@@ -1,0 +1,33 @@
+import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
+import type { RecipientAccessStore } from '$lib/ports/recipient-access-store';
+import { hashRecipientCapability, isRecipientCapability } from '$lib/security/recipient-capability';
+
+const SIGNABLE_ENVELOPE_STATUSES = new Set<RecipientSigningContext['envelopeStatus']>([
+	'sent',
+	'in_progress'
+]);
+const ACTIONABLE_RECIPIENT_STATUSES = new Set<RecipientSigningContext['recipientStatus']>([
+	'pending',
+	'viewed'
+]);
+
+export class RecipientAccessService {
+	constructor(private readonly store: RecipientAccessStore) {}
+
+	async resolve(token: string, at: string): Promise<RecipientSigningContext | null> {
+		if (!isRecipientCapability(token)) return null;
+		const tokenHash: string = await hashRecipientCapability(token);
+		const context: RecipientSigningContext | null = await this.store.findActiveByTokenHash(
+			tokenHash,
+			at
+		);
+		if (!context) return null;
+		if (!SIGNABLE_ENVELOPE_STATUSES.has(context.envelopeStatus)) return null;
+		if (!ACTIONABLE_RECIPIENT_STATUSES.has(context.recipientStatus)) return null;
+		const expiresAt: number = Date.parse(context.expiresAt);
+		const resolvedAt: number = Date.parse(at);
+		if (!Number.isFinite(expiresAt) || !Number.isFinite(resolvedAt) || expiresAt <= resolvedAt)
+			return null;
+		return context;
+	}
+}
