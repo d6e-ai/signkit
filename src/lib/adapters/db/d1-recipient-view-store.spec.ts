@@ -178,7 +178,7 @@ describe('D1RecipientViewStore', () => {
 	it('replays the stored receipt for the same recipient even under a different idempotency key', async () => {
 		const differentKey = { ...command, idempotencyKey: 'viewed-from-another-tab' };
 		const result = await new D1RecipientViewStore(
-			fakeD1([viewedRow, null, storedRow()]).database
+			fakeD1([viewedRow, null, storedRow(), viewedRow]).database
 		).prepareViewed(differentKey, '2026-09-11T00:02:30.000Z');
 		expect(result).toMatchObject({
 			outcome: 'replayed',
@@ -236,9 +236,16 @@ describe('D1RecipientViewStore', () => {
 
 	it('fails closed when a replay receipt exists without the published recipient state', async () => {
 		const result = await new D1RecipientViewStore(
-			fakeD1([eligibleRow, storedRow()]).database
+			fakeD1([eligibleRow, storedRow(), eligibleRow]).database
 		).prepareViewed(command, '2026-09-11T00:02:30.000Z');
 		expect(result).toEqual({ outcome: 'integrity_error' });
+	});
+
+	it('re-reads state before accepting a replay after a concurrent publication', async () => {
+		const result = await new D1RecipientViewStore(
+			fakeD1([eligibleRow, storedRow(), viewedRow]).database
+		).prepareViewed(command, '2026-09-11T00:02:30.000Z');
+		expect(result).toMatchObject({ outcome: 'replayed' });
 	});
 
 	it('treats viewed state without its durable command as an integrity error', async () => {

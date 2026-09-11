@@ -85,10 +85,16 @@ export class D1RecipientViewStore implements RecipientViewStore {
 		if (row === null || !authorized(row, key.capabilityHash, at)) return { outcome: 'not_found' };
 		const replay: ViewedPreparation | null = await this.#resolveCommand(key);
 		if (replay !== null) {
-			if (
-				replay.outcome === 'replayed' &&
-				(row.recipient_status !== 'viewed' || row.envelope_status !== 'in_progress')
-			) {
+			if (replay.outcome !== 'replayed') return replay;
+			const current: RecipientEnvelopeRow | null = await this.#readRecipientEnvelope(
+				key.organizationId,
+				key.envelopeId,
+				key.recipientId
+			);
+			if (current === null || !authorized(current, key.capabilityHash, at)) {
+				return { outcome: 'not_found' };
+			}
+			if (current.recipient_status !== 'viewed' || current.envelope_status !== 'in_progress') {
 				return { outcome: 'integrity_error' };
 			}
 			return replay;
@@ -144,8 +150,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 			await this.#database.batch([statement]);
 			return { outcome: 'published', result: resultFromCommand(command) };
 		} catch (error: unknown) {
-			const raced: ViewedPreparation | null = await this.#resolveCommand(command);
-			if (raced !== null) return publishFromPreparation(raced);
 			const classified: PublishRecipientViewedResult | null = await this.#classifyFailure(command);
 			if (classified !== null) return classified;
 			throw error;

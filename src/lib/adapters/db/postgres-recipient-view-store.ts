@@ -85,10 +85,18 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 		if (row === null || !authorized(row, key.capabilityHash, at)) return { outcome: 'not_found' };
 		const replay: ViewedPreparation | null = await this.#resolveCommand(this.#sql, key);
 		if (replay !== null) {
-			if (
-				replay.outcome === 'replayed' &&
-				(row.recipientStatus !== 'viewed' || row.envelopeStatus !== 'in_progress')
-			) {
+			if (replay.outcome !== 'replayed') return replay;
+			const current: RecipientEnvelopeRow | null = await this.#readRecipientEnvelope(
+				this.#sql,
+				key.organizationId,
+				key.envelopeId,
+				key.recipientId,
+				false
+			);
+			if (current === null || !authorized(current, key.capabilityHash, at)) {
+				return { outcome: 'not_found' };
+			}
+			if (current.recipientStatus !== 'viewed' || current.envelopeStatus !== 'in_progress') {
 				return { outcome: 'integrity_error' };
 			}
 			return replay;
@@ -148,7 +156,16 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 					return { outcome: 'not_found' };
 				}
 				const raced: ViewedPreparation | null = await this.#resolveCommand(transaction, command);
-				if (raced !== null) return publishFromPreparation(raced);
+				if (raced !== null) {
+					if (
+						raced.outcome === 'replayed' &&
+						(recipientRow.recipientStatus !== 'viewed' ||
+							recipientRow.envelopeStatus !== 'in_progress')
+					) {
+						return { outcome: 'integrity_error' };
+					}
+					return publishFromPreparation(raced);
+				}
 				if (recipientRow.recipientStatus === 'viewed') return { outcome: 'integrity_error' };
 				if (
 					recipientRow.recipientRole !== command.recipientRole ||
@@ -214,8 +231,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				return { outcome: 'published', result: resultFromCommand(command) };
 			});
 		} catch (error: unknown) {
-			const raced: ViewedPreparation | null = await this.#resolveCommand(this.#sql, command);
-			if (raced !== null) return publishFromPreparation(raced);
 			const classified: PublishRecipientViewedResult | null = await this.#classifyFailure(command);
 			if (classified !== null) return classified;
 			if (error instanceof ViewedPublicationIntegrityError) return { outcome: 'integrity_error' };

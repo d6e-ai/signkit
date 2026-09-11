@@ -191,7 +191,12 @@ describe('PostgresRecipientViewStore', () => {
 
 	it('replays the stored receipt for the same recipient under a different idempotency key', async () => {
 		const differentKey = { ...command, idempotencyKey: 'viewed-from-another-tab' };
-		const database = new ScriptedPostgres([[viewedRecipientRow], [], [replayRow()]]);
+		const database = new ScriptedPostgres([
+			[viewedRecipientRow],
+			[],
+			[replayRow()],
+			[viewedRecipientRow]
+		]);
 		const result = await new PostgresRecipientViewStore(database.client()).prepareViewed(
 			differentKey,
 			'2026-09-11T00:02:30.000Z'
@@ -240,12 +245,29 @@ describe('PostgresRecipientViewStore', () => {
 	});
 
 	it('fails closed when a replay receipt exists without the published recipient state', async () => {
-		const database = new ScriptedPostgres([[eligibleRecipientRow], [replayRow()]]);
+		const database = new ScriptedPostgres([
+			[eligibleRecipientRow],
+			[replayRow()],
+			[eligibleRecipientRow]
+		]);
 		const result = await new PostgresRecipientViewStore(database.client()).prepareViewed(
 			command,
 			'2026-09-11T00:02:30.000Z'
 		);
 		expect(result).toEqual({ outcome: 'integrity_error' });
+	});
+
+	it('re-reads state before accepting a replay after a concurrent publication', async () => {
+		const database = new ScriptedPostgres([
+			[eligibleRecipientRow],
+			[replayRow()],
+			[viewedRecipientRow]
+		]);
+		const result = await new PostgresRecipientViewStore(database.client()).prepareViewed(
+			command,
+			'2026-09-11T00:02:30.000Z'
+		);
+		expect(result).toMatchObject({ outcome: 'replayed' });
 	});
 
 	it('prepares only an eligible pending recipient with a live capability', async () => {
