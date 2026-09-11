@@ -38,6 +38,7 @@ function fakeD1(firstResults: readonly unknown[]) {
 const command: PublishReadyEnvelopeCommand = {
 	organizationId: 'org-1',
 	envelopeId: '00000000-0000-8000-a000-000000000001',
+	actorType: 'user',
 	actorId: 'user-1',
 	idempotencyKey: 'ready-1',
 	requestFingerprint: 'a'.repeat(64),
@@ -91,6 +92,7 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 	return {
 		organization_id: command.organizationId,
 		envelope_id: command.envelopeId,
+		actor_type: command.actorType,
 		actor_id: command.actorId,
 		request_hash: command.requestFingerprint,
 		expected_generation: 1,
@@ -145,6 +147,7 @@ describe('D1EnvelopeReadyStore', () => {
 		});
 		expect(fake.prepared[0].bindings).toEqual([
 			command.organizationId,
+			command.actorType,
 			command.actorId,
 			command.idempotencyKey
 		]);

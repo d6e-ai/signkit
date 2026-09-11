@@ -48,6 +48,7 @@ class ScriptedPostgres {
 const command: PublishReadyEnvelopeCommand = {
 	organizationId: 'org-1',
 	envelopeId: '00000000-0000-8000-a000-000000000001',
+	actorType: 'user',
 	actorId: 'user-1',
 	idempotencyKey: 'ready-1',
 	requestFingerprint: 'a'.repeat(64),
@@ -129,6 +130,7 @@ describe('PostgresEnvelopeReadyStore', () => {
 		const replayRow = {
 			organizationId: command.organizationId,
 			envelopeId: command.envelopeId,
+			actorType: command.actorType,
 			actorId: command.actorId,
 			requestHash: command.requestFingerprint,
 			expectedGeneration: 1,

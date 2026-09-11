@@ -14,6 +14,7 @@ import { PostgresEnvelopeStore } from './postgres-envelope-store';
 interface ReadyCommandRow {
 	organizationId: string;
 	envelopeId: string;
+	actorType: string;
 	actorId: string;
 	requestHash: string;
 	expectedGeneration: number;
@@ -136,12 +137,12 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 
 				await transaction`
 						INSERT INTO envelope_ready_command (
-							organization_id, envelope_id, actor_id, idempotency_key, request_hash,
+							organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 							expected_generation, commit_sha, recipients_json, recipient_count,
 							updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 							audit_event_hash, audit_payload_json
 						) VALUES (
-							${command.organizationId}, ${command.envelopeId}, ${command.actorId},
+							${command.organizationId}, ${command.envelopeId}, ${command.actorType}, ${command.actorId},
 							${command.idempotencyKey}, ${command.requestFingerprint},
 							${command.expectedGeneration}, ${command.expectedCommitSha},
 							${JSON.stringify(command.recipients)}, ${command.recipients.length},
@@ -176,7 +177,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 							actor_id, payload_json, previous_hash, event_hash, occurred_at
 						) VALUES (
 							${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
-							${command.expectedAuditSequence + 1}, 'envelope.ready', 'user',
+							${command.expectedAuditSequence + 1}, 'envelope.ready', ${command.actorType},
 							${command.actorId}, ${command.auditPayloadJson}, ${command.previousAuditHash},
 							${command.auditEventHash}, ${command.updatedAt}
 						)
@@ -200,7 +201,8 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 	): Promise<ReadyPreparation | null> {
 		const rows = await sql<ReadyCommandRow[]>`
 			SELECT command.organization_id AS "organizationId",
-				command.envelope_id AS "envelopeId", command.actor_id AS "actorId",
+				command.envelope_id AS "envelopeId", command.actor_type AS "actorType",
+				command.actor_id AS "actorId",
 				command.request_hash AS "requestHash",
 				command.expected_generation AS "expectedGeneration",
 				command.commit_sha AS "commitSha", command.recipients_json AS "recipientsJson",
@@ -225,6 +227,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 				ON evidence.organization_id = command.organization_id
 				AND evidence.id = command.audit_event_id
 			WHERE command.organization_id = ${key.organizationId}
+				AND command.actor_type = ${key.actorType}
 				AND command.actor_id = ${key.actorId}
 				AND command.idempotency_key = ${key.idempotencyKey}
 			LIMIT 1
@@ -280,7 +283,7 @@ function validAuditEvidence(row: ReadyCommandRow): boolean {
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'envelope.ready' &&
-		row.evidenceActorType === 'user' &&
+		row.evidenceActorType === row.actorType &&
 		row.evidenceActorId === row.actorId &&
 		row.evidencePayloadJson === row.auditPayloadJson &&
 		row.evidencePreviousHash === row.previousAuditHash &&

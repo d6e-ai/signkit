@@ -13,6 +13,7 @@ import { D1EnvelopeStore } from './d1-envelope-store';
 interface ReadyCommandRow {
 	organization_id: string;
 	envelope_id: string;
+	actor_type: string;
 	actor_id: string;
 	request_hash: string;
 	expected_generation: number;
@@ -84,15 +85,16 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 			this.#database
 				.prepare(
 					`INSERT INTO envelope_ready_command (
-						organization_id, envelope_id, actor_id, idempotency_key, request_hash,
+						organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 						expected_generation, commit_sha, recipients_json, recipient_count,
 						updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 						audit_event_hash, audit_payload_json
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					command.organizationId,
 					command.envelopeId,
+					command.actorType,
 					command.actorId,
 					command.idempotencyKey,
 					command.requestFingerprint,
@@ -166,11 +168,11 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 				 LEFT JOIN audit_event evidence
 					ON evidence.organization_id = command.organization_id
 					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_id = ?
+				 WHERE command.organization_id = ? AND command.actor_type = ? AND command.actor_id = ?
 					AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(key.organizationId, key.actorId, key.idempotencyKey)
+			.bind(key.organizationId, key.actorType, key.actorId, key.idempotencyKey)
 			.first<ReadyCommandRow>();
 		if (row === null) return null;
 		if (row.envelope_id !== key.envelopeId || row.request_hash !== key.requestFingerprint) {
@@ -238,7 +240,7 @@ function validAuditEvidence(row: ReadyCommandRow): boolean {
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'envelope.ready' &&
-		row.evidence_actor_type === 'user' &&
+		row.evidence_actor_type === row.actor_type &&
 		row.evidence_actor_id === row.actor_id &&
 		row.evidence_payload_json === row.audit_payload_json &&
 		row.evidence_previous_hash === row.previous_audit_hash &&

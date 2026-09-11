@@ -71,6 +71,7 @@ describe('EnvelopeReadyApplication', () => {
 		expect(store.keys[0]).toMatchObject({
 			organizationId: envelope.organizationId,
 			envelopeId: envelope.id,
+			actorType: 'user',
 			actorId: actor.id,
 			idempotencyKey: 'ready-1',
 			requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/)

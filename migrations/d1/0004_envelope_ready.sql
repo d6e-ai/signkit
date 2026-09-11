@@ -28,6 +28,7 @@ CREATE UNIQUE INDEX recipient_capability_hash
 CREATE TABLE envelope_ready_command (
   organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
+  actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
   actor_id TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   request_hash TEXT NOT NULL,
@@ -41,7 +42,7 @@ CREATE TABLE envelope_ready_command (
   previous_audit_hash TEXT NOT NULL,
   audit_event_hash TEXT NOT NULL,
   audit_payload_json TEXT NOT NULL,
-  PRIMARY KEY (organization_id, actor_id, idempotency_key),
+  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
   UNIQUE (organization_id, audit_event_id),
   FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
 );
@@ -88,7 +89,7 @@ BEGIN
     actor_id, payload_json, previous_hash, event_hash, occurred_at
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
-    NEW.audit_sequence, 'envelope.ready', 'user', NEW.actor_id,
+    NEW.audit_sequence, 'envelope.ready', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
     NEW.updated_at
   );

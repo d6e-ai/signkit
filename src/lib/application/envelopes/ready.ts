@@ -71,6 +71,7 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 		const key = {
 			organizationId: actor.organizationId,
 			envelopeId,
+			actorType: 'user' as const,
 			actorId: actor.id,
 			idempotencyKey: input.idempotencyKey,
 			requestFingerprint
