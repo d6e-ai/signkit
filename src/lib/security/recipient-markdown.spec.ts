@@ -65,12 +65,23 @@ describe('recipient Markdown rendering', () => {
 		expect(findElements(rendered.nodes, 'input')).toHaveLength(0);
 	});
 
-	it('surfaces invisible Unicode controls after parsing while retaining ordinary RTL text', () => {
-		const rendered = renderRecipientMarkdown('English \u202E spoof \u2066 text\n\nمرحبا بالعالم');
+	it('preserves the explicit start number of an ordered clause list', () => {
+		const rendered = renderRecipientMarkdown('3. Third clause\n4. Fourth clause');
+
+		expect(findElements(rendered.nodes, 'ol')).toHaveLength(1);
+		expect(findElements(rendered.nodes, 'ol')[0]?.attributes).toEqual({ start: '3' });
+	});
+
+	it('surfaces invisible Unicode controls in prose and code while retaining ordinary RTL text', () => {
+		const rendered = renderRecipientMarkdown(
+			'English \u202E spoof \u2066 text\n\n`inline\u200Fcode`\n\n```\nblock\u2067code\n```\n\nمرحبا بالعالم'
+		);
 
 		expect(rendered.hasVisibleUnicodeControls).toBe(true);
 		expect(textContent(rendered.nodes)).toContain('⟦U+202E⟧');
 		expect(textContent(rendered.nodes)).toContain('⟦U+2066⟧');
+		expect(textContent(rendered.nodes)).toContain('inline⟦U+200F⟧code');
+		expect(textContent(rendered.nodes)).toContain('block⟦U+2067⟧code');
 		expect(textContent(rendered.nodes)).toContain('مرحبا بالعالم');
 		expect(findElements(rendered.nodes, 'p').at(-1)?.attributes).toEqual({ dir: 'auto' });
 	});

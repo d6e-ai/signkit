@@ -6,7 +6,7 @@ import type { PageData } from './$types';
 
 test('hydrates the sanitized document surface without active or remote content', async () => {
 	const exactSource =
-		'# Terms\n\n[safe](https://example.com) [unsafe](javascript:alert(1))\n\n<img src="https://tracker.example/pixel.gif" onerror="alert(1)">\n\n![tracking](https://tracker.example/second.gif)\n\ncontrol:\u202e';
+		'# Terms\n\n3. Third clause\n4. Fourth clause\n\n[safe](https://example.com) [unsafe](javascript:alert(1))\n\n<img src="https://tracker.example/pixel.gif" onerror="alert(1)">\n\n![tracking](https://tracker.example/second.gif)\n\ncontrol:\u202e `code:\u2067`';
 	const data: PageData = {
 		state: 'active',
 		access: {
@@ -33,6 +33,7 @@ test('hydrates the sanitized document surface without active or remote content',
 	const container: HTMLElement = screen.container;
 
 	await expect.element(screen.getByRole('heading', { name: 'Terms' })).toBeVisible();
+	expect(container.querySelector('ol')?.getAttribute('start')).toBe('3');
 	expect(container.querySelector('script')).toBeNull();
 	expect(container.querySelector('img')).toBeNull();
 	expect(container.querySelector('[onerror]')).toBeNull();
@@ -46,6 +47,7 @@ test('hydrates the sanitized document surface without active or remote content',
 			.some((entry: PerformanceEntry): boolean => entry.name.includes('tracker.example'))
 	).toBe(false);
 	await expect.element(screen.getByText('⟦U+202E⟧')).toBeVisible();
+	await expect.element(screen.getByText('code:⟦U+2067⟧')).toBeVisible();
 
 	await screen.getByRole('tab', { name: 'Source' }).click();
 	const source = container.querySelector('pre');
