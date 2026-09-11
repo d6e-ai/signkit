@@ -3,6 +3,7 @@ import { gzipSync, gunzipSync } from 'fflate';
 import { assertMarkdownPath } from '$lib/domain/envelope';
 import type {
 	DraftActor,
+	DraftDocument,
 	DraftEdit,
 	DraftRepository,
 	DraftVersion
@@ -20,6 +21,43 @@ interface ArchivePayload {
 }
 
 export class IsomorphicGitDraftRepository implements DraftRepository {
+	async read(
+		archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<readonly DraftDocument[]> {
+		if (archive === null) {
+			if (expectedCommitSha !== null) throw new Error('Empty draft has an unexpected Git head');
+			return [];
+		}
+		if (expectedCommitSha === null) throw new Error('Persisted draft is missing its Git head');
+		const fs: MemoryFs = await restore(archive);
+		const client = fs.asClient();
+		const actualCommitSha: string = await git.resolveRef({
+			fs: client,
+			dir: DIRECTORY,
+			ref: 'HEAD'
+		});
+		if (actualCommitSha !== expectedCommitSha) {
+			throw new Error('Draft repository HEAD does not match its database pointer');
+		}
+		const status = await git.statusMatrix({ fs: client, dir: DIRECTORY });
+		if (status.some(([, head, workdir, stage]) => head !== 1 || workdir !== 1 || stage !== 1)) {
+			throw new Error('Draft repository contains uncommitted content');
+		}
+		const paths: string[] = await git.listFiles({ fs: client, dir: DIRECTORY });
+		const documents: DraftDocument[] = [];
+		for (const path of paths.sort()) {
+			assertMarkdownPath(path);
+			const content: Uint8Array | string = await fs.promises.readFile(
+				`${DIRECTORY}/${path}`,
+				'utf8'
+			);
+			if (typeof content !== 'string') throw new Error('Draft document was not decoded as text');
+			documents.push({ path, content });
+		}
+		return documents;
+	}
+
 	async commit(
 		archive: Uint8Array | null,
 		edits: readonly DraftEdit[],

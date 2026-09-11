@@ -1,6 +1,7 @@
 import { assertEnvelopeMutable, type Envelope } from '$lib/domain/envelope';
 import type {
 	DraftActor,
+	DraftDocument,
 	DraftEdit,
 	DraftRepository,
 	DraftVersion
@@ -44,6 +45,14 @@ export interface PersistedDraftSnapshot {
 }
 
 export type DraftSnapshot = EmptyDraftSnapshot | PersistedDraftSnapshot;
+
+export interface DraftWorkspaceSnapshot {
+	generation: number;
+	commitSha: string | null;
+	archiveKey: string | null;
+	archiveSha256: string | null;
+	documents: readonly DraftDocument[];
+}
 
 export class DraftEnvelopeNotFoundError extends Error {
 	readonly code = 'DRAFT_ENVELOPE_NOT_FOUND';
@@ -108,6 +117,21 @@ export class DraftPersistenceService {
 		}
 
 		throw new DraftReadConflictError();
+	}
+
+	async readWorkspace(input: ReadCurrentDraftInput): Promise<DraftWorkspaceSnapshot> {
+		const snapshot: DraftSnapshot = await this.readCurrent(input);
+		const documents: readonly DraftDocument[] = await this.repository.read(
+			snapshot.archive,
+			snapshot.commitSha
+		);
+		return {
+			generation: snapshot.generation,
+			commitSha: snapshot.commitSha,
+			archiveKey: snapshot.archiveKey,
+			archiveSha256: snapshot.archiveSha256,
+			documents
+		};
 	}
 
 	async commit(input: CommitDraftInput): Promise<PersistedDraftSnapshot> {

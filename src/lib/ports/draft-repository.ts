@@ -10,6 +10,11 @@ export interface DraftEdit {
 	content: string;
 }
 
+export interface DraftDocument {
+	path: `documents/${string}.md`;
+	content: string;
+}
+
 export interface DraftVersion {
 	commitSha: string;
 	archive: Uint8Array;
@@ -17,6 +22,10 @@ export interface DraftVersion {
 }
 
 export interface DraftRepository {
+	read(
+		archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<readonly DraftDocument[]>;
 	commit(
 		archive: Uint8Array | null,
 		edits: readonly DraftEdit[],
