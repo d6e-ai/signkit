@@ -26,6 +26,12 @@ export const GET: RequestHandler = ({ platform }) => {
 			concurrency: 'expected-generation',
 			idempotency: 'required'
 		},
+		sending: {
+			endpoint: '/api/v1/envelopes/{envelopeId}/send',
+			concurrency: 'expected-generation-and-ready-audit-event',
+			delivery: 'durable-outbox',
+			idempotency: 'required'
+		},
 		automation: { idempotencyKeys: true, actorProvenance: true, webhooks: 'planned' }
 	});
 };
