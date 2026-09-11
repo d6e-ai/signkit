@@ -102,7 +102,7 @@ The sender/admin UI uses d6e-auth authorization-code OAuth. Access tokens are ve
 
 d6e-auth proves identity, not envelope or organization access. Active organization memberships are fetched server-side. Suspended and closed organizations are rejected. A remembered organization cookie is display state only. Every query and mutation must match the authorized organization and object ID.
 
-Recipient signing uses a separate, narrow capability link: high entropy, one recipient, stored as a hash, expiring, revocable, rate-limited, and unable to call operator APIs. A recipient does not need a d6e account by default.
+Recipient signing uses a separate, narrow capability link: high entropy, one recipient, stored as a hash, expiring, revocable, rate-limited, and unable to call operator APIs. A recipient does not need a d6e account by default. `GET /api/v1/signing/context` resolves only a bearer capability and is independent from browser OAuth organization state. Its D1 and PostgreSQL queries require a non-null future expiry, no revocation, a `pending` or `viewed` non-CC recipient, a `sent` or `in_progress` envelope, and a composite organization/envelope join. The response is an explicit allowlist that excludes organization identity, recipient email/name, and all token material; all inactive capability cases share one not-found shape. The later `/s/<token>` UI will call this boundary without adding signing mutations or view-audit side effects to the read.
 
 Agents and the future CLI use revocable organization-scoped workload credentials with explicit scopes such as `envelopes:read`, `drafts:write`, and `envelopes:send`. They never use browser cookies or the OAuth client secret.
 

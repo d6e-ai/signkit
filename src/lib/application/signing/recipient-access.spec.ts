@@ -20,6 +20,7 @@ const activeContext: RecipientSigningContext = {
 	recipientId: 'recipient_1',
 	recipientName: 'Recipient',
 	recipientLocale: 'ja',
+	recipientRole: 'signer',
 	recipientStatus: 'pending',
 	envelopeTitle: 'Agreement',
 	envelopeStatus: 'sent',
@@ -46,6 +47,14 @@ describe('RecipientAccessService', () => {
 		await expect(unknown.resolve('malformed', '2026-09-11T00:00:00.000Z')).resolves.toBeNull();
 		await expect(unknown.resolve(capability.token, '2026-09-11T00:00:00.000Z')).resolves.toBeNull();
 		await expect(expired.resolve(capability.token, '2026-09-11T00:00:00.000Z')).resolves.toBeNull();
+	});
+
+	it('fails closed at the exact expiry boundary and for an invalid server timestamp', async () => {
+		const capability = await issueRecipientCapability();
+		const service = new RecipientAccessService(new StubRecipientAccessStore(activeContext));
+
+		await expect(service.resolve(capability.token, activeContext.expiresAt)).resolves.toBeNull();
+		await expect(service.resolve(capability.token, 'invalid')).resolves.toBeNull();
 	});
 
 	it('fails closed for envelopes and recipients that can no longer act', async () => {
