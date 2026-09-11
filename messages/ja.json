@@ -69,5 +69,9 @@
 	"signing_invalid_title": "この署名リンクは現在利用できません",
 	"signing_invalid_description": "リンクが無効・期限切れ・失効済み、または前の受信者の対応待ちの可能性があります。送信者に有効なリンクをご確認ください。",
 	"signing_unavailable_title": "署名画面を一時的に利用できません",
-	"signing_unavailable_description": "少し待ってから、もう一度リンクを開いてください。署名操作は記録されていません。"
+	"signing_unavailable_description": "少し待ってから、もう一度リンクを開いてください。署名操作は記録されていません。",
+	"signing_view_recorded": "閲覧が記録されました",
+	"signing_view_retry_pending": "閲覧を記録できませんでした。このタブに戻るか、再接続したときに再試行します。",
+	"signing_view_failed": "閲覧を記録できませんでした。ページを再読み込みしてお試しください。",
+	"signing_no_js_explanation": "閲覧状況を自動記録するにはJavaScriptを有効にしてください。"
 }

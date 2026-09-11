@@ -3,11 +3,16 @@ import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-enve
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
 import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
+import { PostgresRecipientViewStore } from '$lib/adapters/db/postgres-recipient-view-store';
 import {
 	RecipientAccessService,
 	type RecipientAccessApplicationPort
 } from '$lib/application/signing/recipient-access';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
+import {
+	RecipientViewedApplication,
+	type RecipientViewedApplicationPort
+} from '$lib/application/signing/recipient-viewed';
 import type { EnvelopeApplicationPort } from './model';
 import { EnvelopeReadyApplication, type EnvelopeReadyApplicationPort } from './ready';
 import { EnvelopeSendApplication, type EnvelopeSendApplicationPort } from './send';
@@ -61,6 +66,16 @@ export function resolvePostgresRecipientAccessApplication(
 	databaseUrl: string
 ): RecipientAccessApplicationPort {
 	return resolvePostgresResources(databaseUrl).recipientAccessApplication;
+}
+
+export function resolvePostgresRecipientViewedApplication(
+	databaseUrl: string
+): RecipientViewedApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new RecipientViewedApplication(
+		resources.recipientAccessApplication,
+		new PostgresRecipientViewStore(resources.sql)
+	);
 }
 
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {

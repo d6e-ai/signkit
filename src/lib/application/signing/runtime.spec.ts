@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RecipientAccessService } from './recipient-access';
+import { RecipientViewedApplication } from './recipient-viewed';
 import { RecipientWorkspaceService } from './recipient-workspace';
 
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
-import { resolveRecipientAccessApplication, resolveRecipientWorkspaceApplication } from './runtime';
+import {
+	resolveRecipientAccessApplication,
+	resolveRecipientViewedApplication,
+	resolveRecipientWorkspaceApplication
+} from './runtime';
 
 afterEach((): void => {
 	for (const key of Object.keys(privateEnv)) delete privateEnv[key];
@@ -84,5 +89,33 @@ describe('resolveRecipientAccessApplication', () => {
 
 	it('returns null when a Node deployment has no PostgreSQL configuration', async () => {
 		await expect(resolveRecipientAccessApplication({})).resolves.toBeNull();
+	});
+});
+
+describe('resolveRecipientViewedApplication', () => {
+	it('fails closed on a Cloudflare request without D1 instead of falling back to PostgreSQL', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(
+			resolveRecipientViewedApplication({ platform: { env: {} } as App.Platform })
+		).resolves.toBeNull();
+	});
+
+	it('uses one request-scoped D1 binding for access and atomic publication', async () => {
+		await expect(
+			resolveRecipientViewedApplication({
+				platform: { env: { DB: {} as D1Database } } as App.Platform
+			})
+		).resolves.toBeInstanceOf(RecipientViewedApplication);
+	});
+
+	it('returns null without Node PostgreSQL configuration', async () => {
+		await expect(resolveRecipientViewedApplication({})).resolves.toBeNull();
+	});
+
+	it('constructs the PostgreSQL application from complete Node configuration', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(resolveRecipientViewedApplication({})).resolves.toBeInstanceOf(
+			RecipientViewedApplication
+		);
 	});
 });

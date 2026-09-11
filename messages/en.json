@@ -69,5 +69,9 @@
 	"signing_invalid_title": "This signing link is not active",
 	"signing_invalid_description": "The link may be invalid, expired, revoked, or waiting for an earlier recipient. Ask the sender for an active link.",
 	"signing_unavailable_title": "Signing access is temporarily unavailable",
-	"signing_unavailable_description": "Please wait a moment and open the link again. No signing action was recorded."
+	"signing_unavailable_description": "Please wait a moment and open the link again. No signing action was recorded.",
+	"signing_view_recorded": "Document view recorded",
+	"signing_view_retry_pending": "Could not record the view. We'll retry when you return to this tab or reconnect.",
+	"signing_view_failed": "Could not record the view. Refresh the page to try again.",
+	"signing_no_js_explanation": "JavaScript is required to automatically record document viewing."
 }
