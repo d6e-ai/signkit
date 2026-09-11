@@ -149,6 +149,11 @@
 		return response.status !== 409 || !response.headers.has('retry-after');
 	}
 
+	// A 400/413 rejects the submitted values, not the recipient's capability, so it stays retryable.
+	export function isRecoverableSignValidationFailure(response: Response): boolean {
+		return response.status === 400 || response.status === 413;
+	}
+
 	export type RecipientDeclineStatus =
 		'idle' | 'pending' | 'transient_failure' | 'terminal_failure' | 'success';
 
@@ -651,7 +656,7 @@
 					}
 				}
 
-				if (isPermanentClientFailure(response)) {
+				if (isPermanentClientFailure(response) && !isRecoverableSignValidationFailure(response)) {
 					status = 'terminal_failure';
 					onStatusChange?.('terminal_failure');
 					onTerminalFailure?.();

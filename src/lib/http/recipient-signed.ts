@@ -11,14 +11,16 @@ import {
 } from '$lib/server/recipient-session';
 import { problemResponse } from './problem';
 
-const MAX_BODY_BYTES: number = 64 * 1024;
 const MAX_VALUES: number = 50;
+const MAX_VALUE_CHARS: number = 4000;
+// Sized for the worst-case UTF-8 encoding of a full 50-value payload so a schema-valid submission never 413s.
+const MAX_BODY_BYTES: number = MAX_VALUES * (MAX_VALUE_CHARS * 3 + 128) + 1024;
 const MAX_GENERATION: number = 2_147_483_647;
 const idSchema: ZodType<string> = z.string().uuid();
 const fieldValueSchema = z
 	.object({
 		fieldId: z.string().uuid(),
-		value: z.union([z.string().max(4000), z.boolean()])
+		value: z.union([z.string().max(MAX_VALUE_CHARS), z.boolean()])
 	})
 	.strict();
 const bodySchema = z
