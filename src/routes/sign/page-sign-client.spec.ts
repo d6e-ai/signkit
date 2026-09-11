@@ -175,4 +175,34 @@ describe('recipient sign client controller', () => {
 		await controller.confirmSign(values);
 		expect(controller.getStatus()).toBe('terminal_failure');
 	});
+
+	it.each([400, 413])(
+		'treats %i as editable validation failure and mints a new command after correction',
+		async (status: number) => {
+			const fetch = vi
+				.fn<typeof globalThis.fetch>()
+				.mockResolvedValueOnce(new Response('{}', { status }))
+				.mockResolvedValueOnce(successResponse());
+			const keys: string[] = ['invalid-sign-key', 'corrected-sign-key'];
+			const controller = createRecipientSignController({
+				...base,
+				fetch,
+				randomUUID: () => keys.shift() ?? 'unexpected-key'
+			});
+
+			await controller.confirmSign(values);
+			expect(controller.getStatus()).toBe('validation_failure');
+			expect(controller.getIdempotencyKey()).toBeNull();
+
+			const corrected = [{ fieldId, value: 'Corrected value' }];
+			await controller.confirmSign(corrected);
+			expect(controller.getStatus()).toBe('success');
+			expect(
+				fetch.mock.calls.map(
+					(call) => (call[1]?.headers as Record<string, string>)['idempotency-key']
+				)
+			).toEqual(['invalid-sign-key', 'corrected-sign-key']);
+			expect(JSON.parse(String(fetch.mock.calls[1][1]?.body)).values).toEqual(corrected);
+		}
+	);
 });

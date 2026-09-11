@@ -122,6 +122,7 @@
 	"signing_sign_dialog_confirm": "Sign and complete",
 	"signing_sign_pending": "Signing agreement…",
 	"signing_sign_retry_pending": "Could not record your signature. You can try again.",
+	"signing_sign_validation_failed": "Review your entries and try again. Your signing link is still active.",
 	"signing_sign_retry": "Try again",
 	"signing_sign_failed": "Could not record your signature. This signing link is no longer active.",
 	"signing_sign_success": "Agreement was signed.",

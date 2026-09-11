@@ -197,6 +197,25 @@ describe('recipient signed HTTP handler', () => {
 		);
 	});
 
+	it('accepts the largest schema-valid text field set without tripping the body cap', async () => {
+		const values = Array.from({ length: 50 }, (_, index: number) => ({
+			fieldId: `00000000-0000-8000-a000-${index.toString(16).padStart(12, '0')}`,
+			value: 'x'.repeat(4000)
+		}));
+		const app: RecipientSignedApplicationPort = application(published);
+		const { event } = requestEvent({
+			idempotencyKey: 'sign-max-fields',
+			body: { ...commandBody, values }
+		});
+		const response: Response = await createRecipientSignedHandler(
+			() => app,
+			async (): Promise<string> => token
+		)(event);
+
+		expect(response.status).toBe(200);
+		expect(app.sign).toHaveBeenCalledWith(expect.objectContaining({ values }));
+	});
+
 	it('returns a replay header and still clears the cookie for same-recipient retries', async () => {
 		const replayed: RecipientSignedResult = { ...published, outcome: 'replayed' };
 		const { event, deleted } = requestEvent({ idempotencyKey: 'sign-tab-2' });

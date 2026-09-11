@@ -122,6 +122,7 @@
 	"signing_sign_dialog_confirm": "署名して完了",
 	"signing_sign_pending": "署名を処理中…",
 	"signing_sign_retry_pending": "署名を記録できませんでした。もう一度お試しください。",
+	"signing_sign_validation_failed": "入力内容を確認して、もう一度お試しください。署名リンクは引き続き有効です。",
 	"signing_sign_retry": "再試行",
 	"signing_sign_failed": "署名を記録できませんでした。この署名リンクは無効です。",
 	"signing_sign_success": "契約書に署名しました。",

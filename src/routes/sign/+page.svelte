@@ -149,11 +149,6 @@
 		return response.status !== 409 || !response.headers.has('retry-after');
 	}
 
-	// A 400/413 rejects the submitted values, not the recipient's capability, so it stays retryable.
-	export function isRecoverableSignValidationFailure(response: Response): boolean {
-		return response.status === 400 || response.status === 413;
-	}
-
 	export type RecipientDeclineStatus =
 		'idle' | 'pending' | 'transient_failure' | 'terminal_failure' | 'success';
 
@@ -523,7 +518,12 @@
 	}
 
 	export type RecipientSignStatus =
-		'idle' | 'pending' | 'transient_failure' | 'terminal_failure' | 'success';
+		| 'idle'
+		| 'pending'
+		| 'validation_failure'
+		| 'transient_failure'
+		| 'terminal_failure'
+		| 'success';
 
 	export interface RecipientSignFieldValue {
 		fieldId: string;
@@ -656,7 +656,15 @@
 					}
 				}
 
-				if (isPermanentClientFailure(response) && !isRecoverableSignValidationFailure(response)) {
+				if (response.status === 400 || response.status === 413) {
+					idempotencyKey = null;
+					submittedValues = null;
+					status = 'validation_failure';
+					onStatusChange?.('validation_failure');
+					return;
+				}
+
+				if (isPermanentClientFailure(response)) {
 					status = 'terminal_failure';
 					onStatusChange?.('terminal_failure');
 					onTerminalFailure?.();
@@ -911,6 +919,9 @@
 			liveMessage = m.signing_sign_success();
 		} else if (status === 'transient_failure') {
 			liveMessage = m.signing_sign_retry_pending();
+		} else if (status === 'validation_failure') {
+			signDialogOpen = false;
+			liveMessage = m.signing_sign_validation_failed();
 		} else if (status === 'terminal_failure') {
 			signDialogOpen = false;
 			liveMessage = m.signing_sign_failed();
@@ -1246,7 +1257,8 @@
 															id={field.id}
 															aria-invalid={invalid || undefined}
 															checked={fieldValues[field.id] === true}
-															disabled={signStatus !== 'idle'}
+															disabled={signStatus === 'pending' ||
+																signStatus === 'transient_failure'}
 															onCheckedChange={(value) => (fieldValues[field.id] = value === true)}
 														/>
 														<Field.FieldLabel for={field.id} class="font-normal">
@@ -1275,7 +1287,9 @@
 															<Textarea
 																id={field.id}
 																aria-invalid={invalid || undefined}
-																disabled={signStatus !== 'idle'}
+																disabled={signStatus === 'pending' ||
+																	signStatus === 'transient_failure'}
+																maxlength={4000}
 																value={fieldValues[field.id] as string}
 																oninput={(event) =>
 																	(fieldValues[field.id] = event.currentTarget.value)}
@@ -1285,7 +1299,8 @@
 																id={field.id}
 																type="date"
 																aria-invalid={invalid || undefined}
-																disabled={signStatus !== 'idle'}
+																disabled={signStatus === 'pending' ||
+																	signStatus === 'transient_failure'}
 																value={fieldValues[field.id] as string}
 																oninput={(event) =>
 																	(fieldValues[field.id] = event.currentTarget.value)}
@@ -1295,7 +1310,9 @@
 																id={field.id}
 																type="text"
 																aria-invalid={invalid || undefined}
-																disabled={signStatus !== 'idle'}
+																disabled={signStatus === 'pending' ||
+																	signStatus === 'transient_failure'}
+																maxlength={field.fieldType === 'signature' ? 200 : 20}
 																value={fieldValues[field.id] as string}
 																oninput={(event) =>
 																	(fieldValues[field.id] = event.currentTarget.value)}
@@ -1312,6 +1329,11 @@
 										</Field.FieldGroup>
 									</Field.FieldSet>
 								{/each}
+								{#if signStatus === 'validation_failure'}
+									<p class="text-sm font-medium text-destructive" role="alert">
+										{m.signing_sign_validation_failed()}
+									</p>
+								{/if}
 							</Card.Content>
 							<Card.Footer
 								class="flex flex-col gap-3 border-t bg-muted/20 py-4 sm:flex-row sm:items-center sm:justify-between"
@@ -1326,7 +1348,7 @@
 											disabled={signPending}
 											onclick={handleSignAttempt}
 										>
-											{signStatus === 'transient_failure'
+											{signStatus === 'transient_failure' || signStatus === 'validation_failure'
 												? m.signing_sign_retry()
 												: m.signing_sign_action()}
 										</Button>
