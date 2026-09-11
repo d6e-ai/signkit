@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CreateEnvelopeCommand } from '$lib/application/envelopes/model';
 import type { Envelope } from '$lib/domain/envelope';
+import type { PublishDraftRevisionCommand } from '$lib/ports/draft-mutation-store';
 import { D1EnvelopeApplicationStore } from './d1-envelope-application-store';
 
 interface StatementRecord {
@@ -20,6 +21,7 @@ interface FakeD1Options {
 	allResults?: readonly (readonly unknown[])[];
 	batchError?: Error;
 	firstResults?: readonly unknown[];
+	runError?: Error;
 }
 
 const command: CreateEnvelopeCommand = {
@@ -76,7 +78,10 @@ function createFakeD1(options: FakeD1Options = {}): FakeD1 {
 			all: async (): Promise<{ results: readonly unknown[] }> => ({
 				results: allResults.shift() ?? []
 			}),
-			run: async (): Promise<{ meta: { changes: number } }> => ({ meta: { changes: 1 } })
+			run: async (): Promise<{ meta: { changes: number } }> => {
+				if (options.runError !== undefined) throw options.runError;
+				return { meta: { changes: 1 } };
+			}
 		} as unknown as D1PreparedStatement;
 		record.statement = statement;
 		prepared.push(record);
@@ -294,4 +299,201 @@ describe('D1EnvelopeApplicationStore', () => {
 		).rejects.toThrow(/between 1 and 100/);
 		expect(fake.prepared).toHaveLength(0);
 	});
+
+	it('prepares a draft revision from the organization-scoped envelope and audit head', async () => {
+		const fake: FakeD1 = createFakeD1({
+			firstResults: [null, envelopeRow(command.envelopeId), { sequence: 1, event_hash: 'head-1' }]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		await expect(store.prepareDraftRevision(draftCommand, 0)).resolves.toMatchObject({
+			outcome: 'ready',
+			envelope: { id: command.envelopeId, repositoryGeneration: 0 },
+			auditHead: { sequence: 1, eventHash: 'head-1' }
+		});
+		expect(fake.prepared[0].bindings).toEqual([
+			draftCommand.organizationId,
+			draftCommand.actorType,
+			draftCommand.actorId,
+			draftCommand.idempotencyKey
+		]);
+	});
+
+	it('replays a prepared draft revision and conflicts when the envelope differs', async () => {
+		const stored = draftCommandRow();
+		const replayStore = new D1EnvelopeApplicationStore(
+			createFakeD1({ firstResults: [stored] }).database
+		);
+		await expect(replayStore.prepareDraftRevision(draftCommand, 0)).resolves.toEqual({
+			outcome: 'replayed',
+			revision: publishedDraftRevision
+		});
+
+		const conflictStore = new D1EnvelopeApplicationStore(
+			createFakeD1({
+				firstResults: [{ ...stored, envelope_id: 'another-envelope' }]
+			}).database
+		);
+		await expect(conflictStore.prepareDraftRevision(draftCommand, 0)).resolves.toEqual({
+			outcome: 'idempotency_conflict'
+		});
+	});
+
+	it.each([
+		['missing audit event', { evidence_event_id: null }],
+		['wrong event type', { evidence_event_type: 'envelope.created' }],
+		['wrong actor', { evidence_actor_id: 'other-actor' }],
+		['wrong payload', { evidence_payload_json: '{"generation":99}' }],
+		['wrong previous hash', { evidence_previous_hash: 'other-head' }],
+		['wrong event hash', { evidence_event_hash: 'other-event-hash' }],
+		['wrong timestamp', { evidence_occurred_at: '2026-09-11T02:00:00.000Z' }]
+	])('fails closed when replay evidence has %s', async (_name, override) => {
+		const store = new D1EnvelopeApplicationStore(
+			createFakeD1({ firstResults: [{ ...draftCommandRow(), ...override }] }).database
+		);
+
+		await expect(store.prepareDraftRevision(draftCommand, 0)).resolves.toEqual({
+			outcome: 'integrity_error'
+		});
+	});
+
+	it('publishes through the trigger-backed command insert', async () => {
+		const fake: FakeD1 = createFakeD1({ firstResults: [null] });
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'published',
+			revision: publishedDraftRevision
+		});
+		const insert = fake.prepared.at(-1);
+		expect(insert?.sql).toContain('INSERT INTO draft_revision_command');
+		expect(insert?.bindings).toEqual([
+			draftCommand.organizationId,
+			draftCommand.envelopeId,
+			draftCommand.actorType,
+			draftCommand.actorId,
+			draftCommand.idempotencyKey,
+			draftCommand.requestFingerprint,
+			draftCommand.expectedGeneration,
+			draftCommand.resultingGeneration,
+			draftCommand.commitSha,
+			draftCommand.archiveKey,
+			draftCommand.archiveSha256,
+			draftCommand.updatedAt,
+			draftCommand.auditEventId,
+			2,
+			draftCommand.previousAuditHash,
+			draftCommand.auditEventHash,
+			draftCommand.auditPayloadJson
+		]);
+	});
+
+	it('classifies a concurrent duplicate by durable readback without parsing the error', async () => {
+		const fake: FakeD1 = createFakeD1({
+			runError: new Error('opaque provider failure'),
+			firstResults: [null, draftCommandRow()]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'replayed',
+			revision: publishedDraftRevision
+		});
+	});
+
+	it('classifies a losing generation CAS after a failed D1 publish', async () => {
+		const advancedEnvelope = {
+			...envelopeRow(command.envelopeId),
+			repository_generation: 1,
+			repository_head: draftCommand.commitSha,
+			repository_archive_key: draftCommand.archiveKey,
+			repository_archive_sha256: draftCommand.archiveSha256
+		};
+		const fake: FakeD1 = createFakeD1({
+			runError: new Error('opaque provider failure'),
+			firstResults: [null, null, advancedEnvelope]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'generation_conflict'
+		});
+	});
+
+	it('classifies an audit-head race after a failed D1 publish', async () => {
+		const fake: FakeD1 = createFakeD1({
+			runError: new Error('opaque provider failure'),
+			firstResults: [
+				null,
+				null,
+				envelopeRow(command.envelopeId),
+				{ sequence: 2, event_hash: 'new-head' }
+			]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'audit_conflict'
+		});
+	});
 });
+
+const draftCommand: PublishDraftRevisionCommand = {
+	organizationId: command.organizationId,
+	envelopeId: command.envelopeId,
+	actorType: 'user',
+	actorId: command.actor.id,
+	idempotencyKey: 'draft-request-1',
+	requestFingerprint: 'c'.repeat(64),
+	expectedGeneration: 0,
+	resultingGeneration: 1,
+	commitSha: 'd'.repeat(40),
+	archiveKey: 'draft-repositories/archive.git.gz',
+	archiveSha256: 'e'.repeat(64),
+	updatedAt: '2026-09-11T01:00:00.000Z',
+	expectedAuditSequence: 1,
+	previousAuditHash: 'head-1',
+	auditEventId: '01900000-0000-7000-8000-000000000004',
+	auditEventHash: 'f'.repeat(64),
+	auditPayloadJson: '{"generation":1}'
+};
+
+const publishedDraftRevision = {
+	generation: 1,
+	commitSha: draftCommand.commitSha,
+	archiveKey: draftCommand.archiveKey,
+	archiveSha256: draftCommand.archiveSha256,
+	updatedAt: draftCommand.updatedAt,
+	auditEventId: draftCommand.auditEventId
+};
+
+function draftCommandRow(): Record<string, unknown> {
+	return {
+		organization_id: draftCommand.organizationId,
+		envelope_id: draftCommand.envelopeId,
+		actor_type: draftCommand.actorType,
+		actor_id: draftCommand.actorId,
+		request_hash: draftCommand.requestFingerprint,
+		resulting_generation: draftCommand.resultingGeneration,
+		commit_sha: draftCommand.commitSha,
+		archive_key: draftCommand.archiveKey,
+		archive_sha256: draftCommand.archiveSha256,
+		updated_at: draftCommand.updatedAt,
+		audit_event_id: draftCommand.auditEventId,
+		audit_sequence: draftCommand.expectedAuditSequence + 1,
+		previous_audit_hash: draftCommand.previousAuditHash,
+		audit_event_hash: draftCommand.auditEventHash,
+		audit_payload_json: draftCommand.auditPayloadJson,
+		evidence_event_id: draftCommand.auditEventId,
+		evidence_organization_id: draftCommand.organizationId,
+		evidence_envelope_id: draftCommand.envelopeId,
+		evidence_sequence: draftCommand.expectedAuditSequence + 1,
+		evidence_event_type: 'draft.revision_created',
+		evidence_actor_type: draftCommand.actorType,
+		evidence_actor_id: draftCommand.actorId,
+		evidence_payload_json: draftCommand.auditPayloadJson,
+		evidence_previous_hash: draftCommand.previousAuditHash,
+		evidence_event_hash: draftCommand.auditEventHash,
+		evidence_occurred_at: draftCommand.updatedAt
+	};
+}

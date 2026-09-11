@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { Envelope } from '$lib/domain/envelope';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
+import type {
+	DraftMutationStore,
+	DraftRevisionKey,
+	DraftRevisionPreparation,
+	PublishedDraftRevision,
+	PublishDraftRevisionCommand,
+	PublishDraftRevisionResult
+} from '$lib/ports/draft-mutation-store';
 import type { DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
-import type { DraftPointerUpdate, EnvelopeStore } from '$lib/ports/envelope-store';
+import type { DraftPointerUpdate } from '$lib/ports/envelope-store';
 import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
 import {
 	DraftGenerationConflictError,
+	DraftIdempotencyConflictError,
 	DraftIntegrityError,
 	DraftPersistenceService,
 	draftArchiveKey
@@ -23,22 +32,43 @@ describe('DraftPersistenceService', () => {
 			new IsomorphicGitDraftRepository()
 		);
 
-		const committed = await service.commit({
+		const result = await service.commit({
 			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [{ path: 'documents/agreement.md', content: '# Agreement' }],
 			message: 'Create agreement',
 			actor,
+			idempotencyKey: 'draft-1',
 			updatedAt: '2026-09-11T00:00:00.000Z'
 		});
 
+		const committed = result.revision;
+		expect(result.outcome).toBe('committed');
 		expect(committed.archiveKey).toBe(draftArchiveKey('org_1', 'env_1', committed.archiveSha256));
 		expect(committed.archiveKey).toContain('/organizations/org_1/envelopes/env_1/sha256/');
 		expect(committed.generation).toBe(1);
-		expect(await service.readCurrent({ organizationId: 'org_1', envelopeId: 'env_1' })).toEqual(
-			committed
-		);
+		expect(envelopes.lastPublication).toMatchObject({
+			expectedGeneration: 0,
+			resultingGeneration: 1,
+			previousAuditHash: 'a'.repeat(64),
+			auditEventHash: expect.stringMatching(/^[a-f0-9]{64}$/)
+		});
+		expect(JSON.parse(envelopes.lastPublication?.auditPayloadJson ?? '{}')).toEqual({
+			generation: 1,
+			commitSha: committed.commitSha,
+			archiveSha256: committed.archiveSha256,
+			changedPaths: ['documents/agreement.md'],
+			provenance: { automationRunId: null, externalId: null }
+		});
+		expect(
+			await service.readCurrent({ organizationId: 'org_1', envelopeId: 'env_1' })
+		).toMatchObject({
+			generation: committed.generation,
+			commitSha: committed.commitSha,
+			archiveKey: committed.archiveKey,
+			archiveSha256: committed.archiveSha256
+		});
 		await expect(
 			service.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
 		).resolves.toMatchObject({
@@ -64,11 +94,73 @@ describe('DraftPersistenceService', () => {
 				expectedGeneration: 1,
 				edits: [{ path: 'documents/agreement.md', content: 'stale' }],
 				message: 'Stale edit',
-				actor
+				actor,
+				idempotencyKey: 'stale-1'
 			})
 		).rejects.toBeInstanceOf(DraftGenerationConflictError);
 		expect(repository.commitCalls).toBe(0);
 		expect(objects.size).toBe(0);
+	});
+
+	it('replays a completed command without creating another Git revision', async () => {
+		const envelopes = new MemoryEnvelopeStore(emptyEnvelope());
+		const objects = new MemoryObjectStore();
+		const service = new DraftPersistenceService(
+			envelopes,
+			objects,
+			new IsomorphicGitDraftRepository()
+		);
+		const input = {
+			organizationId: 'org_1',
+			envelopeId: 'env_1',
+			expectedGeneration: 0,
+			edits: [{ path: 'documents/agreement.md' as const, content: '# Agreement\r\n' }],
+			message: ' Create agreement ',
+			actor,
+			idempotencyKey: 'replay-1',
+			updatedAt: '2026-09-11T00:00:00.000Z'
+		};
+
+		const first = await service.commit(input);
+		const replay = await service.commit({
+			...input,
+			edits: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+			message: 'Create agreement'
+		});
+
+		expect(first.outcome).toBe('committed');
+		expect(replay).toEqual({ outcome: 'replayed', revision: first.revision });
+		expect(objects.size).toBe(1);
+	});
+
+	it('rejects reuse of an idempotency key for different normalized content', async () => {
+		const objects = new MemoryObjectStore();
+		const service = new DraftPersistenceService(
+			new MemoryEnvelopeStore(emptyEnvelope()),
+			objects,
+			new IsomorphicGitDraftRepository()
+		);
+		const input = {
+			organizationId: 'org_1',
+			envelopeId: 'env_1',
+			expectedGeneration: 0,
+			message: 'Create agreement',
+			actor,
+			idempotencyKey: 'conflict-1',
+			updatedAt: '2026-09-11T00:00:00.000Z'
+		};
+
+		await service.commit({
+			...input,
+			edits: [{ path: 'documents/agreement.md', content: '# First' }]
+		});
+		await expect(
+			service.commit({
+				...input,
+				edits: [{ path: 'documents/agreement.md', content: '# Different' }]
+			})
+		).rejects.toBeInstanceOf(DraftIdempotencyConflictError);
+		expect(objects.size).toBe(1);
 	});
 
 	it('does not delete an orphaned immutable object after losing the pointer CAS', async () => {
@@ -88,7 +180,8 @@ describe('DraftPersistenceService', () => {
 				expectedGeneration: 0,
 				edits: [{ path: 'documents/agreement.md', content: '# Losing write' }],
 				message: 'Concurrent edit',
-				actor
+				actor,
+				idempotencyKey: 'losing-1'
 			})
 		).rejects.toBeInstanceOf(DraftGenerationConflictError);
 		expect(objects.size).toBe(1);
@@ -143,16 +236,17 @@ describe('DraftPersistenceService', () => {
 			new IsomorphicGitDraftRepository()
 		);
 
-		const committed = await service.commit({
+		const result = await service.commit({
 			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [{ path: 'documents/agreement.md', content: '# Durable' }],
 			message: 'Durable write',
-			actor
+			actor,
+			idempotencyKey: 'durable-1'
 		});
 
-		expect(committed.generation).toBe(1);
+		expect(result.revision.generation).toBe(1);
 		expect(objects.getCalls).toBe(1);
 	});
 
@@ -170,14 +264,20 @@ describe('DraftPersistenceService', () => {
 				expectedGeneration: 0,
 				edits: [{ path: 'documents/agreement.md', content: '# Invalid digest' }],
 				message: 'Invalid digest',
-				actor
+				actor,
+				idempotencyKey: 'invalid-digest-1'
 			})
 		).rejects.toBeInstanceOf(DraftIntegrityError);
 	});
 });
 
-class MemoryEnvelopeStore implements EnvelopeStore {
+class MemoryEnvelopeStore implements DraftMutationStore {
 	rejectCompareAndSet = false;
+	lastPublication: PublishDraftRevisionCommand | null = null;
+	private readonly commands = new Map<
+		string,
+		{ requestFingerprint: string; envelopeId: string; revision: PublishedDraftRevision }
+	>();
 
 	constructor(private envelope: Envelope) {}
 
@@ -213,12 +313,92 @@ class MemoryEnvelopeStore implements EnvelopeStore {
 		return true;
 	}
 
+	async prepareDraftRevision(
+		key: DraftRevisionKey,
+		expectedGeneration: number
+	): Promise<DraftRevisionPreparation> {
+		const existing = this.commands.get(commandKey(key));
+		if (existing !== undefined) {
+			return existing.requestFingerprint === key.requestFingerprint &&
+				existing.envelopeId === key.envelopeId
+				? { outcome: 'replayed', revision: existing.revision }
+				: { outcome: 'idempotency_conflict' };
+		}
+		if (
+			this.envelope.organizationId !== key.organizationId ||
+			this.envelope.id !== key.envelopeId
+		) {
+			return { outcome: 'not_found' };
+		}
+		if (this.envelope.status !== 'draft') return { outcome: 'immutable' };
+		if (this.envelope.repositoryGeneration !== expectedGeneration) {
+			return { outcome: 'generation_conflict' };
+		}
+		return {
+			outcome: 'ready',
+			envelope: { ...this.envelope },
+			auditHead: {
+				sequence: this.envelope.repositoryGeneration + 1,
+				eventHash: 'a'.repeat(64)
+			}
+		};
+	}
+
+	async publishDraftRevision(
+		command: PublishDraftRevisionCommand
+	): Promise<PublishDraftRevisionResult> {
+		this.lastPublication = command;
+		const existing = this.commands.get(commandKey(command));
+		if (existing !== undefined) {
+			return existing.requestFingerprint === command.requestFingerprint &&
+				existing.envelopeId === command.envelopeId
+				? { outcome: 'replayed', revision: existing.revision }
+				: { outcome: 'idempotency_conflict' };
+		}
+		if (
+			this.envelope.organizationId !== command.organizationId ||
+			this.envelope.id !== command.envelopeId
+		) {
+			return { outcome: 'not_found' };
+		}
+		if (this.envelope.status !== 'draft') return { outcome: 'immutable' };
+		if (
+			this.rejectCompareAndSet ||
+			this.envelope.repositoryGeneration !== command.expectedGeneration
+		) {
+			return { outcome: 'generation_conflict' };
+		}
+
+		this.envelope = {
+			...this.envelope,
+			repositoryGeneration: command.resultingGeneration,
+			repositoryHead: command.commitSha,
+			repositoryArchiveKey: command.archiveKey,
+			repositoryArchiveSha256: command.archiveSha256,
+			updatedAt: command.updatedAt
+		};
+		const revision: PublishedDraftRevision = {
+			generation: command.resultingGeneration,
+			commitSha: command.commitSha,
+			archiveKey: command.archiveKey,
+			archiveSha256: command.archiveSha256,
+			updatedAt: command.updatedAt,
+			auditEventId: command.auditEventId
+		};
+		this.commands.set(commandKey(command), {
+			requestFingerprint: command.requestFingerprint,
+			envelopeId: command.envelopeId,
+			revision
+		});
+		return { outcome: 'published', revision };
+	}
+
 	async transition(): Promise<boolean> {
 		return false;
 	}
 }
 
-class SequencedEnvelopeStore implements EnvelopeStore {
+class SequencedEnvelopeStore implements DraftMutationStore {
 	private index = 0;
 
 	constructor(private readonly envelopes: readonly Envelope[]) {}
@@ -237,6 +417,18 @@ class SequencedEnvelopeStore implements EnvelopeStore {
 	async transition(): Promise<boolean> {
 		return false;
 	}
+
+	async prepareDraftRevision(): Promise<DraftRevisionPreparation> {
+		throw new Error('Unexpected draft preparation');
+	}
+
+	async publishDraftRevision(): Promise<PublishDraftRevisionResult> {
+		throw new Error('Unexpected draft publication');
+	}
+}
+
+function commandKey(key: DraftRevisionKey): string {
+	return [key.organizationId, key.actorType, key.actorId, key.idempotencyKey].join('\u0000');
 }
 
 interface StoredObject {
