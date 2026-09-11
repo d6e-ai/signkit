@@ -61,7 +61,7 @@ function boundedReceiptId(value: string): string | null {
  * control characters and length are bounded rather than the character set.
  */
 function boundedProviderMessageId(value: string): string | null {
-	if (value.length === 0 || value.length > 256) return null;
+	if (value.trim().length === 0 || value.length > 1024) return null;
 	if (hasControlCharacters(value)) return null;
 	return value;
 }
@@ -69,6 +69,6 @@ function boundedProviderMessageId(value: string): string | null {
 function hasControlCharacters(value: string): boolean {
 	return Array.from(value).some((character: string): boolean => {
 		const codePoint: number = character.codePointAt(0) ?? 0;
-		return codePoint <= 0x1f || codePoint === 0x7f;
+		return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
 	});
 }

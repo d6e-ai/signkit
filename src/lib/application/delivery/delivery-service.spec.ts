@@ -714,6 +714,26 @@ describe('InvitationDeliveryService', () => {
 		expect(store.completions[0].providerMessageId).toBe('queue:abc_1');
 	});
 
+	it('completes an accepted RFC 5322-style provider message ID without retrying the send', async () => {
+		const { claim, token } = await eligibleClaim();
+		const store: FakeStore = new FakeStore();
+		store.rows = [claim];
+		const mail: FakeMail = new FakeMail();
+		mail.receipt = {
+			outcome: 'accepted',
+			providerMessageId: '<01900000-0000-7000-8000-000000000001@email.cloudflare.net>'
+		};
+
+		const result = await service(store, new FakeOpener(token), mail).deliverPendingInvitations();
+
+		expect(result.delivered).toBe(1);
+		expect(result.retryableFailed).toBe(0);
+		expect(store.completions[0].providerMessageId).toBe(
+			'<01900000-0000-7000-8000-000000000001@email.cloudflare.net>'
+		);
+		expect(store.failures).toHaveLength(0);
+	});
+
 	it('rejects viewed recipients and reserved expiry mismatches before opening ciphertext', async () => {
 		const viewed = await eligibleClaim({ recipientStatus: 'viewed' });
 		const mismatched = await eligibleClaim({

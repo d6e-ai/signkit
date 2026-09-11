@@ -42,12 +42,19 @@ describe('mailProviderReceiptId', () => {
 		expect(mailProviderReceiptId({ outcome: 'queued', receiptId: 'queue:abc_1' })).toBe(
 			'queue:abc_1'
 		);
-		expect(mailProviderReceiptId({ outcome: 'accepted', providerMessageId: '' })).toBeNull();
 		expect(
 			mailProviderReceiptId({
-				outcome: 'queued',
-				receiptId: 'user@example.com'
+				outcome: 'accepted',
+				providerMessageId: '<01900000-0000-7000-8000-000000000001@email.cloudflare.net>'
 			})
+		).toBe('<01900000-0000-7000-8000-000000000001@email.cloudflare.net>');
+		expect(mailProviderReceiptId({ outcome: 'queued', receiptId: 'user@example.com' })).toBeNull();
+		expect(mailProviderReceiptId({ outcome: 'accepted', providerMessageId: '' })).toBeNull();
+		expect(
+			mailProviderReceiptId({ outcome: 'queued', receiptId: 'queue-id\r\nforged-header' })
+		).toBeNull();
+		expect(
+			mailProviderReceiptId({ outcome: 'accepted', providerMessageId: 'x'.repeat(1025) })
 		).toBeNull();
 	});
 });

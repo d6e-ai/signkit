@@ -13,12 +13,14 @@ const message: MailMessage = {
 
 describe('Cloudflare email adapters', () => {
 	it('uses the Workers builder API with both text and HTML', async () => {
-		const send = vi.fn(async (): Promise<EmailSendResult> => ({ messageId: 'message-1' }));
+		const send = vi.fn(async (): Promise<EmailSendResult> => ({
+			messageId: '<message-1@email.cloudflare.net>'
+		}));
 		const sender = new CloudflareBindingMailSender({ send } as SendEmail);
 
 		await expect(sender.send(message)).resolves.toEqual({
 			outcome: 'accepted',
-			providerMessageId: 'message-1'
+			providerMessageId: '<message-1@email.cloudflare.net>'
 		});
 		expect(send).toHaveBeenCalledWith({
 			to: message.to,
