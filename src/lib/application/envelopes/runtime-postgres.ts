@@ -1,8 +1,11 @@
 import postgres from 'postgres';
 import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-envelope-application-store';
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
+import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
+import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import type { EnvelopeApplicationPort } from './model';
 import { EnvelopeReadyApplication, type EnvelopeReadyApplicationPort } from './ready';
+import { EnvelopeSendApplication, type EnvelopeSendApplicationPort } from './send';
 import { EnvelopeApplication } from './service';
 
 interface PostgresRuntimeResources {
@@ -10,6 +13,7 @@ interface PostgresRuntimeResources {
 	store: PostgresEnvelopeApplicationStore;
 	application: EnvelopeApplicationPort;
 	readyApplication: EnvelopeReadyApplicationPort;
+	sql: ReturnType<typeof postgres>;
 }
 
 let cachedResources: PostgresRuntimeResources | null = null;
@@ -39,6 +43,14 @@ export function resolvePostgresEnvelopeReadyApplication(
 	return resolvePostgresResources(databaseUrl).readyApplication;
 }
 
+export function resolvePostgresEnvelopeSendApplication(
+	databaseUrl: string,
+	sealer: RecipientCapabilitySealer
+): EnvelopeSendApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new EnvelopeSendApplication(new PostgresEnvelopeSendStore(resources.sql), sealer);
+}
+
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {
 	const normalizedDatabaseUrl: string = databaseUrl.trim();
 	assertPostgresUrl(normalizedDatabaseUrl);
@@ -62,7 +74,13 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 	const readyApplication: EnvelopeReadyApplicationPort = new EnvelopeReadyApplication(
 		new PostgresEnvelopeReadyStore(sql)
 	);
-	cachedResources = { databaseUrl: normalizedDatabaseUrl, store, application, readyApplication };
+	cachedResources = {
+		databaseUrl: normalizedDatabaseUrl,
+		store,
+		application,
+		readyApplication,
+		sql
+	};
 	return cachedResources;
 }
 
