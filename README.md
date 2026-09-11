@@ -40,4 +40,4 @@ See [docs/design.md](docs/design.md) for the normative architecture and security
 
 The first agent-facing endpoints are `POST /api/v1/envelopes`, `GET /api/v1/envelopes`, and `GET /api/v1/envelopes/{envelopeId}`. Creation requires an authenticated d6e-auth organization and an `Idempotency-Key` header. The same key replays the original result; reusing it with a different request returns an RFC 9457 conflict.
 
-The implementation backlog is tracked in [GitHub Issues](https://github.com/d6e-ai/signkit/issues), including DOCX conversion, agent workload credentials and a Rust CLI, enterprise SSO/audit export boundaries, and the lower-priority Vercel production profile.
+The implementation backlog is tracked in [GitHub Issues](https://github.com/d6e-ai/SignKit/issues), including DOCX conversion, agent workload credentials and a Rust CLI, enterprise SSO/audit export boundaries, and the lower-priority Vercel production profile.
