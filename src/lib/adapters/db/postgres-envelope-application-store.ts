@@ -30,6 +30,7 @@ interface EnvelopeRow {
 	repositoryArchiveKey: string | null;
 	repositoryArchiveSha256: string | null;
 	sentCommitSha: string | null;
+	fieldGeneration: number;
 	createdAt: Date | string;
 	updatedAt: Date | string;
 }
@@ -138,6 +139,7 @@ export class PostgresEnvelopeApplicationStore
 					repository_archive_key AS "repositoryArchiveKey",
 					repository_archive_sha256 AS "repositoryArchiveSha256",
 					sent_commit_sha AS "sentCommitSha",
+					field_generation AS "fieldGeneration",
 					created_at AS "createdAt",
 					updated_at AS "updatedAt"
 			`;
@@ -229,6 +231,7 @@ export class PostgresEnvelopeApplicationStore
 					repository_archive_key AS "repositoryArchiveKey",
 					repository_archive_sha256 AS "repositoryArchiveSha256",
 					sent_commit_sha AS "sentCommitSha",
+					field_generation AS "fieldGeneration",
 					created_at AS "createdAt",
 					updated_at AS "updatedAt"
 				FROM envelope
@@ -260,6 +263,7 @@ export class PostgresEnvelopeApplicationStore
 				e.repository_archive_key AS "repositoryArchiveKey",
 				e.repository_archive_sha256 AS "repositoryArchiveSha256",
 				e.sent_commit_sha AS "sentCommitSha",
+				e.field_generation AS "fieldGeneration",
 				e.created_at AS "createdAt",
 				e.updated_at AS "updatedAt"
 			FROM envelope e
@@ -416,6 +420,7 @@ export class PostgresEnvelopeApplicationStore
 						repository_archive_key AS "repositoryArchiveKey",
 						repository_archive_sha256 AS "repositoryArchiveSha256",
 						sent_commit_sha AS "sentCommitSha",
+						field_generation AS "fieldGeneration",
 						created_at AS "createdAt",
 						updated_at AS "updatedAt"
 					FROM envelope
@@ -676,6 +681,7 @@ function fromRow(row: EnvelopeRow): Envelope {
 		repositoryArchiveKey: row.repositoryArchiveKey,
 		repositoryArchiveSha256: row.repositoryArchiveSha256,
 		sentCommitSha: row.sentCommitSha,
+		fieldGeneration: row.fieldGeneration,
 		createdAt: timestamp(row.createdAt),
 		updatedAt: timestamp(row.updatedAt)
 	};

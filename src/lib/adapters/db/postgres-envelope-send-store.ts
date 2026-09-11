@@ -41,6 +41,9 @@ interface AuditHeadRow {
 	eventHash: string;
 	eventType: string;
 }
+interface ReadyAuditAnchorRow {
+	sequence: number | string;
+}
 interface SendCommandRow {
 	organizationId: string;
 	envelopeId: string;
@@ -119,7 +122,15 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			key.envelopeId
 		);
 		if (auditHead === null) return { outcome: 'integrity_error' };
-		if (auditHead.eventId !== expectedReadyAuditEventId || auditHead.eventType !== 'envelope.ready')
+		const readyAuditSequence: number | null = await this.#readReadyAuditSequence(
+			this.#sql,
+			key.organizationId,
+			key.envelopeId,
+			expectedGeneration,
+			envelope.repositoryHead,
+			expectedReadyAuditEventId
+		);
+		if (readyAuditSequence === null || readyAuditSequence > auditHead.sequence)
 			return { outcome: 'audit_conflict' };
 		const recipients: readonly Recipient[] | null = await this.#readRecipients(
 			this.#sql,
@@ -162,9 +173,17 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					command.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
+				const readyAuditSequence: number | null = await this.#readReadyAuditSequence(
+					transaction,
+					command.organizationId,
+					command.envelopeId,
+					command.expectedGeneration,
+					command.commitSha,
+					command.expectedReadyAuditEventId
+				);
 				if (
-					auditHead.eventId !== command.expectedReadyAuditEventId ||
-					auditHead.eventType !== 'envelope.ready' ||
+					readyAuditSequence === null ||
+					readyAuditSequence > auditHead.sequence ||
 					auditHead.sequence !== command.expectedAuditSequence ||
 					auditHead.eventHash !== command.previousAuditHash
 				) {
@@ -329,6 +348,36 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			routingOrder: row.routingOrder,
 			status: row.status
 		}));
+	}
+
+	async #readReadyAuditSequence(
+		sql: Sql,
+		organizationId: string,
+		envelopeId: string,
+		expectedGeneration: number,
+		expectedCommitSha: string,
+		expectedReadyAuditEventId: string
+	): Promise<number | null> {
+		const rows = await sql<ReadyAuditAnchorRow[]>`
+			SELECT ready.audit_sequence AS sequence
+			FROM envelope_ready_command ready
+			JOIN audit_event evidence
+				ON evidence.organization_id = ready.organization_id
+				AND evidence.envelope_id = ready.envelope_id
+				AND evidence.id = ready.audit_event_id
+				AND evidence.sequence = ready.audit_sequence
+				AND evidence.event_type = 'envelope.ready'
+			WHERE ready.organization_id = ${organizationId}
+				AND ready.envelope_id = ${envelopeId}
+				AND ready.expected_generation = ${expectedGeneration}
+				AND ready.commit_sha = ${expectedCommitSha}
+				AND ready.audit_event_id = ${expectedReadyAuditEventId}
+			LIMIT 1
+		`;
+		const row: ReadyAuditAnchorRow | undefined = rows[0];
+		if (row === undefined) return null;
+		const sequence: number = typeof row.sequence === 'number' ? row.sequence : Number(row.sequence);
+		return Number.isSafeInteger(sequence) && sequence >= 1 ? sequence : null;
 	}
 
 	async #readAuditHead(

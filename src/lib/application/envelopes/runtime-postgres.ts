@@ -1,5 +1,7 @@
 import postgres from 'postgres';
+import type { DraftPersistenceService } from '$lib/application/drafts/draft-persistence';
 import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-envelope-application-store';
+import { PostgresEnvelopeFieldStore } from '$lib/adapters/db/postgres-envelope-field-store';
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
 import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
@@ -24,6 +26,7 @@ import {
 	type RecipientViewedApplicationPort
 } from '$lib/application/signing/recipient-viewed';
 import type { EnvelopeApplicationPort } from './model';
+import { EnvelopeFieldApplication, type EnvelopeFieldApplicationPort } from './fields';
 import { EnvelopeReadyApplication, type EnvelopeReadyApplicationPort } from './ready';
 import { EnvelopeSendApplication, type EnvelopeSendApplicationPort } from './send';
 import { EnvelopeApplication } from './service';
@@ -33,6 +36,7 @@ interface PostgresRuntimeResources {
 	store: PostgresEnvelopeApplicationStore;
 	application: EnvelopeApplicationPort;
 	readyApplication: EnvelopeReadyApplicationPort;
+	fieldStore: PostgresEnvelopeFieldStore;
 	recipientAccessApplication: RecipientAccessApplicationPort;
 	sql: ReturnType<typeof postgres>;
 }
@@ -62,6 +66,20 @@ export function resolvePostgresEnvelopeReadyApplication(
 	databaseUrl: string
 ): EnvelopeReadyApplicationPort {
 	return resolvePostgresResources(databaseUrl).readyApplication;
+}
+
+/**
+ * Share the same process-local PostgreSQL pool with draft persistence and the
+ * per-envelope application store. The caller supplies the draft persistence
+ * service so the same object storage/Git dependencies used elsewhere resolve
+ * documents, rather than opening a second path to them here.
+ */
+export function resolvePostgresEnvelopeFieldApplication(
+	databaseUrl: string,
+	drafts: DraftPersistenceService
+): EnvelopeFieldApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new EnvelopeFieldApplication(resources.fieldStore, drafts);
 }
 
 export function resolvePostgresEnvelopeSendApplication(
@@ -125,6 +143,7 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 	const readyApplication: EnvelopeReadyApplicationPort = new EnvelopeReadyApplication(
 		new PostgresEnvelopeReadyStore(sql)
 	);
+	const fieldStore: PostgresEnvelopeFieldStore = new PostgresEnvelopeFieldStore(sql);
 	const recipientAccessApplication: RecipientAccessApplicationPort = new RecipientAccessService(
 		new PostgresRecipientAccessStore(sql)
 	);
@@ -133,6 +152,7 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 		store,
 		application,
 		readyApplication,
+		fieldStore,
 		recipientAccessApplication,
 		sql
 	};

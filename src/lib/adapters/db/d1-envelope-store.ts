@@ -11,6 +11,7 @@ interface EnvelopeRow {
 	repository_archive_key: string | null;
 	repository_archive_sha256: string | null;
 	sent_commit_sha: string | null;
+	field_generation: number;
 	created_at: string;
 	updated_at: string;
 }
@@ -77,6 +78,7 @@ function fromRow(row: EnvelopeRow): Envelope {
 		repositoryArchiveKey: row.repository_archive_key,
 		repositoryArchiveSha256: row.repository_archive_sha256,
 		sentCommitSha: row.sent_commit_sha,
+		fieldGeneration: row.field_generation,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at
 	};

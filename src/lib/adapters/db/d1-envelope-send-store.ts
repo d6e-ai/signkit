@@ -33,6 +33,10 @@ interface AuditHeadRow {
 	event_type: string;
 }
 
+interface ReadyAuditAnchorRow {
+	sequence: number;
+}
+
 interface SendCommandRow {
 	organization_id: string;
 	envelope_id: string;
@@ -112,7 +116,14 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 			key.envelopeId
 		);
 		if (auditHead === null) return { outcome: 'integrity_error' };
-		if (auditHead.eventId !== expectedReadyAuditEventId || auditHead.eventType !== 'envelope.ready')
+		const readyAuditSequence: number | null = await this.#readReadyAuditSequence(
+			key.organizationId,
+			key.envelopeId,
+			expectedGeneration,
+			envelope.repositoryHead,
+			expectedReadyAuditEventId
+		);
+		if (readyAuditSequence === null || readyAuditSequence > auditHead.sequence)
 			return { outcome: 'audit_conflict' };
 		const recipients: readonly Recipient[] | null = await this.#readRecipients(
 			key.organizationId,
@@ -281,6 +292,40 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 			sequence: row.sequence,
 			eventHash: row.event_hash
 		};
+	}
+
+	async #readReadyAuditSequence(
+		organizationId: string,
+		envelopeId: string,
+		expectedGeneration: number,
+		expectedCommitSha: string,
+		expectedReadyAuditEventId: string
+	): Promise<number | null> {
+		const row: ReadyAuditAnchorRow | null = await this.#database
+			.prepare(
+				`SELECT ready.audit_sequence AS sequence
+				 FROM envelope_ready_command ready
+				 JOIN audit_event evidence
+					ON evidence.organization_id = ready.organization_id
+					AND evidence.envelope_id = ready.envelope_id
+					AND evidence.id = ready.audit_event_id
+					AND evidence.sequence = ready.audit_sequence
+					AND evidence.event_type = 'envelope.ready'
+				 WHERE ready.organization_id = ? AND ready.envelope_id = ?
+					AND ready.expected_generation = ? AND ready.commit_sha = ?
+					AND ready.audit_event_id = ?
+				 LIMIT 1`
+			)
+			.bind(
+				organizationId,
+				envelopeId,
+				expectedGeneration,
+				expectedCommitSha,
+				expectedReadyAuditEventId
+			)
+			.first<ReadyAuditAnchorRow>();
+		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
+		return row.sequence;
 	}
 
 	async #resolveCommand(key: SendCommandKey): Promise<SendPreparation | null> {

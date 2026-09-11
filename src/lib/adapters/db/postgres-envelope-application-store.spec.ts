@@ -302,6 +302,7 @@ const envelope: Envelope = {
 	repositoryArchiveKey: null,
 	repositoryArchiveSha256: null,
 	sentCommitSha: null,
+	fieldGeneration: 0,
 	createdAt: command.createdAt,
 	updatedAt: command.createdAt
 };

@@ -68,10 +68,10 @@ const command: PublishSentEnvelopeCommand = {
 	deliveryManifestHash: '',
 	initialCapabilityExpiresAt: '2026-09-25T00:02:00.000Z',
 	updatedAt: '2026-09-11T00:02:00.000Z',
-	expectedAuditSequence: 2,
-	previousAuditHash: 'hash-2',
+	expectedAuditSequence: 3,
+	previousAuditHash: 'hash-3',
 	auditEventId: 'sent-audit',
-	auditEventHash: 'hash-3',
+	auditEventHash: 'hash-4',
 	auditPayloadJson: ''
 };
 command.deliveryManifestJson = JSON.stringify([
@@ -121,20 +121,20 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		initial_capability_expires_at: command.initialCapabilityExpiresAt,
 		updated_at: command.updatedAt,
 		audit_event_id: 'sent-audit',
-		audit_sequence: 3,
-		previous_audit_hash: 'hash-2',
-		audit_event_hash: 'hash-3',
+		audit_sequence: 4,
+		previous_audit_hash: 'hash-3',
+		audit_event_hash: 'hash-4',
 		audit_payload_json: command.auditPayloadJson,
 		evidence_event_id: 'sent-audit',
 		evidence_organization_id: 'org-1',
 		evidence_envelope_id: 'env-1',
-		evidence_sequence: 3,
+		evidence_sequence: 4,
 		evidence_event_type: 'envelope.sent',
 		evidence_actor_type: 'user',
 		evidence_actor_id: 'user-1',
 		evidence_payload_json: command.auditPayloadJson,
-		evidence_previous_hash: 'hash-2',
-		evidence_event_hash: 'hash-3',
+		evidence_previous_hash: 'hash-3',
+		evidence_event_hash: 'hash-4',
 		evidence_occurred_at: command.updatedAt,
 		...overrides
 	};
@@ -153,6 +153,60 @@ describe('D1EnvelopeSendStore', () => {
 			expect.stringContaining('INSERT INTO envelope_send_publish')
 		]);
 		expect(fake.batches[0][2].bindings).toContain('sealed');
+	});
+
+	it('prepares send when field placement advanced the head after the matching ready event', async () => {
+		const fake = fakeD1(
+			[
+				null,
+				{
+					id: 'env-1',
+					organization_id: 'org-1',
+					title: 'Agreement',
+					status: 'ready',
+					repository_generation: 2,
+					repository_head: 'commit-2',
+					repository_archive_key: 'archive-key',
+					repository_archive_sha256: 'archive-sha',
+					sent_commit_sha: null,
+					field_generation: 1,
+					created_at: '2026-09-11T00:00:00.000Z',
+					updated_at: '2026-09-11T00:01:30.000Z'
+				},
+				{
+					id: 'fields-audit',
+					sequence: 3,
+					event_hash: 'hash-3',
+					event_type: 'envelope.fields_placed'
+				},
+				{ sequence: 2 }
+			],
+			[
+				[
+					{
+						id: 'recipient-1',
+						organization_id: 'org-1',
+						envelope_id: 'env-1',
+						email: 'a@example.com',
+						name: 'A',
+						role: 'signer',
+						locale: 'en',
+						routing_order: 1,
+						status: 'pending',
+						capability_hash: null,
+						capability_expires_at: null,
+						capability_revoked_at: null
+					}
+				]
+			]
+		);
+
+		await expect(
+			new D1EnvelopeSendStore(fake.database).prepareSend(command, 2, 'ready-audit')
+		).resolves.toMatchObject({
+			outcome: 'ready',
+			auditHead: { eventId: 'fields-audit', sequence: 3, eventHash: 'hash-3' }
+		});
 	});
 	it('replays only audit-linked evidence with the same request', async () => {
 		const evidence = [

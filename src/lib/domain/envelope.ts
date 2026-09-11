@@ -12,6 +12,8 @@ export const envelopeStatuses = [
 export type EnvelopeStatus = (typeof envelopeStatuses)[number];
 export type RecipientRole = 'signer' | 'approver' | 'viewer' | 'prefill' | 'cc';
 export type RecipientStatus = 'pending' | 'viewed' | 'completed' | 'declined';
+export const fieldTypes = ['signature', 'initials', 'text', 'date', 'checkbox'] as const;
+export type FieldType = (typeof fieldTypes)[number];
 
 export interface Envelope {
 	id: string;
@@ -23,6 +25,7 @@ export interface Envelope {
 	repositoryArchiveKey: string | null;
 	repositoryArchiveSha256: string | null;
 	sentCommitSha: string | null;
+	fieldGeneration: number;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -46,6 +49,22 @@ export interface Recipient {
 	locale: 'en' | 'ja';
 	routingOrder: number;
 	status: RecipientStatus;
+}
+
+/**
+ * A signing-field placement. Fields are declared only in SQL and describe
+ * semantic document order, never page/x/y geometry.
+ */
+export interface EnvelopeField {
+	id: string;
+	organizationId: string;
+	envelopeId: string;
+	recipientId: string;
+	documentPath: `documents/${string}.md`;
+	fieldType: FieldType;
+	label: string;
+	required: boolean;
+	position: number;
 }
 
 const allowedTransitions: Readonly<Record<EnvelopeStatus, readonly EnvelopeStatus[]>> = {

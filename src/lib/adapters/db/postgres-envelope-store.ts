@@ -16,6 +16,7 @@ export class PostgresEnvelopeStore implements EnvelopeStore {
 				repository_archive_key AS "repositoryArchiveKey",
 				repository_archive_sha256 AS "repositoryArchiveSha256",
 				sent_commit_sha AS "sentCommitSha",
+				field_generation AS "fieldGeneration",
 				created_at AS "createdAt",
 				updated_at AS "updatedAt"
 			FROM envelope
