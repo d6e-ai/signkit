@@ -200,12 +200,14 @@ describe('recipient signed HTTP handler', () => {
 	it('accepts the largest schema-valid text field set without tripping the body cap', async () => {
 		const values = Array.from({ length: 50 }, (_, index: number) => ({
 			fieldId: `00000000-0000-8000-a000-${index.toString(16).padStart(12, '0')}`,
-			value: 'x'.repeat(4000)
+			value: '\u0000'.repeat(4000)
 		}));
+		const body = { ...commandBody, values };
+		expect(new TextEncoder().encode(JSON.stringify(body)).byteLength).toBeGreaterThan(1024 * 1024);
 		const app: RecipientSignedApplicationPort = application(published);
 		const { event } = requestEvent({
 			idempotencyKey: 'sign-max-fields',
-			body: { ...commandBody, values }
+			body
 		});
 		const response: Response = await createRecipientSignedHandler(
 			() => app,
