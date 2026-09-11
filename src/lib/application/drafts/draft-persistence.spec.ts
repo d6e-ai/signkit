@@ -539,6 +539,7 @@ function emptyEnvelope(overrides: Partial<Envelope> = {}): Envelope {
 		repositoryArchiveKey: null,
 		repositoryArchiveSha256: null,
 		sentCommitSha: null,
+		fieldGeneration: 0,
 		createdAt: '2026-09-11T00:00:00.000Z',
 		updatedAt: '2026-09-11T00:00:00.000Z',
 		...overrides

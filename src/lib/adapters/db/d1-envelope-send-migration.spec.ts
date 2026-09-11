@@ -7,7 +7,11 @@ const migrationPaths: readonly string[] = [
 	'migrations/d1/0002_envelope_commands.sql',
 	'migrations/d1/0003_draft_revisions.sql',
 	'migrations/d1/0004_envelope_ready.sql',
-	'migrations/d1/0005_envelope_send.sql'
+	'migrations/d1/0005_envelope_send.sql',
+	'migrations/d1/0006_recipient_viewed.sql',
+	'migrations/d1/0007_recipient_declined.sql',
+	'migrations/d1/0008_recipient_approved.sql',
+	'migrations/d1/0009_field_placement.sql'
 ];
 
 function database(): DatabaseSync {
@@ -16,11 +20,28 @@ function database(): DatabaseSync {
 	db.exec(`
 		INSERT INTO organization (id, d6e_organization_id, name, created_at) VALUES ('org-1','org-1','Workspace','2026-09-11T00:00:00.000Z');
 		INSERT INTO envelope (id, organization_id, title, status, repository_generation, repository_head, created_at, updated_at)
-		VALUES ('env-1','org-1','Agreement','ready',2,'commit-2','2026-09-11T00:00:00.000Z','2026-09-11T00:01:00.000Z');
+		VALUES ('env-1','org-1','Agreement','draft',2,'commit-2','2026-09-11T00:00:00.000Z','2026-09-11T00:00:30.000Z');
 		INSERT INTO audit_event (id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash, event_hash, occurred_at)
-		VALUES ('ready-audit','org-1','env-1',2,'envelope.ready','user','user-1','{}','hash-1','hash-2','2026-09-11T00:01:00.000Z');
+		VALUES ('draft-audit','org-1','env-1',1,'draft.revision_created','user','user-1','{}',NULL,'hash-1','2026-09-11T00:00:30.000Z');
+		INSERT INTO envelope_ready_command (
+			organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+			expected_generation,commit_sha,recipients_json,recipient_count,updated_at,
+			audit_event_id,audit_sequence,previous_audit_hash,audit_event_hash,audit_payload_json
+		) VALUES (
+			'org-1','env-1','user','user-1','ready-1','ready-request-hash',2,'commit-2','[]',1,
+			'2026-09-11T00:01:00.000Z','ready-audit',2,'hash-1','hash-2','{}'
+		);
 		INSERT INTO recipient (id, organization_id, envelope_id, email, name, role, locale, routing_order, status, created_at, updated_at)
 		VALUES ('recipient-1','org-1','env-1','a@example.com','A','signer','en',1,'pending','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
+		INSERT INTO envelope_field_placement_command (
+			organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+			expected_generation,expected_field_generation,commit_sha,fields_json,field_count,
+			updated_at,audit_event_id,audit_sequence,previous_audit_hash,audit_event_hash,audit_payload_json
+		) VALUES (
+			'org-1','env-1','user','user-1','fields-1','fields-request-hash',2,0,'commit-2',
+			'[{"recipientId":"recipient-1"}]',1,'2026-09-11T00:01:30.000Z','fields-audit',3,
+			'hash-2','hash-3','{}'
+		);
 	`);
 	return db;
 }
@@ -33,7 +54,7 @@ function insertCommand(db: DatabaseSync): void {
 		updated_at,audit_event_id,audit_sequence,previous_audit_hash,audit_event_hash,audit_payload_json
 	) VALUES ('org-1','env-1','user','user-1','send-1','request-hash',2,'ready-audit','commit-2',1,
 		1,1,'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
-		'sent-audit',3,'hash-2','hash-3','{}')`);
+		'sent-audit',4,'hash-3','hash-4','{}')`);
 }
 
 function reserveDelivery(db: DatabaseSync): void {
@@ -48,7 +69,7 @@ function reserveDelivery(db: DatabaseSync): void {
 }
 
 describe('D1 envelope send migration', () => {
-	it('publishes sent only after the final guard verifies capability and outbox rows', () => {
+	it('publishes sent after ready then field placement when the final guard verifies delivery', () => {
 		const db: DatabaseSync = database();
 		try {
 			db.exec('BEGIN');
@@ -111,6 +132,28 @@ describe('D1 envelope send migration', () => {
 					'2026-09-25T00:02:00.000Z','sealed','key-1','sealed-hash','2026-09-11T00:02:00.000Z',
 					0,'2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z');
 			`);
+			expect((): void =>
+				db.exec("INSERT INTO envelope_send_publish VALUES ('org-1','user','user-1','send-1')")
+			).toThrow(/publish conflict/);
+			db.exec('ROLLBACK');
+			const envelope = db.prepare("SELECT status FROM envelope WHERE id='env-1'").get() as {
+				status: string;
+			};
+			expect(envelope.status).toBe('ready');
+		} finally {
+			db.close();
+		}
+	});
+
+	it('rejects an audit event that is not the ready anchor for the current Git revision', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec('BEGIN');
+			insertCommand(db);
+			db.exec(
+				"UPDATE envelope_send_command SET ready_audit_event_id='fields-audit' WHERE idempotency_key='send-1'"
+			);
+			reserveDelivery(db);
 			expect((): void =>
 				db.exec("INSERT INTO envelope_send_publish VALUES ('org-1','user','user-1','send-1')")
 			).toThrow(/publish conflict/);

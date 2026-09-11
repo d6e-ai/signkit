@@ -22,6 +22,7 @@ const envelope: Envelope = {
 	repositoryArchiveKey: 'internal',
 	repositoryArchiveSha256: 'a'.repeat(64),
 	sentCommitSha: null,
+	fieldGeneration: 0,
 	createdAt: '2026-09-11T00:00:00.000Z',
 	updatedAt: '2026-09-11T00:01:00.000Z'
 };
