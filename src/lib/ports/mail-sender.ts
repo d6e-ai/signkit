@@ -43,7 +43,7 @@ export function sanitizeMailErrorCode(code: string): string {
 
 export function mailProviderReceiptId(receipt: MailSendReceipt): string | null {
 	if (receipt.outcome === 'accepted') {
-		return boundedReceiptId(receipt.providerMessageId);
+		return boundedProviderMessageId(receipt.providerMessageId);
 	}
 	return boundedReceiptId(receipt.receiptId);
 }
@@ -52,4 +52,23 @@ function boundedReceiptId(value: string): string | null {
 	if (value.length === 0 || value.length > 256) return null;
 	if (!/^[A-Za-z0-9._:-]+$/.test(value)) return null;
 	return value;
+}
+
+/**
+ * Provider-issued message IDs already accepted for delivery are frequently RFC 5322
+ * forms such as `<uuid@host>`, which the internal receipt allowlist rejects. Treating
+ * an accepted send as invalid here would resend a duplicate invitation, so only
+ * control characters and length are bounded rather than the character set.
+ */
+function boundedProviderMessageId(value: string): string | null {
+	if (value.length === 0 || value.length > 256) return null;
+	if (hasControlCharacters(value)) return null;
+	return value;
+}
+
+function hasControlCharacters(value: string): boolean {
+	return Array.from(value).some((character: string): boolean => {
+		const codePoint: number = character.codePointAt(0) ?? 0;
+		return codePoint <= 0x1f || codePoint === 0x7f;
+	});
 }
