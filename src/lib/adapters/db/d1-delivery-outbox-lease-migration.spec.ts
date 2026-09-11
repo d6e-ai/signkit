@@ -226,4 +226,35 @@ describe('D1 delivery outbox lease migration', () => {
 			db.close();
 		}
 	});
+
+	it('scrubs ciphertext from a pre-migration delivered row', () => {
+		const db: DatabaseSync = database(false);
+		try {
+			db.exec(`UPDATE delivery_outbox
+				SET status='delivered', delivered_at='2026-09-11T00:03:00.000Z',
+					provider_message_id='provider-id'
+				WHERE id='delivery-1'`);
+			db.exec(readFileSync(leaseMigrationPath, 'utf8'));
+			const row = db
+				.prepare(
+					'SELECT status, sealed_capability, locked_at, claim_token, retryable FROM delivery_outbox WHERE id = ?'
+				)
+				.get('delivery-1') as {
+				status: string;
+				sealed_capability: string | null;
+				locked_at: string | null;
+				claim_token: string | null;
+				retryable: number;
+			};
+			expect(row).toEqual({
+				status: 'delivered',
+				sealed_capability: null,
+				locked_at: null,
+				claim_token: null,
+				retryable: 0
+			});
+		} finally {
+			db.close();
+		}
+	});
 });

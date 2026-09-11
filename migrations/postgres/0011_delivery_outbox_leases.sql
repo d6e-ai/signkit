@@ -10,6 +10,15 @@ SET status = 'failed',
     retryable = true
 WHERE status = 'processing';
 
+-- Rows delivered before lease enforcement must already be terminal and must
+-- not retain the only durable copy of a recipient capability.
+UPDATE delivery_outbox
+SET claim_token = NULL,
+    locked_at = NULL,
+    sealed_capability = NULL,
+    retryable = false
+WHERE status = 'delivered';
+
 ALTER TABLE delivery_outbox
   ADD CONSTRAINT delivery_outbox_claim_token_length CHECK (
     claim_token IS NULL OR length(claim_token) BETWEEN 16 AND 200

@@ -1,0 +1,716 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
+import postgres from 'postgres';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { DraftPersistenceService } from '$lib/application/drafts/draft-persistence';
+import { EnvelopeFieldApplication } from '$lib/application/envelopes/fields';
+import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
+import { EnvelopeReadyApplication } from '$lib/application/envelopes/ready';
+import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
+import type { EnvelopeField } from '$lib/domain/envelope';
+import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
+import type { PublishReadyEnvelopeCommand } from '$lib/ports/envelope-ready-store';
+import type { EnvelopeSendStore, PublishSentEnvelopeCommand } from '$lib/ports/envelope-send-store';
+import type {
+	CapabilitySealContext,
+	RecipientCapabilitySealer
+} from '$lib/security/delivery-capability';
+import { PostgresDeliveryOutboxStore } from './postgres-delivery-outbox-store';
+import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
+import { PostgresEnvelopeReadyStore } from './postgres-envelope-ready-store';
+import { PostgresEnvelopeSendStore } from './postgres-envelope-send-store';
+
+const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
+const CI_ENABLED: boolean =
+	process.env.CI !== undefined &&
+	process.env.CI.trim() !== '' &&
+	!['0', 'false', 'no'].includes(process.env.CI.toLowerCase());
+if (CI_ENABLED && TEST_DATABASE_URL === undefined) {
+	throw new Error('POSTGRES_TEST_URL is required when PostgreSQL integration tests run in CI');
+}
+const postgresDescribe = TEST_DATABASE_URL === undefined ? describe.skip : describe;
+const ORGANIZATION_ID: string = 'org-integration';
+const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
+const COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
+const ARCHIVE_SHA256: string = 'a'.repeat(64);
+const ACTOR: EnvelopeRequestActor = {
+	id: 'user-integration',
+	organizationId: ORGANIZATION_ID,
+	organizationName: 'Integration Workspace'
+};
+const MIGRATION_PATHS: readonly string[] = readdirSync('migrations/postgres')
+	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
+	.sort()
+	.map((name: string): string => `migrations/postgres/${name}`);
+
+let sql: ReturnType<typeof postgres> | null = null;
+const schemaName: string = `signkit_${process.pid}_${randomUUID().replaceAll('-', '')}`;
+
+postgresDescribe('PostgreSQL migration and adapter integration', () => {
+	beforeAll(async () => {
+		const databaseUrl: string = TEST_DATABASE_URL as string;
+		sql = postgres(databaseUrl, { max: 1, onnotice: (): void => undefined });
+		await database().unsafe(`CREATE SCHEMA "${schemaName}"`);
+		await database().unsafe(`SET search_path TO "${schemaName}"`);
+		await database().unsafe(`SET TIME ZONE 'UTC'`);
+		for (const path of MIGRATION_PATHS) {
+			await database().unsafe(readFileSync(path, 'utf8'));
+		}
+	});
+
+	beforeEach(async () => {
+		await database().unsafe('TRUNCATE organization CASCADE');
+	});
+
+	afterAll(async () => {
+		if (sql === null) return;
+		await sql.unsafe('SET search_path TO public');
+		await sql.unsafe(`DROP SCHEMA "${schemaName}" CASCADE`);
+		await sql.end({ timeout: 5 });
+		sql = null;
+	});
+
+	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
+		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0011_delivery_outbox_leases.sql');
+		const relations = await database()<
+			{ name: string }[]
+		>`SELECT table_name AS name FROM information_schema.tables
+			WHERE table_schema = ${schemaName} ORDER BY table_name`;
+		expect(relations.map((row: { name: string }): string => row.name)).toEqual(
+			expect.arrayContaining([
+				'audit_event',
+				'delivery_outbox',
+				'envelope',
+				'envelope_field',
+				'envelope_send_command',
+				'field_value',
+				'recipient'
+			])
+		);
+
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		const approverId: string = ready.recipients.find(
+			(recipient): boolean => recipient.role === 'approver'
+		)?.id as string;
+		const fields = new PostgresEnvelopeFieldStore(database());
+		const rejected = await fields.publishFieldPlacement(
+			fieldCommand({
+				recipientId: approverId,
+				fieldId: '01900000-0000-7000-8000-000000000031',
+				idempotencyKey: 'approver-field',
+				auditEventId: '01900000-0000-7000-8000-000000000032',
+				previousAuditHash: ready.auditEventHash
+			})
+		);
+		expect(rejected).toEqual({ outcome: 'invalid_recipient' });
+
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES ('other-org', 'other-org', 'Other', now())`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, created_at, updated_at
+		) VALUES (
+			'other-envelope', 'other-org', 'Other Agreement', 'ready', 1, ${COMMIT_SHA},
+			'other/archive', ${ARCHIVE_SHA256}, now(), now()
+		)`;
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			'other-recipient', 'other-org', 'other-envelope', 'other@example.com', 'Other',
+			'signer', 'en', 1, 'pending', now(), now()
+		)`;
+		await expect(
+			database()`INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_path, field_type,
+				label, required, position, created_at, updated_at
+			) VALUES (
+				'cross-tenant-field', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'other-recipient',
+				'documents/agreement.md', 'signature', 'Signature', true, 1, now(), now()
+			)`
+		).rejects.toMatchObject({ code: '23503' });
+
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, created_at, updated_at
+		) VALUES (
+			'same-org-other-envelope', ${ORGANIZATION_ID}, 'Other Agreement', 'ready', 1,
+			${COMMIT_SHA}, 'other/archive', ${ARCHIVE_SHA256}, now(), now()
+		)`;
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			'same-org-other-recipient', ${ORGANIZATION_ID}, 'same-org-other-envelope',
+			'same-org-other@example.com', 'Other signer', 'signer', 'en', 1, 'pending', now(), now()
+		)`;
+		await expect(
+			database()`INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_path, field_type,
+				label, required, position, created_at, updated_at
+			) VALUES (
+				'same-org-cross-envelope-field', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
+				'same-org-other-recipient', 'documents/agreement.md', 'signature', 'Signature',
+				true, 1, now(), now()
+			)`
+		).rejects.toMatchObject({ code: '23503' });
+
+		await expect(
+			database()`UPDATE envelope SET field_generation = ${2_147_483_648}
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`
+		).rejects.toMatchObject({ code: '22003' });
+		await expect(
+			database()`INSERT INTO envelope_field_placement_command (
+				organization_id, envelope_id, actor_type, actor_id, idempotency_key,
+				request_hash, expected_generation, expected_field_generation, commit_sha,
+				fields_json, field_count, updated_at, audit_event_id, audit_sequence,
+				previous_audit_hash, audit_event_hash, audit_payload_json
+			) VALUES (
+				${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'user', ${ACTOR.id}, 'overflow-command',
+				${'c'.repeat(64)}, 1, ${2_147_483_647}, ${COMMIT_SHA}, '[]', 1, now(),
+				'01900000-0000-7000-8000-000000000033', 4, ${ready.auditEventHash},
+				${'d'.repeat(64)}, '{}'
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		const generation = await database()<
+			{ fieldGeneration: number }[]
+		>`SELECT field_generation AS "fieldGeneration" FROM envelope
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
+		expect(generation[0].fieldGeneration).toBe(0);
+	});
+
+	it('runs ready through field placement and send, then claims the delivery lease', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		const signerId: string = ready.recipients.find(
+			(recipient): boolean => recipient.role === 'signer'
+		)?.id as string;
+		const drafts = {
+			readWorkspace: async () => ({
+				generation: 1,
+				commitSha: COMMIT_SHA,
+				archiveKey: 'archives/integration.git.gz',
+				archiveSha256: ARCHIVE_SHA256,
+				documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+			})
+		} as unknown as DraftPersistenceService;
+		const fieldApplication = new EnvelopeFieldApplication(
+			new PostgresEnvelopeFieldStore(database()),
+			drafts
+		);
+		const fieldResult = await fieldApplication.place(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'fields-integration',
+			expectedGeneration: 1,
+			expectedFieldGeneration: 0,
+			fields: [
+				{
+					recipientId: signerId,
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					label: 'Signature',
+					required: true,
+					position: 1
+				}
+			]
+		});
+		expect(fieldResult).toMatchObject({
+			outcome: 'published',
+			result: { fieldGeneration: 1 }
+		});
+		const replacementResult = await fieldApplication.place(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'fields-replacement-integration',
+			expectedGeneration: 1,
+			expectedFieldGeneration: 1,
+			fields: [
+				{
+					recipientId: signerId,
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					label: 'Updated signature',
+					required: true,
+					position: 2
+				},
+				{
+					recipientId: signerId,
+					documentPath: 'documents/agreement.md',
+					fieldType: 'date',
+					label: 'Signed date',
+					required: true,
+					position: 3
+				}
+			]
+		});
+		expect(replacementResult).toMatchObject({
+			outcome: 'published',
+			result: { fieldGeneration: 2, fields: [{ position: 2 }, { position: 3 }] }
+		});
+		const replacedFields = await database()<
+			{ label: string; position: number }[]
+		>`SELECT label, position FROM envelope_field
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+			ORDER BY position`;
+		expect(replacedFields).toEqual([
+			{ label: 'Updated signature', position: 2 },
+			{ label: 'Signed date', position: 3 }
+		]);
+
+		const sealer: RecipientCapabilitySealer = {
+			seal: async (token: string, context: CapabilitySealContext) => {
+				const sealedCapability: string = `sealed:${context.deliveryId}:${token}`;
+				return {
+					sealedCapability,
+					sealingKeyId: 'integration-key',
+					sealedCapabilitySha256: sha256(sealedCapability)
+				};
+			}
+		};
+		const sent = await new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			sealer
+		).send(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'send-integration',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		});
+		expect(sent).toMatchObject({
+			outcome: 'published',
+			result: { status: 'sent', queuedDeliveryCount: 1, reservedCapabilityCount: 2 }
+		});
+
+		const envelopeRows = await database()<
+			{ status: string; fieldGeneration: number; sentCommitSha: string | null }[]
+		>`SELECT status, field_generation AS "fieldGeneration", sent_commit_sha AS "sentCommitSha"
+			FROM envelope WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
+		expect(envelopeRows[0]).toEqual({
+			status: 'sent',
+			fieldGeneration: 2,
+			sentCommitSha: COMMIT_SHA
+		});
+		const auditTypes = await database()<
+			{ eventType: string }[]
+		>`SELECT event_type AS "eventType" FROM audit_event
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+			ORDER BY sequence`;
+		expect(auditTypes.map((row: { eventType: string }): string => row.eventType)).toEqual([
+			'envelope.created',
+			'draft.revision_created',
+			'envelope.ready',
+			'envelope.fields_placed',
+			'envelope.fields_placed',
+			'envelope.sent'
+		]);
+		const outbox = await database()<
+			{ status: string; availableAt: Date | null }[]
+		>`SELECT status, available_at AS "availableAt" FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+			ORDER BY status`;
+		expect(outbox).toHaveLength(2);
+		expect(outbox.map((row: { status: string }): string => row.status).sort()).toEqual([
+			'blocked',
+			'pending'
+		]);
+
+		const claimedAt: string = new Date(Date.now() + 1_000).toISOString();
+		const deliveryStore = new PostgresDeliveryOutboxStore(database());
+		const claimed = await deliveryStore.claimPendingInvitations({
+			claimToken: 'integration-claim-token',
+			claimedAt,
+			staleBefore: new Date(Date.parse(claimedAt) - 300_000).toISOString(),
+			limit: 25
+		});
+		expect(claimed).toHaveLength(1);
+		expect(claimed[0]).toMatchObject({ status: 'processing', attempts: 1 });
+		await expect(
+			deliveryStore.completeInvitationDelivery({
+				organizationId: ORGANIZATION_ID,
+				deliveryId: claimed[0].deliveryId,
+				claimToken: 'integration-claim-token',
+				deliveredAt: claimedAt,
+				providerMessageId: '<integration@email.cloudflare.net>'
+			})
+		).resolves.toEqual({ outcome: 'completed' });
+		const delivered = await database()<
+			{ status: string; sealedCapability: string | null; retryable: boolean }[]
+		>`SELECT status, sealed_capability AS "sealedCapability", retryable
+			FROM delivery_outbox WHERE organization_id = ${ORGANIZATION_ID} AND id = ${claimed[0].deliveryId}`;
+		expect(delivered[0]).toEqual({
+			status: 'delivered',
+			sealedCapability: null,
+			retryable: false
+		});
+	});
+
+	it('upgrades every pre-lease delivery state without losing retryable work', async () => {
+		const upgradeSchema: string = `${schemaName}_upgrade`;
+		await database().unsafe(`CREATE SCHEMA "${upgradeSchema}"`);
+		try {
+			await database().unsafe(`SET search_path TO "${upgradeSchema}"`);
+			for (const path of MIGRATION_PATHS.slice(0, -1)) {
+				await database().unsafe(readFileSync(path, 'utf8'));
+			}
+			await database().unsafe(`
+				INSERT INTO organization (id, d6e_organization_id, name, created_at)
+				VALUES ('upgrade-org','upgrade-org','Upgrade Workspace','2026-09-11T00:00:00.000Z');
+				INSERT INTO envelope (
+					id, organization_id, title, status, repository_generation, repository_head,
+					sent_commit_sha, created_at, updated_at
+				) VALUES (
+					'upgrade-envelope','upgrade-org','Agreement','sent',1,'commit-1','commit-1',
+					'2026-09-11T00:00:00.000Z','2026-09-11T00:01:00.000Z'
+				);
+				INSERT INTO recipient (
+					id, organization_id, envelope_id, email, name, role, locale, routing_order,
+					status, capability_hash, capability_expires_at, created_at, updated_at
+				) VALUES
+					('recipient-pending','upgrade-org','upgrade-envelope','pending@example.com','Pending','signer','en',1,'pending','hash-pending','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('recipient-processing','upgrade-org','upgrade-envelope','processing@example.com','Processing','signer','en',2,'pending','hash-processing','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('recipient-failed','upgrade-org','upgrade-envelope','failed@example.com','Failed','signer','en',3,'pending','hash-failed','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('recipient-delivered','upgrade-org','upgrade-envelope','delivered@example.com','Delivered','signer','en',4,'pending','hash-delivered','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('recipient-blocked','upgrade-org','upgrade-envelope','blocked@example.com','Blocked','signer','en',5,'pending','hash-blocked','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
+				INSERT INTO delivery_outbox (
+					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+					reserved_capability_expires_at, sealed_capability, sealing_key_id,
+					sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
+					provider_message_id, last_error, created_at, updated_at
+				) VALUES
+					('delivery-pending','upgrade-org','upgrade-envelope','recipient-pending','recipient_invitation','pending','hash-pending','2026-09-25T00:00:00.000Z','sealed-pending','key-1','sealed-hash-pending','2026-09-11T00:01:00.000Z',0,NULL,NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('delivery-processing','upgrade-org','upgrade-envelope','recipient-processing','recipient_invitation','processing','hash-processing','2026-09-25T00:00:00.000Z','sealed-processing','key-1','sealed-hash-processing','2026-09-11T00:01:00.000Z',1,'2026-09-11T00:02:00.000Z',NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z'),
+					('delivery-failed','upgrade-org','upgrade-envelope','recipient-failed','recipient_invitation','failed','hash-failed','2026-09-25T00:00:00.000Z','sealed-failed','key-1','sealed-hash-failed','2026-09-11T00:01:00.000Z',1,NULL,NULL,NULL,'transient','2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z'),
+					('delivery-delivered','upgrade-org','upgrade-envelope','recipient-delivered','recipient_invitation','delivered','hash-delivered','2026-09-25T00:00:00.000Z','sealed-delivered','key-1','sealed-hash-delivered','2026-09-11T00:01:00.000Z',1,NULL,'2026-09-11T00:03:00.000Z','provider-id',NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:03:00.000Z'),
+					('delivery-blocked','upgrade-org','upgrade-envelope','recipient-blocked','recipient_invitation','blocked','hash-blocked','2026-09-25T00:00:00.000Z','sealed-blocked','key-1','sealed-hash-blocked',NULL,0,NULL,NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
+			`);
+
+			await database().unsafe(readFileSync(MIGRATION_PATHS.at(-1) as string, 'utf8'));
+			const rows = await database()<
+				{
+					id: string;
+					status: string;
+					claimToken: string | null;
+					lockedAt: Date | null;
+					sealedCapability: string | null;
+					retryable: boolean;
+					lastError: string | null;
+				}[]
+			>`SELECT id, status, claim_token AS "claimToken", locked_at AS "lockedAt",
+				sealed_capability AS "sealedCapability", retryable, last_error AS "lastError"
+			FROM delivery_outbox ORDER BY id`;
+			expect(rows).toEqual([
+				{
+					id: 'delivery-blocked',
+					status: 'blocked',
+					claimToken: null,
+					lockedAt: null,
+					sealedCapability: 'sealed-blocked',
+					retryable: true,
+					lastError: null
+				},
+				{
+					id: 'delivery-delivered',
+					status: 'delivered',
+					claimToken: null,
+					lockedAt: null,
+					sealedCapability: null,
+					retryable: false,
+					lastError: null
+				},
+				{
+					id: 'delivery-failed',
+					status: 'failed',
+					claimToken: null,
+					lockedAt: null,
+					sealedCapability: 'sealed-failed',
+					retryable: true,
+					lastError: 'transient'
+				},
+				{
+					id: 'delivery-pending',
+					status: 'pending',
+					claimToken: null,
+					lockedAt: null,
+					sealedCapability: 'sealed-pending',
+					retryable: true,
+					lastError: null
+				},
+				{
+					id: 'delivery-processing',
+					status: 'failed',
+					claimToken: null,
+					lockedAt: null,
+					sealedCapability: 'sealed-processing',
+					retryable: true,
+					lastError: 'worker_restarted'
+				}
+			]);
+		} finally {
+			await database().unsafe(`SET search_path TO "${schemaName}"`);
+			await database().unsafe(`DROP SCHEMA IF EXISTS "${upgradeSchema}" CASCADE`);
+		}
+	});
+
+	it('rolls back invalid ready evidence and a failed replace-all field insert', async () => {
+		await seedDraftEnvelope();
+		const invalidReady: PublishReadyEnvelopeCommand = {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			actorType: 'user',
+			actorId: ACTOR.id,
+			idempotencyKey: 'invalid-ready-anchor',
+			requestFingerprint: '1'.repeat(64),
+			expectedGeneration: 1,
+			expectedCommitSha: COMMIT_SHA,
+			recipients: [
+				{
+					id: '01900000-0000-7000-8000-000000000041',
+					organizationId: ORGANIZATION_ID,
+					envelopeId: ENVELOPE_ID,
+					email: 'invalid@example.com',
+					name: 'Invalid',
+					role: 'signer',
+					locale: 'en',
+					routingOrder: 1,
+					status: 'pending'
+				}
+			],
+			updatedAt: new Date().toISOString(),
+			expectedAuditSequence: 2,
+			previousAuditHash: 'wrong-audit-head',
+			auditEventId: '01900000-0000-7000-8000-000000000042',
+			auditEventHash: '2'.repeat(64),
+			auditPayloadJson: '{}'
+		};
+		await expect(
+			new PostgresEnvelopeReadyStore(database()).publishReady(invalidReady)
+		).resolves.toEqual({ outcome: 'audit_conflict' });
+		const unchanged = await database()<
+			{ status: string; commands: number; recipients: number }[]
+		>`SELECT envelope.status,
+			(SELECT COUNT(*)::int FROM envelope_ready_command) AS commands,
+			(SELECT COUNT(*)::int FROM recipient) AS recipients
+			FROM envelope WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
+		expect(unchanged[0]).toEqual({ status: 'draft', commands: 0, recipients: 0 });
+
+		const ready = await readyEnvelope();
+		const signerId: string = ready.recipients.find(
+			(recipient): boolean => recipient.role === 'signer'
+		)?.id as string;
+		const store = new PostgresEnvelopeFieldStore(database());
+		const initialCommand = fieldCommand({
+			recipientId: signerId,
+			fieldId: '01900000-0000-7000-8000-000000000051',
+			idempotencyKey: 'initial-fields',
+			auditEventId: '01900000-0000-7000-8000-000000000052',
+			previousAuditHash: ready.auditEventHash
+		});
+		await expect(store.publishFieldPlacement(initialCommand)).resolves.toMatchObject({
+			outcome: 'published'
+		});
+		const sendStore = new PostgresEnvelopeSendStore(database());
+		let capturedSend: PublishSentEnvelopeCommand | null = null;
+		const captureStore: EnvelopeSendStore = {
+			prepareSend: sendStore.prepareSend.bind(sendStore),
+			publishSend: async (command: PublishSentEnvelopeCommand) => {
+				capturedSend = command;
+				return { outcome: 'integrity_error' };
+			}
+		};
+		await new EnvelopeSendApplication(captureStore, {
+			seal: async (token: string, context: CapabilitySealContext) => ({
+				sealedCapability: `sealed:${context.deliveryId}:${token}`,
+				sealingKeyId: 'integration-key',
+				sealedCapabilitySha256: sha256(`sealed:${context.deliveryId}:${token}`)
+			})
+		}).send(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'capture-invalid-ready-anchor-send',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		});
+		const sendCommand: PublishSentEnvelopeCommand = requiredSendCommand(capturedSend);
+		const rejectedSend = await sendStore.publishSend({
+			...sendCommand,
+			expectedReadyAuditEventId: initialCommand.auditEventId
+		});
+		expect(rejectedSend).toEqual({ outcome: 'audit_conflict' });
+		const rejectedSendEvidence = await database()<
+			{ status: string; commands: number; deliveries: number; sentEvents: number }[]
+		>`SELECT envelope.status,
+			(SELECT COUNT(*)::int FROM envelope_send_command) AS commands,
+			(SELECT COUNT(*)::int FROM delivery_outbox) AS deliveries,
+			(SELECT COUNT(*)::int FROM audit_event WHERE event_type = 'envelope.sent') AS "sentEvents"
+			FROM envelope WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
+		expect(rejectedSendEvidence).toEqual([
+			{ status: 'ready', commands: 0, deliveries: 0, sentEvents: 0 }
+		]);
+		const replacement: PublishFieldPlacementCommand = {
+			...fieldCommand({
+				recipientId: signerId,
+				fieldId: '01900000-0000-7000-8000-000000000053',
+				idempotencyKey: 'replacement-fields',
+				auditEventId: '01900000-0000-7000-8000-000000000054',
+				expectedFieldGeneration: 1,
+				expectedAuditSequence: 4,
+				previousAuditHash: initialCommand.auditEventHash
+			}),
+			fields: [
+				{
+					...initialCommand.fields[0],
+					id: '01900000-0000-7000-8000-000000000053',
+					position: 2
+				},
+				{
+					...initialCommand.fields[0],
+					id: '01900000-0000-7000-8000-000000000055',
+					position: 100_001
+				}
+			]
+		};
+		await expect(store.publishFieldPlacement(replacement)).rejects.toMatchObject({
+			code: '23514'
+		});
+		const afterRollback = await database()<
+			{
+				fieldGeneration: number;
+				fieldId: string;
+				failedCommandCount: number;
+				failedAuditCount: number;
+			}[]
+		>`SELECT envelope.field_generation AS "fieldGeneration", field.id AS "fieldId",
+			(SELECT COUNT(*)::int FROM envelope_field_placement_command
+				WHERE idempotency_key = 'replacement-fields') AS "failedCommandCount",
+			(SELECT COUNT(*)::int FROM audit_event
+				WHERE id = '01900000-0000-7000-8000-000000000054') AS "failedAuditCount"
+			FROM envelope JOIN envelope_field field
+				ON field.organization_id = envelope.organization_id AND field.envelope_id = envelope.id
+			WHERE envelope.organization_id = ${ORGANIZATION_ID} AND envelope.id = ${ENVELOPE_ID}`;
+		expect(afterRollback).toEqual([
+			{
+				fieldGeneration: 1,
+				fieldId: initialCommand.fields[0].id,
+				failedCommandCount: 0,
+				failedAuditCount: 0
+			}
+		]);
+	});
+});
+
+function database(): ReturnType<typeof postgres> {
+	if (sql === null) throw new Error('PostgreSQL integration database is unavailable');
+	return sql;
+}
+
+function requiredSendCommand(
+	command: PublishSentEnvelopeCommand | null
+): PublishSentEnvelopeCommand {
+	if (command === null) throw new Error('Expected the send command to be captured');
+	return command;
+}
+
+async function seedDraftEnvelope(): Promise<void> {
+	await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+		VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+	await database()`INSERT INTO envelope (
+		id, organization_id, title, status, repository_generation, repository_head,
+		repository_archive_key, repository_archive_sha256, created_at, updated_at
+	) VALUES (
+		${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'draft', 1, ${COMMIT_SHA},
+		'archives/integration.git.gz', ${ARCHIVE_SHA256},
+		'2026-09-11T00:00:00.000Z', '2026-09-11T00:01:00.000Z'
+	)`;
+	await database()`INSERT INTO audit_event (
+		id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+		payload_json, previous_hash, event_hash, occurred_at
+	) VALUES
+		('01900000-0000-7000-8000-000000000011', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 1,
+		 'envelope.created', 'user', ${ACTOR.id}, '{}', NULL, ${'a'.repeat(64)},
+		 '2026-09-11T00:00:00.000Z'),
+		('01900000-0000-7000-8000-000000000012', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 2,
+		 'draft.revision_created', 'user', ${ACTOR.id}, '{}', ${'a'.repeat(64)}, ${'b'.repeat(64)},
+		 '2026-09-11T00:01:00.000Z')`;
+}
+
+async function readyEnvelope(): Promise<{
+	recipients: readonly { id: string; role: string }[];
+	auditEventId: string;
+	auditEventHash: string;
+}> {
+	const result = await new EnvelopeReadyApplication(
+		new PostgresEnvelopeReadyStore(database())
+	).ready(ACTOR, ENVELOPE_ID, {
+		idempotencyKey: 'ready-integration',
+		expectedGeneration: 1,
+		recipients: [
+			{
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer',
+				locale: 'en',
+				routingOrder: 1
+			},
+			{
+				email: 'approver@example.com',
+				name: 'Approver',
+				role: 'approver',
+				locale: 'ja',
+				routingOrder: 2
+			}
+		]
+	});
+	if (result.outcome !== 'published') {
+		throw new Error(`Ready integration failed with ${result.outcome}`);
+	}
+	const audit = await database()<
+		{ eventHash: string }[]
+	>`SELECT event_hash AS "eventHash" FROM audit_event
+		WHERE organization_id = ${ORGANIZATION_ID} AND id = ${result.result.auditEventId}`;
+	return {
+		recipients: result.result.recipients,
+		auditEventId: result.result.auditEventId,
+		auditEventHash: audit[0].eventHash
+	};
+}
+
+function fieldCommand(options: {
+	recipientId: string;
+	fieldId: string;
+	idempotencyKey: string;
+	auditEventId: string;
+	expectedFieldGeneration?: number;
+	expectedAuditSequence?: number;
+	previousAuditHash?: string;
+}): PublishFieldPlacementCommand {
+	const field: EnvelopeField = {
+		id: options.fieldId,
+		organizationId: ORGANIZATION_ID,
+		envelopeId: ENVELOPE_ID,
+		recipientId: options.recipientId,
+		documentPath: 'documents/agreement.md',
+		fieldType: 'signature',
+		label: 'Signature',
+		required: true,
+		position: 1
+	};
+	return {
+		organizationId: ORGANIZATION_ID,
+		envelopeId: ENVELOPE_ID,
+		actorType: 'user',
+		actorId: ACTOR.id,
+		idempotencyKey: options.idempotencyKey,
+		requestFingerprint: sha256(options.idempotencyKey),
+		expectedGeneration: 1,
+		expectedFieldGeneration: options.expectedFieldGeneration ?? 0,
+		expectedCommitSha: COMMIT_SHA,
+		fields: [field],
+		updatedAt: new Date().toISOString(),
+		expectedAuditSequence: options.expectedAuditSequence ?? 3,
+		previousAuditHash: options.previousAuditHash ?? 'missing-audit-head',
+		auditEventId: options.auditEventId,
+		auditEventHash: sha256(`audit:${options.idempotencyKey}`),
+		auditPayloadJson: JSON.stringify({
+			fieldGeneration: (options.expectedFieldGeneration ?? 0) + 1
+		})
+	};
+}
+
+function sha256(value: string): string {
+	return createHash('sha256').update(value).digest('hex');
+}
