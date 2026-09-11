@@ -27,7 +27,18 @@ const workspace: RecipientWorkspace = {
 			path: 'documents/agreement.md',
 			content: '# Agreement\n\n<script>alert("escaped by Svelte")</script>\n'
 		}
-	]
+	],
+	fields: [
+		{
+			id: 'field-1',
+			documentPath: 'documents/agreement.md',
+			fieldType: 'signature',
+			label: 'Your signature',
+			required: true,
+			position: 0
+		}
+	],
+	fieldGeneration: 1
 };
 
 function event(authorization?: string): RequestEvent {
@@ -71,9 +82,13 @@ describe('recipient documents HTTP handler', () => {
 		expect(response.headers.get('cache-control')).toBe('no-store');
 		expect(response.headers.get('vary')).toBe('Authorization');
 		expect(app.resolve).toHaveBeenCalledWith(token, '2026-09-11T00:00:00.000Z');
-		expect(body).toEqual(workspace);
+		expect(body).toEqual({
+			access: workspace.access,
+			documents: workspace.documents
+		});
 		const serialized: string = JSON.stringify(body);
 		expect(serialized).not.toMatch(/organization|archiveKey|archiveSha256|skr1_/);
+		expect(serialized).not.toMatch(/Your signature|fieldGeneration|field-1/);
 	});
 
 	it.each([

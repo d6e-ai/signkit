@@ -403,7 +403,6 @@
 			if (!idempotencyKey) {
 				idempotencyKey = generateUUID();
 			}
-
 			inFlight = true;
 			status = 'pending';
 			onStatusChange?.('pending');
@@ -518,6 +517,235 @@
 		};
 	}
 
+	export type RecipientSignStatus =
+		| 'idle'
+		| 'pending'
+		| 'validation_failure'
+		| 'transient_failure'
+		| 'terminal_failure'
+		| 'success';
+
+	export interface RecipientSignFieldValue {
+		fieldId: string;
+		value: string | boolean;
+	}
+
+	export interface RecipientSignReceipt {
+		envelopeId: string;
+		recipientId: string;
+		recipientStatus: string;
+		envelopeStatus: string;
+		signedAt: string;
+		replayed?: boolean;
+	}
+
+	export interface RecipientSignOptions {
+		envelopeId: string;
+		recipientId: string;
+		expectedFieldGeneration: number;
+		role: string;
+		pageState: string;
+		recipientStatus?: string | (() => string);
+		fetch?: typeof fetch;
+		randomUUID?: () => string;
+		onStatusChange?: (status: RecipientSignStatus) => void;
+		onSuccess?: (info?: { replayed: boolean; receipt?: RecipientSignReceipt }) => void;
+		onTransientFailure?: () => void;
+		onTerminalFailure?: () => void;
+	}
+
+	export interface RecipientSignController {
+		confirmSign(values: readonly RecipientSignFieldValue[]): Promise<void>;
+		getStatus(): RecipientSignStatus;
+		isInFlight(): boolean;
+		getIdempotencyKey(): string | null;
+		isReplayed(): boolean;
+		getReceipt(): RecipientSignReceipt | null;
+		destroy(): void;
+	}
+
+	export function createRecipientSignController({
+		envelopeId,
+		recipientId,
+		expectedFieldGeneration,
+		role,
+		pageState,
+		recipientStatus,
+		fetch: customFetch,
+		randomUUID: customRandomUUID,
+		onStatusChange,
+		onSuccess,
+		onTransientFailure,
+		onTerminalFailure
+	}: RecipientSignOptions): RecipientSignController {
+		let status: RecipientSignStatus = 'idle';
+		let inFlight = false;
+		let idempotencyKey: string | null = null;
+		let submittedValues: readonly RecipientSignFieldValue[] | null = null;
+		let replayed = false;
+		let receipt: RecipientSignReceipt | null = null;
+		const abortController = new AbortController();
+
+		const getRecipientStatus =
+			typeof recipientStatus === 'function' ? recipientStatus : () => recipientStatus;
+
+		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
+		const generateUUID =
+			customRandomUUID ??
+			(() => {
+				if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+					return crypto.randomUUID();
+				}
+				if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+					const bytes = crypto.getRandomValues(new Uint8Array(16));
+					return Array.from(bytes, (byte: number): string =>
+						byte.toString(16).padStart(2, '0')
+					).join('');
+				}
+				return `sign-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+			});
+
+		async function confirmSign(values: readonly RecipientSignFieldValue[]): Promise<void> {
+			const currentRecipientStatus = getRecipientStatus();
+			const canSign =
+				pageState === 'active' && role === 'signer' && currentRecipientStatus === 'viewed';
+			if (!canSign || inFlight || status === 'success' || status === 'terminal_failure') {
+				return;
+			}
+			if (!fetchFn) return;
+
+			if (!idempotencyKey) {
+				idempotencyKey = generateUUID();
+			}
+			submittedValues ??= values.map((entry: RecipientSignFieldValue): RecipientSignFieldValue => ({
+				fieldId: entry.fieldId,
+				value: entry.value
+			}));
+
+			inFlight = true;
+			status = 'pending';
+			onStatusChange?.('pending');
+
+			try {
+				const response = await fetchFn('/api/v1/signing/sign', {
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: {
+						'content-type': 'application/json',
+						'idempotency-key': idempotencyKey
+					},
+					body: JSON.stringify({
+						envelopeId,
+						recipientId,
+						expectedFieldGeneration,
+						values: submittedValues
+					}),
+					signal: abortController.signal
+				});
+
+				if (response.status === 200) {
+					const validated = await validateSignedReceipt(response, envelopeId, recipientId);
+					if (validated) {
+						const isReplay = response.headers.get('idempotency-replayed') === 'true';
+						replayed = isReplay;
+						receipt = { ...validated, replayed: isReplay };
+						status = 'success';
+						onStatusChange?.('success');
+						onSuccess?.({ replayed: isReplay, receipt });
+						return;
+					}
+				}
+
+				if (response.status === 400 || response.status === 413) {
+					idempotencyKey = null;
+					submittedValues = null;
+					status = 'validation_failure';
+					onStatusChange?.('validation_failure');
+					return;
+				}
+
+				if (isPermanentClientFailure(response)) {
+					status = 'terminal_failure';
+					onStatusChange?.('terminal_failure');
+					onTerminalFailure?.();
+					return;
+				}
+
+				status = 'transient_failure';
+				onStatusChange?.('transient_failure');
+				onTransientFailure?.();
+			} catch {
+				if (abortController.signal.aborted) return;
+				status = 'transient_failure';
+				onStatusChange?.('transient_failure');
+				onTransientFailure?.();
+			} finally {
+				inFlight = false;
+			}
+		}
+
+		function destroy(): void {
+			abortController.abort();
+		}
+
+		return {
+			confirmSign,
+			getStatus: () => status,
+			isInFlight: () => inFlight,
+			getIdempotencyKey: () => idempotencyKey,
+			isReplayed: () => replayed,
+			getReceipt: () => receipt,
+			destroy
+		};
+	}
+
+	export async function validateSignedReceipt(
+		response: Response,
+		expectedEnvelopeId: string,
+		expectedRecipientId: string
+	): Promise<RecipientSignReceipt | null> {
+		if (response.status !== 200) return null;
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			return null;
+		}
+		if (!isRecord(body) || !hasExactKeys(body, ['signed'])) return null;
+		const signed: unknown = body.signed;
+		if (
+			!isRecord(signed) ||
+			!hasExactKeys(signed, [
+				'envelopeId',
+				'envelopeStatus',
+				'recipientId',
+				'recipientStatus',
+				'signedAt'
+			])
+		) {
+			return null;
+		}
+		if (
+			signed.envelopeId !== expectedEnvelopeId ||
+			signed.recipientId !== expectedRecipientId ||
+			typeof signed.signedAt !== 'string' ||
+			!Number.isFinite(new Date(signed.signedAt).getTime()) ||
+			signed.recipientStatus !== 'completed' ||
+			!(signed.envelopeStatus === 'completed' || signed.envelopeStatus === 'in_progress')
+		) {
+			return null;
+		}
+		const replayed = response.headers?.get?.('idempotency-replayed') === 'true';
+		return {
+			envelopeId: signed.envelopeId,
+			recipientId: signed.recipientId,
+			recipientStatus: signed.recipientStatus,
+			envelopeStatus: signed.envelopeStatus,
+			signedAt: signed.signedAt,
+			...(replayed ? { replayed: true } : {})
+		};
+	}
+
 	function isRecord(value: unknown): value is Record<string, unknown> {
 		return typeof value === 'object' && value !== null && !Array.isArray(value);
 	}
@@ -529,7 +757,7 @@
 </script>
 
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import {
 		IconAlertTriangle,
 		IconCircleCheck,
@@ -537,13 +765,18 @@
 		IconClock,
 		IconFileText,
 		IconShieldCheck,
+		IconSignature,
 		IconUserCheck
 	} from '@tabler/icons-svelte';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import * as Field from '$lib/components/ui/field';
+	import { Input } from '$lib/components/ui/input';
 	import { Spinner } from '$lib/components/ui/spinner';
+	import { Textarea } from '$lib/components/ui/textarea';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import type { PageData } from './$types';
@@ -567,6 +800,23 @@
 	let approveDialogOpen = $state(false);
 	let approveController: RecipientApproveController | null = null;
 
+	let signStatus = $state<RecipientSignStatus>('idle');
+	let signPending = $state(false);
+	let isSigned = $state(false);
+	let signDialogOpen = $state(false);
+	let signAttempted = $state(false);
+	let signController: RecipientSignController | null = null;
+	let fieldValues = $state<Record<string, string | boolean>>(
+		untrack(() =>
+			Object.fromEntries(
+				(data.state === 'active' ? data.fields : []).map((field) => [
+					field.id,
+					field.fieldType === 'checkbox' ? false : ''
+				])
+			)
+		)
+	);
+
 	function roleLabel(role: string): string {
 		if (role === 'signer') return m.signing_role_signer();
 		if (role === 'approver') return m.signing_role_approver();
@@ -576,8 +826,38 @@
 
 	function statusLabel(status: string): string {
 		if (status === 'declined') return m.signing_status_declined();
+		if (status === 'signed') return m.signing_status_signed();
 		if (status === 'approved' || status === 'completed') return m.signing_status_approved();
 		return status === 'viewed' ? m.signing_status_viewed() : m.signing_status_pending();
+	}
+
+	function fieldTypeLabel(fieldType: string): string {
+		if (fieldType === 'signature') return m.signing_field_type_signature();
+		if (fieldType === 'initials') return m.signing_field_type_initials();
+		if (fieldType === 'date') return m.signing_field_type_date();
+		if (fieldType === 'checkbox') return m.signing_field_type_checkbox();
+		return m.signing_field_type_text();
+	}
+
+	function fieldsByDocument<T extends { documentPath: string }>(
+		fields: readonly T[]
+	): Array<[string, T[]]> {
+		const grouped: Array<[string, T[]]> = [];
+		for (const field of fields) {
+			const existing = grouped.find(([path]) => path === field.documentPath);
+			if (existing) existing[1].push(field);
+			else grouped.push([field.documentPath, [field]]);
+		}
+		return grouped;
+	}
+
+	function isFieldValueMissing(
+		field: { fieldType: string; required: boolean },
+		value: unknown
+	): boolean {
+		if (!field.required) return false;
+		if (field.fieldType === 'checkbox') return value !== true;
+		return typeof value !== 'string' || value.trim().length === 0;
 	}
 
 	function formatExpiry(expiresAt: string, locale: string): string {
@@ -628,6 +908,66 @@
 		}
 	}
 
+	function handleSignStatus(status: RecipientSignStatus): void {
+		signStatus = status;
+		signPending = status === 'pending';
+		if (status === 'pending') {
+			liveMessage = m.signing_sign_pending();
+		} else if (status === 'success') {
+			isSigned = true;
+			signDialogOpen = false;
+			liveMessage = m.signing_sign_success();
+		} else if (status === 'transient_failure') {
+			liveMessage = m.signing_sign_retry_pending();
+		} else if (status === 'validation_failure') {
+			signDialogOpen = false;
+			liveMessage = m.signing_sign_validation_failed();
+		} else if (status === 'terminal_failure') {
+			signDialogOpen = false;
+			liveMessage = m.signing_sign_failed();
+		}
+	}
+
+	function buildSignController(): RecipientSignController | null {
+		if (data.state !== 'active' || data.access.role !== 'signer') return null;
+		return createRecipientSignController({
+			envelopeId: data.access.envelopeId,
+			recipientId: data.access.recipientId,
+			expectedFieldGeneration: data.fieldGeneration,
+			role: data.access.role,
+			pageState: data.state,
+			recipientStatus: () =>
+				viewRecorded || data.access.recipientStatus === 'viewed'
+					? 'viewed'
+					: data.access.recipientStatus,
+			onStatusChange: handleSignStatus
+		});
+	}
+
+	function hasMissingRequiredField(): boolean {
+		if (data.state !== 'active') return false;
+		return data.fields.some((field) => isFieldValueMissing(field, fieldValues[field.id]));
+	}
+
+	function handleSignAttempt(): void {
+		signAttempted = true;
+		if (hasMissingRequiredField()) {
+			liveMessage = m.signing_field_missing();
+			return;
+		}
+		signDialogOpen = true;
+	}
+
+	async function handleSignConfirm(): Promise<void> {
+		if (data.state !== 'active') return;
+		signController ??= buildSignController();
+		const values = data.fields.map((field) => ({
+			fieldId: field.id,
+			value: fieldValues[field.id]
+		}));
+		await signController?.confirmSign(values);
+	}
+
 	function buildDeclineController(): RecipientDeclineController | null {
 		if (
 			data.state !== 'active' ||
@@ -676,6 +1016,7 @@
 
 		declineController ??= buildDeclineController();
 		approveController ??= buildApproveController();
+		signController ??= buildSignController();
 
 		const cleanupViewed = initRecipientViewed({
 			envelopeId: data.access.envelopeId,
@@ -702,6 +1043,7 @@
 			cleanupViewed();
 			declineController?.destroy();
 			approveController?.destroy();
+			signController?.destroy();
 		};
 	});
 </script>
@@ -756,7 +1098,10 @@
 									variant="outline"
 									class={isDeclined
 										? 'border-destructive/30 bg-destructive/10 text-destructive'
-										: isApproved || viewRecorded || data.access.recipientStatus === 'viewed'
+										: isApproved ||
+											  isSigned ||
+											  viewRecorded ||
+											  data.access.recipientStatus === 'viewed'
 											? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300'
 											: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300'}
 								>
@@ -765,9 +1110,11 @@
 											? 'declined'
 											: isApproved
 												? 'completed'
-												: viewRecorded
-													? 'viewed'
-													: data.access.recipientStatus
+												: isSigned
+													? 'signed'
+													: viewRecorded
+														? 'viewed'
+														: data.access.recipientStatus
 									)}
 								</Badge>
 								{#if retryPending && !viewRecorded && data.access.recipientStatus !== 'viewed' && !isDeclined}
@@ -802,7 +1149,9 @@
 						? m.signing_declined_receipt_description()
 						: isApproved
 							? m.signing_approved_receipt_description()
-							: m.signing_controls_next()}
+							: isSigned
+								? m.signing_signed_receipt_description()
+								: m.signing_controls_next()}
 				</Card.Footer>
 			</Card.Root>
 
@@ -815,7 +1164,7 @@
 				</div>
 				<div class="grid gap-4 lg:grid-cols-[13rem_minmax(0,1fr)]">
 					<nav
-						class="sticky top-14 z-20 -mx-4 flex snap-x snap-mandatory gap-2 overflow-x-auto bg-muted/90 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:flex-col lg:overflow-visible lg:bg-transparent lg:p-0"
+						class="sticky top-16 z-20 -mx-4 flex snap-x snap-mandatory gap-2 overflow-x-auto bg-muted/90 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:flex-col lg:overflow-visible lg:bg-transparent lg:p-0"
 						aria-label={m.signing_documents_title()}
 					>
 						{#each data.documents as document, index (document.path)}
@@ -856,6 +1205,206 @@
 					</div>
 				</div>
 			</section>
+
+			{#if data.access.role === 'signer' && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}
+				<section aria-label={m.signing_fields_title()} class="flex w-full flex-col gap-4">
+					{#if isSigned}
+						<Card.Root class="border-primary/20 bg-primary/[0.03] shadow-sm">
+							<Card.Header class="gap-2">
+								<div class="flex items-start gap-4">
+									<div
+										class="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+									>
+										<IconCircleCheck class="size-6" />
+									</div>
+									<div>
+										<Card.Title class="text-xl">{m.signing_signed_receipt_title()}</Card.Title>
+										<Card.Description class="mt-1.5 text-sm leading-6">
+											{m.signing_signed_receipt_description()}
+										</Card.Description>
+									</div>
+								</div>
+							</Card.Header>
+						</Card.Root>
+					{:else}
+						<Card.Root class="shadow-sm">
+							<Card.Header>
+								<div class="flex items-start gap-4">
+									<div
+										class="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+									>
+										<IconSignature class="size-6" />
+									</div>
+									<div>
+										<Card.Title class="text-xl">{m.signing_fields_title()}</Card.Title>
+										<Card.Description class="mt-1.5 text-sm leading-6">
+											{m.signing_fields_description()}
+										</Card.Description>
+									</div>
+								</div>
+							</Card.Header>
+							<Card.Content class="flex flex-col gap-6">
+								{#each fieldsByDocument(data.fields) as [documentPath, fields] (documentPath)}
+									<Field.FieldSet>
+										<Field.FieldLegend>{documentName(documentPath)}</Field.FieldLegend>
+										<Field.FieldGroup>
+											{#each fields as field (field.id)}
+												{@const invalid =
+													signAttempted && isFieldValueMissing(field, fieldValues[field.id])}
+												{#if field.fieldType === 'checkbox'}
+													<Field.Field orientation="horizontal" data-invalid={invalid || undefined}>
+														<Checkbox
+															id={field.id}
+															aria-invalid={invalid || undefined}
+															checked={fieldValues[field.id] === true}
+															disabled={signStatus === 'pending' ||
+																signStatus === 'transient_failure'}
+															onCheckedChange={(value) => (fieldValues[field.id] = value === true)}
+														/>
+														<Field.FieldLabel for={field.id} class="font-normal">
+															{field.label}
+														</Field.FieldLabel>
+														{#if invalid}
+															<Field.FieldDescription class="text-destructive">
+																{m.signing_field_missing()}
+															</Field.FieldDescription>
+														{/if}
+													</Field.Field>
+												{:else}
+													<Field.Field data-invalid={invalid || undefined}>
+														<Field.FieldLabel for={field.id}>
+															{field.label}
+															<Badge variant="secondary" class="ml-1">
+																{fieldTypeLabel(field.fieldType)}
+															</Badge>
+															{#if field.required}
+																<span class="text-xs font-normal text-muted-foreground">
+																	({m.signing_field_required()})
+																</span>
+															{/if}
+														</Field.FieldLabel>
+														{#if field.fieldType === 'text'}
+															<Textarea
+																id={field.id}
+																aria-invalid={invalid || undefined}
+																disabled={signStatus === 'pending' ||
+																	signStatus === 'transient_failure'}
+																maxlength={4000}
+																value={fieldValues[field.id] as string}
+																oninput={(event) =>
+																	(fieldValues[field.id] = event.currentTarget.value)}
+															/>
+														{:else if field.fieldType === 'date'}
+															<Input
+																id={field.id}
+																type="date"
+																aria-invalid={invalid || undefined}
+																disabled={signStatus === 'pending' ||
+																	signStatus === 'transient_failure'}
+																value={fieldValues[field.id] as string}
+																oninput={(event) =>
+																	(fieldValues[field.id] = event.currentTarget.value)}
+															/>
+														{:else}
+															<Input
+																id={field.id}
+																type="text"
+																aria-invalid={invalid || undefined}
+																disabled={signStatus === 'pending' ||
+																	signStatus === 'transient_failure'}
+																maxlength={field.fieldType === 'signature' ? 200 : 20}
+																value={fieldValues[field.id] as string}
+																oninput={(event) =>
+																	(fieldValues[field.id] = event.currentTarget.value)}
+															/>
+														{/if}
+														{#if invalid}
+															<Field.FieldDescription class="text-destructive">
+																{m.signing_field_missing()}
+															</Field.FieldDescription>
+														{/if}
+													</Field.Field>
+												{/if}
+											{/each}
+										</Field.FieldGroup>
+									</Field.FieldSet>
+								{/each}
+								{#if signStatus === 'validation_failure'}
+									<p class="text-sm font-medium text-destructive" role="alert">
+										{m.signing_sign_validation_failed()}
+									</p>
+								{/if}
+							</Card.Content>
+							<Card.Footer
+								class="flex flex-col gap-3 border-t bg-muted/20 py-4 sm:flex-row sm:items-center sm:justify-between"
+							>
+								<p class="text-sm text-muted-foreground">{m.signing_sign_description()}</p>
+								{#if signStatus === 'terminal_failure'}
+									<p class="text-xs font-medium text-destructive">{m.signing_sign_failed()}</p>
+								{:else}
+									<AlertDialog.Root bind:open={signDialogOpen}>
+										<Button
+											class="min-h-[44px] w-full text-sm sm:w-auto"
+											disabled={signPending}
+											onclick={handleSignAttempt}
+										>
+											{signStatus === 'transient_failure' || signStatus === 'validation_failure'
+												? m.signing_sign_retry()
+												: m.signing_sign_action()}
+										</Button>
+										<AlertDialog.Content class="max-w-[calc(100vw-2rem)] sm:max-w-md">
+											<AlertDialog.Header>
+												<AlertDialog.Title>{m.signing_sign_dialog_title()}</AlertDialog.Title>
+												<AlertDialog.Description>
+													{m.signing_sign_dialog_description()}
+												</AlertDialog.Description>
+											</AlertDialog.Header>
+											{#if signStatus === 'transient_failure'}
+												<p class="text-xs text-destructive" role="status" aria-live="polite">
+													{m.signing_sign_retry_pending()}
+												</p>
+											{:else if signStatus === 'pending'}
+												<p class="text-xs text-muted-foreground" role="status" aria-live="polite">
+													{m.signing_sign_pending()}
+												</p>
+											{/if}
+											<AlertDialog.Footer
+												class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"
+											>
+												<AlertDialog.Cancel class="min-h-[44px]" disabled={signPending}>
+													{m.signing_sign_dialog_cancel()}
+												</AlertDialog.Cancel>
+												<AlertDialog.Action
+													class="min-h-[44px]"
+													disabled={signPending}
+													onclick={async (event) => {
+														event.preventDefault();
+														await handleSignConfirm();
+													}}
+												>
+													{#if signPending}
+														<Spinner data-icon="inline-start" />
+													{/if}
+													{signPending
+														? m.signing_sign_pending()
+														: signStatus === 'transient_failure'
+															? m.signing_sign_retry()
+															: m.signing_sign_dialog_confirm()}
+												</AlertDialog.Action>
+											</AlertDialog.Footer>
+										</AlertDialog.Content>
+									</AlertDialog.Root>
+								{/if}
+							</Card.Footer>
+						</Card.Root>
+						<noscript>
+							<p class="mt-2 text-sm text-muted-foreground">
+								{m.signing_sign_no_js_explanation()}
+							</p>
+						</noscript>
+					{/if}
+				</section>
+			{/if}
 
 			{#if data.access.role === 'approver' && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}
 				<section aria-label={m.signing_approve_action()} class="w-full">
@@ -964,7 +1513,7 @@
 				</section>
 			{/if}
 
-			{#if !isApproved && (data.access.role === 'signer' || data.access.role === 'approver')}
+			{#if !isApproved && !isSigned && (data.access.role === 'signer' || data.access.role === 'approver')}
 				<section aria-label={m.signing_decline_action()} class="w-full">
 					{#if isDeclined}
 						<Card.Root class="border-destructive/20 bg-destructive/[0.03] shadow-sm">

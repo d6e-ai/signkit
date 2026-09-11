@@ -14,7 +14,9 @@ const workspace: RecipientWorkspace = {
 		envelopeStatus: 'in_progress',
 		expiresAt: '2026-09-12T00:00:00.000Z'
 	},
-	documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+	documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+	fields: [],
+	fieldGeneration: 1
 };
 
 function application(

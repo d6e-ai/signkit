@@ -5,8 +5,10 @@ import { PostgresEnvelopeFieldStore } from '$lib/adapters/db/postgres-envelope-f
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
 import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
+import { PostgresRecipientFieldDeclarationStore } from '$lib/adapters/db/postgres-recipient-field-declaration-store';
 import { PostgresRecipientApproveStore } from '$lib/adapters/db/postgres-recipient-approve-store';
 import { PostgresRecipientDeclineStore } from '$lib/adapters/db/postgres-recipient-decline-store';
+import { PostgresRecipientSignStore } from '$lib/adapters/db/postgres-recipient-sign-store';
 import { PostgresRecipientViewStore } from '$lib/adapters/db/postgres-recipient-view-store';
 import {
 	RecipientAccessService,
@@ -17,6 +19,10 @@ import {
 	RecipientApprovedApplication,
 	type RecipientApprovedApplicationPort
 } from '$lib/application/signing/recipient-approved';
+import {
+	RecipientSignedApplication,
+	type RecipientSignedApplicationPort
+} from '$lib/application/signing/recipient-signed';
 import {
 	RecipientDeclinedApplication,
 	type RecipientDeclinedApplicationPort
@@ -118,6 +124,20 @@ export function resolvePostgresRecipientApprovedApplication(
 ): RecipientApprovedApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
 	return new RecipientApprovedApplication(new PostgresRecipientApproveStore(resources.sql));
+}
+
+export function resolvePostgresRecipientSignedApplication(
+	databaseUrl: string
+): RecipientSignedApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new RecipientSignedApplication(new PostgresRecipientSignStore(resources.sql));
+}
+
+export function resolvePostgresRecipientFieldDeclarationStore(
+	databaseUrl: string
+): PostgresRecipientFieldDeclarationStore {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new PostgresRecipientFieldDeclarationStore(resources.sql);
 }
 
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {

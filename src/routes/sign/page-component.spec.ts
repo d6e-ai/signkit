@@ -20,7 +20,9 @@ describe('recipient document review page', () => {
 			documents: [
 				{ path: 'documents/NDA_v1.md', content: '# Terms\n<script>alert(1)</script>\n' },
 				{ path: 'documents/schedule-a.md', content: '## Schedule A\n' }
-			]
+			],
+			fields: [],
+			fieldGeneration: 1
 		};
 		const { body } = render(SignPage, { props: { data } });
 
@@ -57,7 +59,9 @@ describe('recipient document review page', () => {
 					envelopeStatus: 'sent',
 					expiresAt: '2026-09-12T00:00:00.000Z'
 				},
-				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }]
+				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+				fields: [],
+				fieldGeneration: 1
 			};
 			const { body } = render(SignPage, { props: { data } });
 
@@ -83,7 +87,9 @@ describe('recipient document review page', () => {
 					envelopeStatus: 'sent',
 					expiresAt: '2026-09-12T00:00:00.000Z'
 				},
-				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }]
+				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+				fields: [],
+				fieldGeneration: 1
 			};
 			const { body } = render(SignPage, { props: { data } });
 
@@ -112,7 +118,9 @@ describe('recipient document review page', () => {
 					envelopeStatus: 'sent',
 					expiresAt: '2026-09-12T00:00:00.000Z'
 				},
-				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }]
+				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+				fields: [],
+				fieldGeneration: 1
 			};
 			const { body } = render(SignPage, { props: { data } });
 
@@ -157,6 +165,85 @@ describe('recipient document review page', () => {
 			expect(messages.signing_approve_no_js_explanation).toBeTruthy();
 			expect(combined).not.toMatch(/\bpdf\b/i);
 			expect(combined).not.toMatch(/signature/i);
+		}
+	});
+
+	it('renders only this signer own fields after the documents have been viewed', () => {
+		const data: PageData = {
+			state: 'active',
+			access: {
+				envelopeId: '00000000-0000-8000-a000-000000000001',
+				recipientId: '00000000-0000-8000-a000-000000000002',
+				role: 'signer',
+				locale: 'en',
+				recipientStatus: 'viewed',
+				envelopeTitle: 'Service Agreement',
+				envelopeStatus: 'in_progress',
+				expiresAt: '2026-09-12T00:00:00.000Z'
+			},
+			documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+			fields: [
+				{
+					id: '00000000-0000-8000-a000-000000000003',
+					documentPath: 'documents/NDA.md',
+					fieldType: 'signature',
+					label: 'Your signature',
+					required: true,
+					position: 0
+				}
+			],
+			fieldGeneration: 1
+		};
+		const { body } = render(SignPage, { props: { data } });
+		expect(body).toContain('Your signature');
+		expect(body).toContain('Sign and complete');
+		expect(body).toContain('min-h-[44px]');
+		expect(body).toContain('JavaScript is required to submit and record your signature.');
+		expect(body).not.toContain('Approve agreement');
+	});
+
+	it('never renders signing fields for an approver', () => {
+		const data: PageData = {
+			state: 'active',
+			access: {
+				envelopeId: '00000000-0000-8000-a000-000000000001',
+				recipientId: '00000000-0000-8000-a000-000000000002',
+				role: 'approver',
+				locale: 'en',
+				recipientStatus: 'viewed',
+				envelopeTitle: 'Service Agreement',
+				envelopeStatus: 'in_progress',
+				expiresAt: '2026-09-12T00:00:00.000Z'
+			},
+			documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+			fields: [
+				{
+					id: '00000000-0000-8000-a000-000000000003',
+					documentPath: 'documents/NDA.md',
+					fieldType: 'signature',
+					label: 'Your signature',
+					required: true,
+					position: 0
+				}
+			],
+			fieldGeneration: 1
+		};
+		const { body } = render(SignPage, { props: { data } });
+		expect(body).toContain('Approve agreement');
+		expect(body).not.toContain('Your signature');
+		expect(body).not.toContain('Sign and complete');
+	});
+
+	it('provides localized signing copy without claiming a PDF or cryptographic seal', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		for (const messages of [en, ja]) {
+			const combined = `${messages.signing_sign_dialog_title} ${messages.signing_sign_dialog_description} ${messages.signing_signed_receipt_description}`;
+			expect(messages.signing_sign_dialog_confirm).toBeTruthy();
+			expect(messages.signing_sign_no_js_explanation).toBeTruthy();
+			expect(combined).not.toMatch(/\bpdf\b/i);
+			expect(combined).not.toMatch(/pades/i);
 		}
 	});
 });

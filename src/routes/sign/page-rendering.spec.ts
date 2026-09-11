@@ -35,4 +35,19 @@ describe('recipient document rendering', () => {
 		expect(source).toContain('signing_approve_no_js_explanation');
 		expect(source).not.toContain('capabilityToken');
 	});
+
+	it('keeps signing capability-bound and client-driven with expectedFieldGeneration', () => {
+		const source: string = readFileSync('src/routes/sign/+page.svelte', 'utf8');
+		expect(source).toContain("fetchFn('/api/v1/signing/sign'");
+		expect(source).toContain('expectedFieldGeneration');
+		expect(source).toContain("data.access.role === 'signer'");
+		expect(source).toContain('signing_sign_no_js_explanation');
+		expect(source).not.toContain('Bearer');
+	});
+
+	it('offsets sticky signing navigation below the shared h-16 header', () => {
+		const source: string = readFileSync('src/routes/sign/+page.svelte', 'utf8');
+		expect(source).toContain('sticky top-16');
+		expect(source).not.toContain('sticky top-14');
+	});
 });
