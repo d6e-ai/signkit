@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
-import { DatabaseSync, type SQLInputValue, type StatementResultingChanges } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { D1DeliveryOutboxStore } from './d1-delivery-outbox-store';
+import { sqliteD1Database } from './sqlite-d1-test-support';
 
 const MIGRATIONS: readonly string[] = [
 	'migrations/d1/0001_core.sql',
@@ -14,76 +15,11 @@ const MIGRATIONS: readonly string[] = [
 	'migrations/d1/0008_recipient_approved.sql',
 	'migrations/d1/0009_field_placement.sql',
 	'migrations/d1/0010_recipient_signed.sql',
-	'migrations/d1/0011_delivery_outbox_leases.sql'
+	'migrations/d1/0011_delivery_outbox_leases.sql',
+	'migrations/d1/0012_delivery_outbox_recipient_scope.sql'
 ];
 const CLAIMED_AT: string = '2026-09-12T00:00:00.000Z';
 const STALE_BEFORE: string = '2026-09-11T23:55:00.000Z';
-
-class SqliteD1Statement {
-	constructor(
-		private readonly database: DatabaseSync,
-		readonly sql: string,
-		private readonly bindings: readonly SQLInputValue[] = []
-	) {}
-
-	bind(...bindings: unknown[]): D1PreparedStatement {
-		return new SqliteD1Statement(
-			this.database,
-			this.sql,
-			bindings as readonly SQLInputValue[]
-		) as unknown as D1PreparedStatement;
-	}
-
-	async all<T>(): Promise<D1Result<T>> {
-		const results = this.database.prepare(this.sql).all(...this.bindings) as T[];
-		return result(results, 0);
-	}
-
-	async first<T>(): Promise<T | null> {
-		return (this.database.prepare(this.sql).get(...this.bindings) as T | undefined) ?? null;
-	}
-
-	async run(): Promise<D1Result> {
-		const update: StatementResultingChanges = this.database.prepare(this.sql).run(...this.bindings);
-		return result([], Number(update.changes));
-	}
-}
-
-class SqliteD1Database {
-	constructor(readonly sqlite: DatabaseSync) {}
-
-	prepare(sql: string): D1PreparedStatement {
-		return new SqliteD1Statement(this.sqlite, sql) as unknown as D1PreparedStatement;
-	}
-
-	async batch<T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
-		this.sqlite.exec('BEGIN IMMEDIATE');
-		try {
-			const results: D1Result<T>[] = [];
-			for (const statement of statements) {
-				const sqliteStatement: SqliteD1Statement = statement as unknown as SqliteD1Statement;
-				results.push(
-					sqliteStatement.sql.trimStart().startsWith('SELECT')
-						? await sqliteStatement.all<T>()
-						: ((await sqliteStatement.run()) as D1Result<T>)
-				);
-			}
-			this.sqlite.exec('COMMIT');
-			return results;
-		} catch (error: unknown) {
-			this.sqlite.exec('ROLLBACK');
-			throw error;
-		}
-	}
-}
-
-function result<T>(results: T[], changes: number): D1Result<T> {
-	return {
-		success: true,
-		results,
-		meta: { changes }
-	} as unknown as D1Result<T>;
-}
 
 function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 	const sqlite: DatabaseSync = new DatabaseSync(':memory:');
@@ -119,7 +55,7 @@ function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 		);
 	`);
 	return {
-		database: new SqliteD1Database(sqlite) as unknown as D1Database,
+		database: sqliteD1Database(sqlite),
 		sqlite
 	};
 }
