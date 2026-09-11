@@ -24,7 +24,12 @@ const activeContext: RecipientSigningContext = {
 	recipientStatus: 'pending',
 	envelopeTitle: 'Agreement',
 	envelopeStatus: 'sent',
-	expiresAt: '2026-09-12T00:00:00.000Z'
+	expiresAt: '2026-09-12T00:00:00.000Z',
+	sentRevision: {
+		commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+		archiveKey: 'private/archive.git.gz',
+		archiveSha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+	}
 };
 
 describe('RecipientAccessService', () => {

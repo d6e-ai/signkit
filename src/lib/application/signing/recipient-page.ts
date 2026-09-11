@@ -1,13 +1,9 @@
-import {
-	toPublicRecipientAccess,
-	type PublicRecipientAccessContext,
-	type RecipientAccessApplicationPort
-} from './recipient-access';
+import type { RecipientWorkspace, RecipientWorkspaceApplicationPort } from './recipient-workspace';
+import { RecipientWorkspaceIntegrityError } from './recipient-workspace';
+import { DraftIntegrityError } from '$lib/application/drafts/draft-persistence';
 
 export type RecipientPageState =
-	| { state: 'active'; access: PublicRecipientAccessContext }
-	| { state: 'invalid' }
-	| { state: 'unavailable' };
+	({ state: 'active' } & RecipientWorkspace) | { state: 'invalid' } | { state: 'unavailable' };
 
 interface RecipientPageContext {
 	accessHint: string | null;
@@ -18,7 +14,7 @@ interface RecipientPageContext {
 
 type ApplicationResolver = (context: {
 	platform?: Readonly<App.Platform>;
-}) => RecipientAccessApplicationPort | null | Promise<RecipientAccessApplicationPort | null>;
+}) => RecipientWorkspaceApplicationPort | null | Promise<RecipientWorkspaceApplicationPort | null>;
 
 type SessionUnsealer = (cookie: string) => Promise<string | null>;
 
@@ -38,18 +34,28 @@ export async function resolveRecipientPage(
 			context.clearSession();
 			return { state: 'invalid' };
 		}
-		const application: RecipientAccessApplicationPort | null = await resolveApplication({
+		const application: RecipientWorkspaceApplicationPort | null = await resolveApplication({
 			platform: context.platform
 		});
 		if (application === null) return { state: 'unavailable' };
-		const signingContext = await application.resolve(token, now().toISOString());
-		if (signingContext === null) {
+		const workspace: RecipientWorkspace | null = await application.resolve(
+			token,
+			now().toISOString()
+		);
+		if (workspace === null) {
 			context.clearSession();
 			return { state: 'invalid' };
 		}
-		return { state: 'active', access: toPublicRecipientAccess(signingContext) };
-	} catch {
-		console.error(JSON.stringify({ event: 'recipient_page_resolution_failed' }));
+		return { state: 'active', ...workspace };
+	} catch (error: unknown) {
+		console.error(
+			JSON.stringify({
+				event:
+					error instanceof DraftIntegrityError || error instanceof RecipientWorkspaceIntegrityError
+						? 'recipient_page_integrity_failed'
+						: 'recipient_page_resolution_failed'
+			})
+		);
 		return { state: 'unavailable' };
 	}
 }

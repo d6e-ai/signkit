@@ -33,7 +33,10 @@ const row = {
 	recipient_status: 'pending',
 	envelope_title: 'Agreement',
 	envelope_status: 'sent',
-	capability_expires_at: '2026-09-12T00:00:00.000Z'
+	capability_expires_at: '2026-09-12T00:00:00.000Z',
+	sent_commit_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+	archive_key: 'private/archive.git.gz',
+	archive_sha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 };
 
 describe('D1RecipientAccessStore', () => {
@@ -55,7 +58,12 @@ describe('D1RecipientAccessStore', () => {
 			recipientStatus: 'pending',
 			envelopeTitle: 'Agreement',
 			envelopeStatus: 'sent',
-			expiresAt: '2026-09-12T00:00:00.000Z'
+			expiresAt: '2026-09-12T00:00:00.000Z',
+			sentRevision: {
+				commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+				archiveKey: 'private/archive.git.gz',
+				archiveSha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+			}
 		});
 		expect(fake.statement.bindings).toEqual(['hash-1', '2026-09-11T00:00:00.000Z']);
 		expect(fake.statement.sql).toContain('ON envelope.organization_id = recipient.organization_id');
@@ -68,6 +76,13 @@ describe('D1RecipientAccessStore', () => {
 		expect(fake.statement.sql).toContain("recipient.status IN ('pending', 'viewed')");
 		expect(fake.statement.sql).toContain("recipient.role <> 'cc'");
 		expect(fake.statement.sql).toContain("envelope.status IN ('sent', 'in_progress')");
+		expect(fake.statement.sql).toContain('INNER JOIN draft_revision_command revision');
+		expect(fake.statement.sql).toContain('envelope.sent_commit_sha = envelope.repository_head');
+		expect(fake.statement.sql).toContain('revision.commit_sha = envelope.sent_commit_sha');
+		expect(fake.statement.sql).toContain('revision.archive_key = envelope.repository_archive_key');
+		expect(fake.statement.sql).toContain(
+			'revision.archive_sha256 = envelope.repository_archive_sha256'
+		);
 	});
 
 	it('returns null without inventing context when no active row matches', async () => {

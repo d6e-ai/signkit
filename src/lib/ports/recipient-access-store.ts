@@ -11,6 +11,13 @@ export interface RecipientSigningContext {
 	envelopeTitle: string;
 	envelopeStatus: EnvelopeStatus;
 	expiresAt: string;
+	sentRevision: RecipientSentRevision;
+}
+
+export interface RecipientSentRevision {
+	commitSha: string;
+	archiveKey: string;
+	archiveSha256: string;
 }
 
 export interface RecipientAccessStore {

@@ -1,8 +1,15 @@
 import { S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import { S3ObjectStore } from '$lib/adapters/object/s3';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
-import { resolvePostgresEnvelopeStore } from '$lib/application/envelopes/runtime-postgres';
-import { DraftPersistenceService } from './draft-persistence';
+import {
+	resolvePostgresEnvelopeStore,
+	resolvePostgresRecipientAccessApplication
+} from '$lib/application/envelopes/runtime-postgres';
+import { DraftPersistenceService, readImmutableDraftRevision } from './draft-persistence';
+import {
+	RecipientWorkspaceService,
+	type RecipientWorkspaceApplicationPort
+} from '$lib/application/signing/recipient-workspace';
 
 export interface S3DraftRuntimeConfiguration {
 	databaseUrl?: string;
@@ -41,6 +48,18 @@ export function resolveS3DraftPersistenceService(
 		resolvePostgresEnvelopeStore(validated.databaseUrl),
 		resources.objects,
 		new IsomorphicGitDraftRepository()
+	);
+}
+
+export function resolveS3RecipientWorkspaceApplication(
+	configuration: S3DraftRuntimeConfiguration
+): RecipientWorkspaceApplicationPort {
+	const validated: ValidatedS3DraftRuntimeConfiguration = validateConfiguration(configuration);
+	const resources: CachedS3Resources = resolveS3Resources(validated);
+	const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+	return new RecipientWorkspaceService(
+		resolvePostgresRecipientAccessApplication(validated.databaseUrl),
+		(revision) => readImmutableDraftRevision(revision, resources.objects, repository)
 	);
 }
 

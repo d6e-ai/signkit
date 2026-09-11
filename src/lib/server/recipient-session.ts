@@ -2,6 +2,8 @@ import { env } from '$env/dynamic/private';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 
 export const RECIPIENT_SESSION_COOKIE: string = 'signkit_recipient';
+// The exchange is under /s while localized review pages are under /en/sign
+// and /ja/sign, so one host-only cookie needs the shared root path.
 export const RECIPIENT_SESSION_COOKIE_PATH: string = '/';
 export const RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS: number = 60 * 60 * 24 * 30;
 

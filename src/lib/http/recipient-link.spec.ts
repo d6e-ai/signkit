@@ -22,7 +22,12 @@ const context: RecipientSigningContext = {
 	recipientStatus: 'pending',
 	envelopeTitle: 'Agreement',
 	envelopeStatus: 'sent',
-	expiresAt: '2026-11-11T00:00:00.000Z'
+	expiresAt: '2026-11-11T00:00:00.000Z',
+	sentRevision: {
+		commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+		archiveKey: 'private/archive.git.gz',
+		archiveSha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+	}
 };
 
 interface TestEvent {

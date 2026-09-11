@@ -78,6 +78,14 @@ export interface DraftWorkspaceSnapshot {
 	documents: readonly DraftDocument[];
 }
 
+export interface ImmutableDraftRevision {
+	organizationId: string;
+	envelopeId: string;
+	commitSha: string;
+	archiveKey: string;
+	archiveSha256: string;
+}
+
 export class DraftEnvelopeNotFoundError extends Error {
 	readonly code = 'DRAFT_ENVELOPE_NOT_FOUND';
 
@@ -350,11 +358,17 @@ export class DraftPersistenceService {
 		if (revision.archiveKey !== expectedKey) {
 			throw new DraftIntegrityError('Stored draft command has an invalid archive key');
 		}
-		const archive: Uint8Array = await this.readVerifiedArchive(
-			revision.archiveKey,
-			revision.archiveSha256
+		await readImmutableDraftRevision(
+			{
+				organizationId: input.organizationId,
+				envelopeId: input.envelopeId,
+				commitSha: revision.commitSha,
+				archiveKey: revision.archiveKey,
+				archiveSha256: revision.archiveSha256
+			},
+			this.objects,
+			this.repository
 		);
-		await this.repository.read(archive, revision.commitSha);
 	}
 
 	private async loadSnapshot(envelope: Envelope): Promise<DraftSnapshot> {
@@ -443,6 +457,42 @@ export class DraftPersistenceService {
 			throw new DraftIntegrityError('Draft repository archive failed SHA-256 verification');
 		}
 		return archive;
+	}
+}
+
+/**
+ * Read one content-addressed Git revision without consulting the mutable
+ * envelope pointer. Callers must obtain this locator from a trusted database
+ * boundary; no client-supplied key or commit is accepted here.
+ */
+export async function readImmutableDraftRevision(
+	revision: ImmutableDraftRevision,
+	objects: ObjectStore,
+	repository: DraftRepository
+): Promise<readonly DraftDocument[]> {
+	if (!GIT_SHA_PATTERN.test(revision.commitSha)) {
+		throw new DraftIntegrityError('Pinned draft revision has an invalid Git commit SHA');
+	}
+	assertSha256(revision.archiveSha256);
+	const expectedKey: string = draftArchiveKey(
+		revision.organizationId,
+		revision.envelopeId,
+		revision.archiveSha256
+	);
+	if (revision.archiveKey !== expectedKey) {
+		throw new DraftIntegrityError('Pinned draft archive key does not match its organization scope');
+	}
+	const stream: ReadableStream<Uint8Array> | null = await objects.get(revision.archiveKey);
+	if (stream === null) throw new DraftIntegrityError('Pinned draft repository archive is missing');
+	const archive: Uint8Array = await readStreamBounded(stream, MAX_ARCHIVE_BYTES);
+	const actualSha256: string = await sha256Hex(archive);
+	if (actualSha256 !== revision.archiveSha256) {
+		throw new DraftIntegrityError('Pinned draft repository archive failed SHA-256 verification');
+	}
+	try {
+		return await repository.read(archive, revision.commitSha);
+	} catch {
+		throw new DraftIntegrityError('Pinned draft repository failed Git verification');
 	}
 }
 
