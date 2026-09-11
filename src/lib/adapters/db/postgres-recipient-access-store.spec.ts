@@ -36,7 +36,10 @@ describe('PostgresRecipientAccessStore', () => {
 				recipientStatus: 'viewed',
 				envelopeTitle: 'Agreement',
 				envelopeStatus: 'in_progress',
-				expiresAt: new Date('2026-09-12T00:00:00.000Z')
+				expiresAt: new Date('2026-09-12T00:00:00.000Z'),
+				sentCommitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+				archiveKey: 'private/archive.git.gz',
+				archiveSha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 			}
 		]);
 		const store = new PostgresRecipientAccessStore(database.client());
@@ -46,7 +49,12 @@ describe('PostgresRecipientAccessStore', () => {
 		).resolves.toMatchObject({
 			organizationId: 'org-1',
 			recipientRole: 'approver',
-			expiresAt: '2026-09-12T00:00:00.000Z'
+			expiresAt: '2026-09-12T00:00:00.000Z',
+			sentRevision: {
+				commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+				archiveKey: 'private/archive.git.gz',
+				archiveSha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+			}
 		});
 		const query: RecordedQuery = database.queries[0];
 		expect(query.values).toEqual(['hash-1', '2026-09-11T00:00:00.000Z']);
@@ -57,6 +65,11 @@ describe('PostgresRecipientAccessStore', () => {
 		expect(query.text).toContain("recipient.status IN ('pending', 'viewed')");
 		expect(query.text).toContain("recipient.role <> 'cc'");
 		expect(query.text).toContain("envelope.status IN ('sent', 'in_progress')");
+		expect(query.text).toContain('INNER JOIN draft_revision_command revision');
+		expect(query.text).toContain('envelope.sent_commit_sha = envelope.repository_head');
+		expect(query.text).toContain('revision.commit_sha = envelope.sent_commit_sha');
+		expect(query.text).toContain('revision.archive_key = envelope.repository_archive_key');
+		expect(query.text).toContain('revision.archive_sha256 = envelope.repository_archive_sha256');
 	});
 
 	it('returns null when the query has no active row', async () => {

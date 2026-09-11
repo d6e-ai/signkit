@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types';
-import { resolveRecipientAccessApplication } from '$lib/application/signing/runtime';
+import { resolveRecipientWorkspaceApplication } from '$lib/application/signing/runtime';
 import { resolveRecipientPage } from '$lib/application/signing/recipient-page';
 import {
 	RECIPIENT_SESSION_COOKIE,
@@ -9,8 +9,9 @@ import {
 
 export const load: PageServerLoad = async ({ cookies, platform, setHeaders, url }) => {
 	setHeaders({
-		'cache-control': 'no-store',
+		'cache-control': 'private, no-store',
 		'referrer-policy': 'no-referrer',
+		vary: 'Cookie',
 		'x-content-type-options': 'nosniff'
 	});
 	return resolveRecipientPage(
@@ -21,7 +22,7 @@ export const load: PageServerLoad = async ({ cookies, platform, setHeaders, url 
 				cookies.delete(RECIPIENT_SESSION_COOKIE, { path: RECIPIENT_SESSION_COOKIE_PATH }),
 			platform
 		},
-		resolveRecipientAccessApplication,
+		resolveRecipientWorkspaceApplication,
 		unsealRecipientSession
 	);
 };

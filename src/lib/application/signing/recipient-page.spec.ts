@@ -1,25 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { RecipientAccessApplicationPort } from './recipient-access';
-import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
+import type { RecipientWorkspace, RecipientWorkspaceApplicationPort } from './recipient-workspace';
+import { RecipientWorkspaceIntegrityError } from './recipient-workspace';
 import { resolveRecipientPage } from './recipient-page';
 
-const context: RecipientSigningContext = {
-	organizationId: 'org-secret',
-	envelopeId: 'env-1',
-	recipientId: 'recipient-1',
-	recipientName: 'Private Recipient',
-	recipientLocale: 'en',
-	recipientRole: 'approver',
-	recipientStatus: 'viewed',
-	envelopeTitle: 'Agreement',
-	envelopeStatus: 'in_progress',
-	expiresAt: '2026-09-12T00:00:00.000Z'
+const workspace: RecipientWorkspace = {
+	access: {
+		envelopeId: 'env-1',
+		recipientId: 'recipient-1',
+		role: 'approver',
+		locale: 'en',
+		recipientStatus: 'viewed',
+		envelopeTitle: 'Agreement',
+		envelopeStatus: 'in_progress',
+		expiresAt: '2026-09-12T00:00:00.000Z'
+	},
+	documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
 };
 
 function application(
-	result: RecipientSigningContext | null = context
-): RecipientAccessApplicationPort {
-	return { resolve: vi.fn(async (): Promise<RecipientSigningContext | null> => result) };
+	result: RecipientWorkspace | null = workspace
+): RecipientWorkspaceApplicationPort {
+	return { resolve: vi.fn(async (): Promise<RecipientWorkspace | null> => result) };
 }
 
 describe('recipient signing page resolution', () => {
@@ -47,8 +48,8 @@ describe('recipient signing page resolution', () => {
 		expect(clearSession).toHaveBeenCalledOnce();
 	});
 
-	it('revalidates the decrypted capability and returns only public fields', async () => {
-		const app: RecipientAccessApplicationPort = application();
+	it('revalidates the decrypted capability and returns the public workspace', async () => {
+		const app: RecipientWorkspaceApplicationPort = application();
 		const result = await resolveRecipientPage(
 			{ accessHint: null, cookie: 'sealed', clearSession: vi.fn() },
 			() => app,
@@ -57,20 +58,8 @@ describe('recipient signing page resolution', () => {
 		);
 
 		expect(app.resolve).toHaveBeenCalledWith('raw-token', '2026-09-11T00:00:00.000Z');
-		expect(result).toEqual({
-			state: 'active',
-			access: {
-				envelopeId: 'env-1',
-				recipientId: 'recipient-1',
-				role: 'approver',
-				locale: 'en',
-				recipientStatus: 'viewed',
-				envelopeTitle: 'Agreement',
-				envelopeStatus: 'in_progress',
-				expiresAt: '2026-09-12T00:00:00.000Z'
-			}
-		});
-		expect(JSON.stringify(result)).not.toMatch(/org-secret|Private Recipient/);
+		expect(result).toEqual({ state: 'active', ...workspace });
+		expect(JSON.stringify(result)).not.toMatch(/organization|archive|recipientName/);
 	});
 
 	it('deletes the cookie when durable state no longer authorizes the recipient', async () => {
@@ -114,6 +103,27 @@ describe('recipient signing page resolution', () => {
 			JSON.stringify({ event: 'recipient_page_resolution_failed' })
 		);
 		expect(error).not.toHaveBeenCalledWith(expect.stringContaining('configuration detail'));
+		error.mockRestore();
+	});
+
+	it('emits a distinct secret-free event for workspace integrity failures', async () => {
+		const clearSession = vi.fn();
+		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		await expect(
+			resolveRecipientPage(
+				{ accessHint: null, cookie: 'sealed', clearSession },
+				() => ({
+					resolve: async (): Promise<RecipientWorkspace> => {
+						throw new RecipientWorkspaceIntegrityError();
+					}
+				}),
+				async (): Promise<string> => 'raw-token'
+			)
+		).resolves.toEqual({ state: 'unavailable' });
+		expect(clearSession).not.toHaveBeenCalled();
+		expect(error).toHaveBeenCalledWith(
+			JSON.stringify({ event: 'recipient_page_integrity_failed' })
+		);
 		error.mockRestore();
 	});
 });

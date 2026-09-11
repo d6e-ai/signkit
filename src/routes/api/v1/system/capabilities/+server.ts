@@ -34,6 +34,7 @@ export const GET: RequestHandler = ({ platform }) => {
 		},
 		recipientAccess: {
 			endpoint: '/api/v1/signing/context',
+			documentsEndpoint: '/api/v1/signing/documents',
 			linkExchange: '/s/{capability}',
 			webSurface: '/{locale}/sign',
 			authentication: 'bearer-capability',
