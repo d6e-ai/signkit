@@ -8,8 +8,11 @@ The current repository contains the product shell, portable deployment boundary,
 
 ```sh
 pnpm install
+pnpm exec playwright install chromium
 pnpm run dev
 ```
+
+`pnpm run test` runs the PostgreSQL/D1-aware server suite and the Chromium recipient-surface fixture. Set `POSTGRES_TEST_URL` to include the PostgreSQL integration tests; CI installs Chromium and provides PostgreSQL 17.
 
 The default build is the Node/Docker profile:
 
@@ -50,7 +53,7 @@ The first agent-facing endpoints are `POST /api/v1/envelopes`, `GET /api/v1/enve
 
 `GET /api/v1/signing/documents` uses the same bearer capability to return the ordered Markdown documents from the exact Git revision pinned when the envelope was sent. The database resolves the immutable revision locator; callers cannot supply an envelope, object key, commit, or path. The archive key is re-derived, compressed bytes and gzip output are bounded, SHA-256 and Git HEAD are verified, and no organization or storage identifiers are returned.
 
-Browser links use `/s/{capability}` only as a one-time exchange surface. An active token is encrypted into a purpose-separated, `HttpOnly`, `SameSite=Lax` cookie whose lifetime cannot exceed the durable capability expiry or 30 days, then redirected to the locale-specific clean `/{locale}/sign` URL. The signing page rechecks durable authorization before and after loading the pinned revision, never exposes the raw token to client-side code, and renders Markdown as escaped source text.
+Browser links use `/s/{capability}` only as a one-time exchange surface. An active token is encrypted into a purpose-separated, `HttpOnly`, `SameSite=Lax` cookie whose lifetime cannot exceed the durable capability expiry or 30 days, then redirected to the locale-specific clean `/{locale}/sign` URL. The signing page rechecks durable authorization before and after loading the pinned revision, never exposes the raw token to client-side code, and renders only a bounded, server-sanitized Markdown node model. Raw HTML remains visible as escaped text, external images become inert notices, unsafe link schemes are non-interactive, invisible Unicode controls become visible markers, and the exact escaped Markdown source remains available in a separate tab.
 
 `POST /api/v1/signing/viewed` records the first foreground browser view without turning a page `GET` into a mutation. It requires the encrypted recipient cookie, an exact same-origin request, an `Idempotency-Key`, and envelope/recipient IDs that match the freshly resolved cookie context. The recipient transition, optional `sent` to `in_progress` envelope transition, durable command receipt, and `recipient.viewed` audit event publish atomically. Replays are evidence-checked; stale tabs, inactive capabilities, key reuse, and audit-head races fail closed without disclosing whether another recipient session is valid.
 

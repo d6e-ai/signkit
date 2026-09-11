@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { render } from 'svelte/server';
+import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 import SignPage from './+page.svelte';
 import type { PageData } from './$types';
+
+function document(path: `documents/${string}.md`, content: string) {
+	return { path, content, rendered: renderRecipientMarkdown(content) };
+}
 
 describe('recipient document review page', () => {
 	it('renders multiple documents and escapes hostile Markdown HTML', () => {
@@ -18,8 +23,8 @@ describe('recipient document review page', () => {
 				expiresAt: '2026-09-12T00:00:00.000Z'
 			},
 			documents: [
-				{ path: 'documents/NDA_v1.md', content: '# Terms\n<script>alert(1)</script>\n' },
-				{ path: 'documents/schedule-a.md', content: '## Schedule A\n' }
+				document('documents/NDA_v1.md', '# Terms\n<script>alert(1)</script>\n'),
+				document('documents/schedule-a.md', '## Schedule A\n')
 			],
 			fields: [],
 			fieldGeneration: 1
@@ -30,8 +35,47 @@ describe('recipient document review page', () => {
 		expect(body).toContain('NDA v1');
 		expect(body).toContain('schedule a');
 		expect(body).toContain('href="#document-1"');
+		expect(body).toMatch(/<h1[^>]*>.*Terms.*<\/h1>/su);
 		expect(body).toContain('&lt;script>alert(1)&lt;/script>');
 		expect(body).not.toContain('<script>alert(1)</script>');
+		expect(body).toContain('Formatted');
+		expect(body).toContain('Source');
+		expect(body).not.toContain('{@html');
+	});
+
+	it('renders only policy-approved links and handles void Markdown elements', () => {
+		const data: PageData = {
+			state: 'active',
+			access: {
+				envelopeId: 'env-1',
+				recipientId: 'recipient-1',
+				role: 'viewer',
+				locale: 'ja',
+				recipientStatus: 'viewed',
+				envelopeTitle: '契約書',
+				envelopeStatus: 'in_progress',
+				expiresAt: '2026-09-12T00:00:00.000Z'
+			},
+			documents: [
+				document(
+					'documents/agreement.md',
+					'[safe](https://example.com) [unsafe](javascript:alert(1))\n\n---\nline  \nbreak\n\n!\u005btrack\u005d(https://tracker.example/pixel.gif)\n\ncontrol:\u202e'
+				)
+			],
+			fields: [],
+			fieldGeneration: 1
+		};
+		const { body } = render(SignPage, { props: { data } });
+
+		expect(body).toContain('href="https://example.com"');
+		expect(body).toContain('target="_blank"');
+		expect(body).toContain('rel="noopener noreferrer"');
+		expect(body).not.toContain('href="javascript:');
+		expect(body).not.toContain('<img');
+		expect(body).toContain('<hr');
+		expect(body).toContain('<br');
+		expect(body).toContain('⟦U+202E⟧');
+		expect(body).toContain('Invisible Unicode controls are shown as U+ markers.');
 	});
 
 	it.each([
@@ -59,7 +103,7 @@ describe('recipient document review page', () => {
 					envelopeStatus: 'sent',
 					expiresAt: '2026-09-12T00:00:00.000Z'
 				},
-				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+				documents: [document('documents/NDA.md', 'Agreement content')],
 				fields: [],
 				fieldGeneration: 1
 			};
@@ -87,7 +131,7 @@ describe('recipient document review page', () => {
 					envelopeStatus: 'sent',
 					expiresAt: '2026-09-12T00:00:00.000Z'
 				},
-				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+				documents: [document('documents/NDA.md', 'Agreement content')],
 				fields: [],
 				fieldGeneration: 1
 			};
@@ -118,7 +162,7 @@ describe('recipient document review page', () => {
 					envelopeStatus: 'sent',
 					expiresAt: '2026-09-12T00:00:00.000Z'
 				},
-				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+				documents: [document('documents/NDA.md', 'Agreement content')],
 				fields: [],
 				fieldGeneration: 1
 			};
@@ -181,7 +225,7 @@ describe('recipient document review page', () => {
 				envelopeStatus: 'in_progress',
 				expiresAt: '2026-09-12T00:00:00.000Z'
 			},
-			documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+			documents: [document('documents/NDA.md', 'Agreement content')],
 			fields: [
 				{
 					id: '00000000-0000-8000-a000-000000000003',
@@ -215,7 +259,7 @@ describe('recipient document review page', () => {
 				envelopeStatus: 'in_progress',
 				expiresAt: '2026-09-12T00:00:00.000Z'
 			},
-			documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }],
+			documents: [document('documents/NDA.md', 'Agreement content')],
 			fields: [
 				{
 					id: '00000000-0000-8000-a000-000000000003',

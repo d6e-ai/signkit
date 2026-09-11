@@ -4,6 +4,7 @@ import adapterNode from '@sveltejs/adapter-node';
 import adapterVercel from '@sveltejs/adapter-vercel';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vitest/config';
+import { playwright } from '@vitest/browser-playwright';
 import { sveltekit } from '@sveltejs/kit/vite';
 
 const deployTarget = process.env.DEPLOY_TARGET ?? 'node';
@@ -31,7 +32,25 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			adapter: deploymentAdapter()
+			adapter: deploymentAdapter(),
+			csp: {
+				mode: 'auto',
+				directives: {
+					'default-src': ['self'],
+					'base-uri': ['none'],
+					'connect-src': ['self'],
+					'font-src': ['self'],
+					'form-action': ['self'],
+					'frame-ancestors': ['none'],
+					'frame-src': ['none'],
+					'img-src': ['self', 'data:'],
+					'media-src': ['none'],
+					'object-src': ['none'],
+					'script-src': ['self'],
+					'style-src': ['self', 'unsafe-inline'],
+					'worker-src': ['self']
+				}
+			}
 		}),
 		paraglideVitePlugin({
 			project: './project.inlang',
@@ -58,7 +77,20 @@ export default defineConfig({
 					name: 'server',
 					environment: 'node',
 					include: ['src/**/*.{test,spec}.{js,ts}'],
-					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
+					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}', 'src/**/*.browser.spec.ts']
+				}
+			},
+			{
+				extends: './vite.config.ts',
+				test: {
+					name: 'browser',
+					include: ['src/**/*.browser.spec.ts'],
+					browser: {
+						enabled: true,
+						headless: true,
+						provider: playwright(),
+						instances: [{ browser: 'chromium' }]
+					}
 				}
 			}
 		]
