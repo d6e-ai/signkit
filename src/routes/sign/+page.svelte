@@ -316,6 +316,208 @@
 		);
 	}
 
+	export type RecipientApproveStatus =
+		'idle' | 'pending' | 'transient_failure' | 'terminal_failure' | 'success';
+
+	export interface RecipientApproveReceipt {
+		envelopeId: string;
+		recipientId: string;
+		recipientStatus: string;
+		envelopeStatus: string;
+		approvedAt: string;
+		replayed?: boolean;
+	}
+
+	export interface RecipientApproveOptions {
+		envelopeId: string;
+		recipientId: string;
+		role: string;
+		pageState: string;
+		recipientStatus?: string | (() => string);
+		fetch?: typeof fetch;
+		randomUUID?: () => string;
+		onStatusChange?: (status: RecipientApproveStatus) => void;
+		onSuccess?: (info?: { replayed: boolean; receipt?: RecipientApproveReceipt }) => void;
+		onTransientFailure?: () => void;
+		onTerminalFailure?: () => void;
+	}
+
+	export interface RecipientApproveController {
+		confirmApprove(): Promise<void>;
+		getStatus(): RecipientApproveStatus;
+		isInFlight(): boolean;
+		getIdempotencyKey(): string | null;
+		isReplayed(): boolean;
+		getReceipt(): RecipientApproveReceipt | null;
+		destroy(): void;
+	}
+
+	export function createRecipientApproveController({
+		envelopeId,
+		recipientId,
+		role,
+		pageState,
+		recipientStatus,
+		fetch: customFetch,
+		randomUUID: customRandomUUID,
+		onStatusChange,
+		onSuccess,
+		onTransientFailure,
+		onTerminalFailure
+	}: RecipientApproveOptions): RecipientApproveController {
+		let status: RecipientApproveStatus = 'idle';
+		let inFlight = false;
+		let idempotencyKey: string | null = null;
+		let replayed = false;
+		let receipt: RecipientApproveReceipt | null = null;
+		const abortController = new AbortController();
+
+		const getRecipientStatus =
+			typeof recipientStatus === 'function' ? recipientStatus : () => recipientStatus;
+
+		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
+		const generateUUID =
+			customRandomUUID ??
+			(() => {
+				if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+					return crypto.randomUUID();
+				}
+				if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+					const bytes = crypto.getRandomValues(new Uint8Array(16));
+					return Array.from(bytes, (byte: number): string =>
+						byte.toString(16).padStart(2, '0')
+					).join('');
+				}
+				return `approve-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+			});
+
+		async function confirmApprove(): Promise<void> {
+			const currentRecipientStatus = getRecipientStatus();
+			const canApprove =
+				pageState === 'active' && role === 'approver' && currentRecipientStatus === 'viewed';
+			if (!canApprove || inFlight || status === 'success' || status === 'terminal_failure') {
+				return;
+			}
+			if (!fetchFn) return;
+
+			if (!idempotencyKey) {
+				idempotencyKey = generateUUID();
+			}
+
+			inFlight = true;
+			status = 'pending';
+			onStatusChange?.('pending');
+
+			try {
+				const response = await fetchFn('/api/v1/signing/approve', {
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: {
+						'content-type': 'application/json',
+						'idempotency-key': idempotencyKey
+					},
+					body: JSON.stringify({
+						envelopeId,
+						recipientId
+					}),
+					signal: abortController.signal
+				});
+
+				if (response.status === 200) {
+					const validated = await validateApprovedReceipt(response, envelopeId, recipientId);
+					if (validated) {
+						const isReplay = response.headers.get('idempotency-replayed') === 'true';
+						replayed = isReplay;
+						receipt = { ...validated, replayed: isReplay };
+						status = 'success';
+						onStatusChange?.('success');
+						onSuccess?.({ replayed: isReplay, receipt });
+						return;
+					}
+				}
+
+				if (response.status !== 404 && isPermanentClientFailure(response)) {
+					status = 'terminal_failure';
+					onStatusChange?.('terminal_failure');
+					onTerminalFailure?.();
+					return;
+				}
+
+				status = 'transient_failure';
+				onStatusChange?.('transient_failure');
+				onTransientFailure?.();
+			} catch {
+				if (abortController.signal.aborted) return;
+				status = 'transient_failure';
+				onStatusChange?.('transient_failure');
+				onTransientFailure?.();
+			} finally {
+				inFlight = false;
+			}
+		}
+
+		function destroy(): void {
+			abortController.abort();
+		}
+
+		return {
+			confirmApprove,
+			getStatus: () => status,
+			isInFlight: () => inFlight,
+			getIdempotencyKey: () => idempotencyKey,
+			isReplayed: () => replayed,
+			getReceipt: () => receipt,
+			destroy
+		};
+	}
+
+	export async function validateApprovedReceipt(
+		response: Response,
+		expectedEnvelopeId: string,
+		expectedRecipientId: string
+	): Promise<RecipientApproveReceipt | null> {
+		if (response.status !== 200) return null;
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			return null;
+		}
+		if (!isRecord(body) || !hasExactKeys(body, ['approved'])) return null;
+		const approved: unknown = body.approved;
+		if (
+			!isRecord(approved) ||
+			!hasExactKeys(approved, [
+				'approvedAt',
+				'envelopeId',
+				'envelopeStatus',
+				'recipientId',
+				'recipientStatus'
+			])
+		) {
+			return null;
+		}
+		if (
+			approved.envelopeId !== expectedEnvelopeId ||
+			approved.recipientId !== expectedRecipientId ||
+			typeof approved.approvedAt !== 'string' ||
+			!Number.isFinite(new Date(approved.approvedAt).getTime()) ||
+			approved.recipientStatus !== 'completed' ||
+			!(approved.envelopeStatus === 'completed' || approved.envelopeStatus === 'in_progress')
+		) {
+			return null;
+		}
+		const replayed = response.headers?.get?.('idempotency-replayed') === 'true';
+		return {
+			envelopeId: approved.envelopeId,
+			recipientId: approved.recipientId,
+			recipientStatus: approved.recipientStatus,
+			envelopeStatus: approved.envelopeStatus,
+			approvedAt: approved.approvedAt,
+			...(replayed ? { replayed: true } : {})
+		};
+	}
+
 	function isRecord(value: unknown): value is Record<string, unknown> {
 		return typeof value === 'object' && value !== null && !Array.isArray(value);
 	}
@@ -330,6 +532,7 @@
 	import { onMount } from 'svelte';
 	import {
 		IconAlertTriangle,
+		IconCircleCheck,
 		IconCircleX,
 		IconClock,
 		IconFileText,
@@ -340,6 +543,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
+	import { Spinner } from '$lib/components/ui/spinner';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import type { PageData } from './$types';
@@ -357,6 +561,12 @@
 	let dialogOpen = $state(false);
 	let declineController: RecipientDeclineController | null = null;
 
+	let approveStatus = $state<RecipientApproveStatus>('idle');
+	let approvePending = $state(false);
+	let isApproved = $state(false);
+	let approveDialogOpen = $state(false);
+	let approveController: RecipientApproveController | null = null;
+
 	function roleLabel(role: string): string {
 		if (role === 'signer') return m.signing_role_signer();
 		if (role === 'approver') return m.signing_role_approver();
@@ -366,6 +576,7 @@
 
 	function statusLabel(status: string): string {
 		if (status === 'declined') return m.signing_status_declined();
+		if (status === 'approved' || status === 'completed') return m.signing_status_approved();
 		return status === 'viewed' ? m.signing_status_viewed() : m.signing_status_pending();
 	}
 
@@ -400,6 +611,23 @@
 		}
 	}
 
+	function handleApproveStatus(status: RecipientApproveStatus): void {
+		approveStatus = status;
+		approvePending = status === 'pending';
+		if (status === 'pending') {
+			liveMessage = m.signing_approve_pending();
+		} else if (status === 'success') {
+			isApproved = true;
+			approveDialogOpen = false;
+			liveMessage = m.signing_approve_success();
+		} else if (status === 'transient_failure') {
+			liveMessage = m.signing_approve_retry_pending();
+		} else if (status === 'terminal_failure') {
+			approveDialogOpen = false;
+			liveMessage = m.signing_approve_failed();
+		}
+	}
+
 	function buildDeclineController(): RecipientDeclineController | null {
 		if (
 			data.state !== 'active' ||
@@ -416,15 +644,38 @@
 		});
 	}
 
+	function buildApproveController(): RecipientApproveController | null {
+		if (data.state !== 'active' || data.access.role !== 'approver') {
+			return null;
+		}
+		return createRecipientApproveController({
+			envelopeId: data.access.envelopeId,
+			recipientId: data.access.recipientId,
+			role: data.access.role,
+			pageState: data.state,
+			recipientStatus: () =>
+				viewRecorded || data.access.recipientStatus === 'viewed'
+					? 'viewed'
+					: data.access.recipientStatus,
+			onStatusChange: handleApproveStatus
+		});
+	}
+
 	async function handleDeclineConfirm(): Promise<void> {
 		declineController ??= buildDeclineController();
 		await declineController?.confirmDecline();
+	}
+
+	async function handleApproveConfirm(): Promise<void> {
+		approveController ??= buildApproveController();
+		await approveController?.confirmApprove();
 	}
 
 	onMount(() => {
 		if (data.state !== 'active') return;
 
 		declineController ??= buildDeclineController();
+		approveController ??= buildApproveController();
 
 		const cleanupViewed = initRecipientViewed({
 			envelopeId: data.access.envelopeId,
@@ -450,6 +701,7 @@
 		return () => {
 			cleanupViewed();
 			declineController?.destroy();
+			approveController?.destroy();
 		};
 	});
 </script>
@@ -504,12 +756,18 @@
 									variant="outline"
 									class={isDeclined
 										? 'border-destructive/30 bg-destructive/10 text-destructive'
-										: viewRecorded || data.access.recipientStatus === 'viewed'
+										: isApproved || viewRecorded || data.access.recipientStatus === 'viewed'
 											? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300'
 											: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300'}
 								>
 									{statusLabel(
-										isDeclined ? 'declined' : viewRecorded ? 'viewed' : data.access.recipientStatus
+										isDeclined
+											? 'declined'
+											: isApproved
+												? 'completed'
+												: viewRecorded
+													? 'viewed'
+													: data.access.recipientStatus
 									)}
 								</Badge>
 								{#if retryPending && !viewRecorded && data.access.recipientStatus !== 'viewed' && !isDeclined}
@@ -540,7 +798,11 @@
 					</div>
 				</Card.Content>
 				<Card.Footer class="border-t bg-muted/20 py-4 text-sm text-muted-foreground">
-					{isDeclined ? m.signing_declined_receipt_description() : m.signing_controls_next()}
+					{isDeclined
+						? m.signing_declined_receipt_description()
+						: isApproved
+							? m.signing_approved_receipt_description()
+							: m.signing_controls_next()}
 				</Card.Footer>
 			</Card.Root>
 
@@ -595,7 +857,114 @@
 				</div>
 			</section>
 
-			{#if data.access.role === 'signer' || data.access.role === 'approver'}
+			{#if data.access.role === 'approver' && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}
+				<section aria-label={m.signing_approve_action()} class="w-full">
+					{#if isApproved}
+						<Card.Root class="border-primary/20 bg-primary/[0.03] shadow-sm">
+							<Card.Header class="gap-2">
+								<div class="flex items-start gap-4">
+									<div
+										class="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+									>
+										<IconCircleCheck class="size-6" />
+									</div>
+									<div>
+										<Card.Title class="text-xl">{m.signing_approved_receipt_title()}</Card.Title>
+										<Card.Description class="mt-1.5 text-sm leading-6">
+											{m.signing_approved_receipt_description()}
+										</Card.Description>
+									</div>
+								</div>
+							</Card.Header>
+						</Card.Root>
+					{:else}
+						<Card.Root class="border-primary/20 shadow-sm">
+							<Card.Content
+								class="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6"
+							>
+								<div class="min-w-0 space-y-1">
+									<h3 class="text-base font-semibold">{m.signing_approve_action()}</h3>
+									<p class="text-sm text-muted-foreground">{m.signing_approve_description()}</p>
+									{#if approveStatus === 'transient_failure'}
+										<p class="text-xs font-medium text-destructive">
+											{m.signing_approve_retry_pending()}
+										</p>
+									{:else if approveStatus === 'terminal_failure'}
+										<p class="text-xs font-medium text-destructive">
+											{m.signing_approve_failed()}
+										</p>
+									{/if}
+								</div>
+								{#if approveStatus !== 'terminal_failure'}
+									<AlertDialog.Root bind:open={approveDialogOpen}>
+										<AlertDialog.Trigger>
+											{#snippet child({ props })}
+												<Button
+													{...props}
+													class="min-h-[44px] w-full text-sm sm:w-auto"
+													disabled={approvePending}
+												>
+													{approveStatus === 'transient_failure'
+														? m.signing_approve_retry()
+														: m.signing_approve_action()}
+												</Button>
+											{/snippet}
+										</AlertDialog.Trigger>
+										<AlertDialog.Content class="max-w-[calc(100vw-2rem)] sm:max-w-md">
+											<AlertDialog.Header>
+												<AlertDialog.Title>{m.signing_approve_dialog_title()}</AlertDialog.Title>
+												<AlertDialog.Description>
+													{m.signing_approve_dialog_description()}
+												</AlertDialog.Description>
+											</AlertDialog.Header>
+											{#if approveStatus === 'transient_failure'}
+												<p class="text-xs text-destructive" role="status" aria-live="polite">
+													{m.signing_approve_retry_pending()}
+												</p>
+											{:else if approveStatus === 'pending'}
+												<p class="text-xs text-muted-foreground" role="status" aria-live="polite">
+													{m.signing_approve_pending()}
+												</p>
+											{/if}
+											<AlertDialog.Footer
+												class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"
+											>
+												<AlertDialog.Cancel class="min-h-[44px]" disabled={approvePending}>
+													{m.signing_approve_dialog_cancel()}
+												</AlertDialog.Cancel>
+												<AlertDialog.Action
+													class="min-h-[44px]"
+													disabled={approvePending}
+													onclick={async (event) => {
+														event.preventDefault();
+														await handleApproveConfirm();
+													}}
+												>
+													{#if approvePending}
+														<Spinner data-icon="inline-start" />
+													{/if}
+													{approvePending
+														? m.signing_approve_pending()
+														: approveStatus === 'transient_failure'
+															? m.signing_approve_retry()
+															: m.signing_approve_dialog_confirm()}
+												</AlertDialog.Action>
+											</AlertDialog.Footer>
+										</AlertDialog.Content>
+									</AlertDialog.Root>
+								{/if}
+							</Card.Content>
+						</Card.Root>
+						<noscript>
+							<p class="mt-2 text-sm text-muted-foreground">
+								{m.signing_approve_no_js_explanation()}
+							</p>
+						</noscript>
+					{/if}
+				</section>
+			{/if}
+
+			{#if !isApproved && (data.access.role === 'signer' || data.access.role === 'approver')}
 				<section aria-label={m.signing_decline_action()} class="w-full">
 					{#if isDeclined}
 						<Card.Root class="border-destructive/20 bg-destructive/[0.03] shadow-sm">
@@ -697,6 +1066,9 @@
 															await handleDeclineConfirm();
 														}}
 													>
+														{#if declinePending}
+															<Spinner data-icon="inline-start" />
+														{/if}
 														{declinePending
 															? m.signing_decline_pending()
 															: declineStatus === 'transient_failure'

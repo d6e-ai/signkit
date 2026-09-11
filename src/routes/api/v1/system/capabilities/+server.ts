@@ -37,6 +37,7 @@ export const GET: RequestHandler = ({ platform }) => {
 			documentsEndpoint: '/api/v1/signing/documents',
 			viewedEndpoint: '/api/v1/signing/viewed',
 			declineEndpoint: '/api/v1/signing/decline',
+			approveEndpoint: '/api/v1/signing/approve',
 			linkExchange: '/s/{capability}',
 			webSurface: '/{locale}/sign',
 			authentication: 'bearer-capability',

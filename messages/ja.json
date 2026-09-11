@@ -88,5 +88,20 @@
 	"signing_decline_success": "依頼を辞退しました。",
 	"signing_declined_receipt_title": "依頼を辞退しました",
 	"signing_declined_receipt_description": "この依頼は辞退されました。これ以上の操作は行えません。",
-	"signing_decline_no_js_explanation": "辞退を確認して記録するにはJavaScriptを有効にしてください。"
+	"signing_decline_no_js_explanation": "辞退を確認して記録するにはJavaScriptを有効にしてください。",
+	"signing_status_approved": "承認済み",
+	"signing_approve_action": "契約書を承認",
+	"signing_approve_description": "内容を確認し、この契約書を承認して手続きを進めます。",
+	"signing_approve_dialog_title": "この契約書を承認しますか？",
+	"signing_approve_dialog_description": "承認すると契約書類の確認が完了し、承認が記録されます。",
+	"signing_approve_dialog_cancel": "キャンセル",
+	"signing_approve_dialog_confirm": "契約書を承認",
+	"signing_approve_pending": "契約書の承認を処理中…",
+	"signing_approve_retry_pending": "契約書を承認できませんでした。もう一度お試しください。",
+	"signing_approve_retry": "再試行",
+	"signing_approve_failed": "契約書を承認できませんでした。この署名リンクは無効です。",
+	"signing_approve_success": "契約書を承認しました。",
+	"signing_approved_receipt_title": "契約書を承認しました",
+	"signing_approved_receipt_description": "この契約書を承認しました。承認内容が記録されました。",
+	"signing_approve_no_js_explanation": "承認を確認して記録するにはJavaScriptを有効にしてください。"
 }

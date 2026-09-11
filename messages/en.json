@@ -88,5 +88,20 @@
 	"signing_decline_success": "Request was declined.",
 	"signing_declined_receipt_title": "Request declined",
 	"signing_declined_receipt_description": "You have declined this request. No further action can be taken.",
-	"signing_decline_no_js_explanation": "JavaScript is required to confirm and record a decline."
+	"signing_decline_no_js_explanation": "JavaScript is required to confirm and record a decline.",
+	"signing_status_approved": "Approved",
+	"signing_approve_action": "Approve agreement",
+	"signing_approve_description": "Confirm your review and approve this agreement to proceed.",
+	"signing_approve_dialog_title": "Approve this agreement?",
+	"signing_approve_dialog_description": "Approving confirms your review of the agreement documents and records your approval.",
+	"signing_approve_dialog_cancel": "Cancel",
+	"signing_approve_dialog_confirm": "Approve agreement",
+	"signing_approve_pending": "Approving agreement…",
+	"signing_approve_retry_pending": "Could not approve the agreement. You can try again.",
+	"signing_approve_retry": "Try again",
+	"signing_approve_failed": "Could not approve the agreement. This signing link is no longer active.",
+	"signing_approve_success": "Agreement was approved.",
+	"signing_approved_receipt_title": "Agreement approved",
+	"signing_approved_receipt_description": "You have approved this agreement. Your approval has been recorded.",
+	"signing_approve_no_js_explanation": "JavaScript is required to confirm and record an approval."
 }

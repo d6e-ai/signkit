@@ -24,4 +24,15 @@ describe('recipient document rendering', () => {
 		expect(source).toContain('signing_decline_no_js_explanation');
 		expect(source).not.toContain('recipientStatus as string');
 	});
+
+	it('keeps approval capability-bound and client-driven', () => {
+		const source: string = readFileSync('src/routes/sign/+page.svelte', 'utf8');
+		expect(source).toContain("fetchFn('/api/v1/signing/approve'");
+		expect(source).toContain("credentials: 'same-origin'");
+		expect(source).toContain("'idempotency-key': idempotencyKey");
+		expect(source).toContain("data.access.role === 'approver'");
+		expect(source).toContain("data.access.recipientStatus === 'viewed'");
+		expect(source).toContain('signing_approve_no_js_explanation');
+		expect(source).not.toContain('capabilityToken');
+	});
 });
