@@ -48,6 +48,7 @@ describe('resolveDraftPersistenceService', () => {
 
 	it('constructs PostgreSQL and S3 persistence from a complete Node configuration', async () => {
 		setCompleteNodeConfiguration();
+		privateEnv.S3_ENDPOINT = 'http://[::1]:9000';
 
 		const platform = { req: {} } as unknown as App.Platform;
 		const service = await resolveDraftPersistenceService({ platform });

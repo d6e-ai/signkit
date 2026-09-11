@@ -117,7 +117,8 @@ function parseBoolean(value: string, name: string): boolean {
 
 function isLoopbackHttp(url: URL): boolean {
 	if (url.protocol !== 'http:') return false;
-	return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+	const hostname: string = url.hostname.replace(/^\[|\]$/g, '');
+	return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 }
 
 function sameConfiguration(
