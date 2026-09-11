@@ -11,7 +11,7 @@ const deployTarget = process.env.DEPLOY_TARGET ?? 'node';
 function deploymentAdapter() {
 	switch (deployTarget) {
 		case 'cloudflare':
-			return adapterCloudflare();
+			return adapterCloudflare({ config: 'wrangler.build.jsonc' });
 		case 'vercel':
 			return adapterVercel({ runtime: 'nodejs22.x' });
 		case 'node':

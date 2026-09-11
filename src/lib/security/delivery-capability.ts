@@ -35,6 +35,10 @@ export class AesGcmRecipientCapabilitySealer implements RecipientCapabilitySeale
 		]);
 	}
 
+	async currentSealingKeyId(): Promise<string> {
+		return await this.#keyId;
+	}
+
 	async seal(token: string, context: CapabilitySealContext): Promise<SealedRecipientCapability> {
 		if (!isRecipientCapability(token)) throw new Error('Invalid recipient capability token');
 		const iv: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(IV_BYTES));

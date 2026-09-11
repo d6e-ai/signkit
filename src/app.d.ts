@@ -18,7 +18,13 @@ declare global {
 		interface Platform {
 			env?: {
 				DB?: D1Database;
+				EMAIL?: SendEmail;
 				OBJECTS?: R2Bucket;
+				DELIVERY_ENCRYPTION_KEY?: string;
+				DELIVERY_WORKER_SECRET?: string;
+				SIGNKIT_PUBLIC_ORIGIN?: string;
+				SIGNKIT_EMAIL_FROM?: string;
+				SIGNKIT_EMAIL_FROM_NAME?: string;
 			};
 			context?: { waitUntil(promise: Promise<unknown>): void };
 			caches?: CacheStorage;

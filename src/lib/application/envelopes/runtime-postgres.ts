@@ -140,6 +140,14 @@ export function resolvePostgresRecipientFieldDeclarationStore(
 	return new PostgresRecipientFieldDeclarationStore(resources.sql);
 }
 
+/**
+ * Reuse the process-local pool for independently composed application services.
+ * The SQL client carries no request or tenant state.
+ */
+export function resolvePostgresSql(databaseUrl: string): ReturnType<typeof postgres> {
+	return resolvePostgresResources(databaseUrl).sql;
+}
+
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {
 	const normalizedDatabaseUrl: string = databaseUrl.trim();
 	assertPostgresUrl(normalizedDatabaseUrl);
