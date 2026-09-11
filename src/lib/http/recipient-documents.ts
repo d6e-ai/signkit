@@ -39,10 +39,16 @@ export function createRecipientDocumentsHandler(
 				now().toISOString()
 			);
 			if (workspace === null) return accessNotFound(url.pathname);
-			return new Response(JSON.stringify(workspace), {
-				status: 200,
-				headers: securityHeaders({ 'content-type': 'application/json' })
-			});
+			return new Response(
+				JSON.stringify({
+					access: workspace.access,
+					documents: workspace.documents
+				}),
+				{
+					status: 200,
+					headers: securityHeaders({ 'content-type': 'application/json' })
+				}
+			);
 		} catch (error: unknown) {
 			console.error(
 				JSON.stringify({

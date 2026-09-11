@@ -1,0 +1,53 @@
+import { describe, expect, it, vi } from 'vitest';
+import { D1RecipientFieldDeclarationStore } from './d1-recipient-field-declaration-store';
+
+describe('D1RecipientFieldDeclarationStore', () => {
+	it('returns this recipient own fields with the envelope field generation', async () => {
+		const first = vi.fn(async () => ({ field_generation: 3 }));
+		const all = vi.fn(async () => ({
+			results: [
+				{
+					id: 'field-1',
+					document_path: 'documents/agreement.md',
+					field_type: 'signature',
+					label: 'Your signature',
+					required: 1,
+					position: 0
+				}
+			]
+		}));
+		const prepare = vi.fn((sql: string) => ({
+			bind: (...bindings: unknown[]) => {
+				expect(bindings[0]).toBe('org-1');
+				return { first, all, sql };
+			}
+		}));
+		const store = new D1RecipientFieldDeclarationStore({ prepare } as unknown as D1Database);
+		await expect(store.listOwnFields('org-1', 'env-1', 'recipient-1')).resolves.toEqual({
+			fieldGeneration: 3,
+			fields: [
+				{
+					id: 'field-1',
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					label: 'Your signature',
+					required: true,
+					position: 0
+				}
+			]
+		});
+		expect(prepare.mock.calls[0][0]).toContain('field_generation');
+		expect(prepare.mock.calls[1][0]).toContain('recipient_id = ?');
+	});
+
+	it('returns null when the envelope pointer is missing', async () => {
+		const prepare = vi.fn(() => ({
+			bind: () => ({
+				first: async () => null,
+				all: async () => ({ results: [] })
+			})
+		}));
+		const store = new D1RecipientFieldDeclarationStore({ prepare } as unknown as D1Database);
+		await expect(store.listOwnFields('org-1', 'env-1', 'recipient-1')).resolves.toBeNull();
+	});
+});

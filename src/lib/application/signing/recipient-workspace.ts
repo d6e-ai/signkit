@@ -1,5 +1,9 @@
 import type { ImmutableDraftRevision } from '$lib/application/drafts/draft-persistence';
 import type { DraftDocument } from '$lib/ports/draft-repository';
+import type {
+	RecipientFieldDeclaration,
+	RecipientOwnFields
+} from '$lib/ports/recipient-field-declaration-store';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import {
 	toPublicRecipientAccess,
@@ -10,6 +14,8 @@ import {
 export interface RecipientWorkspace {
 	access: PublicRecipientAccessContext;
 	documents: readonly DraftDocument[];
+	fields: readonly RecipientFieldDeclaration[];
+	fieldGeneration: number;
 }
 
 export interface RecipientWorkspaceApplicationPort {
@@ -19,6 +25,12 @@ export interface RecipientWorkspaceApplicationPort {
 export type RecipientRevisionReader = (
 	revision: ImmutableDraftRevision
 ) => Promise<readonly DraftDocument[]>;
+
+export type RecipientFieldReader = (context: {
+	organizationId: string;
+	envelopeId: string;
+	recipientId: string;
+}) => Promise<RecipientOwnFields | null>;
 
 export class RecipientWorkspaceIntegrityError extends Error {
 	readonly code = 'RECIPIENT_WORKSPACE_INTEGRITY_ERROR';
@@ -33,6 +45,7 @@ export class RecipientWorkspaceService implements RecipientWorkspaceApplicationP
 	constructor(
 		private readonly access: RecipientAccessApplicationPort,
 		private readonly readRevision: RecipientRevisionReader,
+		private readonly readFields: RecipientFieldReader,
 		private readonly now: () => Date = (): Date => new Date()
 	) {}
 
@@ -47,6 +60,12 @@ export class RecipientWorkspaceService implements RecipientWorkspaceApplicationP
 		};
 		const documents: readonly DraftDocument[] = await this.readRevision(revision);
 		if (documents.length === 0) throw new RecipientWorkspaceIntegrityError();
+		const ownFields: RecipientOwnFields | null = await this.readFields({
+			organizationId: before.organizationId,
+			envelopeId: before.envelopeId,
+			recipientId: before.recipientId
+		});
+		if (ownFields === null) throw new RecipientWorkspaceIntegrityError();
 
 		// A capability can be revoked while object storage and Git are being read.
 		// Re-resolve immediately before disclosure and require the same pinned source.
@@ -61,7 +80,9 @@ export class RecipientWorkspaceService implements RecipientWorkspaceApplicationP
 
 		return {
 			access: toPublicRecipientAccess(after),
-			documents
+			documents,
+			fields: ownFields.fields,
+			fieldGeneration: ownFields.fieldGeneration
 		};
 	}
 }

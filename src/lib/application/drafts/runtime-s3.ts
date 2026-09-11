@@ -3,8 +3,10 @@ import { S3ObjectStore } from '$lib/adapters/object/s3';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import {
 	resolvePostgresEnvelopeStore,
-	resolvePostgresRecipientAccessApplication
+	resolvePostgresRecipientAccessApplication,
+	resolvePostgresRecipientFieldDeclarationStore
 } from '$lib/application/envelopes/runtime-postgres';
+import type { PostgresRecipientFieldDeclarationStore } from '$lib/adapters/db/postgres-recipient-field-declaration-store';
 import { DraftPersistenceService, readImmutableDraftRevision } from './draft-persistence';
 import {
 	RecipientWorkspaceService,
@@ -57,9 +59,13 @@ export function resolveS3RecipientWorkspaceApplication(
 	const validated: ValidatedS3DraftRuntimeConfiguration = validateConfiguration(configuration);
 	const resources: CachedS3Resources = resolveS3Resources(validated);
 	const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+	const fields: PostgresRecipientFieldDeclarationStore =
+		resolvePostgresRecipientFieldDeclarationStore(validated.databaseUrl);
 	return new RecipientWorkspaceService(
 		resolvePostgresRecipientAccessApplication(validated.databaseUrl),
-		(revision) => readImmutableDraftRevision(revision, resources.objects, repository)
+		(revision) => readImmutableDraftRevision(revision, resources.objects, repository),
+		(context) =>
+			fields.listOwnFields(context.organizationId, context.envelopeId, context.recipientId)
 	);
 }
 
