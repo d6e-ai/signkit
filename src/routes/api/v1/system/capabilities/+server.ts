@@ -12,7 +12,14 @@ export const GET: RequestHandler = ({ platform }) => {
 			cloudflare: { database: 'd1', objects: 'r2', status: 'scaffolded' },
 			vercel: { database: 'postgresql', objects: 's3-compatible', status: 'planned' }
 		},
-		draftHistory: { format: 'git', archive: 'gzip', trackedFiles: ['documents/*.md'] },
+		draftHistory: {
+			format: 'git',
+			archive: 'gzip',
+			trackedFiles: ['documents/*.md'],
+			commitEndpoint: '/api/v1/envelopes/{envelopeId}/draft/commits',
+			concurrency: 'expected-generation',
+			idempotency: 'required'
+		},
 		automation: { idempotencyKeys: true, actorProvenance: true, webhooks: 'planned' }
 	});
 };

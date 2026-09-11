@@ -2,6 +2,7 @@ import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import type { CreateEnvelopeCommand } from '$lib/application/envelopes/model';
 import type { Envelope } from '$lib/domain/envelope';
+import type { PublishDraftRevisionCommand } from '$lib/ports/draft-mutation-store';
 import { PostgresEnvelopeApplicationStore } from './postgres-envelope-application-store';
 
 describe('PostgresEnvelopeApplicationStore', () => {
@@ -92,6 +93,143 @@ describe('PostgresEnvelopeApplicationStore', () => {
 		).rejects.toThrow(/between 1 and 100/);
 		expect(database.directQueries).toHaveLength(0);
 	});
+
+	it('prepares a draft revision with the current audit head', async () => {
+		const database = new ScriptedPostgres([
+			[],
+			[envelopeRow()],
+			[{ sequence: '1', eventHash: 'head-1' }]
+		]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.prepareDraftRevision(draftCommand, 0)).resolves.toMatchObject({
+			outcome: 'ready',
+			envelope: { id: command.envelopeId },
+			auditHead: { sequence: 1, eventHash: 'head-1' }
+		});
+		expect(database.directQueries).toHaveLength(3);
+	});
+
+	it('replays a draft command before checking the current generation', async () => {
+		const database = new ScriptedPostgres([[draftCommandRow()]]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.prepareDraftRevision(draftCommand, 0)).resolves.toEqual({
+			outcome: 'replayed',
+			revision: publishedDraftRevision
+		});
+		expect(database.directQueries).toHaveLength(1);
+	});
+
+	it.each([
+		['missing audit event', { evidenceEventId: null }],
+		['wrong scope', { evidenceOrganizationId: 'other-org' }],
+		['wrong sequence', { evidenceSequence: 99 }],
+		['wrong event type', { evidenceEventType: 'envelope.created' }],
+		['wrong actor', { evidenceActorType: 'agent' }],
+		['wrong payload', { evidencePayloadJson: '{"generation":99}' }],
+		['wrong previous hash', { evidencePreviousHash: 'other-head' }],
+		['wrong event hash', { evidenceEventHash: 'other-event-hash' }],
+		['wrong timestamp', { evidenceOccurredAt: '2026-09-11T02:00:00.000Z' }]
+	])('fails closed when replay evidence has %s', async (_name, override) => {
+		const database = new ScriptedPostgres([[{ ...draftCommandRow(), ...override }]]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.prepareDraftRevision(draftCommand, 0)).resolves.toEqual({
+			outcome: 'integrity_error'
+		});
+		expect(database.directQueries).toHaveLength(1);
+	});
+
+	it('treats a key reused for another envelope as an idempotency conflict', async () => {
+		const database = new ScriptedPostgres([[{ ...draftCommandRow(), envelopeId: 'other' }]]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.prepareDraftRevision(draftCommand, 0)).resolves.toEqual({
+			outcome: 'idempotency_conflict'
+		});
+	});
+
+	it('locks the envelope and atomically publishes the pointer, command, and audit event', async () => {
+		const database = new ScriptedPostgres([
+			[],
+			[envelopeRow()],
+			[],
+			[{ sequence: 1, eventHash: 'head-1' }],
+			[{ id: command.envelopeId }],
+			[],
+			[]
+		]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'published',
+			revision: publishedDraftRevision
+		});
+		expect(database.beginCalls).toBe(1);
+		expect(database.transactionQueries).toHaveLength(7);
+		expect(database.transactionQueries[1].text).toContain('FOR UPDATE');
+		expect(database.transactionQueries[4].text).toContain('UPDATE envelope');
+		expect(database.transactionQueries[5].text).toContain('INSERT INTO draft_revision_command');
+		expect(database.transactionQueries[6].text).toContain('INSERT INTO audit_event');
+		expect(database.transactionQueries[6].text).toContain("'draft.revision_created'");
+	});
+
+	it('rechecks idempotency after waiting for the envelope row lock', async () => {
+		const database = new ScriptedPostgres([[], [envelopeRow()], [draftCommandRow()]]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'replayed',
+			revision: publishedDraftRevision
+		});
+		expect(database.transactionQueries).toHaveLength(3);
+	});
+
+	it('returns an audit conflict without mutating when the chain head moved', async () => {
+		const database = new ScriptedPostgres([
+			[],
+			[envelopeRow()],
+			[],
+			[{ sequence: 2, eventHash: 'new-head' }]
+		]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'audit_conflict'
+		});
+		expect(database.transactionQueries).toHaveLength(4);
+	});
+
+	it('returns a generation conflict after locking a revision changed by another key', async () => {
+		const database = new ScriptedPostgres([[], [envelopeRow({ repositoryGeneration: 1 })], []]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'generation_conflict'
+		});
+		expect(database.transactionQueries[1].text).toContain('FOR UPDATE');
+		expect(database.transactionQueries).toHaveLength(3);
+	});
+
+	it('classifies a concurrent cross-envelope key collision by readback', async () => {
+		const database = new ScriptedPostgres([
+			[],
+			[envelopeRow()],
+			[],
+			[{ sequence: 1, eventHash: 'head-1' }],
+			[{ id: command.envelopeId }],
+			new Error('opaque uniqueness failure'),
+			[{ ...draftCommandRow(), envelopeId: 'other-envelope' }]
+		]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		await expect(store.publishDraftRevision(draftCommand)).resolves.toEqual({
+			outcome: 'idempotency_conflict'
+		});
+		expect(database.beginCalls).toBe(1);
+		expect(database.directQueries).toHaveLength(1);
+	});
 });
 
 interface RecordedQuery {
@@ -99,7 +237,7 @@ interface RecordedQuery {
 	values: readonly unknown[];
 }
 
-type ScriptedResult = readonly object[];
+type ScriptedResult = readonly object[] | Error;
 
 class ScriptedPostgres {
 	readonly directQueries: RecordedQuery[] = [];
@@ -108,7 +246,9 @@ class ScriptedPostgres {
 	private readonly results: ScriptedResult[];
 
 	constructor(results: readonly ScriptedResult[]) {
-		this.results = results.map((result) => [...result]);
+		this.results = results.map((result: ScriptedResult): ScriptedResult =>
+			result instanceof Error ? result : [...result]
+		);
 	}
 
 	client(): ReturnType<typeof postgres> {
@@ -132,6 +272,7 @@ class ScriptedPostgres {
 			target.push({ text: normalizeSql(strings), values });
 			const result = this.results.shift();
 			if (!result) throw new Error('Unexpected PostgreSQL query');
+			if (result instanceof Error) throw result;
 			return result;
 		};
 		return query as ReturnType<typeof postgres>;
@@ -171,4 +312,64 @@ function envelopeRow(overrides: Partial<Envelope> = {}): Envelope {
 
 function normalizeSql(strings: TemplateStringsArray): string {
 	return strings.join('?').replaceAll(/\s+/g, ' ').trim();
+}
+
+const draftCommand: PublishDraftRevisionCommand = {
+	organizationId: command.organizationId,
+	envelopeId: command.envelopeId,
+	actorType: 'user',
+	actorId: command.actor.id,
+	idempotencyKey: 'draft-request-1',
+	requestFingerprint: 'c'.repeat(64),
+	expectedGeneration: 0,
+	resultingGeneration: 1,
+	commitSha: 'd'.repeat(40),
+	archiveKey: 'draft-repositories/archive.git.gz',
+	archiveSha256: 'e'.repeat(64),
+	updatedAt: '2026-09-11T01:00:00.000Z',
+	expectedAuditSequence: 1,
+	previousAuditHash: 'head-1',
+	auditEventId: '00000000-0000-8000-a000-000000000004',
+	auditEventHash: 'f'.repeat(64),
+	auditPayloadJson: '{"generation":1}'
+};
+
+const publishedDraftRevision = {
+	generation: 1,
+	commitSha: draftCommand.commitSha,
+	archiveKey: draftCommand.archiveKey,
+	archiveSha256: draftCommand.archiveSha256,
+	updatedAt: draftCommand.updatedAt,
+	auditEventId: draftCommand.auditEventId
+};
+
+function draftCommandRow(): Record<string, unknown> {
+	return {
+		organizationId: draftCommand.organizationId,
+		envelopeId: draftCommand.envelopeId,
+		actorType: draftCommand.actorType,
+		actorId: draftCommand.actorId,
+		requestHash: draftCommand.requestFingerprint,
+		resultingGeneration: draftCommand.resultingGeneration,
+		commitSha: draftCommand.commitSha,
+		archiveKey: draftCommand.archiveKey,
+		archiveSha256: draftCommand.archiveSha256,
+		updatedAt: draftCommand.updatedAt,
+		auditEventId: draftCommand.auditEventId,
+		auditSequence: draftCommand.expectedAuditSequence + 1,
+		previousAuditHash: draftCommand.previousAuditHash,
+		auditEventHash: draftCommand.auditEventHash,
+		auditPayloadJson: draftCommand.auditPayloadJson,
+		evidenceEventId: draftCommand.auditEventId,
+		evidenceOrganizationId: draftCommand.organizationId,
+		evidenceEnvelopeId: draftCommand.envelopeId,
+		evidenceSequence: draftCommand.expectedAuditSequence + 1,
+		evidenceEventType: 'draft.revision_created',
+		evidenceActorType: draftCommand.actorType,
+		evidenceActorId: draftCommand.actorId,
+		evidencePayloadJson: draftCommand.auditPayloadJson,
+		evidencePreviousHash: draftCommand.previousAuditHash,
+		evidenceEventHash: draftCommand.auditEventHash,
+		evidenceOccurredAt: draftCommand.updatedAt
+	};
 }

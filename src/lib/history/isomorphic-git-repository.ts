@@ -1,5 +1,6 @@
 import git from 'isomorphic-git';
 import { gzipSync, gunzipSync } from 'fflate';
+import { normalizeMarkdownContent } from '$lib/domain/draft';
 import { assertMarkdownPath } from '$lib/domain/envelope';
 import type {
 	DraftActor,
@@ -13,6 +14,7 @@ import { MemoryFs, type ArchivedFile } from './memory-fs';
 const FORMAT = 'signkit-git-archive-v1';
 const DIRECTORY = '/repository';
 const MAX_ARCHIVE_BYTES = 12 * 1024 * 1024;
+const MAX_DECODED_ARCHIVE_BYTES = 16 * 1024 * 1024;
 const MAX_FILES = 5_000;
 
 interface ArchivePayload {
@@ -71,7 +73,10 @@ export class IsomorphicGitDraftRepository implements DraftRepository {
 		if (archive === null) await git.init({ fs: client, dir: DIRECTORY, defaultBranch: 'main' });
 		for (const edit of edits) {
 			assertMarkdownPath(edit.path);
-			await fs.promises.writeFile(`${DIRECTORY}/${edit.path}`, normalizeMarkdown(edit.content));
+			await fs.promises.writeFile(
+				`${DIRECTORY}/${edit.path}`,
+				normalizeMarkdownContent(edit.content)
+			);
 			await git.add({ fs: client, dir: DIRECTORY, filepath: edit.path });
 		}
 
@@ -91,9 +96,8 @@ async function restore(archive: Uint8Array | null): Promise<MemoryFs> {
 	if (archive === null) return fs;
 	if (archive.byteLength > MAX_ARCHIVE_BYTES)
 		throw new Error('Draft repository archive exceeds the size limit');
-	const decoded = JSON.parse(
-		new TextDecoder().decode(gunzipSync(archive))
-	) as Partial<ArchivePayload>;
+	const decodedBytes: Uint8Array = gunzipBounded(archive);
+	const decoded = JSON.parse(new TextDecoder().decode(decodedBytes)) as Partial<ArchivePayload>;
 	if (decoded.format !== FORMAT || !Array.isArray(decoded.files))
 		throw new Error('Unsupported draft repository archive');
 	if (decoded.files.length > MAX_FILES)
@@ -108,11 +112,33 @@ async function restore(archive: Uint8Array | null): Promise<MemoryFs> {
 
 function encodeArchive(files: ArchivedFile[]): Uint8Array {
 	const payload: ArchivePayload = { format: FORMAT, files };
-	return gzipSync(new TextEncoder().encode(JSON.stringify(payload)), { level: 9, mtime: 0 });
+	const decoded: Uint8Array = new TextEncoder().encode(JSON.stringify(payload));
+	if (decoded.byteLength > MAX_DECODED_ARCHIVE_BYTES) {
+		throw new Error('Draft repository archive exceeds the decoded size limit');
+	}
+	return gzipSync(decoded, { level: 9, mtime: 0 });
 }
 
-function normalizeMarkdown(content: string): string {
-	return `${content.replace(/\r\n?/g, '\n').trimEnd()}\n`;
+function gunzipBounded(archive: Uint8Array): Uint8Array {
+	if (archive.byteLength < 4) throw new Error('Invalid draft repository archive');
+	const footerOffset: number = archive.byteLength - 4;
+	const decodedSize: number =
+		archive[footerOffset] |
+		(archive[footerOffset + 1] << 8) |
+		(archive[footerOffset + 2] << 16) |
+		(archive[footerOffset + 3] << 24);
+	const unsignedDecodedSize: number = decodedSize >>> 0;
+	if (unsignedDecodedSize > MAX_DECODED_ARCHIVE_BYTES) {
+		throw new Error('Draft repository archive exceeds the decoded size limit');
+	}
+
+	const decoded: Uint8Array = gunzipSync(archive, {
+		out: new Uint8Array(unsignedDecodedSize)
+	});
+	if (decoded.byteLength !== unsignedDecodedSize) {
+		throw new Error('Draft repository archive has an invalid decoded size');
+	}
+	return decoded;
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {

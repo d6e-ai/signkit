@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { gzipSync } from 'fflate';
 import { IsomorphicGitDraftRepository } from './isomorphic-git-repository';
 
 const actor = { id: 'user_1', name: 'Yu Kimura', email: 'yu@example.test', type: 'user' as const };
@@ -39,5 +40,14 @@ describe('IsomorphicGitDraftRepository', () => {
 				actor
 			)
 		).rejects.toThrow(/Markdown/);
+	});
+
+	it('rejects highly compressed archives before allocating their decoded payload', async () => {
+		const repository = new IsomorphicGitDraftRepository();
+		const oversizedDecodedPayload: Uint8Array = new Uint8Array(16 * 1024 * 1024 + 1).fill(0x61);
+		const archive: Uint8Array = gzipSync(oversizedDecodedPayload, { level: 9, mtime: 0 });
+
+		expect(archive.byteLength).toBeLessThan(12 * 1024 * 1024);
+		await expect(repository.read(archive, '0'.repeat(40))).rejects.toThrow(/decoded size limit/);
 	});
 });
