@@ -11,9 +11,9 @@ import type { EnvelopeField } from '$lib/domain/envelope';
 import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
 import type { PublishReadyEnvelopeCommand } from '$lib/ports/envelope-ready-store';
 import type { EnvelopeSendStore, PublishSentEnvelopeCommand } from '$lib/ports/envelope-send-store';
-import type {
-	CapabilitySealContext,
-	RecipientCapabilitySealer
+import {
+	AesGcmRecipientCapabilitySealer,
+	type RecipientCapabilitySealer
 } from '$lib/security/delivery-capability';
 import { PostgresDeliveryOutboxStore } from './postgres-delivery-outbox-store';
 import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
@@ -33,6 +33,7 @@ const ORGANIZATION_ID: string = 'org-integration';
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 const COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
 const ARCHIVE_SHA256: string = 'a'.repeat(64);
+const TEST_DELIVERY_ENCRYPTION_KEY: string = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const ACTOR: EnvelopeRequestActor = {
 	id: 'user-integration',
 	organizationId: ORGANIZATION_ID,
@@ -359,6 +360,121 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		});
 	});
 
+	it('replays after routing release and a permanent delivery failure', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		const application = new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			capabilitySealer()
+		);
+		const input = {
+			idempotencyKey: 'send-lifecycle-replay',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		};
+		const first = await application.send(ACTOR, ENVELOPE_ID, input);
+		expect(first).toMatchObject({ outcome: 'published' });
+		if (first.outcome !== 'published') throw new Error('Expected send publication');
+
+		const releasedAt: string = new Date(Date.now() + 1_000).toISOString();
+		const releasedExpiry: string = new Date(Date.now() + 13 * 24 * 60 * 60 * 1_000).toISOString();
+		const blockedRows = await database()<
+			{ recipientId: string }[]
+		>`SELECT recipient_id AS "recipientId" FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND status = 'blocked'`;
+		expect(blockedRows).toHaveLength(1);
+		await database().begin(async (transaction): Promise<void> => {
+			await transaction`UPDATE recipient SET capability_expires_at = ${releasedExpiry},
+				updated_at = ${releasedAt}
+				WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+					AND id = ${blockedRows[0].recipientId}`;
+			await transaction`UPDATE delivery_outbox SET status = 'pending',
+				reserved_capability_expires_at = ${releasedExpiry}, available_at = ${releasedAt},
+				updated_at = ${releasedAt}
+				WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+					AND recipient_id = ${blockedRows[0].recipientId} AND status = 'blocked'`;
+		});
+		await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+			outcome: 'replayed',
+			result: first.result
+		});
+
+		const claimToken: string = 'postgres-lifecycle-claim';
+		const claimedAt: string = new Date(Date.now() + 2_000).toISOString();
+		const deliveryStore = new PostgresDeliveryOutboxStore(database());
+		const claimed = await deliveryStore.claimPendingInvitations({
+			claimToken,
+			claimedAt,
+			staleBefore: new Date(Date.parse(claimedAt) - 300_000).toISOString(),
+			limit: 1
+		});
+		expect(claimed).toHaveLength(1);
+		await expect(
+			deliveryStore.failInvitationDelivery({
+				organizationId: ORGANIZATION_ID,
+				deliveryId: claimed[0].deliveryId,
+				claimToken,
+				errorCode: 'recipient_rejected',
+				retryable: false,
+				nextAvailableAt: claimedAt,
+				failedAt: claimedAt
+			})
+		).resolves.toEqual({ outcome: 'failed' });
+		await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+			outcome: 'replayed',
+			result: first.result
+		});
+		const mismatchedExpiry: string = new Date(
+			Date.parse(claimed[0].capabilityExpiresAt as string) + 1_000
+		).toISOString();
+		await database()`UPDATE recipient SET capability_expires_at = ${mismatchedExpiry}
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND id = ${claimed[0].recipientId}`;
+		await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+			outcome: 'integrity_error'
+		});
+	});
+
+	it('serializes two real concurrent sends into one publication and one replay', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const stores: readonly EnvelopeSendStore[] = synchronizePublish([
+				new PostgresEnvelopeSendStore(concurrentSql),
+				new PostgresEnvelopeSendStore(concurrentSql)
+			]);
+			const input = {
+				idempotencyKey: 'send-concurrent',
+				expectedGeneration: 1,
+				expectedReadyAuditEventId: ready.auditEventId
+			};
+			const results = await Promise.all(
+				stores.map((store: EnvelopeSendStore) =>
+					new EnvelopeSendApplication(store, capabilitySealer()).send(ACTOR, ENVELOPE_ID, input)
+				)
+			);
+			expect(results.map((result): string => result.outcome).sort()).toEqual([
+				'published',
+				'replayed'
+			]);
+			const evidence = await database()<
+				{ commands: number; sentEvents: number; deliveries: number }[]
+			>`SELECT
+				(SELECT COUNT(*)::int FROM envelope_send_command) AS commands,
+				(SELECT COUNT(*)::int FROM audit_event WHERE event_type = 'envelope.sent') AS "sentEvents",
+				(SELECT COUNT(*)::int FROM delivery_outbox) AS deliveries`;
+			expect(evidence).toEqual([{ commands: 1, sentEvents: 1, deliveries: 2 }]);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
 	it('upgrades every pre-lease delivery state without losing retryable work', async () => {
 		const upgradeSchema: string = `${schemaName}_upgrade`;
 		const leaseMigrationIndex: number = MIGRATION_PATHS.indexOf(
@@ -538,13 +654,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				return { outcome: 'integrity_error' };
 			}
 		};
-		await new EnvelopeSendApplication(captureStore, {
-			seal: async (token: string, context: CapabilitySealContext) => ({
-				sealedCapability: `sealed:${context.deliveryId}:${token}`,
-				sealingKeyId: 'integration-key',
-				sealedCapabilitySha256: sha256(`sealed:${context.deliveryId}:${token}`)
-			})
-		}).send(ACTOR, ENVELOPE_ID, {
+		await new EnvelopeSendApplication(captureStore, capabilitySealer()).send(ACTOR, ENVELOPE_ID, {
 			idempotencyKey: 'capture-invalid-ready-anchor-send',
 			expectedGeneration: 1,
 			expectedReadyAuditEventId: ready.auditEventId
@@ -627,6 +737,23 @@ function requiredSendCommand(
 ): PublishSentEnvelopeCommand {
 	if (command === null) throw new Error('Expected the send command to be captured');
 	return command;
+}
+
+function synchronizePublish(delegates: readonly EnvelopeSendStore[]): readonly EnvelopeSendStore[] {
+	let arrivals: number = 0;
+	let release: (() => void) | null = null;
+	const gate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+		release = resolve;
+	});
+	return delegates.map((delegate: EnvelopeSendStore): EnvelopeSendStore => ({
+		prepareSend: delegate.prepareSend.bind(delegate),
+		publishSend: async (command: PublishSentEnvelopeCommand) => {
+			arrivals += 1;
+			if (arrivals === delegates.length) release?.();
+			await gate;
+			return await delegate.publishSend(command);
+		}
+	}));
 }
 
 async function seedDraftEnvelope(): Promise<void> {
@@ -740,14 +867,5 @@ function sha256(value: string): string {
 }
 
 function capabilitySealer(): RecipientCapabilitySealer {
-	return {
-		seal: async (token: string, context: CapabilitySealContext) => {
-			const sealedCapability: string = `sealed:${context.deliveryId}:${token}`;
-			return {
-				sealedCapability,
-				sealingKeyId: 'integration-key',
-				sealedCapabilitySha256: sha256(sealedCapability)
-			};
-		}
-	};
+	return new AesGcmRecipientCapabilitySealer(TEST_DELIVERY_ENCRYPTION_KEY);
 }
