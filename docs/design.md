@@ -45,6 +45,10 @@ Only `draft` is mutable. `ready` can return to `draft` before sending. Sending a
 
 Recipient roles are `signer`, `approver`, `viewer`, `prefill`, and `cc`. Recipients at the same routing order may act in parallel; higher groups wait for lower groups.
 
+The initial recipient mutation is deliberately tied to `POST /api/v1/envelopes/{envelopeId}/ready`. The command declares the complete graph, requires at least one signer or approver, normalizes email addresses, rejects duplicates, and checks the expected Git generation. D1 publishes its command, `draft → ready` compare-and-set, recipient projection, and `envelope.ready` event in one batch; PostgreSQL uses a row lock and transaction for the same boundary. The replay receipt is stored without capability tokens, and the audit payload contains recipient IDs, roles, and routing order rather than names or email addresses.
+
+Actual sending is a separate irreversible command. It must atomically pin `sent_commit_sha`, reserve hashed recipient capabilities, and write durable delivery outbox entries before any email side effect runs. This prevents a successful state change from losing the only raw capability token and gives retries a durable result to reconcile.
+
 ## Draft Git repository
 
 Tracked content is deliberately narrow:
@@ -112,7 +116,7 @@ Every mutation requires:
 - provenance such as API client, automation run, or user session;
 - an optional external ID for reconciliation.
 
-The API will use OpenAPI 3.1, structured validation, RFC 9457 problem responses, cursor pagination, and signed retryable webhooks. Stable events include `draft.revision_created`, `envelope.sent`, `recipient.viewed`, `recipient.signed`, `recipient.declined`, `envelope.completed`, and `envelope.voided`.
+The API will use OpenAPI 3.1, structured validation, RFC 9457 problem responses, cursor pagination, and signed retryable webhooks. Stable events include `draft.revision_created`, `envelope.ready`, `envelope.sent`, `recipient.viewed`, `recipient.signed`, `recipient.declined`, `envelope.completed`, and `envelope.voided`.
 
 ## Documents and evidence
 

@@ -1,12 +1,15 @@
 import postgres from 'postgres';
 import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-envelope-application-store';
+import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import type { EnvelopeApplicationPort } from './model';
+import { EnvelopeReadyApplication, type EnvelopeReadyApplicationPort } from './ready';
 import { EnvelopeApplication } from './service';
 
 interface PostgresRuntimeResources {
 	databaseUrl: string;
 	store: PostgresEnvelopeApplicationStore;
 	application: EnvelopeApplicationPort;
+	readyApplication: EnvelopeReadyApplicationPort;
 }
 
 let cachedResources: PostgresRuntimeResources | null = null;
@@ -30,6 +33,12 @@ export function resolvePostgresEnvelopeStore(
 	return resolvePostgresResources(databaseUrl).store;
 }
 
+export function resolvePostgresEnvelopeReadyApplication(
+	databaseUrl: string
+): EnvelopeReadyApplicationPort {
+	return resolvePostgresResources(databaseUrl).readyApplication;
+}
+
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {
 	const normalizedDatabaseUrl: string = databaseUrl.trim();
 	assertPostgresUrl(normalizedDatabaseUrl);
@@ -50,7 +59,10 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 	});
 	const store: PostgresEnvelopeApplicationStore = new PostgresEnvelopeApplicationStore(sql);
 	const application: EnvelopeApplicationPort = new EnvelopeApplication(store);
-	cachedResources = { databaseUrl: normalizedDatabaseUrl, store, application };
+	const readyApplication: EnvelopeReadyApplicationPort = new EnvelopeReadyApplication(
+		new PostgresEnvelopeReadyStore(sql)
+	);
+	cachedResources = { databaseUrl: normalizedDatabaseUrl, store, application, readyApplication };
 	return cachedResources;
 }
 
