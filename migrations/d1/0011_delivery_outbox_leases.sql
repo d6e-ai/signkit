@@ -14,6 +14,14 @@ SET status = 'failed',
     retryable = 1
 WHERE status = 'processing';
 
+-- Normalize rows delivered before the terminal-state triggers existed.
+UPDATE delivery_outbox
+SET claim_token = NULL,
+    locked_at = NULL,
+    sealed_capability = NULL,
+    retryable = 0
+WHERE status = 'delivered';
+
 CREATE INDEX delivery_outbox_reclaim
   ON delivery_outbox(locked_at, created_at)
   WHERE status = 'processing';
