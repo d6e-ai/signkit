@@ -28,7 +28,7 @@
 	{#if recipientSurface}
 		<div class="min-h-svh bg-muted/25">
 			<header
-				class="flex h-14 items-center border-b bg-background/90 px-4 backdrop-blur-xl sm:px-6"
+				class="flex h-16 items-center border-b bg-background/90 px-4 backdrop-blur-xl sm:px-6"
 			>
 				<a href="/" class="font-semibold tracking-tight">{m.app_name()}</a>
 				<div class="ml-auto"><LanguageSwitch /></div>
@@ -40,7 +40,7 @@
 			<AppSidebar />
 			<Sidebar.Inset class="min-w-0 overflow-hidden bg-muted/25">
 				<header
-					class="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl"
+					class="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl"
 				>
 					<Sidebar.Trigger />
 					<div class="h-5 w-px bg-border"></div>

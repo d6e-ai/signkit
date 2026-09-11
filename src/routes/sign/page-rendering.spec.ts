@@ -15,4 +15,13 @@ describe('recipient document rendering', () => {
 		expect(source).not.toContain('/api/v1/signing/viewed');
 		expect(source).not.toContain('recipient.viewed');
 	});
+
+	it('keeps terminal decline receipt rendering client-driven and explains the no-JavaScript case', () => {
+		const source: string = readFileSync('src/routes/sign/+page.svelte', 'utf8');
+		expect(source).toContain('let isDeclined = $state(false)');
+		expect(source).toContain('{#if isDeclined}');
+		expect(source).toContain('signing_declined_receipt_title');
+		expect(source).toContain('signing_decline_no_js_explanation');
+		expect(source).not.toContain('recipientStatus as string');
+	});
 });
