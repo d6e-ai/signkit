@@ -92,6 +92,41 @@ describe('recipient document review page', () => {
 		}
 	});
 
+	it('renders approval controls only for an approver with a durable viewed state', () => {
+		for (const [role, recipientStatus, expected] of [
+			['approver', 'viewed', true],
+			['approver', 'pending', false],
+			['signer', 'viewed', false],
+			['viewer', 'viewed', false],
+			['prefill', 'viewed', false]
+		] as const) {
+			const data: PageData = {
+				state: 'active',
+				access: {
+					envelopeId: '00000000-0000-8000-a000-000000000001',
+					recipientId: '00000000-0000-8000-a000-000000000002',
+					role,
+					locale: 'en',
+					recipientStatus,
+					envelopeTitle: 'Service Agreement',
+					envelopeStatus: 'sent',
+					expiresAt: '2026-09-12T00:00:00.000Z'
+				},
+				documents: [{ path: 'documents/NDA.md', content: 'Agreement content' }]
+			};
+			const { body } = render(SignPage, { props: { data } });
+
+			if (expected) {
+				expect(body).toContain('Approve agreement');
+				expect(body).toContain('min-h-[44px]');
+				expect(body).toContain('aria-haspopup="dialog"');
+				expect(body).toContain('JavaScript is required to confirm and record an approval.');
+			} else {
+				expect(body).not.toContain('Approve agreement');
+			}
+		}
+	});
+
 	it('provides localized decline dialog messages that identify request termination without claiming signature or PDF behavior', async () => {
 		const en = (await import('../../../messages/en.json')).default;
 		const ja = (await import('../../../messages/ja.json')).default;
@@ -110,5 +145,18 @@ describe('recipient document review page', () => {
 
 		expect(en.signing_decline_dialog_description).toContain('Declining ends this request');
 		expect(ja.signing_decline_dialog_description).toContain('辞退するとこの依頼は終了します');
+	});
+
+	it('provides localized approval copy without claiming a signature or PDF artifact', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		for (const messages of [en, ja]) {
+			const combined = `${messages.signing_approve_dialog_title} ${messages.signing_approve_dialog_description}`;
+			expect(messages.signing_approve_dialog_confirm).toBeTruthy();
+			expect(messages.signing_approve_no_js_explanation).toBeTruthy();
+			expect(combined).not.toMatch(/\bpdf\b/i);
+			expect(combined).not.toMatch(/signature/i);
+		}
 	});
 });

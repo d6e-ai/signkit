@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RecipientAccessService } from './recipient-access';
+import { RecipientApprovedApplication } from './recipient-approved';
 import { RecipientDeclinedApplication } from './recipient-declined';
 import { RecipientViewedApplication } from './recipient-viewed';
 import { RecipientWorkspaceService } from './recipient-workspace';
@@ -10,6 +11,7 @@ vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
 import {
 	resolveRecipientAccessApplication,
+	resolveRecipientApprovedApplication,
 	resolveRecipientDeclinedApplication,
 	resolveRecipientViewedApplication,
 	resolveRecipientWorkspaceApplication
@@ -152,6 +154,41 @@ describe('resolveRecipientDeclinedApplication', () => {
 	it('rejects a malformed DATABASE_URL scheme', async () => {
 		privateEnv.DATABASE_URL = 'mysql://signkit:secret@localhost:3306/signkit';
 		await expect(resolveRecipientDeclinedApplication({})).rejects.toThrow(
+			'DATABASE_URL must use the postgres or postgresql scheme'
+		);
+	});
+});
+
+describe('resolveRecipientApprovedApplication', () => {
+	it('fails closed on a Cloudflare request without D1 instead of falling back to PostgreSQL', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(
+			resolveRecipientApprovedApplication({ platform: { env: {} } as App.Platform })
+		).resolves.toBeNull();
+	});
+
+	it('uses one request-scoped D1 binding for identity resolution and atomic publication', async () => {
+		await expect(
+			resolveRecipientApprovedApplication({
+				platform: { env: { DB: {} as D1Database } } as App.Platform
+			})
+		).resolves.toBeInstanceOf(RecipientApprovedApplication);
+	});
+
+	it('returns null without Node PostgreSQL configuration', async () => {
+		await expect(resolveRecipientApprovedApplication({})).resolves.toBeNull();
+	});
+
+	it('constructs the PostgreSQL application from complete Node configuration', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(resolveRecipientApprovedApplication({})).resolves.toBeInstanceOf(
+			RecipientApprovedApplication
+		);
+	});
+
+	it('rejects a malformed DATABASE_URL scheme', async () => {
+		privateEnv.DATABASE_URL = 'mysql://signkit:secret@localhost:3306/signkit';
+		await expect(resolveRecipientApprovedApplication({})).rejects.toThrow(
 			'DATABASE_URL must use the postgres or postgresql scheme'
 		);
 	});
