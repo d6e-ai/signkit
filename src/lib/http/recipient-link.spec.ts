@@ -93,15 +93,46 @@ describe('recipient link exchange', () => {
 
 	it('uses a non-secure cookie only for local HTTP development', async () => {
 		const input: TestEvent = testEvent(token, 'http:');
+		input.event.url = new URL(`http://localhost/s/${token}`);
 		await createRecipientLinkHandler(
 			() => application(),
 			async (): Promise<string> => 'sealed-cookie',
-			() => new Date('2026-09-11T00:00:00.000Z')
+			() => new Date('2026-09-11T00:00:00.000Z'),
+			true
 		)(input.event);
 		expect(input.cookieSet).toHaveBeenCalledWith(
 			RECIPIENT_SESSION_COOKIE,
 			'sealed-cookie',
 			expect.objectContaining({ secure: false })
+		);
+	});
+
+	it('keeps the cookie Secure for non-local HTTP and production localhost', async () => {
+		const remote: TestEvent = testEvent(token, 'http:');
+		await createRecipientLinkHandler(
+			() => application(),
+			async (): Promise<string> => 'sealed-cookie',
+			() => new Date('2026-09-11T00:00:00.000Z'),
+			true
+		)(remote.event);
+		expect(remote.cookieSet).toHaveBeenCalledWith(
+			RECIPIENT_SESSION_COOKIE,
+			'sealed-cookie',
+			expect.objectContaining({ secure: true })
+		);
+
+		const productionLocal: TestEvent = testEvent(token, 'http:');
+		productionLocal.event.url = new URL(`http://localhost/s/${token}`);
+		await createRecipientLinkHandler(
+			() => application(),
+			async (): Promise<string> => 'sealed-cookie',
+			() => new Date('2026-09-11T00:00:00.000Z'),
+			false
+		)(productionLocal.event);
+		expect(productionLocal.cookieSet).toHaveBeenCalledWith(
+			RECIPIENT_SESSION_COOKIE,
+			'sealed-cookie',
+			expect.objectContaining({ secure: true })
 		);
 	});
 

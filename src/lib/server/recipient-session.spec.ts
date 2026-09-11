@@ -45,6 +45,12 @@ describe('recipient session sealing', () => {
 		await expect(sealRecipientSession(token)).rejects.toThrow(/must be 32 bytes/);
 	});
 
+	it('propagates key configuration failures for otherwise well-formed cookies', async () => {
+		const sealed: string = await sealRecipientSession(token);
+		privateEnv.SESSION_ENCRYPTION_KEY = undefined;
+		await expect(unsealRecipientSession(sealed)).rejects.toThrow(/is not set/);
+	});
+
 	it('cannot interchange recipient and operator session ciphertexts', async () => {
 		const recipientCookie: string = await sealRecipientSession(token);
 		const operatorCookie: string = await seal({

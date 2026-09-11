@@ -96,4 +96,24 @@ describe('recipient signing page resolution', () => {
 		).resolves.toEqual({ state: 'unavailable' });
 		expect(clearSession).not.toHaveBeenCalled();
 	});
+
+	it('preserves the session when cookie key configuration is unavailable', async () => {
+		const clearSession = vi.fn();
+		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		await expect(
+			resolveRecipientPage(
+				{ accessHint: null, cookie: 'sealed', clearSession },
+				() => application(),
+				async (): Promise<string> => {
+					throw new Error('configuration detail that must not be logged');
+				}
+			)
+		).resolves.toEqual({ state: 'unavailable' });
+		expect(clearSession).not.toHaveBeenCalled();
+		expect(error).toHaveBeenCalledWith(
+			JSON.stringify({ event: 'recipient_page_resolution_failed' })
+		);
+		expect(error).not.toHaveBeenCalledWith(expect.stringContaining('configuration detail'));
+		error.mockRestore();
+	});
 });

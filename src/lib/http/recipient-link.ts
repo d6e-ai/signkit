@@ -1,4 +1,5 @@
 import type { RequestHandler } from '@sveltejs/kit';
+import { dev } from '$app/environment';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import {
@@ -21,7 +22,8 @@ export type RecipientSessionSealer = (token: string) => Promise<string>;
 export function createRecipientLinkHandler(
 	resolveApplication: RecipientLinkApplicationResolver,
 	sealSession: RecipientSessionSealer = sealRecipientSession,
-	now: () => Date = (): Date => new Date()
+	now: () => Date = (): Date => new Date(),
+	allowInsecureLocalDevelopment: boolean = dev
 ): RequestHandler {
 	return async ({ cookies, params, platform, url }): Promise<Response> => {
 		const token: string | undefined = params.token;
@@ -44,7 +46,7 @@ export function createRecipientLinkHandler(
 			const sealed: string = await sealSession(token);
 			cookies.set(RECIPIENT_SESSION_COOKIE, sealed, {
 				...RECIPIENT_SESSION_COOKIE_OPTIONS,
-				secure: url.protocol === 'https:',
+				secure: !isInsecureLocalDevelopment(url, allowInsecureLocalDevelopment),
 				maxAge: Math.min(remainingSeconds, RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS)
 			});
 			return redirectResponse(`/${context.recipientLocale}/sign`);
@@ -53,6 +55,11 @@ export function createRecipientLinkHandler(
 			return cleanRedirect(url, 'unavailable');
 		}
 	};
+}
+
+function isInsecureLocalDevelopment(url: URL, allowed: boolean): boolean {
+	if (!allowed || url.protocol !== 'http:') return false;
+	return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
 }
 
 function cleanRedirect(url: URL, access: 'invalid' | 'unavailable'): Response {

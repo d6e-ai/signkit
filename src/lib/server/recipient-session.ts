@@ -40,17 +40,24 @@ export async function sealRecipientSession(token: string): Promise<string> {
 }
 
 export async function unsealRecipientSession(cookie: string): Promise<string | null> {
+	if (cookie.length === 0 || cookie.length > MAX_COOKIE_LENGTH) return null;
+	let combined: Uint8Array<ArrayBuffer>;
 	try {
-		if (cookie.length === 0 || cookie.length > MAX_COOKIE_LENGTH) return null;
-		const combined: Uint8Array<ArrayBuffer> = base64UrlDecode(cookie);
+		combined = base64UrlDecode(cookie);
 		if (combined.byteLength <= IV_BYTES + TAG_BYTES) return null;
+	} catch {
+		return null;
+	}
+
+	const key: CryptoKey = await recipientSessionKey();
+	try {
 		const plaintext: ArrayBuffer = await crypto.subtle.decrypt(
 			{
 				name: ALGORITHM,
 				iv: combined.slice(0, IV_BYTES),
 				additionalData: AAD
 			},
-			await recipientSessionKey(),
+			key,
 			combined.slice(IV_BYTES)
 		);
 		const token: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
