@@ -98,7 +98,8 @@ const INVISIBLE_UNICODE_CONTROLS =
 const RECIPIENT_MARKDOWN_SCHEMA: Schema = {
 	tagNames: [...ALLOWED_TAGS],
 	attributes: {
-		a: ['href', 'rel', 'target']
+		a: ['href', 'rel', 'target'],
+		ol: ['start']
 	},
 	protocols: {
 		href: ['https', 'mailto']
@@ -154,7 +155,9 @@ function normalizeMarkdownParent(
 		if (child.type === 'image' || child.type === 'imageReference') {
 			return imagePlaceholder(child, state);
 		}
-		if (child.type === 'text') child.value = surfaceUnicodeControls(child.value, state);
+		if (child.type === 'text' || child.type === 'code' || child.type === 'inlineCode') {
+			child.value = surfaceUnicodeControls(child.value, state);
+		}
 		if (child.type === 'link' || child.type === 'definition') {
 			child.url = surfaceUnicodeControls(child.url, state);
 		}
@@ -267,6 +270,10 @@ function toRenderNode(node: RootContent): RecipientMarkdownNode[] {
 			if (typeof value === 'string') attributes[name] = value;
 			else if (Array.isArray(value)) attributes[name] = value.join(' ');
 		}
+	}
+	if (node.tagName === 'ol') {
+		const start: unknown = node.properties.start;
+		if (typeof start === 'number' || typeof start === 'string') attributes.start = String(start);
 	}
 
 	return [
