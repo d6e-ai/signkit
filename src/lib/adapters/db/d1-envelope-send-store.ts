@@ -75,12 +75,14 @@ interface DeliveryEvidenceRow {
 	id: string;
 	recipient_id: string;
 	status: string;
+	retryable: number;
 	capability_hash: string;
 	reserved_capability_expires_at: string | null;
 	sealed_capability: string | null;
 	sealing_key_id: string;
 	sealed_capability_sha256: string;
 	recipient_capability_hash: string | null;
+	recipient_capability_expires_at: string | null;
 }
 
 export class D1EnvelopeSendStore implements EnvelopeSendStore {
@@ -369,13 +371,16 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 	): Promise<boolean> {
 		const result = await this.#database
 			.prepare(
-				`SELECT delivery.id, delivery.recipient_id, delivery.status, delivery.capability_hash,
+				`SELECT delivery.id, delivery.recipient_id, delivery.status, delivery.retryable,
+					delivery.capability_hash,
 					delivery.reserved_capability_expires_at, delivery.sealing_key_id,
 					delivery.sealed_capability, delivery.sealed_capability_sha256,
-					recipient.capability_hash AS recipient_capability_hash
+					recipient.capability_hash AS recipient_capability_hash,
+					recipient.capability_expires_at AS recipient_capability_expires_at
 				 FROM delivery_outbox delivery JOIN recipient
 					ON recipient.organization_id = delivery.organization_id
 					AND recipient.id = delivery.recipient_id
+					AND recipient.envelope_id = delivery.envelope_id
 				 WHERE delivery.organization_id = ? AND delivery.envelope_id = ?
 				 ORDER BY delivery.id`
 			)
@@ -391,14 +396,30 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 				evidence.recipient_id === entry.recipientId &&
 				evidence.capability_hash === entry.capabilityHash &&
 				evidence.recipient_capability_hash === entry.capabilityHash &&
-				evidence.reserved_capability_expires_at === entry.capabilityExpiresAt &&
+				evidence.recipient_capability_expires_at === evidence.reserved_capability_expires_at &&
 				evidence.sealing_key_id === entry.sealingKeyId &&
 				evidence.sealed_capability_sha256 === entry.sealedCapabilitySha256
 			))
 				return false;
+			const reservedExpiry: string | null = evidence.reserved_capability_expires_at;
+			if (
+				(entry.initialStatus === 'pending' && reservedExpiry !== entry.capabilityExpiresAt) ||
+				(entry.initialStatus === 'blocked' &&
+					((evidence.status === 'blocked' && reservedExpiry !== null) ||
+						(evidence.status !== 'blocked' &&
+							reservedExpiry === null &&
+							!(evidence.status === 'failed' && evidence.retryable === 0))))
+			)
+				return false;
+			const scrubbedTerminal: boolean =
+				(evidence.status === 'delivered' || evidence.status === 'failed') &&
+				evidence.retryable === 0;
 			if (evidence.sealed_capability === null) {
-				if (evidence.status !== 'delivered') return false;
-			} else if ((await sha256(evidence.sealed_capability)) !== entry.sealedCapabilitySha256) {
+				if (!scrubbedTerminal) return false;
+			} else if (
+				scrubbedTerminal ||
+				(await sha256(evidence.sealed_capability)) !== entry.sealedCapabilitySha256
+			) {
 				return false;
 			}
 		}

@@ -82,12 +82,14 @@ interface DeliveryEvidenceRow {
 	id: string;
 	recipientId: string;
 	status: string;
+	retryable: boolean;
 	capabilityHash: string;
 	reservedCapabilityExpiresAt: Date | string | null;
 	sealedCapability: string | null;
 	sealingKeyId: string;
 	sealedCapabilitySha256: string;
 	recipientCapabilityHash: string | null;
+	recipientCapabilityExpiresAt: Date | string | null;
 }
 
 export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
@@ -450,14 +452,18 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 		manifest: readonly DeliveryManifestEntry[]
 	): Promise<boolean> {
 		const evidence = await sql<DeliveryEvidenceRow[]>`SELECT delivery.id, delivery.status,
+			delivery.retryable,
 			delivery.recipient_id AS "recipientId", delivery.capability_hash AS "capabilityHash",
 			delivery.reserved_capability_expires_at AS "reservedCapabilityExpiresAt",
 			delivery.sealed_capability AS "sealedCapability",
 			delivery.sealing_key_id AS "sealingKeyId",
 			delivery.sealed_capability_sha256 AS "sealedCapabilitySha256",
-			recipient.capability_hash AS "recipientCapabilityHash"
+			recipient.capability_hash AS "recipientCapabilityHash",
+			recipient.capability_expires_at AS "recipientCapabilityExpiresAt"
 			FROM delivery_outbox delivery JOIN recipient
-				ON recipient.organization_id = delivery.organization_id AND recipient.id = delivery.recipient_id
+				ON recipient.organization_id = delivery.organization_id
+				AND recipient.id = delivery.recipient_id
+				AND recipient.envelope_id = delivery.envelope_id
 			WHERE delivery.organization_id = ${row.organizationId} AND delivery.envelope_id = ${row.envelopeId}
 			ORDER BY delivery.id`;
 		if (evidence.length !== manifest.length) return false;
@@ -470,14 +476,30 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				item.recipientId === entry.recipientId &&
 				item.capabilityHash === entry.capabilityHash &&
 				item.recipientCapabilityHash === entry.capabilityHash &&
-				nullableTimestamp(item.reservedCapabilityExpiresAt) === entry.capabilityExpiresAt &&
+				nullableTimestamp(item.recipientCapabilityExpiresAt) ===
+					nullableTimestamp(item.reservedCapabilityExpiresAt) &&
 				item.sealingKeyId === entry.sealingKeyId &&
 				item.sealedCapabilitySha256 === entry.sealedCapabilitySha256
 			))
 				return false;
+			const reservedExpiry: string | null = nullableTimestamp(item.reservedCapabilityExpiresAt);
+			if (
+				(entry.initialStatus === 'pending' && reservedExpiry !== entry.capabilityExpiresAt) ||
+				(entry.initialStatus === 'blocked' &&
+					((item.status === 'blocked' && reservedExpiry !== null) ||
+						(item.status !== 'blocked' &&
+							reservedExpiry === null &&
+							!(item.status === 'failed' && !item.retryable))))
+			)
+				return false;
+			const scrubbedTerminal: boolean =
+				(item.status === 'delivered' || item.status === 'failed') && !item.retryable;
 			if (item.sealedCapability === null) {
-				if (item.status !== 'delivered') return false;
-			} else if ((await sha256(item.sealedCapability)) !== entry.sealedCapabilitySha256) {
+				if (!scrubbedTerminal) return false;
+			} else if (
+				scrubbedTerminal ||
+				(await sha256(item.sealedCapability)) !== entry.sealedCapabilitySha256
+			) {
 				return false;
 			}
 		}

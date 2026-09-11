@@ -214,12 +214,14 @@ describe('D1EnvelopeSendStore', () => {
 				id: 'delivery-1',
 				recipient_id: 'recipient-1',
 				status: 'pending',
+				retryable: 1,
 				capability_hash: 'cap-hash',
 				reserved_capability_expires_at: '2026-09-25T00:02:00.000Z',
 				sealed_capability: 'sealed',
 				sealing_key_id: 'key-1',
 				sealed_capability_sha256: sealedDigest,
-				recipient_capability_hash: 'cap-hash'
+				recipient_capability_hash: 'cap-hash',
+				recipient_capability_expires_at: '2026-09-25T00:02:00.000Z'
 			}
 		];
 		await expect(
@@ -240,6 +242,28 @@ describe('D1EnvelopeSendStore', () => {
 		await expect(
 			new D1EnvelopeSendStore(
 				fakeD1([storedRow()], [[{ ...evidence[0], sealed_capability: null }]]).database
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toEqual({ outcome: 'integrity_error' });
+		await expect(
+			new D1EnvelopeSendStore(
+				fakeD1(
+					[storedRow()],
+					[[{ ...evidence[0], status: 'failed', retryable: 0, sealed_capability: null }]]
+				).database
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toMatchObject({ outcome: 'replayed' });
+		await expect(
+			new D1EnvelopeSendStore(
+				fakeD1([storedRow()], [[{ ...evidence[0], status: 'failed', sealed_capability: null }]])
+					.database
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toEqual({ outcome: 'integrity_error' });
+		await expect(
+			new D1EnvelopeSendStore(
+				fakeD1(
+					[storedRow()],
+					[[{ ...evidence[0], recipient_capability_expires_at: '2026-09-25T00:02:01.000Z' }]]
+				).database
 			).prepareSend(command, 2, 'ready-audit')
 		).resolves.toEqual({ outcome: 'integrity_error' });
 	});

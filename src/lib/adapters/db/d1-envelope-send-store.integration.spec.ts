@@ -1,14 +1,11 @@
-import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import type { EnvelopeSendStore, PublishSentEnvelopeCommand } from '$lib/ports/envelope-send-store';
-import type {
-	CapabilitySealContext,
-	RecipientCapabilitySealer
-} from '$lib/security/delivery-capability';
+import { AesGcmRecipientCapabilitySealer } from '$lib/security/delivery-capability';
+import { D1DeliveryOutboxStore } from './d1-delivery-outbox-store';
 import { D1EnvelopeSendStore } from './d1-envelope-send-store';
 import { sqliteD1Database } from './sqlite-d1-test-support';
 
@@ -67,16 +64,9 @@ function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 	return { database: sqliteD1Database(sqlite), sqlite };
 }
 
-const sealer: RecipientCapabilitySealer = {
-	seal: async (token: string, context: CapabilitySealContext) => {
-		const sealedCapability: string = `sealed:${context.deliveryId}:${token}`;
-		return {
-			sealedCapability,
-			sealingKeyId: 'integration-key',
-			sealedCapabilitySha256: sha256(sealedCapability)
-		};
-	}
-};
+const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
+	'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+);
 
 describe('D1EnvelopeSendStore SQLite integration', () => {
 	it('publishes parallel initial recipients, blocks later routes, excludes CC, and replays', async () => {
@@ -137,12 +127,106 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 				deliveries: 3,
 				cc_capabilities: 0
 			});
+			const releasedAt: string = new Date(Date.now() + 1_000).toISOString();
+			const releasedExpiry: string = new Date(Date.now() + 13 * 24 * 60 * 60 * 1_000).toISOString();
+			sqlite
+				.prepare(
+					`UPDATE recipient SET capability_expires_at = ?, updated_at = ?
+					 WHERE organization_id = ? AND envelope_id = ? AND id = 'signer-c'`
+				)
+				.run(releasedExpiry, releasedAt, ORGANIZATION_ID, ENVELOPE_ID);
+			sqlite
+				.prepare(
+					`UPDATE delivery_outbox SET status = 'pending',
+						reserved_capability_expires_at = ?, available_at = ?, updated_at = ?
+					 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = 'signer-c'`
+				)
+				.run(releasedExpiry, releasedAt, releasedAt, ORGANIZATION_ID, ENVELOPE_ID);
+			await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+				outcome: 'replayed',
+				result: first.result
+			});
+
+			const claimToken: string = 'integration-claim-token';
+			const deliveryStore = new D1DeliveryOutboxStore(database);
+			const claimedAt: string = new Date(Date.now() + 2_000).toISOString();
+			const claimed = await deliveryStore.claimPendingInvitations({
+				claimToken,
+				claimedAt,
+				staleBefore: new Date(Date.parse(claimedAt) - 300_000).toISOString(),
+				limit: 1
+			});
+			expect(claimed).toHaveLength(1);
+			await expect(
+				deliveryStore.failInvitationDelivery({
+					organizationId: ORGANIZATION_ID,
+					deliveryId: claimed[0].deliveryId,
+					claimToken,
+					errorCode: 'recipient_rejected',
+					retryable: false,
+					nextAvailableAt: claimedAt,
+					failedAt: claimedAt
+				})
+			).resolves.toEqual({ outcome: 'failed' });
+			await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+				outcome: 'replayed',
+				result: first.result
+			});
+			sqlite
+				.prepare(
+					`UPDATE recipient SET capability_expires_at = ?
+					 WHERE organization_id = ? AND envelope_id = ? AND id = ?`
+				)
+				.run(
+					new Date(Date.parse(claimed[0].capabilityExpiresAt as string) + 1_000).toISOString(),
+					ORGANIZATION_ID,
+					ENVELOPE_ID,
+					claimed[0].recipientId
+				);
+			await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+				outcome: 'integrity_error'
+			});
 			await expect(
 				application.send(ACTOR, ENVELOPE_ID, {
 					...input,
 					expectedReadyAuditEventId: 'different-ready-audit'
 				})
 			).resolves.toEqual({ outcome: 'idempotency_conflict' });
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('serializes two concurrent sends into one publication and one replay', async () => {
+		const { database, sqlite } = fixture();
+		try {
+			const stores: readonly EnvelopeSendStore[] = synchronizePublish([
+				new D1EnvelopeSendStore(database),
+				new D1EnvelopeSendStore(database)
+			]);
+			const input = {
+				idempotencyKey: 'send-concurrent',
+				expectedGeneration: 1,
+				expectedReadyAuditEventId: READY_AUDIT_ID
+			};
+			const results = await Promise.all(
+				stores.map((store: EnvelopeSendStore) =>
+					new EnvelopeSendApplication(store, sealer).send(ACTOR, ENVELOPE_ID, input)
+				)
+			);
+			expect(results.map((result): string => result.outcome).sort()).toEqual([
+				'published',
+				'replayed'
+			]);
+			const evidence = sqlite
+				.prepare(
+					`SELECT
+						(SELECT COUNT(*) FROM envelope_send_command) AS commands,
+						(SELECT COUNT(*) FROM audit_event WHERE event_type='envelope.sent') AS sent_events,
+						(SELECT COUNT(*) FROM delivery_outbox) AS deliveries`
+				)
+				.get() as Record<string, unknown>;
+			expect(evidence).toEqual({ commands: 1, sent_events: 1, deliveries: 3 });
 		} finally {
 			sqlite.close();
 		}
@@ -219,6 +303,19 @@ function requiredCommand(command: PublishSentEnvelopeCommand | null): PublishSen
 	return command;
 }
 
-function sha256(value: string): string {
-	return createHash('sha256').update(value).digest('hex');
+function synchronizePublish(delegates: readonly EnvelopeSendStore[]): readonly EnvelopeSendStore[] {
+	let arrivals: number = 0;
+	let release: (() => void) | null = null;
+	const gate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+		release = resolve;
+	});
+	return delegates.map((delegate: EnvelopeSendStore): EnvelopeSendStore => ({
+		prepareSend: delegate.prepareSend.bind(delegate),
+		publishSend: async (command: PublishSentEnvelopeCommand) => {
+			arrivals += 1;
+			if (arrivals === delegates.length) release?.();
+			await gate;
+			return await delegate.publishSend(command);
+		}
+	}));
 }

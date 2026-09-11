@@ -31,6 +31,8 @@ class SqliteD1Statement {
 }
 
 class SqliteD1Database {
+	#batchTail: Promise<void> = Promise.resolve();
+
 	constructor(readonly sqlite: DatabaseSync) {}
 
 	prepare(sql: string): D1PreparedStatement {
@@ -38,8 +40,14 @@ class SqliteD1Database {
 	}
 
 	async batch<T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
-		this.sqlite.exec('BEGIN IMMEDIATE');
+		const previousBatch: Promise<void> = this.#batchTail;
+		let releaseBatch: () => void = (): void => undefined;
+		this.#batchTail = new Promise<void>((resolve: () => void): void => {
+			releaseBatch = resolve;
+		});
+		await previousBatch;
 		try {
+			this.sqlite.exec('BEGIN IMMEDIATE');
 			const results: D1Result<T>[] = [];
 			for (const statement of statements) {
 				const sqliteStatement: SqliteD1Statement = statement as unknown as SqliteD1Statement;
@@ -54,6 +62,8 @@ class SqliteD1Database {
 		} catch (error: unknown) {
 			this.sqlite.exec('ROLLBACK');
 			throw error;
+		} finally {
+			releaseBatch();
 		}
 	}
 }
