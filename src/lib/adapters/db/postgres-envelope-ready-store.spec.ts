@@ -66,7 +66,6 @@ const command: PublishReadyEnvelopeCommand = {
 			status: 'pending'
 		}
 	],
-	recipientsJson: '',
 	updatedAt: '2026-09-11T00:02:00.000Z',
 	expectedAuditSequence: 2,
 	previousAuditHash: 'b'.repeat(64),
@@ -74,7 +73,6 @@ const command: PublishReadyEnvelopeCommand = {
 	auditEventHash: 'c'.repeat(64),
 	auditPayloadJson: '{"generation":1}'
 };
-command.recipientsJson = JSON.stringify(command.recipients);
 command.requestFingerprint = createHash('sha256')
 	.update(
 		JSON.stringify({
@@ -135,7 +133,7 @@ describe('PostgresEnvelopeReadyStore', () => {
 			requestHash: command.requestFingerprint,
 			expectedGeneration: 1,
 			commitSha: command.expectedCommitSha,
-			recipientsJson: command.recipientsJson,
+			recipientsJson: JSON.stringify(command.recipients),
 			recipientCount: 1,
 			updatedAt: command.updatedAt,
 			auditEventId: command.auditEventId,

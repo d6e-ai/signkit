@@ -39,11 +39,15 @@ function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 function event(input: { body?: string; headers?: HeadersInit; locals?: App.Locals }): RequestEvent {
 	const pathname: string = `/api/v1/envelopes/${envelopeId}/ready`;
 	const url: URL = new URL(`https://signkit.example${pathname}`);
+	const headers: Headers = new Headers(input.headers);
+	if (input.body !== undefined && !headers.has('content-type')) {
+		headers.set('content-type', 'application/json');
+	}
 	return {
 		locals: input.locals ?? locals(),
 		params: { envelopeId },
 		url,
-		request: new Request(url, { method: 'POST', headers: input.headers, body: input.body })
+		request: new Request(url, { method: 'POST', headers, body: input.body })
 	} as RequestEvent;
 }
 
@@ -93,6 +97,19 @@ describe('envelope ready HTTP handler', () => {
 		expect(response.status).toBe(400);
 		expect(await response.json()).toMatchObject({
 			type: 'urn:signkit:problem:idempotency-key-required'
+		});
+	});
+
+	it('requires an application/json content type', async () => {
+		const response: Response = await createEnvelopeReadyHandler(() => application())(
+			event({
+				body: validBody(),
+				headers: { 'content-type': 'text/plain', 'idempotency-key': 'ready-1' }
+			})
+		);
+		expect(response.status).toBe(415);
+		expect(await response.json()).toMatchObject({
+			type: 'urn:signkit:problem:unsupported-media-type'
 		});
 	});
 

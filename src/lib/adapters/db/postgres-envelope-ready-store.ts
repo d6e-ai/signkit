@@ -144,7 +144,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 							${command.organizationId}, ${command.envelopeId}, ${command.actorId},
 							${command.idempotencyKey}, ${command.requestFingerprint},
 							${command.expectedGeneration}, ${command.expectedCommitSha},
-							${command.recipientsJson}, ${command.recipients.length},
+							${JSON.stringify(command.recipients)}, ${command.recipients.length},
 							${command.updatedAt}, ${command.auditEventId},
 							${command.expectedAuditSequence + 1}, ${command.previousAuditHash},
 							${command.auditEventHash}, ${command.auditPayloadJson}

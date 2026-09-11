@@ -13,7 +13,7 @@ import {
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const MAX_BODY_BYTES: number = 64 * 1024;
-const MAX_GENERATION: number = 2_147_483_646;
+const MAX_GENERATION: number = 2_147_483_647;
 const envelopeIdSchema: ZodType<string> = z.string().uuid();
 const idempotencyKeySchema: ZodType<string> = z
 	.string()
@@ -99,6 +99,15 @@ export function createEnvelopeReadyHandler(
 				detail: 'POST requests require one non-empty Idempotency-Key header.',
 				instance: url.pathname,
 				errors: validationErrors(idempotencyKey.error.issues)
+			});
+		}
+		if (!acceptsJson(request)) {
+			return problemResponse({
+				type: 'urn:signkit:problem:unsupported-media-type',
+				title: 'Unsupported media type',
+				status: 415,
+				detail: 'Ready commands require an application/json request body.',
+				instance: url.pathname
 			});
 		}
 
@@ -307,4 +316,9 @@ function validationErrors(issues: readonly ZodIssue[]): readonly ProblemValidati
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : 'unknown error';
+}
+
+function acceptsJson(request: Request): boolean {
+	const contentType: string | null = request.headers.get('content-type');
+	return contentType?.split(';', 1)[0].trim().toLowerCase() === 'application/json';
 }

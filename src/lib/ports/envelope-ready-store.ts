@@ -38,7 +38,6 @@ export interface PublishReadyEnvelopeCommand extends ReadyCommandKey {
 	expectedGeneration: number;
 	expectedCommitSha: string;
 	recipients: readonly Recipient[];
-	recipientsJson: string;
 	updatedAt: string;
 	expectedAuditSequence: number;
 	previousAuditHash: string;

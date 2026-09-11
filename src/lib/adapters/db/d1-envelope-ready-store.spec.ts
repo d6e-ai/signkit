@@ -56,7 +56,6 @@ const command: PublishReadyEnvelopeCommand = {
 			status: 'pending'
 		}
 	],
-	recipientsJson: '',
 	updatedAt: '2026-09-11T00:02:00.000Z',
 	expectedAuditSequence: 2,
 	previousAuditHash: 'b'.repeat(64),
@@ -64,7 +63,6 @@ const command: PublishReadyEnvelopeCommand = {
 	auditEventHash: 'c'.repeat(64),
 	auditPayloadJson: '{"generation":1}'
 };
-command.recipientsJson = JSON.stringify(command.recipients);
 command.requestFingerprint = createHash('sha256')
 	.update(
 		JSON.stringify({
@@ -97,7 +95,7 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		request_hash: command.requestFingerprint,
 		expected_generation: 1,
 		commit_sha: command.expectedCommitSha,
-		recipients_json: command.recipientsJson,
+		recipients_json: JSON.stringify(command.recipients),
 		recipient_count: 1,
 		updated_at: command.updatedAt,
 		audit_event_id: command.auditEventId,

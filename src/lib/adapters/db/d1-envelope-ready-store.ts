@@ -98,7 +98,7 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 					command.requestFingerprint,
 					command.expectedGeneration,
 					command.expectedCommitSha,
-					command.recipientsJson,
+					JSON.stringify(command.recipients),
 					command.recipients.length,
 					command.updatedAt,
 					command.auditEventId,

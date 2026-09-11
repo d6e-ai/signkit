@@ -6,7 +6,7 @@ import type {
 	ReadyCommandKey,
 	ReadyPreparation
 } from '$lib/ports/envelope-ready-store';
-import { EnvelopeReadyApplication } from './ready';
+import { EnvelopeReadyApplication, InvalidRecipientGraphError } from './ready';
 
 const envelope: Envelope = {
 	id: '01900000-0000-7000-8000-000000000001',
@@ -151,5 +151,59 @@ describe('EnvelopeReadyApplication', () => {
 
 		expect(result).toEqual({ outcome: 'generation_conflict' });
 		expect(store.publishReady).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{
+			recipients: [
+				{
+					email: 'invalid',
+					name: 'Alice',
+					role: 'signer' as const,
+					locale: 'en' as const,
+					routingOrder: 1
+				}
+			]
+		},
+		{
+			recipients: [
+				{
+					email: 'a@example.com',
+					name: 'Alice',
+					role: 'cc' as const,
+					locale: 'en' as const,
+					routingOrder: 1
+				}
+			]
+		},
+		{
+			recipients: [
+				{
+					email: 'A@example.com',
+					name: 'Alice',
+					role: 'signer' as const,
+					locale: 'en' as const,
+					routingOrder: 1
+				},
+				{
+					email: 'a@example.com',
+					name: 'Alias',
+					role: 'viewer' as const,
+					locale: 'ja' as const,
+					routingOrder: 2
+				}
+			]
+		}
+	])('rejects invalid recipient invariants before calling the store', async ({ recipients }) => {
+		const store: CapturingStore = new CapturingStore();
+		await expect(
+			new EnvelopeReadyApplication(store).ready(actor, envelope.id, {
+				idempotencyKey: 'invalid',
+				expectedGeneration: 2,
+				recipients
+			})
+		).rejects.toBeInstanceOf(InvalidRecipientGraphError);
+		expect(store.keys).toHaveLength(0);
+		expect(store.commands).toHaveLength(0);
 	});
 });

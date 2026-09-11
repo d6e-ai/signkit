@@ -40,6 +40,13 @@ export interface EnvelopeReadyApplicationPort {
 	): Promise<ReadyEnvelopeResult>;
 }
 
+export class InvalidRecipientGraphError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'InvalidRecipientGraphError';
+	}
+}
+
 export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 	readonly #store: EnvelopeReadyStore;
 
@@ -55,6 +62,7 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 		const canonicalRecipients: readonly ReadyRecipientInput[] = canonicalizeRecipients(
 			input.recipients
 		);
+		assertReadyInput(input.expectedGeneration, canonicalRecipients);
 		const canonicalRequest: string = JSON.stringify({
 			expectedGeneration: input.expectedGeneration,
 			recipients: canonicalRecipients
@@ -89,7 +97,6 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 				status: 'pending'
 			}))
 		);
-		const recipientsJson: string = JSON.stringify(recipients);
 		const auditEventId: string = await deterministicUuid(
 			['signkit-ready-event-v1', actor.organizationId, actor.id, input.idempotencyKey].join(
 				'\u0000'
@@ -120,7 +127,6 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 			expectedGeneration: input.expectedGeneration,
 			expectedCommitSha: requiredHead(preparation.envelope),
 			recipients,
-			recipientsJson,
 			updatedAt,
 			expectedAuditSequence: preparation.auditHead.sequence,
 			previousAuditHash: preparation.auditHead.eventHash,
@@ -131,6 +137,62 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 		const published: PublishReadyEnvelopeResult = await this.#store.publishReady(command);
 		return published;
 	}
+}
+
+function assertReadyInput(
+	expectedGeneration: number,
+	recipients: readonly ReadyRecipientInput[]
+): void {
+	if (
+		!Number.isSafeInteger(expectedGeneration) ||
+		expectedGeneration < 1 ||
+		expectedGeneration > 2_147_483_647
+	) {
+		throw new InvalidRecipientGraphError('Expected generation is outside the supported range');
+	}
+	if (recipients.length < 1 || recipients.length > 50) {
+		throw new InvalidRecipientGraphError(
+			'Recipient graphs must contain between 1 and 50 recipients'
+		);
+	}
+	const emails: Set<string> = new Set<string>();
+	for (const recipient of recipients) {
+		if (!isEmail(recipient.email) || recipient.email.length > 320) {
+			throw new InvalidRecipientGraphError('Recipient email is invalid');
+		}
+		if (recipient.name.length < 1 || recipient.name.length > 200) {
+			throw new InvalidRecipientGraphError('Recipient name is invalid');
+		}
+		if (!['signer', 'approver', 'viewer', 'prefill', 'cc'].includes(recipient.role)) {
+			throw new InvalidRecipientGraphError('Recipient role is invalid');
+		}
+		if (recipient.locale !== 'en' && recipient.locale !== 'ja') {
+			throw new InvalidRecipientGraphError('Recipient locale is invalid');
+		}
+		if (
+			!Number.isSafeInteger(recipient.routingOrder) ||
+			recipient.routingOrder < 1 ||
+			recipient.routingOrder > 1000
+		) {
+			throw new InvalidRecipientGraphError('Recipient routing order is invalid');
+		}
+		if (emails.has(recipient.email)) {
+			throw new InvalidRecipientGraphError('Recipient email addresses must be unique');
+		}
+		emails.add(recipient.email);
+	}
+	if (
+		!recipients.some(
+			(recipient: ReadyRecipientInput): boolean =>
+				recipient.role === 'signer' || recipient.role === 'approver'
+		)
+	) {
+		throw new InvalidRecipientGraphError('At least one signer or approver is required');
+	}
+}
+
+function isEmail(value: string): boolean {
+	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function canonicalizeRecipients(
