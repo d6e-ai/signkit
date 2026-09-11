@@ -1,4 +1,4 @@
-import type { EnvelopeStatus, RecipientStatus } from '$lib/domain/envelope';
+import type { EnvelopeStatus, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
 
 export interface RecipientSigningContext {
 	organizationId: string;
@@ -6,6 +6,7 @@ export interface RecipientSigningContext {
 	recipientId: string;
 	recipientName: string;
 	recipientLocale: 'en' | 'ja';
+	recipientRole: RecipientRole;
 	recipientStatus: RecipientStatus;
 	envelopeTitle: string;
 	envelopeStatus: EnvelopeStatus;

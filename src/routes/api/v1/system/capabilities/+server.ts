@@ -32,6 +32,12 @@ export const GET: RequestHandler = ({ platform }) => {
 			delivery: 'durable-outbox',
 			idempotency: 'required'
 		},
+		recipientAccess: {
+			endpoint: '/api/v1/signing/context',
+			authentication: 'bearer-capability',
+			states: ['sent', 'in_progress'],
+			cache: 'no-store'
+		},
 		automation: { idempotencyKeys: true, actorProvenance: true, webhooks: 'planned' }
 	});
 };

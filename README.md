@@ -2,7 +2,7 @@
 
 SignKit is an open-core, Markdown-native agreement and electronic-signature platform. It is designed so the browser, AI agents, and a future Rust CLI use the same application commands and evidence model.
 
-The current repository contains the product shell, portable deployment boundary, core domain policies, an organization-scoped Envelope API, PostgreSQL/D1 migrations, S3/R2 adapters, d6e-auth OAuth integration, bounded compressed Git-history persistence, and an atomic recipient/readiness command. It is not yet a production signing service; public recipient signing, PDF sealing, mail delivery, and durable jobs remain on the implementation backlog.
+The current repository contains the product shell, portable deployment boundary, core domain policies, an organization-scoped Envelope API, PostgreSQL/D1 migrations, S3/R2 adapters, d6e-auth OAuth integration, bounded compressed Git-history persistence, atomic recipient/readiness and send commands, and fail-closed public recipient capability resolution. It is not yet a production signing service; signing mutations, PDF sealing, mail delivery, and durable jobs remain on the implementation backlog.
 
 ## Development
 
@@ -39,5 +39,7 @@ Copy `.env.example` to `.env` for Node development. Cloudflare secrets belong in
 See [docs/design.md](docs/design.md) for the normative architecture and security boundaries.
 
 The first agent-facing endpoints are `POST /api/v1/envelopes`, `GET /api/v1/envelopes`, `GET /api/v1/envelopes/{envelopeId}`, `GET /api/v1/envelopes/{envelopeId}/draft`, `POST /api/v1/envelopes/{envelopeId}/draft/commits`, `POST /api/v1/envelopes/{envelopeId}/ready`, and `POST /api/v1/envelopes/{envelopeId}/send`. Mutations require an authenticated d6e-auth organization and an `Idempotency-Key` header. Draft commits use expected-generation concurrency and optional automation provenance. The ready command supplies the same expected Git generation plus the complete normalized recipient graph. Send additionally requires the ready audit event ID, pins the Git commit, reserves hashed recipient capabilities, writes encrypted delivery intents, changes `ready` to `sent`, and appends `envelope.sent` in one database transaction. The initial routing group becomes deliverable; later groups stay blocked and CC delivery remains a completion concern. The same key and normalized request replay the original receipt; key reuse or stale state returns an RFC 9457 conflict. Responses keep storage keys, archive bytes, capabilities, hashes, ciphertext, and outbox IDs internal.
+
+`GET /api/v1/signing/context` is the separate public-recipient boundary. It accepts only a `Bearer` recipient capability, requires a non-revoked future expiry and actionable recipient/envelope state in the database query, and returns a minimal allowlisted context. Missing, malformed, unknown, expired, revoked, blocked, and inactive capabilities share one not-found response. Operator OAuth sessions and organization input are intentionally not part of this route.
 
 The implementation backlog is tracked in [GitHub Issues](https://github.com/d6e-ai/signkit/issues), including DOCX conversion, agent workload credentials and a Rust CLI, enterprise SSO/audit export boundaries, and the lower-priority Vercel production profile.

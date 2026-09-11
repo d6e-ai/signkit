@@ -2,6 +2,11 @@ import postgres from 'postgres';
 import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-envelope-application-store';
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
+import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
+import {
+	RecipientAccessService,
+	type RecipientAccessApplicationPort
+} from '$lib/application/signing/recipient-access';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import type { EnvelopeApplicationPort } from './model';
 import { EnvelopeReadyApplication, type EnvelopeReadyApplicationPort } from './ready';
@@ -13,6 +18,7 @@ interface PostgresRuntimeResources {
 	store: PostgresEnvelopeApplicationStore;
 	application: EnvelopeApplicationPort;
 	readyApplication: EnvelopeReadyApplicationPort;
+	recipientAccessApplication: RecipientAccessApplicationPort;
 	sql: ReturnType<typeof postgres>;
 }
 
@@ -51,6 +57,12 @@ export function resolvePostgresEnvelopeSendApplication(
 	return new EnvelopeSendApplication(new PostgresEnvelopeSendStore(resources.sql), sealer);
 }
 
+export function resolvePostgresRecipientAccessApplication(
+	databaseUrl: string
+): RecipientAccessApplicationPort {
+	return resolvePostgresResources(databaseUrl).recipientAccessApplication;
+}
+
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {
 	const normalizedDatabaseUrl: string = databaseUrl.trim();
 	assertPostgresUrl(normalizedDatabaseUrl);
@@ -74,11 +86,15 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 	const readyApplication: EnvelopeReadyApplicationPort = new EnvelopeReadyApplication(
 		new PostgresEnvelopeReadyStore(sql)
 	);
+	const recipientAccessApplication: RecipientAccessApplicationPort = new RecipientAccessService(
+		new PostgresRecipientAccessStore(sql)
+	);
 	cachedResources = {
 		databaseUrl: normalizedDatabaseUrl,
 		store,
 		application,
 		readyApplication,
+		recipientAccessApplication,
 		sql
 	};
 	return cachedResources;

@@ -18,6 +18,10 @@ export function isLocaleExcludedPath(pathname: string): boolean {
 	);
 }
 
+export function isSessionExcludedPath(pathname: string): boolean {
+	return pathname === '/api/v1/signing' || pathname.startsWith('/api/v1/signing/');
+}
+
 const handleLocale: Handle = ({ event, resolve }) => {
 	if (isLocaleExcludedPath(event.url.pathname)) return resolve(event);
 
@@ -37,6 +41,7 @@ const handleSession: Handle = async ({ event, resolve }) => {
 	event.locals.memberships = [];
 	event.locals.organizationId = null;
 	event.locals.identityState = 'anonymous';
+	if (isSessionExcludedPath(event.url.pathname)) return resolve(event);
 
 	const cookie = event.cookies.get(SESSION_COOKIE);
 	if (!cookie) return resolve(event);

@@ -11,7 +11,11 @@ const ACTIONABLE_RECIPIENT_STATUSES = new Set<RecipientSigningContext['recipient
 	'viewed'
 ]);
 
-export class RecipientAccessService {
+export interface RecipientAccessApplicationPort {
+	resolve(token: string, at: string): Promise<RecipientSigningContext | null>;
+}
+
+export class RecipientAccessService implements RecipientAccessApplicationPort {
 	constructor(private readonly store: RecipientAccessStore) {}
 
 	async resolve(token: string, at: string): Promise<RecipientSigningContext | null> {
