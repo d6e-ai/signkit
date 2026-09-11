@@ -71,7 +71,9 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	});
 
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
-		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0011_delivery_outbox_leases.sql');
+		expect(MIGRATION_PATHS.at(-1)).toBe(
+			'migrations/postgres/0012_delivery_outbox_recipient_scope.sql'
+		);
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -130,6 +132,18 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'documents/agreement.md', 'signature', 'Signature', true, 1, now(), now()
 			)`
 		).rejects.toMatchObject({ code: '23503' });
+		await expect(
+			database()`INSERT INTO delivery_outbox (
+				id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+				reserved_capability_expires_at, sealed_capability, sealing_key_id,
+				sealed_capability_sha256, available_at, attempts, created_at, updated_at,
+				claim_token, retryable
+			) VALUES (
+				'cross-tenant-delivery', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'other-recipient',
+				'recipient_invitation', 'blocked', 'capability-hash', NULL,
+				'sealed-capability', 'key-1', ${'e'.repeat(64)}, NULL, 0, now(), now(), NULL, true
+			)`
+		).rejects.toMatchObject({ code: '23503' });
 
 		await database()`INSERT INTO envelope (
 			id, organization_id, title, status, repository_generation, repository_head,
@@ -145,6 +159,19 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			'same-org-other-recipient', ${ORGANIZATION_ID}, 'same-org-other-envelope',
 			'same-org-other@example.com', 'Other signer', 'signer', 'en', 1, 'pending', now(), now()
 		)`;
+		await expect(
+			database()`INSERT INTO delivery_outbox (
+				id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+				reserved_capability_expires_at, sealed_capability, sealing_key_id,
+				sealed_capability_sha256, available_at, attempts, created_at, updated_at,
+				claim_token, retryable
+			) VALUES (
+				'cross-envelope-delivery', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
+				'same-org-other-recipient', 'recipient_invitation', 'blocked', 'capability-hash',
+				NULL, 'sealed-capability', 'key-1', ${'e'.repeat(64)}, NULL, 0, now(), now(),
+				NULL, true
+			)`
+		).rejects.toMatchObject({ code: '23503' });
 		await expect(
 			database()`INSERT INTO envelope_field (
 				id, organization_id, envelope_id, recipient_id, document_path, field_type,
@@ -255,16 +282,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			{ label: 'Signed date', position: 3 }
 		]);
 
-		const sealer: RecipientCapabilitySealer = {
-			seal: async (token: string, context: CapabilitySealContext) => {
-				const sealedCapability: string = `sealed:${context.deliveryId}:${token}`;
-				return {
-					sealedCapability,
-					sealingKeyId: 'integration-key',
-					sealedCapabilitySha256: sha256(sealedCapability)
-				};
-			}
-		};
+		const sealer: RecipientCapabilitySealer = capabilitySealer();
 		const sent = await new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
 			sealer
@@ -343,10 +361,14 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 
 	it('upgrades every pre-lease delivery state without losing retryable work', async () => {
 		const upgradeSchema: string = `${schemaName}_upgrade`;
+		const leaseMigrationIndex: number = MIGRATION_PATHS.indexOf(
+			'migrations/postgres/0011_delivery_outbox_leases.sql'
+		);
+		expect(leaseMigrationIndex).toBeGreaterThan(0);
 		await database().unsafe(`CREATE SCHEMA "${upgradeSchema}"`);
 		try {
 			await database().unsafe(`SET search_path TO "${upgradeSchema}"`);
-			for (const path of MIGRATION_PATHS.slice(0, -1)) {
+			for (const path of MIGRATION_PATHS.slice(0, leaseMigrationIndex)) {
 				await database().unsafe(readFileSync(path, 'utf8'));
 			}
 			await database().unsafe(`
@@ -381,7 +403,9 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					('delivery-blocked','upgrade-org','upgrade-envelope','recipient-blocked','recipient_invitation','blocked','hash-blocked','2026-09-25T00:00:00.000Z','sealed-blocked','key-1','sealed-hash-blocked',NULL,0,NULL,NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
 			`);
 
-			await database().unsafe(readFileSync(MIGRATION_PATHS.at(-1) as string, 'utf8'));
+			for (const path of MIGRATION_PATHS.slice(leaseMigrationIndex)) {
+				await database().unsafe(readFileSync(path, 'utf8'));
+			}
 			const rows = await database()<
 				{
 					id: string;
@@ -713,4 +737,17 @@ function fieldCommand(options: {
 
 function sha256(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
+}
+
+function capabilitySealer(): RecipientCapabilitySealer {
+	return {
+		seal: async (token: string, context: CapabilitySealContext) => {
+			const sealedCapability: string = `sealed:${context.deliveryId}:${token}`;
+			return {
+				sealedCapability,
+				sealingKeyId: 'integration-key',
+				sealedCapabilitySha256: sha256(sealedCapability)
+			};
+		}
+	};
 }
