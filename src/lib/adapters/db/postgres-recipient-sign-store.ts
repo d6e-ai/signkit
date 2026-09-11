@@ -621,7 +621,7 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 		) {
 			return { outcome: 'not_found' };
 		}
-		return await this.#evidenceResult(sql, byRecipient);
+		return { outcome: 'not_found' };
 	}
 
 	async #readCommandRow(

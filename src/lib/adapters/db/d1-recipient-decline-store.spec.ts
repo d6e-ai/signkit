@@ -282,15 +282,12 @@ describe('D1RecipientDeclineStore', () => {
 		expect(result).toEqual({ outcome: 'idempotency_conflict' });
 	});
 
-	it('replays the stored receipt for the same recipient under a different idempotency key', async () => {
+	it('does not disclose the stored receipt under a different idempotency key', async () => {
 		const differentKey = { ...command, idempotencyKey: 'declined-from-another-tab' };
 		const result = await new D1RecipientDeclineStore(
 			fakeD1([declinedRow, null, storedRow(), declinedRow]).database
 		).prepareDeclined(differentKey, '2026-09-11T00:04:00.000Z');
-		expect(result).toMatchObject({
-			outcome: 'replayed',
-			result: { recipientId: command.expectedRecipientId, envelopeStatus: 'declined' }
-		});
+		expect(result).toEqual({ outcome: 'not_found' });
 	});
 
 	it('fails closed when a replay receipt exists without the published declined state', async () => {
