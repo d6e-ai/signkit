@@ -380,7 +380,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 		) {
 			return { outcome: 'not_found' };
 		}
-		return await this.#evidenceResult(byRecipient);
+		return { outcome: 'not_found' };
 	}
 
 	async #readCommandRow(

@@ -358,6 +358,14 @@ describe('D1RecipientSignStore', () => {
 		expect(result).toEqual({ outcome: 'integrity_error' });
 	});
 
+	it('does not disclose the stored receipt under a different idempotency key', async () => {
+		const differentKey = { ...command, idempotencyKey: 'signed-from-another-tab' };
+		const result = await new D1RecipientSignStore(
+			fakeD1([completedRow, null, storedRow()]).database
+		).prepareSign(differentKey, '2026-09-11T00:05:00.000Z');
+		expect(result).toEqual({ outcome: 'not_found' });
+	});
+
 	it('reconstructs the request fingerprint from stored normalized values', async () => {
 		const result = await new D1RecipientSignStore(
 			fakeD1([completedRow, storedRow(), completedRow], [fieldValueRows]).database

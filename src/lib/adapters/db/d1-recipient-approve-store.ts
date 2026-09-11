@@ -316,7 +316,7 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 		) {
 			return { outcome: 'not_found' };
 		}
-		return await this.#evidenceResult(byRecipient);
+		return { outcome: 'not_found' };
 	}
 
 	async #readCommandRow(

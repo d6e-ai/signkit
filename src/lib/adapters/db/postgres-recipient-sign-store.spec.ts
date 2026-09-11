@@ -233,6 +233,26 @@ describe('PostgresRecipientSignStore', () => {
 		expect(database.beginCalls).toBe(0);
 	});
 
+	it('does not disclose the stored receipt under a different idempotency key', async () => {
+		const differentKey = { ...command, idempotencyKey: 'signed-from-another-tab' };
+		const database = new ScriptedPostgres([
+			[
+				{
+					...eligibleRecipientRow,
+					recipientStatus: 'completed',
+					recipientCapabilityRevokedAt: command.updatedAt
+				}
+			],
+			[],
+			[{ envelopeId: command.expectedEnvelopeId, capabilityHash: command.capabilityHash }]
+		]);
+		const result = await new PostgresRecipientSignStore(database.client()).prepareSign(
+			differentKey,
+			'2026-09-11T00:05:00.000Z'
+		);
+		expect(result).toEqual({ outcome: 'not_found' });
+	});
+
 	it('resolves a ready preparation including this recipient own field declarations', async () => {
 		const database = new ScriptedPostgres([
 			[eligibleRecipientRow],

@@ -394,7 +394,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		) {
 			return { outcome: 'not_found' };
 		}
-		return await this.#evidenceResult(byRecipient);
+		return { outcome: 'not_found' };
 	}
 
 	async #readCommandRow(

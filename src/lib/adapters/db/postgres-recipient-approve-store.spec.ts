@@ -405,7 +405,7 @@ describe('PostgresRecipientApproveStore', () => {
 		).toBe(false);
 	});
 
-	it('replays the stored receipt for the same recipient under a different idempotency key', async () => {
+	it('does not disclose the stored receipt under a different idempotency key', async () => {
 		const differentKey = { ...command, idempotencyKey: 'approved-from-another-tab' };
 		const database = new ScriptedPostgres([
 			[completedRecipientRow],
@@ -417,10 +417,7 @@ describe('PostgresRecipientApproveStore', () => {
 			differentKey,
 			'2026-09-11T00:05:00.000Z'
 		);
-		expect(result).toMatchObject({
-			outcome: 'replayed',
-			result: { recipientId: command.expectedRecipientId, envelopeStatus: 'in_progress' }
-		});
+		expect(result).toEqual({ outcome: 'not_found' });
 	});
 
 	it('replays an earlier in-progress receipt after a later recipient completes the envelope', async () => {
