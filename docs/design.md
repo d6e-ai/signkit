@@ -69,10 +69,10 @@ Each edit performs these steps:
 Recommended key:
 
 ```text
-organizations/{organization}/envelopes/{envelope}/repos/{generation}-{sha256}.git.json.gz
+draft-repositories/v1/organizations/{organization}/envelopes/{envelope}/sha256/{sha256}.git.gz
 ```
 
-Git SHA-1 identifies revisions but is not the storage integrity boundary. Every archive and final artifact also has a SHA-256 digest. The current application service implements bounded archive reads, external SHA-256 verification, immutable object writes, and generation-based CAS publication. API wiring, streaming archive production, quotas, orphan collection, and recovery tests remain before production use.
+Git SHA-1 identifies revisions but is not the storage integrity boundary. Every archive and final artifact also has a SHA-256 digest. The current application service implements bounded archive reads, external SHA-256 verification, immutable object writes, and generation-based CAS publication. The first read-only draft API exposes normalized Markdown without leaking the internal object key or archive bytes. Mutation API wiring, streaming archive production, quotas, orphan collection, and recovery tests remain before production use.
 
 ## Persistence
 

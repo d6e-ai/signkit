@@ -38,6 +38,6 @@ Copy `.env.example` to `.env` for Node development. Cloudflare secrets belong in
 
 See [docs/design.md](docs/design.md) for the normative architecture and security boundaries.
 
-The first agent-facing endpoints are `POST /api/v1/envelopes`, `GET /api/v1/envelopes`, and `GET /api/v1/envelopes/{envelopeId}`. Creation requires an authenticated d6e-auth organization and an `Idempotency-Key` header. The same key replays the original result; reusing it with a different request returns an RFC 9457 conflict.
+The first agent-facing endpoints are `POST /api/v1/envelopes`, `GET /api/v1/envelopes`, `GET /api/v1/envelopes/{envelopeId}`, and `GET /api/v1/envelopes/{envelopeId}/draft`. Creation requires an authenticated d6e-auth organization and an `Idempotency-Key` header. The same key replays the original result; reusing it with a different request returns an RFC 9457 conflict. The draft endpoint returns the stable Git generation, commit and archive digest together with normalized Markdown documents; storage keys and archive bytes remain internal.
 
 The implementation backlog is tracked in [GitHub Issues](https://github.com/d6e-ai/signkit/issues), including DOCX conversion, agent workload credentials and a Rust CLI, enterprise SSO/audit export boundaries, and the lower-priority Vercel production profile.

@@ -12,8 +12,9 @@ export interface EnvelopeRuntimeContext {
 export async function resolveEnvelopeApplication(
 	context: EnvelopeRuntimeContext
 ): Promise<EnvelopeApplicationPort | null> {
-	const database: D1Database | undefined = context.platform?.env?.DB;
-	if (database !== undefined) {
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		if (database === undefined) return null;
 		return new EnvelopeApplication(new D1EnvelopeApplicationStore(database));
 	}
 

@@ -8,6 +8,10 @@ import type {
 	EnvelopeRequestActor
 } from '$lib/application/envelopes/model';
 import type { Envelope } from '$lib/domain/envelope';
+import {
+	authorizeOrganizationRequest,
+	type AuthorizedRequestActor
+} from './organization-authorization';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const createEnvelopeSchema: ZodType<{ title: string }> = z
@@ -100,57 +104,11 @@ function validationErrors(issues: readonly ZodIssue[]): readonly ProblemValidati
 	}));
 }
 
-function authorizationProblem(
-	locals: App.Locals,
-	instance: string
-): Response | EnvelopeRequestActor {
-	if (locals.identityState === 'anonymous') {
-		return problemResponse({
-			type: 'urn:signkit:problem:authentication-required',
-			title: 'Authentication required',
-			status: 401,
-			detail: 'Sign in before accessing envelopes.',
-			instance
-		});
-	}
-	if (locals.identityState === 'no_active_organization') {
-		return problemResponse({
-			type: 'urn:signkit:problem:organization-required',
-			title: 'Active organization required',
-			status: 403,
-			detail: 'An active organization membership is required.',
-			instance
-		});
-	}
-	if (
-		locals.identityState !== 'authorized' ||
-		locals.principal === null ||
-		locals.organizationId === null
-	) {
-		return problemResponse({
-			type: 'urn:signkit:problem:identity-unavailable',
-			title: 'Identity unavailable',
-			status: 503,
-			detail: 'Identity and organization authorization could not be verified.',
-			instance
-		});
-	}
-	const membership = locals.memberships.find(
-		(candidate) => candidate.organization.id === locals.organizationId
-	);
-	if (!membership) {
-		return problemResponse({
-			type: 'urn:signkit:problem:identity-unavailable',
-			title: 'Identity unavailable',
-			status: 503,
-			detail: 'The selected organization membership could not be verified.',
-			instance
-		});
-	}
+function envelopeActor(authorized: AuthorizedRequestActor): EnvelopeRequestActor {
 	return {
-		id: locals.principal.subject,
-		organizationId: locals.organizationId,
-		organizationName: membership.organization.name
+		id: authorized.id,
+		organizationId: authorized.organizationId,
+		organizationName: authorized.organizationName
 	};
 }
 
@@ -193,8 +151,12 @@ export function createEnvelopeHttpHandlers(
 	resolveApplication: EnvelopeApplicationResolver
 ): EnvelopeHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
-		const actor: EnvelopeRequestActor | Response = authorizationProblem(locals, url.pathname);
-		if (actor instanceof Response) return actor;
+		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+			locals,
+			url.pathname
+		);
+		if (authorized instanceof Response) return authorized;
+		const actor: EnvelopeRequestActor = envelopeActor(authorized);
 
 		const idempotencyResult = idempotencyKeySchema.safeParse(
 			request.headers.get('idempotency-key')
@@ -286,8 +248,12 @@ export function createEnvelopeHttpHandlers(
 	};
 
 	const list: RequestHandler = async ({ locals, platform, url }): Promise<Response> => {
-		const actor: EnvelopeRequestActor | Response = authorizationProblem(locals, url.pathname);
-		if (actor instanceof Response) return actor;
+		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+			locals,
+			url.pathname
+		);
+		if (authorized instanceof Response) return authorized;
+		const actor: EnvelopeRequestActor = envelopeActor(authorized);
 
 		const queryResult = listEnvelopeSchema.safeParse(Object.fromEntries(url.searchParams));
 		if (!queryResult.success) {
@@ -330,8 +296,12 @@ export function createEnvelopeHttpHandlers(
 	};
 
 	const get: RequestHandler = async ({ locals, params, platform, url }): Promise<Response> => {
-		const actor: EnvelopeRequestActor | Response = authorizationProblem(locals, url.pathname);
-		if (actor instanceof Response) return actor;
+		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+			locals,
+			url.pathname
+		);
+		if (authorized instanceof Response) return authorized;
+		const actor: EnvelopeRequestActor = envelopeActor(authorized);
 
 		const envelopeIdResult = envelopeIdSchema.safeParse(params.envelopeId);
 		if (!envelopeIdResult.success) {

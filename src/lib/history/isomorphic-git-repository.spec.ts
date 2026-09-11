@@ -21,6 +21,12 @@ describe('IsomorphicGitDraftRepository', () => {
 		expect(first.commitSha).toMatch(/^[a-f0-9]{40}$/);
 		expect(second.commitSha).not.toBe(first.commitSha);
 		expect(second.archiveSha256).toMatch(/^[a-f0-9]{64}$/);
+		await expect(repository.read(second.archive, second.commitSha)).resolves.toEqual([
+			{ path: 'documents/main.md', content: '# Agreement\n\nRevised.\n' }
+		]);
+		await expect(repository.read(second.archive, first.commitSha)).rejects.toThrow(
+			/HEAD does not match/
+		);
 	});
 
 	it('rejects binary and traversal paths', async () => {

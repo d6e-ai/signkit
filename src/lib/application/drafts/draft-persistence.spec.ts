@@ -39,6 +39,12 @@ describe('DraftPersistenceService', () => {
 		expect(await service.readCurrent({ organizationId: 'org_1', envelopeId: 'env_1' })).toEqual(
 			committed
 		);
+		await expect(
+			service.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
+		).resolves.toMatchObject({
+			generation: 1,
+			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+		});
 	});
 
 	it('rejects a stale expected generation before creating an object', async () => {
@@ -296,6 +302,10 @@ class MemoryObjectStore implements ObjectStore {
 class CountingDraftRepository implements DraftRepository {
 	commitCalls = 0;
 
+	async read(): Promise<readonly []> {
+		return [];
+	}
+
 	async commit(): Promise<DraftVersion> {
 		this.commitCalls += 1;
 		throw new Error('Unexpected repository commit');
@@ -303,6 +313,10 @@ class CountingDraftRepository implements DraftRepository {
 }
 
 class InvalidDigestDraftRepository implements DraftRepository {
+	async read(): Promise<readonly []> {
+		return [];
+	}
+
 	async commit(): Promise<DraftVersion> {
 		return {
 			commitSha: 'a'.repeat(40),
