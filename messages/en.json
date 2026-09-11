@@ -48,5 +48,22 @@
 	"source_history": "Markdown source history",
 	"source_history_description": "DOCX and PDF are generated artifacts. Only Markdown source and its manifest belong to the envelope Git repository.",
 	"sign_in": "Sign in with d6e-auth",
-	"sign_in_short": "Sign in"
+	"sign_in_short": "Sign in",
+	"signing_page_title": "Review agreement",
+	"signing_secure_access": "Secure access",
+	"signing_access_description": "Your private signing link is active. Access is checked again whenever this page is opened.",
+	"signing_role": "Your role",
+	"signing_status": "Status",
+	"signing_expires": "Link expires",
+	"signing_role_signer": "Signer",
+	"signing_role_approver": "Approver",
+	"signing_role_viewer": "Viewer",
+	"signing_role_prefill": "Prefill",
+	"signing_status_pending": "Action required",
+	"signing_status_viewed": "Viewed",
+	"signing_controls_next": "Document review and signing controls are the next implementation step.",
+	"signing_invalid_title": "This signing link is not active",
+	"signing_invalid_description": "The link may be invalid, expired, revoked, or waiting for an earlier recipient. Ask the sender for an active link.",
+	"signing_unavailable_title": "Signing access is temporarily unavailable",
+	"signing_unavailable_description": "Please wait a moment and open the link again. No signing action was recorded."
 }

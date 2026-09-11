@@ -2,6 +2,7 @@ import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import { getTextDirection } from '$lib/paraglide/runtime';
 import { paraglideMiddleware } from '$lib/paraglide/server';
+import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { organizations, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
 import {
 	ORGANIZATION_COOKIE,
@@ -19,7 +20,11 @@ export function isLocaleExcludedPath(pathname: string): boolean {
 }
 
 export function isSessionExcludedPath(pathname: string): boolean {
-	return pathname === '/api/v1/signing' || pathname.startsWith('/api/v1/signing/');
+	return (
+		pathname === '/api/v1/signing' ||
+		pathname.startsWith('/api/v1/signing/') ||
+		isRecipientSurfacePath(pathname)
+	);
 }
 
 const handleLocale: Handle = ({ event, resolve }) => {
