@@ -42,4 +42,6 @@ The first agent-facing endpoints are `POST /api/v1/envelopes`, `GET /api/v1/enve
 
 `GET /api/v1/signing/context` is the separate public-recipient boundary. It accepts only a `Bearer` recipient capability, requires a non-revoked future expiry and actionable recipient/envelope state in the database query, and returns a minimal allowlisted context. Missing, malformed, unknown, expired, revoked, blocked, and inactive capabilities share one not-found response. Operator OAuth sessions and organization input are intentionally not part of this route.
 
+Browser links use `/s/{capability}` only as a one-time exchange surface. An active token is encrypted into a purpose-separated, `HttpOnly`, `SameSite=Lax` cookie whose lifetime cannot exceed the durable capability expiry or 30 days, then redirected to the locale-specific clean `/{locale}/sign` URL. The signing page rechecks durable authorization on every request and never exposes the raw token to client-side code. It is currently read-only; document rendering and recipient mutations remain separate follow-up slices.
+
 The implementation backlog is tracked in [GitHub Issues](https://github.com/d6e-ai/signkit/issues), including DOCX conversion, agent workload credentials and a Rust CLI, enterprise SSO/audit export boundaries, and the lower-priority Vercel production profile.

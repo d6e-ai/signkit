@@ -34,7 +34,10 @@ export const GET: RequestHandler = ({ platform }) => {
 		},
 		recipientAccess: {
 			endpoint: '/api/v1/signing/context',
+			linkExchange: '/s/{capability}',
+			webSurface: '/{locale}/sign',
 			authentication: 'bearer-capability',
+			browserSession: 'encrypted-http-only-cookie',
 			states: ['sent', 'in_progress'],
 			cache: 'no-store'
 		},

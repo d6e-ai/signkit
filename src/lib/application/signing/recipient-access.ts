@@ -15,6 +15,32 @@ export interface RecipientAccessApplicationPort {
 	resolve(token: string, at: string): Promise<RecipientSigningContext | null>;
 }
 
+export interface PublicRecipientAccessContext {
+	envelopeId: string;
+	recipientId: string;
+	role: RecipientSigningContext['recipientRole'];
+	locale: RecipientSigningContext['recipientLocale'];
+	recipientStatus: RecipientSigningContext['recipientStatus'];
+	envelopeTitle: string;
+	envelopeStatus: RecipientSigningContext['envelopeStatus'];
+	expiresAt: string;
+}
+
+export function toPublicRecipientAccess(
+	context: RecipientSigningContext
+): PublicRecipientAccessContext {
+	return {
+		envelopeId: context.envelopeId,
+		recipientId: context.recipientId,
+		role: context.recipientRole,
+		locale: context.recipientLocale,
+		recipientStatus: context.recipientStatus,
+		envelopeTitle: context.envelopeTitle,
+		envelopeStatus: context.envelopeStatus,
+		expiresAt: context.expiresAt
+	};
+}
+
 export class RecipientAccessService implements RecipientAccessApplicationPort {
 	constructor(private readonly store: RecipientAccessStore) {}
 

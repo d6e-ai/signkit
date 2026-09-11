@@ -1,5 +1,8 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
+import {
+	toPublicRecipientAccess,
+	type RecipientAccessApplicationPort
+} from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import { problemResponse } from './problem';
@@ -47,16 +50,7 @@ export function createRecipientAccessHandler(
 			if (context === null) return accessNotFound(url.pathname);
 			return new Response(
 				JSON.stringify({
-					access: {
-						envelopeId: context.envelopeId,
-						recipientId: context.recipientId,
-						role: context.recipientRole,
-						locale: context.recipientLocale,
-						recipientStatus: context.recipientStatus,
-						envelopeTitle: context.envelopeTitle,
-						envelopeStatus: context.envelopeStatus,
-						expiresAt: context.expiresAt
-					}
+					access: toPublicRecipientAccess(context)
 				}),
 				{ status: 200, headers: securityHeaders({ 'content-type': 'application/json' }) }
 			);
