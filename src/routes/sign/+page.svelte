@@ -1,4 +1,157 @@
+<script lang="ts" module>
+	export interface RecipientViewOptions {
+		envelopeId: string;
+		recipientId: string;
+		initialStatus: string;
+		pageState: string;
+		onStatusChange?: (status: string) => void;
+		onRecorded?: () => void;
+		onRetryPendingChange?: (pending: boolean) => void;
+		onTerminalFailure?: () => void;
+		fetch?: typeof fetch;
+		randomUUID?: () => string;
+		document?: {
+			visibilityState: DocumentVisibilityState;
+			addEventListener: (type: string, listener: (event?: unknown) => void) => void;
+			removeEventListener: (type: string, listener: (event?: unknown) => void) => void;
+		};
+		window?: {
+			addEventListener: (type: string, listener: (event?: unknown) => void) => void;
+			removeEventListener: (type: string, listener: (event?: unknown) => void) => void;
+		};
+	}
+
+	export function initRecipientViewed({
+		envelopeId,
+		recipientId,
+		initialStatus,
+		pageState,
+		onStatusChange,
+		onRecorded,
+		onRetryPendingChange,
+		onTerminalFailure,
+		fetch: customFetch,
+		randomUUID: customRandomUUID,
+		document: customDocument,
+		window: customWindow
+	}: RecipientViewOptions): () => void {
+		if (pageState !== 'active' || initialStatus !== 'pending') {
+			return () => {};
+		}
+
+		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
+		const doc = customDocument ?? (typeof document !== 'undefined' ? document : undefined);
+		const win = customWindow ?? (typeof window !== 'undefined' ? window : undefined);
+
+		const generateUUID =
+			customRandomUUID ??
+			(() => {
+				if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+					return crypto.randomUUID();
+				}
+				if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+					const bytes = crypto.getRandomValues(new Uint8Array(16));
+					return Array.from(bytes, (byte: number): string =>
+						byte.toString(16).padStart(2, '0')
+					).join('');
+				}
+				return `view-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+			});
+
+		const idempotencyKey = generateUUID();
+		let inFlight = false;
+		let isTerminal = false;
+		const abortController = new AbortController();
+
+		async function triggerView(): Promise<void> {
+			if (isTerminal || inFlight) return;
+			if (doc && 'visibilityState' in doc && doc.visibilityState !== 'visible') {
+				return;
+			}
+			if (!fetchFn) return;
+
+			inFlight = true;
+			try {
+				const response = await fetchFn('/api/v1/signing/viewed', {
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: {
+						'content-type': 'application/json',
+						'idempotency-key': idempotencyKey
+					},
+					body: JSON.stringify({
+						envelopeId,
+						recipientId
+					}),
+					signal: abortController.signal
+				});
+
+				if (response.ok) {
+					isTerminal = true;
+					onStatusChange?.('viewed');
+					onRetryPendingChange?.(false);
+					onRecorded?.();
+					cleanupListeners();
+					return;
+				}
+
+				if (response.status === 404 || isPermanentClientFailure(response)) {
+					isTerminal = true;
+					onRetryPendingChange?.(false);
+					if (response.status !== 404) onTerminalFailure?.();
+					cleanupListeners();
+					return;
+				}
+
+				onRetryPendingChange?.(true);
+			} catch {
+				if (abortController.signal.aborted) return;
+				onRetryPendingChange?.(true);
+			} finally {
+				inFlight = false;
+			}
+		}
+
+		const onVisibilityChange = (): void => {
+			if (!doc || !('visibilityState' in doc) || doc.visibilityState === 'visible') {
+				void triggerView();
+			}
+		};
+
+		const onOnline = (): void => {
+			if (doc && 'visibilityState' in doc && doc.visibilityState !== 'visible') {
+				return;
+			}
+			void triggerView();
+		};
+
+		function cleanupListeners(): void {
+			doc?.removeEventListener?.('visibilitychange', onVisibilityChange);
+			win?.removeEventListener?.('online', onOnline);
+		}
+
+		doc?.addEventListener?.('visibilitychange', onVisibilityChange);
+		win?.addEventListener?.('online', onOnline);
+
+		if (!doc || !('visibilityState' in doc) || doc.visibilityState === 'visible') {
+			void triggerView();
+		}
+
+		return () => {
+			abortController.abort();
+			cleanupListeners();
+		};
+	}
+
+	function isPermanentClientFailure(response: Response): boolean {
+		if (response.status < 400 || response.status >= 500) return false;
+		if (response.status === 408 || response.status === 429) return false;
+		return response.status !== 409 || !response.headers.has('retry-after');
+	}
+</script>
+
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import {
 		IconAlertTriangle,
 		IconClock,
@@ -13,6 +166,11 @@
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+
+	let viewRecorded = $state(false);
+	let liveMessage = $state('');
+	let retryPending = $state(false);
+	let viewFailed = $state(false);
 
 	function roleLabel(role: string): string {
 		if (role === 'signer') return m.signing_role_signer();
@@ -38,6 +196,30 @@
 			.replace(/\.md$/, '')
 			.replaceAll(/[-_]+/g, ' ');
 	}
+
+	onMount(() => {
+		if (data.state !== 'active') return;
+		return initRecipientViewed({
+			envelopeId: data.access.envelopeId,
+			recipientId: data.access.recipientId,
+			initialStatus: data.access.recipientStatus,
+			pageState: data.state,
+			onStatusChange: (newStatus) => {
+				viewRecorded = newStatus === 'viewed';
+			},
+			onRecorded: () => {
+				liveMessage = m.signing_view_recorded();
+			},
+			onRetryPendingChange: (pending) => {
+				retryPending = pending;
+				if (pending) viewFailed = false;
+			},
+			onTerminalFailure: () => {
+				viewFailed = true;
+				liveMessage = m.signing_view_failed();
+			}
+		});
+	});
 </script>
 
 <svelte:head>
@@ -45,6 +227,10 @@
 	<meta name="robots" content="noindex,nofollow,noarchive" />
 	<meta name="referrer" content="no-referrer" />
 </svelte:head>
+
+<div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+	{liveMessage}
+</div>
 
 <div class="mx-auto flex min-h-[calc(100svh-7.5rem)] w-full max-w-5xl items-center justify-center">
 	{#if data.state === 'active'}
@@ -81,7 +267,28 @@
 							<div class="flex items-center gap-2 text-xs text-muted-foreground">
 								<IconFileText class="size-4" />{m.signing_status()}
 							</div>
-							<p class="mt-2 font-medium">{statusLabel(data.access.recipientStatus)}</p>
+							<div class="mt-2 flex flex-wrap items-center gap-2">
+								<Badge
+									variant="outline"
+									class={viewRecorded || data.access.recipientStatus === 'viewed'
+										? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300'
+										: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300'}
+								>
+									{statusLabel(viewRecorded ? 'viewed' : data.access.recipientStatus)}
+								</Badge>
+								{#if retryPending && !viewRecorded && data.access.recipientStatus !== 'viewed'}
+									<span class="text-xs text-muted-foreground">
+										{m.signing_view_retry_pending()}
+									</span>
+								{:else if viewFailed && !viewRecorded && data.access.recipientStatus !== 'viewed'}
+									<span class="text-xs text-destructive">{m.signing_view_failed()}</span>
+								{/if}
+							</div>
+							<noscript>
+								<p class="mt-1 text-xs text-muted-foreground">
+									{m.signing_no_js_explanation()}
+								</p>
+							</noscript>
 						</div>
 					</div>
 					<div

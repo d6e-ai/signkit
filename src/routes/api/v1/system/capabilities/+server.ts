@@ -35,10 +35,12 @@ export const GET: RequestHandler = ({ platform }) => {
 		recipientAccess: {
 			endpoint: '/api/v1/signing/context',
 			documentsEndpoint: '/api/v1/signing/documents',
+			viewedEndpoint: '/api/v1/signing/viewed',
 			linkExchange: '/s/{capability}',
 			webSurface: '/{locale}/sign',
 			authentication: 'bearer-capability',
 			browserSession: 'encrypted-http-only-cookie',
+			mutations: 'same-origin-cookie-context',
 			states: ['sent', 'in_progress'],
 			cache: 'no-store'
 		},
