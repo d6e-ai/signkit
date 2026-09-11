@@ -1,5 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { D1RecipientAccessStore } from '$lib/adapters/db/d1-recipient-access-store';
+import { D1RecipientDeclineStore } from '$lib/adapters/db/d1-recipient-decline-store';
 import { D1RecipientViewStore } from '$lib/adapters/db/d1-recipient-view-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
@@ -13,6 +14,10 @@ import {
 	RecipientViewedApplication,
 	type RecipientViewedApplicationPort
 } from './recipient-viewed';
+import {
+	RecipientDeclinedApplication,
+	type RecipientDeclinedApplicationPort
+} from './recipient-declined';
 
 export interface RecipientAccessRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -83,4 +88,20 @@ export async function resolveRecipientViewedApplication(
 	const { resolvePostgresRecipientViewedApplication } =
 		await import('$lib/application/envelopes/runtime-postgres');
 	return resolvePostgresRecipientViewedApplication(databaseUrl);
+}
+
+export async function resolveRecipientDeclinedApplication(
+	context: RecipientAccessRuntimeContext
+): Promise<RecipientDeclinedApplicationPort | null> {
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		if (database === undefined) return null;
+		return new RecipientDeclinedApplication(new D1RecipientDeclineStore(database));
+	}
+
+	const databaseUrl: string | undefined = env.DATABASE_URL;
+	if (databaseUrl === undefined || databaseUrl.trim().length === 0) return null;
+	const { resolvePostgresRecipientDeclinedApplication } =
+		await import('$lib/application/envelopes/runtime-postgres');
+	return resolvePostgresRecipientDeclinedApplication(databaseUrl);
 }

@@ -3,12 +3,17 @@ import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-enve
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
 import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
+import { PostgresRecipientDeclineStore } from '$lib/adapters/db/postgres-recipient-decline-store';
 import { PostgresRecipientViewStore } from '$lib/adapters/db/postgres-recipient-view-store';
 import {
 	RecipientAccessService,
 	type RecipientAccessApplicationPort
 } from '$lib/application/signing/recipient-access';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
+import {
+	RecipientDeclinedApplication,
+	type RecipientDeclinedApplicationPort
+} from '$lib/application/signing/recipient-declined';
 import {
 	RecipientViewedApplication,
 	type RecipientViewedApplicationPort
@@ -76,6 +81,13 @@ export function resolvePostgresRecipientViewedApplication(
 		resources.recipientAccessApplication,
 		new PostgresRecipientViewStore(resources.sql)
 	);
+}
+
+export function resolvePostgresRecipientDeclinedApplication(
+	databaseUrl: string
+): RecipientDeclinedApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new RecipientDeclinedApplication(new PostgresRecipientDeclineStore(resources.sql));
 }
 
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {
