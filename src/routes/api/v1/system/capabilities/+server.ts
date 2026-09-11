@@ -20,6 +20,12 @@ export const GET: RequestHandler = ({ platform }) => {
 			concurrency: 'expected-generation',
 			idempotency: 'required'
 		},
+		readiness: {
+			endpoint: '/api/v1/envelopes/{envelopeId}/ready',
+			recipients: 'complete-graph',
+			concurrency: 'expected-generation',
+			idempotency: 'required'
+		},
 		automation: { idempotencyKeys: true, actorProvenance: true, webhooks: 'planned' }
 	});
 };
