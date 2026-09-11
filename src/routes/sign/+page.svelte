@@ -436,7 +436,7 @@
 					}
 				}
 
-				if (response.status !== 404 && isPermanentClientFailure(response)) {
+				if (isPermanentClientFailure(response)) {
 					status = 'terminal_failure';
 					onStatusChange?.('terminal_failure');
 					onTerminalFailure?.();

@@ -170,15 +170,17 @@ describe('recipient approve client controller', () => {
 		}
 	});
 
-	it('keeps ambiguous 404 and server failures retryable but makes definite client failures terminal', async () => {
-		const terminal = createRecipientApproveController({
-			...base,
-			fetch: async () => new Response('{}', { status: 403 })
-		});
-		await terminal.confirmApprove();
-		expect(terminal.getStatus()).toBe('terminal_failure');
+	it('makes missing access and definite client failures terminal while server failures stay retryable', async () => {
+		for (const status of [403, 404]) {
+			const terminal = createRecipientApproveController({
+				...base,
+				fetch: async () => new Response('{}', { status })
+			});
+			await terminal.confirmApprove();
+			expect(terminal.getStatus()).toBe('terminal_failure');
+		}
 
-		for (const status of [404, 503]) {
+		for (const status of [408, 429, 503]) {
 			const transient = createRecipientApproveController({
 				...base,
 				fetch: async () => new Response('{}', { status })
@@ -186,5 +188,22 @@ describe('recipient approve client controller', () => {
 			await transient.confirmApprove();
 			expect(transient.getStatus()).toBe('transient_failure');
 		}
+	});
+
+	it('stops retrying when a malformed success is followed by a cleared-session 404', async () => {
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+			.mockResolvedValueOnce(new Response('{}', { status: 404 }));
+		const controller = createRecipientApproveController({ ...base, fetch });
+
+		await controller.confirmApprove();
+		expect(controller.getStatus()).toBe('transient_failure');
+		await controller.confirmApprove();
+
+		expect(fetch).toHaveBeenCalledTimes(2);
+		expect(controller.getStatus()).toBe('terminal_failure');
+		await controller.confirmApprove();
+		expect(fetch).toHaveBeenCalledTimes(2);
 	});
 });
