@@ -2,6 +2,8 @@
 	"name": "signkit",
 	"private": true,
 	"version": "0.0.1",
+	"license": "AGPL-3.0-only",
+	"packageManager": "pnpm@11.24.0",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
@@ -14,7 +16,7 @@
 		"preview": "vite preview",
 		"i18n:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide --strategy url cookie baseLocale --emit-ts-declarations --silent",
 		"clean:kit-build": "node ./scripts/clean-kit-build.mjs",
-		"prepare": "pnpm run i18n:compile && svelte-kit sync || echo ''",
+		"prepare": "pnpm run i18n:compile && svelte-kit sync",
 		"check": "pnpm run i18n:compile && pnpm run clean:kit-build && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
@@ -23,7 +25,7 @@
 		"test": "pnpm run test:unit -- --run"
 	},
 	"devDependencies": {
-		"@cloudflare/workers-types": "^5.20260910.1",
+		"@cloudflare/workers-types": "^5.20260911.1",
 		"@eslint/js": "^10.0.1",
 		"@fontsource-variable/geist": "^5.3.0",
 		"@inlang/paraglide-js": "^2.25.1",
@@ -64,6 +66,7 @@
 		"fflate": "^0.8.3",
 		"isomorphic-git": "^1.41.9",
 		"jose": "^6.2.12",
-		"postgres": "^3.4.9"
+		"postgres": "^3.4.9",
+		"zod": "^4.6.1"
 	}
 }

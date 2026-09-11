@@ -41,3 +41,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:${{ matrix.target }}
+      - if: matrix.target == 'cloudflare'
+        run: pnpm exec wrangler types --check src/worker-configuration.d.ts
+      - if: matrix.target == 'cloudflare'
+        run: pnpm exec wrangler d1 migrations apply signkit --local
+      - if: matrix.target == 'cloudflare'
+        run: pnpm exec wrangler deploy --dry-run
