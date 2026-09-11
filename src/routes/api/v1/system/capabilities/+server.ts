@@ -32,12 +32,23 @@ export const GET: RequestHandler = ({ platform }) => {
 			delivery: 'durable-outbox',
 			idempotency: 'required'
 		},
+		delivery: {
+			statusEndpoint: '/api/v1/envelopes/{envelopeId}/deliveries',
+			workerEndpoint: '/api/v1/system/deliveries/drain',
+			workerAuthentication: 'bearer-secret',
+			semantics: 'at-least-once',
+			transports: {
+				cloudflare: 'email-binding',
+				node: 'cloudflare-email-rest'
+			}
+		},
 		recipientAccess: {
 			endpoint: '/api/v1/signing/context',
 			documentsEndpoint: '/api/v1/signing/documents',
 			viewedEndpoint: '/api/v1/signing/viewed',
 			declineEndpoint: '/api/v1/signing/decline',
 			approveEndpoint: '/api/v1/signing/approve',
+			signEndpoint: '/api/v1/signing/sign',
 			linkExchange: '/s/{capability}',
 			webSurface: '/{locale}/sign',
 			authentication: 'bearer-capability',

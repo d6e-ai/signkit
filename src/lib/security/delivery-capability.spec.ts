@@ -17,6 +17,7 @@ describe('AesGcmRecipientCapabilitySealer', () => {
 		const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(key);
 		const issued = await issueRecipientCapability();
 		const sealed = await sealer.seal(issued.token, context);
+		expect(await sealer.currentSealingKeyId()).toBe(sealed.sealingKeyId);
 		expect(sealed.sealedCapability).toMatch(/^skdc1_/);
 		expect(sealed.sealedCapability).not.toContain(issued.token);
 		expect(sealed.sealedCapabilitySha256).toMatch(/^[0-9a-f]{64}$/);

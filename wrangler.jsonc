@@ -1,7 +1,7 @@
 {
 	"$schema": "./node_modules/wrangler/config-schema.json",
 	"name": "signkit",
-	"main": ".svelte-kit/cloudflare/_worker.js",
+	"main": "cloudflare-worker.mjs",
 	"compatibility_date": "2026-09-11",
 	"compatibility_flags": ["nodejs_compat"],
 	"assets": {
@@ -21,6 +21,10 @@
 			"bucket_name": "signkit-objects"
 		}
 	],
+	"send_email": [{ "name": "EMAIL" }],
+	"triggers": {
+		"crons": ["* * * * *"]
+	},
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1
