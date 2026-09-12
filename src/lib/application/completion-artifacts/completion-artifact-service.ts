@@ -153,6 +153,13 @@ export class CompletionArtifactPublicationService {
 		claim = refreshed;
 
 		try {
+			// A completed envelope that is missing (or only partially has) its
+			// repository pointer is corrupt data, isolated to this one row: the
+			// row mapping deliberately never throws for it (see toClaimedJob in
+			// both adapters), so this is the single place that turns it into a
+			// fail-closed, non-retryable outcome for only this envelope, leaving
+			// every other claim in the same batch unaffected.
+			assertClaimedPointerPresent(claim);
 			const evidence: CompletionEvidence = await this.#store.readCompletionEvidence(
 				claim.organizationId,
 				claim.envelopeId
@@ -446,6 +453,32 @@ function summarize(
 
 function encodeScopeSegment(value: string): string {
 	return encodeURIComponent(value).replaceAll('.', '%2E');
+}
+
+/**
+ * A `completed` envelope should always have pinned its repository pointer
+ * before completion, but the row mapping never enforces that (see
+ * `toClaimedJob`), so this is the one place that does: all three fields must
+ * be present together, or the claim fails closed as this envelope's own
+ * integrity error. Format and organization-scope validation still happens in
+ * `readImmutableDraftRevision`, unchanged, once presence is established here.
+ */
+function assertClaimedPointerPresent(
+	claim: ClaimedCompletionArtifactJob
+): asserts claim is ClaimedCompletionArtifactJob & {
+	sentCommitSha: string;
+	repositoryArchiveKey: string;
+	repositoryArchiveSha256: string;
+} {
+	if (
+		claim.sentCommitSha === null ||
+		claim.repositoryArchiveKey === null ||
+		claim.repositoryArchiveSha256 === null
+	) {
+		throw new CompletionArtifactIntegrityError(
+			'Claimed completion artifact envelope is missing its repository pointer'
+		);
+	}
 }
 
 /**

@@ -74,9 +74,17 @@ export interface ClaimedCompletionArtifactJob {
 	attempts: number;
 	lockedAt: string;
 	envelopeTitle: string;
-	sentCommitSha: string;
-	repositoryArchiveKey: string;
-	repositoryArchiveSha256: string;
+	/**
+	 * Null when a `completed` envelope's repository pointer is missing or
+	 * partial — data corruption the row mapping must never throw on, since a
+	 * throw here would poison an entire claimed batch (aborting the whole
+	 * PostgreSQL transaction, or leaving the D1 batch's other rows leased and
+	 * stuck). The publication service validates these three fields together,
+	 * per envelope, so one corrupt row fails closed in isolation.
+	 */
+	sentCommitSha: string | null;
+	repositoryArchiveKey: string | null;
+	repositoryArchiveSha256: string | null;
 	fieldGeneration: number;
 }
 

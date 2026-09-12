@@ -7,7 +7,7 @@ import { CompletionArtifactPublicationService } from '$lib/application/completio
 import { draftArchiveKey } from '$lib/application/drafts/draft-persistence';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
 import type { CompletionEvidenceAuditEvent } from '$lib/ports/completion-artifact-store';
-import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
 import { D1CompletionArtifactStore } from './d1-completion-artifact-store';
 import { sqliteD1Database } from './sqlite-d1-test-support';
 
@@ -518,6 +518,86 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 		}
 	});
 
+	it('isolates a corrupt completed envelope from a healthy sibling claimed in the same D1 batch', async () => {
+		const { database, sqlite } = await fixture();
+		try {
+			// A second completed envelope with no repository pointer at all —
+			// the row mapping must not throw for it (that would poison the
+			// whole discovery/claim batch, leaving env-1's lease stuck), and
+			// the service must fail only this envelope closed while env-1
+			// still publishes in the same call.
+			sqlite.exec(`
+				INSERT INTO envelope (
+					id, organization_id, title, status, repository_generation, repository_head,
+					repository_archive_key, repository_archive_sha256, sent_commit_sha,
+					field_generation, created_at, updated_at
+				) VALUES (
+					'env-corrupt','org-1','Corrupt Agreement','completed',1,NULL,NULL,NULL,NULL,1,
+					'2026-09-11T00:00:00.000Z','2026-09-11T00:02:00.000Z'
+				);
+			`);
+
+			const store = new D1CompletionArtifactStore(database);
+			const objects = new WorkingObjectStore();
+			objects.seed(ARCHIVE_KEY, ARCHIVE_BYTES);
+			const repository = fixedDraftRepository();
+			const service = new CompletionArtifactPublicationService(
+				store,
+				objects,
+				repository,
+				(): Date => new Date(CLAIMED_AT),
+				(): string => 'claim-token-mixed-batch-0001'
+			);
+
+			const result = await service.publishPendingCompletionArtifacts();
+			expect(result).toMatchObject({
+				claimed: 2,
+				published: 1,
+				integrityFailed: 1,
+				retryableFailed: 0,
+				stale: 0
+			});
+
+			const corruptJobRow = sqlite
+				.prepare(
+					`SELECT status, retryable, last_error, claim_token, locked_at
+					 FROM completion_artifact_job WHERE envelope_id = 'env-corrupt'`
+				)
+				.get() as Record<string, unknown>;
+			expect(corruptJobRow).toEqual({
+				status: 'failed',
+				retryable: 0,
+				last_error: 'completion_artifact_evidence_invalid',
+				claim_token: null,
+				locked_at: null
+			});
+
+			const healthyJobRow = sqlite
+				.prepare("SELECT status FROM completion_artifact_job WHERE envelope_id = 'env-1'")
+				.get() as Record<string, unknown>;
+			expect(healthyJobRow).toEqual({ status: 'published' });
+
+			const artifactCounts = sqlite
+				.prepare(
+					`SELECT
+						(SELECT COUNT(*) FROM completion_artifact WHERE envelope_id = 'env-1') AS healthy,
+						(SELECT COUNT(*) FROM completion_artifact WHERE envelope_id = 'env-corrupt') AS corrupt`
+				)
+				.get() as Record<string, unknown>;
+			expect(artifactCounts).toEqual({ healthy: 1, corrupt: 0 });
+
+			// No object access at all for the corrupt row: only the healthy
+			// envelope's archive read and its two artifact writes happened.
+			expect(objects.getCallCount).toBe(1);
+			expect(objects.putCallsByKey.size).toBe(2);
+			for (const key of objects.putCallsByKey.keys()) {
+				expect(key).toContain('/envelopes/env-1/');
+			}
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('fails and reports a stale outcome for a lost lease', async () => {
 		const { database, sqlite } = await fixture();
 		try {
@@ -796,6 +876,53 @@ class SeededObjectStore implements ObjectStore {
 
 	async putImmutable(): Promise<ObjectMetadata> {
 		throw new Error('This tamper scenario must never reach an artifact object write');
+	}
+
+	async delete(): Promise<void> {
+		throw new Error('unused');
+	}
+}
+
+/** A fully functional object store, for scenarios where a healthy sibling must actually publish. */
+class WorkingObjectStore implements ObjectStore {
+	private readonly objects = new Map<string, StoredArchive>();
+	putCallsByKey = new Map<string, number>();
+	getCallCount: number = 0;
+
+	seed(key: string, body: Uint8Array): void {
+		this.objects.set(key, { body: Uint8Array.from(body) });
+	}
+
+	async head(): Promise<ObjectMetadata | null> {
+		throw new Error('unused');
+	}
+
+	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+		this.getCallCount += 1;
+		const object = this.objects.get(key);
+		if (!object) return null;
+		const body = Uint8Array.from(object.body);
+		return new ReadableStream<Uint8Array>({
+			start(controller): void {
+				controller.enqueue(body);
+				controller.close();
+			}
+		});
+	}
+
+	async putImmutable(key: string, object: PutObject): Promise<ObjectMetadata> {
+		this.putCallsByKey.set(key, (this.putCallsByKey.get(key) ?? 0) + 1);
+		if (this.objects.has(key)) throw new Error('Object already exists');
+		if (!(object.body instanceof Uint8Array)) throw new Error('Test store requires buffered input');
+		const stored: StoredArchive = { body: Uint8Array.from(object.body) };
+		this.objects.set(key, stored);
+		return {
+			key,
+			contentType: object.contentType,
+			size: stored.body.byteLength,
+			sha256: object.sha256,
+			version: null
+		};
 	}
 
 	async delete(): Promise<void> {

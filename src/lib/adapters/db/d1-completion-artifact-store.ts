@@ -178,34 +178,7 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 			.bind(command.claimToken);
 		const results: D1Result[] = await this.#database.batch([discover, claim, readClaim]);
 		const rows: readonly ClaimCandidateRow[] = results[2].results as ClaimCandidateRow[];
-		const claimed: ClaimedCompletionArtifactJob[] = [];
-		for (const row of rows) {
-			if (
-				row.sent_commit_sha === null ||
-				row.repository_archive_key === null ||
-				row.repository_archive_sha256 === null
-			) {
-				// The claim batch above has already committed, so this row is
-				// already leased. A `completed` envelope missing its repository
-				// pointer is a data-integrity problem with this one row, not the
-				// batch: fail it terminally in place instead of throwing, which
-				// would leave the lease stuck until reclaim and repeat forever.
-				await this.#database
-					.prepare(
-						`UPDATE completion_artifact_job
-						 SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = 0,
-							last_error = 'completion_artifact_envelope_missing_repository_pointer',
-							updated_at = ?
-						 WHERE organization_id = ? AND envelope_id = ? AND status = 'processing'
-							AND claim_token = ?`
-					)
-					.bind(command.claimedAt, row.organization_id, row.envelope_id, command.claimToken)
-					.run();
-				continue;
-			}
-			claimed.push(toClaimedJob(row));
-		}
-		return claimed;
+		return rows.map(toClaimedJob);
 	}
 
 	async readClaimedCompletionArtifact(
@@ -515,13 +488,11 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 function toClaimedJob(row: ClaimCandidateRow): ClaimedCompletionArtifactJob {
 	if (row.locked_at === null)
 		throw new Error('Claimed completion artifact job is missing its lease');
-	if (
-		row.sent_commit_sha === null ||
-		row.repository_archive_key === null ||
-		row.repository_archive_sha256 === null
-	) {
-		throw new Error('Claimed completion artifact envelope is missing its repository pointer');
-	}
+	// A missing or partial repository pointer is real data corruption, but
+	// this mapping must never throw for it: doing so inside a batch map would
+	// discard every other claimed row in the same call, leaving their leases
+	// stuck until stale-reclaim. The publication service validates these
+	// fields together, per envelope, and fails only that one job closed.
 	return {
 		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,

@@ -1504,6 +1504,86 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		});
 	});
 
+	it('isolates a corrupt completed envelope from a healthy sibling claimed in the same PostgreSQL batch', async () => {
+		await seedVerifiedCompletionEnvelope();
+		// A second completed envelope with no repository pointer at all — the
+		// row mapping must not throw for it (that would abort the whole claim
+		// transaction, taking the healthy envelope's claim down with it), and
+		// the service must fail only this envelope closed while the healthy
+		// sibling still publishes in the same call.
+		const corruptEnvelopeId: string = '01900000-0000-7000-8000-000000000199';
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, sent_commit_sha, field_generation,
+			created_at, updated_at
+		) VALUES (
+			${corruptEnvelopeId}, ${ORGANIZATION_ID}, 'Corrupt Agreement', 'completed', 1, NULL,
+			NULL, NULL, NULL, 1,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:02:00.000Z'
+		)`;
+
+		const store = new PostgresCompletionArtifactStore(database());
+		const objects = new RealMemoryObjectStore();
+		objects.seed(
+			draftArchiveKey(ORGANIZATION_ID, ENVELOPE_ID, VERIFIED_ARCHIVE_SHA256),
+			VERIFIED_ARCHIVE_BYTES
+		);
+		const repository = new FixedPostgresDraftRepository(COMMIT_SHA, [
+			{ path: 'documents/agreement.md', content: 'Agreement body' }
+		]);
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			(): Date => new Date(Date.now()),
+			(): string => 'completion-artifact-mixed-batch-0001'
+		);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({
+			claimed: 2,
+			published: 1,
+			integrityFailed: 1,
+			retryableFailed: 0,
+			stale: 0
+		});
+
+		const corruptJobRow = await database()<
+			{ status: string; retryable: boolean; lastError: string | null; claimToken: string | null }[]
+		>`SELECT status, retryable, last_error AS "lastError", claim_token AS "claimToken"
+			FROM completion_artifact_job
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${corruptEnvelopeId}`;
+		expect(corruptJobRow).toEqual([
+			{
+				status: 'failed',
+				retryable: false,
+				lastError: 'completion_artifact_evidence_invalid',
+				claimToken: null
+			}
+		]);
+
+		const healthyJobRow = await database()<
+			{ status: string }[]
+		>`SELECT status FROM completion_artifact_job
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+		expect(healthyJobRow).toEqual([{ status: 'published' }]);
+
+		const artifactCounts = await database()<
+			{ envelopeId: string; count: string }[]
+		>`SELECT envelope_id AS "envelopeId", COUNT(*) AS count FROM completion_artifact
+			WHERE organization_id = ${ORGANIZATION_ID}
+			GROUP BY envelope_id`;
+		expect(artifactCounts).toEqual([{ envelopeId: ENVELOPE_ID, count: '1' }]);
+
+		// No object access at all for the corrupt row: only the healthy
+		// envelope's archive read and its two artifact writes happened.
+		expect(objects.getCallCount).toBe(1);
+		expect(objects.putCallsByKey.size).toBe(2);
+		for (const key of objects.putCallsByKey.keys()) {
+			expect(key).toContain(`/envelopes/${ENVELOPE_ID}/`);
+		}
+	});
+
 	it('fails closed and publishes no artifact or audit event when value_json is tampered but value_sha256 is unchanged', async () => {
 		await seedDraftEnvelope();
 		const ready = await readyEnvelope([
@@ -1912,6 +1992,12 @@ interface StoredVerifiedArchive {
 /** A genuinely working in-memory object store, for tests that drive a real DraftPersistenceService.commit(). */
 class RealMemoryObjectStore implements ObjectStore {
 	private readonly objects = new Map<string, StoredVerifiedArchive>();
+	putCallsByKey = new Map<string, number>();
+	getCallCount: number = 0;
+
+	seed(key: string, body: Uint8Array): void {
+		this.objects.set(key, { body: Uint8Array.from(body) });
+	}
 
 	async head(key: string): Promise<ObjectMetadata | null> {
 		const object = this.objects.get(key);
@@ -1920,6 +2006,7 @@ class RealMemoryObjectStore implements ObjectStore {
 	}
 
 	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+		this.getCallCount += 1;
 		const object = this.objects.get(key);
 		if (!object) return null;
 		const body = Uint8Array.from(object.body);
@@ -1932,6 +2019,7 @@ class RealMemoryObjectStore implements ObjectStore {
 	}
 
 	async putImmutable(key: string, object: PutObject): Promise<ObjectMetadata> {
+		this.putCallsByKey.set(key, (this.putCallsByKey.get(key) ?? 0) + 1);
 		if (this.objects.has(key)) throw new Error('Object already exists');
 		if (!(object.body instanceof Uint8Array)) throw new Error('Test store requires buffered input');
 		const stored: StoredVerifiedArchive = { body: Uint8Array.from(object.body) };

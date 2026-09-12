@@ -36,6 +36,7 @@ interface StoredObject {
 class MemoryObjectStore implements ObjectStore {
 	private readonly objects = new Map<string, StoredObject>();
 	putCallsByKey = new Map<string, number>();
+	getCallsByKey = new Map<string, number>();
 
 	seed(key: string, body: Uint8Array, sha256: string): void {
 		this.objects.set(key, { body: Uint8Array.from(body), sha256 });
@@ -46,6 +47,7 @@ class MemoryObjectStore implements ObjectStore {
 	}
 
 	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+		putCounts(this.getCallsByKey, key);
 		const object = this.objects.get(key);
 		if (!object) return null;
 		const body = Uint8Array.from(object.body);
@@ -225,6 +227,12 @@ const DEFAULT_ARCHIVE_SHA256: string = 'a'.repeat(64);
 const FIELD_VALUE_JSON: string = '"Signed"';
 const FIELD_VALUE_SHA256: string = sha256Hex(new TextEncoder().encode(FIELD_VALUE_JSON));
 
+/** Narrows a nullable claim field for test helpers that construct only complete (non-corrupt) claims. */
+function requireString(value: string | null): string {
+	if (value === null) throw new Error('Expected a non-null claim field in this test fixture');
+	return value;
+}
+
 function claim(
 	overrides: Partial<ClaimedCompletionArtifactJob> = {}
 ): ClaimedCompletionArtifactJob {
@@ -332,7 +340,7 @@ function claimWithSeededArchive(
 		repositoryArchiveSha256: archiveSha256,
 		...overrides
 	});
-	objects.seed(claimed.repositoryArchiveKey, archiveBytes, archiveSha256);
+	objects.seed(requireString(claimed.repositoryArchiveKey), archiveBytes, archiveSha256);
 	return claimed;
 }
 
@@ -443,7 +451,10 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		const archiveBytes: Uint8Array = new TextEncoder().encode('fake-git-archive');
 		const archiveSha256: string = sha256Hex(archiveBytes);
 		const claimed: ClaimedCompletionArtifactJob = claim({ repositoryArchiveSha256: archiveSha256 });
-		const objects = new ArchiveOnlyObjectStore(claimed.repositoryArchiveKey, archiveBytes);
+		const objects = new ArchiveOnlyObjectStore(
+			requireString(claimed.repositoryArchiveKey),
+			archiveBytes
+		);
 		store.claims = [claimed];
 		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
 		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
@@ -590,6 +601,57 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 			errorCode: 'completion_artifact_evidence_invalid',
 			retryable: false
 		});
+	});
+
+	it('isolates a corrupt claim missing its repository pointer from a healthy sibling in the same batch', async () => {
+		const store = new FakeCompletionArtifactStore();
+		const objects = new MemoryObjectStore();
+		const healthyClaim = claimWithSeededArchive(objects);
+		const corruptClaim = claim({
+			envelopeId: 'envelope-corrupt',
+			sentCommitSha: null,
+			repositoryArchiveKey: null,
+			repositoryArchiveSha256: null
+		});
+		store.claims = [corruptClaim, healthyClaim];
+		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
+		// Deliberately no evidence fixture for 'envelope-corrupt': if the
+		// pointer guard did not fire before readCompletionEvidence, this would
+		// throw a plain Error (retryable), not an integrity error, so the
+		// assertion below also proves no further work happened for this row.
+		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
+		const service = new CompletionArtifactPublicationService(store, objects, repository, () => NOW);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({
+			claimed: 2,
+			published: 1,
+			integrityFailed: 1,
+			retryableFailed: 0,
+			stale: 0
+		});
+
+		const corruptFailure = store.failCalls.find((call) => call.envelopeId === 'envelope-corrupt');
+		expect(corruptFailure).toMatchObject({
+			errorCode: 'completion_artifact_evidence_invalid',
+			retryable: false
+		});
+
+		const healthyPublish = store.publishCalls.find((call) => call.envelopeId === ENVELOPE_ID);
+		expect(healthyPublish).toBeDefined();
+		expect(store.failCalls.some((call) => call.envelopeId === ENVELOPE_ID)).toBe(false);
+
+		// No object access at all for the corrupt row: only the healthy
+		// envelope's archive read and json+markdown writes ever happened.
+		expect(objects.putCallsByKey.size).toBe(2);
+		for (const key of objects.putCallsByKey.keys()) {
+			expect(key).toContain(`/envelopes/${ENVELOPE_ID}/`);
+			expect(key).not.toContain('envelope-corrupt');
+		}
+		expect(objects.getCallsByKey.size).toBe(1);
+		for (const key of objects.getCallsByKey.keys()) {
+			expect(key).not.toContain('envelope-corrupt');
+		}
 	});
 
 	it('retries a transient object-store failure and eventually exhausts attempts', async () => {
