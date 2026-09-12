@@ -2990,6 +2990,15 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					{ cursor: '01900000-0000-7000-8000-000000000998', limit: 10 }
 				)
 			).resolves.toEqual({ outcome: 'listed', page: { items: [], nextCursor: null } });
+			// The service no longer answers a malformed cursor on its own, so the
+			// store receives it: it is bound as a parameter against a text id column
+			// and matches nothing, which is the same opaque empty page.
+			await expect(
+				apiKeyStore().listApiKeys(
+					{ type: 'user', id: ACTOR.id },
+					{ cursor: 'not-a-uuid', limit: 10 }
+				)
+			).resolves.toEqual({ outcome: 'listed', page: { items: [], nextCursor: null } });
 		});
 
 		it('revokes once, replays the original key, and reports already_revoked for a fresh key', async () => {
@@ -3117,6 +3126,13 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			});
 			await expect(
 				apiKeyStore().listApiKeys({ type: 'user', id: ACTOR.id }, { cursor: null, limit: 10 })
+			).resolves.toEqual({ outcome: 'owner_not_active' });
+			// A malformed cursor must not short-circuit that authorization.
+			await expect(
+				apiKeyStore().listApiKeys(
+					{ type: 'user', id: ACTOR.id },
+					{ cursor: 'not-a-uuid', limit: 10 }
+				)
 			).resolves.toEqual({ outcome: 'owner_not_active' });
 			await database()`UPDATE instance_member SET status = 'suspended' WHERE user_id = ${ACTOR.id}`;
 			await expect(apiKeyStore().revokeApiKey(apiKeyRevokeCommand())).resolves.toEqual({
