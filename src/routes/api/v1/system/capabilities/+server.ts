@@ -75,6 +75,18 @@ export const GET: RequestHandler = ({ platform }) => {
 			states: ['sent', 'in_progress'],
 			cache: 'no-store'
 		},
+		completionArtifact: {
+			statusEndpoint: '/api/v1/envelopes/{envelopeId}/completion-artifact',
+			workerEndpoint: '/api/v1/system/completion-artifacts/drain',
+			workerAuthentication: 'bearer-secret',
+			authentication: 'organization-session',
+			discovery: 'reconciliation-job',
+			manifestSchema: 'signkit-completion-manifest-v1',
+			artifacts: ['json', 'markdown'],
+			auditVerification: 'bounded-per-event-hash-rederivation',
+			ccDelivery: 'planned',
+			publicArtifactGrants: 'planned'
+		},
 		automation: { idempotencyKeys: true, actorProvenance: true, webhooks: 'planned' }
 	});
 };

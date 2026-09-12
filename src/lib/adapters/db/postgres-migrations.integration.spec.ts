@@ -2,7 +2,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { DraftPersistenceService } from '$lib/application/drafts/draft-persistence';
+import {
+	DraftPersistenceService,
+	draftArchiveKey
+} from '$lib/application/drafts/draft-persistence';
+import { buildVerifiedAuditChain } from '$lib/application/completion-artifacts/audit-chain-test-support';
+import { auditEventHashPreimage } from '$lib/application/completion-artifacts/audit-event-integrity';
+import { CompletionArtifactPublicationService } from '$lib/application/completion-artifacts/completion-artifact-service';
+import { sha256TextHex } from '$lib/application/completion-artifacts/completion-manifest';
+import { EnvelopeApplication } from '$lib/application/envelopes/service';
 import { EnvelopeFieldApplication } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import {
@@ -11,6 +19,7 @@ import {
 } from '$lib/application/envelopes/ready';
 import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
 import { EnvelopeVoidApplication } from '$lib/application/envelopes/void';
+import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import {
 	RecipientApprovedApplication,
 	type RecipientApprovedResult
@@ -22,14 +31,19 @@ import {
 	type RecipientSignedResult
 } from '$lib/application/signing/recipient-signed';
 import type { EnvelopeField } from '$lib/domain/envelope';
+import type { CompletionEvidenceAuditEvent } from '$lib/ports/completion-artifact-store';
+import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
 import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
 import type { PublishReadyEnvelopeCommand } from '$lib/ports/envelope-ready-store';
 import type { EnvelopeSendStore, PublishSentEnvelopeCommand } from '$lib/ports/envelope-send-store';
+import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
 import {
 	AesGcmRecipientCapabilitySealer,
 	type RecipientCapabilitySealer
 } from '$lib/security/delivery-capability';
+import { PostgresCompletionArtifactStore } from './postgres-completion-artifact-store';
 import { PostgresDeliveryOutboxStore } from './postgres-delivery-outbox-store';
+import { PostgresEnvelopeApplicationStore } from './postgres-envelope-application-store';
 import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
 import { PostgresEnvelopeReadyStore } from './postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from './postgres-envelope-send-store';
@@ -91,7 +105,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	});
 
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
-		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0014_envelope_voided.sql');
+		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0015_completion_artifacts.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -99,6 +113,9 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(relations.map((row: { name: string }): string => row.name)).toEqual(
 			expect.arrayContaining([
 				'audit_event',
+				'completion_artifact',
+				'completion_artifact_job',
+				'completion_artifact_publish_command',
 				'delivery_outbox',
 				'envelope',
 				'envelope_field',
@@ -1214,7 +1231,893 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			}
 		]);
 	});
+
+	it('discovers, claims, and atomically publishes a completion artifact under PostgreSQL locks', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope([
+			{
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer',
+				locale: 'en',
+				routingOrder: 1
+			}
+		]);
+		const signerId: string = ready.recipients.find(
+			(recipient): boolean => recipient.role === 'signer'
+		)?.id as string;
+		const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
+			TEST_DELIVERY_ENCRYPTION_KEY
+		);
+		await new EnvelopeSendApplication(new PostgresEnvelopeSendStore(database()), sealer).send(
+			ACTOR,
+			ENVELOPE_ID,
+			{
+				idempotencyKey: 'send-before-completion-artifact',
+				expectedGeneration: 1,
+				expectedReadyAuditEventId: ready.auditEventId
+			}
+		);
+		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
+		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND id = ${signerId}`;
+		const delivery = await database()<
+			{ deliveryId: string; sealedCapability: string }[]
+		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND recipient_id = ${signerId}`;
+		const token: string = await sealer.open(delivery[0].sealedCapability, {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			recipientId: signerId,
+			deliveryId: delivery[0].deliveryId
+		});
+		const signResult = await new RecipientSignedApplication(
+			new PostgresRecipientSignStore(database()),
+			(): Date => new Date(completedAt)
+		).sign({
+			token,
+			expectedEnvelopeId: ENVELOPE_ID,
+			expectedRecipientId: signerId,
+			expectedFieldGeneration: 0,
+			idempotencyKey: 'sign-completion-artifact',
+			values: []
+		});
+		expect(signResult).toMatchObject({
+			outcome: 'published',
+			result: { envelopeStatus: 'completed' }
+		});
+
+		const store = new PostgresCompletionArtifactStore(database());
+		// Regression: a completed envelope queried before the reconciliation
+		// job is discovered must read as pending with zero attempts, not
+		// not_completed.
+		const statusBeforeDiscovery = await store.findCompletionArtifactStatus(
+			ORGANIZATION_ID,
+			ENVELOPE_ID
+		);
+		expect(statusBeforeDiscovery).toEqual({
+			envelopeId: ENVELOPE_ID,
+			envelopeCompleted: true,
+			jobStatus: null,
+			attempts: null,
+			lastError: null,
+			availableAt: null,
+			published: null
+		});
+
+		const claimToken: string = 'completion-artifact-claim-0001';
+		const claimedAt: string = new Date(Date.now() + 2_000).toISOString();
+		const claims = await store.claimPendingCompletionArtifacts({
+			claimToken,
+			claimedAt,
+			staleBefore: new Date(Date.parse(claimedAt) - 300_000).toISOString(),
+			discoveryLimit: 25,
+			claimLimit: 10
+		});
+		expect(claims).toHaveLength(1);
+		expect(claims[0]).toMatchObject({ envelopeId: ENVELOPE_ID, sentCommitSha: COMMIT_SHA });
+
+		const evidence = await store.readCompletionEvidence(ORGANIZATION_ID, ENVELOPE_ID);
+		expect(evidence.recipients).toEqual([
+			expect.objectContaining({
+				id: signerId,
+				status: 'completed',
+				decisionEventId: expect.any(String)
+			})
+		]);
+		const anchor = evidence.auditEvents[evidence.auditEvents.length - 1];
+		expect(anchor.eventType).toBe('envelope.completed');
+
+		const publishCommand = {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			claimToken,
+			sentCommitSha: COMMIT_SHA,
+			fieldGeneration: 0,
+			anchorAuditEventId: anchor.id,
+			expectedAuditSequence: anchor.sequence,
+			previousAuditHash: anchor.eventHash,
+			manifestSha256: 'm'.repeat(64),
+			jsonObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${'j'.repeat(64)}.json.gz`,
+			jsonSha256: 'j'.repeat(64),
+			markdownObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${'d'.repeat(64)}.md.gz`,
+			markdownSha256: 'd'.repeat(64),
+			updatedAt: new Date(Date.now() + 3_000).toISOString(),
+			auditEventId: '01900000-0000-7000-8000-000000000091',
+			auditEventHash: 'e'.repeat(64),
+			auditPayloadJson: '{}'
+		};
+		const published = await store.publishCompletionArtifact(publishCommand);
+		expect(published).toMatchObject({ outcome: 'published' });
+		const replayed = await store.publishCompletionArtifact(publishCommand);
+		expect(replayed).toMatchObject({ outcome: 'replayed' });
+		const conflicting = await store.publishCompletionArtifact({
+			...publishCommand,
+			manifestSha256: 'f'.repeat(64)
+		});
+		expect(conflicting).toEqual({ outcome: 'integrity_error' });
+
+		const status = await store.findCompletionArtifactStatus(ORGANIZATION_ID, ENVELOPE_ID);
+		expect(status).toMatchObject({
+			jobStatus: 'published',
+			published: { manifestSha256: 'm'.repeat(64) }
+		});
+		const jobRow = await database()<
+			{ status: string; claimToken: string | null }[]
+		>`SELECT status, claim_token AS "claimToken" FROM completion_artifact_job
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+		expect(jobRow).toEqual([{ status: 'published', claimToken: null }]);
+	});
+
+	it('publishes a completion artifact end to end from an audit chain written entirely by real writer paths', async () => {
+		// Positive control: every audit event here — envelope.created,
+		// draft.revision_created, envelope.ready, envelope.sent,
+		// recipient.signed, envelope.completed — is produced by the real
+		// application classes, not seeded SQL. This proves the recompute in
+		// verifyCompletionAuditChain matches what real writers actually hash,
+		// not just what a test fixture was built to satisfy.
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+
+		const created = await new EnvelopeApplication(
+			new PostgresEnvelopeApplicationStore(database())
+		).create(ACTOR, { idempotencyKey: 'real-writer-create', title: 'Agreement' });
+		if (created.outcome === 'conflict') throw new Error('Expected envelope creation to succeed');
+		const envelopeId: string = created.envelope.id;
+
+		const objects = new RealMemoryObjectStore();
+		const repository = new IsomorphicGitDraftRepository();
+		const drafts = new DraftPersistenceService(
+			new PostgresEnvelopeApplicationStore(database()),
+			objects,
+			repository
+		);
+		const commit = await drafts.commit({
+			organizationId: ORGANIZATION_ID,
+			envelopeId,
+			expectedGeneration: 0,
+			edits: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+			message: 'Create agreement',
+			actor: { id: ACTOR.id, name: 'Actor', email: 'actor@example.com', type: 'user' },
+			idempotencyKey: 'real-writer-draft'
+		});
+		if (commit.outcome !== 'committed') throw new Error('Expected the draft commit to succeed');
+
+		const ready = await new EnvelopeReadyApplication(
+			new PostgresEnvelopeReadyStore(database())
+		).ready(ACTOR, envelopeId, {
+			idempotencyKey: 'real-writer-ready',
+			expectedGeneration: 1,
+			recipients: [
+				{
+					email: 'signer@example.com',
+					name: 'Signer',
+					role: 'signer',
+					locale: 'en',
+					routingOrder: 1
+				}
+			]
+		});
+		if (ready.outcome !== 'published') throw new Error('Expected ready to succeed');
+		const signerId: string = ready.result.recipients[0].id;
+
+		const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
+			TEST_DELIVERY_ENCRYPTION_KEY
+		);
+		const sent = await new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			sealer
+		).send(ACTOR, envelopeId, {
+			idempotencyKey: 'real-writer-send',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.result.auditEventId
+		});
+		if (sent.outcome !== 'published') throw new Error('Expected send to succeed');
+
+		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
+		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${envelopeId}
+				AND id = ${signerId}`;
+		const delivery = await database()<
+			{ deliveryId: string; sealedCapability: string }[]
+		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${envelopeId}
+				AND recipient_id = ${signerId}`;
+		const token: string = await sealer.open(delivery[0].sealedCapability, {
+			organizationId: ORGANIZATION_ID,
+			envelopeId,
+			recipientId: signerId,
+			deliveryId: delivery[0].deliveryId
+		});
+		const signResult = await new RecipientSignedApplication(
+			new PostgresRecipientSignStore(database()),
+			(): Date => new Date(completedAt)
+		).sign({
+			token,
+			expectedEnvelopeId: envelopeId,
+			expectedRecipientId: signerId,
+			expectedFieldGeneration: 0,
+			idempotencyKey: 'real-writer-sign',
+			values: []
+		});
+		expect(signResult).toMatchObject({
+			outcome: 'published',
+			result: { envelopeStatus: 'completed' }
+		});
+
+		// Independently recompute every stored event_hash before ever handing
+		// the chain to the publication service, so a failure here points
+		// specifically at the recompute rather than the service's plumbing.
+		const store = new PostgresCompletionArtifactStore(database());
+		const evidence = await store.readCompletionEvidence(ORGANIZATION_ID, envelopeId);
+		expect(evidence.auditEvents.map((event) => event.eventType)).toEqual([
+			'envelope.created',
+			'draft.revision_created',
+			'envelope.ready',
+			'envelope.sent',
+			'recipient.signed',
+			'envelope.completed'
+		]);
+		for (const event of evidence.auditEvents) {
+			const payload: unknown = JSON.parse(event.payloadJson);
+			const preimage: string = auditEventHashPreimage(event, payload, {
+				organizationId: ORGANIZATION_ID,
+				envelopeId
+			});
+			expect(await sha256TextHex(preimage)).toBe(event.eventHash);
+		}
+
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			(): Date => new Date(Date.now() + 2_000)
+		);
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({
+			claimed: 1,
+			published: 1,
+			integrityFailed: 0,
+			retryableFailed: 0
+		});
+	});
+
+	it('isolates a corrupt completed envelope from a healthy sibling claimed in the same PostgreSQL batch', async () => {
+		await seedVerifiedCompletionEnvelope();
+		// A second completed envelope with no repository pointer at all — the
+		// row mapping must not throw for it (that would abort the whole claim
+		// transaction, taking the healthy envelope's claim down with it), and
+		// the service must fail only this envelope closed while the healthy
+		// sibling still publishes in the same call.
+		const corruptEnvelopeId: string = '01900000-0000-7000-8000-000000000199';
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, sent_commit_sha, field_generation,
+			created_at, updated_at
+		) VALUES (
+			${corruptEnvelopeId}, ${ORGANIZATION_ID}, 'Corrupt Agreement', 'completed', 1, NULL,
+			NULL, NULL, NULL, 1,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:02:00.000Z'
+		)`;
+
+		const store = new PostgresCompletionArtifactStore(database());
+		const objects = new RealMemoryObjectStore();
+		objects.seed(
+			draftArchiveKey(ORGANIZATION_ID, ENVELOPE_ID, VERIFIED_ARCHIVE_SHA256),
+			VERIFIED_ARCHIVE_BYTES
+		);
+		const repository = new FixedPostgresDraftRepository(COMMIT_SHA, [
+			{ path: 'documents/agreement.md', content: 'Agreement body' }
+		]);
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			(): Date => new Date(Date.now()),
+			(): string => 'completion-artifact-mixed-batch-0001'
+		);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({
+			claimed: 2,
+			published: 1,
+			integrityFailed: 1,
+			retryableFailed: 0,
+			stale: 0
+		});
+
+		const corruptJobRow = await database()<
+			{ status: string; retryable: boolean; lastError: string | null; claimToken: string | null }[]
+		>`SELECT status, retryable, last_error AS "lastError", claim_token AS "claimToken"
+			FROM completion_artifact_job
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${corruptEnvelopeId}`;
+		expect(corruptJobRow).toEqual([
+			{
+				status: 'failed',
+				retryable: false,
+				lastError: 'completion_artifact_evidence_invalid',
+				claimToken: null
+			}
+		]);
+
+		const healthyJobRow = await database()<
+			{ status: string }[]
+		>`SELECT status FROM completion_artifact_job
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+		expect(healthyJobRow).toEqual([{ status: 'published' }]);
+
+		const artifactCounts = await database()<
+			{ envelopeId: string; count: string }[]
+		>`SELECT envelope_id AS "envelopeId", COUNT(*) AS count FROM completion_artifact
+			WHERE organization_id = ${ORGANIZATION_ID}
+			GROUP BY envelope_id`;
+		expect(artifactCounts).toEqual([{ envelopeId: ENVELOPE_ID, count: '1' }]);
+
+		// No object access at all for the corrupt row: only the healthy
+		// envelope's archive read and its two artifact writes happened.
+		expect(objects.getCallCount).toBe(1);
+		expect(objects.putCallsByKey.size).toBe(2);
+		for (const key of objects.putCallsByKey.keys()) {
+			expect(key).toContain(`/envelopes/${ENVELOPE_ID}/`);
+		}
+	});
+
+	it('fails closed and publishes no artifact or audit event when value_json is tampered but value_sha256 is unchanged', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope([
+			{
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer',
+				locale: 'en',
+				routingOrder: 1
+			}
+		]);
+		const signerId: string = ready.recipients.find(
+			(recipient): boolean => recipient.role === 'signer'
+		)?.id as string;
+		const drafts = {
+			readWorkspace: async () => ({
+				generation: 1,
+				commitSha: COMMIT_SHA,
+				archiveKey: 'archives/integration.git.gz',
+				archiveSha256: ARCHIVE_SHA256,
+				documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+			})
+		} as unknown as DraftPersistenceService;
+		const fieldResult = await new EnvelopeFieldApplication(
+			new PostgresEnvelopeFieldStore(database()),
+			drafts
+		).place(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'fields-tamper-integration',
+			expectedGeneration: 1,
+			expectedFieldGeneration: 0,
+			fields: [
+				{
+					recipientId: signerId,
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					label: 'Signature',
+					required: true,
+					position: 1
+				}
+			]
+		});
+		if (fieldResult.outcome !== 'published') throw new Error('Expected field placement to publish');
+		const fieldId: string = fieldResult.result.fields[0].id;
+
+		const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
+			TEST_DELIVERY_ENCRYPTION_KEY
+		);
+		await new EnvelopeSendApplication(new PostgresEnvelopeSendStore(database()), sealer).send(
+			ACTOR,
+			ENVELOPE_ID,
+			{
+				idempotencyKey: 'send-before-tamper',
+				expectedGeneration: 1,
+				expectedReadyAuditEventId: ready.auditEventId
+			}
+		);
+		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
+		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND id = ${signerId}`;
+		const delivery = await database()<
+			{ deliveryId: string; sealedCapability: string }[]
+		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND recipient_id = ${signerId}`;
+		const token: string = await sealer.open(delivery[0].sealedCapability, {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			recipientId: signerId,
+			deliveryId: delivery[0].deliveryId
+		});
+		const signResult = await new RecipientSignedApplication(
+			new PostgresRecipientSignStore(database()),
+			(): Date => new Date(completedAt)
+		).sign({
+			token,
+			expectedEnvelopeId: ENVELOPE_ID,
+			expectedRecipientId: signerId,
+			expectedFieldGeneration: 1,
+			idempotencyKey: 'sign-tamper-integration',
+			values: [{ fieldId, value: 'Jane Doe' }]
+		});
+		expect(signResult).toMatchObject({
+			outcome: 'published',
+			result: { envelopeStatus: 'completed' }
+		});
+
+		// Tampering: the signed value_json is altered after the fact while
+		// value_sha256 is left at its originally-correct digest. The
+		// integrity check must reject this before touching Git or object
+		// storage, so both doubles below throw if ever invoked.
+		await database()`UPDATE field_value SET value_json = '"Tampered"'
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND field_id = ${fieldId}`;
+
+		const store = new PostgresCompletionArtifactStore(database());
+		const objects = new UnreachablePostgresObjectStore();
+		const repository = new UnreachablePostgresDraftRepository();
+		const claimedAt: string = new Date(Date.now() + 2_000).toISOString();
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			(): Date => new Date(claimedAt),
+			(): string => 'completion-artifact-tamper-claim-0001'
+		);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ claimed: 1, integrityFailed: 1, published: 0 });
+
+		const artifactCount = await database()<
+			{ count: string }[]
+		>`SELECT COUNT(*) AS count FROM completion_artifact
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+		expect(Number(artifactCount[0].count)).toBe(0);
+
+		const publishedAuditCount = await database()<
+			{ count: string }[]
+		>`SELECT COUNT(*) AS count FROM audit_event
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND event_type = 'envelope.completion_artifact_published'`;
+		expect(Number(publishedAuditCount[0].count)).toBe(0);
+
+		const jobRow = await database()<
+			{ status: string; retryable: boolean; lastError: string | null }[]
+		>`SELECT status, retryable, last_error AS "lastError" FROM completion_artifact_job
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+		expect(jobRow).toEqual([
+			{ status: 'failed', retryable: false, lastError: 'completion_artifact_evidence_invalid' }
+		]);
+	});
+
+	describe('completion audit chain integrity (real Postgres)', () => {
+		it('fails closed when the terminal envelope.completed payload is altered', async () => {
+			const { anchor } = await seedVerifiedCompletionEnvelope();
+			await database()`UPDATE audit_event SET payload_json = ${JSON.stringify({
+				sentCommitSha: COMMIT_SHA,
+				completedAt: '2099-01-01T00:00:00.000Z'
+			})} WHERE organization_id = ${ORGANIZATION_ID} AND id = ${anchor.id}`;
+			await expectCompletionArtifactFailClosed();
+		});
+
+		it('fails closed when the terminal envelope.completed occurred_at is altered', async () => {
+			const { anchor } = await seedVerifiedCompletionEnvelope();
+			await database()`UPDATE audit_event SET occurred_at = occurred_at + interval '1 millisecond'
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${anchor.id}`;
+			await expectCompletionArtifactFailClosed();
+		});
+
+		it('fails closed when a mid-chain draft.revision_created event is altered', async () => {
+			const { events } = await seedVerifiedCompletionEnvelope();
+			const draftEvent = events.find(
+				(event) => event.eventType === 'draft.revision_created'
+			) as CompletionEvidenceAuditEvent;
+			await database()`UPDATE audit_event SET payload_json = ${JSON.stringify({
+				generation: 1,
+				commitSha: COMMIT_SHA,
+				archiveSha256: 'f'.repeat(64),
+				changedPaths: ['documents/agreement.md']
+			})} WHERE organization_id = ${ORGANIZATION_ID} AND id = ${draftEvent.id}`;
+			await expectCompletionArtifactFailClosed();
+		});
+
+		it('fails closed when a recipient row is inserted that the envelope.ready event never declared', async () => {
+			await seedVerifiedCompletionEnvelope();
+			await database()`INSERT INTO recipient (
+				id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+				capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
+			) VALUES (
+				'recipient-extra', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'extra@example.com', 'Extra',
+				'viewer', 'en', 1, 'pending', NULL, NULL, NULL,
+				'2026-09-11T00:01:00.000Z', '2026-09-11T00:01:00.000Z'
+			)`;
+			await expectCompletionArtifactFailClosed();
+		});
+
+		it("fails closed when a recipient's role drifts from the envelope.ready declaration", async () => {
+			await seedVerifiedCompletionEnvelope();
+			await database()`UPDATE recipient SET role = 'approver'
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = 'recipient-1'`;
+			await expectCompletionArtifactFailClosed();
+		});
+
+		it('fails closed when a field_value row is inserted after signing', async () => {
+			await seedVerifiedCompletionEnvelope();
+			await database()`INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
+				required, position, created_at, updated_at
+			) VALUES (
+				'field-extra', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'recipient-1', 'documents/agreement.md',
+				'date', 'Signed date', true, 2, '2026-09-11T00:01:00.000Z', '2026-09-11T00:01:00.000Z'
+			)`;
+			await database()`INSERT INTO field_value (
+				organization_id, field_id, envelope_id, recipient_id, field_type, value_json,
+				value_sha256, created_at
+			) VALUES (
+				${ORGANIZATION_ID}, 'field-extra', ${ENVELOPE_ID}, 'recipient-1', 'date',
+				${EXTRA_FIELD_VALUE_JSON}, ${EXTRA_FIELD_VALUE_SHA256}, '2026-09-11T00:02:00.000Z'
+			)`;
+			await expectCompletionArtifactFailClosed();
+		});
+
+		it('fails closed when a field_value row is deleted after signing', async () => {
+			await seedVerifiedCompletionEnvelope();
+			await database()`DELETE FROM field_value
+				WHERE organization_id = ${ORGANIZATION_ID} AND field_id = 'field-1'`;
+			await expectCompletionArtifactFailClosed();
+		});
+
+		it('fails closed when occurred_at is altered below millisecond precision', async () => {
+			const { anchor } = await seedVerifiedCompletionEnvelope();
+			await database()`UPDATE audit_event SET occurred_at = occurred_at + interval '400 microseconds'
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${anchor.id}`;
+			await expectCompletionArtifactFailClosed();
+		});
+	});
 });
+
+const VERIFIED_ARCHIVE_BYTES: Uint8Array = new TextEncoder().encode('fake-git-archive-postgres');
+const VERIFIED_ARCHIVE_SHA256: string = createHash('sha256')
+	.update(VERIFIED_ARCHIVE_BYTES)
+	.digest('hex');
+const VERIFIED_FIELD_VALUE_JSON: string = '"Signed"';
+const VERIFIED_FIELD_VALUE_SHA256: string = createHash('sha256')
+	.update(VERIFIED_FIELD_VALUE_JSON)
+	.digest('hex');
+const VERIFIED_SIGNED_AT: string = '2026-09-11T00:01:30.000Z';
+const VERIFIED_COMPLETED_AT: string = '2026-09-11T00:02:00.000Z';
+const EXTRA_FIELD_VALUE_JSON: string = '"2026-09-11"';
+const EXTRA_FIELD_VALUE_SHA256: string = createHash('sha256')
+	.update(EXTRA_FIELD_VALUE_JSON)
+	.digest('hex');
+
+/**
+ * A self-contained, real hash-verified 4-event completion audit chain
+ * (envelope.created, a mid-chain draft.revision_created, recipient.signed
+ * declaring field-1, and the envelope.completed anchor) inserted directly —
+ * bypassing the wider recipient state-machine fixtures, which seed their own
+ * early events with placeholder (non-cryptographic) hashes that are fine for
+ * store-level tests but would make every chain-hash tamper test below fail
+ * for the wrong reason.
+ */
+async function seedVerifiedCompletionEnvelope(): Promise<{
+	events: CompletionEvidenceAuditEvent[];
+	anchor: CompletionEvidenceAuditEvent;
+}> {
+	const events = await buildVerifiedAuditChain(
+		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
+		[
+			{
+				id: '01900000-0000-7000-8000-000000000101',
+				eventType: 'envelope.created',
+				actorType: 'user',
+				actorId: ACTOR.id,
+				occurredAt: '2026-09-11T00:00:00.000Z',
+				payload: { title: 'Agreement' }
+			},
+			{
+				id: '01900000-0000-7000-8000-000000000105',
+				eventType: 'envelope.ready',
+				actorType: 'user',
+				actorId: ACTOR.id,
+				occurredAt: '2026-09-11T00:00:15.000Z',
+				payload: {
+					commitSha: COMMIT_SHA,
+					generation: 1,
+					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
+				}
+			},
+			{
+				id: '01900000-0000-7000-8000-000000000102',
+				eventType: 'draft.revision_created',
+				actorType: 'user',
+				actorId: ACTOR.id,
+				occurredAt: '2026-09-11T00:00:30.000Z',
+				payload: {
+					generation: 1,
+					commitSha: COMMIT_SHA,
+					archiveSha256: VERIFIED_ARCHIVE_SHA256,
+					changedPaths: ['documents/agreement.md']
+				}
+			},
+			{
+				id: '01900000-0000-7000-8000-000000000103',
+				eventType: 'recipient.signed',
+				actorType: 'recipient',
+				actorId: 'recipient-1',
+				occurredAt: VERIFIED_SIGNED_AT,
+				payload: {
+					recipientId: 'recipient-1',
+					role: 'signer',
+					routingOrder: 1,
+					sentCommitSha: COMMIT_SHA,
+					fields: [
+						{ id: 'field-1', fieldType: 'signature', valueSha256: VERIFIED_FIELD_VALUE_SHA256 }
+					],
+					signedAt: VERIFIED_SIGNED_AT
+				}
+			},
+			{
+				id: '01900000-0000-7000-8000-000000000104',
+				eventType: 'envelope.completed',
+				actorType: 'recipient',
+				actorId: 'recipient-1',
+				occurredAt: VERIFIED_COMPLETED_AT,
+				payload: { sentCommitSha: COMMIT_SHA, completedAt: VERIFIED_COMPLETED_AT }
+			}
+		]
+	);
+
+	await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+		VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+	await database()`INSERT INTO envelope (
+		id, organization_id, title, status, repository_generation, repository_head,
+		repository_archive_key, repository_archive_sha256, sent_commit_sha, field_generation,
+		created_at, updated_at
+	) VALUES (
+		${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'completed', 1, ${COMMIT_SHA},
+		${draftArchiveKey(ORGANIZATION_ID, ENVELOPE_ID, VERIFIED_ARCHIVE_SHA256)},
+		${VERIFIED_ARCHIVE_SHA256}, ${COMMIT_SHA}, 1,
+		'2026-09-11T00:00:00.000Z', ${VERIFIED_COMPLETED_AT}
+	)`;
+	await database()`INSERT INTO recipient (
+		id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+		capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
+	) VALUES (
+		'recipient-1', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'signer@example.com', 'Signer', 'signer',
+		'en', 1, 'completed', 'capability-hash-verified', '2026-09-25T00:00:00.000Z',
+		${VERIFIED_SIGNED_AT}, '2026-09-11T00:00:30.000Z', ${VERIFIED_SIGNED_AT}
+	)`;
+	await database()`INSERT INTO envelope_field (
+		id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
+		required, position, created_at, updated_at
+	) VALUES (
+		'field-1', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'recipient-1', 'documents/agreement.md',
+		'signature', 'Signature', true, 1, '2026-09-11T00:00:30.000Z', '2026-09-11T00:00:30.000Z'
+	)`;
+	await database()`INSERT INTO field_value (
+		organization_id, field_id, envelope_id, recipient_id, field_type, value_json, value_sha256,
+		created_at
+	) VALUES (
+		${ORGANIZATION_ID}, 'field-1', ${ENVELOPE_ID}, 'recipient-1', 'signature',
+		${VERIFIED_FIELD_VALUE_JSON}, ${VERIFIED_FIELD_VALUE_SHA256}, ${VERIFIED_SIGNED_AT}
+	)`;
+	for (const event of events) {
+		await database()`INSERT INTO audit_event (
+			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+			payload_json, previous_hash, event_hash, occurred_at
+		) VALUES (
+			${event.id}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${event.sequence}, ${event.eventType},
+			${event.actorType}, ${event.actorId}, ${event.payloadJson}, ${event.previousHash},
+			${event.eventHash}, ${event.occurredAt}::timestamptz
+		)`;
+	}
+
+	return { events, anchor: events[events.length - 1] };
+}
+
+async function expectCompletionArtifactFailClosed(): Promise<void> {
+	const store = new PostgresCompletionArtifactStore(database());
+	const objects = new SeededPostgresObjectStore();
+	objects.seed(
+		draftArchiveKey(ORGANIZATION_ID, ENVELOPE_ID, VERIFIED_ARCHIVE_SHA256),
+		VERIFIED_ARCHIVE_BYTES
+	);
+	const repository = new FixedPostgresDraftRepository(COMMIT_SHA, [
+		{ path: 'documents/agreement.md', content: 'Agreement body' }
+	]);
+	const service = new CompletionArtifactPublicationService(
+		store,
+		objects,
+		repository,
+		(): Date => new Date(Date.now()),
+		(): string => 'completion-artifact-integrity-claim-0001'
+	);
+
+	const result = await service.publishPendingCompletionArtifacts();
+	expect(result).toMatchObject({ claimed: 1, integrityFailed: 1, published: 0 });
+
+	const artifactCount = await database()<
+		{ count: string }[]
+	>`SELECT COUNT(*) AS count FROM completion_artifact
+		WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+	expect(Number(artifactCount[0].count)).toBe(0);
+
+	const publishedAuditCount = await database()<
+		{ count: string }[]
+	>`SELECT COUNT(*) AS count FROM audit_event
+		WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+			AND event_type = 'envelope.completion_artifact_published'`;
+	expect(Number(publishedAuditCount[0].count)).toBe(0);
+
+	const jobRow = await database()<
+		{ status: string; retryable: boolean; lastError: string | null }[]
+	>`SELECT status, retryable, last_error AS "lastError" FROM completion_artifact_job
+		WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+	expect(jobRow).toEqual([
+		{ status: 'failed', retryable: false, lastError: 'completion_artifact_evidence_invalid' }
+	]);
+}
+
+interface StoredVerifiedArchive {
+	body: Uint8Array;
+}
+
+/** A genuinely working in-memory object store, for tests that drive a real DraftPersistenceService.commit(). */
+class RealMemoryObjectStore implements ObjectStore {
+	private readonly objects = new Map<string, StoredVerifiedArchive>();
+	putCallsByKey = new Map<string, number>();
+	getCallCount: number = 0;
+
+	seed(key: string, body: Uint8Array): void {
+		this.objects.set(key, { body: Uint8Array.from(body) });
+	}
+
+	async head(key: string): Promise<ObjectMetadata | null> {
+		const object = this.objects.get(key);
+		if (!object) return null;
+		return { key, contentType: 'test', size: object.body.byteLength, sha256: '', version: null };
+	}
+
+	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+		this.getCallCount += 1;
+		const object = this.objects.get(key);
+		if (!object) return null;
+		const body = Uint8Array.from(object.body);
+		return new ReadableStream<Uint8Array>({
+			start(controller): void {
+				controller.enqueue(body);
+				controller.close();
+			}
+		});
+	}
+
+	async putImmutable(key: string, object: PutObject): Promise<ObjectMetadata> {
+		this.putCallsByKey.set(key, (this.putCallsByKey.get(key) ?? 0) + 1);
+		if (this.objects.has(key)) throw new Error('Object already exists');
+		if (!(object.body instanceof Uint8Array)) throw new Error('Test store requires buffered input');
+		const stored: StoredVerifiedArchive = { body: Uint8Array.from(object.body) };
+		this.objects.set(key, stored);
+		return {
+			key,
+			contentType: object.contentType,
+			size: stored.body.byteLength,
+			sha256: object.sha256,
+			version: null
+		};
+	}
+
+	async delete(key: string): Promise<void> {
+		this.objects.delete(key);
+	}
+}
+
+class SeededPostgresObjectStore implements ObjectStore {
+	private readonly objects = new Map<string, StoredVerifiedArchive>();
+
+	seed(key: string, body: Uint8Array): void {
+		this.objects.set(key, { body: Uint8Array.from(body) });
+	}
+
+	async head(): Promise<ObjectMetadata | null> {
+		throw new Error('unused');
+	}
+
+	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+		const object = this.objects.get(key);
+		if (!object) return null;
+		const body = Uint8Array.from(object.body);
+		return new ReadableStream<Uint8Array>({
+			start(controller): void {
+				controller.enqueue(body);
+				controller.close();
+			}
+		});
+	}
+
+	async putImmutable(): Promise<ObjectMetadata> {
+		throw new Error('This tamper scenario must never reach an artifact object write');
+	}
+
+	async delete(): Promise<void> {
+		throw new Error('unused');
+	}
+}
+
+class FixedPostgresDraftRepository implements DraftRepository {
+	constructor(
+		private readonly expectedCommitSha: string,
+		private readonly documents: readonly DraftDocument[]
+	) {}
+
+	async read(
+		_archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<readonly DraftDocument[]> {
+		if (expectedCommitSha !== this.expectedCommitSha) throw new Error('Unexpected commit SHA');
+		return this.documents;
+	}
+
+	async commit(): Promise<DraftVersion> {
+		throw new Error('Unexpected repository commit');
+	}
+}
+
+class UnreachablePostgresObjectStore implements ObjectStore {
+	async head(): Promise<ObjectMetadata | null> {
+		throw new Error('Object store must not be read before field value integrity is verified');
+	}
+
+	async get(): Promise<ReadableStream<Uint8Array> | null> {
+		throw new Error('Object store must not be read before field value integrity is verified');
+	}
+
+	async putImmutable(): Promise<ObjectMetadata> {
+		throw new Error('Object store must not be written before field value integrity is verified');
+	}
+
+	async delete(): Promise<void> {
+		throw new Error('Object store must not be read before field value integrity is verified');
+	}
+}
+
+class UnreachablePostgresDraftRepository implements DraftRepository {
+	async read(): Promise<readonly DraftDocument[]> {
+		throw new Error('Draft repository must not be read before field value integrity is verified');
+	}
+
+	async commit(): Promise<DraftVersion> {
+		throw new Error(
+			'Draft repository must not be written before field value integrity is verified'
+		);
+	}
+}
 
 function database(): ReturnType<typeof postgres> {
 	if (sql === null) throw new Error('PostgreSQL integration database is unavailable');
