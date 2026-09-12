@@ -1337,6 +1337,10 @@ function synchronizeBootstrap(delegates: readonly InstanceStore[]): readonly Ins
 	});
 	return delegates.map((delegate: InstanceStore): InstanceStore => ({
 		getInstanceCallerContext: delegate.getInstanceCallerContext.bind(delegate),
+		createInstanceInvitation: delegate.createInstanceInvitation.bind(delegate),
+		listInstanceInvitations: delegate.listInstanceInvitations.bind(delegate),
+		acceptInstanceInvitation: delegate.acceptInstanceInvitation.bind(delegate),
+		revokeInstanceInvitation: delegate.revokeInstanceInvitation.bind(delegate),
 		bootstrapInstance: async (
 			command: BootstrapInstanceCommand
 		): Promise<BootstrapInstanceStoreResult> => {

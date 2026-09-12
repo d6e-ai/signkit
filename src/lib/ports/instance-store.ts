@@ -245,26 +245,17 @@ export type RevokeInstanceInvitationStoreResult =
 export interface InstanceStore {
 	bootstrapInstance(command: BootstrapInstanceCommand): Promise<BootstrapInstanceStoreResult>;
 	getInstanceCallerContext(userId: string): Promise<InstanceCallerContext>;
-	/**
-	 * Optional pending this port's invitation adapters: today's D1 and
-	 * PostgreSQL `InstanceStore` implementations predate the invitation
-	 * schema and only cover bootstrap. Marking these four methods optional
-	 * keeps those adapters (and their mocks) assignable to `InstanceStore`
-	 * without implementing invitation support in this foundation change; a
-	 * follow-up adapter change should implement all four together and can
-	 * then drop the `?`.
-	 */
-	createInstanceInvitation?(
+	createInstanceInvitation(
 		command: CreateInstanceInvitationCommand
 	): Promise<CreateInstanceInvitationStoreResult>;
-	listInstanceInvitations?(
+	listInstanceInvitations(
 		actor: InstanceActor,
 		query: InstanceInvitationListQuery
 	): Promise<ListInstanceInvitationsStoreResult>;
-	acceptInstanceInvitation?(
+	acceptInstanceInvitation(
 		command: AcceptInstanceInvitationCommand
 	): Promise<AcceptInstanceInvitationStoreResult>;
-	revokeInstanceInvitation?(
+	revokeInstanceInvitation(
 		command: RevokeInstanceInvitationCommand
 	): Promise<RevokeInstanceInvitationStoreResult>;
 }
