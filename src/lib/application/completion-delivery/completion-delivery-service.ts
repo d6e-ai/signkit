@@ -12,6 +12,8 @@ import {
 	type EnrollCompletionDeliveryItem,
 	type FailCompletionDeliveryResult
 } from '$lib/ports/completion-delivery-store';
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
+import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import {
 	mailProviderReceiptId,
 	MailDeliveryError,
@@ -98,7 +100,8 @@ export class CompletionDeliveryService {
 	readonly #publicHttpsOrigin: string;
 	readonly #sender: CompletionSenderConfig;
 	readonly #now: () => Date;
-	readonly #uuid: () => string;
+	readonly #newClaimToken: OpaqueTokenGenerator;
+	readonly #newId: UuidV7Generator;
 
 	constructor(
 		store: CompletionDeliveryStore,
@@ -108,7 +111,10 @@ export class CompletionDeliveryService {
 		publicHttpsOrigin: string,
 		sender: CompletionSenderConfig,
 		now: () => Date = (): Date => new Date(),
-		uuid: () => string = (): string => crypto.randomUUID()
+		// A lease token is opaque unguessable material, never a row identifier:
+		// 256 random bits with no embedded creation time.
+		newClaimToken: OpaqueTokenGenerator = newOpaqueToken,
+		newId: UuidV7Generator = newUuidV7
 	) {
 		this.#store = store;
 		this.#cryptor =
@@ -127,7 +133,8 @@ export class CompletionDeliveryService {
 		this.#publicHttpsOrigin = assertPublicHttpsOrigin(publicHttpsOrigin);
 		this.#sender = assertSenderConfig(sender);
 		this.#now = now;
-		this.#uuid = uuid;
+		this.#newClaimToken = newClaimToken;
+		this.#newId = newId;
 	}
 
 	async deliverPendingCompletions(
@@ -149,7 +156,7 @@ export class CompletionDeliveryService {
 		const now: Date = this.#now();
 		const { discovered, seeded } = await this.#discoverAndSeed(discoveryLimit, now);
 		const claimedAt: Date = now;
-		const claimToken: string = this.#uuid();
+		const claimToken: string = this.#newClaimToken();
 		const claims: readonly ClaimedCompletionDelivery[] = await this.#store.claimPendingDeliveries({
 			claimToken,
 			claimedAt: claimedAt.toISOString(),
@@ -217,7 +224,7 @@ export class CompletionDeliveryService {
 				async (
 					recipient: EligibleCompletionDeliveryRecipient
 				): Promise<EnrollCompletionDeliveryItem> => {
-					const id: string = this.#uuid();
+					const id: string = this.#newId();
 					const issued = await issueCompletionToken();
 					const context: CompletionTokenSealContext = {
 						organizationId: recipient.organizationId,

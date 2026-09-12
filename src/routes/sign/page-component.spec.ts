@@ -92,8 +92,8 @@ describe('recipient document review page', () => {
 	it('renders a durable decline receipt without any document workspace or controls', () => {
 		const data: PageData = {
 			state: 'declined',
-			envelopeId: '00000000-0000-8000-a000-000000000001',
-			recipientId: '00000000-0000-8000-a000-000000000002',
+			envelopeId: '01910000-0000-7000-8000-000000000001',
+			recipientId: '01910000-0000-7000-8000-000000000002',
 			recipientStatus: 'declined',
 			envelopeStatus: 'declined',
 			declinedAt: '2026-09-11T00:02:00.000Z',
@@ -117,8 +117,8 @@ describe('recipient document review page', () => {
 			const data: PageData = {
 				state: 'active',
 				access: {
-					envelopeId: '00000000-0000-8000-a000-000000000001',
-					recipientId: '00000000-0000-8000-a000-000000000002',
+					envelopeId: '01910000-0000-7000-8000-000000000001',
+					recipientId: '01910000-0000-7000-8000-000000000002',
 					role,
 					locale: 'en',
 					recipientStatus: 'pending',
@@ -145,8 +145,8 @@ describe('recipient document review page', () => {
 			const data: PageData = {
 				state: 'active',
 				access: {
-					envelopeId: '00000000-0000-8000-a000-000000000001',
-					recipientId: '00000000-0000-8000-a000-000000000002',
+					envelopeId: '01910000-0000-7000-8000-000000000001',
+					recipientId: '01910000-0000-7000-8000-000000000002',
 					role,
 					locale: 'en',
 					recipientStatus: 'pending',
@@ -176,8 +176,8 @@ describe('recipient document review page', () => {
 			const data: PageData = {
 				state: 'active',
 				access: {
-					envelopeId: '00000000-0000-8000-a000-000000000001',
-					recipientId: '00000000-0000-8000-a000-000000000002',
+					envelopeId: '01910000-0000-7000-8000-000000000001',
+					recipientId: '01910000-0000-7000-8000-000000000002',
 					role,
 					locale: 'en',
 					recipientStatus,
@@ -241,8 +241,8 @@ describe('recipient document review page', () => {
 		const data: PageData = {
 			state: 'active',
 			access: {
-				envelopeId: '00000000-0000-8000-a000-000000000001',
-				recipientId: '00000000-0000-8000-a000-000000000002',
+				envelopeId: '01910000-0000-7000-8000-000000000001',
+				recipientId: '01910000-0000-7000-8000-000000000002',
 				role: 'signer',
 				locale: 'en',
 				recipientStatus: 'viewed',
@@ -253,7 +253,7 @@ describe('recipient document review page', () => {
 			documents: [document('documents/NDA.md', 'Agreement content')],
 			fields: [
 				{
-					id: '00000000-0000-8000-a000-000000000003',
+					id: '01910000-0000-7000-8000-000000000003',
 					documentPath: 'documents/NDA.md',
 					fieldType: 'signature',
 					label: 'Your signature',
@@ -275,8 +275,8 @@ describe('recipient document review page', () => {
 		const data: PageData = {
 			state: 'active',
 			access: {
-				envelopeId: '00000000-0000-8000-a000-000000000001',
-				recipientId: '00000000-0000-8000-a000-000000000002',
+				envelopeId: '01910000-0000-7000-8000-000000000001',
+				recipientId: '01910000-0000-7000-8000-000000000002',
 				role: 'approver',
 				locale: 'en',
 				recipientStatus: 'viewed',
@@ -287,7 +287,7 @@ describe('recipient document review page', () => {
 			documents: [document('documents/NDA.md', 'Agreement content')],
 			fields: [
 				{
-					id: '00000000-0000-8000-a000-000000000003',
+					id: '01910000-0000-7000-8000-000000000003',
 					documentPath: 'documents/NDA.md',
 					fieldType: 'signature',
 					label: 'Your signature',

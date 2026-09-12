@@ -1,3 +1,4 @@
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type {
 	PublishRecipientViewedCommand,
@@ -33,7 +34,8 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 	constructor(
 		private readonly access: RecipientAccessApplicationPort,
 		private readonly store: RecipientViewStore,
-		private readonly now: () => Date = (): Date => new Date()
+		private readonly now: () => Date = (): Date => new Date(),
+		private readonly newId: UuidV7Generator = newUuidV7
 	) {}
 
 	async view(input: RecipientViewedInput): Promise<RecipientViewedResult> {
@@ -77,15 +79,10 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 			}
 			if (preparation.outcome !== 'ready') return preparation;
 
-			const auditEventId: string = await deterministicUuid(
-				[
-					'signkit-recipient-viewed-event-v1',
-					before.organizationId,
-					before.envelopeId,
-					before.recipientId,
-					input.idempotencyKey
-				].join('\u0000')
-			);
+			// Replay is proven by the durable command receipt and its audit
+			// evidence, not by re-deriving this identifier, so each attempt mints a
+			// fresh one.
+			const auditEventId: string = this.newId();
 			const auditPayloadJson: string = JSON.stringify({
 				recipientId: before.recipientId,
 				role: preparation.recipientRole,
@@ -164,12 +161,4 @@ async function sha256(value: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

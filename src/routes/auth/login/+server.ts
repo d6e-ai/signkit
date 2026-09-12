@@ -1,10 +1,13 @@
 import { redirect } from '@sveltejs/kit';
 import { authorizeUrl } from '$lib/server/d6e-auth';
 import { OAUTH_RETURN_COOKIE, OAUTH_STATE_COOKIE, safeReturnPath } from '$lib/server/oauth';
+import { newOpaqueToken } from '$lib/security/opaque-token';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = ({ url, cookies }) => {
-	const state = crypto.randomUUID();
+	// CSRF state is a security token, not an identifier: 256 opaque random bits
+	// that never encode time or structure.
+	const state = newOpaqueToken();
 	const options = {
 		path: '/',
 		httpOnly: true,

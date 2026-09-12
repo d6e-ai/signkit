@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import { readFileSync, readdirSync } from 'node:fs';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -173,14 +174,14 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			id, organization_id, title, status, repository_generation, repository_head,
 			repository_archive_key, repository_archive_sha256, created_at, updated_at
 		) VALUES (
-			'other-envelope', 'other-org', 'Other Agreement', 'ready', 1, ${COMMIT_SHA},
+			'01920000-0000-7000-8000-0000000000f2', 'other-org', 'Other Agreement', 'ready', 1, ${COMMIT_SHA},
 			'other/archive', ${ARCHIVE_SHA256}, now(), now()
 		)`;
 		await database()`INSERT INTO recipient (
 			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 			created_at, updated_at
 		) VALUES (
-			'other-recipient', 'other-org', 'other-envelope', 'other@example.com', 'Other',
+			'01930000-0000-7000-8000-0000000000f2', 'other-org', '01920000-0000-7000-8000-0000000000f2', 'other@example.com', 'Other',
 			'signer', 'en', 1, 'pending', now(), now()
 		)`;
 		await expect(
@@ -188,7 +189,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				id, organization_id, envelope_id, recipient_id, document_path, field_type,
 				label, required, position, created_at, updated_at
 			) VALUES (
-				'cross-tenant-field', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'other-recipient',
+				'01950000-0000-7000-8000-0000000000f2', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, '01930000-0000-7000-8000-0000000000f2',
 				'documents/agreement.md', 'signature', 'Signature', true, 1, now(), now()
 			)`
 		).rejects.toMatchObject({ code: '23503' });
@@ -199,7 +200,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				sealed_capability_sha256, available_at, attempts, created_at, updated_at,
 				claim_token, retryable
 			) VALUES (
-				'cross-tenant-delivery', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'other-recipient',
+				'01940000-0000-7000-8000-0000000000f2', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, '01930000-0000-7000-8000-0000000000f2',
 				'recipient_invitation', 'blocked', 'capability-hash', NULL,
 				'sealed-capability', 'key-1', ${'e'.repeat(64)}, NULL, 0, now(), now(), NULL, true
 			)`
@@ -209,14 +210,14 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			id, organization_id, title, status, repository_generation, repository_head,
 			repository_archive_key, repository_archive_sha256, created_at, updated_at
 		) VALUES (
-			'same-org-other-envelope', ${ORGANIZATION_ID}, 'Other Agreement', 'ready', 1,
+			'01920000-0000-7000-8000-0000000000f3', ${ORGANIZATION_ID}, 'Other Agreement', 'ready', 1,
 			${COMMIT_SHA}, 'other/archive', ${ARCHIVE_SHA256}, now(), now()
 		)`;
 		await database()`INSERT INTO recipient (
 			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 			created_at, updated_at
 		) VALUES (
-			'same-org-other-recipient', ${ORGANIZATION_ID}, 'same-org-other-envelope',
+			'01930000-0000-7000-8000-0000000000f3', ${ORGANIZATION_ID}, '01920000-0000-7000-8000-0000000000f3',
 			'same-org-other@example.com', 'Other signer', 'signer', 'en', 1, 'pending', now(), now()
 		)`;
 		await expect(
@@ -226,8 +227,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				sealed_capability_sha256, available_at, attempts, created_at, updated_at,
 				claim_token, retryable
 			) VALUES (
-				'cross-envelope-delivery', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
-				'same-org-other-recipient', 'recipient_invitation', 'blocked', 'capability-hash',
+				'01940000-0000-7000-8000-0000000000f3', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
+				'01930000-0000-7000-8000-0000000000f3', 'recipient_invitation', 'blocked', 'capability-hash',
 				NULL, 'sealed-capability', 'key-1', ${'e'.repeat(64)}, NULL, 0, now(), now(),
 				NULL, true
 			)`
@@ -237,8 +238,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				id, organization_id, envelope_id, recipient_id, document_path, field_type,
 				label, required, position, created_at, updated_at
 			) VALUES (
-				'same-org-cross-envelope-field', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
-				'same-org-other-recipient', 'documents/agreement.md', 'signature', 'Signature',
+				'01950000-0000-7000-8000-0000000000f3', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
+				'01930000-0000-7000-8000-0000000000f3', 'documents/agreement.md', 'signature', 'Signature',
 				true, 1, now(), now()
 			)`
 		).rejects.toMatchObject({ code: '23503' });
@@ -265,6 +266,103 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT field_generation AS "fieldGeneration" FROM envelope
 			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
 		expect(generation[0].fieldGeneration).toBe(0);
+	});
+
+	/**
+	 * PostgreSQL 18 evidence for the SignKit identifier policy. The equivalent
+	 * D1 assertions live in `d1-uuidv7-identifier-constraints.spec.ts`; both must
+	 * accept the same canonical UUIDv7 values and reject the same non-UUIDv7
+	 * ones, while leaving external d6e-auth identifiers and caller-chosen
+	 * idempotency keys unconstrained.
+	 */
+	it('constrains every SignKit-owned identifier to a canonical UUIDv7', async () => {
+		const version = await database()<
+			{ setting: string }[]
+		>`SELECT current_setting('server_version_num') AS setting`;
+		expect(Number(version[0].setting)).toBeGreaterThanOrEqual(180_000);
+
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		const recipientId: string = ready.recipients[0].id;
+		expect(recipientId).toMatch(UUID_V7_PATTERN);
+		expect(ready.auditEventId).toMatch(UUID_V7_PATTERN);
+
+		const rejected: readonly string[] = [
+			'recipient-1',
+			'9f1c6f8e-0a1d-4f3b-8b0e-7c2f9a4d6e11',
+			'01920000-0000-8000-a000-000000000001',
+			'01920000-0000-7000-c000-000000000001',
+			'01920000-0000-7000-8000-0000000000AB',
+			'01920000-0000-7000-8000-00000000000',
+			'00000000-0000-0000-0000-000000000000',
+			''
+		];
+		for (const id of rejected) {
+			await expect(
+				database()`INSERT INTO envelope (
+					id, organization_id, title, status, repository_generation, created_at, updated_at
+				) VALUES (${id}, ${ORGANIZATION_ID}, 'Agreement', 'draft', 0, now(), now())`
+			).rejects.toMatchObject({ code: '23514', constraint_name: 'envelope_id_uuidv7' });
+			await expect(
+				database()`INSERT INTO audit_event (
+					id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+					payload_json, previous_hash, event_hash, occurred_at
+				) VALUES (
+					${id}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 99, 'envelope.voided', 'user',
+					${ACTOR.id}, '{}', ${'e'.repeat(64)}, ${'f'.repeat(64)}, now()
+				)`
+			).rejects.toMatchObject({ code: '23514', constraint_name: 'audit_event_id_uuidv7' });
+			await expect(
+				database()`INSERT INTO recipient (
+					id, organization_id, envelope_id, email, name, role, locale, routing_order,
+					status, created_at, updated_at
+				) VALUES (
+					${id}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'rejected@example.com', 'Rejected',
+					'signer', 'en', 9, 'pending', now(), now()
+				)`
+			).rejects.toMatchObject({ code: '23514', constraint_name: 'recipient_id_uuidv7' });
+			await expect(
+				database()`INSERT INTO delivery_outbox (
+					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+					reserved_capability_expires_at, sealed_capability, sealing_key_id,
+					sealed_capability_sha256, available_at, attempts, created_at, updated_at,
+					claim_token, retryable
+				) VALUES (
+					${id}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'recipient_invitation',
+					'blocked', ${'9'.repeat(64)}, NULL, 'sealed-capability', 'key-1',
+					${'e'.repeat(64)}, NULL, 0, now(), now(), NULL, true
+				)`
+			).rejects.toMatchObject({ code: '23514', constraint_name: 'delivery_outbox_id_uuidv7' });
+			await expect(
+				database()`INSERT INTO envelope_field (
+					id, organization_id, envelope_id, recipient_id, document_path, field_type,
+					label, required, position, created_at, updated_at
+				) VALUES (
+					${id}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId},
+					'documents/agreement.md', 'signature', 'Signature', true, 9, now(), now()
+				)`
+			).rejects.toMatchObject({ code: '23514', constraint_name: 'envelope_field_id_uuidv7' });
+			await expect(
+				database()`INSERT INTO workload_key (
+					organization_id, id, name, token_hash, key_prefix, scopes_json,
+					created_by_user_id, created_at, expires_at
+				) VALUES (
+					${ORGANIZATION_ID}, ${id}, 'CI agent', ${'7'.repeat(64)}, 'signkit_abcdefgh',
+					'["envelopes:read"]', ${ACTOR.id}, now(), now() + INTERVAL '30 days'
+				)`
+			).rejects.toMatchObject({ code: '23514', constraint_name: 'workload_key_id_uuidv7' });
+		}
+
+		// External d6e-auth identifiers and caller-chosen idempotency keys are
+		// deliberately outside the rule.
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES ('org_2f8c_not_a_uuid', 'org_2f8c_not_a_uuid', 'External', now())`;
+		await database()`INSERT INTO idempotency_key (
+			organization_id, caller_id, idempotency_key, request_hash, envelope_id, created_at
+		) VALUES (
+			${ORGANIZATION_ID}, 'user_d6e_not_a_uuid', 'create-agreement#42', ${'a'.repeat(64)},
+			${ENVELOPE_ID}, now()
+		)`;
 	});
 
 	it('runs ready through field placement and send, then claims the delivery lease', async () => {
@@ -434,7 +532,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 			created_at, updated_at
 		) VALUES (
-			'legacy-prefill', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'prefill@example.com', 'Prefill',
+			'01930000-0000-7000-8000-0000000000d1', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'prefill@example.com', 'Prefill',
 			'prefill', 'en', 1, 'pending', now(), now()
 		)`;
 
@@ -1024,29 +1122,29 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					id, organization_id, title, status, repository_generation, repository_head,
 					sent_commit_sha, created_at, updated_at
 				) VALUES (
-					'upgrade-envelope','upgrade-org','Agreement','sent',1,'commit-1','commit-1',
+					'01920000-0000-7000-8000-0000000000f4','upgrade-org','Agreement','sent',1,'commit-1','commit-1',
 					'2026-09-11T00:00:00.000Z','2026-09-11T00:01:00.000Z'
 				);
 				INSERT INTO recipient (
 					id, organization_id, envelope_id, email, name, role, locale, routing_order,
 					status, capability_hash, capability_expires_at, created_at, updated_at
 				) VALUES
-					('recipient-pending','upgrade-org','upgrade-envelope','pending@example.com','Pending','signer','en',1,'pending','hash-pending','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
-					('recipient-processing','upgrade-org','upgrade-envelope','processing@example.com','Processing','signer','en',2,'pending','hash-processing','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
-					('recipient-failed','upgrade-org','upgrade-envelope','failed@example.com','Failed','signer','en',3,'pending','hash-failed','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
-					('recipient-delivered','upgrade-org','upgrade-envelope','delivered@example.com','Delivered','signer','en',4,'pending','hash-delivered','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
-					('recipient-blocked','upgrade-org','upgrade-envelope','blocked@example.com','Blocked','signer','en',5,'pending','hash-blocked','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
+					('01930000-0000-7000-8000-0000000000e5','upgrade-org','01920000-0000-7000-8000-0000000000f4','pending@example.com','Pending','signer','en',1,'pending','hash-pending','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('01930000-0000-7000-8000-0000000000e4','upgrade-org','01920000-0000-7000-8000-0000000000f4','processing@example.com','Processing','signer','en',2,'pending','hash-processing','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('01930000-0000-7000-8000-0000000000e3','upgrade-org','01920000-0000-7000-8000-0000000000f4','failed@example.com','Failed','signer','en',3,'pending','hash-failed','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('01930000-0000-7000-8000-0000000000e2','upgrade-org','01920000-0000-7000-8000-0000000000f4','delivered@example.com','Delivered','signer','en',4,'pending','hash-delivered','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('01930000-0000-7000-8000-0000000000e1','upgrade-org','01920000-0000-7000-8000-0000000000f4','blocked@example.com','Blocked','signer','en',5,'pending','hash-blocked','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
 				INSERT INTO delivery_outbox (
 					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
 					reserved_capability_expires_at, sealed_capability, sealing_key_id,
 					sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
 					provider_message_id, last_error, created_at, updated_at
 				) VALUES
-					('delivery-pending','upgrade-org','upgrade-envelope','recipient-pending','recipient_invitation','pending','hash-pending','2026-09-25T00:00:00.000Z','sealed-pending','key-1','sealed-hash-pending','2026-09-11T00:01:00.000Z',0,NULL,NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
-					('delivery-processing','upgrade-org','upgrade-envelope','recipient-processing','recipient_invitation','processing','hash-processing','2026-09-25T00:00:00.000Z','sealed-processing','key-1','sealed-hash-processing','2026-09-11T00:01:00.000Z',1,'2026-09-11T00:02:00.000Z',NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z'),
-					('delivery-failed','upgrade-org','upgrade-envelope','recipient-failed','recipient_invitation','failed','hash-failed','2026-09-25T00:00:00.000Z','sealed-failed','key-1','sealed-hash-failed','2026-09-11T00:01:00.000Z',1,NULL,NULL,NULL,'transient','2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z'),
-					('delivery-delivered','upgrade-org','upgrade-envelope','recipient-delivered','recipient_invitation','delivered','hash-delivered','2026-09-25T00:00:00.000Z','sealed-delivered','key-1','sealed-hash-delivered','2026-09-11T00:01:00.000Z',1,NULL,'2026-09-11T00:03:00.000Z','provider-id',NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:03:00.000Z'),
-					('delivery-blocked','upgrade-org','upgrade-envelope','recipient-blocked','recipient_invitation','blocked','hash-blocked','2026-09-25T00:00:00.000Z','sealed-blocked','key-1','sealed-hash-blocked',NULL,0,NULL,NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
+					('01940000-0000-7000-8000-0000000000e5','upgrade-org','01920000-0000-7000-8000-0000000000f4','01930000-0000-7000-8000-0000000000e5','recipient_invitation','pending','hash-pending','2026-09-25T00:00:00.000Z','sealed-pending','key-1','sealed-hash-pending','2026-09-11T00:01:00.000Z',0,NULL,NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
+					('01940000-0000-7000-8000-0000000000e4','upgrade-org','01920000-0000-7000-8000-0000000000f4','01930000-0000-7000-8000-0000000000e4','recipient_invitation','processing','hash-processing','2026-09-25T00:00:00.000Z','sealed-processing','key-1','sealed-hash-processing','2026-09-11T00:01:00.000Z',1,'2026-09-11T00:02:00.000Z',NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z'),
+					('01940000-0000-7000-8000-0000000000e3','upgrade-org','01920000-0000-7000-8000-0000000000f4','01930000-0000-7000-8000-0000000000e3','recipient_invitation','failed','hash-failed','2026-09-25T00:00:00.000Z','sealed-failed','key-1','sealed-hash-failed','2026-09-11T00:01:00.000Z',1,NULL,NULL,NULL,'transient','2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z'),
+					('01940000-0000-7000-8000-0000000000e2','upgrade-org','01920000-0000-7000-8000-0000000000f4','01930000-0000-7000-8000-0000000000e2','recipient_invitation','delivered','hash-delivered','2026-09-25T00:00:00.000Z','sealed-delivered','key-1','sealed-hash-delivered','2026-09-11T00:01:00.000Z',1,NULL,'2026-09-11T00:03:00.000Z','provider-id',NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:03:00.000Z'),
+					('01940000-0000-7000-8000-0000000000e1','upgrade-org','01920000-0000-7000-8000-0000000000f4','01930000-0000-7000-8000-0000000000e1','recipient_invitation','blocked','hash-blocked','2026-09-25T00:00:00.000Z','sealed-blocked','key-1','sealed-hash-blocked',NULL,0,NULL,NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
 			`);
 
 			for (const path of MIGRATION_PATHS.slice(leaseMigrationIndex)) {
@@ -1067,7 +1165,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			FROM delivery_outbox ORDER BY id`;
 			expect(rows).toEqual([
 				{
-					id: 'delivery-blocked',
+					id: '01940000-0000-7000-8000-0000000000e1',
 					status: 'blocked',
 					claimToken: null,
 					lockedAt: null,
@@ -1076,7 +1174,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					lastError: null
 				},
 				{
-					id: 'delivery-delivered',
+					id: '01940000-0000-7000-8000-0000000000e2',
 					status: 'delivered',
 					claimToken: null,
 					lockedAt: null,
@@ -1085,7 +1183,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					lastError: null
 				},
 				{
-					id: 'delivery-failed',
+					id: '01940000-0000-7000-8000-0000000000e3',
 					status: 'failed',
 					claimToken: null,
 					lockedAt: null,
@@ -1094,22 +1192,22 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					lastError: 'transient'
 				},
 				{
-					id: 'delivery-pending',
-					status: 'pending',
-					claimToken: null,
-					lockedAt: null,
-					sealedCapability: 'sealed-pending',
-					retryable: true,
-					lastError: null
-				},
-				{
-					id: 'delivery-processing',
+					id: '01940000-0000-7000-8000-0000000000e4',
 					status: 'failed',
 					claimToken: null,
 					lockedAt: null,
 					sealedCapability: 'sealed-processing',
 					retryable: true,
 					lastError: 'worker_restarted'
+				},
+				{
+					id: '01940000-0000-7000-8000-0000000000e5',
+					status: 'pending',
+					claimToken: null,
+					lockedAt: null,
+					sealedCapability: 'sealed-pending',
+					retryable: true,
+					lastError: null
 				}
 			]);
 		} finally {
@@ -1778,7 +1876,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 			) VALUES (
-				'bad-delivered', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'delivered',
+				'01940000-0000-7000-8000-0000000000b1', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'delivered',
 				${'5'.repeat(64)}, ${accessExpiresAt}::timestamptz, NULL, 'unscrubbed', 'key-1',
 				${'s'.repeat(64)}, now(), 1, now(), now(), false
 			)`
@@ -1791,7 +1889,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 			) VALUES (
-				'bad-failed', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'failed',
+				'01940000-0000-7000-8000-0000000000b2', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'failed',
 				${'6'.repeat(64)}, ${accessExpiresAt}::timestamptz, NULL, NULL, 'key-1',
 				${'s'.repeat(64)}, now(), 1, now(), now(), false
 			)`
@@ -2006,7 +2104,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 			) VALUES (
-				'dangling-delivery', ${ORGANIZATION_ID}, ${noArtifactEnvelopeId}, ${recipientId}, 'delivered',
+				'01940000-0000-7000-8000-0000000000f4', ${ORGANIZATION_ID}, ${noArtifactEnvelopeId}, ${recipientId}, 'delivered',
 				${danglingTokenHash}, ${accessExpiresAt}::timestamptz, NULL, NULL, 'key-1',
 				${'s'.repeat(64)}, ${baseTime.toISOString()}::timestamptz, 1,
 				${baseTime.toISOString()}::timestamptz, ${baseTime.toISOString()}::timestamptz, false
@@ -2411,7 +2509,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 				capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 			) VALUES (
-				'recipient-extra', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'extra@example.com', 'Extra',
+				'01930000-0000-7000-8000-0000000000e7', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'extra@example.com', 'Extra',
 				'viewer', 'en', 1, 'pending', NULL, NULL, NULL,
 				'2026-09-11T00:01:00.000Z', '2026-09-11T00:01:00.000Z'
 			)`;
@@ -2421,7 +2519,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		it("fails closed when a recipient's role drifts from the envelope.ready declaration", async () => {
 			await seedVerifiedCompletionEnvelope();
 			await database()`UPDATE recipient SET role = 'approver'
-				WHERE organization_id = ${ORGANIZATION_ID} AND id = 'recipient-1'`;
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = '01930000-0000-7000-8000-000000000001'`;
 			await expectCompletionArtifactFailClosed();
 		});
 
@@ -2431,14 +2529,14 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
 				required, position, created_at, updated_at
 			) VALUES (
-				'field-extra', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'recipient-1', 'documents/agreement.md',
+				'01950000-0000-7000-8000-0000000000e7', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, '01930000-0000-7000-8000-000000000001', 'documents/agreement.md',
 				'date', 'Signed date', true, 2, '2026-09-11T00:01:00.000Z', '2026-09-11T00:01:00.000Z'
 			)`;
 			await database()`INSERT INTO field_value (
 				organization_id, field_id, envelope_id, recipient_id, field_type, value_json,
 				value_sha256, created_at
 			) VALUES (
-				${ORGANIZATION_ID}, 'field-extra', ${ENVELOPE_ID}, 'recipient-1', 'date',
+				${ORGANIZATION_ID}, '01950000-0000-7000-8000-0000000000e7', ${ENVELOPE_ID}, '01930000-0000-7000-8000-000000000001', 'date',
 				${EXTRA_FIELD_VALUE_JSON}, ${EXTRA_FIELD_VALUE_SHA256}, '2026-09-11T00:02:00.000Z'
 			)`;
 			await expectCompletionArtifactFailClosed();
@@ -2447,7 +2545,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		it('fails closed when a field_value row is deleted after signing', async () => {
 			await seedVerifiedCompletionEnvelope();
 			await database()`DELETE FROM field_value
-				WHERE organization_id = ${ORGANIZATION_ID} AND field_id = 'field-1'`;
+				WHERE organization_id = ${ORGANIZATION_ID} AND field_id = '01950000-0000-7000-8000-000000000001'`;
 			await expectCompletionArtifactFailClosed();
 		});
 
@@ -3041,7 +3139,9 @@ async function seedVerifiedCompletionEnvelope(): Promise<{
 				payload: {
 					commitSha: COMMIT_SHA,
 					generation: 1,
-					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
+					recipients: [
+						{ id: '01930000-0000-7000-8000-000000000001', role: 'signer', routingOrder: 1 }
+					]
 				}
 			},
 			{
@@ -3061,15 +3161,19 @@ async function seedVerifiedCompletionEnvelope(): Promise<{
 				id: '01900000-0000-7000-8000-000000000103',
 				eventType: 'recipient.signed',
 				actorType: 'recipient',
-				actorId: 'recipient-1',
+				actorId: '01930000-0000-7000-8000-000000000001',
 				occurredAt: VERIFIED_SIGNED_AT,
 				payload: {
-					recipientId: 'recipient-1',
+					recipientId: '01930000-0000-7000-8000-000000000001',
 					role: 'signer',
 					routingOrder: 1,
 					sentCommitSha: COMMIT_SHA,
 					fields: [
-						{ id: 'field-1', fieldType: 'signature', valueSha256: VERIFIED_FIELD_VALUE_SHA256 }
+						{
+							id: '01950000-0000-7000-8000-000000000001',
+							fieldType: 'signature',
+							valueSha256: VERIFIED_FIELD_VALUE_SHA256
+						}
 					],
 					signedAt: VERIFIED_SIGNED_AT
 				}
@@ -3078,7 +3182,7 @@ async function seedVerifiedCompletionEnvelope(): Promise<{
 				id: '01900000-0000-7000-8000-000000000104',
 				eventType: 'envelope.completed',
 				actorType: 'recipient',
-				actorId: 'recipient-1',
+				actorId: '01930000-0000-7000-8000-000000000001',
 				occurredAt: VERIFIED_COMPLETED_AT,
 				payload: { sentCommitSha: COMMIT_SHA, completedAt: VERIFIED_COMPLETED_AT }
 			}
@@ -3101,7 +3205,7 @@ async function seedVerifiedCompletionEnvelope(): Promise<{
 		id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 		capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 	) VALUES (
-		'recipient-1', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'signer@example.com', 'Signer', 'signer',
+		'01930000-0000-7000-8000-000000000001', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'signer@example.com', 'Signer', 'signer',
 		'en', 1, 'completed', 'capability-hash-verified', '2026-09-25T00:00:00.000Z',
 		${VERIFIED_SIGNED_AT}, '2026-09-11T00:00:30.000Z', ${VERIFIED_SIGNED_AT}
 	)`;
@@ -3109,14 +3213,14 @@ async function seedVerifiedCompletionEnvelope(): Promise<{
 		id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
 		required, position, created_at, updated_at
 	) VALUES (
-		'field-1', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'recipient-1', 'documents/agreement.md',
+		'01950000-0000-7000-8000-000000000001', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, '01930000-0000-7000-8000-000000000001', 'documents/agreement.md',
 		'signature', 'Signature', true, 1, '2026-09-11T00:00:30.000Z', '2026-09-11T00:00:30.000Z'
 	)`;
 	await database()`INSERT INTO field_value (
 		organization_id, field_id, envelope_id, recipient_id, field_type, value_json, value_sha256,
 		created_at
 	) VALUES (
-		${ORGANIZATION_ID}, 'field-1', ${ENVELOPE_ID}, 'recipient-1', 'signature',
+		${ORGANIZATION_ID}, '01950000-0000-7000-8000-000000000001', ${ENVELOPE_ID}, '01930000-0000-7000-8000-000000000001', 'signature',
 		${VERIFIED_FIELD_VALUE_JSON}, ${VERIFIED_FIELD_VALUE_SHA256}, ${VERIFIED_SIGNED_AT}
 	)`;
 	for (const event of events) {

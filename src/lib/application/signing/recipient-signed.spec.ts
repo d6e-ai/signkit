@@ -12,9 +12,9 @@ import { InvalidSignInputError, RecipientSignedApplication } from './recipient-s
 
 const token: string = `skr1_${'A'.repeat(43)}`;
 const organizationId: string = 'org-1';
-const envelopeId: string = '00000000-0000-8000-a000-000000000001';
-const recipientId: string = '00000000-0000-8000-a000-000000000002';
-const fieldId: string = '00000000-0000-8000-a000-000000000003';
+const envelopeId: string = '01910000-0000-7000-8000-000000000001';
+const recipientId: string = '01910000-0000-7000-8000-000000000002';
+const fieldId: string = '01910000-0000-7000-8000-000000000003';
 
 function routing(overrides: Partial<SignRoutingSnapshot> = {}): SignRoutingSnapshot {
 	return {
@@ -164,7 +164,7 @@ describe('RecipientSignedApplication', () => {
 	});
 
 	it('hashes equivalent submissions identically regardless of value order or surrounding whitespace', async () => {
-		const secondFieldId: string = '00000000-0000-8000-a000-000000000004';
+		const secondFieldId: string = '01910000-0000-7000-8000-000000000004';
 		const twoFields: SignPreparation = ready({
 			fields: [
 				{ id: fieldId, fieldType: 'text', required: true },
@@ -269,7 +269,7 @@ describe('RecipientSignedApplication', () => {
 		await expect(
 			new RecipientSignedApplication(storePort).sign({
 				...input,
-				values: [{ fieldId: '00000000-0000-8000-a000-000000000099', value: 'x' }]
+				values: [{ fieldId: '01910000-0000-7000-8000-000000000099', value: 'x' }]
 			})
 		).resolves.toEqual({ outcome: 'incomplete_field_set' });
 		expect(storePort.publishSign).not.toHaveBeenCalled();
@@ -290,7 +290,7 @@ describe('RecipientSignedApplication', () => {
 			ready({
 				fields: [
 					{ id: fieldId, fieldType: 'text', required: true },
-					{ id: '00000000-0000-8000-a000-000000000004', fieldType: 'checkbox', required: false }
+					{ id: '01910000-0000-7000-8000-000000000004', fieldType: 'checkbox', required: false }
 				]
 			})
 		]);

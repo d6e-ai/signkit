@@ -31,14 +31,14 @@ function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 			id, organization_id, title, status, repository_generation, repository_head,
 			sent_commit_sha, created_at, updated_at
 		) VALUES (
-			'env-1','org-1','Agreement','sent',1,'commit-1','commit-1',
+			'01920000-0000-7000-8000-000000000001','org-1','Agreement','sent',1,'commit-1','commit-1',
 			'2026-09-11T00:00:00.000Z','2026-09-11T00:01:00.000Z'
 		);
 		INSERT INTO recipient (
 			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 			capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 		) VALUES (
-			'recipient-1','org-1','env-1','recipient@example.com','Recipient','signer','en',1,
+			'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','recipient@example.com','Recipient','signer','en',1,
 			'pending','capability-hash','2026-09-25T00:00:00.000Z',NULL,
 			'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
 		);
@@ -48,7 +48,7 @@ function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 			sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
 			provider_message_id, last_error, created_at, updated_at, claim_token, retryable
 		) VALUES (
-			'delivery-1','org-1','env-1','recipient-1','recipient_invitation','pending',
+			'01940000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','recipient_invitation','pending',
 			'capability-hash','2026-09-25T00:00:00.000Z','skdc1_ciphertext','key-1',
 			'sealed-hash','2026-09-11T00:01:00.000Z',0,NULL,NULL,NULL,NULL,
 			'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z',NULL,1
@@ -100,19 +100,19 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 			const store = new D1DeliveryOutboxStore(database);
 			await claim(store, 'claim-token-0001');
 			sqlite.exec(
-				"UPDATE delivery_outbox SET locked_at='2026-09-11T23:54:59.000Z' WHERE id='delivery-1'"
+				"UPDATE delivery_outbox SET locked_at='2026-09-11T23:54:59.000Z' WHERE id='01940000-0000-7000-8000-000000000001'"
 			);
 			const reclaimed = await claim(store, 'claim-token-0002');
 			const stale = await store.completeInvitationDelivery({
 				organizationId: 'org-1',
-				deliveryId: 'delivery-1',
+				deliveryId: '01940000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0001',
 				deliveredAt: CLAIMED_AT,
 				providerMessageId: 'provider-old'
 			});
 			const completed = await store.completeInvitationDelivery({
 				organizationId: 'org-1',
-				deliveryId: 'delivery-1',
+				deliveryId: '01940000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0002',
 				deliveredAt: CLAIMED_AT,
 				providerMessageId: 'provider-current'
@@ -141,7 +141,7 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 		const { database, sqlite } = fixture();
 		try {
 			sqlite.exec(
-				"UPDATE recipient SET capability_expires_at='2026-09-11T23:59:59.000Z' WHERE id='recipient-1'; UPDATE delivery_outbox SET reserved_capability_expires_at='2026-09-11T23:59:59.000Z' WHERE id='delivery-1'"
+				"UPDATE recipient SET capability_expires_at='2026-09-11T23:59:59.000Z' WHERE id='01930000-0000-7000-8000-000000000001'; UPDATE delivery_outbox SET reserved_capability_expires_at='2026-09-11T23:59:59.000Z' WHERE id='01940000-0000-7000-8000-000000000001'"
 			);
 			await expect(claim(new D1DeliveryOutboxStore(database), 'claim-token-0001')).resolves.toEqual(
 				[]
@@ -167,7 +167,9 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 	it('does not claim a legacy prefill invitation and permanently scrubs its sealed token', async () => {
 		const { database, sqlite } = fixture();
 		try {
-			sqlite.exec("UPDATE recipient SET role='prefill' WHERE id='recipient-1'");
+			sqlite.exec(
+				"UPDATE recipient SET role='prefill' WHERE id='01930000-0000-7000-8000-000000000001'"
+			);
 			await expect(claim(new D1DeliveryOutboxStore(database), 'claim-token-0001')).resolves.toEqual(
 				[]
 			);
@@ -197,10 +199,10 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 			sqlite.exec(`
 				UPDATE delivery_outbox
 				SET locked_at='2026-09-11T23:54:59.000Z'
-				WHERE id='delivery-1';
+				WHERE id='01940000-0000-7000-8000-000000000001';
 				UPDATE recipient
 				SET status='viewed', updated_at='2026-09-11T23:59:00.000Z'
-				WHERE id='recipient-1';
+				WHERE id='01930000-0000-7000-8000-000000000001';
 			`);
 
 			await expect(claim(store, 'claim-token-0002')).resolves.toEqual([]);

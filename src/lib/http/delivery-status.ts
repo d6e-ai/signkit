@@ -1,5 +1,5 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { z, type ZodType } from 'zod';
+import type { ZodType } from 'zod';
 import type {
 	DeliveryStatusService,
 	PublicEnvelopeDeliveryStatus
@@ -8,9 +8,10 @@ import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
 } from './organization-authorization';
+import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
-const envelopeIdSchema: ZodType<string> = z.string().uuid();
+const envelopeIdSchema: ZodType<string> = signkitIdentifierSchema;
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;

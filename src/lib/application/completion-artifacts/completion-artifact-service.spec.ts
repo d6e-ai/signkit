@@ -4,6 +4,7 @@ import { draftArchiveKey } from '$lib/application/drafts/draft-persistence';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
 import type {
+	ClaimCompletionArtifactsCommand,
 	ClaimedCompletionArtifactJob,
 	CompletionArtifactStatusRow,
 	CompletionArtifactStore,
@@ -15,6 +16,8 @@ import type {
 	PublishedCompletionArtifact,
 	ReadClaimedCompletionArtifactCommand
 } from '$lib/ports/completion-artifact-store';
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
+import { OPAQUE_TOKEN_PATTERN } from '$lib/security/opaque-token';
 import { buildVerifiedAuditChain } from './audit-chain-test-support';
 import {
 	completionArtifactObjectKey,
@@ -160,6 +163,7 @@ class FixedDraftRepository implements DraftRepository {
 
 class FakeCompletionArtifactStore implements CompletionArtifactStore {
 	claims: ClaimedCompletionArtifactJob[] = [];
+	claimCommands: ClaimCompletionArtifactsCommand[] = [];
 	staleEnvelopeIds = new Set<string>();
 	evidenceByEnvelope = new Map<string, CompletionEvidence>();
 	publishResult: PublishCompletionArtifactResult = {
@@ -170,7 +174,10 @@ class FakeCompletionArtifactStore implements CompletionArtifactStore {
 	failCalls: FailCompletionArtifactCommand[] = [];
 	failResult: FailCompletionArtifactResult = { outcome: 'failed' };
 
-	async claimPendingCompletionArtifacts(): Promise<readonly ClaimedCompletionArtifactJob[]> {
+	async claimPendingCompletionArtifacts(
+		command: ClaimCompletionArtifactsCommand
+	): Promise<readonly ClaimedCompletionArtifactJob[]> {
+		this.claimCommands.push(command);
 		return this.claims;
 	}
 
@@ -349,6 +356,23 @@ function documents(): readonly DraftDocument[] {
 }
 
 describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts', () => {
+	it('mints an opaque lease claim token by default, not a UUIDv7', async () => {
+		const store = new FakeCompletionArtifactStore();
+		const objects = new MemoryObjectStore();
+		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
+
+		await new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			() => NOW
+		).publishPendingCompletionArtifacts();
+
+		expect(store.claimCommands).toHaveLength(1);
+		expect(store.claimCommands[0].claimToken).toMatch(OPAQUE_TOKEN_PATTERN);
+		expect(store.claimCommands[0].claimToken).not.toMatch(UUID_V7_PATTERN);
+	});
+
 	it('builds, persists, and publishes a completion artifact for a claimed envelope', async () => {
 		const store = new FakeCompletionArtifactStore();
 		const objects = new MemoryObjectStore();

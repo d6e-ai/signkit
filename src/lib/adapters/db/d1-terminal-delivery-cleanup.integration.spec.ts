@@ -25,29 +25,29 @@ async function fixture(): Promise<{ database: D1Database; sqlite: DatabaseSync }
 			id, organization_id, title, status, repository_generation, repository_head,
 			sent_commit_sha, created_at, updated_at
 		) VALUES (
-			'env-1','org-1','Agreement','sent',1,'commit-1','commit-1',
+			'01920000-0000-7000-8000-000000000001','org-1','Agreement','sent',1,'commit-1','commit-1',
 			'2026-09-12T00:00:00.000Z','2026-09-12T00:01:00.000Z'
 		);
 		INSERT INTO audit_event (
 			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
 			payload_json, previous_hash, event_hash, occurred_at
 		) VALUES (
-			'sent-audit','org-1','env-1',1,'envelope.sent','user','user-1','{}',
+			'01960000-0000-7000-8000-0000000000a1','org-1','01920000-0000-7000-8000-000000000001',1,'envelope.sent','user','user-1','{}',
 			'genesis','sent-hash','2026-09-12T00:01:00.000Z'
 		);
 		INSERT INTO recipient (
 			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 			capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 		) VALUES (
-			'recipient-1','org-1','env-1','actor@example.com','Actor','signer','en',1,'pending',
+			'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','actor@example.com','Actor','signer','en',1,'pending',
 			'${capabilityHash}','2026-09-30T00:00:00.000Z',NULL,
 			'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z'
 		), (
-			'recipient-2','org-1','env-1','sibling@example.com','Sibling','signer','en',2,'pending',
+			'01930000-0000-7000-8000-000000000002','org-1','01920000-0000-7000-8000-000000000001','sibling@example.com','Sibling','signer','en',2,'pending',
 			'sibling-capability',NULL,NULL,
 			'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z'
 		), (
-			'recipient-3','org-1','env-1','completed@example.com','Completed','approver','en',1,'completed',
+			'01930000-0000-7000-8000-000000000003','org-1','01920000-0000-7000-8000-000000000001','completed@example.com','Completed','approver','en',1,'completed',
 			'completed-capability','2026-09-30T00:00:00.000Z','${DECLINED_AT}',
 			'2026-09-12T00:01:00.000Z','${DECLINED_AT}'
 		);
@@ -57,12 +57,12 @@ async function fixture(): Promise<{ database: D1Database; sqlite: DatabaseSync }
 			sealed_capability_sha256, available_at, attempts, created_at, updated_at,
 			claim_token, retryable
 		) VALUES (
-			'delivery-1','org-1','env-1','recipient-1','recipient_invitation','pending',
+			'01940000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','recipient_invitation','pending',
 			'${capabilityHash}','2026-09-30T00:00:00.000Z','sealed-actor','key-1','hash-1',
 			'2026-09-12T00:01:00.000Z',0,'2026-09-12T00:01:00.000Z',
 			'2026-09-12T00:01:00.000Z',NULL,1
 		), (
-			'delivery-2','org-1','env-1','recipient-2','recipient_invitation','blocked',
+			'01940000-0000-7000-8000-000000000002','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000002','recipient_invitation','blocked',
 			'sibling-capability',NULL,'sealed-sibling','key-1','hash-2',NULL,0,
 			'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z',NULL,1
 		);
@@ -76,8 +76,8 @@ function decline(database: D1Database) {
 		() => new Date(DECLINED_AT)
 	).decline({
 		token: TOKEN,
-		expectedEnvelopeId: 'env-1',
-		expectedRecipientId: 'recipient-1',
+		expectedEnvelopeId: '01920000-0000-7000-8000-000000000001',
+		expectedRecipientId: '01930000-0000-7000-8000-000000000001',
 		idempotencyKey: 'decline-terminal-cleanup'
 	});
 }
@@ -96,14 +96,14 @@ describe('D1 terminal delivery cleanup integration', () => {
 				.all() as Record<string, unknown>[];
 			expect(deliveries).toEqual([
 				{
-					recipient_id: 'recipient-1',
+					recipient_id: '01930000-0000-7000-8000-000000000001',
 					status: 'failed',
 					retryable: 0,
 					sealed_capability: null,
 					last_error: 'envelope_terminal'
 				},
 				{
-					recipient_id: 'recipient-2',
+					recipient_id: '01930000-0000-7000-8000-000000000002',
 					status: 'failed',
 					retryable: 0,
 					sealed_capability: null,
@@ -111,7 +111,9 @@ describe('D1 terminal delivery cleanup integration', () => {
 				}
 			]);
 			const sibling = sqlite
-				.prepare("SELECT status, capability_revoked_at FROM recipient WHERE id='recipient-2'")
+				.prepare(
+					"SELECT status, capability_revoked_at FROM recipient WHERE id='01930000-0000-7000-8000-000000000002'"
+				)
 				.get() as Record<string, unknown>;
 			expect(sibling).toEqual({ status: 'pending', capability_revoked_at: DECLINED_AT });
 			const command = sqlite
@@ -123,13 +125,13 @@ describe('D1 terminal delivery cleanup integration', () => {
 				.get() as Record<string, unknown>;
 			expect(command).toMatchObject({
 				revocation_evidence_version: 2,
-				revoked_recipient_ids_json: '["recipient-2"]',
+				revoked_recipient_ids_json: '["01930000-0000-7000-8000-000000000002"]',
 				revoked_recipient_count: 1
 			});
 			expect(JSON.parse(command.audit_payload_json as string)).toMatchObject({
 				revokedCapabilities: {
 					reason: 'envelope_declined',
-					recipientIds: ['recipient-2']
+					recipientIds: ['01930000-0000-7000-8000-000000000002']
 				}
 			});
 		} finally {
@@ -143,9 +145,13 @@ describe('D1 terminal delivery cleanup integration', () => {
 			sqlite.exec(`UPDATE delivery_outbox
 				SET status='processing', claim_token='claim-token-0001',
 					locked_at='2026-09-12T00:02:00.000Z'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			await expect(decline(database)).resolves.toEqual({ outcome: 'delivery_in_flight' });
-			expect(sqlite.prepare("SELECT status FROM envelope WHERE id='env-1'").get()).toEqual({
+			expect(
+				sqlite
+					.prepare("SELECT status FROM envelope WHERE id='01920000-0000-7000-8000-000000000001'")
+					.get()
+			).toEqual({
 				status: 'sent'
 			});
 			expect(
@@ -157,7 +163,7 @@ describe('D1 terminal delivery cleanup integration', () => {
 
 			sqlite.exec(`UPDATE delivery_outbox
 				SET status='pending', claim_token=NULL, locked_at=NULL
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			await expect(decline(database)).resolves.toMatchObject({ outcome: 'published' });
 		} finally {
 			sqlite.close();
@@ -171,13 +177,13 @@ describe('D1 terminal delivery cleanup integration', () => {
 			const capabilityHash: string = await hashRecipientCapability(TOKEN);
 			const requestHash: string = sha256(
 				JSON.stringify({
-					envelopeId: 'env-1',
-					recipientId: 'recipient-1',
+					envelopeId: '01920000-0000-7000-8000-000000000001',
+					recipientId: '01930000-0000-7000-8000-000000000001',
 					capabilityHash
 				})
 			);
 			const payloadValue = {
-				recipientId: 'recipient-1',
+				recipientId: '01930000-0000-7000-8000-000000000001',
 				role: 'signer',
 				routingOrder: 1,
 				sentCommitSha: 'commit-1',
@@ -186,8 +192,8 @@ describe('D1 terminal delivery cleanup integration', () => {
 			const payload: string = JSON.stringify(payloadValue);
 			const eventHash: string = sha256(
 				JSON.stringify({
-					actorId: 'recipient-1',
-					envelopeId: 'env-1',
+					actorId: '01930000-0000-7000-8000-000000000001',
+					envelopeId: '01920000-0000-7000-8000-000000000001',
 					eventType: 'recipient.declined',
 					occurredAt: DECLINED_AT,
 					organizationId: 'org-1',
@@ -202,21 +208,21 @@ describe('D1 terminal delivery cleanup integration', () => {
 					id, organization_id, title, status, repository_generation, repository_head,
 					sent_commit_sha, created_at, updated_at
 				) VALUES (
-					'env-1','org-1','Agreement','sent',1,'commit-1','commit-1',
+					'01920000-0000-7000-8000-000000000001','org-1','Agreement','sent',1,'commit-1','commit-1',
 					'2026-09-12T00:00:00.000Z','2026-09-12T00:01:00.000Z'
 				);
 				INSERT INTO audit_event (
 					id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
 					payload_json, previous_hash, event_hash, occurred_at
 				) VALUES (
-					'sent-audit','org-1','env-1',1,'envelope.sent','user','user-1','{}',
+					'01960000-0000-7000-8000-0000000000a1','org-1','01920000-0000-7000-8000-000000000001',1,'envelope.sent','user','user-1','{}',
 					'genesis','sent-hash','2026-09-12T00:01:00.000Z'
 				);
 				INSERT INTO recipient (
 					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 					capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 				) VALUES (
-					'recipient-1','org-1','env-1','actor@example.com','Actor','signer','en',1,'pending',
+					'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','actor@example.com','Actor','signer','en',1,'pending',
 					'${capabilityHash}','2026-09-30T00:00:00.000Z',NULL,
 					'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z'
 				);
@@ -228,8 +234,8 @@ describe('D1 terminal delivery cleanup integration', () => {
 						actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 						sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 						previous_audit_hash, audit_event_hash, audit_payload_json
-					) VALUES ('org-1','env-1','recipient-1','signer',1,'recipient','recipient-1',
-						'decline-terminal-cleanup',?,?, 'commit-1',?,'declined-audit',2,
+					) VALUES ('org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','signer',1,'recipient','01930000-0000-7000-8000-000000000001',
+						'decline-terminal-cleanup',?,?, 'commit-1',?,'01960000-0000-7000-8000-0000000000a2',2,
 						'sent-hash',?,?)`
 				)
 				.run(requestHash, capabilityHash, DECLINED_AT, eventHash, payload);

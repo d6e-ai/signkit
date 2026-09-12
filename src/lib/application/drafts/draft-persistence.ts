@@ -1,5 +1,6 @@
 import { MAX_DRAFT_GENERATION, normalizeMarkdownContent } from '$lib/domain/draft';
 import { assertMarkdownPath, type Envelope } from '$lib/domain/envelope';
+import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	DraftMutationStore,
 	DraftRevisionKey,
@@ -27,6 +28,7 @@ const MAX_PROVENANCE_VALUE_LENGTH = 200;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{1,200}$/;
+const NUL_CHARACTER = '\x00';
 
 export interface ReadCurrentDraftInput {
 	organizationId: string;
@@ -151,7 +153,8 @@ export class DraftPersistenceService {
 	constructor(
 		private readonly store: DraftMutationStore,
 		private readonly objects: ObjectStore,
-		private readonly repository: DraftRepository
+		private readonly repository: DraftRepository,
+		private readonly newId: UuidV7Generator = newUuidV7
 	) {}
 
 	async readCurrent(input: ReadCurrentDraftInput): Promise<DraftSnapshot> {
@@ -272,15 +275,10 @@ export class DraftPersistenceService {
 			provenance: canonical.provenance
 		};
 		const auditPayloadJson: string = JSON.stringify(auditPayload);
-		const auditEventId: string = await deterministicUuid(
-			[
-				'signkit-draft-revision-v1',
-				input.organizationId,
-				input.actor.type,
-				input.actor.id,
-				input.idempotencyKey
-			].join('\u0000')
-		);
+		// The durable command row binds this event to the idempotency key and
+		// request fingerprint, so the identifier itself is minted rather than
+		// derived from the key.
+		const auditEventId: string = this.newId();
 		const auditEventHash: string = await sha256Text(
 			JSON.stringify({
 				organizationId: input.organizationId,
@@ -337,16 +335,10 @@ export class DraftPersistenceService {
 			throw new DraftIntegrityError('Stored draft command has an invalid Git commit SHA');
 		}
 		assertIsoTimestamp(revision.updatedAt);
-		const expectedAuditEventId: string = await deterministicUuid(
-			[
-				'signkit-draft-revision-v1',
-				input.organizationId,
-				input.actor.type,
-				input.actor.id,
-				input.idempotencyKey
-			].join('\u0000')
-		);
-		if (revision.auditEventId !== expectedAuditEventId) {
+		// The store already proved this row belongs to the same idempotency key,
+		// actor, envelope, and request fingerprint; what remains to check here is
+		// that the recorded identifier is a canonical SignKit UUIDv7.
+		if (!isUuidV7(revision.auditEventId)) {
 			throw new DraftIntegrityError('Stored draft command has an invalid audit event ID');
 		}
 		assertSha256(revision.archiveSha256);
@@ -527,7 +519,9 @@ function canonicalizeCommitInput(input: CommitDraftInput): CanonicalDraftCommitI
 		if (new TextEncoder().encode(edit.path).byteLength > 240) {
 			throw new Error('Draft document path is too long');
 		}
-		if (edit.content.includes('\u0000')) throw new Error('Draft document contains a NUL byte');
+		if (edit.content.includes(NUL_CHARACTER)) {
+			throw new Error('Draft document contains a NUL byte');
+		}
 		const content: string = normalizeMarkdownContent(edit.content);
 		const contentBytes: number = new TextEncoder().encode(content).byteLength;
 		if (contentBytes > MAX_DRAFT_CONTENT_BYTES) {
@@ -612,14 +606,6 @@ function throwForPublicationFailure(
 		case 'integrity_error':
 			throw new DraftIntegrityError('Draft publication failed its integrity check');
 	}
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256Text(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }
 
 async function sha256Text(value: string): Promise<string> {

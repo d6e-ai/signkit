@@ -1,3 +1,5 @@
+-- `idempotency_key` is caller-chosen opaque text and stays unconstrained; the
+-- envelope it resolves to is UUIDv7-checked by its own table.
 CREATE TABLE idempotency_key (
   organization_id text NOT NULL,
   caller_id text NOT NULL,

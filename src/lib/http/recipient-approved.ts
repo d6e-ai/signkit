@@ -8,10 +8,11 @@ import {
 	RECIPIENT_SESSION_COOKIE,
 	RECIPIENT_SESSION_COOKIE_PATH
 } from '$lib/server/recipient-session';
+import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
 const MAX_BODY_BYTES: number = 4 * 1024;
-const idSchema: ZodType<string> = z.string().uuid();
+const idSchema: ZodType<string> = signkitIdentifierSchema;
 const bodySchema = z
 	.object({
 		envelopeId: idSchema,

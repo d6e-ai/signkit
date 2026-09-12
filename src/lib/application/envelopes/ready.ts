@@ -1,3 +1,4 @@
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	isActionableRecipientRole,
 	recipientRoles,
@@ -55,9 +56,11 @@ export class InvalidRecipientGraphError extends Error {
 
 export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 	readonly #store: EnvelopeReadyStore;
+	readonly #newId: UuidV7Generator;
 
-	constructor(store: EnvelopeReadyStore) {
+	constructor(store: EnvelopeReadyStore, newId: UuidV7Generator = newUuidV7) {
 		this.#store = store;
+		this.#newId = newId;
 	}
 
 	async ready(
@@ -89,11 +92,13 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 		if (preparation.outcome !== 'ready') return preparation;
 
 		const updatedAt: string = new Date().toISOString();
-		const recipients: readonly Recipient[] = await Promise.all(
-			canonicalRecipients.map(async (recipient: ReadyRecipientInput): Promise<Recipient> => ({
-				id: await deterministicUuid(
-					['signkit-recipient-v1', envelopeId, recipient.email].join('\u0000')
-				),
+		// Recipient identifiers are minted, never derived from the email address.
+		// A derivation would let anyone holding a published recipient ID confirm a
+		// guessed address for that envelope. A lost publication race replays the
+		// durable receipt, whose recipient IDs are authoritative over these.
+		const recipients: readonly Recipient[] = canonicalRecipients.map(
+			(recipient: ReadyRecipientInput): Recipient => ({
+				id: this.#newId(),
 				organizationId: actor.organizationId,
 				envelopeId,
 				email: recipient.email,
@@ -102,13 +107,9 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 				locale: recipient.locale,
 				routingOrder: recipient.routingOrder,
 				status: 'pending'
-			}))
+			})
 		);
-		const auditEventId: string = await deterministicUuid(
-			['signkit-ready-event-v1', actor.organizationId, actor.id, input.idempotencyKey].join(
-				'\u0000'
-			)
-		);
+		const auditEventId: string = this.#newId();
 		const auditPayloadJson: string = JSON.stringify({
 			commitSha: preparation.envelope.repositoryHead,
 			generation: preparation.envelope.repositoryGeneration,
@@ -250,12 +251,4 @@ async function sha256(value: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

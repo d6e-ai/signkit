@@ -52,7 +52,7 @@ function seedEnvelope(
 			`INSERT INTO audit_event (
 				id, organization_id, envelope_id, sequence, event_type, actor_type,
 				actor_id, payload_json, previous_hash, event_hash, occurred_at
-			 ) VALUES ('head-event', 'org-1', ?, 1, 'envelope.created', 'user',
+			 ) VALUES ('01960000-0000-7000-8000-0000000000a0', 'org-1', ?, 1, 'envelope.created', 'user',
 				'user-1', '{}', 'genesis', 'head-hash', '2026-09-12T01:00:00.000Z')`
 		)
 		.run(ENVELOPE_ID);
@@ -105,21 +105,21 @@ describe('D1 envelope void store integration', () => {
 					status, capability_hash, capability_expires_at, capability_revoked_at,
 					created_at, updated_at
 				) VALUES
-					('r1','org-1','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending','h1','2026-10-01',NULL,'2026-09-12','2026-09-12'),
-					('r2','org-1','${ENVELOPE_ID}','r2@example.com','R2','approver','ja',2,'pending','h2',NULL,NULL,'2026-09-12','2026-09-12'),
-					('r3','org-1','${ENVELOPE_ID}','r3@example.com','R3','signer','en',1,'completed','h3','2026-10-01','${VOIDED_AT}','2026-09-12','${VOIDED_AT}'),
-					('r4','org-1','${ENVELOPE_ID}','r4@example.com','R4','viewer','en',1,'viewed','h4','2026-10-01',NULL,'2026-09-12','2026-09-12'),
-					('r5','org-1','${ENVELOPE_ID}','r5@example.com','R5','signer','en',1,'completed','h5','2026-10-01','2026-09-12T01:30:00.000Z','2026-09-12','2026-09-12');
+					('01930000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending','h1','2026-10-01',NULL,'2026-09-12','2026-09-12'),
+					('01930000-0000-7000-8000-000000000002','org-1','${ENVELOPE_ID}','r2@example.com','R2','approver','ja',2,'pending','h2',NULL,NULL,'2026-09-12','2026-09-12'),
+					('01930000-0000-7000-8000-000000000003','org-1','${ENVELOPE_ID}','r3@example.com','R3','signer','en',1,'completed','h3','2026-10-01','${VOIDED_AT}','2026-09-12','${VOIDED_AT}'),
+					('01930000-0000-7000-8000-000000000004','org-1','${ENVELOPE_ID}','r4@example.com','R4','viewer','en',1,'viewed','h4','2026-10-01',NULL,'2026-09-12','2026-09-12'),
+					('01930000-0000-7000-8000-000000000005','org-1','${ENVELOPE_ID}','r5@example.com','R5','signer','en',1,'completed','h5','2026-10-01','2026-09-12T01:30:00.000Z','2026-09-12','2026-09-12');
 				INSERT INTO delivery_outbox (
 					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
 					reserved_capability_expires_at, sealed_capability, sealing_key_id,
 					sealed_capability_sha256, available_at, attempts, created_at, updated_at, retryable
 				) VALUES
-					('d1','org-1','${ENVELOPE_ID}','r1','recipient_invitation','pending','h1','2026-10-01','sealed-1','key','sha-1','2026-09-12',0,'2026-09-12','2026-09-12',1),
-					('d2','org-1','${ENVELOPE_ID}','r2','recipient_invitation','blocked','h2',NULL,'sealed-2','key','sha-2',NULL,0,'2026-09-12','2026-09-12',1),
-					('d3','org-1','${ENVELOPE_ID}','r3','recipient_invitation','delivered','h3','2026-10-01',NULL,'key','sha-3','2026-09-12',1,'2026-09-12','2026-09-12',0),
-					('d4','org-1','${ENVELOPE_ID}','r4','recipient_invitation','failed','h4','2026-10-01','sealed-4','key','sha-4','2026-09-12',2,'2026-09-12','2026-09-12',1),
-					('d5','org-1','${ENVELOPE_ID}','r5','recipient_invitation','failed','h5','2026-10-01',NULL,'key','sha-5','2026-09-12',3,'2026-09-12','2026-09-12',0);
+					('01940000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000001','recipient_invitation','pending','h1','2026-10-01','sealed-1','key','sha-1','2026-09-12',0,'2026-09-12','2026-09-12',1),
+					('01940000-0000-7000-8000-000000000002','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000002','recipient_invitation','blocked','h2',NULL,'sealed-2','key','sha-2',NULL,0,'2026-09-12','2026-09-12',1),
+					('01940000-0000-7000-8000-000000000003','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000003','recipient_invitation','delivered','h3','2026-10-01',NULL,'key','sha-3','2026-09-12',1,'2026-09-12','2026-09-12',0),
+					('01940000-0000-7000-8000-000000000004','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000004','recipient_invitation','failed','h4','2026-10-01','sealed-4','key','sha-4','2026-09-12',2,'2026-09-12','2026-09-12',1),
+					('01940000-0000-7000-8000-000000000005','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000005','recipient_invitation','failed','h5','2026-10-01',NULL,'key','sha-5','2026-09-12',3,'2026-09-12','2026-09-12',0);
 			`);
 
 			await expect(voidEnvelope(d1, 'sent', 3)).resolves.toMatchObject({
@@ -140,7 +140,12 @@ describe('D1 envelope void store integration', () => {
 			]);
 			expect(
 				recipients.filter((row) => row.capability_revoked_at === VOIDED_AT).map((row) => row.id)
-			).toEqual(['r1', 'r2', 'r3', 'r4']);
+			).toEqual([
+				'01930000-0000-7000-8000-000000000001',
+				'01930000-0000-7000-8000-000000000002',
+				'01930000-0000-7000-8000-000000000003',
+				'01930000-0000-7000-8000-000000000004'
+			]);
 			const deliveries = sqlite
 				.prepare(
 					'SELECT id, status, retryable, sealed_capability, last_error FROM delivery_outbox ORDER BY id'
@@ -148,40 +153,61 @@ describe('D1 envelope void store integration', () => {
 				.all() as Record<string, unknown>[];
 			expect(deliveries.slice(0, 2).concat(deliveries.slice(3, 4))).toEqual([
 				{
-					id: 'd1',
+					id: '01940000-0000-7000-8000-000000000001',
 					status: 'failed',
 					retryable: 0,
 					sealed_capability: null,
 					last_error: 'envelope_terminal'
 				},
 				{
-					id: 'd2',
+					id: '01940000-0000-7000-8000-000000000002',
 					status: 'failed',
 					retryable: 0,
 					sealed_capability: null,
 					last_error: 'envelope_terminal'
 				},
 				{
-					id: 'd4',
+					id: '01940000-0000-7000-8000-000000000004',
 					status: 'failed',
 					retryable: 0,
 					sealed_capability: null,
 					last_error: 'envelope_terminal'
 				}
 			]);
-			expect(deliveries[2]).toMatchObject({ id: 'd3', status: 'delivered', last_error: null });
-			expect(deliveries[4]).toMatchObject({ id: 'd5', status: 'failed', last_error: null });
+			expect(deliveries[2]).toMatchObject({
+				id: '01940000-0000-7000-8000-000000000003',
+				status: 'delivered',
+				last_error: null
+			});
+			expect(deliveries[4]).toMatchObject({
+				id: '01940000-0000-7000-8000-000000000005',
+				status: 'failed',
+				last_error: null
+			});
 			const command = sqlite
 				.prepare(
 					'SELECT revoked_recipient_ids_json, revoked_recipient_count, audit_payload_json FROM envelope_void_command'
 				)
 				.get() as Record<string, unknown>;
-			expect(command.revoked_recipient_ids_json).toBe('["r1","r2","r4"]');
+			expect(command.revoked_recipient_ids_json).toBe(
+				JSON.stringify([
+					'01930000-0000-7000-8000-000000000001',
+					'01930000-0000-7000-8000-000000000002',
+					'01930000-0000-7000-8000-000000000004'
+				])
+			);
 			expect(command.revoked_recipient_count).toBe(3);
 			expect(JSON.parse(command.audit_payload_json as string)).toMatchObject({
 				previousStatus: 'sent',
 				generation: 3,
-				revokedCapabilities: { reason: 'envelope_voided', recipientIds: ['r1', 'r2', 'r4'] }
+				revokedCapabilities: {
+					reason: 'envelope_voided',
+					recipientIds: [
+						'01930000-0000-7000-8000-000000000001',
+						'01930000-0000-7000-8000-000000000002',
+						'01930000-0000-7000-8000-000000000004'
+					]
+				}
 			});
 		} finally {
 			sqlite.close();
@@ -196,14 +222,14 @@ describe('D1 envelope void store integration', () => {
 				INSERT INTO recipient (
 					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 					capability_hash, capability_expires_at, created_at, updated_at
-				) VALUES ('r1','org-1','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending',
+				) VALUES ('01930000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending',
 					'h1','2026-10-01','2026-09-12','2026-09-12');
 				INSERT INTO delivery_outbox (
 					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
 					reserved_capability_expires_at, sealed_capability, sealing_key_id,
 					sealed_capability_sha256, available_at, attempts, locked_at, claim_token,
 					created_at, updated_at, retryable
-				) VALUES ('d1','org-1','${ENVELOPE_ID}','r1','recipient_invitation','processing','h1',
+				) VALUES ('01940000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000001','recipient_invitation','processing','h1',
 					'2026-10-01','sealed','key','sha','2026-09-12',1,'2026-09-12','claim-token-0001',
 					'2026-09-12','2026-09-12',1);
 			`);
@@ -213,7 +239,7 @@ describe('D1 envelope void store integration', () => {
 				count: 0
 			});
 			sqlite.exec(
-				"UPDATE delivery_outbox SET status='pending', claim_token=NULL, locked_at=NULL WHERE id='d1'"
+				"UPDATE delivery_outbox SET status='pending', claim_token=NULL, locked_at=NULL WHERE id='01940000-0000-7000-8000-000000000001'"
 			);
 			await expect(voidEnvelope(d1, 'sent', 1)).resolves.toMatchObject({ outcome: 'published' });
 		} finally {

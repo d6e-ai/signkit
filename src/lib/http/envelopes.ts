@@ -8,6 +8,7 @@ import type {
 	EnvelopeRequestActor
 } from '$lib/application/envelopes/model';
 import type { Envelope } from '$lib/domain/envelope';
+import { signkitIdentifierSchema } from './identifier-schema';
 import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
@@ -22,12 +23,12 @@ const createEnvelopeSchema: ZodType<{ title: string }> = z
 
 const listEnvelopeSchema: ZodType<{ cursor?: string; limit: number }> = z
 	.object({
-		cursor: z.string().uuid().optional(),
+		cursor: signkitIdentifierSchema.optional(),
 		limit: z.coerce.number().int().min(1).max(100).default(50)
 	})
 	.strict();
 
-const envelopeIdSchema: ZodType<string> = z.string().uuid();
+const envelopeIdSchema: ZodType<string> = signkitIdentifierSchema;
 const idempotencyKeySchema: ZodType<string> = z
 	.string()
 	.min(1)

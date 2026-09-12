@@ -20,7 +20,10 @@ CREATE TABLE envelope_field (
   PRIMARY KEY (organization_id, id),
   FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
   FOREIGN KEY (organization_id, envelope_id, recipient_id)
-    REFERENCES recipient(organization_id, envelope_id, id)
+    REFERENCES recipient(organization_id, envelope_id, id),
+  CONSTRAINT envelope_field_id_uuidv7 CHECK (
+    id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  )
 );
 
 CREATE INDEX envelope_field_document_order

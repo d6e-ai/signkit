@@ -9,6 +9,7 @@ describe('PostgresEnvelopeApplicationStore', () => {
 	it('creates the organization projection, envelope, idempotency key, and audit event atomically', async () => {
 		const database = new ScriptedPostgres([
 			[{ id: command.organizationId }],
+			[],
 			[envelopeRow()],
 			[{ requestHash: command.requestFingerprint, envelopeId: command.envelopeId }],
 			[]
@@ -19,38 +20,46 @@ describe('PostgresEnvelopeApplicationStore', () => {
 
 		expect(result).toEqual({ outcome: 'created', envelope });
 		expect(database.beginCalls).toBe(1);
-		expect(database.transactionQueries).toHaveLength(4);
+		expect(database.transactionQueries).toHaveLength(5);
 		expect(database.transactionQueries[0].text).toContain('INSERT INTO organization');
-		expect(database.transactionQueries[1].text).toContain('INSERT INTO envelope');
-		expect(database.transactionQueries[2].text).toContain('INSERT INTO idempotency_key');
-		expect(database.transactionQueries[3].text).toContain('INSERT INTO audit_event');
-		expect(database.transactionQueries[3].values).toContain(command.auditEventId);
-		expect(database.transactionQueries[3].values).toContain(command.auditEventHash);
+		expect(database.transactionQueries[1].text).toContain('FROM idempotency_key');
+		expect(database.transactionQueries[2].text).toContain('INSERT INTO envelope');
+		expect(database.transactionQueries[2].values).toContain(command.envelopeId);
+		expect(database.transactionQueries[3].text).toContain('INSERT INTO idempotency_key');
+		expect(database.transactionQueries[4].text).toContain('INSERT INTO audit_event');
+		expect(database.transactionQueries[4].values).toContain(command.auditEventId);
+		expect(database.transactionQueries[4].values).toContain(command.auditEventHash);
 	});
 
-	it('returns the current envelope for a matching replay without adding another audit event', async () => {
+	it('replays the stored envelope, not the freshly minted candidate ID', async () => {
+		const storedEnvelopeId: string = '01910000-0000-7000-8000-0000000000ff';
 		const database = new ScriptedPostgres([
 			[{ id: command.organizationId }],
-			[],
-			[{ requestHash: command.requestFingerprint, envelopeId: command.envelopeId }],
-			[envelopeRow()]
+			[{ requestHash: command.requestFingerprint, envelopeId: storedEnvelopeId }],
+			[envelopeRow({ id: storedEnvelopeId })]
 		]);
 		const store = new PostgresEnvelopeApplicationStore(database.client());
 
 		const result = await store.createIdempotently(command);
 
-		expect(result).toEqual({ outcome: 'replayed', envelope });
+		expect(result).toEqual({
+			outcome: 'replayed',
+			envelope: { ...envelope, id: storedEnvelopeId }
+		});
 		expect(database.beginCalls).toBe(1);
-		expect(database.transactionQueries).toHaveLength(4);
+		expect(database.transactionQueries).toHaveLength(3);
+		expect(database.transactionQueries[2].values).toContain(storedEnvelopeId);
 		expect(database.transactionQueries.some((query) => query.text.includes('audit_event'))).toBe(
 			false
 		);
+		expect(
+			database.transactionQueries.some((query) => query.text.includes('INSERT INTO envelope'))
+		).toBe(false);
 	});
 
 	it('distinguishes an idempotency-key conflict from a replay', async () => {
 		const database = new ScriptedPostgres([
 			[{ id: command.organizationId }],
-			[],
 			[{ requestHash: 'different-request', envelopeId: command.envelopeId }]
 		]);
 		const store = new PostgresEnvelopeApplicationStore(database.client());
@@ -59,13 +68,36 @@ describe('PostgresEnvelopeApplicationStore', () => {
 
 		expect(result).toEqual({ outcome: 'conflict' });
 		expect(database.beginCalls).toBe(1);
-		expect(database.transactionQueries).toHaveLength(3);
+		expect(database.transactionQueries).toHaveLength(2);
+	});
+
+	it('resolves a lost idempotency-key race into a replay after rolling back its candidate envelope', async () => {
+		const winningEnvelopeId: string = '01910000-0000-7000-8000-0000000000fe';
+		const database = new ScriptedPostgres([
+			[{ id: command.organizationId }],
+			[],
+			[envelopeRow()],
+			[],
+			[{ requestHash: command.requestFingerprint, envelopeId: winningEnvelopeId }],
+			[envelopeRow({ id: winningEnvelopeId })]
+		]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		const result = await store.createIdempotently(command);
+
+		expect(result).toEqual({
+			outcome: 'replayed',
+			envelope: { ...envelope, id: winningEnvelopeId }
+		});
+		expect(database.beginCalls).toBe(1);
+		expect(database.transactionQueries).toHaveLength(4);
+		expect(database.directQueries).toHaveLength(2);
 	});
 
 	it('uses an organization-scoped stable cursor and limit-plus-one pagination', async () => {
-		const first = envelopeRow({ id: '00000000-0000-8000-a000-000000000003' });
-		const second = envelopeRow({ id: '00000000-0000-8000-a000-000000000002' });
-		const lookahead = envelopeRow({ id: '00000000-0000-8000-a000-000000000001' });
+		const first = envelopeRow({ id: '01910000-0000-7000-8000-000000000003' });
+		const second = envelopeRow({ id: '01910000-0000-7000-8000-000000000002' });
+		const lookahead = envelopeRow({ id: '01910000-0000-7000-8000-000000000001' });
 		const database = new ScriptedPostgres([[first, second, lookahead]]);
 		const store = new PostgresEnvelopeApplicationStore(database.client());
 
@@ -282,9 +314,9 @@ class ScriptedPostgres {
 const command: CreateEnvelopeCommand = {
 	actor: { id: 'user_1', type: 'user' },
 	auditEventHash: 'b'.repeat(64),
-	auditEventId: '00000000-0000-8000-a000-000000000002',
+	auditEventId: '01910000-0000-7000-8000-000000000002',
 	createdAt: '2026-09-11T00:00:00.000Z',
-	envelopeId: '00000000-0000-8000-a000-000000000001',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
 	idempotencyKey: 'request-1',
 	organizationId: 'org_1',
 	organizationName: 'Workspace',
@@ -330,7 +362,7 @@ const draftCommand: PublishDraftRevisionCommand = {
 	updatedAt: '2026-09-11T01:00:00.000Z',
 	expectedAuditSequence: 1,
 	previousAuditHash: 'head-1',
-	auditEventId: '00000000-0000-8000-a000-000000000004',
+	auditEventId: '01910000-0000-7000-8000-000000000004',
 	auditEventHash: 'f'.repeat(64),
 	auditPayloadJson: '{"generation":1}'
 };

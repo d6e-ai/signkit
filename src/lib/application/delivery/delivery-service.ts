@@ -16,6 +16,7 @@ import {
 	type MailSender
 } from '$lib/ports/mail-sender';
 import type { CapabilitySealContext } from '$lib/security/delivery-capability';
+import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import { hashRecipientCapability, recipientSigningPath } from '$lib/security/recipient-capability';
 
 export const INVITATION_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
@@ -69,7 +70,7 @@ export class InvitationDeliveryService {
 	readonly #publicHttpsOrigin: string;
 	readonly #sender: InvitationSenderConfig;
 	readonly #now: () => Date;
-	readonly #uuid: () => string;
+	readonly #newClaimToken: OpaqueTokenGenerator;
 
 	constructor(
 		store: DeliveryOutboxStore,
@@ -78,7 +79,9 @@ export class InvitationDeliveryService {
 		publicHttpsOrigin: string,
 		sender: InvitationSenderConfig,
 		now: () => Date = (): Date => new Date(),
-		uuid: () => string = (): string => crypto.randomUUID()
+		// A lease token is opaque unguessable material, never a row identifier:
+		// 256 random bits with no embedded creation time.
+		newClaimToken: OpaqueTokenGenerator = newOpaqueToken
 	) {
 		this.#store = store;
 		this.#opener = opener;
@@ -86,14 +89,14 @@ export class InvitationDeliveryService {
 		this.#publicHttpsOrigin = assertPublicHttpsOrigin(publicHttpsOrigin);
 		this.#sender = assertSenderConfig(sender);
 		this.#now = now;
-		this.#uuid = uuid;
+		this.#newClaimToken = newClaimToken;
 	}
 
 	async deliverPendingInvitations(
 		limit: number = MAX_INVITATION_CLAIM_BATCH
 	): Promise<InvitationDeliveryBatchResult> {
 		const claimedAt: Date = this.#now();
-		const claimToken: string = this.#uuid();
+		const claimToken: string = this.#newClaimToken();
 		const claims: readonly ClaimedInvitationDelivery[] = await this.#store.claimPendingInvitations({
 			claimToken,
 			claimedAt: claimedAt.toISOString(),

@@ -14,26 +14,26 @@ function database(): DatabaseSync {
 		INSERT INTO organization (id,d6e_organization_id,name,created_at)
 		VALUES ('org-1','org-1','One','${now}'), ('org-2','org-2','Two','${now}');
 		INSERT INTO envelope (id,organization_id,title,status,created_at,updated_at)
-		VALUES ('shared','org-1','Correct','draft','${now}','${now}'),
-			('shared','org-2','Wrong tenant','completed','${now}','${now}');
+		VALUES ('01920000-0000-7000-8000-000000000001','org-1','Correct','draft','${now}','${now}'),
+			('01920000-0000-7000-8000-000000000001','org-2','Wrong tenant','completed','${now}','${now}');
 		INSERT INTO audit_event (id,organization_id,envelope_id,sequence,event_type,actor_type,
 			actor_id,payload_json,previous_hash,event_hash,occurred_at)
-		VALUES ('created-1','org-1','shared',1,'envelope.created','user','user-1','{}',NULL,
+		VALUES ('01960000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001',1,'envelope.created','user','user-1','{}',NULL,
 			'previous-hash','${now}');
 		INSERT INTO draft_revision_command (organization_id,envelope_id,actor_type,actor_id,
 			idempotency_key,request_hash,expected_generation,resulting_generation,commit_sha,
 			archive_key,archive_sha256,updated_at,audit_event_id,audit_sequence,previous_audit_hash,
 			audit_event_hash,audit_payload_json)
-		VALUES ('org-1','shared','user','user-1','draft-1','request-hash',0,1,
+		VALUES ('org-1','01920000-0000-7000-8000-000000000001','user','user-1','draft-1','request-hash',0,1,
 			'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-			'draft-repositories/v1/organizations/org-1/envelopes/shared/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.git.gz',
+			'draft-repositories/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.git.gz',
 			'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','${now}',
-			'draft-event-1',2,'previous-hash','revision-hash','{}');
+			'01960000-0000-7000-8000-000000000002',2,'previous-hash','revision-hash','{}');
 		UPDATE envelope SET status='sent', sent_commit_sha=repository_head
-		WHERE organization_id='org-1' AND id='shared';
+		WHERE organization_id='org-1' AND id='01920000-0000-7000-8000-000000000001';
 		INSERT INTO recipient (id,organization_id,envelope_id,email,name,role,locale,routing_order,status,
 			capability_hash,capability_expires_at,created_at,updated_at)
-		VALUES ('recipient-1','org-1','shared','recipient@example.com','Recipient','signer','en',1,'pending',
+		VALUES ('01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','recipient@example.com','Recipient','signer','en',1,'pending',
 			'hash-1','2026-09-12T00:00:00.000Z','${now}','${now}');
 	`);
 	return db;
@@ -49,11 +49,11 @@ describe('D1 recipient access query', () => {
 		try {
 			expect(resolve(db)).toMatchObject({
 				organization_id: 'org-1',
-				envelope_id: 'shared',
+				envelope_id: '01920000-0000-7000-8000-000000000001',
 				envelope_title: 'Correct',
 				sent_commit_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 				archive_key:
-					'draft-repositories/v1/organizations/org-1/envelopes/shared/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.git.gz',
+					'draft-repositories/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.git.gz',
 				archive_sha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 			});
 		} finally {
@@ -75,7 +75,7 @@ describe('D1 recipient access query', () => {
 		const db: DatabaseSync = database();
 		try {
 			db.exec(
-				`UPDATE recipient SET ${assignment} WHERE organization_id='org-1' AND id='recipient-1'`
+				`UPDATE recipient SET ${assignment} WHERE organization_id='org-1' AND id='01930000-0000-7000-8000-000000000001'`
 			);
 			expect(resolve(db)).toBeUndefined();
 		} finally {
@@ -89,7 +89,7 @@ describe('D1 recipient access query', () => {
 			const db: DatabaseSync = database();
 			try {
 				db.exec(
-					`UPDATE envelope SET status='${status}' WHERE organization_id='org-1' AND id='shared'`
+					`UPDATE envelope SET status='${status}' WHERE organization_id='org-1' AND id='01920000-0000-7000-8000-000000000001'`
 				);
 				expect(resolve(db)).toBeUndefined();
 			} finally {
@@ -112,7 +112,9 @@ describe('D1 recipient access query', () => {
 	])('fails closed for %s', (_name, assignment) => {
 		const db: DatabaseSync = database();
 		try {
-			db.exec(`UPDATE envelope SET ${assignment} WHERE organization_id='org-1' AND id='shared'`);
+			db.exec(
+				`UPDATE envelope SET ${assignment} WHERE organization_id='org-1' AND id='01920000-0000-7000-8000-000000000001'`
+			);
 			expect(resolve(db)).toBeUndefined();
 		} finally {
 			db.close();
@@ -135,20 +137,20 @@ describe('D1 recipient access query', () => {
 		try {
 			db.exec("DELETE FROM draft_revision_command WHERE organization_id='org-1'");
 			db.exec(`
-				UPDATE envelope SET status='draft' WHERE organization_id='org-2' AND id='shared';
+				UPDATE envelope SET status='draft' WHERE organization_id='org-2' AND id='01920000-0000-7000-8000-000000000001';
 				INSERT INTO audit_event (id,organization_id,envelope_id,sequence,event_type,actor_type,
 					actor_id,payload_json,previous_hash,event_hash,occurred_at)
-				VALUES ('created-2','org-2','shared',1,'envelope.created','user','user-2','{}',NULL,
+				VALUES ('01960000-0000-7000-8000-000000000003','org-2','01920000-0000-7000-8000-000000000001',1,'envelope.created','user','user-2','{}',NULL,
 					'previous-hash','${now}');
 				INSERT INTO draft_revision_command (organization_id,envelope_id,actor_type,actor_id,
 					idempotency_key,request_hash,expected_generation,resulting_generation,commit_sha,
 					archive_key,archive_sha256,updated_at,audit_event_id,audit_sequence,previous_audit_hash,
 					audit_event_hash,audit_payload_json)
-				VALUES ('org-2','shared','user','user-2','draft-2','request-hash',0,1,
+				VALUES ('org-2','01920000-0000-7000-8000-000000000001','user','user-2','draft-2','request-hash',0,1,
 					'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-					'draft-repositories/v1/organizations/org-1/envelopes/shared/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.git.gz',
+					'draft-repositories/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.git.gz',
 					'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','${now}',
-					'draft-event-2',2,'previous-hash','revision-hash','{}')
+					'01960000-0000-7000-8000-000000000004',2,'previous-hash','revision-hash','{}')
 		`);
 			expect(resolve(db)).toBeUndefined();
 		} finally {

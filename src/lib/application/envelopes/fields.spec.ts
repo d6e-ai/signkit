@@ -18,6 +18,7 @@ import type {
 	FieldPlacementPreparation,
 	PublishFieldPlacementCommand
 } from '$lib/ports/envelope-field-store';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { EnvelopeFieldApplication, InvalidFieldPlacementError } from './fields';
 
 const organizationId: string = '01900000-0000-7000-8000-000000000002';
@@ -264,7 +265,7 @@ describe('EnvelopeFieldApplication', () => {
 		expect(store.commands[0].auditPayloadJson).not.toContain('Initial here');
 	});
 
-	it('produces stable field IDs for the same locator across requests with different labels', async () => {
+	it('mints a distinct canonical UUIDv7 per published field set, even for the same locator', async () => {
 		const envelope: Envelope = await readyEnvelope();
 		const drafts: DraftPersistenceService = await draftPersistenceFor(envelope, [
 			{ path: 'documents/agreement.md', content: '# Agreement' }
@@ -292,7 +293,14 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [{ ...baseField, label: 'Different label' }]
 		});
 
-		expect(first.commands[0].fields[0].id).toBe(second.commands[0].fields[0].id);
+		const firstId: string = first.commands[0].fields[0].id;
+		const secondId: string = second.commands[0].fields[0].id;
+		expect(isUuidV7(firstId)).toBe(true);
+		expect(isUuidV7(secondId)).toBe(true);
+		expect(firstId).not.toBe(secondId);
+		// Later placements sort after earlier ones, so a field set is still
+		// ordered by creation without carrying a stable locator-derived ID.
+		expect(secondId > firstId).toBe(true);
 	});
 
 	it('rejects a field referencing a non-signer recipient without publishing', async () => {

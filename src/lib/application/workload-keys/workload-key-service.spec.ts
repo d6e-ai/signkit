@@ -9,6 +9,7 @@ import type {
 	WorkloadKeyMetadata,
 	WorkloadKeyStore
 } from '$lib/ports/workload-key-store';
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import {
 	hashWorkloadKey,
 	isWorkloadKey,
@@ -110,7 +111,7 @@ function application(
 	const now: Date | (() => Date) = options.now ?? NOW;
 	const clock: () => Date = typeof now === 'function' ? now : (): Date => now;
 	const uuids: string[] = [
-		...(options.uuids ?? [KEY_ID, OTHER_KEY_ID, 'fffffff0-0000-4000-8000-000000000003'])
+		...(options.uuids ?? [KEY_ID, OTHER_KEY_ID, '01900000-0000-7000-8000-000000000203'])
 	];
 	return new WorkloadKeyApplication(store, clock, undefined, (): string => uuids.shift() ?? KEY_ID);
 }
@@ -135,6 +136,23 @@ async function sha256(value: string): Promise<string> {
 }
 
 describe('WorkloadKeyApplication.createWorkloadKey', () => {
+	it('mints a canonical UUIDv7 record identifier by default, separate from the secret', async () => {
+		const store = new FakeWorkloadKeyStore();
+
+		const result: CreateWorkloadKeyResult = await new WorkloadKeyApplication(
+			store,
+			(): Date => NOW
+		).createWorkloadKey(ACTOR, createInput());
+
+		const command: CreateWorkloadKeyCommand = store.createCommands[0];
+		expect(command.workloadKeyId).toMatch(UUID_V7_PATTERN);
+		// The credential itself stays opaque high-entropy material.
+		expect(result.outcome).toBe('created');
+		if (result.outcome !== 'created') return;
+		expect(result.token).toMatch(/^signkit_[A-Za-z0-9_-]{43}$/);
+		expect(result.token).not.toContain(command.workloadKeyId);
+	});
+
 	it('canonicalizes the request, defaults expiry to 90 days, and returns the secret once', async () => {
 		const store = new FakeWorkloadKeyStore();
 		const result: CreateWorkloadKeyResult = await application(store).createWorkloadKey(
@@ -223,7 +241,7 @@ describe('WorkloadKeyApplication.createWorkloadKey', () => {
 	it('separates fingerprints for different names, scopes, and expiries', async () => {
 		const store = new FakeWorkloadKeyStore();
 		const service: WorkloadKeyApplication = application(store, {
-			uuids: [KEY_ID, OTHER_KEY_ID, 'fffffff0-0000-4000-8000-000000000003', KEY_ID]
+			uuids: [KEY_ID, OTHER_KEY_ID, '01900000-0000-7000-8000-000000000203', KEY_ID]
 		});
 		await service.createWorkloadKey(ACTOR, createInput());
 		await service.createWorkloadKey(ACTOR, createInput({ name: 'Other agent' }));

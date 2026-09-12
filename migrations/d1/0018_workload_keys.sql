@@ -22,11 +22,13 @@ CREATE TABLE workload_key (
   rate_window_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (organization_id, id),
   FOREIGN KEY (organization_id) REFERENCES organization(id),
-  CONSTRAINT workload_key_id_uuid CHECK (
+  CONSTRAINT workload_key_id_uuidv7 CHECK (
     length(id) = 36
     AND substr(id, 9, 1) = '-'
     AND substr(id, 14, 1) = '-'
+    AND substr(id, 15, 1) = '7'
     AND substr(id, 19, 1) = '-'
+    AND substr(id, 20, 1) IN ('8', '9', 'a', 'b')
     AND substr(id, 24, 1) = '-'
     AND length(replace(id, '-', '')) = 32
     AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*'

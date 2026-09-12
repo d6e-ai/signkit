@@ -9,8 +9,8 @@ import { RecipientDeclinedApplication } from './recipient-declined';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
 const organizationId: string = 'org-1';
-const envelopeId: string = '00000000-0000-8000-a000-000000000001';
-const recipientId: string = '00000000-0000-8000-a000-000000000002';
+const envelopeId: string = '01910000-0000-7000-8000-000000000001';
+const recipientId: string = '01910000-0000-7000-8000-000000000002';
 
 const ready: Extract<DeclinePreparation, { outcome: 'ready' }> = {
 	outcome: 'ready',
@@ -22,8 +22,8 @@ const ready: Extract<DeclinePreparation, { outcome: 'ready' }> = {
 	sentCommitSha: 'a'.repeat(40),
 	envelopeStatus: 'sent',
 	revokedRecipientIds: [
-		'00000000-0000-8000-a000-000000000003',
-		'00000000-0000-8000-a000-000000000004'
+		'01910000-0000-7000-8000-000000000003',
+		'01910000-0000-7000-8000-000000000004'
 	],
 	auditHead: { sequence: 3, eventHash: 'audit-head-3' }
 };

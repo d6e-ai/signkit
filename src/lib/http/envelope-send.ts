@@ -10,10 +10,11 @@ import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
 } from './organization-authorization';
+import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const MAX_BODY_BYTES: number = 16 * 1024;
-const envelopeIdSchema: ZodType<string> = z.string().uuid();
+const envelopeIdSchema: ZodType<string> = signkitIdentifierSchema;
 const idempotencyKeySchema: ZodType<string> = z
 	.string()
 	.min(1)
@@ -22,7 +23,7 @@ const idempotencyKeySchema: ZodType<string> = z
 const sendSchema = z
 	.object({
 		expectedGeneration: z.number().int().min(1).max(2_147_483_647),
-		expectedReadyAuditEventId: z.string().uuid()
+		expectedReadyAuditEventId: signkitIdentifierSchema
 	})
 	.strict();
 

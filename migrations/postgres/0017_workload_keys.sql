@@ -21,8 +21,8 @@ CREATE TABLE workload_key (
   rate_window_started_at timestamptz,
   rate_window_count integer NOT NULL DEFAULT 0,
   PRIMARY KEY (organization_id, id),
-  CONSTRAINT workload_key_id_uuid CHECK (
-    id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  CONSTRAINT workload_key_id_uuidv7 CHECK (
+    id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
   CONSTRAINT workload_key_name_bound CHECK (
     char_length(name) BETWEEN 1 AND 200

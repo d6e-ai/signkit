@@ -10,8 +10,8 @@ import {
 	type RecipientApprovedApplicationResolver
 } from './recipient-approved';
 
-const envelopeId: string = '00000000-0000-8000-a000-000000000001';
-const recipientId: string = '00000000-0000-8000-a000-000000000002';
+const envelopeId: string = '01910000-0000-7000-8000-000000000001';
+const recipientId: string = '01910000-0000-7000-8000-000000000002';
 const token: string = `skr1_${'A'.repeat(43)}`;
 
 function requestEvent(

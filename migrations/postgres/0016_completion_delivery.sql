@@ -33,6 +33,11 @@ CREATE TABLE completion_delivery_outbox (
   CONSTRAINT completion_delivery_recipient_scope
     FOREIGN KEY (organization_id, envelope_id, recipient_id)
     REFERENCES recipient(organization_id, envelope_id, id),
+  CONSTRAINT completion_delivery_id_uuidv7 CHECK (
+    id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  ),
+  -- A claim token is opaque lease material, not a row identifier, so it keeps
+  -- its length-only bound.
   CONSTRAINT completion_delivery_claim_token_length CHECK (
     claim_token IS NULL OR length(claim_token) BETWEEN 16 AND 200
   ),

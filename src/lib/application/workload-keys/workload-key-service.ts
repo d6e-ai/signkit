@@ -9,6 +9,7 @@ import {
 	type WorkloadKeyMetadata,
 	type WorkloadKeyStore
 } from '$lib/ports/workload-key-store';
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	canonicalizeWorkloadKeyScopes,
 	issueWorkloadKey,
@@ -104,7 +105,7 @@ export class WorkloadKeyApplication implements WorkloadKeyApplicationPort {
 		private readonly store: WorkloadKeyStore,
 		private readonly now: () => Date = (): Date => new Date(),
 		private readonly issue: () => Promise<IssuedWorkloadKey> = issueWorkloadKey,
-		private readonly uuid: () => string = (): string => crypto.randomUUID()
+		private readonly newId: UuidV7Generator = newUuidV7
 	) {}
 
 	async createWorkloadKey(
@@ -135,9 +136,9 @@ export class WorkloadKeyApplication implements WorkloadKeyApplicationPort {
 		);
 
 		for (let attempt: number = 0; attempt < MAX_CREDENTIAL_ATTEMPTS; attempt += 1) {
-			const workloadKeyId: string = this.uuid();
+			const workloadKeyId: string = this.newId();
 			if (!isWorkloadKeyId(workloadKeyId)) {
-				throw new Error('Generated workload key id is not a canonical UUID');
+				throw new Error('Generated workload key id is not a canonical UUIDv7');
 			}
 			const issued: IssuedWorkloadKey = await this.issue();
 			const result: CreateWorkloadKeyStoreResult = await this.store.createWorkloadKey({

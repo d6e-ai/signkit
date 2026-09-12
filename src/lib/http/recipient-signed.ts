@@ -9,6 +9,7 @@ import {
 	RECIPIENT_SESSION_COOKIE,
 	RECIPIENT_SESSION_COOKIE_PATH
 } from '$lib/server/recipient-session';
+import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
 const MAX_VALUES: number = 50;
@@ -16,10 +17,10 @@ const MAX_VALUE_CHARS: number = 4000;
 // Includes JSON escaping overhead for a schema-valid set of 50 maximum-length values.
 const MAX_BODY_BYTES: number = 2 * 1024 * 1024;
 const MAX_GENERATION: number = 2_147_483_647;
-const idSchema: ZodType<string> = z.string().uuid();
+const idSchema: ZodType<string> = signkitIdentifierSchema;
 const fieldValueSchema = z
 	.object({
-		fieldId: z.string().uuid(),
+		fieldId: signkitIdentifierSchema,
 		value: z.union([z.string().max(MAX_VALUE_CHARS), z.boolean()])
 	})
 	.strict();

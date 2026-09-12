@@ -16,6 +16,12 @@ export interface EnvelopeListPage {
 	nextCursor: string | null;
 }
 
+/**
+ * `envelopeId` and `auditEventId` are freshly minted UUIDv7 candidates for a
+ * first attempt. They are not derived from the idempotency key, so a store must
+ * resolve a replay from its durable idempotency record and return the envelope
+ * that record references rather than comparing the candidate ID.
+ */
 export interface CreateEnvelopeCommand {
 	actor: EnvelopeActor;
 	auditEventHash: string;

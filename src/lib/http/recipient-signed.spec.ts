@@ -10,9 +10,9 @@ import {
 	type RecipientSignedApplicationResolver
 } from './recipient-signed';
 
-const envelopeId: string = '00000000-0000-8000-a000-000000000001';
-const recipientId: string = '00000000-0000-8000-a000-000000000002';
-const fieldId: string = '00000000-0000-8000-a000-000000000003';
+const envelopeId: string = '01910000-0000-7000-8000-000000000001';
+const recipientId: string = '01910000-0000-7000-8000-000000000002';
+const fieldId: string = '01910000-0000-7000-8000-000000000003';
 const token: string = `skr1_${'A'.repeat(43)}`;
 const commandBody = {
 	envelopeId,
@@ -199,7 +199,7 @@ describe('recipient signed HTTP handler', () => {
 
 	it('accepts the largest schema-valid text field set without tripping the body cap', async () => {
 		const values = Array.from({ length: 50 }, (_, index: number) => ({
-			fieldId: `00000000-0000-8000-a000-${index.toString(16).padStart(12, '0')}`,
+			fieldId: `01910000-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
 			value: '\u0000'.repeat(4000)
 		}));
 		const body = { ...commandBody, values };

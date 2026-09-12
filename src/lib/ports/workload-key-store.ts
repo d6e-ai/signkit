@@ -1,3 +1,4 @@
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import {
 	canonicalizeWorkloadKeyScopesJson,
 	isWorkloadKeyScope,
@@ -9,8 +10,8 @@ export const DEFAULT_WORKLOAD_KEY_LIST_LIMIT: number = 25;
 export const WORKLOAD_KEY_IDEMPOTENCY_KEY_MAX_LENGTH: number = 200;
 /** Printable ASCII only, mirroring the SQL `NOT GLOB '*[^!-~]*'` bound. */
 export const WORKLOAD_KEY_IDEMPOTENCY_KEY_PATTERN: RegExp = /^[!-~]{1,200}$/;
-export const WORKLOAD_KEY_ID_PATTERN: RegExp =
-	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Workload key records are SignKit-owned, so their IDs are UUIDv7. */
+export const WORKLOAD_KEY_ID_PATTERN: RegExp = UUID_V7_PATTERN;
 
 /** Workload keys are always minted by an authenticated cookie user session. */
 export type WorkloadKeyActorType = 'user';

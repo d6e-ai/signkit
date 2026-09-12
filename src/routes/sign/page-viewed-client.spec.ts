@@ -25,8 +25,8 @@ function browser(initialVisibility: DocumentVisibilityState = 'visible') {
 }
 
 const base = {
-	envelopeId: '00000000-0000-8000-a000-000000000001',
-	recipientId: '00000000-0000-8000-a000-000000000002',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
+	recipientId: '01910000-0000-7000-8000-000000000002',
 	initialStatus: 'pending',
 	pageState: 'active'
 };
@@ -38,10 +38,10 @@ describe('recipient viewed browser trigger', () => {
 			{ ...base, initialStatus: 'viewed' }
 		]) {
 			const fetch = vi.fn();
-			const randomUUID = vi.fn(() => 'view-key');
-			initRecipientViewed({ ...options, fetch, randomUUID });
+			const newIdempotencyKey = vi.fn(() => 'view-key');
+			initRecipientViewed({ ...options, fetch, newIdempotencyKey });
 			expect(fetch).not.toHaveBeenCalled();
-			expect(randomUUID).not.toHaveBeenCalled();
+			expect(newIdempotencyKey).not.toHaveBeenCalled();
 		}
 	});
 
@@ -55,7 +55,7 @@ describe('recipient viewed browser trigger', () => {
 			...base,
 			...surface,
 			fetch,
-			randomUUID: () => 'view-key-1',
+			newIdempotencyKey: () => 'view-key-1',
 			onRecorded: recorded
 		});
 		expect(fetch).not.toHaveBeenCalled();
@@ -91,7 +91,7 @@ describe('recipient viewed browser trigger', () => {
 			...base,
 			...surface,
 			fetch,
-			randomUUID: () => 'stable-view-key',
+			newIdempotencyKey: () => 'stable-view-key',
 			onRetryPendingChange: retryPending
 		});
 		await vi.waitFor((): void => expect(fetch).toHaveBeenCalledOnce());
@@ -112,7 +112,7 @@ describe('recipient viewed browser trigger', () => {
 		const fetch = vi.fn<typeof globalThis.fetch>(
 			async (): Promise<Response> => new Response('{}', { status: 404 })
 		);
-		initRecipientViewed({ ...base, ...surface, fetch, randomUUID: () => 'view-key' });
+		initRecipientViewed({ ...base, ...surface, fetch, newIdempotencyKey: () => 'view-key' });
 		await vi.waitFor((): void => expect(fetch).toHaveBeenCalledOnce());
 		expect(surface.documentListeners.has('visibilitychange')).toBe(false);
 		expect(surface.windowListeners.has('online')).toBe(false);
@@ -129,7 +129,7 @@ describe('recipient viewed browser trigger', () => {
 			...base,
 			...surface,
 			fetch,
-			randomUUID: () => 'conflicted-key',
+			newIdempotencyKey: () => 'conflicted-key',
 			onTerminalFailure: terminalFailure,
 			onRetryPendingChange: retryPending
 		});
@@ -151,7 +151,7 @@ describe('recipient viewed browser trigger', () => {
 			...base,
 			...surface,
 			fetch,
-			randomUUID: () => 'audit-race-key',
+			newIdempotencyKey: () => 'audit-race-key',
 			onRetryPendingChange: retryPending
 		});
 		await vi.waitFor((): void => expect(fetch).toHaveBeenCalledOnce());

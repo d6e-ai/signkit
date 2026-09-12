@@ -1,3 +1,4 @@
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { Envelope } from '$lib/domain/envelope';
 import type {
 	CreateEnvelopeInput,
@@ -17,19 +18,13 @@ async function sha256(value: string): Promise<string> {
 	).join('');
 }
 
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
-}
-
 export class EnvelopeApplication implements EnvelopeApplicationPort {
 	readonly #store: EnvelopeApplicationStore;
+	readonly #newId: UuidV7Generator;
 
-	constructor(store: EnvelopeApplicationStore) {
+	constructor(store: EnvelopeApplicationStore, newId: UuidV7Generator = newUuidV7) {
 		this.#store = store;
+		this.#newId = newId;
 	}
 
 	async create(
@@ -38,11 +33,12 @@ export class EnvelopeApplication implements EnvelopeApplicationPort {
 	): Promise<CreateEnvelopeResult> {
 		const canonicalRequest: string = JSON.stringify({ title: input.title });
 		const requestFingerprint: string = await sha256(canonicalRequest);
-		const envelopeId: string = await deterministicUuid(
-			['signkit-envelope-v1', actor.organizationId, actor.id, input.idempotencyKey].join('\u0000')
-		);
+		// Candidate identifiers for a first attempt. The durable idempotency
+		// record, not a derivation of the caller's key, is what a replay reads
+		// back, so these are simply discarded when this request is a replay.
+		const envelopeId: string = this.#newId();
+		const auditEventId: string = this.#newId();
 		const createdAt: string = new Date().toISOString();
-		const auditEventId: string = await deterministicUuid(`${envelopeId}\u0000envelope.created`);
 		const auditEventHash: string = await sha256(
 			JSON.stringify({
 				actorId: actor.id,

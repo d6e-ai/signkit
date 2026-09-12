@@ -10,11 +10,12 @@ import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
 } from './organization-authorization';
+import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const MAX_BODY_BYTES: number = 4 * 1024;
 const MAX_GENERATION: number = 2_147_483_647;
-const envelopeIdSchema: ZodType<string> = z.string().uuid();
+const envelopeIdSchema: ZodType<string> = signkitIdentifierSchema;
 const idempotencyKeySchema: ZodType<string> = z
 	.string()
 	.min(1)

@@ -19,14 +19,14 @@ function migratedDatabase(): DatabaseSync {
 			id, organization_id, title, status, repository_generation, repository_head,
 			created_at, updated_at
 		) VALUES (
-			'env-1', 'org-1', 'Agreement', 'draft', 1, 'commit-1',
+			'01920000-0000-7000-8000-000000000001', 'org-1', 'Agreement', 'draft', 1, 'commit-1',
 			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
 		);
 		INSERT INTO audit_event (
 			id, organization_id, envelope_id, sequence, event_type, actor_type,
 			actor_id, payload_json, previous_hash, event_hash, occurred_at
 		) VALUES (
-			'audit-1', 'org-1', 'env-1', 1, 'envelope.created', 'user',
+			'01960000-0000-7000-8000-000000000001', 'org-1', '01920000-0000-7000-8000-000000000001', 1, 'envelope.created', 'user',
 			'user-1', '{}', NULL, 'hash-1', '2026-09-11T00:00:00.000Z'
 		);
 	`);
@@ -47,7 +47,7 @@ function readyStatement(database: DatabaseSync): StatementSync {
 function insertReadyCommand(database: DatabaseSync, expectedGeneration: number): void {
 	readyStatement(database).run(
 		'org-1',
-		'env-1',
+		'01920000-0000-7000-8000-000000000001',
 		'user',
 		'user-1',
 		'ready-1',
@@ -57,7 +57,7 @@ function insertReadyCommand(database: DatabaseSync, expectedGeneration: number):
 		'[]',
 		1,
 		'2026-09-11T00:01:00.000Z',
-		'audit-2',
+		'01960000-0000-7000-8000-000000000002',
 		2,
 		'hash-1',
 		'hash-2',
@@ -81,9 +81,9 @@ describe('D1 envelope ready migration', () => {
 				`
 				)
 				.run(
-					'recipient-1',
+					'01930000-0000-7000-8000-000000000001',
 					'org-1',
-					'env-1',
+					'01920000-0000-7000-8000-000000000001',
 					'alice@example.com',
 					'Alice',
 					'signer',
@@ -95,12 +95,14 @@ describe('D1 envelope ready migration', () => {
 				);
 			database.exec('COMMIT');
 
-			const envelope = database.prepare("SELECT status FROM envelope WHERE id = 'env-1'").get() as {
+			const envelope = database
+				.prepare("SELECT status FROM envelope WHERE id = '01920000-0000-7000-8000-000000000001'")
+				.get() as {
 				status: string;
 			};
 			const events = database
 				.prepare(
-					"SELECT sequence, event_type FROM audit_event WHERE envelope_id = 'env-1' ORDER BY sequence"
+					"SELECT sequence, event_type FROM audit_event WHERE envelope_id = '01920000-0000-7000-8000-000000000001' ORDER BY sequence"
 				)
 				.all() as Array<{ sequence: number; event_type: string }>;
 			expect(envelope.status).toBe('ready');
@@ -124,7 +126,7 @@ describe('D1 envelope ready migration', () => {
 						id, organization_id, envelope_id, email, name, role, locale,
 						routing_order, status, created_at, updated_at
 					) VALUES (
-						'recipient-1', 'org-1', 'env-1', 'alice@example.com', 'Alice',
+						'01930000-0000-7000-8000-000000000001', 'org-1', '01920000-0000-7000-8000-000000000001', 'alice@example.com', 'Alice',
 						'invalid-role', 'en', 1, 'pending',
 						'2026-09-11T00:01:00.000Z', '2026-09-11T00:01:00.000Z'
 					)
@@ -132,7 +134,9 @@ describe('D1 envelope ready migration', () => {
 			}).toThrow();
 			database.exec('ROLLBACK');
 
-			const envelope = database.prepare("SELECT status FROM envelope WHERE id = 'env-1'").get() as {
+			const envelope = database
+				.prepare("SELECT status FROM envelope WHERE id = '01920000-0000-7000-8000-000000000001'")
+				.get() as {
 				status: string;
 			};
 			const commandCount = database

@@ -2,6 +2,8 @@ import {
 	DraftIntegrityError,
 	readImmutableDraftRevision
 } from '$lib/application/drafts/draft-persistence';
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
+import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import {
@@ -39,7 +41,6 @@ export const MAX_COMPLETION_ARTIFACT_ATTEMPTS: number = 10;
 const COMPLETION_ARTIFACT_CONCURRENCY: number = 3;
 const JSON_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+json.gz';
 const MARKDOWN_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+markdown.gz';
-const AUDIT_EVENT_ID_SEPARATOR: string = '\u0000';
 
 export type CompletionArtifactItemOutcome =
 	| { envelopeId: string; outcome: 'published' }
@@ -72,27 +73,32 @@ export class CompletionArtifactPublicationService {
 	readonly #objects: ObjectStore;
 	readonly #repository: DraftRepository;
 	readonly #now: () => Date;
-	readonly #uuid: () => string;
+	readonly #newClaimToken: OpaqueTokenGenerator;
+	readonly #newId: UuidV7Generator;
 
 	constructor(
 		store: CompletionArtifactStore,
 		objects: ObjectStore,
 		repository: DraftRepository,
 		now: () => Date = (): Date => new Date(),
-		uuid: () => string = (): string => crypto.randomUUID()
+		// A lease token is opaque unguessable material, never a row identifier:
+		// 256 random bits with no embedded creation time.
+		newClaimToken: OpaqueTokenGenerator = newOpaqueToken,
+		newId: UuidV7Generator = newUuidV7
 	) {
 		this.#store = store;
 		this.#objects = objects;
 		this.#repository = repository;
 		this.#now = now;
-		this.#uuid = uuid;
+		this.#newClaimToken = newClaimToken;
+		this.#newId = newId;
 	}
 
 	async publishPendingCompletionArtifacts(
 		limit: number = MAX_COMPLETION_ARTIFACT_CLAIM_BATCH
 	): Promise<CompletionArtifactBatchResult> {
 		const claimedAt: Date = this.#now();
-		const claimToken: string = this.#uuid();
+		const claimToken: string = this.#newClaimToken();
 		const claims: readonly ClaimedCompletionArtifactJob[] =
 			await this.#store.claimPendingCompletionArtifacts({
 				claimToken,
@@ -233,14 +239,10 @@ export class CompletionArtifactPublicationService {
 				publishedAt: now.toISOString()
 			};
 			const auditPayloadJson: string = JSON.stringify(auditPayload);
-			const auditEventId: string = await deterministicUuid(
-				[
-					'signkit-completion-artifact-published-event-v1',
-					claim.organizationId,
-					claim.envelopeId,
-					manifestSha256
-				].join(AUDIT_EVENT_ID_SEPARATOR)
-			);
+			// The durable publication receipt, not a derivation, proves a safe
+			// in-flight replay; a separate attempt already differs by its own
+			// publication timestamp, so minting this adds no new failure mode.
+			const auditEventId: string = this.#newId();
 			const auditEventHash: string = await sha256TextHex(
 				JSON.stringify({
 					actorId: 'completion-artifact-worker',
@@ -530,12 +532,4 @@ async function readStreamBounded(
 		offset += chunk.byteLength;
 	}
 	return bytes;
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256TextHex(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

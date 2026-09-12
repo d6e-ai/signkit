@@ -19,10 +19,12 @@ import {
 	AesGcmRecipientCapabilitySealer,
 	type CapabilitySealContext
 } from '$lib/security/delivery-capability';
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import {
 	hashRecipientCapability,
 	issueRecipientCapability
 } from '$lib/security/recipient-capability';
+import { OPAQUE_TOKEN_PATTERN } from '$lib/security/opaque-token';
 import {
 	INVITATION_CLAIM_LEASE_MS,
 	INVITATION_RETRY_BASE_DELAY_MS,
@@ -35,7 +37,7 @@ import {
 const NOW: Date = new Date('2026-09-12T00:00:00.000Z');
 const ORIGIN: string = 'https://signkit.example';
 const SENDER = { fromEmail: 'noreply@signkit.example', fromName: 'SignKit' } as const;
-const CLAIM_TOKEN: string = '01900000-0000-7000-8000-0000000000aa';
+const CLAIM_TOKEN: string = 'lease-opaque-claim-token-0001';
 const SEALING_KEY: string = btoa(
 	String.fromCharCode(...Array.from({ length: 32 }, (_, index: number): number => index + 1))
 );
@@ -235,6 +237,23 @@ function assertNoSecrets(value: unknown, needles: readonly string[]): void {
 }
 
 describe('InvitationDeliveryService', () => {
+	it('mints an opaque lease claim token by default, not a UUIDv7', async () => {
+		const store: FakeStore = new FakeStore();
+
+		await new InvitationDeliveryService(
+			store,
+			new FakeOpener('unused'),
+			new FakeMail(),
+			ORIGIN,
+			SENDER,
+			(): Date => NOW
+		).deliverPendingInvitations();
+
+		expect(store.claims).toHaveLength(1);
+		expect(store.claims[0].claimToken).toMatch(OPAQUE_TOKEN_PATTERN);
+		expect(store.claims[0].claimToken).not.toMatch(UUID_V7_PATTERN);
+	});
+
 	it('does not decrypt or send when the claim is no longer current at the send boundary', async () => {
 		const { claim, token } = await eligibleClaim();
 		const store: FakeStore = new FakeStore();

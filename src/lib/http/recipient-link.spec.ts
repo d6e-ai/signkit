@@ -41,17 +41,17 @@ const context: RecipientSigningContext = {
 
 const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
 	receipt: {
-		envelopeId: '00000000-0000-8000-a000-000000000001',
-		recipientId: '00000000-0000-8000-a000-000000000002',
+		envelopeId: '01910000-0000-7000-8000-000000000001',
+		recipientId: '01910000-0000-7000-8000-000000000002',
 		recipientStatus: 'declined',
 		envelopeStatus: 'declined',
 		declinedAt: '2026-09-11T00:02:00.000Z',
 		locale: 'ja'
 	},
 	locator: {
-		organizationId: '00000000-0000-8000-a000-000000000003',
-		envelopeId: '00000000-0000-8000-a000-000000000001',
-		recipientId: '00000000-0000-8000-a000-000000000002',
+		organizationId: '01910000-0000-7000-8000-000000000003',
+		envelopeId: '01910000-0000-7000-8000-000000000001',
+		recipientId: '01910000-0000-7000-8000-000000000002',
 		idempotencyKey: 'decline-1',
 		capabilityHash: 'b'.repeat(64),
 		declinedAt: '2026-09-11T00:02:00.000Z',
