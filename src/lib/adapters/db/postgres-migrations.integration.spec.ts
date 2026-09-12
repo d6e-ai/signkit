@@ -128,6 +128,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0017_api_keys.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0018_instance_bootstrap.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0019_instance_invitations.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -149,6 +150,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'instance_member',
 				'instance_bootstrap',
 				'instance_bootstrap_command',
+				'instance_invitation',
+				'instance_invitation_command',
 				'api_key',
 				'api_key_create_command',
 				'api_key_revoke_command'
@@ -2736,6 +2739,108 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				${keyId}, ${issued.keyPrefix}, ${createdAt}::timestamptz
 			)`
 		).rejects.toMatchObject({ code: '23505' });
+	});
+
+	it('keeps instance invitations zero-PII and enforces terminal exclusivity and receipt uniqueness', async () => {
+		const createdAt: string = '2026-09-12T12:00:00.000Z';
+		const expiresAt: string = '2026-09-19T12:00:00.000Z';
+		const invitationId: string = '01900000-0000-7000-8000-000000000401';
+		const otherInvitationId: string = '01900000-0000-7000-8000-000000000402';
+		const tokenHash: string = 'a'.repeat(64);
+		const emailBinding: string = 'b'.repeat(64);
+
+		const piiColumns = await database()<
+			{ columnName: string }[]
+		>`SELECT column_name AS "columnName" FROM information_schema.columns
+			WHERE table_schema = ${schemaName}
+				AND table_name IN ('instance_invitation', 'instance_invitation_command')
+				AND column_name IN ('email', 'name', 'token', 'secret', 'plaintext', 'credential')`;
+		expect(piiColumns).toEqual([]);
+
+		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES (${ACTOR.id}, 'owner', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+
+		await database()`INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id, created_at, expires_at
+			) VALUES (
+				${invitationId}, 'member', 'pending', ${tokenHash}, ${emailBinding}, ${ACTOR.id},
+				${createdAt}::timestamptz, ${expiresAt}::timestamptz
+			)`;
+
+		await expect(
+			database()`INSERT INTO instance_invitation (
+					id, role, status, token_hash, email_binding, invited_by_user_id, created_at, expires_at
+				) VALUES (
+					${otherInvitationId}, 'member', 'pending', ${tokenHash}, ${'c'.repeat(64)},
+					${ACTOR.id}, ${createdAt}::timestamptz, ${expiresAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23505' });
+
+		await expect(
+			database()`INSERT INTO instance_invitation (
+					id, role, status, token_hash, email_binding, invited_by_user_id, created_at, expires_at
+				) VALUES (
+					${otherInvitationId}, 'member', 'accepted', ${'d'.repeat(64)}, ${'e'.repeat(64)},
+					${ACTOR.id}, ${createdAt}::timestamptz, ${expiresAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		await expect(
+			database()`INSERT INTO instance_invitation (
+					id, role, status, token_hash, email_binding, invited_by_user_id, created_at, expires_at
+				) VALUES (
+					${otherInvitationId}, 'member', 'pending', ${'f'.repeat(64)}, ${'0'.repeat(64)},
+					${ACTOR.id}, ${createdAt}::timestamptz, '2026-09-20T12:00:00.000Z'::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		await database()`INSERT INTO instance_invitation_command (
+				actor_type, actor_id, idempotency_key, command_type, request_hash,
+				invitation_id, role, result_status, occurred_at
+			) VALUES (
+				'user', ${ACTOR.id}, 'invite-create-1', 'create', ${'1'.repeat(64)},
+				${invitationId}, 'member', 'pending', ${createdAt}::timestamptz
+			)`;
+
+		// Same (actor_type, actor_id, idempotency_key): primary key conflict.
+		await expect(
+			database()`INSERT INTO instance_invitation_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					invitation_id, role, result_status, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'invite-create-1', 'accept', ${'2'.repeat(64)},
+					${invitationId}, 'member', 'accepted', ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23505' });
+
+		// Fresh idempotency key but the same (invitation_id, command_type) pair.
+		await expect(
+			database()`INSERT INTO instance_invitation_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					invitation_id, role, result_status, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'invite-create-2', 'create', ${'3'.repeat(64)},
+					${invitationId}, 'member', 'pending', ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23505' });
+
+		await database()`INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id, created_at, expires_at
+			) VALUES (
+				${otherInvitationId}, 'member', 'pending', ${'4'.repeat(64)}, ${'5'.repeat(64)},
+				${ACTOR.id}, ${createdAt}::timestamptz, ${expiresAt}::timestamptz
+			)`;
+
+		// Fresh idempotency key and invitation, but command_type/result_status disagree.
+		await expect(
+			database()`INSERT INTO instance_invitation_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					invitation_id, role, result_status, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'invite-accept-mismatch', 'accept', ${'6'.repeat(64)},
+					${otherInvitationId}, 'member', 'revoked', ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
 	});
 
 	describe('PostgresApiKeyStore', () => {

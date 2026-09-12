@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type {
+	AcceptInstanceInvitationCommand,
+	AcceptInstanceInvitationStoreResult,
 	BootstrapInstanceCommand,
 	BootstrapInstanceStoreResult,
+	CreateInstanceInvitationCommand,
+	CreateInstanceInvitationStoreResult,
+	InstanceActor,
 	InstanceCallerContext,
-	InstanceStore
+	InstanceInvitationListQuery,
+	InstanceStore,
+	ListInstanceInvitationsStoreResult,
+	RevokeInstanceInvitationCommand,
+	RevokeInstanceInvitationStoreResult
 } from '$lib/ports/instance-store';
 import { InstanceApplication, InvalidInstanceBootstrapRequestError } from './instance-service';
 
@@ -38,6 +47,36 @@ class MockInstanceStore implements InstanceStore {
 	async getInstanceCallerContext(userId: string): Promise<InstanceCallerContext> {
 		this.lastUserId = userId;
 		return this.callerContext;
+	}
+
+	async createInstanceInvitation(
+		command: CreateInstanceInvitationCommand
+	): Promise<CreateInstanceInvitationStoreResult> {
+		void command;
+		return { outcome: 'forbidden' };
+	}
+
+	async listInstanceInvitations(
+		actor: InstanceActor,
+		query: InstanceInvitationListQuery
+	): Promise<ListInstanceInvitationsStoreResult> {
+		void actor;
+		void query;
+		return { outcome: 'forbidden' };
+	}
+
+	async acceptInstanceInvitation(
+		command: AcceptInstanceInvitationCommand
+	): Promise<AcceptInstanceInvitationStoreResult> {
+		void command;
+		return { outcome: 'invitation_invalid' };
+	}
+
+	async revokeInstanceInvitation(
+		command: RevokeInstanceInvitationCommand
+	): Promise<RevokeInstanceInvitationStoreResult> {
+		void command;
+		return { outcome: 'forbidden' };
 	}
 }
 
