@@ -1180,6 +1180,132 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		}
 	});
 
+	it('concurrently accepting two different pending invitations as the same previously-new actor consumes exactly one invitation', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await store().createInstanceInvitation(
+			createCommand({
+				idempotencyKey: 'race-create-1',
+				invitationId: INVITATION_ID,
+				role: 'member',
+				tokenHash: TOKEN_HASH,
+				emailBinding: EMAIL_BINDING
+			})
+		);
+		await store().createInstanceInvitation(
+			createCommand({
+				idempotencyKey: 'race-create-2',
+				invitationId: OTHER_INVITATION_ID,
+				role: 'admin',
+				tokenHash: OTHER_TOKEN_HASH,
+				emailBinding: EMAIL_BINDING
+			})
+		);
+
+		const raceActor: string = 'user-race-new-actor';
+
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const [storeA, storeB]: readonly SynchronizedAcceptStore[] = synchronizeAccept([
+				new PostgresInstanceStore(concurrentSql),
+				new PostgresInstanceStore(concurrentSql)
+			]);
+			const cmdA: AcceptInstanceInvitationCommand = acceptCommand({
+				actor: { type: 'user', id: raceActor },
+				idempotencyKey: 'race-accept-a',
+				requestFingerprint: 'a'.repeat(64),
+				tokenHash: TOKEN_HASH,
+				emailBinding: EMAIL_BINDING,
+				acceptedAt: '2026-09-13T12:01:00.000Z'
+			});
+			const cmdB: AcceptInstanceInvitationCommand = acceptCommand({
+				actor: { type: 'user', id: raceActor },
+				idempotencyKey: 'race-accept-b',
+				requestFingerprint: 'b'.repeat(64),
+				tokenHash: OTHER_TOKEN_HASH,
+				emailBinding: EMAIL_BINDING,
+				acceptedAt: '2026-09-13T12:02:00.000Z'
+			});
+
+			const [first, second]: AcceptInstanceInvitationStoreResult[] = await Promise.all([
+				storeA.acceptInstanceInvitation(cmdA),
+				storeB.acceptInstanceInvitation(cmdB)
+			]);
+
+			const outcomes: string[] = [first.outcome, second.outcome].sort();
+			expect(outcomes).toEqual(['accepted', 'already_member']);
+
+			// Exactly one member row for the race actor, from whichever invitation won.
+			const members: { userId: string; role: string }[] = await database()<
+				{ userId: string; role: string }[]
+			>`SELECT user_id AS "userId", role FROM instance_member WHERE user_id = ${raceActor}`;
+			expect(members).toHaveLength(1);
+			const wonRole: string = members[0].role;
+			expect(['member', 'admin']).toContain(wonRole);
+
+			const winnerInvitationId: string = wonRole === 'member' ? INVITATION_ID : OTHER_INVITATION_ID;
+			const loserInvitationId: string = wonRole === 'member' ? OTHER_INVITATION_ID : INVITATION_ID;
+
+			const winnerInv: { status: string; acceptedByUserId: string | null }[] = await database()<
+				{ status: string; acceptedByUserId: string | null }[]
+			>`SELECT status, accepted_by_user_id AS "acceptedByUserId" FROM instance_invitation WHERE id = ${winnerInvitationId}`;
+			expect(winnerInv[0]?.status).toBe('accepted');
+			expect(winnerInv[0]?.acceptedByUserId).toBe(raceActor);
+
+			// The losing invitation must remain pending and unconsumed.
+			const loserInv: {
+				status: string;
+				acceptedAt: Date | string | null;
+				acceptedByUserId: string | null;
+			}[] = await database()<
+				{ status: string; acceptedAt: Date | string | null; acceptedByUserId: string | null }[]
+			>`SELECT status, accepted_at AS "acceptedAt", accepted_by_user_id AS "acceptedByUserId" FROM instance_invitation WHERE id = ${loserInvitationId}`;
+			expect(loserInv[0]?.status).toBe('pending');
+			expect(loserInv[0]?.acceptedAt).toBeNull();
+			expect(loserInv[0]?.acceptedByUserId).toBeNull();
+
+			// Exactly one accept receipt exists, tied to the winning invitation.
+			const receiptRows: { invitationId: string }[] = await database()<
+				{ invitationId: string }[]
+			>`SELECT invitation_id AS "invitationId" FROM instance_invitation_command WHERE command_type = 'accept'`;
+			expect(receiptRows).toEqual([{ invitationId: winnerInvitationId }]);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	it('does not enroll a member when accepting a revoked invitation', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await store().createInstanceInvitation(createCommand());
+		expect((await store().revokeInstanceInvitation(revokeCommand())).outcome).toBe('revoked');
+
+		// The member INSERT runs before the invitation UPDATE (accepted_by_user_id
+		// is a foreign key into instance_member), so a stale invitation must take
+		// the whole transaction down with it rather than leave a member behind.
+		const result: AcceptInstanceInvitationStoreResult =
+			await store().acceptInstanceInvitation(acceptCommand());
+		expect(result).toEqual({ outcome: 'invitation_invalid' });
+
+		const acceptorRows: { userId: string }[] = await database()<
+			{ userId: string }[]
+		>`SELECT user_id AS "userId" FROM instance_member WHERE user_id = ${ACCEPTOR_ID}`;
+		expect(acceptorRows).toHaveLength(0);
+
+		const invRows: { status: string; acceptedByUserId: string | null }[] = await database()<
+			{ status: string; acceptedByUserId: string | null }[]
+		>`SELECT status, accepted_by_user_id AS "acceptedByUserId" FROM instance_invitation WHERE id = ${INVITATION_ID}`;
+		expect(invRows[0]?.status).toBe('revoked');
+		expect(invRows[0]?.acceptedByUserId).toBeNull();
+
+		const acceptReceipts: { actorId: string }[] = await database()<
+			{ actorId: string }[]
+		>`SELECT actor_id AS "actorId" FROM instance_invitation_command WHERE command_type = 'accept'`;
+		expect(acceptReceipts).toHaveLength(0);
+	});
+
 	it('enforces revoke owner and admin role ceiling and replays safely with new revokedAt', async (): Promise<void> => {
 		await insertMember(OWNER_ID, 'owner');
 		await insertMember(ADMIN_ID, 'admin');

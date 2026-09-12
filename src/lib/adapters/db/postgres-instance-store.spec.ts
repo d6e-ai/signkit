@@ -914,7 +914,6 @@ describe('PostgresInstanceStore', () => {
 						revokedByUserId: null
 					}
 				], // invitation lock FOR UPDATE
-				[], // insert member ON CONFLICT DO NOTHING
 				[
 					{
 						userId: ACCEPTOR_ID,
@@ -923,7 +922,7 @@ describe('PostgresInstanceStore', () => {
 						createdAt: ACCEPTED_AT,
 						updatedAt: ACCEPTED_AT
 					}
-				], // select enrolled member
+				], // insert member ON CONFLICT DO NOTHING RETURNING ... (won the race)
 				[{ id: INVITATION_ID }], // update invitation
 				[{ actorId: ACCEPTOR_ID }] // insert receipt
 			]);
@@ -955,6 +954,139 @@ describe('PostgresInstanceStore', () => {
 			});
 			expect(scripted.beginCalls).toBe(1);
 			expect(scripted.rollbacks).toBe(0);
+		});
+
+		it('returns already_member without consuming the invitation when it loses the enrollment race for a previously-new actor', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // existing member check (none: actor is previously-new)
+				[], // receipt check (none)
+				[
+					{
+						id: INVITATION_ID,
+						role: 'member',
+						status: 'pending',
+						emailBinding: EMAIL_BINDING,
+						invitedByUserId: OWNER_ID,
+						createdAt: CREATED_AT,
+						expiresAt: EXPIRES_AT,
+						acceptedAt: null,
+						acceptedByUserId: null,
+						revokedAt: null,
+						revokedByUserId: null
+					}
+				], // invitation lock FOR UPDATE
+				[], // insert member ON CONFLICT DO NOTHING RETURNING ... returns nothing: lost the race
+				[
+					{
+						userId: ACCEPTOR_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: ACCEPTED_AT,
+						updatedAt: ACCEPTED_AT
+					}
+				] // re-read the winner's committed membership FOR UPDATE
+			]);
+
+			const result: AcceptInstanceInvitationStoreResult =
+				await store(scripted).acceptInstanceInvitation(acceptCommand());
+
+			expect(result).toEqual({
+				outcome: 'already_member',
+				member: {
+					userId: ACCEPTOR_ID,
+					role: 'admin',
+					status: 'active',
+					createdAt: ACCEPTED_AT.toISOString(),
+					updatedAt: ACCEPTED_AT.toISOString()
+				}
+			});
+			// No invitation UPDATE or receipt INSERT ran: the invitation stays pending.
+			expect(scripted.queries).toHaveLength(5);
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('rolls the enroll insert back when a stale invitation makes the update match zero rows', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // 1. existing member check (none: actor is previously-new)
+				[], // 2. receipt check (none)
+				[
+					{
+						id: INVITATION_ID,
+						role: 'member',
+						status: 'pending',
+						emailBinding: EMAIL_BINDING,
+						invitedByUserId: OWNER_ID,
+						createdAt: CREATED_AT,
+						expiresAt: EXPIRES_AT,
+						acceptedAt: null,
+						acceptedByUserId: null,
+						revokedAt: null,
+						revokedByUserId: null
+					}
+				], // 3. invitation lock FOR UPDATE
+				[
+					{
+						userId: ACCEPTOR_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: ACCEPTED_AT,
+						updatedAt: ACCEPTED_AT
+					}
+				], // 4. insert instance_member ON CONFLICT DO NOTHING RETURNING ... (won the race)
+				[], // 5. UPDATE instance_invitation matched zero rows: invitation went stale
+				// classifyAcceptFailure queries:
+				[
+					{
+						userId: ACCEPTOR_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: ACCEPTED_AT,
+						updatedAt: ACCEPTED_AT
+					}
+				], // 6. member check (sees only the doomed insert from step 4)
+				[], // 7. receipt check
+				[
+					{
+						id: INVITATION_ID,
+						role: 'member',
+						status: 'revoked',
+						emailBinding: EMAIL_BINDING,
+						invitedByUserId: OWNER_ID,
+						createdAt: CREATED_AT,
+						expiresAt: EXPIRES_AT,
+						acceptedAt: null,
+						acceptedByUserId: null,
+						revokedAt: ACCEPTED_AT,
+						revokedByUserId: OWNER_ID
+					}
+				] // 8. invitation re-read: revoked by a concurrent command
+			]);
+
+			const result: AcceptInstanceInvitationStoreResult =
+				await store(scripted).acceptInstanceInvitation(acceptCommand());
+
+			expect(result).toEqual({ outcome: 'invitation_invalid' });
+
+			// The enroll insert is only safe ahead of the update because the failure
+			// path rolls the whole transaction back; without that a member would
+			// exist with no accepted invitation behind it.
+			const texts: readonly string[] = scripted.texts();
+			const insertIndex: number = texts.findIndex((text: string): boolean =>
+				text.includes('INSERT INTO instance_member')
+			);
+			const updateIndex: number = texts.findIndex((text: string): boolean =>
+				text.includes('UPDATE instance_invitation')
+			);
+			expect(insertIndex).toBeGreaterThanOrEqual(0);
+			expect(updateIndex).toBeGreaterThan(insertIndex);
+			expect(scripted.rollbacks).toBe(1);
+
+			// No receipt was attempted after the failed update.
+			expect(
+				texts.some((text: string): boolean =>
+					text.includes('INSERT INTO instance_invitation_command')
+				)
+			).toBe(false);
 		});
 
 		it('returns already_member without locking or mutating the invitation when actor is already an active member', async () => {
@@ -1108,7 +1240,6 @@ describe('PostgresInstanceStore', () => {
 						revokedByUserId: null
 					}
 				], // 3. invitation lock FOR UPDATE
-				[], // 4. insert instance_member
 				[
 					{
 						userId: ACCEPTOR_ID,
@@ -1117,8 +1248,8 @@ describe('PostgresInstanceStore', () => {
 						createdAt: ACCEPTED_AT,
 						updatedAt: ACCEPTED_AT
 					}
-				], // 5. select enrolled member FOR UPDATE
-				[], // 6. UPDATE instance_invitation returns 0 rows (concurrent mutation / conflict)
+				], // 4. insert instance_member ON CONFLICT DO NOTHING RETURNING ... (won the race)
+				[], // 5. UPDATE instance_invitation returns 0 rows (concurrent mutation / conflict)
 				// classifyAcceptFailure queries:
 				[
 					{
@@ -1128,8 +1259,8 @@ describe('PostgresInstanceStore', () => {
 						createdAt: ACCEPTED_AT,
 						updatedAt: ACCEPTED_AT
 					}
-				], // 7. member check
-				[], // 8. receipt check
+				], // 6. member check
+				[], // 7. receipt check
 				[
 					{
 						id: INVITATION_ID,
@@ -1144,7 +1275,7 @@ describe('PostgresInstanceStore', () => {
 						revokedAt: null,
 						revokedByUserId: null
 					}
-				] // 9. invitation check in classifyAcceptFailure
+				] // 8. invitation check in classifyAcceptFailure
 			]);
 
 			const result: AcceptInstanceInvitationStoreResult =

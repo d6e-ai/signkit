@@ -111,6 +111,39 @@ function createFixture(): Fixture {
 	return { sqlite, store };
 }
 
+interface HookedFixture extends Fixture {
+	/**
+	 * Installs a hook that runs immediately before each subsequent `batch()`
+	 * call, numbered from zero at the moment it is installed. It is the only
+	 * way to land a competing write in the window between a store method's
+	 * read-only gate batch and its mutation batch.
+	 */
+	armBatchHook(hook: (batchIndex: number) => void): void;
+}
+
+function createHookedFixture(): HookedFixture {
+	const sqlite = new DatabaseSync(':memory:');
+	applyD1Migrations(sqlite);
+	const delegate: D1Database = sqliteD1Database(sqlite);
+	let hook: ((batchIndex: number) => void) | null = null;
+	let batchIndex: number = 0;
+	const database = {
+		prepare: (sql: string): D1PreparedStatement => delegate.prepare(sql),
+		batch: async <T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> => {
+			if (hook !== null) hook(batchIndex++);
+			return await delegate.batch<T>(statements);
+		}
+	} as unknown as D1Database;
+	return {
+		sqlite,
+		store: new D1InstanceStore(database),
+		armBatchHook: (next: (index: number) => void): void => {
+			hook = next;
+			batchIndex = 0;
+		}
+	};
+}
+
 describe('D1InstanceStore', () => {
 	describe('bootstrapInstance', () => {
 		it('atomically claims the first active owner slot on an empty instance', async () => {
@@ -1866,6 +1899,152 @@ describe('D1InstanceStore', () => {
 					)
 					.get() as { count: number };
 				expect(acceptReceiptCount.count).toBe(1);
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('concurrently accepting two different pending invitations as the same previously-new actor consumes exactly one invitation', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(
+					createInvitationCommand({
+						invitationId: INVITATION_ID,
+						tokenHash: TOKEN_HASH,
+						emailBinding: EMAIL_BINDING,
+						role: 'member',
+						idempotencyKey: 'invite-create-key-1'
+					})
+				);
+				await store.createInstanceInvitation(
+					createInvitationCommand({
+						invitationId: OTHER_INVITATION_ID,
+						tokenHash: OTHER_TOKEN_HASH,
+						emailBinding: OTHER_EMAIL_BINDING,
+						role: 'admin',
+						idempotencyKey: 'invite-create-key-2'
+					})
+				);
+
+				const [result1, result2] = await Promise.all([
+					store.acceptInstanceInvitation(
+						acceptInvitationCommand({
+							actor: { type: 'user', id: 'race-new-user' },
+							idempotencyKey: 'race-accept-1',
+							tokenHash: TOKEN_HASH,
+							emailBinding: EMAIL_BINDING
+						})
+					),
+					store.acceptInstanceInvitation(
+						acceptInvitationCommand({
+							actor: { type: 'user', id: 'race-new-user' },
+							idempotencyKey: 'race-accept-2',
+							tokenHash: OTHER_TOKEN_HASH,
+							emailBinding: OTHER_EMAIL_BINDING
+						})
+					)
+				]);
+
+				const outcomes = [result1.outcome, result2.outcome].sort();
+				expect(outcomes).toEqual(['accepted', 'already_member']);
+
+				const memberRows = sqlite
+					.prepare('SELECT user_id, role, status FROM instance_member WHERE user_id = ?')
+					.all('race-new-user') as { user_id: string; role: string; status: string }[];
+				expect(memberRows).toHaveLength(1);
+				const wonRole = memberRows[0].role;
+				expect(['member', 'admin']).toContain(wonRole);
+
+				const winningInvitationId = wonRole === 'member' ? INVITATION_ID : OTHER_INVITATION_ID;
+				const losingInvitationId = wonRole === 'member' ? OTHER_INVITATION_ID : INVITATION_ID;
+
+				const winningInv = sqlite
+					.prepare('SELECT status, accepted_by_user_id FROM instance_invitation WHERE id = ?')
+					.get(winningInvitationId) as { status: string; accepted_by_user_id: string };
+				expect(winningInv.status).toBe('accepted');
+				expect(winningInv.accepted_by_user_id).toBe('race-new-user');
+
+				// The losing invitation must remain pending and unconsumed.
+				const losingInv = sqlite
+					.prepare(
+						'SELECT status, accepted_at, accepted_by_user_id FROM instance_invitation WHERE id = ?'
+					)
+					.get(losingInvitationId) as {
+					status: string;
+					accepted_at: string | null;
+					accepted_by_user_id: string | null;
+				};
+				expect(losingInv.status).toBe('pending');
+				expect(losingInv.accepted_at).toBeNull();
+				expect(losingInv.accepted_by_user_id).toBeNull();
+
+				const acceptReceipts = sqlite
+					.prepare(
+						"SELECT invitation_id FROM instance_invitation_command WHERE command_type = 'accept'"
+					)
+					.all() as { invitation_id: string }[];
+				expect(acceptReceipts).toEqual([{ invitation_id: winningInvitationId }]);
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('does not enroll a member when the invitation is revoked between the accept gate and the mutation batch', async () => {
+			const { store, sqlite, armBatchHook } = createHookedFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand());
+
+				// Batch 0 is accept's read-only gate, batch 1 its mutation batch.
+				// Landing a revoke in between is the interleaving that makes the
+				// invitation UPDATE match zero rows while every other statement in
+				// the batch would still have run happily.
+				armBatchHook((batchIndex: number): void => {
+					if (batchIndex !== 1) return;
+					sqlite.exec(
+						`UPDATE instance_invitation
+						 SET status = 'revoked',
+						     revoked_at = '2026-09-13T11:00:00.000Z',
+						     revoked_by_user_id = '${ACTOR_ID}'
+						 WHERE id = '${INVITATION_ID}'`
+					);
+				});
+
+				const result: AcceptInstanceInvitationStoreResult = await store.acceptInstanceInvitation(
+					acceptInvitationCommand({
+						actor: { type: 'user', id: 'stale-accept-user' },
+						idempotencyKey: 'stale-accept-key'
+					})
+				);
+				expect(result).toEqual({ outcome: 'invitation_invalid' });
+
+				// The whole point: no membership may exist without an accepted
+				// invitation behind it.
+				const memberRows = sqlite
+					.prepare('SELECT user_id FROM instance_member WHERE user_id = ?')
+					.all('stale-accept-user') as { user_id: string }[];
+				expect(memberRows).toHaveLength(0);
+
+				const invitation = sqlite
+					.prepare(
+						'SELECT status, accepted_at, accepted_by_user_id FROM instance_invitation WHERE id = ?'
+					)
+					.get(INVITATION_ID) as {
+					status: string;
+					accepted_at: string | null;
+					accepted_by_user_id: string | null;
+				};
+				expect(invitation.status).toBe('revoked');
+				expect(invitation.accepted_at).toBeNull();
+				expect(invitation.accepted_by_user_id).toBeNull();
+
+				const acceptReceipts = sqlite
+					.prepare(
+						"SELECT COUNT(*) AS count FROM instance_invitation_command WHERE command_type = 'accept'"
+					)
+					.get() as { count: number };
+				expect(acceptReceipts.count).toBe(0);
 			} finally {
 				sqlite.close();
 			}

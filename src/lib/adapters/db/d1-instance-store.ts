@@ -573,30 +573,83 @@ export class D1InstanceStore implements InstanceStore {
 		const gate: AcceptGateResult = await this.#resolveAcceptGate(command);
 		if (gate.kind === 'outcome') return gate.result;
 
+		// D1 runs a batch as a single write transaction and rolls the whole
+		// batch back if any statement raises, so these three statements are
+		// ordered and guarded to make one acceptance all-or-nothing.
+		//
+		// The order is forced by the schema: instance_invitation.accepted_by_user_id
+		// is a foreign key into instance_member, so the member row has to exist
+		// before the invitation can be marked accepted, and
+		// instance_invitation_command.actor_id plus the accept-evidence trigger
+		// require both to be in place before the receipt.
+		//
+		// Enrolling first therefore cannot be avoided, so the INSERT carries the
+		// same invitation predicate the UPDATE below applies: the pre-batch gate
+		// is only an advisory snapshot, and a concurrent revoke or accept can
+		// land in between. Nothing between these two statements touches
+		// instance_invitation, so the predicate holding here means it still holds
+		// there. `NOT EXISTS (... status = 'accepted')` is what makes the same
+		// actor's concurrent acceptances consume exactly one invitation: whoever
+		// commits first leaves an accepted invitation bound to this actor, and
+		// the loser's predicate is false from then on. ON CONFLICT DO NOTHING
+		// keeps that loser from clobbering the winner's membership.
 		const memberStmt: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
-				 VALUES (?, ?, 'active', ?, ?)
+				 SELECT ?, invitation.role, 'active', ?, ?
+				 FROM instance_invitation invitation
+				 WHERE invitation.id = ? AND invitation.status = 'pending'
+				   AND invitation.token_hash = ? AND invitation.email_binding = ?
+				   AND invitation.expires_at > ?
+				   AND NOT EXISTS (
+				     SELECT 1 FROM instance_invitation consumed
+				     WHERE consumed.accepted_by_user_id = ? AND consumed.status = 'accepted'
+				   )
 				 ON CONFLICT (user_id) DO NOTHING`
 			)
-			.bind(command.actor.id, gate.invitation.role, command.acceptedAt, command.acceptedAt);
+			.bind(
+				command.actor.id,
+				command.acceptedAt,
+				command.acceptedAt,
+				gate.invitation.id,
+				command.tokenHash,
+				command.emailBinding,
+				command.acceptedAt,
+				command.actor.id
+			);
 
-		// The trailing `(SELECT changes()) = 1` guards chain each statement to the
-		// success of the one before it within this same atomic batch: if
-		// memberStmt lost a concurrent enrollment race for this actor (its
-		// ON CONFLICT DO NOTHING made zero changes), this UPDATE must not
-		// consume this invitation, and if this UPDATE in turn makes zero
-		// changes, the receipt below must not be written either. Without this,
-		// two in-flight accepts for the same new actor could both mark their
-		// own invitation accepted and both write receipts while only one role
-		// is ever actually enrolled.
+		// Consumes the invitation only for an actor this same batch just enrolled
+		// and who holds no other accepted invitation.
+		//
+		// `(SELECT changes()) = 1` is the causal link back to memberStmt: D1 runs
+		// the batch as one transaction on one connection, so changes() here is
+		// that INSERT's row count. An enrollment that did not happen — because
+		// the invitation went stale, or because ON CONFLICT DO NOTHING swallowed
+		// the insert for an actor some concurrent path had already enrolled —
+		// leaves zero changes and cannot consume this invitation. That matters
+		// even where the actor does end up an active member by way of another
+		// path entirely (a concurrent bootstrap, say): without this guard such a
+		// batch would burn the invitation to pay for a membership carrying a
+		// role the invitation never granted.
+		//
+		// The EXISTS guards then restate that same invariant directly against the
+		// tables — the actor is an active member, and no other invitation is
+		// already accepted for them — so this statement holds on its own terms
+		// rather than only by way of a connection-level counter.
 		const invitationStmt: D1PreparedStatement = this.#database
 			.prepare(
 				`UPDATE instance_invitation
 				 SET status = 'accepted', accepted_at = ?, accepted_by_user_id = ?
 				 WHERE id = ? AND status = 'pending' AND token_hash = ? AND email_binding = ?
 				   AND expires_at > ?
-				   AND (SELECT changes()) = 1`
+				   AND (SELECT changes()) = 1
+				   AND EXISTS (
+				     SELECT 1 FROM instance_member WHERE user_id = ? AND status = 'active'
+				   )
+				   AND NOT EXISTS (
+				     SELECT 1 FROM instance_invitation consumed
+				     WHERE consumed.accepted_by_user_id = ? AND consumed.status = 'accepted'
+				   )`
 			)
 			.bind(
 				command.acceptedAt,
@@ -604,18 +657,21 @@ export class D1InstanceStore implements InstanceStore {
 				gate.invitation.id,
 				command.tokenHash,
 				command.emailBinding,
-				command.acceptedAt
+				command.acceptedAt,
+				command.actor.id,
+				command.actor.id
 			);
 
-		// Unconditional, like create/revoke: if invitationStmt above did not
-		// actually mark this invitation accepted for this actor (its own
-		// changes()=1 chain failed, or a concurrent revoke/accept beat it),
-		// this INSERT still runs and the evidence-guard trigger's NOT EXISTS
-		// check on instance_invitation fails, raising ABORT and rolling back
-		// the entire batch — including the memberStmt enrollment above. A
-		// conditional SELECT ... WHERE (SELECT changes()) = 1 here would
-		// instead skip this INSERT silently, letting memberStmt's enrollment
-		// commit without ever having consumed a valid invitation.
+		// Deliberately unconditional, exactly like the create and revoke
+		// receipts. instance_invitation_command's accept-evidence trigger RAISEs
+		// unless the invitation really is accepted by this actor at this instant
+		// and the actor really is an active member, so an invitationStmt that
+		// matched no rows — its changes() chain broke, or a concurrent
+		// revoke/accept beat it — aborts the batch and rolls the member INSERT
+		// back with it. Guarding this INSERT with its own
+		// `SELECT ... WHERE (SELECT changes()) = 1` instead would turn that abort
+		// into a silent skip, letting the enrollment commit without any
+		// invitation ever having been consumed for it.
 		const receiptStmt: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO instance_invitation_command (
@@ -639,7 +695,11 @@ export class D1InstanceStore implements InstanceStore {
 				invitationStmt,
 				receiptStmt
 			]);
-			applied = changeCount(results[1]) === 1 && changeCount(results[2]) === 1;
+			// A well-formed acceptance writes exactly one row per statement, so
+			// anything short of all three means the invariant did not hold — even
+			// where the guards above and the evidence trigger left no exception
+			// behind to catch.
+			applied = results.every((result: D1Result): boolean => changeCount(result) === 1);
 		} catch (error: unknown) {
 			const classified: AcceptInstanceInvitationStoreResult | null =
 				await this.#classifyAcceptFailure(command);

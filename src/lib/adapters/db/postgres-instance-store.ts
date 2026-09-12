@@ -602,8 +602,15 @@ export class PostgresInstanceStore implements InstanceStore {
 
 					// 6. Enroll a brand-new active member with the invited role. An
 					// existing member (active or suspended) was already resolved above
-					// and never reaches this statement.
-					await transaction`
+					// and never reaches this statement. RETURNING tells us whether this
+					// transaction's own insert is the one that created the row: under
+					// ON CONFLICT DO NOTHING, a concurrent transaction enrolling the
+					// same previously-new actor via a *different* invitation blocks
+					// this insert until it commits, then this insert reports zero rows.
+					// That is the signal a stale-member precheck cannot give us (a
+					// non-existent row can't be locked), so it — not the precheck — is
+					// what must decide whether this invitation gets consumed.
+					const insertedMemberRows = await transaction<MemberRow[]>`
 						INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 						VALUES (
 							${command.actor.id},
@@ -613,21 +620,42 @@ export class PostgresInstanceStore implements InstanceStore {
 							${command.acceptedAt}::timestamptz
 						)
 						ON CONFLICT (user_id) DO NOTHING
+						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 					`;
 
-					const enrolledMemberRows = await transaction<MemberRow[]>`
-						SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
-						FROM instance_member
-						WHERE user_id = ${command.actor.id}
-						FOR UPDATE
-					`;
-					const enrolledMember: MemberRow | null = enrolledMemberRows[0] ?? null;
+					const wonEnrollment: boolean = insertedMemberRows.length === 1;
+					let enrolledMember: MemberRow | null = insertedMemberRows[0] ?? null;
+					if (!wonEnrollment) {
+						// Lost the enrollment race to a concurrent acceptance of a
+						// different invitation for this same, previously-new actor: this
+						// invitation must stay pending and unconsumed, and the caller
+						// sees the winner's membership instead of a phantom acceptance.
+						const racedMemberRows = await transaction<MemberRow[]>`
+							SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+							FROM instance_member
+							WHERE user_id = ${command.actor.id}
+							FOR UPDATE
+						`;
+						enrolledMember = racedMemberRows[0] ?? null;
+					}
+
 					if (
 						enrolledMember === null ||
 						!isInstanceMemberRole(enrolledMember.role) ||
-						!isInstanceMemberStatus(enrolledMember.status) ||
-						enrolledMember.status !== 'active'
+						!isInstanceMemberStatus(enrolledMember.status)
 					) {
+						throw new InstanceRollback({ outcome: 'integrity_error' });
+					}
+
+					if (!wonEnrollment) {
+						throw new InstanceRollback(
+							enrolledMember.status === 'suspended'
+								? { outcome: 'member_suspended' }
+								: { outcome: 'already_member', member: memberMetadataFromRow(enrolledMember) }
+						);
+					}
+
+					if (enrolledMember.status !== 'active') {
 						throw new InstanceRollback({ outcome: 'integrity_error' });
 					}
 

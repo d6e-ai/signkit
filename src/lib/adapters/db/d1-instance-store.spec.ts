@@ -320,7 +320,7 @@ describe('D1InstanceStore unit tests', () => {
 	});
 
 	describe('acceptInstanceInvitation', () => {
-		it('prepares 3-statement atomic batch: member insert on conflict, invitation update, receipt insert', async () => {
+		it('prepares a 3-statement atomic batch whose member insert and invitation update carry the same invitation predicate and a no-other-accepted-invitation guard', async () => {
 			const fake = fakeD1({
 				firstResult: {
 					user_id: 'accepting-user-1',
@@ -356,13 +356,73 @@ describe('D1InstanceStore unit tests', () => {
 
 			const mutationBatch = fake.batches[1];
 			expect(mutationBatch).toHaveLength(3);
+			// instance_invitation.accepted_by_user_id is a foreign key into
+			// instance_member, so the member row has to be written first. The
+			// insert therefore has to re-check the invitation itself rather than
+			// trust the gate snapshot, and must refuse to enroll an actor who
+			// already consumed another invitation.
 			expect(mutationBatch[0].sql).toContain('INSERT INTO instance_member');
+			expect(mutationBatch[0].sql).toContain('FROM instance_invitation invitation');
+			expect(mutationBatch[0].sql).toContain("invitation.status = 'pending'");
+			expect(mutationBatch[0].sql).toContain('invitation.token_hash = ?');
+			expect(mutationBatch[0].sql).toContain('invitation.email_binding = ?');
+			expect(mutationBatch[0].sql).toContain(
+				"WHERE consumed.accepted_by_user_id = ? AND consumed.status = 'accepted'"
+			);
 			expect(mutationBatch[0].sql).toContain('ON CONFLICT (user_id) DO NOTHING');
+			expect(mutationBatch[0].bindings[3]).toBe(INVITATION_ID);
+
+			// The update is causally tied to that insert by EXISTS, and carries the
+			// same no-other-accepted-invitation guard.
 			expect(mutationBatch[1].sql).toContain('UPDATE instance_invitation');
 			expect(mutationBatch[1].sql).toContain("status = 'accepted'");
+			expect(mutationBatch[1].sql).toContain(
+				"SELECT 1 FROM instance_member WHERE user_id = ? AND status = 'active'"
+			);
+			expect(mutationBatch[1].sql).toContain(
+				"WHERE consumed.accepted_by_user_id = ? AND consumed.status = 'accepted'"
+			);
+			expect(mutationBatch[1].bindings[2]).toBe(INVITATION_ID);
+
+			// The receipt stays unconditional so the accept-evidence trigger can
+			// abort — and therefore roll back — a batch whose update matched no rows.
 			expect(mutationBatch[2].sql).toContain('INSERT INTO instance_invitation_command');
 			expect(mutationBatch[2].sql).toContain("'accept'");
+			expect(mutationBatch[2].sql).toContain('VALUES');
 			expect(mutationBatch[2].bindings[3]).toBe(INVITATION_ID);
+		});
+
+		it('treats a batch where the member insert landed but the invitation update did not as unapplied', async () => {
+			const invitationRow = {
+				id: INVITATION_ID,
+				role: 'member',
+				status: 'pending',
+				email_binding: EMAIL_BINDING,
+				invited_by_user_id: OWNER_ID,
+				created_at: CREATED_AT,
+				expires_at: EXPIRES_AT,
+				accepted_at: null,
+				accepted_by_user_id: null,
+				revoked_at: null,
+				revoked_by_user_id: null
+			};
+			const fake = fakeD1({
+				batchResults: (batchIndex: number) =>
+					batchIndex === 1 ? [[], [], []] : [[], [], [invitationRow]],
+				batchChanges: (batchIndex: number, statementIndex: number) =>
+					// Mutation batch: the invitation update matched zero rows.
+					batchIndex === 1 && statementIndex === 1 ? 0 : 1
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.acceptInstanceInvitation(acceptCommand);
+
+			// Falls through to classification instead of reporting a phantom accept.
+			// Against a real database the unconditional receipt insert would have
+			// aborted this batch outright; the check on every statement's change
+			// count is the adapter-side backstop for that.
+			expect(result).toEqual({ outcome: 'integrity_error' });
+			expect(fake.batches).toHaveLength(3);
 		});
 
 		it('returns already_member without locking or mutating the invitation when actor is already an active member', async () => {
@@ -527,7 +587,7 @@ describe('D1InstanceStore unit tests', () => {
 					];
 				},
 				batchChanges: (batchIndex: number, statementIndex: number) => {
-					// In batch 1 (mutations), update changed 0 rows
+					// In batch 1 (mutations), the invitation update changed 0 rows
 					if (batchIndex === 1 && statementIndex === 1) return 0;
 					return 1;
 				}
