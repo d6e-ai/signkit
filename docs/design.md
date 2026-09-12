@@ -146,7 +146,35 @@ Publication itself is one immutable pointer per envelope, enforced by a `(organi
 
 Operators read publication state through `GET /api/v1/envelopes/{envelopeId}/completion-artifact`, an organization-authorized, explicit-allowlist read that returns only the publication status and the manifest/JSON/Markdown content digests (comparable to the existing draft `archiveSha256` exposure) — never object storage keys, audit event hashes, recipient email/name, raw field values, capability material, or internal claim tokens. `POST /api/v1/system/completion-artifacts/drain` reuses the existing `DELIVERY_WORKER_SECRET` constant-time bearer convention rather than a new credential. Cloudflare's existing one-minute scheduled trigger invokes it in-process through the Worker's own `fetch` handler alongside the invitation drain, with no Cloudflare REST API call from the Worker; Node/Docker drains it from the same host scheduler used for invitation delivery.
 
-CC recipient delivery, granting public (non-organization) access to a published artifact, mailing a completion notification, PDF, and DOCX are explicitly out of this slice and remain backlog items.
+CC recipient delivery, public artifact grants, and completion notification mailing are implemented in Slice B (below). PDF sealing and DOCX conversion remain backlog items.
+
+## Completion artifact delivery and public access (Slice B)
+
+Completion artifact delivery notifies agreement participants when an envelope completes and distributes purpose-separated read grants for the immutable completion artifact.
+
+Artifact publication (Slice A) is a strict prerequisite: a periodic reconciliation worker discovers `completed` envelopes only after their completion artifact has been successfully published to object storage and recorded in the database. Envelopes lacking a published artifact are excluded from discovery and cannot enroll deliveries.
+
+Delivery targets all participants in the completed agreement: `signer`, `approver`, `viewer`, and `cc` recipients are eligible for completion delivery. `prefill` recipients are strictly excluded, as prefill is pre-send authoring metadata and plays no role in post-completion artifact distribution. Each eligible recipient is enrolled exactly once in a dedicated `completion_delivery_outbox` table, guarded by a `UNIQUE(organization_id, envelope_id, recipient_id)` constraint and composite foreign keys to both `completion_artifact` and `recipient`.
+
+Each enrolled recipient receives a high-entropy 32-byte `skca1_` access token grant. These grants are strictly purpose-separated: they convey read-only access to the published completion artifact, carry no signing or approval authority, cannot mutate any envelope state, and never mint or interact with browser session cookies. Grants carry an immutable 30-day lifetime (`access_expires_at = enrolled_at + 30 days`). When queried after expiration or after access has been revoked, the service returns an opaque RFC 9457 404 not-found response, indistinguishable from an unknown token, to prevent token enumeration or status oracle leakage.
+
+Delivery is managed through a dedicated `completion_delivery_outbox` table, completely separated from the invitation `delivery_outbox`. Claiming follows a bounded-batch (at most 25 items per claim), stable-ordering, five-minute lease-reclaim, and capped exponential backoff (up to 10 attempts) pattern. The worker re-reads the current lease-scoped recipient/envelope projection immediately before decrypting token ciphertext and dispatching email. As with invitation delivery, external mail dispatch (Cloudflare native Email Sending binding on Cloudflare Workers; Cloudflare REST API on Node/Docker) is non-transactional with respect to database updates; provider acceptance and database update form an at-least-once boundary, so downstream mail recipients must tolerate rare duplicates resulting from ambiguous process failures.
+
+Ciphertext lifecycle and terminal failure semantics enforce least privilege:
+
+- Upon successful delivery (provider acceptance), the sealed token ciphertext is scrubbed to `NULL` in the database, while the access grant remains active (`access_revoked_at IS NULL`) for the remainder of its 30-day lifetime.
+- Upon permanent terminal failure (e.g. invalid recipient address, attempt exhaustion, or ciphertext digest mismatch), the sealed token ciphertext is scrubbed to `NULL` and access is terminally revoked by recording `access_revoked_at = now()`.
+- Upon retryable failure (e.g. rate limits or transient mail transport errors), the sealed token is retained for exponential backoff retry and access remains active (`access_revoked_at IS NULL`).
+
+Public artifact retrieval is exposed over two unauthenticated public boundaries requiring no cookies, sessions, or d6e-auth credentials:
+
+- `GET /api/v1/completion-artifacts`: Accepts an `skca1_` token via `Authorization: Bearer <token>` and defaults to JSON (`application/json`).
+- `GET /c/{token}`: Direct browser/link access accepting the token as a URL path parameter and defaulting to Markdown (`text/markdown`).
+  Both endpoints support an explicit `?format=json` or `?format=markdown` query parameter. The resolver validates token structure and SHA-256 hash against the delivery grant, retrieves the compressed artifact from immutable object storage, verifies object content digest against recorded SQL evidence, gunzips the bounded payload, and returns the decompressed text. Storage bucket keys, tenant IDs, recipient identities, and internal metadata are never reflected in the response or error bodies.
+
+Published artifacts in object storage and SQL pointer records in `completion_artifact` and `completion_delivery_outbox` are retained indefinitely in this slice. Physical garbage collection, operator revocation UI, PDF sealing, DOCX export, and completion webhooks remain deferred to future milestones.
+
+Node/Docker and Cloudflare Workers runtime profiles are fully supported; Vercel uses the existing PostgreSQL and S3-compatible path. Host schedulers invoke the protected `POST /api/v1/system/completion-deliveries/drain` endpoint using constant-time `DELIVERY_WORKER_SECRET` bearer validation; Cloudflare Workers drain completion deliveries in-process within `scheduled()` via `context.waitUntil` following invitation and completion artifact drains.
 
 ## Recipient capability reissue (design contract, not implemented)
 
