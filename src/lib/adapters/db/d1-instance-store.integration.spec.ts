@@ -330,6 +330,7 @@ describe('D1InstanceStore', () => {
 			const { store, sqlite } = createFixture();
 			try {
 				await store.bootstrapInstance(bootstrapCommand());
+				insertMember(sqlite, 'standby-owner-1', 'owner');
 
 				// Corrupt owner member state
 				sqlite.exec(
@@ -621,6 +622,7 @@ describe('D1InstanceStore', () => {
 			const { store, sqlite } = createFixture();
 			try {
 				await store.bootstrapInstance(bootstrapCommand());
+				insertMember(sqlite, 'standby-owner-1', 'owner');
 				sqlite.exec(
 					`UPDATE instance_member SET status = 'suspended' WHERE user_id = '${ACTOR_ID}'`
 				);
@@ -885,6 +887,7 @@ describe('D1InstanceStore', () => {
 			try {
 				await store.bootstrapInstance(bootstrapCommand());
 				await store.createInstanceInvitation(createInvitationCommand());
+				insertMember(sqlite, 'standby-owner-1', 'owner');
 
 				sqlite.exec(
 					`UPDATE instance_member SET status = 'suspended' WHERE user_id = '${ACTOR_ID}'`
@@ -1000,6 +1003,7 @@ describe('D1InstanceStore', () => {
 			const { store, sqlite } = createFixture();
 			try {
 				await store.bootstrapInstance(bootstrapCommand());
+				insertMember(sqlite, 'standby-owner-1', 'owner');
 				sqlite.exec(
 					`UPDATE instance_member SET status = 'suspended' WHERE user_id = '${ACTOR_ID}'`
 				);
@@ -1110,6 +1114,7 @@ describe('D1InstanceStore', () => {
 				);
 				expect(resNonMember).toEqual({ outcome: 'forbidden' });
 
+				insertMember(sqlite, 'standby-owner-1', 'owner');
 				sqlite.exec(
 					`UPDATE instance_member SET status = 'suspended' WHERE user_id = '${ACTOR_ID}'`
 				);
@@ -1630,6 +1635,7 @@ describe('D1InstanceStore', () => {
 			try {
 				await store.bootstrapInstance(bootstrapCommand());
 				await store.createInstanceInvitation(createInvitationCommand());
+				insertMember(sqlite, 'standby-owner-1', 'owner');
 				sqlite.exec(
 					`UPDATE instance_member SET status = 'suspended' WHERE user_id = '${ACTOR_ID}'`
 				);
@@ -1767,6 +1773,7 @@ describe('D1InstanceStore', () => {
 				await store.bootstrapInstance(bootstrapCommand());
 				await store.createInstanceInvitation(createInvitationCommand());
 				await store.revokeInstanceInvitation(revokeInvitationCommand());
+				insertMember(sqlite, 'standby-owner-1', 'owner');
 
 				sqlite.exec(
 					`UPDATE instance_member SET status = 'suspended' WHERE user_id = '${ACTOR_ID}'`
