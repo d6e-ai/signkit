@@ -1,19 +1,16 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { RecipientSignedApplication } from '$lib/application/signing/recipient-signed';
+import type { PublishRecipientSignedCommand } from '$lib/ports/recipient-sign-store';
+import { hashRecipientCapability } from '$lib/security/recipient-capability';
+import { D1RecipientSignStore } from './d1-recipient-sign-store';
+import { sqliteD1Database } from './sqlite-d1-test-support';
 
-const migrationPaths: readonly string[] = [
-	'migrations/d1/0001_core.sql',
-	'migrations/d1/0002_envelope_commands.sql',
-	'migrations/d1/0003_draft_revisions.sql',
-	'migrations/d1/0004_envelope_ready.sql',
-	'migrations/d1/0005_envelope_send.sql',
-	'migrations/d1/0006_recipient_viewed.sql',
-	'migrations/d1/0007_recipient_declined.sql',
-	'migrations/d1/0008_recipient_approved.sql',
-	'migrations/d1/0009_field_placement.sql',
-	'migrations/d1/0010_recipient_signed.sql'
-];
+const migrationPaths: readonly string[] = readdirSync('migrations/d1')
+	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
+	.sort()
+	.map((name: string): string => `migrations/d1/${name}`);
 
 const FAR_FUTURE: string = '2026-09-25T00:00:00.000Z';
 const NEXT_EXPIRY: string = '2026-09-25T12:00:00.000Z';
@@ -399,6 +396,12 @@ describe('D1 recipient signed migration', () => {
 			db.exec('COMMIT');
 
 			expect(envelopeState(db)).toEqual({ status: 'completed', sent_commit_sha: 'commit-3' });
+			expect(outboxRow(db, 'recipient-3')).toEqual({
+				status: 'failed',
+				available_at: SIGNED_AT,
+				sealed_capability: null,
+				reserved_capability_expires_at: null
+			});
 			const events = db
 				.prepare(
 					`SELECT sequence, event_type, previous_hash, event_hash
@@ -431,6 +434,190 @@ describe('D1 recipient signed migration', () => {
 					event_hash: 'hash-6'
 				}
 			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it('fences completion while a delivery is processing and rolls back command and field state', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(`
+				UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3');
+				UPDATE delivery_outbox
+				SET status = 'processing', available_at = '${SENT_AT}',
+					claim_token = 'processing-token-1', locked_at = '${SENT_AT}'
+				WHERE recipient_id = 'recipient-3';
+			`);
+			db.exec('BEGIN');
+			expect((): void =>
+				insertSignedCommand(db, {
+					recipientId: 'recipient-1',
+					idempotencyKey: 'signed-processing',
+					capabilityHash: 'cap-hash-1',
+					auditEventId: 'signed-audit-processing',
+					auditSequence: 5,
+					previousAuditHash: 'hash-4',
+					auditEventHash: 'hash-5',
+					completedAuditEventId: 'completed-audit-processing',
+					completedAuditEventHash: 'hash-6',
+					completedAuditPayloadJson: '{}'
+				})
+			).toThrow(/recipient signed delivery in flight/);
+			db.exec('ROLLBACK');
+
+			expect(envelopeState(db).status).toBe('in_progress');
+			expect(recipientRow(db, 'recipient-1')).toMatchObject({
+				status: 'viewed',
+				capability_revoked_at: null
+			});
+			expect(commandCount(db)).toBe(0);
+			expect(fieldValueCount(db)).toBe(0);
+			expect(auditEventCount(db)).toBe(2);
+			expect(outboxRow(db, 'recipient-3')).toMatchObject({
+				status: 'processing',
+				sealed_capability: CIPHERTEXT
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it('maps the real trigger processing fence to delivery_in_flight', async () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(`
+				UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3');
+				UPDATE delivery_outbox
+				SET status = 'processing', available_at = '${SENT_AT}',
+					claim_token = 'processing-token-1', locked_at = '${SENT_AT}'
+				WHERE recipient_id = 'recipient-3';
+			`);
+			const command: PublishRecipientSignedCommand = {
+				capabilityHash: 'cap-hash-1',
+				expectedEnvelopeId: 'env-1',
+				expectedRecipientId: 'recipient-1',
+				idempotencyKey: 'signed-processing-store',
+				requestFingerprint: 'request-hash',
+				recipientRole: 'signer',
+				routingOrder: 1,
+				expectedSentCommitSha: 'commit-3',
+				expectedFieldGeneration: 1,
+				fieldValues: [
+					{
+						fieldId: 'field-1',
+						fieldType: 'signature',
+						valueJson: JSON.stringify('Jane Doe'),
+						valueSha256: 'value-hash-1'
+					}
+				],
+				updatedAt: SIGNED_AT,
+				nextRoutingOrder: null,
+				nextCapabilityExpiresAt: null,
+				releasedDeliveryCount: 0,
+				expectedAuditSequence: 4,
+				previousAuditHash: 'hash-4',
+				auditEventId: 'signed-audit-processing-store',
+				auditEventHash: 'hash-5',
+				auditPayloadJson: '{}',
+				completedAuditEventId: 'completed-audit-processing-store',
+				completedAuditEventHash: 'hash-6',
+				completedAuditPayloadJson: '{}'
+			};
+			await expect(
+				new D1RecipientSignStore(sqliteD1Database(db)).publishSign(command)
+			).resolves.toEqual({ outcome: 'delivery_in_flight' });
+			expect(commandCount(db)).toBe(0);
+			expect(fieldValueCount(db)).toBe(0);
+			expect(recipientRow(db, 'recipient-1').status).toBe('viewed');
+		} finally {
+			db.close();
+		}
+	});
+
+	it('revokes outstanding observer capabilities without changing their statuses on completion', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(`
+				INSERT INTO recipient (
+					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+					capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
+				) VALUES
+					('recipient-viewer','org-1','env-1','viewer@example.com','Viewer','viewer','en',1,'viewed',
+					 'cap-hash-viewer','${FAR_FUTURE}',NULL,'${SENT_AT}','${VIEWED_AT}'),
+					('recipient-prefill','org-1','env-1','prefill@example.com','Prefill','prefill','en',2,'pending',
+					 'cap-hash-prefill',NULL,NULL,'${SENT_AT}','${SENT_AT}');
+				UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3');
+			`);
+			insertSignedCommand(db, {
+				recipientId: 'recipient-1',
+				idempotencyKey: 'signed-observer-cleanup',
+				capabilityHash: 'cap-hash-1',
+				auditEventId: 'signed-audit-observer-cleanup',
+				auditSequence: 5,
+				previousAuditHash: 'hash-4',
+				auditEventHash: 'hash-5',
+				completedAuditEventId: 'completed-audit-observer-cleanup',
+				completedAuditEventHash: 'hash-6',
+				completedAuditPayloadJson: '{}'
+			});
+
+			expect(recipientRow(db, 'recipient-viewer')).toMatchObject({
+				status: 'viewed',
+				capability_revoked_at: SIGNED_AT
+			});
+			expect(recipientRow(db, 'recipient-prefill')).toMatchObject({
+				status: 'pending',
+				capability_revoked_at: SIGNED_AT
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it('fails a completed v1 receipt replay when the terminal projection drifts', async () => {
+		const db: DatabaseSync = database();
+		try {
+			const token: string = `skr1_${'B'.repeat(43)}`;
+			const capabilityHash: string = await hashRecipientCapability(token);
+			const applicationFieldId: string = '00000000-0000-8000-a000-000000000001';
+			db.prepare(
+				`UPDATE recipient SET capability_hash = ?
+				 WHERE organization_id = 'org-1' AND id = 'recipient-1'`
+			).run(capabilityHash);
+			db.prepare("UPDATE envelope_field SET id = ? WHERE id = 'field-1'").run(applicationFieldId);
+			db.exec(
+				"UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3')"
+			);
+			const application = new RecipientSignedApplication(
+				new D1RecipientSignStore(sqliteD1Database(db)),
+				(): Date => new Date(SIGNED_AT)
+			);
+			const input = {
+				token,
+				expectedEnvelopeId: 'env-1',
+				expectedRecipientId: 'recipient-1',
+				expectedFieldGeneration: 1,
+				idempotencyKey: 'signed-v1-terminal-replay',
+				values: [{ fieldId: applicationFieldId, value: 'Jane Doe' }]
+			};
+			const published = await application.sign(input);
+			expect(published).toMatchObject({ outcome: 'published' });
+			if (published.outcome !== 'published') throw new Error('Expected signing publication');
+			await expect(application.sign(input)).resolves.toEqual({
+				outcome: 'replayed',
+				result: published.result
+			});
+
+			db.exec(
+				"UPDATE recipient SET status = 'pending', capability_revoked_at = NULL WHERE id = 'recipient-3'"
+			);
+			await expect(application.sign(input)).resolves.toEqual({ outcome: 'integrity_error' });
+			db.exec("UPDATE recipient SET status = 'completed' WHERE id = 'recipient-3'");
+			db.exec(
+				"UPDATE delivery_outbox SET retryable = 1, sealed_capability = 'restored-ciphertext' WHERE recipient_id = 'recipient-3'"
+			);
+			await expect(application.sign(input)).resolves.toEqual({ outcome: 'integrity_error' });
 		} finally {
 			db.close();
 		}
@@ -673,6 +860,53 @@ describe('D1 recipient signed migration', () => {
 			db.exec('ROLLBACK');
 
 			expect(recipientRow(db, 'recipient-1').status).toBe('viewed');
+			expect(commandCount(db)).toBe(0);
+			expect(fieldValueCount(db)).toBe(0);
+			expect(auditEventCount(db)).toBe(2);
+		} finally {
+			db.close();
+		}
+	});
+
+	it('rolls back terminal cleanup when a later field-value insert fails', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(
+				"UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3')"
+			);
+			db.exec('BEGIN');
+			insertSignedCommand(db, {
+				recipientId: 'recipient-1',
+				idempotencyKey: 'signed-terminal-field-failure',
+				capabilityHash: 'cap-hash-1',
+				auditEventId: 'signed-audit-terminal-field-failure',
+				auditSequence: 5,
+				previousAuditHash: 'hash-4',
+				auditEventHash: 'hash-5',
+				completedAuditEventId: 'completed-audit-terminal-field-failure',
+				completedAuditEventHash: 'hash-6',
+				completedAuditPayloadJson: '{}'
+			});
+			expect(outboxRow(db, 'recipient-3')).toMatchObject({
+				status: 'failed',
+				sealed_capability: null
+			});
+			expect((): void => insertFieldValue(db, { recipientId: 'recipient-2' })).toThrow(
+				/FOREIGN KEY constraint failed/
+			);
+			db.exec('ROLLBACK');
+
+			expect(envelopeState(db).status).toBe('in_progress');
+			expect(recipientRow(db, 'recipient-1')).toMatchObject({
+				status: 'viewed',
+				capability_revoked_at: null
+			});
+			expect(outboxRow(db, 'recipient-3')).toEqual({
+				status: 'blocked',
+				available_at: null,
+				sealed_capability: CIPHERTEXT,
+				reserved_capability_expires_at: null
+			});
 			expect(commandCount(db)).toBe(0);
 			expect(fieldValueCount(db)).toBe(0);
 			expect(auditEventCount(db)).toBe(2);

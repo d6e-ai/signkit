@@ -1,4 +1,4 @@
-import type { RecipientRole } from '$lib/domain/envelope';
+import { isPostSendInvitationRecipientRole, type RecipientRole } from '$lib/domain/envelope';
 import type {
 	PublishRecipientViewedCommand,
 	PublishRecipientViewedResult,
@@ -294,7 +294,7 @@ export class D1RecipientViewStore implements RecipientViewStore {
 function authorized(row: RecipientEnvelopeRow, capabilityHash: string, at: string): boolean {
 	return (
 		(row.recipient_status === 'pending' || row.recipient_status === 'viewed') &&
-		row.recipient_role !== 'cc' &&
+		isPostSendInvitationRecipientRole(row.recipient_role) &&
 		row.recipient_capability_hash === capabilityHash &&
 		row.recipient_capability_revoked_at === null &&
 		row.recipient_capability_expires_at !== null &&

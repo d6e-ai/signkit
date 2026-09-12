@@ -23,6 +23,9 @@ export const GET: RequestHandler = ({ platform }) => {
 		readiness: {
 			endpoint: '/api/v1/envelopes/{envelopeId}/ready',
 			recipients: 'complete-graph',
+			actionableRoles: ['signer', 'approver'],
+			observerRoles: ['viewer'],
+			preSendOnlyRoles: ['prefill'],
 			concurrency: 'expected-generation',
 			idempotency: 'required'
 		},
@@ -61,6 +64,7 @@ export const GET: RequestHandler = ({ platform }) => {
 			authentication: 'bearer-capability',
 			browserSession: 'encrypted-http-only-cookie',
 			mutations: 'same-origin-cookie-context',
+			roles: ['signer', 'approver', 'viewer'],
 			states: ['sent', 'in_progress'],
 			cache: 'no-store'
 		},

@@ -42,15 +42,26 @@ const recipients: readonly Recipient[] = [
 		id: 'r2',
 		organizationId: envelope.organizationId,
 		envelopeId: envelope.id,
-		email: 'b@example.com',
-		name: 'B',
-		role: 'approver',
+		email: 'viewer@example.com',
+		name: 'Viewer',
+		role: 'viewer',
 		locale: 'ja',
-		routingOrder: 2,
+		routingOrder: 1,
 		status: 'pending'
 	},
 	{
 		id: 'r3',
+		organizationId: envelope.organizationId,
+		envelopeId: envelope.id,
+		email: 'b@example.com',
+		name: 'B',
+		role: 'approver',
+		locale: 'en',
+		routingOrder: 2,
+		status: 'pending'
+	},
+	{
+		id: 'r4',
 		organizationId: envelope.organizationId,
 		envelopeId: envelope.id,
 		email: 'cc@example.com',
@@ -71,12 +82,18 @@ const readyEventId: string = '01900000-0000-7000-8000-000000000099';
 class CapturingStore implements EnvelopeSendStore {
 	readonly keys: SendCommandKey[] = [];
 	readonly commands: PublishSentEnvelopeCommand[] = [];
+	readonly #recipients: readonly Recipient[];
+
+	constructor(preparedRecipients: readonly Recipient[] = recipients) {
+		this.#recipients = preparedRecipients;
+	}
+
 	async prepareSend(key: SendCommandKey): Promise<SendPreparation> {
 		this.keys.push(key);
 		return {
 			outcome: 'ready',
 			envelope,
-			recipients,
+			recipients: this.#recipients,
 			auditHead: {
 				eventId: readyEventId,
 				eventType: 'envelope.ready',
@@ -116,7 +133,7 @@ const sealer: RecipientCapabilitySealer = {
 };
 
 describe('EnvelopeSendApplication', () => {
-	it('reserves non-CC capabilities but queues only the first routing group', async () => {
+	it('reserves signer, approver, and viewer capabilities but queues only the first routing group', async () => {
 		const store: CapturingStore = new CapturingStore();
 		const result = await new EnvelopeSendApplication(store, sealer).send(actor, envelope.id, {
 			idempotencyKey: 'send-1',
@@ -124,7 +141,7 @@ describe('EnvelopeSendApplication', () => {
 			expectedReadyAuditEventId: readyEventId
 		});
 		expect(result.outcome).toBe('published');
-		expect(store.commands[0].deliveries).toHaveLength(2);
+		expect(store.commands[0].deliveries).toHaveLength(3);
 		expect(
 			store.commands[0].deliveries.map((delivery) => ({
 				recipientId: delivery.recipientId,
@@ -134,17 +151,61 @@ describe('EnvelopeSendApplication', () => {
 			}))
 		).toEqual([
 			{ recipientId: 'r1', status: 'pending', expires: true, available: true },
-			{ recipientId: 'r2', status: 'blocked', expires: false, available: false }
+			{ recipientId: 'r2', status: 'pending', expires: true, available: true },
+			{ recipientId: 'r3', status: 'blocked', expires: false, available: false }
 		]);
 		expect(store.commands[0].expectedReadyAuditEventId).toBe(readyEventId);
 		expect(JSON.parse(store.commands[0].auditPayloadJson)).toMatchObject({
 			readyAuditEventId: readyEventId,
 			initialRoutingOrder: 1,
-			queuedDeliveryCount: 1,
-			reservedCapabilityCount: 2
+			queuedDeliveryCount: 2,
+			reservedCapabilityCount: 3
 		});
 		expect(store.commands[0].auditPayloadJson).not.toContain('@example.com');
 		expect(store.commands[0].auditPayloadJson).not.toContain('skr1_');
+	});
+
+	it('does not issue a post-send invitation for a legacy prefill recipient', async () => {
+		const prefill: Recipient = {
+			...recipients[0],
+			id: 'prefill-1',
+			email: 'prefill@example.com',
+			role: 'prefill'
+		};
+		const store: CapturingStore = new CapturingStore([recipients[0], prefill]);
+		const localSealer: RecipientCapabilitySealer = {
+			seal: vi.fn(async (token: string, context: CapabilitySealContext) => ({
+				sealedCapability: `sealed:${context.recipientId}:${token.slice(0, 8)}`,
+				sealingKeyId: 'key-1',
+				sealedCapabilitySha256: 'c'.repeat(64)
+			}))
+		};
+
+		const result = await new EnvelopeSendApplication(store, localSealer).send(actor, envelope.id, {
+			idempotencyKey: 'send-prefill',
+			expectedGeneration: 2,
+			expectedReadyAuditEventId: readyEventId
+		});
+
+		expect(result.outcome).toBe('published');
+		expect(store.commands[0].deliveries.map((delivery) => delivery.recipientId)).toEqual(['r1']);
+		expect(localSealer.seal).toHaveBeenCalledTimes(1);
+	});
+
+	it('fails closed when a viewer has no actionable recipient at its routing order', async () => {
+		const detachedViewer: Recipient = { ...recipients[1], routingOrder: 2 };
+		const store: CapturingStore = new CapturingStore([recipients[0], detachedViewer]);
+		const localSealer: RecipientCapabilitySealer = { seal: vi.fn() };
+
+		const result = await new EnvelopeSendApplication(store, localSealer).send(actor, envelope.id, {
+			idempotencyKey: 'send-detached-viewer',
+			expectedGeneration: 2,
+			expectedReadyAuditEventId: readyEventId
+		});
+
+		expect(result).toEqual({ outcome: 'integrity_error' });
+		expect(localSealer.seal).not.toHaveBeenCalled();
+		expect(store.commands).toHaveLength(0);
 	});
 
 	it('returns preparation failures without creating secrets', async () => {

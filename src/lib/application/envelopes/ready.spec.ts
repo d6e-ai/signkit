@@ -63,7 +63,7 @@ describe('EnvelopeReadyApplication', () => {
 			idempotencyKey: 'ready-1',
 			expectedGeneration: 2,
 			recipients: [
-				{ email: ' B@example.com ', name: ' Bob ', role: 'viewer', locale: 'en', routingOrder: 2 },
+				{ email: ' B@example.com ', name: ' Bob ', role: 'viewer', locale: 'en', routingOrder: 1 },
 				{ email: 'A@Example.com', name: ' Alice ', role: 'signer', locale: 'ja', routingOrder: 1 }
 			]
 		});
@@ -79,7 +79,7 @@ describe('EnvelopeReadyApplication', () => {
 		});
 		expect(store.commands[0].recipients).toMatchObject([
 			{ email: 'a@example.com', name: 'Alice', role: 'signer', routingOrder: 1 },
-			{ email: 'b@example.com', name: 'Bob', role: 'viewer', routingOrder: 2 }
+			{ email: 'b@example.com', name: 'Bob', role: 'viewer', routingOrder: 1 }
 		]);
 		expect(store.commands[0]).toMatchObject({
 			expectedCommitSha: envelope.repositoryHead,
@@ -192,6 +192,42 @@ describe('EnvelopeReadyApplication', () => {
 					name: 'Alias',
 					role: 'viewer' as const,
 					locale: 'ja' as const,
+					routingOrder: 2
+				}
+			]
+		},
+		{
+			recipients: [
+				{
+					email: 'a@example.com',
+					name: 'Alice',
+					role: 'signer' as const,
+					locale: 'en' as const,
+					routingOrder: 1
+				},
+				{
+					email: 'prefill@example.com',
+					name: 'Prefill',
+					role: 'prefill' as const,
+					locale: 'en' as const,
+					routingOrder: 1
+				}
+			]
+		},
+		{
+			recipients: [
+				{
+					email: 'a@example.com',
+					name: 'Alice',
+					role: 'signer' as const,
+					locale: 'en' as const,
+					routingOrder: 1
+				},
+				{
+					email: 'viewer@example.com',
+					name: 'Viewer',
+					role: 'viewer' as const,
+					locale: 'en' as const,
 					routingOrder: 2
 				}
 			]

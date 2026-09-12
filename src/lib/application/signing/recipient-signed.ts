@@ -50,6 +50,7 @@ export type RecipientSignedResult =
 	| { outcome: 'incomplete_field_set' }
 	| { outcome: 'missing_required_value' }
 	| { outcome: 'audit_conflict' }
+	| { outcome: 'delivery_in_flight' }
 	| { outcome: 'integrity_error' };
 
 export interface RecipientSignedApplicationPort {

@@ -74,7 +74,7 @@ describe('D1RecipientAccessStore', () => {
 			'julianday(recipient.capability_expires_at) > julianday(?)'
 		);
 		expect(fake.statement.sql).toContain("recipient.status IN ('pending', 'viewed')");
-		expect(fake.statement.sql).toContain("recipient.role <> 'cc'");
+		expect(fake.statement.sql).toContain("recipient.role IN ('signer', 'approver', 'viewer')");
 		expect(fake.statement.sql).toContain("envelope.status IN ('sent', 'in_progress')");
 		expect(fake.statement.sql).toContain('INNER JOIN draft_revision_command revision');
 		expect(fake.statement.sql).toContain('envelope.sent_commit_sha = envelope.repository_head');

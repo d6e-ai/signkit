@@ -249,6 +249,7 @@ describe('recipient signed HTTP handler', () => {
 		[{ outcome: 'incomplete_field_set' } as const, 400],
 		[{ outcome: 'missing_required_value' } as const, 400],
 		[{ outcome: 'audit_conflict' } as const, 409],
+		[{ outcome: 'delivery_in_flight' } as const, 409],
 		[{ outcome: 'integrity_error' } as const, 503]
 	])('maps %j to a fixed RFC 9457 response', async (result, status) => {
 		const { event, deleted } = requestEvent({ idempotencyKey: 'sign-1' });
@@ -261,12 +262,14 @@ describe('recipient signed HTTP handler', () => {
 		expect(deleted).not.toHaveBeenCalled();
 	});
 
-	it('sets Retry-After only for a terminal audit conflict', async () => {
-		const audit = await createRecipientSignedHandler(
-			() => application({ outcome: 'audit_conflict' }),
-			async (): Promise<string> => token
-		)(requestEvent({ idempotencyKey: 'sign-1' }).event);
-		expect(audit.headers.get('retry-after')).toBe('1');
+	it('sets Retry-After only for retryable terminal conflicts', async () => {
+		for (const outcome of ['audit_conflict', 'delivery_in_flight'] as const) {
+			const response = await createRecipientSignedHandler(
+				() => application({ outcome }),
+				async (): Promise<string> => token
+			)(requestEvent({ idempotencyKey: 'sign-1' }).event);
+			expect(response.headers.get('retry-after')).toBe('1');
+		}
 
 		const stale = await createRecipientSignedHandler(
 			() => application({ outcome: 'field_generation_conflict' }),

@@ -71,7 +71,7 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 							AND NOT (
 								envelope.status IN ('sent', 'in_progress')
 								AND recipient.status = 'pending'
-								AND recipient.role <> 'cc'
+								AND recipient.role IN ('signer', 'approver', 'viewer')
 								AND recipient.capability_revoked_at IS NULL
 								AND recipient.capability_hash = delivery.capability_hash
 								AND (
@@ -134,7 +134,7 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 						)
 						AND envelope.status IN ('sent', 'in_progress')
 						AND recipient.status = 'pending'
-						AND recipient.role <> 'cc'
+						AND recipient.role IN ('signer', 'approver', 'viewer')
 						AND recipient.capability_revoked_at IS NULL
 						AND recipient.capability_expires_at IS NOT NULL
 						AND recipient.capability_expires_at > ${command.claimedAt}::timestamptz

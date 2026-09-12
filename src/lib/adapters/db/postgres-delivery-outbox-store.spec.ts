@@ -102,7 +102,9 @@ describe('PostgresDeliveryOutboxStore.claimPendingInvitations', () => {
 		expect(scripted.transactionQueries[1].text).toContain(
 			'recipient.capability_expires_at > ?::timestamptz'
 		);
-		expect(scripted.transactionQueries[1].text).toContain("recipient.role <> 'cc'");
+		expect(scripted.transactionQueries[1].text).toContain(
+			"recipient.role IN ('signer', 'approver', 'viewer')"
+		);
 	});
 
 	it('claims every row whose guarded update returns a row and converts timestamps to ISO strings', async () => {

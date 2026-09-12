@@ -10,7 +10,12 @@ export const envelopeStatuses = [
 ] as const;
 
 export type EnvelopeStatus = (typeof envelopeStatuses)[number];
-export type RecipientRole = 'signer' | 'approver' | 'viewer' | 'prefill' | 'cc';
+export const recipientRoles = ['signer', 'approver', 'viewer', 'prefill', 'cc'] as const;
+export const actionableRecipientRoles = ['signer', 'approver'] as const;
+export const postSendInvitationRecipientRoles = ['signer', 'approver', 'viewer'] as const;
+export type RecipientRole = (typeof recipientRoles)[number];
+export type ActionableRecipientRole = (typeof actionableRecipientRoles)[number];
+export type PostSendInvitationRecipientRole = (typeof postSendInvitationRecipientRoles)[number];
 export type RecipientStatus = 'pending' | 'viewed' | 'completed' | 'declined';
 export const fieldTypes = ['signature', 'initials', 'text', 'date', 'checkbox'] as const;
 export type FieldType = (typeof fieldTypes)[number];
@@ -84,6 +89,16 @@ export function canTransitionEnvelope(from: EnvelopeStatus, to: EnvelopeStatus):
 
 export function assertEnvelopeMutable(status: EnvelopeStatus): void {
 	if (status !== 'draft') throw new Error(`Envelope is immutable in ${status} state`);
+}
+
+export function isActionableRecipientRole(role: RecipientRole): role is ActionableRecipientRole {
+	return role === 'signer' || role === 'approver';
+}
+
+export function isPostSendInvitationRecipientRole(
+	role: RecipientRole
+): role is PostSendInvitationRecipientRole {
+	return isActionableRecipientRole(role) || role === 'viewer';
 }
 
 export function assertMarkdownPath(path: string): asserts path is `documents/${string}.md` {

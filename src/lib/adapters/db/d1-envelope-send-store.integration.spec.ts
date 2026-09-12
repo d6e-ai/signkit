@@ -49,7 +49,7 @@ function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 			audit_event_id, audit_sequence, previous_audit_hash, audit_event_hash, audit_payload_json
 		) VALUES (
 			'${ORGANIZATION_ID}','${ENVELOPE_ID}','user','${ACTOR.id}','ready-integration',
-			'ready-request',1,'${COMMIT_SHA}','[]',4,'2026-09-11T00:02:00.000Z',
+			'ready-request',1,'${COMMIT_SHA}','[]',6,'2026-09-11T00:02:00.000Z',
 			'${READY_AUDIT_ID}',3,'hash-2','hash-3','{}'
 		);
 		INSERT INTO recipient (
@@ -59,7 +59,9 @@ function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 			('signer-a','${ORGANIZATION_ID}','${ENVELOPE_ID}','a@example.com','A','signer','en',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
 			('signer-b','${ORGANIZATION_ID}','${ENVELOPE_ID}','b@example.com','B','signer','ja',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
 			('signer-c','${ORGANIZATION_ID}','${ENVELOPE_ID}','c@example.com','C','signer','en',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
-			('cc-d','${ORGANIZATION_ID}','${ENVELOPE_ID}','d@example.com','D','cc','ja',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z');
+			('cc-d','${ORGANIZATION_ID}','${ENVELOPE_ID}','d@example.com','D','cc','ja',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
+			('viewer-e','${ORGANIZATION_ID}','${ENVELOPE_ID}','e@example.com','E','viewer','en',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
+			('prefill-f','${ORGANIZATION_ID}','${ENVELOPE_ID}','f@example.com','F','prefill','ja',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z');
 	`);
 	return { database: sqliteD1Database(sqlite), sqlite };
 }
@@ -82,7 +84,7 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 			const replay = await application.send(ACTOR, ENVELOPE_ID, input);
 			expect(first).toMatchObject({
 				outcome: 'published',
-				result: { queuedDeliveryCount: 2, reservedCapabilityCount: 3 }
+				result: { queuedDeliveryCount: 2, reservedCapabilityCount: 4 }
 			});
 			if (first.outcome !== 'published') throw new Error('Expected the first send to publish');
 			expect(replay).toEqual({ outcome: 'replayed', result: first.result });
@@ -110,6 +112,12 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 					status: 'blocked',
 					available_at: null,
 					reserved_capability_expires_at: null
+				},
+				{
+					recipient_id: 'viewer-e',
+					status: 'blocked',
+					available_at: null,
+					reserved_capability_expires_at: null
 				}
 			]);
 			const evidence = sqlite
@@ -118,14 +126,16 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 						(SELECT COUNT(*) FROM envelope_send_command) AS commands,
 						(SELECT COUNT(*) FROM audit_event WHERE event_type='envelope.sent') AS sent_events,
 						(SELECT COUNT(*) FROM delivery_outbox) AS deliveries,
-						(SELECT COUNT(*) FROM recipient WHERE role='cc' AND capability_hash IS NOT NULL) AS cc_capabilities`
+						(SELECT COUNT(*) FROM recipient WHERE role='cc' AND capability_hash IS NOT NULL) AS cc_capabilities,
+						(SELECT COUNT(*) FROM recipient WHERE role='prefill' AND capability_hash IS NOT NULL) AS prefill_capabilities`
 				)
 				.get() as Record<string, unknown>;
 			expect(evidence).toEqual({
 				commands: 1,
 				sent_events: 1,
-				deliveries: 3,
-				cc_capabilities: 0
+				deliveries: 4,
+				cc_capabilities: 0,
+				prefill_capabilities: 0
 			});
 			const releasedAt: string = new Date(Date.now() + 1_000).toISOString();
 			const releasedExpiry: string = new Date(Date.now() + 13 * 24 * 60 * 60 * 1_000).toISOString();
@@ -226,7 +236,7 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 						(SELECT COUNT(*) FROM delivery_outbox) AS deliveries`
 				)
 				.get() as Record<string, unknown>;
-			expect(evidence).toEqual({ commands: 1, sent_events: 1, deliveries: 3 });
+			expect(evidence).toEqual({ commands: 1, sent_events: 1, deliveries: 4 });
 		} finally {
 			sqlite.close();
 		}

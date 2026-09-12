@@ -63,7 +63,7 @@ export const D1_RECIPIENT_ACCESS_QUERY: string = `SELECT recipient.organization_
 					AND recipient.capability_expires_at IS NOT NULL
 					AND julianday(recipient.capability_expires_at) > julianday(?)
 					AND recipient.status IN ('pending', 'viewed')
-					AND recipient.role <> 'cc'
+					AND recipient.role IN ('signer', 'approver', 'viewer')
 					AND envelope.status IN ('sent', 'in_progress')
 					AND envelope.sent_commit_sha IS NOT NULL
 					AND envelope.sent_commit_sha = envelope.repository_head

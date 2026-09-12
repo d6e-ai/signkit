@@ -55,6 +55,13 @@ interface RecipientLockRow {
 	routingOrder: number;
 }
 
+interface DeliveryLockRow {
+	id: string;
+	status: string;
+	retryable: boolean;
+	sealedCapability: string | null;
+}
+
 interface RoutingRecipientRow {
 	id: string;
 	role: RecipientRole;
@@ -65,6 +72,11 @@ interface RoutingRecipientRow {
 interface AuditHeadRow {
 	sequence: number | string;
 	eventHash: string;
+}
+
+interface TerminalProjectionRow {
+	hasRevocableRecipient: boolean;
+	hasUnsafeDelivery: boolean;
 }
 
 interface ApprovedCommandRow {
@@ -212,8 +224,9 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 						ORDER BY id
 						FOR UPDATE`;
 
-				await transaction`
-						SELECT id FROM delivery_outbox
+				const deliveries = await transaction<DeliveryLockRow[]>`
+						SELECT id, status, retryable, sealed_capability AS "sealedCapability"
+						FROM delivery_outbox
 						WHERE organization_id = ${identity.organizationId} AND envelope_id = ${identity.envelopeId}
 						ORDER BY id
 						FOR UPDATE`;
@@ -284,6 +297,12 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				if (!commandMatchesRouting(command, routing)) {
 					return { outcome: 'integrity_error' };
 				}
+				if (
+					command.completedAuditEventId !== null &&
+					deliveries.some((delivery: DeliveryLockRow): boolean => delivery.status === 'processing')
+				) {
+					return { outcome: 'delivery_in_flight' };
+				}
 
 				const auditHead: ApproveAuditHead | null = await this.#readAuditHead(
 					transaction,
@@ -319,7 +338,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 								updated_at = ${command.updatedAt}
 							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
 								AND routing_order = ${command.nextRoutingOrder}
-								AND role <> 'cc' AND status <> 'completed'
+								AND role IN ('signer', 'approver', 'viewer') AND status <> 'completed'
 								AND capability_hash IS NOT NULL AND capability_revoked_at IS NULL
 								AND capability_expires_at IS NULL
 							RETURNING id`;
@@ -343,7 +362,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 										AND target.id = delivery.recipient_id
 										AND target.envelope_id = delivery.envelope_id
 										AND target.routing_order = ${command.nextRoutingOrder}
-										AND target.role <> 'cc'
+										AND target.role IN ('signer', 'approver', 'viewer')
 										AND target.status <> 'completed'
 										AND target.capability_revoked_at IS NULL
 										AND target.capability_expires_at = ${command.nextCapabilityExpiresAt}
@@ -351,6 +370,38 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 								)
 							RETURNING delivery.id`;
 					if (releasedOutbox.length !== command.releasedDeliveryCount) {
+						throw new ApprovedPublicationIntegrityError();
+					}
+				}
+
+				if (command.completedAuditEventId !== null) {
+					await transaction`
+							UPDATE recipient
+							SET capability_revoked_at = ${command.updatedAt}, updated_at = ${command.updatedAt}
+							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+								AND status <> 'completed' AND capability_hash IS NOT NULL
+								AND capability_revoked_at IS NULL`;
+
+					await transaction`
+							UPDATE delivery_outbox
+							SET status = 'failed', claim_token = NULL, locked_at = NULL,
+								retryable = false, sealed_capability = NULL,
+								available_at = COALESCE(available_at, ${command.updatedAt}),
+								last_error = 'envelope_terminal', updated_at = ${command.updatedAt}
+							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+								AND (status IN ('blocked', 'pending') OR (status = 'failed' AND retryable))`;
+
+					const outstandingCapabilities = await transaction<{ id: string }[]>`
+							SELECT id FROM recipient
+							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+								AND status <> 'completed' AND capability_hash IS NOT NULL
+								AND capability_revoked_at IS NULL`;
+					const unsafeDeliveries = await transaction<{ id: string }[]>`
+							SELECT id FROM delivery_outbox
+							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+								AND (status IN ('blocked', 'pending', 'processing')
+									OR retryable OR sealed_capability IS NOT NULL)`;
+					if (outstandingCapabilities.length !== 0 || unsafeDeliveries.length !== 0) {
 						throw new ApprovedPublicationIntegrityError();
 					}
 				}
@@ -502,7 +553,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 			) {
 				return { outcome: 'idempotency_conflict' };
 			}
-			return await this.#evidenceResult(exact);
+			return await this.#evidenceResult(sql, exact);
 		}
 		const byRecipient: ApprovedCommandRow | null = await this.#readCommandRowByRecipient(
 			sql,
@@ -619,11 +670,44 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		return rows[0] ?? null;
 	}
 
-	async #evidenceResult(row: ApprovedCommandRow): Promise<ApprovePreparation> {
+	async #evidenceResult(sql: Sql, row: ApprovedCommandRow): Promise<ApprovePreparation> {
 		if (!validAuditEvidence(row) || !(await validStoredReceipt(row))) {
 			return { outcome: 'integrity_error' };
 		}
-		return { outcome: 'replayed', result: resultFromRow(row) };
+		const result: PublishedRecipientApproved = resultFromRow(row);
+		if (
+			result.envelopeStatus === 'completed' &&
+			!(await this.#terminalProjectionIntact(sql, row.organizationId, row.envelopeId))
+		) {
+			return { outcome: 'integrity_error' };
+		}
+		return { outcome: 'replayed', result };
+	}
+
+	async #terminalProjectionIntact(
+		sql: Sql,
+		organizationId: string,
+		envelopeId: string
+	): Promise<boolean> {
+		const rows = await sql<TerminalProjectionRow[]>`
+			SELECT EXISTS (
+				SELECT 1 FROM recipient
+				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+					AND status <> 'completed' AND capability_hash IS NOT NULL
+					AND capability_revoked_at IS NULL
+			) AS "hasRevocableRecipient",
+			EXISTS (
+				SELECT 1 FROM delivery_outbox
+				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+					AND (status IN ('blocked', 'pending', 'processing')
+						OR retryable OR sealed_capability IS NOT NULL)
+			) AS "hasUnsafeDelivery"`;
+		const projection: TerminalProjectionRow | undefined = rows[0];
+		return (
+			projection !== undefined &&
+			projection.hasRevocableRecipient === false &&
+			projection.hasUnsafeDelivery === false
+		);
 	}
 
 	async #classifyFailure(
@@ -721,11 +805,15 @@ function routingAfterActor(
 				: recipients.filter(
 						(recipient: RoutingRecipientRow): boolean =>
 							recipient.id !== actorId &&
-							recipient.role !== 'cc' &&
+							isDeliveryRole(recipient.role) &&
 							recipient.status !== 'completed' &&
 							recipient.routingOrder === nextRoutingOrder
 					).length
 	};
+}
+
+function isDeliveryRole(role: RecipientRole): boolean {
+	return role === 'signer' || role === 'approver' || role === 'viewer';
 }
 
 function commandMatchesRouting(

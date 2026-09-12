@@ -1,4 +1,8 @@
-import type { Recipient } from '$lib/domain/envelope';
+import {
+	isActionableRecipientRole,
+	isPostSendInvitationRecipientRole,
+	type Recipient
+} from '$lib/domain/envelope';
 import type {
 	DeliveryManifestEntry,
 	EnvelopeSendStore,
@@ -81,9 +85,23 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		if (preparation.outcome !== 'ready') return preparation;
 
 		const actionableRecipients: readonly Recipient[] = preparation.recipients.filter(
-			(recipient: Recipient): boolean => recipient.role !== 'cc'
+			(recipient: Recipient): boolean => isActionableRecipientRole(recipient.role)
 		);
 		if (actionableRecipients.length === 0) return { outcome: 'integrity_error' };
+		const actionableRoutingOrders: Set<number> = new Set<number>(
+			actionableRecipients.map((recipient: Recipient): number => recipient.routingOrder)
+		);
+		const invitationRecipients: readonly Recipient[] = preparation.recipients.filter(
+			(recipient: Recipient): boolean => isPostSendInvitationRecipientRole(recipient.role)
+		);
+		if (
+			invitationRecipients.some(
+				(recipient: Recipient): boolean =>
+					recipient.role === 'viewer' && !actionableRoutingOrders.has(recipient.routingOrder)
+			)
+		) {
+			return { outcome: 'integrity_error' };
+		}
 		const initialRoutingOrder: number = Math.min(
 			...actionableRecipients.map((recipient: Recipient): number => recipient.routingOrder)
 		);
@@ -92,7 +110,7 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 			Date.parse(updatedAt) + INITIAL_CAPABILITY_TTL_MS
 		).toISOString();
 		const deliveries: readonly PendingRecipientDelivery[] = await Promise.all(
-			actionableRecipients.map(async (recipient: Recipient): Promise<PendingRecipientDelivery> => {
+			invitationRecipients.map(async (recipient: Recipient): Promise<PendingRecipientDelivery> => {
 				const deliveryId: string = await deterministicUuid(
 					[
 						'signkit-recipient-invitation-v1',

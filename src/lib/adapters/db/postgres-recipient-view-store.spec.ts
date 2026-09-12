@@ -291,6 +291,18 @@ describe('PostgresRecipientViewStore', () => {
 		});
 	});
 
+	it('rejects a legacy prefill capability before publication', async () => {
+		const database = new ScriptedPostgres([
+			[{ ...eligibleRecipientRow, recipientRole: 'prefill' }]
+		]);
+		await expect(
+			new PostgresRecipientViewStore(database.client()).prepareViewed(
+				command,
+				'2026-09-11T00:02:00.000Z'
+			)
+		).resolves.toEqual({ outcome: 'not_found' });
+	});
+
 	it('treats viewed state without its durable command as an integrity error', async () => {
 		const database = new ScriptedPostgres([[viewedRecipientRow], [], []]);
 		await expect(

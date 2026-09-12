@@ -1,4 +1,10 @@
-import type { Envelope, Recipient, RecipientRole } from '$lib/domain/envelope';
+import {
+	isActionableRecipientRole,
+	recipientRoles,
+	type Envelope,
+	type Recipient,
+	type RecipientRole
+} from '$lib/domain/envelope';
 import type {
 	EnvelopeReadyStore,
 	PublishReadyEnvelopeCommand,
@@ -164,8 +170,13 @@ function assertReadyInput(
 		if (recipient.name.length < 1 || recipient.name.length > 200) {
 			throw new InvalidRecipientGraphError('Recipient name is invalid');
 		}
-		if (!['signer', 'approver', 'viewer', 'prefill', 'cc'].includes(recipient.role)) {
+		if (!recipientRoles.includes(recipient.role)) {
 			throw new InvalidRecipientGraphError('Recipient role is invalid');
+		}
+		if (recipient.role === 'prefill') {
+			throw new InvalidRecipientGraphError(
+				'Prefill recipients are not supported in ready recipient graphs'
+			);
 		}
 		if (recipient.locale !== 'en' && recipient.locale !== 'ja') {
 			throw new InvalidRecipientGraphError('Recipient locale is invalid');
@@ -182,13 +193,25 @@ function assertReadyInput(
 		}
 		emails.add(recipient.email);
 	}
+	const actionableRoutingOrders: Set<number> = new Set<number>(
+		recipients
+			.filter((recipient: ReadyRecipientInput): boolean =>
+				isActionableRecipientRole(recipient.role)
+			)
+			.map((recipient: ReadyRecipientInput): number => recipient.routingOrder)
+	);
+	if (actionableRoutingOrders.size === 0) {
+		throw new InvalidRecipientGraphError('At least one signer or approver is required');
+	}
 	if (
-		!recipients.some(
+		recipients.some(
 			(recipient: ReadyRecipientInput): boolean =>
-				recipient.role === 'signer' || recipient.role === 'approver'
+				recipient.role === 'viewer' && !actionableRoutingOrders.has(recipient.routingOrder)
 		)
 	) {
-		throw new InvalidRecipientGraphError('At least one signer or approver is required');
+		throw new InvalidRecipientGraphError(
+			'Every viewer routing order must include a signer or approver'
+		);
 	}
 }
 

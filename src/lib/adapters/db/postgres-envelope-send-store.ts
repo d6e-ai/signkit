@@ -1,5 +1,12 @@
 import postgres from 'postgres';
-import type { Envelope, Recipient, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
+import {
+	isActionableRecipientRole,
+	isPostSendInvitationRecipientRole,
+	type Envelope,
+	type Recipient,
+	type RecipientRole,
+	type RecipientStatus
+} from '$lib/domain/envelope';
 import type {
 	DeliveryManifestEntry,
 	EnvelopeSendStore,
@@ -200,7 +207,9 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				if (recipients === null) return { outcome: 'integrity_error' };
 				const expectedIds: Set<string> = new Set(
 					recipients
-						.filter((recipient: Recipient): boolean => recipient.role !== 'cc')
+						.filter((recipient: Recipient): boolean =>
+							isPostSendInvitationRecipientRole(recipient.role)
+						)
 						.map((recipient: Recipient): string => recipient.id)
 				);
 				if (
@@ -214,7 +223,7 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				);
 				const minimumRoutingOrder: number = Math.min(
 					...recipients
-						.filter((recipient: Recipient): boolean => recipient.role !== 'cc')
+						.filter((recipient: Recipient): boolean => isActionableRecipientRole(recipient.role))
 						.map((recipient: Recipient): number => recipient.routingOrder)
 				);
 				if (

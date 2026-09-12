@@ -164,6 +164,31 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 		}
 	});
 
+	it('does not claim a legacy prefill invitation and permanently scrubs its sealed token', async () => {
+		const { database, sqlite } = fixture();
+		try {
+			sqlite.exec("UPDATE recipient SET role='prefill' WHERE id='recipient-1'");
+			await expect(claim(new D1DeliveryOutboxStore(database), 'claim-token-0001')).resolves.toEqual(
+				[]
+			);
+			const row = sqlite
+				.prepare(
+					'SELECT status, retryable, sealed_capability, claim_token, locked_at, last_error FROM delivery_outbox'
+				)
+				.get() as Record<string, unknown>;
+			expect(row).toEqual({
+				status: 'failed',
+				retryable: 0,
+				sealed_capability: null,
+				claim_token: null,
+				locked_at: null,
+				last_error: 'delivery_not_eligible'
+			});
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('scrubs a stale processing delivery after the recipient has viewed it', async () => {
 		const { database, sqlite } = fixture();
 		try {

@@ -1,17 +1,16 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { RecipientApprovedApplication } from '$lib/application/signing/recipient-approved';
+import type { PublishRecipientApprovedCommand } from '$lib/ports/recipient-approve-store';
+import { hashRecipientCapability } from '$lib/security/recipient-capability';
+import { D1RecipientApproveStore } from './d1-recipient-approve-store';
+import { sqliteD1Database } from './sqlite-d1-test-support';
 
-const migrationPaths: readonly string[] = [
-	'migrations/d1/0001_core.sql',
-	'migrations/d1/0002_envelope_commands.sql',
-	'migrations/d1/0003_draft_revisions.sql',
-	'migrations/d1/0004_envelope_ready.sql',
-	'migrations/d1/0005_envelope_send.sql',
-	'migrations/d1/0006_recipient_viewed.sql',
-	'migrations/d1/0007_recipient_declined.sql',
-	'migrations/d1/0008_recipient_approved.sql'
-];
+const migrationPaths: readonly string[] = readdirSync('migrations/d1')
+	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
+	.sort()
+	.map((name: string): string => `migrations/d1/${name}`);
 
 const FAR_FUTURE: string = '2026-09-25T00:00:00.000Z';
 const NEXT_EXPIRY: string = '2026-09-25T12:00:00.000Z';
@@ -192,10 +191,13 @@ function outboxRow(
 	available_at: string | null;
 	sealed_capability: string | null;
 	reserved_capability_expires_at: string | null;
+	retryable: number;
+	last_error: string | null;
 } {
 	return db
 		.prepare(
-			`SELECT status, available_at, sealed_capability, reserved_capability_expires_at
+			`SELECT status, available_at, sealed_capability, reserved_capability_expires_at,
+				retryable, last_error
 			 FROM delivery_outbox WHERE recipient_id = ?`
 		)
 		.get(recipientId) as {
@@ -203,6 +205,8 @@ function outboxRow(
 		available_at: string | null;
 		sealed_capability: string | null;
 		reserved_capability_expires_at: string | null;
+		retryable: number;
+		last_error: string | null;
 	};
 }
 
@@ -258,7 +262,9 @@ describe('D1 recipient approved migration', () => {
 				status: 'blocked',
 				available_at: null,
 				sealed_capability: CIPHERTEXT,
-				reserved_capability_expires_at: null
+				reserved_capability_expires_at: null,
+				retryable: 1,
+				last_error: null
 			});
 		} finally {
 			db.close();
@@ -294,7 +300,9 @@ describe('D1 recipient approved migration', () => {
 				status: 'pending',
 				available_at: APPROVED_AT,
 				sealed_capability: CIPHERTEXT,
-				reserved_capability_expires_at: NEXT_EXPIRY
+				reserved_capability_expires_at: NEXT_EXPIRY,
+				retryable: 1,
+				last_error: null
 			});
 			expect(outboxRow(db, 'recipient-1')).toMatchObject({
 				status: 'pending',
@@ -330,10 +338,12 @@ describe('D1 recipient approved migration', () => {
 			expect(envelopeState(db)).toEqual({ status: 'completed', sent_commit_sha: 'commit-3' });
 			expect(recipientRow(db, 'recipient-1').status).toBe('completed');
 			expect(outboxRow(db, 'recipient-3')).toEqual({
-				status: 'blocked',
-				available_at: null,
-				sealed_capability: CIPHERTEXT,
-				reserved_capability_expires_at: null
+				status: 'failed',
+				available_at: APPROVED_AT,
+				sealed_capability: null,
+				reserved_capability_expires_at: null,
+				retryable: 0,
+				last_error: 'envelope_terminal'
 			});
 			const events = db
 				.prepare(
@@ -434,8 +444,273 @@ describe('D1 recipient approved migration', () => {
 			db.exec('COMMIT');
 
 			expect(envelopeState(db).status).toBe('completed');
-			expect(recipientRow(db, 'recipient-viewer').status).toBe('viewed');
-			expect(recipientRow(db, 'recipient-prefill').status).toBe('pending');
+			expect(recipientRow(db, 'recipient-viewer')).toMatchObject({
+				status: 'viewed',
+				capability_revoked_at: APPROVED_AT
+			});
+			expect(recipientRow(db, 'recipient-prefill')).toMatchObject({
+				status: 'pending',
+				capability_revoked_at: APPROVED_AT
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it('releases co-routed viewers while a legacy prefill capability remains blocked', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(`
+				UPDATE recipient SET status = 'completed' WHERE id = 'recipient-2';
+				INSERT INTO recipient (
+					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+					capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
+				) VALUES
+					('recipient-viewer','org-1','env-1','viewer@example.com','Viewer','viewer','en',2,'pending',
+					 'cap-hash-viewer',NULL,NULL,'${SENT_AT}','${SENT_AT}'),
+					('recipient-prefill','org-1','env-1','prefill@example.com','Prefill','prefill','en',2,'pending',
+					 'cap-hash-prefill',NULL,NULL,'${SENT_AT}','${SENT_AT}');
+				INSERT INTO delivery_outbox (
+					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+					reserved_capability_expires_at, sealed_capability, sealing_key_id,
+					sealed_capability_sha256, available_at, attempts, created_at, updated_at
+				) VALUES
+					('delivery-viewer','org-1','env-1','recipient-viewer','recipient_invitation','blocked',
+					 'cap-hash-viewer',NULL,'sealed-viewer','key-1','sealed-hash-viewer',NULL,0,
+					 '${SENT_AT}','${SENT_AT}'),
+					('delivery-prefill','org-1','env-1','recipient-prefill','recipient_invitation','blocked',
+					 'cap-hash-prefill',NULL,'sealed-prefill','key-1','sealed-hash-prefill',NULL,0,
+					 '${SENT_AT}','${SENT_AT}');
+			`);
+
+			insertApprovedCommand(db, {
+				recipientId: 'recipient-1',
+				idempotencyKey: 'approved-with-viewer',
+				capabilityHash: 'cap-hash-1',
+				auditEventId: 'approved-audit-viewer',
+				auditSequence: 5,
+				previousAuditHash: 'hash-4',
+				auditEventHash: 'hash-5',
+				nextRoutingOrder: 2,
+				nextCapabilityExpiresAt: NEXT_EXPIRY,
+				releasedDeliveryCount: 2
+			});
+
+			expect(recipientRow(db, 'recipient-viewer')).toMatchObject({
+				status: 'pending',
+				capability_expires_at: NEXT_EXPIRY,
+				capability_revoked_at: null
+			});
+			expect(outboxRow(db, 'recipient-viewer')).toMatchObject({
+				status: 'pending',
+				available_at: APPROVED_AT,
+				sealed_capability: 'sealed-viewer',
+				reserved_capability_expires_at: NEXT_EXPIRY
+			});
+			expect(recipientRow(db, 'recipient-prefill')).toMatchObject({
+				status: 'pending',
+				capability_expires_at: null,
+				capability_revoked_at: null
+			});
+			expect(outboxRow(db, 'recipient-prefill')).toMatchObject({
+				status: 'blocked',
+				available_at: null,
+				sealed_capability: 'sealed-prefill',
+				retryable: 1,
+				last_error: null
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it('fences completion while a delivery is processing and rolls back every mutation', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(`
+				UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3');
+				UPDATE delivery_outbox
+				SET status = 'processing', available_at = '${SENT_AT}',
+					claim_token = 'processing-token-1', locked_at = '${SENT_AT}'
+				WHERE recipient_id = 'recipient-3';
+			`);
+			expect((): void =>
+				insertApprovedCommand(db, {
+					recipientId: 'recipient-1',
+					idempotencyKey: 'approved-processing',
+					capabilityHash: 'cap-hash-1',
+					auditEventId: 'approved-audit-processing',
+					auditSequence: 5,
+					previousAuditHash: 'hash-4',
+					auditEventHash: 'hash-5',
+					completedAuditEventId: 'completed-audit-processing',
+					completedAuditEventHash: 'hash-6',
+					completedAuditPayloadJson: '{}'
+				})
+			).toThrow(/recipient approved delivery in flight/);
+
+			expect(envelopeState(db).status).toBe('in_progress');
+			expect(recipientRow(db, 'recipient-1')).toMatchObject({
+				status: 'viewed',
+				capability_revoked_at: null
+			});
+			expect(commandCount(db)).toBe(0);
+			expect(auditEventCount(db)).toBe(2);
+			expect(outboxRow(db, 'recipient-3')).toMatchObject({
+				status: 'processing',
+				sealed_capability: CIPHERTEXT,
+				retryable: 1
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it('maps the real trigger processing fence to delivery_in_flight', async () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(`
+				UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3');
+				UPDATE delivery_outbox
+				SET status = 'processing', available_at = '${SENT_AT}',
+					claim_token = 'processing-token-1', locked_at = '${SENT_AT}'
+				WHERE recipient_id = 'recipient-3';
+			`);
+			const command: PublishRecipientApprovedCommand = {
+				capabilityHash: 'cap-hash-1',
+				expectedEnvelopeId: 'env-1',
+				expectedRecipientId: 'recipient-1',
+				idempotencyKey: 'approved-processing-store',
+				requestFingerprint: 'request-hash',
+				recipientRole: 'approver',
+				routingOrder: 1,
+				expectedSentCommitSha: 'commit-3',
+				updatedAt: APPROVED_AT,
+				nextRoutingOrder: null,
+				nextCapabilityExpiresAt: null,
+				releasedDeliveryCount: 0,
+				expectedAuditSequence: 4,
+				previousAuditHash: 'hash-4',
+				auditEventId: 'approved-audit-processing-store',
+				auditEventHash: 'hash-5',
+				auditPayloadJson: '{}',
+				completedAuditEventId: 'completed-audit-processing-store',
+				completedAuditEventHash: 'hash-6',
+				completedAuditPayloadJson: '{}'
+			};
+			await expect(
+				new D1RecipientApproveStore(sqliteD1Database(db)).publishApproved(command)
+			).resolves.toEqual({ outcome: 'delivery_in_flight' });
+			expect(commandCount(db)).toBe(0);
+			expect(recipientRow(db, 'recipient-1').status).toBe('viewed');
+		} finally {
+			db.close();
+		}
+	});
+
+	it('preserves delivered and permanent-failure evidence on completion', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec(`
+				UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3');
+				UPDATE delivery_outbox
+				SET status = 'delivered', retryable = 0, sealed_capability = NULL,
+					delivered_at = '${VIEWED_AT}', provider_message_id = 'provider-1'
+				WHERE recipient_id = 'recipient-1';
+				UPDATE delivery_outbox
+				SET status = 'failed', retryable = 0, sealed_capability = NULL,
+					available_at = '${SENT_AT}', last_error = 'recipient_rejected'
+				WHERE recipient_id = 'recipient-3';
+			`);
+
+			insertApprovedCommand(db, {
+				recipientId: 'recipient-1',
+				idempotencyKey: 'approved-terminal-evidence',
+				capabilityHash: 'cap-hash-1',
+				auditEventId: 'approved-audit-terminal-evidence',
+				auditSequence: 5,
+				previousAuditHash: 'hash-4',
+				auditEventHash: 'hash-5',
+				completedAuditEventId: 'completed-audit-terminal-evidence',
+				completedAuditEventHash: 'hash-6',
+				completedAuditPayloadJson: '{}'
+			});
+
+			const evidence = db
+				.prepare(
+					`SELECT recipient_id, status, retryable, sealed_capability, delivered_at,
+						provider_message_id, last_error, updated_at
+					 FROM delivery_outbox ORDER BY recipient_id`
+				)
+				.all();
+			expect(evidence).toEqual([
+				expect.objectContaining({
+					recipient_id: 'recipient-1',
+					status: 'delivered',
+					retryable: 0,
+					sealed_capability: null,
+					delivered_at: VIEWED_AT,
+					provider_message_id: 'provider-1',
+					updated_at: SENT_AT
+				}),
+				expect.objectContaining({
+					recipient_id: 'recipient-3',
+					status: 'failed',
+					retryable: 0,
+					sealed_capability: null,
+					last_error: 'recipient_rejected',
+					updated_at: SENT_AT
+				})
+			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it('keeps the unchanged v1 command receipt replayable after terminal cleanup', async () => {
+		const db: DatabaseSync = database();
+		try {
+			const token: string = `skr1_${'A'.repeat(43)}`;
+			const capabilityHash: string = await hashRecipientCapability(token);
+			db.prepare(
+				`UPDATE recipient SET capability_hash = ?
+				 WHERE organization_id = 'org-1' AND id = 'recipient-1'`
+			).run(capabilityHash);
+			db.exec(
+				"UPDATE recipient SET status = 'completed' WHERE id IN ('recipient-2','recipient-3')"
+			);
+			const application = new RecipientApprovedApplication(
+				new D1RecipientApproveStore(sqliteD1Database(db)),
+				(): Date => new Date(APPROVED_AT)
+			);
+			const input = {
+				token,
+				expectedEnvelopeId: 'env-1',
+				expectedRecipientId: 'recipient-1',
+				idempotencyKey: 'approved-v1-replay'
+			};
+			const published = await application.approve(input);
+			expect(published).toMatchObject({ outcome: 'published' });
+			if (published.outcome !== 'published') throw new Error('Expected approval publication');
+			await expect(application.approve(input)).resolves.toEqual({
+				outcome: 'replayed',
+				result: published.result
+			});
+			expect(outboxRow(db, 'recipient-3')).toMatchObject({
+				status: 'failed',
+				sealed_capability: null,
+				retryable: 0
+			});
+
+			db.exec(
+				"UPDATE recipient SET status = 'pending', capability_revoked_at = NULL WHERE id = 'recipient-3'"
+			);
+			await expect(application.approve(input)).resolves.toEqual({ outcome: 'integrity_error' });
+			db.exec("UPDATE recipient SET status = 'completed' WHERE id = 'recipient-3'");
+			db.exec(
+				"UPDATE delivery_outbox SET retryable = 1, sealed_capability = 'restored-ciphertext' WHERE recipient_id = 'recipient-3'"
+			);
+			await expect(application.approve(input)).resolves.toEqual({ outcome: 'integrity_error' });
 		} finally {
 			db.close();
 		}
@@ -536,7 +811,7 @@ describe('D1 recipient approved migration', () => {
 				expect(recipientRow(db, 'recipient-2').capability_revoked_at).toBeNull();
 				expect(commandCount(db)).toBe(0);
 				expect(auditEventCount(db)).toBe(2);
-				expect(outboxRow(db, 'recipient-3')).toEqual({
+				expect(outboxRow(db, 'recipient-3')).toMatchObject({
 					status: 'blocked',
 					available_at: null,
 					sealed_capability: CIPHERTEXT,
@@ -601,7 +876,7 @@ describe('D1 recipient approved migration', () => {
 
 			expect(recipientRow(db, 'recipient-1').status).toBe('viewed');
 			expect(recipientRow(db, 'recipient-3').capability_expires_at).toBeNull();
-			expect(outboxRow(db, 'recipient-3')).toEqual({
+			expect(outboxRow(db, 'recipient-3')).toMatchObject({
 				status: 'blocked',
 				available_at: null,
 				sealed_capability: CIPHERTEXT,
