@@ -1,5 +1,5 @@
 import postgres from 'postgres';
-import type { RecipientRole } from '$lib/domain/envelope';
+import { isPostSendInvitationRecipientRole, type RecipientRole } from '$lib/domain/envelope';
 import type {
 	PublishRecipientViewedCommand,
 	PublishRecipientViewedResult,
@@ -190,7 +190,8 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				const viewedRows = await transaction<{ id: string }[]>`
 						UPDATE recipient SET status = 'viewed', updated_at = ${command.updatedAt}
 						WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
-							AND id = ${command.recipientId} AND status = 'pending' AND role <> 'cc'
+							AND id = ${command.recipientId} AND status = 'pending'
+							AND role IN ('signer', 'approver', 'viewer')
 							AND role = ${command.recipientRole} AND routing_order = ${command.routingOrder}
 							AND capability_hash = ${command.capabilityHash} AND capability_revoked_at IS NULL
 							AND capability_expires_at IS NOT NULL AND capability_expires_at > ${command.updatedAt}::timestamptz
@@ -416,7 +417,7 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 function authorized(row: RecipientEnvelopeRow, capabilityHash: string, at: string): boolean {
 	return (
 		(row.recipientStatus === 'pending' || row.recipientStatus === 'viewed') &&
-		row.recipientRole !== 'cc' &&
+		isPostSendInvitationRecipientRole(row.recipientRole) &&
 		row.recipientCapabilityHash === capabilityHash &&
 		row.recipientCapabilityRevokedAt === null &&
 		row.recipientCapabilityExpiresAt !== null &&

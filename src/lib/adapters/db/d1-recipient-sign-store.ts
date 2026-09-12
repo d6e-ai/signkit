@@ -1,4 +1,8 @@
-import type { FieldType, RecipientRole } from '$lib/domain/envelope';
+import {
+	isPostSendInvitationRecipientRole,
+	type FieldType,
+	type RecipientRole
+} from '$lib/domain/envelope';
 import type {
 	SignAuditHead,
 	SignLookupKey,
@@ -163,6 +167,15 @@ export class D1RecipientSignStore implements RecipientSignStore {
 			);
 			if (!isFoundRow(currentIdentity)) return { outcome: 'integrity_error' };
 			if (!terminalReplay(currentIdentity, key.capabilityHash, replay.result.envelopeStatus)) {
+				return { outcome: 'integrity_error' };
+			}
+			if (
+				replay.result.envelopeStatus === 'completed' &&
+				!(await this.#validCompletedProjection(
+					currentIdentity.organization_id,
+					currentIdentity.envelope_id
+				))
+			) {
 				return { outcome: 'integrity_error' };
 			}
 			return replay;
@@ -526,7 +539,47 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		if (!commandMatchesRouting(command, preparation.routing)) {
 			return { outcome: 'integrity_error' };
 		}
+		if (
+			command.completedAuditEventId !== null &&
+			(await this.#hasProcessingDelivery(command.capabilityHash, command.expectedEnvelopeId))
+		) {
+			return { outcome: 'delivery_in_flight' };
+		}
 		return null;
+	}
+
+	async #hasProcessingDelivery(capabilityHash: string, envelopeId: string): Promise<boolean> {
+		const row: { present: number } | null = await this.#database
+			.prepare(
+				`SELECT 1 AS present FROM delivery_outbox
+				 WHERE organization_id = (
+					SELECT organization_id FROM recipient WHERE capability_hash = ? LIMIT 1
+				 ) AND envelope_id = ? AND status = 'processing' LIMIT 1`
+			)
+			.bind(capabilityHash, envelopeId)
+			.first<{ present: number }>();
+		return row !== null;
+	}
+
+	async #validCompletedProjection(organizationId: string, envelopeId: string): Promise<boolean> {
+		const row: { valid: number } | null = await this.#database
+			.prepare(
+				`SELECT CASE WHEN NOT EXISTS (
+					SELECT 1 FROM recipient
+					WHERE organization_id = ? AND envelope_id = ?
+						AND status <> 'completed'
+						AND capability_hash IS NOT NULL
+						AND capability_revoked_at IS NULL
+				) AND NOT EXISTS (
+					SELECT 1 FROM delivery_outbox
+					WHERE organization_id = ? AND envelope_id = ?
+						AND (status IN ('blocked', 'pending', 'processing')
+							OR retryable = 1 OR sealed_capability IS NOT NULL)
+				) THEN 1 ELSE 0 END AS valid`
+			)
+			.bind(organizationId, envelopeId, organizationId, envelopeId)
+			.first<{ valid: number }>();
+		return row?.valid === 1;
 	}
 }
 
@@ -604,7 +657,7 @@ function routingAfterActor(
 				: recipients.filter(
 						(recipient: RoutingRecipientRow): boolean =>
 							recipient.id !== actorId &&
-							recipient.role !== 'cc' &&
+							isPostSendInvitationRecipientRole(recipient.role) &&
 							recipient.status !== 'completed' &&
 							recipient.routing_order === nextRoutingOrder
 					).length

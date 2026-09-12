@@ -212,6 +212,18 @@ function resultResponse(
 			securityHeaders({ 'retry-after': '1' })
 		);
 	}
+	if (result.outcome === 'delivery_in_flight') {
+		return problemResponse(
+			{
+				type: 'urn:signkit:problem:recipient-signed-delivery-in-flight',
+				title: 'Invitation delivery in progress',
+				status: 409,
+				detail: 'An invitation delivery is currently in progress. Retry signing shortly.',
+				instance
+			},
+			securityHeaders({ 'retry-after': '1' })
+		);
+	}
 	return problemResponse(
 		{
 			type: 'urn:signkit:problem:recipient-signed-integrity-error',

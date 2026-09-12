@@ -6,6 +6,7 @@ import type {
 	ReadyEnvelopeResult
 } from '$lib/application/envelopes/ready';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
+import { isActionableRecipientRole, recipientRoles } from '$lib/domain/envelope';
 import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
@@ -24,7 +25,7 @@ const recipientSchema = z
 	.object({
 		email: z.string().trim().email().max(320),
 		name: z.string().trim().min(1).max(200),
-		role: z.enum(['signer', 'approver', 'viewer', 'prefill', 'cc']),
+		role: z.enum(recipientRoles),
 		locale: z.enum(['en', 'ja']),
 		routingOrder: z.number().int().min(1).max(1000)
 	})
@@ -47,17 +48,34 @@ const readySchema = z
 				});
 			}
 			emails.add(email);
+			if (recipient.role === 'prefill') {
+				context.addIssue({
+					code: 'custom',
+					path: ['recipients', index, 'role'],
+					message: 'Prefill recipients are not supported in ready recipient graphs.'
+				});
+			}
 		}
-		if (
-			!value.recipients.some((recipient): boolean =>
-				['signer', 'approver'].includes(recipient.role)
-			)
-		) {
+		const actionableRoutingOrders: Set<number> = new Set<number>(
+			value.recipients
+				.filter((recipient): boolean => isActionableRecipientRole(recipient.role))
+				.map((recipient): number => recipient.routingOrder)
+		);
+		if (actionableRoutingOrders.size === 0) {
 			context.addIssue({
 				code: 'custom',
 				path: ['recipients'],
 				message: 'At least one signer or approver is required.'
 			});
+		}
+		for (const [index, recipient] of value.recipients.entries()) {
+			if (recipient.role === 'viewer' && !actionableRoutingOrders.has(recipient.routingOrder)) {
+				context.addIssue({
+					code: 'custom',
+					path: ['recipients', index, 'routingOrder'],
+					message: 'Every viewer routing order must include a signer or approver.'
+				});
+			}
 		}
 	});
 

@@ -129,6 +129,13 @@ const eligibleRecipientRow = {
 	envelopeFieldGeneration: 1
 };
 
+const completedRecipientRow = {
+	...eligibleRecipientRow,
+	recipientStatus: 'completed',
+	recipientCapabilityRevokedAt: command.updatedAt,
+	envelopeStatus: 'completed'
+};
+
 const actorLockRow = {
 	id: 'recipient-1',
 	organizationId: 'org-1',
@@ -152,6 +159,117 @@ const siblingLockRow = {
 	recipientCapabilityRevokedAt: null,
 	routingOrder: 1
 };
+
+const laterSignerLockRow = {
+	...siblingLockRow,
+	id: 'recipient-3',
+	recipientStatus: 'pending',
+	recipientCapabilityHash: 'cap-hash-3',
+	recipientCapabilityExpiresAt: null,
+	routingOrder: 2
+};
+
+const laterViewerLockRow = {
+	...laterSignerLockRow,
+	id: 'recipient-viewer',
+	recipientRole: 'viewer' as const,
+	recipientCapabilityHash: 'cap-hash-viewer'
+};
+
+const laterPrefillLockRow = {
+	...laterSignerLockRow,
+	id: 'recipient-prefill',
+	recipientRole: 'prefill' as const,
+	recipientCapabilityHash: 'cap-hash-prefill'
+};
+
+function completedCommand(): PublishRecipientSignedCommand {
+	const completedAuditPayloadJson: string = JSON.stringify({
+		sentCommitSha: command.expectedSentCommitSha,
+		completedAt: command.updatedAt
+	});
+	const completedAuditEventHash: string = createHash('sha256')
+		.update(
+			JSON.stringify({
+				actorId: command.expectedRecipientId,
+				envelopeId: command.expectedEnvelopeId,
+				eventType: 'envelope.completed',
+				occurredAt: command.updatedAt,
+				organizationId: 'org-1',
+				payload: JSON.parse(completedAuditPayloadJson) as unknown,
+				previousHash: command.auditEventHash
+			})
+		)
+		.digest('hex');
+	return {
+		...command,
+		completedAuditEventId: 'completed-audit-1',
+		completedAuditEventHash,
+		completedAuditPayloadJson
+	};
+}
+
+function completedReplayRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	const completed: PublishRecipientSignedCommand = completedCommand();
+	const fieldValuesJson: string = JSON.stringify(
+		completed.fieldValues.map((value) => ({
+			id: value.fieldId,
+			fieldType: value.fieldType,
+			valueSha256: value.valueSha256
+		}))
+	);
+	return {
+		organizationId: 'org-1',
+		envelopeId: completed.expectedEnvelopeId,
+		recipientId: completed.expectedRecipientId,
+		recipientRole: completed.recipientRole,
+		routingOrder: completed.routingOrder,
+		actorType: 'recipient',
+		actorId: completed.expectedRecipientId,
+		idempotencyKey: completed.idempotencyKey,
+		requestHash: completed.requestFingerprint,
+		capabilityHash: completed.capabilityHash,
+		sentCommitSha: completed.expectedSentCommitSha,
+		expectedFieldGeneration: completed.expectedFieldGeneration,
+		fieldValuesJson,
+		fieldCount: completed.fieldValues.length,
+		updatedAt: completed.updatedAt,
+		nextRoutingOrder: null,
+		nextCapabilityExpiresAt: null,
+		releasedDeliveryCount: 0,
+		auditEventId: completed.auditEventId,
+		auditSequence: completed.expectedAuditSequence + 1,
+		previousAuditHash: completed.previousAuditHash,
+		auditEventHash: completed.auditEventHash,
+		auditPayloadJson: completed.auditPayloadJson,
+		completedAuditEventId: completed.completedAuditEventId,
+		completedAuditEventHash: completed.completedAuditEventHash,
+		completedAuditPayloadJson: completed.completedAuditPayloadJson,
+		evidenceEventId: completed.auditEventId,
+		evidenceOrganizationId: 'org-1',
+		evidenceEnvelopeId: completed.expectedEnvelopeId,
+		evidenceSequence: completed.expectedAuditSequence + 1,
+		evidenceEventType: 'recipient.signed',
+		evidenceActorType: 'recipient',
+		evidenceActorId: completed.expectedRecipientId,
+		evidencePayloadJson: completed.auditPayloadJson,
+		evidencePreviousHash: completed.previousAuditHash,
+		evidenceEventHash: completed.auditEventHash,
+		evidenceOccurredAt: completed.updatedAt,
+		completedEvidenceEventId: completed.completedAuditEventId,
+		completedEvidenceOrganizationId: 'org-1',
+		completedEvidenceEnvelopeId: completed.expectedEnvelopeId,
+		completedEvidenceSequence: completed.expectedAuditSequence + 2,
+		completedEvidenceEventType: 'envelope.completed',
+		completedEvidenceActorType: 'recipient',
+		completedEvidenceActorId: completed.expectedRecipientId,
+		completedEvidencePayloadJson: completed.completedAuditPayloadJson,
+		completedEvidencePreviousHash: completed.auditEventHash,
+		completedEvidenceEventHash: completed.completedAuditEventHash,
+		completedEvidenceOccurredAt: completed.updatedAt,
+		...overrides
+	};
+}
 
 describe('PostgresRecipientSignStore', () => {
 	it('locks the envelope, then recipients, then envelope_field (all in id order) before inserting the field value', async () => {
@@ -217,6 +335,168 @@ describe('PostgresRecipientSignStore', () => {
 		expect(texts.filter((text) => text.includes('UPDATE delivery_outbox')).length).toBe(0);
 	});
 
+	it('releases only signer, approver, and viewer deliveries in the next routing group', async () => {
+		const releaseCommand: PublishRecipientSignedCommand = {
+			...command,
+			nextRoutingOrder: 2,
+			nextCapabilityExpiresAt: '2026-09-25T12:00:00.000Z',
+			releasedDeliveryCount: 2
+		};
+		const database = new ScriptedPostgres([
+			[eligibleRecipientRow],
+			[
+				{
+					status: 'in_progress',
+					sentCommitSha: 'commit-3',
+					repositoryHead: 'commit-3',
+					fieldGeneration: 1
+				}
+			],
+			[actorLockRow, laterSignerLockRow, laterViewerLockRow, laterPrefillLockRow],
+			[
+				{ id: 'delivery-3', status: 'blocked', retryable: true, sealedCapability: 'sealed-3' },
+				{
+					id: 'delivery-viewer',
+					status: 'blocked',
+					retryable: true,
+					sealedCapability: 'sealed-viewer'
+				},
+				{
+					id: 'delivery-prefill',
+					status: 'blocked',
+					retryable: true,
+					sealedCapability: 'sealed-prefill'
+				}
+			],
+			[{ id: fieldId, fieldType: 'signature', required: true }],
+			[],
+			[],
+			[],
+			[{ sequence: 4, eventHash: command.previousAuditHash }],
+			[{ id: command.expectedRecipientId }],
+			[{ id: laterSignerLockRow.id }, { id: laterViewerLockRow.id }],
+			[{ id: 'delivery-3' }, { id: 'delivery-viewer' }],
+			[{ id: command.expectedEnvelopeId }],
+			[],
+			[],
+			[]
+		]);
+		const result = await new PostgresRecipientSignStore(database.client()).publishSign(
+			releaseCommand
+		);
+		expect(result).toMatchObject({
+			outcome: 'published',
+			result: { envelopeStatus: 'in_progress', nextRoutingOrder: 2 }
+		});
+		const texts: string[] = database.transactionQueries.map(
+			(query: RecordedQuery): string => query.text
+		);
+		const recipientRelease: string | undefined = texts.find(
+			(text: string): boolean =>
+				text.includes('UPDATE recipient') && text.includes('SET capability_expires_at')
+		);
+		expect(recipientRelease).toContain("role IN ('signer', 'approver', 'viewer')");
+		expect(recipientRelease).not.toContain("'prefill'");
+		const outboxRelease: string | undefined = texts.find((text: string): boolean =>
+			text.includes('UPDATE delivery_outbox AS delivery')
+		);
+		expect(outboxRelease).toContain("target.role IN ('signer', 'approver', 'viewer')");
+		expect(outboxRelease).not.toMatch(/sealed_capability\s*=/);
+	});
+
+	it('revokes observer capabilities and terminalizes mutable deliveries on completion', async () => {
+		const database = new ScriptedPostgres([
+			[eligibleRecipientRow],
+			[
+				{
+					status: 'in_progress',
+					sentCommitSha: 'commit-3',
+					repositoryHead: 'commit-3',
+					fieldGeneration: 1
+				}
+			],
+			[actorLockRow, laterViewerLockRow, laterPrefillLockRow],
+			[
+				{ id: 'delivery-blocked', status: 'blocked', retryable: true, sealedCapability: 'sealed' },
+				{ id: 'delivery-delivered', status: 'delivered', retryable: false, sealedCapability: null }
+			],
+			[{ id: fieldId, fieldType: 'signature', required: true }],
+			[],
+			[],
+			[],
+			[{ sequence: 4, eventHash: command.previousAuditHash }],
+			[{ id: command.expectedRecipientId }],
+			[],
+			[],
+			[],
+			[],
+			[{ id: command.expectedEnvelopeId }],
+			[],
+			[],
+			[],
+			[]
+		]);
+		const result = await new PostgresRecipientSignStore(database.client()).publishSign(
+			completedCommand()
+		);
+		expect(result).toMatchObject({
+			outcome: 'published',
+			result: { envelopeStatus: 'completed', completedAuditEventId: 'completed-audit-1' }
+		});
+		const texts: string[] = database.transactionQueries.map(
+			(query: RecordedQuery): string => query.text
+		);
+		const capabilityScrub: string | undefined = texts.find(
+			(text: string): boolean =>
+				text.includes('UPDATE recipient') && text.includes("status <> 'completed'")
+		);
+		expect(capabilityScrub).toContain('capability_revoked_at');
+		const deliveryScrub: string | undefined = texts.find(
+			(text: string): boolean =>
+				text.includes('UPDATE delivery_outbox') && text.includes('envelope_terminal')
+		);
+		expect(deliveryScrub).toContain("status IN ('blocked', 'pending')");
+		expect(deliveryScrub).toContain("status = 'failed' AND retryable");
+		expect(deliveryScrub).toContain('sealed_capability = NULL');
+		expect(deliveryScrub).toContain('claim_token = NULL');
+	});
+
+	it('returns delivery_in_flight before publishing terminal state', async () => {
+		const database = new ScriptedPostgres([
+			[eligibleRecipientRow],
+			[
+				{
+					status: 'in_progress',
+					sentCommitSha: 'commit-3',
+					repositoryHead: 'commit-3',
+					fieldGeneration: 1
+				}
+			],
+			[actorLockRow],
+			[
+				{
+					id: 'delivery-processing',
+					status: 'processing',
+					retryable: true,
+					sealedCapability: 'sealed'
+				}
+			],
+			[{ id: fieldId, fieldType: 'signature', required: true }],
+			[],
+			[],
+			[]
+		]);
+		const result = await new PostgresRecipientSignStore(database.client()).publishSign(
+			completedCommand()
+		);
+		expect(result).toEqual({ outcome: 'delivery_in_flight' });
+		expect(
+			database.transactionQueries.some((query: RecordedQuery): boolean =>
+				query.text.startsWith('UPDATE')
+			)
+		).toBe(false);
+	});
+
 	it('returns not_found without opening a transaction when no recipient matches the capability hash', async () => {
 		const database = new ScriptedPostgres([[]]);
 		const result = await new PostgresRecipientSignStore(database.client()).publishSign(command);
@@ -251,6 +531,40 @@ describe('PostgresRecipientSignStore', () => {
 			'2026-09-11T00:05:00.000Z'
 		);
 		expect(result).toEqual({ outcome: 'not_found' });
+	});
+
+	it('replays a completed receipt only while its terminal projection remains intact', async () => {
+		const storedValue = {
+			fieldId,
+			fieldType: 'signature' as const,
+			valueJson: command.fieldValues[0].valueJson,
+			valueSha256: command.fieldValues[0].valueSha256
+		};
+		const intact = new ScriptedPostgres([
+			[completedRecipientRow],
+			[completedReplayRow()],
+			[storedValue],
+			[{ hasRevocableRecipient: false, hasUnsafeDelivery: false }],
+			[completedRecipientRow]
+		]);
+		await expect(
+			new PostgresRecipientSignStore(intact.client()).prepareSign(command, command.updatedAt)
+		).resolves.toMatchObject({ outcome: 'existing', result: { envelopeStatus: 'completed' } });
+
+		for (const projection of [
+			{ hasRevocableRecipient: true, hasUnsafeDelivery: false },
+			{ hasRevocableRecipient: false, hasUnsafeDelivery: true }
+		]) {
+			const drifted = new ScriptedPostgres([
+				[completedRecipientRow],
+				[completedReplayRow()],
+				[storedValue],
+				[projection]
+			]);
+			await expect(
+				new PostgresRecipientSignStore(drifted.client()).prepareSign(command, command.updatedAt)
+			).resolves.toEqual({ outcome: 'integrity_error' });
+		}
 	});
 
 	it('resolves a ready preparation including this recipient own field declarations', async () => {

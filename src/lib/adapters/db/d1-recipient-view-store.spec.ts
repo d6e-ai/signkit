@@ -122,7 +122,7 @@ const viewedRow = {
 };
 
 describe('D1RecipientViewStore', () => {
-	it('prepares only an eligible pending, non-cc, non-expired, non-revoked recipient', async () => {
+	it('prepares only an eligible pending post-send recipient', async () => {
 		const fake = fakeD1([eligibleRow, null, null, { sequence: 3, event_hash: 'hash-3' }]);
 		const result = await new D1RecipientViewStore(fake.database).prepareViewed(
 			command,
@@ -156,6 +156,13 @@ describe('D1RecipientViewStore', () => {
 			fakeD1([{ ...base, recipient_capability_hash: 'wrong-hash' }]).database
 		);
 		await expect(swapped.prepareViewed(command, '2026-09-11T00:02:00.000Z')).resolves.toEqual({
+			outcome: 'not_found'
+		});
+
+		const prefill = new D1RecipientViewStore(
+			fakeD1([{ ...base, recipient_role: 'prefill' }]).database
+		);
+		await expect(prefill.prepareViewed(command, '2026-09-11T00:02:00.000Z')).resolves.toEqual({
 			outcome: 'not_found'
 		});
 	});

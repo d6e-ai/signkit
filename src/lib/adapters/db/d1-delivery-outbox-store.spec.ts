@@ -124,7 +124,7 @@ describe('D1DeliveryOutboxStore.claimPendingInvitations', () => {
 			claimCommand.limit
 		]);
 		expect(prepared[1].sql).toContain('julianday(recipient.capability_expires_at) > julianday(?)');
-		expect(prepared[1].sql).toContain("recipient.role <> 'cc'");
+		expect(prepared[1].sql).toContain("recipient.role IN ('signer', 'approver', 'viewer')");
 		expect(prepared[1].sql).toContain('RETURNING id');
 		expect(prepared[2].bindings).toEqual([claimCommand.claimToken]);
 		expect(prepared[2].sql).toContain("delivery.status = 'processing'");

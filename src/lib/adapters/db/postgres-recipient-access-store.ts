@@ -57,7 +57,7 @@ export class PostgresRecipientAccessStore implements RecipientAccessStore {
 				AND recipient.capability_expires_at IS NOT NULL
 				AND recipient.capability_expires_at > ${at}::timestamptz
 				AND recipient.status IN ('pending', 'viewed')
-				AND recipient.role <> 'cc'
+				AND recipient.role IN ('signer', 'approver', 'viewer')
 				AND envelope.status IN ('sent', 'in_progress')
 				AND envelope.sent_commit_sha IS NOT NULL
 				AND envelope.sent_commit_sha = envelope.repository_head

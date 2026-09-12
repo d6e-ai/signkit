@@ -8,7 +8,16 @@ const migrationPaths: readonly string[] = [
 	'migrations/d1/0003_draft_revisions.sql',
 	'migrations/d1/0004_envelope_ready.sql',
 	'migrations/d1/0005_envelope_send.sql',
-	'migrations/d1/0006_recipient_viewed.sql'
+	'migrations/d1/0006_recipient_viewed.sql',
+	'migrations/d1/0007_recipient_declined.sql',
+	'migrations/d1/0008_recipient_approved.sql',
+	'migrations/d1/0009_field_placement.sql',
+	'migrations/d1/0010_recipient_signed.sql',
+	'migrations/d1/0011_delivery_outbox_leases.sql',
+	'migrations/d1/0012_delivery_outbox_recipient_scope.sql',
+	'migrations/d1/0013_terminal_delivery_cleanup.sql',
+	'migrations/d1/0014_envelope_voided.sql',
+	'migrations/d1/0015_observer_routing_semantics.sql'
 ];
 
 const FAR_FUTURE: string = '2026-09-25T00:00:00.000Z';
@@ -63,6 +72,7 @@ interface ViewedCommandFields {
 	sentCommitSha?: string;
 	updatedAt?: string;
 	routingOrder?: number;
+	recipientRole?: 'signer' | 'approver' | 'viewer' | 'prefill';
 }
 
 function insertViewedCommand(db: DatabaseSync, fields: ViewedCommandFields): void {
@@ -72,9 +82,10 @@ function insertViewedCommand(db: DatabaseSync, fields: ViewedCommandFields): voi
 			actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 			sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 			previous_audit_hash, audit_event_hash, audit_payload_json
-		) VALUES ('org-1','env-1',?,'signer',?,'recipient',?,?,'request-hash',?,?,?,?,?,?,?,'{}')`
+		) VALUES ('org-1','env-1',?,?,?,'recipient',?,?,'request-hash',?,?,?,?,?,?,?,'{}')`
 	).run(
 		fields.recipientId,
+		fields.recipientRole ?? 'signer',
 		fields.routingOrder ?? 1,
 		fields.recipientId,
 		fields.idempotencyKey,
@@ -306,6 +317,31 @@ describe('D1 recipient viewed migration', () => {
 			db.exec('ROLLBACK');
 
 			expect(envelopeState(db)).toEqual({ status: 'sent', sent_commit_sha: 'commit-3' });
+			expect(recipientStatus(db, 'recipient-1')).toBe('pending');
+			expect(commandCount(db)).toBe(0);
+			expect(auditEventCount(db)).toBe(1);
+		} finally {
+			db.close();
+		}
+	});
+
+	it('rejects a legacy prefill capability at the database publication boundary', () => {
+		const db: DatabaseSync = database();
+		try {
+			db.exec("UPDATE recipient SET role='prefill' WHERE id='recipient-1'");
+			expect((): void =>
+				insertViewedCommand(db, {
+					recipientId: 'recipient-1',
+					recipientRole: 'prefill',
+					idempotencyKey: 'viewed-prefill',
+					capabilityHash: 'cap-hash-1',
+					auditEventId: 'viewed-audit-prefill',
+					auditSequence: 4,
+					previousAuditHash: 'hash-3',
+					auditEventHash: 'hash-4'
+				})
+			).toThrow(/publish conflict/);
+
 			expect(recipientStatus(db, 'recipient-1')).toBe('pending');
 			expect(commandCount(db)).toBe(0);
 			expect(auditEventCount(db)).toBe(1);

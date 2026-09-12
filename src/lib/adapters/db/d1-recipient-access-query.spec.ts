@@ -69,6 +69,7 @@ describe('D1 recipient access query', () => {
 		['revoked', `capability_revoked_at='${now}'`],
 		['completed recipient', "status='completed'"],
 		['declined recipient', "status='declined'"],
+		['prefill recipient', "role='prefill'"],
 		['CC recipient', "role='cc'"]
 	])('fails closed for %s', (_name, assignment) => {
 		const db: DatabaseSync = database();

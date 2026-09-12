@@ -55,7 +55,14 @@ function validBody(): string {
 	return JSON.stringify({
 		expectedGeneration: 1,
 		recipients: [
-			{ email: 'Alice@Example.com', name: 'Alice', role: 'signer', locale: 'ja', routingOrder: 1 }
+			{ email: 'Alice@Example.com', name: 'Alice', role: 'signer', locale: 'ja', routingOrder: 1 },
+			{
+				email: 'viewer@example.com',
+				name: 'Viewer',
+				role: 'viewer',
+				locale: 'en',
+				routingOrder: 1
+			}
 		]
 	});
 }
@@ -113,7 +120,7 @@ describe('envelope ready HTTP handler', () => {
 		});
 	});
 
-	it('rejects duplicate normalized emails and recipient graphs without an actor', async () => {
+	it('rejects duplicate emails, prefill recipients, and invalid observer routing', async () => {
 		const handler = createEnvelopeReadyHandler(() => application());
 		const duplicate: Response = await handler(
 			event({
@@ -138,8 +145,46 @@ describe('envelope ready HTTP handler', () => {
 				})
 			})
 		);
+		const prefill: Response = await handler(
+			event({
+				headers: { 'idempotency-key': 'ready-3' },
+				body: JSON.stringify({
+					expectedGeneration: 1,
+					recipients: [
+						{ email: 'a@example.com', name: 'A', role: 'signer', locale: 'en', routingOrder: 1 },
+						{
+							email: 'prefill@example.com',
+							name: 'Prefill',
+							role: 'prefill',
+							locale: 'en',
+							routingOrder: 1
+						}
+					]
+				})
+			})
+		);
+		const detachedViewer: Response = await handler(
+			event({
+				headers: { 'idempotency-key': 'ready-4' },
+				body: JSON.stringify({
+					expectedGeneration: 1,
+					recipients: [
+						{ email: 'a@example.com', name: 'A', role: 'signer', locale: 'en', routingOrder: 1 },
+						{
+							email: 'viewer@example.com',
+							name: 'Viewer',
+							role: 'viewer',
+							locale: 'en',
+							routingOrder: 2
+						}
+					]
+				})
+			})
+		);
 		expect(duplicate.status).toBe(400);
 		expect(passive.status).toBe(400);
+		expect(prefill.status).toBe(400);
+		expect(detachedViewer.status).toBe(400);
 	});
 
 	it('passes only authenticated tenant scope and returns an idempotent receipt', async () => {
@@ -163,6 +208,13 @@ describe('envelope ready HTTP handler', () => {
 						name: 'Alice',
 						role: 'signer',
 						locale: 'ja',
+						routingOrder: 1
+					},
+					{
+						email: 'viewer@example.com',
+						name: 'Viewer',
+						role: 'viewer',
+						locale: 'en',
 						routingOrder: 1
 					}
 				]

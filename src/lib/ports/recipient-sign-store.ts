@@ -135,6 +135,7 @@ export type SignPreparation =
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'field_generation_conflict' }
 	| { outcome: 'audit_conflict' }
+	| { outcome: 'delivery_in_flight' }
 	| { outcome: 'integrity_error' };
 
 /**

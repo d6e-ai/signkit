@@ -49,7 +49,7 @@ const CLAIM_CANDIDATE_JOIN: string = `FROM delivery_outbox delivery
 		)
 		AND envelope.status IN ('sent', 'in_progress')
 		AND recipient.status = 'pending'
-		AND recipient.role <> 'cc'
+		AND recipient.role IN ('signer', 'approver', 'viewer')
 		AND recipient.capability_revoked_at IS NULL
 		AND recipient.capability_expires_at IS NOT NULL
 		AND julianday(recipient.capability_expires_at) > julianday(?)
@@ -90,7 +90,7 @@ const D1_TERMINAL_CLEANUP_QUERY: string = `WITH terminal_candidates(rowid) AS (
 		AND NOT (
 			envelope.status IN ('sent', 'in_progress')
 			AND recipient.status = 'pending'
-			AND recipient.role <> 'cc'
+			AND recipient.role IN ('signer', 'approver', 'viewer')
 			AND recipient.capability_revoked_at IS NULL
 			AND recipient.capability_hash = delivery.capability_hash
 			AND (

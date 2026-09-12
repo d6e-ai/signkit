@@ -5,10 +5,21 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DraftPersistenceService } from '$lib/application/drafts/draft-persistence';
 import { EnvelopeFieldApplication } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
-import { EnvelopeReadyApplication } from '$lib/application/envelopes/ready';
+import {
+	EnvelopeReadyApplication,
+	type ReadyRecipientInput
+} from '$lib/application/envelopes/ready';
 import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
 import { EnvelopeVoidApplication } from '$lib/application/envelopes/void';
+import {
+	RecipientApprovedApplication,
+	type RecipientApprovedResult
+} from '$lib/application/signing/recipient-approved';
 import { RecipientDeclinedApplication } from '$lib/application/signing/recipient-declined';
+import {
+	RecipientSignedApplication,
+	type RecipientSignedResult
+} from '$lib/application/signing/recipient-signed';
 import type { EnvelopeField } from '$lib/domain/envelope';
 import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
 import type { PublishReadyEnvelopeCommand } from '$lib/ports/envelope-ready-store';
@@ -22,7 +33,9 @@ import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
 import { PostgresEnvelopeReadyStore } from './postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from './postgres-envelope-send-store';
 import { PostgresEnvelopeVoidStore } from './postgres-envelope-void-store';
+import { PostgresRecipientApproveStore } from './postgres-recipient-approve-store';
 import { PostgresRecipientDeclineStore } from './postgres-recipient-decline-store';
+import { PostgresRecipientSignStore } from './postgres-recipient-sign-store';
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
 const CI_ENABLED: boolean =
@@ -363,6 +376,63 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		});
 	});
 
+	it('sends a legacy ready projection with prefill without issuing prefill authority', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope([
+			{
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer',
+				locale: 'en',
+				routingOrder: 2
+			}
+		]);
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			'legacy-prefill', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'prefill@example.com', 'Prefill',
+			'prefill', 'en', 1, 'pending', now(), now()
+		)`;
+
+		const application = new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			capabilitySealer()
+		);
+		const input = {
+			idempotencyKey: 'send-legacy-prefill',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		};
+		const first = await application.send(ACTOR, ENVELOPE_ID, input);
+
+		expect(first).toMatchObject({
+			outcome: 'published',
+			result: { queuedDeliveryCount: 1, reservedCapabilityCount: 1 }
+		});
+		if (first.outcome !== 'published') throw new Error('Expected legacy prefill send publication');
+		await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+			outcome: 'replayed',
+			result: first.result
+		});
+		const projection = await database()<
+			{ role: string; capabilityHash: string | null; deliveries: number }[]
+		>`SELECT recipient.role, recipient.capability_hash AS "capabilityHash",
+			COUNT(delivery.id)::int AS deliveries
+			FROM recipient LEFT JOIN delivery_outbox AS delivery
+				ON delivery.organization_id = recipient.organization_id
+				AND delivery.envelope_id = recipient.envelope_id
+				AND delivery.recipient_id = recipient.id
+			WHERE recipient.organization_id = ${ORGANIZATION_ID}
+				AND recipient.envelope_id = ${ENVELOPE_ID}
+			GROUP BY recipient.role, recipient.capability_hash
+			ORDER BY recipient.role`;
+		expect(projection).toEqual([
+			{ role: 'prefill', capabilityHash: null, deliveries: 0 },
+			{ role: 'signer', capabilityHash: expect.any(String), deliveries: 1 }
+		]);
+	});
+
 	it('replays after routing release and a permanent delivery failure', async () => {
 		await seedDraftEnvelope();
 		const ready = await readyEnvelope();
@@ -540,6 +610,171 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			revokedCapabilities: { reason: 'envelope_declined', recipientIds: ids }
 		});
 	});
+
+	it.each(['approver', 'signer'] as const)(
+		'fences delivery and scrubs observer access when the final %s completes the envelope',
+		async (role: 'approver' | 'signer') => {
+			await seedDraftEnvelope();
+			const ready = await readyEnvelope([
+				{
+					email: `${role}@example.com`,
+					name: role === 'approver' ? 'Approver' : 'Signer',
+					role,
+					locale: 'en',
+					routingOrder: 1
+				},
+				{
+					email: 'viewer@example.com',
+					name: 'Viewer',
+					role: 'viewer',
+					locale: 'ja',
+					routingOrder: 1
+				}
+			]);
+			const sealer = new AesGcmRecipientCapabilitySealer(TEST_DELIVERY_ENCRYPTION_KEY);
+			await expect(
+				new EnvelopeSendApplication(new PostgresEnvelopeSendStore(database()), sealer).send(
+					ACTOR,
+					ENVELOPE_ID,
+					{
+						idempotencyKey: `send-before-${role}-completion`,
+						expectedGeneration: 1,
+						expectedReadyAuditEventId: ready.auditEventId
+					}
+				)
+			).resolves.toMatchObject({
+				outcome: 'published',
+				result: { queuedDeliveryCount: 2, reservedCapabilityCount: 2 }
+			});
+
+			const deliveryRows = await database()<
+				{
+					deliveryId: string;
+					recipientId: string;
+					role: string;
+					sealedCapability: string;
+				}[]
+			>`SELECT delivery.id AS "deliveryId", delivery.recipient_id AS "recipientId",
+				recipient.role, delivery.sealed_capability AS "sealedCapability"
+			FROM delivery_outbox AS delivery
+			JOIN recipient ON recipient.organization_id = delivery.organization_id
+				AND recipient.envelope_id = delivery.envelope_id
+				AND recipient.id = delivery.recipient_id
+			WHERE delivery.organization_id = ${ORGANIZATION_ID}
+				AND delivery.envelope_id = ${ENVELOPE_ID}
+			ORDER BY delivery.id`;
+			expect(deliveryRows).toHaveLength(2);
+			const actorDelivery = deliveryRows.find(
+				(row: { role: string }): boolean => row.role === role
+			);
+			if (actorDelivery === undefined) throw new Error(`Missing ${role} delivery`);
+			const token: string = await sealer.open(actorDelivery.sealedCapability, {
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: actorDelivery.recipientId,
+				deliveryId: actorDelivery.deliveryId
+			});
+			const completedAt: string = new Date(Date.now() + 3_000).toISOString();
+			await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
+				WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+					AND id = ${actorDelivery.recipientId}`;
+			const approveApplication = new RecipientApprovedApplication(
+				new PostgresRecipientApproveStore(database()),
+				(): Date => new Date(completedAt)
+			);
+			const signApplication = new RecipientSignedApplication(
+				new PostgresRecipientSignStore(database()),
+				(): Date => new Date(completedAt)
+			);
+			const invoke = async (): Promise<RecipientApprovedResult | RecipientSignedResult> =>
+				role === 'approver'
+					? approveApplication.approve({
+							token,
+							expectedEnvelopeId: ENVELOPE_ID,
+							expectedRecipientId: actorDelivery.recipientId,
+							idempotencyKey: `${role}-completion`
+						})
+					: signApplication.sign({
+							token,
+							expectedEnvelopeId: ENVELOPE_ID,
+							expectedRecipientId: actorDelivery.recipientId,
+							expectedFieldGeneration: 0,
+							idempotencyKey: `${role}-completion`,
+							values: []
+						});
+
+			await database()`UPDATE delivery_outbox
+				SET status = 'processing', claim_token = ${`claim-${role}-0000000000000000`}, locked_at = ${completedAt},
+					updated_at = ${completedAt}
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${actorDelivery.deliveryId}`;
+			await expect(invoke()).resolves.toEqual({ outcome: 'delivery_in_flight' });
+			const fenced = await database()<
+				{ envelopeStatus: string; approvedCommands: number; signedCommands: number }[]
+			>`SELECT
+				(SELECT status FROM envelope WHERE organization_id = ${ORGANIZATION_ID}
+					AND id = ${ENVELOPE_ID}) AS "envelopeStatus",
+				(SELECT COUNT(*)::int FROM recipient_approved_command) AS "approvedCommands",
+				(SELECT COUNT(*)::int FROM recipient_signed_command) AS "signedCommands"`;
+			expect(fenced[0]).toEqual({
+				envelopeStatus: 'sent',
+				approvedCommands: 0,
+				signedCommands: 0
+			});
+
+			await database()`UPDATE delivery_outbox
+				SET status = 'pending', claim_token = NULL, locked_at = NULL
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${actorDelivery.deliveryId}`;
+			await expect(invoke()).resolves.toMatchObject({
+				outcome: 'published',
+				result: { envelopeStatus: 'completed' }
+			});
+			await expect(invoke()).resolves.toMatchObject({ outcome: 'replayed' });
+
+			const recipientRows = await database()<
+				{ role: string; status: string; revokedAt: Date | null }[]
+			>`SELECT role, status, capability_revoked_at AS "revokedAt"
+				FROM recipient WHERE organization_id = ${ORGANIZATION_ID}
+					AND envelope_id = ${ENVELOPE_ID} ORDER BY role`;
+			expect(recipientRows).toHaveLength(2);
+			expect(
+				recipientRows.find((row: { role: string }): boolean => row.role === role)
+			).toMatchObject({ status: 'completed', revokedAt: expect.any(Date) });
+			expect(
+				recipientRows.find((row: { role: string }): boolean => row.role === 'viewer')
+			).toMatchObject({ status: 'pending', revokedAt: expect.any(Date) });
+			const terminal = await database()<
+				{
+					envelopeStatus: string;
+					unsafeDeliveries: number;
+					terminalDeliveries: number;
+					completedEvents: number;
+				}[]
+			>`SELECT envelope.status AS "envelopeStatus",
+				(SELECT COUNT(*)::int FROM delivery_outbox AS delivery
+				 WHERE delivery.organization_id = envelope.organization_id
+					AND delivery.envelope_id = envelope.id
+					AND (delivery.status IN ('blocked', 'pending', 'processing')
+						OR delivery.retryable OR delivery.sealed_capability IS NOT NULL))
+					AS "unsafeDeliveries",
+				(SELECT COUNT(*)::int FROM delivery_outbox AS delivery
+				 WHERE delivery.organization_id = envelope.organization_id
+					AND delivery.envelope_id = envelope.id AND delivery.status = 'failed'
+					AND NOT delivery.retryable AND delivery.sealed_capability IS NULL
+					AND delivery.claim_token IS NULL AND delivery.locked_at IS NULL
+					AND delivery.last_error = 'envelope_terminal') AS "terminalDeliveries",
+				(SELECT COUNT(*)::int FROM audit_event AS audit
+				 WHERE audit.organization_id = envelope.organization_id
+					AND audit.envelope_id = envelope.id
+					AND audit.event_type = 'envelope.completed') AS "completedEvents"
+			FROM envelope WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
+			expect(terminal[0]).toEqual({
+				envelopeStatus: 'completed',
+				unsafeDeliveries: 0,
+				terminalDeliveries: 2,
+				completedEvents: 1
+			});
+		}
+	);
 
 	it('voids under PostgreSQL locks, fences delivery, and replays terminal evidence', async () => {
 		await seedDraftEnvelope();
@@ -966,7 +1201,24 @@ async function seedDraftEnvelope(): Promise<void> {
 		 '2026-09-11T00:01:00.000Z')`;
 }
 
-async function readyEnvelope(): Promise<{
+async function readyEnvelope(
+	recipients: readonly ReadyRecipientInput[] = [
+		{
+			email: 'signer@example.com',
+			name: 'Signer',
+			role: 'signer',
+			locale: 'en',
+			routingOrder: 1
+		},
+		{
+			email: 'approver@example.com',
+			name: 'Approver',
+			role: 'approver',
+			locale: 'ja',
+			routingOrder: 2
+		}
+	]
+): Promise<{
 	recipients: readonly { id: string; role: string }[];
 	auditEventId: string;
 	auditEventHash: string;
@@ -976,22 +1228,7 @@ async function readyEnvelope(): Promise<{
 	).ready(ACTOR, ENVELOPE_ID, {
 		idempotencyKey: 'ready-integration',
 		expectedGeneration: 1,
-		recipients: [
-			{
-				email: 'signer@example.com',
-				name: 'Signer',
-				role: 'signer',
-				locale: 'en',
-				routingOrder: 1
-			},
-			{
-				email: 'approver@example.com',
-				name: 'Approver',
-				role: 'approver',
-				locale: 'ja',
-				routingOrder: 2
-			}
-		]
+		recipients
 	});
 	if (result.outcome !== 'published') {
 		throw new Error(`Ready integration failed with ${result.outcome}`);

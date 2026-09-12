@@ -228,6 +228,7 @@ describe('recipient approved HTTP handler', () => {
 	it.each([
 		[{ outcome: 'idempotency_conflict' } as const, 409],
 		[{ outcome: 'audit_conflict' } as const, 409],
+		[{ outcome: 'delivery_in_flight' } as const, 409],
 		[{ outcome: 'integrity_error' } as const, 503]
 	])('maps %j to a fixed RFC 9457 response', async (result, status) => {
 		const { event, deleted } = requestEvent({ idempotencyKey: 'approve-1' });
@@ -240,12 +241,15 @@ describe('recipient approved HTTP handler', () => {
 		expect(deleted).not.toHaveBeenCalled();
 	});
 
-	it('sets Retry-After for a terminal audit conflict', async () => {
-		const { event } = requestEvent({ idempotencyKey: 'approve-1' });
-		const response: Response = await createRecipientApprovedHandler(
-			() => application({ outcome: 'audit_conflict' }),
-			async (): Promise<string> => token
-		)(event);
-		expect(response.headers.get('retry-after')).toBe('1');
-	});
+	it.each(['audit_conflict', 'delivery_in_flight'] as const)(
+		'sets Retry-After for %s',
+		async (outcome) => {
+			const { event } = requestEvent({ idempotencyKey: 'approve-1' });
+			const response: Response = await createRecipientApprovedHandler(
+				() => application({ outcome }),
+				async (): Promise<string> => token
+			)(event);
+			expect(response.headers.get('retry-after')).toBe('1');
+		}
+	);
 });

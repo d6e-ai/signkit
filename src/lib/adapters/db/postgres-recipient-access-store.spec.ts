@@ -63,7 +63,7 @@ describe('PostgresRecipientAccessStore', () => {
 		expect(query.text).toContain('recipient.capability_revoked_at IS NULL');
 		expect(query.text).toContain('recipient.capability_expires_at IS NOT NULL');
 		expect(query.text).toContain("recipient.status IN ('pending', 'viewed')");
-		expect(query.text).toContain("recipient.role <> 'cc'");
+		expect(query.text).toContain("recipient.role IN ('signer', 'approver', 'viewer')");
 		expect(query.text).toContain("envelope.status IN ('sent', 'in_progress')");
 		expect(query.text).toContain('INNER JOIN draft_revision_command revision');
 		expect(query.text).toContain('envelope.sent_commit_sha = envelope.repository_head');

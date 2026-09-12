@@ -27,6 +27,7 @@ export type RecipientApprovedResult =
 	| { outcome: 'role_not_actionable' }
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'audit_conflict' }
+	| { outcome: 'delivery_in_flight' }
 	| { outcome: 'integrity_error' };
 
 export interface RecipientApprovedApplicationPort {
