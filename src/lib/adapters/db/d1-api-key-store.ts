@@ -89,14 +89,10 @@ const REVOKE_RECEIPT_COLUMNS: string = `command.request_hash, command.api_key_id
  * credential hash and classifies the outcome only when one of those evidence
  * queries proves it. Every write selects the owner through
  * `instance_member.status = 'active'`, so invited and suspended members fail
- * closed at the durable boundary. List reads the member status and the owner
- * page in one batch, and repeats the same active-member predicate inside the
- * page statement, so a suspension can never land between the check and the
- * disclosure. Every read that could project key metadata — both command
- * receipts and the revoke classification read — carries that predicate too, so
- * a suspension committed after the preliminary status check can never surface
- * `already_issued`, `replayed`, or `already_revoked` metadata; such a read
- * comes back empty and classification reports `owner_not_active`.
+ * closed at the durable boundary. List, and the create/revoke idempotency
+ * gates, read the member status together with the disclosed evidence — the
+ * owner page, or the create/revoke receipt and key row — in one batch, so a
+ * suspension can never land between the check and the disclosure.
  */
 export class D1ApiKeyStore implements ApiKeyStore {
 	readonly #database: D1Database;
@@ -106,10 +102,8 @@ export class D1ApiKeyStore implements ApiKeyStore {
 	}
 
 	async createApiKey(command: CreateApiKeyCommand): Promise<CreateApiKeyStoreResult> {
-		if (!(await this.#actorIsActive(command.actor.id))) return { outcome: 'owner_not_active' };
-
-		const replay: CreateApiKeyStoreResult | null = await this.#resolveCreateReceipt(command);
-		if (replay !== null) return replay;
+		const gate: CreateApiKeyStoreResult | null = await this.#resolveCreateGate(command);
+		if (gate !== null) return gate;
 
 		const scopesJson: string = apiKeyScopesJson(command.scopes);
 		const key: D1PreparedStatement = this.#database
@@ -244,9 +238,8 @@ export class D1ApiKeyStore implements ApiKeyStore {
 	}
 
 	async revokeApiKey(command: RevokeApiKeyCommand): Promise<RevokeApiKeyStoreResult> {
-		if (!(await this.#actorIsActive(command.actor.id))) return { outcome: 'owner_not_active' };
-		const classified: RevokeApiKeyStoreResult | null = await this.#classifyRevoke(command);
-		if (classified !== null) return classified;
+		const gate: RevokeApiKeyStoreResult | null = await this.#resolveRevokeGate(command);
+		if (gate !== null) return gate;
 
 		// The receipt is derived from the key row under the same not-yet-revoked
 		// owner-scoped predicate as the update, so both statements agree inside
@@ -291,8 +284,7 @@ export class D1ApiKeyStore implements ApiKeyStore {
 			const results: D1Result[] = await this.#database.batch([receipt, update]);
 			applied = results.every((result: D1Result): boolean => changeCount(result) === 1);
 		} catch (error: unknown) {
-			if (!(await this.#actorIsActive(command.actor.id))) return { outcome: 'owner_not_active' };
-			const raced: RevokeApiKeyStoreResult | null = await this.#classifyRevoke(command);
+			const raced: RevokeApiKeyStoreResult | null = await this.#resolveRevokeGate(command);
 			if (raced !== null) return raced;
 			throw error;
 		}
@@ -307,40 +299,70 @@ export class D1ApiKeyStore implements ApiKeyStore {
 				: { outcome: 'revoked', key: metadataFromRow(revoked) };
 		}
 
-		if (!(await this.#actorIsActive(command.actor.id))) return { outcome: 'owner_not_active' };
-		const raced: RevokeApiKeyStoreResult | null = await this.#classifyRevoke(command);
+		const raced: RevokeApiKeyStoreResult | null = await this.#resolveRevokeGate(command);
 		return raced ?? { outcome: 'integrity_error' };
 	}
 
-	async #classifyRevoke(command: RevokeApiKeyCommand): Promise<RevokeApiKeyStoreResult | null> {
-		const replay: RevokeApiKeyStoreResult | null = await this.#resolveRevokeReceipt(command);
-		if (replay !== null) return replay;
-		const key: ApiKeyRow | null = await this.#readActiveOwnedKey(
-			command.actor.id,
-			command.apiKeyId
-		);
-		if (key === null) {
-			// Both reads above carry the active-member predicate, so an empty result
-			// is either an unknown or cross-owner key id or an owner who is no longer
-			// active. Only this status read decides which, and it projects no key
-			// material of its own.
-			return (await this.#actorIsActive(command.actor.id))
-				? { outcome: 'not_found' }
-				: { outcome: 'owner_not_active' };
+	/**
+	 * Reads the active-membership check, the idempotency receipt, and the
+	 * current key row in one D1 batch (one transaction), so a suspension
+	 * committed between separate reads can never surface a stale
+	 * replayed/already_revoked disclosure for an owner who is no longer active.
+	 * Returns null when the actor is active and the command should proceed.
+	 */
+	async #resolveRevokeGate(command: RevokeApiKeyCommand): Promise<RevokeApiKeyStoreResult | null> {
+		const member: D1PreparedStatement = this.#database
+			.prepare('SELECT status FROM instance_member WHERE user_id = ? LIMIT 1')
+			.bind(command.actor.id);
+		const receipt: D1PreparedStatement = this.#database
+			.prepare(
+				`SELECT ${REVOKE_RECEIPT_COLUMNS}
+				 FROM api_key_revoke_command command
+				 LEFT JOIN api_key stored
+					ON stored.id = command.api_key_id
+				 WHERE command.actor_type = ? AND command.actor_id = ?
+					AND command.idempotency_key = ?
+				 LIMIT 1`
+			)
+			.bind(command.actor.type, command.actor.id, command.idempotencyKey);
+		const key: D1PreparedStatement = this.#database
+			.prepare(
+				`SELECT ${KEY_COLUMNS} FROM api_key
+				 WHERE owner_user_id = ? AND id = ? LIMIT 1`
+			)
+			.bind(command.actor.id, command.apiKeyId);
+
+		const results: D1Result<MemberRow | RevokeReceiptRow | ApiKeyRow>[] =
+			await this.#database.batch<MemberRow | RevokeReceiptRow | ApiKeyRow>([
+				member,
+				receipt,
+				key
+			]);
+		const memberRow: MemberRow | undefined = results[0]?.results[0] as MemberRow | undefined;
+		if (memberRow === undefined || memberRow.status !== 'active') {
+			return { outcome: 'owner_not_active' };
 		}
+
+		const receiptRow: RevokeReceiptRow | undefined = results[1]?.results[0] as
+			| RevokeReceiptRow
+			| undefined;
+		if (receiptRow !== undefined) return evaluateRevokeReceiptRow(receiptRow, command);
+
+		const keyRow: ApiKeyRow | undefined = results[2]?.results[0] as ApiKeyRow | undefined;
+		if (keyRow === undefined) return { outcome: 'not_found' };
 		// A fresh idempotency key for an already revoked credential is reported
 		// explicitly instead of writing a second receipt for the same key.
-		if (key.revoked_at !== null) return { outcome: 'already_revoked', key: metadataFromRow(key) };
+		if (keyRow.revoked_at !== null) {
+			return { outcome: 'already_revoked', key: metadataFromRow(keyRow) };
+		}
 		return null;
 	}
 
 	async #classifyCreateFailure(
 		command: CreateApiKeyCommand
 	): Promise<CreateApiKeyStoreResult | null> {
-		if (!(await this.#actorIsActive(command.actor.id))) return { outcome: 'owner_not_active' };
-
-		const replay: CreateApiKeyStoreResult | null = await this.#resolveCreateReceipt(command);
-		if (replay !== null) return replay;
+		const gate: CreateApiKeyStoreResult | null = await this.#resolveCreateGate(command);
+		if (gate !== null) return gate;
 
 		const existingId: { value: number } | null = await this.#database
 			.prepare('SELECT 1 AS value FROM api_key WHERE id = ? LIMIT 1')
@@ -357,14 +379,18 @@ export class D1ApiKeyStore implements ApiKeyStore {
 		return null;
 	}
 
-	async #resolveCreateReceipt(
-		command: CreateApiKeyCommand
-	): Promise<CreateApiKeyStoreResult | null> {
-		// The receipt read carries the active-member predicate itself, so replay
-		// metadata can never be projected on the strength of an earlier, separate
-		// status check that a suspension has since invalidated. An inactive owner
-		// simply finds no receipt and is classified as `owner_not_active`.
-		const row: CreateReceiptRow | null = await this.#database
+	/**
+	 * Reads the active-membership check and the idempotency receipt in one D1
+	 * batch (one transaction), so a suspension committed between separate reads
+	 * can never surface a stale already_issued disclosure for an owner who is no
+	 * longer active. Returns null when the actor is active and there is no
+	 * receipt yet, meaning the caller should proceed with the insert.
+	 */
+	async #resolveCreateGate(command: CreateApiKeyCommand): Promise<CreateApiKeyStoreResult | null> {
+		const member: D1PreparedStatement = this.#database
+			.prepare('SELECT status FROM instance_member WHERE user_id = ? LIMIT 1')
+			.bind(command.actor.id);
+		const receipt: D1PreparedStatement = this.#database
 			.prepare(
 				`SELECT ${CREATE_RECEIPT_COLUMNS}
 				 FROM api_key_create_command command
@@ -378,79 +404,21 @@ export class D1ApiKeyStore implements ApiKeyStore {
 					)
 				 LIMIT 1`
 			)
-			.bind(command.actor.type, command.actor.id, command.idempotencyKey, command.actor.id)
-			.first<CreateReceiptRow>();
-		if (row === null) return null;
-		if (row.request_hash !== command.requestFingerprint) return { outcome: 'idempotency_conflict' };
+			.bind(command.actor.type, command.actor.id, command.idempotencyKey);
 
-		const scopes: readonly ApiKeyScope[] | null = parseApiKeyScopesJson(row.scopes_json);
-		const current: ApiKeyMetadata | null = createReceiptKeyMetadata(row, command.actor.id);
-		// The secret is unrecoverable, so an unprovable receipt is a conflict
-		// rather than a replay that could imply a usable credential.
-		if (scopes === null || current === null) return { outcome: 'idempotency_conflict' };
-		return { outcome: 'already_issued', key: current };
-	}
-
-	async #resolveRevokeReceipt(
-		command: RevokeApiKeyCommand
-	): Promise<RevokeApiKeyStoreResult | null> {
-		// Same coupling as the create receipt: authorization is part of the read
-		// that would disclose the replayed key, not a separate earlier query.
-		const row: RevokeReceiptRow | null = await this.#database
-			.prepare(
-				`SELECT ${REVOKE_RECEIPT_COLUMNS}
-				 FROM api_key_revoke_command command
-				 LEFT JOIN api_key stored
-					ON stored.id = command.api_key_id
-				 WHERE command.actor_type = ? AND command.actor_id = ?
-					AND command.idempotency_key = ?
-					AND EXISTS (
-						SELECT 1 FROM instance_member
-						WHERE user_id = ? AND status = 'active'
-					)
-				 LIMIT 1`
-			)
-			.bind(command.actor.type, command.actor.id, command.idempotencyKey, command.actor.id)
-			.first<RevokeReceiptRow>();
-		if (row === null) return null;
-		if (row.api_key_id !== command.apiKeyId || row.request_hash !== command.requestFingerprint) {
-			return { outcome: 'idempotency_conflict' };
+		const results: D1Result<MemberRow | CreateReceiptRow>[] = await this.#database.batch<
+			MemberRow | CreateReceiptRow
+		>([member, receipt]);
+		const memberRow: MemberRow | undefined = results[0]?.results[0] as MemberRow | undefined;
+		if (memberRow === undefined || memberRow.status !== 'active') {
+			return { outcome: 'owner_not_active' };
 		}
 
-		const scopes: readonly ApiKeyScope[] | null =
-			row.key_scopes_json === null ? null : parseApiKeyScopesJson(row.key_scopes_json);
-		if (
-			scopes === null ||
-			row.key_id !== row.api_key_id ||
-			row.key_prefix_current !== row.key_prefix ||
-			row.key_revoked_at !== row.revoked_at ||
-			row.key_name === null ||
-			row.key_created_at === null ||
-			row.key_expires_at === null
-		) {
-			return { outcome: 'integrity_error' };
-		}
-		return {
-			outcome: 'replayed',
-			key: {
-				id: row.key_id,
-				name: row.key_name,
-				keyPrefix: row.key_prefix_current,
-				scopes,
-				createdAt: row.key_created_at,
-				expiresAt: row.key_expires_at,
-				lastUsedAt: row.key_last_used_at,
-				revokedAt: row.key_revoked_at
-			}
-		};
-	}
-
-	async #actorIsActive(userId: string): Promise<boolean> {
-		const member: MemberRow | null = await this.#database
-			.prepare(`SELECT status FROM instance_member WHERE user_id = ? LIMIT 1`)
-			.bind(userId)
-			.first<MemberRow>();
-		return member !== null && member.status === 'active';
+		const row: CreateReceiptRow | undefined = results[1]?.results[0] as
+			| CreateReceiptRow
+			| undefined;
+		if (row === undefined) return null;
+		return evaluateCreateReceiptRow(row, command);
 	}
 
 	/** Reads back what this call just wrote, after the batch already proved the owner active. */
@@ -487,6 +455,56 @@ export class D1ApiKeyStore implements ApiKeyStore {
 function changeCount(result: D1Result): number {
 	const changes: unknown = (result.meta as { changes?: unknown }).changes;
 	return typeof changes === 'number' ? changes : 0;
+}
+
+function evaluateCreateReceiptRow(
+	row: CreateReceiptRow,
+	command: CreateApiKeyCommand
+): CreateApiKeyStoreResult {
+	if (row.request_hash !== command.requestFingerprint) return { outcome: 'idempotency_conflict' };
+
+	const scopes: readonly ApiKeyScope[] | null = parseApiKeyScopesJson(row.scopes_json);
+	const current: ApiKeyMetadata | null = createReceiptKeyMetadata(row, command.actor.id);
+	// The secret is unrecoverable, so an unprovable receipt is a conflict
+	// rather than a replay that could imply a usable credential.
+	if (scopes === null || current === null) return { outcome: 'idempotency_conflict' };
+	return { outcome: 'already_issued', key: current };
+}
+
+function evaluateRevokeReceiptRow(
+	row: RevokeReceiptRow,
+	command: RevokeApiKeyCommand
+): RevokeApiKeyStoreResult {
+	if (row.api_key_id !== command.apiKeyId || row.request_hash !== command.requestFingerprint) {
+		return { outcome: 'idempotency_conflict' };
+	}
+
+	const scopes: readonly ApiKeyScope[] | null =
+		row.key_scopes_json === null ? null : parseApiKeyScopesJson(row.key_scopes_json);
+	if (
+		scopes === null ||
+		row.key_id !== row.api_key_id ||
+		row.key_prefix_current !== row.key_prefix ||
+		row.key_revoked_at !== row.revoked_at ||
+		row.key_name === null ||
+		row.key_created_at === null ||
+		row.key_expires_at === null
+	) {
+		return { outcome: 'integrity_error' };
+	}
+	return {
+		outcome: 'replayed',
+		key: {
+			id: row.key_id,
+			name: row.key_name,
+			keyPrefix: row.key_prefix_current,
+			scopes,
+			createdAt: row.key_created_at,
+			expiresAt: row.key_expires_at,
+			lastUsedAt: row.key_last_used_at,
+			revokedAt: row.key_revoked_at
+		}
+	};
 }
 
 /**

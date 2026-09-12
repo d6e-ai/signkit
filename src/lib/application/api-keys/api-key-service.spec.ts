@@ -465,9 +465,8 @@ describe('ApiKeyApplication.listApiKeys', () => {
 		}
 	});
 
-	it('still authorizes a malformed cursor against the durable store', async () => {
+	it('delegates a malformed cursor to the store instead of failing closed locally', async () => {
 		const store = new FakeApiKeyStore();
-		// What an owner-scoped store answers for a cursor that can identify no row.
 		store.listResult = { outcome: 'listed', page: { items: [], nextCursor: null } };
 		await expect(
 			application(store).listApiKeys(ACTOR, { cursor: 'not-a-uuid', limit: 10 })
@@ -477,13 +476,12 @@ describe('ApiKeyApplication.listApiKeys', () => {
 		]);
 	});
 
-	it('reports owner_not_active for a malformed cursor instead of a synthesized empty page', async () => {
+	it('surfaces owner_not_active for a malformed cursor instead of masking it as an empty list', async () => {
 		const store = new FakeApiKeyStore();
 		store.listResult = { outcome: 'owner_not_active' };
 		await expect(
 			application(store).listApiKeys(ACTOR, { cursor: 'not-a-uuid', limit: 10 })
 		).resolves.toEqual({ outcome: 'owner_not_active' });
-		expect(store.listCalls).toHaveLength(1);
 	});
 
 	it('passes owner_not_active through from the store', async () => {

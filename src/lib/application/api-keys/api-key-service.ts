@@ -168,12 +168,11 @@ export class ApiKeyApplication implements ApiKeyApplicationPort {
 	}
 
 	async listApiKeys(actor: ApiKeyRequestActor, query: ApiKeyListQuery): Promise<ListApiKeyResult> {
-		// A malformed cursor is handed to the store unchanged rather than answered
-		// here: durable owner authorization must be evaluated on every list, so a
-		// suspended member can never receive a synthesized `listed` page. The
-		// cursor is always bound as a parameter and can never identify a key row,
-		// so both stores resolve it owner-scoped to the same opaque empty page an
-		// unknown or cross-owner cursor produces.
+		// A malformed cursor can never identify a key row, so the store's own
+		// cursor resolution fails it closed to an empty page exactly like an
+		// unknown or cross-owner cursor. It is never rejected locally: the store
+		// must always authorize the owner first, even for a cursor that can never
+		// match, so an inactive owner still receives `owner_not_active`.
 		return await this.store.listApiKeys(
 			{ type: 'user', id: actor.id },
 			{
