@@ -4,10 +4,14 @@ import type {
 	InvitationDeliveryBatchResult,
 	InvitationDeliveryService
 } from '$lib/application/delivery/delivery-service';
+import {
+	BEARER_SECRET_PATTERN,
+	parseBearerSecret,
+	secretsEqual
+} from '$lib/security/bearer-secret';
 import { problemResponse } from './problem';
 
 const DRAIN_BATCH_LIMIT: number = 25;
-const SECRET_PATTERN: RegExp = /^[\x21-\x7e]{32,200}$/;
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
@@ -79,33 +83,8 @@ export function createDeliveryDrainHandler(
 export function resolveDeliveryWorkerSecret(platform?: Readonly<App.Platform>): string | null {
 	const value: string | undefined =
 		platform?.env?.DELIVERY_WORKER_SECRET ?? env.DELIVERY_WORKER_SECRET;
-	if (value === undefined || !SECRET_PATTERN.test(value)) return null;
+	if (value === undefined || !BEARER_SECRET_PATTERN.test(value)) return null;
 	return value;
-}
-
-function parseBearerSecret(header: string | null): string | null {
-	if (header === null) return null;
-	const match: RegExpExecArray | null = /^Bearer ([\x21-\x7e]{32,200})$/.exec(header);
-	return match?.[1] ?? null;
-}
-
-async function secretsEqual(presented: string, expected: string): Promise<boolean> {
-	const [presentedDigest, expectedDigest]: [ArrayBuffer, ArrayBuffer] = await Promise.all([
-		sha256(presented),
-		sha256(expected)
-	]);
-	const left: Uint8Array = new Uint8Array(presentedDigest);
-	const right: Uint8Array = new Uint8Array(expectedDigest);
-	let difference: number = left.byteLength ^ right.byteLength;
-	const length: number = Math.max(left.byteLength, right.byteLength);
-	for (let index: number = 0; index < length; index += 1) {
-		difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
-	}
-	return difference === 0;
-}
-
-function sha256(value: string): Promise<ArrayBuffer> {
-	return crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
 }
 
 function unauthorized(instance: string): Response {

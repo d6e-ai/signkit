@@ -36,11 +36,12 @@ function columnNames(sqlite: DatabaseSync, table: string): readonly string[] {
 function insertMember(
 	sqlite: DatabaseSync,
 	userId: string = ACTOR_ID,
-	status: 'invited' | 'active' | 'suspended' = 'active'
+	status: 'active' | 'suspended' = 'active',
+	role: 'owner' | 'admin' | 'member' = 'member'
 ): void {
 	sqlite.exec(`
-		INSERT INTO instance_member (user_id, status, created_at, updated_at)
-		VALUES ('${userId}', '${status}', '${CREATED_AT}', '${CREATED_AT}')
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('${userId}', '${role}', '${status}', '${CREATED_AT}', '${CREATED_AT}')
 	`);
 }
 
@@ -130,6 +131,7 @@ describe('D1 API key migration', () => {
 			]);
 			expect(columnNames(sqlite, 'instance_member')).toEqual([
 				'user_id',
+				'role',
 				'status',
 				'created_at',
 				'updated_at'
@@ -146,19 +148,41 @@ describe('D1 API key migration', () => {
 		}
 	});
 
-	it('accepts invited, active, and suspended members and rejects unknown statuses', () => {
+	it('accepts active and suspended members across owner, admin, and member roles and rejects unknown values', () => {
 		const sqlite: DatabaseSync = database();
 		try {
-			insertMember(sqlite, 'invited-user', 'invited');
-			insertMember(sqlite, 'active-user', 'active');
-			insertMember(sqlite, 'suspended-user', 'suspended');
+			insertMember(sqlite, 'owner-user', 'active', 'owner');
+			insertMember(sqlite, 'admin-user', 'active', 'admin');
+			insertMember(sqlite, 'suspended-user', 'suspended', 'member');
+			expect((): void => insertMember(sqlite, 'invited-user', 'invited' as 'active')).toThrow(
+				/CHECK constraint failed/
+			);
 			expect((): void => insertMember(sqlite, 'closed-user', 'closed' as 'active')).toThrow(
 				/CHECK constraint failed/
 			);
+			expect((): void =>
+				insertMember(sqlite, 'super-user', 'active', 'superadmin' as 'member')
+			).toThrow(/CHECK constraint failed/);
 			const count = sqlite.prepare('SELECT COUNT(*) AS count FROM instance_member').get() as {
 				count: number;
 			};
 			expect(count.count).toBe(3);
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('defaults role to member when omitted from the insert', () => {
+		const sqlite: DatabaseSync = database();
+		try {
+			sqlite.exec(`
+				INSERT INTO instance_member (user_id, status, created_at, updated_at)
+				VALUES ('default-role-user', 'active', '${CREATED_AT}', '${CREATED_AT}')
+			`);
+			const row = sqlite
+				.prepare('SELECT role FROM instance_member WHERE user_id = ?')
+				.get('default-role-user') as { role: string };
+			expect(row.role).toBe('member');
 		} finally {
 			sqlite.close();
 		}

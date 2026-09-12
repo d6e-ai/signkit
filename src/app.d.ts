@@ -22,6 +22,7 @@ declare global {
 				OBJECTS?: R2Bucket;
 				DELIVERY_ENCRYPTION_KEY?: string;
 				DELIVERY_WORKER_SECRET?: string;
+				SIGNKIT_BOOTSTRAP_SECRET?: string;
 				SIGNKIT_PUBLIC_ORIGIN?: string;
 				SIGNKIT_EMAIL_FROM?: string;
 				SIGNKIT_EMAIL_FROM_NAME?: string;
