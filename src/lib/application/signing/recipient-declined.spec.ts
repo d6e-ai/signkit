@@ -12,7 +12,7 @@ const organizationId: string = 'org-1';
 const envelopeId: string = '00000000-0000-8000-a000-000000000001';
 const recipientId: string = '00000000-0000-8000-a000-000000000002';
 
-const ready: DeclinePreparation = {
+const ready: Extract<DeclinePreparation, { outcome: 'ready' }> = {
 	outcome: 'ready',
 	organizationId,
 	envelopeId,
@@ -21,6 +21,10 @@ const ready: DeclinePreparation = {
 	routingOrder: 1,
 	sentCommitSha: 'a'.repeat(40),
 	envelopeStatus: 'sent',
+	revokedRecipientIds: [
+		'00000000-0000-8000-a000-000000000003',
+		'00000000-0000-8000-a000-000000000004'
+	],
 	auditHead: { sequence: 3, eventHash: 'audit-head-3' }
 };
 
@@ -99,8 +103,14 @@ describe('RecipientDeclinedApplication', () => {
 			role: 'signer',
 			routingOrder: 1,
 			sentCommitSha: ready.sentCommitSha,
-			declinedAt: '2026-09-11T00:02:00.000Z'
+			declinedAt: '2026-09-11T00:02:00.000Z',
+			revokedCapabilities: {
+				reason: 'envelope_declined',
+				recipientIds: ready.revokedRecipientIds
+			}
 		});
+		expect(command.revocationEvidenceVersion).toBe(2);
+		expect(command.revokedRecipientIds).toEqual(ready.revokedRecipientIds);
 		expect(command.auditPayloadJson).not.toMatch(/recipient@example|Recipient|skr1_|archive/);
 	});
 
@@ -145,7 +155,12 @@ describe('RecipientDeclinedApplication', () => {
 	});
 
 	it('passes through terminal preparation outcomes without publishing', async () => {
-		for (const outcome of ['not_found', 'context_mismatch', 'role_not_actionable'] as const) {
+		for (const outcome of [
+			'not_found',
+			'context_mismatch',
+			'role_not_actionable',
+			'delivery_in_flight'
+		] as const) {
 			const storePort = store([{ outcome }]);
 			await expect(new RecipientDeclinedApplication(storePort).decline(input)).resolves.toEqual({
 				outcome
@@ -155,7 +170,7 @@ describe('RecipientDeclinedApplication', () => {
 	});
 
 	it('retries bounded audit-head races with a fresh non-regressing declined timestamp', async () => {
-		const secondReady: DeclinePreparation = {
+		const secondReady: Extract<DeclinePreparation, { outcome: 'ready' }> = {
 			...ready,
 			auditHead: { sequence: 4, eventHash: 'audit-head-4' }
 		};

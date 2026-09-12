@@ -22,6 +22,8 @@ interface RecipientEnvelopeRow {
 	envelope_status: string;
 	envelope_sent_commit_sha: string | null;
 	envelope_repository_head: string | null;
+	delivery_in_flight: number;
+	revoked_recipient_ids_json: string;
 }
 
 interface AuditHeadRow {
@@ -47,6 +49,12 @@ interface DeclinedCommandRow {
 	previous_audit_hash: string;
 	audit_event_hash: string;
 	audit_payload_json: string;
+	revocation_evidence_version: number;
+	revoked_recipient_ids_json: string;
+	revoked_recipient_count: number;
+	projection_revoked_recipient_ids_json: string;
+	projection_has_revocable_recipient: number;
+	projection_has_unsafe_delivery: number;
 	evidence_event_id: string | null;
 	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
@@ -64,7 +72,31 @@ const DECLINED_COMMAND_COLUMNS: string = `command.organization_id, command.envel
 	command.recipient_role, command.routing_order, command.actor_type, command.actor_id,
 	command.idempotency_key, command.request_hash, command.capability_hash, command.sent_commit_sha,
 	command.updated_at, command.audit_event_id, command.audit_sequence, command.previous_audit_hash,
-	command.audit_event_hash, command.audit_payload_json,
+	command.audit_event_hash, command.audit_payload_json, command.revocation_evidence_version,
+	command.revoked_recipient_ids_json, command.revoked_recipient_count,
+	(SELECT json_group_array(id) FROM (
+		SELECT sibling.id FROM recipient sibling
+		WHERE sibling.organization_id = command.organization_id
+			AND sibling.envelope_id = command.envelope_id AND sibling.id <> command.recipient_id
+			AND sibling.status <> 'completed'
+			AND sibling.capability_hash IS NOT NULL
+			AND sibling.capability_revoked_at = command.updated_at
+		ORDER BY sibling.id
+	)) AS projection_revoked_recipient_ids_json,
+	EXISTS (
+		SELECT 1 FROM recipient sibling
+		WHERE sibling.organization_id = command.organization_id
+			AND sibling.envelope_id = command.envelope_id AND sibling.id <> command.recipient_id
+			AND sibling.status <> 'completed' AND sibling.capability_hash IS NOT NULL
+			AND sibling.capability_revoked_at IS NULL
+	) AS projection_has_revocable_recipient,
+	EXISTS (
+		SELECT 1 FROM delivery_outbox delivery
+		WHERE delivery.organization_id = command.organization_id
+			AND delivery.envelope_id = command.envelope_id
+			AND (delivery.status IN ('blocked', 'pending', 'processing')
+				OR delivery.retryable = 1 OR delivery.sealed_capability IS NOT NULL)
+	) AS projection_has_unsafe_delivery,
 	evidence.id AS evidence_event_id, evidence.organization_id AS evidence_organization_id,
 	evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
@@ -105,6 +137,13 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 		}
 		if (identity.recipient_status === 'declined') return { outcome: 'integrity_error' };
 		if (!liveEligible(identity, key.capabilityHash, at)) return { outcome: 'not_found' };
+		if (identity.delivery_in_flight === 1) {
+			return { outcome: 'delivery_in_flight' };
+		}
+		const revokedRecipientIds: readonly string[] | null = parseStringArray(
+			identity.revoked_recipient_ids_json
+		);
+		if (revokedRecipientIds === null) return { outcome: 'integrity_error' };
 		const auditHead: DeclineAuditHead | null = await this.#readAuditHead(
 			identity.organization_id,
 			identity.envelope_id
@@ -119,6 +158,7 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 			routingOrder: identity.routing_order,
 			sentCommitSha: identity.envelope_sent_commit_sha as string,
 			envelopeStatus: identity.envelope_status as 'sent' | 'in_progress',
+			revokedRecipientIds,
 			auditHead
 		};
 	}
@@ -138,7 +178,8 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 					actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 					sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json
-				) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					, revocation_evidence_version, revoked_recipient_ids_json, revoked_recipient_count
+				) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				identity.organization_id,
@@ -156,13 +197,19 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 				command.expectedAuditSequence + 1,
 				command.previousAuditHash,
 				command.auditEventHash,
-				command.auditPayloadJson
+				command.auditPayloadJson,
+				command.revocationEvidenceVersion,
+				JSON.stringify(command.revokedRecipientIds),
+				command.revokedRecipientIds.length
 			);
 
 		try {
 			await this.#database.batch([statement]);
 			return { outcome: 'published', result: resultFromCommand(command) };
 		} catch (error: unknown) {
+			// Re-read durable state instead of parsing provider error text. If a processing
+			// lease disappears between the trigger rollback and this read, classification
+			// intentionally remains unavailable so the caller can safely retry.
 			const classified: PublishRecipientDeclinedResult | null =
 				await this.#classifyFailure(command);
 			if (classified !== null) return classified;
@@ -184,7 +231,27 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 					recipient.routing_order AS routing_order,
 					envelope.status AS envelope_status,
 					envelope.sent_commit_sha AS envelope_sent_commit_sha,
-					envelope.repository_head AS envelope_repository_head
+					envelope.repository_head AS envelope_repository_head,
+					EXISTS (
+						SELECT 1 FROM delivery_outbox delivery
+						WHERE delivery.organization_id = recipient.organization_id
+							AND delivery.envelope_id = recipient.envelope_id
+							AND delivery.status = 'processing'
+					) AS delivery_in_flight,
+					(
+						SELECT json_group_array(id)
+						FROM (
+							SELECT sibling.id
+							FROM recipient sibling
+							WHERE sibling.organization_id = recipient.organization_id
+								AND sibling.envelope_id = recipient.envelope_id
+								AND sibling.id <> recipient.id
+								AND sibling.status <> 'completed'
+								AND sibling.capability_hash IS NOT NULL
+								AND sibling.capability_revoked_at IS NULL
+							ORDER BY sibling.id
+						)
+					) AS revoked_recipient_ids_json
 				 FROM recipient
 				 INNER JOIN envelope
 					ON envelope.organization_id = recipient.organization_id
@@ -285,7 +352,11 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 	}
 
 	async #evidenceResult(row: DeclinedCommandRow): Promise<DeclinePreparation> {
-		if (!validAuditEvidence(row) || !(await validStoredReceipt(row))) {
+		if (
+			!validAuditEvidence(row) ||
+			!(await validStoredReceipt(row)) ||
+			!validTerminalProjection(row)
+		) {
 			return { outcome: 'integrity_error' };
 		}
 		return { outcome: 'replayed', result: resultFromRow(row) };
@@ -303,6 +374,9 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 			return { outcome: 'audit_conflict' };
 		}
 		if (preparation.sentCommitSha !== command.expectedSentCommitSha) {
+			return { outcome: 'integrity_error' };
+		}
+		if (!sameStringArray(preparation.revokedRecipientIds, command.revokedRecipientIds)) {
 			return { outcome: 'integrity_error' };
 		}
 		return null;
@@ -376,13 +450,25 @@ async function validStoredReceipt(row: DeclinedCommandRow): Promise<boolean> {
 			capabilityHash: row.capability_hash
 		})
 	);
-	const auditPayloadValue = {
+	const baseAuditPayload = {
 		recipientId: row.recipient_id,
 		role: row.recipient_role,
 		routingOrder: row.routing_order,
 		sentCommitSha: row.sent_commit_sha,
 		declinedAt: row.updated_at
 	};
+	const revokedRecipientIds: readonly string[] | null = parseRevokedRecipientIds(row);
+	if (revokedRecipientIds === null) return false;
+	const auditPayloadValue =
+		row.revocation_evidence_version === 1
+			? baseAuditPayload
+			: {
+					...baseAuditPayload,
+					revokedCapabilities: {
+						reason: 'envelope_declined',
+						recipientIds: revokedRecipientIds
+					}
+				};
 	const auditPayload: string = JSON.stringify(auditPayloadValue);
 	const auditEventHash: string = await sha256(
 		JSON.stringify({
@@ -399,6 +485,59 @@ async function validStoredReceipt(row: DeclinedCommandRow): Promise<boolean> {
 		requestHash === row.request_hash &&
 		auditPayload === row.audit_payload_json &&
 		auditEventHash === row.audit_event_hash
+	);
+}
+
+function parseRevokedRecipientIds(row: DeclinedCommandRow): readonly string[] | null {
+	if (row.revocation_evidence_version === 1) {
+		return row.revoked_recipient_ids_json === '[]' && row.revoked_recipient_count === 0 ? [] : null;
+	}
+	if (row.revocation_evidence_version !== 2) return null;
+	try {
+		const ids: readonly string[] | null = parseStringArray(row.revoked_recipient_ids_json);
+		if (ids === null) return null;
+		if (ids.length !== row.revoked_recipient_count) return null;
+		const sorted: string[] = [...ids].sort();
+		return sameStringArray(ids, sorted) && new Set(ids).size === ids.length ? ids : null;
+	} catch {
+		return null;
+	}
+}
+
+function validTerminalProjection(row: DeclinedCommandRow): boolean {
+	if (row.revocation_evidence_version === 1) return true;
+	const expected: readonly string[] | null = parseRevokedRecipientIds(row);
+	const projected: readonly string[] | null = parseStringArray(
+		row.projection_revoked_recipient_ids_json
+	);
+	return (
+		expected !== null &&
+		projected !== null &&
+		sameStringArray(expected, projected) &&
+		row.projection_has_revocable_recipient === 0 &&
+		row.projection_has_unsafe_delivery === 0
+	);
+}
+
+function parseStringArray(valueJson: string): readonly string[] | null {
+	try {
+		const value: unknown = JSON.parse(valueJson);
+		if (
+			!Array.isArray(value) ||
+			!value.every((id: unknown): id is string => typeof id === 'string')
+		) {
+			return null;
+		}
+		return value;
+	} catch {
+		return null;
+	}
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+	return (
+		left.length === right.length &&
+		left.every((value: string, index: number) => value === right[index])
 	);
 }
 

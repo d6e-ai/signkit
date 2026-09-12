@@ -7,6 +7,7 @@ import { EnvelopeFieldApplication } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import { EnvelopeReadyApplication } from '$lib/application/envelopes/ready';
 import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
+import { RecipientDeclinedApplication } from '$lib/application/signing/recipient-declined';
 import type { EnvelopeField } from '$lib/domain/envelope';
 import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
 import type { PublishReadyEnvelopeCommand } from '$lib/ports/envelope-ready-store';
@@ -19,6 +20,7 @@ import { PostgresDeliveryOutboxStore } from './postgres-delivery-outbox-store';
 import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
 import { PostgresEnvelopeReadyStore } from './postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from './postgres-envelope-send-store';
+import { PostgresRecipientDeclineStore } from './postgres-recipient-decline-store';
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
 const CI_ENABLED: boolean =
@@ -72,9 +74,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	});
 
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
-		expect(MIGRATION_PATHS.at(-1)).toBe(
-			'migrations/postgres/0012_delivery_outbox_recipient_scope.sql'
-		);
+		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0013_terminal_delivery_cleanup.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -433,6 +433,108 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				AND id = ${claimed[0].recipientId}`;
 		await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
 			outcome: 'integrity_error'
+		});
+	});
+
+	it('fences in-flight invitation delivery and atomically scrubs terminal-envelope work', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		const sealer = new AesGcmRecipientCapabilitySealer(TEST_DELIVERY_ENCRYPTION_KEY);
+		const sent = await new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			sealer
+		).send(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'send-before-decline',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		});
+		expect(sent).toMatchObject({ outcome: 'published' });
+
+		const pending = await database()<
+			{
+				deliveryId: string;
+				recipientId: string;
+				sealedCapability: string;
+			}[]
+		>`SELECT id AS "deliveryId", recipient_id AS "recipientId",
+			sealed_capability AS "sealedCapability"
+			FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND status = 'pending'`;
+		expect(pending).toHaveLength(1);
+		const token: string = await sealer.open(pending[0].sealedCapability, {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			recipientId: pending[0].recipientId,
+			deliveryId: pending[0].deliveryId
+		});
+		const declinedAt: string = new Date(Date.now() + 2_000).toISOString();
+		const application = new RecipientDeclinedApplication(
+			new PostgresRecipientDeclineStore(database()),
+			() => new Date(declinedAt)
+		);
+		const input = {
+			token,
+			expectedEnvelopeId: ENVELOPE_ID,
+			expectedRecipientId: pending[0].recipientId,
+			idempotencyKey: 'decline-after-send'
+		};
+
+		await database()`UPDATE delivery_outbox
+			SET status = 'processing', claim_token = 'postgres-claim-0001',
+				locked_at = ${declinedAt}, updated_at = ${declinedAt}
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${pending[0].deliveryId}`;
+		await expect(application.decline(input)).resolves.toEqual({ outcome: 'delivery_in_flight' });
+		const unchanged = await database()<
+			{ envelopeStatus: string; declinedCommands: number; declinedEvents: number }[]
+		>`SELECT
+			(SELECT status FROM envelope WHERE organization_id = ${ORGANIZATION_ID}
+				AND id = ${ENVELOPE_ID}) AS "envelopeStatus",
+			(SELECT COUNT(*)::int FROM recipient_declined_command) AS "declinedCommands",
+			(SELECT COUNT(*)::int FROM audit_event WHERE event_type = 'recipient.declined') AS "declinedEvents"`;
+		expect(unchanged[0]).toEqual({
+			envelopeStatus: 'sent',
+			declinedCommands: 0,
+			declinedEvents: 0
+		});
+
+		await database()`UPDATE delivery_outbox
+			SET status = 'pending', claim_token = NULL, locked_at = NULL
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${pending[0].deliveryId}`;
+		await expect(application.decline(input)).resolves.toMatchObject({ outcome: 'published' });
+
+		const deliveries = await database()<
+			{
+				status: string;
+				retryable: boolean;
+				sealedCapability: string | null;
+				lastError: string | null;
+			}[]
+		>`SELECT status, retryable, sealed_capability AS "sealedCapability",
+			last_error AS "lastError"
+			FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+			ORDER BY id`;
+		expect(deliveries).toHaveLength(2);
+		for (const delivery of deliveries) {
+			expect(delivery).toEqual({
+				status: 'failed',
+				retryable: false,
+				sealedCapability: null,
+				lastError: 'envelope_terminal'
+			});
+		}
+		const evidence = await database()<
+			{ version: number; ids: string; count: number; payload: string }[]
+		>`SELECT revocation_evidence_version AS version,
+			revoked_recipient_ids_json AS ids, revoked_recipient_count AS count,
+			audit_payload_json AS payload
+			FROM recipient_declined_command`;
+		expect(evidence[0]).toMatchObject({ version: 2, count: 1 });
+		const ids = JSON.parse(evidence[0].ids) as string[];
+		expect(ids).toHaveLength(1);
+		expect(JSON.parse(evidence[0].payload)).toMatchObject({
+			revokedCapabilities: { reason: 'envelope_declined', recipientIds: ids }
 		});
 	});
 

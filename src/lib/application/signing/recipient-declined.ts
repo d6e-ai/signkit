@@ -24,6 +24,7 @@ export type RecipientDeclinedResult =
 	| { outcome: 'role_not_actionable' }
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'audit_conflict' }
+	| { outcome: 'delivery_in_flight' }
 	| { outcome: 'integrity_error' };
 
 export interface RecipientDeclinedApplicationPort {
@@ -72,7 +73,11 @@ export class RecipientDeclinedApplication implements RecipientDeclinedApplicatio
 				role: preparation.recipientRole,
 				routingOrder: preparation.routingOrder,
 				sentCommitSha: preparation.sentCommitSha,
-				declinedAt
+				declinedAt,
+				revokedCapabilities: {
+					reason: 'envelope_declined',
+					recipientIds: preparation.revokedRecipientIds
+				}
 			});
 			const auditEventHash: string = await sha256(
 				JSON.stringify({
@@ -95,7 +100,9 @@ export class RecipientDeclinedApplication implements RecipientDeclinedApplicatio
 				previousAuditHash: preparation.auditHead.eventHash,
 				auditEventId,
 				auditEventHash,
-				auditPayloadJson
+				auditPayloadJson,
+				revocationEvidenceVersion: 2,
+				revokedRecipientIds: preparation.revokedRecipientIds
 			};
 			const published: PublishRecipientDeclinedResult = await this.store.publishDeclined(command);
 			if (published.outcome === 'audit_conflict' && attempt + 1 < MAX_AUDIT_ATTEMPTS) continue;
