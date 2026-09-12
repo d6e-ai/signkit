@@ -37,6 +37,14 @@ import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-sto
 import type { PublishReadyEnvelopeCommand } from '$lib/ports/envelope-ready-store';
 import type { EnvelopeSendStore, PublishSentEnvelopeCommand } from '$lib/ports/envelope-send-store';
 import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
+import type {
+	CreateWorkloadKeyCommand,
+	CreateWorkloadKeyStoreResult,
+	RevokeWorkloadKeyCommand,
+	RevokeWorkloadKeyStoreResult,
+	WorkloadKeyListPage,
+	WorkloadKeyMetadata
+} from '$lib/ports/workload-key-store';
 import {
 	AesGcmRecipientCapabilitySealer,
 	type RecipientCapabilitySealer
@@ -45,6 +53,11 @@ import {
 	computeCompletionAccessExpiry,
 	issueCompletionToken
 } from '$lib/security/completion-token';
+import {
+	canonicalizeWorkloadKeyScopesJson,
+	issueWorkloadKey,
+	type IssuedWorkloadKey
+} from '$lib/security/workload-key';
 import { AesGcmCompletionTokenSealer } from '$lib/security/completion-token-sealer';
 import { PostgresCompletionArtifactStore } from './postgres-completion-artifact-store';
 import { PostgresCompletionDeliveryStore } from './postgres-completion-delivery-store';
@@ -58,6 +71,7 @@ import { PostgresRecipientApproveStore } from './postgres-recipient-approve-stor
 import { PostgresRecipientDeclineStore } from './postgres-recipient-decline-store';
 import { PostgresRecipientDeclinedReceiptStore } from './postgres-recipient-declined-receipt-store';
 import { PostgresRecipientSignStore } from './postgres-recipient-sign-store';
+import { PostgresWorkloadKeyStore } from './postgres-workload-key-store';
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
 const CI_ENABLED: boolean =
@@ -111,7 +125,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	});
 
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
-		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0016_completion_delivery.sql');
+		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0017_workload_keys.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -129,7 +143,10 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'envelope_send_command',
 				'envelope_void_command',
 				'field_value',
-				'recipient'
+				'recipient',
+				'workload_key',
+				'workload_key_create_command',
+				'workload_key_revoke_command'
 			])
 		);
 
@@ -2439,6 +2456,539 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			await database()`UPDATE audit_event SET occurred_at = occurred_at + interval '400 microseconds'
 				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${anchor.id}`;
 			await expectCompletionArtifactFailClosed();
+		});
+	});
+
+	it('enforces workload key tenant keys, hashed credentials, and already-issued create receipts', async () => {
+		const createdAt: string = '2026-09-12T12:00:00.000Z';
+		const expiresAt: string = '2026-12-11T12:00:00.000Z';
+		const keyId: string = '01900000-0000-7000-8000-000000000201';
+		const issued: IssuedWorkloadKey = await issueWorkloadKey();
+		const scopesJson: string = canonicalizeWorkloadKeyScopesJson([
+			'envelopes:send',
+			'drafts:write'
+		]);
+		const secretColumns: { columnName: string }[] = await database()<
+			{ columnName: string }[]
+		>`SELECT column_name AS "columnName" FROM information_schema.columns
+			WHERE table_schema = ${schemaName}
+				AND table_name IN ('workload_key', 'workload_key_create_command', 'workload_key_revoke_command')
+				AND column_name IN ('token', 'secret', 'plaintext', 'credential')`;
+		expect(secretColumns).toEqual([]);
+
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', ${createdAt}::timestamptz)
+			ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`;
+		await database()`INSERT INTO workload_key (
+			organization_id, id, name, token_hash, key_prefix, scopes_json,
+			created_by_user_id, created_at, expires_at
+		) VALUES (
+			${ORGANIZATION_ID}, ${keyId}, 'CI agent', ${issued.tokenHash}, ${issued.keyPrefix},
+			${scopesJson}, ${ACTOR.id}, ${createdAt}::timestamptz, ${expiresAt}::timestamptz
+		)`;
+		await database()`INSERT INTO workload_key_create_command (
+			organization_id, actor_type, actor_id, idempotency_key, request_hash,
+			workload_key_id, name, scopes_json, key_prefix, expires_at, created_at
+		) VALUES (
+			${ORGANIZATION_ID}, 'user', ${ACTOR.id}, 'create-1', ${'a'.repeat(64)},
+			${keyId}, 'CI agent', ${scopesJson}, ${issued.keyPrefix},
+			${expiresAt}::timestamptz, ${createdAt}::timestamptz
+		)`;
+
+		const [stored] = await database()<
+			{ tokenHash: string; keyPrefix: string }[]
+		>`SELECT token_hash AS "tokenHash", key_prefix AS "keyPrefix"
+			FROM workload_key WHERE organization_id = ${ORGANIZATION_ID} AND id = ${keyId}`;
+		expect(stored.tokenHash).toBe(issued.tokenHash);
+		expect(stored.keyPrefix).toBe(issued.keyPrefix);
+		expect(stored.keyPrefix).not.toBe(issued.token);
+
+		await expect(
+			database()`INSERT INTO workload_key_create_command (
+				organization_id, actor_type, actor_id, idempotency_key, request_hash,
+				workload_key_id, name, scopes_json, key_prefix, expires_at, created_at
+			) VALUES (
+				${ORGANIZATION_ID}, 'user', ${ACTOR.id}, 'create-1', ${'e'.repeat(64)},
+				${keyId}, 'CI agent', ${scopesJson}, ${issued.keyPrefix},
+				${expiresAt}::timestamptz, ${createdAt}::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23505' });
+
+		await expect(
+			database()`INSERT INTO workload_key (
+				organization_id, id, name, token_hash, key_prefix, scopes_json,
+				created_by_user_id, created_at, expires_at
+			) VALUES (
+				${ORGANIZATION_ID}, 'not-a-uuid', 'CI agent', ${'b'.repeat(64)}, 'signkit_abcdefgh',
+				${scopesJson}, ${ACTOR.id}, ${createdAt}::timestamptz, ${expiresAt}::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO workload_key (
+				organization_id, id, name, token_hash, key_prefix, scopes_json,
+				created_by_user_id, created_at, expires_at
+			) VALUES (
+				${ORGANIZATION_ID}, '01900000-0000-7000-8000-000000000202', ' padded ',
+				${'c'.repeat(64)}, 'signkit_ijklmnop', ${scopesJson}, ${ACTOR.id},
+				${createdAt}::timestamptz, ${expiresAt}::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		await database()`INSERT INTO workload_key (
+			organization_id, id, name, token_hash, key_prefix, scopes_json,
+			created_by_user_id, created_at, expires_at
+		) VALUES (
+			${ORGANIZATION_ID}, '01900000-0000-7000-8000-000000000206', 'signkitX',
+			${'2'.repeat(64)}, 'signkit_ijklmnop', ${scopesJson}, ${ACTOR.id},
+			${createdAt}::timestamptz, ${expiresAt}::timestamptz
+		)`;
+		await expect(
+			database()`INSERT INTO workload_key (
+				organization_id, id, name, token_hash, key_prefix, scopes_json,
+				created_by_user_id, created_at, expires_at
+			) VALUES (
+				${ORGANIZATION_ID}, '01900000-0000-7000-8000-000000000207', 'signkit_name',
+				${'3'.repeat(64)}, 'signkit_qrstuvwx', ${scopesJson}, ${ACTOR.id},
+				${createdAt}::timestamptz, ${expiresAt}::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO workload_key (
+				organization_id, id, name, token_hash, key_prefix, scopes_json,
+				created_by_user_id, created_at, expires_at
+			) VALUES (
+				${ORGANIZATION_ID}, '01900000-0000-7000-8000-000000000203', 'CI agent',
+				${'d'.repeat(64)}, 'signkit_qrstuvwx', '["envelopes:send","drafts:write"]', ${ACTOR.id},
+				${createdAt}::timestamptz, ${expiresAt}::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO workload_key (
+				organization_id, id, name, token_hash, key_prefix, scopes_json,
+				created_by_user_id, created_at, expires_at
+			) VALUES (
+				${ORGANIZATION_ID}, '01900000-0000-7000-8000-000000000204', 'CI agent',
+				${'e'.repeat(64)}, 'signkit_yzABCDEF', ${scopesJson}, ${ACTOR.id},
+				${createdAt}::timestamptz, '2028-09-12T12:00:00.000Z'::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES ('other-org', 'other-org', 'Other', ${createdAt}::timestamptz)`;
+		await expect(
+			database()`INSERT INTO workload_key (
+				organization_id, id, name, token_hash, key_prefix, scopes_json,
+				created_by_user_id, created_at, expires_at
+			) VALUES (
+				'other-org', '01900000-0000-7000-8000-000000000205', 'CI agent',
+				${issued.tokenHash}, 'signkit_GHJKLMNO', ${scopesJson}, ${ACTOR.id},
+				${createdAt}::timestamptz, ${expiresAt}::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23505' });
+
+		await database()`INSERT INTO workload_key_revoke_command (
+			organization_id, actor_type, actor_id, idempotency_key, request_hash,
+			workload_key_id, key_prefix, revoked_at
+		) VALUES (
+			${ORGANIZATION_ID}, 'user', ${ACTOR.id}, 'revoke-1', ${'9'.repeat(64)},
+			${keyId}, ${issued.keyPrefix}, ${createdAt}::timestamptz
+		)`;
+		await expect(
+			database()`INSERT INTO workload_key_revoke_command (
+				organization_id, actor_type, actor_id, idempotency_key, request_hash,
+				workload_key_id, key_prefix, revoked_at
+			) VALUES (
+				${ORGANIZATION_ID}, 'user', ${ACTOR.id}, 'revoke-2', ${'8'.repeat(64)},
+				${keyId}, ${issued.keyPrefix}, ${createdAt}::timestamptz
+			)`
+		).rejects.toMatchObject({ code: '23505' });
+	});
+
+	describe('PostgresWorkloadKeyStore', () => {
+		const WORKLOAD_CREATED_AT: string = '2026-09-12T12:00:00.000Z';
+		const WORKLOAD_EXPIRES_AT: string = '2026-12-11T12:00:00.000Z';
+		const WORKLOAD_REVOKED_AT: string = '2026-09-12T13:00:00.000Z';
+		const WORKLOAD_KEY_ID: string = '01900000-0000-7000-8000-000000000301';
+		const OTHER_WORKLOAD_KEY_ID: string = '01900000-0000-7000-8000-000000000302';
+		const THIRD_WORKLOAD_KEY_ID: string = '01900000-0000-7000-8000-000000000303';
+		const WORKLOAD_REQUEST_HASH: string = '1'.repeat(64);
+		const OTHER_WORKLOAD_REQUEST_HASH: string = '2'.repeat(64);
+
+		function workloadStore(
+			sql: ReturnType<typeof postgres> = database()
+		): PostgresWorkloadKeyStore {
+			return new PostgresWorkloadKeyStore(sql);
+		}
+
+		async function workloadCreateCommand(
+			overrides: Partial<CreateWorkloadKeyCommand> = {}
+		): Promise<CreateWorkloadKeyCommand> {
+			const credential: IssuedWorkloadKey = await issueWorkloadKey();
+			return {
+				organizationId: ORGANIZATION_ID,
+				organizationName: 'Integration Workspace',
+				actor: { type: 'user', id: ACTOR.id },
+				idempotencyKey: 'workload-create-1',
+				requestFingerprint: WORKLOAD_REQUEST_HASH,
+				workloadKeyId: WORKLOAD_KEY_ID,
+				name: 'CI agent',
+				scopes: ['audit:read', 'envelopes:send'],
+				tokenHash: credential.tokenHash,
+				keyPrefix: credential.keyPrefix,
+				createdAt: WORKLOAD_CREATED_AT,
+				expiresAt: WORKLOAD_EXPIRES_AT,
+				...overrides
+			};
+		}
+
+		function workloadRevokeCommand(
+			overrides: Partial<RevokeWorkloadKeyCommand> = {}
+		): RevokeWorkloadKeyCommand {
+			return {
+				organizationId: ORGANIZATION_ID,
+				actor: { type: 'user', id: ACTOR.id },
+				idempotencyKey: 'workload-revoke-1',
+				requestFingerprint: WORKLOAD_REQUEST_HASH,
+				workloadKeyId: WORKLOAD_KEY_ID,
+				revokedAt: WORKLOAD_REVOKED_AT,
+				...overrides
+			};
+		}
+
+		async function countRows(table: string): Promise<number> {
+			const rows: { value: number }[] = await database().unsafe<{ value: number }[]>(
+				`SELECT count(*)::int AS value FROM ${table}`
+			);
+			return Number(rows[0].value);
+		}
+
+		async function withSecondConnection<T>(
+			use: (sql: ReturnType<typeof postgres>) => Promise<T>
+		): Promise<T> {
+			const other: ReturnType<typeof postgres> = postgres(TEST_DATABASE_URL as string, {
+				max: 1,
+				onnotice: (): void => undefined
+			});
+			try {
+				await other.unsafe(`SET search_path TO "${schemaName}"`);
+				await other.unsafe(`SET TIME ZONE 'UTC'`);
+				return await use(other);
+			} finally {
+				await other.end({ timeout: 5 });
+			}
+		}
+
+		it('creates the organization projection, key, and receipt atomically without plaintext', async () => {
+			const credential: IssuedWorkloadKey = await issueWorkloadKey();
+			const command: CreateWorkloadKeyCommand = await workloadCreateCommand({
+				tokenHash: credential.tokenHash,
+				keyPrefix: credential.keyPrefix
+			});
+
+			const created: CreateWorkloadKeyStoreResult =
+				await workloadStore().createWorkloadKey(command);
+
+			expect(created).toEqual({
+				outcome: 'created',
+				key: {
+					id: WORKLOAD_KEY_ID,
+					name: 'CI agent',
+					keyPrefix: credential.keyPrefix,
+					scopes: ['audit:read', 'envelopes:send'],
+					createdAt: WORKLOAD_CREATED_AT,
+					expiresAt: WORKLOAD_EXPIRES_AT,
+					lastUsedAt: null,
+					revokedAt: null
+				}
+			});
+			const stored = await database()<
+				{ tokenHash: string; keyPrefix: string; createdByUserId: string; scopesJson: string }[]
+			>`SELECT token_hash AS "tokenHash", key_prefix AS "keyPrefix",
+					created_by_user_id AS "createdByUserId", scopes_json AS "scopesJson"
+				FROM workload_key WHERE organization_id = ${ORGANIZATION_ID}`;
+			expect(stored).toEqual([
+				{
+					tokenHash: credential.tokenHash,
+					keyPrefix: credential.keyPrefix,
+					createdByUserId: ACTOR.id,
+					scopesJson: '["audit:read","envelopes:send"]'
+				}
+			]);
+			const plaintext = await database()<
+				{ value: number }[]
+			>`SELECT count(*)::int AS value FROM workload_key WHERE token_hash = ${credential.token}`;
+			expect(Number(plaintext[0].value)).toBe(0);
+			expect(await countRows('workload_key_create_command')).toBe(1);
+		});
+
+		it('replays an exact create and refuses to remap an organization projection', async () => {
+			await workloadStore().createWorkloadKey(await workloadCreateCommand());
+
+			const replay: CreateWorkloadKeyStoreResult = await workloadStore().createWorkloadKey(
+				await workloadCreateCommand({ workloadKeyId: OTHER_WORKLOAD_KEY_ID })
+			);
+			expect(replay.outcome).toBe('already_issued');
+			if (replay.outcome !== 'already_issued') {
+				expect.unreachable('replay should be already_issued');
+			}
+			expect(replay.key.id).toBe(WORKLOAD_KEY_ID);
+			expect(await countRows('workload_key')).toBe(1);
+
+			await database()`UPDATE organization SET d6e_organization_id = 'other-d6e-org'
+				WHERE id = ${ORGANIZATION_ID}`;
+			const remapped: CreateWorkloadKeyStoreResult = await workloadStore().createWorkloadKey(
+				await workloadCreateCommand({
+					idempotencyKey: 'workload-create-remap',
+					requestFingerprint: OTHER_WORKLOAD_REQUEST_HASH,
+					workloadKeyId: OTHER_WORKLOAD_KEY_ID,
+					organizationName: 'Hijacked'
+				})
+			);
+			expect(remapped).toEqual({ outcome: 'integrity_error' });
+			const organization = await database()<
+				{ name: string; d6eOrganizationId: string }[]
+			>`SELECT name, d6e_organization_id AS "d6eOrganizationId"
+				FROM organization WHERE id = ${ORGANIZATION_ID}`;
+			expect(organization[0]).toEqual({
+				name: 'Integration Workspace',
+				d6eOrganizationId: 'other-d6e-org'
+			});
+			expect(await countRows('workload_key')).toBe(1);
+		});
+
+		it('classifies reused idempotency keys, drifted receipts, and credential collisions', async () => {
+			const first: CreateWorkloadKeyCommand = await workloadCreateCommand();
+			await workloadStore().createWorkloadKey(first);
+
+			await expect(
+				workloadStore().createWorkloadKey(
+					await workloadCreateCommand({
+						requestFingerprint: OTHER_WORKLOAD_REQUEST_HASH,
+						workloadKeyId: OTHER_WORKLOAD_KEY_ID
+					})
+				)
+			).resolves.toEqual({ outcome: 'idempotency_conflict' });
+
+			await expect(
+				workloadStore().createWorkloadKey(
+					await workloadCreateCommand({
+						idempotencyKey: 'workload-create-2',
+						requestFingerprint: OTHER_WORKLOAD_REQUEST_HASH,
+						workloadKeyId: OTHER_WORKLOAD_KEY_ID,
+						tokenHash: first.tokenHash
+					})
+				)
+			).resolves.toEqual({ outcome: 'token_hash_conflict' });
+
+			await expect(
+				workloadStore().createWorkloadKey(
+					await workloadCreateCommand({
+						idempotencyKey: 'workload-create-3',
+						requestFingerprint: OTHER_WORKLOAD_REQUEST_HASH
+					})
+				)
+			).resolves.toEqual({ outcome: 'key_id_conflict' });
+
+			await database()`UPDATE workload_key SET name = 'Renamed agent'
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${WORKLOAD_KEY_ID}`;
+			await expect(
+				workloadStore().createWorkloadKey(
+					await workloadCreateCommand({ workloadKeyId: OTHER_WORKLOAD_KEY_ID })
+				)
+			).resolves.toEqual({ outcome: 'idempotency_conflict' });
+			expect(await countRows('workload_key')).toBe(1);
+		});
+
+		it('lists tenant-scoped keys newest first and fails a cross-tenant cursor closed', async () => {
+			await workloadStore().createWorkloadKey(
+				await workloadCreateCommand({
+					idempotencyKey: 'workload-create-a',
+					workloadKeyId: WORKLOAD_KEY_ID,
+					name: 'Oldest',
+					createdAt: '2026-09-10T12:00:00.000Z',
+					expiresAt: '2026-12-09T12:00:00.000Z'
+				})
+			);
+			await workloadStore().createWorkloadKey(
+				await workloadCreateCommand({
+					idempotencyKey: 'workload-create-b',
+					requestFingerprint: OTHER_WORKLOAD_REQUEST_HASH,
+					workloadKeyId: OTHER_WORKLOAD_KEY_ID,
+					name: 'Tied lower id'
+				})
+			);
+			await workloadStore().createWorkloadKey(
+				await workloadCreateCommand({
+					idempotencyKey: 'workload-create-c',
+					requestFingerprint: '3'.repeat(64),
+					workloadKeyId: THIRD_WORKLOAD_KEY_ID,
+					name: 'Tied higher id'
+				})
+			);
+			await workloadStore().createWorkloadKey(
+				await workloadCreateCommand({
+					organizationId: 'workload-other-org',
+					organizationName: 'Other tenant',
+					idempotencyKey: 'workload-create-a',
+					workloadKeyId: '01900000-0000-7000-8000-000000000399',
+					name: 'Other tenant key'
+				})
+			);
+
+			const first: WorkloadKeyListPage = await workloadStore().listWorkloadKeys(ORGANIZATION_ID, {
+				cursor: null,
+				limit: 2
+			});
+			expect(first.items.map((item: WorkloadKeyMetadata): string => item.id)).toEqual([
+				THIRD_WORKLOAD_KEY_ID,
+				OTHER_WORKLOAD_KEY_ID
+			]);
+			expect(first.nextCursor).toBe(OTHER_WORKLOAD_KEY_ID);
+
+			const second: WorkloadKeyListPage = await workloadStore().listWorkloadKeys(ORGANIZATION_ID, {
+				cursor: first.nextCursor,
+				limit: 2
+			});
+			expect(second.items.map((item: WorkloadKeyMetadata): string => item.id)).toEqual([
+				WORKLOAD_KEY_ID
+			]);
+			expect(second.nextCursor).toBeNull();
+			expect(Object.keys(second.items[0]).sort()).toEqual([
+				'createdAt',
+				'expiresAt',
+				'id',
+				'keyPrefix',
+				'lastUsedAt',
+				'name',
+				'revokedAt',
+				'scopes'
+			]);
+
+			await expect(
+				workloadStore().listWorkloadKeys(ORGANIZATION_ID, {
+					cursor: '01900000-0000-7000-8000-000000000399',
+					limit: 10
+				})
+			).resolves.toEqual({ items: [], nextCursor: null });
+			await expect(
+				workloadStore().listWorkloadKeys(ORGANIZATION_ID, {
+					cursor: '01900000-0000-7000-8000-000000000998',
+					limit: 10
+				})
+			).resolves.toEqual({ items: [], nextCursor: null });
+		});
+
+		it('revokes once, replays the original key, and reports already_revoked for a fresh key', async () => {
+			await workloadStore().createWorkloadKey(await workloadCreateCommand());
+
+			const revoked: RevokeWorkloadKeyStoreResult =
+				await workloadStore().revokeWorkloadKey(workloadRevokeCommand());
+			expect(revoked.outcome).toBe('revoked');
+			if (revoked.outcome !== 'revoked') expect.unreachable('first revoke should succeed');
+			expect(revoked.key.revokedAt).toBe(WORKLOAD_REVOKED_AT);
+
+			await expect(workloadStore().revokeWorkloadKey(workloadRevokeCommand())).resolves.toEqual({
+				outcome: 'replayed',
+				key: revoked.key
+			});
+			await expect(
+				workloadStore().revokeWorkloadKey(
+					workloadRevokeCommand({ requestFingerprint: OTHER_WORKLOAD_REQUEST_HASH })
+				)
+			).resolves.toEqual({ outcome: 'idempotency_conflict' });
+
+			const again: RevokeWorkloadKeyStoreResult = await workloadStore().revokeWorkloadKey(
+				workloadRevokeCommand({
+					idempotencyKey: 'workload-revoke-2',
+					revokedAt: '2026-09-12T14:00:00.000Z'
+				})
+			);
+			expect(again).toEqual({ outcome: 'already_revoked', key: revoked.key });
+			expect(await countRows('workload_key_revoke_command')).toBe(1);
+		});
+
+		it('answers unknown and cross-tenant revocations with not_found', async () => {
+			await workloadStore().createWorkloadKey(await workloadCreateCommand());
+			await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+				VALUES ('workload-other-org', 'workload-other-org', 'Other tenant', now())`;
+
+			await expect(
+				workloadStore().revokeWorkloadKey(
+					workloadRevokeCommand({ workloadKeyId: OTHER_WORKLOAD_KEY_ID })
+				)
+			).resolves.toEqual({ outcome: 'not_found' });
+			await expect(
+				workloadStore().revokeWorkloadKey(
+					workloadRevokeCommand({ organizationId: 'workload-other-org' })
+				)
+			).resolves.toEqual({ outcome: 'not_found' });
+			expect(await countRows('workload_key_revoke_command')).toBe(0);
+		});
+
+		it('fails a drifted revoke receipt closed', async () => {
+			await workloadStore().createWorkloadKey(await workloadCreateCommand());
+			await workloadStore().revokeWorkloadKey(workloadRevokeCommand());
+			await database()`UPDATE workload_key
+				SET revoked_at = '2026-09-12T15:00:00.000Z'::timestamptz
+				WHERE organization_id = ${ORGANIZATION_ID} AND id = ${WORKLOAD_KEY_ID}`;
+
+			await expect(workloadStore().revokeWorkloadKey(workloadRevokeCommand())).resolves.toEqual({
+				outcome: 'integrity_error'
+			});
+		});
+
+		it('serializes two connections racing the same create idempotency key', async () => {
+			await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+				VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Integration Workspace', now())`;
+			const firstCommand: CreateWorkloadKeyCommand = await workloadCreateCommand();
+			const secondCommand: CreateWorkloadKeyCommand = await workloadCreateCommand({
+				workloadKeyId: OTHER_WORKLOAD_KEY_ID
+			});
+
+			const outcomes: readonly CreateWorkloadKeyStoreResult[] = await withSecondConnection(
+				async (other: ReturnType<typeof postgres>): Promise<CreateWorkloadKeyStoreResult[]> =>
+					await Promise.all([
+						workloadStore().createWorkloadKey(firstCommand),
+						workloadStore(other).createWorkloadKey(secondCommand)
+					])
+			);
+
+			const kinds: readonly string[] = outcomes.map(
+				(outcome: CreateWorkloadKeyStoreResult): string => outcome.outcome
+			);
+			expect(kinds.filter((kind: string): boolean => kind === 'created')).toHaveLength(1);
+			expect(kinds.filter((kind: string): boolean => kind === 'already_issued')).toHaveLength(1);
+			expect(await countRows('workload_key')).toBe(1);
+			expect(await countRows('workload_key_create_command')).toBe(1);
+		});
+
+		it('serializes two connections racing a revocation of the same key onto one receipt', async () => {
+			await workloadStore().createWorkloadKey(await workloadCreateCommand());
+
+			const outcomes: readonly RevokeWorkloadKeyStoreResult[] = await withSecondConnection(
+				async (other: ReturnType<typeof postgres>): Promise<RevokeWorkloadKeyStoreResult[]> =>
+					await Promise.all([
+						workloadStore().revokeWorkloadKey(
+							workloadRevokeCommand({ idempotencyKey: 'workload-revoke-a' })
+						),
+						workloadStore(other).revokeWorkloadKey(
+							workloadRevokeCommand({
+								idempotencyKey: 'workload-revoke-b',
+								revokedAt: '2026-09-12T13:30:00.000Z'
+							})
+						)
+					])
+			);
+
+			const kinds: readonly string[] = outcomes.map(
+				(outcome: RevokeWorkloadKeyStoreResult): string => outcome.outcome
+			);
+			expect(kinds.filter((kind: string): boolean => kind === 'revoked')).toHaveLength(1);
+			expect(kinds.filter((kind: string): boolean => kind === 'already_revoked')).toHaveLength(1);
+			expect(await countRows('workload_key_revoke_command')).toBe(1);
+			const revoked = await database()<
+				{ value: number }[]
+			>`SELECT count(*)::int AS value FROM workload_key WHERE revoked_at IS NOT NULL`;
+			expect(Number(revoked[0].value)).toBe(1);
 		});
 	});
 });
