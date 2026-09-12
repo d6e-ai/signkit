@@ -581,12 +581,22 @@ export class D1InstanceStore implements InstanceStore {
 			)
 			.bind(command.actor.id, gate.invitation.role, command.acceptedAt, command.acceptedAt);
 
+		// The trailing `(SELECT changes()) = 1` guards chain each statement to the
+		// success of the one before it within this same atomic batch: if
+		// memberStmt lost a concurrent enrollment race for this actor (its
+		// ON CONFLICT DO NOTHING made zero changes), this UPDATE must not
+		// consume this invitation, and if this UPDATE in turn makes zero
+		// changes, the receipt below must not be written either. Without this,
+		// two in-flight accepts for the same new actor could both mark their
+		// own invitation accepted and both write receipts while only one role
+		// is ever actually enrolled.
 		const invitationStmt: D1PreparedStatement = this.#database
 			.prepare(
 				`UPDATE instance_invitation
 				 SET status = 'accepted', accepted_at = ?, accepted_by_user_id = ?
 				 WHERE id = ? AND status = 'pending' AND token_hash = ? AND email_binding = ?
-				   AND expires_at > ?`
+				   AND expires_at > ?
+				   AND (SELECT changes()) = 1`
 			)
 			.bind(
 				command.acceptedAt,
@@ -602,7 +612,8 @@ export class D1InstanceStore implements InstanceStore {
 				`INSERT INTO instance_invitation_command (
 					actor_type, actor_id, idempotency_key, command_type, request_hash,
 					invitation_id, role, result_status, occurred_at
-				) VALUES ('user', ?, ?, 'accept', ?, ?, ?, 'accepted', ?)`
+				) SELECT 'user', ?, ?, 'accept', ?, ?, ?, 'accepted', ?
+				WHERE (SELECT changes()) = 1`
 			)
 			.bind(
 				command.actor.id,
