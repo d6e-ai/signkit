@@ -9,7 +9,8 @@ import {
 	resolveInstanceInvitationExpiresAt,
 	MAX_INSTANCE_INVITATION_LIST_LIMIT,
 	INSTANCE_INVITATION_DEFAULT_EXPIRY_MS,
-	INSTANCE_INVITATION_MAX_EXPIRY_MS
+	INSTANCE_INVITATION_MAX_EXPIRY_MS,
+	type CreateInstanceInvitationStoreResult
 } from './instance-store';
 
 describe('instance-store port helpers', () => {
@@ -77,5 +78,10 @@ describe('instance-store port helpers', () => {
 		expect((): string =>
 			resolveInstanceInvitationExpiresAt(now, '2026-09-19T12:00:00.001Z')
 		).toThrow('Instance invitation expiry must be at most 7 days');
+	});
+
+	it('includes credential_collision in CreateInstanceInvitationStoreResult outcomes', () => {
+		const result: CreateInstanceInvitationStoreResult = { outcome: 'credential_collision' };
+		expect(result.outcome).toBe('credential_collision');
 	});
 });

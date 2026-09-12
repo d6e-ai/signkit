@@ -748,6 +748,52 @@ describe('D1InstanceStore', () => {
 			}
 		});
 
+		it('classifies a candidate invitationId collision as credential_collision when no matching receipt exists', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+
+				const initial = await store.createInstanceInvitation(createInvitationCommand());
+				expect(initial.outcome).toBe('created');
+
+				const collision = await store.createInstanceInvitation(
+					createInvitationCommand({
+						idempotencyKey: 'invite-create-key-2',
+						requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+						tokenHash: OTHER_TOKEN_HASH,
+						emailBinding: OTHER_EMAIL_BINDING
+					})
+				);
+
+				expect(collision).toEqual({ outcome: 'credential_collision' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('classifies a candidate tokenHash collision as credential_collision when no matching receipt exists', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+
+				const initial = await store.createInstanceInvitation(createInvitationCommand());
+				expect(initial.outcome).toBe('created');
+
+				const collision = await store.createInstanceInvitation(
+					createInvitationCommand({
+						idempotencyKey: 'invite-create-key-2',
+						requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+						invitationId: OTHER_INVITATION_ID,
+						emailBinding: OTHER_EMAIL_BINDING
+					})
+				);
+
+				expect(collision).toEqual({ outcome: 'credential_collision' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
 		it('refuses replay if actor was subsequently suspended', async () => {
 			const { store, sqlite } = createFixture();
 			try {

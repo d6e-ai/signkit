@@ -584,6 +584,46 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		]);
 	});
 
+	it('classifies a candidate invitationId collision as credential_collision when no matching receipt exists', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+
+		const initialCommand: CreateInstanceInvitationCommand = createCommand();
+		const initial: CreateInstanceInvitationStoreResult =
+			await store().createInstanceInvitation(initialCommand);
+		expect(initial.outcome).toBe('created');
+
+		const collisionCommand: CreateInstanceInvitationCommand = createCommand({
+			idempotencyKey: 'invite-create-key-2',
+			requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+			tokenHash: OTHER_TOKEN_HASH,
+			emailBinding: 'f'.repeat(64)
+		});
+		const result: CreateInstanceInvitationStoreResult =
+			await store().createInstanceInvitation(collisionCommand);
+
+		expect(result).toEqual({ outcome: 'credential_collision' });
+	});
+
+	it('classifies a candidate tokenHash collision as credential_collision when no matching receipt exists', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+
+		const initialCommand: CreateInstanceInvitationCommand = createCommand();
+		const initial: CreateInstanceInvitationStoreResult =
+			await store().createInstanceInvitation(initialCommand);
+		expect(initial.outcome).toBe('created');
+
+		const collisionCommand: CreateInstanceInvitationCommand = createCommand({
+			idempotencyKey: 'invite-create-key-2',
+			requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+			invitationId: OTHER_INVITATION_ID,
+			emailBinding: 'f'.repeat(64)
+		});
+		const result: CreateInstanceInvitationStoreResult =
+			await store().createInstanceInvitation(collisionCommand);
+
+		expect(result).toEqual({ outcome: 'credential_collision' });
+	});
+
 	it('resolves real max>=2 synchronized same-key concurrent create to created+replayed and one row', async (): Promise<void> => {
 		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
 			max: 2,

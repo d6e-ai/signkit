@@ -15,7 +15,8 @@ interface RecordedStatement {
 
 interface FakeD1Options {
 	batchResults?: readonly unknown[][];
-	firstResult?: unknown | null;
+	firstResult?: unknown | null | ((sql: string, bindings: readonly unknown[]) => unknown | null);
+	batchError?: Error | ((batchIndex: number) => Error | undefined);
 }
 
 function fakeD1(options: FakeD1Options = {}) {
@@ -31,7 +32,12 @@ function fakeD1(options: FakeD1Options = {}) {
 			run: async (): Promise<{ meta: { changes: number } }> => ({
 				meta: { changes: 1 }
 			}),
-			first: async (): Promise<unknown | null> => options.firstResult ?? null,
+			first: async (): Promise<unknown | null> => {
+				if (typeof options.firstResult === 'function') {
+					return options.firstResult(record.sql, record.bindings);
+				}
+				return options.firstResult ?? null;
+			},
 			all: async (): Promise<{ results: unknown[] }> => ({
 				results: []
 			})
@@ -47,7 +53,14 @@ function fakeD1(options: FakeD1Options = {}) {
 			const records: RecordedStatement[] = statements.map((statement) =>
 				prepared.find((item) => item.statement === statement)!
 			);
+			const batchIndex: number = batches.length;
 			batches.push(records);
+			if (typeof options.batchError === 'function') {
+				const error = options.batchError(batchIndex);
+				if (error !== undefined) throw error;
+			} else if (options.batchError !== undefined) {
+				throw options.batchError;
+			}
 			return statements.map((_, index: number) => ({
 				meta: { changes: 1 },
 				results: (options.batchResults?.[index] ?? []) as unknown[]
@@ -167,6 +180,62 @@ describe('D1InstanceStore unit tests', () => {
 			const result = await store.createInstanceInvitation(createCommand);
 			expect(result).toEqual({ outcome: 'limit' });
 			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('classifies candidate invitationId collision as credential_collision when batch fails', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }], // member (gate)
+					[], // receipt
+					[{ count: 0 }] // pending count
+				],
+				batchError: (batchIndex: number) =>
+					batchIndex === 1
+						? new Error('D1_ERROR: UNIQUE constraint failed: instance_invitation.id')
+						: undefined,
+				firstResult: (sql: string) => (sql.includes('WHERE id = ?') ? { 1: 1 } : null)
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.createInstanceInvitation(createCommand);
+			expect(result).toEqual({ outcome: 'credential_collision' });
+		});
+
+		it('classifies candidate tokenHash collision as credential_collision when batch fails', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }], // member (gate)
+					[], // receipt
+					[{ count: 0 }] // pending count
+				],
+				batchError: (batchIndex: number) =>
+					batchIndex === 1
+						? new Error('D1_ERROR: UNIQUE constraint failed: instance_invitation.token_hash')
+						: undefined,
+				firstResult: (sql: string) => (sql.includes('WHERE token_hash = ?') ? { 1: 1 } : null)
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.createInstanceInvitation(createCommand);
+			expect(result).toEqual({ outcome: 'credential_collision' });
+		});
+
+		it('re-throws unknown batch error when no collision exists during classification', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }], // member (gate)
+					[], // receipt
+					[{ count: 0 }] // pending count
+				],
+				batchError: (batchIndex: number) =>
+					batchIndex === 1 ? new Error('D1_ERROR: storage write failure') : undefined,
+				firstResult: () => null
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			await expect(store.createInstanceInvitation(createCommand)).rejects.toThrow(
+				'D1_ERROR: storage write failure'
+			);
 		});
 	});
 

@@ -784,13 +784,13 @@ export class D1InstanceStore implements InstanceStore {
 			.prepare('SELECT 1 FROM instance_invitation WHERE id = ? LIMIT 1')
 			.bind(command.invitationId)
 			.first();
-		if (existingId !== null) return { outcome: 'integrity_error' };
+		if (existingId !== null) return { outcome: 'credential_collision' };
 
 		const existingHash = await this.#database
 			.prepare('SELECT 1 FROM instance_invitation WHERE token_hash = ? LIMIT 1')
 			.bind(command.tokenHash)
 			.first();
-		if (existingHash !== null) return { outcome: 'integrity_error' };
+		if (existingHash !== null) return { outcome: 'credential_collision' };
 
 		return null;
 	}

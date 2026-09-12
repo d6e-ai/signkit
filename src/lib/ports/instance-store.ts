@@ -120,6 +120,8 @@ export interface CreateInstanceInvitationCommand {
  * - `idempotency_conflict`: the Idempotency-Key was reused for a different
  *   request, or the durable receipt cannot be proven against the invitation
  *   it references.
+ * - `credential_collision`: candidate invitationId or tokenHash already exists
+ *   without a matching idempotency receipt.
  * - `member_suspended`: the actor exists but is not `active`. Fail closed; no
  *   invitation or receipt is written.
  * - `integrity_error`: the receipt and invitation rows cannot be reconciled.
@@ -131,6 +133,7 @@ export type CreateInstanceInvitationStoreResult =
 	| { outcome: 'role_not_permitted' }
 	| { outcome: 'limit' }
 	| { outcome: 'idempotency_conflict' }
+	| { outcome: 'credential_collision' }
 	| { outcome: 'member_suspended' }
 	| { outcome: 'integrity_error' };
 

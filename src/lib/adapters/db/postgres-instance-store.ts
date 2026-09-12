@@ -407,10 +407,14 @@ export class PostgresInstanceStore implements InstanceStore {
 			if (error instanceof InstanceRollback) {
 				return error.result as CreateInstanceInvitationStoreResult;
 			}
-			const classified: CreateInstanceInvitationStoreResult | null =
-				await this.#classifyCreateFailure(this.#sql, command);
-			if (classified !== null && classified.outcome !== 'integrity_error') {
-				return classified;
+			try {
+				const classified: CreateInstanceInvitationStoreResult | null =
+					await this.#classifyCreateFailure(this.#sql, command);
+				if (classified !== null && classified.outcome !== 'integrity_error') {
+					return classified;
+				}
+			} catch {
+				throw error;
 			}
 			throw error;
 		}
@@ -987,14 +991,14 @@ export class PostgresInstanceStore implements InstanceStore {
 			SELECT id FROM instance_invitation WHERE id = ${command.invitationId} LIMIT 1
 		`;
 		if (existingId.length > 0) {
-			return { outcome: 'integrity_error' };
+			return { outcome: 'credential_collision' };
 		}
 
 		const existingHash = await sql<{ id: string }[]>`
 			SELECT id FROM instance_invitation WHERE token_hash = ${command.tokenHash} LIMIT 1
 		`;
 		if (existingHash.length > 0) {
-			return { outcome: 'integrity_error' };
+			return { outcome: 'credential_collision' };
 		}
 
 		return { outcome: 'integrity_error' };

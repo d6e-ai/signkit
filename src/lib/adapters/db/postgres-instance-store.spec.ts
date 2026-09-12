@@ -669,6 +669,91 @@ describe('PostgresInstanceStore', () => {
 			});
 			expect(scripted.rollbacks).toBe(1);
 		});
+
+		it('returns credential_collision when candidate invitationId collision occurs during insert', async () => {
+			const scripted = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }], // member check
+				[], // advisory lock
+				[], // receipt check (none yet)
+				[{ count: '0' }], // count check
+				[], // invitation insert returned 0 rows (conflict on invitationId)
+				// classify queries:
+				[], // receipt check
+				[{ role: 'owner', status: 'active' }], // member check
+				[{ count: '0' }], // count check
+				[{ id: INVITATION_ID }] // existingId found
+			]);
+
+			const result: CreateInstanceInvitationStoreResult =
+				await store(scripted).createInstanceInvitation(createCommand());
+
+			expect(result).toEqual({ outcome: 'credential_collision' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns credential_collision when candidate tokenHash collision occurs during insert', async () => {
+			const scripted = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }], // member check
+				[], // advisory lock
+				[], // receipt check (none yet)
+				[{ count: '0' }], // count check
+				[], // invitation insert returned 0 rows (conflict on tokenHash)
+				// classify queries:
+				[], // receipt check
+				[{ role: 'owner', status: 'active' }], // member check
+				[{ count: '0' }], // count check
+				[], // existingId not found
+				[{ id: INVITATION_ID }] // existingHash found
+			]);
+
+			const result: CreateInstanceInvitationStoreResult =
+				await store(scripted).createInstanceInvitation(createCommand());
+
+			expect(result).toEqual({ outcome: 'credential_collision' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('outer catch returns credential_collision when driver throws and collision is classified', async () => {
+			const scripted = new ScriptedPostgres([
+				new Error('simulated driver insert conflict'), // transaction throws
+				// outer catch classify queries:
+				[], // receipt check
+				[{ role: 'owner', status: 'active' }], // member check
+				[{ count: '0' }], // count check
+				[{ id: INVITATION_ID }] // existingId found
+			]);
+
+			const result: CreateInstanceInvitationStoreResult =
+				await store(scripted).createInstanceInvitation(createCommand());
+
+			expect(result).toEqual({ outcome: 'credential_collision' });
+		});
+
+		it('outer catch re-throws unknown/integrity provider failures when no collision exists', async () => {
+			const scripted = new ScriptedPostgres([
+				new Error('connection failure'), // transaction throws
+				// outer catch classify queries:
+				[], // receipt check
+				[{ role: 'owner', status: 'active' }], // member check
+				[{ count: '0' }], // count check
+				[], // existingId not found
+				[] // existingHash not found -> classify returns integrity_error
+			]);
+
+			await expect(store(scripted).createInstanceInvitation(createCommand())).rejects.toThrow(
+				'connection failure'
+			);
+		});
+
+		it('outer catch re-throws driver error if classification query fails', async () => {
+			const scripted = new ScriptedPostgres([
+				new Error('database offline') // transaction throws and classification cannot proceed
+			]);
+
+			await expect(store(scripted).createInstanceInvitation(createCommand())).rejects.toThrow(
+				'database offline'
+			);
+		});
 	});
 
 	describe('listInstanceInvitations', () => {
