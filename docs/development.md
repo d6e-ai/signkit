@@ -70,7 +70,7 @@ Binding types are generated, not hand-written; regenerate them whenever `wrangle
 
 ## Migrations
 
-`migrations/postgres` and `migrations/d1` are maintained as separate dialect-specific sets behind the same ports. A schema change usually means writing both, plus the matching migration specs. The shared model avoids database enums, arrays, and dialect-specific JSON column types, and every tenant-owned table carries `organization_id` in its keys and foreign keys — see [design.md § Persistence](design.md#persistence).
+`migrations/postgres` and `migrations/d1` are maintained as separate dialect-specific sets behind the same ports. A schema change usually means writing both, plus the matching migration specs. The shared model avoids database enums, arrays, and dialect-specific JSON column types. Tenant-owned tables carry `organization_id` in their keys and foreign keys; instance-scoped `instance_member` / `api_key` tables do not — see [design.md § Persistence](design.md#persistence). SignKit is unreleased, so rewritten migrations require a local database reset rather than a compatibility migration.
 
 A new SignKit-owned identifier column needs the UUIDv7 check in both dialects (PostgreSQL regex, D1 `length`/`substr`/`NOT GLOB`) and a case in each parity suite: `postgres-migrations.integration.spec.ts` and `d1-uuidv7-identifier-constraints.spec.ts`. Mint the value with `newUuidV7` from `src/lib/ids/uuid-v7.ts` — never with `crypto.randomUUID`, and never for external identity, idempotency keys, or secret material — see [design.md § Identifiers](design.md#identifiers).
 
@@ -84,7 +84,7 @@ A new SignKit-owned identifier column needs the UUIDv7 check in both dialects (P
 | `src/lib/ids`                | the single UUIDv7 generator for persistent identifiers                |
 | `src/lib/ports`              | database, object store, identity, and mail interfaces                 |
 | `src/lib/adapters`           | PostgreSQL/D1, S3/R2, and mail implementations                        |
-| `src/lib/security`           | session, capability, and workload-key cryptography                    |
+| `src/lib/security`           | session, capability, and API-key cryptography                         |
 | `src/lib/history`            | bounded Git draft repository handling                                 |
 | `migrations/{postgres,d1}`   | dialect-specific SQL migrations                                       |
 | `messages`, `project.inlang` | Paraglide `en`/`ja` message catalogues                                |

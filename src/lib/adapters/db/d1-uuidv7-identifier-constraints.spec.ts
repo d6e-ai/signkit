@@ -148,13 +148,16 @@ function insertCompletionDelivery(sqlite: DatabaseSync, id: string): void {
 	`);
 }
 
-function insertWorkloadKey(sqlite: DatabaseSync, id: string): void {
+function insertApiKey(sqlite: DatabaseSync, id: string): void {
 	sqlite.exec(`
-		INSERT INTO workload_key (
-			organization_id, id, name, token_hash, key_prefix, scopes_json,
-			created_by_user_id, created_at, expires_at, rate_window_count
+		INSERT INTO instance_member (user_id, status, created_at, updated_at)
+		VALUES ('user_d6e_1', 'active', '${NOW}', '${NOW}')
+		ON CONFLICT (user_id) DO NOTHING;
+		INSERT INTO api_key (
+			id, name, token_hash, key_prefix, scopes_json,
+			owner_user_id, created_at, expires_at, rate_window_count
 		) VALUES (
-			'${ORGANIZATION_ID}', '${id}', 'CI agent', '${'b'.repeat(64)}', 'signkit_abcdefgh',
+			'${id}', 'CI agent', '${'b'.repeat(64)}', 'signkit_abcdefgh',
 			'["envelopes:read"]', 'user_d6e_1', '${NOW}', '2026-12-11T00:00:00.000Z', 0
 		)
 	`);
@@ -168,7 +171,7 @@ const CONSTRAINED_TABLES: readonly [string, (sqlite: DatabaseSync, id: string) =
 		['delivery_outbox', insertDelivery, 'delivery_outbox_id_uuidv7'],
 		['envelope_field', insertField, 'envelope_field_id_uuidv7'],
 		['completion_delivery_outbox', insertCompletionDelivery, 'completion_delivery_id_uuidv7'],
-		['workload_key', insertWorkloadKey, 'workload_key_id_uuidv7']
+		['api_key', insertApiKey, 'api_key_id_uuidv7']
 	];
 
 describe('D1 UUIDv7 identifier constraints', () => {
@@ -191,6 +194,20 @@ describe('D1 UUIDv7 identifier constraints', () => {
 			}
 		});
 	}
+
+	it('keeps external d6e-auth user subjects unconstrained', () => {
+		const sqlite: DatabaseSync = database();
+		try {
+			expect((): void =>
+				sqlite.exec(`
+					INSERT INTO instance_member (user_id, status, created_at, updated_at)
+					VALUES ('user_d6e_not_a_uuid', 'active', '${NOW}', '${NOW}')
+				`)
+			).not.toThrow();
+		} finally {
+			sqlite.close();
+		}
+	});
 
 	it('keeps external d6e-auth organization identifiers unconstrained', () => {
 		const sqlite: DatabaseSync = database();

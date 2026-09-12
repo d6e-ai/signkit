@@ -4,7 +4,7 @@ import { v7 as encodeUuidV7 } from 'uuid';
  * The single source of persistent SignKit identifiers.
  *
  * Every application-owned row identifier — envelopes, recipients, fields,
- * audit events, delivery intents, completion delivery grants, and workload key
+ * audit events, delivery intents, completion delivery grants, and API key
  * records — is a canonical lowercase RFC 9562 UUIDv7 minted here before the row
  * is written. Database-native `uuidv7()` is deliberately not the generator: D1
  * has no such function, and commands hash, seal, and audit their identifiers
@@ -15,7 +15,7 @@ import { v7 as encodeUuidV7 } from 'uuid';
  * substitute for the audit chain's own `sequence` and `occurred_at` columns.
  *
  * Opaque security material — recipient capabilities, completion access grants,
- * workload key secrets, OAuth state, session nonces, and delivery claim tokens
+ * API key secrets, OAuth state, session nonces, and delivery claim tokens
  * — must never be minted here: a UUIDv7 carries only 74 random bits and leaks
  * its creation time. Caller-chosen idempotency keys are also not identifiers:
  * first-party browsers mint UUIDv4 via `crypto.randomUUID()`, and the server
