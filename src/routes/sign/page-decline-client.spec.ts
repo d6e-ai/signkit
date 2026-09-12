@@ -156,6 +156,7 @@ describe('recipient decline client controller', () => {
 			.mockResolvedValueOnce(successResponse());
 
 		const onTransientFailure = vi.fn();
+		const onAmbiguousFailure = vi.fn();
 		const onSuccess = vi.fn();
 
 		const controller = createRecipientDeclineController({
@@ -163,6 +164,7 @@ describe('recipient decline client controller', () => {
 			fetch,
 			randomUUID: () => 'stable-decline-key',
 			onTransientFailure,
+			onAmbiguousFailure,
 			onSuccess
 		});
 
@@ -170,16 +172,19 @@ describe('recipient decline client controller', () => {
 		await controller.confirmDecline();
 		expect(controller.getStatus()).toBe('transient_failure');
 		expect(onTransientFailure).toHaveBeenCalledTimes(1);
+		expect(onAmbiguousFailure).not.toHaveBeenCalled();
 
 		// 2nd attempt: 500 transient failure
 		await controller.confirmDecline();
 		expect(controller.getStatus()).toBe('transient_failure');
 		expect(onTransientFailure).toHaveBeenCalledTimes(2);
+		expect(onAmbiguousFailure).not.toHaveBeenCalled();
 
 		// 3rd attempt: network error
 		await controller.confirmDecline();
 		expect(controller.getStatus()).toBe('transient_failure');
 		expect(onTransientFailure).toHaveBeenCalledTimes(3);
+		expect(onAmbiguousFailure).toHaveBeenCalledOnce();
 
 		// 4th attempt: success
 		await controller.confirmDecline();
@@ -217,11 +222,13 @@ describe('recipient decline client controller', () => {
 				)
 			);
 		const onSuccess = vi.fn();
+		const onAmbiguousFailure = vi.fn();
 		const controller = createRecipientDeclineController({
 			...base,
 			fetch,
 			randomUUID: () => 'receipt-key',
-			onSuccess
+			onSuccess,
+			onAmbiguousFailure
 		});
 
 		await controller.confirmDecline();
@@ -229,6 +236,7 @@ describe('recipient decline client controller', () => {
 		await controller.confirmDecline();
 		expect(controller.getStatus()).toBe('transient_failure');
 		expect(onSuccess).not.toHaveBeenCalled();
+		expect(onAmbiguousFailure).toHaveBeenCalledTimes(2);
 	});
 
 	it('treats 408, 429, and 409 with Retry-After as transient retryable failures', async () => {

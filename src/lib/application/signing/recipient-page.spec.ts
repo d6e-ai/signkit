@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RecipientWorkspace, RecipientWorkspaceApplicationPort } from './recipient-workspace';
+import type { RecipientDeclinedReceiptApplicationPort } from './recipient-declined-receipt';
 import { RecipientWorkspaceIntegrityError } from './recipient-workspace';
-import { resolveRecipientPage } from './recipient-page';
+import { resolveDeclinedReceiptPage, resolveRecipientPage } from './recipient-page';
+import type { DeclinedReceiptSessionLocator } from '$lib/server/declined-receipt-session';
 
 const workspace: RecipientWorkspace = {
 	access: {
@@ -76,6 +78,42 @@ describe('recipient signing page resolution', () => {
 		expect(clearSession).toHaveBeenCalledOnce();
 	});
 
+	it('recovers a durable decline receipt without returning the document workspace', async () => {
+		const clearSession = vi.fn();
+		const recoverDeclined = vi.fn(async () => ({
+			envelopeId: 'env-1',
+			recipientId: 'recipient-1',
+			recipientStatus: 'declined' as const,
+			envelopeStatus: 'declined' as const,
+			declinedAt: '2026-09-11T00:02:00.000Z',
+			locale: 'en' as const
+		}));
+		const result = await resolveRecipientPage(
+			{
+				accessHint: null,
+				cookie: 'sealed',
+				clearSession,
+				recoverDeclined
+			},
+			() => application(null),
+			async (): Promise<string> => 'raw-token',
+			() => new Date('2026-09-11T00:03:00.000Z')
+		);
+
+		expect(recoverDeclined).toHaveBeenCalledWith('raw-token', new Date('2026-09-11T00:03:00.000Z'));
+		expect(result).toEqual({
+			state: 'declined',
+			envelopeId: 'env-1',
+			recipientId: 'recipient-1',
+			recipientStatus: 'declined',
+			envelopeStatus: 'declined',
+			declinedAt: '2026-09-11T00:02:00.000Z',
+			locale: 'en'
+		});
+		expect(clearSession).not.toHaveBeenCalled();
+		expect(JSON.stringify(result)).not.toMatch(/documents|fields|organization|archive/);
+	});
+
 	it('preserves the session during a transient persistence outage', async () => {
 		const clearSession = vi.fn();
 		await expect(
@@ -127,5 +165,95 @@ describe('recipient signing page resolution', () => {
 			JSON.stringify({ event: 'recipient_page_integrity_failed' })
 		);
 		error.mockRestore();
+	});
+});
+
+const declinedLocator: DeclinedReceiptSessionLocator = {
+	version: 1,
+	organizationId: '00000000-0000-8000-a000-000000000001',
+	envelopeId: '00000000-0000-8000-a000-000000000002',
+	recipientId: '00000000-0000-8000-a000-000000000003',
+	idempotencyKey: 'decline-1',
+	capabilityHash: 'a'.repeat(64),
+	declinedAt: '2026-09-11T00:02:00.000Z',
+	expiresAt: '2026-10-11T00:02:00.000Z'
+};
+
+function declinedReceiptApplication(): RecipientDeclinedReceiptApplicationPort {
+	return {
+		recoverByToken: vi.fn(),
+		resolveLocator: vi.fn(async () => ({
+			receipt: {
+				envelopeId: declinedLocator.envelopeId,
+				recipientId: declinedLocator.recipientId,
+				recipientStatus: 'declined' as const,
+				envelopeStatus: 'declined' as const,
+				declinedAt: declinedLocator.declinedAt,
+				locale: 'en' as const
+			},
+			locator: declinedLocator
+		}))
+	};
+}
+
+describe('terminal decline receipt page resolution', () => {
+	it('evidence-checks the encrypted locator without returning a workspace', async () => {
+		const application: RecipientDeclinedReceiptApplicationPort = declinedReceiptApplication();
+		const result = await resolveDeclinedReceiptPage(
+			{ cookie: 'sealed', clearSession: vi.fn() },
+			() => application,
+			async (): Promise<DeclinedReceiptSessionLocator> => declinedLocator,
+			() => new Date('2026-09-11T00:03:00.000Z')
+		);
+
+		expect(application.resolveLocator).toHaveBeenCalledWith(
+			{
+				organizationId: declinedLocator.organizationId,
+				envelopeId: declinedLocator.envelopeId,
+				recipientId: declinedLocator.recipientId,
+				idempotencyKey: declinedLocator.idempotencyKey,
+				capabilityHash: declinedLocator.capabilityHash,
+				declinedAt: declinedLocator.declinedAt,
+				expiresAt: declinedLocator.expiresAt
+			},
+			new Date('2026-09-11T00:03:00.000Z')
+		);
+		expect(result).toMatchObject({ state: 'declined', locale: 'en' });
+		expect(JSON.stringify(result)).not.toMatch(/documents|fields|organization|archive|capability/);
+	});
+
+	it.each(['unreadable', 'expired', 'unproven'] as const)(
+		'clears an %s receipt cookie and fails closed',
+		async (scenario) => {
+			const clearSession = vi.fn();
+			const application: RecipientDeclinedReceiptApplicationPort = declinedReceiptApplication();
+			if (scenario === 'unproven') {
+				vi.mocked(application.resolveLocator).mockResolvedValue(null);
+			}
+			const result = await resolveDeclinedReceiptPage(
+				{ cookie: 'sealed', clearSession },
+				() => application,
+				async (): Promise<DeclinedReceiptSessionLocator | null> =>
+					scenario === 'unreadable' ? null : declinedLocator,
+				() =>
+					new Date(scenario === 'expired' ? '2026-10-11T00:02:00.000Z' : '2026-09-11T00:03:00.000Z')
+			);
+
+			expect(result).toEqual({ state: 'invalid' });
+			expect(clearSession).toHaveBeenCalledOnce();
+		}
+	);
+
+	it('preserves the receipt cookie during a transient resolver outage', async () => {
+		const clearSession = vi.fn();
+		await expect(
+			resolveDeclinedReceiptPage(
+				{ cookie: 'sealed', clearSession },
+				() => null,
+				async (): Promise<DeclinedReceiptSessionLocator> => declinedLocator,
+				() => new Date('2026-09-11T00:03:00.000Z')
+			)
+		).resolves.toEqual({ state: 'unavailable' });
+		expect(clearSession).not.toHaveBeenCalled();
 	});
 });

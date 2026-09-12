@@ -94,6 +94,8 @@
 	"signing_decline_success": "Request was declined.",
 	"signing_declined_receipt_title": "Request declined",
 	"signing_declined_receipt_description": "You have declined this request. No further action can be taken.",
+	"signing_declined_receipt_recorded_at": "Declined at {timestamp}",
+	"signing_declined_receipt_access_closed": "Document access and signing authority for this request have ended.",
 	"signing_decline_no_js_explanation": "JavaScript is required to confirm and record a decline.",
 	"signing_status_approved": "Approved",
 	"signing_approve_action": "Approve agreement",

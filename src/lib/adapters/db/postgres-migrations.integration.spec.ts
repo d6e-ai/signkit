@@ -16,6 +16,7 @@ import {
 	type RecipientApprovedResult
 } from '$lib/application/signing/recipient-approved';
 import { RecipientDeclinedApplication } from '$lib/application/signing/recipient-declined';
+import { RecipientDeclinedReceiptApplication } from '$lib/application/signing/recipient-declined-receipt';
 import {
 	RecipientSignedApplication,
 	type RecipientSignedResult
@@ -35,6 +36,7 @@ import { PostgresEnvelopeSendStore } from './postgres-envelope-send-store';
 import { PostgresEnvelopeVoidStore } from './postgres-envelope-void-store';
 import { PostgresRecipientApproveStore } from './postgres-recipient-approve-store';
 import { PostgresRecipientDeclineStore } from './postgres-recipient-decline-store';
+import { PostgresRecipientDeclinedReceiptStore } from './postgres-recipient-declined-receipt-store';
 import { PostgresRecipientSignStore } from './postgres-recipient-sign-store';
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
@@ -609,6 +611,71 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(JSON.parse(evidence[0].payload)).toMatchObject({
 			revokedCapabilities: { reason: 'envelope_declined', recipientIds: ids }
 		});
+
+		const receiptApplication = new RecipientDeclinedReceiptApplication(
+			new PostgresRecipientDeclinedReceiptStore(database())
+		);
+		const recovered = await receiptApplication.recoverByToken(
+			token,
+			new Date(Date.parse(declinedAt) + 24 * 60 * 60 * 1000)
+		);
+		expect(recovered).toMatchObject({
+			receipt: {
+				envelopeId: ENVELOPE_ID,
+				recipientId: pending[0].recipientId,
+				recipientStatus: 'declined',
+				envelopeStatus: 'declined',
+				declinedAt,
+				locale: 'en'
+			},
+			locator: {
+				organizationId: ORGANIZATION_ID,
+				idempotencyKey: 'decline-after-send'
+			}
+		});
+		if (recovered === null) throw new Error('Expected a durable declined receipt');
+		await expect(
+			receiptApplication.resolveLocator(
+				recovered.locator,
+				new Date(Date.parse(declinedAt) + 24 * 60 * 60 * 1000)
+			)
+		).resolves.toEqual(recovered);
+		await expect(
+			receiptApplication.resolveLocator(
+				{ ...recovered.locator, idempotencyKey: 'different-decline' },
+				new Date(Date.parse(declinedAt) + 24 * 60 * 60 * 1000)
+			)
+		).resolves.toBeNull();
+
+		await database()`UPDATE recipient SET capability_revoked_at = NULL
+				WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+					AND id <> ${pending[0].recipientId} AND status <> 'completed'`;
+		await expect(
+			receiptApplication.recoverByToken(
+				token,
+				new Date(Date.parse(declinedAt) + 24 * 60 * 60 * 1000)
+			)
+		).resolves.toBeNull();
+
+		await database()`UPDATE recipient SET capability_revoked_at = ${declinedAt}
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND id <> ${pending[0].recipientId} AND status <> 'completed'`;
+		await expect(
+			receiptApplication.recoverByToken(
+				token,
+				new Date(Date.parse(declinedAt) + 24 * 60 * 60 * 1000)
+			)
+		).resolves.not.toBeNull();
+		await database()`UPDATE delivery_outbox
+			SET status = 'pending', retryable = true, sealed_capability = 'restored-capability'
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND recipient_id = ${pending[0].recipientId}`;
+		await expect(
+			receiptApplication.recoverByToken(
+				token,
+				new Date(Date.parse(declinedAt) + 24 * 60 * 60 * 1000)
+			)
+		).resolves.toBeNull();
 	});
 
 	it.each(['approver', 'signer'] as const)(

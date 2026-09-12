@@ -4,10 +4,16 @@ import type {
 	RecipientDeclinedApplicationPort,
 	RecipientDeclinedResult
 } from '$lib/application/signing/recipient-declined';
+import type {
+	AuthorizedRecipientDeclinedReceipt,
+	RecipientDeclinedReceiptApplicationPort
+} from '$lib/application/signing/recipient-declined-receipt';
+import { DECLINED_RECEIPT_COOKIE } from '$lib/server/declined-receipt-session';
 import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
 import {
 	createRecipientDeclinedHandler,
-	type RecipientDeclinedApplicationResolver
+	type RecipientDeclinedApplicationResolver,
+	type RecipientDeclinedHandlerOptions
 } from './recipient-declined';
 
 const envelopeId: string = '00000000-0000-8000-a000-000000000001';
@@ -21,19 +27,25 @@ function requestEvent(
 		body?: unknown;
 		cookie?: string;
 	} = {}
-): { event: RequestEvent; deleted: ReturnType<typeof vi.fn> } {
+): {
+	event: RequestEvent;
+	deleted: ReturnType<typeof vi.fn>;
+	set: ReturnType<typeof vi.fn>;
+} {
 	const headers: Headers = new Headers({ 'content-type': 'application/json' });
 	if (options.origin !== null) headers.set('origin', options.origin ?? 'https://signkit.example');
 	if (options.idempotencyKey !== undefined) {
 		headers.set('idempotency-key', options.idempotencyKey);
 	}
 	const deleted = vi.fn();
+	const set = vi.fn();
 	const cookie: string | undefined = options.cookie ?? 'sealed-session';
 	const cookies = {
 		get: vi.fn((name: string): string | undefined =>
 			name === RECIPIENT_SESSION_COOKIE ? cookie : undefined
 		),
-		delete: deleted
+		delete: deleted,
+		set
 	} as unknown as Cookies;
 	const request = new Request('https://signkit.example/api/v1/signing/decline', {
 		method: 'POST',
@@ -47,7 +59,8 @@ function requestEvent(
 			request,
 			url: new URL(request.url)
 		} as unknown as RequestEvent,
-		deleted
+		deleted,
+		set
 	};
 }
 
@@ -68,6 +81,45 @@ const published: RecipientDeclinedResult = {
 		auditEventId: 'private-audit-id'
 	}
 };
+
+const authorizedReceipt: AuthorizedRecipientDeclinedReceipt = {
+	receipt: {
+		envelopeId,
+		recipientId,
+		recipientStatus: 'declined',
+		envelopeStatus: 'declined',
+		declinedAt: '2026-09-11T00:02:00.000Z',
+		locale: 'ja'
+	},
+	locator: {
+		organizationId: '00000000-0000-8000-a000-000000000003',
+		envelopeId,
+		recipientId,
+		idempotencyKey: 'decline-1',
+		capabilityHash: 'b'.repeat(64),
+		declinedAt: '2026-09-11T00:02:00.000Z',
+		expiresAt: '2026-10-11T00:02:00.000Z'
+	}
+};
+
+function receiptApplication(
+	result: AuthorizedRecipientDeclinedReceipt | null = authorizedReceipt
+): RecipientDeclinedReceiptApplicationPort {
+	return {
+		recoverByToken: vi.fn(async (): Promise<AuthorizedRecipientDeclinedReceipt | null> => result),
+		resolveLocator: vi.fn(async (): Promise<AuthorizedRecipientDeclinedReceipt | null> => result)
+	};
+}
+
+function receiptOptions(
+	result: AuthorizedRecipientDeclinedReceipt | null = authorizedReceipt
+): RecipientDeclinedHandlerOptions {
+	return {
+		resolveReceiptApplication: vi.fn(() => receiptApplication(result)),
+		sealReceiptSession: vi.fn(async (): Promise<string> => 'sealed-receipt'),
+		now: (): Date => new Date('2026-09-11T00:03:00.000Z')
+	};
+}
 
 describe('recipient declined HTTP handler', () => {
 	it('rejects cross-origin and origin-less POSTs before reading the cookie', async () => {
@@ -137,10 +189,17 @@ describe('recipient declined HTTP handler', () => {
 
 	it('passes only the cookie capability and expected IDs to the application', async () => {
 		const app: RecipientDeclinedApplicationPort = application(published);
-		const { event, deleted } = requestEvent({ idempotencyKey: 'decline-1' });
+		const receiptApp: RecipientDeclinedReceiptApplicationPort = receiptApplication();
+		const sealReceiptSession = vi.fn(async (): Promise<string> => 'sealed-receipt');
+		const { event, deleted, set } = requestEvent({ idempotencyKey: 'decline-1' });
 		const response: Response = await createRecipientDeclinedHandler(
 			() => app,
-			async (): Promise<string> => token
+			async (): Promise<string> => token,
+			{
+				resolveReceiptApplication: () => receiptApp,
+				sealReceiptSession,
+				now: (): Date => new Date('2026-09-11T00:03:00.000Z')
+			}
 		)(event);
 
 		expect(app.decline).toHaveBeenCalledWith({
@@ -153,6 +212,19 @@ describe('recipient declined HTTP handler', () => {
 		expect(response.headers.get('cache-control')).toBe('no-store');
 		expect(response.headers.get('vary')).toBe('Cookie, Origin');
 		expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(set).toHaveBeenCalledWith(
+			DECLINED_RECEIPT_COOKIE,
+			'sealed-receipt',
+			expect.objectContaining({ httpOnly: true, sameSite: 'lax', secure: true })
+		);
+		expect(receiptApp.recoverByToken).toHaveBeenCalledWith(
+			token,
+			new Date('2026-09-11T00:03:00.000Z')
+		);
+		expect(sealReceiptSession).toHaveBeenCalledWith({
+			...authorizedReceipt.locator,
+			version: 1
+		});
 		const body: unknown = await response.json();
 		expect(body).toEqual({
 			declined: {
@@ -174,11 +246,43 @@ describe('recipient declined HTTP handler', () => {
 		const { event, deleted } = requestEvent({ idempotencyKey: 'decline-tab-2' });
 		const response: Response = await createRecipientDeclinedHandler(
 			() => application(replayed),
-			async (): Promise<string> => token
+			async (): Promise<string> => token,
+			receiptOptions()
 		)(event);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('idempotency-replayed')).toBe('true');
 		expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+	});
+
+	it('preserves active authority and returns a secret-free 503 when receipt recovery fails after publication', async () => {
+		const { event, deleted, set } = requestEvent({ idempotencyKey: 'decline-1' });
+		const response: Response = await createRecipientDeclinedHandler(
+			() => application(published),
+			async (): Promise<string> => token,
+			receiptOptions(null)
+		)(event);
+
+		expect(response.status).toBe(503);
+		expect(deleted).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
+		const serialized: string = JSON.stringify(await response.json());
+		expect(serialized).not.toMatch(/skr1_|capabilityHash|organizationId|locator|auditEventId/);
+	});
+
+	it('rejects mismatched durable evidence without minting or clearing cookies', async () => {
+		const { event, deleted, set } = requestEvent({ idempotencyKey: 'decline-1' });
+		const response: Response = await createRecipientDeclinedHandler(
+			() => application(published),
+			async (): Promise<string> => token,
+			receiptOptions({
+				...authorizedReceipt,
+				receipt: { ...authorizedReceipt.receipt, recipientId: 'different-recipient' }
+			})
+		)(event);
+
+		expect(response.status).toBe(503);
+		expect(deleted).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
 	});
 
 	it('preserves the cookie for opaque context_mismatch and role_not_actionable outcomes', async () => {

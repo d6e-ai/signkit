@@ -63,6 +63,13 @@ export const GET: RequestHandler = ({ platform }) => {
 			webSurface: '/{locale}/sign',
 			authentication: 'bearer-capability',
 			browserSession: 'encrypted-http-only-cookie',
+			terminalDeclineReceipt: {
+				browserSession: 'purpose-separated-encrypted-http-only-cookie',
+				revalidation: 'command-audit-and-terminal-projection',
+				retentionDays: 30,
+				documentAccess: false,
+				mutations: false
+			},
 			mutations: 'same-origin-cookie-context',
 			roles: ['signer', 'approver', 'viewer'],
 			states: ['sent', 'in_progress'],
