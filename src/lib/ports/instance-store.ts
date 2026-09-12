@@ -1,4 +1,16 @@
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
+
 export const INSTANCE_IDEMPOTENCY_KEY_PATTERN: RegExp = /^[!-~]{1,200}$/;
+/** Instance invitations are SignKit-owned, so their IDs are UUIDv7. */
+export const INSTANCE_INVITATION_ID_PATTERN: RegExp = UUID_V7_PATTERN;
+export const INSTANCE_INVITATION_DEFAULT_EXPIRY_DAYS: number = 7;
+export const INSTANCE_INVITATION_MAX_EXPIRY_DAYS: number = 7;
+export const INSTANCE_INVITATION_DEFAULT_EXPIRY_MS: number =
+	INSTANCE_INVITATION_DEFAULT_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+export const INSTANCE_INVITATION_MAX_EXPIRY_MS: number =
+	INSTANCE_INVITATION_MAX_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+export const MAX_INSTANCE_INVITATION_LIST_LIMIT: number = 100;
+export const DEFAULT_INSTANCE_INVITATION_LIST_LIMIT: number = 25;
 
 export type InstanceActorType = 'user';
 
@@ -51,9 +63,207 @@ export type BootstrapInstanceStoreResult =
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'integrity_error' };
 
+export type InstanceInvitationStatus = 'pending' | 'accepted' | 'revoked';
+
+/**
+ * The only invitation projection any caller may observe. Zero-PII by
+ * construction: no email, name, raw token, `tokenHash`, or `emailBinding`
+ * column is ever exposed here. `status` and the accepted/revoked pairs below
+ * are always mutually exclusive — see the durable schema's terminal
+ * exclusivity constraint.
+ */
+export interface InstanceInvitationMetadata {
+	id: string;
+	role: InstanceMemberRole;
+	status: InstanceInvitationStatus;
+	invitedByUserId: string;
+	createdAt: string;
+	expiresAt: string;
+	acceptedAt: string | null;
+	acceptedByUserId: string | null;
+	revokedAt: string | null;
+	revokedByUserId: string | null;
+}
+
+/**
+ * One create attempt. `tokenHash`/`emailBinding` are the only credential- and
+ * email-derived values persisted; the plaintext `ski1_` token and the invited
+ * address never reach this port. The actor is the inviter and must be a
+ * currently active `owner` or `admin` instance member.
+ */
+export interface CreateInstanceInvitationCommand {
+	actor: InstanceActor;
+	idempotencyKey: string;
+	requestFingerprint: string;
+	invitationId: string;
+	role: InstanceMemberRole;
+	tokenHash: string;
+	emailBinding: string;
+	createdAt: string;
+	expiresAt: string;
+}
+
+/**
+ * Provider-independent create outcomes.
+ *
+ * - `created`: the invitation and its receipt landed atomically.
+ * - `replayed`: an exact replay of the same request under the same
+ *   Idempotency-Key. The one-time token cannot be recovered, so only the
+ *   current metadata of the originally created invitation is returned.
+ * - `forbidden`: the actor is not currently an active `owner` or `admin`
+ *   member, so it may not invite anyone.
+ * - `role_not_permitted`: the actor is an active `owner` or `admin` but may
+ *   not grant the requested role (an `admin` inviting an `owner`, for
+ *   example).
+ * - `limit`: the instance already holds the maximum number of pending
+ *   invitations.
+ * - `idempotency_conflict`: the Idempotency-Key was reused for a different
+ *   request, or the durable receipt cannot be proven against the invitation
+ *   it references.
+ * - `member_suspended`: the actor exists but is not `active`. Fail closed; no
+ *   invitation or receipt is written.
+ * - `integrity_error`: the receipt and invitation rows cannot be reconciled.
+ */
+export type CreateInstanceInvitationStoreResult =
+	| { outcome: 'created'; invitation: InstanceInvitationMetadata }
+	| { outcome: 'replayed'; invitation: InstanceInvitationMetadata }
+	| { outcome: 'forbidden' }
+	| { outcome: 'role_not_permitted' }
+	| { outcome: 'limit' }
+	| { outcome: 'idempotency_conflict' }
+	| { outcome: 'member_suspended' }
+	| { outcome: 'integrity_error' };
+
+export interface InstanceInvitationListQuery {
+	cursor: string | null;
+	limit: number;
+}
+
+export interface InstanceInvitationListPage {
+	items: readonly InstanceInvitationMetadata[];
+	nextCursor: string | null;
+}
+
+/**
+ * - `listed`: the page was resolved for a currently active `owner` or
+ *   `admin` actor.
+ * - `forbidden`: the actor is not currently an active `owner` or `admin`.
+ * - `member_suspended`: the actor exists but is not `active`.
+ */
+export type ListInstanceInvitationsStoreResult =
+	| { outcome: 'listed'; page: InstanceInvitationListPage }
+	| { outcome: 'forbidden' }
+	| { outcome: 'member_suspended' };
+
+/**
+ * One accept attempt. `tokenHash` locates the invitation; `emailBinding` is
+ * recomputed by the caller from the bearer token and the asserted email and
+ * must equal the stored value byte-for-byte. The actor is the accepting
+ * user, who does not need to already be an instance member.
+ */
+export interface AcceptInstanceInvitationCommand {
+	actor: InstanceActor;
+	idempotencyKey: string;
+	requestFingerprint: string;
+	tokenHash: string;
+	emailBinding: string;
+	acceptedAt: string;
+}
+
+/**
+ * Provider-independent accept outcomes.
+ *
+ * - `accepted`: the invitation was `pending` and unexpired, the email
+ *   binding matched, and the actor was durably enrolled as an instance
+ *   member with the invited role.
+ * - `replayed`: an exact replay of the same request under the same
+ *   Idempotency-Key, proven against the current invitation and member rows.
+ * - `invitation_invalid`: no invitation matches `tokenHash`, it is expired,
+ *   it is not `pending`, or `emailBinding` does not match. Reported
+ *   opaquely so an invalid token and a wrong email are indistinguishable.
+ * - `idempotency_conflict`: the Idempotency-Key was reused for a different
+ *   request.
+ * - `member_suspended`: the actor already exists as a suspended instance
+ *   member. Fail closed; the invitation is not consumed.
+ * - `integrity_error`: the receipt and invitation/member rows disagree.
+ */
+export type AcceptInstanceInvitationStoreResult =
+	| { outcome: 'accepted'; invitation: InstanceInvitationMetadata; member: InstanceMemberMetadata }
+	| { outcome: 'replayed'; invitation: InstanceInvitationMetadata; member: InstanceMemberMetadata }
+	| { outcome: 'invitation_invalid' }
+	| { outcome: 'idempotency_conflict' }
+	| { outcome: 'member_suspended' }
+	| { outcome: 'integrity_error' };
+
+export interface RevokeInstanceInvitationCommand {
+	actor: InstanceActor;
+	idempotencyKey: string;
+	requestFingerprint: string;
+	invitationId: string;
+	revokedAt: string;
+}
+
+/**
+ * Provider-independent revoke outcomes.
+ *
+ * - `revoked`: this call recorded the revocation plus the single revoke
+ *   receipt for this invitation.
+ * - `replayed`: an exact replay under the original Idempotency-Key, proven
+ *   against the current invitation row.
+ * - `forbidden`: the actor is not currently an active `owner` or `admin`.
+ * - `invitation_invalid`: unknown invitation id, or a fresh Idempotency-Key
+ *   against an invitation that is not `pending`.
+ * - `idempotency_conflict`: the Idempotency-Key was reused for a different
+ *   invitation or a different request fingerprint.
+ * - `member_suspended`: the actor exists but is not `active`.
+ * - `integrity_error`: the receipt and invitation rows disagree.
+ */
+export type RevokeInstanceInvitationStoreResult =
+	| { outcome: 'revoked'; invitation: InstanceInvitationMetadata }
+	| { outcome: 'replayed'; invitation: InstanceInvitationMetadata }
+	| { outcome: 'forbidden' }
+	| { outcome: 'invitation_invalid' }
+	| { outcome: 'idempotency_conflict' }
+	| { outcome: 'member_suspended' }
+	| { outcome: 'integrity_error' };
+
+/**
+ * Durable zero-PII instance invitation management, extending the same
+ * `InstanceStore` port rather than a separate membership port. Create and
+ * list require the actor to be a currently active `owner` or `admin`.
+ * Accept requires only that the bearer token and asserted email resolve a
+ * `pending`, unexpired invitation; it enrolls the actor as an instance
+ * member atomically with consuming the invitation. Create, accept, and
+ * revoke are single atomic units that write the state change and its
+ * command receipt together. Idempotency is primary-keyed by actor plus
+ * Idempotency-Key, matching {@link BootstrapInstanceCommand} and the API key
+ * store.
+ */
 export interface InstanceStore {
 	bootstrapInstance(command: BootstrapInstanceCommand): Promise<BootstrapInstanceStoreResult>;
 	getInstanceCallerContext(userId: string): Promise<InstanceCallerContext>;
+	/**
+	 * Optional pending this port's invitation adapters: today's D1 and
+	 * PostgreSQL `InstanceStore` implementations predate the invitation
+	 * schema and only cover bootstrap. Marking these four methods optional
+	 * keeps those adapters (and their mocks) assignable to `InstanceStore`
+	 * without implementing invitation support in this foundation change; a
+	 * follow-up adapter change should implement all four together and can
+	 * then drop the `?`.
+	 */
+	createInstanceInvitation?(
+		command: CreateInstanceInvitationCommand
+	): Promise<CreateInstanceInvitationStoreResult>;
+	listInstanceInvitations?(
+		actor: InstanceActor,
+		query: InstanceInvitationListQuery
+	): Promise<ListInstanceInvitationsStoreResult>;
+	acceptInstanceInvitation?(
+		command: AcceptInstanceInvitationCommand
+	): Promise<AcceptInstanceInvitationStoreResult>;
+	revokeInstanceInvitation?(
+		command: RevokeInstanceInvitationCommand
+	): Promise<RevokeInstanceInvitationStoreResult>;
 }
 
 export function isInstanceIdempotencyKey(value: string): boolean {
@@ -66,4 +276,44 @@ export function isInstanceMemberRole(value: unknown): value is InstanceMemberRol
 
 export function isInstanceMemberStatus(value: unknown): value is InstanceMemberStatus {
 	return value === 'active' || value === 'suspended';
+}
+
+export function isInstanceInvitationId(value: string): boolean {
+	return INSTANCE_INVITATION_ID_PATTERN.test(value);
+}
+
+export function isInstanceInvitationStatus(value: unknown): value is InstanceInvitationStatus {
+	return value === 'pending' || value === 'accepted' || value === 'revoked';
+}
+
+export function boundInstanceInvitationListLimit(limit: number): number {
+	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	return Math.min(limit, MAX_INSTANCE_INVITATION_LIST_LIMIT);
+}
+
+/**
+ * Defaults to the fixed 7-day lifetime; instance invitations cannot outlive
+ * it and, unlike API keys, cannot be requested with no expiry at all.
+ */
+export function resolveInstanceInvitationExpiresAt(
+	now: Date,
+	requestedExpiresAt?: string | null
+): string {
+	if (requestedExpiresAt === null) {
+		throw new Error('Instance invitations must expire');
+	}
+	if (requestedExpiresAt === undefined) {
+		return new Date(now.valueOf() + INSTANCE_INVITATION_DEFAULT_EXPIRY_MS).toISOString();
+	}
+	const expiresAtMs: number = Date.parse(requestedExpiresAt);
+	if (!Number.isFinite(expiresAtMs)) {
+		throw new Error('Invalid instance invitation expiry');
+	}
+	if (expiresAtMs <= now.valueOf()) {
+		throw new Error('Instance invitation expiry must be in the future');
+	}
+	if (expiresAtMs > now.valueOf() + INSTANCE_INVITATION_MAX_EXPIRY_MS) {
+		throw new Error('Instance invitation expiry must be at most 7 days');
+	}
+	return new Date(expiresAtMs).toISOString();
 }
