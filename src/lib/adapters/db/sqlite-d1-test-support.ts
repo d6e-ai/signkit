@@ -1,4 +1,18 @@
+import { readFileSync, readdirSync } from 'node:fs';
 import { type DatabaseSync, type SQLInputValue, type StatementResultingChanges } from 'node:sqlite';
+
+export function d1MigrationPaths(): readonly string[] {
+	return readdirSync('migrations/d1')
+		.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
+		.sort()
+		.map((name: string): string => `migrations/d1/${name}`);
+}
+
+export function applyD1Migrations(sqlite: DatabaseSync): void {
+	for (const path of d1MigrationPaths()) {
+		sqlite.exec(readFileSync(path, 'utf8'));
+	}
+}
 
 class SqliteD1Statement {
 	constructor(

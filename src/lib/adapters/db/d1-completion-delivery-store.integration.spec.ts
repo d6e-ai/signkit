@@ -1,30 +1,9 @@
-import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { AesGcmCompletionTokenSealer } from '$lib/security/completion-token-sealer';
 import { issueCompletionToken } from '$lib/security/completion-token';
 import { D1CompletionDeliveryStore } from './d1-completion-delivery-store';
-import { sqliteD1Database } from './sqlite-d1-test-support';
-
-const MIGRATIONS: readonly string[] = [
-	'migrations/d1/0001_core.sql',
-	'migrations/d1/0002_envelope_commands.sql',
-	'migrations/d1/0003_draft_revisions.sql',
-	'migrations/d1/0004_envelope_ready.sql',
-	'migrations/d1/0005_envelope_send.sql',
-	'migrations/d1/0006_recipient_viewed.sql',
-	'migrations/d1/0007_recipient_declined.sql',
-	'migrations/d1/0008_recipient_approved.sql',
-	'migrations/d1/0009_field_placement.sql',
-	'migrations/d1/0010_recipient_signed.sql',
-	'migrations/d1/0011_delivery_outbox_leases.sql',
-	'migrations/d1/0012_delivery_outbox_recipient_scope.sql',
-	'migrations/d1/0013_terminal_delivery_cleanup.sql',
-	'migrations/d1/0014_envelope_voided.sql',
-	'migrations/d1/0015_observer_routing_semantics.sql',
-	'migrations/d1/0016_completion_artifacts.sql',
-	'migrations/d1/0017_completion_delivery.sql'
-];
+import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
 
 const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = 'env-1';
@@ -34,9 +13,7 @@ const STALE_BEFORE: string = '2026-09-11T23:55:00.000Z';
 
 function createFixture(): { database: D1Database; sqlite: DatabaseSync } {
 	const sqlite = new DatabaseSync(':memory:');
-	for (const path of MIGRATIONS) {
-		sqlite.exec(readFileSync(path, 'utf8'));
-	}
+	applyD1Migrations(sqlite);
 	return { database: sqliteD1Database(sqlite), sqlite };
 }
 
