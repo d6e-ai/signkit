@@ -41,7 +41,13 @@ import {
 	AesGcmRecipientCapabilitySealer,
 	type RecipientCapabilitySealer
 } from '$lib/security/delivery-capability';
+import {
+	computeCompletionAccessExpiry,
+	issueCompletionToken
+} from '$lib/security/completion-token';
+import { AesGcmCompletionTokenSealer } from '$lib/security/completion-token-sealer';
 import { PostgresCompletionArtifactStore } from './postgres-completion-artifact-store';
+import { PostgresCompletionDeliveryStore } from './postgres-completion-delivery-store';
 import { PostgresDeliveryOutboxStore } from './postgres-delivery-outbox-store';
 import { PostgresEnvelopeApplicationStore } from './postgres-envelope-application-store';
 import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
@@ -105,7 +111,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	});
 
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
-		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0015_completion_artifacts.sql');
+		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0016_completion_delivery.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -116,6 +122,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'completion_artifact',
 				'completion_artifact_job',
 				'completion_artifact_publish_command',
+				'completion_delivery_outbox',
 				'delivery_outbox',
 				'envelope',
 				'envelope_field',
@@ -1369,6 +1376,640 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT status, claim_token AS "claimToken" FROM completion_artifact_job
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
 		expect(jobRow).toEqual([{ status: 'published', claimToken: null }]);
+	});
+
+	it('discovers, enrolls, claims, and completes completion delivery under PostgreSQL locks', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope([
+			{
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer',
+				locale: 'en',
+				routingOrder: 1
+			}
+		]);
+		const signerId: string = ready.recipients.find(
+			(recipient): boolean => recipient.role === 'signer'
+		)?.id as string;
+		const invitationSealer = new AesGcmRecipientCapabilitySealer(TEST_DELIVERY_ENCRYPTION_KEY);
+		await new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			invitationSealer
+		).send(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'send-before-completion-delivery',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		});
+		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
+		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND id = ${signerId}`;
+		const delivery = await database()<
+			{ deliveryId: string; sealedCapability: string }[]
+		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
+				AND recipient_id = ${signerId}`;
+		const token: string = await invitationSealer.open(delivery[0].sealedCapability, {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			recipientId: signerId,
+			deliveryId: delivery[0].deliveryId
+		});
+		await new RecipientSignedApplication(
+			new PostgresRecipientSignStore(database()),
+			(): Date => new Date(completedAt)
+		).sign({
+			token,
+			expectedEnvelopeId: ENVELOPE_ID,
+			expectedRecipientId: signerId,
+			expectedFieldGeneration: 0,
+			idempotencyKey: 'sign-for-completion-delivery',
+			values: []
+		});
+
+		const artifactStore = new PostgresCompletionArtifactStore(database());
+		const deliveryStore = new PostgresCompletionDeliveryStore(database());
+
+		const discoveredBeforeArtifact = await deliveryStore.discoverEligibleRecipients(10);
+		expect(discoveredBeforeArtifact).toEqual([]);
+
+		const claimToken: string = 'completion-artifact-claim-0002';
+		const claimedAt: string = new Date(Date.now() + 2_000).toISOString();
+		await artifactStore.claimPendingCompletionArtifacts({
+			claimToken,
+			claimedAt,
+			staleBefore: new Date(Date.parse(claimedAt) - 300_000).toISOString(),
+			discoveryLimit: 25,
+			claimLimit: 10
+		});
+		const evidence = await artifactStore.readCompletionEvidence(ORGANIZATION_ID, ENVELOPE_ID);
+		const anchor = evidence.auditEvents[evidence.auditEvents.length - 1];
+		await artifactStore.publishCompletionArtifact({
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			claimToken,
+			sentCommitSha: COMMIT_SHA,
+			fieldGeneration: 0,
+			anchorAuditEventId: anchor.id,
+			expectedAuditSequence: anchor.sequence,
+			previousAuditHash: anchor.eventHash,
+			manifestSha256: 'm'.repeat(64),
+			jsonObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${'j'.repeat(64)}.json.gz`,
+			jsonSha256: 'j'.repeat(64),
+			markdownObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${'d'.repeat(64)}.md.gz`,
+			markdownSha256: 'd'.repeat(64),
+			updatedAt: new Date(Date.now() + 3_000).toISOString(),
+			auditEventId: '01900000-0000-7000-8000-000000000092',
+			auditEventHash: 'e'.repeat(64),
+			auditPayloadJson: '{}'
+		});
+
+		const discovered = await deliveryStore.discoverEligibleRecipients(10);
+		expect(discovered).toEqual([
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				recipientEmail: 'signer@example.com',
+				recipientName: 'Signer',
+				recipientLocale: 'en',
+				recipientRole: 'signer',
+				envelopeTitle: 'Agreement'
+			}
+		]);
+
+		const deliveryId: string = '01900000-0000-7000-8000-000000000093';
+		const completionSealer = new AesGcmCompletionTokenSealer(TEST_DELIVERY_ENCRYPTION_KEY);
+		const issuedToken = await issueCompletionToken();
+		const sealed = await completionSealer.seal(issuedToken.token, {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			recipientId: signerId,
+			deliveryId
+		});
+		const enrolledAt: string = new Date(Date.now() + 4_000).toISOString();
+		const accessExpiresAt: string = computeCompletionAccessExpiry(new Date(enrolledAt));
+
+		const enrolledCount = await deliveryStore.enrollDeliveries([
+			{
+				id: deliveryId,
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				tokenHash: issuedToken.tokenHash,
+				accessExpiresAt,
+				sealedToken: sealed.sealedToken,
+				sealingKeyId: sealed.sealingKeyId,
+				sealedTokenSha256: sealed.sealedTokenSha256,
+				availableAt: enrolledAt,
+				createdAt: enrolledAt
+			}
+		]);
+		expect(enrolledCount).toBe(1);
+		expect(await deliveryStore.discoverEligibleRecipients(10)).toEqual([]);
+
+		const deliveryClaimToken: string = 'completion-delivery-claim-0001';
+		const deliveryClaimedAt: string = new Date(Date.now() + 5_000).toISOString();
+		const claimedDeliveries = await deliveryStore.claimPendingDeliveries({
+			claimToken: deliveryClaimToken,
+			claimedAt: deliveryClaimedAt,
+			staleBefore: new Date(Date.parse(deliveryClaimedAt) - 300_000).toISOString(),
+			limit: 10
+		});
+		expect(claimedDeliveries).toHaveLength(1);
+		expect(claimedDeliveries[0]).toMatchObject({
+			deliveryId,
+			status: 'processing',
+			attempts: 1,
+			lockedAt: deliveryClaimedAt
+		});
+
+		const readClaim = await deliveryStore.readClaimedDelivery({
+			organizationId: ORGANIZATION_ID,
+			deliveryId,
+			claimToken: deliveryClaimToken
+		});
+		expect(readClaim).toMatchObject({
+			deliveryId,
+			status: 'processing',
+			attempts: 1,
+			lockedAt: deliveryClaimedAt
+		});
+
+		expect(
+			await deliveryStore.readClaimedDelivery({
+				organizationId: ORGANIZATION_ID,
+				deliveryId,
+				claimToken: 'wrong-token'
+			})
+		).toBeNull();
+
+		const deliveredAt: string = new Date(Date.now() + 6_000).toISOString();
+		const completeResult = await deliveryStore.completeDelivery({
+			organizationId: ORGANIZATION_ID,
+			deliveryId,
+			claimToken: deliveryClaimToken,
+			deliveredAt,
+			providerMessageId: 'provider-completion-msg-001'
+		});
+		expect(completeResult).toEqual({ outcome: 'completed' });
+
+		expect(
+			await deliveryStore.completeDelivery({
+				organizationId: ORGANIZATION_ID,
+				deliveryId,
+				claimToken: deliveryClaimToken,
+				deliveredAt,
+				providerMessageId: 'provider-completion-msg-002'
+			})
+		).toEqual({ outcome: 'stale' });
+
+		const outboxRows = await database()<
+			{
+				status: string;
+				sealedToken: string | null;
+				retryable: boolean;
+				providerMessageId: string | null;
+			}[]
+		>`SELECT status, sealed_token AS "sealedToken", retryable,
+			provider_message_id AS "providerMessageId"
+			FROM completion_delivery_outbox
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${deliveryId}`;
+		expect(outboxRows).toEqual([
+			{
+				status: 'delivered',
+				sealedToken: null,
+				retryable: false,
+				providerMessageId: 'provider-completion-msg-001'
+			}
+		]);
+
+		const resolvedDelivered = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			issuedToken.tokenHash,
+			deliveredAt
+		);
+		expect(resolvedDelivered).toEqual({
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			jsonObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${'j'.repeat(64)}.json.gz`,
+			jsonSha256: 'j'.repeat(64),
+			markdownObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${'d'.repeat(64)}.md.gz`,
+			markdownSha256: 'd'.repeat(64)
+		});
+	});
+
+	it('enforces schema constraints, retryable failure keeping access, and terminal failure revoking access', async () => {
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', now())`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, created_at, updated_at
+		) VALUES (
+			${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Completed Agreement', 'completed', 1, ${COMMIT_SHA},
+			'archive/key', ${ARCHIVE_SHA256}, now(), now()
+		)`;
+		const recipientId: string = '01900000-0000-7000-8000-000000000071';
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			${recipientId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'recipient@example.com', 'Signer',
+			'signer', 'en', 1, 'completed', now(), now()
+		)`;
+		const anchorEventId: string = '01900000-0000-7000-8000-000000000072';
+		await database()`INSERT INTO audit_event (
+			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+			payload_json, previous_hash, event_hash, occurred_at
+		) VALUES (
+			${anchorEventId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 1,
+			'envelope.completed', 'system', 'system', '{}', ${'0'.repeat(64)}, ${'c'.repeat(64)}, now()
+		)`;
+		const artifactPublishEventId: string = '01900000-0000-7000-8000-000000000073';
+		await database()`INSERT INTO completion_artifact (
+			organization_id, envelope_id, schema_version, manifest_sha256,
+			json_object_key, json_sha256, markdown_object_key, markdown_sha256,
+			sent_commit_sha, field_generation, anchor_audit_event_id,
+			audit_head_sequence, audit_head_event_hash, published_at, audit_event_id
+		) VALUES (
+			${ORGANIZATION_ID}, ${ENVELOPE_ID}, 1, ${'m'.repeat(64)},
+			${`completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/artifact.json.gz`},
+			${'j'.repeat(64)},
+			${`completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/artifact.md.gz`},
+			${'d'.repeat(64)},
+			${COMMIT_SHA}, 0, ${anchorEventId},
+			1, ${'c'.repeat(64)}, now(), ${artifactPublishEventId}
+		)`;
+
+		const deliveryStore = new PostgresCompletionDeliveryStore(database());
+		const sealer = new AesGcmCompletionTokenSealer(TEST_DELIVERY_ENCRYPTION_KEY);
+		const token = await issueCompletionToken();
+		const deliveryId = '01900000-0000-7000-8000-000000000074';
+		const sealed = await sealer.seal(token.token, {
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			recipientId,
+			deliveryId
+		});
+
+		const baseTime = new Date('2026-09-12T12:00:00.000Z');
+		const accessExpiresAt = new Date(baseTime.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+		await deliveryStore.enrollDeliveries([
+			{
+				id: deliveryId,
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId,
+				tokenHash: token.tokenHash,
+				accessExpiresAt,
+				sealedToken: sealed.sealedToken,
+				sealingKeyId: sealed.sealingKeyId,
+				sealedTokenSha256: sealed.sealedTokenSha256,
+				availableAt: baseTime.toISOString(),
+				createdAt: baseTime.toISOString()
+			}
+		]);
+
+		const claimToken = 'claim-token-failure-test-01';
+		await deliveryStore.claimPendingDeliveries({
+			claimToken,
+			claimedAt: baseTime.toISOString(),
+			staleBefore: new Date(baseTime.getTime() - 300_000).toISOString(),
+			limit: 10
+		});
+
+		// 1. Retryable failure: keeps sealed_token and leaves access_revoked_at NULL
+		const retryFailResult = await deliveryStore.failDelivery({
+			organizationId: ORGANIZATION_ID,
+			deliveryId,
+			claimToken,
+			errorCode: 'smtp_temporary_error',
+			retryable: true,
+			nextAvailableAt: new Date(baseTime.getTime() + 30_000).toISOString(),
+			failedAt: baseTime.toISOString()
+		});
+		expect(retryFailResult).toEqual({ outcome: 'failed' });
+
+		const [retryRow] = await database()<
+			{
+				status: string;
+				retryable: boolean;
+				sealedToken: string | null;
+				accessRevokedAt: Date | null;
+			}[]
+		>`SELECT status, retryable, sealed_token AS "sealedToken", access_revoked_at AS "accessRevokedAt"
+			FROM completion_delivery_outbox WHERE organization_id = ${ORGANIZATION_ID} AND id = ${deliveryId}`;
+		expect(retryRow.status).toBe('failed');
+		expect(retryRow.retryable).toBe(true);
+		expect(retryRow.sealedToken).toBe(sealed.sealedToken);
+		expect(retryRow.accessRevokedAt).toBeNull();
+
+		// Retryable keeps access: locator resolves
+		const retryLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			token.tokenHash,
+			baseTime.toISOString()
+		);
+		expect(retryLocator).not.toBeNull();
+
+		// Claim again for terminal failure test
+		const claimToken2 = 'claim-token-failure-test-02';
+		await deliveryStore.claimPendingDeliveries({
+			claimToken: claimToken2,
+			claimedAt: new Date(baseTime.getTime() + 60_000).toISOString(),
+			staleBefore: baseTime.toISOString(),
+			limit: 10
+		});
+
+		// 2. Terminal failure: scrubs sealed_token to NULL and sets access_revoked_at
+		const termFailResult = await deliveryStore.failDelivery({
+			organizationId: ORGANIZATION_ID,
+			deliveryId,
+			claimToken: claimToken2,
+			errorCode: 'recipient_mailbox_not_found',
+			retryable: false,
+			nextAvailableAt: new Date(baseTime.getTime() + 60_000).toISOString(),
+			failedAt: new Date(baseTime.getTime() + 60_000).toISOString()
+		});
+		expect(termFailResult).toEqual({ outcome: 'failed' });
+
+		const [termRow] = await database()<
+			{
+				status: string;
+				retryable: boolean;
+				sealedToken: string | null;
+				accessRevokedAt: Date | null;
+			}[]
+		>`SELECT status, retryable, sealed_token AS "sealedToken", access_revoked_at AS "accessRevokedAt"
+			FROM completion_delivery_outbox WHERE organization_id = ${ORGANIZATION_ID} AND id = ${deliveryId}`;
+		expect(termRow.status).toBe('failed');
+		expect(termRow.retryable).toBe(false);
+		expect(termRow.sealedToken).toBeNull();
+		expect(termRow.accessRevokedAt).not.toBeNull();
+
+		// Terminal failure revokes access: locator returns null
+		const termLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			token.tokenHash,
+			baseTime.toISOString()
+		);
+		expect(termLocator).toBeNull();
+
+		// 3. Check constraint: inserting delivered with unscrubbed sealed_token fails
+		await expect(
+			database()`INSERT INTO completion_delivery_outbox (
+				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
+				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
+			) VALUES (
+				'bad-delivered', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'delivered',
+				${'5'.repeat(64)}, ${accessExpiresAt}::timestamptz, NULL, 'unscrubbed', 'key-1',
+				${'s'.repeat(64)}, now(), 1, now(), now(), false
+			)`
+		).rejects.toThrow();
+
+		// 4. Check constraint: inserting failed non-retryable without access_revoked_at fails
+		await expect(
+			database()`INSERT INTO completion_delivery_outbox (
+				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
+				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
+			) VALUES (
+				'bad-failed', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'failed',
+				${'6'.repeat(64)}, ${accessExpiresAt}::timestamptz, NULL, NULL, 'key-1',
+				${'s'.repeat(64)}, now(), 1, now(), now(), false
+			)`
+		).rejects.toThrow();
+	});
+
+	it('resolves artifact locator by token hash for valid, expired, revoked, cross-tenant/nonexistent, and no-artifact cases', async () => {
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', now())`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, created_at, updated_at
+		) VALUES (
+			${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Completed Agreement', 'completed', 1, ${COMMIT_SHA},
+			'archive/key', ${ARCHIVE_SHA256}, now(), now()
+		)`;
+		const recipientId: string = '01900000-0000-7000-8000-000000000081';
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			${recipientId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'signer@example.com', 'Signer',
+			'signer', 'en', 1, 'completed', now(), now()
+		)`;
+		const anchorEventId: string = '01900000-0000-7000-8000-000000000082';
+		await database()`INSERT INTO audit_event (
+			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+			payload_json, previous_hash, event_hash, occurred_at
+		) VALUES (
+			${anchorEventId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 1,
+			'envelope.completed', 'system', 'system', '{}', ${'0'.repeat(64)}, ${'a'.repeat(64)}, now()
+		)`;
+		const artifactPublishEventId: string = '01900000-0000-7000-8000-000000000083';
+		await database()`INSERT INTO completion_artifact (
+			organization_id, envelope_id, schema_version, manifest_sha256,
+			json_object_key, json_sha256, markdown_object_key, markdown_sha256,
+			sent_commit_sha, field_generation, anchor_audit_event_id,
+			audit_head_sequence, audit_head_event_hash, published_at, audit_event_id
+		) VALUES (
+			${ORGANIZATION_ID}, ${ENVELOPE_ID}, 1, ${'m'.repeat(64)},
+			${`completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/artifact.json.gz`},
+			${'j'.repeat(64)},
+			${`completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/artifact.md.gz`},
+			${'d'.repeat(64)},
+			${COMMIT_SHA}, 0, ${anchorEventId},
+			1, ${'a'.repeat(64)}, now(), ${artifactPublishEventId}
+		)`;
+		const deliveryId: string = '01900000-0000-7000-8000-000000000084';
+		const validTokenHash: string = 't'.repeat(64);
+		const baseTime = new Date('2026-09-12T12:00:00.000Z');
+		const accessExpiresAt = new Date(baseTime.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+		await database()`INSERT INTO completion_delivery_outbox (
+			id, organization_id, envelope_id, recipient_id, status, token_hash,
+			access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
+			sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
+		) VALUES (
+			${deliveryId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'delivered',
+			${validTokenHash}, ${accessExpiresAt}::timestamptz, NULL, NULL, 'key-1',
+			${'s'.repeat(64)}, ${baseTime.toISOString()}::timestamptz, 1,
+			${baseTime.toISOString()}::timestamptz, ${baseTime.toISOString()}::timestamptz, false
+		)`;
+
+		const deliveryStore = new PostgresCompletionDeliveryStore(database());
+
+		// 1. Valid: unrevoked, unexpired, completed envelope with published artifact
+		const validLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			validTokenHash,
+			baseTime.toISOString()
+		);
+		expect(validLocator).toEqual({
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			jsonObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/artifact.json.gz`,
+			jsonSha256: 'j'.repeat(64),
+			markdownObjectKey: `completion-artifacts/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/artifact.md.gz`,
+			markdownSha256: 'd'.repeat(64)
+		});
+
+		// 2. Expired: query timestamp equal to or after accessExpiresAt
+		const expiredAt = new Date(Date.parse(accessExpiresAt) + 1_000).toISOString();
+		const expiredLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			validTokenHash,
+			expiredAt
+		);
+		expect(expiredLocator).toBeNull();
+
+		// 3. Revoked: access_revoked_at set
+		const revokedAt = new Date(baseTime.getTime() + 10_000).toISOString();
+		await database()`UPDATE completion_delivery_outbox
+			SET access_revoked_at = ${revokedAt}::timestamptz
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${deliveryId}`;
+		const revokedLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			validTokenHash,
+			baseTime.toISOString()
+		);
+		expect(revokedLocator).toBeNull();
+
+		// Restore access_revoked_at to null for subsequent tests
+		await database()`UPDATE completion_delivery_outbox
+			SET access_revoked_at = NULL
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${deliveryId}`;
+
+		// 4a. Nonexistent: unknown token hash returns null
+		const nonexistentLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			'0'.repeat(64),
+			baseTime.toISOString()
+		);
+		expect(nonexistentLocator).toBeNull();
+
+		// 4b. Cross-tenant: seed second tenant with its own completed envelope and artifact
+		const otherOrgId = 'other-org';
+		const otherEnvelopeId = '01900000-0000-7000-8000-000000000085';
+		const otherRecipientId = '01900000-0000-7000-8000-000000000086';
+		const otherAnchorEventId = '01900000-0000-7000-8000-000000000087';
+		const otherArtifactEventId = '01900000-0000-7000-8000-000000000088';
+		const otherDeliveryId = '01900000-0000-7000-8000-000000000089';
+		const otherTokenHash = '1'.repeat(64);
+
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${otherOrgId}, ${otherOrgId}, 'Other Workspace', now())`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, created_at, updated_at
+		) VALUES (
+			${otherEnvelopeId}, ${otherOrgId}, 'Other Agreement', 'completed', 1, ${COMMIT_SHA},
+			'archive/other', ${ARCHIVE_SHA256}, now(), now()
+		)`;
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			${otherRecipientId}, ${otherOrgId}, ${otherEnvelopeId}, 'other@example.com', 'Other',
+			'signer', 'en', 1, 'completed', now(), now()
+		)`;
+		await database()`INSERT INTO audit_event (
+			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+			payload_json, previous_hash, event_hash, occurred_at
+		) VALUES (
+			${otherAnchorEventId}, ${otherOrgId}, ${otherEnvelopeId}, 1,
+			'envelope.completed', 'system', 'system', '{}', ${'0'.repeat(64)}, ${'b'.repeat(64)}, now()
+		)`;
+		await database()`INSERT INTO completion_artifact (
+			organization_id, envelope_id, schema_version, manifest_sha256,
+			json_object_key, json_sha256, markdown_object_key, markdown_sha256,
+			sent_commit_sha, field_generation, anchor_audit_event_id,
+			audit_head_sequence, audit_head_event_hash, published_at, audit_event_id
+		) VALUES (
+			${otherOrgId}, ${otherEnvelopeId}, 1, ${'m'.repeat(64)},
+			${`completion-artifacts/v1/organizations/${otherOrgId}/envelopes/${otherEnvelopeId}/artifact.json.gz`},
+			${'2'.repeat(64)},
+			${`completion-artifacts/v1/organizations/${otherOrgId}/envelopes/${otherEnvelopeId}/artifact.md.gz`},
+			${'3'.repeat(64)},
+			${COMMIT_SHA}, 0, ${otherAnchorEventId},
+			1, ${'b'.repeat(64)}, now(), ${otherArtifactEventId}
+		)`;
+		await database()`INSERT INTO completion_delivery_outbox (
+			id, organization_id, envelope_id, recipient_id, status, token_hash,
+			access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
+			sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
+		) VALUES (
+			${otherDeliveryId}, ${otherOrgId}, ${otherEnvelopeId}, ${otherRecipientId}, 'delivered',
+			${otherTokenHash}, ${accessExpiresAt}::timestamptz, NULL, NULL, 'key-1',
+			${'s'.repeat(64)}, ${baseTime.toISOString()}::timestamptz, 1,
+			${baseTime.toISOString()}::timestamptz, ${baseTime.toISOString()}::timestamptz, false
+		)`;
+
+		// Resolving with otherTokenHash resolves only to other-org
+		const otherLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			otherTokenHash,
+			baseTime.toISOString()
+		);
+		expect(otherLocator).toEqual({
+			organizationId: otherOrgId,
+			envelopeId: otherEnvelopeId,
+			jsonObjectKey: `completion-artifacts/v1/organizations/${otherOrgId}/envelopes/${otherEnvelopeId}/artifact.json.gz`,
+			jsonSha256: '2'.repeat(64),
+			markdownObjectKey: `completion-artifacts/v1/organizations/${otherOrgId}/envelopes/${otherEnvelopeId}/artifact.md.gz`,
+			markdownSha256: '3'.repeat(64)
+		});
+
+		// And resolving validTokenHash still resolves to ORGANIZATION_ID, never other-org
+		const firstTenantLocator = await deliveryStore.resolveArtifactLocatorByTokenHash(
+			validTokenHash,
+			baseTime.toISOString()
+		);
+		expect(firstTenantLocator?.organizationId).toBe(ORGANIZATION_ID);
+
+		// 5. No-artifact cases:
+		// 5a. Completed envelope without a completion_artifact or delivery grant returns null
+		const noArtifactEnvelopeId = '01900000-0000-7000-8000-000000000090';
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, repository_head,
+			repository_archive_key, repository_archive_sha256, created_at, updated_at
+		) VALUES (
+			${noArtifactEnvelopeId}, ${ORGANIZATION_ID}, 'No Artifact Agreement', 'completed', 1, ${COMMIT_SHA},
+			'archive/no-artifact', ${ARCHIVE_SHA256}, now(), now()
+		)`;
+		expect(
+			await deliveryStore.resolveArtifactLocatorByTokenHash(
+				'unregistered-no-artifact-token',
+				baseTime.toISOString()
+			)
+		).toBeNull();
+
+		// 5b. Dangling delivery grant pointing to an envelope with no completion_artifact
+		// (inserted bypassing foreign key constraints via replica session)
+		const danglingTokenHash = 'd'.repeat(64);
+		await database().unsafe("SET session_replication_role = 'replica'");
+		try {
+			await database()`INSERT INTO completion_delivery_outbox (
+				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
+				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
+			) VALUES (
+				'dangling-delivery', ${ORGANIZATION_ID}, ${noArtifactEnvelopeId}, ${recipientId}, 'delivered',
+				${danglingTokenHash}, ${accessExpiresAt}::timestamptz, NULL, NULL, 'key-1',
+				${'s'.repeat(64)}, ${baseTime.toISOString()}::timestamptz, 1,
+				${baseTime.toISOString()}::timestamptz, ${baseTime.toISOString()}::timestamptz, false
+			)`;
+		} finally {
+			await database().unsafe("SET session_replication_role = 'origin'");
+		}
+		expect(
+			await deliveryStore.resolveArtifactLocatorByTokenHash(
+				danglingTokenHash,
+				baseTime.toISOString()
+			)
+		).toBeNull();
+
+		// 5c. Delivery grant whose envelope status is not 'completed' returns null
+		await database()`UPDATE envelope SET status = 'voided'
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
+		expect(
+			await deliveryStore.resolveArtifactLocatorByTokenHash(validTokenHash, baseTime.toISOString())
+		).toBeNull();
 	});
 
 	it('publishes a completion artifact end to end from an audit chain written entirely by real writer paths', async () => {

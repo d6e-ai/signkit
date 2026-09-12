@@ -1,0 +1,164 @@
+import { isCompletionToken } from './completion-token';
+
+const FORMAT_PREFIX: string = 'skcd1_';
+const IV_BYTES: number = 12;
+const KEY_BYTES: number = 32;
+const DOMAIN_SEPARATOR: string = 'signkit-completion-delivery-v1';
+
+export interface CompletionTokenSealContext {
+	organizationId: string;
+	envelopeId: string;
+	recipientId: string;
+	deliveryId: string;
+}
+
+export interface SealedCompletionToken {
+	sealedToken: string;
+	sealingKeyId: string;
+	sealedTokenSha256: string;
+}
+
+export interface CompletionTokenSealer {
+	currentSealingKeyId(): Promise<string>;
+	seal(token: string, context: CompletionTokenSealContext): Promise<SealedCompletionToken>;
+}
+
+export interface CompletionTokenOpener {
+	currentSealingKeyId(): Promise<string>;
+	open(sealedToken: string, context: CompletionTokenSealContext): Promise<string>;
+}
+
+export class AesGcmCompletionTokenSealer implements CompletionTokenSealer, CompletionTokenOpener {
+	readonly #keyBytes: Uint8Array<ArrayBuffer>;
+	readonly #keyId: Promise<string>;
+	readonly #cryptoKey: Promise<CryptoKey>;
+
+	constructor(encodedKey: string) {
+		this.#keyBytes = decodeKey(encodedKey);
+		this.#keyId = sha256Hex(this.#keyBytes).then((digest: string): string => digest.slice(0, 16));
+		this.#cryptoKey = crypto.subtle.importKey('raw', this.#keyBytes, { name: 'AES-GCM' }, false, [
+			'encrypt',
+			'decrypt'
+		]);
+	}
+
+	async currentSealingKeyId(): Promise<string> {
+		return await this.#keyId;
+	}
+
+	async seal(token: string, context: CompletionTokenSealContext): Promise<SealedCompletionToken> {
+		if (!isCompletionToken(token)) {
+			throw new Error('Invalid completion token');
+		}
+		const iv: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(IV_BYTES));
+		crypto.getRandomValues(iv);
+		const plaintext: Uint8Array<ArrayBuffer> = new TextEncoder().encode(token);
+		const ciphertext: ArrayBuffer = await crypto.subtle.encrypt(
+			{ name: 'AES-GCM', iv, additionalData: additionalData(context) },
+			await this.#cryptoKey,
+			plaintext
+		);
+		const payload: Uint8Array<ArrayBuffer> = new Uint8Array(
+			new ArrayBuffer(iv.byteLength + ciphertext.byteLength)
+		);
+		payload.set(iv, 0);
+		payload.set(new Uint8Array(ciphertext), iv.byteLength);
+		const sealedToken: string = `${FORMAT_PREFIX}${base64UrlEncode(payload)}`;
+		return {
+			sealedToken,
+			sealingKeyId: await this.#keyId,
+			sealedTokenSha256: await sha256Hex(new TextEncoder().encode(sealedToken))
+		};
+	}
+
+	async open(sealedToken: string, context: CompletionTokenSealContext): Promise<string> {
+		if (!sealedToken.startsWith(FORMAT_PREFIX)) {
+			throw new Error('Invalid sealed completion token');
+		}
+		const payload: Uint8Array<ArrayBuffer> = base64UrlDecode(
+			sealedToken.slice(FORMAT_PREFIX.length)
+		);
+		if (payload.byteLength <= IV_BYTES + 16) {
+			throw new Error('Invalid sealed completion token');
+		}
+		const iv: Uint8Array<ArrayBuffer> = payload.slice(0, IV_BYTES);
+		const ciphertext: Uint8Array<ArrayBuffer> = payload.slice(IV_BYTES);
+		let plaintext: ArrayBuffer;
+		try {
+			plaintext = await crypto.subtle.decrypt(
+				{ name: 'AES-GCM', iv, additionalData: additionalData(context) },
+				await this.#cryptoKey,
+				ciphertext
+			);
+		} catch {
+			throw new Error('Sealed completion token authentication failed');
+		}
+		const token: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
+		if (!isCompletionToken(token)) {
+			throw new Error('Invalid completion token');
+		}
+		return token;
+	}
+}
+
+function additionalData(context: CompletionTokenSealContext): Uint8Array<ArrayBuffer> {
+	return new TextEncoder().encode(
+		[
+			DOMAIN_SEPARATOR,
+			context.organizationId,
+			context.envelopeId,
+			context.recipientId,
+			context.deliveryId
+		].join('\u0000')
+	);
+}
+
+function decodeKey(encodedKey: string): Uint8Array<ArrayBuffer> {
+	let binary: string;
+	try {
+		binary = atob(encodedKey.trim());
+	} catch {
+		throw new Error('DELIVERY_ENCRYPTION_KEY must be valid base64');
+	}
+	if (binary.length !== KEY_BYTES) {
+		throw new Error('DELIVERY_ENCRYPTION_KEY must encode exactly 32 bytes');
+	}
+	const bytes: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(KEY_BYTES));
+	for (let index: number = 0; index < binary.length; index += 1) {
+		bytes[index] = binary.charCodeAt(index);
+	}
+	return bytes;
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+	let binary: string = '';
+	for (const byte of bytes) {
+		binary += String.fromCharCode(byte);
+	}
+	return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+function base64UrlDecode(value: string): Uint8Array<ArrayBuffer> {
+	if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+		throw new Error('Invalid sealed completion token');
+	}
+	const padded: string = `${value.replaceAll('-', '+').replaceAll('_', '/')}${'='.repeat((4 - (value.length % 4)) % 4)}`;
+	let binary: string;
+	try {
+		binary = atob(padded);
+	} catch {
+		throw new Error('Invalid sealed completion token');
+	}
+	const bytes: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(binary.length));
+	for (let index: number = 0; index < binary.length; index += 1) {
+		bytes[index] = binary.charCodeAt(index);
+	}
+	return bytes;
+}
+
+async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+	const digest: ArrayBuffer = await crypto.subtle.digest('SHA-256', bytes);
+	return Array.from(new Uint8Array(digest), (byte: number): string =>
+		byte.toString(16).padStart(2, '0')
+	).join('');
+}
