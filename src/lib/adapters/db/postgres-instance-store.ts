@@ -92,6 +92,7 @@ export class PostgresInstanceStore implements InstanceStore {
 							${command.createdAt}::timestamptz
 						WHERE NOT EXISTS (SELECT 1 FROM instance_bootstrap)
 						  AND NOT EXISTS (SELECT 1 FROM instance_member)
+						ON CONFLICT (user_id) DO NOTHING
 						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 					`;
 				if (memberRows.length !== 1) {
