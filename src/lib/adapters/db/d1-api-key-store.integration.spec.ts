@@ -124,6 +124,39 @@ function staleActiveCheckDatabase(sqlite: DatabaseSync): D1Database {
 	} as unknown as D1Database;
 }
 
+/**
+ * Answers only the first member status read with a stale `active` row while the
+ * durable row says otherwise. Create and revoke read that status before they
+ * resolve a command receipt, so this reproduces a suspension committed inside
+ * that window: only a predicate carried inside the receipt read itself can keep
+ * the replay metadata undisclosed, and the later status reads that classify the
+ * failure see the durable truth.
+ */
+function staleFirstMemberCheckDatabase(sqlite: DatabaseSync): D1Database {
+	const real: D1Database = sqliteD1Database(sqlite);
+	let stale: boolean = true;
+	return {
+		prepare: (sql: string): D1PreparedStatement => {
+			const statement: D1PreparedStatement = real.prepare(sql);
+			if (!sql.trimStart().startsWith('SELECT status FROM instance_member')) return statement;
+			return {
+				bind: (...bindings: unknown[]): D1PreparedStatement => {
+					const bound: D1PreparedStatement = statement.bind(...bindings);
+					return {
+						first: async <T>(): Promise<T | null> => {
+							if (!stale) return await bound.first<T>();
+							stale = false;
+							return { status: 'active' } as unknown as T;
+						}
+					} as unknown as D1PreparedStatement;
+				}
+			} as unknown as D1PreparedStatement;
+		},
+		batch: async <T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> =>
+			await real.batch<T>(statements)
+	} as unknown as D1Database;
+}
+
 describe('D1ApiKeyStore.createApiKey', () => {
 	it('writes the owner-scoped key and receipt in one batch without any plaintext', async () => {
 		const { store, sqlite }: Fixture = createFixture();
@@ -372,6 +405,26 @@ describe('D1ApiKeyStore.createApiKey', () => {
 			store.createApiKey(await createCommand({ apiKeyId: OTHER_KEY_ID }))
 		).resolves.toEqual({ outcome: 'owner_not_active' });
 		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key')).toBe(1);
+	});
+
+	it('discloses no already_issued metadata when the owner is suspended after a preliminary check', async () => {
+		const { store, sqlite }: Fixture = createFixture();
+		const created: CreateApiKeyCommand = await createCommand();
+		await store.createApiKey(created);
+		setMemberStatus(sqlite, ACTOR_ID, 'suspended');
+		// The receipt is resolved while a stale check still reports the owner as
+		// active, which is exactly the window the coupled predicate closes.
+		const stale: D1ApiKeyStore = new D1ApiKeyStore(staleFirstMemberCheckDatabase(sqlite));
+
+		const replay: CreateApiKeyStoreResult = await stale.createApiKey(
+			await createCommand({ apiKeyId: OTHER_KEY_ID })
+		);
+
+		expect(replay).toEqual({ outcome: 'owner_not_active' });
+		expect(JSON.stringify(replay)).not.toContain(created.keyPrefix);
+		expect(JSON.stringify(replay)).not.toContain(KEY_ID);
+		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key')).toBe(1);
+		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key_create_command')).toBe(1);
 	});
 });
 
@@ -718,6 +771,39 @@ describe('D1ApiKeyStore.revokeApiKey', () => {
 		await expect(store.revokeApiKey(revokeCommand())).resolves.toEqual({
 			outcome: 'owner_not_active'
 		});
+	});
+
+	it('discloses no replayed or already_revoked metadata after a stale preliminary check', async () => {
+		const { store, sqlite }: Fixture = createFixture();
+		const created: CreateApiKeyCommand = await createCommand();
+		await store.createApiKey(created);
+		await store.revokeApiKey(revokeCommand());
+		setMemberStatus(sqlite, ACTOR_ID, 'suspended');
+
+		// The original idempotency key, whose durable receipt would otherwise replay.
+		const staleReplay: D1ApiKeyStore = new D1ApiKeyStore(staleFirstMemberCheckDatabase(sqlite));
+		const replay: RevokeApiKeyStoreResult = await staleReplay.revokeApiKey(revokeCommand());
+		// A fresh idempotency key, which would otherwise disclose the same key
+		// metadata as already_revoked.
+		const staleFresh: D1ApiKeyStore = new D1ApiKeyStore(staleFirstMemberCheckDatabase(sqlite));
+		const fresh: RevokeApiKeyStoreResult = await staleFresh.revokeApiKey(
+			revokeCommand({ idempotencyKey: 'revoke-2', requestFingerprint: OTHER_REQUEST_HASH })
+		);
+
+		expect(replay).toEqual({ outcome: 'owner_not_active' });
+		expect(fresh).toEqual({ outcome: 'owner_not_active' });
+		for (const outcome of [replay, fresh]) {
+			expect(JSON.stringify(outcome)).not.toContain(created.keyPrefix);
+			expect(JSON.stringify(outcome)).not.toContain(REVOKED_AT);
+		}
+		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key_revoke_command')).toBe(1);
+		expect(
+			count(
+				sqlite,
+				`SELECT count(*) AS value FROM api_key
+				 WHERE id = '${KEY_ID}' AND revoked_at = '${REVOKED_AT}'`
+			)
+		).toBe(1);
 	});
 
 	it('fails closed when the revoke receipt drifted from the key row', async () => {

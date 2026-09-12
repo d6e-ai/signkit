@@ -92,7 +92,11 @@ const REVOKE_RECEIPT_COLUMNS: string = `command.request_hash, command.api_key_id
  * closed at the durable boundary. List reads the member status and the owner
  * page in one batch, and repeats the same active-member predicate inside the
  * page statement, so a suspension can never land between the check and the
- * disclosure.
+ * disclosure. Every read that could project key metadata — both command
+ * receipts and the revoke classification read — carries that predicate too, so
+ * a suspension committed after the preliminary status check can never surface
+ * `already_issued`, `replayed`, or `already_revoked` metadata; such a read
+ * comes back empty and classification reports `owner_not_active`.
  */
 export class D1ApiKeyStore implements ApiKeyStore {
 	readonly #database: D1Database;
@@ -311,8 +315,19 @@ export class D1ApiKeyStore implements ApiKeyStore {
 	async #classifyRevoke(command: RevokeApiKeyCommand): Promise<RevokeApiKeyStoreResult | null> {
 		const replay: RevokeApiKeyStoreResult | null = await this.#resolveRevokeReceipt(command);
 		if (replay !== null) return replay;
-		const key: ApiKeyRow | null = await this.#readOwnedKey(command.actor.id, command.apiKeyId);
-		if (key === null) return { outcome: 'not_found' };
+		const key: ApiKeyRow | null = await this.#readActiveOwnedKey(
+			command.actor.id,
+			command.apiKeyId
+		);
+		if (key === null) {
+			// Both reads above carry the active-member predicate, so an empty result
+			// is either an unknown or cross-owner key id or an owner who is no longer
+			// active. Only this status read decides which, and it projects no key
+			// material of its own.
+			return (await this.#actorIsActive(command.actor.id))
+				? { outcome: 'not_found' }
+				: { outcome: 'owner_not_active' };
+		}
 		// A fresh idempotency key for an already revoked credential is reported
 		// explicitly instead of writing a second receipt for the same key.
 		if (key.revoked_at !== null) return { outcome: 'already_revoked', key: metadataFromRow(key) };
@@ -345,6 +360,10 @@ export class D1ApiKeyStore implements ApiKeyStore {
 	async #resolveCreateReceipt(
 		command: CreateApiKeyCommand
 	): Promise<CreateApiKeyStoreResult | null> {
+		// The receipt read carries the active-member predicate itself, so replay
+		// metadata can never be projected on the strength of an earlier, separate
+		// status check that a suspension has since invalidated. An inactive owner
+		// simply finds no receipt and is classified as `owner_not_active`.
 		const row: CreateReceiptRow | null = await this.#database
 			.prepare(
 				`SELECT ${CREATE_RECEIPT_COLUMNS}
@@ -353,9 +372,13 @@ export class D1ApiKeyStore implements ApiKeyStore {
 					ON stored.id = command.api_key_id
 				 WHERE command.actor_type = ? AND command.actor_id = ?
 					AND command.idempotency_key = ?
+					AND EXISTS (
+						SELECT 1 FROM instance_member
+						WHERE user_id = ? AND status = 'active'
+					)
 				 LIMIT 1`
 			)
-			.bind(command.actor.type, command.actor.id, command.idempotencyKey)
+			.bind(command.actor.type, command.actor.id, command.idempotencyKey, command.actor.id)
 			.first<CreateReceiptRow>();
 		if (row === null) return null;
 		if (row.request_hash !== command.requestFingerprint) return { outcome: 'idempotency_conflict' };
@@ -371,6 +394,8 @@ export class D1ApiKeyStore implements ApiKeyStore {
 	async #resolveRevokeReceipt(
 		command: RevokeApiKeyCommand
 	): Promise<RevokeApiKeyStoreResult | null> {
+		// Same coupling as the create receipt: authorization is part of the read
+		// that would disclose the replayed key, not a separate earlier query.
 		const row: RevokeReceiptRow | null = await this.#database
 			.prepare(
 				`SELECT ${REVOKE_RECEIPT_COLUMNS}
@@ -379,9 +404,13 @@ export class D1ApiKeyStore implements ApiKeyStore {
 					ON stored.id = command.api_key_id
 				 WHERE command.actor_type = ? AND command.actor_id = ?
 					AND command.idempotency_key = ?
+					AND EXISTS (
+						SELECT 1 FROM instance_member
+						WHERE user_id = ? AND status = 'active'
+					)
 				 LIMIT 1`
 			)
-			.bind(command.actor.type, command.actor.id, command.idempotencyKey)
+			.bind(command.actor.type, command.actor.id, command.idempotencyKey, command.actor.id)
 			.first<RevokeReceiptRow>();
 		if (row === null) return null;
 		if (row.api_key_id !== command.apiKeyId || row.request_hash !== command.requestFingerprint) {
@@ -424,6 +453,7 @@ export class D1ApiKeyStore implements ApiKeyStore {
 		return member !== null && member.status === 'active';
 	}
 
+	/** Reads back what this call just wrote, after the batch already proved the owner active. */
 	async #readOwnedKey(ownerUserId: string, apiKeyId: string): Promise<ApiKeyRow | null> {
 		return await this.#database
 			.prepare(
@@ -431,6 +461,25 @@ export class D1ApiKeyStore implements ApiKeyStore {
 				 WHERE owner_user_id = ? AND id = ? LIMIT 1`
 			)
 			.bind(ownerUserId, apiKeyId)
+			.first<ApiKeyRow>();
+	}
+
+	/**
+	 * The classification read. `already_revoked` discloses the same key metadata a
+	 * replay does, so the active-member predicate rides inside this statement too.
+	 */
+	async #readActiveOwnedKey(ownerUserId: string, apiKeyId: string): Promise<ApiKeyRow | null> {
+		return await this.#database
+			.prepare(
+				`SELECT ${KEY_COLUMNS} FROM api_key
+				 WHERE owner_user_id = ? AND id = ?
+					AND EXISTS (
+						SELECT 1 FROM instance_member
+						WHERE user_id = ? AND status = 'active'
+					)
+				 LIMIT 1`
+			)
+			.bind(ownerUserId, apiKeyId, ownerUserId)
 			.first<ApiKeyRow>();
 	}
 }
