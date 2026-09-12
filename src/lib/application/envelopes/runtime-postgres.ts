@@ -4,6 +4,7 @@ import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-enve
 import { PostgresEnvelopeFieldStore } from '$lib/adapters/db/postgres-envelope-field-store';
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
+import { PostgresEnvelopeVoidStore } from '$lib/adapters/db/postgres-envelope-void-store';
 import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
 import { PostgresRecipientFieldDeclarationStore } from '$lib/adapters/db/postgres-recipient-field-declaration-store';
 import { PostgresRecipientApproveStore } from '$lib/adapters/db/postgres-recipient-approve-store';
@@ -35,6 +36,7 @@ import type { EnvelopeApplicationPort } from './model';
 import { EnvelopeFieldApplication, type EnvelopeFieldApplicationPort } from './fields';
 import { EnvelopeReadyApplication, type EnvelopeReadyApplicationPort } from './ready';
 import { EnvelopeSendApplication, type EnvelopeSendApplicationPort } from './send';
+import { EnvelopeVoidApplication, type EnvelopeVoidApplicationPort } from './void';
 import { EnvelopeApplication } from './service';
 
 interface PostgresRuntimeResources {
@@ -94,6 +96,13 @@ export function resolvePostgresEnvelopeSendApplication(
 ): EnvelopeSendApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
 	return new EnvelopeSendApplication(new PostgresEnvelopeSendStore(resources.sql), sealer);
+}
+
+export function resolvePostgresEnvelopeVoidApplication(
+	databaseUrl: string
+): EnvelopeVoidApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new EnvelopeVoidApplication(new PostgresEnvelopeVoidStore(resources.sql));
 }
 
 export function resolvePostgresRecipientAccessApplication(
