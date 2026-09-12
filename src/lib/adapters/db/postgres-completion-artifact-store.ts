@@ -180,9 +180,27 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 									AND locked_at < ${command.staleBefore}::timestamptz)
 							)
 						RETURNING envelope_id`;
-					if (updated.length === 1) {
-						claimed.push(toClaimedJob(row, command.claimedAt, 1));
+					if (updated.length !== 1) continue;
+					if (
+						row.sentCommitSha === null ||
+						row.repositoryArchiveKey === null ||
+						row.repositoryArchiveSha256 === null
+					) {
+						// A `completed` envelope missing its repository pointer is a
+						// data-integrity problem with this one row, not the batch: fail
+						// it terminally in place instead of throwing, which would abort
+						// this transaction and leave it reselected on every drain while
+						// blocking every sibling job claimed alongside it.
+						await transaction`
+							UPDATE completion_artifact_job
+							SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = false,
+								last_error = 'completion_artifact_envelope_missing_repository_pointer',
+								updated_at = ${command.claimedAt}::timestamptz
+							WHERE organization_id = ${row.organizationId} AND envelope_id = ${row.envelopeId}
+								AND status = 'processing' AND claim_token = ${command.claimToken}`;
+						continue;
 					}
+					claimed.push(toClaimedJob(row, command.claimedAt, 1));
 				}
 				return claimed;
 			}
