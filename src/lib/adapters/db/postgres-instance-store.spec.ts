@@ -496,6 +496,50 @@ describe('PostgresInstanceStore', () => {
 
 			expect(result).toEqual({ outcome: 'limit' });
 			expect(scripted.rollbacks).toBe(1);
+			expect(scripted.texts()[3]).toContain(
+				"WHERE status = 'pending' AND expires_at > ?::timestamptz"
+			);
+			expect(scripted.queries[3].values).toEqual([CREATED_AT.toISOString()]);
+		});
+
+		it('proves 200 expired pending invitations do not block a new create, while 200 live pending still returns limit', async () => {
+			// Case A: 200 expired pending invitations exist -> live-pending count query returns 0 -> create proceeds
+			const scriptedExpired = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }], // member check
+				[], // advisory lock
+				[], // receipt check
+				[{ count: '0' }], // count check (0 live pending, 200 expired filtered out)
+				[{ id: INVITATION_ID }], // invitation insert RETURNING id
+				[{ actorId: OWNER_ID }] // receipt insert RETURNING actor_id
+			]);
+
+			const createdResult: CreateInstanceInvitationStoreResult =
+				await store(scriptedExpired).createInstanceInvitation(createCommand());
+
+			expect(createdResult.outcome).toBe('created');
+			expect(scriptedExpired.rollbacks).toBe(0);
+			expect(scriptedExpired.texts()[3]).toContain(
+				"WHERE status = 'pending' AND expires_at > ?::timestamptz"
+			);
+			expect(scriptedExpired.queries[3].values).toEqual([CREATED_AT.toISOString()]);
+
+			// Case B: 200 live pending invitations exist -> count check returns 200 -> limit outcome returned
+			const scriptedLive = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }], // member check
+				[], // advisory lock
+				[], // receipt check
+				[{ count: '200' }] // count check (200 live pending invitations)
+			]);
+
+			const limitResult: CreateInstanceInvitationStoreResult =
+				await store(scriptedLive).createInstanceInvitation(createCommand());
+
+			expect(limitResult).toEqual({ outcome: 'limit' });
+			expect(scriptedLive.rollbacks).toBe(1);
+			expect(scriptedLive.texts()[3]).toContain(
+				"WHERE status = 'pending' AND expires_at > ?::timestamptz"
+			);
+			expect(scriptedLive.queries[3].values).toEqual([CREATED_AT.toISOString()]);
 		});
 
 		it('replays safely under matching receipt ignoring newly minted candidate invitationId and tokens', async () => {

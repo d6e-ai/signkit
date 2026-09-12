@@ -442,4 +442,84 @@ describe('D1 instance invitation migration', () => {
 			sqlite.close();
 		}
 	});
+
+	it('proves 200 expired pending invitations do not block a new create, while 200 live pending still returns evidence conflict', () => {
+		const sqlite: DatabaseSync = database();
+		try {
+			insertMember(sqlite, OWNER_ID, 'owner');
+
+			// Seed 200 expired pending invitations (expired relative to CREATED_AT)
+			const expiredCreatedAt = '2026-09-01T12:00:00.000Z';
+			const expiredExpiresAt = '2026-09-08T12:00:00.000Z';
+			const insertStmt = sqlite.prepare(`
+				INSERT INTO instance_invitation (
+					id, role, status, token_hash, email_binding, invited_by_user_id,
+					created_at, expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id
+				) VALUES (?, 'member', 'pending', ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+			`);
+
+			for (let i = 1; i <= 200; i++) {
+				const hexId = i.toString(16).padStart(12, '0');
+				const invId = `01900000-0000-7000-8000-${hexId}`;
+				const tHash = i.toString(16).padStart(64, '0');
+				const eBind = i.toString(16).padStart(64, '1');
+				insertStmt.run(invId, tHash, eBind, OWNER_ID, expiredCreatedAt, expiredExpiresAt);
+			}
+
+			// New create with occurredAt = CREATED_AT (2026-09-12T12:00:00.000Z) strictly after expiredExpiresAt:
+			// 200 expired pending invitations do not block create.
+			insertInvitation(sqlite, {
+				id: INVITATION_ID,
+				tokenHash: 'f'.repeat(64),
+				createdAt: CREATED_AT,
+				expiresAt: EXPIRES_AT
+			});
+			expect(() => {
+				insertCommand(sqlite, {
+					actorId: OWNER_ID,
+					idempotencyKey: 'create-command-success',
+					commandType: 'create',
+					role: 'member',
+					resultStatus: 'pending',
+					invitationId: INVITATION_ID,
+					occurredAt: CREATED_AT
+				});
+			}).not.toThrow();
+
+			// Clean up and seed 200 live pending invitations (live relative to CREATED_AT)
+			sqlite.exec('DELETE FROM instance_invitation_command');
+			sqlite.exec('DELETE FROM instance_invitation');
+
+			const liveCreatedAt = '2026-09-10T12:00:00.000Z';
+			const liveExpiresAt = '2026-09-17T12:00:00.000Z';
+			for (let i = 1; i <= 200; i++) {
+				const hexId = i.toString(16).padStart(12, '0');
+				const invId = `01900000-0000-7000-8000-${hexId}`;
+				const tHash = '2' + i.toString(16).padStart(63, '0');
+				const eBind = '3' + i.toString(16).padStart(63, '0');
+				insertStmt.run(invId, tHash, eBind, OWNER_ID, liveCreatedAt, liveExpiresAt);
+			}
+
+			// Inserting 201st live pending invitation and its create command receipt must abort with conflict
+			insertInvitation(sqlite, {
+				id: INVITATION_ID,
+				tokenHash: '4'.repeat(64),
+				createdAt: CREATED_AT,
+				expiresAt: EXPIRES_AT
+			});
+			expect(() => {
+				insertCommand(sqlite, {
+					actorId: OWNER_ID,
+					idempotencyKey: 'create-command-over-cap',
+					commandType: 'create',
+					role: 'member',
+					resultStatus: 'pending',
+					invitationId: INVITATION_ID,
+					occurredAt: CREATED_AT
+				});
+			}).toThrow(/instance invitation create evidence conflict/);
+		} finally {
+			sqlite.close();
+		}
+	});
 });

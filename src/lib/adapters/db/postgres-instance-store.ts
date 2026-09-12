@@ -335,7 +335,10 @@ export class PostgresInstanceStore implements InstanceStore {
 					}
 
 					// 4. Enforce pending cap 200 durably in transaction
-					const pendingCount: number = await this.#countPendingInvitations(transaction);
+					const pendingCount: number = await this.#countPendingInvitations(
+						transaction,
+						command.createdAt
+					);
 					if (pendingCount >= 200) {
 						throw new InstanceRollback({ outcome: 'limit' });
 					}
@@ -840,11 +843,12 @@ export class PostgresInstanceStore implements InstanceStore {
 		return rows[0] ?? null;
 	}
 
-	async #countPendingInvitations(sql: Sql): Promise<number> {
+	async #countPendingInvitations(sql: Sql, asOf: Date | string): Promise<number> {
 		const rows = await sql<CountRow[]>`
 			SELECT count(*)::int AS count
 			FROM instance_invitation
 			WHERE status = 'pending'
+			  AND expires_at > ${asOf}::timestamptz
 		`;
 		return Number(rows[0]?.count ?? 0);
 	}
@@ -982,7 +986,7 @@ export class PostgresInstanceStore implements InstanceStore {
 			return { outcome: 'role_not_permitted' };
 		}
 
-		const pendingCount = await this.#countPendingInvitations(sql);
+		const pendingCount = await this.#countPendingInvitations(sql, command.createdAt);
 		if (pendingCount >= 200) {
 			return { outcome: 'limit' };
 		}

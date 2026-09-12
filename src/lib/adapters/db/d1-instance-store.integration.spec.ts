@@ -631,6 +631,59 @@ describe('D1InstanceStore', () => {
 			}
 		});
 
+		it('proves 200 expired pending invitations do not block a new create, while 200 live pending still returns limit', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+
+				// Seed 200 expired pending invitations
+				const expiredCreatedAt = '2026-09-01T12:00:00.000Z';
+				const expiredExpiresAt = '2026-09-08T12:00:00.000Z';
+				const insertStmt = sqlite.prepare(`
+					INSERT INTO instance_invitation (id, role, status, token_hash, email_binding, invited_by_user_id, created_at, expires_at)
+					VALUES (?, 'member', 'pending', ?, ?, ?, ?, ?)
+				`);
+
+				for (let i = 1; i <= 200; i++) {
+					const hexId = i.toString(16).padStart(12, '0');
+					const invId = `01900000-0000-7000-8000-${hexId}`;
+					const tHash = i.toString(16).padStart(64, '0');
+					insertStmt.run(invId, tHash, EMAIL_BINDING, ACTOR_ID, expiredCreatedAt, expiredExpiresAt);
+				}
+
+				// 200 expired pending invitations do not block creating a new live invitation
+				const allowedRes = await store.createInstanceInvitation(
+					createInvitationCommand({
+						invitationId: '01900000-0000-7000-8000-000000000998',
+						tokenHash: '8'.repeat(64)
+					})
+				);
+				expect(allowedRes.outcome).toBe('created');
+
+				// Now clean up invitations/commands and seed 200 live pending invitations
+				sqlite.exec('DELETE FROM instance_invitation_command');
+				sqlite.exec('DELETE FROM instance_invitation');
+
+				for (let i = 1; i <= 200; i++) {
+					const hexId = i.toString(16).padStart(12, '0');
+					const invId = `01900000-0000-7000-8000-${hexId}`;
+					const tHash = '1' + i.toString(16).padStart(63, '0');
+					insertStmt.run(invId, tHash, EMAIL_BINDING, ACTOR_ID, CREATED_AT, EXPIRES_AT);
+				}
+
+				// 200 live pending invitations block creating a new invitation and return limit
+				const limitRes = await store.createInstanceInvitation(
+					createInvitationCommand({
+						invitationId: '01900000-0000-7000-8000-000000000999',
+						tokenHash: '9'.repeat(64)
+					})
+				);
+				expect(limitRes).toEqual({ outcome: 'limit' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
 		it('safely replays an exact request under the original idempotency key returning current metadata', async () => {
 			const { store, sqlite } = createFixture();
 			try {

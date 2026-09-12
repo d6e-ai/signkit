@@ -736,9 +736,11 @@ export class D1InstanceStore implements InstanceStore {
 			)
 			.bind(command.actor.type, command.actor.id, command.idempotencyKey);
 
-		const countStmt: D1PreparedStatement = this.#database.prepare(
-			"SELECT COUNT(*) AS count FROM instance_invitation WHERE status = 'pending'"
-		);
+		const countStmt: D1PreparedStatement = this.#database
+			.prepare(
+				"SELECT COUNT(*) AS count FROM instance_invitation WHERE status = 'pending' AND datetime(expires_at) > datetime(?)"
+			)
+			.bind(command.createdAt);
 
 		const results: D1Result<MemberRoleStatusRow | CreateInvitationReceiptRow | CountRow>[] =
 			await this.#database.batch<MemberRoleStatusRow | CreateInvitationReceiptRow | CountRow>([

@@ -180,7 +180,12 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		`;
 	}
 
-	async function seedPendingInvitations(count: number, inviterUserId: string): Promise<void> {
+	async function seedPendingInvitations(
+		count: number,
+		inviterUserId: string,
+		createdAt: string = CREATED_AT,
+		expiresAt: string = EXPIRES_AT
+	): Promise<void> {
 		await database()`
 			INSERT INTO instance_invitation (
 				id, role, status, token_hash, email_binding, invited_by_user_id,
@@ -193,8 +198,8 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 				lpad(i::text, 64, '0'),
 				lpad(i::text, 64, 'a'),
 				${inviterUserId},
-				${CREATED_AT}::timestamptz,
-				${EXPIRES_AT}::timestamptz,
+				${createdAt}::timestamptz,
+				${expiresAt}::timestamptz,
 				NULL, NULL, NULL, NULL
 			FROM generate_series(1, ${count}) AS s(i)
 		`;
@@ -722,6 +727,42 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		} finally {
 			await concurrentSql.end({ timeout: 5 });
 		}
+	});
+
+	it('proves 200 expired pending invitations do not block a new create, while 200 live pending still returns limit', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+
+		// Seed 200 expired pending invitations
+		const expiredCreatedAt: string = '2026-09-01T12:00:00.000Z';
+		const expiredExpiresAt: string = '2026-09-08T12:00:00.000Z';
+		await seedPendingInvitations(200, OWNER_ID, expiredCreatedAt, expiredExpiresAt);
+
+		// New create with createdAt = CREATED_AT (2026-09-12T12:00:00.000Z) strictly after expiredExpiresAt:
+		// 200 expired pending invitations do not block create.
+		const allowed = await store().createInstanceInvitation(
+			createCommand({
+				idempotencyKey: 'allowed-after-expired',
+				invitationId: '01900000-0000-7000-8000-000000000998',
+				tokenHash: '8'.repeat(64),
+				emailBinding: '8'.repeat(64)
+			})
+		);
+		expect(allowed.outcome).toBe('created');
+
+		// Truncate and seed 200 live pending invitations (live relative to CREATED_AT)
+		await database().unsafe('TRUNCATE instance_invitation CASCADE');
+		await seedPendingInvitations(200, OWNER_ID, CREATED_AT, EXPIRES_AT);
+
+		// New create fails with limit because 200 live pending invitations exist
+		const limited = await store().createInstanceInvitation(
+			createCommand({
+				idempotencyKey: 'limited-by-live-pending',
+				invitationId: '01900000-0000-7000-8000-000000000999',
+				tokenHash: '9'.repeat(64),
+				emailBinding: '9'.repeat(64)
+			})
+		);
+		expect(limited).toEqual({ outcome: 'limit' });
 	});
 
 	it('lists invitations with safe zero-PII metadata, correct pagination, and no hash disclosure', async (): Promise<void> => {

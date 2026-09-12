@@ -180,6 +180,36 @@ describe('D1InstanceStore unit tests', () => {
 			const result = await store.createInstanceInvitation(createCommand);
 			expect(result).toEqual({ outcome: 'limit' });
 			expect(fake.batches).toHaveLength(1);
+			expect(fake.batches[0][2].sql).toContain('datetime(expires_at) > datetime(?)');
+			expect(fake.batches[0][2].bindings).toEqual([CREATED_AT]);
+		});
+
+		it('proves 200 expired pending invitations do not block a new create, while 200 live pending returns limit', async () => {
+			// When expired pending invitations exist, live-pending count query returns 0
+			const fakeExpired = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }], // member
+					[], // receipt
+					[{ count: 0 }] // live pending count is 0 because 200 expired are filtered out
+				]
+			});
+			const storeExpired = new D1InstanceStore(fakeExpired.database);
+			const allowedResult = await storeExpired.createInstanceInvitation(createCommand);
+			expect(allowedResult.outcome).toBe('created');
+			expect(fakeExpired.batches).toHaveLength(2);
+			expect(fakeExpired.batches[0][2].sql).toContain('datetime(expires_at) > datetime(?)');
+			expect(fakeExpired.batches[0][2].bindings).toEqual([CREATED_AT]);
+
+			// When 200 live pending invitations exist, live-pending count returns 200 -> limit
+			const fakeLive = fakeD1({
+				batchResults: [[{ role: 'owner', status: 'active' }], [], [{ count: 200 }]]
+			});
+			const storeLive = new D1InstanceStore(fakeLive.database);
+			const limitResult = await storeLive.createInstanceInvitation(createCommand);
+			expect(limitResult).toEqual({ outcome: 'limit' });
+			expect(fakeLive.batches).toHaveLength(1);
+			expect(fakeLive.batches[0][2].sql).toContain('datetime(expires_at) > datetime(?)');
+			expect(fakeLive.batches[0][2].bindings).toEqual([CREATED_AT]);
 		});
 
 		it('classifies candidate invitationId collision as credential_collision when batch fails', async () => {

@@ -200,7 +200,9 @@ BEGIN
         AND NEW.role <> 'member'
       )
       OR (
-        SELECT COUNT(*) FROM instance_invitation WHERE status = 'pending'
+        SELECT COUNT(*) FROM instance_invitation
+        WHERE status = 'pending'
+          AND datetime(expires_at) > datetime(NEW.occurred_at)
       ) > 200
       OR NOT EXISTS (
         SELECT 1 FROM instance_invitation
