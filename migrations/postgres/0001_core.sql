@@ -8,6 +8,27 @@ CREATE TABLE organization (
   created_at timestamptz NOT NULL
 );
 
+-- SignKit-local instance membership. One deployment database is the instance
+-- boundary, so there is no instance_id. user_id is the external d6e-auth
+-- subject: d6e-auth proves identity only, and this row is membership
+-- authority. Status is invited, active, or suspended. No PII is stored.
+-- Invite acceptance and bootstrap flows are out of scope for this table.
+CREATE TABLE instance_member (
+  user_id text PRIMARY KEY,
+  status text NOT NULL,
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  CONSTRAINT instance_member_user_id_bound CHECK (
+    char_length(user_id) BETWEEN 1 AND 200
+  ),
+  CONSTRAINT instance_member_status_known CHECK (
+    status IN ('invited', 'active', 'suspended')
+  ),
+  CONSTRAINT instance_member_updated_order CHECK (
+    updated_at >= created_at
+  )
+);
+
 CREATE TABLE envelope (
   id text NOT NULL,
   organization_id text NOT NULL REFERENCES organization(id),

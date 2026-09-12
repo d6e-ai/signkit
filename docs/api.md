@@ -113,4 +113,4 @@ The provider call is outside the database transaction, so provider acceptance an
 
 ## Not exposed yet
 
-Workload credentials for agents and the CLI exist as storage, service, and migration layers only; there is no HTTP endpoint for issuing or revoking them. Recipient capability reissue is a documented design contract with no implementation. Webhooks, an OpenAPI document, rate limits, cursor pagination beyond the current list behaviour, ink capture, PDF sealing, DOCX conversion, audit export, and operator revoke UI remain on the backlog.
+API keys exist as storage, service, and migration layers only; there is no HTTP endpoint, Bearer authentication, OpenAPI surface, or CLI for issuing or revoking them. Key ownership does not authorize organization-scoped agent requests — that grant model is deferred. Recipient capability reissue is a documented design contract with no implementation. Webhooks, an OpenAPI document, rate limits, cursor pagination beyond the current list behaviour, ink capture, PDF sealing, DOCX conversion, audit export, and operator revoke UI remain on the backlog.

@@ -1,16 +1,16 @@
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import type {
-	CreateWorkloadKeyCommand,
-	CreateWorkloadKeyStoreResult,
-	RevokeWorkloadKeyCommand,
-	RevokeWorkloadKeyStoreResult,
-	WorkloadKeyListPage,
-	WorkloadKeyMetadata
-} from '$lib/ports/workload-key-store';
-import { PostgresWorkloadKeyStore } from './postgres-workload-key-store';
+	CreateApiKeyCommand,
+	CreateApiKeyStoreResult,
+	ListApiKeyStoreResult,
+	RevokeApiKeyCommand,
+	RevokeApiKeyStoreResult,
+	ApiKeyListPage,
+	ApiKeyMetadata
+} from '$lib/ports/api-key-store';
+import { PostgresApiKeyStore } from './postgres-api-key-store';
 
-const ORGANIZATION_ID: string = 'org-1';
 const ACTOR_ID: string = 'user-1';
 const KEY_ID: string = '01900000-0000-7000-8000-000000000201';
 const OTHER_KEY_ID: string = '01900000-0000-7000-8000-000000000202';
@@ -103,20 +103,16 @@ class ScriptedPostgres {
 	}
 }
 
-function store(scripted: ScriptedPostgres): PostgresWorkloadKeyStore {
-	return new PostgresWorkloadKeyStore(scripted.client());
+function store(scripted: ScriptedPostgres): PostgresApiKeyStore {
+	return new PostgresApiKeyStore(scripted.client());
 }
 
-function createCommand(
-	overrides: Partial<CreateWorkloadKeyCommand> = {}
-): CreateWorkloadKeyCommand {
+function createCommand(overrides: Partial<CreateApiKeyCommand> = {}): CreateApiKeyCommand {
 	return {
-		organizationId: ORGANIZATION_ID,
-		organizationName: 'Workspace',
 		actor: { type: 'user', id: ACTOR_ID },
 		idempotencyKey: 'create-1',
 		requestFingerprint: REQUEST_HASH,
-		workloadKeyId: KEY_ID,
+		apiKeyId: KEY_ID,
 		name: 'CI agent',
 		scopes: ['audit:read', 'envelopes:send'],
 		tokenHash: TOKEN_HASH,
@@ -127,15 +123,12 @@ function createCommand(
 	};
 }
 
-function revokeCommand(
-	overrides: Partial<RevokeWorkloadKeyCommand> = {}
-): RevokeWorkloadKeyCommand {
+function revokeCommand(overrides: Partial<RevokeApiKeyCommand> = {}): RevokeApiKeyCommand {
 	return {
-		organizationId: ORGANIZATION_ID,
 		actor: { type: 'user', id: ACTOR_ID },
 		idempotencyKey: 'revoke-1',
 		requestFingerprint: REQUEST_HASH,
-		workloadKeyId: KEY_ID,
+		apiKeyId: KEY_ID,
 		revokedAt: '2026-09-12T13:00:00.000Z',
 		...overrides
 	};
@@ -158,7 +151,7 @@ function keyRow(overrides: Record<string, unknown> = {}): Record<string, unknown
 function createReceiptRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		requestHash: REQUEST_HASH,
-		workloadKeyId: KEY_ID,
+		apiKeyId: KEY_ID,
 		name: 'CI agent',
 		scopesJson: SCOPES_JSON,
 		keyPrefix: KEY_PREFIX,
@@ -168,7 +161,7 @@ function createReceiptRow(overrides: Record<string, unknown> = {}): Record<strin
 		keyName: 'CI agent',
 		keyPrefixCurrent: KEY_PREFIX,
 		keyScopesJson: SCOPES_JSON,
-		keyCreatedByUserId: ACTOR_ID,
+		keyOwnerUserId: ACTOR_ID,
 		keyCreatedAt: CREATED_AT,
 		keyExpiresAt: EXPIRES_AT,
 		keyLastUsedAt: null,
@@ -180,7 +173,7 @@ function createReceiptRow(overrides: Record<string, unknown> = {}): Record<strin
 function revokeReceiptRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		requestHash: REQUEST_HASH,
-		workloadKeyId: KEY_ID,
+		apiKeyId: KEY_ID,
 		keyPrefix: KEY_PREFIX,
 		revokedAt: REVOKED_AT,
 		keyId: KEY_ID,
@@ -195,7 +188,7 @@ function revokeReceiptRow(overrides: Record<string, unknown> = {}): Record<strin
 	};
 }
 
-const EXPECTED_METADATA: WorkloadKeyMetadata = {
+const EXPECTED_METADATA: ApiKeyMetadata = {
 	id: KEY_ID,
 	name: 'CI agent',
 	keyPrefix: KEY_PREFIX,
@@ -206,112 +199,108 @@ const EXPECTED_METADATA: WorkloadKeyMetadata = {
 	revokedAt: null
 };
 
-describe('PostgresWorkloadKeyStore.createWorkloadKey', () => {
-	it('upserts the guarded organization, key, and receipt inside one transaction', async () => {
-		const scripted = new ScriptedPostgres([
-			[],
-			[{ id: ORGANIZATION_ID }],
-			[keyRow()],
-			[{ workloadKeyId: KEY_ID }]
-		]);
-		const result: CreateWorkloadKeyStoreResult =
-			await store(scripted).createWorkloadKey(createCommand());
+const ACTIVE_MEMBER: readonly { status: string }[] = [{ status: 'active' }];
+
+describe('PostgresApiKeyStore.createApiKey', () => {
+	it('locks the active owner, then writes the key and receipt inside one transaction', async () => {
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], [keyRow()], [{ apiKeyId: KEY_ID }]]);
+		const result: CreateApiKeyStoreResult = await store(scripted).createApiKey(createCommand());
 
 		expect(result).toEqual({ outcome: 'created', key: EXPECTED_METADATA });
 		expect(scripted.beginCalls).toBe(1);
 		expect(scripted.rollbacks).toBe(0);
 		expect(scripted.queries).toHaveLength(4);
-		expect(scripted.texts()[0]).toContain('FROM workload_key_create_command command');
-		expect(scripted.texts()[0]).toContain('LEFT JOIN workload_key stored');
-		expect(scripted.texts()[1]).toContain('INSERT INTO organization');
-		expect(scripted.texts()[1]).toContain(
-			'WHERE organization.d6e_organization_id = EXCLUDED.d6e_organization_id'
+		expect(scripted.texts()[0]).toContain(
+			'FROM instance_member WHERE user_id = ? LIMIT 1 FOR SHARE'
 		);
-		expect(scripted.texts()[2]).toContain('INSERT INTO workload_key');
+		expect(scripted.texts()[1]).toContain('FROM api_key_create_command command');
+		expect(scripted.texts()[1]).toContain('LEFT JOIN api_key stored');
+		expect(scripted.texts()[2]).toContain('INSERT INTO api_key');
+		expect(scripted.texts()[2]).toContain("status = 'active'");
 		expect(scripted.texts()[2]).toContain('ON CONFLICT DO NOTHING');
 		expect(scripted.texts()[2]).toContain('::timestamptz');
 		expect(scripted.queries[2].values).toEqual([
-			ORGANIZATION_ID,
 			KEY_ID,
 			'CI agent',
 			TOKEN_HASH,
 			KEY_PREFIX,
 			SCOPES_JSON,
-			ACTOR_ID,
 			'2026-09-12T12:00:00.000Z',
-			'2026-12-11T12:00:00.000Z'
+			'2026-12-11T12:00:00.000Z',
+			ACTOR_ID
 		]);
-		expect(scripted.texts()[3]).toContain('INSERT INTO workload_key_create_command');
+		expect(scripted.texts()[3]).toContain('INSERT INTO api_key_create_command');
 		expect(scripted.queries[3].values).toEqual([
-			ORGANIZATION_ID,
 			'user',
 			ACTOR_ID,
 			'create-1',
 			REQUEST_HASH,
 			KEY_ID,
-			'CI agent',
-			SCOPES_JSON,
-			KEY_PREFIX,
-			'2026-12-11T12:00:00.000Z',
-			'2026-09-12T12:00:00.000Z'
+			ACTOR_ID
 		]);
+		expect(JSON.stringify(scripted.queries)).not.toContain('organization_id');
 	});
 
-	it('rolls back with integrity_error when the organization projection is guarded out', async () => {
-		const scripted = new ScriptedPostgres([[], []]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
-			outcome: 'integrity_error'
-		});
-		expect(scripted.queries).toHaveLength(2);
-		expect(scripted.rollbacks).toBe(1);
+	it('fails closed for a missing, invited, or suspended owner before writing', async () => {
+		for (const members of [[], [{ status: 'invited' }], [{ status: 'suspended' }]]) {
+			const scripted = new ScriptedPostgres([members]);
+			await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
+				outcome: 'owner_not_active'
+			});
+			expect(scripted.queries).toHaveLength(1);
+			expect(scripted.rollbacks).toBe(1);
+			expect(scripted.texts()[0]).not.toContain('INSERT INTO api_key');
+		}
 	});
 
 	it('classifies a key id conflict from evidence', async () => {
-		const scripted = new ScriptedPostgres([[], [{ id: ORGANIZATION_ID }], [], [{ id: KEY_ID }]]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], [], ACTIVE_MEMBER, [{ id: KEY_ID }]]);
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'key_id_conflict'
 		});
-		expect(scripted.texts()[3]).toContain('SELECT id FROM workload_key WHERE organization_id = ?');
+		expect(scripted.texts()[4]).toContain('SELECT id FROM api_key WHERE id = ?');
 		expect(scripted.rollbacks).toBe(1);
 	});
 
 	it('classifies a credential hash conflict from evidence', async () => {
 		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
 			[],
-			[{ id: ORGANIZATION_ID }],
 			[],
+			ACTIVE_MEMBER,
 			[],
 			[{ id: OTHER_KEY_ID }]
 		]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'token_hash_conflict'
 		});
-		expect(scripted.texts()[4]).toContain('WHERE token_hash = ?');
-		expect(scripted.queries[4].values).toEqual([TOKEN_HASH]);
+		expect(scripted.texts()[5]).toContain('WHERE token_hash = ?');
+		expect(scripted.queries[5].values).toEqual([TOKEN_HASH]);
 	});
 
 	it('falls back to integrity_error when no conflicting row can be proven', async () => {
-		const scripted = new ScriptedPostgres([[], [{ id: ORGANIZATION_ID }], [], [], []]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], [], ACTIVE_MEMBER, [], []]);
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'integrity_error'
 		});
 	});
 
 	it('returns already_issued for an exact replay without inserting anything', async () => {
-		const scripted = new ScriptedPostgres([[createReceiptRow()]]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [createReceiptRow()]]);
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'already_issued',
 			key: EXPECTED_METADATA
 		});
-		expect(scripted.queries).toHaveLength(1);
+		expect(scripted.queries).toHaveLength(2);
 		expect(scripted.rollbacks).toBe(1);
 	});
 
 	it('returns already_issued with the current metadata of a since-revoked key', async () => {
 		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
 			[createReceiptRow({ keyRevokedAt: REVOKED_AT, keyLastUsedAt: REVOKED_AT })]
 		]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'already_issued',
 			key: {
 				...EXPECTED_METADATA,
@@ -322,8 +311,11 @@ describe('PostgresWorkloadKeyStore.createWorkloadKey', () => {
 	});
 
 	it('rejects a reused idempotency key for a different request', async () => {
-		const scripted = new ScriptedPostgres([[createReceiptRow({ requestHash: 'b'.repeat(64) })]]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
+			[createReceiptRow({ requestHash: 'b'.repeat(64) })]
+		]);
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'idempotency_conflict'
 		});
 	});
@@ -334,7 +326,7 @@ describe('PostgresWorkloadKeyStore.createWorkloadKey', () => {
 			{ keyName: 'Renamed agent' },
 			{ keyPrefixCurrent: 'signkit_zzzzzzzz' },
 			{ keyScopesJson: '["audit:read"]' },
-			{ keyCreatedByUserId: 'user-2' },
+			{ keyOwnerUserId: 'user-2' },
 			{ keyCreatedAt: new Date('2026-09-12T12:00:01.000Z') },
 			{ keyExpiresAt: new Date('2026-12-12T12:00:00.000Z') },
 			{
@@ -343,8 +335,8 @@ describe('PostgresWorkloadKeyStore.createWorkloadKey', () => {
 			}
 		];
 		for (const drift of drifts) {
-			const scripted = new ScriptedPostgres([[createReceiptRow(drift)]]);
-			await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+			const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [createReceiptRow(drift)]]);
+			await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 				outcome: 'idempotency_conflict'
 			});
 		}
@@ -352,13 +344,13 @@ describe('PostgresWorkloadKeyStore.createWorkloadKey', () => {
 
 	it('rolls back and replays when a concurrent identical request won the receipt', async () => {
 		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
 			[],
-			[{ id: ORGANIZATION_ID }],
 			[keyRow()],
 			[],
 			[createReceiptRow()]
 		]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'already_issued',
 			key: EXPECTED_METADATA
 		});
@@ -366,8 +358,8 @@ describe('PostgresWorkloadKeyStore.createWorkloadKey', () => {
 	});
 
 	it('rolls back with integrity_error when the receipt insert conflicts unprovably', async () => {
-		const scripted = new ScriptedPostgres([[], [{ id: ORGANIZATION_ID }], [keyRow()], [], []]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], [keyRow()], [], []]);
+		await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 			outcome: 'integrity_error'
 		});
 		expect(scripted.rollbacks).toBe(1);
@@ -375,92 +367,137 @@ describe('PostgresWorkloadKeyStore.createWorkloadKey', () => {
 
 	it('never swallows a real driver failure into an outcome', async () => {
 		const failure: Error = Object.assign(new Error('deadlock detected'), { code: '40P01' });
-		const scripted = new ScriptedPostgres([[], [{ id: ORGANIZATION_ID }], failure]);
-		await expect(store(scripted).createWorkloadKey(createCommand())).rejects.toThrow(
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], failure]);
+		await expect(store(scripted).createApiKey(createCommand())).rejects.toThrow(
 			'deadlock detected'
 		);
 	});
 });
 
-describe('PostgresWorkloadKeyStore.listWorkloadKeys', () => {
-	it('reads one deterministic newest-first page and over-fetches to compute the cursor', async () => {
+describe('PostgresApiKeyStore.listApiKeys', () => {
+	it('reads one deterministic newest-first owner page and over-fetches to compute the cursor', async () => {
 		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
 			[keyRow({ id: OTHER_KEY_ID }), keyRow(), keyRow({ id: 'extra' })]
 		]);
-		const page: WorkloadKeyListPage = await store(scripted).listWorkloadKeys(ORGANIZATION_ID, {
-			cursor: null,
-			limit: 2
-		});
+		const result: ListApiKeyStoreResult = await store(scripted).listApiKeys(
+			{ type: 'user', id: ACTOR_ID },
+			{ cursor: null, limit: 2 }
+		);
 
-		expect(page.items.map((item: WorkloadKeyMetadata): string => item.id)).toEqual([
+		expect(result.outcome).toBe('listed');
+		if (result.outcome !== 'listed') expect.unreachable('list should succeed');
+		const page: ApiKeyListPage = result.page;
+		expect(page.items.map((item: ApiKeyMetadata): string => item.id)).toEqual([
 			OTHER_KEY_ID,
 			KEY_ID
 		]);
 		expect(page.nextCursor).toBe(KEY_ID);
-		expect(scripted.queries).toHaveLength(1);
-		expect(scripted.texts()[0]).toContain('ORDER BY created_at DESC, id DESC');
-		expect(scripted.queries[0].values).toEqual([ORGANIZATION_ID, 3]);
-		expect(scripted.beginCalls).toBe(0);
+		expect(scripted.queries).toHaveLength(2);
+		expect(scripted.texts()[1]).toContain('ORDER BY created_at DESC, id DESC');
+		expect(scripted.queries[1].values).toEqual([ACTOR_ID, ACTOR_ID, 3]);
+		expect(scripted.beginCalls).toBe(1);
+		expect(scripted.rollbacks).toBe(0);
 	});
 
-	it('resolves a cursor tenant-scoped before paging with a stable keyset predicate', async () => {
+	it('holds the owner membership lock across the page read and repeats it in the predicate', async () => {
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [keyRow()]]);
+		await store(scripted).listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 5 });
+
+		// The FOR SHARE lock taken here is held until the transaction commits, so a
+		// concurrent suspension cannot land between the check and the disclosure.
+		expect(scripted.beginCalls).toBe(1);
+		expect(scripted.texts()[0]).toContain(
+			'FROM instance_member WHERE user_id = ? LIMIT 1 FOR SHARE'
+		);
+		expect(scripted.texts()[1]).toContain(
+			"EXISTS ( SELECT 1 FROM instance_member WHERE user_id = ? AND status = 'active' )"
+		);
+	});
+
+	it('resolves a cursor owner-scoped before paging with a stable keyset predicate', async () => {
 		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
 			[{ id: OTHER_KEY_ID, createdAt: EXPIRES_AT }],
 			[keyRow()]
 		]);
-		const page: WorkloadKeyListPage = await store(scripted).listWorkloadKeys(ORGANIZATION_ID, {
-			cursor: OTHER_KEY_ID,
-			limit: 5
-		});
+		const result: ListApiKeyStoreResult = await store(scripted).listApiKeys(
+			{ type: 'user', id: ACTOR_ID },
+			{ cursor: OTHER_KEY_ID, limit: 5 }
+		);
 
-		expect(page).toEqual({ items: [EXPECTED_METADATA], nextCursor: null });
-		expect(scripted.texts()[0]).toContain('FROM workload_key WHERE organization_id = ? AND id = ?');
-		expect(scripted.texts()[1]).toContain('created_at < ? OR (created_at = ? AND id < ?)');
-		expect(scripted.queries[1].values).toEqual([
-			ORGANIZATION_ID,
+		expect(result).toEqual({
+			outcome: 'listed',
+			page: { items: [EXPECTED_METADATA], nextCursor: null }
+		});
+		expect(scripted.texts()[1]).toContain('FROM api_key WHERE owner_user_id = ? AND id = ?');
+		expect(scripted.texts()[2]).toContain('created_at < ? OR (created_at = ? AND id < ?)');
+		expect(scripted.texts()[2]).toContain(
+			"EXISTS ( SELECT 1 FROM instance_member WHERE user_id = ? AND status = 'active' )"
+		);
+		expect(scripted.queries[2].values).toEqual([
+			ACTOR_ID,
+			ACTOR_ID,
 			EXPIRES_AT,
 			EXPIRES_AT,
 			OTHER_KEY_ID,
 			6
 		]);
+		// The cursor is resolved inside the same locked transaction as the page.
+		expect(scripted.beginCalls).toBe(1);
 	});
 
-	it('fails closed on an unknown or cross-tenant cursor', async () => {
-		const scripted = new ScriptedPostgres([[]]);
+	it('fails closed on an unknown or cross-owner cursor', async () => {
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, []]);
 		await expect(
-			store(scripted).listWorkloadKeys(ORGANIZATION_ID, { cursor: OTHER_KEY_ID, limit: 5 })
-		).resolves.toEqual({ items: [], nextCursor: null });
-		expect(scripted.queries).toHaveLength(1);
+			store(scripted).listApiKeys(
+				{ type: 'user', id: ACTOR_ID },
+				{ cursor: OTHER_KEY_ID, limit: 5 }
+			)
+		).resolves.toEqual({ outcome: 'listed', page: { items: [], nextCursor: null } });
+		expect(scripted.queries).toHaveLength(2);
+	});
+
+	it('fails closed for a missing, invited, or suspended owner', async () => {
+		for (const members of [[], [{ status: 'invited' }], [{ status: 'suspended' }]]) {
+			const scripted = new ScriptedPostgres([members]);
+			await expect(
+				store(scripted).listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 5 })
+			).resolves.toEqual({ outcome: 'owner_not_active' });
+			expect(scripted.queries).toHaveLength(1);
+			expect(scripted.rollbacks).toBe(1);
+		}
 	});
 
 	it('rejects out-of-range limits before querying', async () => {
 		const scripted = new ScriptedPostgres([]);
 		await expect(
-			store(scripted).listWorkloadKeys(ORGANIZATION_ID, { cursor: null, limit: 101 })
-		).rejects.toThrow('Workload key list limit must be between 1 and 100.');
+			store(scripted).listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 101 })
+		).rejects.toThrow('API key list limit must be between 1 and 100.');
 		expect(scripted.queries).toEqual([]);
 	});
 
 	it('refuses to project a row whose stored scopes are not canonical', async () => {
 		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
 			[keyRow({ scopesJson: '["envelopes:send","audit:read"]' })]
 		]);
 		await expect(
-			store(scripted).listWorkloadKeys(ORGANIZATION_ID, { cursor: null, limit: 5 })
-		).rejects.toThrow('Stored workload key row is not canonical.');
+			store(scripted).listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 5 })
+		).rejects.toThrow('Stored API key row is not canonical.');
 	});
 });
 
-describe('PostgresWorkloadKeyStore.revokeWorkloadKey', () => {
-	it('locks the key row, writes one receipt, and stamps revoked_at in one transaction', async () => {
+describe('PostgresApiKeyStore.revokeApiKey', () => {
+	it('locks the owner and key row, writes one receipt, and stamps revoked_at in one transaction', async () => {
 		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
 			[],
 			[keyRow()],
-			[{ workloadKeyId: KEY_ID }],
+			[{ apiKeyId: KEY_ID }],
 			[keyRow({ revokedAt: REVOKED_AT })]
 		]);
-		const result: RevokeWorkloadKeyStoreResult =
-			await store(scripted).revokeWorkloadKey(revokeCommand());
+		const result: RevokeApiKeyStoreResult = await store(scripted).revokeApiKey(revokeCommand());
 
 		expect(result).toEqual({
 			outcome: 'revoked',
@@ -468,11 +505,14 @@ describe('PostgresWorkloadKeyStore.revokeWorkloadKey', () => {
 		});
 		expect(scripted.beginCalls).toBe(1);
 		expect(scripted.rollbacks).toBe(0);
-		expect(scripted.texts()[0]).toContain('FROM workload_key_revoke_command command');
-		expect(scripted.texts()[1]).toContain('FOR UPDATE');
-		expect(scripted.texts()[2]).toContain('INSERT INTO workload_key_revoke_command');
-		expect(scripted.queries[2].values).toEqual([
-			ORGANIZATION_ID,
+		expect(scripted.texts()[0]).toContain(
+			'FROM instance_member WHERE user_id = ? LIMIT 1 FOR SHARE'
+		);
+		expect(scripted.texts()[1]).toContain('FROM api_key_revoke_command command');
+		expect(scripted.texts()[2]).toContain('FOR UPDATE');
+		expect(scripted.texts()[2]).toContain('owner_user_id = ?');
+		expect(scripted.texts()[3]).toContain('INSERT INTO api_key_revoke_command');
+		expect(scripted.queries[3].values).toEqual([
 			'user',
 			ACTOR_ID,
 			'revoke-1',
@@ -481,41 +521,51 @@ describe('PostgresWorkloadKeyStore.revokeWorkloadKey', () => {
 			KEY_PREFIX,
 			'2026-09-12T13:00:00.000Z'
 		]);
-		expect(scripted.texts()[3]).toContain('UPDATE workload_key SET revoked_at = ?::timestamptz');
-		expect(scripted.texts()[3]).toContain('AND revoked_at IS NULL');
+		expect(scripted.texts()[4]).toContain('UPDATE api_key SET revoked_at = ?::timestamptz');
+		expect(scripted.texts()[4]).toContain('AND revoked_at IS NULL');
 	});
 
-	it('answers an unknown or cross-tenant key with not_found', async () => {
-		const scripted = new ScriptedPostgres([[], []]);
-		await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+	it('fails closed for a missing, invited, or suspended owner', async () => {
+		for (const members of [[], [{ status: 'invited' }], [{ status: 'suspended' }]]) {
+			const scripted = new ScriptedPostgres([members]);
+			await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
+				outcome: 'owner_not_active'
+			});
+			expect(scripted.rollbacks).toBe(1);
+		}
+	});
+
+	it('answers an unknown or cross-owner key with not_found', async () => {
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], []]);
+		await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 			outcome: 'not_found'
 		});
 		expect(scripted.rollbacks).toBe(1);
 	});
 
 	it('reports already_revoked without writing a second receipt', async () => {
-		const scripted = new ScriptedPostgres([[], [keyRow({ revokedAt: REVOKED_AT })]]);
-		await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], [keyRow({ revokedAt: REVOKED_AT })]]);
+		await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 			outcome: 'already_revoked',
 			key: { ...EXPECTED_METADATA, revokedAt: '2026-09-12T13:00:00.000Z' }
 		});
-		expect(scripted.queries).toHaveLength(2);
+		expect(scripted.queries).toHaveLength(3);
 		expect(scripted.rollbacks).toBe(1);
 	});
 
 	it('replays the original idempotency key from proven evidence', async () => {
-		const scripted = new ScriptedPostgres([[revokeReceiptRow()]]);
-		await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [revokeReceiptRow()]]);
+		await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 			outcome: 'replayed',
 			key: { ...EXPECTED_METADATA, revokedAt: '2026-09-12T13:00:00.000Z' }
 		});
-		expect(scripted.queries).toHaveLength(1);
+		expect(scripted.queries).toHaveLength(2);
 	});
 
 	it('rejects a reused idempotency key for another key or another request', async () => {
-		for (const drift of [{ workloadKeyId: OTHER_KEY_ID }, { requestHash: 'b'.repeat(64) }]) {
-			const scripted = new ScriptedPostgres([[revokeReceiptRow(drift)]]);
-			await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+		for (const drift of [{ apiKeyId: OTHER_KEY_ID }, { requestHash: 'b'.repeat(64) }]) {
+			const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [revokeReceiptRow(drift)]]);
+			await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 				outcome: 'idempotency_conflict'
 			});
 		}
@@ -528,24 +578,30 @@ describe('PostgresWorkloadKeyStore.revokeWorkloadKey', () => {
 			{ keyPrefixCurrent: 'signkit_zzzzzzzz' },
 			{ keyRevokedAt: null }
 		]) {
-			const scripted = new ScriptedPostgres([[revokeReceiptRow(drift)]]);
-			await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+			const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [revokeReceiptRow(drift)]]);
+			await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 				outcome: 'integrity_error'
 			});
 		}
 	});
 
 	it('rolls back with integrity_error when the receipt insert conflicts unprovably', async () => {
-		const scripted = new ScriptedPostgres([[], [keyRow()], [], []]);
-		await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, [], [keyRow()], [], []]);
+		await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 			outcome: 'integrity_error'
 		});
 		expect(scripted.rollbacks).toBe(1);
 	});
 
 	it('replays when a concurrent identical revoke won the receipt', async () => {
-		const scripted = new ScriptedPostgres([[], [keyRow()], [], [revokeReceiptRow()]]);
-		await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
+			[],
+			[keyRow()],
+			[],
+			[revokeReceiptRow()]
+		]);
+		await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 			outcome: 'replayed',
 			key: { ...EXPECTED_METADATA, revokedAt: '2026-09-12T13:00:00.000Z' }
 		});
@@ -553,8 +609,14 @@ describe('PostgresWorkloadKeyStore.revokeWorkloadKey', () => {
 	});
 
 	it('rolls back with integrity_error when the guarded update matches nothing', async () => {
-		const scripted = new ScriptedPostgres([[], [keyRow()], [{ workloadKeyId: KEY_ID }], []]);
-		await expect(store(scripted).revokeWorkloadKey(revokeCommand())).resolves.toEqual({
+		const scripted = new ScriptedPostgres([
+			ACTIVE_MEMBER,
+			[],
+			[keyRow()],
+			[{ apiKeyId: KEY_ID }],
+			[]
+		]);
+		await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 			outcome: 'integrity_error'
 		});
 		expect(scripted.rollbacks).toBe(1);
@@ -564,8 +626,8 @@ describe('PostgresWorkloadKeyStore.revokeWorkloadKey', () => {
 		const failure: Error = Object.assign(new Error('could not serialize access'), {
 			code: '40001'
 		});
-		const scripted = new ScriptedPostgres([[], failure]);
-		await expect(store(scripted).revokeWorkloadKey(revokeCommand())).rejects.toThrow(
+		const scripted = new ScriptedPostgres([ACTIVE_MEMBER, failure]);
+		await expect(store(scripted).revokeApiKey(revokeCommand())).rejects.toThrow(
 			'could not serialize access'
 		);
 	});

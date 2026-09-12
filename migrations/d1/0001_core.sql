@@ -13,6 +13,37 @@ CREATE TABLE organization (
   created_at TEXT NOT NULL
 );
 
+-- SignKit-local instance membership. One deployment database is the instance
+-- boundary, so there is no instance_id. user_id is the external d6e-auth
+-- subject: d6e-auth proves identity only, and this row is membership
+-- authority. Status is invited, active, or suspended. No PII is stored.
+-- Invite acceptance and bootstrap flows are out of scope for this table.
+CREATE TABLE instance_member (
+  user_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CONSTRAINT instance_member_user_id_bound CHECK (
+    length(user_id) BETWEEN 1 AND 200
+  ),
+  CONSTRAINT instance_member_status_known CHECK (
+    status IN ('invited', 'active', 'suspended')
+  ),
+  CONSTRAINT instance_member_created_at_iso CHECK (
+    length(created_at) = 24
+    AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+    AND datetime(created_at) IS NOT NULL
+  ),
+  CONSTRAINT instance_member_updated_at_iso CHECK (
+    length(updated_at) = 24
+    AND updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+    AND datetime(updated_at) IS NOT NULL
+  ),
+  CONSTRAINT instance_member_updated_order CHECK (
+    datetime(updated_at) >= datetime(created_at)
+  )
+);
+
 CREATE TABLE envelope (
   id TEXT NOT NULL,
   organization_id TEXT NOT NULL,
