@@ -1,0 +1,69 @@
+# Deployment
+
+How the three deployment profiles differ, what to configure, and how background jobs are driven. The normative boundary is [design.md § Deployment](design.md#deployment) and [§ Persistence](design.md#persistence); this document is the operational companion.
+
+## Profiles
+
+`DEPLOY_TARGET` selects the adapter at build time. Each target produces its own artifact; there is no universal runtime build.
+
+| Target             | Build                       | Database      | Objects                 | Background work                      | Status               |
+| ------------------ | --------------------------- | ------------- | ----------------------- | ------------------------------------ | -------------------- |
+| Node/Docker        | `pnpm run build:node`       | PostgreSQL 18 | S3-compatible           | host scheduler posts to drain routes | scaffolded           |
+| Cloudflare Workers | `pnpm run build:cloudflare` | D1 binding    | R2 binding              | one-minute cron drains in-process    | scaffolded           |
+| Vercel             | `pnpm run build:vercel`     | PostgreSQL    | S3-compatible initially | platform-specific, not yet specified | low-priority backlog |
+
+Priority order is Node/Docker first, Cloudflare second, Vercel last. Vercel compiles in CI but is not supported for production use.
+
+## Node / Docker
+
+PostgreSQL 18 is the database baseline for this profile: CI validates against `postgres:18-alpine`, and that is the version new deployments should run. The migrations in `migrations/postgres` do not depend on version-18-only features, but older servers are not exercised by the test suite.
+
+The supplied multi-stage `Dockerfile` builds the Node profile and runs it as the non-root `signkit` user on port 3000. Its healthcheck polls `GET /api/v1/system/capabilities`, an unauthenticated read that reports the API version, the detected runtime, and the supported profiles.
+
+Put the app behind a reverse proxy that preserves the public HTTPS origin: `SIGNKIT_PUBLIC_ORIGIN` must match both the d6e-auth `/auth/callback` redirect URI registered for the client and the origin used to mint recipient signing and completion links.
+
+Objects go to any S3-compatible service. Most of them require path-style addressing (`S3_FORCE_PATH_STYLE=true`); set it to `false` for AWS S3 itself. R2 is not used through its S3 endpoint on this profile.
+
+## Cloudflare Workers
+
+`wrangler.jsonc` declares the `DB` (D1), `OBJECTS` (R2), `ASSETS`, and `EMAIL` bindings, `nodejs_compat`, observability, and a `* * * * *` cron trigger. R2 is used through its in-process binding rather than an S3 endpoint, and D1 migrations live in `migrations/d1`.
+
+The scheduled trigger drains invitation delivery, completion-artifact publication, and completion delivery in-process, so no external scheduler is required. Secrets belong in Wrangler secret storage (`.dev.vars` locally) and must never be committed: at minimum `DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, `DELIVERY_WORKER_SECRET`, the d6e-auth client credentials, plus the `SIGNKIT_PUBLIC_ORIGIN`, `SIGNKIT_EMAIL_FROM`, and `SIGNKIT_EMAIL_FROM_NAME` variables.
+
+Cloudflare Email Sending is currently beta. Sending to arbitrary recipient addresses requires Workers Paid; free accounts can only send to verified destination addresses, which is fine for testing but not for real envelopes. Check the current [Email Sending pricing and availability](https://developers.cloudflare.com/email-service/platform/pricing/) before treating this profile as zero-cost.
+
+## Vercel
+
+The Vercel target builds with `adapter-vercel` on `nodejs22.x` and uses the same PostgreSQL and S3-compatible adapters as the Node profile. Native Vercel Blob is not S3-compatible and would need a separate adapter. Treat this profile as CI-validated only.
+
+## Configuration
+
+All values come from `.env.example`; copy it to `.env` for Node development, and set the same names as Worker secrets or variables on Cloudflare.
+
+| Variable                                                                                                   | Purpose                                                                                                               |
+| ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `D6E_AUTH_BASE_URL`, `D6E_AUTH_CLIENT_ID`, `D6E_AUTH_CLIENT_SECRET`                                        | Operator OAuth against d6e-auth. The client ID is also the expected token audience.                                   |
+| `SESSION_ENCRYPTION_KEY`                                                                                   | 32 random bytes, base64. Encrypts operator and recipient cookies, separated by AES-GCM additional authenticated data. |
+| `DELIVERY_ENCRYPTION_KEY`                                                                                  | Separate AES-256 key sealing recipient capabilities and completion tokens held in delivery outboxes.                  |
+| `SIGNKIT_PUBLIC_ORIGIN`                                                                                    | Exact public HTTPS origin used to build signing and completion links.                                                 |
+| `SIGNKIT_EMAIL_FROM`, `SIGNKIT_EMAIL_FROM_NAME`                                                            | Transactional sender address and display name.                                                                        |
+| `DELIVERY_WORKER_SECRET`                                                                                   | High-entropy bearer secret for the protected drain endpoints.                                                         |
+| `DATABASE_URL`                                                                                             | PostgreSQL connection string (Node and Vercel profiles).                                                              |
+| `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE` | Object storage for the Node and Vercel profiles.                                                                      |
+| `CLOUDFLARE_EMAIL_ACCOUNT_ID`, `CLOUDFLARE_EMAIL_API_TOKEN`                                                | Cloudflare Email Sending REST credentials used by the Node delivery worker.                                           |
+
+Do not rotate `DELIVERY_ENCRYPTION_KEY` while any outbox row still carries its key ID; undelivered ciphertext sealed under a retired key fails closed rather than being silently dropped.
+
+## Background jobs
+
+Three durable outboxes are drained through protected endpoints:
+
+| Endpoint                                          | Work                                                          |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| `POST /api/v1/system/deliveries/drain`            | recipient invitation mail                                     |
+| `POST /api/v1/system/completion-artifacts/drain`  | completion-artifact publication                               |
+| `POST /api/v1/system/completion-deliveries/drain` | completion notifications and read-only artifact access grants |
+
+All three authenticate with a constant-time check of `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare drains them from its own scheduled trigger; Node/Docker and Vercel deployments must call them from a host scheduler (systemd timer, Kubernetes CronJob, or equivalent) roughly once a minute. Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes.
+
+Each drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [design.md](design.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
