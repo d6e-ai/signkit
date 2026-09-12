@@ -776,9 +776,11 @@
 	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
 	import { Spinner } from '$lib/components/ui/spinner';
+	import * as Tabs from '$lib/components/ui/tabs';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
+	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -1054,6 +1056,22 @@
 	<meta name="referrer" content="no-referrer" />
 </svelte:head>
 
+{#snippet renderMarkdownNode(node: RecipientMarkdownNode)}
+	{#if node.type === 'text'}
+		{node.value}
+	{:else if node.tag === 'br'}
+		<br />
+	{:else if node.tag === 'hr'}
+		<hr />
+	{:else}
+		<svelte:element this={node.tag} {...node.attributes}>
+			{#each node.children as child, childIndex (childIndex)}
+				{@render renderMarkdownNode(child)}
+			{/each}
+		</svelte:element>
+	{/if}
+{/snippet}
+
 <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
 	{liveMessage}
 </div>
@@ -1194,11 +1212,50 @@
 										</span>
 										{documentName(document.path)}
 									</Card.Title>
-									<Badge variant="secondary" class="shrink-0">{m.signing_document_source()}</Badge>
+									<Badge variant="secondary" class="shrink-0">{m.signing_document_format()}</Badge>
 								</Card.Header>
 								<Card.Content class="p-0">
-									<pre
-										class="overflow-hidden p-5 font-sans text-sm leading-7 [overflow-wrap:anywhere] break-words whitespace-pre-wrap sm:p-7">{document.content}</pre>
+									<Tabs.Root value="formatted" class="gap-0">
+										<div class="border-b bg-muted/10 px-5 py-3 sm:px-7">
+											<Tabs.List aria-label={m.signing_document_view_label()}>
+												<Tabs.Trigger value="formatted">
+													{m.signing_document_formatted_view()}
+												</Tabs.Trigger>
+												<Tabs.Trigger value="source">
+													{m.signing_document_source_view()}
+												</Tabs.Trigger>
+											</Tabs.List>
+										</div>
+										<Tabs.Content value="formatted" class="m-0">
+											<div
+												class="prose max-w-none overflow-x-auto p-5 [overflow-wrap:anywhere] prose-neutral sm:p-7 dark:prose-invert"
+												dir="auto"
+											>
+												{#each document.rendered.nodes as node, nodeIndex (nodeIndex)}
+													{@render renderMarkdownNode(node)}
+												{/each}
+											</div>
+											<p
+												class="border-t bg-muted/10 px-5 py-3 text-xs text-muted-foreground sm:px-7"
+											>
+												{m.signing_document_rendering_policy()}
+												{#if document.rendered.hasVisibleUnicodeControls}
+													<span class="ml-1 font-medium text-amber-700 dark:text-amber-300">
+														{m.signing_document_unicode_warning()}
+													</span>
+												{/if}
+											</p>
+										</Tabs.Content>
+										<Tabs.Content value="source" class="m-0">
+											<p
+												class="border-b bg-muted/10 px-5 py-3 text-xs text-muted-foreground sm:px-7"
+											>
+												{m.signing_document_source_description()}
+											</p>
+											<pre
+												class="overflow-hidden p-5 font-mono text-sm leading-7 [overflow-wrap:anywhere] break-words whitespace-pre-wrap sm:p-7">{document.content}</pre>
+										</Tabs.Content>
+									</Tabs.Root>
 								</Card.Content>
 							</Card.Root>
 						{/each}

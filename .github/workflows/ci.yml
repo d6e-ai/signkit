@@ -39,6 +39,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run check
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run test
 
   build:
@@ -57,6 +58,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:${{ matrix.target }}
+      - if: matrix.target == 'node'
+        run: pnpm run test:node-build
       - if: matrix.target == 'cloudflare'
         run: pnpm exec wrangler types --check src/worker-configuration.d.ts
       - if: matrix.target == 'cloudflare'

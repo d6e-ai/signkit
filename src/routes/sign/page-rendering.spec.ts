@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('recipient document rendering', () => {
-	it('renders untrusted Markdown only through escaped Svelte text interpolation', () => {
+	it('renders only the server-sanitized node model through escaped Svelte interpolation', () => {
 		const source: string = readFileSync('src/routes/sign/+page.svelte', 'utf8');
 		expect(source).toContain('{document.content}');
+		expect(source).toContain('{@render renderMarkdownNode(node)}');
+		expect(source).toContain('<svelte:element this={node.tag} {...node.attributes}>');
 		expect(source).not.toContain('{@html');
 		expect(source).not.toMatch(/<img[^>]+document\.content|href=\{document\.content\}/);
 	});
