@@ -3,6 +3,7 @@ import type {
 	DraftPersistenceService,
 	DraftWorkspaceSnapshot
 } from '$lib/application/drafts/draft-persistence';
+import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	EnvelopeFieldStore,
 	FieldPlacementPreparation,
@@ -17,7 +18,6 @@ const MAX_GENERATION: number = 2_147_483_647;
 const MAX_FIELD_COUNT: number = 50;
 const MAX_POSITION: number = 100_000;
 const MAX_LABEL_LENGTH: number = 200;
-const UUID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface FieldPlacementInput {
 	recipientId: string;
@@ -65,10 +65,16 @@ export class InvalidFieldPlacementError extends Error {
 export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 	readonly #store: EnvelopeFieldStore;
 	readonly #drafts: DraftPersistenceService;
+	readonly #newId: UuidV7Generator;
 
-	constructor(store: EnvelopeFieldStore, drafts: DraftPersistenceService) {
+	constructor(
+		store: EnvelopeFieldStore,
+		drafts: DraftPersistenceService,
+		newId: UuidV7Generator = newUuidV7
+	) {
 		this.#store = store;
 		this.#drafts = drafts;
+		this.#newId = newId;
 	}
 
 	async place(
@@ -127,9 +133,13 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 			if (!documentPaths.has(field.documentPath)) return { outcome: 'invalid_document' };
 		}
 
-		const fields: readonly EnvelopeField[] = await Promise.all(
-			canonicalFields.map(async (field: FieldPlacementInput): Promise<EnvelopeField> => ({
-				id: await deterministicFieldId(actor.organizationId, envelopeId, field),
+		// Each published field set mints its own identifiers. Placement is a
+		// whole-set replace guarded by `expectedFieldGeneration`, so a client that
+		// republishes must re-read the set rather than assume stable IDs; a lost
+		// race replays the durable receipt's own field IDs.
+		const fields: readonly EnvelopeField[] = canonicalFields.map(
+			(field: FieldPlacementInput): EnvelopeField => ({
+				id: this.#newId(),
 				organizationId: actor.organizationId,
 				envelopeId,
 				recipientId: field.recipientId,
@@ -138,20 +148,11 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				label: field.label,
 				required: field.required,
 				position: field.position
-			}))
+			})
 		);
-		if (new Set(fields.map((field: EnvelopeField): string => field.id)).size !== fields.length) {
-			throw new InvalidFieldPlacementError(
-				'Field declarations must not collide on the same locator'
-			);
-		}
 
 		const updatedAt: string = new Date().toISOString();
-		const auditEventId: string = await deterministicUuid(
-			['signkit-fields-event-v1', actor.organizationId, actor.id, input.idempotencyKey].join(
-				'\u0000'
-			)
-		);
+		const auditEventId: string = this.#newId();
 		const auditPayloadJson: string = JSON.stringify({
 			commitSha: preparation.envelope.repositoryHead,
 			generation: preparation.envelope.repositoryGeneration,
@@ -222,7 +223,7 @@ function assertFieldsInput(
 	}
 	const locators: Set<string> = new Set<string>();
 	for (const field of fields) {
-		if (!UUID_PATTERN.test(field.recipientId)) {
+		if (!isUuidV7(field.recipientId)) {
 			throw new InvalidFieldPlacementError('Field recipient ID is invalid');
 		}
 		if (!/^documents\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/.test(field.documentPath)) {
@@ -248,7 +249,7 @@ function assertFieldsInput(
 		) {
 			throw new InvalidFieldPlacementError('Field position is invalid');
 		}
-		const locator: string = [field.recipientId, field.documentPath, field.position].join('\u0000');
+		const locator: string = [field.recipientId, field.documentPath, field.position].join('\x00');
 		if (locators.has(locator)) {
 			throw new InvalidFieldPlacementError('Field declarations must not repeat the same locator');
 		}
@@ -296,36 +297,10 @@ function hasControlCharacter(value: string): boolean {
 	return false;
 }
 
-async function deterministicFieldId(
-	organizationId: string,
-	envelopeId: string,
-	field: FieldPlacementInput
-): Promise<string> {
-	return deterministicUuid(
-		[
-			'signkit-field-v1',
-			organizationId,
-			envelopeId,
-			field.recipientId,
-			field.documentPath,
-			field.fieldType,
-			field.position
-		].join('\u0000')
-	);
-}
-
 async function sha256(value: string): Promise<string> {
 	const bytes: Uint8Array<ArrayBuffer> = new TextEncoder().encode(value);
 	const digest: ArrayBuffer = await crypto.subtle.digest('SHA-256', bytes);
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

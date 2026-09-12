@@ -37,7 +37,7 @@ function fakeD1(firstResults: readonly unknown[]) {
 
 const command: PublishReadyEnvelopeCommand = {
 	organizationId: 'org-1',
-	envelopeId: '00000000-0000-8000-a000-000000000001',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
 	actorType: 'user',
 	actorId: 'user-1',
 	idempotencyKey: 'ready-1',
@@ -46,9 +46,9 @@ const command: PublishReadyEnvelopeCommand = {
 	expectedCommitSha: '0123456789abcdef0123456789abcdef01234567',
 	recipients: [
 		{
-			id: '00000000-0000-8000-a000-000000000002',
+			id: '01910000-0000-7000-8000-000000000002',
 			organizationId: 'org-1',
-			envelopeId: '00000000-0000-8000-a000-000000000001',
+			envelopeId: '01910000-0000-7000-8000-000000000001',
 			email: 'a@example.com',
 			name: 'Alice',
 			role: 'signer',
@@ -60,7 +60,7 @@ const command: PublishReadyEnvelopeCommand = {
 	updatedAt: '2026-09-11T00:02:00.000Z',
 	expectedAuditSequence: 2,
 	previousAuditHash: 'b'.repeat(64),
-	auditEventId: '00000000-0000-8000-a000-000000000003',
+	auditEventId: '01910000-0000-7000-8000-000000000003',
 	auditEventHash: 'c'.repeat(64),
 	auditPayloadJson: '{"generation":1}'
 };

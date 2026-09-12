@@ -18,9 +18,10 @@ import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
 } from './organization-authorization';
+import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
-const envelopeIdSchema: ZodType<string> = z.string().uuid();
+const envelopeIdSchema: ZodType<string> = signkitIdentifierSchema;
 const idempotencyKeySchema: ZodType<string> = z
 	.string()
 	.min(1)

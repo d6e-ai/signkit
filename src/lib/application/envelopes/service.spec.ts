@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Envelope } from '$lib/domain/envelope';
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import type { EnvelopeApplicationStore } from './model';
 import { EnvelopeApplication } from './service';
 
@@ -47,15 +48,57 @@ describe('EnvelopeApplication', () => {
 		expect(store.createIdempotently).toHaveBeenCalledWith({
 			actor: { id: 'user-1', type: 'user' },
 			auditEventHash: expect.stringMatching(/^[0-9a-f]{64}$/),
-			auditEventId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+			auditEventId: expect.stringMatching(UUID_V7_PATTERN),
 			createdAt: expect.any(String),
-			envelopeId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+			envelopeId: expect.stringMatching(UUID_V7_PATTERN),
 			idempotencyKey: 'request-1',
 			organizationId: envelope.organizationId,
 			organizationName: 'Workspace',
 			requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
 			title: 'Agreement'
 		});
+	});
+
+	it('mints a distinct envelope and audit event identifier from the injected generator', async () => {
+		const store: EnvelopeApplicationStore = createStore();
+		const minted: string[] = [
+			'01900000-0000-7000-8000-0000000000a1',
+			'01900000-0000-7000-8000-0000000000a2'
+		];
+		const application: EnvelopeApplication = new EnvelopeApplication(
+			store,
+			(): string => minted.shift() ?? 'exhausted'
+		);
+
+		await application.create(
+			{ id: 'user-1', organizationId: envelope.organizationId, organizationName: 'Workspace' },
+			{ idempotencyKey: 'request-1', title: 'Agreement' }
+		);
+
+		expect(store.createIdempotently).toHaveBeenCalledWith(
+			expect.objectContaining({
+				envelopeId: '01900000-0000-7000-8000-0000000000a1',
+				auditEventId: '01900000-0000-7000-8000-0000000000a2'
+			})
+		);
+	});
+
+	it('does not derive the envelope identifier from the idempotency key', async () => {
+		const store: EnvelopeApplicationStore = createStore();
+		const actor = {
+			id: 'user-1',
+			organizationId: envelope.organizationId,
+			organizationName: 'Workspace'
+		} as const;
+		const application: EnvelopeApplication = new EnvelopeApplication(store);
+
+		await application.create(actor, { idempotencyKey: 'request-1', title: 'Agreement' });
+		await application.create(actor, { idempotencyKey: 'request-1', title: 'Agreement' });
+
+		const calls = vi.mocked(store.createIdempotently).mock.calls;
+		expect(calls[0][0].requestFingerprint).toBe(calls[1][0].requestFingerprint);
+		expect(calls[0][0].envelopeId).not.toBe(calls[1][0].envelopeId);
+		expect(calls[1][0].envelopeId > calls[0][0].envelopeId).toBe(true);
 	});
 
 	it('uses the organization scope for list and get operations', async () => {

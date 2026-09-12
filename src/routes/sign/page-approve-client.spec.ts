@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRecipientApproveController, validateApprovedReceipt } from './+page.svelte';
 
 const base = {
-	envelopeId: '00000000-0000-8000-a000-000000000001',
-	recipientId: '00000000-0000-8000-a000-000000000002',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
+	recipientId: '01910000-0000-7000-8000-000000000002',
 	role: 'approver',
 	pageState: 'active',
 	recipientStatus: 'viewed'
@@ -54,7 +54,7 @@ describe('recipient approve client controller', () => {
 			...base,
 			recipientStatus: () => recipientStatus,
 			fetch,
-			randomUUID: () => 'approve-after-view-key'
+			newIdempotencyKey: () => 'approve-after-view-key'
 		});
 
 		await controller.confirmApprove();
@@ -70,7 +70,7 @@ describe('recipient approve client controller', () => {
 		const controller = createRecipientApproveController({
 			...base,
 			fetch,
-			randomUUID: () => 'approve-key'
+			newIdempotencyKey: () => 'approve-key'
 		});
 
 		await controller.confirmApprove();
@@ -108,7 +108,7 @@ describe('recipient approve client controller', () => {
 		const controller = createRecipientApproveController({
 			...base,
 			fetch,
-			randomUUID: () => 'stable-approve-key'
+			newIdempotencyKey: () => 'stable-approve-key'
 		});
 
 		const pending = controller.confirmApprove();
@@ -150,7 +150,7 @@ describe('recipient approve client controller', () => {
 			{},
 			{
 				envelopeId: base.envelopeId,
-				recipientId: '00000000-0000-8000-a000-000000000099',
+				recipientId: '01910000-0000-7000-8000-000000000099',
 				recipientStatus: 'completed',
 				envelopeStatus: 'in_progress',
 				approvedAt: '2026-09-11T00:00:00.000Z'

@@ -40,7 +40,7 @@ function fakeD1(firstResults: readonly unknown[]) {
 
 const command: PublishFieldPlacementCommand = {
 	organizationId: 'org-1',
-	envelopeId: '00000000-0000-8000-a000-000000000001',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
 	actorType: 'user',
 	actorId: 'user-1',
 	idempotencyKey: 'fields-1',
@@ -50,10 +50,10 @@ const command: PublishFieldPlacementCommand = {
 	expectedCommitSha: '0123456789abcdef0123456789abcdef01234567',
 	fields: [
 		{
-			id: '00000000-0000-8000-a000-000000000010',
+			id: '01910000-0000-7000-8000-000000000010',
 			organizationId: 'org-1',
-			envelopeId: '00000000-0000-8000-a000-000000000001',
-			recipientId: '00000000-0000-8000-a000-000000000002',
+			envelopeId: '01910000-0000-7000-8000-000000000001',
+			recipientId: '01910000-0000-7000-8000-000000000002',
 			documentPath: 'documents/agreement.md',
 			fieldType: 'signature',
 			label: 'Signature',
@@ -64,7 +64,7 @@ const command: PublishFieldPlacementCommand = {
 	updatedAt: '2026-09-11T00:02:00.000Z',
 	expectedAuditSequence: 2,
 	previousAuditHash: 'b'.repeat(64),
-	auditEventId: '00000000-0000-8000-a000-000000000003',
+	auditEventId: '01910000-0000-7000-8000-000000000003',
 	auditEventHash: 'c'.repeat(64),
 	auditPayloadJson: '{"generation":1}'
 };

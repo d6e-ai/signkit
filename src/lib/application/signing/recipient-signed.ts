@@ -12,6 +12,7 @@ import type {
 	RecipientSignStore
 } from '$lib/ports/recipient-sign-store';
 import { canonicalRecipientSignFingerprint } from '$lib/ports/recipient-sign-store';
+import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import { hashRecipientCapability } from '$lib/security/recipient-capability';
 
 const MAX_AUDIT_ATTEMPTS: number = 3;
@@ -22,8 +23,6 @@ const MAX_INITIALS_LENGTH: number = 20;
 const MAX_TEXT_LENGTH: number = 4000;
 const MAX_GENERATION: number = 2_147_483_647;
 const DATE_PATTERN: RegExp = /^\d{4}-\d{2}-\d{2}$/;
-const UUID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const NUL: string = String.fromCharCode(0);
 
 export interface SignFieldValueInput {
 	fieldId: string;
@@ -67,7 +66,8 @@ export class InvalidSignInputError extends Error {
 export class RecipientSignedApplication implements RecipientSignedApplicationPort {
 	constructor(
 		private readonly store: RecipientSignStore,
-		private readonly now: () => Date = (): Date => new Date()
+		private readonly now: () => Date = (): Date => new Date(),
+		private readonly newId: UuidV7Generator = newUuidV7
 	) {}
 
 	async sign(input: RecipientSignedInput): Promise<RecipientSignedResult> {
@@ -105,15 +105,10 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 				fieldValues
 			);
 
-			const auditEventId: string = await deterministicUuid(
-				[
-					'signkit-recipient-signed-event-v1',
-					preparation.organizationId,
-					preparation.envelopeId,
-					preparation.recipientId,
-					input.idempotencyKey
-				].join(NUL)
-			);
+			// Replay is proven by the durable command receipt, its field values, and
+			// its audit evidence, not by re-deriving this identifier, so each
+			// attempt mints a fresh one.
+			const auditEventId: string = this.newId();
 			const auditPayloadJson: string = JSON.stringify({
 				recipientId: preparation.recipientId,
 				role: 'signer',
@@ -153,15 +148,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 			let releasedDeliveryCount: number = 0;
 
 			if (shouldComplete) {
-				completedAuditEventId = await deterministicUuid(
-					[
-						'signkit-envelope-completed-event-v1',
-						preparation.organizationId,
-						preparation.envelopeId,
-						preparation.recipientId,
-						input.idempotencyKey
-					].join(NUL)
-				);
+				completedAuditEventId = this.newId();
 				const completedPayloadValue = {
 					sentCommitSha: preparation.sentCommitSha,
 					completedAt: signedAt
@@ -382,7 +369,7 @@ function assertSignInput(
 	}
 	const seen: Set<string> = new Set<string>();
 	for (const entry of values) {
-		if (!UUID_PATTERN.test(entry.fieldId)) {
+		if (!isUuidV7(entry.fieldId)) {
 			throw new InvalidSignInputError('Field ID is invalid');
 		}
 		if (seen.has(entry.fieldId)) {
@@ -414,12 +401,4 @@ async function sha256(value: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

@@ -2,14 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRecipientSignController, validateSignedReceipt } from './+page.svelte';
 
 const base = {
-	envelopeId: '00000000-0000-8000-a000-000000000001',
-	recipientId: '00000000-0000-8000-a000-000000000002',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
+	recipientId: '01910000-0000-7000-8000-000000000002',
 	expectedFieldGeneration: 1,
 	role: 'signer',
 	pageState: 'active',
 	recipientStatus: 'viewed'
 };
-const fieldId: string = '00000000-0000-8000-a000-000000000003';
+const fieldId: string = '01910000-0000-7000-8000-000000000003';
 const values = [{ fieldId, value: 'Jane Doe' }];
 
 function successResponse(
@@ -55,7 +55,7 @@ describe('recipient sign client controller', () => {
 		const controller = createRecipientSignController({
 			...base,
 			fetch,
-			randomUUID: () => 'sign-key'
+			newIdempotencyKey: () => 'sign-key'
 		});
 
 		await controller.confirmSign(values);
@@ -90,7 +90,7 @@ describe('recipient sign client controller', () => {
 		const controller = createRecipientSignController({
 			...base,
 			fetch,
-			randomUUID: () => 'stable-sign-key'
+			newIdempotencyKey: () => 'stable-sign-key'
 		});
 
 		await controller.confirmSign(values);
@@ -187,7 +187,7 @@ describe('recipient sign client controller', () => {
 			const controller = createRecipientSignController({
 				...base,
 				fetch,
-				randomUUID: () => keys.shift() ?? 'unexpected-key'
+				newIdempotencyKey: () => keys.shift() ?? 'unexpected-key'
 			});
 
 			await controller.confirmSign(values);

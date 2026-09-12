@@ -11,8 +11,8 @@ import { RecipientViewedApplication } from './recipient-viewed';
 const token: string = `skr1_${'A'.repeat(43)}`;
 const context: RecipientSigningContext = {
 	organizationId: 'org-1',
-	envelopeId: '00000000-0000-8000-a000-000000000001',
-	recipientId: '00000000-0000-8000-a000-000000000002',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
+	recipientId: '01910000-0000-7000-8000-000000000002',
 	recipientName: 'Recipient',
 	recipientRole: 'signer',
 	recipientLocale: 'en',
@@ -22,7 +22,7 @@ const context: RecipientSigningContext = {
 	expiresAt: '2026-09-25T00:00:00.000Z',
 	sentRevision: {
 		commitSha: 'a'.repeat(40),
-		archiveKey: `draft-repositories/v1/organizations/org-1/envelopes/00000000-0000-8000-a000-000000000001/sha256/${'b'.repeat(64)}.git.gz`,
+		archiveKey: `draft-repositories/v1/organizations/org-1/envelopes/01910000-0000-7000-8000-000000000001/sha256/${'b'.repeat(64)}.git.gz`,
 		archiveSha256: 'b'.repeat(64)
 	}
 };
@@ -113,8 +113,8 @@ describe('RecipientViewedApplication', () => {
 
 	it('rejects stale-tab envelope and recipient IDs before any mutation preparation', async () => {
 		for (const mismatch of [
-			{ ...input, expectedEnvelopeId: '00000000-0000-8000-a000-000000000099' },
-			{ ...input, expectedRecipientId: '00000000-0000-8000-a000-000000000099' }
+			{ ...input, expectedEnvelopeId: '01910000-0000-7000-8000-000000000099' },
+			{ ...input, expectedRecipientId: '01910000-0000-7000-8000-000000000099' }
 		]) {
 			const storePort = store();
 			await expect(

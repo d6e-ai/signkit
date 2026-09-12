@@ -3,6 +3,7 @@ import {
 	isPostSendInvitationRecipientRole,
 	type Recipient
 } from '$lib/domain/envelope';
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	DeliveryManifestEntry,
 	EnvelopeSendStore,
@@ -51,10 +52,16 @@ export class InvalidSendCommandError extends Error {
 export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 	readonly #store: EnvelopeSendStore;
 	readonly #sealer: RecipientCapabilitySealer;
+	readonly #newId: UuidV7Generator;
 
-	constructor(store: EnvelopeSendStore, sealer: RecipientCapabilitySealer) {
+	constructor(
+		store: EnvelopeSendStore,
+		sealer: RecipientCapabilitySealer,
+		newId: UuidV7Generator = newUuidV7
+	) {
 		this.#store = store;
 		this.#sealer = sealer;
+		this.#newId = newId;
 	}
 
 	async send(
@@ -109,18 +116,12 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		const initialCapabilityExpiresAt: string = new Date(
 			Date.parse(updatedAt) + INITIAL_CAPABILITY_TTL_MS
 		).toISOString();
+		// Delivery intents mint their own identifiers, matching the capability
+		// each one seals: both are fresh per attempt, and only a published or
+		// replayed command makes either durable.
 		const deliveries: readonly PendingRecipientDelivery[] = await Promise.all(
 			invitationRecipients.map(async (recipient: Recipient): Promise<PendingRecipientDelivery> => {
-				const deliveryId: string = await deterministicUuid(
-					[
-						'signkit-recipient-invitation-v1',
-						actor.organizationId,
-						envelopeId,
-						actor.id,
-						input.idempotencyKey,
-						recipient.id
-					].join('\u0000')
-				);
+				const deliveryId: string = this.#newId();
 				const capability = await issueRecipientCapability();
 				const sealed = await this.#sealer.seal(capability.token, {
 					organizationId: actor.organizationId,
@@ -159,9 +160,7 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 				)
 		);
 		const deliveryManifestHash: string = await sha256(deliveryManifestJson);
-		const auditEventId: string = await deterministicUuid(
-			['signkit-send-event-v1', actor.organizationId, actor.id, input.idempotencyKey].join('\u0000')
-		);
+		const auditEventId: string = this.#newId();
 		const auditPayloadJson: string = JSON.stringify({
 			commitSha: preparation.envelope.repositoryHead,
 			generation: preparation.envelope.repositoryGeneration,
@@ -230,12 +229,4 @@ async function sha256(value: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

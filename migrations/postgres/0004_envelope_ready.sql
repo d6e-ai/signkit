@@ -15,7 +15,10 @@ CREATE TABLE recipient (
   updated_at timestamptz NOT NULL,
   PRIMARY KEY (organization_id, id),
   UNIQUE (organization_id, envelope_id, email),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
+  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  CONSTRAINT recipient_id_uuidv7 CHECK (
+    id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  )
 );
 
 CREATE INDEX recipient_envelope_route

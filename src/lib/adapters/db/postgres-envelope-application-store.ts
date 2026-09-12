@@ -20,6 +20,20 @@ import { PostgresEnvelopeStore } from './postgres-envelope-store';
 
 const MAX_LIST_LIMIT = 100;
 
+/** A pooled connection or an open transaction; both accept the same queries. */
+type TransactionalSql = postgres.Sql | postgres.TransactionSql;
+
+/**
+ * Signals that another request committed this idempotency key first. It aborts
+ * the candidate transaction so the record can be re-read after that commit.
+ */
+class ConcurrentEnvelopeCreationError extends Error {
+	constructor() {
+		super('Envelope creation lost an idempotency-key race');
+		this.name = 'ConcurrentEnvelopeCreationError';
+	}
+}
+
 interface EnvelopeRow {
 	id: string;
 	organizationId: string;
@@ -91,6 +105,20 @@ export class PostgresEnvelopeApplicationStore
 	}
 
 	async createIdempotently(command: CreateEnvelopeCommand): Promise<CreateEnvelopeStoreResult> {
+		try {
+			return await this.#createIdempotently(command);
+		} catch (error: unknown) {
+			if (!(error instanceof ConcurrentEnvelopeCreationError)) throw error;
+			// A duplicate key committed while this transaction held its own
+			// candidate envelope ID. The durable record is now visible and decides
+			// between a safe replay and a genuine conflict.
+			const raced: CreateEnvelopeStoreResult | null = await this.#resolveIdempotency(command);
+			if (raced === null) throw error;
+			return raced;
+		}
+	}
+
+	async #createIdempotently(command: CreateEnvelopeCommand): Promise<CreateEnvelopeStoreResult> {
 		return this.applicationSql.begin(async (transaction): Promise<CreateEnvelopeStoreResult> => {
 			const organizations = await transaction<{ id: string }[]>`
 				INSERT INTO organization (id, d6e_organization_id, name, created_at)
@@ -108,6 +136,12 @@ export class PostgresEnvelopeApplicationStore
 			if (organizations.length !== 1) {
 				throw new Error('Organization projection conflicts with its d6e-auth identifier');
 			}
+
+			const replay: CreateEnvelopeStoreResult | null = await resolveIdempotency(
+				transaction,
+				command
+			);
+			if (replay !== null) return replay;
 
 			const createdRows = await transaction<EnvelopeRow[]>`
 				INSERT INTO envelope (
@@ -144,107 +178,75 @@ export class PostgresEnvelopeApplicationStore
 					updated_at AS "updatedAt"
 			`;
 
-			if (createdRows.length === 1) {
-				const idempotencyRows = await transaction<IdempotencyRow[]>`
-					INSERT INTO idempotency_key (
-						organization_id,
-						caller_id,
-						idempotency_key,
-						request_hash,
-						envelope_id,
-						created_at
-					)
-					VALUES (
-						${command.organizationId},
-						${command.actor.id},
-						${command.idempotencyKey},
-						${command.requestFingerprint},
-						${command.envelopeId},
-						${command.createdAt}
-					)
-					ON CONFLICT (organization_id, caller_id, idempotency_key) DO NOTHING
-					RETURNING request_hash AS "requestHash", envelope_id AS "envelopeId"
-				`;
-				if (idempotencyRows.length !== 1) {
-					throw new Error('Idempotency key maps to a different envelope');
-				}
-
-				await transaction`
-					INSERT INTO audit_event (
-						id,
-						organization_id,
-						envelope_id,
-						sequence,
-						event_type,
-						actor_type,
-						actor_id,
-						payload_json,
-						previous_hash,
-						event_hash,
-						occurred_at
-					)
-					VALUES (
-						${command.auditEventId},
-						${command.organizationId},
-						${command.envelopeId},
-						1,
-						'envelope.created',
-						${command.actor.type},
-						${command.actor.id},
-						${JSON.stringify({ title: command.title })},
-						NULL,
-						${command.auditEventHash},
-						${command.createdAt}
-					)
-				`;
-
-				return { outcome: 'created', envelope: fromRow(createdRows[0]) };
+			if (createdRows.length !== 1) {
+				// The candidate identifier is freshly minted, so a collision here is
+				// not a replay.
+				throw new Error('Envelope identifier collided with an existing envelope');
 			}
 
 			const idempotencyRows = await transaction<IdempotencyRow[]>`
-				SELECT
-					request_hash AS "requestHash",
-					envelope_id AS "envelopeId"
-				FROM idempotency_key
-				WHERE organization_id = ${command.organizationId}
-					AND caller_id = ${command.actor.id}
-					AND idempotency_key = ${command.idempotencyKey}
-				LIMIT 1
+				INSERT INTO idempotency_key (
+					organization_id,
+					caller_id,
+					idempotency_key,
+					request_hash,
+					envelope_id,
+					created_at
+				)
+				VALUES (
+					${command.organizationId},
+					${command.actor.id},
+					${command.idempotencyKey},
+					${command.requestFingerprint},
+					${command.envelopeId},
+					${command.createdAt}
+				)
+				ON CONFLICT (organization_id, caller_id, idempotency_key) DO NOTHING
+				RETURNING request_hash AS "requestHash", envelope_id AS "envelopeId"
 			`;
-			const idempotency = idempotencyRows[0];
-			if (
-				!idempotency ||
-				idempotency.requestHash !== command.requestFingerprint ||
-				idempotency.envelopeId !== command.envelopeId
-			) {
-				return { outcome: 'conflict' };
+			if (idempotencyRows.length !== 1) {
+				// A concurrent request committed the same key first. Roll this
+				// candidate envelope back and resolve the outcome from its record.
+				throw new ConcurrentEnvelopeCreationError();
 			}
 
-			const replayRows = await transaction<EnvelopeRow[]>`
-				SELECT
+			await transaction`
+				INSERT INTO audit_event (
 					id,
-					organization_id AS "organizationId",
-					title,
-					status,
-					repository_generation AS "repositoryGeneration",
-					repository_head AS "repositoryHead",
-					repository_archive_key AS "repositoryArchiveKey",
-					repository_archive_sha256 AS "repositoryArchiveSha256",
-					sent_commit_sha AS "sentCommitSha",
-					field_generation AS "fieldGeneration",
-					created_at AS "createdAt",
-					updated_at AS "updatedAt"
-				FROM envelope
-				WHERE organization_id = ${command.organizationId}
-					AND id = ${idempotency.envelopeId}
-				LIMIT 1
+					organization_id,
+					envelope_id,
+					sequence,
+					event_type,
+					actor_type,
+					actor_id,
+					payload_json,
+					previous_hash,
+					event_hash,
+					occurred_at
+				)
+				VALUES (
+					${command.auditEventId},
+					${command.organizationId},
+					${command.envelopeId},
+					1,
+					'envelope.created',
+					${command.actor.type},
+					${command.actor.id},
+					${JSON.stringify({ title: command.title })},
+					NULL,
+					${command.auditEventHash},
+					${command.createdAt}
+				)
 			`;
-			if (replayRows.length !== 1) {
-				throw new Error('Idempotency record references a missing envelope');
-			}
 
-			return { outcome: 'replayed', envelope: fromRow(replayRows[0]) };
+			return { outcome: 'created', envelope: fromRow(createdRows[0]) };
 		});
+	}
+
+	async #resolveIdempotency(
+		command: CreateEnvelopeCommand
+	): Promise<CreateEnvelopeStoreResult | null> {
+		return resolveIdempotency(this.applicationSql, command);
 	}
 
 	async listForOrganization(
@@ -584,6 +586,55 @@ export class PostgresEnvelopeApplicationStore
 		`;
 		return auditHeadFromPostgresRow(rows[0]);
 	}
+}
+
+/**
+ * Reads the durable idempotency record. The stored `envelope_id`, never the
+ * caller's freshly minted candidate, identifies the envelope a replay returns;
+ * only a different request fingerprint is a conflict.
+ */
+async function resolveIdempotency(
+	sql: TransactionalSql,
+	command: CreateEnvelopeCommand
+): Promise<CreateEnvelopeStoreResult | null> {
+	const idempotencyRows = await sql<IdempotencyRow[]>`
+		SELECT
+			request_hash AS "requestHash",
+			envelope_id AS "envelopeId"
+		FROM idempotency_key
+		WHERE organization_id = ${command.organizationId}
+			AND caller_id = ${command.actor.id}
+			AND idempotency_key = ${command.idempotencyKey}
+		LIMIT 1
+	`;
+	const idempotency: IdempotencyRow | undefined = idempotencyRows[0];
+	if (idempotency === undefined) return null;
+	if (idempotency.requestHash !== command.requestFingerprint) return { outcome: 'conflict' };
+
+	const replayRows = await sql<EnvelopeRow[]>`
+		SELECT
+			id,
+			organization_id AS "organizationId",
+			title,
+			status,
+			repository_generation AS "repositoryGeneration",
+			repository_head AS "repositoryHead",
+			repository_archive_key AS "repositoryArchiveKey",
+			repository_archive_sha256 AS "repositoryArchiveSha256",
+			sent_commit_sha AS "sentCommitSha",
+			field_generation AS "fieldGeneration",
+			created_at AS "createdAt",
+			updated_at AS "updatedAt"
+		FROM envelope
+		WHERE organization_id = ${command.organizationId}
+			AND id = ${idempotency.envelopeId}
+		LIMIT 1
+	`;
+	if (replayRows.length !== 1) {
+		throw new Error('Idempotency record references a missing envelope');
+	}
+
+	return { outcome: 'replayed', envelope: fromRow(replayRows[0]) };
 }
 
 function resolvePostgresDraftRevision(

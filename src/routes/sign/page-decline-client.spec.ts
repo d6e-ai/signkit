@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRecipientDeclineController, isPermanentClientFailure } from './+page.svelte';
 
 const base = {
-	envelopeId: '00000000-0000-8000-a000-000000000001',
-	recipientId: '00000000-0000-8000-a000-000000000002',
+	envelopeId: '01910000-0000-7000-8000-000000000001',
+	recipientId: '01910000-0000-7000-8000-000000000002',
 	role: 'signer',
 	pageState: 'active'
 };
@@ -32,17 +32,17 @@ describe('recipient decline client controller', () => {
 			{ ...base, role: 'prefill' }
 		]) {
 			const fetch = vi.fn();
-			const randomUUID = vi.fn(() => 'decline-key');
+			const newIdempotencyKey = vi.fn(() => 'decline-key');
 			const controller = createRecipientDeclineController({
 				...options,
 				fetch,
-				randomUUID
+				newIdempotencyKey
 			});
 
 			await controller.confirmDecline();
 
 			expect(fetch).not.toHaveBeenCalled();
-			expect(randomUUID).not.toHaveBeenCalled();
+			expect(newIdempotencyKey).not.toHaveBeenCalled();
 			expect(controller.getStatus()).toBe('idle');
 			expect(controller.isInFlight()).toBe(false);
 		}
@@ -50,15 +50,15 @@ describe('recipient decline client controller', () => {
 
 	it('does not send any request before explicit confirm', () => {
 		const fetch = vi.fn();
-		const randomUUID = vi.fn(() => 'decline-key-pre');
+		const newIdempotencyKey = vi.fn(() => 'decline-key-pre');
 		const controller = createRecipientDeclineController({
 			...base,
 			fetch,
-			randomUUID
+			newIdempotencyKey
 		});
 
 		expect(fetch).not.toHaveBeenCalled();
-		expect(randomUUID).not.toHaveBeenCalled();
+		expect(newIdempotencyKey).not.toHaveBeenCalled();
 		expect(controller.getStatus()).toBe('idle');
 		expect(controller.getIdempotencyKey()).toBeNull();
 	});
@@ -70,7 +70,7 @@ describe('recipient decline client controller', () => {
 		const controller = createRecipientDeclineController({
 			...base,
 			fetch,
-			randomUUID: () => 'decline-key-123',
+			newIdempotencyKey: () => 'decline-key-123',
 			onStatusChange,
 			onSuccess
 		});
@@ -105,7 +105,7 @@ describe('recipient decline client controller', () => {
 			...base,
 			role: 'approver',
 			fetch,
-			randomUUID: () => 'approver-key',
+			newIdempotencyKey: () => 'approver-key',
 			onSuccess
 		});
 
@@ -126,7 +126,7 @@ describe('recipient decline client controller', () => {
 		const controller = createRecipientDeclineController({
 			...base,
 			fetch,
-			randomUUID: () => 'dedup-key'
+			newIdempotencyKey: () => 'dedup-key'
 		});
 
 		const firstCall = controller.confirmDecline();
@@ -162,7 +162,7 @@ describe('recipient decline client controller', () => {
 		const controller = createRecipientDeclineController({
 			...base,
 			fetch,
-			randomUUID: () => 'stable-decline-key',
+			newIdempotencyKey: () => 'stable-decline-key',
 			onTransientFailure,
 			onAmbiguousFailure,
 			onSuccess
@@ -212,7 +212,7 @@ describe('recipient decline client controller', () => {
 					JSON.stringify({
 						declined: {
 							envelopeId: base.envelopeId,
-							recipientId: '00000000-0000-8000-a000-000000000099',
+							recipientId: '01910000-0000-7000-8000-000000000099',
 							recipientStatus: 'declined',
 							envelopeStatus: 'declined',
 							declinedAt: '2026-09-11T00:00:00.000Z'
@@ -226,7 +226,7 @@ describe('recipient decline client controller', () => {
 		const controller = createRecipientDeclineController({
 			...base,
 			fetch,
-			randomUUID: () => 'receipt-key',
+			newIdempotencyKey: () => 'receipt-key',
 			onSuccess,
 			onAmbiguousFailure
 		});
@@ -250,7 +250,7 @@ describe('recipient decline client controller', () => {
 			const controller = createRecipientDeclineController({
 				...base,
 				fetch,
-				randomUUID: () => 'retryable-key',
+				newIdempotencyKey: () => 'retryable-key',
 				onTransientFailure
 			});
 
@@ -269,7 +269,7 @@ describe('recipient decline client controller', () => {
 		const controller = createRecipientDeclineController({
 			...base,
 			fetch,
-			randomUUID: () => 'term-404-key',
+			newIdempotencyKey: () => 'term-404-key',
 			onTerminalFailure
 		});
 
@@ -293,7 +293,7 @@ describe('recipient decline client controller', () => {
 			const controller = createRecipientDeclineController({
 				...base,
 				fetch,
-				randomUUID: () => `term-${status}-key`,
+				newIdempotencyKey: () => `term-${status}-key`,
 				onTerminalFailure
 			});
 

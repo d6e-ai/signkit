@@ -31,7 +31,7 @@ const MIGRATIONS: readonly string[] = [
 ];
 
 const ORGANIZATION_ID: string = 'org-1';
-const ENVELOPE_ID: string = 'env-1';
+const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
 const COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
 const ARCHIVE_BYTES: Uint8Array = new TextEncoder().encode('fake-git-archive');
 const ARCHIVE_SHA256: string = createHash('sha256').update(ARCHIVE_BYTES).digest('hex');
@@ -57,7 +57,7 @@ const COMPLETED_AT: string = '2026-09-11T00:02:00.000Z';
 async function auditChain(): Promise<CompletionEvidenceAuditEvent[]> {
 	return buildVerifiedAuditChain({ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID }, [
 		{
-			id: 'event-1',
+			id: '01960000-0000-7000-8000-000000000001',
 			eventType: 'envelope.created',
 			actorType: 'user',
 			actorId: 'actor-1',
@@ -65,7 +65,7 @@ async function auditChain(): Promise<CompletionEvidenceAuditEvent[]> {
 			payload: { title: 'Agreement' }
 		},
 		{
-			id: 'event-ready',
+			id: '01960000-0000-7000-8000-0000000000e0',
 			eventType: 'envelope.ready',
 			actorType: 'user',
 			actorId: 'actor-1',
@@ -73,11 +73,13 @@ async function auditChain(): Promise<CompletionEvidenceAuditEvent[]> {
 			payload: {
 				commitSha: COMMIT_SHA,
 				generation: 1,
-				recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
+				recipients: [
+					{ id: '01930000-0000-7000-8000-000000000001', role: 'signer', routingOrder: 1 }
+				]
 			}
 		},
 		{
-			id: 'event-2',
+			id: '01960000-0000-7000-8000-000000000002',
 			eventType: 'draft.revision_created',
 			actorType: 'user',
 			actorId: 'actor-1',
@@ -90,25 +92,31 @@ async function auditChain(): Promise<CompletionEvidenceAuditEvent[]> {
 			}
 		},
 		{
-			id: 'event-3',
+			id: '01960000-0000-7000-8000-000000000003',
 			eventType: 'recipient.signed',
 			actorType: 'recipient',
-			actorId: 'recipient-1',
+			actorId: '01930000-0000-7000-8000-000000000001',
 			occurredAt: SIGNED_AT,
 			payload: {
-				recipientId: 'recipient-1',
+				recipientId: '01930000-0000-7000-8000-000000000001',
 				role: 'signer',
 				routingOrder: 1,
 				sentCommitSha: COMMIT_SHA,
-				fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: FIELD_VALUE_SHA256 }],
+				fields: [
+					{
+						id: '01950000-0000-7000-8000-000000000001',
+						fieldType: 'signature',
+						valueSha256: FIELD_VALUE_SHA256
+					}
+				],
 				signedAt: SIGNED_AT
 			}
 		},
 		{
-			id: 'event-4',
+			id: '01960000-0000-7000-8000-000000000004',
 			eventType: 'envelope.completed',
 			actorType: 'recipient',
-			actorId: 'recipient-1',
+			actorId: '01930000-0000-7000-8000-000000000001',
 			occurredAt: COMPLETED_AT,
 			payload: { sentCommitSha: COMMIT_SHA, completedAt: COMPLETED_AT }
 		}
@@ -130,7 +138,7 @@ async function fixture(): Promise<{
 			repository_archive_key, repository_archive_sha256, sent_commit_sha, field_generation,
 			created_at, updated_at
 		) VALUES (
-			'env-1','org-1','Agreement','completed',1,'${COMMIT_SHA}',
+			'01920000-0000-7000-8000-000000000001','org-1','Agreement','completed',1,'${COMMIT_SHA}',
 			'${ARCHIVE_KEY}',
 			'${ARCHIVE_SHA256}','${COMMIT_SHA}',1,
 			'2026-09-11T00:00:00.000Z','2026-09-11T00:02:00.000Z'
@@ -139,7 +147,7 @@ async function fixture(): Promise<{
 			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 			capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 		) VALUES (
-			'recipient-1','org-1','env-1','recipient@example.com','Recipient','signer','en',1,
+			'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','recipient@example.com','Recipient','signer','en',1,
 			'completed','capability-hash','2026-09-25T00:00:00.000Z','2026-09-11T00:02:00.000Z',
 			'2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z'
 		);
@@ -147,14 +155,14 @@ async function fixture(): Promise<{
 			id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
 			required, position, created_at, updated_at
 		) VALUES (
-			'field-1','org-1','env-1','recipient-1','documents/agreement.md','signature','Signature',
+			'01950000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','documents/agreement.md','signature','Signature',
 			1,1,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
 		);
 		INSERT INTO field_value (
 			organization_id, field_id, envelope_id, recipient_id, field_type, value_json,
 			value_sha256, created_at
 		) VALUES (
-			'org-1','field-1','env-1','recipient-1','signature','${FIELD_VALUE_JSON}','${FIELD_VALUE_SHA256}',
+			'org-1','01950000-0000-7000-8000-000000000001','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','signature','${FIELD_VALUE_JSON}','${FIELD_VALUE_SHA256}',
 			'2026-09-11T00:02:00.000Z'
 		);
 	`);
@@ -228,26 +236,29 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			expect(claimed).toHaveLength(1);
 			expect(claimed[0]).toMatchObject({
 				organizationId: 'org-1',
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				attempts: 1,
 				sentCommitSha: COMMIT_SHA,
 				fieldGeneration: 1
 			});
 
-			const evidence = await store.readCompletionEvidence('org-1', 'env-1');
+			const evidence = await store.readCompletionEvidence(
+				'org-1',
+				'01920000-0000-7000-8000-000000000001'
+			);
 			expect(evidence.recipients).toEqual([
 				{
-					id: 'recipient-1',
+					id: '01930000-0000-7000-8000-000000000001',
 					role: 'signer',
 					routingOrder: 1,
 					status: 'completed',
-					decisionEventId: 'event-3',
+					decisionEventId: '01960000-0000-7000-8000-000000000003',
 					decisionOccurredAt: SIGNED_AT
 				}
 			]);
 			expect(evidence.fields).toEqual([
 				{
-					id: 'field-1',
+					id: '01950000-0000-7000-8000-000000000001',
 					fieldType: 'signature',
 					valueJson: FIELD_VALUE_JSON,
 					valueSha256: FIELD_VALUE_SHA256
@@ -275,9 +286,12 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 		const { database, sqlite } = await fixture();
 		try {
 			const store = new D1CompletionArtifactStore(database);
-			const status = await store.findCompletionArtifactStatus('org-1', 'env-1');
+			const status = await store.findCompletionArtifactStatus(
+				'org-1',
+				'01920000-0000-7000-8000-000000000001'
+			);
 			expect(status).toEqual({
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				envelopeCompleted: true,
 				jobStatus: null,
 				attempts: null,
@@ -312,7 +326,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			const store = new D1CompletionArtifactStore(database);
 			await claim(store, 'claim-token-0001');
 			sqlite.exec(
-				"UPDATE completion_artifact_job SET locked_at='2026-09-11T23:54:59.000Z' WHERE envelope_id='env-1'"
+				"UPDATE completion_artifact_job SET locked_at='2026-09-11T23:54:59.000Z' WHERE envelope_id='01920000-0000-7000-8000-000000000001'"
 			);
 			const reclaimed = await claim(store, 'claim-token-0002');
 			expect(reclaimed).toHaveLength(1);
@@ -330,7 +344,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			await claim(store, 'claim-token-0001');
 			const published = await store.publishCompletionArtifact({
 				organizationId: 'org-1',
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0001',
 				sentCommitSha: COMMIT_SHA,
 				fieldGeneration: 1,
@@ -339,13 +353,13 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				previousAuditHash: anchor.eventHash,
 				manifestSha256: 'm'.repeat(64),
 				jsonObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/j.json.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/j.json.gz',
 				jsonSha256: 'j'.repeat(64),
 				markdownObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/d.md.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/d.md.gz',
 				markdownSha256: 'd'.repeat(64),
 				updatedAt: '2026-09-12T00:00:00.000Z',
-				auditEventId: 'event-5',
+				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
 				auditPayloadJson: '{"manifestSha256":"m"}'
 			});
@@ -379,7 +393,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 
 			const replay = await store.publishCompletionArtifact({
 				organizationId: 'org-1',
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0001',
 				sentCommitSha: COMMIT_SHA,
 				fieldGeneration: 1,
@@ -388,13 +402,13 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				previousAuditHash: anchor.eventHash,
 				manifestSha256: 'm'.repeat(64),
 				jsonObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/j.json.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/j.json.gz',
 				jsonSha256: 'j'.repeat(64),
 				markdownObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/d.md.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/d.md.gz',
 				markdownSha256: 'd'.repeat(64),
 				updatedAt: '2026-09-12T00:00:00.000Z',
-				auditEventId: 'event-5',
+				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
 				auditPayloadJson: '{"manifestSha256":"m"}'
 			});
@@ -402,7 +416,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 
 			const integrityConflict = await store.publishCompletionArtifact({
 				organizationId: 'org-1',
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0001',
 				sentCommitSha: COMMIT_SHA,
 				fieldGeneration: 1,
@@ -411,19 +425,22 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				previousAuditHash: anchor.eventHash,
 				manifestSha256: 'different-manifest-sha256'.padEnd(64, '0'),
 				jsonObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/j.json.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/j.json.gz',
 				jsonSha256: 'j'.repeat(64),
 				markdownObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/d.md.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/d.md.gz',
 				markdownSha256: 'd'.repeat(64),
 				updatedAt: '2026-09-12T00:00:00.000Z',
-				auditEventId: 'event-5',
+				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
 				auditPayloadJson: '{"manifestSha256":"m"}'
 			});
 			expect(integrityConflict).toEqual({ outcome: 'integrity_error' });
 
-			const status = await store.findCompletionArtifactStatus('org-1', 'env-1');
+			const status = await store.findCompletionArtifactStatus(
+				'org-1',
+				'01920000-0000-7000-8000-000000000001'
+			);
 			expect(status).toMatchObject({
 				jobStatus: 'published',
 				published: { manifestSha256: 'm'.repeat(64) }
@@ -441,7 +458,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			await claim(store, 'claim-token-0001');
 			const result = await store.publishCompletionArtifact({
 				organizationId: 'org-1',
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				claimToken: 'wrong-claim-token',
 				sentCommitSha: COMMIT_SHA,
 				fieldGeneration: 1,
@@ -450,13 +467,13 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				previousAuditHash: anchor.eventHash,
 				manifestSha256: 'm'.repeat(64),
 				jsonObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/j.json.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/j.json.gz',
 				jsonSha256: 'j'.repeat(64),
 				markdownObjectKey:
-					'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/d.md.gz',
+					'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/d.md.gz',
 				markdownSha256: 'd'.repeat(64),
 				updatedAt: '2026-09-12T00:00:00.000Z',
-				auditEventId: 'event-5',
+				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
 				auditPayloadJson: '{}'
 			});
@@ -481,7 +498,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			await expect(
 				store.publishCompletionArtifact({
 					organizationId: 'org-1',
-					envelopeId: 'env-1',
+					envelopeId: '01920000-0000-7000-8000-000000000001',
 					claimToken: 'claim-token-0001',
 					sentCommitSha: COMMIT_SHA,
 					fieldGeneration: 1,
@@ -490,13 +507,13 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 					previousAuditHash: anchor.eventHash,
 					manifestSha256: 'm'.repeat(64),
 					jsonObjectKey:
-						'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/j.json.gz',
+						'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/j.json.gz',
 					jsonSha256: 'j'.repeat(64),
 					markdownObjectKey:
-						'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/d.md.gz',
+						'completion-artifacts/v1/organizations/org-1/envelopes/01920000-0000-7000-8000-000000000001/sha256/d.md.gz',
 					markdownSha256: 'd'.repeat(64),
 					updatedAt: '2026-09-12T00:00:00.000Z',
-					auditEventId: 'event-5',
+					auditEventId: '01960000-0000-7000-8000-000000000005',
 					auditEventHash: 'hash-5',
 					auditPayloadJson: '{"manifestSha256":"m"}'
 				})
@@ -532,7 +549,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 					repository_archive_key, repository_archive_sha256, sent_commit_sha,
 					field_generation, created_at, updated_at
 				) VALUES (
-					'env-corrupt','org-1','Corrupt Agreement','completed',1,NULL,NULL,NULL,NULL,1,
+					'01920000-0000-7000-8000-0000000000c0','org-1','Corrupt Agreement','completed',1,NULL,NULL,NULL,NULL,1,
 					'2026-09-11T00:00:00.000Z','2026-09-11T00:02:00.000Z'
 				);
 			`);
@@ -561,7 +578,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			const corruptJobRow = sqlite
 				.prepare(
 					`SELECT status, retryable, last_error, claim_token, locked_at
-					 FROM completion_artifact_job WHERE envelope_id = 'env-corrupt'`
+					 FROM completion_artifact_job WHERE envelope_id = '01920000-0000-7000-8000-0000000000c0'`
 				)
 				.get() as Record<string, unknown>;
 			expect(corruptJobRow).toEqual({
@@ -573,15 +590,17 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			});
 
 			const healthyJobRow = sqlite
-				.prepare("SELECT status FROM completion_artifact_job WHERE envelope_id = 'env-1'")
+				.prepare(
+					"SELECT status FROM completion_artifact_job WHERE envelope_id = '01920000-0000-7000-8000-000000000001'"
+				)
 				.get() as Record<string, unknown>;
 			expect(healthyJobRow).toEqual({ status: 'published' });
 
 			const artifactCounts = sqlite
 				.prepare(
 					`SELECT
-						(SELECT COUNT(*) FROM completion_artifact WHERE envelope_id = 'env-1') AS healthy,
-						(SELECT COUNT(*) FROM completion_artifact WHERE envelope_id = 'env-corrupt') AS corrupt`
+						(SELECT COUNT(*) FROM completion_artifact WHERE envelope_id = '01920000-0000-7000-8000-000000000001') AS healthy,
+						(SELECT COUNT(*) FROM completion_artifact WHERE envelope_id = '01920000-0000-7000-8000-0000000000c0') AS corrupt`
 				)
 				.get() as Record<string, unknown>;
 			expect(artifactCounts).toEqual({ healthy: 1, corrupt: 0 });
@@ -591,7 +610,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			expect(objects.getCallCount).toBe(1);
 			expect(objects.putCallsByKey.size).toBe(2);
 			for (const key of objects.putCallsByKey.keys()) {
-				expect(key).toContain('/envelopes/env-1/');
+				expect(key).toContain('/envelopes/01920000-0000-7000-8000-000000000001/');
 			}
 		} finally {
 			sqlite.close();
@@ -605,7 +624,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			await claim(store, 'claim-token-0001');
 			const failure = await store.failCompletionArtifact({
 				organizationId: 'org-1',
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0001',
 				errorCode: 'completion_artifact_build_failed',
 				retryable: true,
@@ -615,7 +634,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			expect(failure).toEqual({ outcome: 'failed' });
 			const stale = await store.failCompletionArtifact({
 				organizationId: 'org-1',
-				envelopeId: 'env-1',
+				envelopeId: '01920000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0001',
 				errorCode: 'completion_artifact_build_failed',
 				retryable: true,
@@ -684,7 +703,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				// originally-correct digest. This is caught before the draft
 				// repository or object store are ever read, so both doubles
 				// here throw if touched.
-				tamperedField('field-1', '"Tampered"', sqlite, 'value_json');
+				tamperedField('01950000-0000-7000-8000-000000000001', '"Tampered"', sqlite, 'value_json');
 				await expectFailClosed(
 					sqlite,
 					database,
@@ -704,14 +723,14 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 						id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
 						required, position, created_at, updated_at
 					) VALUES (
-						'field-2','org-1','env-1','recipient-1','documents/agreement.md','date','Signed date',
+						'01950000-0000-7000-8000-000000000002','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','documents/agreement.md','date','Signed date',
 						1,2,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
 					);
 					INSERT INTO field_value (
 						organization_id, field_id, envelope_id, recipient_id, field_type, value_json,
 						value_sha256, created_at
 					) VALUES (
-						'org-1','field-2','env-1','recipient-1','date','${EXTRA_FIELD_VALUE_JSON}',
+						'org-1','01950000-0000-7000-8000-000000000002','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','date','${EXTRA_FIELD_VALUE_JSON}',
 						'${EXTRA_FIELD_VALUE_SHA256}','2026-09-11T00:02:00.000Z'
 					);
 				`);
@@ -724,7 +743,9 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 		it('fails closed when a field_value row is deleted after signing', async () => {
 			const { database, sqlite } = await fixture();
 			try {
-				sqlite.exec("DELETE FROM field_value WHERE field_id = 'field-1'");
+				sqlite.exec(
+					"DELETE FROM field_value WHERE field_id = '01950000-0000-7000-8000-000000000001'"
+				);
 				await expectFailClosed(sqlite, database, seededObjectStore(), fixedDraftRepository());
 			} finally {
 				sqlite.close();
@@ -735,7 +756,9 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			const { database, sqlite } = await fixture();
 			try {
 				sqlite
-					.prepare("UPDATE audit_event SET payload_json = ? WHERE id = 'event-4'")
+					.prepare(
+						"UPDATE audit_event SET payload_json = ? WHERE id = '01960000-0000-7000-8000-000000000004'"
+					)
 					.run(
 						JSON.stringify({ sentCommitSha: COMMIT_SHA, completedAt: '2099-01-01T00:00:00.000Z' })
 					);
@@ -749,7 +772,9 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 			const { database, sqlite } = await fixture();
 			try {
 				sqlite
-					.prepare("UPDATE audit_event SET occurred_at = ? WHERE id = 'event-4'")
+					.prepare(
+						"UPDATE audit_event SET occurred_at = ? WHERE id = '01960000-0000-7000-8000-000000000004'"
+					)
 					.run('2026-09-11T00:02:00.001Z');
 				await expectFailClosed(sqlite, database, seededObjectStore(), fixedDraftRepository());
 			} finally {
@@ -760,14 +785,18 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 		it('fails closed when a mid-chain draft.revision_created event is altered', async () => {
 			const { database, sqlite } = await fixture();
 			try {
-				sqlite.prepare("UPDATE audit_event SET payload_json = ? WHERE id = 'event-2'").run(
-					JSON.stringify({
-						generation: 1,
-						commitSha: COMMIT_SHA,
-						archiveSha256: 'f'.repeat(64),
-						changedPaths: ['documents/agreement.md']
-					})
-				);
+				sqlite
+					.prepare(
+						"UPDATE audit_event SET payload_json = ? WHERE id = '01960000-0000-7000-8000-000000000002'"
+					)
+					.run(
+						JSON.stringify({
+							generation: 1,
+							commitSha: COMMIT_SHA,
+							archiveSha256: 'f'.repeat(64),
+							changedPaths: ['documents/agreement.md']
+						})
+					);
 				await expectFailClosed(sqlite, database, seededObjectStore(), fixedDraftRepository());
 			} finally {
 				sqlite.close();
@@ -782,7 +811,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 						id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 						capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 					) VALUES (
-						'recipient-extra','org-1','env-1','extra@example.com','Extra','viewer','en',1,
+						'01930000-0000-7000-8000-0000000000e7','org-1','01920000-0000-7000-8000-000000000001','extra@example.com','Extra','viewer','en',1,
 						'pending',NULL,NULL,NULL,'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
 					);
 				`);
@@ -795,7 +824,11 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 		it("fails closed when a recipient's role drifts from the envelope.ready declaration", async () => {
 			const { database, sqlite } = await fixture();
 			try {
-				sqlite.prepare("UPDATE recipient SET role = 'approver' WHERE id = 'recipient-1'").run();
+				sqlite
+					.prepare(
+						"UPDATE recipient SET role = 'approver' WHERE id = '01930000-0000-7000-8000-000000000001'"
+					)
+					.run();
 				await expectFailClosed(sqlite, database, seededObjectStore(), fixedDraftRepository());
 			} finally {
 				sqlite.close();

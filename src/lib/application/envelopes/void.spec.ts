@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
 import type {
 	EnvelopeVoidStore,
 	PublishVoidedEnvelopeCommand,
@@ -29,6 +30,17 @@ const ready: Extract<VoidPreparation, { outcome: 'ready' }> = {
 	auditHead: { sequence: 8, eventHash: 'hash-8' },
 	revokedRecipientIds: ['recipient-z', 'recipient-a']
 };
+const FIRST_EVENT_ID: string = '01900000-0000-7000-8000-0000000000e1';
+const SECOND_EVENT_ID: string = '01900000-0000-7000-8000-0000000000e2';
+
+function scriptedIds(ids: readonly string[]): () => string {
+	const remaining: string[] = [...ids];
+	return (): string => {
+		const id: string | undefined = remaining.shift();
+		if (id === undefined) throw new Error('Unexpected identifier request');
+		return id;
+	};
+}
 
 function store(preparations: readonly VoidPreparation[], publishOutcomes: readonly string[] = []) {
 	const remainingPreparations: VoidPreparation[] = [...preparations];
@@ -61,11 +73,12 @@ function store(preparations: readonly VoidPreparation[], publishOutcomes: readon
 }
 
 describe('EnvelopeVoidApplication', () => {
-	it('publishes a deterministic, PII-free void audit event with sorted revocation evidence', async () => {
+	it('publishes a PII-free void audit event with sorted revocation evidence', async () => {
 		const applicationStore = store([ready]);
 		const application = new EnvelopeVoidApplication(
 			applicationStore,
-			(): Date => new Date('2026-09-12T01:02:03.000Z')
+			(): Date => new Date('2026-09-12T01:02:03.000Z'),
+			scriptedIds([FIRST_EVENT_ID])
 		);
 
 		const result = await application.voidEnvelope(actor, envelopeId, input);
@@ -89,17 +102,7 @@ describe('EnvelopeVoidApplication', () => {
 		expect(command.revokedRecipientIds).toEqual(['recipient-a', 'recipient-z']);
 		expect(command.repositoryHead).toBe(ready.repositoryHead);
 		expect(command.sentCommitSha).toBe(ready.sentCommitSha);
-		expect(command.auditEventId).toBe(
-			deterministicUuid(
-				[
-					'signkit-envelope-voided-event-v1',
-					actor.organizationId,
-					envelopeId,
-					actor.id,
-					input.idempotencyKey
-				].join('\u0000')
-			)
-		);
+		expect(command.auditEventId).toBe(FIRST_EVENT_ID);
 		expect(JSON.parse(command.auditPayloadJson)).toEqual({
 			previousStatus: 'sent',
 			generation: 3,
@@ -126,6 +129,14 @@ describe('EnvelopeVoidApplication', () => {
 		);
 	});
 
+	it('mints a canonical UUIDv7 audit event ID by default', async () => {
+		const applicationStore = store([ready]);
+
+		await new EnvelopeVoidApplication(applicationStore).voidEnvelope(actor, envelopeId, input);
+
+		expect(isUuidV7(applicationStore.publishVoid.mock.calls[0][0].auditEventId)).toBe(true);
+	});
+
 	it.each([
 		'idempotency_conflict',
 		'not_found',
@@ -145,7 +156,7 @@ describe('EnvelopeVoidApplication', () => {
 		expect(applicationStore.publishVoid).not.toHaveBeenCalled();
 	});
 
-	it('retries an audit-head race with a fresh timestamp and the same deterministic event ID', async () => {
+	it('retries an audit-head race with a fresh timestamp and a fresh event ID', async () => {
 		const secondReady: Extract<VoidPreparation, { outcome: 'ready' }> = {
 			...ready,
 			auditHead: { sequence: 9, eventHash: 'hash-9' }
@@ -157,7 +168,8 @@ describe('EnvelopeVoidApplication', () => {
 		];
 		const application = new EnvelopeVoidApplication(
 			applicationStore,
-			(): Date => times.shift() as Date
+			(): Date => times.shift() as Date,
+			scriptedIds([FIRST_EVENT_ID, SECOND_EVENT_ID])
 		);
 
 		const result = await application.voidEnvelope(actor, envelopeId, input);
@@ -166,7 +178,10 @@ describe('EnvelopeVoidApplication', () => {
 		expect(applicationStore.prepareVoid).toHaveBeenCalledTimes(2);
 		expect(applicationStore.publishVoid).toHaveBeenCalledTimes(2);
 		const [first, second] = applicationStore.publishVoid.mock.calls.map((call) => call[0]);
-		expect(second.auditEventId).toBe(first.auditEventId);
+		// The rolled-back attempt published nothing, so its identifier is simply
+		// discarded rather than reused by the retry.
+		expect(first.auditEventId).toBe(FIRST_EVENT_ID);
+		expect(second.auditEventId).toBe(SECOND_EVENT_ID);
 		expect(second.updatedAt).not.toBe(first.updatedAt);
 		expect(second.previousAuditHash).toBe('hash-9');
 	});
@@ -196,12 +211,4 @@ describe('EnvelopeVoidApplication', () => {
 
 function sha256(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
-}
-
-function deterministicUuid(value: string): string {
-	const digest: string = sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

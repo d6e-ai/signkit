@@ -6,7 +6,7 @@ import { D1CompletionDeliveryStore } from './d1-completion-delivery-store';
 import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
 
 const ORGANIZATION_ID: string = 'org-1';
-const ENVELOPE_ID: string = 'env-1';
+const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
 const ENCRYPTION_KEY: string = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
 const CLAIMED_AT: string = '2026-09-12T00:00:00.000Z';
 const STALE_BEFORE: string = '2026-09-11T23:55:00.000Z';
@@ -24,11 +24,11 @@ function seedCompletedEnvelopeWithArtifact(sqlite: DatabaseSync): {
 	ccId: string;
 	prefillId: string;
 } {
-	const signerId = 'rec-signer';
-	const approverId = 'rec-approver';
-	const viewerId = 'rec-viewer';
-	const ccId = 'rec-cc';
-	const prefillId = 'rec-prefill';
+	const signerId = '01930000-0000-7000-8000-000000000001';
+	const approverId = '01930000-0000-7000-8000-000000000003';
+	const viewerId = '01930000-0000-7000-8000-000000000002';
+	const ccId = '01930000-0000-7000-8000-000000000004';
+	const prefillId = '01930000-0000-7000-8000-000000000005';
 
 	sqlite.exec(`
 		INSERT INTO organization (id, d6e_organization_id, name, created_at)
@@ -56,7 +56,7 @@ function seedCompletedEnvelopeWithArtifact(sqlite: DatabaseSync): {
 			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
 			payload_json, previous_hash, event_hash, occurred_at
 		) VALUES (
-			'audit-anchor', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 1, 'envelope.completed', 'system', 'system',
+			'01960000-0000-7000-8000-000000000001', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 1, 'envelope.completed', 'system', 'system',
 			'{}', '${'0'.repeat(64)}', '${'e'.repeat(64)}', '2026-09-11T00:02:00.000Z'
 		);
 
@@ -69,7 +69,7 @@ function seedCompletedEnvelopeWithArtifact(sqlite: DatabaseSync): {
 			'${ORGANIZATION_ID}', '${ENVELOPE_ID}', 1, '${'m'.repeat(64)}',
 			'completion-artifacts/v1/org-1/env-1/sha256/${'j'.repeat(64)}.json.gz', '${'j'.repeat(64)}',
 			'completion-artifacts/v1/org-1/env-1/sha256/${'d'.repeat(64)}.md.gz', '${'d'.repeat(64)}',
-			'commit-1', 0, 'audit-anchor', 1, '${'e'.repeat(64)}', '2026-09-11T00:03:00.000Z', 'audit-pub'
+			'commit-1', 0, '01960000-0000-7000-8000-000000000001', 1, '${'e'.repeat(64)}', '2026-09-11T00:03:00.000Z', '01960000-0000-7000-8000-000000000003'
 		);
 	`);
 
@@ -107,11 +107,11 @@ describe('D1CompletionDeliveryStore integration', () => {
 			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
-			deliveryId: 'del-1'
+			deliveryId: '01940000-0000-7000-8000-000000000001'
 		});
 
 		const item = {
-			id: 'del-1',
+			id: '01940000-0000-7000-8000-000000000001',
 			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
@@ -136,7 +136,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 			store.enrollDeliveries([
 				{
 					...item,
-					id: 'del-prefill',
+					id: '01940000-0000-7000-8000-0000000000d1',
 					recipientId: prefillId,
 					tokenHash: 'p'.repeat(64)
 				}
@@ -148,8 +148,8 @@ describe('D1CompletionDeliveryStore integration', () => {
 			store.enrollDeliveries([
 				{
 					...item,
-					id: 'del-no-artifact',
-					envelopeId: 'env-missing',
+					id: '01940000-0000-7000-8000-0000000000a2',
+					envelopeId: '01920000-0000-7000-8000-0000000000f1',
 					tokenHash: 'm'.repeat(64)
 				}
 			])
@@ -167,12 +167,12 @@ describe('D1CompletionDeliveryStore integration', () => {
 			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
-			deliveryId: 'del-1'
+			deliveryId: '01940000-0000-7000-8000-000000000001'
 		});
 
 		await store.enrollDeliveries([
 			{
-				id: 'del-1',
+				id: '01940000-0000-7000-8000-000000000001',
 				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				recipientId: signerId,
@@ -200,16 +200,16 @@ describe('D1CompletionDeliveryStore integration', () => {
 		// Read claimed delivery
 		const readClaimed = await store.readClaimedDelivery({
 			organizationId: ORGANIZATION_ID,
-			deliveryId: 'del-1',
+			deliveryId: '01940000-0000-7000-8000-000000000001',
 			claimToken
 		});
 		expect(readClaimed).not.toBeNull();
-		expect(readClaimed?.deliveryId).toBe('del-1');
+		expect(readClaimed?.deliveryId).toBe('01940000-0000-7000-8000-000000000001');
 
 		// Complete delivery (success): scrubs sealed_token, keeps access_revoked_at NULL
 		const completeRes = await store.completeDelivery({
 			organizationId: ORGANIZATION_ID,
-			deliveryId: 'del-1',
+			deliveryId: '01940000-0000-7000-8000-000000000001',
 			claimToken,
 			deliveredAt: '2026-09-12T00:01:00.000Z',
 			providerMessageId: 'msg-001'
@@ -221,7 +221,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 			.prepare(
 				'SELECT status, retryable, sealed_token, access_revoked_at FROM completion_delivery_outbox WHERE id = ?'
 			)
-			.get('del-1') as {
+			.get('01940000-0000-7000-8000-000000000001') as {
 			status: string;
 			retryable: number;
 			sealed_token: string | null;
@@ -267,18 +267,18 @@ describe('D1CompletionDeliveryStore integration', () => {
 			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
-			deliveryId: 'del-retryable'
+			deliveryId: '01940000-0000-7000-8000-0000000000a3'
 		});
 		const sealed2 = await sealer.seal(token2.token, {
 			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: approverId,
-			deliveryId: 'del-terminal'
+			deliveryId: '01940000-0000-7000-8000-0000000000a4'
 		});
 
 		await store.enrollDeliveries([
 			{
-				id: 'del-retryable',
+				id: '01940000-0000-7000-8000-0000000000a3',
 				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				recipientId: signerId,
@@ -291,7 +291,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 				createdAt: '2026-09-11T00:05:00.000Z'
 			},
 			{
-				id: 'del-terminal',
+				id: '01940000-0000-7000-8000-0000000000a4',
 				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				recipientId: approverId,
@@ -316,7 +316,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 		// 1. Retryable failure: keeps sealed_token and keeps access_revoked_at NULL
 		const retryFailRes = await store.failDelivery({
 			organizationId: ORGANIZATION_ID,
-			deliveryId: 'del-retryable',
+			deliveryId: '01940000-0000-7000-8000-0000000000a3',
 			claimToken,
 			errorCode: 'rate_limited',
 			retryable: true,
@@ -329,7 +329,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 			.prepare(
 				'SELECT status, retryable, sealed_token, access_revoked_at FROM completion_delivery_outbox WHERE id = ?'
 			)
-			.get('del-retryable') as {
+			.get('01940000-0000-7000-8000-0000000000a3') as {
 			status: string;
 			retryable: number;
 			sealed_token: string | null;
@@ -343,7 +343,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 		// 2. Terminal failure: scrubs sealed_token to NULL and sets access_revoked_at
 		const termFailRes = await store.failDelivery({
 			organizationId: ORGANIZATION_ID,
-			deliveryId: 'del-terminal',
+			deliveryId: '01940000-0000-7000-8000-0000000000a4',
 			claimToken,
 			errorCode: 'recipient_rejected',
 			retryable: false,
@@ -356,7 +356,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 			.prepare(
 				'SELECT status, retryable, sealed_token, access_revoked_at FROM completion_delivery_outbox WHERE id = ?'
 			)
-			.get('del-terminal') as {
+			.get('01940000-0000-7000-8000-0000000000a4') as {
 			status: string;
 			retryable: number;
 			sealed_token: string | null;
@@ -385,7 +385,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 					access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 					sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 				) VALUES (
-					'bad-1', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'rec-signer', 'delivered',
+					'bad-1', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '01930000-0000-7000-8000-000000000001', 'delivered',
 					'${'1'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, 'unscrubbed-token', 'key-1',
 					'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 0
 				)
@@ -400,7 +400,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 					access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 					sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 				) VALUES (
-					'bad-2', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'rec-signer', 'failed',
+					'bad-2', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '01930000-0000-7000-8000-000000000001', 'failed',
 					'${'2'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, NULL, 'key-1',
 					'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 0
 				)
@@ -421,13 +421,13 @@ describe('D1CompletionDeliveryStore integration', () => {
 			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
-			deliveryId: 'del-abandoned'
+			deliveryId: '01940000-0000-7000-8000-0000000000a1'
 		});
 		const sealed2 = await sealer.seal(token2.token, {
 			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: approverId,
-			deliveryId: 'del-voided'
+			deliveryId: '01940000-0000-7000-8000-0000000000a5'
 		});
 
 		// Insert del-abandoned directly as processing with old locked_at
@@ -438,7 +438,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 				sealed_token_sha256, available_at, attempts, locked_at, claim_token,
 				created_at, updated_at, retryable
 			) VALUES (
-				'del-abandoned', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${signerId}', 'processing',
+				'01940000-0000-7000-8000-0000000000a1', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${signerId}', 'processing',
 				'${token1.tokenHash}', '2026-10-12T00:00:00.000Z', NULL, '${sealed1.sealedToken}', '${sealed1.sealingKeyId}',
 				'${sealed1.sealedTokenSha256}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T23:50:00.000Z', 'old-claim-token-1234',
 				'2026-09-11T00:00:00.000Z', '2026-09-11T23:50:00.000Z', 1
@@ -449,7 +449,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 				sealed_token_sha256, available_at, attempts, locked_at, claim_token,
 				created_at, updated_at, retryable
 			) VALUES (
-				'del-voided', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${approverId}', 'processing',
+				'01940000-0000-7000-8000-0000000000a5', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${approverId}', 'processing',
 				'${token2.tokenHash}', '2026-10-12T00:00:00.000Z', NULL, '${sealed2.sealedToken}', '${sealed2.sealingKeyId}',
 				'${sealed2.sealedTokenSha256}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T23:50:00.000Z', 'old-claim-token-1234',
 				'2026-09-11T00:00:00.000Z', '2026-09-11T23:50:00.000Z', 1
@@ -470,7 +470,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 		});
 
 		expect(claimed).toHaveLength(1);
-		expect(claimed[0]?.deliveryId).toBe('del-abandoned');
+		expect(claimed[0]?.deliveryId).toBe('01940000-0000-7000-8000-0000000000a1');
 		expect(claimed[0]?.attempts).toBe(2);
 
 		// del-voided should have been converted to terminal failure by cleanup
@@ -478,7 +478,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 			.prepare(
 				'SELECT status, retryable, sealed_token, access_revoked_at, last_error FROM completion_delivery_outbox WHERE id = ?'
 			)
-			.get('del-voided') as {
+			.get('01940000-0000-7000-8000-0000000000a5') as {
 			status: string;
 			retryable: number;
 			sealed_token: string | null;
@@ -498,8 +498,8 @@ describe('D1CompletionDeliveryStore integration', () => {
 		seedCompletedEnvelopeWithArtifact(sqlite);
 
 		const otherOrgId = 'org-other';
-		const otherEnvId = 'env-other';
-		const otherRecId = 'rec-other';
+		const otherEnvId = '01920000-0000-7000-8000-0000000000f2';
+		const otherRecId = '01930000-0000-7000-8000-0000000000f2';
 		const otherTokenHash = '7'.repeat(64);
 		const baseTime = '2026-09-12T00:00:00.000Z';
 
@@ -525,7 +525,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 				id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
 				payload_json, previous_hash, event_hash, occurred_at
 			) VALUES (
-				'audit-anchor-other', '${otherOrgId}', '${otherEnvId}', 1, 'envelope.completed', 'system', 'system',
+				'01960000-0000-7000-8000-000000000002', '${otherOrgId}', '${otherEnvId}', 1, 'envelope.completed', 'system', 'system',
 				'{}', '${'0'.repeat(64)}', '${'f'.repeat(64)}', '2026-09-11T00:02:00.000Z'
 			);
 
@@ -538,7 +538,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 				'${otherOrgId}', '${otherEnvId}', 1, '${'n'.repeat(64)}',
 				'completion-artifacts/v1/${otherOrgId}/${otherEnvId}/sha256/${'8'.repeat(64)}.json.gz', '${'8'.repeat(64)}',
 				'completion-artifacts/v1/${otherOrgId}/${otherEnvId}/sha256/${'9'.repeat(64)}.md.gz', '${'9'.repeat(64)}',
-				'commit-2', 0, 'audit-anchor-other', 1, '${'f'.repeat(64)}', '2026-09-11T00:03:00.000Z', 'audit-pub-other'
+				'commit-2', 0, '01960000-0000-7000-8000-000000000002', 1, '${'f'.repeat(64)}', '2026-09-11T00:03:00.000Z', '01960000-0000-7000-8000-000000000004'
 			);
 
 			INSERT INTO completion_delivery_outbox (
@@ -546,7 +546,7 @@ describe('D1CompletionDeliveryStore integration', () => {
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 			) VALUES (
-				'del-other', '${otherOrgId}', '${otherEnvId}', '${otherRecId}', 'delivered',
+				'01940000-0000-7000-8000-0000000000f2', '${otherOrgId}', '${otherEnvId}', '${otherRecId}', 'delivered',
 				'${otherTokenHash}', '2026-10-12T00:00:00.000Z', NULL, NULL, 'key-1',
 				'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 0
 			);

@@ -170,9 +170,9 @@ describe('recipient signing page resolution', () => {
 
 const declinedLocator: DeclinedReceiptSessionLocator = {
 	version: 1,
-	organizationId: '00000000-0000-8000-a000-000000000001',
-	envelopeId: '00000000-0000-8000-a000-000000000002',
-	recipientId: '00000000-0000-8000-a000-000000000003',
+	organizationId: '01910000-0000-7000-8000-000000000001',
+	envelopeId: '01910000-0000-7000-8000-000000000002',
+	recipientId: '01910000-0000-7000-8000-000000000003',
 	idempotencyKey: 'decline-1',
 	capabilityHash: 'a'.repeat(64),
 	declinedAt: '2026-09-11T00:02:00.000Z',

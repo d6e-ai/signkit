@@ -9,7 +9,8 @@
 		onRetryPendingChange?: (pending: boolean) => void;
 		onTerminalFailure?: () => void;
 		fetch?: typeof fetch;
-		randomUUID?: () => string;
+		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		newIdempotencyKey?: () => string;
 		document?: {
 			visibilityState: DocumentVisibilityState;
 			addEventListener: (type: string, listener: (event?: unknown) => void) => void;
@@ -19,6 +20,17 @@
 			addEventListener: (type: string, listener: (event?: unknown) => void) => void;
 			removeEventListener: (type: string, listener: (event?: unknown) => void) => void;
 		};
+	}
+
+	// An Idempotency-Key is opaque request material that the server never
+	// parses, not a SignKit identifier: UUIDv4 is simply the recommended
+	// concrete format for it, and it must never become a UUIDv7.
+	function defaultNewIdempotencyKey(): string {
+		const source: Crypto | undefined = globalThis.crypto;
+		if (source === undefined || typeof source.randomUUID !== 'function') {
+			throw new Error('crypto.randomUUID() is required to mint an Idempotency-Key');
+		}
+		return source.randomUUID();
 	}
 
 	export function initRecipientViewed({
@@ -31,7 +43,7 @@
 		onRetryPendingChange,
 		onTerminalFailure,
 		fetch: customFetch,
-		randomUUID: customRandomUUID,
+		newIdempotencyKey: customNewIdempotencyKey,
 		document: customDocument,
 		window: customWindow
 	}: RecipientViewOptions): () => void {
@@ -42,23 +54,9 @@
 		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
 		const doc = customDocument ?? (typeof document !== 'undefined' ? document : undefined);
 		const win = customWindow ?? (typeof window !== 'undefined' ? window : undefined);
+		const generateIdempotencyKey = customNewIdempotencyKey ?? defaultNewIdempotencyKey;
 
-		const generateUUID =
-			customRandomUUID ??
-			(() => {
-				if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-					return crypto.randomUUID();
-				}
-				if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-					const bytes = crypto.getRandomValues(new Uint8Array(16));
-					return Array.from(bytes, (byte: number): string =>
-						byte.toString(16).padStart(2, '0')
-					).join('');
-				}
-				return `view-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-			});
-
-		const idempotencyKey = generateUUID();
+		const idempotencyKey = generateIdempotencyKey();
 		let inFlight = false;
 		let isTerminal = false;
 		const abortController = new AbortController();
@@ -158,7 +156,8 @@
 		role: string;
 		pageState: string;
 		fetch?: typeof fetch;
-		randomUUID?: () => string;
+		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		newIdempotencyKey?: () => string;
 		onStatusChange?: (status: RecipientDeclineStatus) => void;
 		onSuccess?: () => void;
 		onTransientFailure?: () => void;
@@ -180,7 +179,7 @@
 		role,
 		pageState,
 		fetch: customFetch,
-		randomUUID: customRandomUUID,
+		newIdempotencyKey: customNewIdempotencyKey,
 		onStatusChange,
 		onSuccess,
 		onTransientFailure,
@@ -196,20 +195,7 @@
 		const canDecline = pageState === 'active' && isActionableRole;
 
 		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
-		const generateUUID =
-			customRandomUUID ??
-			(() => {
-				if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-					return crypto.randomUUID();
-				}
-				if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-					const bytes = crypto.getRandomValues(new Uint8Array(16));
-					return Array.from(bytes, (byte: number): string =>
-						byte.toString(16).padStart(2, '0')
-					).join('');
-				}
-				return `decline-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-			});
+		const generateIdempotencyKey = customNewIdempotencyKey ?? defaultNewIdempotencyKey;
 
 		async function confirmDecline(): Promise<void> {
 			if (!canDecline || inFlight || status === 'success' || status === 'terminal_failure') {
@@ -218,7 +204,7 @@
 			if (!fetchFn) return;
 
 			if (!idempotencyKey) {
-				idempotencyKey = generateUUID();
+				idempotencyKey = generateIdempotencyKey();
 			}
 
 			inFlight = true;
@@ -339,7 +325,8 @@
 		pageState: string;
 		recipientStatus?: string | (() => string);
 		fetch?: typeof fetch;
-		randomUUID?: () => string;
+		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		newIdempotencyKey?: () => string;
 		onStatusChange?: (status: RecipientApproveStatus) => void;
 		onSuccess?: (info?: { replayed: boolean; receipt?: RecipientApproveReceipt }) => void;
 		onTransientFailure?: () => void;
@@ -363,7 +350,7 @@
 		pageState,
 		recipientStatus,
 		fetch: customFetch,
-		randomUUID: customRandomUUID,
+		newIdempotencyKey: customNewIdempotencyKey,
 		onStatusChange,
 		onSuccess,
 		onTransientFailure,
@@ -380,20 +367,7 @@
 			typeof recipientStatus === 'function' ? recipientStatus : () => recipientStatus;
 
 		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
-		const generateUUID =
-			customRandomUUID ??
-			(() => {
-				if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-					return crypto.randomUUID();
-				}
-				if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-					const bytes = crypto.getRandomValues(new Uint8Array(16));
-					return Array.from(bytes, (byte: number): string =>
-						byte.toString(16).padStart(2, '0')
-					).join('');
-				}
-				return `approve-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-			});
+		const generateIdempotencyKey = customNewIdempotencyKey ?? defaultNewIdempotencyKey;
 
 		async function confirmApprove(): Promise<void> {
 			const currentRecipientStatus = getRecipientStatus();
@@ -405,7 +379,7 @@
 			if (!fetchFn) return;
 
 			if (!idempotencyKey) {
-				idempotencyKey = generateUUID();
+				idempotencyKey = generateIdempotencyKey();
 			}
 			inFlight = true;
 			status = 'pending';
@@ -551,7 +525,8 @@
 		pageState: string;
 		recipientStatus?: string | (() => string);
 		fetch?: typeof fetch;
-		randomUUID?: () => string;
+		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		newIdempotencyKey?: () => string;
 		onStatusChange?: (status: RecipientSignStatus) => void;
 		onSuccess?: (info?: { replayed: boolean; receipt?: RecipientSignReceipt }) => void;
 		onTransientFailure?: () => void;
@@ -576,7 +551,7 @@
 		pageState,
 		recipientStatus,
 		fetch: customFetch,
-		randomUUID: customRandomUUID,
+		newIdempotencyKey: customNewIdempotencyKey,
 		onStatusChange,
 		onSuccess,
 		onTransientFailure,
@@ -594,20 +569,7 @@
 			typeof recipientStatus === 'function' ? recipientStatus : () => recipientStatus;
 
 		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
-		const generateUUID =
-			customRandomUUID ??
-			(() => {
-				if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-					return crypto.randomUUID();
-				}
-				if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-					const bytes = crypto.getRandomValues(new Uint8Array(16));
-					return Array.from(bytes, (byte: number): string =>
-						byte.toString(16).padStart(2, '0')
-					).join('');
-				}
-				return `sign-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-			});
+		const generateIdempotencyKey = customNewIdempotencyKey ?? defaultNewIdempotencyKey;
 
 		async function confirmSign(values: readonly RecipientSignFieldValue[]): Promise<void> {
 			const currentRecipientStatus = getRecipientStatus();
@@ -619,7 +581,7 @@
 			if (!fetchFn) return;
 
 			if (!idempotencyKey) {
-				idempotencyKey = generateUUID();
+				idempotencyKey = generateIdempotencyKey();
 			}
 			submittedValues ??= values.map((entry: RecipientSignFieldValue): RecipientSignFieldValue => ({
 				fieldId: entry.fieldId,

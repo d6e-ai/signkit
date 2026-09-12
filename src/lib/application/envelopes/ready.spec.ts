@@ -6,6 +6,7 @@ import type {
 	ReadyCommandKey,
 	ReadyPreparation
 } from '$lib/ports/envelope-ready-store';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { EnvelopeReadyApplication, InvalidRecipientGraphError } from './ready';
 
 const envelope: Envelope = {
@@ -131,9 +132,21 @@ describe('EnvelopeReadyApplication', () => {
 		});
 
 		expect(first.keys[0].requestFingerprint).toBe(second.keys[0].requestFingerprint);
-		expect(first.commands[0].recipients.map((recipient) => recipient.id)).toEqual(
-			second.commands[0].recipients.map((recipient) => recipient.id)
+		// Recipients are canonically ordered before IDs are minted, so both
+		// requests agree on which recipient occupies which position even though
+		// each attempt mints its own identifiers.
+		expect(first.commands[0].recipients.map((recipient) => recipient.email)).toEqual(
+			second.commands[0].recipients.map((recipient) => recipient.email)
 		);
+		const firstIds: readonly string[] = first.commands[0].recipients.map(
+			(recipient) => recipient.id
+		);
+		const secondIds: readonly string[] = second.commands[0].recipients.map(
+			(recipient) => recipient.id
+		);
+		expect(firstIds.every(isUuidV7)).toBe(true);
+		expect(secondIds.every(isUuidV7)).toBe(true);
+		expect(firstIds).not.toEqual(secondIds);
 	});
 
 	it('returns preparation conflicts without attempting publication', async () => {

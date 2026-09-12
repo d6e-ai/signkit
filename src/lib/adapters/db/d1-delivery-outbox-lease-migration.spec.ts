@@ -26,14 +26,14 @@ function database(applyLeaseMigration = true): DatabaseSync {
 			id, organization_id, title, status, repository_generation, repository_head,
 			sent_commit_sha, created_at, updated_at
 		) VALUES (
-			'env-1','org-1','Agreement','sent',1,'commit-1','commit-1',
+			'01920000-0000-7000-8000-000000000001','org-1','Agreement','sent',1,'commit-1','commit-1',
 			'2026-09-11T00:00:00.000Z','2026-09-11T00:01:00.000Z'
 		);
 		INSERT INTO recipient (
 			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 			capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 		) VALUES (
-			'recipient-1','org-1','env-1','recipient@example.com','Recipient','signer','en',1,
+			'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','recipient@example.com','Recipient','signer','en',1,
 			'pending','capability-hash','2026-09-25T00:00:00.000Z',NULL,
 			'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
 		);
@@ -43,7 +43,7 @@ function database(applyLeaseMigration = true): DatabaseSync {
 			sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
 			provider_message_id, last_error, created_at, updated_at
 		) VALUES (
-			'delivery-1','org-1','env-1','recipient-1','recipient_invitation','pending',
+			'01940000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','recipient_invitation','pending',
 			'capability-hash','2026-09-25T00:00:00.000Z','sealed-capability','key-1',
 			'sealed-hash','2026-09-11T00:01:00.000Z',0,NULL,NULL,NULL,NULL,
 			'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
@@ -62,10 +62,10 @@ describe('D1 delivery outbox lease migration', () => {
 					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
 					capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 				) VALUES
-					('recipient-2','org-1','env-1','two@example.com','Two','signer','en',1,'pending',
+					('01930000-0000-7000-8000-000000000002','org-1','01920000-0000-7000-8000-000000000001','two@example.com','Two','signer','en',1,'pending',
 					 'capability-hash-2','2026-09-25T00:00:00.000Z',NULL,
 					 '2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'),
-					('recipient-3','org-1','env-1','three@example.com','Three','signer','en',1,'pending',
+					('01930000-0000-7000-8000-000000000003','org-1','01920000-0000-7000-8000-000000000001','three@example.com','Three','signer','en',1,'pending',
 					 'capability-hash-3','2026-09-25T00:00:00.000Z',NULL,
 					 '2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z');
 			`);
@@ -76,7 +76,7 @@ describe('D1 delivery outbox lease migration', () => {
 					sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
 					provider_message_id, last_error, created_at, updated_at, claim_token, retryable
 				) VALUES (
-					'delivery-2','org-1','env-1','recipient-2','recipient_invitation','processing',
+					'01940000-0000-7000-8000-000000000002','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000002','recipient_invitation','processing',
 					'capability-hash-2','2026-09-25T00:00:00.000Z','sealed-2','key-1','hash-2',
 					'2026-09-11T00:01:00.000Z',1,NULL,NULL,NULL,NULL,
 					'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z',NULL,1
@@ -89,7 +89,7 @@ describe('D1 delivery outbox lease migration', () => {
 					sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
 					provider_message_id, last_error, created_at, updated_at, claim_token, retryable
 				) VALUES (
-					'delivery-3','org-1','env-1','recipient-3','recipient_invitation','delivered',
+					'01940000-0000-7000-8000-000000000003','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000003','recipient_invitation','delivered',
 					'capability-hash-3','2026-09-25T00:00:00.000Z','sealed-3','key-1','hash-3',
 					'2026-09-11T00:01:00.000Z',1,NULL,'2026-09-11T00:02:00.000Z','provider-3',NULL,
 					'2026-09-11T00:01:00.000Z','2026-09-11T00:02:00.000Z',NULL,0
@@ -104,15 +104,17 @@ describe('D1 delivery outbox lease migration', () => {
 		const db: DatabaseSync = database();
 		try {
 			expect((): void =>
-				db.exec("UPDATE delivery_outbox SET status='processing' WHERE id='delivery-1'")
+				db.exec(
+					"UPDATE delivery_outbox SET status='processing' WHERE id='01940000-0000-7000-8000-000000000001'"
+				)
 			).toThrow(/invalid delivery claim state/);
 			db.exec(`UPDATE delivery_outbox
 				SET status='processing', claim_token='claim-token-0001',
 					locked_at='2026-09-11T00:02:00.000Z', updated_at='2026-09-11T00:02:00.000Z'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			const row = db
 				.prepare('SELECT status, claim_token, locked_at FROM delivery_outbox WHERE id = ?')
-				.get('delivery-1') as {
+				.get('01940000-0000-7000-8000-000000000001') as {
 				status: string;
 				claim_token: string;
 				locked_at: string;
@@ -133,21 +135,21 @@ describe('D1 delivery outbox lease migration', () => {
 			db.exec(`UPDATE delivery_outbox
 				SET status='processing', claim_token='claim-token-0001',
 					locked_at='2026-09-11T00:02:00.000Z'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			expect((): void =>
 				db.exec(`UPDATE delivery_outbox
 					SET status='delivered', claim_token=NULL, locked_at=NULL, retryable=0
-					WHERE id='delivery-1'`)
+					WHERE id='01940000-0000-7000-8000-000000000001'`)
 			).toThrow(/invalid delivery terminal state/);
 			db.exec(`UPDATE delivery_outbox
 				SET status='delivered', claim_token=NULL, locked_at=NULL, retryable=0,
 					sealed_capability=NULL, delivered_at='2026-09-11T00:03:00.000Z'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			const row = db
 				.prepare(
 					'SELECT status, sealed_capability, claim_token, locked_at, retryable FROM delivery_outbox WHERE id = ?'
 				)
-				.get('delivery-1') as {
+				.get('01940000-0000-7000-8000-000000000001') as {
 				status: string;
 				sealed_capability: string | null;
 				claim_token: string | null;
@@ -172,19 +174,19 @@ describe('D1 delivery outbox lease migration', () => {
 			db.exec(`UPDATE delivery_outbox
 				SET status='processing', claim_token='claim-token-0001',
 					locked_at='2026-09-11T00:02:00.000Z'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			expect((): void =>
 				db.exec(`UPDATE delivery_outbox
 					SET status='failed', claim_token=NULL, locked_at=NULL, retryable=0
-					WHERE id='delivery-1'`)
+					WHERE id='01940000-0000-7000-8000-000000000001'`)
 			).toThrow(/invalid delivery terminal state/);
 			db.exec(`UPDATE delivery_outbox
 				SET status='failed', claim_token=NULL, locked_at=NULL, retryable=0,
 					sealed_capability=NULL, last_error='recipient_rejected'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			const row = db
 				.prepare('SELECT status, sealed_capability, retryable FROM delivery_outbox WHERE id = ?')
-				.get('delivery-1') as {
+				.get('01940000-0000-7000-8000-000000000001') as {
 				status: string;
 				sealed_capability: string | null;
 				retryable: number;
@@ -200,13 +202,13 @@ describe('D1 delivery outbox lease migration', () => {
 		try {
 			db.exec(`UPDATE delivery_outbox
 				SET status='processing', locked_at='2026-09-11T00:02:00.000Z'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			db.exec(readFileSync(leaseMigrationPath, 'utf8'));
 			const row = db
 				.prepare(
 					'SELECT status, available_at, locked_at, claim_token, retryable, last_error FROM delivery_outbox WHERE id = ?'
 				)
-				.get('delivery-1') as {
+				.get('01940000-0000-7000-8000-000000000001') as {
 				status: string;
 				available_at: string;
 				locked_at: string | null;
@@ -233,13 +235,13 @@ describe('D1 delivery outbox lease migration', () => {
 			db.exec(`UPDATE delivery_outbox
 				SET status='delivered', delivered_at='2026-09-11T00:03:00.000Z',
 					provider_message_id='provider-id'
-				WHERE id='delivery-1'`);
+				WHERE id='01940000-0000-7000-8000-000000000001'`);
 			db.exec(readFileSync(leaseMigrationPath, 'utf8'));
 			const row = db
 				.prepare(
 					'SELECT status, sealed_capability, locked_at, claim_token, retryable FROM delivery_outbox WHERE id = ?'
 				)
-				.get('delivery-1') as {
+				.get('01940000-0000-7000-8000-000000000001') as {
 				status: string;
 				sealed_capability: string | null;
 				locked_at: string | null;

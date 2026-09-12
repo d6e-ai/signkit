@@ -1,3 +1,4 @@
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { EnvelopeRequestActor } from './model';
 import type {
 	EnvelopeVoidStore,
@@ -39,7 +40,8 @@ export interface EnvelopeVoidApplicationPort {
 export class EnvelopeVoidApplication implements EnvelopeVoidApplicationPort {
 	constructor(
 		private readonly store: EnvelopeVoidStore,
-		private readonly now: () => Date = (): Date => new Date()
+		private readonly now: () => Date = (): Date => new Date(),
+		private readonly newId: UuidV7Generator = newUuidV7
 	) {}
 
 	async voidEnvelope(
@@ -79,15 +81,9 @@ export class EnvelopeVoidApplication implements EnvelopeVoidApplicationPort {
 			const revokedRecipientIds: readonly string[] = sortedRecipientIds(
 				preparation.revokedRecipientIds
 			);
-			const auditEventId: string = await deterministicUuid(
-				[
-					'signkit-envelope-voided-event-v1',
-					actor.organizationId,
-					envelopeId,
-					actor.id,
-					input.idempotencyKey
-				].join('\u0000')
-			);
+			// An audit-head retry is a fresh unpublished attempt, so it mints a new
+			// event identifier alongside its new timestamp and chain position.
+			const auditEventId: string = this.newId();
 			const auditPayloadJson: string = JSON.stringify({
 				previousStatus: preparation.previousStatus,
 				generation: preparation.generation,
@@ -160,12 +156,4 @@ async function sha256(value: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

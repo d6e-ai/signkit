@@ -19,6 +19,8 @@ import {
 	type MailSender
 } from '$lib/ports/mail-sender';
 import { hashCompletionToken, issueCompletionToken } from '$lib/security/completion-token';
+import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
+import { OPAQUE_TOKEN_PATTERN } from '$lib/security/opaque-token';
 import {
 	AesGcmCompletionTokenSealer,
 	type CompletionTokenSealContext,
@@ -34,7 +36,7 @@ import {
 const NOW: Date = new Date('2026-09-12T00:00:00.000Z');
 const ORIGIN: string = 'https://signkit.example';
 const SENDER = { fromEmail: 'noreply@signkit.example', fromName: 'SignKit' } as const;
-const CLAIM_TOKEN: string = '01900000-0000-7000-8000-0000000000aa';
+const CLAIM_TOKEN: string = 'lease-opaque-claim-token-0001';
 const SEALING_KEY: string = btoa(
 	String.fromCharCode(...Array.from({ length: 32 }, (_, index: number): number => index + 1))
 );
@@ -175,7 +177,7 @@ function service(
 	store: FakeStore,
 	cryptor: CompletionTokenCryptor,
 	mail: FakeMail,
-	uuidGen: () => string = (): string => CLAIM_TOKEN
+	newClaimToken: () => string = (): string => CLAIM_TOKEN
 ): CompletionDeliveryService {
 	return new CompletionDeliveryService(
 		store,
@@ -184,7 +186,7 @@ function service(
 		ORIGIN,
 		SENDER,
 		(): Date => NOW,
-		uuidGen
+		newClaimToken
 	);
 }
 
@@ -362,6 +364,36 @@ describe('CompletionDeliveryService', () => {
 			expect(mail.messages[0].subject).toBe('Completed: "Partnership Agreement"');
 			expect(mail.messages[0].text).toContain('Hello Morgan,');
 			expect(mail.messages[0].html).toContain('View completed agreement');
+		});
+
+		it('mints a UUIDv7 delivery row identifier while the claim token stays opaque', async () => {
+			const sealer = new AesGcmCompletionTokenSealer(SEALING_KEY);
+			const store: FakeStore = new FakeStore();
+			store.discoveredRecipients = [
+				{
+					organizationId: 'org-1',
+					envelopeId: 'envelope-1',
+					recipientId: 'recipient-1',
+					recipientEmail: 'morgan@example.com',
+					recipientName: 'Morgan',
+					recipientLocale: 'en',
+					recipientRole: 'approver',
+					envelopeTitle: 'Partnership Agreement'
+				}
+			];
+
+			await new CompletionDeliveryService(
+				store,
+				sealer,
+				new FakeMail(),
+				ORIGIN,
+				SENDER,
+				(): Date => NOW
+			).deliverPendingCompletions();
+
+			expect(store.enrolled[0][0].id).toMatch(UUID_V7_PATTERN);
+			expect(store.claims[0].claimToken).toMatch(OPAQUE_TOKEN_PATTERN);
+			expect(store.claims[0].claimToken).not.toMatch(UUID_V7_PATTERN);
 		});
 	});
 

@@ -25,6 +25,9 @@ CREATE TABLE delivery_outbox (
   CHECK (
     (status = 'blocked' AND available_at IS NULL) OR
     (status <> 'blocked' AND available_at IS NOT NULL)
+  ),
+  CONSTRAINT delivery_outbox_id_uuidv7 CHECK (
+    id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   )
 );
 

@@ -338,7 +338,9 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 			.bind(command.organizationId, command.actor.id, command.idempotencyKey)
 			.first<IdempotencyRow>();
 		if (row === null) return null;
-		if (row.request_hash !== command.requestFingerprint || row.envelope_id !== command.envelopeId) {
+		// The stored envelope, not the caller's freshly minted candidate ID,
+		// identifies what a replay returns; only a different request is a conflict.
+		if (row.request_hash !== command.requestFingerprint) {
 			return { outcome: 'conflict' };
 		}
 

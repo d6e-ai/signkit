@@ -171,11 +171,14 @@ describe('D1EnvelopeApplicationStore', () => {
 		]);
 	});
 
-	it('returns a replay only when the scoped key and request hash match', async () => {
-		const row: Record<string, unknown> = envelopeRow(command.envelopeId);
+	it('replays the stored envelope, not the freshly minted candidate identifier', async () => {
+		// The candidate ID is minted per attempt, so the durable record's envelope
+		// is authoritative for a replay.
+		const storedEnvelopeId: string = '01900000-0000-7000-8000-0000000000ff';
+		const row: Record<string, unknown> = envelopeRow(storedEnvelopeId);
 		const fake: FakeD1 = createFakeD1({
 			firstResults: [
-				{ envelope_id: command.envelopeId, request_hash: command.requestFingerprint },
+				{ envelope_id: storedEnvelopeId, request_hash: command.requestFingerprint },
 				row
 			]
 		});
@@ -183,15 +186,16 @@ describe('D1EnvelopeApplicationStore', () => {
 
 		const result = await store.createIdempotently(command);
 
+		expect(storedEnvelopeId).not.toBe(command.envelopeId);
 		expect(result.outcome).toBe('replayed');
-		expect(result).toMatchObject({ envelope: { id: command.envelopeId } });
+		expect(result).toMatchObject({ envelope: { id: storedEnvelopeId } });
 		expect(fake.batch).not.toHaveBeenCalled();
 		expect(fake.prepared[0].bindings).toEqual([
 			command.organizationId,
 			command.actor.id,
 			command.idempotencyKey
 		]);
-		expect(fake.prepared[1].bindings).toEqual([command.organizationId, command.envelopeId]);
+		expect(fake.prepared[1].bindings).toEqual([command.organizationId, storedEnvelopeId]);
 	});
 
 	it('reports a conflict when a scoped key was used for another request', async () => {

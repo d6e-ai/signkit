@@ -25,6 +25,17 @@ CREATE TABLE delivery_outbox (
   CHECK (
     (status = 'blocked' AND available_at IS NULL) OR
     (status <> 'blocked' AND available_at IS NOT NULL)
+  ),
+  CONSTRAINT delivery_outbox_id_uuidv7 CHECK (
+    length(id) = 36
+    AND substr(id, 9, 1) = '-'
+    AND substr(id, 14, 1) = '-'
+    AND substr(id, 15, 1) = '7'
+    AND substr(id, 19, 1) = '-'
+    AND substr(id, 20, 1) IN ('8', '9', 'a', 'b')
+    AND substr(id, 24, 1) = '-'
+    AND length(replace(id, '-', '')) = 32
+    AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*'
   )
 );
 

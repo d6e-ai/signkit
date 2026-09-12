@@ -1,3 +1,4 @@
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	ApproveCommandKey,
 	ApprovePreparation,
@@ -11,7 +12,6 @@ import { hashRecipientCapability } from '$lib/security/recipient-capability';
 
 const MAX_AUDIT_ATTEMPTS: number = 3;
 const NEXT_ROUTING_CAPABILITY_TTL_MS: number = 14 * 24 * 60 * 60 * 1000;
-const NUL: string = String.fromCharCode(0);
 
 export interface RecipientApprovedInput {
 	token: string;
@@ -37,7 +37,8 @@ export interface RecipientApprovedApplicationPort {
 export class RecipientApprovedApplication implements RecipientApprovedApplicationPort {
 	constructor(
 		private readonly store: RecipientApproveStore,
-		private readonly now: () => Date = (): Date => new Date()
+		private readonly now: () => Date = (): Date => new Date(),
+		private readonly newId: UuidV7Generator = newUuidV7
 	) {}
 
 	async approve(input: RecipientApprovedInput): Promise<RecipientApprovedResult> {
@@ -62,15 +63,10 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 			const preparation: ApprovePreparation = await this.store.prepareApproved(key, approvedAt);
 			if (preparation.outcome !== 'ready') return preparation;
 
-			const auditEventId: string = await deterministicUuid(
-				[
-					'signkit-recipient-approved-event-v1',
-					preparation.organizationId,
-					preparation.envelopeId,
-					preparation.recipientId,
-					input.idempotencyKey
-				].join(NUL)
-			);
+			// Replay is proven by the durable command receipt and its audit
+			// evidence, not by re-deriving this identifier, so each attempt mints a
+			// fresh one.
+			const auditEventId: string = this.newId();
 			const auditPayloadJson: string = JSON.stringify({
 				recipientId: preparation.recipientId,
 				role: preparation.recipientRole,
@@ -105,15 +101,7 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 			let releasedDeliveryCount: number = 0;
 
 			if (shouldComplete) {
-				completedAuditEventId = await deterministicUuid(
-					[
-						'signkit-envelope-completed-event-v1',
-						preparation.organizationId,
-						preparation.envelopeId,
-						preparation.recipientId,
-						input.idempotencyKey
-					].join(NUL)
-				);
+				completedAuditEventId = this.newId();
 				const completedPayloadValue = {
 					sentCommitSha: preparation.sentCommitSha,
 					completedAt: approvedAt
@@ -173,12 +161,4 @@ async function sha256(value: string): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
-}
-
-async function deterministicUuid(value: string): Promise<string> {
-	const digest: string = await sha256(value);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
-		17,
-		20
-	)}-${digest.slice(20, 32)}`;
 }

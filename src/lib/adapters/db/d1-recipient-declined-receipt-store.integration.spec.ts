@@ -54,7 +54,7 @@ async function fixture(): Promise<{
 			`INSERT INTO audit_event (
 				id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
 				payload_json, previous_hash, event_hash, occurred_at
-			 ) VALUES ('sent-event', 'org-1', ?, 1, 'envelope.sent', 'user', 'user-1',
+			 ) VALUES ('01960000-0000-7000-8000-0000000000a1', 'org-1', ?, 1, 'envelope.sent', 'user', 'user-1',
 				'{}', NULL, 'sent-hash', ?)`
 		)
 		.run(ENVELOPE_ID, DECLINED_AT);
@@ -139,7 +139,7 @@ describe('D1 declined receipt evidence integration', () => {
 					id, organization_id, envelope_id, email, name, role, locale, routing_order,
 					status, capability_hash, capability_expires_at, created_at, updated_at
 				) VALUES (
-					'sibling', 'org-1', '${ENVELOPE_ID}', 'sibling@example.com', 'Sibling',
+					'01930000-0000-7000-8000-0000000000f5', 'org-1', '${ENVELOPE_ID}', 'sibling@example.com', 'Sibling',
 					'viewer', 'en', 1, 'pending', '${'b'.repeat(64)}', '2026-10-01',
 					'${DECLINED_AT}', '${DECLINED_AT}'
 				);
@@ -151,7 +151,7 @@ describe('D1 declined receipt evidence integration', () => {
 				application.recoverByToken(token, new Date('2026-09-13T00:00:00.000Z'))
 			).resolves.toBeNull();
 
-			sqlite.exec("DELETE FROM recipient WHERE id='sibling'");
+			sqlite.exec("DELETE FROM recipient WHERE id='01930000-0000-7000-8000-0000000000f5'");
 			await expect(
 				application.recoverByToken(token, new Date('2026-09-13T00:00:00.000Z'))
 			).resolves.not.toBeNull();
@@ -161,7 +161,7 @@ describe('D1 declined receipt evidence integration', () => {
 					reserved_capability_expires_at, sealed_capability, sealing_key_id,
 					sealed_capability_sha256, available_at, attempts, created_at, updated_at, retryable
 				) VALUES (
-					'delivery-1', 'org-1', '${ENVELOPE_ID}', '${RECIPIENT_ID}', 'recipient_invitation',
+					'01940000-0000-7000-8000-000000000001', 'org-1', '${ENVELOPE_ID}', '${RECIPIENT_ID}', 'recipient_invitation',
 					'pending', '${'b'.repeat(64)}', '2026-10-01', 'sealed', 'key-1',
 					'${'c'.repeat(64)}', '2026-09-13', 0, '2026-09-13', '2026-09-13', 1
 				)
