@@ -50,7 +50,9 @@ const command: PublishRecipientDeclinedCommand = {
 	previousAuditHash: 'hash-3',
 	auditEventId: 'declined-audit-1',
 	auditEventHash: 'hash-4',
-	auditPayloadJson: ''
+	auditPayloadJson: '',
+	revocationEvidenceVersion: 2,
+	revokedRecipientIds: ['recipient-2']
 };
 command.requestFingerprint = createHash('sha256')
 	.update(
@@ -66,7 +68,11 @@ command.auditPayloadJson = JSON.stringify({
 	role: command.recipientRole,
 	routingOrder: command.routingOrder,
 	sentCommitSha: command.expectedSentCommitSha,
-	declinedAt: command.updatedAt
+	declinedAt: command.updatedAt,
+	revokedCapabilities: {
+		reason: 'envelope_declined',
+		recipientIds: command.revokedRecipientIds
+	}
 });
 command.auditEventHash = createHash('sha256')
 	.update(
@@ -101,6 +107,12 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		previous_audit_hash: command.previousAuditHash,
 		audit_event_hash: command.auditEventHash,
 		audit_payload_json: command.auditPayloadJson,
+		revocation_evidence_version: command.revocationEvidenceVersion,
+		revoked_recipient_ids_json: JSON.stringify(command.revokedRecipientIds),
+		revoked_recipient_count: command.revokedRecipientIds.length,
+		projection_revoked_recipient_ids_json: JSON.stringify(command.revokedRecipientIds),
+		projection_has_revocable_recipient: 0,
+		projection_has_unsafe_delivery: 0,
 		evidence_event_id: command.auditEventId,
 		evidence_organization_id: 'org-1',
 		evidence_envelope_id: command.expectedEnvelopeId,
@@ -128,7 +140,9 @@ const eligibleRow = {
 	routing_order: 1,
 	envelope_status: 'sent',
 	envelope_sent_commit_sha: 'commit-3',
-	envelope_repository_head: 'commit-3'
+	envelope_repository_head: 'commit-3',
+	delivery_in_flight: 0,
+	revoked_recipient_ids_json: JSON.stringify(command.revokedRecipientIds)
 };
 
 const declinedRow = {
@@ -154,11 +168,23 @@ describe('D1RecipientDeclineStore', () => {
 			routingOrder: 1,
 			sentCommitSha: 'commit-3',
 			envelopeStatus: 'sent',
+			revokedRecipientIds: command.revokedRecipientIds,
 			auditHead: { sequence: 3, eventHash: 'hash-3' }
 		});
 		expect(fake.prepared[0].sql).toContain('recipient.capability_hash = ?');
 		expect(fake.prepared[0].sql).not.toContain('recipient.envelope_id = ?');
 		expect(fake.prepared[0].bindings).toEqual([command.capabilityHash]);
+	});
+
+	it('fences a live delivery lease before preparing audit publication', async () => {
+		const row = { ...eligibleRow, delivery_in_flight: 1 };
+		const fake = fakeD1([row, null, null]);
+		await expect(
+			new D1RecipientDeclineStore(fake.database).prepareDeclined(command, command.updatedAt)
+		).resolves.toEqual({ outcome: 'delivery_in_flight' });
+		expect(fake.prepared.some((statement) => statement.sql.includes('FROM audit_event'))).toBe(
+			false
+		);
 	});
 
 	it('returns context_mismatch for a stale body without writing', async () => {
@@ -241,6 +267,17 @@ describe('D1RecipientDeclineStore', () => {
 		expect(fake.prepared).toHaveLength(2);
 	});
 
+	it('preserves an unexplained D1 failure when the post-failure state is still ready', async () => {
+		const failure = new Error('opaque D1 batch failure');
+		const fake = fakeD1(
+			[eligibleRow, eligibleRow, null, null, { sequence: 3, event_hash: 'hash-3' }],
+			failure
+		);
+		await expect(new D1RecipientDeclineStore(fake.database).publishDeclined(command)).rejects.toBe(
+			failure
+		);
+	});
+
 	it('replays a lost successful response after the actor is declined and revoked', async () => {
 		const result = await new D1RecipientDeclineStore(
 			fakeD1([declinedRow, storedRow(), declinedRow]).database
@@ -263,6 +300,19 @@ describe('D1RecipientDeclineStore', () => {
 			fakeD1([declinedRow, storedRow({ evidence_event_type: 'recipient.viewed' })]).database
 		).prepareDeclined(command, command.updatedAt);
 		expect(result).toEqual({ outcome: 'integrity_error' });
+	});
+
+	it('fails closed when a v2 terminal projection regains capability or delivery authority', async () => {
+		for (const override of [
+			{ projection_has_revocable_recipient: 1 },
+			{ projection_has_unsafe_delivery: 1 },
+			{ projection_revoked_recipient_ids_json: '[]' }
+		]) {
+			const result = await new D1RecipientDeclineStore(
+				fakeD1([declinedRow, storedRow(override)]).database
+			).prepareDeclined(command, command.updatedAt);
+			expect(result).toEqual({ outcome: 'integrity_error' });
+		}
 	});
 
 	it('recomputes the audit hash before accepting terminal replay evidence', async () => {

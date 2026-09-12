@@ -59,7 +59,9 @@ const command: PublishRecipientDeclinedCommand = {
 	previousAuditHash: 'hash-3',
 	auditEventId: 'declined-audit-1',
 	auditEventHash: 'hash-4',
-	auditPayloadJson: ''
+	auditPayloadJson: '',
+	revocationEvidenceVersion: 2,
+	revokedRecipientIds: ['recipient-2']
 };
 command.requestFingerprint = createHash('sha256')
 	.update(
@@ -75,7 +77,11 @@ command.auditPayloadJson = JSON.stringify({
 	role: command.recipientRole,
 	routingOrder: command.routingOrder,
 	sentCommitSha: command.expectedSentCommitSha,
-	declinedAt: command.updatedAt
+	declinedAt: command.updatedAt,
+	revokedCapabilities: {
+		reason: 'envelope_declined',
+		recipientIds: command.revokedRecipientIds
+	}
 });
 command.auditEventHash = createHash('sha256')
 	.update(
@@ -103,7 +109,9 @@ const eligibleRecipientRow = {
 	routingOrder: 1,
 	envelopeStatus: 'sent',
 	envelopeSentCommitSha: 'commit-3',
-	envelopeRepositoryHead: 'commit-3'
+	envelopeRepositoryHead: 'commit-3',
+	deliveryInFlight: false,
+	revokedRecipientIds: command.revokedRecipientIds
 };
 
 const declinedRecipientRow = {
@@ -156,6 +164,12 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		previousAuditHash: command.previousAuditHash,
 		auditEventHash: command.auditEventHash,
 		auditPayloadJson: command.auditPayloadJson,
+		revocationEvidenceVersion: command.revocationEvidenceVersion,
+		revokedRecipientIdsJson: JSON.stringify(command.revokedRecipientIds),
+		revokedRecipientCount: command.revokedRecipientIds.length,
+		projectionRevokedRecipientIds: command.revokedRecipientIds,
+		projectionHasRevocableRecipient: false,
+		projectionHasUnsafeDelivery: false,
 		evidenceEventId: command.auditEventId,
 		evidenceOrganizationId: 'org-1',
 		evidenceEnvelopeId: command.expectedEnvelopeId,
@@ -171,17 +185,53 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 	};
 }
 
+function versionOneReplayRow(): Record<string, unknown> {
+	const payloadValue = {
+		recipientId: command.expectedRecipientId,
+		role: command.recipientRole,
+		routingOrder: command.routingOrder,
+		sentCommitSha: command.expectedSentCommitSha,
+		declinedAt: command.updatedAt
+	};
+	const auditPayloadJson: string = JSON.stringify(payloadValue);
+	const auditEventHash: string = createHash('sha256')
+		.update(
+			JSON.stringify({
+				actorId: command.expectedRecipientId,
+				envelopeId: command.expectedEnvelopeId,
+				eventType: 'recipient.declined',
+				occurredAt: command.updatedAt,
+				organizationId: 'org-1',
+				payload: payloadValue,
+				previousHash: command.previousAuditHash
+			})
+		)
+		.digest('hex');
+	return replayRow({
+		auditPayloadJson,
+		auditEventHash,
+		revocationEvidenceVersion: 1,
+		revokedRecipientIdsJson: '[]',
+		revokedRecipientCount: 0,
+		projectionRevokedRecipientIds: [],
+		evidencePayloadJson: auditPayloadJson,
+		evidenceEventHash: auditEventHash
+	});
+}
+
 describe('PostgresRecipientDeclineStore', () => {
-	it('locks the envelope then all recipients in id order and never writes delivery_outbox', async () => {
+	it('locks envelope, recipients, and delivery rows before publishing terminal cleanup', async () => {
 		const database = new ScriptedPostgres([
 			[eligibleRecipientRow],
 			[{ status: 'sent', sentCommitSha: 'commit-3', repositoryHead: 'commit-3' }],
 			[actorLockRow, siblingLockRow],
 			[],
 			[],
+			[],
 			[{ sequence: 3, eventHash: command.previousAuditHash }],
 			[{ id: command.expectedRecipientId }],
 			[],
+			[{ id: 'recipient-2' }],
 			[{ id: command.expectedEnvelopeId }],
 			[],
 			[]
@@ -197,7 +247,6 @@ describe('PostgresRecipientDeclineStore', () => {
 		expect(database.directQueries[0].text).toContain('recipient.capability_hash =');
 		expect(database.directQueries[0].values).toEqual([command.capabilityHash]);
 		const texts = database.transactionQueries.map((query) => query.text);
-		expect(texts.some((text) => text.includes('delivery_outbox'))).toBe(false);
 		expect(texts[0]).toContain('FROM envelope');
 		expect(texts[0]).toContain('FOR UPDATE');
 		expect(texts[1]).toContain('FROM recipient');
@@ -208,18 +257,24 @@ describe('PostgresRecipientDeclineStore', () => {
 			expect.stringContaining('ORDER BY id'),
 			expect.stringContaining('FROM recipient_declined_command'),
 			expect.stringContaining('FROM recipient_declined_command'),
+			expect.stringContaining('FROM delivery_outbox'),
 			expect.stringContaining('FROM audit_event'),
 			expect.stringContaining("SET status = 'declined'"),
+			expect.stringContaining('UPDATE delivery_outbox'),
 			expect.stringContaining('status <>'),
 			expect.stringContaining("SET status = 'declined'"),
 			expect.stringContaining('INSERT INTO recipient_declined_command'),
 			expect.stringContaining('INSERT INTO audit_event')
 		]);
-		expect(texts[5]).toContain('capability_revoked_at');
+		expect(texts[4]).toContain('ORDER BY id');
+		expect(texts[4]).toContain('FOR UPDATE');
 		expect(texts[6]).toContain('capability_revoked_at');
-		expect(texts[6]).toContain('capability_hash IS NOT NULL');
-		expect(texts[6]).not.toContain("status = 'declined'");
-		expect(texts[6]).toContain('status <>');
+		expect(texts[7]).toContain("last_error = 'envelope_terminal'");
+		expect(texts[7]).toContain('sealed_capability = NULL');
+		expect(texts[8]).toContain('capability_revoked_at');
+		expect(texts[8]).toContain('capability_hash IS NOT NULL');
+		expect(texts[8]).not.toContain("status = 'declined'");
+		expect(texts[8]).toContain('status <>');
 	});
 
 	it('returns context_mismatch for a stale body without opening a write transaction', async () => {
@@ -269,9 +324,24 @@ describe('PostgresRecipientDeclineStore', () => {
 			result: { auditEventId: command.auditEventId }
 		});
 		expect(database.transactionQueries).toHaveLength(3);
+		expect(database.transactionQueries[2].text).toContain("sibling.status <> 'completed'");
 		expect(
 			database.transactionQueries.some((query) => query.text.includes('UPDATE recipient'))
 		).toBe(false);
+	});
+
+	it('keeps a version 1 decline receipt replayable after migration defaults are applied', async () => {
+		const database = new ScriptedPostgres([
+			[declinedRecipientRow],
+			[versionOneReplayRow()],
+			[declinedRecipientRow]
+		]);
+		await expect(
+			new PostgresRecipientDeclineStore(database.client()).prepareDeclined(
+				command,
+				command.updatedAt
+			)
+		).resolves.toMatchObject({ outcome: 'replayed' });
 	});
 
 	it('does not disclose the stored receipt under a different idempotency key', async () => {
@@ -299,6 +369,21 @@ describe('PostgresRecipientDeclineStore', () => {
 			command.updatedAt
 		);
 		expect(result).toEqual({ outcome: 'integrity_error' });
+	});
+
+	it('fails closed when a v2 terminal projection regains capability or delivery authority', async () => {
+		for (const override of [
+			{ projectionHasRevocableRecipient: true },
+			{ projectionHasUnsafeDelivery: true },
+			{ projectionRevokedRecipientIds: [] }
+		]) {
+			const database = new ScriptedPostgres([[declinedRecipientRow], [replayRow(override)]]);
+			const result = await new PostgresRecipientDeclineStore(database.client()).prepareDeclined(
+				command,
+				command.updatedAt
+			);
+			expect(result).toEqual({ outcome: 'integrity_error' });
+		}
 	});
 
 	it('recomputes the audit hash before accepting terminal replay evidence', async () => {
@@ -358,8 +443,26 @@ describe('PostgresRecipientDeclineStore', () => {
 			routingOrder: 1,
 			sentCommitSha: 'commit-3',
 			envelopeStatus: 'sent',
+			revokedRecipientIds: command.revokedRecipientIds,
 			auditHead: { sequence: 3, eventHash: 'hash-3' }
 		});
+	});
+
+	it('fences a live delivery lease before reading the audit head', async () => {
+		const database = new ScriptedPostgres([
+			[{ ...eligibleRecipientRow, deliveryInFlight: true }],
+			[],
+			[]
+		]);
+		await expect(
+			new PostgresRecipientDeclineStore(database.client()).prepareDeclined(
+				command,
+				command.updatedAt
+			)
+		).resolves.toEqual({ outcome: 'delivery_in_flight' });
+		expect(database.directQueries.some((query) => query.text.includes('FROM audit_event'))).toBe(
+			false
+		);
 	});
 
 	it('denies as not_found when the capability is revoked or expired', async () => {

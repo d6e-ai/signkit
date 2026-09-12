@@ -34,6 +34,7 @@ export type DeclinePreparation =
 			routingOrder: number;
 			sentCommitSha: string;
 			envelopeStatus: 'sent' | 'in_progress';
+			revokedRecipientIds: readonly string[];
 			auditHead: DeclineAuditHead;
 	  }
 	| { outcome: 'replayed'; result: PublishedRecipientDeclined }
@@ -42,6 +43,7 @@ export type DeclinePreparation =
 	| { outcome: 'role_not_actionable' }
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'audit_conflict' }
+	| { outcome: 'delivery_in_flight' }
 	| { outcome: 'integrity_error' };
 
 export interface PublishRecipientDeclinedCommand extends DeclineCommandKey {
@@ -54,6 +56,8 @@ export interface PublishRecipientDeclinedCommand extends DeclineCommandKey {
 	auditEventId: string;
 	auditEventHash: string;
 	auditPayloadJson: string;
+	revocationEvidenceVersion: 2;
+	revokedRecipientIds: readonly string[];
 }
 
 export type PublishRecipientDeclinedResult =

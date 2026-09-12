@@ -146,6 +146,19 @@ function resultResponse(
 			securityHeaders({ 'retry-after': '1' })
 		);
 	}
+	if (result.outcome === 'delivery_in_flight') {
+		return problemResponse(
+			{
+				type: 'urn:signkit:problem:recipient-declined-delivery-in-flight',
+				title: 'Invitation delivery in progress',
+				status: 409,
+				detail:
+					'An invitation delivery is currently in progress. Retry the decline command shortly.',
+				instance
+			},
+			securityHeaders({ 'retry-after': '1' })
+		);
+	}
 	return problemResponse(
 		{
 			type: 'urn:signkit:problem:recipient-declined-integrity-error',
