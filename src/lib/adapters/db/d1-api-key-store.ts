@@ -333,19 +333,14 @@ export class D1ApiKeyStore implements ApiKeyStore {
 			.bind(command.actor.id, command.apiKeyId);
 
 		const results: D1Result<MemberRow | RevokeReceiptRow | ApiKeyRow>[] =
-			await this.#database.batch<MemberRow | RevokeReceiptRow | ApiKeyRow>([
-				member,
-				receipt,
-				key
-			]);
+			await this.#database.batch<MemberRow | RevokeReceiptRow | ApiKeyRow>([member, receipt, key]);
 		const memberRow: MemberRow | undefined = results[0]?.results[0] as MemberRow | undefined;
 		if (memberRow === undefined || memberRow.status !== 'active') {
 			return { outcome: 'owner_not_active' };
 		}
 
 		const receiptRow: RevokeReceiptRow | undefined = results[1]?.results[0] as
-			| RevokeReceiptRow
-			| undefined;
+			RevokeReceiptRow | undefined;
 		if (receiptRow !== undefined) return evaluateRevokeReceiptRow(receiptRow, command);
 
 		const keyRow: ApiKeyRow | undefined = results[2]?.results[0] as ApiKeyRow | undefined;
@@ -383,8 +378,10 @@ export class D1ApiKeyStore implements ApiKeyStore {
 	 * Reads the active-membership check and the idempotency receipt in one D1
 	 * batch (one transaction), so a suspension committed between separate reads
 	 * can never surface a stale already_issued disclosure for an owner who is no
-	 * longer active. Returns null when the actor is active and there is no
-	 * receipt yet, meaning the caller should proceed with the insert.
+	 * longer active. The receipt read repeats the actor id for its own
+	 * active-member predicate, so the disclosure is owner-gated by the statement
+	 * that produces it as well. Returns null when the actor is active and there
+	 * is no receipt yet, meaning the caller should proceed with the insert.
 	 */
 	async #resolveCreateGate(command: CreateApiKeyCommand): Promise<CreateApiKeyStoreResult | null> {
 		const member: D1PreparedStatement = this.#database
@@ -404,7 +401,7 @@ export class D1ApiKeyStore implements ApiKeyStore {
 					)
 				 LIMIT 1`
 			)
-			.bind(command.actor.type, command.actor.id, command.idempotencyKey);
+			.bind(command.actor.type, command.actor.id, command.idempotencyKey, command.actor.id);
 
 		const results: D1Result<MemberRow | CreateReceiptRow>[] = await this.#database.batch<
 			MemberRow | CreateReceiptRow
@@ -415,8 +412,7 @@ export class D1ApiKeyStore implements ApiKeyStore {
 		}
 
 		const row: CreateReceiptRow | undefined = results[1]?.results[0] as
-			| CreateReceiptRow
-			| undefined;
+			CreateReceiptRow | undefined;
 		if (row === undefined) return null;
 		return evaluateCreateReceiptRow(row, command);
 	}
@@ -429,25 +425,6 @@ export class D1ApiKeyStore implements ApiKeyStore {
 				 WHERE owner_user_id = ? AND id = ? LIMIT 1`
 			)
 			.bind(ownerUserId, apiKeyId)
-			.first<ApiKeyRow>();
-	}
-
-	/**
-	 * The classification read. `already_revoked` discloses the same key metadata a
-	 * replay does, so the active-member predicate rides inside this statement too.
-	 */
-	async #readActiveOwnedKey(ownerUserId: string, apiKeyId: string): Promise<ApiKeyRow | null> {
-		return await this.#database
-			.prepare(
-				`SELECT ${KEY_COLUMNS} FROM api_key
-				 WHERE owner_user_id = ? AND id = ?
-					AND EXISTS (
-						SELECT 1 FROM instance_member
-						WHERE user_id = ? AND status = 'active'
-					)
-				 LIMIT 1`
-			)
-			.bind(ownerUserId, apiKeyId, ownerUserId)
 			.first<ApiKeyRow>();
 	}
 }

@@ -93,15 +93,37 @@ function keyId(item: ApiKeyMetadata): string {
 	return item.id;
 }
 
-function recordingBatchDatabase(sqlite: DatabaseSync, sizes: number[]): D1Database {
+/**
+ * Records the shape of every batch the store issues, as the kind of each
+ * statement in order, so a test can assert that authorization and disclosure
+ * stayed inside one transaction instead of drifting back into separate reads.
+ */
+function recordingBatchDatabase(sqlite: DatabaseSync, batches: string[][]): D1Database {
 	const real: D1Database = sqliteD1Database(sqlite);
 	return {
 		prepare: (sql: string): D1PreparedStatement => real.prepare(sql),
 		batch: async <T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> => {
-			sizes.push(statements.length);
+			batches.push(statements.map(statementKind));
 			return await real.batch<T>(statements);
 		}
 	} as unknown as D1Database;
+}
+
+/** Names the statements the store batches, so assertions read as intent, not SQL text. */
+function statementKind(statement: D1PreparedStatement): string {
+	const sql: string = (statement as unknown as { sql: string }).sql.replace(/\s+/g, ' ').trim();
+	if (sql.startsWith('SELECT status FROM instance_member')) return 'member-status';
+	if (sql.includes('FROM api_key_create_command command')) return 'create-receipt';
+	if (sql.includes('FROM api_key_revoke_command command')) return 'revoke-receipt';
+	if (sql.startsWith('INSERT INTO api_key (')) return 'key-insert';
+	if (sql.startsWith('INSERT INTO api_key_create_command')) return 'create-receipt-insert';
+	if (sql.startsWith('INSERT INTO api_key_revoke_command')) return 'revoke-receipt-insert';
+	if (sql.startsWith('UPDATE api_key SET revoked_at')) return 'key-revoke-update';
+	// Checked before the single-key read, whose shape also appears inside the
+	// page statement's cursor subquery.
+	if (sql.includes('ORDER BY created_at DESC, id DESC')) return 'owner-page';
+	if (sql.includes('FROM api_key WHERE owner_user_id = ? AND id = ?')) return 'owned-key';
+	return sql;
 }
 
 /**
@@ -121,39 +143,6 @@ function staleActiveCheckDatabase(sqlite: DatabaseSync): D1Database {
 					: result
 			);
 		}
-	} as unknown as D1Database;
-}
-
-/**
- * Answers only the first member status read with a stale `active` row while the
- * durable row says otherwise. Create and revoke read that status before they
- * resolve a command receipt, so this reproduces a suspension committed inside
- * that window: only a predicate carried inside the receipt read itself can keep
- * the replay metadata undisclosed, and the later status reads that classify the
- * failure see the durable truth.
- */
-function staleFirstMemberCheckDatabase(sqlite: DatabaseSync): D1Database {
-	const real: D1Database = sqliteD1Database(sqlite);
-	let stale: boolean = true;
-	return {
-		prepare: (sql: string): D1PreparedStatement => {
-			const statement: D1PreparedStatement = real.prepare(sql);
-			if (!sql.trimStart().startsWith('SELECT status FROM instance_member')) return statement;
-			return {
-				bind: (...bindings: unknown[]): D1PreparedStatement => {
-					const bound: D1PreparedStatement = statement.bind(...bindings);
-					return {
-						first: async <T>(): Promise<T | null> => {
-							if (!stale) return await bound.first<T>();
-							stale = false;
-							return { status: 'active' } as unknown as T;
-						}
-					} as unknown as D1PreparedStatement;
-				}
-			} as unknown as D1PreparedStatement;
-		},
-		batch: async <T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> =>
-			await real.batch<T>(statements)
 	} as unknown as D1Database;
 }
 
@@ -407,24 +396,43 @@ describe('D1ApiKeyStore.createApiKey', () => {
 		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key')).toBe(1);
 	});
 
-	it('discloses no already_issued metadata when the owner is suspended after a preliminary check', async () => {
-		const { store, sqlite }: Fixture = createFixture();
+	it('resolves the create replay gate in one batch and discloses nothing to a suspended owner', async () => {
+		const { sqlite }: Fixture = createFixture();
+		const batches: string[][] = [];
+		const store: D1ApiKeyStore = new D1ApiKeyStore(recordingBatchDatabase(sqlite, batches));
 		const created: CreateApiKeyCommand = await createCommand();
 		await store.createApiKey(created);
 		setMemberStatus(sqlite, ACTOR_ID, 'suspended');
-		// The receipt is resolved while a stale check still reports the owner as
-		// active, which is exactly the window the coupled predicate closes.
-		const stale: D1ApiKeyStore = new D1ApiKeyStore(staleFirstMemberCheckDatabase(sqlite));
+		batches.length = 0;
 
-		const replay: CreateApiKeyStoreResult = await stale.createApiKey(
+		const replay: CreateApiKeyStoreResult = await store.createApiKey(
 			await createCommand({ apiKeyId: OTHER_KEY_ID })
 		);
 
+		// The membership check and the receipt read are one transaction, so no
+		// suspension can commit between authorization and an already_issued
+		// disclosure. A second batch here would mean two snapshots again.
+		expect(batches).toEqual([['member-status', 'create-receipt']]);
 		expect(replay).toEqual({ outcome: 'owner_not_active' });
 		expect(JSON.stringify(replay)).not.toContain(created.keyPrefix);
 		expect(JSON.stringify(replay)).not.toContain(KEY_ID);
 		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key')).toBe(1);
 		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key_create_command')).toBe(1);
+	});
+
+	it('writes the key and its receipt in the single batch that follows the gate', async () => {
+		const { sqlite }: Fixture = createFixture();
+		const batches: string[][] = [];
+		const store: D1ApiKeyStore = new D1ApiKeyStore(recordingBatchDatabase(sqlite, batches));
+
+		await expect(store.createApiKey(await createCommand())).resolves.toMatchObject({
+			outcome: 'created'
+		});
+
+		expect(batches).toEqual([
+			['member-status', 'create-receipt'],
+			['key-insert', 'create-receipt-insert']
+		]);
 	});
 });
 
@@ -571,7 +579,7 @@ describe('D1ApiKeyStore.listApiKeys', () => {
 
 	it('reads the member status and the owner page in one batch', async () => {
 		const { sqlite }: Fixture = createFixture();
-		const batches: number[] = [];
+		const batches: string[][] = [];
 		const recording: D1Database = recordingBatchDatabase(sqlite, batches);
 		const store: D1ApiKeyStore = new D1ApiKeyStore(recording);
 		await store.createApiKey(await createCommand());
@@ -582,7 +590,10 @@ describe('D1ApiKeyStore.listApiKeys', () => {
 
 		// Two statements each time: the member status and the page, cursor resolution
 		// included, so authorization and disclosure share one transaction.
-		expect(batches).toEqual([2, 2]);
+		expect(batches).toEqual([
+			['member-status', 'owner-page'],
+			['member-status', 'owner-page']
+		]);
 	});
 
 	it('discloses nothing when the owner is suspended after a preliminary check', async () => {
@@ -773,23 +784,30 @@ describe('D1ApiKeyStore.revokeApiKey', () => {
 		});
 	});
 
-	it('discloses no replayed or already_revoked metadata after a stale preliminary check', async () => {
-		const { store, sqlite }: Fixture = createFixture();
+	it('resolves the revoke replay gate in one batch and discloses nothing to a suspended owner', async () => {
+		const { sqlite }: Fixture = createFixture();
+		const batches: string[][] = [];
+		const store: D1ApiKeyStore = new D1ApiKeyStore(recordingBatchDatabase(sqlite, batches));
 		const created: CreateApiKeyCommand = await createCommand();
 		await store.createApiKey(created);
 		await store.revokeApiKey(revokeCommand());
 		setMemberStatus(sqlite, ACTOR_ID, 'suspended');
+		batches.length = 0;
 
 		// The original idempotency key, whose durable receipt would otherwise replay.
-		const staleReplay: D1ApiKeyStore = new D1ApiKeyStore(staleFirstMemberCheckDatabase(sqlite));
-		const replay: RevokeApiKeyStoreResult = await staleReplay.revokeApiKey(revokeCommand());
+		const replay: RevokeApiKeyStoreResult = await store.revokeApiKey(revokeCommand());
 		// A fresh idempotency key, which would otherwise disclose the same key
 		// metadata as already_revoked.
-		const staleFresh: D1ApiKeyStore = new D1ApiKeyStore(staleFirstMemberCheckDatabase(sqlite));
-		const fresh: RevokeApiKeyStoreResult = await staleFresh.revokeApiKey(
+		const fresh: RevokeApiKeyStoreResult = await store.revokeApiKey(
 			revokeCommand({ idempotencyKey: 'revoke-2', requestFingerprint: OTHER_REQUEST_HASH })
 		);
 
+		// Each gate reads the membership check, the receipt, and the key row from
+		// one snapshot, and stops there: no write batch follows a failed gate.
+		expect(batches).toEqual([
+			['member-status', 'revoke-receipt', 'owned-key'],
+			['member-status', 'revoke-receipt', 'owned-key']
+		]);
 		expect(replay).toEqual({ outcome: 'owner_not_active' });
 		expect(fresh).toEqual({ outcome: 'owner_not_active' });
 		for (const outcome of [replay, fresh]) {
