@@ -7,6 +7,7 @@ import { EnvelopeFieldApplication } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import { EnvelopeReadyApplication } from '$lib/application/envelopes/ready';
 import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
+import { EnvelopeVoidApplication } from '$lib/application/envelopes/void';
 import { RecipientDeclinedApplication } from '$lib/application/signing/recipient-declined';
 import type { EnvelopeField } from '$lib/domain/envelope';
 import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
@@ -20,6 +21,7 @@ import { PostgresDeliveryOutboxStore } from './postgres-delivery-outbox-store';
 import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
 import { PostgresEnvelopeReadyStore } from './postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from './postgres-envelope-send-store';
+import { PostgresEnvelopeVoidStore } from './postgres-envelope-void-store';
 import { PostgresRecipientDeclineStore } from './postgres-recipient-decline-store';
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
@@ -74,7 +76,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	});
 
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
-		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0013_terminal_delivery_cleanup.sql');
+		expect(MIGRATION_PATHS.at(-1)).toBe('migrations/postgres/0014_envelope_voided.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -86,6 +88,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'envelope',
 				'envelope_field',
 				'envelope_send_command',
+				'envelope_void_command',
 				'field_value',
 				'recipient'
 			])
@@ -535,6 +538,88 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(ids).toHaveLength(1);
 		expect(JSON.parse(evidence[0].payload)).toMatchObject({
 			revokedCapabilities: { reason: 'envelope_declined', recipientIds: ids }
+		});
+	});
+
+	it('voids under PostgreSQL locks, fences delivery, and replays terminal evidence', async () => {
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		await expect(
+			new EnvelopeSendApplication(
+				new PostgresEnvelopeSendStore(database()),
+				capabilitySealer()
+			).send(ACTOR, ENVELOPE_ID, {
+				idempotencyKey: 'send-before-void',
+				expectedGeneration: 1,
+				expectedReadyAuditEventId: ready.auditEventId
+			})
+		).resolves.toMatchObject({ outcome: 'published' });
+		const voidedAt: string = new Date(Date.now() + 4_000).toISOString();
+		const application = new EnvelopeVoidApplication(
+			new PostgresEnvelopeVoidStore(database()),
+			(): Date => new Date(voidedAt)
+		);
+		const input = {
+			idempotencyKey: 'void-after-send',
+			expectedStatus: 'sent' as const,
+			expectedGeneration: 1
+		};
+		const pending = await database()<{ id: string }[]>`
+			SELECT id FROM delivery_outbox WHERE organization_id = ${ORGANIZATION_ID}
+				AND envelope_id = ${ENVELOPE_ID} AND status = 'pending'`;
+		expect(pending).toHaveLength(1);
+		await database()`UPDATE delivery_outbox SET status = 'processing',
+			claim_token = 'postgres-void-claim', locked_at = ${voidedAt}
+			WHERE organization_id = ${ORGANIZATION_ID} AND id = ${pending[0].id}`;
+		await expect(application.voidEnvelope(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
+			outcome: 'delivery_in_flight'
+		});
+		const beforeRelease = await database()<{ status: string; commands: number }[]>`
+			SELECT status, (SELECT COUNT(*)::int FROM envelope_void_command) AS commands
+			FROM envelope WHERE organization_id = ${ORGANIZATION_ID} AND id = ${ENVELOPE_ID}`;
+		expect(beforeRelease).toEqual([{ status: 'sent', commands: 0 }]);
+
+		await database()`UPDATE delivery_outbox SET status = 'pending', claim_token = NULL,
+			locked_at = NULL WHERE organization_id = ${ORGANIZATION_ID} AND id = ${pending[0].id}`;
+		await expect(application.voidEnvelope(ACTOR, ENVELOPE_ID, input)).resolves.toMatchObject({
+			outcome: 'published',
+			result: { status: 'voided', previousStatus: 'sent', generation: 1 }
+		});
+		await expect(application.voidEnvelope(ACTOR, ENVELOPE_ID, input)).resolves.toMatchObject({
+			outcome: 'replayed'
+		});
+		const evidence = await database()<
+			{
+				status: string;
+				unsafeDeliveries: number;
+				commands: number;
+				voidedEvents: number;
+				ids: string;
+				payload: string;
+			}[]
+		>`SELECT envelope.status,
+			(SELECT COUNT(*)::int FROM delivery_outbox delivery
+			 WHERE delivery.organization_id = envelope.organization_id
+				AND delivery.envelope_id = envelope.id
+				AND (delivery.retryable OR delivery.sealed_capability IS NOT NULL
+					OR delivery.status IN ('blocked','pending','processing'))) AS "unsafeDeliveries",
+			(SELECT COUNT(*)::int FROM envelope_void_command) AS commands,
+			(SELECT COUNT(*)::int FROM audit_event WHERE event_type = 'envelope.voided') AS "voidedEvents",
+			command.revoked_recipient_ids_json AS ids, command.audit_payload_json AS payload
+		FROM envelope JOIN envelope_void_command command
+			ON command.organization_id = envelope.organization_id AND command.envelope_id = envelope.id
+		WHERE envelope.organization_id = ${ORGANIZATION_ID} AND envelope.id = ${ENVELOPE_ID}`;
+		expect(evidence[0]).toMatchObject({
+			status: 'voided',
+			unsafeDeliveries: 0,
+			commands: 1,
+			voidedEvents: 1
+		});
+		const ids = JSON.parse(evidence[0].ids) as string[];
+		expect(JSON.parse(evidence[0].payload)).toMatchObject({
+			previousStatus: 'sent',
+			generation: 1,
+			revokedCapabilities: { reason: 'envelope_voided', recipientIds: ids }
 		});
 	});
 

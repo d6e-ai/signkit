@@ -1,0 +1,26 @@
+CREATE TABLE envelope_void_command (
+  organization_id text NOT NULL,
+  envelope_id text NOT NULL,
+  actor_type text NOT NULL CHECK (actor_type = 'user'),
+  actor_id text NOT NULL,
+  idempotency_key text NOT NULL,
+  request_hash text NOT NULL,
+  previous_status text NOT NULL CHECK (previous_status IN ('draft','ready','sent','in_progress')),
+  expected_generation integer NOT NULL CHECK (expected_generation BETWEEN 0 AND 2147483647),
+  repository_head text,
+  sent_commit_sha text,
+  updated_at timestamptz NOT NULL,
+  audit_event_id text NOT NULL,
+  audit_sequence bigint NOT NULL CHECK (audit_sequence > 1),
+  previous_audit_hash text NOT NULL,
+  audit_event_hash text NOT NULL,
+  audit_payload_json text NOT NULL,
+  revocation_evidence_version integer NOT NULL CHECK (revocation_evidence_version = 1),
+  revoked_recipient_ids_json text NOT NULL
+    CHECK (jsonb_typeof(revoked_recipient_ids_json::jsonb) = 'array'),
+  revoked_recipient_count integer NOT NULL CHECK (revoked_recipient_count >= 0),
+  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
+  UNIQUE (organization_id, envelope_id),
+  UNIQUE (organization_id, audit_event_id),
+  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
+);

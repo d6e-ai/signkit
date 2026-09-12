@@ -32,6 +32,13 @@ export const GET: RequestHandler = ({ platform }) => {
 			delivery: 'durable-outbox',
 			idempotency: 'required'
 		},
+		voiding: {
+			endpoint: '/api/v1/envelopes/{envelopeId}/void',
+			authentication: 'organization-session',
+			concurrency: 'expected-status-and-generation',
+			terminalCleanup: 'atomic',
+			idempotency: 'required'
+		},
 		delivery: {
 			statusEndpoint: '/api/v1/envelopes/{envelopeId}/deliveries',
 			workerEndpoint: '/api/v1/system/deliveries/drain',
