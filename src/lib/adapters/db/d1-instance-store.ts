@@ -607,13 +607,21 @@ export class D1InstanceStore implements InstanceStore {
 				command.acceptedAt
 			);
 
+		// Unconditional, like create/revoke: if invitationStmt above did not
+		// actually mark this invitation accepted for this actor (its own
+		// changes()=1 chain failed, or a concurrent revoke/accept beat it),
+		// this INSERT still runs and the evidence-guard trigger's NOT EXISTS
+		// check on instance_invitation fails, raising ABORT and rolling back
+		// the entire batch — including the memberStmt enrollment above. A
+		// conditional SELECT ... WHERE (SELECT changes()) = 1 here would
+		// instead skip this INSERT silently, letting memberStmt's enrollment
+		// commit without ever having consumed a valid invitation.
 		const receiptStmt: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO instance_invitation_command (
 					actor_type, actor_id, idempotency_key, command_type, request_hash,
 					invitation_id, role, result_status, occurred_at
-				) SELECT 'user', ?, ?, 'accept', ?, ?, ?, 'accepted', ?
-				WHERE (SELECT changes()) = 1`
+				) VALUES ('user', ?, ?, 'accept', ?, ?, ?, 'accepted', ?)`
 			)
 			.bind(
 				command.actor.id,
