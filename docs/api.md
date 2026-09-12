@@ -9,6 +9,7 @@ There is no published OpenAPI document yet, and no webhooks or rate limits.
 Three separate authorities exist, and they never substitute for one another:
 
 - **Operator session** — d6e-auth authorization-code OAuth, RS256-verified, held in an AES-GCM `HttpOnly`, `SameSite=Lax` cookie. Every operator query and mutation must match the authorized organization and the object ID. See [design.md § Authentication and authorization](design.md#authentication-and-authorization).
+- **Verified identity (no organization)** — the same d6e-auth cookie session, but for endpoints scoped to the local instance rather than a d6e organization: instance bootstrap, the current-member lookup, and API key management. `no_active_organization` is authorized here; only anonymous or unresolvable identity is rejected.
 - **Recipient capability** — a high-entropy, per-recipient, expiring, revocable token stored as a hash. It cannot call operator APIs, and operator OAuth state is never part of resolving it. Recipients do not need a d6e account.
 - **Completion access grant** — a purpose-separated, read-only `skca1_` token issued after completion. It conveys no signing authority and sets no cookies.
 
@@ -16,7 +17,7 @@ Three separate authorities exist, and they never substitute for one another:
 
 - **Idempotency.** Every mutation requires an `Idempotency-Key` header. Replaying the same key with the same normalized request returns the original receipt; reusing a key with a different request, or against state that has since moved, returns an RFC 9457 conflict.
 - **Optimistic concurrency.** Commands carry the expected state they were composed against — envelope status, the Git `expectedGeneration`, and for field-dependent commands `expectedFieldGeneration`. A stale automation run or stale browser tab fails instead of overwriting concurrent work.
-- **Identifiers.** Every SignKit-owned identifier in a path or body — envelope, recipient, field, audit event, list cursor — is a canonical lowercase RFC 9562 UUIDv7 and is validated as one; anything else is a validation error rather than a not-found. Identifiers are opaque: their embedded timestamp is a coarse ordering hint, never authorization or trusted event time. An `Idempotency-Key` is a unique opaque string (UUIDv4 recommended); the server never parses UUID structure and still accepts any bounded visible-ASCII key. Capability tokens and access grants are deliberately not UUIDs. See [design.md § Identifiers](design.md#identifiers).
+- **Identifiers.** Every SignKit-owned identifier in a path or body — envelope, recipient, field, audit event — is a canonical lowercase RFC 9562 UUIDv7 and is validated as one; anything else is a validation error rather than a not-found. Identifiers are opaque: their embedded timestamp is a coarse ordering hint, never authorization or trusted event time. List cursors are not part of this rule: the API-key list cursor is a bounded opaque token forwarded unvalidated to the durable store, which must authorize the owner before it can be resolved, so a malformed cursor fails closed there (an empty page or `owner_not_active`) rather than being rejected on shape. An `Idempotency-Key` is a unique opaque string (UUIDv4 recommended); the server never parses UUID structure and still accepts any bounded visible-ASCII key. Capability tokens and access grants are deliberately not UUIDs. See [design.md § Identifiers](design.md#identifiers).
 - **Errors.** RFC 9457 problem documents.
 - **Response minimization.** Responses never return object storage keys, archive bytes, capability material, audit hashes, ciphertext, or internal outbox/command IDs. Public recipient responses additionally omit organization identifiers, recipient emails and names, and raw field values.
 - **Fail-closed resolution.** Missing, malformed, unknown, expired, revoked, blocked, and inactive capabilities all share one indistinguishable not-found response, so no endpoint can be used as an existence oracle.
@@ -48,6 +49,24 @@ Requires an authenticated d6e-auth organization session.
 **Send** pins the Git commit, reserves capabilities and durable delivery intents for signer, approver, and viewer recipients only, and activates the first actionable routing order together with its co-routed viewers. Later groups stay blocked.
 
 **Void** is the operator terminal command for `draft`, `ready`, `sent`, and `in_progress` envelopes. It requires both the expected status and the expected Git generation so a stale confirmation page cannot void a concurrently changed envelope. One atomic operation fences active delivery leases, scrubs still-deliverable invitation ciphertext, revokes every issued non-completed capability without changing recipient statuses, moves the envelope to `voided`, and appends a PII-free `envelope.voided` event. Provider-accepted messages and existing permanent evidence are never rewritten.
+
+## Instance and API keys
+
+Requires the verified-identity authority above; none of these endpoints accept or require a d6e organization. See [design.md § Persistence](design.md#persistence) for the underlying `instance_member` / `instance_bootstrap` / `api_key` model.
+
+| Method | Path                                 | Purpose                                         |
+| ------ | ------------------------------------ | ----------------------------------------------- |
+| `POST` | `/api/v1/instance/bootstrap`         | one-time claim of the initial `owner` member    |
+| `GET`  | `/api/v1/instance/members/me`        | current caller's membership and bootstrap state |
+| `POST` | `/api/v1/api-keys`                   | issue an owner-scoped API key                   |
+| `GET`  | `/api/v1/api-keys`                   | list the owner's API keys (cursor-paginated)    |
+| `POST` | `/api/v1/api-keys/{apiKeyId}/revoke` | revoke an owner-scoped API key                  |
+
+**Bootstrap** additionally requires `Authorization: Bearer SIGNKIT_BOOTSTRAP_SECRET`, checked constant-time before identity so an invalid or unconfigured secret returns the same opaque 404 as a wrong one. The body must be the exact empty JSON object `{}`, bounded to 1 KiB. A first call on an empty instance claims the caller as the sole `owner` (201). Exact idempotency replay returns 200 with `idempotency-replayed: true`; a conflicting request fingerprint under the same key returns 409 idempotency conflict; a cross-subject or post-bootstrap attempt returns 409 already-bootstrapped. There is no un-bootstrap or ownership transfer endpoint.
+
+**Members/me** requires identity only (no bootstrap secret) and always returns `{ member, bootstrapped }`, where `member` is `null` for a caller who is not yet a member.
+
+**API keys** are owned by the calling `instance_member` and require that member to be currently `active`; a missing or suspended owner fails closed with `owner_not_active` before any key material is disclosed. Create accepts a name, an explicit scope list (for example `envelopes:read`, `drafts:write`, `envelopes:send`), and an optional expiry, and returns the plaintext `signkit_`-prefixed token exactly once on creation (a 200 replay carries only the stored metadata, never the token). List is cursor-paginated. Revoke is scoped to the caller's own key; an unknown or cross-owner ID returns opaque `not_found`. All three require a bounded `Idempotency-Key` and reuse the same bounded JSON body reader, `application/json` content-type check, and RFC 9457 validation shape as bootstrap.
 
 ## Recipient surface
 
@@ -113,4 +132,4 @@ The provider call is outside the database transaction, so provider acceptance an
 
 ## Not exposed yet
 
-API keys exist as storage, service, and migration layers only; there is no HTTP endpoint, Bearer authentication, OpenAPI surface, or CLI for issuing or revoking them. Key ownership does not authorize organization-scoped agent requests — that grant model is deferred. Recipient capability reissue is a documented design contract with no implementation. Webhooks, an OpenAPI document, rate limits, cursor pagination beyond the current list behaviour, ink capture, PDF sealing, DOCX conversion, audit export, and operator revoke UI remain on the backlog.
+API keys are issued and revoked over HTTP (above), but key ownership does not itself authorize organization-scoped agent requests — that grant model, along with Bearer-authenticated agent calls against the operator/recipient APIs, is deferred. Instance membership beyond the initial bootstrap owner — invitations, role/status mutations, and any member-management UI — is out of scope. Recipient capability reissue is a documented design contract with no implementation. Webhooks, an OpenAPI document, rate limits, cursor pagination beyond the current list behaviour, ink capture, PDF sealing, DOCX conversion, audit export, and operator revoke UI remain on the backlog.

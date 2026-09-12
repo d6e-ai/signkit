@@ -11,18 +11,23 @@ CREATE TABLE organization (
 -- SignKit-local instance membership. One deployment database is the instance
 -- boundary, so there is no instance_id. user_id is the external d6e-auth
 -- subject: d6e-auth proves identity only, and this row is membership
--- authority. Status is invited, active, or suspended. No PII is stored.
--- Invite acceptance and bootstrap flows are out of scope for this table.
+-- authority. Role is owner, admin, or member. Status is active or suspended.
+-- No PII is stored. Invite acceptance and bootstrap flows are out of scope
+-- for this table.
 CREATE TABLE instance_member (
   user_id text PRIMARY KEY,
+  role text NOT NULL DEFAULT 'member',
   status text NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   CONSTRAINT instance_member_user_id_bound CHECK (
     char_length(user_id) BETWEEN 1 AND 200
   ),
+  CONSTRAINT instance_member_role_known CHECK (
+    role IN ('owner', 'admin', 'member')
+  ),
   CONSTRAINT instance_member_status_known CHECK (
-    status IN ('invited', 'active', 'suspended')
+    status IN ('active', 'suspended')
   ),
   CONSTRAINT instance_member_updated_order CHECK (
     updated_at >= created_at

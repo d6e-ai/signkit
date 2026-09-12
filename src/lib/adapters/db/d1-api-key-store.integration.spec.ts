@@ -24,7 +24,7 @@ const REVOKED_AT: string = '2026-09-12T13:00:00.000Z';
 const REQUEST_HASH: string = 'a'.repeat(64);
 const OTHER_REQUEST_HASH: string = 'b'.repeat(64);
 
-type MemberStatus = 'invited' | 'active' | 'suspended';
+type MemberStatus = 'active' | 'suspended';
 
 interface Fixture {
 	store: D1ApiKeyStore;
@@ -198,8 +198,8 @@ describe('D1ApiKeyStore.createApiKey', () => {
 		).toBe(0);
 	});
 
-	it('fails closed for a missing, invited, or suspended owner and writes nothing', async () => {
-		for (const status of [null, 'invited', 'suspended'] as const) {
+	it('fails closed for a missing or suspended owner and writes nothing', async () => {
+		for (const status of [null, 'suspended'] as const) {
 			const sqlite: DatabaseSync = new DatabaseSync(':memory:');
 			applyD1Migrations(sqlite);
 			if (status !== null) insertMember(sqlite, ACTOR_ID, status);
@@ -554,13 +554,9 @@ describe('D1ApiKeyStore.listApiKeys', () => {
 		).resolves.toEqual({ outcome: 'listed', page: { items: [], nextCursor: null } });
 	});
 
-	it('fails closed for invited and suspended owners', async () => {
+	it('fails closed for suspended owners', async () => {
 		const { store, sqlite }: Fixture = createFixture();
 		await store.createApiKey(await createCommand());
-		setMemberStatus(sqlite, ACTOR_ID, 'invited');
-		await expect(
-			store.listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 10 })
-		).resolves.toEqual({ outcome: 'owner_not_active' });
 		setMemberStatus(sqlite, ACTOR_ID, 'suspended');
 		await expect(
 			store.listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 10 })
@@ -770,7 +766,7 @@ describe('D1ApiKeyStore.revokeApiKey', () => {
 		).toBe(1);
 	});
 
-	it('fails closed after the owner is invited or suspended', async () => {
+	it('fails closed after the owner is suspended', async () => {
 		const { store, sqlite }: Fixture = createFixture();
 		await store.createApiKey(await createCommand());
 		setMemberStatus(sqlite, ACTOR_ID, 'suspended');
@@ -778,10 +774,6 @@ describe('D1ApiKeyStore.revokeApiKey', () => {
 			outcome: 'owner_not_active'
 		});
 		expect(count(sqlite, 'SELECT count(*) AS value FROM api_key_revoke_command')).toBe(0);
-		setMemberStatus(sqlite, ACTOR_ID, 'invited');
-		await expect(store.revokeApiKey(revokeCommand())).resolves.toEqual({
-			outcome: 'owner_not_active'
-		});
 	});
 
 	it('resolves the revoke replay gate in one batch and discloses nothing to a suspended owner', async () => {

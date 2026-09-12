@@ -127,6 +127,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 
 	it('applies every migration and enforces tenant, signer, and int32 field bounds', async () => {
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0017_api_keys.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0018_instance_bootstrap.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -146,6 +147,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'field_value',
 				'recipient',
 				'instance_member',
+				'instance_bootstrap',
+				'instance_bootstrap_command',
 				'api_key',
 				'api_key_create_command',
 				'api_key_revoke_command'
@@ -2572,19 +2575,34 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			{ columnName: string }[]
 		>`SELECT column_name AS "columnName" FROM information_schema.columns
 			WHERE table_schema = ${schemaName}
-				AND table_name IN ('api_key', 'api_key_create_command', 'api_key_revoke_command', 'instance_member')
+				AND table_name IN (
+					'api_key',
+					'api_key_create_command',
+					'api_key_revoke_command',
+					'instance_member',
+					'instance_bootstrap',
+					'instance_bootstrap_command'
+				)
 				AND column_name IN ('token', 'secret', 'plaintext', 'credential', 'email', 'organization_id', 'instance_id')`;
 		expect(secretColumns).toEqual([]);
 
-		await database()`INSERT INTO instance_member (user_id, status, created_at, updated_at)
-			VALUES (${ACTOR.id}, 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
-		await database()`INSERT INTO instance_member (user_id, status, created_at, updated_at)
-			VALUES ('user-2', 'invited', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES (${ACTOR.id}, 'owner', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES ('user-2', 'admin', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
 		await database()`INSERT INTO instance_member (user_id, status, created_at, updated_at)
 			VALUES ('user-3', 'suspended', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+		const defaultedRole = await database()<
+			{ role: string }[]
+		>`SELECT role FROM instance_member WHERE user_id = 'user-3'`;
+		expect(defaultedRole[0]?.role).toBe('member');
 		await expect(
 			database()`INSERT INTO instance_member (user_id, status, created_at, updated_at)
-				VALUES ('user-4', 'closed', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`
+				VALUES ('user-4', 'invited', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+				VALUES ('user-5', 'superadmin', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`
 		).rejects.toMatchObject({ code: '23514' });
 
 		await database()`INSERT INTO api_key (
@@ -2839,7 +2857,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			expect(await countRows('api_key_create_command')).toBe(1);
 		});
 
-		it('replays an exact create and fails closed for invited or suspended owners', async () => {
+		it('replays an exact create and fails closed for suspended owners', async () => {
 			await seedActiveOwner();
 			await apiKeyStore().createApiKey(await apiKeyCreateCommand());
 
@@ -3113,14 +3131,14 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			expect(Number(revoked[0].value)).toBe(1);
 		});
 
-		it('fails closed for invited, suspended, and missing owners', async () => {
+		it('fails closed for suspended and missing owners', async () => {
 			await expect(
 				apiKeyStore().createApiKey(
 					await apiKeyCreateCommand({ actor: { type: 'user', id: 'missing-owner' } })
 				)
 			).resolves.toEqual({ outcome: 'owner_not_active' });
 			await database()`INSERT INTO instance_member (user_id, status, created_at, updated_at)
-				VALUES (${ACTOR.id}, 'invited', now(), now())`;
+				VALUES (${ACTOR.id}, 'suspended', now(), now())`;
 			await expect(apiKeyStore().createApiKey(await apiKeyCreateCommand())).resolves.toEqual({
 				outcome: 'owner_not_active'
 			});

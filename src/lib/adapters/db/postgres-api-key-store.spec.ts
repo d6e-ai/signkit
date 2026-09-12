@@ -241,8 +241,8 @@ describe('PostgresApiKeyStore.createApiKey', () => {
 		expect(JSON.stringify(scripted.queries)).not.toContain('organization_id');
 	});
 
-	it('fails closed for a missing, invited, or suspended owner before writing', async () => {
-		for (const members of [[], [{ status: 'invited' }], [{ status: 'suspended' }]]) {
+	it('fails closed for a missing or suspended owner before writing', async () => {
+		for (const members of [[], [{ status: 'suspended' }]]) {
 			const scripted = new ScriptedPostgres([members]);
 			await expect(store(scripted).createApiKey(createCommand())).resolves.toEqual({
 				outcome: 'owner_not_active'
@@ -458,8 +458,8 @@ describe('PostgresApiKeyStore.listApiKeys', () => {
 		expect(scripted.queries).toHaveLength(2);
 	});
 
-	it('fails closed for a missing, invited, or suspended owner', async () => {
-		for (const members of [[], [{ status: 'invited' }], [{ status: 'suspended' }]]) {
+	it('fails closed for a missing or suspended owner', async () => {
+		for (const members of [[], [{ status: 'suspended' }]]) {
 			const scripted = new ScriptedPostgres([members]);
 			await expect(
 				store(scripted).listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 5 })
@@ -525,8 +525,8 @@ describe('PostgresApiKeyStore.revokeApiKey', () => {
 		expect(scripted.texts()[4]).toContain('AND revoked_at IS NULL');
 	});
 
-	it('fails closed for a missing, invited, or suspended owner', async () => {
-		for (const members of [[], [{ status: 'invited' }], [{ status: 'suspended' }]]) {
+	it('fails closed for a missing or suspended owner', async () => {
+		for (const members of [[], [{ status: 'suspended' }]]) {
 			const scripted = new ScriptedPostgres([members]);
 			await expect(store(scripted).revokeApiKey(revokeCommand())).resolves.toEqual({
 				outcome: 'owner_not_active'

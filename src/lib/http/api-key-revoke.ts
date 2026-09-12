@@ -1,13 +1,19 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { z, type ZodIssue, type ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
 import {
 	InvalidApiKeyRequestError,
 	type ApiKeyApplicationPort,
 	type ApiKeyRequestActor,
 	type RevokeApiKeyResult
 } from '$lib/application/api-keys/api-key-service';
+import {
+	acceptsJson,
+	readJsonBody,
+	validationErrors,
+	type JsonBodyResult
+} from './bounded-json-body';
 import { authorizeIdentityRequest, type AuthorizedIdentityActor } from './identity-authorization';
-import { problemResponse, type ProblemValidationError } from './problem';
+import { problemResponse } from './problem';
 
 const MAX_BODY_BYTES: number = 1024;
 
@@ -27,68 +33,6 @@ interface ResolverContext {
 export type ApiKeyRevokeApplicationResolver = (
 	context: ResolverContext
 ) => ApiKeyApplicationPort | null | Promise<ApiKeyApplicationPort | null>;
-
-type JsonBodyResult = { ok: true; value: unknown } | { ok: false; reason: 'invalid' | 'too_large' };
-
-async function readJsonBody(request: Request): Promise<JsonBodyResult> {
-	const contentLength: string | null = request.headers.get('content-length');
-	if (contentLength !== null) {
-		const declaredBytes: number = Number(contentLength);
-		if (Number.isFinite(declaredBytes) && declaredBytes > MAX_BODY_BYTES) {
-			return { ok: false, reason: 'too_large' };
-		}
-	}
-	if (request.body === null) return { ok: false, reason: 'invalid' };
-
-	const reader: ReadableStreamDefaultReader<Uint8Array> = request.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let totalBytes: number = 0;
-	try {
-		while (true) {
-			const next: ReadableStreamReadResult<Uint8Array> = await reader.read();
-			if (next.done) break;
-			totalBytes += next.value.byteLength;
-			if (totalBytes > MAX_BODY_BYTES) {
-				await reader.cancel('request body exceeded the configured limit');
-				return { ok: false, reason: 'too_large' };
-			}
-			chunks.push(next.value);
-		}
-	} catch {
-		return { ok: false, reason: 'invalid' };
-	} finally {
-		reader.releaseLock();
-	}
-
-	const bytes: Uint8Array = new Uint8Array(totalBytes);
-	let offset: number = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	try {
-		return {
-			ok: true,
-			value: JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown
-		};
-	} catch {
-		return { ok: false, reason: 'invalid' };
-	}
-}
-
-function acceptsJson(request: Request): boolean {
-	return (
-		request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ===
-		'application/json'
-	);
-}
-
-function validationErrors(issues: readonly ZodIssue[]): readonly ProblemValidationError[] {
-	return issues.map((issue: ZodIssue): ProblemValidationError => ({
-		path: issue.path.length === 0 ? '$' : issue.path.join('.'),
-		message: issue.message
-	}));
-}
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : 'Unknown error';
@@ -130,7 +74,7 @@ export function createApiKeyRevokeHandler(
 			});
 		}
 
-		const body: JsonBodyResult = await readJsonBody(request);
+		const body: JsonBodyResult = await readJsonBody(request, MAX_BODY_BYTES);
 		if (!body.ok) {
 			return problemResponse(
 				body.reason === 'too_large'

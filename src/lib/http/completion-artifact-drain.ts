@@ -3,6 +3,7 @@ import type {
 	CompletionArtifactBatchResult,
 	CompletionArtifactPublicationService
 } from '$lib/application/completion-artifacts/completion-artifact-service';
+import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
 
@@ -78,31 +79,6 @@ export function createCompletionArtifactDrainHandler(
 			});
 		}
 	};
-}
-
-function parseBearerSecret(header: string | null): string | null {
-	if (header === null) return null;
-	const match: RegExpExecArray | null = /^Bearer ([\x21-\x7e]{32,200})$/.exec(header);
-	return match?.[1] ?? null;
-}
-
-async function secretsEqual(presented: string, expected: string): Promise<boolean> {
-	const [presentedDigest, expectedDigest]: [ArrayBuffer, ArrayBuffer] = await Promise.all([
-		sha256(presented),
-		sha256(expected)
-	]);
-	const left: Uint8Array = new Uint8Array(presentedDigest);
-	const right: Uint8Array = new Uint8Array(expectedDigest);
-	let difference: number = left.byteLength ^ right.byteLength;
-	const length: number = Math.max(left.byteLength, right.byteLength);
-	for (let index: number = 0; index < length; index += 1) {
-		difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
-	}
-	return difference === 0;
-}
-
-function sha256(value: string): Promise<ArrayBuffer> {
-	return crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
 }
 
 function unauthorized(instance: string): Response {

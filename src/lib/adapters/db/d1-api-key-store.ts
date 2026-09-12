@@ -88,8 +88,8 @@ const REVOKE_RECEIPT_COLUMNS: string = `command.request_hash, command.api_key_id
  * re-reads the durable receipt, the member status, the key id, and the
  * credential hash and classifies the outcome only when one of those evidence
  * queries proves it. Every write selects the owner through
- * `instance_member.status = 'active'`, so invited and suspended members fail
- * closed at the durable boundary. List, and the create/revoke idempotency
+ * `instance_member.status = 'active'`, so suspended members fail closed at
+ * the durable boundary. List, and the create/revoke idempotency
  * gates, read the member status together with the disclosed evidence — the
  * owner page, or the create/revoke receipt and key row — in one batch, so a
  * suspension can never land between the check and the disclosure.

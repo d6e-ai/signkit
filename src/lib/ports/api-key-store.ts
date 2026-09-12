@@ -68,8 +68,8 @@ export interface CreateApiKeyCommand {
  *   references (a corrupted receipt can never be treated as a safe replay).
  * - `key_id_conflict` / `token_hash_conflict`: the generated UUID or the
  *   credential hash already exists. Both are retryable with fresh material.
- * - `owner_not_active`: the actor is missing, invited, or suspended. Fail
- *   closed; no key or receipt is written.
+ * - `owner_not_active`: the actor is missing or suspended. Fail closed; no
+ *   key or receipt is written.
  * - `integrity_error`: the receipt and key rows cannot be reconciled.
  */
 export type CreateApiKeyStoreResult =
@@ -114,7 +114,7 @@ export interface RevokeApiKeyCommand {
  * - `idempotency_conflict`: the idempotency key was reused for a different key
  *   or a different request fingerprint.
  * - `not_found`: unknown or cross-owner key id, reported opaquely.
- * - `owner_not_active`: the actor is missing, invited, or suspended.
+ * - `owner_not_active`: the actor is missing or suspended.
  * - `integrity_error`: the receipt and key rows disagree.
  */
 export type RevokeApiKeyStoreResult =
