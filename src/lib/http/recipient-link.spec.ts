@@ -1,14 +1,23 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
+import type {
+	AuthorizedRecipientDeclinedReceipt,
+	RecipientDeclinedReceiptApplicationPort
+} from '$lib/application/signing/recipient-declined-receipt';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
+import {
+	DECLINED_RECEIPT_COOKIE,
+	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS
+} from '$lib/server/declined-receipt-session';
 import {
 	RECIPIENT_SESSION_COOKIE,
 	RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS
 } from '$lib/server/recipient-session';
 import {
 	createRecipientLinkHandler,
-	type RecipientLinkApplicationResolver
+	type RecipientLinkApplicationResolver,
+	type RecipientLinkReceiptOptions
 } from './recipient-link';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
@@ -27,6 +36,26 @@ const context: RecipientSigningContext = {
 		commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 		archiveKey: 'private/archive.git.gz',
 		archiveSha256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+	}
+};
+
+const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
+	receipt: {
+		envelopeId: '00000000-0000-8000-a000-000000000001',
+		recipientId: '00000000-0000-8000-a000-000000000002',
+		recipientStatus: 'declined',
+		envelopeStatus: 'declined',
+		declinedAt: '2026-09-11T00:02:00.000Z',
+		locale: 'ja'
+	},
+	locator: {
+		organizationId: '00000000-0000-8000-a000-000000000003',
+		envelopeId: '00000000-0000-8000-a000-000000000001',
+		recipientId: '00000000-0000-8000-a000-000000000002',
+		idempotencyKey: 'decline-1',
+		capabilityHash: 'b'.repeat(64),
+		declinedAt: '2026-09-11T00:02:00.000Z',
+		expiresAt: '2026-10-11T00:02:00.000Z'
 	}
 };
 
@@ -58,6 +87,24 @@ function application(
 	return { resolve: vi.fn(async (): Promise<RecipientSigningContext | null> => result) };
 }
 
+function receiptApplication(
+	result: AuthorizedRecipientDeclinedReceipt | null = declinedReceipt
+): RecipientDeclinedReceiptApplicationPort {
+	return {
+		recoverByToken: vi.fn(async (): Promise<AuthorizedRecipientDeclinedReceipt | null> => result),
+		resolveLocator: vi.fn(async (): Promise<AuthorizedRecipientDeclinedReceipt | null> => result)
+	};
+}
+
+function receiptOptions(
+	result: AuthorizedRecipientDeclinedReceipt | null = declinedReceipt
+): RecipientLinkReceiptOptions {
+	return {
+		resolveApplication: vi.fn(() => receiptApplication(result)),
+		sealSession: vi.fn(async (): Promise<string> => 'sealed-receipt')
+	};
+}
+
 describe('recipient link exchange', () => {
 	it('rejects malformed path capabilities before resolving persistence', async () => {
 		const input: TestEvent = testEvent('malformed');
@@ -76,10 +123,13 @@ describe('recipient link exchange', () => {
 		const input: TestEvent = testEvent();
 		const app: RecipientAccessApplicationPort = application();
 		const sealer = vi.fn(async (): Promise<string> => 'sealed-cookie');
+		const receipts: RecipientLinkReceiptOptions = receiptOptions();
 		const response: Response = await createRecipientLinkHandler(
 			() => app,
 			sealer,
-			() => new Date('2026-09-11T00:00:00.000Z')
+			() => new Date('2026-09-11T00:00:00.000Z'),
+			false,
+			receipts
 		)(input.event);
 
 		expect(app.resolve).toHaveBeenCalledWith(token, '2026-09-11T00:00:00.000Z');
@@ -94,6 +144,62 @@ describe('recipient link exchange', () => {
 		expect(response.status).toBe(303);
 		expect(response.headers.get('location')).toBe('/ja/sign');
 		expect(response.headers.get('location')).not.toContain(token);
+		expect(receipts.resolveApplication).not.toHaveBeenCalled();
+		expect(input.cookieDelete).toHaveBeenCalledWith(DECLINED_RECEIPT_COOKIE, { path: '/' });
+	});
+
+	it('recovers an inactive declined capability into a purpose-separated receipt cookie', async () => {
+		const input: TestEvent = testEvent();
+		const access: RecipientAccessApplicationPort = application(null);
+		const receipts: RecipientLinkReceiptOptions = receiptOptions();
+		const response: Response = await createRecipientLinkHandler(
+			() => access,
+			async (): Promise<string> => 'unused-active-cookie',
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			receipts
+		)(input.event);
+
+		expect(access.resolve).toHaveBeenCalledWith(token, '2026-09-11T00:03:00.000Z');
+		expect(receipts.resolveApplication).toHaveBeenCalledTimes(1);
+		expect(receipts.sealSession).toHaveBeenCalledWith({ ...declinedReceipt.locator, version: 1 });
+		expect(input.cookieSet).toHaveBeenCalledWith(
+			DECLINED_RECEIPT_COOKIE,
+			'sealed-receipt',
+			expect.objectContaining({
+				httpOnly: true,
+				sameSite: 'lax',
+				secure: true,
+				maxAge: DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS - 60
+			})
+		);
+		expect(input.cookieDelete).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(response.headers.get('location')).toBe('/ja/sign');
+		expect(response.headers.get('location')).not.toContain(token);
+	});
+
+	it('preserves existing cookies and returns a clean unavailable redirect when receipt minting fails', async () => {
+		const input: TestEvent = testEvent();
+		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const response: Response = await createRecipientLinkHandler(
+			() => application(null),
+			async (): Promise<string> => 'unused-active-cookie',
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			{
+				resolveApplication: () => receiptApplication(),
+				sealSession: async (): Promise<string> => {
+					throw new Error('private locator must not be logged');
+				}
+			}
+		)(input.event);
+
+		expect(response.headers.get('location')).toBe('/sign?access=unavailable');
+		expect(input.cookieSet).not.toHaveBeenCalled();
+		expect(input.cookieDelete).not.toHaveBeenCalled();
+		expect(error).toHaveBeenCalledWith(JSON.stringify({ event: 'recipient_link_exchange_failed' }));
+		expect(error).not.toHaveBeenCalledWith(expect.stringContaining('private locator'));
+		error.mockRestore();
 	});
 
 	it('uses a non-secure cookie only for local HTTP development', async () => {

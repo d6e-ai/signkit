@@ -1,9 +1,21 @@
 import type { Cookies, RequestHandler } from '@sveltejs/kit';
+import { dev } from '$app/environment';
 import { z, type ZodType } from 'zod';
 import type {
 	RecipientDeclinedApplicationPort,
 	RecipientDeclinedResult
 } from '$lib/application/signing/recipient-declined';
+import type {
+	AuthorizedRecipientDeclinedReceipt,
+	RecipientDeclinedReceiptApplicationPort
+} from '$lib/application/signing/recipient-declined-receipt';
+import {
+	DECLINED_RECEIPT_COOKIE,
+	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
+	DECLINED_RECEIPT_COOKIE_OPTIONS,
+	type DeclinedReceiptSessionLocator,
+	sealDeclinedReceiptSession
+} from '$lib/server/declined-receipt-session';
 import {
 	RECIPIENT_SESSION_COOKIE,
 	RECIPIENT_SESSION_COOKIE_PATH
@@ -34,11 +46,30 @@ export type RecipientDeclinedApplicationResolver = (
 
 export type RecipientSessionUnsealer = (cookie: string) => Promise<string | null>;
 
+export type RecipientDeclinedReceiptApplicationResolver = (
+	context: ResolverContext
+) =>
+	| RecipientDeclinedReceiptApplicationPort
+	| null
+	| Promise<RecipientDeclinedReceiptApplicationPort | null>;
+
+export type DeclinedReceiptSessionSealer = (
+	locator: DeclinedReceiptSessionLocator
+) => Promise<string>;
+
+export interface RecipientDeclinedHandlerOptions {
+	resolveReceiptApplication: RecipientDeclinedReceiptApplicationResolver;
+	sealReceiptSession?: DeclinedReceiptSessionSealer;
+	now?: () => Date;
+	allowInsecureLocalDevelopment?: boolean;
+}
+
 type JsonBodyResult = { ok: true; value: unknown } | { ok: false; reason: 'invalid' | 'too_large' };
 
 export function createRecipientDeclinedHandler(
 	resolveApplication: RecipientDeclinedApplicationResolver,
-	unsealSession: RecipientSessionUnsealer
+	unsealSession: RecipientSessionUnsealer,
+	options?: RecipientDeclinedHandlerOptions
 ): RequestHandler {
 	return async ({ cookies, platform, request, url }): Promise<Response> => {
 		if (request.headers.get('origin') !== url.origin) return crossOriginDenied(url.pathname);
@@ -85,7 +116,7 @@ export function createRecipientDeclinedHandler(
 				expectedRecipientId: parsed.data.recipientId,
 				idempotencyKey: idempotencyKey.data
 			});
-			return resultResponse(result, url.pathname, cookies);
+			return await resultResponse(result, token, url, platform, cookies, options);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_declined_failed' }));
 			return unavailable(url.pathname);
@@ -93,13 +124,25 @@ export function createRecipientDeclinedHandler(
 	};
 }
 
-function resultResponse(
+async function resultResponse(
 	result: RecipientDeclinedResult,
-	instance: string,
-	cookies: Cookies
-): Response {
+	token: string,
+	url: URL,
+	platform: Readonly<App.Platform> | undefined,
+	cookies: Cookies,
+	options: RecipientDeclinedHandlerOptions | undefined
+): Promise<Response> {
+	const instance: string = url.pathname;
 	if (result.outcome === 'published' || result.outcome === 'replayed') {
-		clearSession(cookies);
+		const exchanged: boolean = await exchangeDeclinedReceipt(
+			result,
+			token,
+			url,
+			platform,
+			cookies,
+			options
+		);
+		if (!exchanged) return unavailable(instance);
 		const headers: Headers = new Headers(securityHeaders({ 'content-type': 'application/json' }));
 		if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
 		return new Response(
@@ -169,6 +212,69 @@ function resultResponse(
 		},
 		securityHeaders()
 	);
+}
+
+async function exchangeDeclinedReceipt(
+	result: Extract<RecipientDeclinedResult, { outcome: 'published' | 'replayed' }>,
+	token: string,
+	url: URL,
+	platform: Readonly<App.Platform> | undefined,
+	cookies: Cookies,
+	options: RecipientDeclinedHandlerOptions | undefined
+): Promise<boolean> {
+	if (options === undefined) return false;
+	try {
+		const application: RecipientDeclinedReceiptApplicationPort | null =
+			await options.resolveReceiptApplication({ platform });
+		if (application === null) return false;
+		const now: Date = options.now?.() ?? new Date();
+		const authorized: AuthorizedRecipientDeclinedReceipt | null = await application.recoverByToken(
+			token,
+			now
+		);
+		if (authorized === null || !samePublishedReceipt(result, authorized)) return false;
+		const remainingSeconds: number = remainingReceiptSeconds(authorized.locator.expiresAt, now);
+		if (remainingSeconds <= 0) return false;
+		const locator: DeclinedReceiptSessionLocator = {
+			...authorized.locator,
+			version: 1
+		};
+		const seal: DeclinedReceiptSessionSealer =
+			options.sealReceiptSession ?? sealDeclinedReceiptSession;
+		const sealed: string = await seal(locator);
+		cookies.set(DECLINED_RECEIPT_COOKIE, sealed, {
+			...DECLINED_RECEIPT_COOKIE_OPTIONS,
+			secure: !isInsecureLocalDevelopment(url, options.allowInsecureLocalDevelopment ?? dev),
+			maxAge: remainingSeconds
+		});
+		clearSession(cookies);
+		return true;
+	} catch {
+		console.error(JSON.stringify({ event: 'recipient_declined_receipt_exchange_failed' }));
+		return false;
+	}
+}
+
+function samePublishedReceipt(
+	result: Extract<RecipientDeclinedResult, { outcome: 'published' | 'replayed' }>,
+	authorized: AuthorizedRecipientDeclinedReceipt
+): boolean {
+	return (
+		authorized.receipt.envelopeId === result.result.envelopeId &&
+		authorized.receipt.recipientId === result.result.recipientId &&
+		authorized.receipt.declinedAt === result.result.declinedAt
+	);
+}
+
+function remainingReceiptSeconds(expiresAt: string, now: Date): number {
+	const remainingSeconds: number = Math.floor((Date.parse(expiresAt) - now.valueOf()) / 1000);
+	if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return 0;
+	return Math.min(remainingSeconds, DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS);
+}
+
+function isInsecureLocalDevelopment(url: URL, allowed: boolean): boolean {
+	if (!allowed || url.protocol !== 'http:') return false;
+	return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
 }
 
 function accessNotFound(instance: string): Response {

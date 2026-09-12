@@ -94,6 +94,8 @@
 	"signing_decline_success": "依頼を辞退しました。",
 	"signing_declined_receipt_title": "依頼を辞退しました",
 	"signing_declined_receipt_description": "この依頼は辞退されました。これ以上の操作は行えません。",
+	"signing_declined_receipt_recorded_at": "辞退日時: {timestamp}",
+	"signing_declined_receipt_access_closed": "この依頼に対する文書アクセスと署名権限は終了しました。",
 	"signing_decline_no_js_explanation": "辞退を確認して記録するにはJavaScriptを有効にしてください。",
 	"signing_status_approved": "承認済み",
 	"signing_approve_action": "契約書を承認",

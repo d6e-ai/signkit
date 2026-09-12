@@ -18,13 +18,34 @@ describe('recipient document rendering', () => {
 		expect(source).not.toContain('recipient.viewed');
 	});
 
-	it('keeps terminal decline receipt rendering client-driven and explains the no-JavaScript case', () => {
+	it('makes the authoritative terminal decline branch precede all document rendering', () => {
 		const source: string = readFileSync('src/routes/sign/+page.svelte', 'utf8');
-		expect(source).toContain('let isDeclined = $state(false)');
-		expect(source).toContain('{#if isDeclined}');
+		expect(source).toContain('let optimisticDecline = $state<');
+		expect(source).toContain('let isDeclined = $derived(');
+		expect(source).toContain('optimisticDecline.envelopeId === data.access.envelopeId');
+		expect(source).toContain('optimisticDecline.recipientId === data.access.recipientId');
+		expect(source).toContain('declineControllerIdentity !== identity');
+		expect(source).toContain('declineController?.destroy()');
+		expect(source).toContain('ensureDeclineController()?.confirmDecline()');
+		expect(source).toContain("{#if data.state === 'declined' || isDeclined}");
+		expect(source).toContain("{:else if data.state === 'active'}");
+		expect(source).toContain('onSuccess: () => void invalidateAll()');
+		expect(source).toContain('onTransientFailure: () => void invalidateAll()');
+		expect(source).toContain('onTerminalFailure: () => void invalidateAll()');
 		expect(source).toContain('signing_declined_receipt_title');
+		expect(source.indexOf("{#if data.state === 'declined' || isDeclined}")).toBeLessThan(
+			source.indexOf('{#each data.documents as document')
+		);
 		expect(source).toContain('signing_decline_no_js_explanation');
 		expect(source).not.toContain('recipientStatus as string');
+	});
+
+	it('resolves terminal receipt cookies without using the document workspace runtime', () => {
+		const source: string = readFileSync('src/routes/sign/+page.server.ts', 'utf8');
+		expect(source).toContain('resolveDeclinedReceiptPage');
+		expect(source).toContain('resolveRecipientDeclinedReceiptApplication');
+		expect(source).toContain('unsealDeclinedReceiptSession');
+		expect(source).toContain("if (page.state !== 'active') return page");
 	});
 
 	it('keeps approval capability-bound and client-driven', () => {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RecipientAccessService } from './recipient-access';
 import { RecipientApprovedApplication } from './recipient-approved';
 import { RecipientDeclinedApplication } from './recipient-declined';
+import { RecipientDeclinedReceiptApplication } from './recipient-declined-receipt';
 import { RecipientViewedApplication } from './recipient-viewed';
 import { RecipientWorkspaceService } from './recipient-workspace';
 
@@ -13,6 +14,7 @@ import {
 	resolveRecipientAccessApplication,
 	resolveRecipientApprovedApplication,
 	resolveRecipientDeclinedApplication,
+	resolveRecipientDeclinedReceiptApplication,
 	resolveRecipientViewedApplication,
 	resolveRecipientWorkspaceApplication
 } from './runtime';
@@ -155,6 +157,34 @@ describe('resolveRecipientDeclinedApplication', () => {
 		privateEnv.DATABASE_URL = 'mysql://signkit:secret@localhost:3306/signkit';
 		await expect(resolveRecipientDeclinedApplication({})).rejects.toThrow(
 			'DATABASE_URL must use the postgres or postgresql scheme'
+		);
+	});
+});
+
+describe('resolveRecipientDeclinedReceiptApplication', () => {
+	it('fails closed on a Cloudflare request without D1 instead of falling back to PostgreSQL', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(
+			resolveRecipientDeclinedReceiptApplication({ platform: { env: {} } as App.Platform })
+		).resolves.toBeNull();
+	});
+
+	it('uses the request-scoped D1 binding for terminal evidence', async () => {
+		await expect(
+			resolveRecipientDeclinedReceiptApplication({
+				platform: { env: { DB: {} as D1Database } } as App.Platform
+			})
+		).resolves.toBeInstanceOf(RecipientDeclinedReceiptApplication);
+	});
+
+	it('returns null without Node PostgreSQL configuration', async () => {
+		await expect(resolveRecipientDeclinedReceiptApplication({})).resolves.toBeNull();
+	});
+
+	it('constructs the PostgreSQL application from complete Node configuration', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(resolveRecipientDeclinedReceiptApplication({})).resolves.toBeInstanceOf(
+			RecipientDeclinedReceiptApplication
 		);
 	});
 });

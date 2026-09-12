@@ -757,6 +757,7 @@
 </script>
 
 <script lang="ts">
+	import { invalidateAll } from '$app/navigation';
 	import { onMount, untrack } from 'svelte';
 	import {
 		IconAlertTriangle,
@@ -792,9 +793,16 @@
 
 	let declineStatus = $state<RecipientDeclineStatus>('idle');
 	let declinePending = $state(false);
-	let isDeclined = $state(false);
+	let optimisticDecline = $state<{ envelopeId: string; recipientId: string } | null>(null);
+	let isDeclined = $derived(
+		data.state === 'active' &&
+			optimisticDecline !== null &&
+			optimisticDecline.envelopeId === data.access.envelopeId &&
+			optimisticDecline.recipientId === data.access.recipientId
+	);
 	let dialogOpen = $state(false);
 	let declineController: RecipientDeclineController | null = null;
+	let declineControllerIdentity: string | null = null;
 
 	let approveStatus = $state<RecipientApproveStatus>('idle');
 	let approvePending = $state(false);
@@ -882,7 +890,12 @@
 		if (status === 'pending') {
 			liveMessage = m.signing_decline_pending();
 		} else if (status === 'success') {
-			isDeclined = true;
+			if (data.state === 'active') {
+				optimisticDecline = {
+					envelopeId: data.access.envelopeId,
+					recipientId: data.access.recipientId
+				};
+			}
 			dialogOpen = false;
 			liveMessage = m.signing_decline_success();
 		} else if (status === 'transient_failure') {
@@ -982,8 +995,25 @@
 			recipientId: data.access.recipientId,
 			role: data.access.role,
 			pageState: data.state,
-			onStatusChange: handleDeclineStatus
+			onStatusChange: handleDeclineStatus,
+			onSuccess: () => void invalidateAll(),
+			onTransientFailure: () => void invalidateAll(),
+			onTerminalFailure: () => void invalidateAll()
 		});
+	}
+
+	function ensureDeclineController(): RecipientDeclineController | null {
+		if (data.state !== 'active') return null;
+		const identity: string = `${data.access.envelopeId}:${data.access.recipientId}`;
+		if (declineController === null || declineControllerIdentity !== identity) {
+			declineController?.destroy();
+			declineStatus = 'idle';
+			declinePending = false;
+			dialogOpen = false;
+			declineController = buildDeclineController();
+			declineControllerIdentity = identity;
+		}
+		return declineController;
 	}
 
 	function buildApproveController(): RecipientApproveController | null {
@@ -1004,8 +1034,7 @@
 	}
 
 	async function handleDeclineConfirm(): Promise<void> {
-		declineController ??= buildDeclineController();
-		await declineController?.confirmDecline();
+		await ensureDeclineController()?.confirmDecline();
 	}
 
 	async function handleApproveConfirm(): Promise<void> {
@@ -1016,7 +1045,7 @@
 	onMount(() => {
 		if (data.state !== 'active') return;
 
-		declineController ??= buildDeclineController();
+		ensureDeclineController();
 		approveController ??= buildApproveController();
 		signController ??= buildSignController();
 
@@ -1044,6 +1073,8 @@
 		return () => {
 			cleanupViewed();
 			declineController?.destroy();
+			declineController = null;
+			declineControllerIdentity = null;
 			approveController?.destroy();
 			signController?.destroy();
 		};
@@ -1051,7 +1082,11 @@
 </script>
 
 <svelte:head>
-	<title>{m.signing_page_title()} — {m.app_name()}</title>
+	<title
+		>{data.state === 'declined' || isDeclined
+			? m.signing_declined_receipt_title()
+			: m.signing_page_title()} — {m.app_name()}</title
+	>
 	<meta name="robots" content="noindex,nofollow,noarchive" />
 	<meta name="referrer" content="no-referrer" />
 </svelte:head>
@@ -1077,7 +1112,36 @@
 </div>
 
 <div class="mx-auto flex min-h-[calc(100svh-7.5rem)] w-full max-w-5xl items-center justify-center">
-	{#if data.state === 'active'}
+	{#if data.state === 'declined' || isDeclined}
+		<Card.Root class="w-full max-w-2xl border-destructive/20 shadow-sm">
+			<Card.Header class="items-center gap-4 pt-10 text-center">
+				<div
+					class="flex size-12 items-center justify-center rounded-2xl bg-destructive/10 text-destructive"
+				>
+					<IconCircleX />
+				</div>
+				<Card.Title class="text-2xl">{m.signing_declined_receipt_title()}</Card.Title>
+				<Card.Description class="max-w-md leading-6">
+					{m.signing_declined_receipt_description()}
+				</Card.Description>
+			</Card.Header>
+			<Card.Content class="flex flex-col items-center gap-3 pb-8">
+				<Badge variant="outline">{m.signing_status_declined()}</Badge>
+				{#if data.state === 'declined'}
+					<p class="text-sm text-muted-foreground">
+						{m.signing_declined_receipt_recorded_at({
+							timestamp: formatExpiry(data.declinedAt, getLocale())
+						})}
+					</p>
+				{/if}
+			</Card.Content>
+			<Card.Footer
+				class="justify-center border-t bg-muted/20 py-4 text-center text-sm text-muted-foreground"
+			>
+				{m.signing_declined_receipt_access_closed()}
+			</Card.Footer>
+		</Card.Root>
+	{:else if data.state === 'active'}
 		<div class="w-full space-y-6">
 			<Card.Root class="w-full overflow-hidden shadow-sm">
 				<div class="h-1 bg-primary"></div>

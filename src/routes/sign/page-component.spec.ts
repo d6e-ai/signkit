@@ -89,6 +89,29 @@ describe('recipient document review page', () => {
 		expect(body).not.toContain('Decline request');
 	});
 
+	it('renders a durable decline receipt without any document workspace or controls', () => {
+		const data: PageData = {
+			state: 'declined',
+			envelopeId: '00000000-0000-8000-a000-000000000001',
+			recipientId: '00000000-0000-8000-a000-000000000002',
+			recipientStatus: 'declined',
+			envelopeStatus: 'declined',
+			declinedAt: '2026-09-11T00:02:00.000Z',
+			locale: 'en'
+		};
+		const { body } = render(SignPage, { props: { data } });
+
+		expect(body).toContain('Request declined');
+		expect(body).toContain('Declined at');
+		expect(body).toContain('Document access and signing authority for this request have ended.');
+		expect(body).not.toContain('Agreement documents');
+		expect(body).not.toContain('Decline request');
+		expect(body).not.toContain('Approve agreement');
+		expect(body).not.toContain('Sign and complete');
+		expect(body).not.toContain('<form');
+		expect(body).not.toContain('href="#document-');
+	});
+
 	it('renders decline controls for signer and approver roles with >= 44px touch target', () => {
 		for (const role of ['signer', 'approver'] as const) {
 			const data: PageData = {
@@ -188,11 +211,13 @@ describe('recipient document review page', () => {
 			expect(messages.signing_decline_dialog_description).toBeTruthy();
 			expect(messages.signing_decline_dialog_cancel).toBeTruthy();
 			expect(messages.signing_decline_dialog_confirm).toBeTruthy();
+			expect(messages.signing_declined_receipt_recorded_at).toContain('{timestamp}');
+			expect(messages.signing_declined_receipt_access_closed).toBeTruthy();
 
-			const combined = `${messages.signing_decline_dialog_title} ${messages.signing_decline_dialog_description}`;
+			const combined = `${messages.signing_decline_dialog_title} ${messages.signing_decline_dialog_description} ${messages.signing_declined_receipt_access_closed}`;
 			expect(combined).not.toMatch(/pades/i);
 			expect(combined).not.toMatch(/\bpdf\b/i);
-			expect(combined).not.toMatch(/signature/i);
+			expect(combined).not.toMatch(/sender|notified|notification/i);
 		}
 
 		expect(en.signing_decline_dialog_description).toContain('Declining ends this request');

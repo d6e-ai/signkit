@@ -9,6 +9,7 @@ import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipien
 import { PostgresRecipientFieldDeclarationStore } from '$lib/adapters/db/postgres-recipient-field-declaration-store';
 import { PostgresRecipientApproveStore } from '$lib/adapters/db/postgres-recipient-approve-store';
 import { PostgresRecipientDeclineStore } from '$lib/adapters/db/postgres-recipient-decline-store';
+import { PostgresRecipientDeclinedReceiptStore } from '$lib/adapters/db/postgres-recipient-declined-receipt-store';
 import { PostgresRecipientSignStore } from '$lib/adapters/db/postgres-recipient-sign-store';
 import { PostgresRecipientViewStore } from '$lib/adapters/db/postgres-recipient-view-store';
 import {
@@ -28,6 +29,10 @@ import {
 	RecipientDeclinedApplication,
 	type RecipientDeclinedApplicationPort
 } from '$lib/application/signing/recipient-declined';
+import {
+	RecipientDeclinedReceiptApplication,
+	type RecipientDeclinedReceiptApplicationPort
+} from '$lib/application/signing/recipient-declined-receipt';
 import {
 	RecipientViewedApplication,
 	type RecipientViewedApplicationPort
@@ -126,6 +131,15 @@ export function resolvePostgresRecipientDeclinedApplication(
 ): RecipientDeclinedApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
 	return new RecipientDeclinedApplication(new PostgresRecipientDeclineStore(resources.sql));
+}
+
+export function resolvePostgresRecipientDeclinedReceiptApplication(
+	databaseUrl: string
+): RecipientDeclinedReceiptApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new RecipientDeclinedReceiptApplication(
+		new PostgresRecipientDeclinedReceiptStore(resources.sql)
+	);
 }
 
 export function resolvePostgresRecipientApprovedApplication(

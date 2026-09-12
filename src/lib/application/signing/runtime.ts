@@ -2,6 +2,7 @@ import { env } from '$env/dynamic/private';
 import { D1RecipientAccessStore } from '$lib/adapters/db/d1-recipient-access-store';
 import { D1RecipientApproveStore } from '$lib/adapters/db/d1-recipient-approve-store';
 import { D1RecipientDeclineStore } from '$lib/adapters/db/d1-recipient-decline-store';
+import { D1RecipientDeclinedReceiptStore } from '$lib/adapters/db/d1-recipient-declined-receipt-store';
 import { D1RecipientFieldDeclarationStore } from '$lib/adapters/db/d1-recipient-field-declaration-store';
 import { D1RecipientSignStore } from '$lib/adapters/db/d1-recipient-sign-store';
 import { D1RecipientViewStore } from '$lib/adapters/db/d1-recipient-view-store';
@@ -21,6 +22,10 @@ import {
 	RecipientDeclinedApplication,
 	type RecipientDeclinedApplicationPort
 } from './recipient-declined';
+import {
+	RecipientDeclinedReceiptApplication,
+	type RecipientDeclinedReceiptApplicationPort
+} from './recipient-declined-receipt';
 import {
 	RecipientApprovedApplication,
 	type RecipientApprovedApplicationPort
@@ -118,6 +123,22 @@ export async function resolveRecipientDeclinedApplication(
 	const { resolvePostgresRecipientDeclinedApplication } =
 		await import('$lib/application/envelopes/runtime-postgres');
 	return resolvePostgresRecipientDeclinedApplication(databaseUrl);
+}
+
+export async function resolveRecipientDeclinedReceiptApplication(
+	context: RecipientAccessRuntimeContext
+): Promise<RecipientDeclinedReceiptApplicationPort | null> {
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		if (database === undefined) return null;
+		return new RecipientDeclinedReceiptApplication(new D1RecipientDeclinedReceiptStore(database));
+	}
+
+	const databaseUrl: string | undefined = env.DATABASE_URL;
+	if (databaseUrl === undefined || databaseUrl.trim().length === 0) return null;
+	const { resolvePostgresRecipientDeclinedReceiptApplication } =
+		await import('$lib/application/envelopes/runtime-postgres');
+	return resolvePostgresRecipientDeclinedReceiptApplication(databaseUrl);
 }
 
 export async function resolveRecipientApprovedApplication(
