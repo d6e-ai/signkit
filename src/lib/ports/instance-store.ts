@@ -11,6 +11,8 @@ export const INSTANCE_INVITATION_MAX_EXPIRY_MS: number =
 	INSTANCE_INVITATION_MAX_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
 export const MAX_INSTANCE_INVITATION_LIST_LIMIT: number = 100;
 export const DEFAULT_INSTANCE_INVITATION_LIST_LIMIT: number = 25;
+/** Maximum number of simultaneously live (unexpired) pending invitations per instance. */
+export const MAX_PENDING_INSTANCE_INVITATIONS: number = 200;
 
 export type InstanceActorType = 'user';
 
@@ -181,6 +183,13 @@ export interface AcceptInstanceInvitationCommand {
  *   member with the invited role.
  * - `replayed`: an exact replay of the same request under the same
  *   Idempotency-Key, proven against the current invitation and member rows.
+ * - `already_member`: no receipt matched, but the actor is already a
+ *   currently active instance member. The invitation is neither consumed
+ *   nor mutated and no receipt is written — an existing active member
+ *   cannot re-accept an invitation into a different role or re-trigger
+ *   enrollment side effects. Carries only the actor's own current member
+ *   metadata, never invitation data (no token, tokenHash, or emailBinding),
+ *   since the caller already knows their own membership.
  * - `invitation_invalid`: no invitation matches `tokenHash`, it is expired,
  *   it is not `pending`, or `emailBinding` does not match. Reported
  *   opaquely so an invalid token and a wrong email are indistinguishable.
@@ -193,6 +202,7 @@ export interface AcceptInstanceInvitationCommand {
 export type AcceptInstanceInvitationStoreResult =
 	| { outcome: 'accepted'; invitation: InstanceInvitationMetadata; member: InstanceMemberMetadata }
 	| { outcome: 'replayed'; invitation: InstanceInvitationMetadata; member: InstanceMemberMetadata }
+	| { outcome: 'already_member'; member: InstanceMemberMetadata }
 	| { outcome: 'invitation_invalid' }
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'member_suspended' }

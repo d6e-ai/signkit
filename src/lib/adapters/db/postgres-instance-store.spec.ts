@@ -957,7 +957,7 @@ describe('PostgresInstanceStore', () => {
 			expect(scripted.rollbacks).toBe(0);
 		});
 
-		it('preserves existing active member role when enrolling an already active member', async () => {
+		it('returns already_member without locking or mutating the invitation when actor is already an active member', async () => {
 			const scripted = new ScriptedPostgres([
 				[
 					{
@@ -968,44 +968,26 @@ describe('PostgresInstanceStore', () => {
 						updatedAt: CREATED_AT
 					}
 				], // existing member check (active admin)
-				[], // receipt check (none)
-				[
-					{
-						id: INVITATION_ID,
-						role: 'member',
-						status: 'pending',
-						emailBinding: EMAIL_BINDING,
-						invitedByUserId: OWNER_ID,
-						createdAt: CREATED_AT,
-						expiresAt: EXPIRES_AT,
-						acceptedAt: null,
-						acceptedByUserId: null,
-						revokedAt: null,
-						revokedByUserId: null
-					}
-				], // invitation lock FOR UPDATE
-				[], // insert member ON CONFLICT DO NOTHING
-				[
-					{
-						userId: ACCEPTOR_ID,
-						role: 'admin',
-						status: 'active',
-						createdAt: CREATED_AT,
-						updatedAt: CREATED_AT
-					}
-				], // select member (role preserved as admin)
-				[{ id: INVITATION_ID }], // update invitation
-				[{ actorId: ACCEPTOR_ID }] // insert receipt
+				[] // receipt check (none)
 			]);
 
 			const result: AcceptInstanceInvitationStoreResult =
 				await store(scripted).acceptInstanceInvitation(acceptCommand());
 
-			expect(result.outcome).toBe('accepted');
-			if (result.outcome === 'accepted') {
-				expect(result.member.role).toBe('admin');
-				expect(result.member.createdAt).toBe(CREATED_AT.toISOString());
-			}
+			expect(result).toEqual({
+				outcome: 'already_member',
+				member: {
+					userId: ACCEPTOR_ID,
+					role: 'admin',
+					status: 'active',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: CREATED_AT.toISOString()
+				}
+			});
+			// Only the member lock and receipt check ran: no invitation lock, member
+			// insert, invitation update, or receipt insert.
+			expect(scripted.queries).toHaveLength(2);
+			expect(scripted.rollbacks).toBe(1);
 		});
 
 		it('refuses accept when subject is suspended (member_suspended)', async () => {
@@ -1018,7 +1000,8 @@ describe('PostgresInstanceStore', () => {
 						createdAt: CREATED_AT,
 						updatedAt: CREATED_AT
 					}
-				] // existing member check
+				], // existing member check
+				[] // receipt check (none): checked before the suspended branch
 			]);
 
 			const result: AcceptInstanceInvitationStoreResult =

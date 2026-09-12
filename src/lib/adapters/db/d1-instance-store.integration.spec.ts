@@ -1200,24 +1200,49 @@ describe('D1InstanceStore', () => {
 			}
 		});
 
-		it('preserves existing active member role when enrolling an existing member', async () => {
+		it('returns already_member, leaves a higher-role invitation pending, and writes zero accept receipts when an existing active member accepts', async () => {
 			const { store, sqlite } = createFixture();
 			try {
 				await store.bootstrapInstance(bootstrapCommand());
-				insertMember(sqlite, 'existing-owner', 'owner');
-				await store.createInstanceInvitation(createInvitationCommand({ role: 'member' }));
+				insertMember(sqlite, 'existing-admin', 'admin');
+				await store.createInstanceInvitation(createInvitationCommand({ role: 'owner' }));
 
 				const result = await store.acceptInstanceInvitation(
-					acceptInvitationCommand({ actor: { type: 'user', id: 'existing-owner' } })
+					acceptInvitationCommand({ actor: { type: 'user', id: 'existing-admin' } })
 				);
-				expect(result.outcome).toBe('accepted');
-				if (result.outcome !== 'accepted') return;
-				expect(result.member.role).toBe('owner');
+				expect(result).toEqual({
+					outcome: 'already_member',
+					member: {
+						userId: 'existing-admin',
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				});
 
 				const member = sqlite
-					.prepare('SELECT role FROM instance_member WHERE user_id = ?')
-					.get('existing-owner') as { role: string };
-				expect(member.role).toBe('owner');
+					.prepare('SELECT role, status FROM instance_member WHERE user_id = ?')
+					.get('existing-admin') as { role: string; status: string };
+				expect(member).toEqual({ role: 'admin', status: 'active' });
+
+				const inv = sqlite
+					.prepare(
+						'SELECT status, accepted_at, accepted_by_user_id FROM instance_invitation WHERE id = ?'
+					)
+					.get(INVITATION_ID) as {
+					status: string;
+					accepted_at: string | null;
+					accepted_by_user_id: string | null;
+				};
+				expect(inv).toEqual({ status: 'pending', accepted_at: null, accepted_by_user_id: null });
+
+				const receiptCount = sqlite
+					.prepare(
+						"SELECT COUNT(*) as count FROM instance_invitation_command WHERE command_type = 'accept'"
+					)
+					.get() as { count: number };
+				expect(receiptCount.count).toBe(0);
 			} finally {
 				sqlite.close();
 			}
@@ -1785,6 +1810,62 @@ describe('D1InstanceStore', () => {
 					.get(INVITATION_ID) as { status: string; accepted_by_user_id: string };
 				expect(inv.status).toBe('accepted');
 				expect(inv.accepted_by_user_id).toBe(acceptedUserId);
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('concurrently: a fresh actor accepts while an already-active member accepting the same invitation gets already_member, invitation stays consumed exactly once', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				insertMember(sqlite, 'existing-admin', 'admin');
+				await store.createInstanceInvitation(createInvitationCommand({ role: 'owner' }));
+
+				const [freshResult, existingResult] = await Promise.all([
+					store.acceptInstanceInvitation(
+						acceptInvitationCommand({
+							actor: { type: 'user', id: 'fresh-acceptor' },
+							idempotencyKey: 'conc-fresh-accept'
+						})
+					),
+					store.acceptInstanceInvitation(
+						acceptInvitationCommand({
+							actor: { type: 'user', id: 'existing-admin' },
+							idempotencyKey: 'conc-existing-accept'
+						})
+					)
+				]);
+
+				expect(freshResult.outcome).toBe('accepted');
+				expect(existingResult).toEqual({
+					outcome: 'already_member',
+					member: {
+						userId: 'existing-admin',
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				});
+
+				const inv = sqlite
+					.prepare('SELECT status, accepted_by_user_id FROM instance_invitation WHERE id = ?')
+					.get(INVITATION_ID) as { status: string; accepted_by_user_id: string };
+				expect(inv.status).toBe('accepted');
+				expect(inv.accepted_by_user_id).toBe('fresh-acceptor');
+
+				const existingAdminRole = sqlite
+					.prepare('SELECT role FROM instance_member WHERE user_id = ?')
+					.get('existing-admin') as { role: string };
+				expect(existingAdminRole.role).toBe('admin');
+
+				const acceptReceiptCount = sqlite
+					.prepare(
+						"SELECT COUNT(*) as count FROM instance_invitation_command WHERE command_type = 'accept'"
+					)
+					.get() as { count: number };
+				expect(acceptReceiptCount.count).toBe(1);
 			} finally {
 				sqlite.close();
 			}

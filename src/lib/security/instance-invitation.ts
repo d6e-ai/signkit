@@ -60,13 +60,18 @@ export async function issueInstanceInvitationToken(): Promise<IssuedInstanceInvi
 }
 
 /**
- * Trims and lowercases the address, then requires exactly one `@` and
- * RFC 5321-shaped local/domain length bounds with no whitespace or control
- * characters. Returns the canonical normalized form callers must store and
- * re-derive from; it never accepts an already-normalized value verbatim.
+ * Trims, applies Unicode NFC normalization, and lowercases the address, then
+ * requires exactly one `@` and RFC 5321-shaped local/domain length bounds
+ * with no whitespace or control characters. NFC runs before lowercasing so
+ * that composed and decomposed encodings of the same visible address (for
+ * example a precomposed `é` versus `e` plus a combining acute accent) always
+ * normalize to the same canonical string; without it, two byte-distinct but
+ * visually identical addresses would bind to different email bindings.
+ * Returns the canonical normalized form callers must store and re-derive
+ * from; it never accepts an already-normalized value verbatim.
  */
 export function normalizeInstanceInvitationEmail(email: string): string {
-	const trimmed: string = email.trim().toLowerCase();
+	const trimmed: string = email.trim().normalize('NFC').toLowerCase();
 	if (trimmed.length < 3 || trimmed.length > INSTANCE_INVITATION_EMAIL_MAX_LENGTH) {
 		throw new Error('Invalid instance invitation email');
 	}

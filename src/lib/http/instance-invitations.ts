@@ -13,6 +13,7 @@ import {
 import {
 	DEFAULT_INSTANCE_INVITATION_LIST_LIMIT,
 	MAX_INSTANCE_INVITATION_LIST_LIMIT,
+	type InstanceMemberMetadata,
 	type InstanceMemberRole
 } from '$lib/ports/instance-store';
 import {
@@ -230,6 +231,31 @@ function invitationNotFound(instance: string): Response {
 		detail: 'No instance invitation was found for the requested identifier.',
 		instance
 	});
+}
+
+/**
+ * Distinct from the opaque `invitationCannotBeAccepted` 404 below: a caller
+ * who is already an active instance member already knows their own
+ * membership, so disclosing that fact (and only that fact — the invitation
+ * itself is left pending and unconsumed, and neither it nor the token is
+ * ever included here) leaks nothing a probing caller couldn't already know
+ * about themselves.
+ */
+function instanceMemberAlreadyExists(instance: string, member: InstanceMemberMetadata): Response {
+	return new Response(
+		JSON.stringify({
+			type: 'urn:signkit:problem:instance-member-already-exists',
+			title: 'Instance member already exists',
+			status: 409,
+			detail: 'The authenticated caller is already an active instance member.',
+			instance,
+			member
+		}),
+		{
+			status: 409,
+			headers: { 'content-type': 'application/problem+json', 'cache-control': 'no-store' }
+		}
+	);
 }
 
 /**
@@ -594,6 +620,9 @@ function acceptResponse(result: AcceptInstanceInvitationResult, instance: string
 			status: 200,
 			headers
 		});
+	}
+	if (result.outcome === 'already_member') {
+		return instanceMemberAlreadyExists(instance, result.member);
 	}
 	if (result.outcome === 'invitation_invalid' || result.outcome === 'member_suspended') {
 		return invitationCannotBeAccepted(instance);

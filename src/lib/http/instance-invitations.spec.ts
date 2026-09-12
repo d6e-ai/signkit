@@ -916,6 +916,40 @@ describe('instance invitation HTTP handlers', () => {
 			expect(await invalidResponse.json()).toEqual(await suspendedResponse.json());
 		});
 
+		it('maps already_member to an RFC 9457 409 problem with caller member metadata and no invitation, token, hash, or email', async () => {
+			const app: InstanceInvitationApplicationPort = application();
+			(app.accept as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				outcome: 'already_member',
+				member
+			} satisfies AcceptInstanceInvitationResult);
+
+			const response: Response = await invoke(
+				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
+				event({
+					pathname: ACCEPT_PATH,
+					method: 'POST',
+					body: validAcceptBody(),
+					headers: { 'idempotency-key': 'accept-1' }
+				})
+			);
+
+			expect(response.status).toBe(409);
+			expect(response.headers.get('cache-control')).toBe('no-store');
+			const body: Record<string, unknown> = await response.json();
+			expect(body).toEqual({
+				type: 'urn:signkit:problem:instance-member-already-exists',
+				title: 'Instance member already exists',
+				status: 409,
+				detail: 'The authenticated caller is already an active instance member.',
+				instance: ACCEPT_PATH,
+				member
+			});
+			expect(body).not.toHaveProperty('invitation');
+			expect(body).not.toHaveProperty('token');
+			expect(body).not.toHaveProperty('hash');
+			expect(body).not.toHaveProperty('email');
+		});
+
 		it.each([
 			['idempotency_conflict', 409, 'urn:signkit:problem:instance-invitation-idempotency-conflict'],
 			['integrity_error', 503, 'urn:signkit:problem:instance-invitation-integrity-error']

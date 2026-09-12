@@ -941,21 +941,20 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		]);
 	});
 
-	it('preserves existing member role when an active member accepts an invitation', async (): Promise<void> => {
+	it('returns already_member, keeps original role, leaves a higher-role invitation pending, and writes zero accept receipts', async (): Promise<void> => {
 		await insertMember(OWNER_ID, 'owner');
 		const preexistingCreatedAt: string = '2026-09-01T12:00:00.000Z';
-		await insertMember(ADMIN_ID, 'admin', 'active', preexistingCreatedAt);
+		await insertMember(MEMBER_ID, 'member', 'active', preexistingCreatedAt);
 
-		// Owner invites member role
+		// Owner invites for a higher 'admin' role than the pre-existing member's own role.
 		await store().createInstanceInvitation(
-			createCommand({ role: 'member', invitationId: INVITATION_ID, tokenHash: TOKEN_HASH })
+			createCommand({ role: 'admin', invitationId: INVITATION_ID, tokenHash: TOKEN_HASH })
 		);
 
-		// Admin accepts member-role invitation
 		const acceptResult: AcceptInstanceInvitationStoreResult =
 			await store().acceptInstanceInvitation(
 				acceptCommand({
-					actor: { type: 'user', id: ADMIN_ID },
+					actor: { type: 'user', id: MEMBER_ID },
 					tokenHash: TOKEN_HASH,
 					emailBinding: EMAIL_BINDING,
 					acceptedAt: ACCEPTED_AT
@@ -963,15 +962,10 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 			);
 
 		expect(acceptResult).toEqual({
-			outcome: 'accepted',
-			invitation: expect.objectContaining({
-				id: INVITATION_ID,
-				status: 'accepted',
-				acceptedByUserId: ADMIN_ID
-			}),
+			outcome: 'already_member',
 			member: {
-				userId: ADMIN_ID,
-				role: 'admin',
+				userId: MEMBER_ID,
+				role: 'member',
 				status: 'active',
 				createdAt: new Date(preexistingCreatedAt).toISOString(),
 				updatedAt: new Date(preexistingCreatedAt).toISOString()
@@ -980,8 +974,20 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 
 		const memberRoleRows: { role: string }[] = await database()<
 			{ role: string }[]
-		>`SELECT role FROM instance_member WHERE user_id = ${ADMIN_ID}`;
-		expect(memberRoleRows[0]?.role).toBe('admin');
+		>`SELECT role FROM instance_member WHERE user_id = ${MEMBER_ID}`;
+		expect(memberRoleRows).toEqual([{ role: 'member' }]);
+
+		const invRows: { status: string; acceptedByUserId: string | null }[] = await database()<
+			{ status: string; acceptedByUserId: string | null }[]
+		>`SELECT status, accepted_by_user_id AS "acceptedByUserId" FROM instance_invitation WHERE id = ${INVITATION_ID}`;
+		expect(invRows).toEqual([{ status: 'pending', acceptedByUserId: null }]);
+
+		// Only the owner's earlier create receipt exists; the rolled-back
+		// already_member accept never wrote a receipt for this invitation.
+		const receiptRows: { commandType: string }[] = await database()<
+			{ commandType: string }[]
+		>`SELECT command_type AS "commandType" FROM instance_invitation_command WHERE invitation_id = ${INVITATION_ID}`;
+		expect(receiptRows).toEqual([{ commandType: 'create' }]);
 	});
 
 	it('rejects suspended members across invitation methods', async (): Promise<void> => {

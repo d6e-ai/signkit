@@ -805,6 +805,23 @@ describe('InstanceInvitationApplication', () => {
 			).rejects.toThrow(InvalidInstanceInvitationRequestError);
 		});
 
+		it('propagates a scripted already_member outcome with only the current member, no invitation, token, or replay flag', async () => {
+			const member: InstanceMemberMetadata = memberMetadata('acceptor-user-2', 'admin');
+			const store = new FakeInstanceStore([], [], [{ outcome: 'already_member', member }]);
+			const app = createTestApp(store);
+
+			const result: AcceptInstanceInvitationResult = await app.accept(ACCEPTOR_ACTOR, {
+				idempotencyKey: 'accept-already-member-1',
+				token: validToken,
+				email: 'signer@example.com'
+			});
+
+			expect(result).toEqual({ outcome: 'already_member', member });
+			expect(result).not.toHaveProperty('invitation');
+			expect(result).not.toHaveProperty('token');
+			expect(result).not.toHaveProperty('replayed');
+		});
+
 		it('forwards other accept store outcomes (invitation_invalid, idempotency_conflict, member_suspended, integrity_error)', async () => {
 			const outcomes: AcceptInstanceInvitationStoreResult[] = [
 				{ outcome: 'invitation_invalid' },

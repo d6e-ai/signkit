@@ -4,6 +4,7 @@ import {
 	isInstanceInvitationStatus,
 	isInstanceMemberRole,
 	isInstanceMemberStatus,
+	MAX_PENDING_INSTANCE_INVITATIONS,
 	type AcceptInstanceInvitationCommand,
 	type AcceptInstanceInvitationStoreResult,
 	type BootstrapInstanceCommand,
@@ -585,7 +586,7 @@ export class D1InstanceStore implements InstanceStore {
 				`UPDATE instance_invitation
 				 SET status = 'accepted', accepted_at = ?, accepted_by_user_id = ?
 				 WHERE id = ? AND status = 'pending' AND token_hash = ? AND email_binding = ?
-				   AND datetime(expires_at) > datetime(?)`
+				   AND expires_at > ?`
 			)
 			.bind(
 				command.acceptedAt,
@@ -737,9 +738,13 @@ export class D1InstanceStore implements InstanceStore {
 			)
 			.bind(command.actor.type, command.actor.id, command.idempotencyKey);
 
+		// Lexical comparison, not datetime(): both sides are canonical UTC
+		// millisecond ISO-8601 strings, so string ordering matches chronological
+		// ordering exactly, whereas datetime() truncates to whole seconds and
+		// would misclassify invitations expiring within the same second.
 		const countStmt: D1PreparedStatement = this.#database
 			.prepare(
-				"SELECT COUNT(*) AS count FROM instance_invitation WHERE status = 'pending' AND datetime(expires_at) > datetime(?)"
+				"SELECT COUNT(*) AS count FROM instance_invitation WHERE status = 'pending' AND expires_at > ?"
 			)
 			.bind(command.createdAt);
 
@@ -770,7 +775,7 @@ export class D1InstanceStore implements InstanceStore {
 		}
 
 		const countRow: CountRow | null = firstRow<CountRow>(results[2]);
-		if (countRow !== null && countRow.count >= 200) {
+		if (countRow !== null && countRow.count >= MAX_PENDING_INSTANCE_INVITATIONS) {
 			return { outcome: 'limit' };
 		}
 
@@ -840,14 +845,29 @@ export class D1InstanceStore implements InstanceStore {
 			results[2]
 		);
 
-		if (memberRow !== null && memberRow.status === 'suspended') {
-			return { kind: 'outcome', result: { outcome: 'member_suspended' } };
-		}
-
+		// Exact receipt replay is checked first, ahead of the actor's current
+		// status: evaluateAcceptReceipt re-derives member_suspended from the
+		// joined member row itself, so a replay by a since-suspended actor is
+		// still classified correctly without a separate branch here.
 		if (receiptRow !== null) {
 			return {
 				kind: 'outcome',
 				result: evaluateAcceptReceipt(receiptRow, memberRow, command)
+			};
+		}
+
+		if (memberRow !== null && memberRow.status === 'suspended') {
+			return { kind: 'outcome', result: { outcome: 'member_suspended' } };
+		}
+
+		// An already-active member never needs to accept: return their current
+		// membership without ever locking or mutating the invitation, so a
+		// stale or misdirected token cannot be replayed into a role change or
+		// leave a receipt behind.
+		if (memberRow !== null && memberRow.status === 'active') {
+			return {
+				kind: 'outcome',
+				result: { outcome: 'already_member', member: metadataFromMemberRow(memberRow) }
 			};
 		}
 

@@ -190,7 +190,7 @@ describe('D1InstanceStore unit tests', () => {
 			const result = await store.createInstanceInvitation(createCommand);
 			expect(result).toEqual({ outcome: 'limit' });
 			expect(fake.batches).toHaveLength(1);
-			expect(fake.batches[0][2].sql).toContain('datetime(expires_at) > datetime(?)');
+			expect(fake.batches[0][2].sql).toContain('expires_at > ?');
 			expect(fake.batches[0][2].bindings).toEqual([CREATED_AT]);
 		});
 
@@ -207,7 +207,7 @@ describe('D1InstanceStore unit tests', () => {
 			const allowedResult = await storeExpired.createInstanceInvitation(createCommand);
 			expect(allowedResult.outcome).toBe('created');
 			expect(fakeExpired.batches).toHaveLength(2);
-			expect(fakeExpired.batches[0][2].sql).toContain('datetime(expires_at) > datetime(?)');
+			expect(fakeExpired.batches[0][2].sql).toContain('expires_at > ?');
 			expect(fakeExpired.batches[0][2].bindings).toEqual([CREATED_AT]);
 
 			// When 200 live pending invitations exist, live-pending count returns 200 -> limit
@@ -218,7 +218,7 @@ describe('D1InstanceStore unit tests', () => {
 			const limitResult = await storeLive.createInstanceInvitation(createCommand);
 			expect(limitResult).toEqual({ outcome: 'limit' });
 			expect(fakeLive.batches).toHaveLength(1);
-			expect(fakeLive.batches[0][2].sql).toContain('datetime(expires_at) > datetime(?)');
+			expect(fakeLive.batches[0][2].sql).toContain('expires_at > ?');
 			expect(fakeLive.batches[0][2].bindings).toEqual([CREATED_AT]);
 		});
 
@@ -363,6 +363,53 @@ describe('D1InstanceStore unit tests', () => {
 			expect(mutationBatch[2].sql).toContain('INSERT INTO instance_invitation_command');
 			expect(mutationBatch[2].sql).toContain("'accept'");
 			expect(mutationBatch[2].bindings[3]).toBe(INVITATION_ID);
+		});
+
+		it('returns already_member without locking or mutating the invitation when actor is already an active member', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[], // receipt: none
+					[
+						{
+							user_id: 'accepting-user-1',
+							role: 'admin',
+							status: 'active',
+							created_at: '2026-09-01T00:00:00.000Z',
+							updated_at: '2026-09-01T00:00:00.000Z'
+						}
+					], // member: already active
+					[
+						{
+							id: INVITATION_ID,
+							role: 'owner',
+							status: 'pending',
+							email_binding: EMAIL_BINDING,
+							invited_by_user_id: OWNER_ID,
+							created_at: CREATED_AT,
+							expires_at: EXPIRES_AT,
+							accepted_at: null,
+							accepted_by_user_id: null,
+							revoked_at: null,
+							revoked_by_user_id: null
+						}
+					] // invitation: pending, invites a higher role
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.acceptInstanceInvitation(acceptCommand);
+			expect(result).toEqual({
+				outcome: 'already_member',
+				member: {
+					userId: 'accepting-user-1',
+					role: 'admin',
+					status: 'active',
+					createdAt: '2026-09-01T00:00:00.000Z',
+					updatedAt: '2026-09-01T00:00:00.000Z'
+				}
+			});
+			// Gate batch only: no member/invitation mutation or receipt batch was ever run.
+			expect(fake.batches).toHaveLength(1);
 		});
 
 		it('refuses accept when asserted email binding does not match and proves secretsEqual async flow', async () => {

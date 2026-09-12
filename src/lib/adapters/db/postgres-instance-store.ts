@@ -5,6 +5,7 @@ import {
 	isInstanceInvitationStatus,
 	isInstanceMemberRole,
 	isInstanceMemberStatus,
+	MAX_PENDING_INSTANCE_INVITATIONS,
 	type AcceptInstanceInvitationCommand,
 	type AcceptInstanceInvitationStoreResult,
 	type BootstrapInstanceCommand,
@@ -340,7 +341,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						transaction,
 						command.createdAt
 					);
-					if (pendingCount >= 200) {
+					if (pendingCount >= MAX_PENDING_INSTANCE_INVITATIONS) {
 						throw new InstanceRollback({ outcome: 'limit' });
 					}
 
@@ -506,7 +507,8 @@ export class PostgresInstanceStore implements InstanceStore {
 		try {
 			return await this.#sql.begin(
 				async (transaction): Promise<AcceptInstanceInvitationStoreResult> => {
-					// 1. Refuse suspended subject
+					// 1. Lock the actor's member row up front so replay evaluation and
+					// the checks below observe a stable snapshot.
 					const memberRows = await transaction<MemberRow[]>`
 						SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 						FROM instance_member
@@ -514,11 +516,11 @@ export class PostgresInstanceStore implements InstanceStore {
 						FOR UPDATE
 					`;
 					const existingMember: MemberRow | null = memberRows[0] ?? null;
-					if (existingMember !== null && existingMember.status === 'suspended') {
-						throw new InstanceRollback({ outcome: 'member_suspended' });
-					}
 
-					// 2. Check receipt for replay
+					// 2. Exact receipt replay is checked first: evaluateAcceptReceipt
+					// re-derives member_suspended from the joined member row itself, so
+					// a replay by a since-suspended actor is still classified correctly
+					// without a separate branch here.
 					const receiptRow: AcceptInvitationReceiptRow | null = await this.#findAcceptReceipt(
 						transaction,
 						command.actor.type,
@@ -529,7 +531,23 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback(evaluateAcceptReceipt(receiptRow, existingMember, command));
 					}
 
-					// 3. Lock invitation FOR UPDATE
+					// 3. Suspended subject fails closed, opaque like an invalid invitation.
+					if (existingMember !== null && existingMember.status === 'suspended') {
+						throw new InstanceRollback({ outcome: 'member_suspended' });
+					}
+
+					// 4. An already-active member never needs to accept: return their
+					// current membership without ever locking or mutating the
+					// invitation, so a stale or misdirected token cannot be replayed
+					// into a role change or leave a receipt behind.
+					if (existingMember !== null && existingMember.status === 'active') {
+						throw new InstanceRollback({
+							outcome: 'already_member',
+							member: memberMetadataFromRow(existingMember)
+						});
+					}
+
+					// 5. Lock invitation FOR UPDATE
 					const invRows = await transaction<InvitationCandidateRow[]>`
 						SELECT
 							id, role, status,
@@ -582,7 +600,9 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback({ outcome: 'invitation_invalid' });
 					}
 
-					// 4. Enroll active member with invited role or preserve existing role
+					// 6. Enroll a brand-new active member with the invited role. An
+					// existing member (active or suspended) was already resolved above
+					// and never reaches this statement.
 					await transaction`
 						INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 						VALUES (
@@ -611,7 +631,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback({ outcome: 'integrity_error' });
 					}
 
-					// 5. Update invitation
+					// 7. Update invitation
 					const updated = await transaction<{ id: string }[]>`
 						UPDATE instance_invitation
 						SET status = 'accepted',
@@ -628,7 +648,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback(await this.#classifyAcceptFailure(transaction, command));
 					}
 
-					// 6. Record accept receipt
+					// 8. Record accept receipt
 					const insertedReceipt = await transaction<{ actorId: string }[]>`
 						INSERT INTO instance_invitation_command (
 							actor_type, actor_id, idempotency_key, command_type, request_hash,
@@ -988,7 +1008,7 @@ export class PostgresInstanceStore implements InstanceStore {
 		}
 
 		const pendingCount = await this.#countPendingInvitations(sql, command.createdAt);
-		if (pendingCount >= 200) {
+		if (pendingCount >= MAX_PENDING_INSTANCE_INVITATIONS) {
 			return { outcome: 'limit' };
 		}
 
@@ -1020,9 +1040,6 @@ export class PostgresInstanceStore implements InstanceStore {
 			LIMIT 1
 		`;
 		const existingMember: MemberRow | null = memberRows[0] ?? null;
-		if (existingMember !== null && existingMember.status === 'suspended') {
-			return { outcome: 'member_suspended' };
-		}
 
 		const receipt = await this.#findAcceptReceipt(
 			sql,
@@ -1034,6 +1051,17 @@ export class PostgresInstanceStore implements InstanceStore {
 			return evaluateAcceptReceipt(receipt, existingMember, command);
 		}
 
+		if (existingMember !== null && existingMember.status === 'suspended') {
+			return { outcome: 'member_suspended' };
+		}
+
+		// Deliberately no already_member re-check here: this classifier also
+		// runs inside the same transaction right after the brand-new-member
+		// enroll insert (step 6) has tentatively run — by construction the
+		// primary gate already proved existingMember was null at transaction
+		// start whenever that path reaches this classifier, so re-reading
+		// "active" here would only ever reflect that same doomed insert, not
+		// genuine pre-existing membership.
 		const invRows = await sql<InvitationCandidateRow[]>`
 			SELECT
 				id, role, status,
@@ -1367,6 +1395,19 @@ function metadataFromJoinedInvitation(row: {
 		acceptedByUserId: row.invAcceptedByUserId,
 		revokedAt: toIsoOrNull(row.invRevokedAt),
 		revokedByUserId: row.invRevokedByUserId
+	};
+}
+
+function memberMetadataFromRow(row: MemberRow): InstanceMemberMetadata {
+	if (!isInstanceMemberRole(row.role) || !isInstanceMemberStatus(row.status)) {
+		throw new Error('Stored instance member state is corrupted.');
+	}
+	return {
+		userId: row.userId,
+		role: row.role,
+		status: row.status,
+		createdAt: toIso(row.createdAt),
+		updatedAt: toIso(row.updatedAt)
 	};
 }
 

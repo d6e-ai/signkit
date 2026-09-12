@@ -200,9 +200,16 @@ BEGIN
         AND NEW.role <> 'member'
       )
       OR (
+        -- Lexical comparison, not datetime(): both columns are canonical UTC
+        -- millisecond ISO-8601 strings, so string ordering matches
+        -- chronological ordering exactly, whereas datetime() truncates to
+        -- whole seconds and would misclassify invitations expiring within
+        -- the same second.
         SELECT COUNT(*) FROM instance_invitation
         WHERE status = 'pending'
-          AND datetime(expires_at) > datetime(NEW.occurred_at)
+          AND expires_at > NEW.occurred_at
+      -- 200 mirrors MAX_PENDING_INSTANCE_INVITATIONS in
+      -- src/lib/ports/instance-store.ts; keep both in sync.
       ) > 200
       OR NOT EXISTS (
         SELECT 1 FROM instance_invitation
@@ -231,7 +238,8 @@ BEGIN
           AND status = 'accepted'
           AND accepted_by_user_id = NEW.actor_id
           AND accepted_at = NEW.occurred_at
-          AND datetime(expires_at) > datetime(NEW.occurred_at)
+          -- Lexical comparison: see the create-evidence check above.
+          AND expires_at > NEW.occurred_at
       )
     )
     THEN RAISE(ABORT, 'instance invitation accept evidence conflict')

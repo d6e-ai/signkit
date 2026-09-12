@@ -96,7 +96,10 @@ export interface AcceptInstanceInvitationInput {
  * Public accept outcomes.
  *
  * `accepted` and `replayed` both resolve the current invitation and enrolled member.
- * `replayed: true` distinguishes an idempotent replay.
+ * `replayed: true` distinguishes an idempotent replay. `already_member` means the
+ * caller was already a currently active instance member: the invitation was left
+ * pending and unconsumed, and only the caller's own current member metadata is
+ * returned, never invitation data.
  */
 export type AcceptInstanceInvitationResult =
 	| {
@@ -111,6 +114,7 @@ export type AcceptInstanceInvitationResult =
 			member: InstanceMemberMetadata;
 			replayed: true;
 	  }
+	| { outcome: 'already_member'; member: InstanceMemberMetadata }
 	| { outcome: 'invitation_invalid' }
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'member_suspended' }
