@@ -61,19 +61,28 @@ const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
 
 interface TestEvent {
 	cookieDelete: ReturnType<typeof vi.fn>;
+	cookieGet: ReturnType<typeof vi.fn>;
 	cookieSet: ReturnType<typeof vi.fn>;
 	event: RequestEvent;
 }
 
-function testEvent(value: string = token, protocol: 'http:' | 'https:' = 'https:'): TestEvent {
+function testEvent(
+	value: string = token,
+	protocol: 'http:' | 'https:' = 'https:',
+	activeSessionCookie?: string
+): TestEvent {
 	const cookieDelete = vi.fn();
+	const cookieGet = vi.fn((name: string): string | undefined =>
+		name === RECIPIENT_SESSION_COOKIE ? activeSessionCookie : undefined
+	);
 	const cookieSet = vi.fn();
 	const url: URL = new URL(`${protocol}//signkit.example/s/${value}`);
 	return {
 		cookieDelete,
+		cookieGet,
 		cookieSet,
 		event: {
-			cookies: { delete: cookieDelete, set: cookieSet },
+			cookies: { delete: cookieDelete, get: cookieGet, set: cookieSet },
 			params: { token: value },
 			platform: { env: { DB: {} as D1Database } },
 			url
@@ -173,9 +182,43 @@ describe('recipient link exchange', () => {
 				maxAge: DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS - 60
 			})
 		);
-		expect(input.cookieDelete).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(input.cookieDelete).not.toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
 		expect(response.headers.get('location')).toBe('/ja/sign');
 		expect(response.headers.get('location')).not.toContain(token);
+	});
+
+	it('clears only an active session containing the same declined capability', async () => {
+		const same: TestEvent = testEvent(token, 'https:', 'sealed-active-cookie');
+		const sameOptions: RecipientLinkReceiptOptions = {
+			...receiptOptions(),
+			unsealActiveSession: vi.fn(async (): Promise<string> => token)
+		};
+		await createRecipientLinkHandler(
+			() => application(null),
+			undefined,
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			sameOptions
+		)(same.event);
+		expect(sameOptions.unsealActiveSession).toHaveBeenCalledWith('sealed-active-cookie');
+		expect(same.cookieDelete).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+
+		const unrelated: TestEvent = testEvent(token, 'https:', 'other-active-cookie');
+		const unrelatedOptions: RecipientLinkReceiptOptions = {
+			...receiptOptions(),
+			unsealActiveSession: vi.fn(async (): Promise<string> => `skr1_${'B'.repeat(43)}`)
+		};
+		await createRecipientLinkHandler(
+			() => application(null),
+			undefined,
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			unrelatedOptions
+		)(unrelated.event);
+		expect(unrelatedOptions.unsealActiveSession).toHaveBeenCalledWith('other-active-cookie');
+		expect(unrelated.cookieDelete).not.toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, {
+			path: '/'
+		});
 	});
 
 	it('preserves existing cookies and returns a clean unavailable redirect when receipt minting fails', async () => {

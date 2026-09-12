@@ -162,6 +162,7 @@
 		onStatusChange?: (status: RecipientDeclineStatus) => void;
 		onSuccess?: () => void;
 		onTransientFailure?: () => void;
+		onAmbiguousFailure?: () => void;
 		onTerminalFailure?: () => void;
 	}
 
@@ -183,6 +184,7 @@
 		onStatusChange,
 		onSuccess,
 		onTransientFailure,
+		onAmbiguousFailure,
 		onTerminalFailure
 	}: RecipientDeclineOptions): RecipientDeclineController {
 		let status: RecipientDeclineStatus = 'idle';
@@ -258,11 +260,13 @@
 				status = 'transient_failure';
 				onStatusChange?.('transient_failure');
 				onTransientFailure?.();
+				if (response.status === 200) onAmbiguousFailure?.();
 			} catch {
 				if (abortController.signal.aborted) return;
 				status = 'transient_failure';
 				onStatusChange?.('transient_failure');
 				onTransientFailure?.();
+				onAmbiguousFailure?.();
 			} finally {
 				inFlight = false;
 			}
@@ -997,7 +1001,7 @@
 			pageState: data.state,
 			onStatusChange: handleDeclineStatus,
 			onSuccess: () => void invalidateAll(),
-			onTransientFailure: () => void invalidateAll(),
+			onAmbiguousFailure: () => void invalidateAll(),
 			onTerminalFailure: () => void invalidateAll()
 		});
 	}

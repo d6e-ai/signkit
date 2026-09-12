@@ -30,7 +30,8 @@ describe('recipient document rendering', () => {
 		expect(source).toContain("{#if data.state === 'declined' || isDeclined}");
 		expect(source).toContain("{:else if data.state === 'active'}");
 		expect(source).toContain('onSuccess: () => void invalidateAll()');
-		expect(source).toContain('onTransientFailure: () => void invalidateAll()');
+		expect(source).toContain('onAmbiguousFailure: () => void invalidateAll()');
+		expect(source).not.toContain('onTransientFailure: () => void invalidateAll()');
 		expect(source).toContain('onTerminalFailure: () => void invalidateAll()');
 		expect(source).toContain('signing_declined_receipt_title');
 		expect(source.indexOf("{#if data.state === 'declined' || isDeclined}")).toBeLessThan(

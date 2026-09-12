@@ -17,7 +17,8 @@ import {
 	RECIPIENT_SESSION_COOKIE,
 	RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS,
 	RECIPIENT_SESSION_COOKIE_OPTIONS,
-	sealRecipientSession
+	sealRecipientSession,
+	unsealRecipientSession
 } from '$lib/server/recipient-session';
 
 interface ResolverContext {
@@ -29,6 +30,7 @@ export type RecipientLinkApplicationResolver = (
 ) => RecipientAccessApplicationPort | null | Promise<RecipientAccessApplicationPort | null>;
 
 export type RecipientSessionSealer = (token: string) => Promise<string>;
+export type RecipientSessionUnsealer = (cookie: string) => Promise<string | null>;
 
 export type RecipientDeclinedReceiptApplicationResolver = (
 	context: ResolverContext
@@ -44,6 +46,7 @@ export type DeclinedReceiptSessionSealer = (
 export interface RecipientLinkReceiptOptions {
 	resolveApplication: RecipientDeclinedReceiptApplicationResolver;
 	sealSession?: DeclinedReceiptSessionSealer;
+	unsealActiveSession?: RecipientSessionUnsealer;
 }
 
 export function createRecipientLinkHandler(
@@ -130,7 +133,18 @@ async function exchangeDeclinedReceipt(
 		secure: !isInsecureLocalDevelopment(url, allowInsecureLocalDevelopment),
 		maxAge: remainingSeconds
 	});
-	cookies.delete(RECIPIENT_SESSION_COOKIE, { path: RECIPIENT_SESSION_COOKIE_OPTIONS.path });
+	const activeCookie: string | undefined = cookies.get(RECIPIENT_SESSION_COOKIE);
+	if (activeCookie !== undefined) {
+		const unsealActive: RecipientSessionUnsealer =
+			options.unsealActiveSession ?? unsealRecipientSession;
+		try {
+			if ((await unsealActive(activeCookie)) === token) {
+				cookies.delete(RECIPIENT_SESSION_COOKIE, { path: RECIPIENT_SESSION_COOKIE_OPTIONS.path });
+			}
+		} catch {
+			// A declined link must never destroy an unreadable or unrelated live session.
+		}
+	}
 	return redirectResponse(`/${authorized.receipt.locale}/sign`);
 }
 
