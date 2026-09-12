@@ -147,6 +147,63 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		}
 	});
 
+	it('resolves a genuinely concurrent same-actor, same-idempotency-key bootstrap race to one bootstrap and one replay', async () => {
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const [storeA, storeB]: readonly InstanceStore[] = synchronizeBootstrap([
+				new PostgresInstanceStore(concurrentSql),
+				new PostgresInstanceStore(concurrentSql)
+			]);
+			const command: BootstrapInstanceCommand = bootstrapCommand();
+			const [first, second]: BootstrapInstanceStoreResult[] = await Promise.all([
+				storeA.bootstrapInstance(command),
+				storeB.bootstrapInstance(command)
+			]);
+
+			const outcomes: string[] = [first.outcome, second.outcome].sort();
+			expect(outcomes).toEqual(['already_bootstrapped', 'bootstrapped']);
+
+			const bootstrapped: Extract<BootstrapInstanceStoreResult, { outcome: 'bootstrapped' }> = (
+				first.outcome === 'bootstrapped' ? first : second
+			) as Extract<BootstrapInstanceStoreResult, { outcome: 'bootstrapped' }>;
+			const replay: Extract<
+				BootstrapInstanceStoreResult,
+				{ outcome: 'already_bootstrapped'; replayed: true }
+			> = (first.outcome === 'already_bootstrapped' ? first : second) as Extract<
+				BootstrapInstanceStoreResult,
+				{ outcome: 'already_bootstrapped'; replayed: true }
+			>;
+			expect(replay.replayed).toBe(true);
+			expect(replay.member).toEqual(bootstrapped.member);
+			expect(bootstrapped.member).toEqual({
+				userId: ACTOR_ID,
+				role: 'owner',
+				status: 'active',
+				createdAt: new Date(CREATED_AT).toISOString(),
+				updatedAt: new Date(CREATED_AT).toISOString()
+			});
+
+			const members = await memberRows();
+			expect(members).toEqual([{ userId: ACTOR_ID, role: 'owner' }]);
+
+			const bootstrapRows = await database()<
+				{ ownerUserId: string }[]
+			>`SELECT owner_user_id AS "ownerUserId" FROM instance_bootstrap`;
+			expect(bootstrapRows).toEqual([{ ownerUserId: ACTOR_ID }]);
+
+			const commandRows = await database()<
+				{ actorId: string }[]
+			>`SELECT actor_id AS "actorId" FROM instance_bootstrap_command`;
+			expect(commandRows).toEqual([{ actorId: ACTOR_ID }]);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
 	it('refuses bootstrap when a member already exists', async () => {
 		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 			VALUES ('preexisting-user', 'member', 'active', ${CREATED_AT}::timestamptz, ${CREATED_AT}::timestamptz)`;
