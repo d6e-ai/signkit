@@ -321,4 +321,125 @@ describe('D1 instance invitation migration', () => {
 			sqlite.close();
 		}
 	});
+
+	it('protects terminal invitations and immutable columns from modification', () => {
+		const sqlite: DatabaseSync = database();
+		try {
+			insertMember(sqlite);
+			insertMember(sqlite, OTHER_MEMBER_ID, 'member');
+			insertInvitation(sqlite, {
+				status: 'accepted',
+				acceptedAt: CREATED_AT,
+				acceptedByUserId: OTHER_MEMBER_ID
+			});
+
+			// Attempt to update terminal invitation
+			expect((): void => {
+				sqlite.exec(
+					`UPDATE instance_invitation SET status = 'pending' WHERE id = '${INVITATION_ID}'`
+				);
+			}).toThrow(/cannot modify immutable instance invitation fields/);
+
+			// Attempt to modify immutable fields on pending invitation
+			insertInvitation(sqlite, { id: OTHER_INVITATION_ID, tokenHash: 'd'.repeat(64) });
+			expect((): void => {
+				sqlite.exec(
+					`UPDATE instance_invitation SET role = 'owner' WHERE id = '${OTHER_INVITATION_ID}'`
+				);
+			}).toThrow(/cannot modify immutable instance invitation fields/);
+			expect((): void => {
+				sqlite.exec(
+					`UPDATE instance_invitation SET token_hash = '${'f'.repeat(64)}' WHERE id = '${OTHER_INVITATION_ID}'`
+				);
+			}).toThrow(/cannot modify immutable instance invitation fields/);
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('enforces evidence guard triggers on command receipts', () => {
+		const sqlite: DatabaseSync = database();
+		try {
+			insertMember(sqlite, OWNER_ID, 'owner');
+			insertMember(sqlite, 'admin-1', 'admin');
+			insertMember(sqlite, 'suspended-1', 'owner');
+			sqlite.exec("UPDATE instance_member SET status = 'suspended' WHERE user_id = 'suspended-1'");
+
+			// CREATE: fails if actor is admin inviting owner
+			insertInvitation(sqlite, {
+				id: INVITATION_ID,
+				role: 'owner',
+				invitedByUserId: 'admin-1'
+			});
+			expect((): void => {
+				insertCommand(sqlite, {
+					actorId: 'admin-1',
+					idempotencyKey: 'admin-invite-owner',
+					commandType: 'create',
+					role: 'owner',
+					invitationId: INVITATION_ID
+				});
+			}).toThrow(/instance invitation create evidence conflict/);
+
+			// CREATE: fails if actor is suspended
+			insertInvitation(sqlite, {
+				id: OTHER_INVITATION_ID,
+				tokenHash: 'd'.repeat(64),
+				role: 'member',
+				invitedByUserId: 'suspended-1'
+			});
+			expect((): void => {
+				insertCommand(sqlite, {
+					actorId: 'suspended-1',
+					idempotencyKey: 'suspended-invite',
+					commandType: 'create',
+					role: 'member',
+					invitationId: OTHER_INVITATION_ID
+				});
+			}).toThrow(/instance invitation create evidence conflict/);
+
+			// ACCEPT: fails if invitation was not updated to accepted
+			const acceptInvId = '01900000-0000-7000-8000-000000000403';
+			insertMember(sqlite, 'acceptor-1', 'member');
+			insertInvitation(sqlite, {
+				id: acceptInvId,
+				tokenHash: 'e'.repeat(64),
+				role: 'member',
+				status: 'pending'
+			});
+			expect((): void => {
+				insertCommand(sqlite, {
+					actorId: 'acceptor-1',
+					idempotencyKey: 'accept-without-update',
+					commandType: 'accept',
+					resultStatus: 'accepted',
+					role: 'member',
+					invitationId: acceptInvId
+				});
+			}).toThrow(/instance invitation accept evidence conflict/);
+
+			// REVOKE: fails if admin attempts to revoke owner invitation
+			const ownerInvId = '01900000-0000-7000-8000-000000000404';
+			insertInvitation(sqlite, {
+				id: ownerInvId,
+				tokenHash: 'f'.repeat(64),
+				role: 'owner',
+				status: 'revoked',
+				revokedAt: CREATED_AT,
+				revokedByUserId: 'admin-1'
+			});
+			expect((): void => {
+				insertCommand(sqlite, {
+					actorId: 'admin-1',
+					idempotencyKey: 'admin-revoke-owner',
+					commandType: 'revoke',
+					resultStatus: 'revoked',
+					role: 'owner',
+					invitationId: ownerInvId
+				});
+			}).toThrow(/instance invitation revoke evidence conflict/);
+		} finally {
+			sqlite.close();
+		}
+	});
 });

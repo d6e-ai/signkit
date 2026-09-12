@@ -167,3 +167,95 @@ CREATE TABLE instance_invitation_command (
     AND datetime(occurred_at) IS NOT NULL
   )
 );
+
+CREATE TRIGGER instance_invitation_immutable_fields_guard
+BEFORE UPDATE ON instance_invitation
+BEGIN
+  SELECT CASE
+    WHEN OLD.status IN ('accepted', 'revoked')
+      OR NEW.id <> OLD.id
+      OR NEW.token_hash <> OLD.token_hash
+      OR NEW.email_binding <> OLD.email_binding
+      OR NEW.invited_by_user_id <> OLD.invited_by_user_id
+      OR NEW.created_at <> OLD.created_at
+      OR NEW.expires_at <> OLD.expires_at
+      OR NEW.role <> OLD.role
+    THEN RAISE(ABORT, 'cannot modify immutable instance invitation fields')
+  END;
+END;
+
+CREATE TRIGGER instance_invitation_command_evidence_guard
+AFTER INSERT ON instance_invitation_command
+BEGIN
+  -- Validate CREATE command evidence
+  SELECT CASE
+    WHEN NEW.command_type = 'create' AND (
+      NEW.result_status <> 'pending'
+      OR NOT EXISTS (
+        SELECT 1 FROM instance_member
+        WHERE user_id = NEW.actor_id AND status = 'active' AND role IN ('owner', 'admin')
+      )
+      OR (
+        (SELECT role FROM instance_member WHERE user_id = NEW.actor_id) = 'admin'
+        AND NEW.role <> 'member'
+      )
+      OR (
+        SELECT COUNT(*) FROM instance_invitation WHERE status = 'pending'
+      ) > 200
+      OR NOT EXISTS (
+        SELECT 1 FROM instance_invitation
+        WHERE id = NEW.invitation_id
+          AND role = NEW.role
+          AND status = 'pending'
+          AND invited_by_user_id = NEW.actor_id
+          AND created_at = NEW.occurred_at
+      )
+    )
+    THEN RAISE(ABORT, 'instance invitation create evidence conflict')
+  END;
+
+  -- Validate ACCEPT command evidence
+  SELECT CASE
+    WHEN NEW.command_type = 'accept' AND (
+      NEW.result_status <> 'accepted'
+      OR NOT EXISTS (
+        SELECT 1 FROM instance_member
+        WHERE user_id = NEW.actor_id AND status = 'active'
+      )
+      OR NOT EXISTS (
+        SELECT 1 FROM instance_invitation
+        WHERE id = NEW.invitation_id
+          AND role = NEW.role
+          AND status = 'accepted'
+          AND accepted_by_user_id = NEW.actor_id
+          AND accepted_at = NEW.occurred_at
+          AND datetime(expires_at) > datetime(NEW.occurred_at)
+      )
+    )
+    THEN RAISE(ABORT, 'instance invitation accept evidence conflict')
+  END;
+
+  -- Validate REVOKE command evidence
+  SELECT CASE
+    WHEN NEW.command_type = 'revoke' AND (
+      NEW.result_status <> 'revoked'
+      OR NOT EXISTS (
+        SELECT 1 FROM instance_member
+        WHERE user_id = NEW.actor_id AND status = 'active' AND role IN ('owner', 'admin')
+      )
+      OR (
+        (SELECT role FROM instance_member WHERE user_id = NEW.actor_id) = 'admin'
+        AND NEW.role <> 'member'
+      )
+      OR NOT EXISTS (
+        SELECT 1 FROM instance_invitation
+        WHERE id = NEW.invitation_id
+          AND role = NEW.role
+          AND status = 'revoked'
+          AND revoked_by_user_id = NEW.actor_id
+          AND revoked_at = NEW.occurred_at
+      )
+    )
+    THEN RAISE(ABORT, 'instance invitation revoke evidence conflict')
+  END;
+END;
