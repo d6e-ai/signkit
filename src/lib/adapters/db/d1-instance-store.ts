@@ -21,6 +21,7 @@ import {
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult
 } from '$lib/ports/instance-store';
+import { secretsEqual } from '$lib/security/bearer-secret';
 
 interface BootstrapCommandReceiptRow {
 	request_hash: string;
@@ -855,7 +856,7 @@ export class D1InstanceStore implements InstanceStore {
 		const expiresAtMs: number = invitationRow !== null ? Date.parse(invitationRow.expires_at) : NaN;
 		if (
 			invitationRow === null ||
-			invitationRow.email_binding !== command.emailBinding ||
+			!(await secretsEqual(command.emailBinding, invitationRow.email_binding)) ||
 			invitationRow.status !== 'pending' ||
 			!Number.isFinite(acceptedAtMs) ||
 			!Number.isFinite(createdAtMs) ||

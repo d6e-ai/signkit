@@ -5,6 +5,7 @@ import type {
 	InstanceInvitationListQuery,
 	RevokeInstanceInvitationCommand
 } from '$lib/ports/instance-store';
+import * as bearerSecret from '$lib/security/bearer-secret';
 import { D1InstanceStore } from './d1-instance-store';
 
 interface RecordedStatement {
@@ -14,7 +15,10 @@ interface RecordedStatement {
 }
 
 interface FakeD1Options {
-	batchResults?: readonly unknown[][];
+	batchResults?:
+		| readonly unknown[][]
+		| ((batchIndex: number, statements: D1PreparedStatement[]) => readonly unknown[][]);
+	batchChanges?: (batchIndex: number, statementIndex: number) => number;
 	firstResult?: unknown | null | ((sql: string, bindings: readonly unknown[]) => unknown | null);
 	batchError?: Error | ((batchIndex: number) => Error | undefined);
 }
@@ -61,9 +65,15 @@ function fakeD1(options: FakeD1Options = {}) {
 			} else if (options.batchError !== undefined) {
 				throw options.batchError;
 			}
+			const resolvedBatchResults =
+				typeof options.batchResults === 'function'
+					? options.batchResults(batchIndex, statements)
+					: options.batchResults;
 			return statements.map((_, index: number) => ({
-				meta: { changes: 1 },
-				results: (options.batchResults?.[index] ?? []) as unknown[]
+				meta: {
+					changes: options.batchChanges !== undefined ? options.batchChanges(batchIndex, index) : 1
+				},
+				results: (resolvedBatchResults?.[index] ?? []) as unknown[]
 			}));
 		}
 	);
@@ -355,7 +365,8 @@ describe('D1InstanceStore unit tests', () => {
 			expect(mutationBatch[2].bindings[3]).toBe(INVITATION_ID);
 		});
 
-		it('refuses accept when asserted email binding does not match', async () => {
+		it('refuses accept when asserted email binding does not match and proves secretsEqual async flow', async () => {
+			const secretsEqualSpy = vi.spyOn(bearerSecret, 'secretsEqual');
 			const fake = fakeD1({
 				batchResults: [
 					[],
@@ -378,6 +389,108 @@ describe('D1InstanceStore unit tests', () => {
 			const result = await store.acceptInstanceInvitation(acceptCommand);
 			expect(result).toEqual({ outcome: 'invitation_invalid' });
 			expect(fake.batches).toHaveLength(1); // Gate check only
+			expect(secretsEqualSpy).toHaveBeenCalledWith(
+				acceptCommand.emailBinding,
+				'wrong-binding'.padStart(64, '0')
+			);
+			// Verify token_hash lookup query was not weakened
+			expect(fake.batches[0][2].sql).toContain('WHERE token_hash = ?');
+			expect(fake.batches[0][2].bindings).toEqual([TOKEN_HASH]);
+			secretsEqualSpy.mockRestore();
+		});
+
+		it('proves secretsEqual async resolution correctly gates accept outcome', async () => {
+			let asyncEvaluated = false;
+			const secretsEqualSpy = vi
+				.spyOn(bearerSecret, 'secretsEqual')
+				.mockImplementation(async () => {
+					await new Promise((resolve) => queueMicrotask(resolve));
+					asyncEvaluated = true;
+					return false;
+				});
+
+			const fake = fakeD1({
+				batchResults: [
+					[],
+					[],
+					[
+						{
+							id: INVITATION_ID,
+							role: 'member',
+							status: 'pending',
+							email_binding: 'wrong-binding'.padStart(64, '0'),
+							invited_by_user_id: OWNER_ID,
+							created_at: CREATED_AT,
+							expires_at: EXPIRES_AT
+						}
+					]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.acceptInstanceInvitation(acceptCommand);
+			expect(result).toEqual({ outcome: 'invitation_invalid' });
+			expect(asyncEvaluated).toBe(true);
+			expect(fake.batches).toHaveLength(1);
+			secretsEqualSpy.mockRestore();
+		});
+
+		it('classifies mutation failure as invitation_invalid via secretsEqual when email binding differs in classification path', async () => {
+			const secretsEqualSpy = vi.spyOn(bearerSecret, 'secretsEqual');
+			const wrongBinding = 'different-binding'.padStart(64, '0');
+			const fake = fakeD1({
+				batchResults: (batchIndex: number) => {
+					if (batchIndex === 0) {
+						// Batch 0: gate check passes
+						return [
+							[],
+							[],
+							[
+								{
+									id: INVITATION_ID,
+									role: 'member',
+									status: 'pending',
+									email_binding: EMAIL_BINDING,
+									invited_by_user_id: OWNER_ID,
+									created_at: CREATED_AT,
+									expires_at: EXPIRES_AT
+								}
+							]
+						];
+					}
+					if (batchIndex === 1) {
+						// Batch 1: mutation applied = false
+						return [[], [], []];
+					}
+					// Batch 2: classifyAcceptFailure gate check re-reads invitation with changed email binding
+					return [
+						[],
+						[],
+						[
+							{
+								id: INVITATION_ID,
+								role: 'member',
+								status: 'pending',
+								email_binding: wrongBinding,
+								invited_by_user_id: OWNER_ID,
+								created_at: CREATED_AT,
+								expires_at: EXPIRES_AT
+							}
+						]
+					];
+				},
+				batchChanges: (batchIndex: number, statementIndex: number) => {
+					// In batch 1 (mutations), update changed 0 rows
+					if (batchIndex === 1 && statementIndex === 1) return 0;
+					return 1;
+				}
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.acceptInstanceInvitation(acceptCommand);
+			expect(result).toEqual({ outcome: 'invitation_invalid' });
+			expect(secretsEqualSpy).toHaveBeenCalledWith(acceptCommand.emailBinding, wrongBinding);
+			secretsEqualSpy.mockRestore();
 		});
 	});
 

@@ -1,5 +1,6 @@
 import postgres from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as bearerSecret from '$lib/security/bearer-secret';
 import type {
 	AcceptInstanceInvitationCommand,
 	AcceptInstanceInvitationStoreResult,
@@ -1027,7 +1028,8 @@ describe('PostgresInstanceStore', () => {
 			expect(scripted.rollbacks).toBe(1);
 		});
 
-		it('refuses accept when email binding mismatch (invitation_invalid)', async () => {
+		it('refuses accept when email binding mismatch (invitation_invalid) and proves secretsEqual usage', async () => {
+			const secretsEqualSpy = vi.spyOn(bearerSecret, 'secretsEqual');
 			const scripted = new ScriptedPostgres([
 				[], // existing member check
 				[], // receipt check
@@ -1053,6 +1055,122 @@ describe('PostgresInstanceStore', () => {
 
 			expect(result).toEqual({ outcome: 'invitation_invalid' });
 			expect(scripted.rollbacks).toBe(1);
+			expect(secretsEqualSpy).toHaveBeenCalledWith(
+				acceptCommand().emailBinding,
+				'wrong'.padStart(64, '0')
+			);
+			// Verify token_hash lookup query was not weakened
+			expect(scripted.queries[2].text).toContain('WHERE token_hash =');
+			expect(scripted.queries[2].values).toContain(TOKEN_HASH);
+			secretsEqualSpy.mockRestore();
+		});
+
+		it('proves secretsEqual async resolution correctly gates accept outcome', async () => {
+			let asyncEvaluated = false;
+			const secretsEqualSpy = vi
+				.spyOn(bearerSecret, 'secretsEqual')
+				.mockImplementation(async () => {
+					await new Promise((resolve) => queueMicrotask(resolve));
+					asyncEvaluated = true;
+					return false;
+				});
+
+			const scripted = new ScriptedPostgres([
+				[], // existing member check
+				[], // receipt check
+				[
+					{
+						id: INVITATION_ID,
+						role: 'member',
+						status: 'pending',
+						emailBinding: 'wrong'.padStart(64, '0'),
+						invitedByUserId: OWNER_ID,
+						createdAt: CREATED_AT,
+						expiresAt: EXPIRES_AT,
+						acceptedAt: null,
+						acceptedByUserId: null,
+						revokedAt: null,
+						revokedByUserId: null
+					}
+				] // invitation lock FOR UPDATE
+			]);
+
+			const result: AcceptInstanceInvitationStoreResult =
+				await store(scripted).acceptInstanceInvitation(acceptCommand());
+
+			expect(result).toEqual({ outcome: 'invitation_invalid' });
+			expect(asyncEvaluated).toBe(true);
+			expect(scripted.rollbacks).toBe(1);
+			secretsEqualSpy.mockRestore();
+		});
+
+		it('classifies failure as invitation_invalid via secretsEqual when email binding differs in classification path', async () => {
+			const secretsEqualSpy = vi.spyOn(bearerSecret, 'secretsEqual');
+			const wrongBinding = 'different'.padStart(64, '0');
+			const scripted = new ScriptedPostgres([
+				[], // 1. existing member check
+				[], // 2. receipt check
+				[
+					{
+						id: INVITATION_ID,
+						role: 'member',
+						status: 'pending',
+						emailBinding: EMAIL_BINDING, // Gate passes initially
+						invitedByUserId: OWNER_ID,
+						createdAt: CREATED_AT,
+						expiresAt: EXPIRES_AT,
+						acceptedAt: null,
+						acceptedByUserId: null,
+						revokedAt: null,
+						revokedByUserId: null
+					}
+				], // 3. invitation lock FOR UPDATE
+				[], // 4. insert instance_member
+				[
+					{
+						userId: ACCEPTOR_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: ACCEPTED_AT,
+						updatedAt: ACCEPTED_AT
+					}
+				], // 5. select enrolled member FOR UPDATE
+				[], // 6. UPDATE instance_invitation returns 0 rows (concurrent mutation / conflict)
+				// classifyAcceptFailure queries:
+				[
+					{
+						userId: ACCEPTOR_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: ACCEPTED_AT,
+						updatedAt: ACCEPTED_AT
+					}
+				], // 7. member check
+				[], // 8. receipt check
+				[
+					{
+						id: INVITATION_ID,
+						role: 'member',
+						status: 'pending',
+						emailBinding: wrongBinding, // re-read invitation has different email binding
+						invitedByUserId: OWNER_ID,
+						createdAt: CREATED_AT,
+						expiresAt: EXPIRES_AT,
+						acceptedAt: null,
+						acceptedByUserId: null,
+						revokedAt: null,
+						revokedByUserId: null
+					}
+				] // 9. invitation check in classifyAcceptFailure
+			]);
+
+			const result: AcceptInstanceInvitationStoreResult =
+				await store(scripted).acceptInstanceInvitation(acceptCommand());
+
+			expect(result).toEqual({ outcome: 'invitation_invalid' });
+			expect(scripted.rollbacks).toBe(1);
+			expect(secretsEqualSpy).toHaveBeenCalledWith(acceptCommand().emailBinding, wrongBinding);
+			secretsEqualSpy.mockRestore();
 		});
 
 		it('refuses accept when invitation expired (invitation_invalid)', async () => {

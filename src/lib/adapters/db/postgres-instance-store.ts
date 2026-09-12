@@ -22,6 +22,7 @@ import {
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult
 } from '$lib/ports/instance-store';
+import { secretsEqual } from '$lib/security/bearer-secret';
 
 type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
 
@@ -564,7 +565,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback({ outcome: 'invitation_invalid' });
 					}
 
-					if (inv.emailBinding !== command.emailBinding) {
+					if (!(await secretsEqual(command.emailBinding, inv.emailBinding))) {
 						throw new InstanceRollback({ outcome: 'invitation_invalid' });
 					}
 
@@ -1053,7 +1054,7 @@ export class PostgresInstanceStore implements InstanceStore {
 		}
 
 		const inv = invRows[0];
-		if (inv.status !== 'pending' || inv.emailBinding !== command.emailBinding) {
+		if (inv.status !== 'pending' || !(await secretsEqual(command.emailBinding, inv.emailBinding))) {
 			return { outcome: 'invitation_invalid' };
 		}
 
