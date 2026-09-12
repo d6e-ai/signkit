@@ -1,0 +1,508 @@
+import {
+	DraftIntegrityError,
+	readImmutableDraftRevision
+} from '$lib/application/drafts/draft-persistence';
+import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
+import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import {
+	boundCompletionArtifactClaimLimit,
+	CompletionArtifactBoundExceededError,
+	MAX_COMPLETION_ARTIFACT_CLAIM_BATCH,
+	MAX_COMPLETION_ARTIFACT_DISCOVERY_BATCH,
+	sanitizeCompletionArtifactErrorCode,
+	type ClaimedCompletionArtifactJob,
+	type CompletionArtifactStore,
+	type CompletionEvidence,
+	type CompletionEvidenceAuditEvent,
+	type CompletionEvidenceField,
+	type FailCompletionArtifactResult,
+	type PublishCompletionArtifactResult
+} from '$lib/ports/completion-artifact-store';
+import {
+	buildCompletionManifest,
+	canonicalManifestJson,
+	COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE,
+	CompletionArtifactIntegrityError,
+	gzipCompletionArtifact,
+	MAX_MANIFEST_GZIP_BYTES,
+	renderCompletionMarkdown,
+	sha256Hex,
+	sha256TextHex,
+	type CompletionManifestDocument,
+	type CompletionManifestV1
+} from './completion-manifest';
+
+export const COMPLETION_ARTIFACT_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
+export const COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS: number = 30_000;
+export const COMPLETION_ARTIFACT_RETRY_MAX_DELAY_MS: number = 6 * 60 * 60 * 1000;
+export const MAX_COMPLETION_ARTIFACT_ATTEMPTS: number = 10;
+const COMPLETION_ARTIFACT_CONCURRENCY: number = 3;
+const JSON_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+json.gz';
+const MARKDOWN_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+markdown.gz';
+const AUDIT_EVENT_ID_SEPARATOR: string = '\u0000';
+
+export type CompletionArtifactItemOutcome =
+	| { envelopeId: string; outcome: 'published' }
+	| { envelopeId: string; outcome: 'stale' }
+	| {
+			envelopeId: string;
+			outcome: 'retryable_failed' | 'permanently_failed' | 'integrity_failed';
+			errorCode: string;
+	  };
+
+export interface CompletionArtifactBatchResult {
+	claimed: number;
+	published: number;
+	retryableFailed: number;
+	permanentlyFailed: number;
+	integrityFailed: number;
+	stale: number;
+	outcomes: readonly CompletionArtifactItemOutcome[];
+}
+
+/**
+ * Discovers `completed` envelopes without a published artifact through a
+ * leased job table (never the hot recipient sign/approve transactions),
+ * deterministically rebuilds the canonical manifest from the pinned Git
+ * revision plus SQL evidence, persists content-addressed JSON/Markdown gzip
+ * artifacts, and publishes the pointer and audit event atomically.
+ */
+export class CompletionArtifactPublicationService {
+	readonly #store: CompletionArtifactStore;
+	readonly #objects: ObjectStore;
+	readonly #repository: DraftRepository;
+	readonly #now: () => Date;
+	readonly #uuid: () => string;
+
+	constructor(
+		store: CompletionArtifactStore,
+		objects: ObjectStore,
+		repository: DraftRepository,
+		now: () => Date = (): Date => new Date(),
+		uuid: () => string = (): string => crypto.randomUUID()
+	) {
+		this.#store = store;
+		this.#objects = objects;
+		this.#repository = repository;
+		this.#now = now;
+		this.#uuid = uuid;
+	}
+
+	async publishPendingCompletionArtifacts(
+		limit: number = MAX_COMPLETION_ARTIFACT_CLAIM_BATCH
+	): Promise<CompletionArtifactBatchResult> {
+		const claimedAt: Date = this.#now();
+		const claimToken: string = this.#uuid();
+		const claims: readonly ClaimedCompletionArtifactJob[] =
+			await this.#store.claimPendingCompletionArtifacts({
+				claimToken,
+				claimedAt: claimedAt.toISOString(),
+				staleBefore: new Date(
+					claimedAt.valueOf() - COMPLETION_ARTIFACT_CLAIM_LEASE_MS
+				).toISOString(),
+				discoveryLimit: MAX_COMPLETION_ARTIFACT_DISCOVERY_BATCH,
+				claimLimit: boundCompletionArtifactClaimLimit(limit)
+			});
+		const outcomes: CompletionArtifactItemOutcome[] = [];
+		for (
+			let offset: number = 0;
+			offset < claims.length;
+			offset += COMPLETION_ARTIFACT_CONCURRENCY
+		) {
+			const chunk: readonly ClaimedCompletionArtifactJob[] = claims.slice(
+				offset,
+				offset + COMPLETION_ARTIFACT_CONCURRENCY
+			);
+			const settled: readonly PromiseSettledResult<CompletionArtifactItemOutcome>[] =
+				await Promise.allSettled(
+					chunk.map((claim: ClaimedCompletionArtifactJob) =>
+						this.#publishClaim(claim, claimToken, claimedAt)
+					)
+				);
+			outcomes.push(
+				...settled.map(
+					(
+						result: PromiseSettledResult<CompletionArtifactItemOutcome>,
+						index: number
+					): CompletionArtifactItemOutcome =>
+						result.status === 'fulfilled'
+							? result.value
+							: {
+									envelopeId: chunk[index].envelopeId,
+									outcome: 'retryable_failed',
+									errorCode: 'completion_artifact_store_unavailable'
+								}
+				)
+			);
+		}
+		return summarize(claims.length, outcomes);
+	}
+
+	async #publishClaim(
+		claim: ClaimedCompletionArtifactJob,
+		claimToken: string,
+		now: Date
+	): Promise<CompletionArtifactItemOutcome> {
+		const refreshed: ClaimedCompletionArtifactJob | null =
+			await this.#store.readClaimedCompletionArtifact({
+				organizationId: claim.organizationId,
+				envelopeId: claim.envelopeId,
+				claimToken
+			});
+		if (refreshed === null) return { envelopeId: claim.envelopeId, outcome: 'stale' };
+		claim = refreshed;
+
+		try {
+			const evidence: CompletionEvidence = await this.#store.readCompletionEvidence(
+				claim.organizationId,
+				claim.envelopeId
+			);
+			await verifyFieldValueIntegrity(evidence.fields);
+			const documents: readonly DraftDocument[] = await readImmutableDraftRevision(
+				{
+					organizationId: claim.organizationId,
+					envelopeId: claim.envelopeId,
+					commitSha: claim.sentCommitSha,
+					archiveKey: claim.repositoryArchiveKey,
+					archiveSha256: claim.repositoryArchiveSha256
+				},
+				this.#objects,
+				this.#repository
+			);
+			const manifestDocuments: CompletionManifestDocument[] = [];
+			for (const document of documents) {
+				manifestDocuments.push({
+					path: document.path,
+					sha256: await sha256TextHex(document.content)
+				});
+			}
+			const manifest: CompletionManifestV1 = await buildCompletionManifest({
+				organizationId: claim.organizationId,
+				envelopeId: claim.envelopeId,
+				title: claim.envelopeTitle,
+				sentCommitSha: claim.sentCommitSha,
+				draftArchiveSha256: claim.repositoryArchiveSha256,
+				fieldGeneration: claim.fieldGeneration,
+				documents: manifestDocuments,
+				recipients: evidence.recipients,
+				fields: evidence.fields,
+				auditEvents: evidence.auditEvents
+			});
+			const manifestJson: string = canonicalManifestJson(manifest);
+			const manifestSha256: string = await sha256TextHex(manifestJson);
+			const jsonGzip: Uint8Array = gzipCompletionArtifact(manifestJson);
+			const jsonSha256: string = await sha256Hex(jsonGzip);
+			const markdown: string = renderCompletionMarkdown(manifest);
+			const markdownGzip: Uint8Array = gzipCompletionArtifact(markdown);
+			const markdownSha256: string = await sha256Hex(markdownGzip);
+			const jsonKey: string = completionArtifactObjectKey(
+				claim.organizationId,
+				claim.envelopeId,
+				'json',
+				jsonSha256
+			);
+			const markdownKey: string = completionArtifactObjectKey(
+				claim.organizationId,
+				claim.envelopeId,
+				'markdown',
+				markdownSha256
+			);
+			await this.#persistImmutable(jsonKey, jsonGzip, jsonSha256, JSON_CONTENT_TYPE);
+			await this.#persistImmutable(
+				markdownKey,
+				markdownGzip,
+				markdownSha256,
+				MARKDOWN_CONTENT_TYPE
+			);
+
+			const anchor: CompletionEvidenceAuditEvent =
+				evidence.auditEvents[evidence.auditEvents.length - 1];
+			const auditPayload = {
+				manifestSha256,
+				jsonSha256,
+				markdownSha256,
+				sentCommitSha: claim.sentCommitSha,
+				fieldGeneration: claim.fieldGeneration,
+				publishedAt: now.toISOString()
+			};
+			const auditPayloadJson: string = JSON.stringify(auditPayload);
+			const auditEventId: string = await deterministicUuid(
+				[
+					'signkit-completion-artifact-published-event-v1',
+					claim.organizationId,
+					claim.envelopeId,
+					manifestSha256
+				].join(AUDIT_EVENT_ID_SEPARATOR)
+			);
+			const auditEventHash: string = await sha256TextHex(
+				JSON.stringify({
+					actorId: 'completion-artifact-worker',
+					envelopeId: claim.envelopeId,
+					eventType: COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE,
+					occurredAt: now.toISOString(),
+					organizationId: claim.organizationId,
+					payload: auditPayload,
+					previousHash: anchor.eventHash
+				})
+			);
+
+			const publish: PublishCompletionArtifactResult = await this.#store.publishCompletionArtifact({
+				organizationId: claim.organizationId,
+				envelopeId: claim.envelopeId,
+				claimToken,
+				sentCommitSha: claim.sentCommitSha,
+				fieldGeneration: claim.fieldGeneration,
+				anchorAuditEventId: anchor.id,
+				expectedAuditSequence: anchor.sequence,
+				previousAuditHash: anchor.eventHash,
+				manifestSha256,
+				jsonObjectKey: jsonKey,
+				jsonSha256,
+				markdownObjectKey: markdownKey,
+				markdownSha256,
+				updatedAt: now.toISOString(),
+				auditEventId,
+				auditEventHash,
+				auditPayloadJson
+			});
+			if (publish.outcome === 'published' || publish.outcome === 'replayed') {
+				return { envelopeId: claim.envelopeId, outcome: 'published' };
+			}
+			if (publish.outcome === 'stale') return { envelopeId: claim.envelopeId, outcome: 'stale' };
+			return this.#finishFailure(
+				claim,
+				claimToken,
+				'completion_artifact_integrity_conflict',
+				false,
+				now,
+				'integrity_failed'
+			);
+		} catch (error: unknown) {
+			// Order matters: CompletionArtifactBoundExceededError is a subclass of
+			// CompletionArtifactIntegrityError, so it must be checked first to get
+			// its own operator-safe error code rather than the generic one. R2/S3
+			// are strongly consistent for these immutable pointers, so a
+			// DraftIntegrityError from readImmutableDraftRevision (missing object,
+			// SHA mismatch, scope mismatch, size, or Git verification failure) is
+			// exactly as much an integrity failure here as our own checks.
+			if (error instanceof CompletionArtifactBoundExceededError) {
+				return this.#finishFailure(
+					claim,
+					claimToken,
+					'completion_artifact_evidence_too_large',
+					false,
+					now,
+					'integrity_failed'
+				);
+			}
+			const integrity: boolean =
+				error instanceof CompletionArtifactIntegrityError || error instanceof DraftIntegrityError;
+			return this.#finishFailure(
+				claim,
+				claimToken,
+				integrity ? 'completion_artifact_evidence_invalid' : 'completion_artifact_build_failed',
+				!integrity,
+				now,
+				integrity ? 'integrity_failed' : 'retryable_failed'
+			);
+		}
+	}
+
+	async #persistImmutable(
+		key: string,
+		bytes: Uint8Array,
+		sha256: string,
+		contentType: string
+	): Promise<void> {
+		try {
+			const stored: ObjectMetadata = await this.#objects.putImmutable(key, {
+				contentType,
+				body: bytes,
+				sha256,
+				metadata: { format: 'signkit-completion-artifact-v1' }
+			});
+			if (stored.key !== key || stored.size !== bytes.byteLength || stored.sha256 !== sha256) {
+				throw new CompletionArtifactIntegrityError(
+					'Object store did not confirm the immutable completion artifact'
+				);
+			}
+		} catch (error: unknown) {
+			// A provider can report a precondition failure, or lose the response after
+			// accepting the write. Reuse is safe only after reading and hashing the
+			// immutable object ourselves, exactly as draft archive persistence does.
+			// An object that is simply missing, or that we failed to read back, is a
+			// transient condition and stays retryable with the original error. An
+			// object that DOES exist at this content-addressed key but holds
+			// different bytes is a real conflict — content-addressing means that
+			// should be cryptographically impossible for honest data — so it must
+			// fail closed immediately rather than retry until attempts exhaust.
+			const outcome: 'missing' | 'verified' | 'mismatched' = await this.#readAndVerify(
+				key,
+				sha256,
+				bytes.byteLength
+			);
+			if (outcome === 'verified') return;
+			if (outcome === 'mismatched') {
+				throw new CompletionArtifactIntegrityError(
+					'Object store already holds different bytes at this immutable content-addressed key'
+				);
+			}
+			throw error;
+		}
+	}
+
+	async #readAndVerify(
+		key: string,
+		expectedSha256: string,
+		expectedSize: number
+	): Promise<'missing' | 'verified' | 'mismatched'> {
+		const stream: ReadableStream<Uint8Array> | null = await this.#objects.get(key);
+		if (stream === null) return 'missing';
+		const bytes: Uint8Array = await readStreamBounded(stream, MAX_MANIFEST_GZIP_BYTES);
+		if (bytes.byteLength !== expectedSize) return 'mismatched';
+		return (await sha256Hex(bytes)) === expectedSha256 ? 'verified' : 'mismatched';
+	}
+
+	async #finishFailure(
+		claim: ClaimedCompletionArtifactJob,
+		claimToken: string,
+		errorCode: string,
+		retryable: boolean,
+		now: Date,
+		outcome: 'retryable_failed' | 'permanently_failed' | 'integrity_failed'
+	): Promise<CompletionArtifactItemOutcome> {
+		const attemptsExhausted: boolean =
+			retryable && claim.attempts >= MAX_COMPLETION_ARTIFACT_ATTEMPTS;
+		const willRetry: boolean = retryable && !attemptsExhausted;
+		const safeCode: string = sanitizeCompletionArtifactErrorCode(
+			attemptsExhausted ? 'completion_artifact_attempts_exhausted' : errorCode
+		);
+		const failure: FailCompletionArtifactResult = await this.#store.failCompletionArtifact({
+			organizationId: claim.organizationId,
+			envelopeId: claim.envelopeId,
+			claimToken,
+			errorCode: safeCode,
+			retryable: willRetry,
+			nextAvailableAt: willRetry
+				? completionArtifactRetryAvailableAt(now, claim.attempts)
+				: now.toISOString(),
+			failedAt: now.toISOString()
+		});
+		if (failure.outcome === 'stale') return { envelopeId: claim.envelopeId, outcome: 'stale' };
+		return {
+			envelopeId: claim.envelopeId,
+			outcome: attemptsExhausted ? 'permanently_failed' : outcome,
+			errorCode: safeCode
+		};
+	}
+}
+
+export function completionArtifactRetryAvailableAt(now: Date, attempts: number): string {
+	const safeAttempts: number = Math.max(1, attempts);
+	const exponent: number = Math.min(safeAttempts - 1, 10);
+	const delayMs: number = Math.min(
+		COMPLETION_ARTIFACT_RETRY_MAX_DELAY_MS,
+		COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS * 2 ** exponent
+	);
+	return new Date(now.valueOf() + delayMs).toISOString();
+}
+
+export function completionArtifactObjectKey(
+	organizationId: string,
+	envelopeId: string,
+	kind: 'json' | 'markdown',
+	sha256: string
+): string {
+	const extension: string = kind === 'json' ? 'json.gz' : 'md.gz';
+	return `completion-artifacts/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.${extension}`;
+}
+
+function summarize(
+	claimed: number,
+	outcomes: readonly CompletionArtifactItemOutcome[]
+): CompletionArtifactBatchResult {
+	let published: number = 0;
+	let retryableFailed: number = 0;
+	let permanentlyFailed: number = 0;
+	let integrityFailed: number = 0;
+	let stale: number = 0;
+	for (const item of outcomes) {
+		if (item.outcome === 'published') published += 1;
+		else if (item.outcome === 'retryable_failed') retryableFailed += 1;
+		else if (item.outcome === 'permanently_failed') permanentlyFailed += 1;
+		else if (item.outcome === 'integrity_failed') integrityFailed += 1;
+		else stale += 1;
+	}
+	return {
+		claimed,
+		published,
+		retryableFailed,
+		permanentlyFailed,
+		integrityFailed,
+		stale,
+		outcomes
+	};
+}
+
+function encodeScopeSegment(value: string): string {
+	return encodeURIComponent(value).replaceAll('.', '%2E');
+}
+
+/**
+ * Recompute SHA-256 over the exact persisted `field_value.value_json` string
+ * and require it to equal the stored `value_sha256` before any artifact
+ * object write. A mismatch means the value was tampered with (or corrupted)
+ * after signing, so publication must fail closed rather than notarize it.
+ */
+async function verifyFieldValueIntegrity(
+	fields: readonly CompletionEvidenceField[]
+): Promise<void> {
+	for (const field of fields) {
+		const digest: string = await sha256TextHex(field.valueJson);
+		if (digest !== field.valueSha256) {
+			throw new CompletionArtifactIntegrityError(
+				'Completion evidence field value does not match its persisted SHA-256'
+			);
+		}
+	}
+}
+
+async function readStreamBounded(
+	stream: ReadableStream<Uint8Array>,
+	maximumBytes: number
+): Promise<Uint8Array> {
+	const reader: ReadableStreamDefaultReader<Uint8Array> = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let size: number = 0;
+	try {
+		while (true) {
+			const result: ReadableStreamReadResult<Uint8Array> = await reader.read();
+			if (result.done) break;
+			size += result.value.byteLength;
+			if (size > maximumBytes) {
+				await reader.cancel('Completion artifact exceeds the size limit');
+				throw new CompletionArtifactBoundExceededError(
+					'Completion artifact exceeds the size limit'
+				);
+			}
+			chunks.push(result.value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes: Uint8Array = new Uint8Array(size);
+	let offset: number = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return bytes;
+}
+
+async function deterministicUuid(value: string): Promise<string> {
+	const digest: string = await sha256TextHex(value);
+	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-a${digest.slice(
+		17,
+		20
+	)}-${digest.slice(20, 32)}`;
+}

@@ -53,6 +53,15 @@ export function resolveS3DraftPersistenceService(
 	);
 }
 
+/**
+ * Share the same process-local S3 client with draft persistence for services
+ * that need the raw object store rather than a full persistence service.
+ */
+export function resolveS3ObjectStore(configuration: S3DraftRuntimeConfiguration): S3ObjectStore {
+	const validated: ValidatedS3DraftRuntimeConfiguration = validateConfiguration(configuration);
+	return resolveS3Resources(validated).objects;
+}
+
 export function resolveS3RecipientWorkspaceApplication(
 	configuration: S3DraftRuntimeConfiguration
 ): RecipientWorkspaceApplicationPort {
