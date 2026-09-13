@@ -3,22 +3,21 @@ import {
 	type FieldType,
 	type RecipientRole
 } from '$lib/domain/envelope';
-import type {
-	SignAuditHead,
-	SignLookupKey,
-	SignPreparation,
-	SignRoutingSnapshot,
-	SignableFieldDeclaration,
-	SignedFieldValue,
-	StoredSignValue,
-	PublishRecipientSignedCommand,
-	PublishRecipientSignedResult,
-	PublishedRecipientSigned,
-	RecipientSignStore
-} from '$lib/ports/recipient-sign-store';
+import { hashStoredAuditEvent } from '$lib/domain/audit';
 import {
 	canonicalRecipientSignFingerprint,
-	fingerprintValuesFromStored
+	fingerprintValuesFromStored,
+	type SignAuditHead,
+	type SignLookupKey,
+	type SignPreparation,
+	type SignRoutingSnapshot,
+	type SignableFieldDeclaration,
+	type SignedFieldValue,
+	type StoredSignValue,
+	type PublishRecipientSignedCommand,
+	type PublishRecipientSignedResult,
+	type PublishedRecipientSigned,
+	type RecipientSignStore
 } from '$lib/ports/recipient-sign-store';
 
 const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
@@ -95,6 +94,7 @@ interface SignedCommandRow {
 	evidence_previous_hash: string | null;
 	evidence_event_hash: string | null;
 	evidence_occurred_at: string | null;
+	evidence_hash_version: number | string | null;
 	completed_evidence_event_id: string | null;
 	completed_evidence_organization_id: string | null;
 	completed_evidence_envelope_id: string | null;
@@ -106,6 +106,7 @@ interface SignedCommandRow {
 	completed_evidence_previous_hash: string | null;
 	completed_evidence_event_hash: string | null;
 	completed_evidence_occurred_at: string | null;
+	completed_evidence_hash_version: number | string | null;
 }
 
 interface EvidenceField {
@@ -127,7 +128,7 @@ const SIGNED_COMMAND_COLUMNS: string = `command.organization_id, command.envelop
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
-	evidence.occurred_at AS evidence_occurred_at,
+	evidence.occurred_at AS evidence_occurred_at, evidence.hash_version AS evidence_hash_version,
 	completed_evidence.id AS completed_evidence_event_id,
 	completed_evidence.organization_id AS completed_evidence_organization_id,
 	completed_evidence.envelope_id AS completed_evidence_envelope_id,
@@ -138,7 +139,8 @@ const SIGNED_COMMAND_COLUMNS: string = `command.organization_id, command.envelop
 	completed_evidence.payload_json AS completed_evidence_payload_json,
 	completed_evidence.previous_hash AS completed_evidence_previous_hash,
 	completed_evidence.event_hash AS completed_evidence_event_hash,
-	completed_evidence.occurred_at AS completed_evidence_occurred_at`;
+	completed_evidence.occurred_at AS completed_evidence_occurred_at,
+	completed_evidence.hash_version AS completed_evidence_hash_version`;
 
 export class D1RecipientSignStore implements RecipientSignStore {
 	readonly #database: D1Database;
@@ -816,16 +818,18 @@ async function validStoredReceipt(
 		signedAt: row.updated_at
 	};
 	const auditPayload: string = JSON.stringify(auditPayloadValue);
-	const auditEventHash: string = await sha256(
-		JSON.stringify({
-			actorId: row.recipient_id,
-			envelopeId: row.envelope_id,
+	const auditEventHash: string = await hashStoredAuditEvent(
+		{
+			hashVersion: row.evidence_hash_version,
+			sequence: row.audit_sequence,
 			eventType: 'recipient.signed',
+			actorType: row.actor_type,
+			actorId: row.recipient_id,
 			occurredAt: row.updated_at,
-			organizationId: row.organization_id,
 			payload: auditPayloadValue,
 			previousHash: row.previous_audit_hash
-		})
+		},
+		{ organizationId: row.organization_id, envelopeId: row.envelope_id }
 	);
 	if (auditPayload !== row.audit_payload_json || auditEventHash !== row.audit_event_hash) {
 		return false;
@@ -845,16 +849,18 @@ async function validStoredReceipt(
 			completedAt: row.updated_at
 		};
 		const completedPayload: string = JSON.stringify(completedPayloadValue);
-		const completedEventHash: string = await sha256(
-			JSON.stringify({
-				actorId: row.recipient_id,
-				envelopeId: row.envelope_id,
+		const completedEventHash: string = await hashStoredAuditEvent(
+			{
+				hashVersion: row.completed_evidence_hash_version,
+				sequence: row.audit_sequence + 1,
 				eventType: 'envelope.completed',
+				actorType: row.actor_type,
+				actorId: row.recipient_id,
 				occurredAt: row.updated_at,
-				organizationId: row.organization_id,
 				payload: completedPayloadValue,
 				previousHash: row.audit_event_hash
-			})
+			},
+			{ organizationId: row.organization_id, envelopeId: row.envelope_id }
 		);
 		return (
 			completedPayload === row.completed_audit_payload_json &&

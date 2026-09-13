@@ -10,6 +10,7 @@ import type {
 	PublishedRecipientApproved,
 	RecipientApproveStore
 } from '$lib/ports/recipient-approve-store';
+import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
 
@@ -114,6 +115,7 @@ interface ApprovedCommandRow {
 	evidencePreviousHash: string | null;
 	evidenceEventHash: string | null;
 	evidenceOccurredAt: Date | string | null;
+	evidenceHashVersion: number | string | null;
 	completedEvidenceEventId: string | null;
 	completedEvidenceOrganizationId: string | null;
 	completedEvidenceEnvelopeId: string | null;
@@ -125,6 +127,7 @@ interface ApprovedCommandRow {
 	completedEvidencePreviousHash: string | null;
 	completedEvidenceEventHash: string | null;
 	completedEvidenceOccurredAt: Date | string | null;
+	completedEvidenceHashVersion: number | string | null;
 }
 
 export class PostgresRecipientApproveStore implements RecipientApproveStore {
@@ -598,6 +601,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
 				evidence.event_hash AS "evidenceEventHash", evidence.occurred_at AS "evidenceOccurredAt",
+				evidence.hash_version AS "evidenceHashVersion",
 				completed_evidence.id AS "completedEvidenceEventId",
 				completed_evidence.organization_id AS "completedEvidenceOrganizationId",
 				completed_evidence.envelope_id AS "completedEvidenceEnvelopeId",
@@ -608,7 +612,8 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				completed_evidence.payload_json AS "completedEvidencePayloadJson",
 				completed_evidence.previous_hash AS "completedEvidencePreviousHash",
 				completed_evidence.event_hash AS "completedEvidenceEventHash",
-				completed_evidence.occurred_at AS "completedEvidenceOccurredAt"
+				completed_evidence.occurred_at AS "completedEvidenceOccurredAt",
+				completed_evidence.hash_version AS "completedEvidenceHashVersion"
 			FROM recipient_approved_command command
 			LEFT JOIN audit_event evidence
 				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
@@ -648,6 +653,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
 				evidence.event_hash AS "evidenceEventHash", evidence.occurred_at AS "evidenceOccurredAt",
+				evidence.hash_version AS "evidenceHashVersion",
 				completed_evidence.id AS "completedEvidenceEventId",
 				completed_evidence.organization_id AS "completedEvidenceOrganizationId",
 				completed_evidence.envelope_id AS "completedEvidenceEnvelopeId",
@@ -658,7 +664,8 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				completed_evidence.payload_json AS "completedEvidencePayloadJson",
 				completed_evidence.previous_hash AS "completedEvidencePreviousHash",
 				completed_evidence.event_hash AS "completedEvidenceEventHash",
-				completed_evidence.occurred_at AS "completedEvidenceOccurredAt"
+				completed_evidence.occurred_at AS "completedEvidenceOccurredAt",
+				completed_evidence.hash_version AS "completedEvidenceHashVersion"
 			FROM recipient_approved_command command
 			LEFT JOIN audit_event evidence
 				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
@@ -909,16 +916,18 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 		approvedAt
 	};
 	const auditPayload: string = JSON.stringify(auditPayloadValue);
-	const auditEventHash: string = await sha256(
-		JSON.stringify({
-			actorId: row.recipientId,
-			envelopeId: row.envelopeId,
+	const auditEventHash: string = await hashStoredAuditEvent(
+		{
+			hashVersion: row.evidenceHashVersion,
+			sequence: Number(row.auditSequence),
 			eventType: 'recipient.approved',
+			actorType: row.actorType,
+			actorId: row.recipientId,
 			occurredAt: approvedAt,
-			organizationId: row.organizationId,
 			payload: auditPayloadValue,
 			previousHash: row.previousAuditHash
-		})
+		},
+		{ organizationId: row.organizationId, envelopeId: row.envelopeId }
 	);
 	if (
 		requestHash !== row.requestHash ||
@@ -942,16 +951,18 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 			completedAt: approvedAt
 		};
 		const completedPayload: string = JSON.stringify(completedPayloadValue);
-		const completedEventHash: string = await sha256(
-			JSON.stringify({
-				actorId: row.recipientId,
-				envelopeId: row.envelopeId,
+		const completedEventHash: string = await hashStoredAuditEvent(
+			{
+				hashVersion: row.completedEvidenceHashVersion,
+				sequence: Number(row.auditSequence) + 1,
 				eventType: 'envelope.completed',
+				actorType: row.actorType,
+				actorId: row.recipientId,
 				occurredAt: approvedAt,
-				organizationId: row.organizationId,
 				payload: completedPayloadValue,
 				previousHash: row.auditEventHash
-			})
+			},
+			{ organizationId: row.organizationId, envelopeId: row.envelopeId }
 		);
 		return (
 			completedPayload === row.completedAuditPayloadJson &&

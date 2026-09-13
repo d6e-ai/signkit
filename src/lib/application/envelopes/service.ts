@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { Envelope } from '$lib/domain/envelope';
 import type {
@@ -5,10 +6,12 @@ import type {
 	CreateEnvelopeResult,
 	EnvelopeApplicationPort,
 	EnvelopeApplicationStore,
+	EnvelopeDetail,
 	EnvelopeListPage,
 	EnvelopeListQuery,
 	EnvelopeRequestActor
 } from './model';
+import { envelopeActorType } from './model';
 
 async function sha256(value: string): Promise<string> {
 	const bytes: Uint8Array<ArrayBuffer> = new TextEncoder().encode(value);
@@ -39,19 +42,21 @@ export class EnvelopeApplication implements EnvelopeApplicationPort {
 		const envelopeId: string = this.#newId();
 		const auditEventId: string = this.#newId();
 		const createdAt: string = new Date().toISOString();
-		const auditEventHash: string = await sha256(
-			JSON.stringify({
-				actorId: actor.id,
-				envelopeId,
+		const actorType: 'user' | 'agent' = envelopeActorType(actor);
+		const auditEventHash: string = await hashAuditEventV2(
+			{
+				sequence: 1,
 				eventType: 'envelope.created',
+				actorType,
+				actorId: actor.id,
 				occurredAt: createdAt,
-				organizationId: actor.organizationId,
 				payload: { title: input.title },
 				previousHash: null
-			})
+			},
+			{ organizationId: actor.organizationId, envelopeId }
 		);
 		return this.#store.createIdempotently({
-			actor: { id: actor.id, type: 'user' },
+			actor: { id: actor.id, type: actorType },
 			auditEventHash,
 			auditEventId,
 			createdAt,
@@ -66,6 +71,10 @@ export class EnvelopeApplication implements EnvelopeApplicationPort {
 
 	async get(actor: EnvelopeRequestActor, envelopeId: string): Promise<Envelope | null> {
 		return this.#store.findForOrganization(actor.organizationId, envelopeId);
+	}
+
+	async getDetail(actor: EnvelopeRequestActor, envelopeId: string): Promise<EnvelopeDetail | null> {
+		return this.#store.readDetail(actor.organizationId, envelopeId);
 	}
 
 	async list(actor: EnvelopeRequestActor, query: EnvelopeListQuery): Promise<EnvelopeListPage> {

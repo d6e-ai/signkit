@@ -4,7 +4,6 @@ import type {
 	RecipientViewedApplicationPort,
 	RecipientViewedResult
 } from '$lib/application/signing/recipient-viewed';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
 import {
 	createRecipientViewedHandler,
 	type RecipientViewedApplicationResolver
@@ -118,7 +117,7 @@ describe('recipient viewed HTTP handler', () => {
 		expect(deleted).not.toHaveBeenCalled();
 	});
 
-	it('clears a definitively inactive or unreadable recipient session', async () => {
+	it('does not clear recipient session on inactive or unreadable session (overwrite-only)', async () => {
 		for (const mode of ['inactive', 'unreadable'] as const) {
 			const { event, deleted } = requestEvent({ idempotencyKey: 'view-1' });
 			const response: Response = await createRecipientViewedHandler(
@@ -126,8 +125,22 @@ describe('recipient viewed HTTP handler', () => {
 				async (): Promise<string | null> => (mode === 'unreadable' ? null : token)
 			)(event);
 			expect(response.status).toBe(404);
-			expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+			expect(deleted).not.toHaveBeenCalled();
 		}
+	});
+
+	it('returns 200 with continuation property when view outcome is continued', async () => {
+		const continued: RecipientViewedResult = { ...published, outcome: 'continued' };
+		const { event, deleted } = requestEvent({ idempotencyKey: 'view-tab-reissued' });
+		const response: Response = await createRecipientViewedHandler(
+			() => application(continued),
+			async (): Promise<string> => token
+		)(event);
+		expect(response.status).toBe(200);
+		expect(response.headers.get('idempotency-replayed')).toBeNull();
+		const body = (await response.json()) as { viewed: { continuation?: boolean } };
+		expect(body.viewed.continuation).toBe(true);
+		expect(deleted).not.toHaveBeenCalled();
 	});
 
 	it.each([

@@ -9,6 +9,7 @@ import type {
 	PublishedRecipientApproved,
 	RecipientApproveStore
 } from '$lib/ports/recipient-approve-store';
+import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
 
@@ -74,6 +75,7 @@ interface ApprovedCommandRow {
 	evidence_previous_hash: string | null;
 	evidence_event_hash: string | null;
 	evidence_occurred_at: string | null;
+	evidence_hash_version: number | string | null;
 	completed_evidence_event_id: string | null;
 	completed_evidence_organization_id: string | null;
 	completed_evidence_envelope_id: string | null;
@@ -85,6 +87,7 @@ interface ApprovedCommandRow {
 	completed_evidence_previous_hash: string | null;
 	completed_evidence_event_hash: string | null;
 	completed_evidence_occurred_at: string | null;
+	completed_evidence_hash_version: number | string | null;
 }
 
 const APPROVED_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_id, command.recipient_id,
@@ -99,7 +102,7 @@ const APPROVED_COMMAND_COLUMNS: string = `command.organization_id, command.envel
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
-	evidence.occurred_at AS evidence_occurred_at,
+	evidence.occurred_at AS evidence_occurred_at, evidence.hash_version AS evidence_hash_version,
 	completed_evidence.id AS completed_evidence_event_id,
 	completed_evidence.organization_id AS completed_evidence_organization_id,
 	completed_evidence.envelope_id AS completed_evidence_envelope_id,
@@ -110,7 +113,8 @@ const APPROVED_COMMAND_COLUMNS: string = `command.organization_id, command.envel
 	completed_evidence.payload_json AS completed_evidence_payload_json,
 	completed_evidence.previous_hash AS completed_evidence_previous_hash,
 	completed_evidence.event_hash AS completed_evidence_event_hash,
-	completed_evidence.occurred_at AS completed_evidence_occurred_at`;
+	completed_evidence.occurred_at AS completed_evidence_occurred_at,
+	completed_evidence.hash_version AS completed_evidence_hash_version`;
 
 export class D1RecipientApproveStore implements RecipientApproveStore {
 	readonly #database: D1Database;
@@ -615,16 +619,18 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 		approvedAt: row.updated_at
 	};
 	const auditPayload: string = JSON.stringify(auditPayloadValue);
-	const auditEventHash: string = await sha256(
-		JSON.stringify({
-			actorId: row.recipient_id,
-			envelopeId: row.envelope_id,
+	const auditEventHash: string = await hashStoredAuditEvent(
+		{
+			hashVersion: row.evidence_hash_version,
+			sequence: row.audit_sequence,
 			eventType: 'recipient.approved',
+			actorType: row.actor_type,
+			actorId: row.recipient_id,
 			occurredAt: row.updated_at,
-			organizationId: row.organization_id,
 			payload: auditPayloadValue,
 			previousHash: row.previous_audit_hash
-		})
+		},
+		{ organizationId: row.organization_id, envelopeId: row.envelope_id }
 	);
 	if (
 		requestHash !== row.request_hash ||
@@ -648,16 +654,18 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 			completedAt: row.updated_at
 		};
 		const completedPayload: string = JSON.stringify(completedPayloadValue);
-		const completedEventHash: string = await sha256(
-			JSON.stringify({
-				actorId: row.recipient_id,
-				envelopeId: row.envelope_id,
+		const completedEventHash: string = await hashStoredAuditEvent(
+			{
+				hashVersion: row.completed_evidence_hash_version,
+				sequence: row.audit_sequence + 1,
 				eventType: 'envelope.completed',
+				actorType: row.actor_type,
+				actorId: row.recipient_id,
 				occurredAt: row.updated_at,
-				organizationId: row.organization_id,
 				payload: completedPayloadValue,
 				previousHash: row.audit_event_hash
-			})
+			},
+			{ organizationId: row.organization_id, envelopeId: row.envelope_id }
 		);
 		return (
 			completedPayload === row.completed_audit_payload_json &&

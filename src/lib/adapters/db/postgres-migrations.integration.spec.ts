@@ -8,7 +8,10 @@ import {
 	draftArchiveKey
 } from '$lib/application/drafts/draft-persistence';
 import { buildVerifiedAuditChain } from '$lib/application/completion-artifacts/audit-chain-test-support';
-import { auditEventHashPreimage } from '$lib/application/completion-artifacts/audit-event-integrity';
+import {
+	auditEventHashPreimage,
+	verifyCompletionAuditChain
+} from '$lib/application/completion-artifacts/audit-event-integrity';
 import { CompletionArtifactPublicationService } from '$lib/application/completion-artifacts/completion-artifact-service';
 import { sha256TextHex } from '$lib/application/completion-artifacts/completion-manifest';
 import { EnvelopeApplication } from '$lib/application/envelopes/service';
@@ -18,8 +21,14 @@ import {
 	EnvelopeReadyApplication,
 	type ReadyRecipientInput
 } from '$lib/application/envelopes/ready';
+import { RecipientCapabilityReissueApplication } from '$lib/application/signing/recipient-capability-reissue';
 import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
 import { EnvelopeVoidApplication } from '$lib/application/envelopes/void';
+import {
+	PostgresOrphanReferenceStore,
+	PostgresOrphanSweepCheckpointStore
+} from '$lib/application/maintenance/orphan-collector';
+import { signatureAssetKey } from '$lib/application/documents/signature-asset';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import {
 	RecipientApprovedApplication,
@@ -71,6 +80,7 @@ import { PostgresEnvelopeVoidStore } from './postgres-envelope-void-store';
 import { PostgresRecipientApproveStore } from './postgres-recipient-approve-store';
 import { PostgresRecipientDeclineStore } from './postgres-recipient-decline-store';
 import { PostgresRecipientDeclinedReceiptStore } from './postgres-recipient-declined-receipt-store';
+import { PostgresRecipientCapabilityReissueStore } from './postgres-recipient-capability-reissue-store';
 import { PostgresRecipientSignStore } from './postgres-recipient-sign-store';
 import { PostgresApiKeyStore } from './postgres-api-key-store';
 
@@ -131,6 +141,10 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0019_instance_invitations.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0020_instance_member_command.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0021_api_key_organization_grants.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0035_orphan_sweep_checkpoint.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0036_envelope_void_agent_actor.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0037_webhook_signing_secret_seal.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0038_webhook_outbox_retryable.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -160,7 +174,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'api_key_revoke_command',
 				'api_key_organization_grant',
 				'api_key_organization_grant_command',
-				'api_key_organization_grant_revoke_command'
+				'api_key_organization_grant_revoke_command',
+				'orphan_sweep_checkpoint'
 			])
 		);
 
@@ -705,12 +720,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND status = 'pending'`;
 		expect(pending).toHaveLength(1);
-		const token: string = await sealer.open(pending[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: pending[0].recipientId,
-			deliveryId: pending[0].deliveryId
-		});
+		const token: string = await sealer.open(
+			pending[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: pending[0].recipientId,
+				deliveryId: pending[0].deliveryId
+			},
+			await sealer.currentSealingKeyId()
+		);
 		const declinedAt: string = new Date(Date.now() + 2_000).toISOString();
 		const application = new RecipientDeclinedApplication(
 			new PostgresRecipientDeclineStore(database()),
@@ -903,12 +922,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				(row: { role: string }): boolean => row.role === role
 			);
 			if (actorDelivery === undefined) throw new Error(`Missing ${role} delivery`);
-			const token: string = await sealer.open(actorDelivery.sealedCapability, {
-				organizationId: ORGANIZATION_ID,
-				envelopeId: ENVELOPE_ID,
-				recipientId: actorDelivery.recipientId,
-				deliveryId: actorDelivery.deliveryId
-			});
+			const token: string = await sealer.open(
+				actorDelivery.sealedCapability,
+				{
+					organizationId: ORGANIZATION_ID,
+					envelopeId: ENVELOPE_ID,
+					recipientId: actorDelivery.recipientId,
+					deliveryId: actorDelivery.deliveryId
+				},
+				await sealer.currentSealingKeyId()
+			);
 			const completedAt: string = new Date(Date.now() + 3_000).toISOString();
 			await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
 				WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
@@ -1091,6 +1114,186 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			generation: 1,
 			revokedCapabilities: { reason: 'envelope_voided', recipientIds: ids }
 		});
+	});
+
+	it('accepts API-key agent voids and rejects other actor types on envelope_void_command', async () => {
+		const actorChecks = await database()<
+			{ definition: string }[]
+		>`SELECT pg_get_constraintdef(oid) AS definition
+			FROM pg_constraint
+			WHERE conrelid = 'envelope_void_command'::regclass
+				AND contype = 'c'
+				AND pg_get_constraintdef(oid) LIKE '%actor_type%'`;
+		expect(actorChecks).toHaveLength(1);
+		expect(actorChecks[0].definition).toMatch(/user/);
+		expect(actorChecks[0].definition).toMatch(/agent/);
+		expect(actorChecks[0].definition).not.toMatch(/system/);
+
+		const mutationActorChecks = await database()<
+			{ tableName: string; definition: string }[]
+		>`SELECT rel.relname AS "tableName", pg_get_constraintdef(con.oid) AS definition
+			FROM pg_constraint con
+			JOIN pg_class rel ON rel.oid = con.conrelid
+			JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+			WHERE nsp.nspname = current_schema()
+				AND rel.relname IN (
+					'draft_revision_command',
+					'envelope_ready_command',
+					'envelope_field_placement_command',
+					'envelope_send_command',
+					'envelope_void_command'
+				)
+				AND con.contype = 'c'
+				AND pg_get_constraintdef(con.oid) LIKE '%actor_type%'`;
+		expect(
+			mutationActorChecks
+				.map((row: { tableName: string; definition: string }): string => row.tableName)
+				.sort()
+		).toEqual([
+			'draft_revision_command',
+			'envelope_field_placement_command',
+			'envelope_ready_command',
+			'envelope_send_command',
+			'envelope_void_command'
+		]);
+		for (const row of mutationActorChecks) {
+			expect(row.definition).toMatch(/agent/);
+			expect(row.definition).not.toMatch(/actor_type = 'user'/);
+		}
+
+		await seedDraftEnvelope();
+		const ready = await readyEnvelope();
+		await expect(
+			new EnvelopeSendApplication(
+				new PostgresEnvelopeSendStore(database()),
+				capabilitySealer()
+			).send(ACTOR, ENVELOPE_ID, {
+				idempotencyKey: 'send-before-agent-void',
+				expectedGeneration: 1,
+				expectedReadyAuditEventId: ready.auditEventId
+			})
+		).resolves.toMatchObject({ outcome: 'published' });
+
+		const agent: EnvelopeRequestActor = {
+			...ACTOR,
+			id: '01900000-0000-7000-8000-000000000201',
+			actorType: 'agent'
+		};
+		await expect(
+			new EnvelopeVoidApplication(new PostgresEnvelopeVoidStore(database())).voidEnvelope(
+				agent,
+				ENVELOPE_ID,
+				{
+					idempotencyKey: 'void-as-agent',
+					expectedStatus: 'sent',
+					expectedGeneration: 1
+				}
+			)
+		).resolves.toMatchObject({ outcome: 'published', result: { status: 'voided' } });
+
+		const stamped = await database()<
+			{ actorType: string; hashVersion: number }[]
+		>`SELECT actor_type AS "actorType", hash_version AS "hashVersion"
+			FROM audit_event WHERE event_type = 'envelope.voided'`;
+		expect(stamped[0]).toEqual({ actorType: 'agent', hashVersion: 2 });
+
+		const otherEnvelopeId: string = '01900000-0000-7000-8000-000000000099';
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, created_at, updated_at
+		) VALUES (
+			${otherEnvelopeId}, ${ORGANIZATION_ID}, 'Other', 'draft', 0,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await expect(
+			database()`INSERT INTO envelope_void_command (
+				organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+				previous_status, expected_generation, updated_at, audit_event_id, audit_sequence,
+				previous_audit_hash, audit_event_hash, audit_payload_json,
+				revocation_evidence_version, revoked_recipient_ids_json, revoked_recipient_count
+			) VALUES (
+				${ORGANIZATION_ID}, ${otherEnvelopeId}, 'system', 'worker', 'void-system', ${'a'.repeat(64)},
+				'draft', 0, NOW(), '01900000-0000-7000-8000-0000000000f1', 99, ${'b'.repeat(64)},
+				${'c'.repeat(64)}, '{}', 1, '[]', 0
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+	});
+
+	it('compare-and-swaps the orphan checkpoint so concurrent writers cannot regress', async () => {
+		await database()`UPDATE orphan_sweep_checkpoint
+			SET last_object_key = '', updated_at = NOW() WHERE singleton = 1`;
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const first = new PostgresOrphanSweepCheckpointStore(concurrentSql);
+			const second = new PostgresOrphanSweepCheckpointStore(concurrentSql);
+			const results = await Promise.all([
+				first.compareAndSwapLastObjectKey('', 'drafts/a.git.gz'),
+				second.compareAndSwapLastObjectKey('', 'drafts/b.git.gz')
+			]);
+			expect(results.filter((won: boolean): boolean => won)).toHaveLength(1);
+			const stored = await first.readLastObjectKey();
+			expect(['drafts/a.git.gz', 'drafts/b.git.gz']).toContain(stored);
+			await expect(second.compareAndSwapLastObjectKey('', 'drafts/stale.git.gz')).resolves.toBe(
+				false
+			);
+			await expect(first.readLastObjectKey()).resolves.toBe(stored);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	it('classifies a signature-assets/v1 key referenced by field_value sig:sha256 as live', async () => {
+		const sha256: string = 'ab'.repeat(32);
+		const recipientId: string = '01900000-0000-7000-8000-000000000201';
+		const fieldId: string = '01900000-0000-7000-8000-000000000202';
+		const assetKey: string = signatureAssetKey(ORGANIZATION_ID, ENVELOPE_ID, recipientId, sha256);
+		const foreignAssetKey: string = signatureAssetKey(
+			'org-other',
+			ENVELOPE_ID,
+			recipientId,
+			sha256
+		);
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, created_at, updated_at
+		) VALUES (
+			${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'completed', 1,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			${recipientId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'signer@example.test', 'Signer',
+			'signer', 'en', 1, 'completed', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await database()`INSERT INTO envelope_field (
+			id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
+			required, position, created_at, updated_at
+		) VALUES (
+			${fieldId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'documents/agreement.md',
+			'signature', 'Signature', true, 0, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await database()`INSERT INTO field_value (
+			organization_id, field_id, envelope_id, recipient_id, field_type, value_json,
+			value_sha256, created_at
+		) VALUES (
+			${ORGANIZATION_ID}, ${fieldId}, ${ENVELOPE_ID}, ${recipientId}, 'signature',
+			${JSON.stringify(`sig:sha256:${sha256}`)}, ${'c'.repeat(64)}, '2026-09-11T00:00:00.000Z'
+		)`;
+		const store = new PostgresOrphanReferenceStore(database());
+		const referenced = await store.filterReferencedKeys([
+			assetKey,
+			foreignAssetKey,
+			'drafts/orphan.git.gz'
+		]);
+		expect(referenced.has(assetKey)).toBe(true);
+		expect(referenced.has(foreignAssetKey)).toBe(false);
+		expect(referenced.has('drafts/orphan.git.gz')).toBe(false);
 	});
 
 	it('serializes two real concurrent sends into one publication and one replay', async () => {
@@ -1418,12 +1621,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND recipient_id = ${signerId}`;
-		const token: string = await sealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+		const token: string = await sealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			await sealer.currentSealingKeyId()
+		);
 		const signResult = await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -1554,12 +1761,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND recipient_id = ${signerId}`;
-		const token: string = await invitationSealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+		const token: string = await invitationSealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			await invitationSealer.currentSealingKeyId()
+		);
 		await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -2159,10 +2370,10 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	it('publishes a completion artifact end to end from an audit chain written entirely by real writer paths', async () => {
 		// Positive control: every audit event here — envelope.created,
 		// draft.revision_created, envelope.ready, envelope.sent,
-		// recipient.signed, envelope.completed — is produced by the real
-		// application classes, not seeded SQL. This proves the recompute in
-		// verifyCompletionAuditChain matches what real writers actually hash,
-		// not just what a test fixture was built to satisfy.
+		// recipient.capability_reissued, recipient.signed, envelope.completed —
+		// is produced by the real application classes, not seeded SQL. This proves
+		// the recompute in verifyCompletionAuditChain matches what real writers
+		// actually hash, including the reissue catalog event on the webhook surface.
 		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
 			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
 
@@ -2221,21 +2432,40 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		});
 		if (sent.outcome !== 'published') throw new Error('Expected send to succeed');
 
+		const reissued = await new RecipientCapabilityReissueApplication(
+			new PostgresRecipientCapabilityReissueStore(database()),
+			sealer
+		).reissue(ACTOR, {
+			envelopeId,
+			recipientId: signerId,
+			idempotencyKey: 'real-writer-reissue'
+		});
+		if (reissued.outcome !== 'published' && reissued.outcome !== 'replayed') {
+			throw new Error(`Expected reissue to succeed, got ${reissued.outcome}`);
+		}
+
 		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
 		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${envelopeId}
 				AND id = ${signerId}`;
 		const delivery = await database()<
-			{ deliveryId: string; sealedCapability: string }[]
-		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
+			{ deliveryId: string; sealedCapability: string; sealingKeyId: string }[]
+		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability",
+				sealing_key_id AS "sealingKeyId" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${envelopeId}
-				AND recipient_id = ${signerId}`;
-		const token: string = await sealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+				AND recipient_id = ${signerId} AND status = 'pending'
+				AND sealed_capability IS NOT NULL`;
+		expect(delivery).toHaveLength(1);
+		const token: string = await sealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			delivery[0].sealingKeyId
+		);
 		const signResult = await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -2262,6 +2492,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			'draft.revision_created',
 			'envelope.ready',
 			'envelope.sent',
+			'recipient.capability_reissued',
 			'recipient.signed',
 			'envelope.completed'
 		]);
@@ -2273,6 +2504,15 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			});
 			expect(await sha256TextHex(preimage)).toBe(event.eventHash);
 		}
+		await expect(
+			verifyCompletionAuditChain(
+				evidence.auditEvents,
+				{ organizationId: ORGANIZATION_ID, envelopeId },
+				5_000
+			)
+		).resolves.toMatchObject({
+			proof: { hashChainVerified: true, anchorEventType: 'envelope.completed' }
+		});
 
 		const service = new CompletionArtifactPublicationService(
 			store,
@@ -2434,12 +2674,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND recipient_id = ${signerId}`;
-		const token: string = await sealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+		const token: string = await sealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			await sealer.currentSealingKeyId()
+		);
 		const signResult = await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -3811,6 +4055,14 @@ class RealMemoryObjectStore implements ObjectStore {
 	async delete(key: string): Promise<void> {
 		this.objects.delete(key);
 	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('unused');
+	}
 }
 
 class SeededPostgresObjectStore implements ObjectStore {
@@ -3841,6 +4093,14 @@ class SeededPostgresObjectStore implements ObjectStore {
 	}
 
 	async delete(): Promise<void> {
+		throw new Error('unused');
+	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
 		throw new Error('unused');
 	}
 }
@@ -3879,6 +4139,14 @@ class UnreachablePostgresObjectStore implements ObjectStore {
 
 	async delete(): Promise<void> {
 		throw new Error('Object store must not be read before field value integrity is verified');
+	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('Object store must not be listed before field value integrity is verified');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('Object store must not be deleted before field value integrity is verified');
 	}
 }
 
@@ -4007,7 +4275,8 @@ function fieldCommand(options: {
 		fieldType: 'signature',
 		label: 'Signature',
 		required: true,
-		position: 1
+		position: 1,
+		geometry: null
 	};
 	return {
 		organizationId: ORGANIZATION_ID,

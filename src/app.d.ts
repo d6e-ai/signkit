@@ -23,6 +23,7 @@ export type ApiKeyAuthenticationState =
 	 */
 	| { state: 'rejected_surface' }
 	| { state: 'invalid_token' }
+	| { state: 'rate_limited' }
 	| { state: 'organization_selector_invalid' }
 	| { state: 'organization_grant_required' }
 	| { state: 'integrity_error' }
@@ -54,11 +55,14 @@ declare global {
 				EMAIL?: SendEmail;
 				OBJECTS?: R2Bucket;
 				DELIVERY_ENCRYPTION_KEY?: string;
+				DELIVERY_ENCRYPTION_KEY_PREVIOUS?: string;
 				DELIVERY_WORKER_SECRET?: string;
 				SIGNKIT_BOOTSTRAP_SECRET?: string;
 				SIGNKIT_PUBLIC_ORIGIN?: string;
 				SIGNKIT_EMAIL_FROM?: string;
 				SIGNKIT_EMAIL_FROM_NAME?: string;
+				SESSION_ENCRYPTION_KEY?: string;
+				SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
 			};
 			context?: { waitUntil(promise: Promise<unknown>): void };
 			caches?: CacheStorage;

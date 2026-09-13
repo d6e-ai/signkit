@@ -18,7 +18,7 @@ DROP TRIGGER recipient_declined_command_publish;
 CREATE TRIGGER recipient_declined_command_publish
 AFTER INSERT ON recipient_declined_command
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.revocation_evidence_version <> 2
       OR NEW.revoked_recipient_count <> json_array_length(NEW.revoked_recipient_ids_json)
       OR NEW.revoked_recipient_ids_json <> (
@@ -36,21 +36,21 @@ BEGIN
         ) revocable
       )
     THEN RAISE(ABORT, 'recipient declined revocation evidence conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_valid(NEW.audit_payload_json) <> 1
     THEN RAISE(ABORT, 'recipient declined audit payload conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_extract(NEW.audit_payload_json, '$.revokedCapabilities.reason') IS NOT 'envelope_declined'
       OR json_extract(NEW.audit_payload_json, '$.revokedCapabilities.recipientIds')
         IS NOT NEW.revoked_recipient_ids_json
     THEN RAISE(ABORT, 'recipient declined audit payload conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -59,7 +59,7 @@ BEGIN
         AND status = 'processing'
     )
     THEN RAISE(ABORT, 'recipient declined delivery in flight')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -77,7 +77,7 @@ BEGIN
       OR (status = 'failed' AND retryable = 1)
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -89,7 +89,7 @@ BEGIN
         )
     )
     THEN RAISE(ABORT, 'recipient declined delivery cleanup conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET status = 'declined',
@@ -107,9 +107,9 @@ BEGIN
     AND capability_expires_at IS NOT NULL
     AND julianday(capability_expires_at) > julianday(NEW.updated_at);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient declined publish conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
@@ -121,10 +121,10 @@ BEGIN
     AND capability_hash IS NOT NULL
     AND capability_revoked_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> NEW.revoked_recipient_count
     THEN RAISE(ABORT, 'recipient declined revocation evidence conflict')
-  END;
+  END);
 
   UPDATE envelope
   SET status = 'declined',
@@ -150,9 +150,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient declined publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,

@@ -262,6 +262,73 @@ describe('PostgresEnvelopeApplicationStore', () => {
 		expect(database.beginCalls).toBe(1);
 		expect(database.directQueries).toHaveLength(1);
 	});
+
+	it('reads recipients, ready audit event, and fields without capability hashes or labels', async () => {
+		const database = new ScriptedPostgres([
+			[
+				{
+					id: command.envelopeId,
+					organizationId: command.organizationId,
+					title: command.title,
+					status: 'ready',
+					repositoryGeneration: 1,
+					repositoryHead: 'a'.repeat(40),
+					repositoryArchiveKey: 'archive',
+					repositoryArchiveSha256: 'b'.repeat(64),
+					sentCommitSha: null,
+					fieldGeneration: 1,
+					createdAt: command.createdAt,
+					updatedAt: command.createdAt
+				}
+			],
+			[
+				{
+					id: '01900000-0000-7000-8000-000000000021',
+					email: 'signer@example.com',
+					name: 'Signer',
+					role: 'signer',
+					locale: 'en',
+					routingOrder: 1,
+					status: 'pending'
+				}
+			],
+			[{ id: '01900000-0000-7000-8000-000000000033' }],
+			[
+				{
+					id: '01900000-0000-7000-8000-000000000022',
+					recipientId: '01900000-0000-7000-8000-000000000021',
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					required: true,
+					position: 1,
+					page: 1,
+					x: 0.1,
+					y: 0.2,
+					width: 0.3,
+					height: 0.05
+				}
+			]
+		]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		const detail = await store.readDetail(command.organizationId, command.envelopeId);
+
+		expect(detail?.readyAuditEventId).toBe('01900000-0000-7000-8000-000000000033');
+		expect(detail?.recipients[0]?.email).toBe('signer@example.com');
+		expect(detail?.fields[0]?.geometry).toEqual({
+			page: 1,
+			x: 0.1,
+			y: 0.2,
+			width: 0.3,
+			height: 0.05
+		});
+		const sql = database.directQueries.map((query) => query.text).join('\n');
+		expect(sql).toContain('FROM recipient');
+		expect(sql).toContain("event_type = 'envelope.ready'");
+		expect(sql).toContain('FROM envelope_field');
+		expect(sql).not.toContain('capability_hash');
+		expect(sql).not.toMatch(/\blabel\b/);
+	});
 });
 
 interface RecordedQuery {

@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import { MAX_DRAFT_GENERATION, normalizeMarkdownContent } from '$lib/domain/draft';
 import { assertMarkdownPath, type Envelope } from '$lib/domain/envelope';
 import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
@@ -279,10 +280,8 @@ export class DraftPersistenceService {
 		// request fingerprint, so the identifier itself is minted rather than
 		// derived from the key.
 		const auditEventId: string = this.newId();
-		const auditEventHash: string = await sha256Text(
-			JSON.stringify({
-				organizationId: input.organizationId,
-				envelopeId: input.envelopeId,
+		const auditEventHash: string = await hashAuditEventV2(
+			{
 				sequence: auditSequence,
 				eventType: 'draft.revision_created',
 				actorType: input.actor.type,
@@ -290,7 +289,8 @@ export class DraftPersistenceService {
 				occurredAt: updatedAt,
 				payload: auditPayload,
 				previousHash: preparation.auditHead.eventHash
-			})
+			},
+			{ organizationId: input.organizationId, envelopeId: input.envelopeId }
 		);
 		const publication: PublishDraftRevisionResult = await this.store.publishDraftRevision({
 			...key,

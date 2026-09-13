@@ -1,4 +1,10 @@
-import type { Envelope, EnvelopeField, FieldType, Recipient } from '$lib/domain/envelope';
+import type {
+	Envelope,
+	EnvelopeField,
+	FieldGeometry,
+	FieldType,
+	Recipient
+} from '$lib/domain/envelope';
 
 export interface FieldCommandKey {
 	organizationId: string;
@@ -26,6 +32,7 @@ export interface PublicEnvelopeField {
 	fieldType: FieldType;
 	required: boolean;
 	position: number;
+	geometry: FieldGeometry | null;
 }
 
 export interface PublishedFieldPlacement {

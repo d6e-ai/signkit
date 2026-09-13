@@ -68,6 +68,20 @@ export default defineConfig({
 			]
 		})
 	],
+	optimizeDeps: {
+		// Pin every @tabler/icons-svelte specifier reachable from the browser specs so the
+		// dep optimizer prebundles them on the initial cold-start scan instead of discovering
+		// them mid-run, which forces a disruptive reload of in-flight browser test modules.
+		include: [
+			'@tabler/icons-svelte',
+			'@tabler/icons-svelte/icons/alert-triangle',
+			'@tabler/icons-svelte/icons/ban',
+			'@tabler/icons-svelte/icons/download',
+			'@tabler/icons-svelte/icons/plus',
+			'@tabler/icons-svelte/icons/send',
+			'@tabler/icons-svelte/icons/trash'
+		]
+	},
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

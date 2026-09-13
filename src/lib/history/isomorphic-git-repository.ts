@@ -1,5 +1,5 @@
 import git from 'isomorphic-git';
-import { gzipSync, gunzipSync } from 'fflate';
+import { gzipSync } from 'fflate';
 import { normalizeMarkdownContent } from '$lib/domain/draft';
 import { assertMarkdownPath } from '$lib/domain/envelope';
 import type {
@@ -96,7 +96,7 @@ async function restore(archive: Uint8Array | null): Promise<MemoryFs> {
 	if (archive === null) return fs;
 	if (archive.byteLength > MAX_ARCHIVE_BYTES)
 		throw new Error('Draft repository archive exceeds the size limit');
-	const decodedBytes: Uint8Array = gunzipBounded(archive);
+	const decodedBytes: Uint8Array = await gunzipBounded(archive);
 	const decoded = JSON.parse(new TextDecoder().decode(decodedBytes)) as Partial<ArchivePayload>;
 	if (decoded.format !== FORMAT || !Array.isArray(decoded.files))
 		throw new Error('Unsupported draft repository archive');
@@ -119,7 +119,24 @@ function encodeArchive(files: ArchivedFile[]): Uint8Array {
 	return gzipSync(decoded, { level: 9, mtime: 0 });
 }
 
-function gunzipBounded(archive: Uint8Array): Uint8Array {
+const GZIP_SLICE_BYTES = 64 * 1024;
+
+function readableByteSlices(bytes: Uint8Array): ReadableStream<Uint8Array> {
+	let offset: number = 0;
+	return new ReadableStream<Uint8Array>({
+		pull(controller): void {
+			if (offset >= bytes.byteLength) {
+				controller.close();
+				return;
+			}
+			const end: number = Math.min(offset + GZIP_SLICE_BYTES, bytes.byteLength);
+			controller.enqueue(bytes.subarray(offset, end));
+			offset = end;
+		}
+	});
+}
+
+async function gunzipBounded(archive: Uint8Array): Promise<Uint8Array> {
 	if (archive.byteLength < 4) throw new Error('Invalid draft repository archive');
 	const footerOffset: number = archive.byteLength - 4;
 	const decodedSize: number =
@@ -132,11 +149,55 @@ function gunzipBounded(archive: Uint8Array): Uint8Array {
 		throw new Error('Draft repository archive exceeds the decoded size limit');
 	}
 
-	const decoded: Uint8Array = gunzipSync(archive, {
-		out: new Uint8Array(unsignedDecodedSize)
-	});
-	if (decoded.byteLength !== unsignedDecodedSize) {
-		throw new Error('Draft repository archive has an invalid decoded size');
+	let decompressed: ReadableStream<Uint8Array>;
+	try {
+		decompressed = readableByteSlices(archive).pipeThrough(
+			new DecompressionStream('gzip') as TransformStream<Uint8Array, Uint8Array>
+		);
+	} catch {
+		throw new Error('Invalid draft repository archive');
+	}
+
+	const reader = decompressed.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+
+	try {
+		while (true) {
+			const result = await reader.read();
+			if (result.done) break;
+			size += result.value.byteLength;
+			if (size > MAX_DECODED_ARCHIVE_BYTES) {
+				try {
+					await reader.cancel();
+				} catch {
+					// Ignore cancel error.
+				}
+				throw new Error('Draft repository archive exceeds the decoded size limit');
+			}
+			chunks.push(result.value);
+		}
+	} catch (error: unknown) {
+		if (
+			error instanceof Error &&
+			error.message === 'Draft repository archive exceeds the decoded size limit'
+		) {
+			throw error;
+		}
+		throw new Error('Invalid draft repository archive', { cause: error });
+	} finally {
+		try {
+			reader.releaseLock();
+		} catch {
+			// Ignore release lock error.
+		}
+	}
+
+	const decoded = new Uint8Array(size);
+	let offset = 0;
+	for (const chunk of chunks) {
+		decoded.set(chunk, offset);
+		offset += chunk.byteLength;
 	}
 	return decoded;
 }

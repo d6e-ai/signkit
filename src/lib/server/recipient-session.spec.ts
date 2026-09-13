@@ -34,7 +34,7 @@ describe('recipient session sealing', () => {
 
 		await expect(unsealRecipientSession(tampered)).resolves.toBeNull();
 		await expect(unsealRecipientSession('not+base64')).resolves.toBeNull();
-		await expect(unsealRecipientSession('A'.repeat(257))).resolves.toBeNull();
+		await expect(unsealRecipientSession('A'.repeat(400))).resolves.toBeNull();
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 8).toString('base64');
 		await expect(unsealRecipientSession(sealed)).resolves.toBeNull();
 	});
@@ -42,7 +42,7 @@ describe('recipient session sealing', () => {
 	it('rejects malformed capabilities and invalid key configuration', async () => {
 		await expect(sealRecipientSession('malformed')).rejects.toThrow(/Invalid recipient capability/);
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(31, 7).toString('base64');
-		await expect(sealRecipientSession(token)).rejects.toThrow(/must be 32 bytes/);
+		await expect(sealRecipientSession(token)).rejects.toThrow(/must encode exactly 32 bytes/);
 	});
 
 	it('propagates key configuration failures for otherwise well-formed cookies', async () => {
@@ -62,5 +62,33 @@ describe('recipient session sealing', () => {
 
 		await expect(unseal(recipientCookie)).resolves.toBeNull();
 		await expect(unsealRecipientSession(operatorCookie)).resolves.toBeNull();
+	});
+
+	it('opens a cookie sealed under the previous key once the active key rotates', async () => {
+		const sealedUnderOldActive: string = await sealRecipientSession(token);
+
+		const rotatedKey: string = Buffer.alloc(32, 9).toString('base64');
+		privateEnv.SESSION_ENCRYPTION_KEY_PREVIOUS = privateEnv.SESSION_ENCRYPTION_KEY;
+		privateEnv.SESSION_ENCRYPTION_KEY = rotatedKey;
+
+		await expect(unsealRecipientSession(sealedUnderOldActive)).resolves.toBe(token);
+
+		// A fresh seal after rotation overwrites with the active key so the
+		// cookie migrates off the retiring key on the next successful write.
+		const sealedUnderNewActive: string = await sealRecipientSession(token);
+		expect(sealedUnderNewActive).not.toBe(sealedUnderOldActive);
+		await expect(unsealRecipientSession(sealedUnderNewActive)).resolves.toBe(token);
+	});
+
+	it('fails closed once a key is retired outside the active/previous window', async () => {
+		const sealedUnderRetiredKey: string = await sealRecipientSession(token);
+
+		// Two rotations later: the key that sealed this cookie is neither
+		// active nor previous, so opening it must fail closed, not silently
+		// try an unrelated key.
+		privateEnv.SESSION_ENCRYPTION_KEY_PREVIOUS = Buffer.alloc(32, 9).toString('base64');
+		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 10).toString('base64');
+
+		await expect(unsealRecipientSession(sealedUnderRetiredKey)).resolves.toBeNull();
 	});
 });

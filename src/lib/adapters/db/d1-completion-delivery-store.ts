@@ -11,8 +11,12 @@ import type {
 	EnrollCompletionDeliveryItem,
 	FailCompletionDeliveryCommand,
 	FailCompletionDeliveryResult,
+	FindStaleSealedCompletionTokensCommand,
 	ReadClaimedCompletionDeliveryCommand,
-	RecipientLocale
+	RecipientLocale,
+	ResealCompletionTokenCommand,
+	ResealCompletionTokenResult,
+	StaleSealedCompletionTokenRow
 } from '$lib/ports/completion-delivery-store';
 
 const MAX_COMPLETION_DELIVERY_TERMINAL_CLEANUP_BATCH: number = 100;
@@ -406,6 +410,63 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 			markdownObjectKey: row.markdown_object_key,
 			markdownSha256: row.markdown_sha256
 		};
+	}
+
+	async findStaleSealedCompletionTokens(
+		command: FindStaleSealedCompletionTokensCommand
+	): Promise<readonly StaleSealedCompletionTokenRow[]> {
+		interface StaleRow {
+			delivery_id: string;
+			organization_id: string;
+			envelope_id: string;
+			recipient_id: string;
+			sealed_token: string;
+			sealing_key_id: string;
+		}
+		const result: D1Result<StaleRow> = await this.#database
+			.prepare(
+				`SELECT id AS delivery_id, organization_id, envelope_id, recipient_id,
+					sealed_token, sealing_key_id
+				 FROM completion_delivery_outbox
+				 WHERE status IN ('pending', 'failed')
+					AND sealed_token IS NOT NULL
+					AND sealing_key_id <> ?
+				 ORDER BY updated_at ASC, id ASC
+				 LIMIT ?`
+			)
+			.bind(command.activeSealingKeyId, command.limit)
+			.all<StaleRow>();
+		return result.results.map((row: StaleRow): StaleSealedCompletionTokenRow => ({
+			deliveryId: row.delivery_id,
+			organizationId: row.organization_id,
+			envelopeId: row.envelope_id,
+			recipientId: row.recipient_id,
+			sealedToken: row.sealed_token,
+			sealingKeyId: row.sealing_key_id
+		}));
+	}
+
+	async resealCompletionToken(
+		command: ResealCompletionTokenCommand
+	): Promise<ResealCompletionTokenResult> {
+		const result: D1Result = await this.#database
+			.prepare(
+				`UPDATE completion_delivery_outbox
+				 SET sealed_token = ?, sealing_key_id = ?, sealed_token_sha256 = ?, updated_at = ?
+				 WHERE organization_id = ? AND id = ? AND status <> 'processing'
+					AND sealed_token IS NOT NULL AND sealing_key_id = ?`
+			)
+			.bind(
+				command.sealedToken,
+				command.sealingKeyId,
+				command.sealedTokenSha256,
+				command.updatedAt,
+				command.organizationId,
+				command.deliveryId,
+				command.previousSealingKeyId
+			)
+			.run();
+		return result.meta.changes > 0 ? { outcome: 'resealed' } : { outcome: 'stale' };
 	}
 }
 

@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { describe, expect, it } from 'vitest';
+import type { ListObjectsResult, ObjectMetadata } from '$lib/ports/object-store';
+import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import {
 	DraftIntegrityError,
@@ -7,29 +8,29 @@ import {
 	readImmutableDraftRevision
 } from './draft-persistence';
 
-class ReadOnlyObjectStore implements ObjectStore {
-	readonly get = vi.fn(async (): Promise<ReadableStream<Uint8Array> | null> =>
-		this.body === null
-			? null
-			: new ReadableStream<Uint8Array>({
-					start: (controller): void => {
-						controller.enqueue(this.body as Uint8Array);
-						controller.close();
-					}
-				})
-	);
-
-	constructor(readonly body: Uint8Array | null) {}
-
-	async head(): Promise<ObjectMetadata | null> {
+/**
+ * Guards that `readImmutableDraftRevision` only ever reads via `get`: every
+ * other method throws instead of quietly succeeding, so a regression that
+ * starts calling head/put/delete/list on the store fails loudly here.
+ */
+class ReadOnlyObjectStore extends InMemoryObjectStore {
+	override async head(): Promise<ObjectMetadata | null> {
 		throw new Error('not implemented');
 	}
 
-	async putImmutable(): Promise<ObjectMetadata> {
+	override async putImmutable(): Promise<ObjectMetadata> {
 		throw new Error('not implemented');
 	}
 
-	async delete(): Promise<void> {
+	override async delete(): Promise<void> {
+		throw new Error('not implemented');
+	}
+
+	override async list(): Promise<ListObjectsResult> {
+		throw new Error('not implemented');
+	}
+
+	override async deleteMany(): Promise<void> {
 		throw new Error('not implemented');
 	}
 }
@@ -44,7 +45,8 @@ describe('readImmutableDraftRevision', () => {
 			{ id: 'user-1', name: 'User', email: 'user@example.com', type: 'user' }
 		);
 		const archiveKey: string = draftArchiveKey('org-1', 'env-1', version.archiveSha256);
-		const objects = new ReadOnlyObjectStore(version.archive);
+		const objects = new ReadOnlyObjectStore();
+		objects.seed(archiveKey, version.archive);
 
 		await expect(
 			readImmutableDraftRevision(
@@ -62,7 +64,7 @@ describe('readImmutableDraftRevision', () => {
 	});
 
 	it('rejects an unscoped key before reading object storage', async () => {
-		const objects = new ReadOnlyObjectStore(new Uint8Array());
+		const objects = new ReadOnlyObjectStore();
 		await expect(
 			readImmutableDraftRevision(
 				{
@@ -76,7 +78,7 @@ describe('readImmutableDraftRevision', () => {
 				new IsomorphicGitDraftRepository()
 			)
 		).rejects.toBeInstanceOf(DraftIntegrityError);
-		expect(objects.get).not.toHaveBeenCalled();
+		expect(objects.getCalls).toBe(0);
 	});
 
 	it('rejects archive digest and Git head mismatches', async () => {
@@ -97,14 +99,18 @@ describe('readImmutableDraftRevision', () => {
 		};
 		const corrupted: Uint8Array = Uint8Array.from(version.archive);
 		corrupted[0] ^= 1;
+		const corruptedStore = new ReadOnlyObjectStore();
+		corruptedStore.seed(archiveKey, corrupted);
+		const mismatchedHeadStore = new ReadOnlyObjectStore();
+		mismatchedHeadStore.seed(archiveKey, version.archive);
 
 		await expect(
-			readImmutableDraftRevision(revision, new ReadOnlyObjectStore(corrupted), repository)
+			readImmutableDraftRevision(revision, corruptedStore, repository)
 		).rejects.toBeInstanceOf(DraftIntegrityError);
 		await expect(
 			readImmutableDraftRevision(
 				{ ...revision, commitSha: 'c'.repeat(40) },
-				new ReadOnlyObjectStore(version.archive),
+				mismatchedHeadStore,
 				repository
 			)
 		).rejects.toBeInstanceOf(DraftIntegrityError);

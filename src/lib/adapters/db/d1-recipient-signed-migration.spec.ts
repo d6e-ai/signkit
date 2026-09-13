@@ -1,16 +1,10 @@
-import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { RecipientSignedApplication } from '$lib/application/signing/recipient-signed';
 import type { PublishRecipientSignedCommand } from '$lib/ports/recipient-sign-store';
 import { hashRecipientCapability } from '$lib/security/recipient-capability';
 import { D1RecipientSignStore } from './d1-recipient-sign-store';
-import { sqliteD1Database } from './sqlite-d1-test-support';
-
-const migrationPaths: readonly string[] = readdirSync('migrations/d1')
-	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
-	.sort()
-	.map((name: string): string => `migrations/d1/${name}`);
+import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
 
 const FAR_FUTURE: string = '2026-09-25T00:00:00.000Z';
 const NEXT_EXPIRY: string = '2026-09-25T12:00:00.000Z';
@@ -21,7 +15,7 @@ const CIPHERTEXT: string = 'sealed-ciphertext-3';
 
 function database(): DatabaseSync {
 	const db: DatabaseSync = new DatabaseSync(':memory:');
-	for (const path of migrationPaths) db.exec(readFileSync(path, 'utf8'));
+	applyD1Migrations(db);
 	db.exec(`
 		INSERT INTO organization (id, d6e_organization_id, name, created_at)
 		VALUES ('org-1','org-1','Workspace','2026-09-11T00:00:00.000Z');

@@ -10,10 +10,9 @@
  * handler does.
  *
  * Membership here only means "an API key may be resolved on this path". It does
- * not mean every endpoint under it accepts one: the mutation endpoints beneath
- * `/api/v1/envelopes` remain session-only and reject a resolved key outright.
- * The two layers are independent on purpose -- widening this list can never by
- * itself grant a key access to a mutation.
+ * not mean every endpoint under it accepts one: handlers still require the
+ * matching live grant scope. The two layers are independent on purpose --
+ * widening this list can never by itself grant a key a mutation.
  */
 const API_KEY_PATH_PREFIXES: readonly string[] = ['/api/v1/envelopes'];
 
@@ -29,7 +28,11 @@ const API_KEY_PATH_PREFIXES: readonly string[] = ['/api/v1/envelopes'];
  * suppresses the cookie for that request, so the two authorities can never
  * compose on the surfaces where composing them would matter most.
  */
-const API_KEY_REJECTED_PATH_PREFIXES: readonly string[] = ['/api/v1/api-keys', '/api/v1/instance'];
+const API_KEY_REJECTED_PATH_PREFIXES: readonly string[] = [
+	'/api/v1/api-keys',
+	'/api/v1/instance',
+	'/api/v1/webhooks'
+];
 
 /**
  * Instance bootstrap is deliberately exempt.

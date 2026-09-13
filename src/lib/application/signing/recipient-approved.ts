@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	ApproveCommandKey,
@@ -74,16 +75,17 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 				sentCommitSha: preparation.sentCommitSha,
 				approvedAt
 			});
-			const auditEventHash: string = await sha256(
-				JSON.stringify({
-					actorId: preparation.recipientId,
-					envelopeId: preparation.envelopeId,
+			const auditEventHash: string = await hashAuditEventV2(
+				{
+					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'recipient.approved',
+					actorType: 'recipient',
+					actorId: preparation.recipientId,
 					occurredAt: approvedAt,
-					organizationId: preparation.organizationId,
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
-				})
+				},
+				{ organizationId: preparation.organizationId, envelopeId: preparation.envelopeId }
 			);
 
 			const routing: ApproveRoutingSnapshot = preparation.routing;
@@ -107,16 +109,17 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 					completedAt: approvedAt
 				};
 				completedAuditPayloadJson = JSON.stringify(completedPayloadValue);
-				completedAuditEventHash = await sha256(
-					JSON.stringify({
-						actorId: preparation.recipientId,
-						envelopeId: preparation.envelopeId,
+				completedAuditEventHash = await hashAuditEventV2(
+					{
+						sequence: preparation.auditHead.sequence + 2,
 						eventType: 'envelope.completed',
+						actorType: 'recipient',
+						actorId: preparation.recipientId,
 						occurredAt: approvedAt,
-						organizationId: preparation.organizationId,
 						payload: completedPayloadValue,
 						previousHash: auditEventHash
-					})
+					},
+					{ organizationId: preparation.organizationId, envelopeId: preparation.envelopeId }
 				);
 			} else if (shouldRelease) {
 				nextRoutingOrder = routing.nextRoutingOrder;

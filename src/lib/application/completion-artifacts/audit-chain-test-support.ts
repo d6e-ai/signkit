@@ -1,6 +1,7 @@
+import { CURRENT_AUDIT_HASH_VERSION, type AuditHashVersion } from '$lib/domain/audit';
 import type { CompletionEvidenceAuditEvent } from '$lib/ports/completion-artifact-store';
 import { auditEventHashPreimage, type CompletionAuditChainContext } from './audit-event-integrity';
-import { sha256TextHex } from './completion-manifest';
+import { sha256TextHex } from '$lib/domain/audit';
 
 export interface AuditChainStep {
 	id: string;
@@ -9,6 +10,7 @@ export interface AuditChainStep {
 	actorId: string | null;
 	occurredAt: string;
 	payload: unknown;
+	hashVersion?: AuditHashVersion;
 }
 
 /**
@@ -35,7 +37,8 @@ export async function buildVerifiedAuditChain(
 			payloadJson,
 			previousHash,
 			eventHash: '',
-			occurredAt: step.occurredAt
+			occurredAt: step.occurredAt,
+			hashVersion: step.hashVersion ?? CURRENT_AUDIT_HASH_VERSION
 		};
 		const preimage: string = auditEventHashPreimage(draft, step.payload, context);
 		const eventHash: string = await sha256TextHex(preimage);

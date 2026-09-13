@@ -46,15 +46,9 @@ function apiKeyNotPermitted(locals: App.Locals, instance: string): Response | nu
 /**
  * Session-only organization authorization.
  *
- * Every mutation and every endpoint that has not deliberately opted into API key
- * access uses this. A resolved API key is refused outright, so machine actors
- * cannot reach the envelope mutation commands in this slice -- which is required,
- * not merely conservative: the completion artifact verifier pins
- * `envelope.created`, `envelope.ready`, `envelope.fields_placed`,
- * `envelope.sent`, and `envelope.voided` to `actor_type = 'user'`, and
- * `actor_type` is not part of those events' hash preimage, so admitting a machine
- * actor would either falsify the audit chain or make every affected envelope fail
- * completion artifact publication.
+ * Envelope mutations that accept API keys use {@link authorizeScopedOrganizationRequest}
+ * instead. This helper still refuses a presented key, which is required for
+ * organization administration and any remaining session-only surfaces.
  */
 export function authorizeOrganizationRequest(
 	locals: App.Locals,

@@ -736,6 +736,7 @@
 		IconUserCheck
 	} from '@tabler/icons-svelte';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import SignatureCanvas from '$lib/components/signature-canvas.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -1381,6 +1382,18 @@
 																oninput={(event) =>
 																	(fieldValues[field.id] = event.currentTarget.value)}
 															/>
+														{:else if field.fieldType === 'signature'}
+															<SignatureCanvas
+																id={field.id}
+																envelopeId={data.access.envelopeId}
+																recipientId={data.access.recipientId}
+																disabled={signStatus === 'pending' ||
+																	signStatus === 'transient_failure'}
+																bind:value={
+																	() => fieldValues[field.id] as string,
+																	(next) => (fieldValues[field.id] = next)
+																}
+															/>
 														{:else if field.fieldType === 'date'}
 															<Input
 																id={field.id}
@@ -1399,7 +1412,7 @@
 																aria-invalid={invalid || undefined}
 																disabled={signStatus === 'pending' ||
 																	signStatus === 'transient_failure'}
-																maxlength={field.fieldType === 'signature' ? 200 : 20}
+																maxlength={20}
 																value={fieldValues[field.id] as string}
 																oninput={(event) =>
 																	(fieldValues[field.id] = event.currentTarget.value)}

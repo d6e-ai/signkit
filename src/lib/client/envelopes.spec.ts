@@ -1,0 +1,231 @@
+import { describe, expect, it, vi } from 'vitest';
+import { createEnvelopesClient, EnvelopesApiError } from './envelopes';
+
+function mockJsonResponse(
+	data: unknown,
+	status = 200,
+	headersInit?: Record<string, string>
+): Response {
+	const headers = new Headers({ 'content-type': 'application/json', ...headersInit });
+	return new Response(JSON.stringify(data), { status, headers });
+}
+
+function mockProblemResponse(
+	problem: { type: string; title: string; status: number; detail: string; instance: string },
+	headersInit?: Record<string, string>
+): Response {
+	const headers = new Headers({ 'content-type': 'application/problem+json', ...headersInit });
+	return new Response(JSON.stringify(problem), { status: problem.status, headers });
+}
+
+const envelope = {
+	id: '01900000-0000-7000-8000-000000000001',
+	organizationId: 'org-1',
+	title: 'Agreement',
+	status: 'draft' as const,
+	repositoryGeneration: 0,
+	repositoryHead: null,
+	repositoryArchiveSha256: null,
+	sentCommitSha: null,
+	fieldGeneration: 0,
+	createdAt: '2026-09-11T00:00:00.000Z',
+	updatedAt: '2026-09-11T00:00:00.000Z'
+};
+
+describe('EnvelopesClient', () => {
+	it('mints an Idempotency-Key and posts a new envelope', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ envelope }, 201)
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		const result = await client.create('Agreement');
+
+		expect(result.envelope).toEqual(envelope);
+		expect(result.replayed).toBe(false);
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe('/api/v1/envelopes');
+		const headers = init?.headers as Record<string, string>;
+		expect(headers['idempotency-key']).toBeTruthy();
+		expect(JSON.parse(init?.body as string)).toEqual({ title: 'Agreement' });
+	});
+
+	it('lists envelopes with cursor and limit query params', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ items: [envelope], nextCursor: null })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		const result = await client.list({ cursor: 'abc', limit: 10 });
+
+		expect(result.items).toEqual([envelope]);
+		const [url] = fetchMock.mock.calls[0];
+		expect(url).toBe('/api/v1/envelopes?cursor=abc&limit=10');
+	});
+
+	it('reads the draft workspace', async () => {
+		const workspace = {
+			generation: 1,
+			commitSha: '0123456789abcdef0123456789abcdef01234567',
+			archiveSha256: 'a'.repeat(64),
+			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(workspace));
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.getDraft(envelope.id)).resolves.toEqual(workspace);
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/draft`);
+	});
+
+	it('reads the durable envelope detail including recipients and the ready audit event', async () => {
+		const detail = {
+			envelope,
+			recipients: [
+				{
+					id: '01900000-0000-7000-8000-000000000011',
+					email: 'signer@example.com',
+					name: 'Signer',
+					role: 'signer',
+					locale: 'en',
+					routingOrder: 1,
+					status: 'pending'
+				}
+			],
+			readyAuditEventId: '01900000-0000-7000-8000-000000000099',
+			fields: []
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(detail));
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.getDetail(envelope.id)).resolves.toEqual(detail);
+		await expect(client.get(envelope.id)).resolves.toEqual(envelope);
+	});
+
+	it('imports a DOCX file as multipart without setting a manual content-type', async () => {
+		const revision = { generation: 1, commitSha: 'a'.repeat(40), archiveSha256: 'b'.repeat(64) };
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ revision }, 201)
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+		const file = new Blob(['PK'], {
+			type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+		});
+
+		await client.importDocx(envelope.id, {
+			expectedGeneration: 0,
+			targetPath: 'documents/agreement.md',
+			file
+		});
+
+		const [, init] = fetchMock.mock.calls[0];
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/draft/docx`);
+		expect(init?.body).toBeInstanceOf(FormData);
+		expect(init?.headers).not.toHaveProperty('content-type');
+	});
+
+	it('downloads commit-pinned DOCX bytes without JSON parsing', async () => {
+		const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+		const fetchMock = vi.fn<typeof globalThis.fetch>(
+			async () =>
+				new Response(bytes, {
+					status: 200,
+					headers: {
+						'content-type':
+							'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+						'content-disposition': 'attachment; filename="envelope-export.docx"',
+						'x-signkit-commit-sha': 'a'.repeat(40)
+					}
+				})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.exportDocx(envelope.id)).resolves.toEqual({
+			bytes,
+			commitSha: 'a'.repeat(40),
+			filename: 'envelope-export.docx'
+		});
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/docx`);
+	});
+
+	it('marks a replayed commit via the idempotency-replayed response header', async () => {
+		const revision = { generation: 1, commitSha: 'a'.repeat(40), archiveSha256: 'b'.repeat(64) };
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ revision }, 201, { 'idempotency-replayed': 'true' })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		const result = await client.commitDraft(envelope.id, {
+			expectedGeneration: 0,
+			message: 'Initial draft',
+			edits: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+		});
+
+		expect(result.replayed).toBe(true);
+		expect(result.revision).toEqual(revision);
+	});
+
+	it('surfaces an RFC 9457 problem as EnvelopesApiError', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockProblemResponse({
+				type: 'urn:signkit:problem:draft-generation-conflict',
+				title: 'Draft generation conflict',
+				status: 409,
+				detail: 'The expected draft generation is no longer current.',
+				instance: '/api/v1/envelopes/x/draft/commits'
+			})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(
+			client.commitDraft(envelope.id, {
+				expectedGeneration: 0,
+				message: 'Initial draft',
+				edits: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+			})
+		).rejects.toMatchObject({
+			status: 409,
+			type: 'urn:signkit:problem:draft-generation-conflict'
+		});
+	});
+
+	it('sends the ready command and returns the recipient graph', async () => {
+		const ready = {
+			envelopeId: envelope.id,
+			status: 'ready' as const,
+			generation: 1,
+			commitSha: 'a'.repeat(40),
+			recipients: [],
+			updatedAt: '2026-09-11T00:00:00.000Z',
+			auditEventId: '01900000-0000-7000-8000-000000000099'
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse({ ready }));
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		const result = await client.ready(envelope.id, {
+			expectedGeneration: 1,
+			recipients: [
+				{ email: 'a@example.com', name: 'Alice', role: 'signer', locale: 'en', routingOrder: 1 }
+			]
+		});
+
+		expect(result.ready).toEqual(ready);
+	});
+
+	it('propagates a network failure as-is', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => {
+			throw new Error('network down');
+		});
+		const client = createEnvelopesClient({ fetch: fetchMock });
+		await expect(client.get(envelope.id)).rejects.toThrow('network down');
+	});
+
+	it('EnvelopesApiError falls back to a generic message when detail is empty', () => {
+		const error = new EnvelopesApiError({
+			status: 503,
+			type: 'urn:signkit:problem:service-unavailable',
+			title: '',
+			detail: ''
+		});
+		expect(error.message).toBe('Request failed with status 503');
+	});
+});

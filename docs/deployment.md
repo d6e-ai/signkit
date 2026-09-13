@@ -28,7 +28,7 @@ Objects go to any S3-compatible service. Most of them require path-style address
 
 `wrangler.jsonc` declares the `DB` (D1), `OBJECTS` (R2), `ASSETS`, and `EMAIL` bindings, `nodejs_compat`, observability, and a `* * * * *` cron trigger. R2 is used through its in-process binding rather than an S3 endpoint, and D1 migrations live in `migrations/d1`.
 
-The scheduled trigger drains invitation delivery, completion-artifact publication, and completion delivery in-process, so no external scheduler is required. Secrets belong in Wrangler secret storage (`.dev.vars` locally) and must never be committed: at minimum `DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, `DELIVERY_WORKER_SECRET`, the d6e-auth client credentials, plus the `SIGNKIT_PUBLIC_ORIGIN`, `SIGNKIT_EMAIL_FROM`, and `SIGNKIT_EMAIL_FROM_NAME` variables.
+The scheduled trigger invokes every protected drain and sweep in-process through the Worker's own `fetch` handler — invitation delivery, completion-artifact publication, completion delivery, envelope expiry, webhooks, both reseal sweeps, and orphan object collection — each via `context.waitUntil` so one failure cannot block the others. No external scheduler is required. Secrets belong in Wrangler secret storage (`.dev.vars` locally) and must never be committed: at minimum `DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, `DELIVERY_WORKER_SECRET`, the d6e-auth client credentials, plus the `SIGNKIT_PUBLIC_ORIGIN`, `SIGNKIT_EMAIL_FROM`, and `SIGNKIT_EMAIL_FROM_NAME` variables.
 
 Cloudflare Email Sending is currently beta. Sending to arbitrary recipient addresses requires Workers Paid; free accounts can only send to verified destination addresses, which is fine for testing but not for real envelopes. Check the current [Email Sending pricing and availability](https://developers.cloudflare.com/email-service/platform/pricing/) before treating this profile as zero-cost.
 
@@ -44,7 +44,9 @@ All values come from `.env.example`; copy it to `.env` for Node development, and
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `D6E_AUTH_BASE_URL`, `D6E_AUTH_CLIENT_ID`, `D6E_AUTH_CLIENT_SECRET`                                        | Operator OAuth against d6e-auth. The client ID is also the expected token audience.                                                                                                              |
 | `SESSION_ENCRYPTION_KEY`                                                                                   | 32 random bytes, base64. Encrypts operator and recipient cookies, separated by AES-GCM additional authenticated data.                                                                            |
+| `SESSION_ENCRYPTION_KEY_PREVIOUS`                                                                          | Optional retiring session key, kept only until every issued recipient/decline cookie sealed under it has expired (30 days) or been overwritten by a fresh exchange. See rotation below.          |
 | `DELIVERY_ENCRYPTION_KEY`                                                                                  | Separate AES-256 key sealing recipient capabilities and completion tokens held in delivery outboxes.                                                                                             |
+| `DELIVERY_ENCRYPTION_KEY_PREVIOUS`                                                                         | Optional retiring delivery key. See rotation below.                                                                                                                                              |
 | `SIGNKIT_PUBLIC_ORIGIN`                                                                                    | Exact public HTTPS origin used to build signing and completion links.                                                                                                                            |
 | `SIGNKIT_EMAIL_FROM`, `SIGNKIT_EMAIL_FROM_NAME`                                                            | Transactional sender address and display name.                                                                                                                                                   |
 | `DELIVERY_WORKER_SECRET`                                                                                   | High-entropy bearer secret for the protected drain endpoints.                                                                                                                                    |
@@ -53,18 +55,59 @@ All values come from `.env.example`; copy it to `.env` for Node development, and
 | `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_FORCE_PATH_STYLE` | Object storage for the Node and Vercel profiles.                                                                                                                                                 |
 | `CLOUDFLARE_EMAIL_ACCOUNT_ID`, `CLOUDFLARE_EMAIL_API_TOKEN`                                                | Cloudflare Email Sending REST credentials used by the Node delivery worker.                                                                                                                      |
 
-Do not rotate `DELIVERY_ENCRYPTION_KEY` while any outbox row still carries its key ID; undelivered ciphertext sealed under a retired key fails closed rather than being silently dropped.
+### Rotating `DELIVERY_ENCRYPTION_KEY` and `SESSION_ENCRYPTION_KEY`
+
+Both keys support an active+previous keyring, so rotation is safe: opening ciphertext is fail-closed by the explicit key ID recorded alongside it (the outbox row's `sealing_key_id` column, or the key ID embedded in the cookie envelope), and only the active key or the configured `_PREVIOUS` key can ever decrypt — never a key outside that pair.
+
+1. Set `DELIVERY_ENCRYPTION_KEY_PREVIOUS` (or `SESSION_ENCRYPTION_KEY_PREVIOUS`) to the current value of the key you are retiring.
+2. Set `DELIVERY_ENCRYPTION_KEY` (or `SESSION_ENCRYPTION_KEY`) to a fresh 32 random bytes, base64.
+3. Deploy. New ciphertext seals under the new active key immediately; ciphertext already sealed under the previous key keeps opening correctly.
+4. Let the reseal sweep (below) migrate outstanding outbox ciphertext onto the active key over the following runs. Cookies migrate opportunistically the next time a session is resealed on a successful request; leave `_PREVIOUS` set for at least 30 days (the cookie/capability lifetime) so any cookie or capability that never gets resealed can still be opened.
+5. Once no outbox row reports the retired key ID and 30 days have passed, unset `_PREVIOUS`. A key ID outside the active/previous pair fails closed rather than being silently accepted — this is a deliberate integrity guarantee, not a bug to work around by widening the keyring.
 
 ## Background jobs
 
-Three durable outboxes are drained through protected endpoints:
+Durable outboxes, expiry, reseal, webhook delivery, and object-store orphan collection are processed through protected endpoints:
 
-| Endpoint                                          | Work                                                          |
-| ------------------------------------------------- | ------------------------------------------------------------- |
-| `POST /api/v1/system/deliveries/drain`            | recipient invitation mail                                     |
-| `POST /api/v1/system/completion-artifacts/drain`  | completion-artifact publication                               |
-| `POST /api/v1/system/completion-deliveries/drain` | completion notifications and read-only artifact access grants |
+| Endpoint                                                 | Work                                                                    |
+| -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `POST /api/v1/system/deliveries/drain`                   | recipient invitation mail                                               |
+| `POST /api/v1/system/deliveries/reseal-sweep`            | migrates outstanding delivery capability ciphertext onto the active key |
+| `POST /api/v1/system/completion-artifacts/drain`         | completion-artifact publication                                         |
+| `POST /api/v1/system/completion-deliveries/drain`        | completion notifications and read-only artifact access grants           |
+| `POST /api/v1/system/completion-deliveries/reseal-sweep` | migrates outstanding completion token ciphertext onto the active key    |
+| `POST /api/v1/system/envelopes/expiry-drain`             | transitions lapsed `sent`/`in_progress` envelopes to `expired`          |
+| `POST /api/v1/system/webhooks/drain`                     | signed webhook deliveries                                               |
+| `POST /api/v1/system/objects/orphan-sweep`               | deletes unreferenced object-store uploads older than 24 hours           |
 
-All three authenticate with a constant-time check of `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare drains them from its own scheduled trigger; Node/Docker and Vercel deployments must call them from a host scheduler (systemd timer, Kubernetes CronJob, or equivalent) roughly once a minute. Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes.
+All endpoints authenticate with a constant-time check of `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare invokes them from its own scheduled trigger. Node/Docker and Vercel deployments must POST each path from a host scheduler (systemd timer, Kubernetes CronJob, or equivalent) roughly once a minute, for example:
 
-Each drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [architecture/completion-artifacts.md](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
+```sh
+for path in \
+  /api/v1/system/deliveries/drain \
+  /api/v1/system/deliveries/reseal-sweep \
+  /api/v1/system/completion-artifacts/drain \
+  /api/v1/system/completion-deliveries/drain \
+  /api/v1/system/completion-deliveries/reseal-sweep \
+  /api/v1/system/envelopes/expiry-drain \
+  /api/v1/system/webhooks/drain \
+  /api/v1/system/objects/orphan-sweep
+do
+  curl -fsS -X POST "${SIGNKIT_PUBLIC_ORIGIN}${path}" \
+    -H "Authorization: Bearer ${DELIVERY_WORKER_SECRET}"
+done
+```
+
+Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes — never object keys, ciphertext, or secrets.
+
+Each delivery drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [architecture/completion-artifacts.md](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
+
+The reseal sweeps are bounded maintenance, not delivery: each run migrates at most 50 non-`processing` outbox rows sealed under a key other than the active one, leaving rows sealed under a key outside the active/previous pair untouched for an operator to investigate rather than silently discarding them.
+
+The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable (signer/approver) recipient that has ever been released has an expired capability and none currently has a live one, then transitions each envelope to `expired` with the same delivery-outbox scrub and capability revocation as an operator void, plus a chained `envelope.expired` audit event.
+
+The orphan sweep lists at most 1,000 objects per run, skips anything younger than 24 hours or without a parseable upload time, and deletes only keys that SQL does not currently reference. A durable, server-owned resume key advances across scheduled runs so a first page of live objects cannot starve later orphans; callers cannot supply that cursor, shorten the grace period, or name a prefix. Failed pointer CAS uploads remain invisible until they age out and are collected.
+
+## Disaster recovery
+
+Point-in-time D1 restore and R2 object recovery runbooks live in [docs/operations/](operations/README.md); they are deliberately generic (no account, database, bucket, or Worker names) so they stay accurate as this deployment's specific resource names change.

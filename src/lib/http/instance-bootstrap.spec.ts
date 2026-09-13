@@ -2,6 +2,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
 import type { InstanceMemberMetadata } from '$lib/ports/instance-store';
+import { identityOnlyLocals as locals } from './http-handler-test-support';
 import { createInstanceBootstrapHandler, type BootstrapSecretResolver } from './instance-bootstrap';
 
 const VALID_SECRET: string = 'signkit-bootstrap-secret-0123456789abcdef';
@@ -14,19 +15,6 @@ const mockMember: InstanceMemberMetadata = {
 	createdAt: NOW,
 	updatedAt: NOW
 };
-
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships: [],
-		organizationId: null,
-		principal:
-			state === 'unavailable' || state === 'anonymous'
-				? null
-				: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
-}
 
 function event(input: {
 	locals?: App.Locals;

@@ -1,9 +1,10 @@
 import { isCompletionToken } from './completion-token';
+import { AesGcmSealingKeyring, sealingKeyringFromEncodedEnv, sha256Hex } from './sealing-keyring';
 
 const FORMAT_PREFIX: string = 'skcd1_';
 const IV_BYTES: number = 12;
-const KEY_BYTES: number = 32;
 const DOMAIN_SEPARATOR: string = 'signkit-completion-delivery-v1';
+const ENV_VAR_NAME: string = 'DELIVERY_ENCRYPTION_KEY';
 
 export interface CompletionTokenSealContext {
 	organizationId: string;
@@ -25,53 +26,68 @@ export interface CompletionTokenSealer {
 
 export interface CompletionTokenOpener {
 	currentSealingKeyId(): Promise<string>;
-	open(sealedToken: string, context: CompletionTokenSealContext): Promise<string>;
+	isKnownSealingKeyId(keyId: string): Promise<boolean>;
+	open(
+		sealedToken: string,
+		context: CompletionTokenSealContext,
+		sealingKeyId: string
+	): Promise<string>;
 }
 
+/**
+ * Active+previous keyring for completion delivery token ciphertext, sharing
+ * the same `DELIVERY_ENCRYPTION_KEY`/`DELIVERY_ENCRYPTION_KEY_PREVIOUS`
+ * master key material as {@link AesGcmRecipientCapabilitySealer} — purpose
+ * separation comes entirely from the format prefix and AAD, never a
+ * different key. Opening is fail-closed by explicit `sealingKeyId`.
+ */
 export class AesGcmCompletionTokenSealer implements CompletionTokenSealer, CompletionTokenOpener {
-	readonly #keyBytes: Uint8Array<ArrayBuffer>;
-	readonly #keyId: Promise<string>;
-	readonly #cryptoKey: Promise<CryptoKey>;
+	readonly #keyring: AesGcmSealingKeyring;
 
-	constructor(encodedKey: string) {
-		this.#keyBytes = decodeKey(encodedKey);
-		this.#keyId = sha256Hex(this.#keyBytes).then((digest: string): string => digest.slice(0, 16));
-		this.#cryptoKey = crypto.subtle.importKey('raw', this.#keyBytes, { name: 'AES-GCM' }, false, [
-			'encrypt',
-			'decrypt'
-		]);
+	constructor(activeEncodedKey: string, previousEncodedKey?: string) {
+		this.#keyring = sealingKeyringFromEncodedEnv(
+			activeEncodedKey,
+			previousEncodedKey,
+			ENV_VAR_NAME
+		);
 	}
 
 	async currentSealingKeyId(): Promise<string> {
-		return await this.#keyId;
+		return await this.#keyring.activeKeyId();
+	}
+
+	async isKnownSealingKeyId(keyId: string): Promise<boolean> {
+		return await this.#keyring.isKnownKeyId(keyId);
+	}
+
+	async needsReseal(keyId: string): Promise<boolean> {
+		return !(await this.#keyring.isActiveKeyId(keyId));
 	}
 
 	async seal(token: string, context: CompletionTokenSealContext): Promise<SealedCompletionToken> {
 		if (!isCompletionToken(token)) {
 			throw new Error('Invalid completion token');
 		}
-		const iv: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(IV_BYTES));
-		crypto.getRandomValues(iv);
 		const plaintext: Uint8Array<ArrayBuffer> = new TextEncoder().encode(token);
-		const ciphertext: ArrayBuffer = await crypto.subtle.encrypt(
-			{ name: 'AES-GCM', iv, additionalData: additionalData(context) },
-			await this.#cryptoKey,
-			plaintext
-		);
+		const sealed = await this.#keyring.sealWithActive(plaintext, additionalData(context));
 		const payload: Uint8Array<ArrayBuffer> = new Uint8Array(
-			new ArrayBuffer(iv.byteLength + ciphertext.byteLength)
+			new ArrayBuffer(sealed.iv.byteLength + sealed.ciphertext.byteLength)
 		);
-		payload.set(iv, 0);
-		payload.set(new Uint8Array(ciphertext), iv.byteLength);
+		payload.set(sealed.iv, 0);
+		payload.set(sealed.ciphertext, sealed.iv.byteLength);
 		const sealedToken: string = `${FORMAT_PREFIX}${base64UrlEncode(payload)}`;
 		return {
 			sealedToken,
-			sealingKeyId: await this.#keyId,
+			sealingKeyId: sealed.keyId,
 			sealedTokenSha256: await sha256Hex(new TextEncoder().encode(sealedToken))
 		};
 	}
 
-	async open(sealedToken: string, context: CompletionTokenSealContext): Promise<string> {
+	async open(
+		sealedToken: string,
+		context: CompletionTokenSealContext,
+		sealingKeyId: string
+	): Promise<string> {
 		if (!sealedToken.startsWith(FORMAT_PREFIX)) {
 			throw new Error('Invalid sealed completion token');
 		}
@@ -83,12 +99,13 @@ export class AesGcmCompletionTokenSealer implements CompletionTokenSealer, Compl
 		}
 		const iv: Uint8Array<ArrayBuffer> = payload.slice(0, IV_BYTES);
 		const ciphertext: Uint8Array<ArrayBuffer> = payload.slice(IV_BYTES);
-		let plaintext: ArrayBuffer;
+		let plaintext: Uint8Array;
 		try {
-			plaintext = await crypto.subtle.decrypt(
-				{ name: 'AES-GCM', iv, additionalData: additionalData(context) },
-				await this.#cryptoKey,
-				ciphertext
+			plaintext = await this.#keyring.openWithKeyId(
+				sealingKeyId,
+				iv,
+				ciphertext,
+				additionalData(context)
 			);
 		} catch {
 			throw new Error('Sealed completion token authentication failed');
@@ -98,6 +115,11 @@ export class AesGcmCompletionTokenSealer implements CompletionTokenSealer, Compl
 			throw new Error('Invalid completion token');
 		}
 		return token;
+	}
+
+	/** Re-encrypts under the active key for the bounded reseal sweep only. */
+	async reseal(token: string, context: CompletionTokenSealContext): Promise<SealedCompletionToken> {
+		return this.seal(token, context);
 	}
 }
 
@@ -109,25 +131,8 @@ function additionalData(context: CompletionTokenSealContext): Uint8Array<ArrayBu
 			context.envelopeId,
 			context.recipientId,
 			context.deliveryId
-		].join('\u0000')
+		].join('\0')
 	);
-}
-
-function decodeKey(encodedKey: string): Uint8Array<ArrayBuffer> {
-	let binary: string;
-	try {
-		binary = atob(encodedKey.trim());
-	} catch {
-		throw new Error('DELIVERY_ENCRYPTION_KEY must be valid base64');
-	}
-	if (binary.length !== KEY_BYTES) {
-		throw new Error('DELIVERY_ENCRYPTION_KEY must encode exactly 32 bytes');
-	}
-	const bytes: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(KEY_BYTES));
-	for (let index: number = 0; index < binary.length; index += 1) {
-		bytes[index] = binary.charCodeAt(index);
-	}
-	return bytes;
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -154,11 +159,4 @@ function base64UrlDecode(value: string): Uint8Array<ArrayBuffer> {
 		bytes[index] = binary.charCodeAt(index);
 	}
 	return bytes;
-}
-
-async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest('SHA-256', bytes);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

@@ -117,11 +117,44 @@ describe('EnvelopeVoidApplication', () => {
 		expect(command.auditEventHash).toBe(
 			sha256(
 				JSON.stringify({
-					actorId: actor.id,
-					envelopeId,
-					eventType: 'envelope.voided',
-					occurredAt: command.updatedAt,
+					hashVersion: 2,
 					organizationId: actor.organizationId,
+					envelopeId,
+					sequence: 9,
+					eventType: 'envelope.voided',
+					actorType: 'user',
+					actorId: actor.id,
+					occurredAt: command.updatedAt,
+					payload: JSON.parse(command.auditPayloadJson),
+					previousHash: ready.auditHead.eventHash
+				})
+			)
+		);
+	});
+
+	it('hashes API-key voids as agent actors under audit hash v2', async () => {
+		const applicationStore = store([ready]);
+		const agent = { ...actor, actorType: 'agent' as const };
+		await new EnvelopeVoidApplication(
+			applicationStore,
+			(): Date => new Date('2026-09-12T01:02:03.000Z'),
+			scriptedIds([FIRST_EVENT_ID])
+		).voidEnvelope(agent, envelopeId, input);
+
+		expect(applicationStore.prepareVoid.mock.calls[0][0].actorType).toBe('agent');
+		const command = applicationStore.publishVoid.mock.calls[0][0];
+		expect(command.actorType).toBe('agent');
+		expect(command.auditEventHash).toBe(
+			sha256(
+				JSON.stringify({
+					hashVersion: 2,
+					organizationId: actor.organizationId,
+					envelopeId,
+					sequence: 9,
+					eventType: 'envelope.voided',
+					actorType: 'agent',
+					actorId: actor.id,
+					occurredAt: command.updatedAt,
 					payload: JSON.parse(command.auditPayloadJson),
 					previousHash: ready.auditHead.eventHash
 				})

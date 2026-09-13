@@ -1,11 +1,11 @@
 ---
 name: signkit-cli
-description: Guide for building, configuring, scripting, and operating the read-only SignKit Rust CLI (signkit), including secure secret handling, JSON output, exit codes, loopback networking, and explicit organization selection.
+description: Guide for building, configuring, scripting, and operating the agent-first SignKit Rust CLI (signkit), including secure secret handling, JSON output, exit codes, loopback networking, mutations, DOCX import/export, and explicit organization selection.
 ---
 
 # SignKit CLI
 
-Guide for building, configuring, scripting, and operating the agent-first SignKit Rust CLI (`signkit`). Emphasizes compilation from source, strict read-only boundaries, credential hygiene, flexible organization configuration, loopback HTTP rules, and exit code handling.
+Guide for building, configuring, scripting, and operating the agent-first SignKit Rust CLI (`signkit`). Emphasizes compilation from source, credential hygiene, flexible organization configuration, loopback HTTP rules, and exit code handling.
 
 ## Build and Installation
 
@@ -41,17 +41,11 @@ cargo test --manifest-path cli/Cargo.toml
 
 The CLI strictly respects the current API authorization model:
 
-- **Enabled Operations:** Public capabilities (`signkit capabilities`) and the five API-key read endpoints under `envelopes:read`:
-  - `signkit envelopes list`
-  - `signkit envelopes get <ENVELOPE_ID>`
-  - `signkit envelopes draft <ENVELOPE_ID>`
-  - `signkit envelopes deliveries <ENVELOPE_ID>`
-  - `signkit envelopes completion-artifact <ENVELOPE_ID>`
+- **Enabled Operations:** Public capabilities (`signkit capabilities`), API-key `envelopes:read` inspection (`list`, `get`, `draft`, `deliveries`, `completion-artifact`, `audit`, `evidence`, `pdf`, `export-docx`), `drafts:write` authoring (`create`, `commit`, `ready`, `fields`, `import-docx`), and `envelopes:send` (`send`, `void`).
 - **Explicit Non-Goals (Do Not Attempt or Invent):**
-  - **No Mutations:** `create`, `send`, `void`, `draft commit`, `fields`, `sign`, `approve`, and `decline` are NOT exposed in the CLI. Mutations require interactive operator sessions. Machine mutation actors are deliberately excluded because completion artifact audit events pin `actor_type = 'user'` while excluding `actor_type` from audit hash preimages.
   - **No Authentication Commands:** There is no `login`, `logout`, or browser exchange command.
   - **No Management Commands:** Key issuance, grant creation, and instance member administration reject API keys and are not in the CLI.
-  - **No External Conversions:** Webhooks, PDF generation, and DOCX conversions are not supported.
+  - **No Recipient Decisions:** `sign`, `approve`, and `decline` remain capability-cookie commands.
 
 ## Secret Handling & Credential Hygiene
 

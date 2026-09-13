@@ -10,12 +10,14 @@ import type {
 	CompletionDeliveryStore
 } from '$lib/ports/completion-delivery-store';
 import type { ObjectStore } from '$lib/ports/object-store';
+import type { CompletionArtifactPdfStore } from '$lib/ports/completion-artifact-pdf-store';
+import { MAX_COMPLETION_PDF_BYTES } from '$lib/application/completion-artifacts/completion-pdf';
 import { hashCompletionToken, isCompletionToken } from '$lib/security/completion-token';
 
-export type PublicCompletionArtifactFormat = 'json' | 'markdown';
+export type PublicCompletionArtifactFormat = 'json' | 'markdown' | 'pdf';
 
 export interface PublicCompletionArtifact {
-	content: string;
+	content: string | Uint8Array;
 	contentType: string;
 }
 
@@ -53,10 +55,16 @@ const GZIP_SLICE_BYTES: number = 16 * 1024;
 export class PublicCompletionArtifactService {
 	readonly #store: CompletionDeliveryStore;
 	readonly #objects: ObjectStore;
+	readonly #pdfStore: CompletionArtifactPdfStore | null;
 
-	constructor(store: CompletionDeliveryStore, objects: ObjectStore) {
+	constructor(
+		store: CompletionDeliveryStore,
+		objects: ObjectStore,
+		pdfStore: CompletionArtifactPdfStore | null = null
+	) {
 		this.#store = store;
 		this.#objects = objects;
+		this.#pdfStore = pdfStore;
 	}
 
 	async read(
@@ -71,6 +79,52 @@ export class PublicCompletionArtifactService {
 		const locator: CompletionArtifactLocator | null = await this.#resolveLocator(tokenHash, now);
 		if (locator === null) {
 			throw new PublicCompletionArtifactNotFoundError();
+		}
+
+		if (format === 'pdf') {
+			if (this.#pdfStore === null) {
+				throw new PublicCompletionArtifactNotFoundError();
+			}
+			const pdfRecord = await this.#pdfStore.readCompletionArtifactPdf(
+				locator.organizationId,
+				locator.envelopeId
+			);
+			if (pdfRecord === null) {
+				throw new PublicCompletionArtifactNotFoundError();
+			}
+			if (!SHA256_PATTERN.test(pdfRecord.pdfSha256)) {
+				throw new PublicCompletionArtifactIntegrityError();
+			}
+			const expectedPdfKey: string = completionArtifactObjectKey(
+				locator.organizationId,
+				locator.envelopeId,
+				'pdf',
+				pdfRecord.pdfSha256
+			);
+			if (pdfRecord.pdfObjectKey !== expectedPdfKey) {
+				throw new PublicCompletionArtifactIntegrityError();
+			}
+			let stream: ReadableStream<Uint8Array> | null;
+			try {
+				stream = await this.#objects.get(expectedPdfKey);
+			} catch (error: unknown) {
+				throwIfPublicCompletionError(error);
+				throw new PublicCompletionArtifactStorageError();
+			}
+			if (stream === null) {
+				throw new PublicCompletionArtifactIntegrityError();
+			}
+			let pdfBytes: Uint8Array;
+			try {
+				pdfBytes = await readStreamBounded(stream, MAX_COMPLETION_PDF_BYTES);
+			} catch (error: unknown) {
+				throwIfPublicCompletionError(error);
+				throw new PublicCompletionArtifactStorageError();
+			}
+			if ((await sha256Hex(pdfBytes)) !== pdfRecord.pdfSha256) {
+				throw new PublicCompletionArtifactIntegrityError();
+			}
+			return { content: pdfBytes, contentType: 'application/pdf' };
 		}
 
 		const digest: string = format === 'json' ? locator.jsonSha256 : locator.markdownSha256;

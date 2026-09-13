@@ -8,9 +8,12 @@ import type {
 import type { Envelope } from '$lib/domain/envelope';
 import { createEnvelopeHttpHandlers, type EnvelopeApplicationResolver } from './envelopes';
 import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { expectProblemResponse } from './problem-response-test-support';
 
 const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
+const archiveKey =
+	'draft-repositories/v1/organizations/org/envelopes/01900000-0000-7000-8000-000000000001/sha256/ab.git.gz';
 const envelope: Envelope = {
 	id: envelopeId,
 	organizationId,
@@ -18,7 +21,20 @@ const envelope: Envelope = {
 	status: 'draft',
 	repositoryGeneration: 0,
 	repositoryHead: null,
-	repositoryArchiveKey: null,
+	repositoryArchiveKey: archiveKey,
+	repositoryArchiveSha256: null,
+	sentCommitSha: null,
+	fieldGeneration: 0,
+	createdAt: '2026-09-11T00:00:00.000Z',
+	updatedAt: '2026-09-11T00:00:00.000Z'
+};
+const publicEnvelope = {
+	id: envelopeId,
+	organizationId,
+	title: 'Agreement',
+	status: 'draft',
+	repositoryGeneration: 0,
+	repositoryHead: null,
 	repositoryArchiveSha256: null,
 	sentCommitSha: null,
 	fieldGeneration: 0,
@@ -54,6 +70,12 @@ function application(): EnvelopeApplicationPort {
 	return {
 		create: vi.fn(async (): Promise<CreateEnvelopeResult> => ({ outcome: 'created', envelope })),
 		get: vi.fn(async (): Promise<Envelope | null> => envelope),
+		getDetail: vi.fn(async () => ({
+			envelope,
+			recipients: [],
+			readyAuditEventId: null,
+			fields: []
+		})),
 		list: vi.fn(async (): Promise<EnvelopeListPage> => ({ items: [envelope], nextCursor: null }))
 	};
 }
@@ -70,11 +92,9 @@ describe('envelope HTTP handlers', () => {
 			event({ locals: locals('anonymous') })
 		);
 
-		expect(response.status).toBe(401);
-		expect(response.headers.get('content-type')).toBe('application/problem+json');
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:authentication-required',
-			status: 401
+		await expectProblemResponse(response, {
+			status: 401,
+			type: 'urn:signkit:problem:authentication-required'
 		});
 		expect(resolver).not.toHaveBeenCalled();
 	});
@@ -85,10 +105,9 @@ describe('envelope HTTP handlers', () => {
 			event({})
 		);
 
-		expect(response.status).toBe(503);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:persistence-unavailable',
-			status: 503
+		await expectProblemResponse(response, {
+			status: 503,
+			type: 'urn:signkit:problem:persistence-unavailable'
 		});
 	});
 
@@ -98,10 +117,9 @@ describe('envelope HTTP handlers', () => {
 			event({ method: 'POST', body: JSON.stringify({ title: 'Agreement' }) })
 		);
 
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:idempotency-key-required',
-			status: 400
+		await expectProblemResponse(response, {
+			status: 400,
+			type: 'urn:signkit:problem:idempotency-key-required'
 		});
 	});
 
@@ -116,10 +134,9 @@ describe('envelope HTTP handlers', () => {
 			})
 		);
 
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:validation-failed',
-			status: 400
+		await expectProblemResponse(response, {
+			status: 400,
+			type: 'urn:signkit:problem:validation-failed'
 		});
 		expect(app.create).not.toHaveBeenCalled();
 	});
@@ -135,10 +152,9 @@ describe('envelope HTTP handlers', () => {
 			})
 		);
 
-		expect(response.status).toBe(413);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:request-body-too-large',
-			status: 413
+		await expectProblemResponse(response, {
+			status: 413,
+			type: 'urn:signkit:problem:request-body-too-large'
 		});
 		expect(app.create).not.toHaveBeenCalled();
 	});
@@ -156,10 +172,14 @@ describe('envelope HTTP handlers', () => {
 
 		expect(response.status).toBe(201);
 		expect(app.create).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			{ idempotencyKey: 'request-1', title: 'Agreement' }
 		);
 		expect(response.headers.get('location')).toBe(`/api/v1/envelopes/${envelopeId}`);
+		const created = (await response.json()) as { envelope: Record<string, unknown> };
+		expect(created.envelope).toEqual(publicEnvelope);
+		expect(JSON.stringify(created)).not.toContain('repositoryArchiveKey');
+		expect(JSON.stringify(created)).not.toContain(archiveKey);
 	});
 
 	it('scopes list and get to the authenticated organization', async () => {
@@ -177,12 +197,76 @@ describe('envelope HTTP handlers', () => {
 		expect(listResponse.status).toBe(200);
 		expect(getResponse.status).toBe(200);
 		expect(app.list).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			{ cursor: null, limit: 25 }
 		);
-		expect(app.get).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+		expect(app.getDetail).toHaveBeenCalledWith(
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			envelopeId
 		);
+		const listed = (await listResponse.json()) as { items: unknown[] };
+		expect(listed.items).toEqual([publicEnvelope]);
+		expect(JSON.stringify(listed)).not.toContain('repositoryArchiveKey');
+		expect(JSON.stringify(listed)).not.toContain(archiveKey);
+		expect(await getResponse.json()).toEqual({
+			envelope: publicEnvelope,
+			recipients: [],
+			readyAuditEventId: null,
+			fields: []
+		});
+	});
+
+	it('returns durable recipients, ready audit event, and fields without capability material', async () => {
+		const recipients = [
+			{
+				id: '01900000-0000-7000-8000-000000000011',
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer' as const,
+				locale: 'en' as const,
+				routingOrder: 1,
+				status: 'pending' as const
+			}
+		];
+		const fields = [
+			{
+				id: '01900000-0000-7000-8000-000000000012',
+				recipientId: recipients[0].id,
+				documentPath: 'documents/agreement.md' as const,
+				fieldType: 'signature' as const,
+				required: true,
+				position: 1,
+				geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
+			}
+		];
+		const readyAuditEventId = '01900000-0000-7000-8000-000000000013';
+		const app: EnvelopeApplicationPort = {
+			...application(),
+			getDetail: vi.fn(async () => ({
+				envelope: { ...envelope, status: 'ready' as const, repositoryGeneration: 1 },
+				recipients,
+				readyAuditEventId,
+				fields
+			}))
+		};
+		const response: Response = await invoke(
+			createEnvelopeHttpHandlers((): EnvelopeApplicationPort => app).get,
+			event({
+				pathname: `/api/v1/envelopes/${envelopeId}`,
+				params: { envelopeId }
+			})
+		);
+		const body = (await response.json()) as Record<string, unknown>;
+		expect(response.status).toBe(200);
+		expect(body).toEqual({
+			envelope: { ...publicEnvelope, status: 'ready', repositoryGeneration: 1 },
+			recipients,
+			readyAuditEventId,
+			fields
+		});
+		expect(JSON.stringify(body)).not.toContain('capability');
+		expect(JSON.stringify(body)).not.toContain('label');
+		expect(JSON.stringify(body)).not.toContain('repositoryArchiveKey');
+		expect(JSON.stringify(body)).not.toContain(archiveKey);
 	});
 });

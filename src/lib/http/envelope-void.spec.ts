@@ -14,6 +14,27 @@ function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return organizationScopedLocals(state, organizationId);
 }
 
+function apiKeyLocals(): App.Locals {
+	return {
+		apiKeyAuthentication: {
+			state: 'authenticated',
+			principal: {
+				apiKeyId: '01900000-0000-7000-8000-000000000201',
+				keyPrefix: 'signkit_abcdefgh',
+				ownerUserId: 'user-1',
+				organizationId,
+				organizationName: 'Workspace',
+				scopes: ['envelopes:send'],
+				expiresAt: '2026-12-11T00:00:00.000Z'
+			}
+		},
+		identityState: 'anonymous',
+		memberships: [],
+		organizationId: null,
+		principal: null
+	};
+}
+
 function event(input: {
 	body?: string;
 	headers?: HeadersInit;
@@ -138,13 +159,35 @@ describe('envelope void HTTP handler', () => {
 			);
 			expect(response.status).toBe(200);
 			expect(app.voidEnvelope).toHaveBeenCalledWith(
-				{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+				{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 				envelopeId,
 				{ idempotencyKey: 'void-1', expectedStatus, expectedGeneration }
 			);
 			expect(response.headers.get('cache-control')).toBe('no-store');
 		}
 	);
+
+	it('records an API-key caller as an agent actor', async () => {
+		const app: EnvelopeVoidApplicationPort = application();
+		const response: Response = await createEnvelopeVoidHandler(() => app)(
+			event({
+				body: validBody(),
+				headers: { 'idempotency-key': 'void-1' },
+				locals: apiKeyLocals()
+			})
+		);
+		expect(response.status).toBe(200);
+		expect(app.voidEnvelope).toHaveBeenCalledWith(
+			{
+				id: '01900000-0000-7000-8000-000000000201',
+				organizationId,
+				organizationName: 'Workspace',
+				actorType: 'agent'
+			},
+			envelopeId,
+			{ idempotencyKey: 'void-1', expectedStatus: 'sent', expectedGeneration: 3 }
+		);
+	});
 
 	it('marks safe replays and returns the public generation', async () => {
 		const replayed: VoidEnvelopeResult = {

@@ -1,52 +1,40 @@
 import {
+	AUDIT_HASH_VERSION_V1,
+	COMPLETION_AUDIT_ANCHOR_EVENT_TYPE,
+	CURRENT_AUDIT_HASH_VERSION,
+	DRAFT_REVISION_EVENT_TYPE,
+	LEGACY_V1_FIXED_ACTOR_TYPES,
+	auditEventHashPreimage as domainAuditEventHashPreimage,
+	isAllowedActorType,
+	isAuditEventType,
+	parseAuditHashVersion,
+	sha256TextHex,
+	type AuditEventHashContext,
+	type AuditHashVersion
+} from '$lib/domain/audit';
+import {
 	CompletionArtifactBoundExceededError,
 	CompletionArtifactIntegrityError,
 	ISO_MILLISECOND_TIMESTAMP_PATTERN,
 	type CompletionEvidenceAuditEvent
 } from '$lib/ports/completion-artifact-store';
 
-/**
- * The only audit event types a completion artifact worker currently knows how
- * to verify, mapped to the actor type every writer stamps for that event.
- * `actorType` is not part of the hash preimage for these events (see
- * {@link auditEventHashPreimage}), so it is checked here explicitly — an
- * attacker who flips `actor_type` in place would otherwise leave the
- * recomputed hash unchanged. A type not on this list fails closed: either it
- * was never a real writer event (tampering) or it is a genuinely new event
- * type this verifier has not been taught about yet, and in both cases
- * publishing a manifest that silently ignores it would be wrong.
- */
-export const COMPLETION_AUDIT_EVENT_ACTOR_TYPES: Readonly<Record<string, string>> = {
-	'envelope.created': 'user',
-	'envelope.ready': 'user',
-	'envelope.fields_placed': 'user',
-	'envelope.sent': 'user',
-	'envelope.voided': 'user',
-	'recipient.viewed': 'recipient',
-	'recipient.signed': 'recipient',
-	'recipient.approved': 'recipient',
-	'recipient.declined': 'recipient',
-	'envelope.completed': 'recipient',
-	'envelope.completion_artifact_published': 'system'
+export {
+	COMPLETION_AUDIT_ANCHOR_EVENT_TYPE,
+	CURRENT_AUDIT_HASH_VERSION,
+	DRAFT_REVISION_EVENT_TYPE
 };
 
-/**
- * The one writer event whose `actorType`/`actorId` are hashed rather than
- * checked against a single fixed expectation — a draft revision can
- * legitimately be authored by a human, an agent, or a system process.
- */
-export const DRAFT_REVISION_EVENT_TYPE: string = 'draft.revision_created';
-export const DRAFT_REVISION_ACTOR_TYPES: ReadonlySet<string> = new Set(['user', 'agent', 'system']);
+/** @deprecated Use the registry in `$lib/domain/audit`; kept for existing imports. */
+export const COMPLETION_AUDIT_EVENT_ACTOR_TYPES: Readonly<Record<string, string>> =
+	LEGACY_V1_FIXED_ACTOR_TYPES;
 
-export const COMPLETION_AUDIT_ANCHOR_EVENT_TYPE: string = 'envelope.completed';
+export const DRAFT_REVISION_ACTOR_TYPES: ReadonlySet<string> = new Set(['user', 'agent', 'system']);
 
 /** Sum of every `payloadJson` byte length in a chain; bounds work before any hashing happens. */
 export const MAX_AUDIT_CHAIN_PAYLOAD_BYTES: number = 4 * 1024 * 1024;
 
-export interface CompletionAuditChainContext {
-	organizationId: string;
-	envelopeId: string;
-}
+export type CompletionAuditChainContext = AuditEventHashContext;
 
 export interface CompletionAuditChainVerification {
 	anchorEventType: typeof COMPLETION_AUDIT_ANCHOR_EVENT_TYPE;
@@ -68,27 +56,18 @@ export interface CompletionAuditChainVerification {
 }
 
 /**
- * Reproduces the exact JSON.stringify preimage each writer hashed. There are
- * exactly two shapes in the current codebase:
- *
- * 1. `draft.revision_created` (src/lib/application/drafts/draft-persistence.ts):
- *    `{ organizationId, envelopeId, sequence, eventType, actorType, actorId, occurredAt, payload, previousHash }`
- * 2. Every other writer event (envelope create/ready/fields/sent/voided,
- *    recipient viewed/signed/approved/declined, envelope.completed,
- *    envelope.completion_artifact_published):
- *    `{ actorId, envelopeId, eventType, occurredAt, organizationId, payload, previousHash }`
- *
- * Property order matters: it is part of the hashed bytes, not just the value.
+ * Reproduces the exact JSON.stringify preimage each writer hashed. v1 keeps the
+ * historical two-shape contract so legacy rows still verify; v2 includes
+ * `hashVersion`, `actorType`, and `actorId` for every event.
  */
 export function auditEventHashPreimage(
 	event: CompletionEvidenceAuditEvent,
 	payload: unknown,
 	context: CompletionAuditChainContext
 ): string {
-	if (event.eventType === DRAFT_REVISION_EVENT_TYPE) {
-		return JSON.stringify({
-			organizationId: context.organizationId,
-			envelopeId: context.envelopeId,
+	return domainAuditEventHashPreimage(
+		{
+			hashVersion: hashVersionOf(event),
 			sequence: event.sequence,
 			eventType: event.eventType,
 			actorType: event.actorType,
@@ -96,25 +75,16 @@ export function auditEventHashPreimage(
 			occurredAt: event.occurredAt,
 			payload,
 			previousHash: event.previousHash
-		});
-	}
-	return JSON.stringify({
-		actorId: event.actorId,
-		envelopeId: context.envelopeId,
-		eventType: event.eventType,
-		occurredAt: event.occurredAt,
-		organizationId: context.organizationId,
-		payload,
-		previousHash: event.previousHash
-	});
+		},
+		context
+	);
 }
 
 /**
- * Verifies one event in isolation: canonical timestamp and payload, an
- * actor type consistent with the event type, and a recomputed hash that
- * matches the recorded one. Returns the parsed payload so callers (chain
- * walking, field/decision cross-checks) never need to re-parse
- * already-validated JSON.
+ * Verifies one event in isolation: canonical timestamp and payload, an actor
+ * type consistent with the event type and hash version, and a recomputed hash
+ * that matches the recorded one. Returns the parsed payload so callers never
+ * need to re-parse already-validated JSON.
  */
 export async function verifyAuditEventRecord(
 	event: CompletionEvidenceAuditEvent,
@@ -138,26 +108,7 @@ export async function verifyAuditEventRecord(
 		);
 	}
 
-	if (event.eventType === DRAFT_REVISION_EVENT_TYPE) {
-		if (!DRAFT_REVISION_ACTOR_TYPES.has(event.actorType)) {
-			throw new CompletionArtifactIntegrityError(
-				'Draft revision audit event has an unexpected actor type'
-			);
-		}
-	} else {
-		const expectedActorType: string | undefined =
-			COMPLETION_AUDIT_EVENT_ACTOR_TYPES[event.eventType];
-		if (expectedActorType === undefined) {
-			throw new CompletionArtifactIntegrityError(
-				`Completion audit event has an unknown event type: ${event.eventType}`
-			);
-		}
-		if (event.actorType !== expectedActorType) {
-			throw new CompletionArtifactIntegrityError(
-				'Completion audit event has an unexpected actor type'
-			);
-		}
-	}
+	assertExpectedActorType(event);
 
 	const preimage: string = auditEventHashPreimage(event, payload, context);
 	const recomputed: string = await sha256TextHex(preimage);
@@ -240,16 +191,49 @@ export async function verifyCompletionAuditChain(
 	};
 }
 
-function byteLengthUtf8(value: string): number {
-	return new TextEncoder().encode(value).byteLength;
+function hashVersionOf(event: CompletionEvidenceAuditEvent): AuditHashVersion {
+	try {
+		return parseAuditHashVersion(event.hashVersion);
+	} catch {
+		throw new CompletionArtifactIntegrityError(
+			'Completion audit event has an unsupported hash version'
+		);
+	}
 }
 
-async function sha256TextHex(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
+function assertExpectedActorType(event: CompletionEvidenceAuditEvent): void {
+	const version: AuditHashVersion = hashVersionOf(event);
+	if (!isAuditEventType(event.eventType)) {
+		throw new CompletionArtifactIntegrityError(
+			`Completion audit event has an unknown event type: ${event.eventType}`
+		);
+	}
+
+	if (version === AUDIT_HASH_VERSION_V1) {
+		if (event.eventType === DRAFT_REVISION_EVENT_TYPE) {
+			if (!DRAFT_REVISION_ACTOR_TYPES.has(event.actorType)) {
+				throw new CompletionArtifactIntegrityError(
+					'Draft revision audit event has an unexpected actor type'
+				);
+			}
+			return;
+		}
+		const expectedActorType: string | undefined = LEGACY_V1_FIXED_ACTOR_TYPES[event.eventType];
+		if (expectedActorType === undefined || event.actorType !== expectedActorType) {
+			throw new CompletionArtifactIntegrityError(
+				'Completion audit event has an unexpected actor type'
+			);
+		}
+		return;
+	}
+
+	if (!isAllowedActorType(event.eventType, event.actorType)) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion audit event has an unexpected actor type'
+		);
+	}
+}
+
+function byteLengthUtf8(value: string): number {
+	return new TextEncoder().encode(value).byteLength;
 }

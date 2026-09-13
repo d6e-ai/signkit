@@ -42,6 +42,12 @@ function mockObjectStore(objects: Map<string, Uint8Array> = new Map()): ObjectSt
 		}),
 		delete: vi.fn(async () => {
 			throw new Error('unused');
+		}),
+		list: vi.fn(async () => {
+			throw new Error('unused');
+		}),
+		deleteMany: vi.fn(async () => {
+			throw new Error('unused');
 		})
 	};
 }
@@ -56,7 +62,9 @@ function mockStore(
 		readClaimedDelivery: vi.fn(),
 		completeDelivery: vi.fn(),
 		failDelivery: vi.fn(),
-		resolveArtifactLocatorByTokenHash: vi.fn(locatorResolver)
+		resolveArtifactLocatorByTokenHash: vi.fn(locatorResolver),
+		findStaleSealedCompletionTokens: vi.fn(),
+		resealCompletionToken: vi.fn()
 	};
 }
 

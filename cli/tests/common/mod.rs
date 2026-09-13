@@ -130,7 +130,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "authentication": "organization-session",
         "discovery": "reconciliation-job",
         "manifestSchema": "signkit-completion-manifest-v1",
-        "artifacts": ["json", "markdown"],
+        "artifacts": ["json", "markdown", "pdf"],
         "auditVerification": "bounded-per-event-hash-rederivation",
         "ccDelivery": "supported",
         "publicArtifactGrants": "supported"
@@ -149,7 +149,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "apiEndpoint": "/api/v1/completion-artifacts",
         "linkEndpoint": "/c/{token}",
         "authentication": "bearer-token-or-path-token",
-        "formats": ["json", "markdown"],
+        "formats": ["json", "markdown", "pdf"],
         "tokenPrefix": "skca1",
         "cookies": false
       },
@@ -161,20 +161,39 @@ pub fn sample_capabilities_json() -> &'static str {
         "grantModel": "explicit-per-organization",
         "multipleOrganizationsPerKey": true,
         "effectiveAuthority": "key-scopes-intersected-with-requested-live-grant",
-        "enabledScopes": ["envelopes:read"],
-        "mintedButUnusableScopes": ["audit:read", "drafts:write", "envelopes:send"],
+        "enabledScopes": ["envelopes:read", "drafts:write", "envelopes:send"],
+        "mintedButUnusableScopes": ["audit:read"],
         "readEndpoints": [
           "/api/v1/envelopes",
           "/api/v1/envelopes/{envelopeId}",
           "/api/v1/envelopes/{envelopeId}/draft",
+          "/api/v1/envelopes/{envelopeId}/docx",
           "/api/v1/envelopes/{envelopeId}/deliveries",
-          "/api/v1/envelopes/{envelopeId}/completion-artifact"
+          "/api/v1/envelopes/{envelopeId}/completion-artifact",
+          "/api/v1/envelopes/{envelopeId}/evidence",
+          "/api/v1/envelopes/{envelopeId}/completion-artifact/evidence",
+          "/api/v1/envelopes/{envelopeId}/pdf",
+          "/api/v1/envelopes/{envelopeId}/completion-artifact/pdf"
         ],
-        "mutations": false,
+        "writeEndpoints": {
+          "drafts:write": [
+            "/api/v1/envelopes",
+            "/api/v1/envelopes/{envelopeId}/draft/commits",
+            "/api/v1/envelopes/{envelopeId}/draft/docx",
+            "/api/v1/envelopes/{envelopeId}/ready",
+            "/api/v1/envelopes/{envelopeId}/fields"
+          ],
+          "envelopes:send": [
+            "/api/v1/envelopes/{envelopeId}/send",
+            "/api/v1/envelopes/{envelopeId}/void"
+          ]
+        },
+        "mutations": true,
         "cookieComposition": false,
         "caching": "none",
-        "lastUsedTracking": false,
-        "rateLimits": false,
+        "lastUsedTracking": true,
+        "rateLimits": { "durable": true, "windowSeconds": 60, "maxRequests": 120 },
+        "actor": { "type": "agent", "id": "api-key-uuidv7" },
         "grantManagement": {
           "create": "/api/v1/api-keys/{apiKeyId}/organization-grants",
           "list": "/api/v1/api-keys/{apiKeyId}/organization-grants",
@@ -183,6 +202,6 @@ pub fn sample_capabilities_json() -> &'static str {
         "grantAuthority": "key-owner-and-d6e-organization-owner-or-admin",
         "grantRevokeAuthority": ["key_owner", "organization_admin"]
       },
-      "automation": { "idempotencyKeys": true, "actorProvenance": true, "webhooks": "planned" }
+      "automation": { "idempotencyKeys": true, "actorProvenance": true, "webhooks": "supported" }
     }"#
 }

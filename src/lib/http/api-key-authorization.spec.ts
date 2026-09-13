@@ -55,7 +55,9 @@ describe('authorizeScopedOrganizationRequest', () => {
 				authority: 'session',
 				id: 'user-1',
 				organizationId: 'org-session',
-				organizationName: 'Session'
+				organizationName: 'Session',
+				name: 'User',
+				email: 'user@example.com'
 			} satisfies AuthorizedApiActor);
 		});
 
@@ -286,7 +288,8 @@ describe('session-only defense in depth', () => {
 		['organization_grant_required', { state: 'organization_grant_required' }],
 		['organization_selector_invalid', { state: 'organization_selector_invalid' }],
 		['integrity_error', { state: 'integrity_error' }],
-		['unavailable', { state: 'unavailable' }]
+		['unavailable', { state: 'unavailable' }],
+		['rate_limited', { state: 'rate_limited' }]
 	] as const)(
 		'authorizeOrganizationRequest refuses a presented key in state %s',
 		async (_name, apiKeyAuthentication) => {
@@ -310,7 +313,8 @@ describe('session-only defense in depth', () => {
 		['authenticated', { state: 'authenticated', principal: principal() }],
 		['rejected_surface', { state: 'rejected_surface' }],
 		['invalid_token', { state: 'invalid_token' }],
-		['unavailable', { state: 'unavailable' }]
+		['unavailable', { state: 'unavailable' }],
+		['rate_limited', { state: 'rate_limited' }]
 	] as const)(
 		'authorizeIdentityRequest refuses a presented key in state %s',
 		async (_name, apiKeyAuthentication) => {
@@ -326,7 +330,14 @@ describe('session-only defense in depth', () => {
 
 	it('still authorizes a session when no key was presented', () => {
 		expect(authorizeOrganizationRequest(locals(), INSTANCE)).not.toBeInstanceOf(Response);
-		expect(authorizeIdentityRequest(locals(), '/api/v1/api-keys')).not.toBeInstanceOf(Response);
+		const identity = authorizeIdentityRequest(locals(), '/api/v1/api-keys');
+		expect(identity).not.toBeInstanceOf(Response);
+		expect(identity).toMatchObject({
+			id: 'user-1',
+			name: 'User',
+			email: 'user@example.com',
+			emailVerified: false
+		});
 	});
 
 	it('reports the verified d6e organization role on the session actor', () => {

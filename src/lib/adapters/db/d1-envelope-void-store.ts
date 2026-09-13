@@ -8,6 +8,7 @@ import type {
 	VoidPreparation,
 	VoidableEnvelopeStatus
 } from '$lib/ports/envelope-void-store';
+import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 interface EnvelopeProjectionRow {
 	status: string;
@@ -61,6 +62,7 @@ interface VoidCommandRow {
 	evidence_previous_hash: string | null;
 	evidence_event_hash: string | null;
 	evidence_occurred_at: string | null;
+	evidence_hash_version: number | string | null;
 }
 
 const VOID_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_id,
@@ -102,7 +104,7 @@ const VOID_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
-	evidence.occurred_at AS evidence_occurred_at`;
+	evidence.occurred_at AS evidence_occurred_at, evidence.hash_version AS evidence_hash_version`;
 
 export class D1EnvelopeVoidStore implements EnvelopeVoidStore {
 	readonly #database: D1Database;
@@ -280,16 +282,18 @@ async function validReplay(row: VoidCommandRow): Promise<boolean> {
 			expectedGeneration: row.expected_generation
 		})
 	);
-	const auditEventHash: string = await sha256(
-		JSON.stringify({
-			actorId: row.actor_id,
-			envelopeId: row.envelope_id,
+	const auditEventHash: string = await hashStoredAuditEvent(
+		{
+			hashVersion: row.evidence_hash_version,
+			sequence: row.audit_sequence,
 			eventType: 'envelope.voided',
+			actorType: row.actor_type,
+			actorId: row.actor_id,
 			occurredAt: row.updated_at,
-			organizationId: row.organization_id,
 			payload: payloadValue,
 			previousHash: row.previous_audit_hash
-		})
+		},
+		{ organizationId: row.organization_id, envelopeId: row.envelope_id }
 	);
 	const projectedIds: readonly string[] | null = parseStringArray(
 		row.projection_revoked_recipient_ids_json

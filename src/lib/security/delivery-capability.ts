@@ -1,8 +1,9 @@
 import { isRecipientCapability } from './recipient-capability';
+import { AesGcmSealingKeyring, sealingKeyringFromEncodedEnv, sha256Hex } from './sealing-keyring';
 
 const FORMAT_PREFIX: string = 'skdc1_';
 const IV_BYTES: number = 12;
-const KEY_BYTES: number = 32;
+const ENV_VAR_NAME: string = 'DELIVERY_ENCRYPTION_KEY';
 
 export interface CapabilitySealContext {
 	organizationId: string;
@@ -21,48 +22,64 @@ export interface RecipientCapabilitySealer {
 	seal(token: string, context: CapabilitySealContext): Promise<SealedRecipientCapability>;
 }
 
+/**
+ * Active+previous keyring for delivery capability ciphertext. Opening is
+ * fail-closed by the explicit `sealingKeyId` recorded alongside the
+ * ciphertext: only the active key or the configured previous key can ever
+ * decrypt, and an ID matching neither throws before any AEAD attempt.
+ */
 export class AesGcmRecipientCapabilitySealer implements RecipientCapabilitySealer {
-	readonly #keyBytes: Uint8Array<ArrayBuffer>;
-	readonly #keyId: Promise<string>;
-	readonly #cryptoKey: Promise<CryptoKey>;
+	readonly #keyring: AesGcmSealingKeyring;
 
-	constructor(encodedKey: string) {
-		this.#keyBytes = decodeKey(encodedKey);
-		this.#keyId = sha256Hex(this.#keyBytes).then((digest: string): string => digest.slice(0, 16));
-		this.#cryptoKey = crypto.subtle.importKey('raw', this.#keyBytes, { name: 'AES-GCM' }, false, [
-			'encrypt',
-			'decrypt'
-		]);
+	constructor(activeEncodedKey: string, previousEncodedKey?: string) {
+		this.#keyring = sealingKeyringFromEncodedEnv(
+			activeEncodedKey,
+			previousEncodedKey,
+			ENV_VAR_NAME
+		);
 	}
 
 	async currentSealingKeyId(): Promise<string> {
-		return await this.#keyId;
+		return await this.#keyring.activeKeyId();
+	}
+
+	/** Whether `keyId` is the active key or the configured previous key. */
+	async isKnownSealingKeyId(keyId: string): Promise<boolean> {
+		return await this.#keyring.isKnownKeyId(keyId);
+	}
+
+	/** Whether a ciphertext recorded under `keyId` is stale and due for the reseal sweep. */
+	async needsReseal(keyId: string): Promise<boolean> {
+		return !(await this.#keyring.isActiveKeyId(keyId));
 	}
 
 	async seal(token: string, context: CapabilitySealContext): Promise<SealedRecipientCapability> {
 		if (!isRecipientCapability(token)) throw new Error('Invalid recipient capability token');
-		const iv: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(IV_BYTES));
-		crypto.getRandomValues(iv);
 		const plaintext: Uint8Array<ArrayBuffer> = new TextEncoder().encode(token);
-		const ciphertext: ArrayBuffer = await crypto.subtle.encrypt(
-			{ name: 'AES-GCM', iv, additionalData: additionalData(context) },
-			await this.#cryptoKey,
-			plaintext
-		);
+		const sealed = await this.#keyring.sealWithActive(plaintext, additionalData(context));
 		const payload: Uint8Array<ArrayBuffer> = new Uint8Array(
-			new ArrayBuffer(iv.byteLength + ciphertext.byteLength)
+			new ArrayBuffer(sealed.iv.byteLength + sealed.ciphertext.byteLength)
 		);
-		payload.set(iv, 0);
-		payload.set(new Uint8Array(ciphertext), iv.byteLength);
+		payload.set(sealed.iv, 0);
+		payload.set(sealed.ciphertext, sealed.iv.byteLength);
 		const sealedCapability: string = `${FORMAT_PREFIX}${base64UrlEncode(payload)}`;
 		return {
 			sealedCapability,
-			sealingKeyId: await this.#keyId,
+			sealingKeyId: sealed.keyId,
 			sealedCapabilitySha256: await sha256Hex(new TextEncoder().encode(sealedCapability))
 		};
 	}
 
-	async open(sealedCapability: string, context: CapabilitySealContext): Promise<string> {
+	/**
+	 * `sealingKeyId` must be the ID recorded alongside the ciphertext (e.g.
+	 * the outbox row's `sealing_key_id`). An ID outside the active/previous
+	 * keyring fails closed immediately without attempting decryption.
+	 */
+	async open(
+		sealedCapability: string,
+		context: CapabilitySealContext,
+		sealingKeyId: string
+	): Promise<string> {
 		if (!sealedCapability.startsWith(FORMAT_PREFIX)) throw new Error('Invalid sealed capability');
 		const payload: Uint8Array<ArrayBuffer> = base64UrlDecode(
 			sealedCapability.slice(FORMAT_PREFIX.length)
@@ -70,12 +87,13 @@ export class AesGcmRecipientCapabilitySealer implements RecipientCapabilitySeale
 		if (payload.byteLength <= IV_BYTES + 16) throw new Error('Invalid sealed capability');
 		const iv: Uint8Array<ArrayBuffer> = payload.slice(0, IV_BYTES);
 		const ciphertext: Uint8Array<ArrayBuffer> = payload.slice(IV_BYTES);
-		let plaintext: ArrayBuffer;
+		let plaintext: Uint8Array;
 		try {
-			plaintext = await crypto.subtle.decrypt(
-				{ name: 'AES-GCM', iv, additionalData: additionalData(context) },
-				await this.#cryptoKey,
-				ciphertext
+			plaintext = await this.#keyring.openWithKeyId(
+				sealingKeyId,
+				iv,
+				ciphertext,
+				additionalData(context)
 			);
 		} catch {
 			throw new Error('Sealed capability authentication failed');
@@ -83,6 +101,16 @@ export class AesGcmRecipientCapabilitySealer implements RecipientCapabilitySeale
 		const token: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 		if (!isRecipientCapability(token)) throw new Error('Invalid recipient capability token');
 		return token;
+	}
+
+	/**
+	 * Re-encrypts a capability already opened from stale ciphertext under the
+	 * active key, for the bounded reseal sweep. Never used on the hot
+	 * delivery path — only by the maintenance sweep migrating rows off a
+	 * retiring key.
+	 */
+	async reseal(token: string, context: CapabilitySealContext): Promise<SealedRecipientCapability> {
+		return this.seal(token, context);
 	}
 }
 
@@ -94,25 +122,8 @@ function additionalData(context: CapabilitySealContext): Uint8Array<ArrayBuffer>
 			context.envelopeId,
 			context.recipientId,
 			context.deliveryId
-		].join('\u0000')
+		].join('\0')
 	);
-}
-
-function decodeKey(encodedKey: string): Uint8Array<ArrayBuffer> {
-	let binary: string;
-	try {
-		binary = atob(encodedKey.trim());
-	} catch {
-		throw new Error('DELIVERY_ENCRYPTION_KEY must be valid base64');
-	}
-	if (binary.length !== KEY_BYTES) {
-		throw new Error('DELIVERY_ENCRYPTION_KEY must encode exactly 32 bytes');
-	}
-	const bytes: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(KEY_BYTES));
-	for (let index: number = 0; index < binary.length; index += 1) {
-		bytes[index] = binary.charCodeAt(index);
-	}
-	return bytes;
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -134,11 +145,4 @@ function base64UrlDecode(value: string): Uint8Array<ArrayBuffer> {
 	for (let index: number = 0; index < binary.length; index += 1)
 		bytes[index] = binary.charCodeAt(index);
 	return bytes;
-}
-
-async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest('SHA-256', bytes);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

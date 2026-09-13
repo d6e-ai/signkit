@@ -90,11 +90,59 @@ signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
 
 ### 6. `signkit envelopes completion-artifact <ENVELOPE_ID>`
 
-Reads completion artifact publication status: `published`, `pending`, `processing`, `failed`, or `not_completed`.
+Reads completion artifact publication status: `published`, `pending`, `processing`, `failed`, or `not_completed`. `signkit envelopes audit` is an alias of this status read.
 
 ```sh
 signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
   envelopes completion-artifact 0191b26f-4000-7000-8000-000000000001
+```
+
+---
+
+### 7. `signkit envelopes evidence <ENVELOPE_ID>`
+
+Downloads published immutable completion evidence (`GET .../evidence`). `--format json` (default) or `--format markdown`. `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout.
+
+```sh
+signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
+  envelopes evidence 0191b26f-4000-7000-8000-000000000001 \
+  --format markdown --output ./evidence.md
+```
+
+---
+
+### 8. `signkit envelopes pdf <ENVELOPE_ID>`
+
+Downloads the published visual completion PDF (`GET .../pdf`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout.
+
+```sh
+signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
+  envelopes pdf 0191b26f-4000-7000-8000-000000000001 \
+  --output ./completion.pdf
+```
+
+---
+
+### 9. `signkit envelopes import-docx <ENVELOPE_ID>`
+
+Converts a bounded DOCX file into one Markdown draft commit (`drafts:write`). Reads a regular file or stdin (`--file`, default `-`), refuses symbolic links, and caps input at 20 MiB. Requires `--target-path documents/....md`, `--expected-generation`, and `Idempotency-Key` (generated when omitted). Secrets are never accepted as flags.
+
+```sh
+signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
+  envelopes import-docx 0191b26f-4000-7000-8000-000000000001 \
+  --file ./agreement.docx --target-path documents/agreement.md --expected-generation 0
+```
+
+---
+
+### 10. `signkit envelopes export-docx <ENVELOPE_ID>`
+
+Downloads the pinned revision as WordprocessingML (`envelopes:read`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes DOCX bytes to stdout.
+
+```sh
+signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
+  envelopes export-docx 0191b26f-4000-7000-8000-000000000001 \
+  --output ./agreement.docx
 ```
 
 ---

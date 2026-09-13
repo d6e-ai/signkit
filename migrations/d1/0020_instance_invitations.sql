@@ -171,7 +171,7 @@ CREATE TABLE instance_invitation_command (
 CREATE TRIGGER instance_invitation_immutable_fields_guard
 BEFORE UPDATE ON instance_invitation
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN OLD.status IN ('accepted', 'revoked')
       OR NEW.id <> OLD.id
       OR NEW.token_hash <> OLD.token_hash
@@ -181,14 +181,14 @@ BEGIN
       OR NEW.expires_at <> OLD.expires_at
       OR NEW.role <> OLD.role
     THEN RAISE(ABORT, 'cannot modify immutable instance invitation fields')
-  END;
+  END);
 END;
 
 CREATE TRIGGER instance_invitation_command_evidence_guard
 AFTER INSERT ON instance_invitation_command
 BEGIN
   -- Validate CREATE command evidence
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.command_type = 'create' AND (
       NEW.result_status <> 'pending'
       OR NOT EXISTS (
@@ -221,10 +221,10 @@ BEGIN
       )
     )
     THEN RAISE(ABORT, 'instance invitation create evidence conflict')
-  END;
+  END);
 
   -- Validate ACCEPT command evidence
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.command_type = 'accept' AND (
       NEW.result_status <> 'accepted'
       OR NOT EXISTS (
@@ -243,10 +243,10 @@ BEGIN
       )
     )
     THEN RAISE(ABORT, 'instance invitation accept evidence conflict')
-  END;
+  END);
 
   -- Validate REVOKE command evidence
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.command_type = 'revoke' AND (
       NEW.result_status <> 'revoked'
       OR NOT EXISTS (
@@ -267,5 +267,5 @@ BEGIN
       )
     )
     THEN RAISE(ABORT, 'instance invitation revoke evidence conflict')
-  END;
+  END);
 END;

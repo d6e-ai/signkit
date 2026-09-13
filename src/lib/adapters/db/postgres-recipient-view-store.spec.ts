@@ -207,17 +207,19 @@ describe('PostgresRecipientViewStore', () => {
 		});
 	});
 
-	it('denies replay as not_found when the stored capability hash was swapped', async () => {
+	it('fails closed when the stored viewed command capability hash does not match', async () => {
 		const database = new ScriptedPostgres([
 			[viewedRecipientRow],
 			[],
-			[replayRow({ capabilityHash: 'wrong-hash' })]
+			[replayRow({ capabilityHash: 'wrong-hash' })],
+			[replayRow({ capabilityHash: 'wrong-hash' })],
+			[{ count: 0 }]
 		]);
 		const result = await new PostgresRecipientViewStore(database.client()).prepareViewed(
 			command,
 			'2026-09-11T00:02:30.000Z'
 		);
-		expect(result).toEqual({ outcome: 'not_found' });
+		expect(result).toEqual({ outcome: 'integrity_error' });
 	});
 
 	it('reports idempotency_conflict when the same key is reused for a different request', async () => {
@@ -304,7 +306,7 @@ describe('PostgresRecipientViewStore', () => {
 	});
 
 	it('treats viewed state without its durable command as an integrity error', async () => {
-		const database = new ScriptedPostgres([[viewedRecipientRow], [], []]);
+		const database = new ScriptedPostgres([[viewedRecipientRow], [], [], []]);
 		await expect(
 			new PostgresRecipientViewStore(database.client()).prepareViewed(
 				command,

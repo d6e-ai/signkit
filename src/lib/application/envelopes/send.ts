@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import {
 	isActionableRecipientRole,
 	isPostSendInvitationRecipientRole,
@@ -16,6 +17,7 @@ import type {
 import { issueRecipientCapability } from '$lib/security/recipient-capability';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import type { EnvelopeRequestActor } from './model';
+import { envelopeActorType } from './model';
 
 const INITIAL_CAPABILITY_TTL_MS: number = 14 * 24 * 60 * 60 * 1000;
 
@@ -76,10 +78,11 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 				expectedReadyAuditEventId: input.expectedReadyAuditEventId
 			})
 		);
+		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key = {
 			organizationId: actor.organizationId,
 			envelopeId,
-			actorType: 'user' as const,
+			actorType,
 			actorId: actor.id,
 			idempotencyKey: input.idempotencyKey,
 			requestFingerprint
@@ -173,16 +176,17 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 			deliveryManifestHash,
 			initialCapabilityExpiresAt
 		});
-		const auditEventHash: string = await sha256(
-			JSON.stringify({
-				actorId: actor.id,
-				envelopeId,
+		const auditEventHash: string = await hashAuditEventV2(
+			{
+				sequence: preparation.auditHead.sequence + 1,
 				eventType: 'envelope.sent',
+				actorType,
+				actorId: actor.id,
 				occurredAt: updatedAt,
-				organizationId: actor.organizationId,
 				payload: JSON.parse(auditPayloadJson) as unknown,
 				previousHash: preparation.auditHead.eventHash
-			})
+			},
+			{ organizationId: actor.organizationId, envelopeId }
 		);
 		const command: PublishSentEnvelopeCommand = {
 			...key,

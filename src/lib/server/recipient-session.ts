@@ -1,5 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
+import { AesGcmSealingKeyring, decodeBase64SealingKey } from '$lib/security/sealing-keyring';
 
 export const RECIPIENT_SESSION_COOKIE: string = 'signkit_recipient';
 // The exchange is under /s while localized review pages are under /en/sign
@@ -14,31 +15,40 @@ export const RECIPIENT_SESSION_COOKIE_OPTIONS = {
 	secure: true
 } as const;
 
-const ALGORITHM: string = 'AES-GCM';
 const IV_BYTES: number = 12;
 const TAG_BYTES: number = 16;
-const MAX_COOKIE_LENGTH: number = 256;
+const MAX_COOKIE_LENGTH: number = 300;
+const KEY_ID_HEX_LENGTH: number = 16;
 const AAD: Uint8Array<ArrayBuffer> = utf8('signkit:recipient-session-cookie:v1');
 const HKDF_SALT: Uint8Array<ArrayBuffer> = utf8('signkit:session-key-derivation:v1');
 const HKDF_INFO: Uint8Array<ArrayBuffer> = utf8('signkit:recipient-session-key:v1');
+const ENV_VAR_NAME: string = 'SESSION_ENCRYPTION_KEY';
 
+/**
+ * Cookie envelope is `base64url(keyId(16 hex ascii) | iv(12) | ciphertext+tag)`.
+ * The key ID travels with the ciphertext so opening is fail-closed by
+ * explicit ID — active or previous HKDF-derived subkey, nothing else —
+ * exactly like the delivery capability and completion token sealers.
+ */
 export async function sealRecipientSession(token: string): Promise<string> {
 	if (!isRecipientCapability(token)) throw new Error('Invalid recipient capability token');
-	const iv: Uint8Array<ArrayBuffer> = crypto.getRandomValues(
-		new Uint8Array(new ArrayBuffer(IV_BYTES))
-	);
+	const keyring: AesGcmSealingKeyring = await recipientSessionKeyring();
 	const plaintext: Uint8Array<ArrayBuffer> = utf8(token);
-	const ciphertext: ArrayBuffer = await crypto.subtle.encrypt(
-		{ name: ALGORITHM, iv, additionalData: AAD },
-		await recipientSessionKey(),
-		plaintext
-	);
+	const sealed = await keyring.sealWithActive(plaintext, AAD);
+	const keyIdBytes: Uint8Array<ArrayBuffer> = utf8(sealed.keyId);
+	if (keyIdBytes.byteLength !== KEY_ID_HEX_LENGTH)
+		throw new Error('Unexpected sealing key ID length');
 	const combined: Uint8Array<ArrayBuffer> = new Uint8Array(
-		new ArrayBuffer(iv.byteLength + ciphertext.byteLength)
+		new ArrayBuffer(keyIdBytes.byteLength + sealed.iv.byteLength + sealed.ciphertext.byteLength)
 	);
-	combined.set(iv);
-	combined.set(new Uint8Array(ciphertext), iv.byteLength);
-	return base64UrlEncode(combined);
+	combined.set(keyIdBytes, 0);
+	combined.set(sealed.iv, keyIdBytes.byteLength);
+	combined.set(sealed.ciphertext, keyIdBytes.byteLength + sealed.iv.byteLength);
+	const cookie: string = base64UrlEncode(combined);
+	if (cookie.length > MAX_COOKIE_LENGTH) {
+		throw new Error('Recipient session cookie exceeds the maximum length');
+	}
+	return cookie;
 }
 
 export async function unsealRecipientSession(cookie: string): Promise<string | null> {
@@ -46,22 +56,20 @@ export async function unsealRecipientSession(cookie: string): Promise<string | n
 	let combined: Uint8Array<ArrayBuffer>;
 	try {
 		combined = base64UrlDecode(cookie);
-		if (combined.byteLength <= IV_BYTES + TAG_BYTES) return null;
+		if (combined.byteLength <= KEY_ID_HEX_LENGTH + IV_BYTES + TAG_BYTES) return null;
 	} catch {
 		return null;
 	}
 
-	const key: CryptoKey = await recipientSessionKey();
+	const keyId: string = new TextDecoder('ascii').decode(combined.slice(0, KEY_ID_HEX_LENGTH));
+	const iv: Uint8Array<ArrayBuffer> = combined.slice(
+		KEY_ID_HEX_LENGTH,
+		KEY_ID_HEX_LENGTH + IV_BYTES
+	);
+	const ciphertext: Uint8Array<ArrayBuffer> = combined.slice(KEY_ID_HEX_LENGTH + IV_BYTES);
+	const keyring: AesGcmSealingKeyring = await recipientSessionKeyring();
 	try {
-		const plaintext: ArrayBuffer = await crypto.subtle.decrypt(
-			{
-				name: ALGORITHM,
-				iv: combined.slice(0, IV_BYTES),
-				additionalData: AAD
-			},
-			key,
-			combined.slice(IV_BYTES)
-		);
+		const plaintext: Uint8Array = await keyring.openWithKeyId(keyId, iv, ciphertext, AAD);
 		const token: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 		return isRecipientCapability(token) ? token : null;
 	} catch {
@@ -69,23 +77,42 @@ export async function unsealRecipientSession(cookie: string): Promise<string | n
 	}
 }
 
-async function recipientSessionKey(): Promise<CryptoKey> {
-	const encoded: string | undefined = env.SESSION_ENCRYPTION_KEY;
-	if (encoded === undefined || encoded.trim().length === 0)
-		throw new Error('SESSION_ENCRYPTION_KEY is not set');
-	const bytes: Uint8Array<ArrayBuffer> = base64Decode(encoded);
-	if (bytes.byteLength !== 32)
-		throw new Error('SESSION_ENCRYPTION_KEY must be 32 bytes encoded as base64');
-	const masterKey: CryptoKey = await crypto.subtle.importKey('raw', bytes, 'HKDF', false, [
-		'deriveKey'
+async function recipientSessionKeyring(): Promise<AesGcmSealingKeyring> {
+	const activeMaster: Uint8Array<ArrayBuffer> = decodeBase64SealingKey(
+		requiredEnv(ENV_VAR_NAME, env.SESSION_ENCRYPTION_KEY),
+		ENV_VAR_NAME
+	);
+	const previousEncoded: string | undefined = optionalEnv(env.SESSION_ENCRYPTION_KEY_PREVIOUS);
+	const activeSubkey: Uint8Array<ArrayBuffer> = await deriveSubkey(activeMaster);
+	const previousSubkey: Uint8Array<ArrayBuffer> | null =
+		previousEncoded === undefined
+			? null
+			: await deriveSubkey(decodeBase64SealingKey(previousEncoded, `${ENV_VAR_NAME}_PREVIOUS`));
+	return new AesGcmSealingKeyring(activeSubkey, previousSubkey);
+}
+
+async function deriveSubkey(
+	masterKeyBytes: Uint8Array<ArrayBuffer>
+): Promise<Uint8Array<ArrayBuffer>> {
+	const masterKey: CryptoKey = await crypto.subtle.importKey('raw', masterKeyBytes, 'HKDF', false, [
+		'deriveBits'
 	]);
-	return crypto.subtle.deriveKey(
+	const derived: ArrayBuffer = await crypto.subtle.deriveBits(
 		{ name: 'HKDF', hash: 'SHA-256', salt: HKDF_SALT, info: HKDF_INFO },
 		masterKey,
-		{ name: ALGORITHM, length: 256 },
-		false,
-		['encrypt', 'decrypt']
+		256
 	);
+	return new Uint8Array(derived);
+}
+
+function requiredEnv(name: string, value: string | undefined): string {
+	if (value === undefined || value.trim().length === 0) throw new Error(`${name} is not set`);
+	return value;
+}
+
+function optionalEnv(value: string | undefined): string | undefined {
+	if (value === undefined || value.trim().length === 0) return undefined;
+	return value;
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {

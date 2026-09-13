@@ -49,12 +49,12 @@ BEGIN
     AND capability_expires_at IS NOT NULL
     AND julianday(capability_expires_at) > julianday(NEW.updated_at);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient viewed publish conflict')
-  END;
+  END);
 
   UPDATE envelope
-  SET status = CASE WHEN status = 'sent' THEN 'in_progress' ELSE status END,
+  SET status = (CASE WHEN status = 'sent' THEN 'in_progress' ELSE status END),
       updated_at = NEW.updated_at
   WHERE organization_id = NEW.organization_id
     AND id = NEW.envelope_id
@@ -77,9 +77,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient viewed publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,

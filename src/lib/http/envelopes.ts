@@ -3,20 +3,17 @@ import { z, type ZodIssue, type ZodType } from 'zod';
 import type {
 	CreateEnvelopeResult,
 	EnvelopeApplicationPort,
+	EnvelopeDetail,
 	EnvelopeListPage,
 	EnvelopeListQuery,
 	EnvelopeRequestActor
 } from '$lib/application/envelopes/model';
-import type { Envelope } from '$lib/domain/envelope';
+import { toPublicEnvelope, toPublicEnvelopeListPage } from '$lib/application/envelopes/model';
 import { signkitIdentifierSchema } from './identifier-schema';
 import {
 	authorizeScopedOrganizationRequest,
 	type AuthorizedApiActor
 } from './api-key-authorization';
-import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const createEnvelopeSchema: ZodType<{ title: string }> = z
@@ -111,17 +108,15 @@ function validationErrors(issues: readonly ZodIssue[]): readonly ProblemValidati
 
 /**
  * Both authorities project to the same envelope actor shape. `id` is the d6e
- * subject for a session and the API key id for a key; the reads below use only
- * `organizationId`, and envelope creation -- the one command that persists `id`
- * as a caller identifier -- remains session-only in this slice.
+ * subject for a session and the API key id for a key. API keys are `agent`
+ * actors; interactive sessions remain `user`.
  */
-function envelopeActor(
-	authorized: AuthorizedRequestActor | AuthorizedApiActor
-): EnvelopeRequestActor {
+function envelopeActor(authorized: AuthorizedApiActor): EnvelopeRequestActor {
 	return {
 		id: authorized.id,
 		organizationId: authorized.organizationId,
-		organizationName: authorized.organizationName
+		organizationName: authorized.organizationName,
+		actorType: authorized.authority === 'api_key' ? 'agent' : 'user'
 	};
 }
 
@@ -164,9 +159,10 @@ export function createEnvelopeHttpHandlers(
 	resolveApplication: EnvelopeApplicationResolver
 ): EnvelopeHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'drafts:write'
 		);
 		if (authorized instanceof Response) return authorized;
 		const actor: EnvelopeRequestActor = envelopeActor(authorized);
@@ -245,7 +241,7 @@ export function createEnvelopeHttpHandlers(
 				location: `/api/v1/envelopes/${result.envelope.id}`
 			});
 			if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
-			return new Response(JSON.stringify({ envelope: result.envelope }), {
+			return new Response(JSON.stringify({ envelope: toPublicEnvelope(result.envelope) }), {
 				status: 201,
 				headers
 			});
@@ -294,7 +290,7 @@ export function createEnvelopeHttpHandlers(
 		};
 		try {
 			const page: EnvelopeListPage = await application.list(actor, query);
-			return new Response(JSON.stringify(page), {
+			return new Response(JSON.stringify(toPublicEnvelopeListPage(page)), {
 				status: 200,
 				headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
 			});
@@ -338,8 +334,11 @@ export function createEnvelopeHttpHandlers(
 		if (application instanceof Response) return application;
 
 		try {
-			const envelope: Envelope | null = await application.get(actor, envelopeIdResult.data);
-			if (envelope === null) {
+			const detail: EnvelopeDetail | null = await application.getDetail(
+				actor,
+				envelopeIdResult.data
+			);
+			if (detail === null) {
 				return problemResponse({
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
@@ -348,10 +347,18 @@ export function createEnvelopeHttpHandlers(
 					instance: url.pathname
 				});
 			}
-			return new Response(JSON.stringify({ envelope }), {
-				status: 200,
-				headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
-			});
+			return new Response(
+				JSON.stringify({
+					envelope: toPublicEnvelope(detail.envelope),
+					recipients: detail.recipients,
+					readyAuditEventId: detail.readyAuditEventId,
+					fields: detail.fields
+				}),
+				{
+					status: 200,
+					headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
+				}
+			);
 		} catch (error: unknown) {
 			console.error(
 				JSON.stringify({

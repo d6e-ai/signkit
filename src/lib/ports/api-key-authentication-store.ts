@@ -58,6 +58,9 @@ export interface ApiKeyPrincipal {
  *   revoked key, an expired key, and a suspended or missing owner. These are
  *   never distinguished, so the endpoint cannot be used as an existence or
  *   status oracle for a credential the caller does not already hold.
+ * - `rate_limited`: the key authenticated, but the durable per-key window is
+ *   exhausted. Distinct from invalid_token so a correctly configured agent can
+ *   back off without treating the key as revoked.
  * - `organization_grant_required`: the key itself is live and its owner is
  *   active, but no live grant exists for the organization the request named.
  *   This is deliberately distinguishable from `invalid_token`: it reports only
@@ -72,6 +75,7 @@ export interface ApiKeyPrincipal {
 export type AuthenticateApiKeyResult =
 	| { outcome: 'authenticated'; principal: ApiKeyPrincipal }
 	| { outcome: 'invalid_token' }
+	| { outcome: 'rate_limited' }
 	| { outcome: 'organization_grant_required' }
 	| { outcome: 'integrity_error' };
 

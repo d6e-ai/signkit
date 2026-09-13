@@ -76,6 +76,7 @@ interface AuditEvidenceRow {
 	previous_hash: string | null;
 	event_hash: string;
 	occurred_at: string;
+	hash_version: number | null;
 }
 
 interface PublishCommandRow {
@@ -237,7 +238,7 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		const auditEvents: D1Result<AuditEvidenceRow> = await this.#database
 			.prepare(
 				`SELECT id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash,
-					event_hash, occurred_at
+					event_hash, occurred_at, hash_version
 				 FROM audit_event
 				 WHERE organization_id = ? AND envelope_id = ?
 				 ORDER BY sequence ASC
@@ -273,7 +274,8 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 					payloadJson: row.payload_json,
 					previousHash: row.previous_hash,
 					eventHash: row.event_hash,
-					occurredAt: requireCanonicalIsoMillisecondTimestamp(row.occurred_at)
+					occurredAt: requireCanonicalIsoMillisecondTimestamp(row.occurred_at),
+					hashVersion: row.hash_version === 2 ? 2 : 1
 				})
 			)
 		};

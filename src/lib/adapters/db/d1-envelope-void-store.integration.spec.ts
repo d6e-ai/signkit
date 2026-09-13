@@ -3,6 +3,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { EnvelopeVoidApplication } from '$lib/application/envelopes/void';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
+import { hashStoredAuditEvent } from '$lib/domain/audit';
+import { createEnvelopeVoidHandler } from '$lib/http/envelope-void';
+import { createHttpRequestEvent } from '$lib/http/http-handler-test-support';
 import type { VoidableEnvelopeStatus } from '$lib/ports/envelope-void-store';
 import { D1EnvelopeVoidStore } from './d1-envelope-void-store';
 import { sqliteD1Database } from './sqlite-d1-test-support';
@@ -17,6 +20,12 @@ const ACTOR: EnvelopeRequestActor = {
 	id: 'user-1',
 	organizationId: 'org-1',
 	organizationName: 'Workspace'
+};
+const AGENT_ACTOR: EnvelopeRequestActor = {
+	id: '01900000-0000-7000-8000-000000000201',
+	organizationId: 'org-1',
+	organizationName: 'Workspace',
+	actorType: 'agent'
 };
 
 function database(): { sqlite: DatabaseSync; d1: D1Database } {
@@ -272,6 +281,120 @@ describe('D1 envelope void store integration', () => {
 			expect(sqlite.prepare('SELECT count(*) AS count FROM envelope_void_command').get()).toEqual({
 				count: 1
 			});
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('voids as an API-key agent and stamps audit hash v2 with that actor', async () => {
+		const { sqlite, d1 } = database();
+		try {
+			seedEnvelope(sqlite, 'draft', 0);
+			await expect(
+				application(d1).voidEnvelope(AGENT_ACTOR, ENVELOPE_ID, {
+					idempotencyKey: 'void-agent',
+					expectedStatus: 'draft',
+					expectedGeneration: 0
+				})
+			).resolves.toMatchObject({ outcome: 'published', result: { status: 'voided' } });
+			await expect(
+				application(d1).voidEnvelope(AGENT_ACTOR, ENVELOPE_ID, {
+					idempotencyKey: 'void-agent',
+					expectedStatus: 'draft',
+					expectedGeneration: 0
+				})
+			).resolves.toMatchObject({ outcome: 'replayed' });
+
+			const event = sqlite
+				.prepare(
+					`SELECT actor_type, actor_id, hash_version, event_hash, payload_json, previous_hash,
+						sequence, occurred_at
+					 FROM audit_event WHERE event_type = 'envelope.voided'`
+				)
+				.get() as {
+				actor_type: string;
+				actor_id: string;
+				hash_version: number;
+				event_hash: string;
+				payload_json: string;
+				previous_hash: string;
+				sequence: number;
+				occurred_at: string;
+			};
+			expect(event).toMatchObject({
+				actor_type: 'agent',
+				actor_id: AGENT_ACTOR.id,
+				hash_version: 2
+			});
+			await expect(
+				hashStoredAuditEvent(
+					{
+						hashVersion: event.hash_version,
+						sequence: event.sequence,
+						eventType: 'envelope.voided',
+						actorType: event.actor_type,
+						actorId: event.actor_id,
+						occurredAt: event.occurred_at,
+						payload: JSON.parse(event.payload_json) as unknown,
+						previousHash: event.previous_hash
+					},
+					{ organizationId: 'org-1', envelopeId: ENVELOPE_ID }
+				)
+			).resolves.toBe(event.event_hash);
+			expect(sqlite.prepare('SELECT actor_type FROM envelope_void_command').get()).toEqual({
+				actor_type: 'agent'
+			});
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('round-trips an API-key HTTP void through the D1 store as an agent', async () => {
+		const { sqlite, d1 } = database();
+		try {
+			seedEnvelope(sqlite, 'ready', 1, 'head-1');
+			const response: Response = await createEnvelopeVoidHandler(() => application(d1))(
+				createHttpRequestEvent({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/void`,
+					method: 'POST',
+					body: JSON.stringify({ expectedStatus: 'ready', expectedGeneration: 1 }),
+					headers: { 'idempotency-key': 'void-http-agent' },
+					locals: {
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: {
+								apiKeyId: AGENT_ACTOR.id,
+								keyPrefix: 'signkit_abcdefgh',
+								ownerUserId: 'user-1',
+								organizationId: 'org-1',
+								organizationName: 'Workspace',
+								scopes: ['envelopes:send'],
+								expiresAt: '2026-12-11T00:00:00.000Z'
+							}
+						},
+						identityState: 'anonymous',
+						memberships: [],
+						organizationId: null,
+						principal: null
+					},
+					params: { envelopeId: ENVELOPE_ID },
+					jsonBodyContentType: true
+				})
+			);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				voided: { status: 'voided', previousStatus: 'ready', generation: 1 }
+			});
+			expect(
+				sqlite
+					.prepare(
+						`SELECT command.actor_type AS actor_type, evidence.hash_version AS hash_version
+						 FROM envelope_void_command command
+						 JOIN audit_event evidence ON evidence.organization_id = command.organization_id
+							AND evidence.id = command.audit_event_id`
+					)
+					.get()
+			).toEqual({ actor_type: 'agent', hash_version: 2 });
 		} finally {
 			sqlite.close();
 		}

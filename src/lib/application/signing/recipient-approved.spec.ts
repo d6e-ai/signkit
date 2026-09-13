@@ -184,11 +184,14 @@ describe('RecipientApprovedApplication', () => {
 		const expectedCompletedHash: string = createHash('sha256')
 			.update(
 				JSON.stringify({
-					actorId: recipientId,
-					envelopeId,
-					eventType: 'envelope.completed',
-					occurredAt: '2026-09-11T00:02:00.000Z',
+					hashVersion: 2,
 					organizationId,
+					envelopeId,
+					sequence: 5,
+					eventType: 'envelope.completed',
+					actorType: 'recipient',
+					actorId: recipientId,
+					occurredAt: '2026-09-11T00:02:00.000Z',
 					payload: { sentCommitSha: 'a'.repeat(40), completedAt: '2026-09-11T00:02:00.000Z' },
 					previousHash: command.auditEventHash
 				})

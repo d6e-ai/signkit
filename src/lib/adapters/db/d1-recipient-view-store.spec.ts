@@ -220,11 +220,11 @@ describe('D1RecipientViewStore', () => {
 		]);
 	});
 
-	it('denies replay as not_found when the stored capability hash was swapped', async () => {
+	it('fails closed when the stored viewed command capability hash does not match', async () => {
 		const result = await new D1RecipientViewStore(
 			fakeD1([viewedRow, null, storedRow({ capability_hash: 'wrong-hash' })]).database
 		).prepareViewed(command, '2026-09-11T00:02:30.000Z');
-		expect(result).toEqual({ outcome: 'not_found' });
+		expect(result).toEqual({ outcome: 'integrity_error' });
 	});
 
 	it('reports idempotency_conflict when the same key is reused for a different request', async () => {

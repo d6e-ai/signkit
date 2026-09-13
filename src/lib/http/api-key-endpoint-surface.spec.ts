@@ -6,8 +6,12 @@ import { createApiKeyHttpHandlers } from './api-keys';
 import { createApiKeyRevokeHandler } from './api-key-revoke';
 import { createApiKeyOrganizationGrantHandlers } from './api-key-organization-grants';
 import { createCompletionArtifactStatusHandler } from './completion-artifact-status';
+import { createCompletionEvidenceHandler } from './completion-evidence';
+import { createCompletionPdfHandler } from './completion-pdf';
 import { createDeliveryStatusHandler } from './delivery-status';
 import { createDraftHttpHandlers } from './drafts';
+import { createDocxExportHandler } from './docx-export';
+import { createDocxImportHandler } from './docx-import';
 import { createEnvelopeFieldsHandler } from './envelope-fields';
 import { createEnvelopeHttpHandlers } from './envelopes';
 import { createEnvelopeReadyHandler } from './envelope-ready';
@@ -74,6 +78,7 @@ function event(input: {
 	params?: Record<string, string>;
 	apiKeyAuthentication?: App.Locals['apiKeyAuthentication'];
 	search?: string;
+	body?: string;
 }): RequestEvent {
 	const url: URL = new URL(`https://signkit.example${input.pathname}${input.search ?? ''}`);
 	const method: string = input.method ?? 'GET';
@@ -90,7 +95,7 @@ function event(input: {
 		request: new Request(url, {
 			method,
 			headers,
-			body: method === 'POST' ? '{}' : undefined
+			body: method === 'POST' ? (input.body ?? '{}') : undefined
 		})
 	} as unknown as RequestEvent;
 }
@@ -123,6 +128,7 @@ function envelopeListCase(): ReadCase {
 			const handlers = createEnvelopeHttpHandlers(() => ({
 				create: vi.fn(),
 				get: vi.fn(),
+				getDetail: vi.fn(),
 				list: vi.fn(async (actor: { organizationId: string }) => {
 					organizationIds.push(actor.organizationId);
 					return { items: [], nextCursor: null };
@@ -145,7 +151,8 @@ function envelopeGetCase(): ReadCase {
 			const organizationIds: string[] = [];
 			const handlers = createEnvelopeHttpHandlers(() => ({
 				create: vi.fn(),
-				get: vi.fn(async (actor: { organizationId: string }) => {
+				get: vi.fn(),
+				getDetail: vi.fn(async (actor: { organizationId: string }) => {
 					organizationIds.push(actor.organizationId);
 					return null;
 				}),
@@ -186,6 +193,35 @@ function draftGetCase(): ReadCase {
 			const response: Response = await handlers.get(
 				event({
 					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/draft`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, organizationIds };
+		}
+	};
+}
+
+function docxGetCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/docx',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/docx`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const organizationIds: string[] = [];
+			const handler: RequestHandler = createDocxExportHandler(() => ({
+				envelopes: {
+					findForOrganization: async (organizationId: string) => {
+						organizationIds.push(organizationId);
+						return null;
+					}
+				},
+				objects: {} as never,
+				repository: {} as never
+			}));
+			const response: Response = await handler(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/docx`,
 					params: { envelopeId: ENVELOPE_ID },
 					apiKeyAuthentication
 				})
@@ -251,12 +287,69 @@ function completionArtifactCase(): ReadCase {
 	};
 }
 
+function completionEvidenceCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/evidence',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/evidence`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const organizationIds: string[] = [];
+			const handler: RequestHandler = createCompletionEvidenceHandler(() => ({
+				readEvidence: vi.fn(async (organizationId: string) => {
+					organizationIds.push(organizationId);
+					return null;
+				}),
+				readPdf: vi.fn(),
+				envelopeExists: vi.fn(async () => false)
+			}));
+			const response: Response = await handler(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/evidence`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, organizationIds };
+		}
+	};
+}
+
+function completionPdfCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/pdf',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const organizationIds: string[] = [];
+			const handler: RequestHandler = createCompletionPdfHandler(() => ({
+				readEvidence: vi.fn(),
+				readPdf: vi.fn(async (organizationId: string) => {
+					organizationIds.push(organizationId);
+					return null;
+				}),
+				envelopeExists: vi.fn(async () => false)
+			}));
+			const response: Response = await handler(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, organizationIds };
+		}
+	};
+}
+
 const READ_CASES: readonly ReadCase[] = [
 	envelopeListCase(),
 	envelopeGetCase(),
 	draftGetCase(),
+	docxGetCase(),
 	deliveriesCase(),
-	completionArtifactCase()
+	completionArtifactCase(),
+	completionEvidenceCase(),
+	completionPdfCase()
 ];
 
 describe('API key read surface', () => {
@@ -338,19 +431,99 @@ describe('API key read surface', () => {
 });
 
 /**
- * Every mutation stays session-only. This is required rather than merely
- * conservative: the completion artifact verifier pins the envelope event types to
- * `actor_type = 'user'` and does not hash `actor_type`, so admitting a machine
- * actor would either falsify the audit chain or make affected envelopes fail
- * completion artifact publication.
+ * Envelope mutations now accept API keys that hold drafts:write or envelopes:send.
+ * A live key missing the required scope is insufficient-scope, not a surface
+ * refusal. Management paths stay session-only.
  */
-describe('API key rejected surface', () => {
-	const REJECTED: readonly [string, string, () => Promise<Response>][] = [
+describe('API key mutation surface', () => {
+	const WRITE: readonly [
+		string,
+		ApiKeyScope,
+		() => Promise<{ response: Response; called: boolean }>
+	][] = [
 		[
 			'POST /api/v1/envelopes',
-			'/api/v1/envelopes',
+			'drafts:write',
+			async () => {
+				const create = vi.fn(async () => ({
+					outcome: 'created' as const,
+					envelope: {
+						id: ENVELOPE_ID,
+						organizationId: GRANTED_ORG,
+						title: 'Agreement',
+						status: 'draft' as const,
+						repositoryGeneration: 0,
+						repositoryHead: null,
+						repositoryArchiveKey: null,
+						repositoryArchiveSha256: null,
+						sentCommitSha: null,
+						fieldGeneration: 0,
+						createdAt: '2026-09-11T00:00:00.000Z',
+						updatedAt: '2026-09-11T00:00:00.000Z'
+					}
+				}));
+				const response: Response = await createEnvelopeHttpHandlers(() => ({
+					create,
+					get: vi.fn(),
+					getDetail: vi.fn(),
+					list: vi.fn()
+				})).create(
+					event({
+						pathname: '/api/v1/envelopes',
+						method: 'POST',
+						body: JSON.stringify({ title: 'Agreement' }),
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: principal({ scopes: ['drafts:write'] })
+						}
+					})
+				);
+				return { response, called: create.mock.calls.length === 1 };
+			}
+		],
+		[
+			'POST /api/v1/envelopes/{envelopeId}/send',
+			'envelopes:send',
+			async () => {
+				const send = vi.fn(async () => ({ outcome: 'integrity_error' as const }));
+				const response: Response = await createEnvelopeSendHandler(() => ({ send }))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/send`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						body: JSON.stringify({
+							expectedGeneration: 1,
+							expectedReadyAuditEventId: ENVELOPE_ID
+						}),
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: principal({ scopes: ['envelopes:send'] })
+						}
+					})
+				);
+				return { response, called: send.mock.calls.length === 1 };
+			}
+		]
+	];
+
+	it.each(WRITE)(
+		'accepts an authenticated API key on %s with %s',
+		async (_name, _scope, invoke) => {
+			const { called } = await invoke();
+			expect(called).toBe(true);
+		}
+	);
+
+	it.each([
+		[
+			'POST /api/v1/envelopes',
 			async (): Promise<Response> =>
-				createEnvelopeHttpHandlers(() => ({ create: vi.fn(), get: vi.fn(), list: vi.fn() })).create(
+				createEnvelopeHttpHandlers(() => ({
+					create: vi.fn(),
+					get: vi.fn(),
+					getDetail: vi.fn(),
+					list: vi.fn()
+				})).create(
 					event({
 						pathname: '/api/v1/envelopes',
 						method: 'POST',
@@ -360,7 +533,6 @@ describe('API key rejected surface', () => {
 		],
 		[
 			'POST /api/v1/envelopes/{envelopeId}/draft/commits',
-			`/api/v1/envelopes/${ENVELOPE_ID}/draft/commits`,
 			async (): Promise<Response> =>
 				createDraftHttpHandlers(() => ({ commit: vi.fn(), readWorkspace: vi.fn() })).commit(
 					event({
@@ -372,8 +544,19 @@ describe('API key rejected surface', () => {
 				)
 		],
 		[
+			'POST /api/v1/envelopes/{envelopeId}/draft/docx',
+			async (): Promise<Response> =>
+				createDocxImportHandler(() => ({ commit: vi.fn() }))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/draft/docx`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+					})
+				)
+		],
+		[
 			'POST /api/v1/envelopes/{envelopeId}/ready',
-			`/api/v1/envelopes/${ENVELOPE_ID}/ready`,
 			async (): Promise<Response> =>
 				createEnvelopeReadyHandler(() => null)(
 					event({
@@ -386,7 +569,6 @@ describe('API key rejected surface', () => {
 		],
 		[
 			'POST /api/v1/envelopes/{envelopeId}/fields',
-			`/api/v1/envelopes/${ENVELOPE_ID}/fields`,
 			async (): Promise<Response> =>
 				createEnvelopeFieldsHandler(() => null)(
 					event({
@@ -399,7 +581,6 @@ describe('API key rejected surface', () => {
 		],
 		[
 			'POST /api/v1/envelopes/{envelopeId}/send',
-			`/api/v1/envelopes/${ENVELOPE_ID}/send`,
 			async (): Promise<Response> =>
 				createEnvelopeSendHandler(() => null)(
 					event({
@@ -412,7 +593,6 @@ describe('API key rejected surface', () => {
 		],
 		[
 			'POST /api/v1/envelopes/{envelopeId}/void',
-			`/api/v1/envelopes/${ENVELOPE_ID}/void`,
 			async (): Promise<Response> =>
 				createEnvelopeVoidHandler(() => null)(
 					event({
@@ -423,15 +603,50 @@ describe('API key rejected surface', () => {
 					})
 				)
 		]
-	];
-
-	it.each(REJECTED)('refuses an authenticated API key on %s', async (_name, _path, invoke) => {
+	] as const)('refuses a live key missing the mutation scope on %s', async (_name, invoke) => {
 		const response: Response = await invoke();
-
 		expect(response.status).toBe(403);
-		expect(await problemType(response)).toBe('urn:signkit:problem:api-key-not-permitted');
+		expect(await problemType(response)).toBe('urn:signkit:problem:api-key-insufficient-scope');
 	});
 
+	it.each([
+		[
+			'POST /api/v1/envelopes',
+			async (): Promise<Response> =>
+				createEnvelopeHttpHandlers(() => ({
+					create: vi.fn(),
+					get: vi.fn(),
+					getDetail: vi.fn(),
+					list: vi.fn()
+				})).create(
+					event({
+						pathname: '/api/v1/envelopes',
+						method: 'POST',
+						apiKeyAuthentication: { state: 'invalid_token' }
+					})
+				)
+		],
+		[
+			'POST /api/v1/envelopes/{envelopeId}/void',
+			async (): Promise<Response> =>
+				createEnvelopeVoidHandler(() => null)(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/void`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: { state: 'invalid_token' }
+					})
+				)
+		]
+	] as const)('keeps malformed or unauthorized bearers opaque 401 on %s', async (_name, invoke) => {
+		const response: Response = await invoke();
+		expect(response.status).toBe(401);
+		expect(await problemType(response)).toBe('urn:signkit:problem:api-key-authentication-required');
+		expect(response.headers.get('www-authenticate')).toBe('Bearer');
+	});
+});
+
+describe('API key rejected surface', () => {
 	/**
 	 * Privilege escalation: a key must never mint another key, grant itself an
 	 * organization, revoke a grant, bootstrap the instance, or administer members.

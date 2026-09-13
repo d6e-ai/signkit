@@ -6,11 +6,10 @@ Production-quality, agent-first Rust CLI for SignKit located under `cli/` (requi
 
 The SignKit CLI is designed for non-interactive and machine-automated workflows. It adheres strictly to the current authorization reality documented in [api.md](api.md) and [architecture/](architecture/README.md):
 
-- **Enabled surface:** API-key Bearer authentication with the `envelopes:read` scope on all five enabled read endpoints, plus public system capabilities.
+- **Enabled surface:** API-key Bearer authentication with `envelopes:read`, `drafts:write`, and `envelopes:send` on the HTTP commands listed by `GET /api/v1/system/capabilities`, plus public system capabilities. `audit` reads publication status; `evidence` and `pdf` download published bytes.
 - **Unavailable operations (by design):**
-  - **Mutations** (`create`, `draft/commits`, `ready`, `fields`, `send`, `void`) are interactive-session-only because machine actors are excluded until completion audit event actor types can safely accommodate machine principals without invalidating audit hash chains (`COMPLETION_AUDIT_EVENT_ACTOR_TYPES` pins actor types to `user`).
   - **API-key and instance management** (`/api/v1/api-keys/**`, `/api/v1/instance/**`) reject API keys outright with HTTP 403 `api-key-not-permitted` to prevent self-escalation.
-  - The CLI **does not fake or expose unusable create, send, or key-management commands**.
+  - Recipient sign/approve/decline remain capability-cookie commands and are not in the CLI.
 
 ## Credentials & Security Boundaries
 
@@ -132,8 +131,57 @@ signkit --base-url https://signkit.example.com --org org_12345 envelopes deliver
 
 ### `signkit envelopes completion-artifact <ENVELOPE_ID>`
 
-Reads completion artifact publication status: `published`, `pending`, `processing`, `failed`, or `not_completed` (when the envelope has not reached terminal completion).
+Reads completion artifact publication status: `published`, `pending`, `processing`, `failed`, or `not_completed` (when the envelope has not reached terminal completion). `signkit envelopes audit` is an alias of this status read.
 
 ```sh
 signkit --base-url https://signkit.example.com --org org_12345 envelopes completion-artifact 0191b26f-4000-7000-8000-000000000001
+```
+
+### `signkit envelopes evidence <ENVELOPE_ID>`
+
+Downloads published immutable completion evidence (`GET .../evidence`). `--format json` (default) or `--format markdown`. `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout.
+
+```sh
+signkit --base-url https://signkit.example.com --org org_12345 \
+  envelopes evidence 0191b26f-4000-7000-8000-000000000001 --format markdown --output ./evidence.md
+```
+
+### `signkit envelopes pdf <ENVELOPE_ID>`
+
+Downloads the published visual completion PDF (`GET .../pdf`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout. Cryptographic PAdES sealing is not included.
+
+```sh
+signkit --base-url https://signkit.example.com --org org_12345 \
+  envelopes pdf 0191b26f-4000-7000-8000-000000000001 --output ./completion.pdf
+```
+
+### `signkit envelopes create`
+
+Creates a draft envelope (`drafts:write`). Supply `--title` or `--file PATH` (`-` for stdin JSON `{ "title": "..." }`). An `Idempotency-Key` is generated when `--idempotency-key` is omitted.
+
+### `signkit envelopes commit <ENVELOPE_ID>`
+
+Commits Markdown edits (`drafts:write`). JSON body from `--file` (default stdin) must include `expectedGeneration`, `message`, and `edits`.
+
+### `signkit envelopes ready <ENVELOPE_ID>` / `fields` / `send` / `void`
+
+Authoring and send/void mutations. JSON from `--file` (default stdin). Flags overlay concurrency fields. Envelope IDs and `expectedReadyAuditEventId` must be canonical lowercase UUIDv7. Each command sends `Idempotency-Key`.
+
+### `signkit envelopes import-docx <ENVELOPE_ID>`
+
+Converts a bounded DOCX file into one Markdown draft commit (`drafts:write`). Reads a regular file or stdin (`--file`, default `-`), refuses symbolic links, and caps input at the server's deploy-target bound (Node 20 MiB; Cloudflare Workers 2 MiB). Requires `--target-path documents/....md`, `--expected-generation`, and `Idempotency-Key`.
+
+```sh
+signkit --base-url https://signkit.example.com --org org_12345 \
+  envelopes import-docx 0191b26f-4000-7000-8000-000000000001 \
+  --file ./agreement.docx --target-path documents/agreement.md --expected-generation 0
+```
+
+### `signkit envelopes export-docx <ENVELOPE_ID>`
+
+Downloads the pinned revision as WordprocessingML (`envelopes:read`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout.
+
+```sh
+signkit --base-url https://signkit.example.com --org org_12345 \
+  envelopes export-docx 0191b26f-4000-7000-8000-000000000001 --output ./agreement.docx
 ```

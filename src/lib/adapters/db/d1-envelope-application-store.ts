@@ -2,10 +2,20 @@ import type {
 	CreateEnvelopeCommand,
 	CreateEnvelopeStoreResult,
 	EnvelopeApplicationStore,
+	EnvelopeDetail,
 	EnvelopeListPage,
-	EnvelopeListQuery
+	EnvelopeListQuery,
+	PublicEnvelopeDetailField,
+	PublicEnvelopeRecipient
 } from '$lib/application/envelopes/model';
-import type { Envelope, EnvelopeStatus } from '$lib/domain/envelope';
+import type {
+	Envelope,
+	EnvelopeStatus,
+	FieldGeometry,
+	FieldType,
+	RecipientRole,
+	RecipientStatus
+} from '$lib/domain/envelope';
 import type {
 	DraftAuditHead,
 	DraftMutationStore,
@@ -133,8 +143,8 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 			.prepare(
 				`INSERT INTO audit_event (
 					id, organization_id, envelope_id, sequence, event_type, actor_type,
-					actor_id, payload_json, previous_hash, event_hash, occurred_at
-				) VALUES (?, ?, ?, 1, 'envelope.created', ?, ?, ?, NULL, ?, ?)`
+					actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
+				) VALUES (?, ?, ?, 1, 'envelope.created', ?, ?, ?, NULL, ?, ?, 2)`
 			)
 			.bind(
 				command.auditEventId,
@@ -306,6 +316,54 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 
 	findForOrganization(organizationId: string, envelopeId: string): Promise<Envelope | null> {
 		return this.#envelopes.findForOrganization(organizationId, envelopeId);
+	}
+
+	async readDetail(organizationId: string, envelopeId: string): Promise<EnvelopeDetail | null> {
+		const envelope: Envelope | null = await this.findForOrganization(organizationId, envelopeId);
+		if (envelope === null) return null;
+
+		const recipientResult = await this.#database
+			.prepare(
+				`SELECT id, email, name, role, locale, routing_order, status
+				 FROM recipient
+				 WHERE organization_id = ? AND envelope_id = ?
+				 ORDER BY routing_order ASC, id ASC`
+			)
+			.bind(organizationId, envelopeId)
+			.all<DetailRecipientRow>();
+
+		let readyAuditEventId: string | null = null;
+		if (envelope.status !== 'draft') {
+			const ready = await this.#database
+				.prepare(
+					`SELECT id
+					 FROM audit_event
+					 WHERE organization_id = ? AND envelope_id = ? AND event_type = 'envelope.ready'
+					 ORDER BY sequence DESC
+					 LIMIT 1`
+				)
+				.bind(organizationId, envelopeId)
+				.first<{ id: string }>();
+			readyAuditEventId = ready?.id ?? null;
+		}
+
+		const fieldResult = await this.#database
+			.prepare(
+				`SELECT id, recipient_id, document_path, field_type, required, position,
+				        page, x, y, width, height
+				 FROM envelope_field
+				 WHERE organization_id = ? AND envelope_id = ?
+				 ORDER BY document_path ASC, position ASC, id ASC`
+			)
+			.bind(organizationId, envelopeId)
+			.all<DetailFieldRow>();
+
+		return {
+			envelope,
+			recipients: recipientResult.results.map(fromRecipientRow),
+			readyAuditEventId,
+			fields: fieldResult.results.map(fromFieldRow)
+		};
 	}
 
 	compareAndSetDraftPointer(
@@ -538,4 +596,65 @@ function envelopeFromRow(row: EnvelopeRow): Envelope {
 		createdAt: row.created_at,
 		updatedAt: row.updated_at
 	};
+}
+
+interface DetailRecipientRow {
+	id: string;
+	email: string;
+	name: string;
+	role: RecipientRole;
+	locale: 'en' | 'ja';
+	routing_order: number;
+	status: RecipientStatus;
+}
+
+interface DetailFieldRow {
+	id: string;
+	recipient_id: string;
+	document_path: `documents/${string}.md`;
+	field_type: FieldType;
+	required: number | boolean;
+	position: number;
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
+}
+
+function fromRecipientRow(row: DetailRecipientRow): PublicEnvelopeRecipient {
+	return {
+		id: row.id,
+		email: row.email,
+		name: row.name,
+		role: row.role,
+		locale: row.locale,
+		routingOrder: row.routing_order,
+		status: row.status
+	};
+}
+
+function fromFieldRow(row: DetailFieldRow): PublicEnvelopeDetailField {
+	return {
+		id: row.id,
+		recipientId: row.recipient_id,
+		documentPath: row.document_path,
+		fieldType: row.field_type,
+		required: row.required === true || row.required === 1,
+		position: row.position,
+		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height)
+	};
+}
+
+function geometryFromColumns(
+	page: number | null,
+	x: number | null,
+	y: number | null,
+	width: number | null,
+	height: number | null
+): FieldGeometry | null {
+	if (page === null || x === null || y === null || width === null || height === null) {
+		return null;
+	}
+	return { page, x, y, width, height };
 }

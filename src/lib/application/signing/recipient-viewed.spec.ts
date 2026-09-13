@@ -154,6 +154,27 @@ describe('RecipientViewedApplication', () => {
 		expect(storePort.publishViewed).not.toHaveBeenCalled();
 	});
 
+	it('handles continued outcome for reissued capabilities and reauthorizes live capability', async () => {
+		const receipt = {
+			envelopeId: context.envelopeId,
+			recipientId: context.recipientId,
+			recipientRole: 'signer' as const,
+			routingOrder: 1,
+			sentCommitSha: context.sentRevision.commitSha,
+			envelopeStatus: 'in_progress' as const,
+			viewedAt: '2026-09-11T00:01:00.000Z',
+			auditEventId: 'audit-viewed'
+		};
+		const storePort = store([{ outcome: 'continued', result: receipt }]);
+		await expect(
+			new RecipientViewedApplication(
+				access([context, { ...context, recipientStatus: 'viewed' }]),
+				storePort
+			).view(input)
+		).resolves.toEqual({ outcome: 'continued', result: receipt });
+		expect(storePort.publishViewed).not.toHaveBeenCalled();
+	});
+
 	it('retries bounded audit-head races with a fresh non-regressing viewed timestamp', async () => {
 		const secondReady: ViewedPreparation = {
 			...ready,

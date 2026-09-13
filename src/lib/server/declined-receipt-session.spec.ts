@@ -124,12 +124,32 @@ describe('declined receipt session sealing', () => {
 
 	it('rejects invalid key configuration and propagates missing configuration during unseal', async () => {
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(31, 7).toString('base64');
-		await expect(sealDeclinedReceiptSession(locator)).rejects.toThrow(/must be 32 bytes/);
+		await expect(sealDeclinedReceiptSession(locator)).rejects.toThrow(
+			/must encode exactly 32 bytes/
+		);
 
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
 		const sealed: string = await sealDeclinedReceiptSession(locator);
 		privateEnv.SESSION_ENCRYPTION_KEY = undefined;
 		await expect(unsealDeclinedReceiptSession(sealed)).rejects.toThrow(/is not set/);
+	});
+
+	it('opens a receipt cookie sealed under the previous key once the active key rotates', async () => {
+		const sealedUnderOldActive: string = await sealDeclinedReceiptSession(locator);
+
+		privateEnv.SESSION_ENCRYPTION_KEY_PREVIOUS = privateEnv.SESSION_ENCRYPTION_KEY;
+		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64');
+
+		await expect(unsealDeclinedReceiptSession(sealedUnderOldActive)).resolves.toEqual(locator);
+	});
+
+	it('fails closed once a key is retired outside the active/previous window', async () => {
+		const sealedUnderRetiredKey: string = await sealDeclinedReceiptSession(locator);
+
+		privateEnv.SESSION_ENCRYPTION_KEY_PREVIOUS = Buffer.alloc(32, 9).toString('base64');
+		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 10).toString('base64');
+
+		await expect(unsealDeclinedReceiptSession(sealedUnderRetiredKey)).resolves.toBeNull();
 	});
 });
 

@@ -559,4 +559,93 @@ describe('D1CompletionDeliveryStore integration', () => {
 		// Unknown token returns null
 		expect(await store.resolveArtifactLocatorByTokenHash('0'.repeat(64), baseTime)).toBeNull();
 	});
+
+	it('finds and reseals a non-processing completion delivery row sealed under a stale key', async () => {
+		const { database, sqlite } = createFixture();
+		const { signerId } = seedCompletedEnvelopeWithArtifact(sqlite);
+		const store = new D1CompletionDeliveryStore(database);
+		const deliveryId = '01940000-0000-7000-8000-0000000000f9';
+		sqlite.exec(`
+			INSERT INTO completion_delivery_outbox (
+				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
+				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
+			) VALUES (
+				'${deliveryId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${signerId}', 'pending',
+				'${'t'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, 'skcd1_ciphertext', 'key-1',
+				'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 0, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 1
+			);
+		`);
+
+		const stale = await store.findStaleSealedCompletionTokens({
+			activeSealingKeyId: 'key-2',
+			limit: 25
+		});
+		expect(stale).toEqual([
+			{
+				deliveryId,
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				sealedToken: 'skcd1_ciphertext',
+				sealingKeyId: 'key-1'
+			}
+		]);
+
+		await expect(
+			store.resealCompletionToken({
+				organizationId: ORGANIZATION_ID,
+				deliveryId,
+				previousSealingKeyId: 'key-1',
+				sealedToken: 'skcd1_resealed',
+				sealingKeyId: 'key-2',
+				sealedTokenSha256: 'resealed-hash',
+				updatedAt: '2026-09-12T00:05:00.000Z'
+			})
+		).resolves.toEqual({ outcome: 'resealed' });
+
+		const row = sqlite
+			.prepare('SELECT sealed_token, sealing_key_id FROM completion_delivery_outbox WHERE id = ?')
+			.get(deliveryId);
+		expect(row).toEqual({ sealed_token: 'skcd1_resealed', sealing_key_id: 'key-2' });
+
+		await expect(
+			store.findStaleSealedCompletionTokens({ activeSealingKeyId: 'key-2', limit: 25 })
+		).resolves.toEqual([]);
+	});
+
+	it('does not reseal a completion delivery row already claimed for processing', async () => {
+		const { database, sqlite } = createFixture();
+		const { signerId } = seedCompletedEnvelopeWithArtifact(sqlite);
+		const store = new D1CompletionDeliveryStore(database);
+		const deliveryId = '01940000-0000-7000-8000-0000000000fa';
+		sqlite.exec(`
+			INSERT INTO completion_delivery_outbox (
+				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
+				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable,
+				claim_token, locked_at
+			) VALUES (
+				'${deliveryId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${signerId}', 'processing',
+				'${'t'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, 'skcd1_ciphertext', 'key-1',
+				'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 1,
+				'lease-token-0001', '2026-09-12T00:00:00.000Z'
+			);
+		`);
+
+		await expect(
+			store.findStaleSealedCompletionTokens({ activeSealingKeyId: 'key-2', limit: 25 })
+		).resolves.toEqual([]);
+		await expect(
+			store.resealCompletionToken({
+				organizationId: ORGANIZATION_ID,
+				deliveryId,
+				previousSealingKeyId: 'key-1',
+				sealedToken: 'skcd1_resealed',
+				sealingKeyId: 'key-2',
+				sealedTokenSha256: 'resealed-hash',
+				updatedAt: '2026-09-12T00:05:00.000Z'
+			})
+		).resolves.toEqual({ outcome: 'stale' });
+	});
 });

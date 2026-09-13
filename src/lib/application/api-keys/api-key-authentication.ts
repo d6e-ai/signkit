@@ -25,6 +25,7 @@ export interface ApiKeyAuthenticationInput {
 export type ApiKeyAuthenticationResult =
 	| { outcome: 'authenticated'; principal: ApiKeyPrincipal }
 	| { outcome: 'invalid_token' }
+	| { outcome: 'rate_limited' }
 	| { outcome: 'organization_selector_invalid' }
 	| { outcome: 'organization_grant_required' }
 	| { outcome: 'integrity_error' };

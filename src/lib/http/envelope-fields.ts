@@ -9,9 +9,9 @@ import type {
 import { InvalidFieldPlacementError } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
+	authorizeScopedOrganizationRequest,
+	type AuthorizedApiActor
+} from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -30,6 +30,15 @@ const documentPathSchema: ZodType<string> = z
 	.refine((value: string): boolean => !value.includes('..'), {
 		message: 'Document paths must not contain ..'
 	});
+const geometrySchema = z
+	.object({
+		page: z.number().int().min(1).max(100_000),
+		x: z.number().min(0).max(1),
+		y: z.number().min(0).max(1),
+		width: z.number().gt(0).max(1),
+		height: z.number().gt(0).max(1)
+	})
+	.strict();
 const fieldSchema = z
 	.object({
 		recipientId: signkitIdentifierSchema,
@@ -44,7 +53,8 @@ const fieldSchema = z
 				message: 'Field labels must not contain control characters'
 			}),
 		required: z.boolean(),
-		position: z.number().int().min(0).max(100_000)
+		position: z.number().int().min(0).max(100_000),
+		geometry: geometrySchema.nullable().optional()
 	})
 	.strict();
 const fieldsSchema = z
@@ -92,9 +102,10 @@ export function createEnvelopeFieldsHandler(
 	resolveApplication: EnvelopeFieldApplicationResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'drafts:write'
 		);
 		if (authorized instanceof Response) return authorized;
 
@@ -182,7 +193,8 @@ export function createEnvelopeFieldsHandler(
 		const actor: EnvelopeRequestActor = {
 			id: authorized.id,
 			organizationId: authorized.organizationId,
-			organizationName: authorized.organizationName
+			organizationName: authorized.organizationName,
+			actorType: authorized.authority === 'api_key' ? 'agent' : 'user'
 		};
 		const input: PlaceFieldsInput = {
 			idempotencyKey: idempotencyKey.data,

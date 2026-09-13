@@ -66,7 +66,8 @@ function application(result?: PlaceFieldsResult): EnvelopeFieldApplicationPort {
 								documentPath: 'documents/agreement.md',
 								fieldType: 'signature',
 								required: true,
-								position: 1
+								position: 1,
+								geometry: null
 							}
 						],
 						updatedAt: '2026-09-11T00:00:00.000Z',
@@ -231,7 +232,7 @@ describe('envelope fields HTTP handler', () => {
 		);
 		expect(response.status).toBe(200);
 		expect(app.place).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			envelopeId,
 			{
 				idempotencyKey: 'fields-1',
@@ -287,7 +288,8 @@ describe('envelope fields HTTP handler', () => {
 						documentPath: 'documents/agreement.md',
 						fieldType: 'signature',
 						required: true,
-						position: 1
+						position: 1,
+						geometry: null
 					}
 				],
 				updatedAt: '2026-09-11T00:00:00.000Z',
@@ -301,5 +303,60 @@ describe('envelope fields HTTP handler', () => {
 		const text: string = JSON.stringify(await response.json());
 		expect(text).not.toContain('Sign here');
 		expect(text).not.toContain('archive');
+	});
+
+	it('accepts an optional normalized geometry object and forwards it verbatim', async () => {
+		const app: EnvelopeFieldApplicationPort = application();
+		const geometry = { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 };
+		const response: Response = await createEnvelopeFieldsHandler(() => app)(
+			event({
+				headers: { 'idempotency-key': 'fields-geometry' },
+				body: JSON.stringify({
+					expectedGeneration: 2,
+					expectedFieldGeneration: 0,
+					fields: [
+						{
+							recipientId,
+							documentPath: 'documents/agreement.md',
+							fieldType: 'signature',
+							label: 'Sign here',
+							required: true,
+							position: 1,
+							geometry
+						}
+					]
+				})
+			})
+		);
+		expect(response.status).toBe(200);
+		expect(app.place).toHaveBeenCalledWith(
+			expect.anything(),
+			envelopeId,
+			expect.objectContaining({ fields: [expect.objectContaining({ geometry })] })
+		);
+	});
+
+	it('rejects geometry outside the normalized unit square', async () => {
+		const response: Response = await createEnvelopeFieldsHandler(() => application())(
+			event({
+				headers: { 'idempotency-key': 'fields-geometry-invalid' },
+				body: JSON.stringify({
+					expectedGeneration: 2,
+					expectedFieldGeneration: 0,
+					fields: [
+						{
+							recipientId,
+							documentPath: 'documents/agreement.md',
+							fieldType: 'signature',
+							label: 'Sign here',
+							required: true,
+							position: 1,
+							geometry: { page: 1, x: 1.5, y: 0, width: 0.1, height: 0.1 }
+						}
+					]
+				})
+			})
+		);
+		expect(response.status).toBe(400);
 	});
 });

@@ -12,6 +12,11 @@ export interface VerifiedPrincipal {
 	subject: string;
 	email: string;
 	name: string;
+	/**
+	 * Provider-verified inbox claim. Missing or non-true `email_verified` is
+	 * treated as false so sealed sessions that predate the field fail closed.
+	 */
+	emailVerified?: boolean;
 }
 
 export interface OrganizationMembership {
@@ -104,6 +109,7 @@ function principalFromPayload(payload: JWTPayload): VerifiedPrincipal {
 	return {
 		subject: payload.sub,
 		email: payload.email,
-		name: typeof payload.name === 'string' ? payload.name : payload.email
+		name: typeof payload.name === 'string' ? payload.name : payload.email,
+		emailVerified: payload.email_verified === true
 	};
 }

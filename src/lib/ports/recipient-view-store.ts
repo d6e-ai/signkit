@@ -35,6 +35,7 @@ export type ViewedPreparation =
 			auditHead: ViewedAuditHead;
 	  }
 	| { outcome: 'replayed'; result: PublishedRecipientViewed }
+	| { outcome: 'continued'; result: PublishedRecipientViewed }
 	| { outcome: 'not_found' }
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'audit_conflict' }

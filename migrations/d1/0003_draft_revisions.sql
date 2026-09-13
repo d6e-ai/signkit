@@ -59,9 +59,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'draft revision publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id,

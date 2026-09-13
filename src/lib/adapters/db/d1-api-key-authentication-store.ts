@@ -1,5 +1,6 @@
 import { parseApiKeyScopesJson } from '$lib/ports/api-key-store';
 import type { ApiKeyScope } from '$lib/security/api-key';
+import { API_KEY_RATE_WINDOW_MAX_REQUESTS, API_KEY_RATE_WINDOW_MS } from '$lib/security/api-key';
 import type {
 	ApiKeyAuthenticationStore,
 	AuthenticateApiKeyQuery,
@@ -107,6 +108,9 @@ export class D1ApiKeyAuthenticationStore implements ApiKeyAuthenticationStore {
 			return { outcome: 'integrity_error' };
 		}
 
+		const recorded: boolean = await this.#recordUse(row.api_key_id, query.at);
+		if (!recorded) return { outcome: 'rate_limited' };
+
 		return {
 			outcome: 'authenticated',
 			principal: {
@@ -119,5 +123,44 @@ export class D1ApiKeyAuthenticationStore implements ApiKeyAuthenticationStore {
 				expiresAt: row.expires_at
 			}
 		};
+	}
+
+	async #recordUse(apiKeyId: string, at: string): Promise<boolean> {
+		const windowStartCutoff: string = new Date(
+			Date.parse(at) - API_KEY_RATE_WINDOW_MS
+		).toISOString();
+		const result: D1Result = await this.#database
+			.prepare(
+				`UPDATE api_key
+				 SET last_used_at = ?,
+					 rate_window_started_at = CASE
+						WHEN rate_window_started_at IS NULL OR rate_window_started_at <= ?
+						THEN ?
+						ELSE rate_window_started_at
+					 END,
+					 rate_window_count = CASE
+						WHEN rate_window_started_at IS NULL OR rate_window_started_at <= ?
+						THEN 1
+						ELSE rate_window_count + 1
+					 END
+				 WHERE id = ?
+					 AND revoked_at IS NULL
+					 AND (
+						rate_window_started_at IS NULL
+						OR rate_window_started_at <= ?
+						OR rate_window_count < ?
+					 )`
+			)
+			.bind(
+				at,
+				windowStartCutoff,
+				at,
+				windowStartCutoff,
+				apiKeyId,
+				windowStartCutoff,
+				API_KEY_RATE_WINDOW_MAX_REQUESTS
+			)
+			.run();
+		return (result.meta?.changes ?? 0) === 1;
 	}
 }

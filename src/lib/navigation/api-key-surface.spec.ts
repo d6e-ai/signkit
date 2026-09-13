@@ -7,7 +7,10 @@ describe('API key surface allowlist', () => {
 		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001',
 		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/draft',
 		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/deliveries',
-		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/completion-artifact'
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/completion-artifact',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/evidence',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/pdf',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/reissue'
 	])('resolves an API key on the operator envelope surface %s', (pathname) => {
 		expect(isApiKeyAuthenticatedPath(pathname)).toBe(true);
 	});
@@ -70,7 +73,10 @@ describe('API key rejected surface', () => {
 		'/api/v1/instance/members/user-2/status',
 		'/api/v1/instance/invitations',
 		'/api/v1/instance/invitations/accept',
-		'/api/v1/instance/invitations/01900000-0000-7000-8000-000000000301/revoke'
+		'/api/v1/instance/invitations/01900000-0000-7000-8000-000000000301/revoke',
+		'/api/v1/webhooks',
+		'/api/v1/webhooks/01900000-0000-7000-8000-000000000401',
+		'/api/v1/webhooks/01900000-0000-7000-8000-000000000401/revoke'
 	])('rejects an API key presented on %s', (pathname) => {
 		expect(isApiKeyRejectedPath(pathname)).toBe(true);
 	});

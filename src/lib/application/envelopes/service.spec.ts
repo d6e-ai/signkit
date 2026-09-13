@@ -27,6 +27,12 @@ function createStore(): EnvelopeApplicationStore {
 			envelope
 		})),
 		findForOrganization: vi.fn(async (): Promise<Envelope | null> => envelope),
+		readDetail: vi.fn(async () => ({
+			envelope,
+			recipients: [],
+			readyAuditEventId: null,
+			fields: []
+		})),
 		listForOrganization: vi.fn(async () => ({
 			items: [envelope],
 			nextCursor: null
@@ -112,11 +118,13 @@ describe('EnvelopeApplication', () => {
 
 		await application.list(actor, { cursor: null, limit: 25 });
 		await application.get(actor, envelope.id);
+		await application.getDetail(actor, envelope.id);
 
 		expect(store.listForOrganization).toHaveBeenCalledWith(envelope.organizationId, {
 			cursor: null,
 			limit: 25
 		});
 		expect(store.findForOrganization).toHaveBeenCalledWith(envelope.organizationId, envelope.id);
+		expect(store.readDetail).toHaveBeenCalledWith(envelope.organizationId, envelope.id);
 	});
 });

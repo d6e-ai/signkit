@@ -67,7 +67,7 @@ describe('envelope send HTTP handler', () => {
 		);
 		expect(response.status).toBe(202);
 		expect(app.send).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			envelopeId,
 			{
 				idempotencyKey: 'send-1',

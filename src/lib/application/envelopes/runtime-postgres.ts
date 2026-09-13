@@ -12,6 +12,11 @@ import { PostgresRecipientDeclineStore } from '$lib/adapters/db/postgres-recipie
 import { PostgresRecipientDeclinedReceiptStore } from '$lib/adapters/db/postgres-recipient-declined-receipt-store';
 import { PostgresRecipientSignStore } from '$lib/adapters/db/postgres-recipient-sign-store';
 import { PostgresRecipientViewStore } from '$lib/adapters/db/postgres-recipient-view-store';
+import { PostgresRecipientCapabilityReissueStore } from '$lib/adapters/db/postgres-recipient-capability-reissue-store';
+import {
+	RecipientCapabilityReissueApplication,
+	type RecipientCapabilityReissueApplicationPort
+} from '$lib/application/signing/recipient-capability-reissue';
 import {
 	RecipientAccessService,
 	type RecipientAccessApplicationPort
@@ -108,6 +113,17 @@ export function resolvePostgresEnvelopeVoidApplication(
 ): EnvelopeVoidApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
 	return new EnvelopeVoidApplication(new PostgresEnvelopeVoidStore(resources.sql));
+}
+
+export function resolvePostgresEnvelopeReissueApplication(
+	databaseUrl: string,
+	sealer: RecipientCapabilitySealer
+): RecipientCapabilityReissueApplicationPort {
+	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
+	return new RecipientCapabilityReissueApplication(
+		new PostgresRecipientCapabilityReissueStore(resources.sql),
+		sealer
+	);
 }
 
 export function resolvePostgresRecipientAccessApplication(

@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type {
@@ -19,7 +20,7 @@ export interface RecipientViewedInput {
 }
 
 export type RecipientViewedResult =
-	| { outcome: 'published' | 'replayed'; result: PublishedRecipientViewed }
+	| { outcome: 'published' | 'replayed' | 'continued'; result: PublishedRecipientViewed }
 	| { outcome: 'not_found' }
 	| { outcome: 'context_mismatch' }
 	| { outcome: 'idempotency_conflict' }
@@ -77,6 +78,12 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 					result: preparation.result
 				});
 			}
+			if (preparation.outcome === 'continued') {
+				return await this.reauthorizeResult(input.token, before, {
+					outcome: 'continued',
+					result: preparation.result
+				});
+			}
 			if (preparation.outcome !== 'ready') return preparation;
 
 			// Replay is proven by the durable command receipt and its audit
@@ -90,16 +97,17 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 				sentCommitSha: preparation.sentCommitSha,
 				viewedAt
 			});
-			const auditEventHash: string = await sha256(
-				JSON.stringify({
-					actorId: before.recipientId,
-					envelopeId: before.envelopeId,
+			const auditEventHash: string = await hashAuditEventV2(
+				{
+					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'recipient.viewed',
+					actorType: 'recipient',
+					actorId: before.recipientId,
 					occurredAt: viewedAt,
-					organizationId: before.organizationId,
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
-				})
+				},
+				{ organizationId: before.organizationId, envelopeId: before.envelopeId }
 			);
 			const command: PublishRecipientViewedCommand = {
 				...key,
@@ -115,7 +123,11 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 			};
 			const published: RecipientViewedResult = await this.store.publishViewed(command);
 			if (published.outcome === 'audit_conflict' && attempt + 1 < MAX_AUDIT_ATTEMPTS) continue;
-			if (published.outcome === 'published' || published.outcome === 'replayed') {
+			if (
+				published.outcome === 'published' ||
+				published.outcome === 'replayed' ||
+				published.outcome === 'continued'
+			) {
 				return await this.reauthorizeResult(input.token, before, published);
 			}
 			return published;
@@ -127,7 +139,7 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 	private async reauthorizeResult(
 		token: string,
 		before: RecipientSigningContext,
-		result: Extract<RecipientViewedResult, { outcome: 'published' | 'replayed' }>
+		result: Extract<RecipientViewedResult, { outcome: 'published' | 'replayed' | 'continued' }>
 	): Promise<RecipientViewedResult> {
 		const after: RecipientSigningContext | null = await this.access.resolve(
 			token,

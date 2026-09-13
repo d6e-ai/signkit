@@ -5,6 +5,10 @@ import type {
 	RevokeApiKeyResult
 } from '$lib/application/api-keys/api-key-service';
 import type { ApiKeyMetadata } from '$lib/ports/api-key-store';
+import {
+	identityOnlyLocals as locals,
+	unavailableIdentityLocalsWithPrincipal
+} from './http-handler-test-support';
 import { createApiKeyRevokeHandler, type ApiKeyRevokeApplicationResolver } from './api-key-revoke';
 
 const KEY_ID: string = '01900000-0000-7000-8000-000000000201';
@@ -19,34 +23,6 @@ const metadata: ApiKeyMetadata = {
 	lastUsedAt: null,
 	revokedAt: '2026-09-13T00:00:00.000Z'
 };
-
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships: [],
-		organizationId: null,
-		principal:
-			state === 'unavailable' || state === 'anonymous'
-				? null
-				: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
-}
-
-/**
- * A defense-in-depth case: `unavailable` must fail closed even if a
- * principal is somehow present, since only `authorized` and
- * `no_active_organization` are the intended authenticated states.
- */
-function unavailableLocalsWithPrincipal(): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: 'unavailable',
-		memberships: [],
-		organizationId: null,
-		principal: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
-}
 
 function event(input: {
 	locals?: App.Locals;
@@ -124,7 +100,7 @@ describe('API key revoke HTTP handler', () => {
 		const response: Response = await invoke(
 			createApiKeyRevokeHandler(resolver),
 			event({
-				locals: unavailableLocalsWithPrincipal(),
+				locals: unavailableIdentityLocalsWithPrincipal(),
 				headers: { 'idempotency-key': 'revoke-1' }
 			})
 		);

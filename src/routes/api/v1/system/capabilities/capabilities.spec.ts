@@ -22,11 +22,13 @@ interface CapabilitiesResponse {
 		enabledScopes: string[];
 		mintedButUnusableScopes: string[];
 		readEndpoints: string[];
+		writeEndpoints?: Record<string, string[]>;
 		mutations: boolean;
 		cookieComposition: boolean;
 		caching: string;
 		lastUsedTracking: boolean;
-		rateLimits: boolean;
+		rateLimits: boolean | { durable: boolean; windowSeconds: number; maxRequests: number };
+		actor?: { type: string; id: string };
 		grantManagement: { create: string; list: string; revoke: string };
 		grantAuthority: string;
 		grantRevokeAuthority: string[];
@@ -44,6 +46,8 @@ interface CapabilitiesResponse {
 		archive: string;
 		trackedFiles: string[];
 		commitEndpoint: string;
+		docxImportEndpoint: string;
+		docxExportEndpoint: string;
 		concurrency: string;
 		idempotency: string;
 	};
@@ -177,11 +181,12 @@ describe('GET /api/v1/system/capabilities', () => {
 		});
 
 		// Public completion artifact capabilities
+		expect(data.completionArtifact.artifacts).toEqual(['json', 'markdown', 'pdf']);
 		expect(data.publicCompletionArtifact).toEqual({
 			apiEndpoint: '/api/v1/completion-artifacts',
 			linkEndpoint: '/c/{token}',
 			authentication: 'bearer-token-or-path-token',
-			formats: ['json', 'markdown'],
+			formats: ['json', 'markdown', 'pdf'],
 			tokenPrefix: 'skca1',
 			cookies: false
 		});
@@ -197,20 +202,43 @@ describe('GET /api/v1/system/capabilities', () => {
 			grantModel: 'explicit-per-organization',
 			multipleOrganizationsPerKey: true,
 			effectiveAuthority: 'key-scopes-intersected-with-requested-live-grant',
-			enabledScopes: ['envelopes:read'],
-			mintedButUnusableScopes: ['audit:read', 'drafts:write', 'envelopes:send'],
+			enabledScopes: ['envelopes:read', 'drafts:write', 'envelopes:send'],
+			mintedButUnusableScopes: ['audit:read'],
 			readEndpoints: [
 				'/api/v1/envelopes',
 				'/api/v1/envelopes/{envelopeId}',
 				'/api/v1/envelopes/{envelopeId}/draft',
+				'/api/v1/envelopes/{envelopeId}/docx',
 				'/api/v1/envelopes/{envelopeId}/deliveries',
-				'/api/v1/envelopes/{envelopeId}/completion-artifact'
+				'/api/v1/envelopes/{envelopeId}/completion-artifact',
+				'/api/v1/envelopes/{envelopeId}/evidence',
+				'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
+				'/api/v1/envelopes/{envelopeId}/pdf',
+				'/api/v1/envelopes/{envelopeId}/completion-artifact/pdf'
 			],
-			mutations: false,
+			writeEndpoints: {
+				'drafts:write': [
+					'/api/v1/envelopes',
+					'/api/v1/envelopes/{envelopeId}/draft/commits',
+					'/api/v1/envelopes/{envelopeId}/draft/docx',
+					'/api/v1/envelopes/{envelopeId}/ready',
+					'/api/v1/envelopes/{envelopeId}/fields'
+				],
+				'envelopes:send': [
+					'/api/v1/envelopes/{envelopeId}/send',
+					'/api/v1/envelopes/{envelopeId}/void'
+				]
+			},
+			mutations: true,
 			cookieComposition: false,
 			caching: 'none',
-			lastUsedTracking: false,
-			rateLimits: false,
+			lastUsedTracking: true,
+			rateLimits: {
+				durable: true,
+				windowSeconds: 60,
+				maxRequests: 120
+			},
+			actor: { type: 'agent', id: 'api-key-uuidv7' },
 			grantManagement: {
 				create: '/api/v1/api-keys/{apiKeyId}/organization-grants',
 				list: '/api/v1/api-keys/{apiKeyId}/organization-grants',

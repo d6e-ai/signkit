@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { AesGcmSealingKeyring, decodeBase64SealingKey } from '$lib/security/sealing-keyring';
 
 export interface DeclinedReceiptSessionLocator {
 	version: 1;
@@ -24,9 +25,9 @@ export const DECLINED_RECEIPT_COOKIE_OPTIONS = {
 	maxAge: DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS
 } as const;
 
-const ALGORITHM: string = 'AES-GCM';
 const IV_BYTES: number = 12;
 const TAG_BYTES: number = 16;
+const KEY_ID_HEX_LENGTH: number = 16;
 const UUID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_KEY_PATTERN: RegExp = /^[\x21-\x7e]{1,200}$/;
 const SHA256_HEX_PATTERN: RegExp = /^[0-9a-f]{64}$/;
@@ -43,6 +44,7 @@ const LOCATOR_KEYS: readonly string[] = [
 const AAD: Uint8Array<ArrayBuffer> = utf8('signkit:declined-receipt-cookie:v1');
 const HKDF_SALT: Uint8Array<ArrayBuffer> = utf8('signkit:session-key-derivation:v1');
 const HKDF_INFO: Uint8Array<ArrayBuffer> = utf8('signkit:declined-receipt-key:v1');
+const ENV_VAR_NAME: string = 'SESSION_ENCRYPTION_KEY';
 
 export async function sealDeclinedReceiptSession(
 	locator: DeclinedReceiptSessionLocator
@@ -50,20 +52,18 @@ export async function sealDeclinedReceiptSession(
 	if (!isDeclinedReceiptSessionLocator(locator))
 		throw new Error('Invalid declined receipt locator');
 
-	const iv: Uint8Array<ArrayBuffer> = crypto.getRandomValues(
-		new Uint8Array(new ArrayBuffer(IV_BYTES))
-	);
+	const keyring: AesGcmSealingKeyring = await declinedReceiptKeyring();
 	const plaintext: Uint8Array<ArrayBuffer> = utf8(JSON.stringify(locator));
-	const ciphertext: ArrayBuffer = await crypto.subtle.encrypt(
-		{ name: ALGORITHM, iv, additionalData: AAD },
-		await declinedReceiptKey(),
-		plaintext
-	);
+	const sealed = await keyring.sealWithActive(plaintext, AAD);
+	const keyIdBytes: Uint8Array<ArrayBuffer> = utf8(sealed.keyId);
+	if (keyIdBytes.byteLength !== KEY_ID_HEX_LENGTH)
+		throw new Error('Unexpected sealing key ID length');
 	const combined: Uint8Array<ArrayBuffer> = new Uint8Array(
-		new ArrayBuffer(iv.byteLength + ciphertext.byteLength)
+		new ArrayBuffer(keyIdBytes.byteLength + sealed.iv.byteLength + sealed.ciphertext.byteLength)
 	);
-	combined.set(iv);
-	combined.set(new Uint8Array(ciphertext), iv.byteLength);
+	combined.set(keyIdBytes, 0);
+	combined.set(sealed.iv, keyIdBytes.byteLength);
+	combined.set(sealed.ciphertext, keyIdBytes.byteLength + sealed.iv.byteLength);
 
 	const cookie: string = base64UrlEncode(combined);
 	if (cookie.length > DECLINED_RECEIPT_COOKIE_MAX_LENGTH)
@@ -79,22 +79,20 @@ export async function unsealDeclinedReceiptSession(
 	let combined: Uint8Array<ArrayBuffer>;
 	try {
 		combined = base64UrlDecode(cookie);
-		if (combined.byteLength <= IV_BYTES + TAG_BYTES) return null;
+		if (combined.byteLength <= KEY_ID_HEX_LENGTH + IV_BYTES + TAG_BYTES) return null;
 	} catch {
 		return null;
 	}
 
-	const key: CryptoKey = await declinedReceiptKey();
+	const keyId: string = new TextDecoder('ascii').decode(combined.slice(0, KEY_ID_HEX_LENGTH));
+	const iv: Uint8Array<ArrayBuffer> = combined.slice(
+		KEY_ID_HEX_LENGTH,
+		KEY_ID_HEX_LENGTH + IV_BYTES
+	);
+	const ciphertext: Uint8Array<ArrayBuffer> = combined.slice(KEY_ID_HEX_LENGTH + IV_BYTES);
+	const keyring: AesGcmSealingKeyring = await declinedReceiptKeyring();
 	try {
-		const plaintext: ArrayBuffer = await crypto.subtle.decrypt(
-			{
-				name: ALGORITHM,
-				iv: combined.slice(0, IV_BYTES),
-				additionalData: AAD
-			},
-			key,
-			combined.slice(IV_BYTES)
-		);
+		const plaintext: Uint8Array = await keyring.openWithKeyId(keyId, iv, ciphertext, AAD);
 		const decoded: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 		const candidate: unknown = JSON.parse(decoded);
 		return isDeclinedReceiptSessionLocator(candidate) ? candidate : null;
@@ -135,23 +133,42 @@ export function isDeclinedReceiptSessionLocator(
 	return Date.parse(value.expiresAt) > Date.parse(value.declinedAt);
 }
 
-async function declinedReceiptKey(): Promise<CryptoKey> {
-	const encoded: string | undefined = env.SESSION_ENCRYPTION_KEY;
-	if (encoded === undefined || encoded.trim().length === 0)
-		throw new Error('SESSION_ENCRYPTION_KEY is not set');
-	const bytes: Uint8Array<ArrayBuffer> = base64Decode(encoded);
-	if (bytes.byteLength !== 32)
-		throw new Error('SESSION_ENCRYPTION_KEY must be 32 bytes encoded as base64');
-	const masterKey: CryptoKey = await crypto.subtle.importKey('raw', bytes, 'HKDF', false, [
-		'deriveKey'
+async function declinedReceiptKeyring(): Promise<AesGcmSealingKeyring> {
+	const activeMaster: Uint8Array<ArrayBuffer> = decodeBase64SealingKey(
+		requiredEnv(ENV_VAR_NAME, env.SESSION_ENCRYPTION_KEY),
+		ENV_VAR_NAME
+	);
+	const previousEncoded: string | undefined = optionalEnv(env.SESSION_ENCRYPTION_KEY_PREVIOUS);
+	const activeSubkey: Uint8Array<ArrayBuffer> = await deriveSubkey(activeMaster);
+	const previousSubkey: Uint8Array<ArrayBuffer> | null =
+		previousEncoded === undefined
+			? null
+			: await deriveSubkey(decodeBase64SealingKey(previousEncoded, `${ENV_VAR_NAME}_PREVIOUS`));
+	return new AesGcmSealingKeyring(activeSubkey, previousSubkey);
+}
+
+async function deriveSubkey(
+	masterKeyBytes: Uint8Array<ArrayBuffer>
+): Promise<Uint8Array<ArrayBuffer>> {
+	const masterKey: CryptoKey = await crypto.subtle.importKey('raw', masterKeyBytes, 'HKDF', false, [
+		'deriveBits'
 	]);
-	return crypto.subtle.deriveKey(
+	const derived: ArrayBuffer = await crypto.subtle.deriveBits(
 		{ name: 'HKDF', hash: 'SHA-256', salt: HKDF_SALT, info: HKDF_INFO },
 		masterKey,
-		{ name: ALGORITHM, length: 256 },
-		false,
-		['encrypt', 'decrypt']
+		256
 	);
+	return new Uint8Array(derived);
+}
+
+function requiredEnv(name: string, value: string | undefined): string {
+	if (value === undefined || value.trim().length === 0) throw new Error(`${name} is not set`);
+	return value;
+}
+
+function optionalEnv(value: string | undefined): string | undefined {
+	if (value === undefined || value.trim().length === 0) return undefined;
+	return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

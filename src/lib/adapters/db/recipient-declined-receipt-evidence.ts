@@ -2,6 +2,7 @@ import type {
 	ProvenRecipientDeclinedReceipt,
 	RecipientDeclinedReceiptLocale
 } from '$lib/ports/recipient-declined-receipt-store';
+import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 export interface RecipientDeclinedReceiptEvidenceRow {
 	organizationId: string;
@@ -45,6 +46,7 @@ export interface RecipientDeclinedReceiptEvidenceRow {
 	evidencePreviousHash: string | null;
 	evidenceEventHash: string | null;
 	evidenceOccurredAt: Date | string | null;
+	evidenceHashVersion: number | string | null;
 	previousOrganizationId: string | null;
 	previousEnvelopeId: string | null;
 	previousSequence: number | string | null;
@@ -88,16 +90,18 @@ export async function proveRecipientDeclinedReceipt(
 		})
 	);
 	const auditPayloadJson: string = JSON.stringify(auditPayloadValue);
-	const auditEventHash: string = await sha256(
-		JSON.stringify({
-			actorId: row.recipientId,
-			envelopeId: row.envelopeId,
+	const auditEventHash: string = await hashStoredAuditEvent(
+		{
+			hashVersion: row.evidenceHashVersion,
+			sequence: auditSequence,
 			eventType: 'recipient.declined',
+			actorType: 'recipient',
+			actorId: row.recipientId,
 			occurredAt: declinedAt,
-			organizationId: row.organizationId,
 			payload: auditPayloadValue,
 			previousHash: row.previousAuditHash
-		})
+		},
+		{ organizationId: row.organizationId, envelopeId: row.envelopeId }
 	);
 	if (
 		requestHash !== row.requestHash ||

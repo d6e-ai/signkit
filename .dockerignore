@@ -4,6 +4,12 @@
 .wrangler
 build
 node_modules
+.output
+.vercel
+.netlify
+project.inlang/cache/
+target/
+cli/target/
 .env
 .env.*
 !.env.example
