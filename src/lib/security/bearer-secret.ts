@@ -1,3 +1,7 @@
+// Keep in sync with BEARER_SECRET_PATTERN's {32,200} bounds below.
+export const BEARER_SECRET_MIN_LENGTH: number = 32;
+export const BEARER_SECRET_MAX_LENGTH: number = 200;
+
 export const BEARER_SECRET_PATTERN: RegExp = /^[\x21-\x7e]{32,200}$/;
 
 export function parseBearerSecret(header: string | null): string | null {
