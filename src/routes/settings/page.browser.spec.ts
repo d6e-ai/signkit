@@ -818,4 +818,136 @@ describe('settings instance-management page in browser', () => {
 			screen.getByText('Could not copy to clipboard. Copy the value manually.').query()
 		).toBeNull();
 	});
+
+	it('keeps the revealed API key secret intact when a follow-up create fails or discloses no secret', async () => {
+		let createCount = 0;
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith('/api/v1/instance/members/me')) {
+					return meResponse(member({ userId: 'owner-user-1', role: 'owner' }));
+				}
+				if (urlStr.includes('/api/v1/api-keys') && init?.method === 'POST') {
+					createCount += 1;
+					if (createCount === 2) {
+						return problemResponse(503, 'The API key operation could not be completed.');
+					}
+					const body = parseBody(init);
+					const apiKey = {
+						id: `key-${createCount}`,
+						name: (body?.name as string) ?? 'Key',
+						keyPrefix: 'signkit_abc_',
+						scopes: body?.scopes ?? [],
+						createdAt: '2026-09-04T00:00:00.000Z',
+						expiresAt: '2026-12-04T00:00:00.000Z',
+						lastUsedAt: null,
+						revokedAt: null
+					};
+					// The third attempt is an idempotent replay: 200 with metadata only
+					// and no plaintext secret to reveal.
+					return createCount === 3
+						? jsonResponse({ apiKey }, 200, { 'idempotency-replayed': 'true' })
+						: jsonResponse({ apiKey, token: `signkit_plaintext_secret_${createCount}` }, 201);
+				}
+				if (urlStr.includes('/api/v1/api-keys')) {
+					return jsonResponse({ page: { items: [], nextCursor: null } });
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(SettingsPage);
+		await screen.getByRole('tab', { name: 'API keys' }).click();
+
+		await screen.getByLabelText('Key name').fill('First Key');
+		await screen.getByRole('checkbox').first().click();
+		await screen.getByRole('button', { name: 'Create key' }).click();
+		await expect.element(screen.getByText('signkit_plaintext_secret_1')).toBeVisible();
+		await expect.element(screen.getByText('For “First Key” — key key-1')).toBeVisible();
+
+		// A failed follow-up create must not destroy the only copy of secret 1.
+		await screen.getByLabelText('Key name').fill('Second Key');
+		await screen.getByRole('checkbox').first().click();
+		await screen.getByRole('button', { name: 'Create key' }).click();
+		await expect
+			.element(screen.getByText('The API key operation could not be completed.'))
+			.toBeVisible();
+		await expect.element(screen.getByText('signkit_plaintext_secret_1')).toBeVisible();
+		await expect.element(screen.getByText('For “First Key” — key key-1')).toBeVisible();
+
+		// Neither may a successful response that carries no fresh secret.
+		await screen.getByRole('button', { name: 'Create key' }).click();
+		await expect.element(screen.getByText('signkit_plaintext_secret_1')).toBeVisible();
+		await expect.element(screen.getByText('For “First Key” — key key-1')).toBeVisible();
+		expect(createCount).toBe(3);
+	});
+
+	it('keeps the revealed invitation token intact when a follow-up create fails', async () => {
+		let inviteCount = 0;
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith('/api/v1/instance/members/me')) {
+					return meResponse(member({ userId: 'owner-user-1', role: 'owner' }));
+				}
+				if (urlStr.includes('/api/v1/instance/invitations') && init?.method === 'POST') {
+					inviteCount += 1;
+					if (inviteCount === 2) {
+						return problemResponse(409, 'The Idempotency-Key was already used.');
+					}
+					return jsonResponse(
+						{
+							invitation: {
+								id: `inv-${inviteCount}`,
+								role: 'member',
+								status: 'pending',
+								invitedByUserId: 'owner-user-1',
+								createdAt: '2026-09-03T00:00:00.000Z',
+								expiresAt: '2099-01-01T00:00:00.000Z',
+								acceptedAt: null,
+								acceptedByUserId: null,
+								revokedAt: null,
+								revokedByUserId: null
+							},
+							token: `ski1_token_${inviteCount}`
+						},
+						201
+					);
+				}
+				if (urlStr.includes('/api/v1/instance/invitations')) {
+					return jsonResponse({ invitations: [], nextCursor: null });
+				}
+				if (urlStr.includes('/api/v1/instance/members')) {
+					return jsonResponse({
+						members: [member({ userId: 'owner-user-1', role: 'owner' })],
+						nextCursor: null
+					});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(SettingsPage);
+		await screen.getByRole('tab', { name: 'Invitations' }).click();
+
+		await screen.getByLabelText('Email address').fill('alice@example.com');
+		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
+		await expect.element(screen.getByText('ski1_token_1')).toBeVisible();
+		await expect
+			.element(screen.getByText('For alice@example.com — invitation inv-1'))
+			.toBeVisible();
+
+		await screen.getByLabelText('Email address').fill('bob@example.com');
+		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
+		await expect.element(screen.getByText('The Idempotency-Key was already used.')).toBeVisible();
+
+		// Alice's one-time token is still the only one ever disclosed, unchanged.
+		await expect.element(screen.getByText('ski1_token_1')).toBeVisible();
+		await expect
+			.element(screen.getByText('For alice@example.com — invitation inv-1'))
+			.toBeVisible();
+		expect(screen.getByText('ski1_token_2').query()).toBeNull();
+	});
 });

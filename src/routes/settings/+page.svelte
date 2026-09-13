@@ -299,9 +299,12 @@
 		inviteCreateError = null;
 		try {
 			const res = await client.createInvitation({ email, role: inviteRole });
-			revealedInvitation = null;
-			resetInvitationCopyFeedback();
+			// Replace the revealed secret only once a fresh token has actually
+			// arrived. A failed request, or a replay that discloses no token, must
+			// leave the previous one-time token on screen: clearing it up front
+			// would destroy the only copy the inviter will ever be shown.
 			if (res.token) {
+				resetInvitationCopyFeedback();
 				revealedInvitation = { token: res.token, invitationId: res.invitation.id, email };
 			}
 			inviteEmail = '';
@@ -370,10 +373,11 @@
 				).toISOString();
 			}
 			const res = await client.createApiKey({ name, scopes, expiresAt });
-			revealedApiKey = null;
-			resetApiKeyCopyFeedback();
 			const secret = res.secret || res.token;
+			// Same one-time discipline as the invitation token above: only a
+			// response carrying a fresh secret may displace the previous reveal.
 			if (secret) {
+				resetApiKeyCopyFeedback();
 				revealedApiKey = { secret, keyId: res.apiKey.id, keyName: res.apiKey.name };
 			}
 			newKeyName = '';
@@ -403,7 +407,10 @@
 	// Copy feedback belongs to exactly one revealed secret. A stale "Copied!"
 	// or copy error must never carry onto the next reveal: a user who trusts a
 	// carried-over "Copied!" would dismiss a one-time secret that was never
-	// actually placed on the clipboard.
+	// actually placed on the clipboard. These run in the same synchronous step
+	// that installs the replacement reveal, so secret and feedback are never
+	// rendered out of sync, and only ever on an explicit dismiss or a response
+	// that actually carried a fresh secret.
 	function resetInvitationCopyFeedback() {
 		clearTimeout(invitationCopyTimeoutId);
 		invitationCopyTimeoutId = undefined;
