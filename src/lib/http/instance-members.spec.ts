@@ -9,6 +9,7 @@ import {
 	type SetInstanceMemberStatusResult
 } from '$lib/application/instance-members/instance-member-service';
 import type { InstanceMemberMetadata } from '$lib/ports/instance-store';
+import { identityOnlyLocals as locals } from './http-handler-test-support';
 import {
 	createInstanceMemberHttpHandlers,
 	createInstanceMemberMeHandler,
@@ -24,19 +25,6 @@ const mockMember: InstanceMemberMetadata = {
 	createdAt: NOW,
 	updatedAt: NOW
 };
-
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships: [],
-		organizationId: null,
-		principal:
-			state === 'unavailable' || state === 'anonymous'
-				? null
-				: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
-}
 
 function event(input: { locals?: App.Locals } = {}): RequestEvent {
 	const pathname: string = '/api/v1/instance/members/me';

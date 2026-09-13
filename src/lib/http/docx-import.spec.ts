@@ -9,6 +9,7 @@ import { CLOUDFLARE_DOCX_IMPORT_LIMITS } from '$lib/adapters/documents/docx-impo
 import { DocxImportService } from '$lib/application/documents/docx-import-service';
 import { createDocxImportHandler } from './docx-import';
 import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { expectProblemResponse } from './problem-response-test-support';
 
 const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
@@ -73,8 +74,8 @@ describe('DOCX import HTTP handler', () => {
 				body: requestBody(sampleDocx())
 			})
 		);
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({
+		await expectProblemResponse(response, {
+			status: 400,
 			type: 'urn:signkit:problem:idempotency-key-required'
 		});
 	});
@@ -171,8 +172,8 @@ describe('DOCX import HTTP handler', () => {
 				body: requestBody(oversized)
 			})
 		);
-		expect(response.status).toBe(413);
-		expect(await response.json()).toMatchObject({
+		await expectProblemResponse(response, {
+			status: 413,
 			type: 'urn:signkit:problem:request-body-too-large',
 			detail: `The uploaded DOCX file must not exceed ${CLOUDFLARE_DOCX_IMPORT_LIMITS.maxInputBytes} bytes.`
 		});

@@ -8,6 +8,7 @@ import type {
 import type { WebhookEndpointMetadata } from '$lib/ports/webhook-store';
 import { createWebhookHttpHandlers, type WebhookApplicationResolver } from './webhooks';
 import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { expectProblemResponse } from './problem-response-test-support';
 
 const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const webhookId: string = '01900000-0000-7000-8000-000000000401';
@@ -113,8 +114,8 @@ describe('webhook HTTP handlers', () => {
 				headers: { 'idempotency-key': 'wh-1' }
 			})
 		);
-		expect(response.status).toBe(403);
-		expect(await response.json()).toMatchObject({
+		await expectProblemResponse(response, {
+			status: 403,
 			type: 'urn:signkit:problem:api-key-not-permitted'
 		});
 		expect(resolver).not.toHaveBeenCalled();
@@ -133,8 +134,8 @@ describe('webhook HTTP handlers', () => {
 		const response = await createWebhookHttpHandlers(resolver).list(
 			event({ locals: memberLocals })
 		);
-		expect(response.status).toBe(403);
-		expect(await response.json()).toMatchObject({
+		await expectProblemResponse(response, {
+			status: 403,
 			type: 'urn:signkit:problem:webhook-forbidden'
 		});
 		expect(resolver).not.toHaveBeenCalled();
@@ -183,8 +184,8 @@ describe('webhook HTTP handlers', () => {
 				params: { webhookId }
 			})
 		);
-		expect(response.status).toBe(404);
-		expect(await response.json()).toMatchObject({
+		await expectProblemResponse(response, {
+			status: 404,
 			type: 'urn:signkit:problem:webhook-not-found'
 		});
 	});

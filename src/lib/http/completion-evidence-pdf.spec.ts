@@ -8,32 +8,17 @@ import {
 } from '$lib/application/completion-artifacts/completion-evidence-service';
 import { createCompletionEvidenceHandler } from './completion-evidence';
 import { createCompletionPdfHandler } from './completion-pdf';
-import { createHttpRequestEvent } from './http-handler-test-support';
+import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
 
 const organizationId = '01900000-0000-7000-8000-000000000010';
 const envelopeId = '01900000-0000-7000-8000-000000000020';
 
 function authorizedLocals(): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: 'authorized',
-		memberships: [
-			{
-				role: 'owner',
-				joinedAt: '2026-09-01T00:00:00.000Z',
-				organization: { id: organizationId, slug: 'test', name: 'Test Org', status: 'active' }
-			}
-		],
-		organizationId,
-		principal: { subject: 'user-1', email: 'user@example.test', name: 'Test User' }
-	} as unknown as App.Locals;
+	return organizationScopedLocals('authorized', organizationId);
 }
 
 function unauthorizedLocals(): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: 'anonymous'
-	} as unknown as App.Locals;
+	return organizationScopedLocals('anonymous', organizationId);
 }
 
 function event(input: {

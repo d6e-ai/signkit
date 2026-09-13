@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { draftArchiveKey } from '$lib/application/drafts/draft-persistence';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
-import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
+import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import type {
 	ClaimCompletionArtifactsCommand,
 	ClaimedCompletionArtifactJob,
@@ -30,65 +31,6 @@ const NOW: Date = new Date('2026-09-12T00:00:00.000Z');
 const SENT_COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
 const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = 'envelope-1';
-
-interface StoredObject {
-	body: Uint8Array;
-	sha256: string;
-}
-
-class MemoryObjectStore implements ObjectStore {
-	private readonly objects = new Map<string, StoredObject>();
-	putCallsByKey = new Map<string, number>();
-	getCallsByKey = new Map<string, number>();
-
-	seed(key: string, body: Uint8Array, sha256: string): void {
-		this.objects.set(key, { body: Uint8Array.from(body), sha256 });
-	}
-
-	async head(): Promise<ObjectMetadata | null> {
-		throw new Error('unused');
-	}
-
-	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
-		putCounts(this.getCallsByKey, key);
-		const object = this.objects.get(key);
-		if (!object) return null;
-		const body = Uint8Array.from(object.body);
-		return new ReadableStream<Uint8Array>({
-			start(controller): void {
-				controller.enqueue(body);
-				controller.close();
-			}
-		});
-	}
-
-	async putImmutable(key: string, object: PutObject): Promise<ObjectMetadata> {
-		putCounts(this.putCallsByKey, key);
-		if (this.objects.has(key)) throw new Error('Object already exists');
-		if (!(object.body instanceof Uint8Array)) throw new Error('Test store requires buffered input');
-		const stored: StoredObject = { body: Uint8Array.from(object.body), sha256: object.sha256 };
-		this.objects.set(key, stored);
-		return {
-			key,
-			contentType: object.contentType,
-			size: stored.body.byteLength,
-			sha256: stored.sha256,
-			version: null
-		};
-	}
-
-	async delete(): Promise<void> {
-		throw new Error('unused');
-	}
-
-	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
-		throw new Error('unused');
-	}
-
-	async deleteMany(): Promise<void> {
-		throw new Error('unused');
-	}
-}
 
 /** Simulates a transient object-store outage: every read fails with a plain Error, never DraftIntegrityError. */
 class ThrowingObjectStore implements ObjectStore {
@@ -160,10 +102,6 @@ class ArchiveOnlyObjectStore implements ObjectStore {
 	async deleteMany(): Promise<void> {
 		throw new Error('unused');
 	}
-}
-
-function putCounts(map: Map<string, number>, key: string): void {
-	map.set(key, (map.get(key) ?? 0) + 1);
 }
 
 class FixedDraftRepository implements DraftRepository {
@@ -439,7 +377,7 @@ async function agentAuthoredEvidence(): Promise<CompletionEvidence> {
 }
 
 function claimWithSeededArchive(
-	objects: MemoryObjectStore,
+	objects: InMemoryObjectStore,
 	overrides: Partial<ClaimedCompletionArtifactJob> = {}
 ): ClaimedCompletionArtifactJob {
 	const archiveBytes: Uint8Array = new TextEncoder().encode('fake-git-archive');
@@ -459,7 +397,7 @@ function documents(): readonly DraftDocument[] {
 describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts', () => {
 	it('mints an opaque lease claim token by default, not a UUIDv7', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
 
 		await new CompletionArtifactPublicationService(
@@ -476,7 +414,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('builds, persists, and publishes a completion artifact for a claimed envelope', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
 		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
@@ -510,7 +448,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('publishes an envelope whose create/commit/ready/fields/sent events were authored by an API-key agent under audit hash v2', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		store.evidenceByEnvelope.set(ENVELOPE_ID, await agentAuthoredEvidence());
 		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
@@ -544,7 +482,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('reuses identical content-addressed bytes when the object already exists', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
 		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
@@ -576,7 +514,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 	it('fails closed immediately when an existing object holds different bytes at the same key', async () => {
 		// First learn the content-addressed key this fixed evidence hashes to.
 		const probeStore = new FakeCompletionArtifactStore();
-		const probeObjects = new MemoryObjectStore();
+		const probeObjects = new InMemoryObjectStore();
 		probeStore.claims = [claimWithSeededArchive(probeObjects)];
 		probeStore.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
 		await new CompletionArtifactPublicationService(
@@ -588,7 +526,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		const { jsonObjectKey } = probeStore.publishCalls[0];
 
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		// A should-be-impossible content-addressed collision: different bytes
 		// already occupy the exact key our real manifest will hash to.
 		objects.seed(jsonObjectKey, new TextEncoder().encode('not-the-real-manifest'), 'b'.repeat(64));
@@ -629,7 +567,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('returns stale without failing when the lease is lost before evidence is read', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claim()];
 		store.staleEnvelopeIds.add(ENVELOPE_ID);
 		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
@@ -642,7 +580,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('reports stale without a retry when publication observes a lost lease', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
 		store.publishResult = { outcome: 'stale' };
@@ -656,7 +594,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('marks an integrity conflict from publication as a non-retryable integrity failure', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
 		store.publishResult = { outcome: 'integrity_error' };
@@ -674,7 +612,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('classifies a manifest-building integrity failure as non-retryable', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		// An empty audit chain fails manifest construction closed.
 		store.evidenceByEnvelope.set(ENVELOPE_ID, { ...(await baseEvidence()), auditEvents: [] });
@@ -691,7 +629,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('publishes the operator-safe too-large error code for a resource bound, not evidence-invalid', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		const evidence = await baseEvidence();
 		const extraValueJson: string = '"x"';
@@ -716,7 +654,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('fails closed and publishes nothing when a field value_json no longer matches its value_sha256', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
 		// Tampering: value_json changed but value_sha256 left untouched.
 		store.evidenceByEnvelope.set(ENVELOPE_ID, {
@@ -745,7 +683,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('classifies a missing draft archive as a non-retryable integrity failure', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		store.claims = [claim()];
 		// No archive seeded: readImmutableDraftRevision throws DraftIntegrityError.
 		// R2/S3 are strongly consistent for these immutable pointers, so a missing
@@ -764,7 +702,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 
 	it('isolates a corrupt claim missing its repository pointer from a healthy sibling in the same batch', async () => {
 		const store = new FakeCompletionArtifactStore();
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const healthyClaim = claimWithSeededArchive(objects);
 		const corruptClaim = claim({
 			envelopeId: 'envelope-corrupt',

@@ -6,7 +6,7 @@ import {
 	type ImmutableDraftRevision
 } from '$lib/application/drafts/draft-persistence';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
-import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import type { Envelope } from '$lib/domain/envelope';
 import { exportEnvelopeDocx, exportPinnedDocx } from './docx-export-service';
 
@@ -16,43 +16,6 @@ const commitSha = '0123456789abcdef0123456789abcdef01234567';
 
 function sha256Hex(bytes: Uint8Array): string {
 	return createHash('sha256').update(bytes).digest('hex');
-}
-
-class MemoryObjectStore implements ObjectStore {
-	private readonly objects = new Map<string, Uint8Array>();
-
-	seed(key: string, body: Uint8Array): void {
-		this.objects.set(key, body);
-	}
-
-	async head(): Promise<ObjectMetadata | null> {
-		return null;
-	}
-
-	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
-		const body = this.objects.get(key);
-		if (body === undefined) return null;
-		return new ReadableStream<Uint8Array>({
-			start(controller): void {
-				controller.enqueue(body);
-				controller.close();
-			}
-		});
-	}
-
-	async putImmutable(): Promise<ObjectMetadata> {
-		throw new Error('Unexpected object write');
-	}
-
-	async delete(): Promise<void> {}
-
-	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
-		throw new Error('unused');
-	}
-
-	async deleteMany(): Promise<void> {
-		throw new Error('unused');
-	}
 }
 
 class FixedDraftRepository implements DraftRepository {
@@ -72,7 +35,7 @@ describe('exportPinnedDocx', () => {
 		const archive = new TextEncoder().encode('archive-bytes');
 		const archiveSha256 = sha256Hex(archive);
 		const archiveKey = draftArchiveKey(organizationId, envelopeId, archiveSha256);
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		objects.seed(archiveKey, archive);
 		const repository = new FixedDraftRepository([
 			{ path: 'documents/agreement.md', content: '# Agreement\n\nPinned content.\n' }
@@ -118,7 +81,7 @@ describe('exportEnvelopeDocx', () => {
 
 	it('exports the envelope’s current trusted locator without writing objects', async () => {
 		const archive = new TextEncoder().encode('archive-bytes');
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		objects.seed(envelope.repositoryArchiveKey as string, archive);
 		const repository = new FixedDraftRepository([
 			{ path: 'documents/agreement.md', content: '# Agreement\n\nPinned content.\n' }
@@ -133,6 +96,7 @@ describe('exportEnvelopeDocx', () => {
 		);
 
 		expect(result).toMatchObject({ outcome: 'exported', commitSha });
+		expect(objects.putCalls).toBe(0);
 		if (result.outcome !== 'exported') return;
 		const files = unzipSync(result.bytes);
 		expect(new TextDecoder().decode(files['word/document.xml'])).toContain('Pinned content.');
@@ -150,7 +114,7 @@ describe('exportEnvelopeDocx', () => {
 					repositoryArchiveSha256: null
 				})
 			},
-			new MemoryObjectStore(),
+			new InMemoryObjectStore(),
 			new FixedDraftRepository([])
 		);
 		expect(result).toEqual({ outcome: 'empty_draft' });
@@ -161,7 +125,7 @@ describe('exportEnvelopeDocx', () => {
 			organizationId,
 			envelopeId,
 			{ findForOrganization: async () => null },
-			new MemoryObjectStore(),
+			new InMemoryObjectStore(),
 			new FixedDraftRepository([])
 		);
 		expect(result).toEqual({ outcome: 'not_found' });

@@ -4,9 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Envelope } from '$lib/domain/envelope';
 import { draftArchiveKey } from '$lib/application/drafts/draft-persistence';
 import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
-import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import { createDocxExportHandler } from './docx-export';
 import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { expectProblemResponse } from './problem-response-test-support';
 
 const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
@@ -38,33 +39,10 @@ function envelope(overrides: Partial<Envelope> = {}): Envelope {
 	};
 }
 
-class MemoryObjectStore implements ObjectStore {
-	readonly putImmutable = vi.fn(async (): Promise<ObjectMetadata> => {
-		throw new Error('Unexpected object write');
-	});
-
-	constructor(private readonly body: Uint8Array | null) {}
-
-	async head(): Promise<ObjectMetadata | null> {
-		return null;
-	}
-
-	async get(): Promise<ReadableStream<Uint8Array> | null> {
-		if (this.body === null) return null;
-		const body = this.body;
-		return new ReadableStream<Uint8Array>({
-			start(controller): void {
-				controller.enqueue(body);
-				controller.close();
-			}
-		});
-	}
-
-	async delete(): Promise<void> {}
-	async list(): Promise<{ objects: []; truncated: false }> {
-		return { objects: [], truncated: false };
-	}
-	async deleteMany(): Promise<void> {}
+function objectStoreSeededWithArchive(): InMemoryObjectStore {
+	const objects = new InMemoryObjectStore();
+	objects.seed(archiveKey, archiveBytes, archiveSha256);
+	return objects;
 }
 
 describe('DOCX export HTTP handler', () => {
@@ -82,7 +60,7 @@ describe('DOCX export HTTP handler', () => {
 	});
 
 	it('exports the pinned revision and never writes objects', async () => {
-		const objects = new MemoryObjectStore(archiveBytes);
+		const objects = objectStoreSeededWithArchive();
 		const handler: RequestHandler = createDocxExportHandler(() => ({
 			envelopes: {
 				findForOrganization: async () => envelope()
@@ -109,7 +87,7 @@ describe('DOCX export HTTP handler', () => {
 			'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 		);
 		expect(response.headers.get('x-signkit-commit-sha')).toBe(commitSha);
-		expect(objects.putImmutable).not.toHaveBeenCalled();
+		expect(objects.putCalls).toBe(0);
 		const bytes = new Uint8Array(await response.arrayBuffer());
 		expect(bytes[0]).toBe(0x50);
 		expect(bytes[1]).toBe(0x4b);
@@ -123,7 +101,7 @@ describe('DOCX export HTTP handler', () => {
 	it('returns 404 when the envelope is outside the authorized organization', async () => {
 		const handler: RequestHandler = createDocxExportHandler(() => ({
 			envelopes: { findForOrganization: async () => null },
-			objects: new MemoryObjectStore(null),
+			objects: new InMemoryObjectStore(),
 			repository: {
 				read: async () => [],
 				commit: async () => {
@@ -134,8 +112,8 @@ describe('DOCX export HTTP handler', () => {
 		const response: Response = await handler(
 			createHttpRequestEvent({ pathname, locals: locals(), params: { envelopeId } })
 		);
-		expect(response.status).toBe(404);
-		expect(await response.json()).toMatchObject({
+		await expectProblemResponse(response, {
+			status: 404,
 			type: 'urn:signkit:problem:envelope-not-found'
 		});
 	});
@@ -150,7 +128,7 @@ describe('DOCX export HTTP handler', () => {
 						repositoryArchiveSha256: null
 					})
 			},
-			objects: new MemoryObjectStore(null),
+			objects: new InMemoryObjectStore(),
 			repository: {
 				read: async () => [],
 				commit: async () => {
@@ -161,8 +139,8 @@ describe('DOCX export HTTP handler', () => {
 		const response: Response = await handler(
 			createHttpRequestEvent({ pathname, locals: locals(), params: { envelopeId } })
 		);
-		expect(response.status).toBe(409);
-		expect(await response.json()).toMatchObject({
+		await expectProblemResponse(response, {
+			status: 409,
 			type: 'urn:signkit:problem:docx-export-empty'
 		});
 	});

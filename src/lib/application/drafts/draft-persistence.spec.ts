@@ -11,7 +11,7 @@ import type {
 } from '$lib/ports/draft-mutation-store';
 import type { DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
 import type { DraftPointerUpdate } from '$lib/ports/envelope-store';
-import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
+import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import {
 	DraftGenerationConflictError,
 	DraftIdempotencyConflictError,
@@ -25,7 +25,7 @@ const actor = { id: 'user_1', name: 'Yu Kimura', email: 'yu@example.test', type:
 describe('DraftPersistenceService', () => {
 	it('persists and reads an organization-scoped, content-addressed Git archive', async () => {
 		const envelopes = new MemoryEnvelopeStore(emptyEnvelope());
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const service = new DraftPersistenceService(
 			envelopes,
 			objects,
@@ -79,7 +79,7 @@ describe('DraftPersistenceService', () => {
 
 	it('rejects a stale expected generation before creating an object', async () => {
 		const envelope = emptyEnvelope({ repositoryGeneration: 2 });
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const repository = new CountingDraftRepository();
 		const service = new DraftPersistenceService(
 			new MemoryEnvelopeStore(envelope),
@@ -104,7 +104,7 @@ describe('DraftPersistenceService', () => {
 
 	it('replays a completed command without creating another Git revision', async () => {
 		const envelopes = new MemoryEnvelopeStore(emptyEnvelope());
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const service = new DraftPersistenceService(
 			envelopes,
 			objects,
@@ -134,7 +134,7 @@ describe('DraftPersistenceService', () => {
 	});
 
 	it('rejects reuse of an idempotency key for different normalized content', async () => {
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const service = new DraftPersistenceService(
 			new MemoryEnvelopeStore(emptyEnvelope()),
 			objects,
@@ -166,7 +166,7 @@ describe('DraftPersistenceService', () => {
 	it('does not delete an orphaned immutable object after losing the pointer CAS', async () => {
 		const envelopes = new MemoryEnvelopeStore(emptyEnvelope());
 		envelopes.rejectCompareAndSet = true;
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const service = new DraftPersistenceService(
 			envelopes,
 			objects,
@@ -189,7 +189,7 @@ describe('DraftPersistenceService', () => {
 	});
 
 	it('fails closed when stored archive bytes do not match the pointer SHA-256', async () => {
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const goodBytes = new TextEncoder().encode('good');
 		const goodSha = await sha256Hex(goodBytes);
 		const key = draftArchiveKey('org_1', 'env_1', goodSha);
@@ -212,7 +212,7 @@ describe('DraftPersistenceService', () => {
 	});
 
 	it('retries a read-only race and returns the newest stable pointer', async () => {
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		const first = await persistedEnvelope(1, 'first', objects);
 		const second = await persistedEnvelope(2, 'second', objects);
 		const envelopes = new SequencedEnvelopeStore([first, second, second, second]);
@@ -228,7 +228,7 @@ describe('DraftPersistenceService', () => {
 	});
 
 	it('accepts an uncertain immutable put only after verifying the stored bytes', async () => {
-		const objects = new MemoryObjectStore();
+		const objects = new InMemoryObjectStore();
 		objects.throwAfterNextPut = true;
 		const service = new DraftPersistenceService(
 			new MemoryEnvelopeStore(emptyEnvelope()),
@@ -253,7 +253,7 @@ describe('DraftPersistenceService', () => {
 	it('independently verifies the repository-provided archive digest', async () => {
 		const service = new DraftPersistenceService(
 			new MemoryEnvelopeStore(emptyEnvelope()),
-			new MemoryObjectStore(),
+			new InMemoryObjectStore(),
 			new InvalidDigestDraftRepository()
 		);
 
@@ -431,74 +431,6 @@ function commandKey(key: DraftRevisionKey): string {
 	return [key.organizationId, key.actorType, key.actorId, key.idempotencyKey].join('\u0000');
 }
 
-interface StoredObject {
-	body: Uint8Array;
-	contentType: string;
-	sha256: string;
-}
-
-class MemoryObjectStore implements ObjectStore {
-	private readonly objects = new Map<string, StoredObject>();
-	deleteCalls = 0;
-	getCalls = 0;
-	throwAfterNextPut = false;
-
-	get size(): number {
-		return this.objects.size;
-	}
-
-	seed(key: string, body: Uint8Array, sha256: string): void {
-		this.objects.set(key, { body: Uint8Array.from(body), contentType: 'test', sha256 });
-	}
-
-	async head(key: string): Promise<ObjectMetadata | null> {
-		const object = this.objects.get(key);
-		return object ? metadata(key, object) : null;
-	}
-
-	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
-		this.getCalls += 1;
-		const object = this.objects.get(key);
-		if (!object) return null;
-		const body = Uint8Array.from(object.body);
-		return new ReadableStream<Uint8Array>({
-			start(controller: ReadableStreamDefaultController<Uint8Array>): void {
-				controller.enqueue(body);
-				controller.close();
-			}
-		});
-	}
-
-	async putImmutable(key: string, object: PutObject): Promise<ObjectMetadata> {
-		if (this.objects.has(key)) throw new Error('Object already exists');
-		if (!(object.body instanceof Uint8Array)) throw new Error('Test store requires buffered input');
-		const stored = {
-			body: Uint8Array.from(object.body),
-			contentType: object.contentType,
-			sha256: object.sha256
-		};
-		this.objects.set(key, stored);
-		if (this.throwAfterNextPut) {
-			this.throwAfterNextPut = false;
-			throw new Error('Response was lost after put');
-		}
-		return metadata(key, stored);
-	}
-
-	async delete(key: string): Promise<void> {
-		this.deleteCalls += 1;
-		this.objects.delete(key);
-	}
-
-	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
-		throw new Error('unused');
-	}
-
-	async deleteMany(): Promise<void> {
-		throw new Error('unused');
-	}
-}
-
 class CountingDraftRepository implements DraftRepository {
 	commitCalls = 0;
 
@@ -526,16 +458,6 @@ class InvalidDigestDraftRepository implements DraftRepository {
 	}
 }
 
-function metadata(key: string, object: StoredObject): ObjectMetadata {
-	return {
-		key,
-		contentType: object.contentType,
-		size: object.body.byteLength,
-		sha256: object.sha256,
-		version: '1'
-	};
-}
-
 function emptyEnvelope(overrides: Partial<Envelope> = {}): Envelope {
 	return {
 		id: 'env_1',
@@ -557,7 +479,7 @@ function emptyEnvelope(overrides: Partial<Envelope> = {}): Envelope {
 async function persistedEnvelope(
 	generation: number,
 	content: string,
-	objects: MemoryObjectStore
+	objects: InMemoryObjectStore
 ): Promise<Envelope> {
 	const archive = new TextEncoder().encode(content);
 	const sha256 = await sha256Hex(archive);

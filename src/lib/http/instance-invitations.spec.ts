@@ -11,6 +11,10 @@ import {
 } from '$lib/application/instance-invitations/instance-invitation-service';
 import type { InstanceInvitationMetadata, InstanceMemberMetadata } from '$lib/ports/instance-store';
 import {
+	identityOnlyLocals,
+	unavailableIdentityLocalsWithPrincipal
+} from './http-handler-test-support';
+import {
 	createInstanceInvitationHttpHandlers,
 	type InstanceInvitationApplicationResolver
 } from './instance-invitations';
@@ -39,32 +43,9 @@ const member: InstanceMemberMetadata = {
 	updatedAt: '2026-09-13T00:00:00.000Z'
 };
 
+/** This surface additionally requires a verified email, unlike other identity-only surfaces. */
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships: [],
-		organizationId: null,
-		principal:
-			state === 'unavailable' || state === 'anonymous'
-				? null
-				: { subject: 'user-1', email: 'user@example.com', name: 'User', emailVerified: true }
-	};
-}
-
-/**
- * A defense-in-depth case: `unavailable` must fail closed even if a
- * principal is somehow present, since only `authorized` and
- * `no_active_organization` are the intended authenticated states.
- */
-function unavailableLocalsWithPrincipal(): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: 'unavailable',
-		memberships: [],
-		organizationId: null,
-		principal: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
+	return identityOnlyLocals(state, { emailVerified: true });
 }
 
 function event(input: {
@@ -205,7 +186,7 @@ describe('instance invitation HTTP handlers', () => {
 				createInstanceInvitationHttpHandlers(resolver).create,
 				event({
 					pathname: CREATE_PATH,
-					locals: unavailableLocalsWithPrincipal(),
+					locals: unavailableIdentityLocalsWithPrincipal(),
 					method: 'POST',
 					body: validCreateBody(),
 					headers: { 'idempotency-key': 'create-1' }
@@ -515,7 +496,7 @@ describe('instance invitation HTTP handlers', () => {
 			);
 			const response: Response = await invoke(
 				createInstanceInvitationHttpHandlers(resolver).list,
-				event({ pathname: CREATE_PATH, locals: unavailableLocalsWithPrincipal() })
+				event({ pathname: CREATE_PATH, locals: unavailableIdentityLocalsWithPrincipal() })
 			);
 			expect(response.status).toBe(503);
 			expect(resolver).not.toHaveBeenCalled();
@@ -710,7 +691,7 @@ describe('instance invitation HTTP handlers', () => {
 				createInstanceInvitationHttpHandlers(resolver).accept,
 				event({
 					pathname: ACCEPT_PATH,
-					locals: unavailableLocalsWithPrincipal(),
+					locals: unavailableIdentityLocalsWithPrincipal(),
 					method: 'POST',
 					body: validAcceptBody(),
 					headers: { 'idempotency-key': 'accept-1' }
@@ -1160,7 +1141,7 @@ describe('instance invitation HTTP handlers', () => {
 			const response: Response = await invoke(
 				createInstanceInvitationHttpHandlers(resolver).revoke,
 				revokeEvent({
-					locals: unavailableLocalsWithPrincipal(),
+					locals: unavailableIdentityLocalsWithPrincipal(),
 					headers: { 'idempotency-key': 'revoke-1' }
 				})
 			);

@@ -1,4 +1,5 @@
 import type { RequestEvent } from '@sveltejs/kit';
+import type { VerifiedPrincipal } from '$lib/server/d6e-auth';
 
 const ORIGIN: string = 'https://signkit.example';
 
@@ -35,6 +36,44 @@ export function organizationScopedLocals(
 		organizationId: state === 'authorized' ? organizationId : null,
 		principal:
 			state === 'authorized' ? { subject: 'user-1', email: 'user@example.com', name: 'User' } : null
+	};
+}
+
+/**
+ * Builds `App.Locals` for an instance-level request that carries no
+ * organization context (instance bootstrap/membership, API-key management).
+ * `unavailable` and `anonymous` are the only states with no principal; every
+ * other state gets the same fixed user, since these surfaces authorize on
+ * identity alone, never on organization membership or API-key state.
+ */
+export function identityOnlyLocals(
+	state: App.Locals['identityState'] = 'authorized',
+	principalOverrides: Partial<VerifiedPrincipal> = {}
+): App.Locals {
+	return {
+		apiKeyAuthentication: { state: 'absent' },
+		identityState: state,
+		memberships: [],
+		organizationId: null,
+		principal:
+			state === 'unavailable' || state === 'anonymous'
+				? null
+				: { subject: 'user-1', email: 'user@example.com', name: 'User', ...principalOverrides }
+	};
+}
+
+/**
+ * A defense-in-depth fixture: `unavailable` must fail closed even if a
+ * principal is somehow present, since only `authorized` and
+ * `no_active_organization` are the intended authenticated states.
+ */
+export function unavailableIdentityLocalsWithPrincipal(): App.Locals {
+	return {
+		apiKeyAuthentication: { state: 'absent' },
+		identityState: 'unavailable',
+		memberships: [],
+		organizationId: null,
+		principal: { subject: 'user-1', email: 'user@example.com', name: 'User' }
 	};
 }
 

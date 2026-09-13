@@ -8,6 +8,7 @@ import type {
 import type { Envelope } from '$lib/domain/envelope';
 import { createEnvelopeHttpHandlers, type EnvelopeApplicationResolver } from './envelopes';
 import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { expectProblemResponse } from './problem-response-test-support';
 
 const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
@@ -91,11 +92,9 @@ describe('envelope HTTP handlers', () => {
 			event({ locals: locals('anonymous') })
 		);
 
-		expect(response.status).toBe(401);
-		expect(response.headers.get('content-type')).toBe('application/problem+json');
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:authentication-required',
-			status: 401
+		await expectProblemResponse(response, {
+			status: 401,
+			type: 'urn:signkit:problem:authentication-required'
 		});
 		expect(resolver).not.toHaveBeenCalled();
 	});
@@ -106,10 +105,9 @@ describe('envelope HTTP handlers', () => {
 			event({})
 		);
 
-		expect(response.status).toBe(503);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:persistence-unavailable',
-			status: 503
+		await expectProblemResponse(response, {
+			status: 503,
+			type: 'urn:signkit:problem:persistence-unavailable'
 		});
 	});
 
@@ -119,10 +117,9 @@ describe('envelope HTTP handlers', () => {
 			event({ method: 'POST', body: JSON.stringify({ title: 'Agreement' }) })
 		);
 
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:idempotency-key-required',
-			status: 400
+		await expectProblemResponse(response, {
+			status: 400,
+			type: 'urn:signkit:problem:idempotency-key-required'
 		});
 	});
 
@@ -137,10 +134,9 @@ describe('envelope HTTP handlers', () => {
 			})
 		);
 
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:validation-failed',
-			status: 400
+		await expectProblemResponse(response, {
+			status: 400,
+			type: 'urn:signkit:problem:validation-failed'
 		});
 		expect(app.create).not.toHaveBeenCalled();
 	});
@@ -156,10 +152,9 @@ describe('envelope HTTP handlers', () => {
 			})
 		);
 
-		expect(response.status).toBe(413);
-		expect(await response.json()).toMatchObject({
-			type: 'urn:signkit:problem:request-body-too-large',
-			status: 413
+		await expectProblemResponse(response, {
+			status: 413,
+			type: 'urn:signkit:problem:request-body-too-large'
 		});
 		expect(app.create).not.toHaveBeenCalled();
 	});

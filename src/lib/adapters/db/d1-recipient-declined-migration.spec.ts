@@ -1,16 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { applyD1MigrationsThrough } from './sqlite-d1-test-support';
 
-const migrationPaths: readonly string[] = [
-	'migrations/d1/0001_core.sql',
-	'migrations/d1/0002_envelope_commands.sql',
-	'migrations/d1/0003_draft_revisions.sql',
-	'migrations/d1/0004_envelope_ready.sql',
-	'migrations/d1/0005_envelope_send.sql',
-	'migrations/d1/0006_recipient_viewed.sql',
-	'migrations/d1/0007_recipient_declined.sql'
-];
+const MIGRATIONS_THROUGH: string = 'migrations/d1/0007_recipient_declined.sql';
 
 const FAR_FUTURE: string = '2026-09-25T00:00:00.000Z';
 const DECLINED_AT: string = '2026-09-11T00:03:00.000Z';
@@ -18,7 +11,7 @@ const SENT_AT: string = '2026-09-11T00:01:00.000Z';
 
 function database(): DatabaseSync {
 	const db: DatabaseSync = new DatabaseSync(':memory:');
-	for (const path of migrationPaths) db.exec(readFileSync(path, 'utf8'));
+	applyD1MigrationsThrough(db, MIGRATIONS_THROUGH);
 	db.exec(`
 		INSERT INTO organization (id, d6e_organization_id, name, created_at)
 		VALUES ('org-1','org-1','Workspace','2026-09-11T00:00:00.000Z');

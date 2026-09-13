@@ -1,24 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { applyD1MigrationsThrough } from './sqlite-d1-test-support';
 
-const baseMigrationPaths: readonly string[] = [
-	'migrations/d1/0001_core.sql',
-	'migrations/d1/0002_envelope_commands.sql',
-	'migrations/d1/0003_draft_revisions.sql',
-	'migrations/d1/0004_envelope_ready.sql',
-	'migrations/d1/0005_envelope_send.sql',
-	'migrations/d1/0006_recipient_viewed.sql',
-	'migrations/d1/0007_recipient_declined.sql',
-	'migrations/d1/0008_recipient_approved.sql',
-	'migrations/d1/0009_field_placement.sql',
-	'migrations/d1/0010_recipient_signed.sql'
-];
+const baseMigrationsThrough: string = 'migrations/d1/0010_recipient_signed.sql';
 const leaseMigrationPath: string = 'migrations/d1/0011_delivery_outbox_leases.sql';
 
 function database(applyLeaseMigration = true): DatabaseSync {
 	const db: DatabaseSync = new DatabaseSync(':memory:');
-	for (const path of baseMigrationPaths) db.exec(readFileSync(path, 'utf8'));
+	applyD1MigrationsThrough(db, baseMigrationsThrough);
 	db.exec(`
 		INSERT INTO organization (id, d6e_organization_id, name, created_at)
 		VALUES ('org-1','org-1','Workspace','2026-09-11T00:00:00.000Z');

@@ -7,6 +7,10 @@ import {
 	type ListApiKeyResult
 } from '$lib/application/api-keys/api-key-service';
 import type { ApiKeyMetadata } from '$lib/ports/api-key-store';
+import {
+	identityOnlyLocals as locals,
+	unavailableIdentityLocalsWithPrincipal
+} from './http-handler-test-support';
 import { createApiKeyHttpHandlers, type ApiKeyApplicationResolver } from './api-keys';
 
 const KEY_ID: string = '01900000-0000-7000-8000-000000000201';
@@ -21,34 +25,6 @@ const metadata: ApiKeyMetadata = {
 	lastUsedAt: null,
 	revokedAt: null
 };
-
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships: [],
-		organizationId: null,
-		principal:
-			state === 'unavailable' || state === 'anonymous'
-				? null
-				: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
-}
-
-/**
- * A defense-in-depth case: `unavailable` must fail closed even if a
- * principal is somehow present, since only `authorized` and
- * `no_active_organization` are the intended authenticated states.
- */
-function unavailableLocalsWithPrincipal(): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: 'unavailable',
-		memberships: [],
-		organizationId: null,
-		principal: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
-}
 
 function event(input: {
 	locals?: App.Locals;
@@ -143,7 +119,7 @@ describe('API key HTTP handlers', () => {
 			const response: Response = await invoke(
 				createApiKeyHttpHandlers(resolver).create,
 				event({
-					locals: unavailableLocalsWithPrincipal(),
+					locals: unavailableIdentityLocalsWithPrincipal(),
 					method: 'POST',
 					body: validBody(),
 					headers: { 'idempotency-key': 'create-1' }
@@ -369,7 +345,7 @@ describe('API key HTTP handlers', () => {
 			const resolver: ApiKeyApplicationResolver = vi.fn((): ApiKeyApplicationPort | null => null);
 			const response: Response = await invoke(
 				createApiKeyHttpHandlers(resolver).list,
-				event({ locals: unavailableLocalsWithPrincipal() })
+				event({ locals: unavailableIdentityLocalsWithPrincipal() })
 			);
 			expect(response.status).toBe(503);
 			expect(await response.json()).toMatchObject({

@@ -10,7 +10,7 @@ import type {
 	PublishDraftRevisionResult
 } from '$lib/ports/draft-mutation-store';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
-import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import type { Envelope, Recipient } from '$lib/domain/envelope';
 import type {
 	EnvelopeFieldStore,
@@ -63,43 +63,6 @@ class FixedEnvelopeStore implements DraftMutationStore {
 	}
 }
 
-class MemoryObjectStore implements ObjectStore {
-	private readonly objects = new Map<string, Uint8Array>();
-
-	seed(key: string, body: Uint8Array): void {
-		this.objects.set(key, body);
-	}
-
-	async head(): Promise<ObjectMetadata | null> {
-		return null;
-	}
-
-	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
-		const body: Uint8Array | undefined = this.objects.get(key);
-		if (body === undefined) return null;
-		return new ReadableStream<Uint8Array>({
-			start(controller: ReadableStreamDefaultController<Uint8Array>): void {
-				controller.enqueue(body);
-				controller.close();
-			}
-		});
-	}
-
-	async putImmutable(): Promise<ObjectMetadata> {
-		throw new Error('Unexpected object write');
-	}
-
-	async delete(): Promise<void> {}
-
-	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
-		throw new Error('Unexpected object list');
-	}
-
-	async deleteMany(): Promise<void> {
-		throw new Error('Unexpected object deleteMany');
-	}
-}
-
 class FixedDraftRepository implements DraftRepository {
 	constructor(private readonly documents: readonly DraftDocument[]) {}
 
@@ -116,7 +79,7 @@ async function draftPersistenceFor(
 	envelope: Envelope,
 	documents: readonly DraftDocument[]
 ): Promise<DraftPersistenceService> {
-	const objects = new MemoryObjectStore();
+	const objects = new InMemoryObjectStore();
 	if (envelope.repositoryArchiveKey !== null) {
 		const archive: Uint8Array = new TextEncoder().encode('archive');
 		objects.seed(envelope.repositoryArchiveKey, archive);

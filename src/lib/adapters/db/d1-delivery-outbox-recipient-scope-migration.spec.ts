@@ -1,21 +1,16 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { applyD1MigrationsThrough } from './sqlite-d1-test-support';
 
-const MIGRATION_PATHS: readonly string[] = readdirSync('migrations/d1')
-	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
-	.sort()
-	.map((name: string): string => `migrations/d1/${name}`);
+const BEFORE_SCOPE_MIGRATION: string = 'migrations/d1/0011_delivery_outbox_leases.sql';
 const SCOPE_MIGRATION: string = 'migrations/d1/0012_delivery_outbox_recipient_scope.sql';
 
 function database(
 	recipientId: '01930000-0000-7000-8000-00000000000a' | '01930000-0000-7000-8000-00000000000b'
 ): DatabaseSync {
 	const sqlite: DatabaseSync = new DatabaseSync(':memory:');
-	for (const path of MIGRATION_PATHS) {
-		if (path === SCOPE_MIGRATION) break;
-		sqlite.exec(readFileSync(path, 'utf8'));
-	}
+	applyD1MigrationsThrough(sqlite, BEFORE_SCOPE_MIGRATION);
 	sqlite.exec(`
 		INSERT INTO organization (id, d6e_organization_id, name, created_at)
 		VALUES ('org-1','org-1','Workspace','2026-09-11T00:00:00.000Z');
