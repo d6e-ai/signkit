@@ -2,11 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { WebhookApplication, type WebhookDispatchRequest } from './webhook-service';
 import type {
 	CreateWebhookEndpointCommand,
+	FailWebhookDeliveryCommand,
 	ResealWebhookSigningSecretCommand,
 	WebhookEndpointMetadata,
+	WebhookOutboxRow,
 	WebhookStore
 } from '$lib/ports/webhook-store';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
+import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_PAYLOAD_BYTES } from '$lib/security/webhook';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 
 const ORG: string = 'org-1';
@@ -26,6 +29,26 @@ function metadata(overrides: Partial<WebhookEndpointMetadata> = {}): WebhookEndp
 		createdByUserId: ACTOR_ID,
 		revokedAt: null,
 		revokedByUserId: null,
+		...overrides
+	};
+}
+
+function claimedRow(overrides: Partial<WebhookOutboxRow> = {}): WebhookOutboxRow {
+	return {
+		organizationId: ORG,
+		endpointId: ENDPOINT_ID,
+		auditEventId: '01900000-0000-7000-8000-000000000501',
+		envelopeId: '01900000-0000-7000-8000-000000000001',
+		eventType: 'envelope.completed',
+		payloadJson: '{"eventType":"envelope.completed"}',
+		endpointUrl: 'https://hooks.example.com/signkit',
+		signingSecret: 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG',
+		sealingKeyId: null,
+		claimToken: 'claim-1',
+		status: 'processing',
+		attempts: 1,
+		availableAt: '2026-09-13T00:00:00.000Z',
+		lockedAt: '2026-09-13T00:00:00.000Z',
 		...overrides
 	};
 }
@@ -51,6 +74,13 @@ function store(overrides: Partial<WebhookStore> = {}): WebhookStore {
 		listDeliveryLogs: vi.fn(),
 		...overrides
 	};
+}
+
+function failDeliveryMock() {
+	return vi.fn(async (_command: FailWebhookDeliveryCommand) => {
+		void _command;
+		return { outcome: 'failed' as const };
+	});
 }
 
 describe('WebhookApplication.createEndpoint', () => {
@@ -225,5 +255,149 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 				command.sealingKeyId
 			)
 		).resolves.toBe(plaintext);
+	});
+
+	it('marks an oversized payload as a terminal non-retryable failure', async () => {
+		const failDelivery = failDeliveryMock();
+		const dispatch = vi.fn();
+		const persistence = store({
+			claimPendingDeliveries: vi.fn(async () => [
+				claimedRow({ payloadJson: 'x'.repeat(WEBHOOK_MAX_PAYLOAD_BYTES + 1) })
+			]),
+			failDelivery
+		});
+		const app = new WebhookApplication(persistence, sealer(), {
+			now: () => new Date('2026-09-13T00:00:00.000Z'),
+			dispatch
+		});
+		await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+			claimed: 1,
+			delivered: 0,
+			retried: 0,
+			failed: 1
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(failDelivery).toHaveBeenCalledOnce();
+		expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+			retryable: false,
+			errorCode: 'payload_too_large',
+			httpStatus: null
+		});
+	});
+
+	it('marks SSRF rejection as a terminal non-retryable failure', async () => {
+		const failDelivery = failDeliveryMock();
+		const persistence = store({
+			claimPendingDeliveries: vi.fn(async () => [claimedRow()]),
+			failDelivery
+		});
+		const app = new WebhookApplication(persistence, sealer(), {
+			now: () => new Date('2026-09-13T00:00:00.000Z'),
+			dispatch: async () => {
+				throw new WebhookTargetRejectedError('Webhook URL hostname is not a public DNS name');
+			}
+		});
+		await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+			claimed: 1,
+			delivered: 0,
+			retried: 0,
+			failed: 1
+		});
+		expect(failDelivery).toHaveBeenCalledOnce();
+		expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+			retryable: false,
+			errorCode: 'ssrf_rejected',
+			httpStatus: null
+		});
+	});
+
+	it.each([400, 403, 404, 422])(
+		'marks HTTP %s as a terminal non-retryable failure',
+		async (status: number) => {
+			const failDelivery = failDeliveryMock();
+			const persistence = store({
+				claimPendingDeliveries: vi.fn(async () => [claimedRow()]),
+				failDelivery
+			});
+			const app = new WebhookApplication(persistence, sealer(), {
+				now: () => new Date('2026-09-13T00:00:00.000Z'),
+				dispatch: async () => ({
+					ok: false as const,
+					retryable: false,
+					status,
+					errorCode: `http_${status}`
+				})
+			});
+			await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+				claimed: 1,
+				delivered: 0,
+				retried: 0,
+				failed: 1
+			});
+			expect(failDelivery).toHaveBeenCalledOnce();
+			expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+				retryable: false,
+				errorCode: `http_${status}`,
+				httpStatus: status
+			});
+		}
+	);
+
+	it.each([408, 429, 500, 503])(
+		'keeps HTTP %s retryable before the attempt ceiling',
+		async (status: number) => {
+			const failDelivery = failDeliveryMock();
+			const persistence = store({
+				claimPendingDeliveries: vi.fn(async () => [claimedRow({ attempts: 1 })]),
+				failDelivery
+			});
+			const app = new WebhookApplication(persistence, sealer(), {
+				now: () => new Date('2026-09-13T00:00:00.000Z'),
+				dispatch: async () => ({
+					ok: false as const,
+					retryable: true,
+					status,
+					errorCode: `http_${status}`
+				})
+			});
+			await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+				claimed: 1,
+				delivered: 0,
+				retried: 1,
+				failed: 0
+			});
+			expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+				retryable: true,
+				errorCode: `http_${status}`,
+				httpStatus: status
+			});
+		}
+	);
+
+	it('turns a retryable HTTP 5xx terminal at the attempt ceiling', async () => {
+		const failDelivery = failDeliveryMock();
+		const persistence = store({
+			claimPendingDeliveries: vi.fn(async () => [claimedRow({ attempts: WEBHOOK_MAX_ATTEMPTS })]),
+			failDelivery
+		});
+		const app = new WebhookApplication(persistence, sealer(), {
+			now: () => new Date('2026-09-13T00:00:00.000Z'),
+			dispatch: async () => ({
+				ok: false as const,
+				retryable: true,
+				status: 500,
+				errorCode: 'http_500'
+			})
+		});
+		await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+			claimed: 1,
+			delivered: 0,
+			retried: 0,
+			failed: 1
+		});
+		expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+			retryable: false,
+			errorCode: 'http_500'
+		});
 	});
 });

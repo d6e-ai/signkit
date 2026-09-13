@@ -144,6 +144,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0035_orphan_sweep_checkpoint.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0036_envelope_void_agent_actor.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0037_webhook_signing_secret_seal.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0038_webhook_outbox_retryable.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables

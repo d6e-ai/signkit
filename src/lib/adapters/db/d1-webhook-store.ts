@@ -296,10 +296,11 @@ export class D1WebhookStore implements WebhookStore {
 						AND webhook_endpoint.status = 'active'
 					WHERE (
 						(webhook_outbox.status IN ('pending', 'failed')
-							AND webhook_outbox.available_at <= ?
-							AND webhook_outbox.attempts < ?)
+							AND webhook_outbox.retryable = 1
+							AND webhook_outbox.available_at <= ?)
 						OR (webhook_outbox.status = 'processing' AND webhook_outbox.locked_at < ?)
 					)
+					AND webhook_outbox.attempts < ?
 					ORDER BY webhook_outbox.available_at ASC, webhook_outbox.endpoint_id ASC,
 						webhook_outbox.audit_event_id ASC
 					LIMIT ?
@@ -310,8 +311,8 @@ export class D1WebhookStore implements WebhookStore {
 				command.claimedAt,
 				command.claimedAt,
 				command.claimedAt,
-				WEBHOOK_MAX_ATTEMPTS,
 				command.staleBefore,
+				WEBHOOK_MAX_ATTEMPTS,
 				command.limit
 			)
 			.run();
@@ -419,7 +420,7 @@ export class D1WebhookStore implements WebhookStore {
 				.prepare(
 					`UPDATE webhook_outbox
 					 SET status = 'failed', claim_token = NULL, locked_at = NULL,
-						available_at = ?, last_error = ?, updated_at = ?
+						available_at = ?, last_error = ?, updated_at = ?, retryable = ?
 					 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
 						AND status = 'processing' AND claim_token = ?`
 				)
@@ -427,6 +428,7 @@ export class D1WebhookStore implements WebhookStore {
 					command.nextAvailableAt,
 					command.errorCode,
 					command.failedAt,
+					command.retryable ? 1 : 0,
 					command.organizationId,
 					command.endpointId,
 					command.auditEventId,

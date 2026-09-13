@@ -106,6 +106,7 @@ export interface FailWebhookDeliveryCommand {
 	auditEventId: string;
 	claimToken: string;
 	failedAt: string;
+	/** When false the outbox row is terminal and must never be reclaimed. */
 	retryable: boolean;
 	nextAvailableAt: string;
 	errorCode: string;
@@ -145,6 +146,12 @@ export interface WebhookStore {
 	listEndpoints(organizationId: string, query: WebhookListQuery): Promise<WebhookListPage>;
 	getEndpoint(organizationId: string, webhookId: string): Promise<WebhookEndpointMetadata | null>;
 	revokeEndpoint(command: RevokeWebhookEndpointCommand): Promise<RevokeWebhookEndpointResult>;
+	/**
+	 * Claim due work under a unique lease. D1 and PostgreSQL must match:
+	 * `attempts < WEBHOOK_MAX_ATTEMPTS`, and either a retryable
+	 * `pending`/`failed` row that is due, or a stale `processing` lease.
+	 * Non-retryable failures stay failed and are never reclaimed.
+	 */
 	claimPendingDeliveries(
 		command: ClaimWebhookDeliveriesCommand
 	): Promise<readonly WebhookOutboxRow[]>;

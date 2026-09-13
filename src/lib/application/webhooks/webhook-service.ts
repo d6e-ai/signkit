@@ -15,6 +15,7 @@ import {
 	WEBHOOK_CLAIM_LEASE_MS,
 	WEBHOOK_MAX_ATTEMPTS,
 	WEBHOOK_MAX_DESCRIPTION_LENGTH,
+	WEBHOOK_MAX_PAYLOAD_BYTES,
 	WEBHOOK_MAX_URL_LENGTH,
 	WEBHOOK_RETRY_BASE_DELAY_MS,
 	canonicalizeWebhookEvents,
@@ -280,7 +281,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 	): Promise<'delivered' | 'retried' | 'failed'> {
 		const timestamp: string = String(Math.floor(claimedAt.valueOf() / 1000));
 		try {
-			if (new TextEncoder().encode(row.payloadJson).byteLength > 32 * 1024) {
+			if (new TextEncoder().encode(row.payloadJson).byteLength > WEBHOOK_MAX_PAYLOAD_BYTES) {
 				await this.#store.failDelivery({
 					organizationId: row.organizationId,
 					endpointId: row.endpointId,

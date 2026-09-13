@@ -278,10 +278,11 @@ export class PostgresWebhookStore implements WebhookStore {
 				FROM webhook_outbox
 				WHERE (
 					(status IN ('pending', 'failed')
-						AND available_at <= ${command.claimedAt}::timestamptz
-						AND attempts < ${WEBHOOK_MAX_ATTEMPTS})
+						AND retryable
+						AND available_at <= ${command.claimedAt}::timestamptz)
 					OR (status = 'processing' AND locked_at < ${command.staleBefore}::timestamptz)
 				)
+				AND attempts < ${WEBHOOK_MAX_ATTEMPTS}
 				ORDER BY available_at ASC, endpoint_id ASC, audit_event_id ASC
 				FOR UPDATE SKIP LOCKED
 				LIMIT ${command.limit}
@@ -390,7 +391,8 @@ export class PostgresWebhookStore implements WebhookStore {
 			SET status = 'failed', claim_token = NULL, locked_at = NULL,
 				available_at = ${command.nextAvailableAt}::timestamptz,
 				last_error = ${command.errorCode},
-				updated_at = ${command.failedAt}::timestamptz
+				updated_at = ${command.failedAt}::timestamptz,
+				retryable = ${command.retryable}
 			WHERE organization_id = ${command.organizationId}
 				AND endpoint_id = ${command.endpointId}
 				AND audit_event_id = ${command.auditEventId}
