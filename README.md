@@ -39,6 +39,17 @@ Fill in `.env` with your d6e-auth client, encryption keys, public origin, and Po
 
 `DEPLOY_TARGET` selects the profile at build time; there is no universal runtime build. Vercel compiles in CI but is not supported for production. Details in [docs/deployment.md](docs/deployment.md).
 
+## Agent skills
+
+SignKit provides two repository-packaged agent skills. Users can discover and install them with `npx skills add https://github.com/d6e-ai/signkit`:
+
+```sh
+npx skills add https://github.com/d6e-ai/signkit
+```
+
+- `signkit-api` — Calling the `/api/v1` HTTP API, capability discovery, organization scoping, read-only API-key inspection, UUIDv7 validation, and RFC 9457 error handling.
+- `signkit-cli` — Building, configuring, and operating the read-only Rust CLI (`signkit`), credential hygiene, loopback networking, and exit codes.
+
 ## Documentation
 
 - [docs/design.md](docs/design.md) — normative architecture, security, and evidence contracts.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SignKit API"
+  short_description: "Inspect SignKit envelopes, draft workspaces, and capabilities"
+  default_prompt: "Use $signkit-api to inspect envelopes and system capabilities."
