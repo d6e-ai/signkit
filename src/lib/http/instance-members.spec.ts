@@ -27,6 +27,7 @@ const mockMember: InstanceMemberMetadata = {
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
 		memberships: [],
 		organizationId: null,

@@ -21,6 +21,7 @@ type DraftPersistencePort = Pick<DraftPersistenceService, 'commit' | 'readWorksp
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
 		memberships:
 			state === 'authorized'

@@ -22,6 +22,7 @@ const metadata: ApiKeyMetadata = {
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
 		memberships: [],
 		organizationId: null,
@@ -39,6 +40,7 @@ function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
  */
 function unavailableLocalsWithPrincipal(): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: 'unavailable',
 		memberships: [],
 		organizationId: null,
@@ -73,7 +75,10 @@ function application(result?: RevokeApiKeyResult): ApiKeyApplicationPort {
 		listApiKeys: vi.fn(),
 		revokeApiKey: vi.fn(
 			async (): Promise<RevokeApiKeyResult> => result ?? { outcome: 'revoked', key: metadata }
-		)
+		),
+		grantApiKeyOrganization: vi.fn(),
+		listApiKeyOrganizationGrants: vi.fn(),
+		revokeApiKeyOrganizationGrant: vi.fn()
 	};
 }
 

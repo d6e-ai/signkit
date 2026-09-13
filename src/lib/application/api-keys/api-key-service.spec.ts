@@ -29,26 +29,50 @@ import {
 	type RevokeApiKeyResult,
 	type ApiKeyRequestActor
 } from './api-key-service';
+import type {
+	ApiKeyOrganizationGrantListQuery,
+	ApiKeyOrganizationGrantMetadata,
+	GrantApiKeyOrganizationCommand,
+	GrantApiKeyOrganizationStoreResult,
+	ListApiKeyOrganizationGrantsStoreResult,
+	RevokeApiKeyOrganizationGrantCommand,
+	RevokeApiKeyOrganizationGrantStoreResult
+} from '$lib/ports/api-key-store';
 
 const ACTOR: ApiKeyRequestActor = { id: 'user-1' };
 const NOW: Date = new Date('2026-09-12T12:00:00.000Z');
 const KEY_ID: string = '01900000-0000-7000-8000-000000000201';
 const OTHER_KEY_ID: string = '01900000-0000-7000-8000-000000000202';
+const GRANT_ID: string = '01900000-0000-7000-8000-000000000301';
+const ORGANIZATION_ID: string = 'org-alpha';
 
 class FakeApiKeyStore implements ApiKeyStore {
 	readonly createCommands: CreateApiKeyCommand[] = [];
 	readonly revokeCommands: RevokeApiKeyCommand[] = [];
 	readonly listCalls: { actor: ApiKeyActor; query: ApiKeyListQuery }[] = [];
+	readonly grantCommands: GrantApiKeyOrganizationCommand[] = [];
+	readonly grantRevokeCommands: RevokeApiKeyOrganizationGrantCommand[] = [];
+	readonly grantListQueries: ApiKeyOrganizationGrantListQuery[] = [];
 	listResult: ListApiKeyStoreResult = { outcome: 'listed', page: { items: [], nextCursor: null } };
+	grantListResult: ListApiKeyOrganizationGrantsStoreResult = {
+		outcome: 'listed',
+		page: { items: [], nextCursor: null }
+	};
 	readonly #createResults: CreateApiKeyStoreResult[];
 	readonly #revokeResults: RevokeApiKeyStoreResult[];
+	readonly #grantResults: GrantApiKeyOrganizationStoreResult[];
+	readonly #grantRevokeResults: RevokeApiKeyOrganizationGrantStoreResult[];
 
 	constructor(
 		createResults: readonly CreateApiKeyStoreResult[] = [],
-		revokeResults: readonly RevokeApiKeyStoreResult[] = []
+		revokeResults: readonly RevokeApiKeyStoreResult[] = [],
+		grantResults: readonly GrantApiKeyOrganizationStoreResult[] = [],
+		grantRevokeResults: readonly RevokeApiKeyOrganizationGrantStoreResult[] = []
 	) {
 		this.#createResults = [...createResults];
 		this.#revokeResults = [...revokeResults];
+		this.#grantResults = [...grantResults];
+		this.#grantRevokeResults = [...grantRevokeResults];
 	}
 
 	async createApiKey(command: CreateApiKeyCommand): Promise<CreateApiKeyStoreResult> {
@@ -67,6 +91,74 @@ class FakeApiKeyStore implements ApiKeyStore {
 		const scripted: RevokeApiKeyStoreResult | undefined = this.#revokeResults.shift();
 		return scripted ?? { outcome: 'revoked', key: metadata({ revokedAt: command.revokedAt }) };
 	}
+
+	async grantApiKeyOrganization(
+		command: GrantApiKeyOrganizationCommand
+	): Promise<GrantApiKeyOrganizationStoreResult> {
+		this.grantCommands.push(command);
+		const scripted: GrantApiKeyOrganizationStoreResult | undefined = this.#grantResults.shift();
+		return scripted ?? { outcome: 'granted', grant: grantFromCommand(command) };
+	}
+
+	async listApiKeyOrganizationGrants(
+		query: ApiKeyOrganizationGrantListQuery
+	): Promise<ListApiKeyOrganizationGrantsStoreResult> {
+		this.grantListQueries.push(query);
+		return this.grantListResult;
+	}
+
+	async revokeApiKeyOrganizationGrant(
+		command: RevokeApiKeyOrganizationGrantCommand
+	): Promise<RevokeApiKeyOrganizationGrantStoreResult> {
+		this.grantRevokeCommands.push(command);
+		const scripted: RevokeApiKeyOrganizationGrantStoreResult | undefined =
+			this.#grantRevokeResults.shift();
+		return (
+			scripted ?? {
+				outcome: 'revoked',
+				grant: grant({
+					id: command.grantId,
+					apiKeyId: command.apiKeyId,
+					revokedAt: command.revokedAt,
+					revokedByUserId: command.actor.id,
+					revokedByAuthority: 'key_owner'
+				})
+			}
+		);
+	}
+}
+
+function grantFromCommand(
+	command: GrantApiKeyOrganizationCommand
+): ApiKeyOrganizationGrantMetadata {
+	return {
+		id: command.grantId,
+		apiKeyId: command.apiKeyId,
+		organizationId: command.organizationId,
+		grantedByUserId: command.actor.id,
+		grantedOrganizationRole: command.grantingOrganizationRole,
+		grantedAt: command.grantedAt,
+		revokedAt: null,
+		revokedByUserId: null,
+		revokedByAuthority: null
+	};
+}
+
+function grant(
+	overrides: Partial<ApiKeyOrganizationGrantMetadata> = {}
+): ApiKeyOrganizationGrantMetadata {
+	return {
+		id: GRANT_ID,
+		apiKeyId: KEY_ID,
+		organizationId: ORGANIZATION_ID,
+		grantedByUserId: ACTOR.id,
+		grantedOrganizationRole: 'owner',
+		grantedAt: '2026-09-12T12:00:00.000Z',
+		revokedAt: null,
+		revokedByUserId: null,
+		revokedByAuthority: null,
+		...overrides
+	};
 }
 
 function metadataFromCommand(command: CreateApiKeyCommand): ApiKeyMetadata {
@@ -609,6 +701,199 @@ describe('ApiKeyApplication scope canonicalization', () => {
 		expect(store.createCommands[1].scopes).toEqual(store.createCommands[0].scopes);
 		expect(store.createCommands[1].requestFingerprint).toBe(
 			store.createCommands[0].requestFingerprint
+		);
+	});
+});
+
+describe('ApiKeyApplication organization grants', () => {
+	const GRANT_INPUT = {
+		idempotencyKey: 'grant-1',
+		organizationId: ORGANIZATION_ID,
+		organizationName: 'Alpha',
+		grantingOrganizationRole: 'owner' as const
+	};
+
+	it('mints a UUIDv7 grant id and forwards the verified organization', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		const result = await application(store, { uuids: [GRANT_ID] }).grantApiKeyOrganization(
+			ACTOR,
+			KEY_ID,
+			GRANT_INPUT
+		);
+
+		expect(result.outcome).toBe('granted');
+		expect(store.grantCommands).toHaveLength(1);
+		expect(store.grantCommands[0]).toMatchObject({
+			actor: { type: 'user', id: ACTOR.id },
+			grantId: GRANT_ID,
+			apiKeyId: KEY_ID,
+			organizationId: ORGANIZATION_ID,
+			organizationName: 'Alpha',
+			grantingOrganizationRole: 'owner',
+			grantedAt: NOW.toISOString()
+		});
+	});
+
+	/**
+	 * The fingerprint covers only which key and which organization. The granting
+	 * role is evidence, not request identity, so a caller promoted from admin to
+	 * owner between a lost response and its retry must replay rather than conflict.
+	 */
+	it('fingerprints only the key and organization, not the granting role', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		const app = application(store, { uuids: [GRANT_ID, '01900000-0000-7000-8000-000000000304'] });
+		await app.grantApiKeyOrganization(ACTOR, KEY_ID, GRANT_INPUT);
+		await app.grantApiKeyOrganization(ACTOR, KEY_ID, {
+			...GRANT_INPUT,
+			grantingOrganizationRole: 'admin'
+		});
+
+		expect(store.grantCommands[0].requestFingerprint).toBe(
+			store.grantCommands[1].requestFingerprint
+		);
+	});
+
+	it('fingerprints a different organization differently', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		const app = application(store, { uuids: [GRANT_ID, '01900000-0000-7000-8000-000000000304'] });
+		await app.grantApiKeyOrganization(ACTOR, KEY_ID, GRANT_INPUT);
+		await app.grantApiKeyOrganization(ACTOR, KEY_ID, {
+			...GRANT_INPUT,
+			organizationId: 'org-beta'
+		});
+
+		expect(store.grantCommands[0].requestFingerprint).not.toBe(
+			store.grantCommands[1].requestFingerprint
+		);
+	});
+
+	it('retries a grant id collision with fresh material', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore([], [], [{ outcome: 'grant_id_conflict' }]);
+		const result = await application(store, {
+			uuids: [GRANT_ID, '01900000-0000-7000-8000-000000000304']
+		}).grantApiKeyOrganization(ACTOR, KEY_ID, GRANT_INPUT);
+
+		expect(result.outcome).toBe('granted');
+		expect(store.grantCommands.map((command) => command.grantId)).toEqual([
+			GRANT_ID,
+			'01900000-0000-7000-8000-000000000304'
+		]);
+	});
+
+	it('answers an unparsable key id opaquely without touching the store', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		expect(
+			await application(store).grantApiKeyOrganization(ACTOR, 'not-a-uuid', GRANT_INPUT)
+		).toEqual({ outcome: 'not_found' });
+		expect(store.grantCommands).toEqual([]);
+	});
+
+	it('rejects a malformed idempotency key before any durable work', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		await expect(
+			application(store).grantApiKeyOrganization(ACTOR, KEY_ID, {
+				...GRANT_INPUT,
+				idempotencyKey: 'grant one'
+			})
+		).rejects.toThrow(InvalidApiKeyRequestError);
+		expect(store.grantCommands).toEqual([]);
+	});
+
+	it('bounds the grant list limit and forwards a malformed cursor unvalidated', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		await application(store).listApiKeyOrganizationGrants(ACTOR, KEY_ID, {
+			cursor: 'not-a-cursor',
+			limit: 5000
+		});
+
+		expect(store.grantListQueries).toEqual([
+			{
+				actor: { type: 'user', id: ACTOR.id },
+				apiKeyId: KEY_ID,
+				cursor: 'not-a-cursor',
+				limit: 100
+			}
+		]);
+	});
+
+	it('answers an unparsable key id opaquely when listing', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		expect(
+			await application(store).listApiKeyOrganizationGrants(ACTOR, 'not-a-uuid', {
+				cursor: null,
+				limit: 25
+			})
+		).toEqual({ outcome: 'not_found' });
+		expect(store.grantListQueries).toEqual([]);
+	});
+
+	it('forwards both admissible revoke authorities', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		await application(store).revokeApiKeyOrganizationGrant(ACTOR, KEY_ID, GRANT_ID, {
+			idempotencyKey: 'revoke-1',
+			ownerScope: true,
+			organizationScope: ORGANIZATION_ID
+		});
+
+		expect(store.grantRevokeCommands[0]).toMatchObject({
+			apiKeyId: KEY_ID,
+			grantId: GRANT_ID,
+			ownerScope: true,
+			organizationScope: ORGANIZATION_ID,
+			revokedAt: NOW.toISOString()
+		});
+	});
+
+	/**
+	 * With neither authority proven nothing can authorize the request, and it is
+	 * reported as the same opaque outcome as an unknown grant rather than as a
+	 * distinct "you have no authority" hint.
+	 */
+	it('answers a revoke with no proven authority opaquely without touching the store', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		expect(
+			await application(store).revokeApiKeyOrganizationGrant(ACTOR, KEY_ID, GRANT_ID, {
+				idempotencyKey: 'revoke-1',
+				ownerScope: false,
+				organizationScope: null
+			})
+		).toEqual({ outcome: 'not_found' });
+		expect(store.grantRevokeCommands).toEqual([]);
+	});
+
+	it.each([
+		['an unparsable key id', 'not-a-uuid', GRANT_ID],
+		['an unparsable grant id', KEY_ID, 'not-a-uuid']
+	])('answers %s opaquely when revoking', async (_name, apiKeyId, grantId) => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		expect(
+			await application(store).revokeApiKeyOrganizationGrant(ACTOR, apiKeyId, grantId, {
+				idempotencyKey: 'revoke-1',
+				ownerScope: true,
+				organizationScope: null
+			})
+		).toEqual({ outcome: 'not_found' });
+		expect(store.grantRevokeCommands).toEqual([]);
+	});
+
+	it('fingerprints revoke over the key and grant pair', async () => {
+		const store: FakeApiKeyStore = new FakeApiKeyStore();
+		const app = application(store);
+		await app.revokeApiKeyOrganizationGrant(ACTOR, KEY_ID, GRANT_ID, {
+			idempotencyKey: 'revoke-1',
+			ownerScope: true,
+			organizationScope: null
+		});
+		await app.revokeApiKeyOrganizationGrant(ACTOR, KEY_ID, GRANT_ID, {
+			idempotencyKey: 'revoke-2',
+			ownerScope: true,
+			organizationScope: ORGANIZATION_ID
+		});
+
+		// The proven authority is not part of the request identity: the same key and
+		// grant replay identically whichever de-escalation path the caller held.
+		expect(store.grantRevokeCommands[0].requestFingerprint).toBe(
+			store.grantRevokeCommands[1].requestFingerprint
 		);
 	});
 });

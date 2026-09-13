@@ -1,9 +1,16 @@
 import {
+	boundApiKeyGrantListLimit,
 	boundApiKeyListLimit,
+	isApiKeyGrantId,
 	isApiKeyId,
 	isApiKeyIdempotencyKey,
+	type ApiKeyGrantingOrganizationRole,
+	type ApiKeyOrganizationGrantMetadata,
 	type CreateApiKeyStoreResult,
+	type GrantApiKeyOrganizationStoreResult,
+	type ListApiKeyOrganizationGrantsStoreResult,
 	type ListApiKeyStoreResult,
+	type RevokeApiKeyOrganizationGrantStoreResult,
 	type RevokeApiKeyStoreResult,
 	type ApiKeyListQuery,
 	type ApiKeyMetadata,
@@ -71,6 +78,58 @@ export type RevokeApiKeyResult =
 	| { outcome: 'owner_not_active' }
 	| { outcome: 'integrity_error' };
 
+/**
+ * One grant request.
+ *
+ * `organizationId`, `organizationName`, and `grantingOrganizationRole` all come
+ * from the caller's own verified d6e-auth membership for the session-selected
+ * organization -- never from a request body. Accepting a free-form organization
+ * here would turn the endpoint into a way to grant access to an organization the
+ * caller has no authority over, which is the single most important thing this
+ * surface must not permit.
+ */
+export interface GrantApiKeyOrganizationInput {
+	idempotencyKey: string;
+	organizationId: string;
+	organizationName: string;
+	grantingOrganizationRole: ApiKeyGrantingOrganizationRole;
+}
+
+export interface ApiKeyOrganizationGrantListInput {
+	cursor: string | null;
+	limit: number;
+}
+
+/**
+ * One grant revocation request, carrying whichever de-escalation authorities the
+ * HTTP layer proved.
+ *
+ * `ownerScope` means a verified identity is claiming to own the key; the store
+ * still re-proves active instance membership and actual ownership.
+ * `organizationScope`, when set, is the session-selected organization the caller
+ * proved current d6e owner/admin authority over -- never a caller-chosen value.
+ * At least one must be present or the request cannot be authorized at all.
+ */
+export interface RevokeApiKeyOrganizationGrantInput {
+	idempotencyKey: string;
+	ownerScope: boolean;
+	organizationScope: string | null;
+}
+
+export type GrantApiKeyOrganizationResult =
+	| { outcome: 'granted'; grant: ApiKeyOrganizationGrantMetadata }
+	| { outcome: 'replayed'; grant: ApiKeyOrganizationGrantMetadata }
+	| { outcome: 'already_granted'; grant: ApiKeyOrganizationGrantMetadata }
+	| { outcome: 'idempotency_conflict' }
+	| { outcome: 'not_found' }
+	| { outcome: 'key_not_active' }
+	| { outcome: 'owner_not_active' }
+	| { outcome: 'integrity_error' };
+
+export type ListApiKeyOrganizationGrantsResult = ListApiKeyOrganizationGrantsStoreResult;
+
+export type RevokeApiKeyOrganizationGrantResult = RevokeApiKeyOrganizationGrantStoreResult;
+
 export interface ApiKeyApplicationPort {
 	createApiKey(actor: ApiKeyRequestActor, input: CreateApiKeyInput): Promise<CreateApiKeyResult>;
 	listApiKeys(actor: ApiKeyRequestActor, query: ApiKeyListQuery): Promise<ListApiKeyResult>;
@@ -79,6 +138,22 @@ export interface ApiKeyApplicationPort {
 		apiKeyId: string,
 		input: RevokeApiKeyInput
 	): Promise<RevokeApiKeyResult>;
+	grantApiKeyOrganization(
+		actor: ApiKeyRequestActor,
+		apiKeyId: string,
+		input: GrantApiKeyOrganizationInput
+	): Promise<GrantApiKeyOrganizationResult>;
+	listApiKeyOrganizationGrants(
+		actor: ApiKeyRequestActor,
+		apiKeyId: string,
+		input: ApiKeyOrganizationGrantListInput
+	): Promise<ListApiKeyOrganizationGrantsResult>;
+	revokeApiKeyOrganizationGrant(
+		actor: ApiKeyRequestActor,
+		apiKeyId: string,
+		grantId: string,
+		input: RevokeApiKeyOrganizationGrantInput
+	): Promise<RevokeApiKeyOrganizationGrantResult>;
 }
 
 /** Rejected before any durable work, so no partial state can be observed. */
@@ -199,6 +274,89 @@ export class ApiKeyApplication implements ApiKeyApplicationPort {
 			revokedAt: this.now().toISOString()
 		});
 		return result;
+	}
+
+	async grantApiKeyOrganization(
+		actor: ApiKeyRequestActor,
+		apiKeyId: string,
+		input: GrantApiKeyOrganizationInput
+	): Promise<GrantApiKeyOrganizationResult> {
+		const idempotencyKey: string = assertIdempotencyKey(input.idempotencyKey);
+		// An id that cannot exist is answered opaquely, never as a validation hint.
+		if (!isApiKeyId(apiKeyId)) return { outcome: 'not_found' };
+		const grantedAt: string = this.now().toISOString();
+		// The fingerprint covers only what the caller asked for: which key, which
+		// organization. The granting role is evidence recorded alongside the grant,
+		// not part of the request identity -- a caller promoted from admin to owner
+		// between a lost response and its retry must still replay rather than
+		// conflict.
+		const requestFingerprint: string = await sha256(
+			JSON.stringify({ apiKeyId, organizationId: input.organizationId })
+		);
+
+		for (let attempt: number = 0; attempt < MAX_CREDENTIAL_ATTEMPTS; attempt += 1) {
+			const grantId: string = this.newId();
+			if (!isApiKeyGrantId(grantId)) {
+				throw new Error('Generated API key grant id is not a canonical UUIDv7');
+			}
+			const result: GrantApiKeyOrganizationStoreResult = await this.store.grantApiKeyOrganization({
+				actor: { type: 'user', id: actor.id },
+				idempotencyKey,
+				requestFingerprint,
+				grantId,
+				apiKeyId,
+				organizationId: input.organizationId,
+				organizationName: input.organizationName,
+				grantingOrganizationRole: input.grantingOrganizationRole,
+				grantedAt
+			});
+			if (result.outcome === 'grant_id_conflict') continue;
+			return result;
+		}
+
+		throw new Error('API key grant id generation exhausted its collision retries');
+	}
+
+	async listApiKeyOrganizationGrants(
+		actor: ApiKeyRequestActor,
+		apiKeyId: string,
+		input: ApiKeyOrganizationGrantListInput
+	): Promise<ListApiKeyOrganizationGrantsResult> {
+		if (!isApiKeyId(apiKeyId)) return { outcome: 'not_found' };
+		// A malformed cursor is forwarded unvalidated, matching the key list: the
+		// store must authorize the owner before a cursor can be resolved, so a
+		// cursor that can never match fails closed there rather than here.
+		return await this.store.listApiKeyOrganizationGrants({
+			actor: { type: 'user', id: actor.id },
+			apiKeyId,
+			cursor: input.cursor,
+			limit: boundApiKeyGrantListLimit(input.limit)
+		});
+	}
+
+	async revokeApiKeyOrganizationGrant(
+		actor: ApiKeyRequestActor,
+		apiKeyId: string,
+		grantId: string,
+		input: RevokeApiKeyOrganizationGrantInput
+	): Promise<RevokeApiKeyOrganizationGrantResult> {
+		const idempotencyKey: string = assertIdempotencyKey(input.idempotencyKey);
+		// Neither authority proven means nothing can authorize this, and it is
+		// reported as the same opaque outcome as an unknown grant rather than as a
+		// distinct "you have no authority" hint.
+		if (!input.ownerScope && input.organizationScope === null) return { outcome: 'not_found' };
+		if (!isApiKeyId(apiKeyId) || !isApiKeyGrantId(grantId)) return { outcome: 'not_found' };
+		const requestFingerprint: string = await sha256(JSON.stringify({ apiKeyId, grantId }));
+		return await this.store.revokeApiKeyOrganizationGrant({
+			actor: { type: 'user', id: actor.id },
+			idempotencyKey,
+			requestFingerprint,
+			apiKeyId,
+			grantId,
+			revokedAt: this.now().toISOString(),
+			ownerScope: input.ownerScope,
+			organizationScope: input.organizationScope
+		});
 	}
 }
 

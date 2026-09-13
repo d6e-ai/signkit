@@ -5,9 +5,9 @@ import type {
 	PublicCompletionArtifactStatus
 } from '$lib/application/completion-artifacts/completion-artifact-status';
 import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
+	authorizeScopedOrganizationRequest,
+	type AuthorizedApiActor
+} from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -30,9 +30,10 @@ export function createCompletionArtifactStatusHandler(
 	resolveService: CompletionArtifactStatusServiceResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'envelopes:read'
 		);
 		if (authorized instanceof Response) return authorized;
 		const envelopeId = envelopeIdSchema.safeParse(params.envelopeId);

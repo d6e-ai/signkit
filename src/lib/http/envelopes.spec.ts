@@ -27,6 +27,7 @@ const envelope: Envelope = {
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
 		memberships:
 			state === 'authorized'

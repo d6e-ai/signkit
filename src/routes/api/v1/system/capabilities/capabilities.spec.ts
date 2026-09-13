@@ -11,6 +11,26 @@ function createEvent(platform?: App.Platform): RequestEvent {
 }
 
 interface CapabilitiesResponse {
+	apiKeyAuthentication: {
+		scheme: string;
+		tokenPrefix: string;
+		organizationSelector: string;
+		organizationSelectorRequired: boolean;
+		grantModel: string;
+		multipleOrganizationsPerKey: boolean;
+		effectiveAuthority: string;
+		enabledScopes: string[];
+		mintedButUnusableScopes: string[];
+		readEndpoints: string[];
+		mutations: boolean;
+		cookieComposition: boolean;
+		caching: string;
+		lastUsedTracking: boolean;
+		rateLimits: boolean;
+		grantManagement: { create: string; list: string; revoke: string };
+		grantAuthority: string;
+		grantRevokeAuthority: string[];
+	};
 	name: string;
 	apiVersion: string;
 	runtime: 'node' | 'cloudflare' | 'vercel';
@@ -166,6 +186,40 @@ describe('GET /api/v1/system/capabilities', () => {
 			cookies: false
 		});
 
+		// API key bearer authentication capabilities. The selector requirement and
+		// the enabled/minted scope split are advertised because an agent integrator
+		// cannot otherwise tell which minted scopes actually work yet.
+		expect(data.apiKeyAuthentication).toEqual({
+			scheme: 'bearer',
+			tokenPrefix: 'signkit',
+			organizationSelector: 'SignKit-Organization-Id',
+			organizationSelectorRequired: true,
+			grantModel: 'explicit-per-organization',
+			multipleOrganizationsPerKey: true,
+			effectiveAuthority: 'key-scopes-intersected-with-requested-live-grant',
+			enabledScopes: ['envelopes:read'],
+			mintedButUnusableScopes: ['audit:read', 'drafts:write', 'envelopes:send'],
+			readEndpoints: [
+				'/api/v1/envelopes',
+				'/api/v1/envelopes/{envelopeId}',
+				'/api/v1/envelopes/{envelopeId}/draft',
+				'/api/v1/envelopes/{envelopeId}/deliveries',
+				'/api/v1/envelopes/{envelopeId}/completion-artifact'
+			],
+			mutations: false,
+			cookieComposition: false,
+			caching: 'none',
+			lastUsedTracking: false,
+			rateLimits: false,
+			grantManagement: {
+				create: '/api/v1/api-keys/{apiKeyId}/organization-grants',
+				list: '/api/v1/api-keys/{apiKeyId}/organization-grants',
+				revoke: '/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke'
+			},
+			grantAuthority: 'key-owner-and-d6e-organization-owner-or-admin',
+			grantRevokeAuthority: ['key_owner', 'organization_admin']
+		});
+
 		// No secrets or token material exposed
 		const serialized = JSON.stringify(data);
 		expect(serialized).not.toContain('DELIVERY_WORKER_SECRET');
@@ -173,6 +227,7 @@ describe('GET /api/v1/system/capabilities', () => {
 		expect(serialized).not.toContain('CLOUDFLARE_EMAIL_API_TOKEN');
 		expect(serialized).not.toContain('skca1_');
 		expect(serialized).not.toContain('skcd1_');
+		expect(serialized).not.toContain('signkit_');
 	});
 
 	it('reflects cloudflare runtime when platform DB is present', async () => {

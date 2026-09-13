@@ -163,6 +163,20 @@ function insertApiKey(sqlite: DatabaseSync, id: string): void {
 	`);
 }
 
+const API_KEY_ID: string = '01970000-0000-7000-8000-000000000001';
+
+function insertApiKeyOrganizationGrant(sqlite: DatabaseSync, id: string): void {
+	insertApiKey(sqlite, API_KEY_ID);
+	sqlite.exec(`
+		INSERT INTO api_key_organization_grant (
+			id, api_key_id, organization_id, granted_by_user_id,
+			granted_organization_role, granted_at
+		) VALUES (
+			'${id}', '${API_KEY_ID}', '${ORGANIZATION_ID}', 'user_d6e_1', 'owner', '${NOW}'
+		)
+	`);
+}
+
 const CONSTRAINED_TABLES: readonly [string, (sqlite: DatabaseSync, id: string) => void, string][] =
 	[
 		['envelope', insertEnvelope, 'envelope_id_uuidv7'],
@@ -171,7 +185,12 @@ const CONSTRAINED_TABLES: readonly [string, (sqlite: DatabaseSync, id: string) =
 		['delivery_outbox', insertDelivery, 'delivery_outbox_id_uuidv7'],
 		['envelope_field', insertField, 'envelope_field_id_uuidv7'],
 		['completion_delivery_outbox', insertCompletionDelivery, 'completion_delivery_id_uuidv7'],
-		['api_key', insertApiKey, 'api_key_id_uuidv7']
+		['api_key', insertApiKey, 'api_key_id_uuidv7'],
+		[
+			'api_key_organization_grant',
+			insertApiKeyOrganizationGrant,
+			'api_key_organization_grant_id_uuidv7'
+		]
 	];
 
 describe('D1 UUIDv7 identifier constraints', () => {
@@ -253,6 +272,28 @@ describe('D1 UUIDv7 identifier constraints', () => {
 						locked_at = '${NOW}'
 					WHERE organization_id = '${ORGANIZATION_ID}'
 						AND id = '01940000-0000-7000-8000-0000000000c1'
+				`)
+			).not.toThrow();
+		} finally {
+			sqlite.close();
+		}
+	});
+});
+
+describe('D1 API key organization grant identifier policy', () => {
+	it('keeps the granted organization an external identifier rather than a UUIDv7', () => {
+		const sqlite: DatabaseSync = database();
+		try {
+			insertApiKey(sqlite, API_KEY_ID);
+			expect((): void =>
+				sqlite.exec(`
+					INSERT INTO api_key_organization_grant (
+						id, api_key_id, organization_id, granted_by_user_id,
+						granted_organization_role, granted_at
+					) VALUES (
+						'${newUuidV7()}', '${API_KEY_ID}', '${ORGANIZATION_ID}', 'user_d6e_1',
+						'admin', '${NOW}'
+					)
 				`)
 			).not.toThrow();
 		} finally {

@@ -130,6 +130,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0018_instance_bootstrap.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0019_instance_invitations.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0020_instance_member_command.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0021_api_key_organization_grants.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -156,7 +157,10 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'instance_member_command',
 				'api_key',
 				'api_key_create_command',
-				'api_key_revoke_command'
+				'api_key_revoke_command',
+				'api_key_organization_grant',
+				'api_key_organization_grant_command',
+				'api_key_organization_grant_revoke_command'
 			])
 		);
 
@@ -362,6 +366,18 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					'["envelopes:read"]', ${ACTOR.id}, now(), now() + INTERVAL '30 days'
 				)`
 			).rejects.toMatchObject({ code: '23514', constraint_name: 'api_key_id_uuidv7' });
+			await expect(
+				database()`INSERT INTO api_key_organization_grant (
+					id, api_key_id, organization_id, granted_by_user_id,
+					granted_organization_role, granted_at
+				) VALUES (
+					${id}, '01900000-0000-7000-8000-000000000201', ${ORGANIZATION_ID}, ${ACTOR.id},
+					'owner', now()
+				)`
+			).rejects.toMatchObject({
+				code: '23514',
+				constraint_name: 'api_key_organization_grant_id_uuidv7'
+			});
 		}
 
 		// External d6e-auth identifiers and caller-chosen idempotency keys are
@@ -2589,6 +2605,22 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					'instance_bootstrap_command'
 				)
 				AND column_name IN ('token', 'secret', 'plaintext', 'credential', 'email', 'organization_id', 'instance_id')`;
+		// The grant tables legitimately name an organization -- that is their whole
+		// purpose -- so they are checked against the secret and PII column set only.
+		const grantSecretColumns: { columnName: string }[] = await database()<
+			{ columnName: string }[]
+		>`SELECT column_name AS "columnName" FROM information_schema.columns
+			WHERE table_schema = ${schemaName}
+				AND table_name IN (
+					'api_key_organization_grant',
+					'api_key_organization_grant_command',
+					'api_key_organization_grant_revoke_command'
+				)
+				AND column_name IN (
+					'token', 'secret', 'plaintext', 'credential', 'token_hash', 'key_prefix',
+					'email', 'name', 'display_name'
+				)`;
+		expect(grantSecretColumns).toEqual([]);
 		expect(secretColumns).toEqual([]);
 
 		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
@@ -3529,6 +3561,13 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			});
 			expect(await countRows('api_key')).toBe(0);
 		});
+
+		// Grant store and request-path authentication behaviour, plus its D1 parity,
+		// live in the dedicated `postgres-api-key-grants.integration.spec.ts`, which
+		// mirrors `d1-api-key-grant-store.integration.spec.ts` case for case. What
+		// belongs here is what this file is for: that the migration applies, that the
+		// grant tables exist, and that their identifier and no-secret-column
+		// constraints hold.
 	});
 });
 

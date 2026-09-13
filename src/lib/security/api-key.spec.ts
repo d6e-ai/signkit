@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
 	canonicalizeApiKeyScopes,
+	hasAuthorizationHeader,
+	parseBearerApiKey,
 	canonicalizeApiKeyScopesJson,
 	defaultApiKeyExpiresAt,
 	hashApiKey,
@@ -134,5 +136,108 @@ describe('api-key helpers', () => {
 			expect((error as Error).message).not.toContain(invalid);
 		}
 		await expect(hashApiKey(invalid)).rejects.toThrow('Invalid API key');
+	});
+});
+
+describe('bearer API key parsing', () => {
+	const TOKEN: string = `signkit_${'a'.repeat(43)}`;
+
+	it('accepts the exact canonical Bearer form', () => {
+		expect(parseBearerApiKey(`Bearer ${TOKEN}`)).toBe(TOKEN);
+	});
+
+	it('accepts every base64url character in the secret', () => {
+		const token: string = `signkit_${'-_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG'.slice(0, 43)}`;
+		expect(isApiKey(token)).toBe(true);
+		expect(parseBearerApiKey(`Bearer ${token}`)).toBe(token);
+	});
+
+	/**
+	 * Every rejection must be indistinguishable to the caller: the parser returns
+	 * null for all of them, and the hooks layer maps null to the same opaque 401.
+	 * The other credential families are listed explicitly because presenting a
+	 * recipient capability, a completion grant, an invitation token, or a worker
+	 * secret here must never be treated as an API key.
+	 */
+	it.each([
+		['a missing header', null],
+		['an empty header', ''],
+		['a lowercase scheme', `bearer ${TOKEN}`],
+		['an uppercase scheme', `BEARER ${TOKEN}`],
+		['no scheme at all', TOKEN],
+		['a leading space', ` Bearer ${TOKEN}`],
+		['a trailing space', `Bearer ${TOKEN} `],
+		['two spaces after the scheme', `Bearer  ${TOKEN}`],
+		['a tab separator', `Bearer\t${TOKEN}`],
+		['a Basic credential', 'Basic dXNlcjpwYXNz'],
+		['a recipient capability', `Bearer skr1_${'a'.repeat(43)}`],
+		['a completion access grant', `Bearer skca1_${'a'.repeat(43)}`],
+		['an instance invitation token', `Bearer ski1_${'a'.repeat(43)}`],
+		['a deployment worker secret', `Bearer ${'x'.repeat(48)}`],
+		['a truncated secret', `Bearer signkit_${'a'.repeat(42)}`],
+		['an overlong secret', `Bearer signkit_${'a'.repeat(44)}`],
+		['a non-base64url character', `Bearer signkit_${'a'.repeat(42)}+`],
+		['a trailing newline', `Bearer ${TOKEN}\n`],
+		['a second credential appended', `Bearer ${TOKEN}, Bearer ${TOKEN}`]
+	])('rejects %s', (_name, header) => {
+		expect(parseBearerApiKey(header)).toBeNull();
+	});
+
+	/**
+	 * Bearer exclusivity depends on detecting that *some* Authorization header was
+	 * presented, independently of whether it parses. Otherwise a malformed bearer
+	 * would silently fall back to a cookie session.
+	 */
+	it('reports header presence independently of parseability', () => {
+		expect(hasAuthorizationHeader('Basic dXNlcjpwYXNz')).toBe(true);
+		expect(hasAuthorizationHeader(`Bearer skr1_${'a'.repeat(43)}`)).toBe(true);
+		expect(hasAuthorizationHeader(`Bearer ${TOKEN}`)).toBe(true);
+	});
+
+	/**
+	 * An absent header and a present-but-empty one are genuinely different inputs
+	 * -- `Headers.get` returns `null` versus `''`, and `Headers.has` reports false
+	 * versus true -- and they are deliberately treated the same here.
+	 *
+	 * An all-empty `Authorization` presents no credential, so treating it as "no
+	 * bearer" cannot let an attacker-supplied credential compose with a victim's
+	 * cookie: there is no credential to compose. Suppressing the cookie for it
+	 * would only turn a credential-free request into a 401 for no security gain.
+	 */
+	it('treats an absent and a present-but-empty header alike', () => {
+		const url: string = 'https://signkit.example/api/v1/envelopes';
+		const absent: Request = new Request(url);
+		const empty: Request = new Request(url, { headers: { authorization: '' } });
+		const whitespace: Request = new Request(url, { headers: { authorization: '   ' } });
+
+		// The inputs really are distinguishable at the Headers level.
+		expect(absent.headers.has('authorization')).toBe(false);
+		expect(absent.headers.get('authorization')).toBeNull();
+		expect(empty.headers.has('authorization')).toBe(true);
+		expect(empty.headers.get('authorization')).toBe('');
+		// HTTP strips surrounding whitespace, so a whitespace-only value is empty.
+		expect(whitespace.headers.get('authorization')).toBe('');
+
+		// And all three are reported as carrying no bearer.
+		expect(hasAuthorizationHeader(absent.headers.get('authorization'))).toBe(false);
+		expect(hasAuthorizationHeader(empty.headers.get('authorization'))).toBe(false);
+		expect(hasAuthorizationHeader(whitespace.headers.get('authorization'))).toBe(false);
+	});
+
+	/**
+	 * Duplication cannot be used to hide a real token behind an empty one:
+	 * `Headers.get` joins repeated fields with `", "`, so the combined value is
+	 * non-empty, is reported as present, and then fails the anchored parse -- which
+	 * is the fail-closed outcome, not a usable credential.
+	 */
+	it('reports a duplicated header with one empty value as present but unparsable', () => {
+		const headers: Headers = new Headers();
+		headers.append('authorization', '');
+		headers.append('authorization', `Bearer ${TOKEN}`);
+		const combined: string | null = headers.get('authorization');
+
+		expect(combined).toBe(`, Bearer ${TOKEN}`);
+		expect(hasAuthorizationHeader(combined)).toBe(true);
+		expect(parseBearerApiKey(combined)).toBeNull();
 	});
 });

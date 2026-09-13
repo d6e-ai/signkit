@@ -12,6 +12,7 @@ const readyAuditEventId: string = '01900000-0000-7000-8000-000000000099';
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
 		memberships:
 			state === 'authorized'
