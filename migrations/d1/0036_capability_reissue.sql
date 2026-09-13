@@ -1,6 +1,8 @@
 -- Recipient capability reissue, append-only outbox, and issuance ledger.
 -- Allows reissuing delivery for released pending or viewed recipients,
 -- creating an append-only capability lineage without mutating first-view evidence.
+-- Recreated command triggers must stamp audit_event.hash_version = 2 explicitly:
+-- SQLite cannot ALTER COLUMN SET DEFAULT (see 0023_audit_hash_v2.sql).
 
 PRAGMA foreign_keys = OFF;
 
@@ -346,12 +348,12 @@ BEGIN
   -- 6. Insert audit event
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id, NEW.audit_sequence,
     'recipient.capability_reissued', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
-    NEW.updated_at
+    NEW.updated_at, 2
   );
 
   -- 7. Update envelope updated_at
@@ -481,12 +483,12 @@ BEGIN
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence, 'envelope.expired', 'system',
     'envelope-expiry-drain', NEW.audit_payload_json, NEW.previous_audit_hash,
-    NEW.audit_event_hash, NEW.updated_at
+    NEW.audit_event_hash, NEW.updated_at, 2
   );
 END;
 
@@ -583,11 +585,11 @@ BEGIN
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) SELECT command.audit_event_id, command.organization_id, command.envelope_id,
       command.audit_sequence, 'envelope.sent', command.actor_type, command.actor_id,
       command.audit_payload_json, command.previous_audit_hash, command.audit_event_hash,
-      command.updated_at
+      command.updated_at, 2
     FROM envelope_send_command command
     WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
       AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key;
@@ -717,12 +719,12 @@ BEGIN
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence, 'envelope.voided', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
-    NEW.updated_at
+    NEW.updated_at, 2
   );
 END;
 
@@ -897,22 +899,22 @@ BEGIN
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence, 'recipient.approved', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
-    NEW.updated_at
+    NEW.updated_at, 2
   );
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   )
   SELECT NEW.completed_audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence + 1, 'envelope.completed', NEW.actor_type, NEW.actor_id,
     NEW.completed_audit_payload_json, NEW.audit_event_hash, NEW.completed_audit_event_hash,
-    NEW.updated_at
+    NEW.updated_at, 2
   WHERE NEW.completed_audit_event_id IS NOT NULL;
 
   SELECT CASE
@@ -1120,12 +1122,12 @@ BEGIN
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence, 'recipient.declined', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
-    NEW.updated_at
+    NEW.updated_at, 2
   );
 END;
 
@@ -1338,22 +1340,22 @@ BEGIN
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence, 'recipient.signed', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
-    NEW.updated_at
+    NEW.updated_at, 2
   );
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   )
   SELECT NEW.completed_audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence + 1, 'envelope.completed', NEW.actor_type, NEW.actor_id,
     NEW.completed_audit_payload_json, NEW.audit_event_hash, NEW.completed_audit_event_hash,
-    NEW.updated_at
+    NEW.updated_at, 2
   WHERE NEW.completed_audit_event_id IS NOT NULL;
 
   SELECT CASE

@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	boundEnvelopeExpiryDiscoveryLimit,
@@ -86,16 +87,17 @@ export class EnvelopeExpiryDrainService {
 					recipientIds: revokedRecipientIds
 				}
 			});
-			const auditEventHash: string = await sha256(
-				JSON.stringify({
-					actorId: EXPIRY_ACTOR_ID,
-					envelopeId: candidate.envelopeId,
+			const auditEventHash: string = await hashAuditEventV2(
+				{
+					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'envelope.expired',
+					actorType: 'system',
+					actorId: EXPIRY_ACTOR_ID,
 					occurredAt: expiredAt,
-					organizationId: candidate.organizationId,
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
-				})
+				},
+				{ organizationId: candidate.organizationId, envelopeId: candidate.envelopeId }
 			);
 			const command: PublishEnvelopeExpiryCommand = {
 				organizationId: candidate.organizationId,
@@ -135,14 +137,4 @@ function summarize(
 		else skipped += 1;
 	}
 	return { discovered, expired, skipped, outcomes };
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

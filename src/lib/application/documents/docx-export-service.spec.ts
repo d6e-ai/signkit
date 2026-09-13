@@ -44,6 +44,14 @@ class MemoryObjectStore implements ObjectStore {
 	}
 
 	async delete(): Promise<void> {}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('unused');
+	}
 }
 
 class FixedDraftRepository implements DraftRepository {

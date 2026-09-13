@@ -54,6 +54,12 @@ class FakeObjectStore implements ObjectStore {
 		return { key, contentType: object.contentType, size: 0, sha256: object.sha256, version: null };
 	}
 	async delete(): Promise<void> {}
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+	async deleteMany(): Promise<void> {
+		throw new Error('unused');
+	}
 }
 
 describe('SignatureAssetApplication', () => {
@@ -144,7 +150,13 @@ describe('SignatureAssetApplication', () => {
 				sha256: 'mismatched-sha256',
 				version: null
 			}),
-			delete: async () => {}
+			delete: async () => {},
+			list: async () => {
+				throw new Error('unused');
+			},
+			deleteMany: async () => {
+				throw new Error('unused');
+			}
 		};
 		const application = new SignatureAssetApplication(new FakeAccess(), objects);
 		const result = await application.store({

@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	PublishReissueCommand,
@@ -113,16 +114,17 @@ export class RecipientCapabilityReissueApplication implements RecipientCapabilit
 				reissuedAt: updatedAt
 			});
 
-			const auditEventHash: string = await sha256(
-				JSON.stringify({
-					actorId: actor.id,
-					envelopeId: input.envelopeId,
+			const auditEventHash: string = await hashAuditEventV2(
+				{
+					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'recipient.capability_reissued',
+					actorType: 'user',
+					actorId: actor.id,
 					occurredAt: updatedAt,
-					organizationId: actor.organizationId,
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
-				})
+				},
+				{ organizationId: actor.organizationId, envelopeId: input.envelopeId }
 			);
 
 			const command: PublishReissueCommand = {
