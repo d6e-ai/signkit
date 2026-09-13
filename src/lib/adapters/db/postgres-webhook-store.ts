@@ -96,29 +96,15 @@ export class PostgresWebhookStore implements WebhookStore {
 	): Promise<CreateWebhookEndpointResult> {
 		try {
 			return await this.#sql.begin(async (sql: postgres.TransactionSql) => {
-				const existing: CommandRow[] = await sql<CommandRow[]>`
-					SELECT request_hash AS "requestHash", webhook_id AS "webhookId"
-					FROM webhook_endpoint_command
-					WHERE organization_id = ${command.organizationId}
-						AND actor_id = ${command.actorId}
-						AND idempotency_key = ${command.idempotencyKey}
-					FOR UPDATE`;
-				if (existing.length === 1) {
-					if (existing[0].requestHash !== command.requestFingerprint) {
-						throw new WebhookRollback<CreateWebhookEndpointResult>({ outcome: 'conflict' });
-					}
-					const endpoint: WebhookEndpointMetadata | null = await this.#get(
-						sql,
-						command.organizationId,
-						existing[0].webhookId
-					);
-					if (endpoint === null) {
-						throw new WebhookRollback<CreateWebhookEndpointResult>({ outcome: 'conflict' });
-					}
-					throw new WebhookRollback<CreateWebhookEndpointResult>({
-						outcome: 'replayed',
-						endpoint
-					});
+				await this.#lockOrganization(sql, command.organizationId);
+				const existing: CommandRow | null = await this.#findCommand(
+					sql,
+					command.organizationId,
+					command.actorId,
+					command.idempotencyKey
+				);
+				if (existing !== null) {
+					throw new WebhookRollback(await this.#replayOrConflictCreate(sql, command, existing));
 				}
 				const [{ n }]: { n: string }[] = await sql<{ n: string }[]>`
 					SELECT COUNT(*)::text AS n FROM webhook_endpoint
@@ -126,7 +112,7 @@ export class PostgresWebhookStore implements WebhookStore {
 				if (Number(n) >= WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION) {
 					throw new WebhookRollback<CreateWebhookEndpointResult>({ outcome: 'limit_exceeded' });
 				}
-				await sql`
+				const insertedEndpoint: { id: string }[] = await sql<{ id: string }[]>`
 					INSERT INTO webhook_endpoint (
 						id, organization_id, url, description, status, events_json,
 						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
@@ -134,15 +120,25 @@ export class PostgresWebhookStore implements WebhookStore {
 						${command.id}, ${command.organizationId}, ${command.url}, ${command.description},
 						'active', ${command.eventsJson}, ${command.secretHash}, ${command.signingSecret},
 						${command.sealingKeyId}, ${command.secretPrefix}, ${command.createdAt}::timestamptz, ${command.actorId}
-					)`;
-				await sql`
+					)
+					ON CONFLICT DO NOTHING
+					RETURNING id`;
+				if (insertedEndpoint.length !== 1) {
+					throw new WebhookRollback<CreateWebhookEndpointResult>({ outcome: 'conflict' });
+				}
+				const insertedCommand: { webhookId: string }[] = await sql<{ webhookId: string }[]>`
 					INSERT INTO webhook_endpoint_command (
 						organization_id, actor_id, idempotency_key, command_type, request_hash,
 						webhook_id, occurred_at
 					) VALUES (
 						${command.organizationId}, ${command.actorId}, ${command.idempotencyKey}, 'create',
 						${command.requestFingerprint}, ${command.id}, ${command.createdAt}::timestamptz
-					)`;
+					)
+					ON CONFLICT DO NOTHING
+					RETURNING webhook_id AS "webhookId"`;
+				if (insertedCommand.length !== 1) {
+					throw new WebhookRollback(await this.#classifyCreateCollision(sql, command));
+				}
 				const endpoint: WebhookEndpointMetadata | null = await this.#get(
 					sql,
 					command.organizationId,
@@ -199,29 +195,14 @@ export class PostgresWebhookStore implements WebhookStore {
 	): Promise<RevokeWebhookEndpointResult> {
 		try {
 			return await this.#sql.begin(async (sql: postgres.TransactionSql) => {
-				const existing: CommandRow[] = await sql<CommandRow[]>`
-					SELECT request_hash AS "requestHash", webhook_id AS "webhookId"
-					FROM webhook_endpoint_command
-					WHERE organization_id = ${command.organizationId}
-						AND actor_id = ${command.actorId}
-						AND idempotency_key = ${command.idempotencyKey}
-					FOR UPDATE`;
-				if (existing.length === 1) {
-					if (existing[0].requestHash !== command.requestFingerprint) {
-						throw new WebhookRollback<RevokeWebhookEndpointResult>({ outcome: 'conflict' });
-					}
-					const endpoint: WebhookEndpointMetadata | null = await this.#get(
-						sql,
-						command.organizationId,
-						existing[0].webhookId
-					);
-					if (endpoint === null) {
-						throw new WebhookRollback<RevokeWebhookEndpointResult>({ outcome: 'not_found' });
-					}
-					throw new WebhookRollback<RevokeWebhookEndpointResult>({
-						outcome: 'replayed',
-						endpoint
-					});
+				const existing: CommandRow | null = await this.#findCommand(
+					sql,
+					command.organizationId,
+					command.actorId,
+					command.idempotencyKey
+				);
+				if (existing !== null) {
+					throw new WebhookRollback(await this.#replayOrConflictRevoke(sql, command, existing));
 				}
 				const updated: { id: string }[] = await sql<{ id: string }[]>`
 					UPDATE webhook_endpoint
@@ -232,6 +213,15 @@ export class PostgresWebhookStore implements WebhookStore {
 						AND status = 'active'
 					RETURNING id`;
 				if (updated.length !== 1) {
+					const raced: CommandRow | null = await this.#findCommand(
+						sql,
+						command.organizationId,
+						command.actorId,
+						command.idempotencyKey
+					);
+					if (raced !== null) {
+						throw new WebhookRollback(await this.#replayOrConflictRevoke(sql, command, raced));
+					}
 					const current: WebhookEndpointMetadata | null = await this.#get(
 						sql,
 						command.organizationId,
@@ -245,14 +235,19 @@ export class PostgresWebhookStore implements WebhookStore {
 						endpoint: current
 					});
 				}
-				await sql`
+				const insertedCommand: { webhookId: string }[] = await sql<{ webhookId: string }[]>`
 					INSERT INTO webhook_endpoint_command (
 						organization_id, actor_id, idempotency_key, command_type, request_hash,
 						webhook_id, occurred_at
 					) VALUES (
 						${command.organizationId}, ${command.actorId}, ${command.idempotencyKey}, 'revoke',
 						${command.requestFingerprint}, ${command.webhookId}, ${command.revokedAt}::timestamptz
-					)`;
+					)
+					ON CONFLICT DO NOTHING
+					RETURNING webhook_id AS "webhookId"`;
+				if (insertedCommand.length !== 1) {
+					throw new WebhookRollback(await this.#classifyRevokeCollision(sql, command));
+				}
 				const endpoint: WebhookEndpointMetadata | null = await this.#get(
 					sql,
 					command.organizationId,
@@ -505,6 +500,83 @@ export class PostgresWebhookStore implements WebhookStore {
 			SELECT ${sql.unsafe(ENDPOINT_COLUMNS)} FROM webhook_endpoint
 			WHERE organization_id = ${organizationId} AND id = ${webhookId}`;
 		return rows[0] === undefined ? null : metadataFromRow(rows[0]);
+	}
+
+	async #lockOrganization(sql: Sql, organizationId: string): Promise<void> {
+		await sql`
+			SELECT id FROM organization WHERE id = ${organizationId} FOR NO KEY UPDATE`;
+	}
+
+	async #findCommand(
+		sql: Sql,
+		organizationId: string,
+		actorId: string,
+		idempotencyKey: string
+	): Promise<CommandRow | null> {
+		const existing: CommandRow[] = await sql<CommandRow[]>`
+			SELECT request_hash AS "requestHash", webhook_id AS "webhookId"
+			FROM webhook_endpoint_command
+			WHERE organization_id = ${organizationId}
+				AND actor_id = ${actorId}
+				AND idempotency_key = ${idempotencyKey}
+			FOR UPDATE`;
+		return existing[0] ?? null;
+	}
+
+	async #classifyCreateCollision(
+		sql: Sql,
+		command: CreateWebhookEndpointCommand
+	): Promise<CreateWebhookEndpointResult> {
+		const existing: CommandRow | null = await this.#findCommand(
+			sql,
+			command.organizationId,
+			command.actorId,
+			command.idempotencyKey
+		);
+		if (existing === null) return { outcome: 'conflict' };
+		return this.#replayOrConflictCreate(sql, command, existing);
+	}
+
+	async #classifyRevokeCollision(
+		sql: Sql,
+		command: RevokeWebhookEndpointCommand
+	): Promise<RevokeWebhookEndpointResult> {
+		const existing: CommandRow | null = await this.#findCommand(
+			sql,
+			command.organizationId,
+			command.actorId,
+			command.idempotencyKey
+		);
+		if (existing === null) return { outcome: 'conflict' };
+		return this.#replayOrConflictRevoke(sql, command, existing);
+	}
+
+	async #replayOrConflictCreate(
+		sql: Sql,
+		command: CreateWebhookEndpointCommand,
+		row: CommandRow
+	): Promise<CreateWebhookEndpointResult> {
+		if (row.requestHash !== command.requestFingerprint) return { outcome: 'conflict' };
+		const endpoint: WebhookEndpointMetadata | null = await this.#get(
+			sql,
+			command.organizationId,
+			row.webhookId
+		);
+		return endpoint === null ? { outcome: 'conflict' } : { outcome: 'replayed', endpoint };
+	}
+
+	async #replayOrConflictRevoke(
+		sql: Sql,
+		command: RevokeWebhookEndpointCommand,
+		row: CommandRow
+	): Promise<RevokeWebhookEndpointResult> {
+		if (row.requestHash !== command.requestFingerprint) return { outcome: 'conflict' };
+		const endpoint: WebhookEndpointMetadata | null = await this.#get(
+			sql,
+			command.organizationId,
+			row.webhookId
+		);
+		return endpoint === null ? { outcome: 'not_found' } : { outcome: 'replayed', endpoint };
 	}
 }
 

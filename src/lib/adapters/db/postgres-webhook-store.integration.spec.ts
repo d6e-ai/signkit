@@ -1,15 +1,32 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { WebhookApplication } from '$lib/application/webhooks/webhook-service';
-import type { FailWebhookDeliveryCommand } from '$lib/ports/webhook-store';
-import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_PAYLOAD_BYTES } from '$lib/security/webhook';
+import type {
+	CreateWebhookEndpointCommand,
+	CreateWebhookEndpointResult,
+	FailWebhookDeliveryCommand,
+	RevokeWebhookEndpointCommand,
+	RevokeWebhookEndpointResult
+} from '$lib/ports/webhook-store';
+import {
+	WEBHOOK_MAX_ATTEMPTS,
+	WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION,
+	WEBHOOK_MAX_PAYLOAD_BYTES
+} from '$lib/security/webhook';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 import { PostgresWebhookStore } from './postgres-webhook-store';
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
+const CI_ENABLED: boolean =
+	process.env.CI !== undefined &&
+	process.env.CI.trim() !== '' &&
+	!['0', 'false', 'no'].includes(process.env.CI.toLowerCase());
+if (CI_ENABLED && TEST_DATABASE_URL === undefined) {
+	throw new Error('POSTGRES_TEST_URL is required when PostgreSQL integration tests run in CI');
+}
 const postgresDescribe = TEST_DATABASE_URL === undefined ? describe.skip : describe;
 const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
@@ -265,4 +282,326 @@ async function outboxState(
 	const row = rows[0];
 	if (row === undefined) throw new Error(`missing webhook outbox row ${auditEventId}`);
 	return row;
+}
+
+postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
+	let endpointSql: ReturnType<typeof postgres> | null = null;
+	const endpointSchemaName: string = `signkit_wh_cap_${process.pid}_${randomUUID().replaceAll('-', '')}`;
+	const CREATE_ID_A: string = '01900000-0000-7000-8000-000000000a01';
+	const CREATE_ID_B: string = '01900000-0000-7000-8000-000000000a02';
+	const REVOKE_ID_A: string = '01900000-0000-7000-8000-000000000b01';
+	const REVOKE_ID_B: string = '01900000-0000-7000-8000-000000000b02';
+	const REQUEST_HASH: string = 'c'.repeat(64);
+	const OTHER_REQUEST_HASH: string = 'd'.repeat(64);
+
+	function endpointDatabase(): ReturnType<typeof postgres> {
+		if (endpointSql === null) throw new Error('PostgreSQL endpoint test client is not connected');
+		return endpointSql;
+	}
+
+	function createCommand(
+		overrides: Partial<CreateWebhookEndpointCommand> = {}
+	): CreateWebhookEndpointCommand {
+		return {
+			id: CREATE_ID_A,
+			organizationId: ORGANIZATION_ID,
+			actorId: ACTOR_ID,
+			idempotencyKey: 'idemp-create-001',
+			requestFingerprint: REQUEST_HASH,
+			url: 'https://hooks.example.com/target',
+			description: 'Webhook Endpoint',
+			eventsJson: '["envelope.completed"]',
+			secretHash: 'b'.repeat(64),
+			signingSecret: 'skwhs1_v1_' + 'C'.repeat(80),
+			sealingKeyId: '0123456789abcdef',
+			secretPrefix: 'skwh1_abcd',
+			createdAt: AVAILABLE_AT,
+			...overrides
+		};
+	}
+
+	function revokeCommand(
+		overrides: Partial<RevokeWebhookEndpointCommand> = {}
+	): RevokeWebhookEndpointCommand {
+		return {
+			organizationId: ORGANIZATION_ID,
+			webhookId: REVOKE_ID_A,
+			actorId: ACTOR_ID,
+			idempotencyKey: 'idemp-revoke-001',
+			requestFingerprint: REQUEST_HASH,
+			revokedAt: AVAILABLE_AT,
+			...overrides
+		};
+	}
+
+	async function seedActiveEndpoints(count: number): Promise<void> {
+		await endpointDatabase()`
+			INSERT INTO webhook_endpoint (
+				id, organization_id, url, description, status, events_json, secret_hash,
+				signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
+			)
+			SELECT
+				'01900000-0000-7000-8000-' || lpad(i::text, 12, '0'),
+				${ORGANIZATION_ID},
+				'https://hooks.example.com/t' || i::text,
+				NULL,
+				'active',
+				'["envelope.completed"]',
+				${'a'.repeat(64)},
+				${'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG'},
+				NULL,
+				'skwh1_abcd',
+				${AVAILABLE_AT}::timestamptz,
+				${ACTOR_ID}
+			FROM generate_series(1, ${count}) AS s(i)`;
+	}
+
+	async function insertActiveEndpoint(id: string): Promise<void> {
+		await endpointDatabase()`
+			INSERT INTO webhook_endpoint (
+				id, organization_id, url, description, status, events_json, secret_hash,
+				signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
+			) VALUES (
+				${id}, ${ORGANIZATION_ID}, ${'https://hooks.example.com/' + id}, NULL, 'active',
+				'["envelope.completed"]', ${'a'.repeat(64)},
+				${'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG'}, NULL, 'skwh1_abcd',
+				${AVAILABLE_AT}::timestamptz, ${ACTOR_ID}
+			)`;
+	}
+
+	async function activeCount(): Promise<number> {
+		const rows: { n: string }[] = await endpointDatabase()`
+			SELECT COUNT(*)::text AS n FROM webhook_endpoint
+			WHERE organization_id = ${ORGANIZATION_ID} AND status = 'active'`;
+		return Number(rows[0]?.n ?? '0');
+	}
+
+	function openConcurrentSql(): ReturnType<typeof postgres> {
+		return postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: endpointSchemaName, TimeZone: 'UTC' }
+		});
+	}
+
+	beforeAll(async () => {
+		endpointSql = postgres(TEST_DATABASE_URL as string, {
+			max: 1,
+			onnotice: (): void => undefined
+		});
+		await endpointSql.unsafe(`CREATE SCHEMA "${endpointSchemaName}"`);
+		await endpointSql.unsafe(`SET search_path TO "${endpointSchemaName}"`);
+		await endpointSql.unsafe(`SET TIME ZONE 'UTC'`);
+		for (const path of MIGRATION_PATHS) await endpointSql.unsafe(readFileSync(path, 'utf8'));
+		await endpointSql.unsafe(`
+			INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES ('${ORGANIZATION_ID}', '${ORGANIZATION_ID}', 'Workspace', '${AVAILABLE_AT}');
+		`);
+	});
+
+	beforeEach(async () => {
+		await endpointDatabase().unsafe('TRUNCATE webhook_endpoint CASCADE');
+	});
+
+	afterAll(async () => {
+		if (endpointSql === null) return;
+		await endpointSql.unsafe('SET search_path TO public');
+		await endpointSql.unsafe(`DROP SCHEMA "${endpointSchemaName}" CASCADE`);
+		await endpointSql.end({ timeout: 5 });
+		endpointSql = null;
+	});
+
+	it('creates a webhook endpoint and replays an identical idempotency key', async () => {
+		const store = new PostgresWebhookStore(endpointDatabase());
+		const command = createCommand();
+		const created = await store.createEndpoint(command);
+		expect(created.outcome).toBe('created');
+		const replay = await store.createEndpoint(command);
+		expect(replay.outcome).toBe('replayed');
+		if (created.outcome === 'created' && replay.outcome === 'replayed') {
+			expect(replay.endpoint).toEqual(created.endpoint);
+		}
+	});
+
+	it('returns conflict when the create idempotency key is reused with a different fingerprint', async () => {
+		const store = new PostgresWebhookStore(endpointDatabase());
+		await store.createEndpoint(createCommand());
+		await expect(
+			store.createEndpoint(createCommand({ requestFingerprint: OTHER_REQUEST_HASH }))
+		).resolves.toEqual({ outcome: 'conflict' });
+	});
+
+	it('enforces the active endpoint cap when already at capacity', async () => {
+		await seedActiveEndpoints(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION);
+		const store = new PostgresWebhookStore(endpointDatabase());
+		await expect(store.createEndpoint(createCommand())).resolves.toEqual({
+			outcome: 'limit_exceeded'
+		});
+		expect(await activeCount()).toBe(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION);
+	});
+
+	it('lets exactly one of two synchronized creates succeed from 19 active endpoints', async () => {
+		await seedActiveEndpoints(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION - 1);
+		expect(await activeCount()).toBe(19);
+
+		const concurrentSql = openConcurrentSql();
+		try {
+			const [storeA, storeB] = synchronizeCreateEndpoint([
+				new PostgresWebhookStore(concurrentSql),
+				new PostgresWebhookStore(concurrentSql)
+			]);
+			const [first, second]: CreateWebhookEndpointResult[] = await Promise.all([
+				storeA.createEndpoint(createCommand({ id: CREATE_ID_A, idempotencyKey: 'idemp-race-a' })),
+				storeB.createEndpoint(createCommand({ id: CREATE_ID_B, idempotencyKey: 'idemp-race-b' }))
+			]);
+			expect([first.outcome, second.outcome].sort()).toEqual(['created', 'limit_exceeded']);
+			expect(await activeCount()).toBe(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	it('resolves a concurrent same-key create race to created and replayed', async () => {
+		const concurrentSql = openConcurrentSql();
+		try {
+			const command = createCommand();
+			const [storeA, storeB] = synchronizeCreateEndpoint([
+				new PostgresWebhookStore(concurrentSql),
+				new PostgresWebhookStore(concurrentSql)
+			]);
+			const [first, second]: CreateWebhookEndpointResult[] = await Promise.all([
+				storeA.createEndpoint(command),
+				storeB.createEndpoint(command)
+			]);
+			expect([first.outcome, second.outcome].sort()).toEqual(['created', 'replayed']);
+			const created = first.outcome === 'created' ? first : second;
+			const replayed = first.outcome === 'replayed' ? first : second;
+			if (created.outcome === 'created' && replayed.outcome === 'replayed') {
+				expect(replayed.endpoint).toEqual(created.endpoint);
+			}
+			const rows: { id: string }[] = await endpointDatabase()`
+				SELECT id FROM webhook_endpoint WHERE organization_id = ${ORGANIZATION_ID}`;
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.id).toBe(command.id);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	it('resolves a concurrent same-key create race with mismatched fingerprints to created and conflict', async () => {
+		const concurrentSql = openConcurrentSql();
+		try {
+			const [storeA, storeB] = synchronizeCreateEndpoint([
+				new PostgresWebhookStore(concurrentSql),
+				new PostgresWebhookStore(concurrentSql)
+			]);
+			const [first, second]: CreateWebhookEndpointResult[] = await Promise.all([
+				storeA.createEndpoint(createCommand()),
+				storeB.createEndpoint(createCommand({ requestFingerprint: OTHER_REQUEST_HASH }))
+			]);
+			expect([first.outcome, second.outcome].sort()).toEqual(['conflict', 'created']);
+			const rows: { id: string }[] = await endpointDatabase()`
+				SELECT id FROM webhook_endpoint WHERE organization_id = ${ORGANIZATION_ID}`;
+			expect(rows).toHaveLength(1);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	it('resolves a concurrent same-key revoke race to revoked and replayed', async () => {
+		await insertActiveEndpoint(REVOKE_ID_A);
+		const concurrentSql = openConcurrentSql();
+		try {
+			const command = revokeCommand();
+			const [storeA, storeB] = synchronizeRevokeEndpoint([
+				new PostgresWebhookStore(concurrentSql),
+				new PostgresWebhookStore(concurrentSql)
+			]);
+			const [first, second]: RevokeWebhookEndpointResult[] = await Promise.all([
+				storeA.revokeEndpoint(command),
+				storeB.revokeEndpoint(command)
+			]);
+			expect([first.outcome, second.outcome].sort()).toEqual(['replayed', 'revoked']);
+			expect(await activeCount()).toBe(0);
+			const commandRows: { n: string }[] = await endpointDatabase()`
+				SELECT COUNT(*)::text AS n FROM webhook_endpoint_command
+				WHERE organization_id = ${ORGANIZATION_ID} AND idempotency_key = ${command.idempotencyKey}`;
+			expect(Number(commandRows[0]?.n)).toBe(1);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	it('classifies a concurrent same-key revoke of different endpoints as conflict rather than 503', async () => {
+		await insertActiveEndpoint(REVOKE_ID_A);
+		await insertActiveEndpoint(REVOKE_ID_B);
+		const concurrentSql = openConcurrentSql();
+		try {
+			const [storeA, storeB] = synchronizeRevokeEndpoint([
+				new PostgresWebhookStore(concurrentSql),
+				new PostgresWebhookStore(concurrentSql)
+			]);
+			const [first, second]: RevokeWebhookEndpointResult[] = await Promise.all([
+				storeA.revokeEndpoint(revokeCommand({ webhookId: REVOKE_ID_A })),
+				storeB.revokeEndpoint(
+					revokeCommand({
+						webhookId: REVOKE_ID_B,
+						requestFingerprint: OTHER_REQUEST_HASH
+					})
+				)
+			]);
+			expect([first.outcome, second.outcome].sort()).toEqual(['conflict', 'revoked']);
+			expect(await activeCount()).toBe(1);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+});
+
+interface SynchronizedCreateEndpointStore {
+	createEndpoint(command: CreateWebhookEndpointCommand): Promise<CreateWebhookEndpointResult>;
+}
+
+function synchronizeCreateEndpoint(
+	delegates: readonly PostgresWebhookStore[]
+): readonly SynchronizedCreateEndpointStore[] {
+	let arrivals: number = 0;
+	let release: (() => void) | null = null;
+	const gate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+		release = resolve;
+	});
+	return delegates.map((delegate: PostgresWebhookStore): SynchronizedCreateEndpointStore => ({
+		createEndpoint: async (
+			command: CreateWebhookEndpointCommand
+		): Promise<CreateWebhookEndpointResult> => {
+			arrivals += 1;
+			if (arrivals === delegates.length) release?.();
+			await gate;
+			return delegate.createEndpoint(command);
+		}
+	}));
+}
+
+interface SynchronizedRevokeEndpointStore {
+	revokeEndpoint(command: RevokeWebhookEndpointCommand): Promise<RevokeWebhookEndpointResult>;
+}
+
+function synchronizeRevokeEndpoint(
+	delegates: readonly PostgresWebhookStore[]
+): readonly SynchronizedRevokeEndpointStore[] {
+	let arrivals: number = 0;
+	let release: (() => void) | null = null;
+	const gate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+		release = resolve;
+	});
+	return delegates.map((delegate: PostgresWebhookStore): SynchronizedRevokeEndpointStore => ({
+		revokeEndpoint: async (
+			command: RevokeWebhookEndpointCommand
+		): Promise<RevokeWebhookEndpointResult> => {
+			arrivals += 1;
+			if (arrivals === delegates.length) release?.();
+			await gate;
+			return delegate.revokeEndpoint(command);
+		}
+	}));
 }
