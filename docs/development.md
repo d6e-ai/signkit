@@ -91,7 +91,7 @@ A new SignKit-owned identifier column needs the UUIDv7 check in both dialects (P
 
 ## Rust CLI (`cli/`)
 
-The Rust CLI workspace lives in `cli/` with binary target `signkit`.
+The Rust CLI workspace lives in `cli/` with binary target `signkit` (MSRV 1.88.0).
 
 ```sh
 cd cli
@@ -110,3 +110,4 @@ The test suite uses `wiremock` to test against a local mock HTTP server, verifyi
 
 - **validate** — `lint`, `check`, Chromium install, and the full `test` script against a `postgres:18-alpine` service with `POSTGRES_TEST_URL` set, so PostgreSQL integration suites always run in CI.
 - **build** — a matrix over `node`, `cloudflare`, and `vercel`. The Node build additionally runs `test:node-build`; the Cloudflare build checks generated binding types, applies local D1 migrations, and runs `wrangler deploy --dry-run`.
+- **rust-cli** — isolated Rust CI job on Rust 1.88.0 running `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.

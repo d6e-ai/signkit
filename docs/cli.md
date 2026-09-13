@@ -1,6 +1,6 @@
 # SignKit Rust CLI (`signkit`)
 
-Production-quality, agent-first Rust CLI for SignKit located under `cli/`.
+Production-quality, agent-first Rust CLI for SignKit located under `cli/` (requires Rust 1.88.0+ / MSRV 1.88.0).
 
 ## Architecture & Current Truth
 

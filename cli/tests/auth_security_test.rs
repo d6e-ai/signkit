@@ -448,3 +448,74 @@ async fn test_bounded_response_handling() {
     let exit_code = run_cli(cli).await;
     assert_eq!(exit_code, ExitCode::ValidationError);
 }
+
+#[tokio::test]
+async fn test_non_json_error_body_multibyte_truncation_no_panic_or_leak() {
+    let mock_server = common::start_mock_server().await;
+
+    // 499 ASCII bytes, followed by 4-byte '🦀' ([0xF0, 0x9F, 0xA6, 0x80]), then trailing bytes.
+    // Index 500 lands inside the 4-byte crab emoji, which would panic with simple &detail_text[..500].
+    let mut body = vec![b'X'; 499];
+    body.extend_from_slice("🦀--trailing-upstream-proxy-error--".as_bytes());
+    assert!(body.len() > 500);
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/envelopes"))
+        .respond_with(
+            ResponseTemplate::new(502)
+                .insert_header("content-type", "text/plain; charset=utf-8")
+                .set_body_bytes(body),
+        )
+        .mount(&mock_server)
+        .await;
+
+    // 1. Binary execution regression test: verify exit code 8, no panic, no secret leakage
+    let mut cmd = Command::cargo_bin("signkit").unwrap();
+    let assert = cmd
+        .args([
+            "--base-url",
+            &mock_server.uri(),
+            "--org",
+            common::TEST_ORG,
+            "envelopes",
+            "list",
+        ])
+        .env("SIGNKIT_API_KEY", common::TEST_API_KEY)
+        .assert()
+        .code(8)
+        .stdout(predicate::str::is_empty());
+
+    let stderr_str = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        !stderr_str.contains(common::TEST_API_KEY),
+        "API key secret must never leak in stderr"
+    );
+    assert!(
+        !stderr_str.contains("panicked"),
+        "CLI must not panic when error detail crosses a multi-byte boundary"
+    );
+
+    // Verify valid RFC 9457 JSON problem document in stderr
+    let problem: serde_json::Value = serde_json::from_str(&stderr_str)
+        .expect("stderr must be valid RFC 9457 ProblemDetail JSON");
+    assert_eq!(problem["status"], 502);
+    assert_eq!(problem["type"], "urn:signkit:problem:http-502");
+    assert_eq!(problem["title"], "Bad Gateway");
+    let detail = problem["detail"].as_str().expect("detail must be a string");
+    assert_eq!(detail, format!("{}...", "X".repeat(499)));
+
+    // 2. In-process execution: verify run_cli returns ExitCode::UnavailableError
+    let _env = common::EnvScope::new(&[("SIGNKIT_API_KEY", Some(common::TEST_API_KEY))]).await;
+    let cli = Cli::parse_from([
+        "signkit",
+        "--base-url",
+        &mock_server.uri(),
+        "--org",
+        common::TEST_ORG,
+        "envelopes",
+        "list",
+    ]);
+
+    let exit_code = run_cli(cli).await;
+    assert_eq!(exit_code, ExitCode::UnavailableError);
+}
