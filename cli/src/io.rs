@@ -167,8 +167,8 @@ fn new_uuid_v4() -> Result<String, CliError> {
     ))
 }
 
-fn fill_random(buffer: &mut [u8]) -> io::Result<()> {
-    File::open("/dev/urandom")?.read_exact(buffer)
+fn fill_random(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
+    getrandom::getrandom(buffer)
 }
 
 #[cfg(test)]
