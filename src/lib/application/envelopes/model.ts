@@ -3,7 +3,7 @@ import type { EnvelopeStore } from '$lib/ports/envelope-store';
 
 export interface EnvelopeActor {
 	id: string;
-	type: 'user';
+	type: 'user' | 'agent';
 }
 
 export interface EnvelopeListQuery {
@@ -54,6 +54,12 @@ export interface EnvelopeRequestActor {
 	id: string;
 	organizationId: string;
 	organizationName: string;
+	/** Session operators are `user`; API keys are `agent`. Defaults to `user`. */
+	actorType?: 'user' | 'agent';
+}
+
+export function envelopeActorType(actor: EnvelopeRequestActor): 'user' | 'agent' {
+	return actor.actorType ?? 'user';
 }
 
 export interface CreateEnvelopeInput {

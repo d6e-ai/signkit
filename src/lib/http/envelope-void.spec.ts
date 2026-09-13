@@ -138,7 +138,7 @@ describe('envelope void HTTP handler', () => {
 			);
 			expect(response.status).toBe(200);
 			expect(app.voidEnvelope).toHaveBeenCalledWith(
-				{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+				{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 				envelopeId,
 				{ idempotencyKey: 'void-1', expectedStatus, expectedGeneration }
 			);

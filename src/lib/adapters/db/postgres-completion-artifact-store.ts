@@ -65,6 +65,7 @@ interface AuditEvidenceRow {
 	payloadJson: string;
 	previousHash: string | null;
 	eventHash: string;
+	hashVersion: number | string | null;
 	/** `to_char(... , 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`: full microsecond precision, so alteration below millisecond precision cannot hide behind the driver's own millisecond-only `Date` rounding. */
 	occurredAtPrecise: string;
 }
@@ -246,7 +247,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 		const auditEvents = await this.#sql<AuditEvidenceRow[]>`
 			SELECT id, sequence, event_type AS "eventType", actor_type AS "actorType",
 				actor_id AS "actorId", payload_json AS "payloadJson", previous_hash AS "previousHash",
-				event_hash AS "eventHash",
+				event_hash AS "eventHash", hash_version AS "hashVersion",
 				to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAtPrecise"
 			FROM audit_event
 			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
@@ -277,7 +278,8 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				payloadJson: row.payloadJson,
 				previousHash: row.previousHash,
 				eventHash: row.eventHash,
-				occurredAt: alignedMillisecondTimestamp(row.occurredAtPrecise)
+				occurredAt: alignedMillisecondTimestamp(row.occurredAtPrecise),
+				hashVersion: Number(row.hashVersion) === 2 ? 2 : 1
 			}))
 		};
 	}

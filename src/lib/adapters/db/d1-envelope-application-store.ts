@@ -133,8 +133,8 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 			.prepare(
 				`INSERT INTO audit_event (
 					id, organization_id, envelope_id, sequence, event_type, actor_type,
-					actor_id, payload_json, previous_hash, event_hash, occurred_at
-				) VALUES (?, ?, ?, 1, 'envelope.created', ?, ?, ?, NULL, ?, ?)`
+					actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
+				) VALUES (?, ?, ?, 1, 'envelope.created', ?, ?, ?, NULL, ?, ?, 2)`
 			)
 			.bind(
 				command.auditEventId,

@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import {
 	DraftIntegrityError,
 	readImmutableDraftRevision
@@ -243,16 +244,17 @@ export class CompletionArtifactPublicationService {
 			// in-flight replay; a separate attempt already differs by its own
 			// publication timestamp, so minting this adds no new failure mode.
 			const auditEventId: string = this.#newId();
-			const auditEventHash: string = await sha256TextHex(
-				JSON.stringify({
-					actorId: 'completion-artifact-worker',
-					envelopeId: claim.envelopeId,
+			const auditEventHash: string = await hashAuditEventV2(
+				{
+					sequence: anchor.sequence + 1,
 					eventType: COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE,
+					actorType: 'system',
+					actorId: 'completion-artifact-worker',
 					occurredAt: now.toISOString(),
-					organizationId: claim.organizationId,
 					payload: auditPayload,
 					previousHash: anchor.eventHash
-				})
+				},
+				{ organizationId: claim.organizationId, envelopeId: claim.envelopeId }
 			);
 
 			const publish: PublishCompletionArtifactResult = await this.#store.publishCompletionArtifact({

@@ -117,11 +117,14 @@ describe('EnvelopeVoidApplication', () => {
 		expect(command.auditEventHash).toBe(
 			sha256(
 				JSON.stringify({
-					actorId: actor.id,
-					envelopeId,
-					eventType: 'envelope.voided',
-					occurredAt: command.updatedAt,
+					hashVersion: 2,
 					organizationId: actor.organizationId,
+					envelopeId,
+					sequence: 9,
+					eventType: 'envelope.voided',
+					actorType: 'user',
+					actorId: actor.id,
+					occurredAt: command.updatedAt,
 					payload: JSON.parse(command.auditPayloadJson),
 					previousHash: ready.auditHead.eventHash
 				})

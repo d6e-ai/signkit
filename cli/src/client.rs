@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
@@ -144,6 +144,141 @@ impl SignKitClient {
                 // Truncate detail if excessively long, backing off to the nearest
                 // char boundary so the slice never lands inside a multi-byte
                 // UTF-8 sequence.
+                let max_len = 500;
+                if detail_text.len() > max_len {
+                    let mut end = max_len;
+                    while end > 0 && !detail_text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &detail_text[..end])
+                } else {
+                    detail_text.to_string()
+                }
+            };
+
+            let title = status
+                .canonical_reason()
+                .unwrap_or("HTTP Error")
+                .to_string();
+            let problem = ProblemDetail {
+                r#type: format!("urn:signkit:problem:http-{}", status.as_u16()),
+                title,
+                status: status.as_u16(),
+                detail,
+                instance: path.to_string(),
+                errors: None,
+                extra: Default::default(),
+            };
+            Err(CliError::server_problem(problem))
+        }
+    }
+
+    /// Performs a safe, bounded JSON POST with a required Idempotency-Key.
+    pub async fn post<T, B>(
+        &self,
+        path: &str,
+        body: &B,
+        idempotency_key: &str,
+        authenticated: bool,
+    ) -> Result<T, CliError>
+    where
+        T: DeserializeOwned,
+        B: serde::Serialize,
+    {
+        let relative = path.trim_start_matches('/');
+        let url = self
+            .config
+            .base_url
+            .join(relative)
+            .map_err(|e| CliError::usage(format!("Failed to construct request URL: {e}")))?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, application/problem+json"),
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let idempotency_val = HeaderValue::from_str(idempotency_key).map_err(|_| {
+            CliError::usage("Idempotency-Key contains invalid characters for HTTP header")
+        })?;
+        headers.insert(HeaderName::from_static("idempotency-key"), idempotency_val);
+
+        if authenticated {
+            let org_id = self.config.require_organization()?;
+            let api_key = self.config.require_api_key()?;
+
+            let org_header_name = HeaderName::from_static(SIGNKIT_ORGANIZATION_HEADER);
+            let org_header_val = HeaderValue::from_str(org_id).map_err(|_| {
+                CliError::usage("Organization ID contains invalid characters for HTTP header")
+            })?;
+            headers.insert(org_header_name, org_header_val);
+
+            let auth_str = format!("Bearer {api_key}");
+            let mut auth_val = HeaderValue::from_str(&auth_str).map_err(|_| {
+                CliError::usage("API key contains invalid characters for HTTP header")
+            })?;
+            auth_val.set_sensitive(true);
+            headers.insert(AUTHORIZATION, auth_val);
+        }
+
+        let response = self
+            .http
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() {
+                    CliError::Timeout(format!(
+                        "Request to {path} timed out after {}s",
+                        self.config.timeout_secs
+                    ))
+                } else if err.is_redirect() {
+                    CliError::RedirectRefused(format!("Redirect requested for {path}"))
+                } else {
+                    CliError::Network(format!("Request failed: {err}"))
+                }
+            })?;
+
+        let status = response.status();
+
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+            return Err(CliError::RedirectRefused(location));
+        }
+
+        let bytes = Self::read_bounded_body(response, MAX_RESPONSE_BYTES).await?;
+
+        if status.is_success() {
+            let data: T = serde_json::from_slice(&bytes).map_err(CliError::Json)?;
+            Ok(data)
+        } else {
+            if let Ok(mut problem) = serde_json::from_slice::<ProblemDetail>(&bytes) {
+                if problem.status == 0 {
+                    problem.status = status.as_u16();
+                }
+                if problem.title.is_empty() {
+                    problem.title = status
+                        .canonical_reason()
+                        .unwrap_or("HTTP Error")
+                        .to_string();
+                }
+                if problem.instance.is_empty() {
+                    problem.instance = path.to_string();
+                }
+                return Err(CliError::server_problem(problem));
+            }
+
+            let detail_text = String::from_utf8_lossy(&bytes);
+            let detail = if detail_text.trim().is_empty() {
+                format!("HTTP request returned status {}", status.as_u16())
+            } else {
                 let max_len = 500;
                 if detail_text.len() > max_len {
                     let mut end = max_len;

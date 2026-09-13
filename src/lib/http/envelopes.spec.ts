@@ -156,7 +156,7 @@ describe('envelope HTTP handlers', () => {
 
 		expect(response.status).toBe(201);
 		expect(app.create).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			{ idempotencyKey: 'request-1', title: 'Agreement' }
 		);
 		expect(response.headers.get('location')).toBe(`/api/v1/envelopes/${envelopeId}`);
@@ -177,11 +177,11 @@ describe('envelope HTTP handlers', () => {
 		expect(listResponse.status).toBe(200);
 		expect(getResponse.status).toBe(200);
 		expect(app.list).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			{ cursor: null, limit: 25 }
 		);
 		expect(app.get).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			envelopeId
 		);
 	});

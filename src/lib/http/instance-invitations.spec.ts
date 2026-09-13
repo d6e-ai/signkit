@@ -48,7 +48,7 @@ function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 		principal:
 			state === 'unavailable' || state === 'anonymous'
 				? null
-				: { subject: 'user-1', email: 'user@example.com', name: 'User' }
+				: { subject: 'user-1', email: 'user@example.com', name: 'User', emailVerified: true }
 	};
 }
 
@@ -824,6 +824,44 @@ describe('instance invitation HTTP handlers', () => {
 			});
 			expect(app.accept).not.toHaveBeenCalled();
 		});
+
+		it.each([
+			['missing', undefined],
+			['false', false]
+		] as const)(
+			'fails closed when the authenticated emailVerified claim is %s',
+			async (_name, emailVerified) => {
+				const app: InstanceInvitationApplicationPort = application();
+				const principal = {
+					subject: 'user-1',
+					email: 'user@example.com',
+					name: 'User',
+					...(emailVerified === undefined ? {} : { emailVerified })
+				};
+				const response: Response = await invoke(
+					createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
+					event({
+						pathname: ACCEPT_PATH,
+						locals: {
+							apiKeyAuthentication: { state: 'absent' },
+							identityState: 'authorized',
+							memberships: [],
+							organizationId: null,
+							principal
+						},
+						method: 'POST',
+						body: validAcceptBody(),
+						headers: { 'idempotency-key': 'accept-1' }
+					})
+				);
+				expect(response.status).toBe(403);
+				expect(await response.json()).toMatchObject({
+					type: 'urn:signkit:problem:email-verification-required',
+					status: 403
+				});
+				expect(app.accept).not.toHaveBeenCalled();
+			}
+		);
 
 		it("uses the authenticated identity's own email, never a body-supplied value", async () => {
 			const app: InstanceInvitationApplicationPort = application();

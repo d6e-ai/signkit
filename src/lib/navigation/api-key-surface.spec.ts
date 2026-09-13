@@ -70,7 +70,10 @@ describe('API key rejected surface', () => {
 		'/api/v1/instance/members/user-2/status',
 		'/api/v1/instance/invitations',
 		'/api/v1/instance/invitations/accept',
-		'/api/v1/instance/invitations/01900000-0000-7000-8000-000000000301/revoke'
+		'/api/v1/instance/invitations/01900000-0000-7000-8000-000000000301/revoke',
+		'/api/v1/webhooks',
+		'/api/v1/webhooks/01900000-0000-7000-8000-000000000401',
+		'/api/v1/webhooks/01900000-0000-7000-8000-000000000401/revoke'
 	])('rejects an API key presented on %s', (pathname) => {
 		expect(isApiKeyRejectedPath(pathname)).toBe(true);
 	});

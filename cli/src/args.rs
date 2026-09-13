@@ -7,7 +7,7 @@ use std::path::PathBuf;
     author = "SignKit Authors",
     version = "0.1.0",
     about = "Agent-first CLI for the SignKit e-signature platform",
-    long_about = "Non-interactive, agent-first CLI for SignKit. Operates strictly within the enabled 'envelopes:read' API-key surface. All mutations and key management require interactive operator sessions and are not exposed here."
+    long_about = "Non-interactive, agent-first CLI for SignKit. Operates within the enabled API-key surface: envelopes:read, drafts:write, and envelopes:send. Key management and instance administration require interactive operator sessions and are not exposed here."
 )]
 pub struct Cli {
     /// Base URL of the SignKit service.
@@ -47,7 +47,7 @@ pub enum Command {
     /// Read system capabilities and supported runtime profiles (unauthenticated).
     Capabilities,
 
-    /// Envelope query and inspection commands (requires envelopes:read scope).
+    /// Envelope query, mutation, and evidence commands.
     Envelopes(EnvelopesArgs),
 }
 
@@ -71,8 +71,32 @@ pub enum EnvelopesSubcommand {
     /// Read the delivery status of invitations for an envelope.
     Deliveries(EnvelopeIdArg),
 
+    /// Create a draft envelope (requires drafts:write).
+    Create(EnvelopeCreateArgs),
+
+    /// Commit draft Markdown edits (requires drafts:write).
+    Commit(EnvelopeCommitArgs),
+
+    /// Prepare a draft envelope for sending (requires drafts:write).
+    Ready(EnvelopeReadyArgs),
+
+    /// Place fields on a ready envelope (requires drafts:write).
+    Fields(EnvelopeFieldsArgs),
+
+    /// Send a ready envelope (requires envelopes:send).
+    Send(EnvelopeSendArgs),
+
+    /// Void an envelope (requires envelopes:send).
+    Void(EnvelopeVoidArgs),
+
     /// Read completion artifact publication status for an envelope.
     CompletionArtifact(EnvelopeIdArg),
+
+    /// Read completion artifact publication status (audit evidence).
+    Audit(EnvelopeIdArg),
+
+    /// Read completion artifact publication status (audit evidence).
+    Evidence(EnvelopeIdArg),
 }
 
 #[derive(Debug, Args)]
@@ -91,4 +115,126 @@ pub struct EnvelopeIdArg {
     /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
     #[arg(value_name = "ENVELOPE_ID")]
     pub envelope_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeCreateArgs {
+    /// Envelope title. Mutually exclusive with --file.
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// JSON file or `-` for stdin containing `{ "title": "..." }`.
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeCommitArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `expectedGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: Option<u64>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeReadyArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `expectedGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: Option<u64>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeFieldsArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `expectedGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: Option<u64>,
+
+    /// Overlay `expectedFieldGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_field_generation: Option<u64>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeSendArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `expectedGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: Option<u64>,
+
+    /// Overlay `expectedReadyAuditEventId` onto the JSON body.
+    #[arg(long, value_name = "ID")]
+    pub expected_ready_audit_event_id: Option<String>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeVoidArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `expectedStatus` onto the JSON body.
+    #[arg(long, value_name = "STATUS")]
+    pub expected_status: Option<String>,
+
+    /// Overlay `expectedGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: Option<u64>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
 }

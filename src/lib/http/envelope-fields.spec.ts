@@ -232,7 +232,7 @@ describe('envelope fields HTTP handler', () => {
 		);
 		expect(response.status).toBe(200);
 		expect(app.place).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			envelopeId,
 			{
 				idempotencyKey: 'fields-1',

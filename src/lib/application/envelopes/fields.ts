@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import {
 	fieldTypes,
 	type EnvelopeField,
@@ -18,6 +19,7 @@ import type {
 } from '$lib/ports/envelope-field-store';
 import type { Envelope, Recipient } from '$lib/domain/envelope';
 import type { EnvelopeRequestActor } from './model';
+import { envelopeActorType } from './model';
 
 const MAX_GENERATION: number = 2_147_483_647;
 const MAX_FIELD_COUNT: number = 50;
@@ -97,10 +99,11 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 			fields: canonicalFields
 		});
 		const requestFingerprint: string = await sha256(canonicalRequest);
+		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key = {
 			organizationId: actor.organizationId,
 			envelopeId,
-			actorType: 'user' as const,
+			actorType,
 			actorId: actor.id,
 			idempotencyKey: input.idempotencyKey,
 			requestFingerprint
@@ -174,16 +177,17 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				geometry: field.geometry
 			}))
 		});
-		const auditEventHash: string = await sha256(
-			JSON.stringify({
-				actorId: actor.id,
-				envelopeId,
+		const auditEventHash: string = await hashAuditEventV2(
+			{
+				sequence: preparation.auditHead.sequence + 1,
 				eventType: 'envelope.fields_placed',
+				actorType,
+				actorId: actor.id,
 				occurredAt: updatedAt,
-				organizationId: actor.organizationId,
 				payload: JSON.parse(auditPayloadJson) as unknown,
 				previousHash: preparation.auditHead.eventHash
-			})
+			},
+			{ organizationId: actor.organizationId, envelopeId }
 		);
 		const command: PublishFieldPlacementCommand = {
 			...key,

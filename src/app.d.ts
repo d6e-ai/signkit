@@ -23,6 +23,7 @@ export type ApiKeyAuthenticationState =
 	 */
 	| { state: 'rejected_surface' }
 	| { state: 'invalid_token' }
+	| { state: 'rate_limited' }
 	| { state: 'organization_selector_invalid' }
 	| { state: 'organization_grant_required' }
 	| { state: 'integrity_error' }

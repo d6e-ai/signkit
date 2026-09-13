@@ -15,6 +15,10 @@ export const API_KEY_SCOPES = [
 	'envelopes:send'
 ] as const;
 
+export const API_KEY_RATE_WINDOW_SECONDS: number = 60;
+export const API_KEY_RATE_WINDOW_MAX_REQUESTS: number = 120;
+export const API_KEY_RATE_WINDOW_MS: number = API_KEY_RATE_WINDOW_SECONDS * 1000;
+
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 
 export interface IssuedApiKey {

@@ -1,0 +1,49 @@
+CREATE TABLE webhook_endpoint (
+  id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  url TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL,
+  events_json TEXT NOT NULL,
+  secret_hash TEXT NOT NULL,
+  signing_secret TEXT NOT NULL,
+  secret_prefix TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by_user_id TEXT NOT NULL,
+  revoked_at TEXT,
+  revoked_by_user_id TEXT,
+  PRIMARY KEY (organization_id, id),
+  FOREIGN KEY (organization_id) REFERENCES organization(id),
+  CONSTRAINT webhook_endpoint_id_uuidv7 CHECK (
+    id GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-7[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+  ),
+  CONSTRAINT webhook_endpoint_status_known CHECK (status IN ('active', 'revoked')),
+  CONSTRAINT webhook_endpoint_url_https CHECK (
+    length(url) BETWEEN 12 AND 2000
+    AND url GLOB 'https://*'
+  ),
+  CONSTRAINT webhook_endpoint_secret_hash_sha256 CHECK (
+    length(secret_hash) = 64 AND secret_hash GLOB '[0-9a-f]*'
+  ),
+  CONSTRAINT webhook_endpoint_terminal_exclusive CHECK (
+    (status = 'active' AND revoked_at IS NULL AND revoked_by_user_id IS NULL)
+    OR (status = 'revoked' AND revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX webhook_endpoint_org_created
+  ON webhook_endpoint(organization_id, created_at DESC, id DESC);
+
+CREATE TABLE webhook_endpoint_command (
+  organization_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  command_type TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  webhook_id TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  PRIMARY KEY (organization_id, actor_id, idempotency_key),
+  UNIQUE (organization_id, webhook_id, command_type),
+  FOREIGN KEY (organization_id, webhook_id) REFERENCES webhook_endpoint(organization_id, id),
+  CONSTRAINT webhook_endpoint_command_type_known CHECK (command_type IN ('create', 'revoke'))
+);

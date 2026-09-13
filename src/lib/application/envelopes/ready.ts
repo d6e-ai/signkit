@@ -1,3 +1,4 @@
+import { hashAuditEventV2 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	isActionableRecipientRole,
@@ -14,6 +15,7 @@ import type {
 	ReadyPreparation
 } from '$lib/ports/envelope-ready-store';
 import type { EnvelopeRequestActor } from './model';
+import { envelopeActorType } from './model';
 
 export interface ReadyRecipientInput {
 	email: string;
@@ -77,10 +79,11 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 			recipients: canonicalRecipients
 		});
 		const requestFingerprint: string = await sha256(canonicalRequest);
+		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key = {
 			organizationId: actor.organizationId,
 			envelopeId,
-			actorType: 'user' as const,
+			actorType,
 			actorId: actor.id,
 			idempotencyKey: input.idempotencyKey,
 			requestFingerprint
@@ -119,16 +122,17 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 				routingOrder: recipient.routingOrder
 			}))
 		});
-		const auditEventHash: string = await sha256(
-			JSON.stringify({
-				actorId: actor.id,
-				envelopeId,
+		const auditEventHash: string = await hashAuditEventV2(
+			{
+				sequence: preparation.auditHead.sequence + 1,
 				eventType: 'envelope.ready',
+				actorType,
+				actorId: actor.id,
 				occurredAt: updatedAt,
-				organizationId: actor.organizationId,
 				payload: JSON.parse(auditPayloadJson) as unknown,
 				previousHash: preparation.auditHead.eventHash
-			})
+			},
+			{ organizationId: actor.organizationId, envelopeId }
 		);
 		const command: PublishReadyEnvelopeCommand = {
 			...key,

@@ -121,10 +121,9 @@ export interface CompletionEvidenceAuditEvent {
 	sequence: number;
 	eventType: string;
 	/**
-	 * Not part of every event's hash preimage (only `draft.revision_created`
-	 * hashes it) but always validated against the event type's expected actor
-	 * semantics, since it could otherwise be altered without invalidating the
-	 * event's own recomputed hash.
+	 * v2 hashes include `actorType` and `actorId` for every event. v1 rows
+	 * keep the historical preimage (draft revision hashed actor fields; other
+	 * events did not) and the verifier still rejects an unexpected actor type.
 	 */
 	actorType: string;
 	actorId: string | null;
@@ -134,6 +133,8 @@ export interface CompletionEvidenceAuditEvent {
 	eventHash: string;
 	/** Canonical ISO-8601 millisecond UTC; the adapter fails closed rather than silently truncate stray precision. */
 	occurredAt: string;
+	/** 1 = legacy preimage; 2 = actor fields included for every event. Absent rows are v1. */
+	hashVersion: 1 | 2;
 }
 
 export interface CompletionEvidence {

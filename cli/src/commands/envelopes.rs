@@ -1,10 +1,19 @@
-use crate::args::{EnvelopeIdArg, EnvelopeListArgs, EnvelopesSubcommand};
+use crate::args::{
+    EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeListArgs,
+    EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeVoidArgs, EnvelopesSubcommand,
+};
 use crate::client::SignKitClient;
 use crate::error::CliError;
+use crate::io::{
+    overlay_string, overlay_u64, read_json_object, read_json_value, resolve_idempotency_key,
+};
 use crate::output::print_success;
 use crate::types::{
-    is_valid_uuid_v7, CompletionArtifactResponse, DeliveryStatusResponse, DraftWorkspaceSnapshot,
-    EnvelopeGetResponse, EnvelopeListPage,
+    is_valid_uuid_v7, CompletionArtifactResponse, DeliveryStatusResponse, DraftCommitRequest,
+    DraftCommitResponse, DraftWorkspaceSnapshot, EnvelopeCreateRequest, EnvelopeCreateResponse,
+    EnvelopeGetResponse, EnvelopeListPage, PlaceFieldsRequest, PlaceFieldsResponse,
+    ReadyEnvelopeRequest, ReadyEnvelopeResponse, SendEnvelopeRequest, SendEnvelopeResponse,
+    VoidEnvelopeRequest, VoidEnvelopeResponse,
 };
 
 pub async fn execute(
@@ -18,7 +27,15 @@ pub async fn execute(
         EnvelopesSubcommand::Get(args) => get_envelope(client, args, raw, pretty).await,
         EnvelopesSubcommand::Draft(args) => get_draft(client, args, raw, pretty).await,
         EnvelopesSubcommand::Deliveries(args) => get_deliveries(client, args, raw, pretty).await,
-        EnvelopesSubcommand::CompletionArtifact(args) => {
+        EnvelopesSubcommand::Create(args) => create_envelope(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Commit(args) => commit_draft(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Ready(args) => ready_envelope(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Fields(args) => place_fields(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Send(args) => send_envelope(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Void(args) => void_envelope(client, args, raw, pretty).await,
+        EnvelopesSubcommand::CompletionArtifact(args)
+        | EnvelopesSubcommand::Audit(args)
+        | EnvelopesSubcommand::Evidence(args) => {
             get_completion_artifact(client, args, raw, pretty).await
         }
     }
@@ -105,6 +122,177 @@ async fn get_completion_artifact(
     validate_envelope_id(&args.envelope_id)?;
     let path = format!("/api/v1/envelopes/{}/completion-artifact", args.envelope_id);
     let resp: CompletionArtifactResponse = client.get(&path, &[], true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn create_envelope(
+    client: &SignKitClient,
+    args: EnvelopeCreateArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    let request = match (args.title.as_deref(), args.file.as_deref()) {
+        (Some(title), None) => {
+            let trimmed = title.trim();
+            if trimmed.is_empty() || trimmed.len() > 200 {
+                return Err(CliError::usage(
+                    "Envelope title must contain 1-200 characters.",
+                ));
+            }
+            EnvelopeCreateRequest {
+                title: trimmed.to_string(),
+            }
+        }
+        (None, Some(path)) => {
+            let value = read_json_value(path)?;
+            serde_json::from_value(value).map_err(|err| {
+                CliError::usage(format!("Create JSON did not match {{ title }}: {err}"))
+            })?
+        }
+        (None, None) => {
+            return Err(CliError::usage(
+                "Provide --title or --file PATH (use '-' for stdin).",
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(CliError::usage("Use either --title or --file, not both."));
+        }
+    };
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let resp: EnvelopeCreateResponse = client
+        .post("/api/v1/envelopes", &request, &idempotency_key, true)
+        .await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn commit_draft(
+    client: &SignKitClient,
+    args: EnvelopeCommitArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let mut object = read_json_object(&args.file)?;
+    overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    let request: DraftCommitRequest = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| {
+            CliError::usage(format!(
+                "Commit JSON did not match the required schema: {err}"
+            ))
+        })?;
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/draft/commits", args.envelope_id);
+    let resp: DraftCommitResponse = client.post(&path, &request, &idempotency_key, true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn ready_envelope(
+    client: &SignKitClient,
+    args: EnvelopeReadyArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let mut object = read_json_object(&args.file)?;
+    overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    let request: ReadyEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| {
+        CliError::usage(format!(
+            "Ready JSON did not match the required schema: {err}"
+        ))
+    })?;
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/ready", args.envelope_id);
+    let resp: ReadyEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn place_fields(
+    client: &SignKitClient,
+    args: EnvelopeFieldsArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let mut object = read_json_object(&args.file)?;
+    overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    overlay_u64(
+        &mut object,
+        "expectedFieldGeneration",
+        args.expected_field_generation,
+    );
+    let request: PlaceFieldsRequest = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| {
+            CliError::usage(format!(
+                "Fields JSON did not match the required schema: {err}"
+            ))
+        })?;
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/fields", args.envelope_id);
+    let resp: PlaceFieldsResponse = client.post(&path, &request, &idempotency_key, true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn send_envelope(
+    client: &SignKitClient,
+    args: EnvelopeSendArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let mut object = read_json_object(&args.file)?;
+    overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    overlay_string(
+        &mut object,
+        "expectedReadyAuditEventId",
+        args.expected_ready_audit_event_id.as_deref(),
+    );
+    let request: SendEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| {
+            CliError::usage(format!(
+                "Send JSON did not match the required schema: {err}"
+            ))
+        })?;
+    if !is_valid_uuid_v7(&request.expected_ready_audit_event_id) {
+        return Err(CliError::usage(
+            "expectedReadyAuditEventId must be a canonical lowercase RFC 9562 UUIDv7.",
+        ));
+    }
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/send", args.envelope_id);
+    let resp: SendEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn void_envelope(
+    client: &SignKitClient,
+    args: EnvelopeVoidArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let mut object = read_json_object(&args.file)?;
+    overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    overlay_string(
+        &mut object,
+        "expectedStatus",
+        args.expected_status.as_deref(),
+    );
+    let request: VoidEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| {
+            CliError::usage(format!(
+                "Void JSON did not match the required schema: {err}"
+            ))
+        })?;
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/void", args.envelope_id);
+    let resp: VoidEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
 }

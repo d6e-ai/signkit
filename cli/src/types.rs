@@ -295,6 +295,26 @@ pub struct GrantManagementPaths {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiKeyRateLimits {
+    pub durable: bool,
+    #[serde(rename = "windowSeconds")]
+    pub window_seconds: u32,
+    #[serde(rename = "maxRequests")]
+    pub max_requests: u32,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiKeyActor {
+    #[serde(rename = "type")]
+    pub actor_type: String,
+    pub id: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKeyAuthenticationCapability {
     pub scheme: String,
     #[serde(rename = "tokenPrefix")]
@@ -315,6 +335,8 @@ pub struct ApiKeyAuthenticationCapability {
     pub minted_but_unusable_scopes: Vec<String>,
     #[serde(rename = "readEndpoints")]
     pub read_endpoints: Vec<String>,
+    #[serde(rename = "writeEndpoints")]
+    pub write_endpoints: BTreeMap<String, Vec<String>>,
     pub mutations: bool,
     #[serde(rename = "cookieComposition")]
     pub cookie_composition: bool,
@@ -322,7 +344,8 @@ pub struct ApiKeyAuthenticationCapability {
     #[serde(rename = "lastUsedTracking")]
     pub last_used_tracking: bool,
     #[serde(rename = "rateLimits")]
-    pub rate_limits: bool,
+    pub rate_limits: ApiKeyRateLimits,
+    pub actor: ApiKeyActor,
     #[serde(rename = "grantManagement")]
     pub grant_management: GrantManagementPaths,
     #[serde(rename = "grantAuthority")]
@@ -846,6 +869,232 @@ impl<'de> Deserialize<'de> for PublicCompletionArtifactStatus {
 pub struct CompletionArtifactResponse {
     #[serde(rename = "completionArtifact")]
     pub completion_artifact: PublicCompletionArtifactStatus,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvelopeCreateRequest {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvelopeCreateResponse {
+    pub envelope: Envelope,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftEdit {
+    pub path: String,
+    pub content: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftCommitProvenance {
+    #[serde(rename = "automationRunId", skip_serializing_if = "Option::is_none")]
+    pub automation_run_id: Option<String>,
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftCommitRequest {
+    #[serde(rename = "expectedGeneration")]
+    pub expected_generation: u64,
+    pub message: String,
+    pub edits: Vec<DraftEdit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<DraftCommitProvenance>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftRevision {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    #[serde(rename = "archiveSha256")]
+    pub archive_sha256: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftCommitResponse {
+    pub revision: DraftRevision,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadyRecipient {
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub locale: String,
+    #[serde(rename = "routingOrder")]
+    pub routing_order: u32,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadyEnvelopeRequest {
+    #[serde(rename = "expectedGeneration")]
+    pub expected_generation: u64,
+    pub recipients: Vec<ReadyRecipient>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedReadyEnvelope {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    pub status: EnvelopeStatus,
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    #[serde(rename = "auditEventId")]
+    pub audit_event_id: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadyEnvelopeResponse {
+    pub ready: PublishedReadyEnvelope,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldPlacement {
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+    #[serde(rename = "documentPath")]
+    pub document_path: String,
+    #[serde(rename = "fieldType")]
+    pub field_type: String,
+    pub label: String,
+    pub required: bool,
+    pub position: u32,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceFieldsRequest {
+    #[serde(rename = "expectedGeneration")]
+    pub expected_generation: u64,
+    #[serde(rename = "expectedFieldGeneration")]
+    pub expected_field_generation: u64,
+    pub fields: Vec<FieldPlacement>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedFieldPlacement {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    pub generation: u64,
+    #[serde(rename = "fieldGeneration")]
+    pub field_generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    #[serde(rename = "auditEventId")]
+    pub audit_event_id: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceFieldsResponse {
+    pub fields: PublishedFieldPlacement,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendEnvelopeRequest {
+    #[serde(rename = "expectedGeneration")]
+    pub expected_generation: u64,
+    #[serde(rename = "expectedReadyAuditEventId")]
+    pub expected_ready_audit_event_id: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedSentEnvelope {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    pub status: EnvelopeStatus,
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    #[serde(rename = "readyAuditEventId")]
+    pub ready_audit_event_id: String,
+    #[serde(rename = "queuedDeliveryCount")]
+    pub queued_delivery_count: u32,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    #[serde(rename = "auditEventId")]
+    pub audit_event_id: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendEnvelopeResponse {
+    pub sent: PublishedSentEnvelope,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoidEnvelopeRequest {
+    #[serde(rename = "expectedStatus")]
+    pub expected_status: EnvelopeStatus,
+    #[serde(rename = "expectedGeneration")]
+    pub expected_generation: u64,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedVoidedEnvelope {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    pub status: EnvelopeStatus,
+    #[serde(rename = "previousStatus")]
+    pub previous_status: EnvelopeStatus,
+    pub generation: u64,
+    #[serde(rename = "voidedAt")]
+    pub voided_at: String,
+    #[serde(rename = "revokedCapabilityCount")]
+    pub revoked_capability_count: u32,
+    #[serde(rename = "auditEventId")]
+    pub audit_event_id: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoidEnvelopeResponse {
+    pub voided: PublishedVoidedEnvelope,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }

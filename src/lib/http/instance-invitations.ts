@@ -464,6 +464,20 @@ export function createInstanceInvitationHttpHandlers(
 			);
 		}
 
+		// The asserted email is the caller's own authenticated d6e-auth
+		// identity email claim, never a value the request body can supply.
+		// Missing or false `email_verified` fails closed: holding a session
+		// is not a provider-verified inbox guarantee.
+		if (authorized.emailVerified !== true) {
+			return problemResponse({
+				type: 'urn:signkit:problem:email-verification-required',
+				title: 'Email verification required',
+				status: 403,
+				detail: 'Accepting an invitation requires a provider-verified email claim.',
+				instance: url.pathname
+			});
+		}
+
 		const application: InstanceInvitationApplicationPort | Response =
 			await resolveApplicationOrProblem(
 				resolveApplication,
@@ -474,12 +488,6 @@ export function createInstanceInvitationHttpHandlers(
 		if (application instanceof Response) return application;
 
 		try {
-			// The asserted email is the caller's own authenticated d6e-auth
-			// identity email claim, never a value the request body can supply
-			// — this is itself a public API request, but the recipient inbox
-			// is proven only by holding the bearer token. d6e-auth exposes no
-			// distinct email_verified claim, so this is an authenticated
-			// assertion, not a provider-verified guarantee.
 			const result: AcceptInstanceInvitationResult = await application.accept(actorOf(authorized), {
 				idempotencyKey: idempotencyKey.data,
 				token: parsed.data.token,

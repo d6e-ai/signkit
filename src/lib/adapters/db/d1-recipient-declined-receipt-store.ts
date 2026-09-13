@@ -73,6 +73,7 @@ const EVIDENCE_COLUMNS: string = `
 	evidence.previous_hash AS evidencePreviousHash,
 	evidence.event_hash AS evidenceEventHash,
 	evidence.occurred_at AS evidenceOccurredAt,
+	evidence.hash_version AS evidenceHashVersion,
 	previous.organization_id AS previousOrganizationId,
 	previous.envelope_id AS previousEnvelopeId,
 	previous.sequence AS previousSequence,

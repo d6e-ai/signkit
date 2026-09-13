@@ -18,10 +18,6 @@ import {
 	authorizeScopedOrganizationRequest,
 	type AuthorizedApiActor
 } from './api-key-authorization';
-import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -314,9 +310,10 @@ export function createDraftHttpHandlers(
 		request,
 		url
 	}): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'drafts:write'
 		);
 		if (authorized instanceof Response) return authorized;
 
@@ -412,12 +409,20 @@ export function createDraftHttpHandlers(
 			const result: CommitDraftResult = await persistence.commit({
 				organizationId: authorized.organizationId,
 				envelopeId: envelopeIdResult.data,
-				actor: {
-					id: authorized.id,
-					name: authorized.name,
-					email: authorized.email,
-					type: 'user'
-				},
+				actor:
+					authorized.authority === 'api_key'
+						? {
+								id: authorized.id,
+								name: 'SignKit agent',
+								email: `agent+${authorized.id}@users.noreply.signkit.invalid`,
+								type: 'agent' as const
+							}
+						: {
+								id: authorized.id,
+								name: authorized.name ?? 'SignKit operator',
+								email: authorized.email ?? `user+${authorized.id}@users.noreply.signkit.invalid`,
+								type: 'user' as const
+							},
 				idempotencyKey: idempotencyResult.data,
 				expectedGeneration: input.expectedGeneration,
 				message: input.message,

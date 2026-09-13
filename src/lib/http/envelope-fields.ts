@@ -9,9 +9,9 @@ import type {
 import { InvalidFieldPlacementError } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
+	authorizeScopedOrganizationRequest,
+	type AuthorizedApiActor
+} from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -102,9 +102,10 @@ export function createEnvelopeFieldsHandler(
 	resolveApplication: EnvelopeFieldApplicationResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'drafts:write'
 		);
 		if (authorized instanceof Response) return authorized;
 
@@ -192,7 +193,8 @@ export function createEnvelopeFieldsHandler(
 		const actor: EnvelopeRequestActor = {
 			id: authorized.id,
 			organizationId: authorized.organizationId,
-			organizationName: authorized.organizationName
+			organizationName: authorized.organizationName,
+			actorType: authorized.authority === 'api_key' ? 'agent' : 'user'
 		};
 		const input: PlaceFieldsInput = {
 			idempotencyKey: idempotencyKey.data,

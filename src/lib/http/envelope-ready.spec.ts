@@ -175,7 +175,7 @@ describe('envelope ready HTTP handler', () => {
 		);
 		expect(response.status).toBe(200);
 		expect(app.ready).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			envelopeId,
 			{
 				idempotencyKey: 'ready-1',

@@ -25,6 +25,8 @@ export interface AuthorizedApiActor {
 	id: string;
 	organizationId: string;
 	organizationName: string;
+	name?: string;
+	email?: string;
 }
 
 /**
@@ -81,6 +83,16 @@ function insufficientScope(instance: string, requiredScope: ApiKeyScope): Respon
 		// just called needs. It discloses nothing about the key itself.
 		{ 'www-authenticate': `Bearer error="insufficient_scope", scope="${requiredScope}"` }
 	);
+}
+
+function rateLimited(instance: string): Response {
+	return problemResponse({
+		type: 'urn:signkit:problem:api-key-rate-limited',
+		title: 'API key rate limit exceeded',
+		status: 429,
+		detail: 'This API key has exceeded its durable per-window request limit.',
+		instance
+	});
 }
 
 function apiKeyNotPermitted(instance: string): Response {
@@ -174,6 +186,8 @@ export function authorizeScopedOrganizationRequest(
 				return organizationSelectorRequired(instance);
 			case 'invalid_token':
 				return authenticationRequired(instance);
+			case 'rate_limited':
+				return rateLimited(instance);
 			case 'organization_grant_required':
 				return organizationGrantRequired(instance);
 			case 'integrity_error':
@@ -204,6 +218,8 @@ export function authorizeScopedOrganizationRequest(
 		authority: 'session',
 		id: authorized.id,
 		organizationId: authorized.organizationId,
-		organizationName: authorized.organizationName
+		organizationName: authorized.organizationName,
+		name: authorized.name,
+		email: authorized.email
 	};
 }

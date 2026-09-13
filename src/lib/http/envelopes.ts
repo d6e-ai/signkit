@@ -13,10 +13,6 @@ import {
 	authorizeScopedOrganizationRequest,
 	type AuthorizedApiActor
 } from './api-key-authorization';
-import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const createEnvelopeSchema: ZodType<{ title: string }> = z
@@ -111,17 +107,15 @@ function validationErrors(issues: readonly ZodIssue[]): readonly ProblemValidati
 
 /**
  * Both authorities project to the same envelope actor shape. `id` is the d6e
- * subject for a session and the API key id for a key; the reads below use only
- * `organizationId`, and envelope creation -- the one command that persists `id`
- * as a caller identifier -- remains session-only in this slice.
+ * subject for a session and the API key id for a key. API keys are `agent`
+ * actors; interactive sessions remain `user`.
  */
-function envelopeActor(
-	authorized: AuthorizedRequestActor | AuthorizedApiActor
-): EnvelopeRequestActor {
+function envelopeActor(authorized: AuthorizedApiActor): EnvelopeRequestActor {
 	return {
 		id: authorized.id,
 		organizationId: authorized.organizationId,
-		organizationName: authorized.organizationName
+		organizationName: authorized.organizationName,
+		actorType: authorized.authority === 'api_key' ? 'agent' : 'user'
 	};
 }
 
@@ -164,9 +158,10 @@ export function createEnvelopeHttpHandlers(
 	resolveApplication: EnvelopeApplicationResolver
 ): EnvelopeHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'drafts:write'
 		);
 		if (authorized instanceof Response) return authorized;
 		const actor: EnvelopeRequestActor = envelopeActor(authorized);

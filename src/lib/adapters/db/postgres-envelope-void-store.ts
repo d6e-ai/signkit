@@ -9,6 +9,7 @@ import type {
 	VoidPreparation,
 	VoidableEnvelopeStatus
 } from '$lib/ports/envelope-void-store';
+import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
 
@@ -82,6 +83,7 @@ interface VoidCommandRow {
 	evidencePreviousHash: string | null;
 	evidenceEventHash: string | null;
 	evidenceOccurredAt: Date | string | null;
+	evidenceHashVersion: number | string | null;
 }
 
 export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
@@ -334,7 +336,7 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 				evidence.event_type AS "evidenceEventType", evidence.actor_type AS "evidenceActorType",
 				evidence.actor_id AS "evidenceActorId", evidence.payload_json AS "evidencePayloadJson",
 				evidence.previous_hash AS "evidencePreviousHash", evidence.event_hash AS "evidenceEventHash",
-				evidence.occurred_at AS "evidenceOccurredAt"
+				evidence.occurred_at AS "evidenceOccurredAt", evidence.hash_version AS "evidenceHashVersion"
 			FROM envelope_void_command command
 			LEFT JOIN envelope ON envelope.organization_id = command.organization_id
 				AND envelope.id = command.envelope_id
@@ -401,16 +403,18 @@ async function validReplay(row: VoidCommandRow): Promise<boolean> {
 		})
 	);
 	const auditPayloadJson: string = JSON.stringify(payloadValue);
-	const auditEventHash: string = await sha256(
-		JSON.stringify({
-			actorId: row.actorId,
-			envelopeId: row.envelopeId,
+	const auditEventHash: string = await hashStoredAuditEvent(
+		{
+			hashVersion: row.evidenceHashVersion,
+			sequence: Number(row.auditSequence),
 			eventType: 'envelope.voided',
+			actorType: row.actorType,
+			actorId: row.actorId,
 			occurredAt: voidedAt,
-			organizationId: row.organizationId,
 			payload: payloadValue,
 			previousHash: row.previousAuditHash
-		})
+		},
+		{ organizationId: row.organizationId, envelopeId: row.envelopeId }
 	);
 	return (
 		requestHash === row.requestHash &&

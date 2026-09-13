@@ -4,6 +4,7 @@ export interface AuthorizedIdentityActor {
 	id: string;
 	name: string;
 	email: string;
+	emailVerified: boolean;
 }
 
 /**
@@ -56,7 +57,8 @@ export function authorizeIdentityRequest(
 		return {
 			id: locals.principal.subject,
 			name: locals.principal.name,
-			email: locals.principal.email
+			email: locals.principal.email,
+			emailVerified: locals.principal.emailVerified === true
 		};
 	}
 	return problemResponse({

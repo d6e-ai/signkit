@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import { parseApiKeyScopesJson } from '$lib/ports/api-key-store';
 import type { ApiKeyScope } from '$lib/security/api-key';
+import { API_KEY_RATE_WINDOW_MAX_REQUESTS, API_KEY_RATE_WINDOW_MS } from '$lib/security/api-key';
 import type {
 	ApiKeyAuthenticationStore,
 	AuthenticateApiKeyQuery,
@@ -100,6 +101,9 @@ export class PostgresApiKeyAuthenticationStore implements ApiKeyAuthenticationSt
 			return { outcome: 'integrity_error' };
 		}
 
+		const recorded: boolean = await this.#recordUse(row.apiKeyId, query.at);
+		if (!recorded) return { outcome: 'rate_limited' };
+
 		return {
 			outcome: 'authenticated',
 			principal: {
@@ -112,6 +116,37 @@ export class PostgresApiKeyAuthenticationStore implements ApiKeyAuthenticationSt
 				expiresAt
 			}
 		};
+	}
+
+	async #recordUse(apiKeyId: string, at: string): Promise<boolean> {
+		const windowStartCutoff: string = new Date(
+			Date.parse(at) - API_KEY_RATE_WINDOW_MS
+		).toISOString();
+		const updated = await this.#sql<{ id: string }[]>`
+			UPDATE api_key
+			SET last_used_at = ${at}::timestamptz,
+				rate_window_started_at = CASE
+					WHEN rate_window_started_at IS NULL
+						OR rate_window_started_at <= ${windowStartCutoff}::timestamptz
+					THEN ${at}::timestamptz
+					ELSE rate_window_started_at
+				END,
+				rate_window_count = CASE
+					WHEN rate_window_started_at IS NULL
+						OR rate_window_started_at <= ${windowStartCutoff}::timestamptz
+					THEN 1
+					ELSE rate_window_count + 1
+				END
+			WHERE id = ${apiKeyId}
+				AND revoked_at IS NULL
+				AND (
+					rate_window_started_at IS NULL
+					OR rate_window_started_at <= ${windowStartCutoff}::timestamptz
+					OR rate_window_count < ${API_KEY_RATE_WINDOW_MAX_REQUESTS}
+				)
+			RETURNING id
+		`;
+		return updated.length === 1;
 	}
 }
 

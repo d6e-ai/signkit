@@ -27,7 +27,8 @@ const MIGRATIONS: readonly string[] = [
 	'migrations/d1/0013_terminal_delivery_cleanup.sql',
 	'migrations/d1/0014_envelope_voided.sql',
 	'migrations/d1/0015_observer_routing_semantics.sql',
-	'migrations/d1/0016_completion_artifacts.sql'
+	'migrations/d1/0016_completion_artifacts.sql',
+	'migrations/d1/0023_audit_hash_v2.sql'
 ];
 
 const ORGANIZATION_ID: string = 'org-1';
@@ -170,8 +171,8 @@ async function fixture(): Promise<{
 	const insertEvent = sqlite.prepare(
 		`INSERT INTO audit_event (
 			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
-			payload_json, previous_hash, event_hash, occurred_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			payload_json, previous_hash, event_hash, occurred_at, hash_version
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	);
 	for (const event of events) {
 		insertEvent.run(
@@ -185,7 +186,8 @@ async function fixture(): Promise<{
 			event.payloadJson,
 			event.previousHash,
 			event.eventHash,
-			event.occurredAt
+			event.occurredAt,
+			event.hashVersion
 		);
 	}
 	return { database: sqliteD1Database(sqlite), sqlite, events };
