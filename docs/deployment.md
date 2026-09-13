@@ -1,6 +1,6 @@
 # Deployment
 
-How the three deployment profiles differ, what to configure, and how background jobs are driven. The normative boundary is [design.md § Deployment](design.md#deployment) and [§ Persistence](design.md#persistence); this document is the operational companion.
+How the three deployment profiles differ, what to configure, and how background jobs are driven. The normative boundary is [architecture/deployment-and-risks.md § Deployment](architecture/deployment-and-risks.md#deployment) and [architecture/persistence.md § Persistence](architecture/persistence.md#persistence); this document is the operational companion.
 
 ## Profiles
 
@@ -67,4 +67,4 @@ Three durable outboxes are drained through protected endpoints:
 
 All three authenticate with a constant-time check of `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare drains them from its own scheduled trigger; Node/Docker and Vercel deployments must call them from a host scheduler (systemd timer, Kubernetes CronJob, or equivalent) roughly once a minute. Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes.
 
-Each drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [design.md](design.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
+Each drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [architecture/completion-artifacts.md](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
