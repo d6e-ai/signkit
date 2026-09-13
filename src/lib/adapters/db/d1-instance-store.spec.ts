@@ -3,7 +3,10 @@ import type {
 	AcceptInstanceInvitationCommand,
 	CreateInstanceInvitationCommand,
 	InstanceInvitationListQuery,
-	RevokeInstanceInvitationCommand
+	InstanceMemberListQuery,
+	RevokeInstanceInvitationCommand,
+	SetInstanceMemberRoleCommand,
+	SetInstanceMemberStatusCommand
 } from '$lib/ports/instance-store';
 import * as bearerSecret from '$lib/security/bearer-secret';
 import { D1InstanceStore } from './d1-instance-store';
@@ -657,6 +660,622 @@ describe('D1InstanceStore unit tests', () => {
 				actor: { type: 'user', id: 'admin-1' }
 			});
 			expect(result).toEqual({ outcome: 'forbidden' });
+			expect(fake.batches).toHaveLength(1);
+		});
+	});
+
+	describe('listInstanceMembers', () => {
+		it('bounds limit and executes member check and page ordered by user_id in one batch', async () => {
+			const fake = fakeD1({
+				batchResults: [[{ role: 'owner', status: 'active' }], []]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const query: InstanceMemberListQuery = { cursor: null, limit: 500 };
+			const result = await store.listInstanceMembers({ type: 'user', id: OWNER_ID }, query);
+			expect(result.outcome).toBe('listed');
+			expect(fake.batches).toHaveLength(1);
+
+			const batch = fake.batches[0];
+			expect(batch).toHaveLength(2);
+			expect(batch[0].sql).toContain('SELECT role, status FROM instance_member');
+			expect(batch[1].sql).toContain('ORDER BY user_id ASC');
+			expect(batch[1].sql).not.toContain('WHERE user_id >');
+			// Bounded to 100 + 1 = 101
+			expect(batch[1].bindings).toEqual([101]);
+		});
+
+		it('uses a direct user_id keyset predicate when a cursor is supplied', async () => {
+			const fake = fakeD1({
+				batchResults: [[{ role: 'admin', status: 'active' }], []]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			await store.listInstanceMembers(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: 'user-abc', limit: 10 }
+			);
+			const batch = fake.batches[0];
+			expect(batch[1].sql).toContain('WHERE user_id > ?');
+			expect(batch[1].bindings).toEqual(['user-abc', 11]);
+		});
+
+		it('refuses list for a member-role or unknown actor with forbidden', async () => {
+			const fake = fakeD1({ batchResults: [[{ role: 'member', status: 'active' }], []] });
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.listInstanceMembers(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: null, limit: 10 }
+			);
+			expect(result).toEqual({ outcome: 'forbidden' });
+		});
+
+		it('refuses list for a suspended actor with member_suspended', async () => {
+			const fake = fakeD1({ batchResults: [[{ role: 'owner', status: 'suspended' }], []] });
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.listInstanceMembers(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: null, limit: 10 }
+			);
+			expect(result).toEqual({ outcome: 'member_suspended' });
+		});
+	});
+
+	describe('setInstanceMemberRole', () => {
+		const TARGET_ID: string = 'target-admin-1';
+		const UPDATED_AT: string = '2026-09-13T12:00:00.000Z';
+		const setRoleCommand: SetInstanceMemberRoleCommand = {
+			actor: { type: 'user', id: OWNER_ID },
+			idempotencyKey: 'role-idem-1',
+			requestFingerprint: REQUEST_FINGERPRINT,
+			targetUserId: TARGET_ID,
+			role: 'member',
+			updatedAt: UPDATED_AT
+		};
+
+		it('prepares a gate batch then a 3-statement mutation batch (update, cascade-all, receipt) for an owner->member demotion', async () => {
+			const fake = fakeD1({
+				batchResults: (batchIndex: number) =>
+					batchIndex === 0
+						? [
+								[{ role: 'owner', status: 'active' }], // actor
+								[
+									{
+										user_id: TARGET_ID,
+										role: 'admin',
+										status: 'active',
+										created_at: CREATED_AT,
+										updated_at: CREATED_AT
+									}
+								], // target
+								[], // receipt
+								[{ count: 1 }] // other active owners
+							]
+						: [[], [], []],
+				batchChanges: (batchIndex: number, statementIndex: number) =>
+					batchIndex === 1 && statementIndex === 1 ? 3 : 1
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole(setRoleCommand);
+			expect(result).toEqual({
+				outcome: 'updated',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'active',
+					createdAt: CREATED_AT,
+					updatedAt: UPDATED_AT
+				},
+				appliedAt: UPDATED_AT,
+				revokedInvitationCount: 3
+			});
+
+			expect(fake.batches).toHaveLength(2);
+			const mutationBatch = fake.batches[1];
+			expect(mutationBatch).toHaveLength(3);
+			expect(mutationBatch[0].sql).toContain('UPDATE instance_member');
+			expect(mutationBatch[0].sql).toContain('SET role = ?, updated_at = ?');
+			expect(mutationBatch[0].bindings).toEqual([
+				'member',
+				UPDATED_AT,
+				TARGET_ID,
+				'admin',
+				'active'
+			]);
+			expect(mutationBatch[1].sql).toContain('UPDATE instance_invitation');
+			expect(mutationBatch[1].sql).not.toContain("role <> 'member'");
+			expect(mutationBatch[1].bindings).toEqual([UPDATED_AT, OWNER_ID, TARGET_ID, UPDATED_AT]);
+			expect(mutationBatch[2].sql).toContain('INSERT INTO instance_member_command');
+			expect(mutationBatch[2].sql).toContain("'set_role'");
+			expect(mutationBatch[2].sql).toContain('(SELECT changes())');
+		});
+
+		it('scopes the cascade to non-member invitations for an owner->admin demotion', async () => {
+			const fake = fakeD1({
+				batchResults: (batchIndex: number) =>
+					batchIndex === 0
+						? [
+								[{ role: 'owner', status: 'active' }],
+								[
+									{
+										user_id: 'target-owner-1',
+										role: 'owner',
+										status: 'active',
+										created_at: CREATED_AT,
+										updated_at: CREATED_AT
+									}
+								],
+								[],
+								[{ count: 1 }]
+							]
+						: [[], [], []]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			await store.setInstanceMemberRole({
+				...setRoleCommand,
+				targetUserId: 'target-owner-1',
+				role: 'admin'
+			});
+			const mutationBatch = fake.batches[1];
+			expect(mutationBatch[1].sql).toContain("role <> 'member'");
+		});
+
+		it('omits the cascade statement entirely for a promotion, recording revokedInvitationCount 0', async () => {
+			const fake = fakeD1({
+				batchResults: (batchIndex: number) =>
+					batchIndex === 0
+						? [
+								[{ role: 'owner', status: 'active' }],
+								[
+									{
+										user_id: 'target-member-1',
+										role: 'member',
+										status: 'active',
+										created_at: CREATED_AT,
+										updated_at: CREATED_AT
+									}
+								],
+								[],
+								[{ count: 1 }]
+							]
+						: [[], []]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole({
+				...setRoleCommand,
+				targetUserId: 'target-member-1',
+				role: 'admin'
+			});
+			expect(result.outcome).toBe('updated');
+			if (result.outcome === 'updated') {
+				expect(result.revokedInvitationCount).toBe(0);
+			}
+			const mutationBatch = fake.batches[1];
+			expect(mutationBatch).toHaveLength(2);
+			expect(mutationBatch[1].sql).toContain('INSERT INTO instance_member_command');
+			expect(mutationBatch[1].sql).not.toContain('(SELECT changes())');
+		});
+
+		it('refuses at the gate when the actor is suspended, running no mutation batch', async () => {
+			const fake = fakeD1({
+				batchResults: [[{ role: 'owner', status: 'suspended' }], [], [], [{ count: 1 }]]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole(setRoleCommand);
+			expect(result).toEqual({ outcome: 'member_suspended' });
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('refuses at the gate when an admin actor targets a non-member with forbidden', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'admin', status: 'active' }],
+					[
+						{
+							user_id: 'target-admin-2',
+							role: 'admin',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: CREATED_AT
+						}
+					],
+					[],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole({
+				...setRoleCommand,
+				actor: { type: 'user', id: 'admin-1' },
+				targetUserId: 'target-admin-2'
+			});
+			expect(result).toEqual({ outcome: 'forbidden' });
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('refuses at the gate when an admin actor requests a role above member with role_not_permitted', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'admin', status: 'active' }],
+					[
+						{
+							user_id: 'target-member-2',
+							role: 'member',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: CREATED_AT
+						}
+					],
+					[],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole({
+				...setRoleCommand,
+				actor: { type: 'user', id: 'admin-1' },
+				targetUserId: 'target-member-2',
+				role: 'admin'
+			});
+			expect(result).toEqual({ outcome: 'role_not_permitted' });
+		});
+
+		it('refuses an unknown target with member_not_found', async () => {
+			const fake = fakeD1({
+				batchResults: [[{ role: 'owner', status: 'active' }], [], [], [{ count: 1 }]]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole({ ...setRoleCommand, targetUserId: 'ghost' });
+			expect(result).toEqual({ outcome: 'member_not_found' });
+		});
+
+		it('refuses with last_active_owner when self-demoting as the sole active owner', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }],
+					[
+						{
+							user_id: OWNER_ID,
+							role: 'owner',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: CREATED_AT
+						}
+					],
+					[],
+					[{ count: 0 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole({
+				...setRoleCommand,
+				targetUserId: OWNER_ID,
+				role: 'admin'
+			});
+			expect(result).toEqual({ outcome: 'last_active_owner' });
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('replays a matching receipt without running any mutation batch', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }],
+					[
+						{
+							user_id: TARGET_ID,
+							role: 'member',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: UPDATED_AT
+						}
+					],
+					[
+						{
+							request_hash: REQUEST_FINGERPRINT,
+							command_type: 'set_role',
+							target_user_id: TARGET_ID,
+							previous_role: 'admin',
+							previous_status: 'active',
+							result_role: 'member',
+							result_status: 'active',
+							revoked_invitation_count: 2,
+							occurred_at: UPDATED_AT,
+							target_row_user_id: TARGET_ID,
+							target_row_created_at: CREATED_AT,
+						}
+					],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole(setRoleCommand);
+			expect(result).toEqual({
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'active',
+					createdAt: CREATED_AT,
+					updatedAt: UPDATED_AT
+				},
+				appliedAt: UPDATED_AT,
+				revokedInvitationCount: 2
+			});
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('rejects a reused idempotency key with a conflicting request fingerprint', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }],
+					[
+						{
+							user_id: TARGET_ID,
+							role: 'member',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: UPDATED_AT
+						}
+					],
+					[
+						{
+							request_hash: 'different-hash'.padStart(64, '0'),
+							command_type: 'set_role',
+							target_user_id: TARGET_ID,
+							previous_role: 'admin',
+							previous_status: 'active',
+							result_role: 'member',
+							result_status: 'active',
+							revoked_invitation_count: 0,
+							occurred_at: UPDATED_AT,
+							target_row_user_id: TARGET_ID,
+							target_row_created_at: CREATED_AT,
+						}
+					],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole(setRoleCommand);
+			expect(result).toEqual({ outcome: 'idempotency_conflict' });
+		});
+	});
+
+	describe('setInstanceMemberStatus', () => {
+		const TARGET_ID: string = 'target-member-1';
+		const UPDATED_AT: string = '2026-09-13T12:00:00.000Z';
+		const setStatusCommand: SetInstanceMemberStatusCommand = {
+			actor: { type: 'user', id: OWNER_ID },
+			idempotencyKey: 'status-idem-1',
+			requestFingerprint: REQUEST_FINGERPRINT,
+			targetUserId: TARGET_ID,
+			status: 'suspended',
+			updatedAt: UPDATED_AT
+		};
+
+		it('prepares a gate batch then a 3-statement mutation batch (update, cascade, receipt) when suspending', async () => {
+			const fake = fakeD1({
+				batchResults: (batchIndex: number) =>
+					batchIndex === 0
+						? [
+								[{ role: 'owner', status: 'active' }],
+								[
+									{
+										user_id: TARGET_ID,
+										role: 'member',
+										status: 'active',
+										created_at: CREATED_AT,
+										updated_at: CREATED_AT
+									}
+								],
+								[],
+								[{ count: 1 }]
+							]
+						: [[], [], []],
+				batchChanges: (batchIndex: number, statementIndex: number) =>
+					batchIndex === 1 && statementIndex === 1 ? 2 : 1
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus(setStatusCommand);
+			expect(result).toEqual({
+				outcome: 'updated',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					createdAt: CREATED_AT,
+					updatedAt: UPDATED_AT
+				},
+				appliedAt: UPDATED_AT,
+				revokedInvitationCount: 2
+			});
+
+			const mutationBatch = fake.batches[1];
+			expect(mutationBatch).toHaveLength(3);
+			expect(mutationBatch[0].sql).toContain('UPDATE instance_member');
+			expect(mutationBatch[0].sql).toContain('SET status = ?, updated_at = ?');
+			expect(mutationBatch[1].sql).toContain('UPDATE instance_invitation');
+			expect(mutationBatch[2].sql).toContain('INSERT INTO instance_member_command');
+			expect(mutationBatch[2].sql).toContain("'set_status'");
+			expect(mutationBatch[2].sql).toContain('(SELECT changes())');
+		});
+
+		it('omits the cascade statement for reactivation, recording revokedInvitationCount 0', async () => {
+			const fake = fakeD1({
+				batchResults: (batchIndex: number) =>
+					batchIndex === 0
+						? [
+								[{ role: 'owner', status: 'active' }],
+								[
+									{
+										user_id: TARGET_ID,
+										role: 'member',
+										status: 'suspended',
+										created_at: CREATED_AT,
+										updated_at: CREATED_AT
+									}
+								],
+								[],
+								[{ count: 1 }]
+							]
+						: [[], []]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus({ ...setStatusCommand, status: 'active' });
+			expect(result.outcome).toBe('updated');
+			if (result.outcome === 'updated') {
+				expect(result.revokedInvitationCount).toBe(0);
+			}
+			expect(fake.batches[1]).toHaveLength(2);
+		});
+
+		it('refuses self-targeting with cannot_target_self ahead of the target lookup', async () => {
+			const fake = fakeD1({
+				batchResults: [[{ role: 'owner', status: 'active' }], [], [], [{ count: 1 }]]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus({
+				...setStatusCommand,
+				targetUserId: OWNER_ID
+			});
+			expect(result).toEqual({ outcome: 'cannot_target_self' });
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('refuses at the gate when an admin actor targets a non-member with forbidden', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'admin', status: 'active' }],
+					[
+						{
+							user_id: 'target-admin-2',
+							role: 'admin',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: CREATED_AT
+						}
+					],
+					[],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus({
+				...setStatusCommand,
+				actor: { type: 'user', id: 'admin-1' },
+				targetUserId: 'target-admin-2'
+			});
+			expect(result).toEqual({ outcome: 'forbidden' });
+		});
+
+		it('refuses an unknown target with member_not_found', async () => {
+			const fake = fakeD1({
+				batchResults: [[{ role: 'owner', status: 'active' }], [], [], [{ count: 1 }]]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus({
+				...setStatusCommand,
+				targetUserId: 'ghost'
+			});
+			expect(result).toEqual({ outcome: 'member_not_found' });
+		});
+
+		it('reaches last_active_owner at the gate when the snapshot shows no other active owner', async () => {
+			// This snapshot (an active-owner actor, a distinct active-owner target,
+			// and zero other active owners) is only internally consistent as the
+			// post-failure reclassification snapshot after a concurrent floor
+			// violation already suspended the actor's own row; see the
+			// integration suite for that real race. It still exercises the
+			// dedicated branch directly here.
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }],
+					[
+						{
+							user_id: 'target-owner-1',
+							role: 'owner',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: CREATED_AT
+						}
+					],
+					[],
+					[{ count: 0 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus({
+				...setStatusCommand,
+				targetUserId: 'target-owner-1'
+			});
+			expect(result).toEqual({ outcome: 'last_active_owner' });
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('replays a matching receipt without running any mutation batch', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }],
+					[
+						{
+							user_id: TARGET_ID,
+							role: 'member',
+							status: 'suspended',
+							created_at: CREATED_AT,
+							updated_at: UPDATED_AT
+						}
+					],
+					[
+						{
+							request_hash: REQUEST_FINGERPRINT,
+							command_type: 'set_status',
+							target_user_id: TARGET_ID,
+							previous_role: 'member',
+							previous_status: 'active',
+							result_role: 'member',
+							result_status: 'suspended',
+							revoked_invitation_count: 1,
+							occurred_at: UPDATED_AT,
+							target_row_user_id: TARGET_ID,
+							target_row_created_at: CREATED_AT,
+						}
+					],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus(setStatusCommand);
+			expect(result).toEqual({
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					createdAt: CREATED_AT,
+					updatedAt: UPDATED_AT
+				},
+				appliedAt: UPDATED_AT,
+				revokedInvitationCount: 1
+			});
 			expect(fake.batches).toHaveLength(1);
 		});
 	});
