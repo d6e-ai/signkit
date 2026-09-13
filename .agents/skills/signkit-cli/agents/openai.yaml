@@ -1,0 +1,4 @@
+interface:
+  display_name: "SignKit CLI"
+  short_description: "Build and run the read-only SignKit Rust CLI safely"
+  default_prompt: "Use $signkit-cli to query SignKit envelopes via the Rust CLI."
