@@ -28,7 +28,7 @@ Objects go to any S3-compatible service. Most of them require path-style address
 
 `wrangler.jsonc` declares the `DB` (D1), `OBJECTS` (R2), `ASSETS`, and `EMAIL` bindings, `nodejs_compat`, observability, and a `* * * * *` cron trigger. R2 is used through its in-process binding rather than an S3 endpoint, and D1 migrations live in `migrations/d1`.
 
-The scheduled trigger drains invitation delivery, completion-artifact publication, and completion delivery in-process, so no external scheduler is required. Secrets belong in Wrangler secret storage (`.dev.vars` locally) and must never be committed: at minimum `DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, `DELIVERY_WORKER_SECRET`, the d6e-auth client credentials, plus the `SIGNKIT_PUBLIC_ORIGIN`, `SIGNKIT_EMAIL_FROM`, and `SIGNKIT_EMAIL_FROM_NAME` variables.
+The scheduled trigger invokes every protected drain and sweep in-process through the Worker's own `fetch` handler — invitation delivery, completion-artifact publication, completion delivery, envelope expiry, webhooks, both reseal sweeps, and orphan object collection — each via `context.waitUntil` so one failure cannot block the others. No external scheduler is required. Secrets belong in Wrangler secret storage (`.dev.vars` locally) and must never be committed: at minimum `DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, `DELIVERY_WORKER_SECRET`, the d6e-auth client credentials, plus the `SIGNKIT_PUBLIC_ORIGIN`, `SIGNKIT_EMAIL_FROM`, and `SIGNKIT_EMAIL_FROM_NAME` variables.
 
 Cloudflare Email Sending is currently beta. Sending to arbitrary recipient addresses requires Workers Paid; free accounts can only send to verified destination addresses, which is fine for testing but not for real envelopes. Check the current [Email Sending pricing and availability](https://developers.cloudflare.com/email-service/platform/pricing/) before treating this profile as zero-cost.
 
@@ -67,7 +67,7 @@ Both keys support an active+previous keyring, so rotation is safe: opening ciphe
 
 ## Background jobs
 
-Durable outboxes and the envelope expiry drain are processed through protected endpoints:
+Durable outboxes, expiry, reseal, webhook delivery, and object-store orphan collection are processed through protected endpoints:
 
 | Endpoint                                                 | Work                                                                    |
 | -------------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -77,14 +77,36 @@ Durable outboxes and the envelope expiry drain are processed through protected e
 | `POST /api/v1/system/completion-deliveries/drain`        | completion notifications and read-only artifact access grants           |
 | `POST /api/v1/system/completion-deliveries/reseal-sweep` | migrates outstanding completion token ciphertext onto the active key    |
 | `POST /api/v1/system/envelopes/expiry-drain`             | transitions lapsed `sent`/`in_progress` envelopes to `expired`          |
+| `POST /api/v1/system/webhooks/drain`                     | signed webhook deliveries                                               |
+| `POST /api/v1/system/objects/orphan-sweep`               | deletes unreferenced object-store uploads older than 24 hours           |
 
-All endpoints authenticate with a constant-time check of `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare drains them from its own scheduled trigger; Node/Docker and Vercel deployments must call them from a host scheduler (systemd timer, Kubernetes CronJob, or equivalent) roughly once a minute. Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes.
+All endpoints authenticate with a constant-time check of `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare invokes them from its own scheduled trigger. Node/Docker and Vercel deployments must POST each path from a host scheduler (systemd timer, Kubernetes CronJob, or equivalent) roughly once a minute, for example:
+
+```sh
+for path in \
+  /api/v1/system/deliveries/drain \
+  /api/v1/system/deliveries/reseal-sweep \
+  /api/v1/system/completion-artifacts/drain \
+  /api/v1/system/completion-deliveries/drain \
+  /api/v1/system/completion-deliveries/reseal-sweep \
+  /api/v1/system/envelopes/expiry-drain \
+  /api/v1/system/webhooks/drain \
+  /api/v1/system/objects/orphan-sweep
+do
+  curl -fsS -X POST "${SIGNKIT_PUBLIC_ORIGIN}${path}" \
+    -H "Authorization: Bearer ${DELIVERY_WORKER_SECRET}"
+done
+```
+
+Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes — never object keys, ciphertext, or secrets.
 
 Each delivery drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [architecture/completion-artifacts.md](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
 
 The reseal sweeps are bounded maintenance, not delivery: each run migrates at most 50 non-`processing` outbox rows sealed under a key other than the active one, leaving rows sealed under a key outside the active/previous pair untouched for an operator to investigate rather than silently discarding them.
 
 The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable (signer/approver) recipient that has ever been released has an expired capability and none currently has a live one, then transitions each envelope to `expired` with the same delivery-outbox scrub and capability revocation as an operator void, plus a chained `envelope.expired` audit event.
+
+The orphan sweep lists at most 1,000 objects per run, skips anything younger than 24 hours or without a parseable upload time, and deletes only keys that SQL does not currently reference. Callers cannot shorten the grace period. Failed pointer CAS uploads remain invisible until they age out and are collected.
 
 ## Disaster recovery
 

@@ -29,8 +29,13 @@ The table below summarizes key endpoints and required authorities. Interactive o
 | `POST` | `/api/v1/api-keys/{id}/organization-grants` | Grant key to organization | Key owner + d6e org `owner`/`admin` | No (403 refused) |
 | `POST` | `/api/v1/api-keys/{id}/organization-grants/{grantId}/revoke` | Revoke organization grant | Key owner OR d6e org `owner`/`admin` | No (403 refused) |
 | `POST` | `/api/v1/system/deliveries/drain` | Process invitation delivery outbox | `Bearer DELIVERY_WORKER_SECRET` | No |
+| `POST` | `/api/v1/system/deliveries/reseal-sweep` | Reseal delivery capability ciphertext | `Bearer DELIVERY_WORKER_SECRET` | No |
 | `POST` | `/api/v1/system/completion-artifacts/drain` | Process artifact reconciliation | `Bearer DELIVERY_WORKER_SECRET` | No |
 | `POST` | `/api/v1/system/completion-deliveries/drain` | Process completion delivery outbox | `Bearer DELIVERY_WORKER_SECRET` | No |
+| `POST` | `/api/v1/system/completion-deliveries/reseal-sweep` | Reseal completion token ciphertext | `Bearer DELIVERY_WORKER_SECRET` | No |
+| `POST` | `/api/v1/system/envelopes/expiry-drain` | Expire lapsed sent envelopes | `Bearer DELIVERY_WORKER_SECRET` | No |
+| `POST` | `/api/v1/system/webhooks/drain` | Process webhook outbox | `Bearer DELIVERY_WORKER_SECRET` | No |
+| `POST` | `/api/v1/system/objects/orphan-sweep` | Collect unreferenced object uploads past the 24h grace period | `Bearer DELIVERY_WORKER_SECRET` | No |
 
 ---
 

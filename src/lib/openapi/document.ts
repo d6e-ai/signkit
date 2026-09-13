@@ -617,6 +617,15 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
 				})
 			},
+			'/api/v1/system/deliveries/reseal-sweep': {
+				post: op({
+					summary: 'Reseal outstanding delivery capabilities',
+					operationId: 'sweepDeliveryReseal',
+					tags: ['System'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Sweep batch result', { type: 'object' })
+				})
+			},
 			'/api/v1/system/completion-artifacts/drain': {
 				post: op({
 					summary: 'Drain pending completion artifact publication',
@@ -633,6 +642,33 @@ export function openApiDocument(): Record<string, unknown> {
 					tags: ['System', 'Completion artifacts'],
 					security: [{ DeliveryWorkerSecret: [] }],
 					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
+				})
+			},
+			'/api/v1/system/completion-deliveries/reseal-sweep': {
+				post: op({
+					summary: 'Reseal outstanding completion tokens',
+					operationId: 'sweepCompletionDeliveryReseal',
+					tags: ['System', 'Completion artifacts'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Sweep batch result', { type: 'object' })
+				})
+			},
+			'/api/v1/system/envelopes/expiry-drain': {
+				post: op({
+					summary: 'Expire lapsed sent envelopes',
+					operationId: 'drainEnvelopeExpiry',
+					tags: ['System'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
+				})
+			},
+			'/api/v1/system/objects/orphan-sweep': {
+				post: op({
+					summary: 'Sweep unreferenced object-store uploads past the grace period',
+					operationId: 'sweepOrphanObjects',
+					tags: ['System'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Sweep batch result', { type: 'object' })
 				})
 			},
 			'/api/v1/api-keys': {

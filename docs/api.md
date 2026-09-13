@@ -136,12 +136,17 @@ The public routes accept `?format=json|markdown` and need no cookies or d6e-auth
 
 ## System endpoints
 
-| Method | Path                                         | Authority                           |
-| ------ | -------------------------------------------- | ----------------------------------- |
-| `GET`  | `/api/v1/system/capabilities`                | none; static profile/runtime report |
-| `POST` | `/api/v1/system/deliveries/drain`            | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/completion-artifacts/drain`  | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/completion-deliveries/drain` | `Bearer DELIVERY_WORKER_SECRET`     |
+| Method | Path                                                | Authority                           |
+| ------ | --------------------------------------------------- | ----------------------------------- |
+| `GET`  | `/api/v1/system/capabilities`                       | none; static profile/runtime report |
+| `POST` | `/api/v1/system/deliveries/drain`                   | `Bearer DELIVERY_WORKER_SECRET`     |
+| `POST` | `/api/v1/system/deliveries/reseal-sweep`            | `Bearer DELIVERY_WORKER_SECRET`     |
+| `POST` | `/api/v1/system/completion-artifacts/drain`         | `Bearer DELIVERY_WORKER_SECRET`     |
+| `POST` | `/api/v1/system/completion-deliveries/drain`        | `Bearer DELIVERY_WORKER_SECRET`     |
+| `POST` | `/api/v1/system/completion-deliveries/reseal-sweep` | `Bearer DELIVERY_WORKER_SECRET`     |
+| `POST` | `/api/v1/system/envelopes/expiry-drain`             | `Bearer DELIVERY_WORKER_SECRET`     |
+| `POST` | `/api/v1/system/webhooks/drain`                     | `Bearer DELIVERY_WORKER_SECRET`     |
+| `POST` | `/api/v1/system/objects/orphan-sweep`               | `Bearer DELIVERY_WORKER_SECRET`     |
 
 ### Background drains
 
@@ -157,4 +162,4 @@ The first-party agent CLI is implemented in Rust under `cli/` with binary name `
 
 ## Not exposed yet
 
-API keys now authenticate agent reads over Bearer with explicit organization grants (above), but only `envelopes:read` is usable: `audit:read`, `drafts:write`, and `envelopes:send` can be minted and stored yet no endpoint accepts them, and every mutation remains session-only. The Rust CLI strictly respects this boundary and exposes no faked or unusable create/send/mutation commands. Machine actors are deliberately excluded from mutations because the completion artifact verifier pins the envelope audit events to `actor_type = 'user'` without hashing `actor_type`; resolving that is a prerequisite for any write scope. Bearer access to the recipient surface is not planned — recipient capabilities are a separate authority. API key `lastUsedAt` is still never populated, rate limits are still absent, automatic revocation of grants when d6e organization membership changes is a follow-up, and there is no grant management UI or typed browser client for grants yet. Instance invitations can be created, listed, accepted, and revoked (above), but the invitation token is never emailed — invitation email delivery remains deferred, while instance member management and role/status mutations are exposed via the settings UI and instance management APIs. Recipient capability reissue is a documented design contract with no implementation. Webhooks, an OpenAPI document, rate limits, cursor pagination beyond the current list behaviour, ink capture, PDF sealing, DOCX conversion, audit export, and operator revoke UI remain on the backlog.
+API keys now authenticate agent reads over Bearer with explicit organization grants (above), but only `envelopes:read` is usable: `audit:read`, `drafts:write`, and `envelopes:send` can be minted and stored yet no endpoint accepts them, and every mutation remains session-only. The Rust CLI strictly respects this boundary and exposes no faked or unusable create/send/mutation commands. Machine actors are deliberately excluded from mutations because the completion artifact verifier pins the envelope audit events to `actor_type = 'user'` without hashing `actor_type`; resolving that is a prerequisite for any write scope. Bearer access to the recipient surface is not planned — recipient capabilities are a separate authority. API key `lastUsedAt` is still never populated, rate limits are still absent, automatic revocation of grants when d6e organization membership changes is a follow-up, and there is no grant management UI or typed browser client for grants yet. Instance invitations can be created, listed, accepted, and revoked (above), but the invitation token is never emailed — invitation email delivery remains deferred, while instance member management and role/status mutations are exposed via the settings UI and instance management APIs. Recipient capability reissue is a documented design contract with no implementation. Rate limits, cursor pagination beyond the current list behaviour, ink capture, PDF sealing, DOCX conversion, audit export, and operator revoke UI remain on the backlog.

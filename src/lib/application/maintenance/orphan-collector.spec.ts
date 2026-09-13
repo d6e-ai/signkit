@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+	DEFAULT_ORPHAN_GRACE_PERIOD_MS,
+	MAX_ORPHAN_SCAN_LIMIT,
 	OrphanCollector,
 	D1OrphanReferenceStore,
+	PostgresOrphanReferenceStore,
 	type OrphanReferenceStore
 } from './orphan-collector';
 import type { ObjectStore, ListObjectsResult } from '$lib/ports/object-store';
@@ -115,6 +118,116 @@ describe('OrphanCollector', () => {
 		expect(report.scanned).toBe(1);
 		expect(listMock).toHaveBeenCalledTimes(1);
 	});
+
+	it('does not delete objects missing a parseable upload time even when unreferenced', async () => {
+		const deleteManyMock = vi.fn(async () => {});
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async (): Promise<ListObjectsResult> => ({
+				objects: [
+					{ key: 'unknown-age.bin', size: 10 },
+					{ key: 'bad-date.bin', size: 10, uploadedAt: 'not-a-date' },
+					{ key: '../escape.bin', size: 10, uploadedAt: twentyFiveHoursAgo }
+				],
+				truncated: false
+			})),
+			deleteMany: deleteManyMock
+		};
+		const references: OrphanReferenceStore = {
+			filterReferencedKeys: vi.fn(async (): Promise<Set<string>> => new Set())
+		};
+
+		const report = await new OrphanCollector(objects, references, () => now).sweep();
+
+		expect(report.deleted).toBe(0);
+		expect(report.inGracePeriod).toBe(2);
+		expect(references.filterReferencedKeys).not.toHaveBeenCalled();
+		expect(deleteManyMock).not.toHaveBeenCalled();
+	});
+
+	it('ignores a requested grace period below the 24-hour floor', async () => {
+		const deleteManyMock = vi.fn(async () => {});
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async (): Promise<ListObjectsResult> => ({
+				objects: [{ key: 'recent.bin', size: 10, uploadedAt: oneHourAgo }],
+				truncated: false
+			})),
+			deleteMany: deleteManyMock
+		};
+		const references: OrphanReferenceStore = {
+			filterReferencedKeys: vi.fn(async (): Promise<Set<string>> => new Set())
+		};
+
+		const report = await new OrphanCollector(objects, references, () => now).sweep({
+			gracePeriodMs: 0,
+			maxObjectsToScan: 50_000
+		});
+
+		expect(DEFAULT_ORPHAN_GRACE_PERIOD_MS).toBe(24 * 60 * 60 * 1000);
+		expect(report.deleted).toBe(0);
+		expect(report.inGracePeriod).toBe(1);
+		expect(deleteManyMock).not.toHaveBeenCalled();
+		expect(objects.list).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
+	});
+
+	it('caps each invocation at the object-store list bound', async () => {
+		expect(MAX_ORPHAN_SCAN_LIMIT).toBe(1000);
+		const listMock = vi.fn(async (): Promise<ListObjectsResult> => ({
+			objects: [{ key: 'item', size: 1, uploadedAt: twentyFiveHoursAgo }],
+			truncated: false
+		}));
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: listMock,
+			deleteMany: vi.fn()
+		};
+
+		await new OrphanCollector(
+			objects,
+			{ filterReferencedKeys: vi.fn(async () => new Set<string>()) },
+			() => now
+		).sweep({ maxObjectsToScan: 10_000, batchSize: 5_000 });
+
+		expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 1000 }));
+	});
+
+	it('does not delete when the reference check fails', async () => {
+		const deleteManyMock = vi.fn(async () => {});
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async (): Promise<ListObjectsResult> => ({
+				objects: [{ key: 'maybe-orphan.bin', size: 10, uploadedAt: twentyFiveHoursAgo }],
+				truncated: false
+			})),
+			deleteMany: deleteManyMock
+		};
+
+		await expect(
+			new OrphanCollector(
+				objects,
+				{
+					filterReferencedKeys: vi.fn(async () => {
+						throw new Error('sql unavailable');
+					})
+				},
+				() => now
+			).sweep()
+		).rejects.toThrow('sql unavailable');
+		expect(deleteManyMock).not.toHaveBeenCalled();
+	});
 });
 
 describe('D1OrphanReferenceStore', () => {
@@ -140,5 +253,17 @@ describe('D1OrphanReferenceStore', () => {
 		expect(result.has('key-1')).toBe(true);
 		expect(result.has('key-2')).toBe(false);
 		expect(result.has('key-3')).toBe(true);
+	});
+});
+
+describe('PostgresOrphanReferenceStore', () => {
+	it('returns empty set for empty keys without querying', async () => {
+		const sql = vi.fn();
+		const store = new PostgresOrphanReferenceStore(
+			sql as unknown as ConstructorParameters<typeof PostgresOrphanReferenceStore>[0]
+		);
+		const result = await store.filterReferencedKeys([]);
+		expect(result.size).toBe(0);
+		expect(sql).not.toHaveBeenCalled();
 	});
 });

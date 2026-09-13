@@ -124,5 +124,5 @@ Idempotency and concurrency semantics are endpoint-specific rather than universa
   - Field placement: `expectedGeneration` and `expectedFieldGeneration`
   - Send: `expectedGeneration` and `expectedReadyAuditEventId`
   - Voiding: `expectedStatus` and `expectedGeneration`
-- **Worker Drain Endpoints (Exceptions):** System background drains (`POST /api/v1/system/deliveries/drain`, `POST /api/v1/system/completion-artifacts/drain`, `POST /api/v1/system/completion-deliveries/drain`) authenticate using `Authorization: Bearer DELIVERY_WORKER_SECRET` and claim outbox batches using durable lease windows; they do NOT require `Idempotency-Key` headers.
+- **Worker Drain Endpoints (Exceptions):** System background drains and sweeps (`POST /api/v1/system/deliveries/drain`, `POST /api/v1/system/deliveries/reseal-sweep`, `POST /api/v1/system/completion-artifacts/drain`, `POST /api/v1/system/completion-deliveries/drain`, `POST /api/v1/system/completion-deliveries/reseal-sweep`, `POST /api/v1/system/envelopes/expiry-drain`, `POST /api/v1/system/webhooks/drain`, `POST /api/v1/system/objects/orphan-sweep`) authenticate using `Authorization: Bearer DELIVERY_WORKER_SECRET` and do NOT require `Idempotency-Key` headers.
 - **Canonical Details:** Consult `docs/api.md` for mutation body definitions and concurrency contracts.

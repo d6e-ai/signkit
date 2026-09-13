@@ -1,9 +1,11 @@
 import type { ObjectStore } from '$lib/ports/object-store';
+import { MAX_LIST_OBJECTS_LIMIT } from '$lib/ports/object-store';
 import type { D1Database } from '@cloudflare/workers-types';
 import type postgres from 'postgres';
 
 export const DEFAULT_ORPHAN_GRACE_PERIOD_MS: number = 24 * 60 * 60 * 1000; // 24 hours
 export const DEFAULT_ORPHAN_BATCH_SIZE: number = 100;
+export const MAX_ORPHAN_SCAN_LIMIT: number = MAX_LIST_OBJECTS_LIMIT;
 
 export interface OrphanReferenceStore {
 	filterReferencedKeys(keys: readonly string[]): Promise<Set<string>>;
@@ -41,9 +43,18 @@ export class OrphanCollector {
 	}
 
 	async sweep(options: OrphanCollectorOptions = {}): Promise<OrphanCollectorReport> {
-		const gracePeriodMs = options.gracePeriodMs ?? DEFAULT_ORPHAN_GRACE_PERIOD_MS;
-		const batchSize = Math.min(options.batchSize ?? DEFAULT_ORPHAN_BATCH_SIZE, 1000);
-		const maxScan = options.maxObjectsToScan ?? Infinity;
+		const gracePeriodMs = Math.max(
+			options.gracePeriodMs ?? DEFAULT_ORPHAN_GRACE_PERIOD_MS,
+			DEFAULT_ORPHAN_GRACE_PERIOD_MS
+		);
+		const batchSize = Math.max(
+			1,
+			Math.min(options.batchSize ?? DEFAULT_ORPHAN_BATCH_SIZE, MAX_ORPHAN_SCAN_LIMIT)
+		);
+		const maxScan = Math.max(
+			1,
+			Math.min(options.maxObjectsToScan ?? MAX_ORPHAN_SCAN_LIMIT, MAX_ORPHAN_SCAN_LIMIT)
+		);
 		const dryRun = options.dryRun ?? false;
 		const nowTime = this.#now().getTime();
 
@@ -68,12 +79,11 @@ export class OrphanCollector {
 			const candidates: string[] = [];
 			for (const obj of listed.objects) {
 				scanned += 1;
-				if (obj.uploadedAt) {
-					const uploadTime = new Date(obj.uploadedAt).getTime();
-					if (nowTime - uploadTime < gracePeriodMs) {
-						inGracePeriodCount += 1;
-						continue;
-					}
+				if (!isSafeObjectKey(obj.key)) continue;
+				const ageMs = uploadAgeMs(obj.uploadedAt, nowTime);
+				if (ageMs === null || ageMs < gracePeriodMs) {
+					inGracePeriodCount += 1;
+					continue;
 				}
 				candidates.push(obj.key);
 			}
@@ -187,4 +197,15 @@ export class PostgresOrphanReferenceStore implements OrphanReferenceStore {
 
 		return referenced;
 	}
+}
+
+function isSafeObjectKey(key: string): boolean {
+	return key.length > 0 && !key.startsWith('/') && !key.includes('..') && !key.includes('\\');
+}
+
+function uploadAgeMs(uploadedAt: string | undefined, nowTime: number): number | null {
+	if (uploadedAt === undefined || uploadedAt.trim().length === 0) return null;
+	const uploadTime: number = Date.parse(uploadedAt);
+	if (!Number.isFinite(uploadTime)) return null;
+	return nowTime - uploadTime;
 }

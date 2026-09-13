@@ -8,7 +8,7 @@ SignKit is under active development and is **not yet a production signing servic
 
 What exists today: the product shell and portable deployment boundary, core domain policies, an organization-scoped Envelope API, PostgreSQL and D1 migrations, S3/R2 adapters, d6e-auth OAuth, bounded compressed Git draft history, recipient/readiness, send, void, and recipient decision commands (view, decline, approve, sign), durable invitation delivery, immutable completion-artifact publication, completion delivery with fail-closed public recipient and completion access, and the first-party Rust CLI slice (`signkit` under `cli/`) for capabilities and API-key `envelopes:read` inspection.
 
-What does not exist yet: ink capture, PDF sealing, DOCX conversion, webhooks, CLI mutations / write scopes, and broader job orchestration. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
+What does not exist yet: ink capture, PDF sealing, DOCX conversion, and CLI mutations / write scopes. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
 
 ## Core ideas
 
