@@ -1,4 +1,10 @@
-import type { Envelope } from '$lib/domain/envelope';
+import type {
+	Envelope,
+	FieldGeometry,
+	FieldType,
+	RecipientRole,
+	RecipientStatus
+} from '$lib/domain/envelope';
 import type { EnvelopeStore } from '$lib/ports/envelope-store';
 
 export interface EnvelopeActor {
@@ -45,9 +51,50 @@ export type CreateEnvelopeStoreResult =
  * existing per-envelope port. Implementations must scope every statement by
  * organizationId and make idempotent creation atomic.
  */
+/**
+ * Operator-safe recipient projection. Omits capability hashes, ciphertext,
+ * expiry, revocation, and organization identifiers.
+ */
+export interface PublicEnvelopeRecipient {
+	id: string;
+	email: string;
+	name: string;
+	role: RecipientRole;
+	locale: 'en' | 'ja';
+	routingOrder: number;
+	status: RecipientStatus;
+}
+
+/**
+ * Operator-safe field projection. Labels can carry PII and are never echoed
+ * on this read model, matching the field-placement receipt.
+ */
+export interface PublicEnvelopeDetailField {
+	id: string;
+	recipientId: string;
+	documentPath: `documents/${string}.md`;
+	fieldType: FieldType;
+	required: boolean;
+	position: number;
+	geometry: FieldGeometry | null;
+}
+
+/**
+ * Tenant-authorized envelope read model used by GET /envelopes/{id}. Recipients,
+ * the ready audit event id, and the current field set are durable server reads
+ * so a reload or second tab can continue authoring/send without sessionStorage.
+ */
+export interface EnvelopeDetail {
+	envelope: Envelope;
+	recipients: readonly PublicEnvelopeRecipient[];
+	readyAuditEventId: string | null;
+	fields: readonly PublicEnvelopeDetailField[];
+}
+
 export interface EnvelopeApplicationStore extends EnvelopeStore {
 	createIdempotently(command: CreateEnvelopeCommand): Promise<CreateEnvelopeStoreResult>;
 	listForOrganization(organizationId: string, query: EnvelopeListQuery): Promise<EnvelopeListPage>;
+	readDetail(organizationId: string, envelopeId: string): Promise<EnvelopeDetail | null>;
 }
 
 export interface EnvelopeRequestActor {
@@ -75,5 +122,6 @@ export type CreateEnvelopeResult =
 export interface EnvelopeApplicationPort {
 	create(actor: EnvelopeRequestActor, input: CreateEnvelopeInput): Promise<CreateEnvelopeResult>;
 	get(actor: EnvelopeRequestActor, envelopeId: string): Promise<Envelope | null>;
+	getDetail(actor: EnvelopeRequestActor, envelopeId: string): Promise<EnvelopeDetail | null>;
 	list(actor: EnvelopeRequestActor, query: EnvelopeListQuery): Promise<EnvelopeListPage>;
 }

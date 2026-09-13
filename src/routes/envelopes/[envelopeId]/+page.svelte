@@ -7,12 +7,14 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconSend from '@tabler/icons-svelte/icons/send';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
+	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
+	import * as Select from '$lib/components/ui/select';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Spinner } from '$lib/components/ui/spinner';
 	import * as Tabs from '$lib/components/ui/tabs';
@@ -40,7 +42,6 @@
 
 	const client = createEnvelopesClient();
 	const envelopeId = $derived(page.params.envelopeId as string);
-	const RECIPIENTS_CACHE_PREFIX = 'signkit:envelope-recipients:';
 
 	let loading = $state(true);
 	let authRequired = $state(false);
@@ -71,6 +72,11 @@
 	let readyPending = $state(false);
 	let readyError = $state<string | null>(null);
 	let readyRecipients = $state<readonly ReadyRecipientPublic[]>([]);
+	let readyAuditEventId = $state<string | null>(null);
+	let importPending = $state(false);
+	let importError = $state<string | null>(null);
+	let exportPending = $state(false);
+	let exportError = $state<string | null>(null);
 
 	// Field placement state.
 	interface FieldDraft {
@@ -158,39 +164,17 @@
 		return m.signing_field_type_text();
 	}
 
-	function cacheKey(id: string): string {
-		return `${RECIPIENTS_CACHE_PREFIX}${id}`;
-	}
-
-	function cacheRecipients(id: string, recipients: readonly ReadyRecipientPublic[]): void {
-		try {
-			sessionStorage.setItem(cacheKey(id), JSON.stringify(recipients));
-		} catch {
-			// Session storage may be unavailable (private browsing); the cache is
-			// best-effort UX continuity, never a source of truth.
-		}
-	}
-
-	function readCachedRecipients(id: string): readonly ReadyRecipientPublic[] {
-		try {
-			const raw = sessionStorage.getItem(cacheKey(id));
-			if (!raw) return [];
-			const parsed: unknown = JSON.parse(raw);
-			return Array.isArray(parsed) ? (parsed as ReadyRecipientPublic[]) : [];
-		} catch {
-			return [];
-		}
-	}
-
 	async function load(): Promise<void> {
 		loading = true;
 		authRequired = false;
 		loadError = null;
 		try {
-			const found = await client.get(envelopeId);
-			envelope = found;
-			readyRecipients = readCachedRecipients(envelopeId);
-			if (found.status === 'draft' || found.status === 'ready') {
+			const detail = await client.getDetail(envelopeId);
+			envelope = detail.envelope;
+			readyRecipients = detail.recipients;
+			readyAuditEventId = detail.readyAuditEventId;
+			placedFields = detail.fields;
+			if (detail.envelope.status === 'draft' || detail.envelope.status === 'ready') {
 				const workspace = await client.getDraft(envelopeId);
 				draft = workspace;
 				editedContent = Object.fromEntries(
@@ -198,10 +182,20 @@
 				);
 				dirtyPaths.clear();
 				activeDocPath ??= workspace.documents[0]?.path ?? null;
+				if (newField.documentPath === '' && workspace.documents[0]) {
+					newField = { ...newField, documentPath: workspace.documents[0].path };
+				}
 			} else {
 				draft = await client.getDraft(envelopeId).catch(() => null);
 			}
-			if (found.status !== 'draft') {
+			if (
+				detail.recipients.some((recipient) => recipient.role === 'signer') &&
+				newField.recipientId === ''
+			) {
+				const firstSigner = detail.recipients.find((recipient) => recipient.role === 'signer');
+				if (firstSigner) newField = { ...newField, recipientId: firstSigner.id };
+			}
+			if (detail.envelope.status !== 'draft') {
 				delivery = await client.deliveries(envelopeId).catch(() => null);
 			}
 		} catch (cause) {
@@ -310,15 +304,7 @@
 				recipients
 			});
 			readyRecipients = result.ready.recipients;
-			cacheRecipients(envelopeId, result.ready.recipients);
-			try {
-				sessionStorage.setItem(
-					`signkit:envelope-ready-audit:${envelopeId}`,
-					result.ready.auditEventId
-				);
-			} catch {
-				// Best-effort cache only; send() surfaces a clear error if it is missing.
-			}
+			readyAuditEventId = result.ready.auditEventId;
 			await load();
 		} catch (cause) {
 			readyError =
@@ -374,7 +360,7 @@
 		newField = { ...newField, [key]: parsed };
 	}
 
-	function placeOnPage(event: MouseEvent & { currentTarget: HTMLButtonElement }): void {
+	function placeOnPage(event: MouseEvent & { currentTarget: EventTarget & HTMLElement }): void {
 		const rect = event.currentTarget.getBoundingClientRect();
 		const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
 		const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
@@ -412,7 +398,6 @@
 
 	async function sendEnvelope(): Promise<void> {
 		if (envelope === null || draft === null || sendPending) return;
-		const readyAuditEventId = readyAuditEventFromCache();
 		if (readyAuditEventId === null) {
 			sendError = m.envelope_send_missing_ready_audit();
 			return;
@@ -433,12 +418,57 @@
 		}
 	}
 
-	function readyAuditEventFromCache(): string | null {
+	async function importDocx(fileList: FileList | null): Promise<void> {
+		if (fileList === null || fileList.length === 0 || draft === null || importPending) return;
+		const file = fileList[0];
+		const sourceName = file.name.replace(/\.docx$/i, '');
+		const slug = sourceName
+			.trim()
+			.toLowerCase()
+			.replaceAll(/[^a-z0-9._-]+/g, '-')
+			.replace(/^-+|-+$/g, '');
+		const targetPath = (activeDocPath ??
+			`documents/${slug.length > 0 ? slug : 'imported'}.md`) as `documents/${string}.md`;
+		importPending = true;
+		importError = null;
 		try {
-			const raw = sessionStorage.getItem(`signkit:envelope-ready-audit:${envelopeId}`);
-			return raw && raw.length > 0 ? raw : null;
-		} catch {
-			return null;
+			await client.importDocx(envelopeId, {
+				expectedGeneration: draft.generation,
+				targetPath,
+				file
+			});
+			activeDocPath = targetPath;
+			await load();
+		} catch (cause) {
+			importError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_import_unavailable();
+		} finally {
+			importPending = false;
+		}
+	}
+
+	async function exportDocx(): Promise<void> {
+		if (exportPending) return;
+		exportPending = true;
+		exportError = null;
+		try {
+			const exported = await client.exportDocx(envelopeId);
+			const body = new Uint8Array(exported.bytes.byteLength);
+			body.set(exported.bytes);
+			const blob = new Blob([body], {
+				type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+			});
+			const href = URL.createObjectURL(blob);
+			const link = document.createElement('a');
+			link.href = href;
+			link.download = exported.filename;
+			link.click();
+			URL.revokeObjectURL(href);
+		} catch (cause) {
+			exportError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_export_unavailable();
+		} finally {
+			exportPending = false;
 		}
 	}
 
@@ -471,6 +501,61 @@
 			? renderRecipientMarkdown(editedContent[activeDocPath])
 			: null
 	);
+	const placementSource = $derived.by(() => {
+		const path = newField.documentPath || activeDocPath;
+		if (path === null || path === '') return '';
+		return (
+			editedContent[path] ??
+			draft?.documents.find((document) => document.path === path)?.content ??
+			''
+		);
+	});
+	const placementPreview = $derived(
+		placementSource.length > 0 ? renderRecipientMarkdown(placementSource) : null
+	);
+	const visiblePlacementFields = $derived.by(() => {
+		const path = newField.documentPath || activeDocPath;
+		const overlays: {
+			key: string;
+			label: string;
+			geometry: FieldGeometry;
+			current: boolean;
+		}[] = [];
+		if (path === null || path === '') return overlays;
+		for (const field of placedFields) {
+			if (field.documentPath !== path || field.geometry === null) continue;
+			if (field.geometry.page !== newField.page) continue;
+			overlays.push({
+				key: field.id,
+				label: fieldTypeLabel(field.fieldType),
+				geometry: field.geometry,
+				current: false
+			});
+		}
+		for (const field of fieldDrafts) {
+			if (field.documentPath !== path || field.geometry === null) continue;
+			if (field.geometry.page !== newField.page) continue;
+			overlays.push({
+				key: field.key,
+				label: field.label,
+				geometry: field.geometry,
+				current: false
+			});
+		}
+		overlays.push({
+			key: 'current',
+			label: newField.label.trim() || fieldTypeLabel(newField.fieldType),
+			geometry: {
+				page: newField.page,
+				x: newField.x,
+				y: newField.y,
+				width: newField.width,
+				height: newField.height
+			},
+			current: true
+		});
+		return overlays;
+	});
 
 	onMount(() => {
 		void load();
@@ -565,6 +650,23 @@
 								>
 									<IconPlus data-icon="inline-start" />{m.envelope_add_document()}
 								</Button>
+								<Field.Field class="w-fit">
+									<Field.FieldLabel for="docx-import"
+										>{m.envelope_import_docx_label()}</Field.FieldLabel
+									>
+									<Input
+										id="docx-import"
+										type="file"
+										accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+										disabled={importPending || draft === null}
+										onchange={(event) => {
+											const files = event.currentTarget.files;
+											event.currentTarget.value = '';
+											void importDocx(files);
+										}}
+									/>
+									<Field.FieldDescription>{m.envelope_import_docx_hint()}</Field.FieldDescription>
+								</Field.Field>
 							</div>
 
 							{#if Object.keys(editedContent).length === 0}
@@ -639,8 +741,27 @@
 							{#if commitError}
 								<p class="text-sm font-medium text-destructive" role="alert">{commitError}</p>
 							{/if}
+							{#if importError}
+								<p class="text-sm font-medium text-destructive" role="alert">{importError}</p>
+							{/if}
+							{#if exportError}
+								<p class="text-sm font-medium text-destructive" role="alert">{exportError}</p>
+							{/if}
 						</Card.Content>
 						<Card.Footer class="justify-end gap-2 border-t bg-muted/20 py-4">
+							<Button
+								variant="outline"
+								disabled={exportPending ||
+									(draft?.commitSha == null && envelope.repositoryHead == null)}
+								onclick={() => void exportDocx()}
+							>
+								{#if exportPending}
+									<Spinner data-icon="inline-start" />
+								{:else}
+									<IconDownload data-icon="inline-start" />
+								{/if}
+								{m.envelope_export_docx()}
+							</Button>
 							<Button disabled={dirtyPaths.size === 0 || commitPending} onclick={commitChanges}>
 								{#if commitPending}<Spinner data-icon="inline-start" />{/if}
 								{m.envelope_commit_action({ count: String(dirtyPaths.size) })}
@@ -649,6 +770,19 @@
 					</Card.Root>
 				{:else if draft !== null}
 					<div class="flex flex-col gap-4">
+						<div class="flex justify-end">
+							<Button variant="outline" disabled={exportPending} onclick={() => void exportDocx()}>
+								{#if exportPending}
+									<Spinner data-icon="inline-start" />
+								{:else}
+									<IconDownload data-icon="inline-start" />
+								{/if}
+								{m.envelope_export_docx()}
+							</Button>
+						</div>
+						{#if exportError}
+							<p class="text-sm font-medium text-destructive" role="alert">{exportError}</p>
+						{/if}
 						{#each draft.documents as document (document.path)}
 							<Card.Root>
 								<Card.Header>
@@ -784,7 +918,7 @@
 								</Table.Body>
 							</Table.Root>
 						{:else}
-							<p class="text-sm text-muted-foreground">{m.envelope_recipients_uncached()}</p>
+							<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
 						{/if}
 					</Card.Content>
 					{#if envelope.status === 'draft'}
@@ -805,7 +939,7 @@
 				{#if envelope.status !== 'ready'}
 					<p class="text-sm text-muted-foreground">{m.envelope_fields_requires_ready()}</p>
 				{:else if signerRecipients().length === 0}
-					<p class="text-sm text-muted-foreground">{m.envelope_recipients_uncached()}</p>
+					<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
 				{:else}
 					<Card.Root>
 						<Card.Header>
@@ -813,52 +947,76 @@
 							<Card.Description>{m.envelope_fields_description()}</Card.Description>
 						</Card.Header>
 						<Card.Content class="flex flex-col gap-4">
-							<div class="grid gap-3 sm:grid-cols-2">
+							<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
 								<Field.Field>
 									<Field.FieldLabel for="field-recipient">
 										{m.envelope_field_recipient_label()}
 									</Field.FieldLabel>
-									<select
-										id="field-recipient"
-										bind:value={newField.recipientId}
-										class="flex h-9 w-full rounded-2xl border border-input bg-input/50 px-3 py-1.5 text-sm font-medium focus-visible:ring-3 focus-visible:ring-ring/30"
-									>
-										<option value="">{m.envelope_field_select_placeholder()}</option>
-										{#each signerRecipients() as recipient (recipient.id)}
-											<option value={recipient.id}>{recipient.name}</option>
-										{/each}
-									</select>
+									<Select.Root type="single" bind:value={newField.recipientId}>
+										<Select.Trigger id="field-recipient" class="w-full">
+											{signerRecipients().find((recipient) => recipient.id === newField.recipientId)
+												?.name ?? m.envelope_field_select_placeholder()}
+										</Select.Trigger>
+										<Select.Content>
+											<Select.Group>
+												{#each signerRecipients() as recipient (recipient.id)}
+													<Select.Item value={recipient.id} label={recipient.name}>
+														{recipient.name}
+													</Select.Item>
+												{/each}
+											</Select.Group>
+										</Select.Content>
+									</Select.Root>
 								</Field.Field>
 								<Field.Field>
 									<Field.FieldLabel for="field-document">
 										{m.envelope_field_document_label()}
 									</Field.FieldLabel>
-									<select
-										id="field-document"
-										bind:value={newField.documentPath}
-										class="flex h-9 w-full rounded-2xl border border-input bg-input/50 px-3 py-1.5 text-sm font-medium focus-visible:ring-3 focus-visible:ring-ring/30"
-									>
-										<option value="">{m.envelope_field_select_placeholder()}</option>
-										{#each draft?.documents ?? [] as document (document.path)}
-											<option value={document.path}>{documentTitle(document.path)}</option>
-										{/each}
-									</select>
+									<Select.Root type="single" bind:value={newField.documentPath}>
+										<Select.Trigger id="field-document" class="w-full">
+											{newField.documentPath
+												? documentTitle(newField.documentPath)
+												: m.envelope_field_select_placeholder()}
+										</Select.Trigger>
+										<Select.Content>
+											<Select.Group>
+												{#each draft?.documents ?? [] as document (document.path)}
+													<Select.Item value={document.path} label={documentTitle(document.path)}>
+														{documentTitle(document.path)}
+													</Select.Item>
+												{/each}
+											</Select.Group>
+										</Select.Content>
+									</Select.Root>
 								</Field.Field>
 								<Field.Field>
 									<Field.FieldLabel for="field-type"
 										>{m.envelope_field_type_label()}</Field.FieldLabel
 									>
-									<select
-										id="field-type"
-										bind:value={newField.fieldType}
-										class="flex h-9 w-full rounded-2xl border border-input bg-input/50 px-3 py-1.5 text-sm font-medium focus-visible:ring-3 focus-visible:ring-ring/30"
-									>
-										<option value="signature">{m.signing_field_type_signature()}</option>
-										<option value="initials">{m.signing_field_type_initials()}</option>
-										<option value="text">{m.signing_field_type_text()}</option>
-										<option value="date">{m.signing_field_type_date()}</option>
-										<option value="checkbox">{m.signing_field_type_checkbox()}</option>
-									</select>
+									<Select.Root type="single" bind:value={newField.fieldType}>
+										<Select.Trigger id="field-type" class="w-full">
+											{fieldTypeLabel(newField.fieldType)}
+										</Select.Trigger>
+										<Select.Content>
+											<Select.Group>
+												<Select.Item value="signature" label={m.signing_field_type_signature()}>
+													{m.signing_field_type_signature()}
+												</Select.Item>
+												<Select.Item value="initials" label={m.signing_field_type_initials()}>
+													{m.signing_field_type_initials()}
+												</Select.Item>
+												<Select.Item value="text" label={m.signing_field_type_text()}>
+													{m.signing_field_type_text()}
+												</Select.Item>
+												<Select.Item value="date" label={m.signing_field_type_date()}>
+													{m.signing_field_type_date()}
+												</Select.Item>
+												<Select.Item value="checkbox" label={m.signing_field_type_checkbox()}>
+													{m.signing_field_type_checkbox()}
+												</Select.Item>
+											</Select.Group>
+										</Select.Content>
+									</Select.Root>
 								</Field.Field>
 								<Field.Field>
 									<Field.FieldLabel for="field-label"
@@ -872,22 +1030,48 @@
 										{m.signing_field_required()}
 									</Field.FieldLabel>
 								</Field.Field>
-							</div>
+							</Field.FieldGroup>
 
-							<div>
-								<p class="mb-2 text-sm font-medium">{m.envelope_field_geometry_label()}</p>
-								<button
-									type="button"
-									class="relative aspect-[8.5/11] w-full max-w-64 cursor-crosshair rounded-lg border bg-muted/20"
-									aria-label={m.envelope_field_geometry_page_aria()}
-									onclick={placeOnPage}
+							<div class="flex flex-col gap-3">
+								<div>
+									<p class="text-sm font-medium">{m.envelope_field_geometry_label()}</p>
+									<p class="text-xs text-muted-foreground">
+										{m.envelope_field_geometry_description()}
+									</p>
+								</div>
+								<div
+									class="relative min-h-96 w-full overflow-hidden rounded-2xl border bg-background"
 								>
-									<span
-										class="absolute rounded border-2 border-primary bg-primary/20"
-										style={`left:${newField.x * 100}%;top:${newField.y * 100}%;width:${newField.width * 100}%;height:${newField.height * 100}%;`}
-									></span>
-								</button>
-								<div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+									<div class="pointer-events-none p-6">
+										{#if placementPreview !== null}
+											<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
+												{#each placementPreview.nodes as node, nodeIndex (nodeIndex)}
+													{@render renderMarkdownNode(node)}
+												{/each}
+											</div>
+										{:else}
+											<p class="text-sm text-muted-foreground">{m.envelope_documents_empty()}</p>
+										{/if}
+									</div>
+									<button
+										type="button"
+										tabindex="-1"
+										class="absolute inset-0 cursor-crosshair bg-transparent"
+										aria-label={m.envelope_field_geometry_page_aria()}
+										onclick={placeOnPage}
+									></button>
+									{#each visiblePlacementFields as overlay (overlay.key)}
+										<span
+											class={overlay.current
+												? 'pointer-events-none absolute rounded border-2 border-primary bg-primary/20 text-[10px] font-medium text-primary'
+												: 'pointer-events-none absolute rounded border border-muted-foreground/50 bg-muted/40 text-[10px] text-muted-foreground'}
+											style={`left:${overlay.geometry.x * 100}%;top:${overlay.geometry.y * 100}%;width:${overlay.geometry.width * 100}%;height:${overlay.geometry.height * 100}%;`}
+										>
+											<span class="block truncate px-1">{overlay.label}</span>
+										</span>
+									{/each}
+								</div>
+								<Field.FieldGroup class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
 									<Field.Field>
 										<Field.FieldLabel for="geo-page" class="text-xs">
 											{m.envelope_field_geometry_page()}
@@ -952,7 +1136,7 @@
 											oninput={(event) => setNewFieldNumber('height', event.currentTarget.value)}
 										/>
 									</Field.Field>
-								</div>
+								</Field.FieldGroup>
 							</div>
 
 							<Button

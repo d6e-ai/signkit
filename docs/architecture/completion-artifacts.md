@@ -16,7 +16,7 @@ Publication itself is one immutable pointer per envelope, enforced by a `(organi
 
 Operators read publication state through `GET /api/v1/envelopes/{envelopeId}/completion-artifact`, an organization-authorized, explicit-allowlist read that returns only the publication status and the manifest/JSON/Markdown content digests (comparable to the existing draft `archiveSha256` exposure) — never object storage keys, audit event hashes, recipient email/name, raw field values, capability material, or internal claim tokens. `POST /api/v1/system/completion-artifacts/drain` reuses the existing `DELIVERY_WORKER_SECRET` constant-time bearer convention rather than a new credential. Cloudflare's existing one-minute scheduled trigger invokes it in-process through the Worker's own `fetch` handler alongside the invitation drain, with no Cloudflare REST API call from the Worker; Node/Docker drains it from the same host scheduler used for invitation delivery.
 
-CC recipient delivery, public artifact grants, and completion notification mailing are implemented in Slice B (below). PDF sealing and DOCX conversion remain backlog items.
+CC recipient delivery, public artifact grants, and completion notification mailing are implemented in Slice B (below). Operator commit-pinned DOCX export is a separate derived read (`GET /api/v1/envelopes/{envelopeId}/docx`) and is not part of the completion artifact. PDF sealing of the completion package remains backlog.
 
 ## Completion artifact delivery and public access (Slice B)
 
@@ -42,7 +42,7 @@ Public artifact retrieval is exposed over two unauthenticated public boundaries 
 - `GET /c/{token}`: Direct browser/link access accepting the token as a URL path parameter and defaulting to Markdown (`text/markdown`).
   Both endpoints support an explicit `?format=json` or `?format=markdown` query parameter. The resolver validates token structure and SHA-256 hash against the delivery grant, retrieves the compressed artifact from immutable object storage, verifies object content digest against recorded SQL evidence, gunzips the bounded payload, and returns the decompressed text. Storage bucket keys, tenant IDs, recipient identities, and internal metadata are never reflected in the response or error bodies.
 
-Published artifacts in object storage and SQL pointer records in `completion_artifact` and `completion_delivery_outbox` are retained while SQL still references them. Unreferenced object-store uploads (failed CAS leftovers, not live pointers) are reclaimed by the bounded orphan sweep after a 24-hour grace period. Operator revocation UI, PDF sealing, and DOCX export remain deferred.
+Published artifacts in object storage and SQL pointer records in `completion_artifact` and `completion_delivery_outbox` are retained while SQL still references them. Unreferenced object-store uploads (failed CAS leftovers, not live pointers) are reclaimed by the bounded orphan sweep after a 24-hour grace period. Operator revocation UI, PDF sealing of the completion package, and completion webhooks remain deferred.
 
 Node/Docker and Cloudflare Workers runtime profiles are fully supported; Vercel uses the existing PostgreSQL and S3-compatible path. Host schedulers invoke the protected `POST /api/v1/system/completion-deliveries/drain` endpoint using constant-time `DELIVERY_WORKER_SECRET` bearer validation; Cloudflare Workers drain completion deliveries in-process within `scheduled()` via `context.waitUntil` following invitation and completion artifact drains.
 

@@ -8,6 +8,8 @@ import { createApiKeyOrganizationGrantHandlers } from './api-key-organization-gr
 import { createCompletionArtifactStatusHandler } from './completion-artifact-status';
 import { createDeliveryStatusHandler } from './delivery-status';
 import { createDraftHttpHandlers } from './drafts';
+import { createDocxExportHandler } from './docx-export';
+import { createDocxImportHandler } from './docx-import';
 import { createEnvelopeFieldsHandler } from './envelope-fields';
 import { createEnvelopeHttpHandlers } from './envelopes';
 import { createEnvelopeReadyHandler } from './envelope-ready';
@@ -124,6 +126,7 @@ function envelopeListCase(): ReadCase {
 			const handlers = createEnvelopeHttpHandlers(() => ({
 				create: vi.fn(),
 				get: vi.fn(),
+				getDetail: vi.fn(),
 				list: vi.fn(async (actor: { organizationId: string }) => {
 					organizationIds.push(actor.organizationId);
 					return { items: [], nextCursor: null };
@@ -146,7 +149,8 @@ function envelopeGetCase(): ReadCase {
 			const organizationIds: string[] = [];
 			const handlers = createEnvelopeHttpHandlers(() => ({
 				create: vi.fn(),
-				get: vi.fn(async (actor: { organizationId: string }) => {
+				get: vi.fn(),
+				getDetail: vi.fn(async (actor: { organizationId: string }) => {
 					organizationIds.push(actor.organizationId);
 					return null;
 				}),
@@ -187,6 +191,35 @@ function draftGetCase(): ReadCase {
 			const response: Response = await handlers.get(
 				event({
 					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/draft`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, organizationIds };
+		}
+	};
+}
+
+function docxGetCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/docx',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/docx`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const organizationIds: string[] = [];
+			const handler: RequestHandler = createDocxExportHandler(() => ({
+				envelopes: {
+					findForOrganization: async (organizationId: string) => {
+						organizationIds.push(organizationId);
+						return null;
+					}
+				},
+				objects: {} as never,
+				repository: {} as never
+			}));
+			const response: Response = await handler(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/docx`,
 					params: { envelopeId: ENVELOPE_ID },
 					apiKeyAuthentication
 				})
@@ -256,6 +289,7 @@ const READ_CASES: readonly ReadCase[] = [
 	envelopeListCase(),
 	envelopeGetCase(),
 	draftGetCase(),
+	docxGetCase(),
 	deliveriesCase(),
 	completionArtifactCase()
 ];
@@ -373,6 +407,7 @@ describe('API key mutation surface', () => {
 				const response: Response = await createEnvelopeHttpHandlers(() => ({
 					create,
 					get: vi.fn(),
+					getDetail: vi.fn(),
 					list: vi.fn()
 				})).create(
 					event({
@@ -425,7 +460,12 @@ describe('API key mutation surface', () => {
 		[
 			'POST /api/v1/envelopes',
 			async (): Promise<Response> =>
-				createEnvelopeHttpHandlers(() => ({ create: vi.fn(), get: vi.fn(), list: vi.fn() })).create(
+				createEnvelopeHttpHandlers(() => ({
+					create: vi.fn(),
+					get: vi.fn(),
+					getDetail: vi.fn(),
+					list: vi.fn()
+				})).create(
 					event({
 						pathname: '/api/v1/envelopes',
 						method: 'POST',
@@ -439,6 +479,18 @@ describe('API key mutation surface', () => {
 				createDraftHttpHandlers(() => ({ commit: vi.fn(), readWorkspace: vi.fn() })).commit(
 					event({
 						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/draft/commits`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+					})
+				)
+		],
+		[
+			'POST /api/v1/envelopes/{envelopeId}/draft/docx',
+			async (): Promise<Response> =>
+				createDocxImportHandler(() => ({ commit: vi.fn() }))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/draft/docx`,
 						method: 'POST',
 						params: { envelopeId: ENVELOPE_ID },
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
@@ -503,7 +555,12 @@ describe('API key mutation surface', () => {
 		[
 			'POST /api/v1/envelopes',
 			async (): Promise<Response> =>
-				createEnvelopeHttpHandlers(() => ({ create: vi.fn(), get: vi.fn(), list: vi.fn() })).create(
+				createEnvelopeHttpHandlers(() => ({
+					create: vi.fn(),
+					get: vi.fn(),
+					getDetail: vi.fn(),
+					list: vi.fn()
+				})).create(
 					event({
 						pathname: '/api/v1/envelopes',
 						method: 'POST',

@@ -33,16 +33,17 @@ Authorization: Bearer signkit_<43-base64url-characters>
 SignKit-Organization-Id: <organization-id>
 ```
 
-- **Strict Read-Only Surface:** API keys are accepted ONLY on five read endpoints under the `envelopes:read` scope:
+- **Strict Read-Only Surface:** API keys are accepted on these `envelopes:read` endpoints:
   - `GET /api/v1/envelopes`
-  - `GET /api/v1/envelopes/{envelopeId}`
+  - `GET /api/v1/envelopes/{envelopeId}` — envelope detail (`envelope`, `recipients`, `readyAuditEventId`, `fields`; fields omit labels)
   - `GET /api/v1/envelopes/{envelopeId}/draft`
+  - `GET /api/v1/envelopes/{envelopeId}/docx` — commit-pinned DOCX bytes; never stored in Git
   - `GET /api/v1/envelopes/{envelopeId}/deliveries`
   - `GET /api/v1/envelopes/{envelopeId}/completion-artifact`
+- **Authoring mutations:** Envelope create, draft commits, `POST .../draft/docx`, ready, and fields accept `drafts:write`. Send and void accept `envelopes:send`. See `GET /api/v1/system/capabilities`. DOCX import converts a bounded upload into a Markdown draft commit; the original DOCX is discarded.
 - **Bearer Exclusivity on Envelope Surfaces:** On the operator envelope surface (`/api/v1/envelopes/**`), a non-empty `Authorization` header selects bearer mode for the entire request and suppresses cookie resolution. Malformed tokens, foreign credentials (`skr1_`, `skca1_`, `ski1_`, worker secrets), or unauthorized keys fail closed with an opaque `401 Unauthorized` (`urn:signkit:problem:api-key-authentication-required`) carrying a bare `WWW-Authenticate: Bearer` challenge. A valid cookie never rescues a failing bearer.
 - **Narrow Management Refusal:** Presenting a well-formed `signkit_` bearer to management surfaces (`/api/v1/api-keys/**` or `/api/v1/instance/**`) is refused outright with `403 Forbidden` (`urn:signkit:problem:api-key-not-permitted`), and any accompanying cookie session is suppressed to prevent self-escalation. Note that `/api/v1/instance/bootstrap` is exempt because its `Authorization` header expects `SIGNKIT_BOOTSTRAP_SECRET` rather than a credential-family selector (returning an opaque 404 if invalid).
-- **Mutations Require Interactive Operator Sessions:** Envelope creation, draft commits, readiness, field placement, sending, and voiding require an interactive operator session authenticated via the `d6e-auth` OAuth provider. The session is held in an encrypted cookie; caller scripts must not fabricate cookies or machine mutation sessions.
-- **Machine Mutation Exclusion Rationale:** Machine principals are excluded from mutations because the completion artifact verifier pins audit events (`envelope.created`, `envelope.ready`, `envelope.fields_placed`, `envelope.sent`, `envelope.voided`) to `actor_type = 'user'`, but `actor_type` is excluded from those events' audit hash preimages. Admitting machine mutation actors would either falsify the audit chain or cause completion artifact publication to fail.
+- **Completion actor caveat:** Agent mutations record `actor_type = 'agent'`. Completion-artifact publication still pins create/ready/fields/sent/void events to `actor_type = 'user'`, so envelopes mutated only by API keys can fail closed at publication.
 
 For request shapes and response wrappers, see [references/endpoints.md](references/endpoints.md). For evolving full schemas, see canonical `docs/api.md`.
 
@@ -87,6 +88,7 @@ All error responses use `application/problem+json`:
 ```
 
 - **503 Problem Types Differ Across API-Key Reads:**
+  - `GET /api/v1/envelopes/{envelopeId}/docx`: returns `urn:signkit:problem:docx-export-unavailable`.
   - `GET /api/v1/envelopes/{envelopeId}/draft`: returns `urn:signkit:problem:draft-service-unavailable`.
   - `GET /api/v1/envelopes/{envelopeId}/deliveries`: returns `urn:signkit:problem:delivery-status-unavailable`.
   - `GET /api/v1/envelopes/{envelopeId}/completion-artifact`: returns `urn:signkit:problem:completion-artifact-status-unavailable`.

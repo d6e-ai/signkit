@@ -54,6 +54,12 @@ function application(): EnvelopeApplicationPort {
 	return {
 		create: vi.fn(async (): Promise<CreateEnvelopeResult> => ({ outcome: 'created', envelope })),
 		get: vi.fn(async (): Promise<Envelope | null> => envelope),
+		getDetail: vi.fn(async () => ({
+			envelope,
+			recipients: [],
+			readyAuditEventId: null,
+			fields: []
+		})),
 		list: vi.fn(async (): Promise<EnvelopeListPage> => ({ items: [envelope], nextCursor: null }))
 	};
 }
@@ -180,9 +186,67 @@ describe('envelope HTTP handlers', () => {
 			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			{ cursor: null, limit: 25 }
 		);
-		expect(app.get).toHaveBeenCalledWith(
+		expect(app.getDetail).toHaveBeenCalledWith(
 			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
 			envelopeId
 		);
+		expect(await getResponse.json()).toEqual({
+			envelope,
+			recipients: [],
+			readyAuditEventId: null,
+			fields: []
+		});
+	});
+
+	it('returns durable recipients, ready audit event, and fields without capability material', async () => {
+		const recipients = [
+			{
+				id: '01900000-0000-7000-8000-000000000011',
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer' as const,
+				locale: 'en' as const,
+				routingOrder: 1,
+				status: 'pending' as const
+			}
+		];
+		const fields = [
+			{
+				id: '01900000-0000-7000-8000-000000000012',
+				recipientId: recipients[0].id,
+				documentPath: 'documents/agreement.md' as const,
+				fieldType: 'signature' as const,
+				required: true,
+				position: 1,
+				geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
+			}
+		];
+		const readyAuditEventId = '01900000-0000-7000-8000-000000000013';
+		const app: EnvelopeApplicationPort = {
+			...application(),
+			getDetail: vi.fn(async () => ({
+				envelope: { ...envelope, status: 'ready' as const, repositoryGeneration: 1 },
+				recipients,
+				readyAuditEventId,
+				fields
+			}))
+		};
+		const response: Response = await invoke(
+			createEnvelopeHttpHandlers((): EnvelopeApplicationPort => app).get,
+			event({
+				pathname: `/api/v1/envelopes/${envelopeId}`,
+				params: { envelopeId }
+			})
+		);
+		const body = (await response.json()) as Record<string, unknown>;
+		expect(response.status).toBe(200);
+		expect(body).toEqual({
+			envelope: { ...envelope, status: 'ready', repositoryGeneration: 1 },
+			recipients,
+			readyAuditEventId,
+			fields
+		});
+		expect(JSON.stringify(body)).not.toContain('capability');
+		expect(JSON.stringify(body)).not.toContain('label');
 	});
 });

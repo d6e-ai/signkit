@@ -4,6 +4,8 @@ export const authoringCapabilities = {
 		archive: 'gzip',
 		trackedFiles: ['documents/*.md'],
 		commitEndpoint: '/api/v1/envelopes/{envelopeId}/draft/commits',
+		docxImportEndpoint: '/api/v1/envelopes/{envelopeId}/draft/docx',
+		docxExportEndpoint: '/api/v1/envelopes/{envelopeId}/docx',
 		concurrency: 'expected-generation',
 		idempotency: 'required'
 	},

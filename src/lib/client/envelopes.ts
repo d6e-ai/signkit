@@ -75,6 +75,13 @@ export interface DraftDocumentSnapshot {
 	content: string;
 }
 
+export interface EnvelopeDetailResponse {
+	envelope: Envelope;
+	recipients: readonly ReadyRecipientPublic[];
+	readyAuditEventId: string | null;
+	fields: readonly PublicEnvelopeFieldResponse[];
+}
+
 export interface DraftWorkspaceResponse {
 	generation: number;
 	commitSha: string | null;
@@ -363,13 +370,23 @@ export class EnvelopesClient {
 	}
 
 	async get(envelopeId: string, options?: RequestOptions): Promise<Envelope> {
+		const detail = await this.getDetail(envelopeId, options);
+		return detail.envelope;
+	}
+
+	async getDetail(envelopeId: string, options?: RequestOptions): Promise<EnvelopeDetailResponse> {
 		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}`);
-		const { data } = await this.request<{ envelope: Envelope }>(
+		const { data } = await this.request<EnvelopeDetailResponse>(
 			url,
 			{ method: 'GET', headers: { accept: 'application/json, application/problem+json' } },
 			options?.fetch
 		);
-		return data.envelope;
+		return {
+			envelope: data.envelope,
+			recipients: data.recipients ?? [],
+			readyAuditEventId: data.readyAuditEventId ?? null,
+			fields: data.fields ?? []
+		};
 	}
 
 	async list(
@@ -420,6 +437,62 @@ export class EnvelopesClient {
 		return {
 			revision: data.revision,
 			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
+	async importDocx(
+		envelopeId: string,
+		input: { expectedGeneration: number; targetPath: `documents/${string}.md`; file: Blob },
+		options?: RequestOptions
+	): Promise<CommitDraftResponse> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/draft/docx`);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const body = new FormData();
+		body.set('expectedGeneration', String(input.expectedGeneration));
+		body.set('targetPath', input.targetPath);
+		body.set('file', input.file, 'upload.docx');
+		const { data, response } = await this.request<{
+			revision: { generation: number; commitSha: string; archiveSha256: string };
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body
+			},
+			options?.fetch
+		);
+		return {
+			revision: data.revision,
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
+	async exportDocx(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<{ bytes: Uint8Array; commitSha: string | null; filename: string }> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/docx`);
+		const fetchFn = this.resolveFetch(options?.fetch);
+		const response = await fetchFn(url, {
+			credentials: 'same-origin',
+			method: 'GET',
+			headers: {
+				accept:
+					'application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/problem+json'
+			}
+		});
+		if (!response.ok) throw await this.parseErrorResponse(response, url);
+		const buffer = await response.arrayBuffer();
+		const disposition = response.headers.get('content-disposition');
+		const filenameMatch = disposition?.match(/filename="([^"]+)"/);
+		return {
+			bytes: new Uint8Array(buffer),
+			commitSha: response.headers.get('x-signkit-commit-sha'),
+			filename: filenameMatch?.[1] ?? `envelope-${envelopeId}.docx`
 		};
 	}
 

@@ -1,10 +1,12 @@
 # Documents, localization, and the open-core boundary
 
-Status: mixed — localization is implemented; DOCX/PDF derivation is backlog; the open-core boundary is policy
+Status: mixed — localization and bounded DOCX import/export are implemented; PDF sealing is backlog; the open-core boundary is policy
 
 ## Documents and evidence
 
-DOCX import is a bounded asynchronous conversion: hostile DOCX ZIP/XML → sanitized constrained representation → normalized Markdown commit. The original DOCX is outside Git and follows an explicit retention policy. DOCX export is generated from a specific source commit and remains a transient or retained artifact outside Git.
+DOCX import is a bounded conversion on `POST /api/v1/envelopes/{envelopeId}/draft/docx`: hostile DOCX ZIP/XML → sanitized constrained representation → a Markdown-only `documents/*.md` commit through the existing draft persistence boundary. The original DOCX never enters Git or the object draft archive. The upload is capped (`MAX_DOCX_INPUT_BYTES`, 20 MiB) and requires `drafts:write`, an `Idempotency-Key`, and the expected Git generation.
+
+DOCX export is `GET /api/v1/envelopes/{envelopeId}/docx` (`envelopes:read`). It renders the envelope's current trusted locator (`sentCommitSha` when present, otherwise `repositoryHead`) through `readImmutableDraftRevision` and returns WordprocessingML bytes plus `x-signkit-commit-sha`. Those bytes are derived for the response; they are not stored in Git.
 
 PDF output is also derived from a pinned Git commit. The product must distinguish a visual electronic signature plus evidence trail from cryptographic PDF certification/PAdES. It must not claim the latter until certificate, timestamping, and long-term validation are implemented and verified.
 

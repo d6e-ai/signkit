@@ -16,6 +16,7 @@ export const integrationCapabilities = {
 			'/api/v1/envelopes',
 			'/api/v1/envelopes/{envelopeId}',
 			'/api/v1/envelopes/{envelopeId}/draft',
+			'/api/v1/envelopes/{envelopeId}/docx',
 			'/api/v1/envelopes/{envelopeId}/deliveries',
 			'/api/v1/envelopes/{envelopeId}/completion-artifact'
 		],
@@ -23,6 +24,7 @@ export const integrationCapabilities = {
 			'drafts:write': [
 				'/api/v1/envelopes',
 				'/api/v1/envelopes/{envelopeId}/draft/commits',
+				'/api/v1/envelopes/{envelopeId}/draft/docx',
 				'/api/v1/envelopes/{envelopeId}/ready',
 				'/api/v1/envelopes/{envelopeId}/fields'
 			],

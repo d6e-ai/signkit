@@ -6,6 +6,7 @@ import type {
 	CreateEnvelopeResult,
 	EnvelopeApplicationPort,
 	EnvelopeApplicationStore,
+	EnvelopeDetail,
 	EnvelopeListPage,
 	EnvelopeListQuery,
 	EnvelopeRequestActor
@@ -70,6 +71,10 @@ export class EnvelopeApplication implements EnvelopeApplicationPort {
 
 	async get(actor: EnvelopeRequestActor, envelopeId: string): Promise<Envelope | null> {
 		return this.#store.findForOrganization(actor.organizationId, envelopeId);
+	}
+
+	async getDetail(actor: EnvelopeRequestActor, envelopeId: string): Promise<EnvelopeDetail | null> {
+		return this.#store.readDetail(actor.organizationId, envelopeId);
 	}
 
 	async list(actor: EnvelopeRequestActor, query: EnvelopeListQuery): Promise<EnvelopeListPage> {

@@ -46,6 +46,8 @@ interface CapabilitiesResponse {
 		archive: string;
 		trackedFiles: string[];
 		commitEndpoint: string;
+		docxImportEndpoint: string;
+		docxExportEndpoint: string;
 		concurrency: string;
 		idempotency: string;
 	};
@@ -205,6 +207,7 @@ describe('GET /api/v1/system/capabilities', () => {
 				'/api/v1/envelopes',
 				'/api/v1/envelopes/{envelopeId}',
 				'/api/v1/envelopes/{envelopeId}/draft',
+				'/api/v1/envelopes/{envelopeId}/docx',
 				'/api/v1/envelopes/{envelopeId}/deliveries',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact'
 			],
@@ -212,6 +215,7 @@ describe('GET /api/v1/system/capabilities', () => {
 				'drafts:write': [
 					'/api/v1/envelopes',
 					'/api/v1/envelopes/{envelopeId}/draft/commits',
+					'/api/v1/envelopes/{envelopeId}/draft/docx',
 					'/api/v1/envelopes/{envelopeId}/ready',
 					'/api/v1/envelopes/{envelopeId}/fields'
 				],

@@ -280,10 +280,15 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'getEnvelope',
 					tags: ['Envelopes'],
 					parameters: [organizationHeader, envelopeIdParam],
-					responses: jsonResponse('200', 'Envelope', {
+					responses: jsonResponse('200', 'Envelope detail', {
 						type: 'object',
-						required: ['envelope'],
-						properties: { envelope: { $ref: '#/components/schemas/Envelope' } }
+						required: ['envelope', 'recipients', 'readyAuditEventId', 'fields'],
+						properties: {
+							envelope: { $ref: '#/components/schemas/Envelope' },
+							recipients: { type: 'array', items: { type: 'object' } },
+							readyAuditEventId: { type: ['string', 'null'] },
+							fields: { type: 'array', items: { type: 'object' } }
+						}
 					})
 				})
 			},
@@ -341,6 +346,49 @@ export function openApiDocument(): Record<string, unknown> {
 						}
 					},
 					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/draft/docx': {
+				post: op({
+					summary: 'Import a bounded DOCX file as a Markdown draft commit',
+					operationId: 'importEnvelopeDocx',
+					tags: ['Envelopes'],
+					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'multipart/form-data': {
+								schema: {
+									type: 'object',
+									required: ['file', 'targetPath', 'expectedGeneration'],
+									properties: {
+										file: { type: 'string', format: 'binary' },
+										targetPath: { type: 'string' },
+										expectedGeneration: { type: 'integer', minimum: 0 }
+									}
+								}
+							}
+						}
+					},
+					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/docx': {
+				get: op({
+					summary: 'Export the pinned Markdown revision as DOCX',
+					operationId: 'exportEnvelopeDocx',
+					tags: ['Envelopes'],
+					parameters: [organizationHeader, envelopeIdParam],
+					responses: {
+						'200': {
+							description: 'DOCX package derived from the pinned Git commit',
+							content: {
+								'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {
+									schema: { type: 'string', format: 'binary' }
+								}
+							}
+						}
+					}
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/ready': {

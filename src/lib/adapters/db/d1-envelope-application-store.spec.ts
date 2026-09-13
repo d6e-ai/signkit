@@ -441,6 +441,73 @@ describe('D1EnvelopeApplicationStore', () => {
 			outcome: 'audit_conflict'
 		});
 	});
+
+	it('reads recipients, ready audit event, and fields without capability hashes or labels', async () => {
+		const readyEnvelope = {
+			...envelopeRow(command.envelopeId),
+			status: 'ready',
+			repository_generation: 1,
+			field_generation: 1
+		};
+		const fake: FakeD1 = createFakeD1({
+			firstResults: [readyEnvelope, { id: '01900000-0000-7000-8000-000000000033' }],
+			allResults: [
+				[
+					{
+						id: '01900000-0000-7000-8000-000000000021',
+						email: 'signer@example.com',
+						name: 'Signer',
+						role: 'signer',
+						locale: 'en',
+						routing_order: 1,
+						status: 'pending'
+					}
+				],
+				[
+					{
+						id: '01900000-0000-7000-8000-000000000022',
+						recipient_id: '01900000-0000-7000-8000-000000000021',
+						document_path: 'documents/agreement.md',
+						field_type: 'signature',
+						required: 1,
+						position: 1,
+						page: 1,
+						x: 0.1,
+						y: 0.2,
+						width: 0.3,
+						height: 0.05
+					}
+				]
+			]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		const detail = await store.readDetail(command.organizationId, command.envelopeId);
+
+		expect(detail?.readyAuditEventId).toBe('01900000-0000-7000-8000-000000000033');
+		expect(detail?.recipients).toEqual([
+			{
+				id: '01900000-0000-7000-8000-000000000021',
+				email: 'signer@example.com',
+				name: 'Signer',
+				role: 'signer',
+				locale: 'en',
+				routingOrder: 1,
+				status: 'pending'
+			}
+		]);
+		expect(detail?.fields[0]).toMatchObject({
+			id: '01900000-0000-7000-8000-000000000022',
+			geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
+		});
+		expect(JSON.stringify(detail)).not.toContain('capability');
+		const sql = fake.prepared.map((record) => record.sql).join('\n');
+		expect(sql).toContain('FROM recipient');
+		expect(sql).toContain("event_type = 'envelope.ready'");
+		expect(sql).toContain('FROM envelope_field');
+		expect(sql).not.toContain('capability_hash');
+		expect(sql).not.toContain('label');
+	});
 });
 
 const draftCommand: PublishDraftRevisionCommand = {

@@ -1,6 +1,6 @@
 # SignKit API Endpoints Reference
 
-This document provides reference details for calling the five read-only API-key endpoints under `/api/v1/envelopes/**`, along with authority rules and response wrappers.
+This document provides reference details for calling the API-key envelope endpoints under `/api/v1/envelopes/**`, along with authority rules and response wrappers.
 
 > [!NOTE]
 > For the complete and evolving normative endpoint matrix, recipient signing flows, instance administration, and mutation request contracts, consult [docs/api.md](../../../../docs/api.md).
@@ -13,16 +13,18 @@ The table below summarizes key endpoints and required authorities. Interactive o
 | :--- | :--- | :--- | :--- | :---: |
 | `GET` | `/api/v1/system/capabilities` | Runtime profile & feature flags | None (unauthenticated) | Ignored |
 | `GET` | `/api/v1/envelopes` | List envelopes in organization | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
-| `GET` | `/api/v1/envelopes/{envelopeId}` | Read single envelope metadata | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
+| `GET` | `/api/v1/envelopes/{envelopeId}` | Read envelope detail (recipients, ready audit, fields) | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
 | `GET` | `/api/v1/envelopes/{envelopeId}/draft` | Read draft workspace snapshot | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
+| `GET` | `/api/v1/envelopes/{envelopeId}/docx` | Export pinned Markdown as DOCX | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
+| `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits` | Commit Markdown changes | `drafts:write` (session or API key) | Yes (`drafts:write`) |
+| `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx` | Import bounded DOCX as Markdown commit | `drafts:write` (session or API key) | Yes (`drafts:write`) |
 | `GET` | `/api/v1/envelopes/{envelopeId}/deliveries` | Read invitation delivery status | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
 | `GET` | `/api/v1/envelopes/{envelopeId}/completion-artifact` | Read artifact publication status | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
-| `POST` | `/api/v1/envelopes` | Create new envelope | Verified interactive operator session established through the application | No (403 refused) |
-| `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits` | Commit Markdown changes | Verified interactive operator session established through the application | No (403 refused) |
-| `POST` | `/api/v1/envelopes/{envelopeId}/ready` | Freeze recipient graph | Verified interactive operator session established through the application | No (403 refused) |
-| `POST` | `/api/v1/envelopes/{envelopeId}/fields` | Place signing fields | Verified interactive operator session established through the application | No (403 refused) |
-| `POST` | `/api/v1/envelopes/{envelopeId}/send` | Send envelope & start delivery | Verified interactive operator session established through the application | No (403 refused) |
-| `POST` | `/api/v1/envelopes/{envelopeId}/void` | Void envelope terminally | Verified interactive operator session established through the application | No (403 refused) |
+| `POST` | `/api/v1/envelopes` | Create new envelope | `drafts:write` (session or API key) | Yes (`drafts:write`) |
+| `POST` | `/api/v1/envelopes/{envelopeId}/ready` | Freeze recipient graph | `drafts:write` (session or API key) | Yes (`drafts:write`) |
+| `POST` | `/api/v1/envelopes/{envelopeId}/fields` | Place signing fields | `drafts:write` (session or API key) | Yes (`drafts:write`) |
+| `POST` | `/api/v1/envelopes/{envelopeId}/send` | Send envelope & start delivery | `envelopes:send` (session or API key) | Yes (`envelopes:send`) |
+| `POST` | `/api/v1/envelopes/{envelopeId}/void` | Void envelope terminally | `envelopes:send` (session or API key) | Yes (`envelopes:send`) |
 | `POST` | `/api/v1/api-keys` | Mint owner-scoped API key | Verified identity session | No (403 refused) |
 | `GET` | `/api/v1/api-keys` | List owner's API keys | Verified identity session | No (403 refused) |
 | `POST` | `/api/v1/api-keys/{id}/revoke` | Revoke owner's API key | Verified identity session | No (403 refused) |
@@ -41,7 +43,7 @@ The table below summarizes key endpoints and required authorities. Interactive o
 
 ## Enabled Read Operations (API Key Requests)
 
-All five read endpoints require:
+All `envelopes:read` endpoints require:
 1. `Authorization: Bearer <signkit_key>`
 2. `SignKit-Organization-Id: <organization_id>`
 
@@ -86,7 +88,7 @@ Accept: application/json
 
 ### 2. Read One Envelope
 
-Reads metadata for a specific envelope.
+Reads metadata, recipients, ready audit event id, and fields (no labels) for a specific envelope.
 
 ```http
 GET /api/v1/envelopes/0191b26f-4000-7000-8000-000000000001 HTTP/1.1
@@ -112,7 +114,20 @@ Accept: application/json
     "fieldGeneration": 0,
     "createdAt": "2026-09-11T12:00:00.000Z",
     "updatedAt": "2026-09-11T12:05:00.000Z"
-  }
+  },
+  "recipients": [
+    {
+      "id": "0191b26f-4000-7000-8000-000000000010",
+      "email": "signer@example.com",
+      "name": "Signer",
+      "role": "signer",
+      "locale": "en",
+      "routingOrder": 1,
+      "status": "pending"
+    }
+  ],
+  "readyAuditEventId": "0191b26f-4000-7000-8000-000000000020",
+  "fields": []
 }
 ```
 
@@ -225,11 +240,13 @@ RFC 9457 error URNs under `urn:signkit:problem:`:
 - `urn:signkit:problem:api-key-authentication-required` (401): API key invalid, revoked, expired, or owner suspended. Carries bare `WWW-Authenticate: Bearer` challenge. (Distinct from session `urn:signkit:problem:authentication-required`).
 - `urn:signkit:problem:api-key-organization-grant-required` (403): API key exists but holds no live grant for the specified organization.
 - `urn:signkit:problem:api-key-insufficient-scope` (403): API key lacks the required scope (`envelopes:read`).
-- `urn:signkit:problem:api-key-not-permitted` (403): API key was presented to a mutation or management endpoint.
+- `urn:signkit:problem:api-key-not-permitted` (403): API key was presented to a management endpoint that refuses keys.
 - `urn:signkit:problem:envelope-not-found` (404): Envelope not found in the authorized organization.
 - `urn:signkit:problem:idempotency-conflict` (409): `Idempotency-Key` previously used with a different request fingerprint.
 - `urn:signkit:problem:request-body-too-large` (413): Request body exceeded byte ceiling.
 - `urn:signkit:problem:draft-service-unavailable` (503): Emitted by `GET /api/v1/envelopes/{envelopeId}/draft` when the draft workspace cannot be read safely.
+- `urn:signkit:problem:docx-export-unavailable` (503): Emitted by `GET /api/v1/envelopes/{envelopeId}/docx` when the pinned revision cannot be exported.
+- `urn:signkit:problem:docx-export-empty` (409): Envelope has no pinned Markdown revision to export.
 - `urn:signkit:problem:delivery-status-unavailable` (503): Emitted by `GET /api/v1/envelopes/{envelopeId}/deliveries` when delivery status cannot be read.
 - `urn:signkit:problem:completion-artifact-status-unavailable` (503): Emitted by `GET /api/v1/envelopes/{envelopeId}/completion-artifact` when publication status cannot be read.
 - `urn:signkit:problem:persistence-unavailable` (503): Emitted by envelope list and get when the durable envelope store is unconfigured or resolution fails.

@@ -3,11 +3,11 @@ import { z, type ZodIssue, type ZodType } from 'zod';
 import type {
 	CreateEnvelopeResult,
 	EnvelopeApplicationPort,
+	EnvelopeDetail,
 	EnvelopeListPage,
 	EnvelopeListQuery,
 	EnvelopeRequestActor
 } from '$lib/application/envelopes/model';
-import type { Envelope } from '$lib/domain/envelope';
 import { signkitIdentifierSchema } from './identifier-schema';
 import {
 	authorizeScopedOrganizationRequest,
@@ -333,8 +333,11 @@ export function createEnvelopeHttpHandlers(
 		if (application instanceof Response) return application;
 
 		try {
-			const envelope: Envelope | null = await application.get(actor, envelopeIdResult.data);
-			if (envelope === null) {
+			const detail: EnvelopeDetail | null = await application.getDetail(
+				actor,
+				envelopeIdResult.data
+			);
+			if (detail === null) {
 				return problemResponse({
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
@@ -343,10 +346,18 @@ export function createEnvelopeHttpHandlers(
 					instance: url.pathname
 				});
 			}
-			return new Response(JSON.stringify({ envelope }), {
-				status: 200,
-				headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
-			});
+			return new Response(
+				JSON.stringify({
+					envelope: detail.envelope,
+					recipients: detail.recipients,
+					readyAuditEventId: detail.readyAuditEventId,
+					fields: detail.fields
+				}),
+				{
+					status: 200,
+					headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
+				}
+			);
 		} catch (error: unknown) {
 			console.error(
 				JSON.stringify({

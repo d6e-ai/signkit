@@ -3,10 +3,20 @@ import type {
 	CreateEnvelopeCommand,
 	CreateEnvelopeStoreResult,
 	EnvelopeApplicationStore,
+	EnvelopeDetail,
 	EnvelopeListPage,
-	EnvelopeListQuery
+	EnvelopeListQuery,
+	PublicEnvelopeDetailField,
+	PublicEnvelopeRecipient
 } from '$lib/application/envelopes/model';
-import type { Envelope, EnvelopeStatus } from '$lib/domain/envelope';
+import type {
+	Envelope,
+	EnvelopeStatus,
+	FieldGeometry,
+	FieldType,
+	RecipientRole,
+	RecipientStatus
+} from '$lib/domain/envelope';
 import type {
 	DraftAuditHead,
 	DraftMutationStore,
@@ -287,6 +297,64 @@ export class PostgresEnvelopeApplicationStore
 		return {
 			items,
 			nextCursor: hasNextPage ? (items.at(-1)?.id ?? null) : null
+		};
+	}
+
+	async readDetail(organizationId: string, envelopeId: string): Promise<EnvelopeDetail | null> {
+		const envelope: Envelope | null = await this.findForOrganization(organizationId, envelopeId);
+		if (envelope === null) return null;
+
+		const recipientRows = await this.applicationSql<PostgresDetailRecipientRow[]>`
+			SELECT
+				id,
+				email,
+				name,
+				role,
+				locale,
+				routing_order AS "routingOrder",
+				status
+			FROM recipient
+			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			ORDER BY routing_order ASC, id ASC
+		`;
+
+		let readyAuditEventId: string | null = null;
+		if (envelope.status !== 'draft') {
+			const readyRows = await this.applicationSql<{ id: string }[]>`
+				SELECT id
+				FROM audit_event
+				WHERE organization_id = ${organizationId}
+					AND envelope_id = ${envelopeId}
+					AND event_type = 'envelope.ready'
+				ORDER BY sequence DESC
+				LIMIT 1
+			`;
+			readyAuditEventId = readyRows[0]?.id ?? null;
+		}
+
+		const fieldRows = await this.applicationSql<PostgresDetailFieldRow[]>`
+			SELECT
+				id,
+				recipient_id AS "recipientId",
+				document_path AS "documentPath",
+				field_type AS "fieldType",
+				required,
+				position,
+				page,
+				x,
+				y,
+				width,
+				height
+			FROM envelope_field
+			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			ORDER BY document_path ASC, position ASC, id ASC
+		`;
+
+		return {
+			envelope,
+			recipients: recipientRows.map(fromPostgresRecipientRow),
+			readyAuditEventId,
+			fields: fieldRows.map(fromPostgresFieldRow)
 		};
 	}
 
@@ -748,4 +816,65 @@ function assertListLimit(limit: number): void {
 	if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LIST_LIMIT) {
 		throw new Error(`Envelope list limit must be between 1 and ${MAX_LIST_LIMIT}`);
 	}
+}
+
+interface PostgresDetailRecipientRow {
+	id: string;
+	email: string;
+	name: string;
+	role: RecipientRole;
+	locale: 'en' | 'ja';
+	routingOrder: number;
+	status: RecipientStatus;
+}
+
+interface PostgresDetailFieldRow {
+	id: string;
+	recipientId: string;
+	documentPath: `documents/${string}.md`;
+	fieldType: FieldType;
+	required: boolean;
+	position: number;
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
+}
+
+function fromPostgresRecipientRow(row: PostgresDetailRecipientRow): PublicEnvelopeRecipient {
+	return {
+		id: row.id,
+		email: row.email,
+		name: row.name,
+		role: row.role,
+		locale: row.locale,
+		routingOrder: row.routingOrder,
+		status: row.status
+	};
+}
+
+function fromPostgresFieldRow(row: PostgresDetailFieldRow): PublicEnvelopeDetailField {
+	return {
+		id: row.id,
+		recipientId: row.recipientId,
+		documentPath: row.documentPath,
+		fieldType: row.fieldType,
+		required: row.required,
+		position: row.position,
+		geometry: postgresGeometryFromColumns(row.page, row.x, row.y, row.width, row.height)
+	};
+}
+
+function postgresGeometryFromColumns(
+	page: number | null,
+	x: number | null,
+	y: number | null,
+	width: number | null,
+	height: number | null
+): FieldGeometry | null {
+	if (page === null || x === null || y === null || width === null || height === null) {
+		return null;
+	}
+	return { page, x, y, width, height };
 }

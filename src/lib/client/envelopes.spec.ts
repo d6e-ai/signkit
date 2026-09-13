@@ -78,6 +78,76 @@ describe('EnvelopesClient', () => {
 		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/draft`);
 	});
 
+	it('reads the durable envelope detail including recipients and the ready audit event', async () => {
+		const detail = {
+			envelope,
+			recipients: [
+				{
+					id: '01900000-0000-7000-8000-000000000011',
+					email: 'signer@example.com',
+					name: 'Signer',
+					role: 'signer',
+					locale: 'en',
+					routingOrder: 1,
+					status: 'pending'
+				}
+			],
+			readyAuditEventId: '01900000-0000-7000-8000-000000000099',
+			fields: []
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(detail));
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.getDetail(envelope.id)).resolves.toEqual(detail);
+		await expect(client.get(envelope.id)).resolves.toEqual(envelope);
+	});
+
+	it('imports a DOCX file as multipart without setting a manual content-type', async () => {
+		const revision = { generation: 1, commitSha: 'a'.repeat(40), archiveSha256: 'b'.repeat(64) };
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ revision }, 201)
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+		const file = new Blob(['PK'], {
+			type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+		});
+
+		await client.importDocx(envelope.id, {
+			expectedGeneration: 0,
+			targetPath: 'documents/agreement.md',
+			file
+		});
+
+		const [, init] = fetchMock.mock.calls[0];
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/draft/docx`);
+		expect(init?.body).toBeInstanceOf(FormData);
+		expect(init?.headers).not.toHaveProperty('content-type');
+	});
+
+	it('downloads commit-pinned DOCX bytes without JSON parsing', async () => {
+		const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+		const fetchMock = vi.fn<typeof globalThis.fetch>(
+			async () =>
+				new Response(bytes, {
+					status: 200,
+					headers: {
+						'content-type':
+							'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+						'content-disposition': 'attachment; filename="envelope-export.docx"',
+						'x-signkit-commit-sha': 'a'.repeat(40)
+					}
+				})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.exportDocx(envelope.id)).resolves.toEqual({
+			bytes,
+			commitSha: 'a'.repeat(40),
+			filename: 'envelope-export.docx'
+		});
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/docx`);
+	});
+
 	it('marks a replayed commit via the idempotency-replayed response header', async () => {
 		const revision = { generation: 1, commitSha: 'a'.repeat(40), archiveSha256: 'b'.repeat(64) };
 		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
