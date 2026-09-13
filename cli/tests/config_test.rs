@@ -225,7 +225,7 @@ async fn test_credential_redacted_in_debug() {
     .await;
 
     let resolved = resolve_config(None, None, false, None, None).unwrap();
-    let debug_output = format!("{:?}", resolved);
+    let debug_output = format!("{resolved:?}");
     assert!(debug_output.contains("[REDACTED]"));
     assert!(!debug_output.contains(common::TEST_API_KEY));
 }
