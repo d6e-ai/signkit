@@ -12,12 +12,19 @@ import type {
 	InstanceInvitationListPage,
 	InstanceInvitationListQuery,
 	InstanceInvitationMetadata,
+	InstanceMemberListPage,
+	InstanceMemberListQuery,
 	InstanceMemberRole,
 	InstanceMemberStatus,
 	InstanceStore,
 	ListInstanceInvitationsStoreResult,
+	ListInstanceMembersStoreResult,
 	RevokeInstanceInvitationCommand,
-	RevokeInstanceInvitationStoreResult
+	RevokeInstanceInvitationStoreResult,
+	SetInstanceMemberRoleCommand,
+	SetInstanceMemberRoleStoreResult,
+	SetInstanceMemberStatusCommand,
+	SetInstanceMemberStatusStoreResult
 } from '$lib/ports/instance-store';
 import { PostgresInstanceStore } from './postgres-instance-store';
 
@@ -34,8 +41,10 @@ const postgresDescribe = TEST_DATABASE_URL === undefined ? describe.skip : descr
 const ACTOR_ID: string = 'user-owner-1';
 const OTHER_ACTOR_ID: string = 'user-other-2';
 const OWNER_ID: string = 'user-owner-1';
+const OWNER2_ID: string = 'user-owner-2';
 const ADMIN_ID: string = 'user-admin-1';
 const MEMBER_ID: string = 'user-member-1';
+const TARGET_ID: string = 'user-target-1';
 const ACCEPTOR_ID: string = 'user-acceptor-1';
 const SUSPENDED_USER_ID: string = 'user-suspended-1';
 const SUSPENDED_ADMIN_ID: string = 'admin-suspended-1';
@@ -54,6 +63,8 @@ const CREATED_AT: string = '2026-09-12T12:00:00.000Z';
 const EXPIRES_AT: string = '2026-09-19T12:00:00.000Z';
 const ACCEPTED_AT: string = '2026-09-13T12:00:00.000Z';
 const REVOKED_AT: string = '2026-09-13T12:00:00.000Z';
+const UPDATED_AT: string = '2026-09-13T13:00:00.000Z';
+const LATER_AT: string = '2026-09-14T13:00:00.000Z';
 
 const MIGRATION_PATHS: readonly string[] = readdirSync('migrations/postgres')
 	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
@@ -122,6 +133,44 @@ function listQuery(
 	return {
 		cursor: null,
 		limit: 25,
+		...overrides
+	};
+}
+
+function memberListQuery(
+	overrides: Partial<InstanceMemberListQuery> = {}
+): InstanceMemberListQuery {
+	return {
+		cursor: null,
+		limit: 25,
+		...overrides
+	};
+}
+
+function setRoleCommand(
+	overrides: Partial<SetInstanceMemberRoleCommand> = {}
+): SetInstanceMemberRoleCommand {
+	return {
+		actor: { type: 'user', id: OWNER_ID },
+		idempotencyKey: 'role-idem-key-1',
+		requestFingerprint: REQUEST_FINGERPRINT,
+		targetUserId: TARGET_ID,
+		role: 'admin',
+		updatedAt: UPDATED_AT,
+		...overrides
+	};
+}
+
+function setStatusCommand(
+	overrides: Partial<SetInstanceMemberStatusCommand> = {}
+): SetInstanceMemberStatusCommand {
+	return {
+		actor: { type: 'user', id: OWNER_ID },
+		idempotencyKey: 'status-idem-key-1',
+		requestFingerprint: REQUEST_FINGERPRINT,
+		targetUserId: TARGET_ID,
+		status: 'suspended',
+		updatedAt: UPDATED_AT,
 		...overrides
 	};
 }
@@ -1454,6 +1503,611 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		expect(commandRows).toHaveLength(1);
 		expect(new Date(commandRows[0]?.occurredAt).toISOString()).toBe('2026-09-13T12:00:00.000Z');
 	});
+
+	it('lists members for owner/admin with deterministic user_id-ascending pagination, and forbids member/suspended/unknown actors', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(ADMIN_ID, 'admin');
+		await insertMember('member-a', 'member');
+		await insertMember('member-b', 'member');
+		await insertMember('member-c', 'member');
+
+		const page1Result: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: OWNER_ID },
+			memberListQuery({ limit: 2 })
+		);
+		expect(page1Result.outcome).toBe('listed');
+		const page1: InstanceMemberListPage = (
+			page1Result as Extract<ListInstanceMembersStoreResult, { outcome: 'listed' }>
+		).page;
+		expect(page1.items.map((item) => item.userId)).toEqual(['member-a', 'member-b']);
+		expect(page1.nextCursor).toBe('member-b');
+
+		const page2Result: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: OWNER_ID },
+			memberListQuery({ cursor: page1.nextCursor, limit: 3 })
+		);
+		expect(page2Result.outcome).toBe('listed');
+		const page2: InstanceMemberListPage = (
+			page2Result as Extract<ListInstanceMembersStoreResult, { outcome: 'listed' }>
+		).page;
+		// Ascending by user_id: 'user-admin-1' sorts before 'user-owner-1'.
+		expect(page2.items.map((item) => item.userId)).toEqual(['member-c', ADMIN_ID, OWNER_ID]);
+		expect(page2.nextCursor).toBeNull();
+
+		const adminList: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: ADMIN_ID },
+			memberListQuery()
+		);
+		expect(adminList.outcome).toBe('listed');
+
+		const memberList: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: 'member-a' },
+			memberListQuery()
+		);
+		expect(memberList).toEqual({ outcome: 'forbidden' });
+
+		const ghostList: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: 'ghost' },
+			memberListQuery()
+		);
+		expect(ghostList).toEqual({ outcome: 'forbidden' });
+
+		await database()`UPDATE instance_member SET status = 'suspended' WHERE user_id = ${OWNER_ID}`;
+		const suspendedList: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: OWNER_ID },
+			memberListQuery()
+		);
+		expect(suspendedList).toEqual({ outcome: 'member_suspended' });
+	});
+
+	it('lets an owner administer any member, lets an admin administer only current member-role targets, and never grants above member from an admin', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(ADMIN_ID, 'admin');
+		await insertMember(TARGET_ID, 'member');
+		await insertMember('other-admin', 'admin');
+
+		// Owner can promote a member to admin.
+		const ownerPromotes: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ idempotencyKey: 'owner-promotes', role: 'admin' })
+		);
+		expect(ownerPromotes.outcome).toBe('updated');
+
+		// Admin cannot grant a role above member, even to a current member target.
+		await insertMember('member-2', 'member');
+		const adminGrantsOwner: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				actor: { type: 'user', id: ADMIN_ID },
+				idempotencyKey: 'admin-grants-owner',
+				targetUserId: 'member-2',
+				role: 'owner'
+			})
+		);
+		expect(adminGrantsOwner).toEqual({ outcome: 'role_not_permitted' });
+
+		const adminGrantsAdmin: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				actor: { type: 'user', id: ADMIN_ID },
+				idempotencyKey: 'admin-grants-admin',
+				targetUserId: 'member-2',
+				role: 'admin'
+			})
+		);
+		expect(adminGrantsAdmin).toEqual({ outcome: 'role_not_permitted' });
+
+		// Admin cannot administer a non-member (current role is not 'member').
+		const adminTargetsAdmin: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				actor: { type: 'user', id: ADMIN_ID },
+				idempotencyKey: 'admin-targets-admin',
+				targetUserId: 'other-admin',
+				role: 'member'
+			})
+		);
+		expect(adminTargetsAdmin).toEqual({ outcome: 'forbidden' });
+
+		const adminSuspendsAdmin: SetInstanceMemberStatusStoreResult =
+			await store().setInstanceMemberStatus(
+				setStatusCommand({
+					actor: { type: 'user', id: ADMIN_ID },
+					idempotencyKey: 'admin-suspends-admin',
+					targetUserId: 'other-admin'
+				})
+			);
+		expect(adminSuspendsAdmin).toEqual({ outcome: 'forbidden' });
+
+		// Admin CAN administer a current member-role target.
+		const adminSuspendsMember: SetInstanceMemberStatusStoreResult =
+			await store().setInstanceMemberStatus(
+				setStatusCommand({
+					actor: { type: 'user', id: ADMIN_ID },
+					idempotencyKey: 'admin-suspends-member',
+					targetUserId: 'member-2'
+				})
+			);
+		expect(adminSuspendsMember.outcome).toBe('updated');
+	});
+
+	it('blocks demoting or suspending the sole active owner, but allows it once another active owner exists', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+
+		const demoteAlone: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ targetUserId: OWNER_ID, role: 'admin', idempotencyKey: 'demote-alone' })
+		);
+		expect(demoteAlone).toEqual({ outcome: 'last_active_owner' });
+
+		await insertMember(OWNER2_ID, 'owner');
+		const suspendOther: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({
+				actor: { type: 'user', id: OWNER_ID },
+				targetUserId: OWNER2_ID,
+				idempotencyKey: 'suspend-with-backup'
+			})
+		);
+		expect(suspendOther.outcome).toBe('updated');
+
+		// Now OWNER_ID is the sole active owner again (OWNER2_ID suspended).
+		const demoteWithoutBackup: SetInstanceMemberRoleStoreResult =
+			await store().setInstanceMemberRole(
+				setRoleCommand({
+					targetUserId: OWNER_ID,
+					role: 'admin',
+					idempotencyKey: 'demote-without-backup'
+				})
+			);
+		expect(demoteWithoutBackup).toEqual({ outcome: 'last_active_owner' });
+	});
+
+	it('allows role self-handoff for an active owner but always rejects status self-targeting', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(OWNER2_ID, 'owner');
+
+		const selfHandoff: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				actor: { type: 'user', id: OWNER_ID },
+				targetUserId: OWNER_ID,
+				role: 'admin',
+				idempotencyKey: 'self-handoff'
+			})
+		);
+		expect(selfHandoff.outcome).toBe('updated');
+		if (selfHandoff.outcome === 'updated') {
+			expect(selfHandoff.member).toEqual(
+				expect.objectContaining({ userId: OWNER_ID, role: 'admin' })
+			);
+		}
+
+		const selfStatus: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				targetUserId: OWNER2_ID,
+				idempotencyKey: 'self-status'
+			})
+		);
+		expect(selfStatus).toEqual({ outcome: 'cannot_target_self' });
+	});
+
+	it('replays the originally recorded role state, not state produced by a later command', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(TARGET_ID, 'member');
+
+		const first: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ role: 'admin', idempotencyKey: 'role-replay-1' })
+		);
+		expect(first.outcome).toBe('updated');
+
+		await store().setInstanceMemberRole(
+			setRoleCommand({ role: 'member', idempotencyKey: 'role-replay-2', updatedAt: LATER_AT })
+		);
+
+		const replay: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ role: 'admin', idempotencyKey: 'role-replay-1', updatedAt: LATER_AT })
+		);
+		expect(replay).toEqual({
+			outcome: 'replayed',
+			member: {
+				userId: TARGET_ID,
+				role: 'admin',
+				status: 'active',
+				createdAt: new Date(CREATED_AT).toISOString(),
+				updatedAt: new Date(UPDATED_AT).toISOString()
+			},
+			appliedAt: new Date(UPDATED_AT).toISOString(),
+			revokedInvitationCount: 0
+		});
+
+		const currentRole: { role: string }[] = await database()<
+			{ role: string }[]
+		>`SELECT role FROM instance_member WHERE user_id = ${TARGET_ID}`;
+		expect(currentRole[0]?.role).toBe('member');
+	});
+
+	it('replays the originally recorded status state, not state produced by a later command', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(TARGET_ID, 'member');
+
+		const first: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({ status: 'suspended', idempotencyKey: 'status-replay-1' })
+		);
+		expect(first.outcome).toBe('updated');
+
+		await store().setInstanceMemberStatus(
+			setStatusCommand({
+				status: 'active',
+				idempotencyKey: 'status-replay-2',
+				updatedAt: LATER_AT
+			})
+		);
+
+		const replay: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({
+				status: 'suspended',
+				idempotencyKey: 'status-replay-1',
+				updatedAt: LATER_AT
+			})
+		);
+		expect(replay).toEqual({
+			outcome: 'replayed',
+			member: {
+				userId: TARGET_ID,
+				role: 'member',
+				status: 'suspended',
+				createdAt: new Date(CREATED_AT).toISOString(),
+				updatedAt: new Date(UPDATED_AT).toISOString()
+			},
+			appliedAt: new Date(UPDATED_AT).toISOString(),
+			revokedInvitationCount: 0
+		});
+
+		const currentStatus: { status: string }[] = await database()<
+			{ status: string }[]
+		>`SELECT status FROM instance_member WHERE user_id = ${TARGET_ID}`;
+		expect(currentStatus[0]?.status).toBe('active');
+	});
+
+	it('rejects a reused idempotency key with a conflicting request fingerprint for role and status commands', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(TARGET_ID, 'member');
+
+		await store().setInstanceMemberRole(setRoleCommand({ role: 'admin' }));
+		const roleConflict: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ role: 'admin', requestFingerprint: OTHER_REQUEST_FINGERPRINT })
+		);
+		expect(roleConflict).toEqual({ outcome: 'idempotency_conflict' });
+
+		await store().setInstanceMemberStatus(setStatusCommand({ status: 'suspended' }));
+		const statusConflict: SetInstanceMemberStatusStoreResult =
+			await store().setInstanceMemberStatus(
+				setStatusCommand({ status: 'suspended', requestFingerprint: OTHER_REQUEST_FINGERPRINT })
+			);
+		expect(statusConflict).toEqual({ outcome: 'idempotency_conflict' });
+	});
+
+	it('cascades only the non-member invitations the target can no longer hold on an owner->admin demotion', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(TARGET_ID, 'owner');
+		await database()`
+			INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id,
+				created_at, expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id
+			) VALUES (
+				${INVITATION_ID}, 'owner', 'pending', ${TOKEN_HASH}, ${EMAIL_BINDING}, ${TARGET_ID},
+				${CREATED_AT}::timestamptz, ${EXPIRES_AT}::timestamptz, NULL, NULL, NULL, NULL
+			)
+		`;
+		await database()`
+			INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id,
+				created_at, expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id
+			) VALUES (
+				${OTHER_INVITATION_ID}, 'member', 'pending', ${OTHER_TOKEN_HASH}, ${EMAIL_BINDING}, ${TARGET_ID},
+				${CREATED_AT}::timestamptz, ${EXPIRES_AT}::timestamptz, NULL, NULL, NULL, NULL
+			)
+		`;
+
+		const result: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ role: 'admin' })
+		);
+		expect(result.outcome).toBe('updated');
+		if (result.outcome === 'updated') expect(result.revokedInvitationCount).toBe(1);
+
+		const statuses: { id: string; status: string }[] = await database()<
+			{ id: string; status: string }[]
+		>`SELECT id, status FROM instance_invitation ORDER BY id`;
+		expect(statuses).toEqual([
+			{ id: INVITATION_ID, status: 'revoked' },
+			{ id: OTHER_INVITATION_ID, status: 'pending' }
+		]);
+	});
+
+	it('cascades every pending invitation of the target on a demotion to member and on a suspension, but nothing on promotion or reactivation', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(TARGET_ID, 'admin');
+		await database()`
+			INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id,
+				created_at, expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id
+			) VALUES (
+				${INVITATION_ID}, 'member', 'pending', ${TOKEN_HASH}, ${EMAIL_BINDING}, ${TARGET_ID},
+				${CREATED_AT}::timestamptz, ${EXPIRES_AT}::timestamptz, NULL, NULL, NULL, NULL
+			)
+		`;
+
+		const demote: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ role: 'member', idempotencyKey: 'demote-to-member' })
+		);
+		expect(demote.outcome).toBe('updated');
+		if (demote.outcome === 'updated') expect(demote.revokedInvitationCount).toBe(1);
+
+		// Promotion cascades nothing.
+		const promote: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({ role: 'owner', idempotencyKey: 'promote-back' })
+		);
+		expect(promote.outcome).toBe('updated');
+		if (promote.outcome === 'updated') expect(promote.revokedInvitationCount).toBe(0);
+
+		await database()`
+			INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id,
+				created_at, expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id
+			) VALUES (
+				${OTHER_INVITATION_ID}, 'member', 'pending', ${OTHER_TOKEN_HASH}, ${EMAIL_BINDING}, ${TARGET_ID},
+				${CREATED_AT}::timestamptz, ${EXPIRES_AT}::timestamptz, NULL, NULL, NULL, NULL
+			)
+		`;
+		const suspend: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({ idempotencyKey: 'suspend-cascade' })
+		);
+		expect(suspend.outcome).toBe('updated');
+		if (suspend.outcome === 'updated') expect(suspend.revokedInvitationCount).toBe(1);
+
+		// Reactivation cascades nothing.
+		const reactivate: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({ status: 'active', idempotencyKey: 'reactivate' })
+		);
+		expect(reactivate.outcome).toBe('updated');
+		if (reactivate.outcome === 'updated') expect(reactivate.revokedInvitationCount).toBe(0);
+
+		const otherInv: { status: string }[] = await database()<
+			{ status: string }[]
+		>`SELECT status FROM instance_invitation WHERE id = ${OTHER_INVITATION_ID}`;
+		expect(otherInv[0]?.status).toBe('revoked');
+	});
+
+	/**
+	 * The core write-skew regression test for the shared member-admin advisory
+	 * lock: under plain READ COMMITTED and per-row locking alone, two owners
+	 * concurrently demoting each other would each read the other's row as
+	 * still an active owner and both succeed, leaving zero active owners. The
+	 * lock serializes the two mutations so the second always re-reads the
+	 * first's already-committed result, and this also exercises the
+	 * deterministic actor/target row-lock ordering: two symmetric mutations
+	 * (owner A targeting owner B, and owner B targeting owner A) always
+	 * request their locks in the same sorted order and so never deadlock.
+	 *
+	 * The loser's specific rejection is 'forbidden' rather than
+	 * 'last_active_owner': whichever demotion commits first turns its actor
+	 * into a plain admin, and an admin may never administer a target whose
+	 * role isn't 'member' (the other command's target is still 'owner'). A
+	 * distinct active-owner actor always counts as "another active owner" of
+	 * its target in the owner-floor query, so 'last_active_owner' for a
+	 * non-self target is only reachable when the actor's own authority has
+	 * already lapsed some other way -- which the admin-ceiling check catches
+	 * first here. The invariant this test actually protects -- never both
+	 * succeed, and exactly one active owner survives -- holds either way.
+	 */
+	it('resolves two owners concurrently demoting each other to exactly one updated and one forbidden, leaving one active owner and one admin', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(OWNER2_ID, 'owner');
+
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const [storeA, storeB]: readonly SynchronizedSetRoleStore[] = synchronizeSetRole([
+				new PostgresInstanceStore(concurrentSql),
+				new PostgresInstanceStore(concurrentSql)
+			]);
+			const cmdA: SetInstanceMemberRoleCommand = setRoleCommand({
+				actor: { type: 'user', id: OWNER_ID },
+				idempotencyKey: 'demote-a-targets-b',
+				targetUserId: OWNER2_ID,
+				role: 'admin'
+			});
+			const cmdB: SetInstanceMemberRoleCommand = setRoleCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				idempotencyKey: 'demote-b-targets-a',
+				targetUserId: OWNER_ID,
+				role: 'admin'
+			});
+
+			const [first, second]: SetInstanceMemberRoleStoreResult[] = await Promise.all([
+				storeA.setInstanceMemberRole(cmdA),
+				storeB.setInstanceMemberRole(cmdB)
+			]);
+
+			const outcomes: string[] = [first.outcome, second.outcome].sort();
+			expect(outcomes).toEqual(['forbidden', 'updated']);
+
+			const owners: { userId: string; role: string; status: string }[] = await database()<
+				{ userId: string; role: string; status: string }[]
+			>`SELECT user_id AS "userId", role, status FROM instance_member WHERE role = 'owner' AND status = 'active'`;
+			expect(owners).toHaveLength(1);
+
+			const allMembers: { userId: string; role: string }[] = await database()<
+				{ userId: string; role: string }[]
+			>`SELECT user_id AS "userId", role FROM instance_member ORDER BY user_id`;
+			expect(allMembers).toHaveLength(2);
+			expect(allMembers.filter((m) => m.role === 'admin')).toHaveLength(1);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	/**
+	 * The literal write-skew race the owner floor exists to prevent: two
+	 * owners each performing a role self-handoff concurrently. Unlike
+	 * targeting each other (above), self-handoff never touches the other
+	 * command's actor row, so the second command's own authorization is
+	 * unaffected by the first -- its self-targeted owner-floor check is what
+	 * decides the outcome, and it deterministically lands on
+	 * 'last_active_owner' once the first commit leaves it the sole owner.
+	 * Without the shared advisory lock, both would read the other as still
+	 * an active owner and both would succeed, leaving zero active owners.
+	 */
+	it('resolves two owners concurrently self-demoting to exactly one updated and one last_active_owner, leaving one active owner', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(OWNER2_ID, 'owner');
+
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const [storeA, storeB]: readonly SynchronizedSetRoleStore[] = synchronizeSetRole([
+				new PostgresInstanceStore(concurrentSql),
+				new PostgresInstanceStore(concurrentSql)
+			]);
+			const cmdA: SetInstanceMemberRoleCommand = setRoleCommand({
+				actor: { type: 'user', id: OWNER_ID },
+				idempotencyKey: 'self-demote-a',
+				targetUserId: OWNER_ID,
+				role: 'admin'
+			});
+			const cmdB: SetInstanceMemberRoleCommand = setRoleCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				idempotencyKey: 'self-demote-b',
+				targetUserId: OWNER2_ID,
+				role: 'admin'
+			});
+
+			const [first, second]: SetInstanceMemberRoleStoreResult[] = await Promise.all([
+				storeA.setInstanceMemberRole(cmdA),
+				storeB.setInstanceMemberRole(cmdB)
+			]);
+
+			const outcomes: string[] = [first.outcome, second.outcome].sort();
+			expect(outcomes).toEqual(['last_active_owner', 'updated']);
+
+			const owners: { userId: string }[] = await database()<
+				{ userId: string }[]
+			>`SELECT user_id AS "userId" FROM instance_member WHERE role = 'owner' AND status = 'active'`;
+			expect(owners).toHaveLength(1);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	/**
+	 * The status analogue of the demote-each-other test above. Status
+	 * self-targeting is always rejected (`cannot_target_self`), so there is
+	 * no status equivalent of the self-handoff race: a distinct active-owner
+	 * actor always counts as "another active owner" of its target, so
+	 * 'last_active_owner' can never be produced by two distinct owners
+	 * suspending each other -- only the admin-ceiling and self-target checks
+	 * are reachable this way. The loser here is rejected as
+	 * 'member_suspended' because the winning suspension strips the loser's
+	 * own actor authority before its command reaches the owner-floor check.
+	 * The invariant that matters -- never both succeed, exactly one active
+	 * owner survives -- still holds.
+	 */
+	it('resolves two owners concurrently suspending each other to exactly one updated and one member_suspended, leaving one active owner', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(OWNER2_ID, 'owner');
+
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const [storeA, storeB]: readonly SynchronizedSetStatusStore[] = synchronizeSetStatus([
+				new PostgresInstanceStore(concurrentSql),
+				new PostgresInstanceStore(concurrentSql)
+			]);
+			const cmdA: SetInstanceMemberStatusCommand = setStatusCommand({
+				actor: { type: 'user', id: OWNER_ID },
+				idempotencyKey: 'suspend-a-targets-b',
+				targetUserId: OWNER2_ID
+			});
+			const cmdB: SetInstanceMemberStatusCommand = setStatusCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				idempotencyKey: 'suspend-b-targets-a',
+				targetUserId: OWNER_ID
+			});
+
+			const [first, second]: SetInstanceMemberStatusStoreResult[] = await Promise.all([
+				storeA.setInstanceMemberStatus(cmdA),
+				storeB.setInstanceMemberStatus(cmdB)
+			]);
+
+			const outcomes: string[] = [first.outcome, second.outcome].sort();
+			expect(outcomes).toEqual(['member_suspended', 'updated']);
+
+			const activeOwners: { userId: string }[] = await database()<
+				{ userId: string }[]
+			>`SELECT user_id AS "userId" FROM instance_member WHERE role = 'owner' AND status = 'active'`;
+			expect(activeOwners).toHaveLength(1);
+
+			const suspended: { userId: string }[] = await database()<
+				{ userId: string }[]
+			>`SELECT user_id AS "userId" FROM instance_member WHERE status = 'suspended'`;
+			expect(suspended).toHaveLength(1);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
+
+	it('resolves a genuinely concurrent same-actor, same-idempotency-key role change race to one updated and one replayed with a single persisted row', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(TARGET_ID, 'member');
+
+		const concurrentSql = postgres(TEST_DATABASE_URL as string, {
+			max: 2,
+			onnotice: (): void => undefined,
+			connection: { search_path: schemaName, TimeZone: 'UTC' }
+		});
+		try {
+			const [storeA, storeB]: readonly SynchronizedSetRoleStore[] = synchronizeSetRole([
+				new PostgresInstanceStore(concurrentSql),
+				new PostgresInstanceStore(concurrentSql)
+			]);
+			const command: SetInstanceMemberRoleCommand = setRoleCommand({
+				idempotencyKey: 'race-same-key'
+			});
+
+			const [first, second]: SetInstanceMemberRoleStoreResult[] = await Promise.all([
+				storeA.setInstanceMemberRole(command),
+				storeB.setInstanceMemberRole(command)
+			]);
+
+			const outcomes: string[] = [first.outcome, second.outcome].sort();
+			expect(outcomes).toEqual(['replayed', 'updated']);
+
+			const updated: Extract<SetInstanceMemberRoleStoreResult, { outcome: 'updated' }> = (
+				first.outcome === 'updated' ? first : second
+			) as Extract<SetInstanceMemberRoleStoreResult, { outcome: 'updated' }>;
+			const replayed: Extract<SetInstanceMemberRoleStoreResult, { outcome: 'replayed' }> = (
+				first.outcome === 'replayed' ? first : second
+			) as Extract<SetInstanceMemberRoleStoreResult, { outcome: 'replayed' }>;
+			expect(replayed.member).toEqual(updated.member);
+			expect(replayed.appliedAt).toBe(updated.appliedAt);
+
+			const commandRows: { targetUserId: string }[] = await database()<
+				{ targetUserId: string }[]
+			>`SELECT target_user_id AS "targetUserId" FROM instance_member_command WHERE actor_id = ${OWNER_ID}`;
+			expect(commandRows).toHaveLength(1);
+
+			const memberRoleRows: { role: string }[] = await database()<
+				{ role: string }[]
+			>`SELECT role FROM instance_member WHERE user_id = ${TARGET_ID}`;
+			expect(memberRoleRows).toEqual([{ role: 'admin' }]);
+		} finally {
+			await concurrentSql.end({ timeout: 5 });
+		}
+	});
 });
 
 /**
@@ -1532,6 +2186,64 @@ function synchronizeAccept(
 			if (arrivals === delegates.length) release?.();
 			await gate;
 			return delegate.acceptInstanceInvitation!(command);
+		}
+	}));
+}
+
+interface SynchronizedSetRoleStore {
+	setInstanceMemberRole(
+		command: SetInstanceMemberRoleCommand
+	): Promise<SetInstanceMemberRoleStoreResult>;
+}
+
+/**
+ * Gates every delegate's `setInstanceMemberRole` on all callers having
+ * arrived, so two stores on two distinct pool connections genuinely race
+ * the same owner-floor precondition instead of one finishing before the
+ * other starts.
+ */
+function synchronizeSetRole(
+	delegates: readonly InstanceStore[]
+): readonly SynchronizedSetRoleStore[] {
+	let arrivals: number = 0;
+	let release: (() => void) | null = null;
+	const gate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+		release = resolve;
+	});
+	return delegates.map((delegate: InstanceStore): SynchronizedSetRoleStore => ({
+		setInstanceMemberRole: async (
+			command: SetInstanceMemberRoleCommand
+		): Promise<SetInstanceMemberRoleStoreResult> => {
+			arrivals += 1;
+			if (arrivals === delegates.length) release?.();
+			await gate;
+			return delegate.setInstanceMemberRole(command);
+		}
+	}));
+}
+
+interface SynchronizedSetStatusStore {
+	setInstanceMemberStatus(
+		command: SetInstanceMemberStatusCommand
+	): Promise<SetInstanceMemberStatusStoreResult>;
+}
+
+function synchronizeSetStatus(
+	delegates: readonly InstanceStore[]
+): readonly SynchronizedSetStatusStore[] {
+	let arrivals: number = 0;
+	let release: (() => void) | null = null;
+	const gate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+		release = resolve;
+	});
+	return delegates.map((delegate: InstanceStore): SynchronizedSetStatusStore => ({
+		setInstanceMemberStatus: async (
+			command: SetInstanceMemberStatusCommand
+		): Promise<SetInstanceMemberStatusStoreResult> => {
+			arrivals += 1;
+			if (arrivals === delegates.length) release?.();
+			await gate;
+			return delegate.setInstanceMemberStatus(command);
 		}
 	}));
 }
