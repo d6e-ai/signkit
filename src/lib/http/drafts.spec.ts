@@ -12,6 +12,7 @@ import {
 	type DraftWorkspaceSnapshot
 } from '$lib/application/drafts/draft-persistence';
 import { createDraftHttpHandlers, type DraftPersistenceResolver } from './drafts';
+import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
 
 const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
@@ -20,28 +21,7 @@ const commitPathname = `${pathname}/commits`;
 type DraftPersistencePort = Pick<DraftPersistenceService, 'commit' | 'readWorkspace'>;
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships:
-			state === 'authorized'
-				? [
-						{
-							joinedAt: '2026-09-11T00:00:00.000Z',
-							role: 'owner',
-							organization: {
-								id: organizationId,
-								name: 'Workspace',
-								slug: 'workspace',
-								status: 'active'
-							}
-						}
-					]
-				: [],
-		organizationId: state === 'authorized' ? organizationId : null,
-		principal:
-			state === 'authorized' ? { subject: 'user-1', email: 'user@example.com', name: 'User' } : null
-	};
+	return organizationScopedLocals(state, organizationId);
 }
 
 function event(
@@ -55,19 +35,15 @@ function event(
 	} = {}
 ): RequestEvent {
 	const selectedEnvelopeId: string = input.envelopeId ?? envelopeId;
-	const selectedPathname: string = `/api/v1/envelopes/${selectedEnvelopeId}/draft${input.commit ? '/commits' : ''}`;
-	const url: URL = new URL(`https://signkit.example${selectedPathname}`);
-	return {
+	return createHttpRequestEvent({
+		pathname: `/api/v1/envelopes/${selectedEnvelopeId}/draft${input.commit ? '/commits' : ''}`,
+		method: input.commit ? 'POST' : 'GET',
+		body: input.body,
+		headers: input.headers,
 		locals: input.locals ?? locals(),
 		params: { envelopeId: selectedEnvelopeId },
-		platform: input.platform,
-		request: new Request(url, {
-			method: input.commit ? 'POST' : 'GET',
-			body: input.body,
-			headers: input.headers
-		}),
-		url
-	} as RequestEvent;
+		platform: input.platform
+	});
 }
 
 function committedResult(outcome: CommitDraftResult['outcome'] = 'committed'): CommitDraftResult {

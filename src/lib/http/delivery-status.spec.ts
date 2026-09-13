@@ -3,46 +3,24 @@ import { describe, expect, it, vi } from 'vitest';
 import { DeliveryStatusService } from '$lib/application/delivery/delivery-status';
 import type { DeliveryStatusStore } from '$lib/ports/delivery-status-store';
 import { createDeliveryStatusHandler, type DeliveryStatusServiceResolver } from './delivery-status';
+import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
 
 const ORGANIZATION_ID: string = '01900000-0000-7000-8000-000000000002';
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships:
-			state === 'authorized'
-				? [
-						{
-							joinedAt: '2026-09-11T00:00:00.000Z',
-							role: 'owner',
-							organization: {
-								id: ORGANIZATION_ID,
-								name: 'Workspace',
-								slug: 'workspace',
-								status: 'active'
-							}
-						}
-					]
-				: [],
-		organizationId: state === 'authorized' ? ORGANIZATION_ID : null,
-		principal:
-			state === 'authorized' ? { subject: 'user-1', email: 'user@example.com', name: 'User' } : null
-	};
+	return organizationScopedLocals(state, ORGANIZATION_ID);
 }
 
 function event(
 	envelopeId: string = ENVELOPE_ID,
 	state: App.Locals['identityState'] = 'authorized'
 ): RequestEvent {
-	const url: URL = new URL(`https://signkit.example/api/v1/envelopes/${envelopeId}/deliveries`);
-	return {
+	return createHttpRequestEvent({
+		pathname: `/api/v1/envelopes/${envelopeId}/deliveries`,
 		locals: locals(state),
-		params: { envelopeId },
-		request: new Request(url),
-		url
-	} as RequestEvent;
+		params: { envelopeId }
+	});
 }
 
 function service(find = vi.fn()) {
