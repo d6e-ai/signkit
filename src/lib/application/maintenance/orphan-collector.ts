@@ -33,6 +33,14 @@ export interface OrphanCollectorReport {
 	deleted: number;
 	deletedKeys: readonly string[];
 	nextStartAfter: string;
+	/**
+	 * True when a durable checkpoint was wired but another writer already
+	 * advanced it, so this sweep's `nextStartAfter` was not persisted. The
+	 * scan and any deletions above already completed and are not retried or
+	 * repeated by this call; the next sweep simply resumes from whatever the
+	 * winning writer stored.
+	 */
+	checkpointConflict: boolean;
 }
 
 export interface OrphanSweepCheckpointStore {
@@ -134,8 +142,13 @@ export class OrphanCollector {
 		}
 
 		const nextStartAfter = hasMore && lastKey.length > 0 ? lastKey : '';
+		let checkpointConflict = false;
 		if (this.#checkpoint !== null) {
-			await this.#checkpoint.compareAndSwapLastObjectKey(resume.stored, nextStartAfter);
+			const advanced = await this.#checkpoint.compareAndSwapLastObjectKey(
+				resume.stored,
+				nextStartAfter
+			);
+			checkpointConflict = !advanced;
 		}
 
 		return {
@@ -144,7 +157,8 @@ export class OrphanCollector {
 			inGracePeriod: inGracePeriodCount,
 			deleted: deletedKeys.length,
 			deletedKeys,
-			nextStartAfter
+			nextStartAfter,
+			checkpointConflict
 		};
 	}
 

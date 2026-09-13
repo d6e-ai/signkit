@@ -67,6 +67,15 @@ export function createOrphanSweepHandler(
 				batchSize: ORPHAN_SWEEP_BATCH_SIZE,
 				maxObjectsToScan: ORPHAN_SWEEP_MAX_OBJECTS
 			});
+			if (report.checkpointConflict) {
+				// A concurrent sweep already advanced the checkpoint past this run's
+				// start point. This run's scan and any deletions above already
+				// completed and are not retried, so there is no duplicate deletion;
+				// the next sweep resumes from whatever the winning writer stored, so
+				// there is no livelock. Only the durable checkpoint bookkeeping lost
+				// the race, so this is reported, not treated as a failure.
+				logOrphanSweepEvent('orphan_sweep_checkpoint_conflict');
+			}
 			return Response.json(
 				{
 					scanned: report.scanned,
@@ -109,4 +118,8 @@ function logOrphanSweepError(event: string, error: unknown): void {
 			message: error instanceof Error ? error.name : 'UnknownError'
 		})
 	);
+}
+
+function logOrphanSweepEvent(event: string): void {
+	console.error(JSON.stringify({ event }));
 }

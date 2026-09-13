@@ -103,6 +103,32 @@ describe('orphan sweep HTTP handler', () => {
 		expect(missingRuntime.status).toBe(503);
 	});
 
+	it('observes a lost checkpoint compare-and-swap without failing the request', async () => {
+		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const app = {
+			sweep: vi.fn(async () => ({
+				scanned: 3,
+				referenced: 1,
+				inGracePeriod: 1,
+				deleted: 1,
+				deletedKeys: ['drafts/secret-orphan.git.gz'],
+				checkpointConflict: true
+			}))
+		};
+		const response: Response = await createOrphanSweepHandler(
+			() => app as unknown as OrphanCollector,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		const body: unknown = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(body).toEqual({ scanned: 3, referenced: 1, inGracePeriod: 1, deleted: 1 });
+		expect(error).toHaveBeenCalledWith(
+			JSON.stringify({ event: 'orphan_sweep_checkpoint_conflict' })
+		);
+		error.mockRestore();
+	});
+
 	it('does not expose thrown store details', async () => {
 		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 		const app = collector();

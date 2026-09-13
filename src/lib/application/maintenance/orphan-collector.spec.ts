@@ -261,6 +261,7 @@ describe('OrphanCollector', () => {
 	});
 
 	it('does not let a stale concurrent sweep regress a later checkpoint', async () => {
+		const deleteManyMock = vi.fn(async () => {});
 		const objects: ObjectStore = {
 			get: vi.fn(),
 			head: vi.fn(),
@@ -270,7 +271,7 @@ describe('OrphanCollector', () => {
 				objects: [{ key: 'early-key', size: 1, uploadedAt: twentyFiveHoursAgo }],
 				truncated: false
 			})),
-			deleteMany: vi.fn()
+			deleteMany: deleteManyMock
 		};
 		const checkpoint: OrphanSweepCheckpointStore & { key: string; rejected: number } = {
 			key: 'later-key',
@@ -289,14 +290,52 @@ describe('OrphanCollector', () => {
 		};
 		const collector = new OrphanCollector(
 			objects,
-			{ filterReferencedKeys: vi.fn(async () => new Set<string>(['early-key'])) },
+			{ filterReferencedKeys: vi.fn(async () => new Set<string>()) },
 			() => now,
 			checkpoint
 		);
 
-		await collector.sweep({ batchSize: 1, maxObjectsToScan: 1 });
+		const report = await collector.sweep({ batchSize: 1, maxObjectsToScan: 1 });
+
+		// The lost CAS is surfaced on the report rather than swallowed, so a
+		// caller can observe the collision instead of assuming the checkpoint
+		// reflects this run.
+		expect(report.checkpointConflict).toBe(true);
 		expect(checkpoint.key).toBe('later-key');
 		expect(checkpoint.rejected).toBe(1);
+
+		// The scan and deletion already ran exactly once for this invocation;
+		// losing the CAS must not trigger a retry that deletes the same
+		// orphan again (no duplicate deletion) or loops on the conflict (no
+		// livelock).
+		expect(deleteManyMock).toHaveBeenCalledOnce();
+		expect(deleteManyMock).toHaveBeenCalledWith(['early-key']);
+	});
+
+	it('reports no checkpoint conflict when the compare-and-swap wins', async () => {
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async (): Promise<ListObjectsResult> => ({
+				objects: [{ key: 'only-key', size: 1, uploadedAt: twentyFiveHoursAgo }],
+				truncated: false
+			})),
+			deleteMany: vi.fn()
+		};
+		const checkpoint = memoryCheckpoint();
+		const collector = new OrphanCollector(
+			objects,
+			{ filterReferencedKeys: vi.fn(async () => new Set<string>()) },
+			() => now,
+			checkpoint
+		);
+
+		const report = await collector.sweep();
+
+		expect(report.checkpointConflict).toBe(false);
+		expect(checkpoint.rejected).toBe(0);
 	});
 
 	it('does not delete when the reference check fails', async () => {

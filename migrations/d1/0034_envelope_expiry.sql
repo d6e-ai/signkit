@@ -145,11 +145,11 @@ BEGIN
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
-    actor_id, payload_json, previous_hash, event_hash, occurred_at
+    actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
     NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
     NEW.audit_sequence, 'envelope.expired', 'system',
     'envelope-expiry-drain', NEW.audit_payload_json, NEW.previous_audit_hash,
-    NEW.audit_event_hash, NEW.updated_at
+    NEW.audit_event_hash, NEW.updated_at, 2
   );
 END;
