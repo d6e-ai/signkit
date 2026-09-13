@@ -295,12 +295,12 @@
 		event.preventDefault();
 		const email = inviteEmail.trim();
 		if (!email) return;
-		revealedInvitation = null;
-		resetInvitationCopyFeedback();
 		invitePending = true;
 		inviteCreateError = null;
 		try {
 			const res = await client.createInvitation({ email, role: inviteRole });
+			revealedInvitation = null;
+			resetInvitationCopyFeedback();
 			if (res.token) {
 				revealedInvitation = { token: res.token, invitationId: res.invitation.id, email };
 			}
@@ -354,8 +354,6 @@
 			.map(([scope]) => scope as ApiKeyScope);
 
 		if (!name || scopes.length === 0) return;
-		revealedApiKey = null;
-		resetApiKeyCopyFeedback();
 		keyPending = true;
 		keyCreateError = null;
 		try {
@@ -372,6 +370,8 @@
 				).toISOString();
 			}
 			const res = await client.createApiKey({ name, scopes, expiresAt });
+			revealedApiKey = null;
+			resetApiKeyCopyFeedback();
 			const secret = res.secret || res.token;
 			if (secret) {
 				revealedApiKey = { secret, keyId: res.apiKey.id, keyName: res.apiKey.name };
