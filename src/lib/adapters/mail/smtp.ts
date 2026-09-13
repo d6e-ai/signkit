@@ -62,7 +62,7 @@ export class NodemailerSmtpMailSender implements MailSender {
 		}
 
 		if (info.accepted.length === 0) {
-			throw new MailDeliveryError('recipient_rejected', false);
+			throw new MailDeliveryError('mail_recipient_unconfirmed', true);
 		}
 		if (typeof info.messageId !== 'string' || info.messageId.trim().length === 0) {
 			throw new MailDeliveryError('mail_invalid_response', true);

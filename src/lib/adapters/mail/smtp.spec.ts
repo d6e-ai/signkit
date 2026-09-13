@@ -51,7 +51,7 @@ describe('NodemailerSmtpMailSender', () => {
 		});
 	});
 
-	it('treats a resolved empty accepted list as a non-retryable rejection', async () => {
+	it('treats a resolved empty accepted list as retryable, since it proves no permanent rejection', async () => {
 		const sendMail = vi.fn(async () => ({
 			accepted: [],
 			rejected: [message.to],
@@ -60,8 +60,8 @@ describe('NodemailerSmtpMailSender', () => {
 		const sender = senderWith({ sendMail } as unknown as SmtpTransporter);
 
 		await expect(sender.send(message)).rejects.toMatchObject({
-			code: 'recipient_rejected',
-			retryable: false
+			code: 'mail_recipient_unconfirmed',
+			retryable: true
 		});
 	});
 
