@@ -93,6 +93,66 @@ export function resolveApiKeyExpiresAt(now: Date, requestedExpiresAt?: string | 
 	return canonical;
 }
 
+/**
+ * The exact `Authorization` header shape a SignKit API key may arrive in.
+ *
+ * Deliberately strict and anchored: exactly one ASCII space, the `signkit_`
+ * prefix, and the full 43-character base64url secret. No lowercase `bearer`, no
+ * leading or trailing whitespace, no folded values, and no other credential
+ * family. The recipient capability (`skr1_`), completion access grant
+ * (`skca1_`), instance invitation (`ski1_`), and deployment worker secrets all
+ * fail this pattern, so presenting one of them where an API key is expected can
+ * never be mistaken for an API key -- it resolves to `null` here and the caller
+ * answers with the same opaque outcome as an unknown key.
+ */
+export const API_KEY_BEARER_PATTERN: RegExp = /^Bearer (signkit_[A-Za-z0-9_-]{43})$/;
+
+/**
+ * Extracts a structurally valid API key from an `Authorization` header value.
+ *
+ * Returns `null` for a missing header, any non-`Bearer` scheme, any other
+ * credential family, and any malformed `signkit_` value. Callers must treat
+ * every `null` the same way they treat an unknown key: one opaque response, so
+ * the endpoint cannot be used to distinguish "not an API key" from "not a
+ * recognized API key".
+ */
+export function parseBearerApiKey(header: string | null): string | null {
+	if (header === null) return null;
+	const match: RegExpExecArray | null = API_KEY_BEARER_PATTERN.exec(header);
+	return match?.[1] ?? null;
+}
+
+/**
+ * True when an `Authorization` header carries a non-empty value.
+ *
+ * This is the bearer-exclusivity signal: on an operator surface, presenting a
+ * non-empty `Authorization` value selects bearer mode and permanently forfeits
+ * any cookie session on that request, so a malformed or foreign bearer value
+ * fails closed instead of silently falling back to whatever browser session
+ * happened to accompany it.
+ *
+ * The empty case is a deliberate equivalence, not an oversight, and the
+ * distinction is real: `Headers.get` returns `null` for an absent header but
+ * `''` for one that is present with an empty or whitespace-only value (HTTP
+ * strips surrounding whitespace), and `Headers.has` reports `true` for the
+ * latter. Both are treated as "no bearer presented", because an all-empty
+ * `Authorization` carries no credential at all -- so the invariant that matters,
+ * that an attacker-supplied *credential* must never compose with a victim's
+ * cookie, is untouched. Suppressing the cookie here would only turn a
+ * credential-free request into a 401 while granting no additional protection: a
+ * caller able to set headers on a cookie-bearing request can simply omit the
+ * header instead.
+ *
+ * Header duplication does not escape this. `Headers.get` joins repeated fields
+ * with `", "`, so an empty value alongside a real one yields a non-empty
+ * combined value that this reports as present and that {@link parseBearerApiKey}
+ * then rejects, producing the opaque failure with the cookie suppressed rather
+ * than a usable credential.
+ */
+export function hasAuthorizationHeader(header: string | null): boolean {
+	return header !== null && header.length > 0;
+}
+
 export function isApiKey(value: string): boolean {
 	return API_KEY_PATTERN.test(value);
 }

@@ -32,6 +32,7 @@ function event(authorization?: string): RequestEvent {
 	if (authorization !== undefined) headers.set('authorization', authorization);
 	return {
 		locals: {
+			apiKeyAuthentication: { state: 'absent' },
 			identityState: 'unavailable',
 			memberships: [],
 			organizationId: null,

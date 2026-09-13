@@ -10,6 +10,10 @@ import type {
 import type { Envelope } from '$lib/domain/envelope';
 import { signkitIdentifierSchema } from './identifier-schema';
 import {
+	authorizeScopedOrganizationRequest,
+	type AuthorizedApiActor
+} from './api-key-authorization';
+import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
 } from './organization-authorization';
@@ -105,7 +109,15 @@ function validationErrors(issues: readonly ZodIssue[]): readonly ProblemValidati
 	}));
 }
 
-function envelopeActor(authorized: AuthorizedRequestActor): EnvelopeRequestActor {
+/**
+ * Both authorities project to the same envelope actor shape. `id` is the d6e
+ * subject for a session and the API key id for a key; the reads below use only
+ * `organizationId`, and envelope creation -- the one command that persists `id`
+ * as a caller identifier -- remains session-only in this slice.
+ */
+function envelopeActor(
+	authorized: AuthorizedRequestActor | AuthorizedApiActor
+): EnvelopeRequestActor {
 	return {
 		id: authorized.id,
 		organizationId: authorized.organizationId,
@@ -249,9 +261,10 @@ export function createEnvelopeHttpHandlers(
 	};
 
 	const list: RequestHandler = async ({ locals, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'envelopes:read'
 		);
 		if (authorized instanceof Response) return authorized;
 		const actor: EnvelopeRequestActor = envelopeActor(authorized);
@@ -297,9 +310,10 @@ export function createEnvelopeHttpHandlers(
 	};
 
 	const get: RequestHandler = async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'envelopes:read'
 		);
 		if (authorized instanceof Response) return authorized;
 		const actor: EnvelopeRequestActor = envelopeActor(authorized);

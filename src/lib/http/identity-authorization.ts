@@ -23,6 +23,23 @@ export function authorizeIdentityRequest(
 	locals: App.Locals,
 	instance: string
 ): AuthorizedIdentityActor | Response {
+	// A `signkit_` bearer is refused outright here, never treated as absent and
+	// never allowed to ride an accompanying cookie. This branch is load-bearing
+	// rather than theoretical: `isApiKeyRejectedPath` classifies every API-key and
+	// instance-management path as a rejected surface, so the hooks layer sets
+	// `rejected_surface` for exactly these endpoints and suppresses the cookie with
+	// it. Refusing again here keeps the guarantee local to the handler, so it holds
+	// even if the surface lists change -- an API key must never be able to mint
+	// another key, grant itself an organization, or administer instance members.
+	if (locals.apiKeyAuthentication.state !== 'absent') {
+		return problemResponse({
+			type: 'urn:signkit:problem:api-key-not-permitted',
+			title: 'API key authentication is not accepted here',
+			status: 403,
+			detail: 'This endpoint requires an interactive operator session.',
+			instance
+		});
+	}
 	if (locals.identityState === 'anonymous') {
 		return problemResponse({
 			type: 'urn:signkit:problem:authentication-required',

@@ -108,6 +108,36 @@ export const GET: RequestHandler = ({ platform }) => {
 			tokenPrefix: 'skca1',
 			cookies: false
 		},
+		apiKeyAuthentication: {
+			scheme: 'bearer',
+			tokenPrefix: 'signkit',
+			organizationSelector: 'SignKit-Organization-Id',
+			organizationSelectorRequired: true,
+			grantModel: 'explicit-per-organization',
+			multipleOrganizationsPerKey: true,
+			effectiveAuthority: 'key-scopes-intersected-with-requested-live-grant',
+			enabledScopes: ['envelopes:read'],
+			mintedButUnusableScopes: ['audit:read', 'drafts:write', 'envelopes:send'],
+			readEndpoints: [
+				'/api/v1/envelopes',
+				'/api/v1/envelopes/{envelopeId}',
+				'/api/v1/envelopes/{envelopeId}/draft',
+				'/api/v1/envelopes/{envelopeId}/deliveries',
+				'/api/v1/envelopes/{envelopeId}/completion-artifact'
+			],
+			mutations: false,
+			cookieComposition: false,
+			caching: 'none',
+			lastUsedTracking: false,
+			rateLimits: false,
+			grantManagement: {
+				create: '/api/v1/api-keys/{apiKeyId}/organization-grants',
+				list: '/api/v1/api-keys/{apiKeyId}/organization-grants',
+				revoke: '/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke'
+			},
+			grantAuthority: 'key-owner-and-d6e-organization-owner-or-admin',
+			grantRevokeAuthority: ['key_owner', 'organization_admin']
+		},
 		automation: { idempotencyKeys: true, actorProvenance: true, webhooks: 'planned' }
 	});
 };

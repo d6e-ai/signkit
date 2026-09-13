@@ -41,6 +41,7 @@ const member: InstanceMemberMetadata = {
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
 		memberships: [],
 		organizationId: null,
@@ -58,6 +59,7 @@ function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
  */
 function unavailableLocalsWithPrincipal(): App.Locals {
 	return {
+		apiKeyAuthentication: { state: 'absent' },
 		identityState: 'unavailable',
 		memberships: [],
 		organizationId: null,

@@ -15,6 +15,10 @@ import {
 import { MAX_DRAFT_GENERATION, normalizeMarkdownContent } from '$lib/domain/draft';
 import type { DraftEdit } from '$lib/ports/draft-repository';
 import {
+	authorizeScopedOrganizationRequest,
+	type AuthorizedApiActor
+} from './api-key-authorization';
+import {
 	authorizeOrganizationRequest,
 	type AuthorizedRequestActor
 } from './organization-authorization';
@@ -237,9 +241,10 @@ export function createDraftHttpHandlers(
 	resolvePersistence: DraftPersistenceResolver
 ): DraftHttpHandlers {
 	const get: RequestHandler = async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'envelopes:read'
 		);
 		if (authorized instanceof Response) return authorized;
 

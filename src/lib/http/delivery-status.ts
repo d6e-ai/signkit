@@ -5,9 +5,9 @@ import type {
 	PublicEnvelopeDeliveryStatus
 } from '$lib/application/delivery/delivery-status';
 import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
+	authorizeScopedOrganizationRequest,
+	type AuthorizedApiActor
+} from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -25,9 +25,10 @@ export function createDeliveryStatusHandler(
 	resolveService: DeliveryStatusServiceResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
 			locals,
-			url.pathname
+			url.pathname,
+			'envelopes:read'
 		);
 		if (authorized instanceof Response) return authorized;
 		const envelopeId = envelopeIdSchema.safeParse(params.envelopeId);
