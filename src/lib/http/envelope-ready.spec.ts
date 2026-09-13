@@ -8,48 +8,25 @@ import {
 	createEnvelopeReadyHandler,
 	type EnvelopeReadyApplicationResolver
 } from './envelope-ready';
+import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
 
 const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships:
-			state === 'authorized'
-				? [
-						{
-							joinedAt: '2026-09-11T00:00:00.000Z',
-							role: 'owner',
-							organization: {
-								id: organizationId,
-								name: 'Workspace',
-								slug: 'workspace',
-								status: 'active'
-							}
-						}
-					]
-				: [],
-		organizationId: state === 'authorized' ? organizationId : null,
-		principal:
-			state === 'authorized' ? { subject: 'user-1', email: 'user@example.com', name: 'User' } : null
-	};
+	return organizationScopedLocals(state, organizationId);
 }
 
 function event(input: { body?: string; headers?: HeadersInit; locals?: App.Locals }): RequestEvent {
-	const pathname: string = `/api/v1/envelopes/${envelopeId}/ready`;
-	const url: URL = new URL(`https://signkit.example${pathname}`);
-	const headers: Headers = new Headers(input.headers);
-	if (input.body !== undefined && !headers.has('content-type')) {
-		headers.set('content-type', 'application/json');
-	}
-	return {
+	return createHttpRequestEvent({
+		pathname: `/api/v1/envelopes/${envelopeId}/ready`,
+		method: 'POST',
+		body: input.body,
+		headers: input.headers,
 		locals: input.locals ?? locals(),
 		params: { envelopeId },
-		url,
-		request: new Request(url, { method: 'POST', headers, body: input.body })
-	} as RequestEvent;
+		jsonBodyContentType: true
+	});
 }
 
 function validBody(): string {

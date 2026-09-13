@@ -7,6 +7,7 @@ import type {
 } from '$lib/application/envelopes/model';
 import type { Envelope } from '$lib/domain/envelope';
 import { createEnvelopeHttpHandlers, type EnvelopeApplicationResolver } from './envelopes';
+import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
 
 const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
@@ -26,28 +27,7 @@ const envelope: Envelope = {
 };
 
 function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: state,
-		memberships:
-			state === 'authorized'
-				? [
-						{
-							joinedAt: '2026-09-11T00:00:00.000Z',
-							role: 'owner',
-							organization: {
-								id: organizationId,
-								name: 'Workspace',
-								slug: 'workspace',
-								status: 'active'
-							}
-						}
-					]
-				: [],
-		organizationId: state === 'authorized' ? organizationId : null,
-		principal:
-			state === 'authorized' ? { subject: 'user-1', email: 'user@example.com', name: 'User' } : null
-	};
+	return organizationScopedLocals(state, organizationId);
 }
 
 function event(input: {
@@ -59,18 +39,15 @@ function event(input: {
 	params?: Record<string, string>;
 	search?: string;
 }): RequestEvent {
-	const pathname: string = input.pathname ?? '/api/v1/envelopes';
-	const url: URL = new URL(`https://signkit.example${pathname}${input.search ?? ''}`);
-	return {
+	return createHttpRequestEvent({
+		pathname: input.pathname ?? '/api/v1/envelopes',
+		method: input.method,
+		body: input.body,
+		headers: input.headers,
 		locals: input.locals ?? locals(),
-		params: input.params ?? {},
-		request: new Request(url, {
-			method: input.method ?? 'GET',
-			headers: input.headers,
-			body: input.body
-		}),
-		url
-	} as RequestEvent;
+		params: input.params,
+		search: input.search
+	});
 }
 
 function application(): EnvelopeApplicationPort {
