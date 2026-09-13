@@ -475,7 +475,7 @@ describe('InstanceManagementClient', () => {
 				id: 'key-001',
 				name: 'Production Key',
 				keyPrefix: 'signkit_prod',
-				scopes: ['envelopes:read', 'envelopes:write'],
+				scopes: ['envelopes:read', 'envelopes:send'],
 				createdAt: '2026-09-01T00:00:00Z',
 				expiresAt: '2026-12-01T00:00:00Z',
 				lastUsedAt: null,
@@ -493,7 +493,7 @@ describe('InstanceManagementClient', () => {
 
 			const res: CreateApiKeyResponse = await client.createApiKey({
 				name: 'Production Key',
-				scopes: ['envelopes:read', 'envelopes:write'],
+				scopes: ['envelopes:read', 'envelopes:send'],
 				expiresAt: '2026-12-01T00:00:00Z'
 			});
 
@@ -507,7 +507,7 @@ describe('InstanceManagementClient', () => {
 				},
 				body: JSON.stringify({
 					name: 'Production Key',
-					scopes: ['envelopes:read', 'envelopes:write'],
+					scopes: ['envelopes:read', 'envelopes:send'],
 					expiresAt: '2026-12-01T00:00:00Z'
 				})
 			});
@@ -902,6 +902,22 @@ describe('InstanceManagementClient', () => {
 				expect(val).not.toBe(sensitiveApiKeySecret);
 				expect(JSON.stringify(val) ?? '').not.toContain(sensitiveApiKeySecret);
 			}
+		});
+	});
+
+	describe('Static type safety (compile-time only, never invoked)', () => {
+		it('rejects invalid scopes, null expiry, and mismatched role/status overloads', () => {
+			function typeOnlyChecks(client: InstanceManagementClient): void {
+				// @ts-expect-error scopes must be a valid ApiKeyScope, not an arbitrary string
+				void client.createApiKey({ name: 'x', scopes: ['not-a-real-scope'] });
+				// @ts-expect-error expiresAt may not be null; omit the field instead
+				void client.createApiKey({ name: 'x', scopes: ['envelopes:read'], expiresAt: null });
+				// @ts-expect-error a SetMemberRoleInput object cannot be paired with a role string
+				void client.setMemberRole({ userId: 'u', role: 'admin' }, 'owner');
+				// @ts-expect-error a SetMemberStatusInput object cannot be paired with a status string
+				void client.setMemberStatus({ userId: 'u', status: 'active' }, 'suspended');
+			}
+			expect(typeof typeOnlyChecks).toBe('function');
 		});
 	});
 });

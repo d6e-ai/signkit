@@ -100,8 +100,8 @@ export interface AcceptInvitationInput {
 
 export interface CreateApiKeyInput {
 	name: string;
-	scopes: readonly (ApiKeyScope | string)[];
-	expiresAt?: string | null;
+	scopes: readonly ApiKeyScope[];
+	expiresAt?: string;
 }
 
 export interface BootstrapOwnerResponse {
@@ -379,6 +379,15 @@ export class InstanceManagementClient {
 		return data;
 	}
 
+	setMemberRole(
+		userId: string,
+		role: InstanceMemberRole,
+		options?: RequestOptions
+	): Promise<SetInstanceMemberRoleResponse>;
+	setMemberRole(
+		input: SetMemberRoleInput,
+		options?: RequestOptions
+	): Promise<SetInstanceMemberRoleResponse>;
 	async setMemberRole(
 		userIdOrInput: string | SetMemberRoleInput,
 		roleOrOptions?: InstanceMemberRole | RequestOptions,
@@ -426,6 +435,15 @@ export class InstanceManagementClient {
 		};
 	}
 
+	setMemberStatus(
+		userId: string,
+		status: InstanceMemberStatus,
+		options?: RequestOptions
+	): Promise<SetInstanceMemberStatusResponse>;
+	setMemberStatus(
+		input: SetMemberStatusInput,
+		options?: RequestOptions
+	): Promise<SetInstanceMemberStatusResponse>;
 	async setMemberStatus(
 		userIdOrInput: string | SetMemberStatusInput,
 		statusOrOptions?: InstanceMemberStatus | RequestOptions,

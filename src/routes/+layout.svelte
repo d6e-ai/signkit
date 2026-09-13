@@ -7,12 +7,16 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import favicon from '$lib/assets/favicon.svg';
 	import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
+	import { isSettingsSurfacePath } from '$lib/navigation/settings-surface';
 	import { page } from '$app/state';
 	import './layout.css';
 	import * as m from '$lib/paraglide/messages';
 
 	let { children } = $props();
 	let recipientSurface = $derived(isRecipientSurfacePath(page.url.pathname));
+	let headerTitle = $derived(
+		isSettingsSurfacePath(page.url.pathname) ? m.nav_settings() : m.nav_dashboard()
+	);
 </script>
 
 <svelte:head>
@@ -44,7 +48,7 @@
 				>
 					<Sidebar.Trigger />
 					<div class="h-5 w-px bg-border"></div>
-					<div class="hidden truncate text-sm font-medium sm:block">{m.nav_dashboard()}</div>
+					<div class="hidden truncate text-sm font-medium sm:block">{headerTitle}</div>
 					<div class="ml-auto flex min-w-0 items-center gap-1">
 						<Button variant="ghost" size="icon" aria-label="Search" class="hidden sm:inline-flex"
 							><IconSearch /></Button
