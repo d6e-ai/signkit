@@ -141,10 +141,16 @@ impl SignKitClient {
             let detail = if detail_text.trim().is_empty() {
                 format!("HTTP request returned status {}", status.as_u16())
             } else {
-                // Truncate detail if excessively long
+                // Truncate detail if excessively long, backing off to the nearest
+                // char boundary so the slice never lands inside a multi-byte
+                // UTF-8 sequence.
                 let max_len = 500;
                 if detail_text.len() > max_len {
-                    format!("{}...", &detail_text[..max_len])
+                    let mut end = max_len;
+                    while end > 0 && !detail_text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &detail_text[..end])
                 } else {
                     detail_text.to_string()
                 }
