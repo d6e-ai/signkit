@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { WebhookApplication } from '$lib/application/webhooks/webhook-service';
 import type {
+	CompleteWebhookDeliveryCommand,
 	CreateWebhookEndpointCommand,
 	FailWebhookDeliveryCommand
 } from '$lib/ports/webhook-store';
@@ -457,6 +458,118 @@ describe('D1WebhookStore.failDelivery', () => {
 		});
 		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([
 			{ status: 'failed', attempt: 5, http_status: 400, error_code: 'http_400' }
+		]);
+	});
+});
+
+describe('D1WebhookStore.completeDelivery', () => {
+	function completeCommand(
+		auditEventId: string,
+		overrides: Partial<CompleteWebhookDeliveryCommand> = {}
+	): CompleteWebhookDeliveryCommand {
+		return {
+			organizationId: ORGANIZATION_ID,
+			endpointId: ENDPOINT_ID,
+			auditEventId,
+			claimToken: 'claim-current',
+			deliveredAt: CLAIMED_AT,
+			httpStatus: 200,
+			...overrides
+		};
+	}
+
+	it('does not log a delivery when the claim is stale', async () => {
+		const { store, sqlite } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000541';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'processing',
+			attempts: 2,
+			claimToken: 'claim-current',
+			lockedAt: CLAIMED_AT
+		});
+
+		await expect(
+			store.completeDelivery(completeCommand(auditEventId, { claimToken: 'claim-wrong' }))
+		).resolves.toEqual({ outcome: 'stale' });
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'processing',
+			attempts: 2,
+			retryable: 1
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([]);
+	});
+
+	it('does not log a phantom completion when the claim is stale but already delivered', async () => {
+		const { store, sqlite } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000542';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'delivered',
+			attempts: 1,
+			claimToken: null,
+			lockedAt: null
+		});
+
+		await expect(
+			store.completeDelivery(completeCommand(auditEventId, { claimToken: 'claim-current' }))
+		).resolves.toEqual({ outcome: 'stale' });
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'delivered',
+			attempts: 1,
+			retryable: 1
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([]);
+	});
+
+	it('rolls back the outbox update when the delivery log insert fails', async () => {
+		const { sqlite, database } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000543';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'processing',
+			attempts: 4,
+			claimToken: 'claim-current',
+			lockedAt: CLAIMED_AT
+		});
+		const failingStore = new D1WebhookStore(
+			withFailingStatement(database, (sql: string): boolean =>
+				sql.includes('INSERT INTO webhook_delivery_log')
+			)
+		);
+
+		await expect(failingStore.completeDelivery(completeCommand(auditEventId))).rejects.toThrow(
+			'simulated constraint failure'
+		);
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'processing',
+			attempts: 4,
+			retryable: 1
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([]);
+	});
+
+	it('logs exactly one delivered entry for a valid completion', async () => {
+		const { store, sqlite } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000544';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'processing',
+			attempts: 3,
+			claimToken: 'claim-current',
+			lockedAt: CLAIMED_AT
+		});
+
+		await expect(
+			store.completeDelivery(completeCommand(auditEventId, { httpStatus: 200 }))
+		).resolves.toEqual({ outcome: 'completed' });
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'delivered',
+			attempts: 3,
+			retryable: 1
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([
+			{ status: 'delivered', attempt: 3, http_status: 200, error_code: null }
 		]);
 	});
 });

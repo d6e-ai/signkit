@@ -410,7 +410,32 @@ export class D1WebhookStore implements WebhookStore {
 		command: CompleteWebhookDeliveryCommand
 	): Promise<{ outcome: 'completed' | 'stale' }> {
 		const logId: string = newUuidV7();
+		// The log INSERT runs first, gated on the same pre-UPDATE
+		// (status = 'processing' AND claim_token = ?) predicate the outbox UPDATE uses, so a
+		// stale claim inserts zero rows in both statements. Both statements share one D1 batch
+		// (an implicit transaction), so a log-insert failure rolls back the outbox UPDATE too.
 		const results: D1Result[] = await this.#database.batch([
+			this.#database
+				.prepare(
+					`INSERT INTO webhook_delivery_log (
+						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						attempt, http_status, error_code, occurred_at
+					)
+					SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, 'delivered',
+						attempts, ?, NULL, ?
+					FROM webhook_outbox
+					WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+						AND status = 'processing' AND claim_token = ?`
+				)
+				.bind(
+					logId,
+					command.httpStatus,
+					command.deliveredAt,
+					command.organizationId,
+					command.endpointId,
+					command.auditEventId,
+					command.claimToken
+				),
 			this.#database
 				.prepare(
 					`UPDATE webhook_outbox
@@ -424,29 +449,9 @@ export class D1WebhookStore implements WebhookStore {
 					command.endpointId,
 					command.auditEventId,
 					command.claimToken
-				),
-			this.#database
-				.prepare(
-					`INSERT INTO webhook_delivery_log (
-						id, organization_id, endpoint_id, audit_event_id, event_type, status,
-						attempt, http_status, error_code, occurred_at
-					)
-					SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, 'delivered',
-						attempts, ?, NULL, ?
-					FROM webhook_outbox
-					WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
-						AND status = 'delivered'`
-				)
-				.bind(
-					logId,
-					command.httpStatus,
-					command.deliveredAt,
-					command.organizationId,
-					command.endpointId,
-					command.auditEventId
 				)
 		]);
-		return (results[0]?.meta.changes ?? 0) === 1 ? { outcome: 'completed' } : { outcome: 'stale' };
+		return (results[1]?.meta.changes ?? 0) === 1 ? { outcome: 'completed' } : { outcome: 'stale' };
 	}
 
 	async failDelivery(
