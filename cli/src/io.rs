@@ -156,7 +156,7 @@ fn read_bounded_stdin(max_bytes: usize, kind: &str) -> Result<Vec<u8>, CliError>
 
 fn new_uuid_v4() -> Result<String, CliError> {
     let mut bytes = [0u8; 16];
-    fill_random(&mut bytes)
+    getrandom::getrandom(&mut bytes)
         .map_err(|err| CliError::usage(format!("Failed to generate an Idempotency-Key: {err}")))?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
@@ -165,10 +165,6 @@ fn new_uuid_v4() -> Result<String, CliError> {
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
     ))
-}
-
-fn fill_random(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
-    getrandom::getrandom(buffer)
 }
 
 #[cfg(test)]
@@ -182,5 +178,19 @@ mod tests {
         assert_eq!(bytes.len(), 36);
         assert_eq!(bytes[14], b'4');
         assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
+    }
+
+    #[test]
+    fn resolve_idempotency_key_generates_distinct_uuid_v4_keys_when_unset() {
+        let first = resolve_idempotency_key(None).unwrap();
+        let second = resolve_idempotency_key(None).unwrap();
+        for key in [&first, &second] {
+            let bytes = key.as_bytes();
+            assert_eq!(bytes.len(), 36);
+            assert_eq!(bytes[14], b'4');
+            assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
+            assert!(key.chars().all(|c| ('!'..='~').contains(&c)));
+        }
+        assert_ne!(first, second);
     }
 }
