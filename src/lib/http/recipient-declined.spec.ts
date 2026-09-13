@@ -1,4 +1,4 @@
-import type { Cookies, RequestEvent } from '@sveltejs/kit';
+import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type {
 	RecipientDeclinedApplicationPort,
@@ -15,6 +15,7 @@ import {
 	type RecipientDeclinedApplicationResolver,
 	type RecipientDeclinedHandlerOptions
 } from './recipient-declined';
+import { createRecipientRequestEvent } from './recipient-request-event-test-support';
 
 const envelopeId: string = '01910000-0000-7000-8000-000000000001';
 const recipientId: string = '01910000-0000-7000-8000-000000000002';
@@ -32,36 +33,14 @@ function requestEvent(
 	deleted: ReturnType<typeof vi.fn>;
 	set: ReturnType<typeof vi.fn>;
 } {
-	const headers: Headers = new Headers({ 'content-type': 'application/json' });
-	if (options.origin !== null) headers.set('origin', options.origin ?? 'https://signkit.example');
-	if (options.idempotencyKey !== undefined) {
-		headers.set('idempotency-key', options.idempotencyKey);
-	}
-	const deleted = vi.fn();
-	const set = vi.fn();
-	const cookie: string | undefined = options.cookie ?? 'sealed-session';
-	const cookies = {
-		get: vi.fn((name: string): string | undefined =>
-			name === RECIPIENT_SESSION_COOKIE ? cookie : undefined
-		),
-		delete: deleted,
-		set
-	} as unknown as Cookies;
-	const request = new Request('https://signkit.example/api/v1/signing/decline', {
-		method: 'POST',
-		headers,
-		body: JSON.stringify(options.body ?? { envelopeId, recipientId })
+	const { event, deleted, cookies } = createRecipientRequestEvent({
+		pathname: '/api/v1/signing/decline',
+		defaultBody: { envelopeId, recipientId },
+		...options
 	});
-	return {
-		event: {
-			cookies,
-			platform: { env: { DB: {} as D1Database } },
-			request,
-			url: new URL(request.url)
-		} as unknown as RequestEvent,
-		deleted,
-		set
-	};
+	const set = vi.fn();
+	cookies.set = set;
+	return { event, deleted, set };
 }
 
 function application(result: RecipientDeclinedResult): RecipientDeclinedApplicationPort {
