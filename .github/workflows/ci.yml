@@ -66,3 +66,17 @@ jobs:
         run: pnpm exec wrangler d1 migrations apply signkit --local
       - if: matrix.target == 'cloudflare'
         run: pnpm exec wrangler deploy --dry-run
+
+  rust-cli:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked

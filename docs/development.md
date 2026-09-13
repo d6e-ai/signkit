@@ -84,10 +84,25 @@ A new SignKit-owned identifier column needs the UUIDv7 check in both dialects (P
 | `src/lib/ids`                | the single UUIDv7 generator for persistent identifiers                |
 | `src/lib/ports`              | database, object store, identity, and mail interfaces                 |
 | `src/lib/adapters`           | PostgreSQL/D1, S3/R2, and mail implementations                        |
-| `src/lib/security`           | session, capability, and API-key cryptography                         |
 | `src/lib/history`            | bounded Git draft repository handling                                 |
+| `cli`                        | production Rust CLI workspace (`signkit`)                             |
 | `migrations/{postgres,d1}`   | dialect-specific SQL migrations                                       |
 | `messages`, `project.inlang` | Paraglide `en`/`ja` message catalogues                                |
+
+## Rust CLI (`cli/`)
+
+The Rust CLI workspace lives in `cli/` with binary target `signkit` (MSRV 1.88.0).
+
+```sh
+cd cli
+cargo fmt --check
+cargo check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build
+```
+
+The test suite uses `wiremock` to test against a local mock HTTP server, verifying capabilities, envelope read endpoints, mandatory organization enforcement, secure stdin/env API-key handling, strict redirect refusal, bounded response streaming, and exact exit-code contracts.
 
 ## CI
 
@@ -95,3 +110,4 @@ A new SignKit-owned identifier column needs the UUIDv7 check in both dialects (P
 
 - **validate** — `lint`, `check`, Chromium install, and the full `test` script against a `postgres:18-alpine` service with `POSTGRES_TEST_URL` set, so PostgreSQL integration suites always run in CI.
 - **build** — a matrix over `node`, `cloudflare`, and `vercel`. The Node build additionally runs `test:node-build`; the Cloudflare build checks generated binding types, applies local D1 migrations, and runs `wrangler deploy --dry-run`.
+- **rust-cli** — isolated Rust CI job on Rust 1.88.0 running `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.

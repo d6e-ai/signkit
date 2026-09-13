@@ -291,6 +291,17 @@ Every mutation requires:
 
 The API will use OpenAPI 3.1, structured validation, RFC 9457 problem responses, cursor pagination, and signed retryable webhooks. Stable events include `draft.revision_created`, `envelope.ready`, `envelope.fields_placed`, `envelope.sent`, `recipient.viewed`, `recipient.signed`, `recipient.declined`, `recipient.approved`, `envelope.completed`, `envelope.completion_artifact_published`, and `envelope.voided`.
 
+### Rust CLI architecture (`signkit`)
+
+The first production-quality CLI slice lives in `cli/` with binary name `signkit` (see [cli.md](cli.md)). Built for automated, non-interactive agent integration, its design rules are:
+
+- **Truthful scope exposure:** Strictly limited to system capabilities and currently enabled API-key read endpoints under `envelopes:read` (`list`, `get`, `draft`, `deliveries`, `completion-artifact`). Envelope mutations and API-key management remain interactive-session-only and are not exposed.
+- **Mandatory explicit organization selection:** The organization selector is required for all envelope commands and is never inferred.
+- **Credential hygiene:** API keys are ingested solely from the `SIGNKIT_API_KEY` environment variable or `--api-key-stdin`. Command-line flags and configuration files are prohibited from holding secret material.
+- **Fail-closed network posture:** Redirects are completely disabled to prevent credential leakage. Responses are strictly bounded to prevent OOM risks. Timeouts are enforced.
+- **Deterministic machine interface:** Every error produces an RFC 9457 problem document to stderr; every success produces versioned JSON (`{"version": "1", "data": ...}`); exact exit codes (`0`..`8`) govern all success and failure outcomes.
+- **Explicit typing:** Explicit Rust structs are used at all serialization and deserialization boundaries to eliminate type inference ambiguities.
+
 ## Documents and evidence
 
 DOCX import is a bounded asynchronous conversion: hostile DOCX ZIP/XML → sanitized constrained representation → normalized Markdown commit. The original DOCX is outside Git and follows an explicit retention policy. DOCX export is generated from a specific source commit and remains a transient or retained artifact outside Git.

@@ -17,3 +17,6 @@ bun.lockb
 # Vendored project-local agent skills
 /.agents/skills/
 /agent/skills/
+
+# Rust CLI
+/cli/
