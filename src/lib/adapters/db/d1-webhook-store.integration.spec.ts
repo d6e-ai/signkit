@@ -162,6 +162,29 @@ const claimCommand = {
 	limit: 10
 };
 
+/** Wraps a D1Database so any prepared statement matching `matches` throws when executed, to prove batch() rolls back its other statements. */
+function withFailingStatement(database: D1Database, matches: (sql: string) => boolean): D1Database {
+	const failure = (sql: string): D1PreparedStatement =>
+		({
+			sql,
+			bind: (): D1PreparedStatement => failure(sql),
+			run: async (): Promise<never> => {
+				throw new Error('simulated constraint failure');
+			},
+			all: async (): Promise<never> => {
+				throw new Error('simulated constraint failure');
+			},
+			first: async (): Promise<never> => {
+				throw new Error('simulated constraint failure');
+			}
+		}) as unknown as D1PreparedStatement;
+	return {
+		prepare: (sql: string): D1PreparedStatement =>
+			matches(sql) ? failure(sql) : database.prepare(sql),
+		batch: (statements: D1PreparedStatement[]): Promise<D1Result[]> => database.batch(statements)
+	} as unknown as D1Database;
+}
+
 describe('D1WebhookStore webhook retry terminalization', () => {
 	it('does not reclaim HTTP 4xx, SSRF, or payload-too-large terminal failures', async () => {
 		const { store, sqlite, sealer } = await createFixture();
@@ -353,6 +376,33 @@ describe('D1WebhookStore.failDelivery', () => {
 		expect(outboxState(sqlite, auditEventId)).toEqual({
 			status: 'processing',
 			attempts: 2,
+			retryable: 1
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([]);
+	});
+
+	it('rolls back the outbox update when the delivery log insert fails', async () => {
+		const { sqlite, database } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000534';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'processing',
+			attempts: 4,
+			claimToken: 'claim-current',
+			lockedAt: CLAIMED_AT
+		});
+		const failingStore = new D1WebhookStore(
+			withFailingStatement(database, (sql: string): boolean =>
+				sql.includes('INSERT INTO webhook_delivery_log')
+			)
+		);
+
+		await expect(failingStore.failDelivery(failCommand(auditEventId))).rejects.toThrow(
+			'simulated constraint failure'
+		);
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'processing',
+			attempts: 4,
 			retryable: 1
 		});
 		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([]);

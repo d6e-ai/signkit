@@ -454,51 +454,54 @@ export class D1WebhookStore implements WebhookStore {
 	): Promise<{ outcome: 'failed' | 'stale' }> {
 		const logId: string = newUuidV7();
 		const logStatus: string = command.retryable ? 'retrying' : 'failed';
-		const updated: D1Result = await this.#database
-			.prepare(
-				`UPDATE webhook_outbox
-				 SET status = 'failed', claim_token = NULL, locked_at = NULL,
-					available_at = ?, last_error = ?, updated_at = ?, retryable = ?
-				 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
-					AND status = 'processing' AND claim_token = ?`
-			)
-			.bind(
-				command.nextAvailableAt,
-				command.errorCode,
-				command.failedAt,
-				command.retryable ? 1 : 0,
-				command.organizationId,
-				command.endpointId,
-				command.auditEventId,
-				command.claimToken
-			)
-			.run();
-		if ((updated.meta.changes ?? 0) !== 1) {
-			return { outcome: 'stale' };
-		}
-		await this.#database
-			.prepare(
-				`INSERT INTO webhook_delivery_log (
-					id, organization_id, endpoint_id, audit_event_id, event_type, status,
-					attempt, http_status, error_code, occurred_at
+		// The log INSERT runs first, gated on the same pre-UPDATE
+		// (status = 'processing' AND claim_token = ?) predicate the outbox UPDATE uses, so a
+		// stale claim inserts zero rows in both statements. Both statements share one D1 batch
+		// (an implicit transaction), so a log-insert failure rolls back the outbox UPDATE too.
+		const results: D1Result[] = await this.#database.batch([
+			this.#database
+				.prepare(
+					`INSERT INTO webhook_delivery_log (
+						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						attempt, http_status, error_code, occurred_at
+					)
+					SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, ?,
+						attempts, ?, ?, ?
+					FROM webhook_outbox
+					WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+						AND status = 'processing' AND claim_token = ?`
 				)
-				SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, ?,
-					attempts, ?, ?, ?
-				FROM webhook_outbox
-				WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?`
-			)
-			.bind(
-				logId,
-				logStatus,
-				command.httpStatus,
-				command.errorCode,
-				command.failedAt,
-				command.organizationId,
-				command.endpointId,
-				command.auditEventId
-			)
-			.run();
-		return { outcome: 'failed' };
+				.bind(
+					logId,
+					logStatus,
+					command.httpStatus,
+					command.errorCode,
+					command.failedAt,
+					command.organizationId,
+					command.endpointId,
+					command.auditEventId,
+					command.claimToken
+				),
+			this.#database
+				.prepare(
+					`UPDATE webhook_outbox
+					 SET status = 'failed', claim_token = NULL, locked_at = NULL,
+						available_at = ?, last_error = ?, updated_at = ?, retryable = ?
+					 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+						AND status = 'processing' AND claim_token = ?`
+				)
+				.bind(
+					command.nextAvailableAt,
+					command.errorCode,
+					command.failedAt,
+					command.retryable ? 1 : 0,
+					command.organizationId,
+					command.endpointId,
+					command.auditEventId,
+					command.claimToken
+				)
+		]);
+		return (results[1]?.meta.changes ?? 0) === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
 	}
 
 	async listStaleSigningSecrets(
