@@ -1,8 +1,6 @@
 import { env } from '$env/dynamic/private';
-import {
-	CloudflareBindingMailSender,
-	CloudflareRestMailSender
-} from '$lib/adapters/mail/cloudflare-email';
+import { resolveNodeMailSender, resolveWorkerMailSender } from '$lib/application/mail/mail-runtime';
+import type { MailSender } from '$lib/ports/mail-sender';
 import { AesGcmRecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import { DeliveryStatusService } from './delivery-status';
 import { InvitationDeliveryService } from './delivery-service';
@@ -24,22 +22,24 @@ export async function resolveInvitationDeliveryService(
 
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
-		const email: SendEmail | undefined = context.platform.env.EMAIL;
-		if (database === undefined || email === undefined) return null;
+		const mailSender: MailSender | null = resolveWorkerMailSender(
+			context.platform.env,
+			context.platform.env.EMAIL
+		);
+		if (database === undefined || mailSender === null) return null;
 		const { D1DeliveryOutboxStore } = await import('$lib/adapters/db/d1-delivery-outbox-store');
 		return new InvitationDeliveryService(
 			new D1DeliveryOutboxStore(database),
 			sealer,
-			new CloudflareBindingMailSender(email),
+			mailSender,
 			configuration.publicOrigin,
 			{ fromEmail: configuration.fromEmail, fromName: configuration.fromName }
 		);
 	}
 
 	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
-	const accountId: string | undefined = nonempty(env.CLOUDFLARE_EMAIL_ACCOUNT_ID);
-	const apiToken: string | undefined = nonempty(env.CLOUDFLARE_EMAIL_API_TOKEN);
-	if (databaseUrl === undefined || accountId === undefined || apiToken === undefined) return null;
+	const mailSender: MailSender | null = await resolveNodeMailSender(env);
+	if (databaseUrl === undefined || mailSender === null) return null;
 	const [{ PostgresDeliveryOutboxStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-delivery-outbox-store'),
 		import('$lib/application/envelopes/runtime-postgres')
@@ -47,7 +47,7 @@ export async function resolveInvitationDeliveryService(
 	return new InvitationDeliveryService(
 		new PostgresDeliveryOutboxStore(resolvePostgresSql(databaseUrl)),
 		sealer,
-		new CloudflareRestMailSender(accountId, apiToken),
+		mailSender,
 		configuration.publicOrigin,
 		{ fromEmail: configuration.fromEmail, fromName: configuration.fromName }
 	);

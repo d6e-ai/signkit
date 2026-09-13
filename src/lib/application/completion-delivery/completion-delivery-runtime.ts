@@ -1,8 +1,6 @@
 import { env } from '$env/dynamic/private';
-import {
-	CloudflareBindingMailSender,
-	CloudflareRestMailSender
-} from '$lib/adapters/mail/cloudflare-email';
+import { resolveNodeMailSender, resolveWorkerMailSender } from '$lib/application/mail/mail-runtime';
+import type { MailSender } from '$lib/ports/mail-sender';
 import type { ObjectStore } from '$lib/ports/object-store';
 import { AesGcmCompletionTokenSealer } from '$lib/security/completion-token-sealer';
 import { CompletionDeliveryResealSweepService } from './completion-reseal-sweep-service';
@@ -79,23 +77,25 @@ export async function resolveCompletionDeliveryService(
 
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
-		const email: SendEmail | undefined = context.platform.env.EMAIL;
-		if (database === undefined || email === undefined) return null;
+		const mailSender: MailSender | null = resolveWorkerMailSender(
+			context.platform.env,
+			context.platform.env.EMAIL
+		);
+		if (database === undefined || mailSender === null) return null;
 		const { D1CompletionDeliveryStore } =
 			await import('$lib/adapters/db/d1-completion-delivery-store');
 		return new CompletionDeliveryService(
 			new D1CompletionDeliveryStore(database),
 			sealer,
-			new CloudflareBindingMailSender(email),
+			mailSender,
 			configuration.publicOrigin,
 			{ fromEmail: configuration.fromEmail, fromName: configuration.fromName }
 		);
 	}
 
 	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
-	const accountId: string | undefined = nonempty(env.CLOUDFLARE_EMAIL_ACCOUNT_ID);
-	const apiToken: string | undefined = nonempty(env.CLOUDFLARE_EMAIL_API_TOKEN);
-	if (databaseUrl === undefined || accountId === undefined || apiToken === undefined) return null;
+	const mailSender: MailSender | null = await resolveNodeMailSender(env);
+	if (databaseUrl === undefined || mailSender === null) return null;
 	const [{ PostgresCompletionDeliveryStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-delivery-store'),
 		import('$lib/application/envelopes/runtime-postgres')
@@ -103,7 +103,7 @@ export async function resolveCompletionDeliveryService(
 	return new CompletionDeliveryService(
 		new PostgresCompletionDeliveryStore(resolvePostgresSql(databaseUrl)),
 		sealer,
-		new CloudflareRestMailSender(accountId, apiToken),
+		mailSender,
 		configuration.publicOrigin,
 		{ fromEmail: configuration.fromEmail, fromName: configuration.fromName }
 	);

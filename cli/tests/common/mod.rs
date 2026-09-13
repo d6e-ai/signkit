@@ -98,7 +98,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "workerEndpoint": "/api/v1/system/deliveries/drain",
         "workerAuthentication": "bearer-secret",
         "semantics": "at-least-once",
-        "transports": { "cloudflare": "email-binding", "node": "cloudflare-email-rest" }
+        "transports": { "cloudflare": "email-binding", "node": "smtp-or-cloudflare-email-rest" }
       },
       "recipientAccess": {
         "endpoint": "/api/v1/signing/context",
@@ -139,7 +139,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "workerEndpoint": "/api/v1/system/completion-deliveries/drain",
         "workerAuthentication": "bearer-secret",
         "semantics": "at-least-once",
-        "transports": { "cloudflare": "email-binding", "node": "cloudflare-email-rest" },
+        "transports": { "cloudflare": "email-binding", "node": "smtp-or-cloudflare-email-rest" },
         "roles": ["signer", "approver", "viewer", "cc"],
         "prerequisite": "published-completion-artifact",
         "tokenFormat": "skca1",
