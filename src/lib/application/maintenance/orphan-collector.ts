@@ -17,6 +17,8 @@ export interface OrphanCollectorOptions {
 	maxObjectsToScan?: number;
 	dryRun?: boolean;
 	prefix?: string;
+	/** Exclusive resume key for this invocation when no durable checkpoint is wired. */
+	startAfter?: string;
 }
 
 export interface OrphanCollectorReport {
@@ -25,21 +27,34 @@ export interface OrphanCollectorReport {
 	inGracePeriod: number;
 	deleted: number;
 	deletedKeys: readonly string[];
+	nextStartAfter: string;
+}
+
+export interface OrphanSweepCheckpointStore {
+	readLastObjectKey(): Promise<string>;
+	/**
+	 * Atomically replace `expected` with `next` on the singleton row.
+	 * Returns false when another writer already advanced the checkpoint.
+	 */
+	compareAndSwapLastObjectKey(expected: string, next: string): Promise<boolean>;
 }
 
 export class OrphanCollector {
 	readonly #objects: ObjectStore;
 	readonly #references: OrphanReferenceStore;
 	readonly #now: () => Date;
+	readonly #checkpoint: OrphanSweepCheckpointStore | null;
 
 	constructor(
 		objects: ObjectStore,
 		references: OrphanReferenceStore,
-		now: () => Date = (): Date => new Date()
+		now: () => Date = (): Date => new Date(),
+		checkpoint: OrphanSweepCheckpointStore | null = null
 	) {
 		this.#objects = objects;
 		this.#references = references;
 		this.#now = now;
+		this.#checkpoint = checkpoint;
 	}
 
 	async sweep(options: OrphanCollectorOptions = {}): Promise<OrphanCollectorReport> {
@@ -57,6 +72,8 @@ export class OrphanCollector {
 		);
 		const dryRun = options.dryRun ?? false;
 		const nowTime = this.#now().getTime();
+		const resume = await this.#resumeAfter(options.startAfter);
+		const startAfter = resume.startAfter;
 
 		let scanned = 0;
 		let referencedCount = 0;
@@ -65,20 +82,26 @@ export class OrphanCollector {
 
 		let cursor: string | undefined = undefined;
 		let hasMore = true;
+		let lastKey = startAfter ?? '';
 
 		while (hasMore && scanned < maxScan) {
 			const limit = Math.min(batchSize, maxScan - scanned);
 			const listed = await this.#objects.list({
 				prefix: options.prefix,
 				cursor,
+				startAfter: cursor === undefined ? startAfter : undefined,
 				limit
 			});
 
-			if (listed.objects.length === 0) break;
+			if (listed.objects.length === 0) {
+				hasMore = false;
+				break;
+			}
 
 			const candidates: string[] = [];
 			for (const obj of listed.objects) {
 				scanned += 1;
+				lastKey = obj.key;
 				if (!isSafeObjectKey(obj.key)) continue;
 				const ageMs = uploadAgeMs(obj.uploadedAt, nowTime);
 				if (ageMs === null || ageMs < gracePeriodMs) {
@@ -105,13 +128,31 @@ export class OrphanCollector {
 			cursor = listed.cursor;
 		}
 
+		const nextStartAfter = hasMore && lastKey.length > 0 ? lastKey : '';
+		if (this.#checkpoint !== null) {
+			await this.#checkpoint.compareAndSwapLastObjectKey(resume.stored, nextStartAfter);
+		}
+
 		return {
 			scanned,
 			referenced: referencedCount,
 			inGracePeriod: inGracePeriodCount,
 			deleted: deletedKeys.length,
-			deletedKeys
+			deletedKeys,
+			nextStartAfter
 		};
+	}
+
+	async #resumeAfter(
+		requested: string | undefined
+	): Promise<{ stored: string; startAfter: string | undefined }> {
+		const stored: string =
+			this.#checkpoint !== null ? await this.#checkpoint.readLastObjectKey() : (requested ?? '');
+		if (stored.length === 0) return { stored: '', startAfter: undefined };
+		if (!isSafeObjectKey(stored)) {
+			throw new Error('orphan sweep checkpoint is not a safe object key');
+		}
+		return { stored, startAfter: stored };
 	}
 }
 
@@ -197,6 +238,74 @@ export class PostgresOrphanReferenceStore implements OrphanReferenceStore {
 
 		return referenced;
 	}
+}
+
+const CHECKPOINT_SINGLETON: number = 1;
+
+export class D1OrphanSweepCheckpointStore implements OrphanSweepCheckpointStore {
+	readonly #database: D1Database;
+
+	constructor(database: D1Database) {
+		this.#database = database;
+	}
+
+	async readLastObjectKey(): Promise<string> {
+		const row = await this.#database
+			.prepare('SELECT last_object_key AS key FROM orphan_sweep_checkpoint WHERE singleton = ?')
+			.bind(CHECKPOINT_SINGLETON)
+			.first<{ key: string }>();
+		return normalizeCheckpointKey(row?.key);
+	}
+
+	async compareAndSwapLastObjectKey(expected: string, next: string): Promise<boolean> {
+		const expectedKey = normalizeCheckpointKey(expected);
+		const nextKey = normalizeCheckpointKey(next);
+		const updatedAt = new Date().toISOString();
+		const result = await this.#database
+			.prepare(
+				`UPDATE orphan_sweep_checkpoint
+				 SET last_object_key = ?, updated_at = ?
+				 WHERE singleton = ? AND last_object_key = ?`
+			)
+			.bind(nextKey, updatedAt, CHECKPOINT_SINGLETON, expectedKey)
+			.run();
+		return (result.meta.changes ?? 0) === 1;
+	}
+}
+
+export class PostgresOrphanSweepCheckpointStore implements OrphanSweepCheckpointStore {
+	readonly #sql: ReturnType<typeof postgres>;
+
+	constructor(sql: ReturnType<typeof postgres>) {
+		this.#sql = sql;
+	}
+
+	async readLastObjectKey(): Promise<string> {
+		const rows = await this.#sql<{ key: string }[]>`
+			SELECT last_object_key AS key FROM orphan_sweep_checkpoint WHERE singleton = ${CHECKPOINT_SINGLETON}
+		`;
+		return normalizeCheckpointKey(rows[0]?.key);
+	}
+
+	async compareAndSwapLastObjectKey(expected: string, next: string): Promise<boolean> {
+		const expectedKey = normalizeCheckpointKey(expected);
+		const nextKey = normalizeCheckpointKey(next);
+		const rows = await this.#sql<{ key: string }[]>`
+			UPDATE orphan_sweep_checkpoint
+			SET last_object_key = ${nextKey}, updated_at = NOW()
+			WHERE singleton = ${CHECKPOINT_SINGLETON} AND last_object_key = ${expectedKey}
+			RETURNING last_object_key AS key
+		`;
+		return rows.length === 1;
+	}
+}
+
+function normalizeCheckpointKey(key: string | undefined): string {
+	if (key === undefined || key.length === 0) return '';
+	if (!isSafeObjectKey(key)) {
+		throw new Error('orphan sweep checkpoint is not a safe object key');
+	}
+	return key;
 }
 
 function isSafeObjectKey(key: string): boolean {

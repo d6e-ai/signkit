@@ -18,6 +18,8 @@ export const MAX_LIST_OBJECTS_LIMIT: number = 1000;
 export interface ListObjectsOptions {
 	prefix?: string;
 	cursor?: string;
+	/** Exclusive key to resume listing after. Ignored when `cursor` is set. */
+	startAfter?: string;
 	limit?: number;
 }
 

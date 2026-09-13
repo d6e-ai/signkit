@@ -106,7 +106,7 @@ The reseal sweeps are bounded maintenance, not delivery: each run migrates at mo
 
 The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable (signer/approver) recipient that has ever been released has an expired capability and none currently has a live one, then transitions each envelope to `expired` with the same delivery-outbox scrub and capability revocation as an operator void, plus a chained `envelope.expired` audit event.
 
-The orphan sweep lists at most 1,000 objects per run, skips anything younger than 24 hours or without a parseable upload time, and deletes only keys that SQL does not currently reference. Callers cannot shorten the grace period. Failed pointer CAS uploads remain invisible until they age out and are collected.
+The orphan sweep lists at most 1,000 objects per run, skips anything younger than 24 hours or without a parseable upload time, and deletes only keys that SQL does not currently reference. A durable, server-owned resume key advances across scheduled runs so a first page of live objects cannot starve later orphans; callers cannot supply that cursor, shorten the grace period, or name a prefix. Failed pointer CAS uploads remain invisible until they age out and are collected.
 
 ## Disaster recovery
 

@@ -25,7 +25,6 @@ const envelope = {
 	status: 'draft' as const,
 	repositoryGeneration: 0,
 	repositoryHead: null,
-	repositoryArchiveKey: null,
 	repositoryArchiveSha256: null,
 	sentCommitSha: null,
 	fieldGeneration: 0,

@@ -2,8 +2,10 @@ import { env } from '$env/dynamic/private';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import {
 	D1OrphanReferenceStore,
+	D1OrphanSweepCheckpointStore,
 	OrphanCollector,
-	PostgresOrphanReferenceStore
+	PostgresOrphanReferenceStore,
+	PostgresOrphanSweepCheckpointStore
 } from './orphan-collector';
 
 export interface OrphanCollectorRuntimeContext {
@@ -18,7 +20,12 @@ export async function resolveOrphanCollector(
 		const database: D1Database | undefined = context.platform.env.DB;
 		const bucket: R2Bucket | undefined = context.platform.env.OBJECTS;
 		if (database === undefined || bucket === undefined) return null;
-		return new OrphanCollector(new R2ObjectStore(bucket), new D1OrphanReferenceStore(database));
+		return new OrphanCollector(
+			new R2ObjectStore(bucket),
+			new D1OrphanReferenceStore(database),
+			(): Date => new Date(),
+			new D1OrphanSweepCheckpointStore(database)
+		);
 	}
 
 	const configuration = {
@@ -38,8 +45,14 @@ export async function resolveOrphanCollector(
 		import('$lib/application/drafts/runtime-s3'),
 		import('$lib/application/envelopes/runtime-postgres')
 	]);
+	// Resolve object storage first so incomplete S3 configuration fails closed
+	// without opening a process-local Postgres pool.
+	const objectStore = resolveS3ObjectStore(configuration);
+	const sql = resolvePostgresSql(configuration.databaseUrl ?? '');
 	return new OrphanCollector(
-		resolveS3ObjectStore(configuration),
-		new PostgresOrphanReferenceStore(resolvePostgresSql(configuration.databaseUrl ?? ''))
+		objectStore,
+		new PostgresOrphanReferenceStore(sql),
+		(): Date => new Date(),
+		new PostgresOrphanSweepCheckpointStore(sql)
 	);
 }

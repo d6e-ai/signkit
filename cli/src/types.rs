@@ -468,8 +468,6 @@ pub struct Envelope {
     pub repository_generation: u64,
     #[serde(rename = "repositoryHead")]
     pub repository_head: Option<String>,
-    #[serde(rename = "repositoryArchiveKey")]
-    pub repository_archive_key: Option<String>,
     #[serde(rename = "repositoryArchiveSha256")]
     pub repository_archive_sha256: Option<String>,
     #[serde(rename = "sentCommitSha")]
@@ -933,6 +931,15 @@ pub struct DraftCommitResponse {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// Receipt written to stdout when DOCX export lands on a regular file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocxExportReceipt {
+    pub path: String,
+    pub bytes: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyRecipient {
     pub email: String,
@@ -1141,6 +1148,29 @@ mod tests {
     }
 
     #[test]
+    fn test_public_envelope_does_not_require_object_keys() {
+        let raw = r#"{
+            "id": "0191b26f-4000-7000-8000-000000000001",
+            "organizationId": "org_test",
+            "title": "Test Envelope",
+            "status": "draft",
+            "repositoryGeneration": 1,
+            "repositoryHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "repositoryArchiveSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "sentCommitSha": null,
+            "fieldGeneration": 0,
+            "createdAt": "2026-09-13T10:00:00Z",
+            "updatedAt": "2026-09-13T10:05:00Z"
+        }"#;
+        let envelope: Envelope = serde_json::from_str(raw).unwrap();
+        assert!(envelope.repository_head.is_some());
+        assert!(envelope.repository_archive_sha256.is_some());
+        assert!(!envelope.extra.contains_key("repositoryArchiveKey"));
+        let serialized = serde_json::to_string(&envelope).unwrap();
+        assert!(!serialized.contains("repositoryArchiveKey"));
+    }
+
+    #[test]
     fn test_envelope_preserves_unknown_fields_round_trip() {
         let raw = r#"{
             "id": "0191b26f-4000-7000-8000-000000000001",
@@ -1149,7 +1179,6 @@ mod tests {
             "status": "draft",
             "repositoryGeneration": 1,
             "repositoryHead": null,
-            "repositoryArchiveKey": null,
             "repositoryArchiveSha256": null,
             "sentCommitSha": null,
             "fieldGeneration": 0,

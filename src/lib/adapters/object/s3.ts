@@ -91,6 +91,7 @@ export class S3ObjectStore implements ObjectStore {
 				Bucket: this.bucket,
 				Prefix: options?.prefix,
 				ContinuationToken: options?.cursor,
+				StartAfter: options?.cursor ? undefined : options?.startAfter,
 				MaxKeys: limit
 			})
 		);

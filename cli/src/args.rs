@@ -89,6 +89,12 @@ pub enum EnvelopesSubcommand {
     /// Void an envelope (requires envelopes:send).
     Void(EnvelopeVoidArgs),
 
+    /// Import a bounded DOCX file as a Markdown draft commit (requires drafts:write).
+    ImportDocx(EnvelopeImportDocxArgs),
+
+    /// Export the pinned revision as DOCX (requires envelopes:read).
+    ExportDocx(EnvelopeExportDocxArgs),
+
     /// Read completion artifact publication status for an envelope.
     CompletionArtifact(EnvelopeIdArg),
 
@@ -237,4 +243,38 @@ pub struct EnvelopeVoidArgs {
     /// Idempotency key. Generated as a UUIDv4 when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeImportDocxArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// DOCX file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Target Markdown path under documents/.
+    #[arg(long, value_name = "PATH")]
+    pub target_path: String,
+
+    /// Expected Git generation for the draft commit.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: u64,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeExportDocxArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Destination file, or `-` for stdout.
+    #[arg(long, value_name = "PATH")]
+    pub output: String,
 }

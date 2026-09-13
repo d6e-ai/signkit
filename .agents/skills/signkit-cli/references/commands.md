@@ -99,6 +99,30 @@ signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
 
 ---
 
+### 7. `signkit envelopes import-docx <ENVELOPE_ID>`
+
+Converts a bounded DOCX file into one Markdown draft commit (`drafts:write`). Reads a regular file or stdin (`--file`, default `-`), refuses symbolic links, and caps input at 20 MiB. Requires `--target-path documents/....md`, `--expected-generation`, and `Idempotency-Key` (generated when omitted). Secrets are never accepted as flags.
+
+```sh
+signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
+  envelopes import-docx 0191b26f-4000-7000-8000-000000000001 \
+  --file ./agreement.docx --target-path documents/agreement.md --expected-generation 0
+```
+
+---
+
+### 8. `signkit envelopes export-docx <ENVELOPE_ID>`
+
+Downloads the pinned revision as WordprocessingML (`envelopes:read`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes DOCX bytes to stdout.
+
+```sh
+signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
+  envelopes export-docx 0191b26f-4000-7000-8000-000000000001 \
+  --output ./agreement.docx
+```
+
+---
+
 ## Non-Secret Configuration File
 
 Default location: `~/.config/signkit/config.toml` (or specified via `--config <PATH>` or `SIGNKIT_CONFIG`).

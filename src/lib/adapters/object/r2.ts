@@ -43,6 +43,7 @@ export class R2ObjectStore implements ObjectStore {
 		const listed = await this.bucket.list({
 			prefix: options?.prefix,
 			cursor: options?.cursor,
+			startAfter: options?.cursor ? undefined : options?.startAfter,
 			limit
 		});
 		return {

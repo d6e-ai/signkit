@@ -1,7 +1,9 @@
-import type { Envelope, FieldGeometry, FieldType, RecipientRole } from '$lib/domain/envelope';
+import type { FieldGeometry, FieldType, RecipientRole } from '$lib/domain/envelope';
+import type { PublicEnvelope } from '$lib/application/envelopes/model';
 import type { PublicEnvelopeDeliveryStatus } from '$lib/application/delivery/delivery-status';
 
-export type { Envelope, FieldGeometry, FieldType, RecipientRole, PublicEnvelopeDeliveryStatus };
+export type Envelope = PublicEnvelope;
+export type { FieldGeometry, FieldType, RecipientRole, PublicEnvelopeDeliveryStatus };
 
 export interface ProblemValidationError {
 	readonly path: string;

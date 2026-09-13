@@ -1,19 +1,21 @@
 use crate::args::{
-    EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeListArgs,
-    EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeVoidArgs, EnvelopesSubcommand,
+    EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeExportDocxArgs, EnvelopeFieldsArgs,
+    EnvelopeIdArg, EnvelopeImportDocxArgs, EnvelopeListArgs, EnvelopeReadyArgs, EnvelopeSendArgs,
+    EnvelopeVoidArgs, EnvelopesSubcommand,
 };
 use crate::client::SignKitClient;
 use crate::error::CliError;
 use crate::io::{
-    overlay_string, overlay_u64, read_json_object, read_json_value, resolve_idempotency_key,
+    overlay_string, overlay_u64, read_docx_bytes, read_json_object, read_json_value,
+    resolve_idempotency_key, write_output_bytes, MAX_DOCX_BYTES,
 };
 use crate::output::print_success;
 use crate::types::{
-    is_valid_uuid_v7, CompletionArtifactResponse, DeliveryStatusResponse, DraftCommitRequest,
-    DraftCommitResponse, DraftWorkspaceSnapshot, EnvelopeCreateRequest, EnvelopeCreateResponse,
-    EnvelopeGetResponse, EnvelopeListPage, PlaceFieldsRequest, PlaceFieldsResponse,
-    ReadyEnvelopeRequest, ReadyEnvelopeResponse, SendEnvelopeRequest, SendEnvelopeResponse,
-    VoidEnvelopeRequest, VoidEnvelopeResponse,
+    is_valid_uuid_v7, CompletionArtifactResponse, DeliveryStatusResponse, DocxExportReceipt,
+    DraftCommitRequest, DraftCommitResponse, DraftWorkspaceSnapshot, EnvelopeCreateRequest,
+    EnvelopeCreateResponse, EnvelopeGetResponse, EnvelopeListPage, PlaceFieldsRequest,
+    PlaceFieldsResponse, ReadyEnvelopeRequest, ReadyEnvelopeResponse, SendEnvelopeRequest,
+    SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
 };
 
 pub async fn execute(
@@ -33,6 +35,8 @@ pub async fn execute(
         EnvelopesSubcommand::Fields(args) => place_fields(client, args, raw, pretty).await,
         EnvelopesSubcommand::Send(args) => send_envelope(client, args, raw, pretty).await,
         EnvelopesSubcommand::Void(args) => void_envelope(client, args, raw, pretty).await,
+        EnvelopesSubcommand::ImportDocx(args) => import_docx(client, args, raw, pretty).await,
+        EnvelopesSubcommand::ExportDocx(args) => export_docx(client, args, raw, pretty).await,
         EnvelopesSubcommand::CompletionArtifact(args)
         | EnvelopesSubcommand::Audit(args)
         | EnvelopesSubcommand::Evidence(args) => {
@@ -294,6 +298,103 @@ async fn void_envelope(
     let path = format!("/api/v1/envelopes/{}/void", args.envelope_id);
     let resp: VoidEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+const DOCX_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const MAX_DRAFT_GENERATION: u64 = 2_147_483_647;
+
+fn validate_markdown_path(path: &str) -> Result<(), CliError> {
+    if path.contains("..")
+        || path.len() > 240
+        || !path.starts_with("documents/")
+        || !path.ends_with(".md")
+    {
+        return Err(CliError::usage(
+            "target-path must be a Markdown file directly under documents/ (for example documents/agreement.md).",
+        ));
+    }
+    let rest = &path["documents/".len()..path.len() - ".md".len()];
+    if rest.is_empty() {
+        return Err(CliError::usage(
+            "target-path must be a Markdown file directly under documents/ (for example documents/agreement.md).",
+        ));
+    }
+    let bytes = rest.as_bytes();
+    if !bytes[0].is_ascii_alphanumeric() {
+        return Err(CliError::usage(
+            "target-path must be a Markdown file directly under documents/ (for example documents/agreement.md).",
+        ));
+    }
+    if !rest
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return Err(CliError::usage(
+            "target-path must be a Markdown file directly under documents/ (for example documents/agreement.md).",
+        ));
+    }
+    Ok(())
+}
+
+async fn import_docx(
+    client: &SignKitClient,
+    args: EnvelopeImportDocxArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    validate_markdown_path(&args.target_path)?;
+    if args.expected_generation >= MAX_DRAFT_GENERATION {
+        return Err(CliError::usage(
+            "expected-generation must be an integer between 0 and 2147483646.",
+        ));
+    }
+    let docx_bytes = read_docx_bytes(&args.file)?;
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let generation = args.expected_generation.to_string();
+    let path = format!("/api/v1/envelopes/{}/draft/docx", args.envelope_id);
+    let query = [
+        ("targetPath", args.target_path.as_str()),
+        ("expectedGeneration", generation.as_str()),
+    ];
+    let resp: DraftCommitResponse = client
+        .post_bytes(
+            &path,
+            &query,
+            docx_bytes,
+            DOCX_CONTENT_TYPE,
+            &idempotency_key,
+        )
+        .await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn export_docx(
+    client: &SignKitClient,
+    args: EnvelopeExportDocxArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if args.output.is_empty() {
+        return Err(CliError::usage(
+            "Provide --output PATH (use '-' to write DOCX bytes to stdout).",
+        ));
+    }
+    let path = format!("/api/v1/envelopes/{}/docx", args.envelope_id);
+    let resp = client.get_bytes(&path, &[], true, MAX_DOCX_BYTES).await?;
+    write_output_bytes(&args.output, &resp.bytes)?;
+    if args.output != "-" {
+        let receipt = DocxExportReceipt {
+            path: args.output,
+            bytes: resp.bytes.len() as u64,
+            commit_sha: resp.commit_sha,
+        };
+        print_success(&receipt, raw, pretty)?;
+    }
     Ok(())
 }
 

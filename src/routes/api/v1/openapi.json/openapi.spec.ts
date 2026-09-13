@@ -51,9 +51,20 @@ describe('GET /api/v1/openapi.json', () => {
 		);
 
 		const serialized = JSON.stringify(document);
+		expect(serialized).not.toContain('repositoryArchiveKey');
 		expect(serialized).not.toContain('DELIVERY_WORKER_SECRET');
 		expect(serialized).not.toContain('skwh1_');
 		expect(serialized).not.toContain('SESSION_ENCRYPTION_KEY');
 		expect(serialized).not.toContain('CLOUDFLARE_EMAIL_API_TOKEN');
+
+		const envelopeSchema = (
+			document.components as {
+				schemas: {
+					Envelope: { additionalProperties: boolean; properties: Record<string, unknown> };
+				};
+			}
+		).schemas.Envelope;
+		expect(envelopeSchema.additionalProperties).toBe(false);
+		expect(envelopeSchema.properties).not.toHaveProperty('repositoryArchiveKey');
 	});
 });

@@ -1,21 +1,44 @@
 use crate::error::CliError;
 use serde_json::{Map, Value};
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 /// Matches the draft-commit HTTP body bound.
 pub const MAX_JSON_INPUT_BYTES: usize = 2 * 1024 * 1024;
 
+/// Matches the server DOCX import bound (`MAX_DOCX_INPUT_BYTES`).
+pub const MAX_DOCX_BYTES: usize = 20 * 1024 * 1024;
+
 /// Reads JSON from a regular file, or from stdin when `path` is `-`.
 pub fn read_json_value(path: &str) -> Result<Value, CliError> {
     let bytes = if path == "-" {
-        read_bounded_stdin(MAX_JSON_INPUT_BYTES)?
+        read_bounded_stdin(MAX_JSON_INPUT_BYTES, "JSON")?
     } else {
-        read_bounded_file(Path::new(path), MAX_JSON_INPUT_BYTES)?
+        read_bounded_file(Path::new(path), MAX_JSON_INPUT_BYTES, "JSON")?
     };
     serde_json::from_slice(&bytes)
         .map_err(|err| CliError::usage(format!("Input is not valid JSON: {err}")))
+}
+
+/// Reads DOCX bytes from a regular file, or from stdin when `path` is `-`.
+pub fn read_docx_bytes(path: &str) -> Result<Vec<u8>, CliError> {
+    if path == "-" {
+        read_bounded_stdin(MAX_DOCX_BYTES, "DOCX")
+    } else {
+        read_bounded_file(Path::new(path), MAX_DOCX_BYTES, "DOCX")
+    }
+}
+
+/// Writes bytes to a regular file, or to stdout when `path` is `-`.
+pub fn write_output_bytes(path: &str, bytes: &[u8]) -> Result<(), CliError> {
+    if path == "-" {
+        io::stdout()
+            .write_all(bytes)
+            .map_err(|err| CliError::usage(format!("Failed to write DOCX to stdout: {err}")))?;
+        return Ok(());
+    }
+    write_bounded_file(Path::new(path), bytes)
 }
 
 /// Requires a JSON object, optionally overlaying unsigned integer command flags.
@@ -54,7 +77,7 @@ pub fn resolve_idempotency_key(provided: Option<&str>) -> Result<String, CliErro
     }
 }
 
-fn read_bounded_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, CliError> {
+fn read_bounded_file(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8>, CliError> {
     if path.as_os_str().is_empty() {
         return Err(CliError::usage("Input path must not be empty."));
     }
@@ -66,11 +89,13 @@ fn read_bounded_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, CliError>
         ));
     }
     if !metadata.is_file() {
-        return Err(CliError::usage("JSON input path must name a regular file."));
+        return Err(CliError::usage(format!(
+            "{kind} input path must name a regular file."
+        )));
     }
     if metadata.len() as usize > max_bytes {
         return Err(CliError::usage(format!(
-            "JSON input exceeds the {max_bytes} byte limit."
+            "{kind} input exceeds the {max_bytes} byte limit."
         )));
     }
     let mut file = File::open(path)
@@ -79,25 +104,48 @@ fn read_bounded_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, CliError>
     file.read_to_end(&mut buffer)?;
     if buffer.len() > max_bytes {
         return Err(CliError::usage(format!(
-            "JSON input exceeds the {max_bytes} byte limit."
+            "{kind} input exceeds the {max_bytes} byte limit."
         )));
     }
     Ok(buffer)
 }
 
-fn read_bounded_stdin(max_bytes: usize) -> Result<Vec<u8>, CliError> {
+fn write_bounded_file(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    if path.as_os_str().is_empty() {
+        return Err(CliError::usage("Output path must not be empty."));
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(CliError::usage(
+                "Refusing to write through a symbolic link. Provide a regular file or '-'.",
+            ));
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(CliError::usage(
+                "DOCX output path must name a regular file.",
+            ));
+        }
+        Ok(_) | Err(_) => {}
+    }
+    fs::write(path, bytes)
+        .map_err(|err| CliError::usage(format!("Failed to write '{}': {err}", path.display())))
+}
+
+fn read_bounded_stdin(max_bytes: usize, kind: &str) -> Result<Vec<u8>, CliError> {
     let mut buffer = Vec::new();
     io::stdin()
         .take((max_bytes as u64) + 1)
         .read_to_end(&mut buffer)
-        .map_err(|err| CliError::usage(format!("Failed to read JSON from stdin: {err}")))?;
+        .map_err(|err| CliError::usage(format!("Failed to read {kind} from stdin: {err}")))?;
     if buffer.len() > max_bytes {
         return Err(CliError::usage(format!(
-            "JSON input exceeds the {max_bytes} byte limit."
+            "{kind} input exceeds the {max_bytes} byte limit."
         )));
     }
     if buffer.is_empty() {
-        return Err(CliError::usage("JSON input from stdin was empty."));
+        return Err(CliError::usage(format!(
+            "{kind} input from stdin was empty."
+        )));
     }
     Ok(buffer)
 }

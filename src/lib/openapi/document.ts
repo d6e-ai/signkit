@@ -52,15 +52,23 @@ const ENVELOPE: Record<string, unknown> = {
 			enum: ['draft', 'ready', 'sent', 'in_progress', 'completed', 'declined', 'expired', 'voided']
 		},
 		repositoryGeneration: { type: 'integer' },
-		repositoryHead: { type: ['string', 'null'] },
-		repositoryArchiveKey: { type: ['string', 'null'] },
-		repositoryArchiveSha256: { type: ['string', 'null'] },
-		sentCommitSha: { type: ['string', 'null'] },
+		repositoryHead: {
+			type: ['string', 'null'],
+			description: 'Current Git commit SHA. A content identifier, not an object-store key.'
+		},
+		repositoryArchiveSha256: {
+			type: ['string', 'null'],
+			description: 'SHA-256 digest of the draft archive bytes. Not a storage locator.'
+		},
+		sentCommitSha: {
+			type: ['string', 'null'],
+			description: 'Git commit SHA pinned at send. A content identifier, not an object-store key.'
+		},
 		fieldGeneration: { type: 'integer' },
 		createdAt: { type: 'string', format: 'date-time' },
 		updatedAt: { type: 'string', format: 'date-time' }
 	},
-	additionalProperties: true
+	additionalProperties: false
 };
 
 const JSON_BODY: Record<string, unknown> = {

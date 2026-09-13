@@ -361,6 +361,83 @@ async function baseEvidence(): Promise<CompletionEvidence> {
 	};
 }
 
+async function agentAuthoredEvidence(): Promise<CompletionEvidence> {
+	const evidence = await baseEvidence();
+	const auditEvents = await buildVerifiedAuditChain(
+		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
+		[
+			{
+				id: 'event-1',
+				eventType: 'envelope.created',
+				actorType: 'agent',
+				actorId: 'api-key-1',
+				occurredAt: '2026-09-10T00:00:00.000Z',
+				payload: { title: 'Agreement' }
+			},
+			{
+				id: 'event-commit',
+				eventType: 'draft.revision_created',
+				actorType: 'agent',
+				actorId: 'api-key-1',
+				occurredAt: '2026-09-10T00:00:10.000Z',
+				payload: { generation: 1, commitSha: SENT_COMMIT_SHA }
+			},
+			{
+				id: 'event-ready',
+				eventType: 'envelope.ready',
+				actorType: 'agent',
+				actorId: 'api-key-1',
+				occurredAt: '2026-09-10T00:00:30.000Z',
+				payload: {
+					commitSha: SENT_COMMIT_SHA,
+					generation: 1,
+					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
+				}
+			},
+			{
+				id: 'event-fields',
+				eventType: 'envelope.fields_placed',
+				actorType: 'agent',
+				actorId: 'api-key-1',
+				occurredAt: '2026-09-10T00:00:40.000Z',
+				payload: { fieldGeneration: 1, fieldCount: 1 }
+			},
+			{
+				id: 'event-sent',
+				eventType: 'envelope.sent',
+				actorType: 'agent',
+				actorId: 'api-key-1',
+				occurredAt: '2026-09-10T00:00:50.000Z',
+				payload: { commitSha: SENT_COMMIT_SHA, generation: 1 }
+			},
+			{
+				id: 'event-2',
+				eventType: 'recipient.signed',
+				actorType: 'recipient',
+				actorId: 'recipient-1',
+				occurredAt: SIGNED_AT,
+				payload: {
+					recipientId: 'recipient-1',
+					role: 'signer',
+					routingOrder: 1,
+					sentCommitSha: SENT_COMMIT_SHA,
+					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: FIELD_VALUE_SHA256 }],
+					signedAt: SIGNED_AT
+				}
+			},
+			{
+				id: 'event-3',
+				eventType: 'envelope.completed',
+				actorType: 'recipient',
+				actorId: 'recipient-1',
+				occurredAt: COMPLETED_AT,
+				payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+			}
+		]
+	);
+	return { ...evidence, auditEvents };
+}
+
 function claimWithSeededArchive(
 	objects: MemoryObjectStore,
 	overrides: Partial<ClaimedCompletionArtifactJob> = {}
@@ -429,6 +506,40 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 				published.markdownSha256
 			)
 		);
+	});
+
+	it('publishes an envelope whose create/commit/ready/fields/sent events were authored by an API-key agent under audit hash v2', async () => {
+		const store = new FakeCompletionArtifactStore();
+		const objects = new MemoryObjectStore();
+		store.claims = [claimWithSeededArchive(objects)];
+		store.evidenceByEnvelope.set(ENVELOPE_ID, await agentAuthoredEvidence());
+		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			() => NOW,
+			() => 'claim-token-agent-1'
+		);
+
+		const result: CompletionArtifactBatchResult = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({
+			claimed: 1,
+			published: 1,
+			integrityFailed: 0,
+			retryableFailed: 0
+		});
+		expect(store.publishCalls).toHaveLength(1);
+		expect(store.failCalls).toHaveLength(0);
+		expect(store.publishCalls[0].expectedAuditSequence).toBe(7);
+		expect(
+			store.evidenceByEnvelope.get(ENVELOPE_ID)?.auditEvents.map((event) => event.actorType)
+		).toEqual(['agent', 'agent', 'agent', 'agent', 'agent', 'recipient', 'recipient']);
+		expect(
+			store.evidenceByEnvelope
+				.get(ENVELOPE_ID)
+				?.auditEvents.every((event) => event.hashVersion === 2)
+		).toBe(true);
 	});
 
 	it('reuses identical content-addressed bytes when the object already exists', async () => {

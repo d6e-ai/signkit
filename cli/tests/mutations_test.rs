@@ -17,7 +17,6 @@ fn envelope_json() -> String {
             "status": "draft",
             "repositoryGeneration": 0,
             "repositoryHead": null,
-            "repositoryArchiveKey": null,
             "repositoryArchiveSha256": null,
             "sentCommitSha": null,
             "fieldGeneration": 0,

@@ -1,14 +1,19 @@
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import {
 	DEFAULT_ORPHAN_GRACE_PERIOD_MS,
 	MAX_ORPHAN_SCAN_LIMIT,
 	OrphanCollector,
 	D1OrphanReferenceStore,
+	D1OrphanSweepCheckpointStore,
 	PostgresOrphanReferenceStore,
-	type OrphanReferenceStore
+	PostgresOrphanSweepCheckpointStore,
+	type OrphanReferenceStore,
+	type OrphanSweepCheckpointStore
 } from './orphan-collector';
 import type { ObjectStore, ListObjectsResult } from '$lib/ports/object-store';
 import type { D1Database } from '@cloudflare/workers-types';
+import { applyD1Migrations, sqliteD1Database } from '$lib/adapters/db/sqlite-d1-test-support';
 
 describe('OrphanCollector', () => {
 	const now = new Date('2026-09-13T12:00:00.000Z');
@@ -201,6 +206,99 @@ describe('OrphanCollector', () => {
 		expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 1000 }));
 	});
 
+	it('resumes from a durable checkpoint so later runs are not starved by the first page', async () => {
+		const keys = ['live-a', 'live-b', 'orphan-c'];
+		const listMock = vi.fn(
+			async (options?: { startAfter?: string; cursor?: string; limit?: number }) => {
+				const remaining = keys.filter(
+					(key) => options?.startAfter === undefined || key > options.startAfter
+				);
+				const limit = options?.limit ?? remaining.length;
+				const page = remaining.slice(0, limit);
+				return {
+					objects: page.map((key) => ({ key, size: 1, uploadedAt: twentyFiveHoursAgo })),
+					truncated: remaining.length > page.length,
+					cursor: remaining.length > page.length ? `after-${page[page.length - 1]}` : undefined
+				};
+			}
+		);
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: listMock,
+			deleteMany: vi.fn()
+		};
+		const checkpoint = memoryCheckpoint();
+		const collector = new OrphanCollector(
+			objects,
+			{
+				filterReferencedKeys: vi.fn(
+					async (candidates: readonly string[]): Promise<Set<string>> =>
+						new Set(candidates.filter((key) => key.startsWith('live-')))
+				)
+			},
+			() => now,
+			checkpoint
+		);
+
+		const first = await collector.sweep({ batchSize: 1, maxObjectsToScan: 1 });
+		expect(first.scanned).toBe(1);
+		expect(first.deleted).toBe(0);
+		expect(first.nextStartAfter).toBe('live-a');
+		expect(checkpoint.key).toBe('live-a');
+
+		const second = await collector.sweep({ batchSize: 1, maxObjectsToScan: 1 });
+		expect(second.scanned).toBe(1);
+		expect(listMock.mock.calls[1][0]).toEqual(expect.objectContaining({ startAfter: 'live-a' }));
+		expect(checkpoint.key).toBe('live-b');
+
+		const third = await collector.sweep({ batchSize: 1, maxObjectsToScan: 1 });
+		expect(third.deletedKeys).toEqual(['orphan-c']);
+		expect(third.nextStartAfter).toBe('');
+		expect(checkpoint.key).toBe('');
+	});
+
+	it('does not let a stale concurrent sweep regress a later checkpoint', async () => {
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async (): Promise<ListObjectsResult> => ({
+				objects: [{ key: 'early-key', size: 1, uploadedAt: twentyFiveHoursAgo }],
+				truncated: false
+			})),
+			deleteMany: vi.fn()
+		};
+		const checkpoint: OrphanSweepCheckpointStore & { key: string; rejected: number } = {
+			key: 'later-key',
+			rejected: 0,
+			async readLastObjectKey(): Promise<string> {
+				return '';
+			},
+			async compareAndSwapLastObjectKey(expected: string, next: string): Promise<boolean> {
+				if (this.key !== expected) {
+					this.rejected += 1;
+					return false;
+				}
+				this.key = next;
+				return true;
+			}
+		};
+		const collector = new OrphanCollector(
+			objects,
+			{ filterReferencedKeys: vi.fn(async () => new Set<string>(['early-key'])) },
+			() => now,
+			checkpoint
+		);
+
+		await collector.sweep({ batchSize: 1, maxObjectsToScan: 1 });
+		expect(checkpoint.key).toBe('later-key');
+		expect(checkpoint.rejected).toBe(1);
+	});
+
 	it('does not delete when the reference check fails', async () => {
 		const deleteManyMock = vi.fn(async () => {});
 		const objects: ObjectStore = {
@@ -256,6 +354,46 @@ describe('D1OrphanReferenceStore', () => {
 	});
 });
 
+describe('D1OrphanSweepCheckpointStore', () => {
+	it('reads an empty checkpoint as the start of the listing', async () => {
+		const first = vi.fn(async () => ({ key: '' }));
+		const bindMock = vi.fn(() => ({ first }));
+		const prepareMock = vi.fn(() => ({ bind: bindMock }));
+		const store = new D1OrphanSweepCheckpointStore({
+			prepare: prepareMock
+		} as unknown as D1Database);
+		await expect(store.readLastObjectKey()).resolves.toBe('');
+	});
+
+	it('rejects an unsafe stored key', async () => {
+		const first = vi.fn(async () => ({ key: '../escape.bin' }));
+		const store = new D1OrphanSweepCheckpointStore({
+			prepare: vi.fn(() => ({ bind: vi.fn(() => ({ first })) }))
+		} as unknown as D1Database);
+		await expect(store.readLastObjectKey()).rejects.toThrow('safe object key');
+	});
+
+	it('advances with compare-and-swap and rejects a stale writer', async () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		applyD1Migrations(sqlite);
+		const store = new D1OrphanSweepCheckpointStore(sqliteD1Database(sqlite));
+		try {
+			await expect(store.readLastObjectKey()).resolves.toBe('');
+			await expect(store.compareAndSwapLastObjectKey('', 'drafts/a.git.gz')).resolves.toBe(true);
+			await expect(store.compareAndSwapLastObjectKey('', 'drafts/b.git.gz')).resolves.toBe(false);
+			await expect(store.readLastObjectKey()).resolves.toBe('drafts/a.git.gz');
+			const [first, second] = await Promise.all([
+				store.compareAndSwapLastObjectKey('drafts/a.git.gz', 'drafts/c.git.gz'),
+				store.compareAndSwapLastObjectKey('drafts/a.git.gz', 'drafts/d.git.gz')
+			]);
+			expect([first, second].filter((won: boolean): boolean => won)).toHaveLength(1);
+			expect(['drafts/c.git.gz', 'drafts/d.git.gz']).toContain(await store.readLastObjectKey());
+		} finally {
+			sqlite.close();
+		}
+	});
+});
+
 describe('PostgresOrphanReferenceStore', () => {
 	it('returns empty set for empty keys without querying', async () => {
 		const sql = vi.fn();
@@ -267,3 +405,38 @@ describe('PostgresOrphanReferenceStore', () => {
 		expect(sql).not.toHaveBeenCalled();
 	});
 });
+
+describe('PostgresOrphanSweepCheckpointStore', () => {
+	it('compare-and-swaps only when the expected key still matches', async () => {
+		const sql = Object.assign(
+			vi.fn(async () => [{ key: 'drafts/next.git.gz' }]),
+			{}
+		);
+		const store = new PostgresOrphanSweepCheckpointStore(
+			sql as unknown as ConstructorParameters<typeof PostgresOrphanSweepCheckpointStore>[0]
+		);
+		await expect(store.compareAndSwapLastObjectKey('', 'drafts/next.git.gz')).resolves.toBe(true);
+		expect(sql).toHaveBeenCalledOnce();
+
+		sql.mockResolvedValueOnce([]);
+		await expect(store.compareAndSwapLastObjectKey('', 'drafts/stale.git.gz')).resolves.toBe(false);
+	});
+});
+
+function memoryCheckpoint(): OrphanSweepCheckpointStore & { key: string; rejected: number } {
+	return {
+		key: '',
+		rejected: 0,
+		async readLastObjectKey(): Promise<string> {
+			return this.key;
+		},
+		async compareAndSwapLastObjectKey(expected: string, next: string): Promise<boolean> {
+			if (this.key !== expected) {
+				this.rejected += 1;
+				return false;
+			}
+			this.key = next;
+			return true;
+		}
+	};
+}

@@ -23,6 +23,54 @@ export interface EnvelopeListPage {
 }
 
 /**
+ * Public create/list/get envelope JSON. Omits `repositoryArchiveKey` and any
+ * other object-store locator. `repositoryHead` and `sentCommitSha` are Git
+ * content identifiers used for pinning and concurrency; `repositoryArchiveSha256`
+ * is a content digest, not a storage key.
+ */
+export interface PublicEnvelope {
+	id: string;
+	organizationId: string;
+	title: string;
+	status: Envelope['status'];
+	repositoryGeneration: number;
+	repositoryHead: string | null;
+	repositoryArchiveSha256: string | null;
+	sentCommitSha: string | null;
+	fieldGeneration: number;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface PublicEnvelopeListPage {
+	items: readonly PublicEnvelope[];
+	nextCursor: string | null;
+}
+
+export function toPublicEnvelope(envelope: Envelope): PublicEnvelope {
+	return {
+		id: envelope.id,
+		organizationId: envelope.organizationId,
+		title: envelope.title,
+		status: envelope.status,
+		repositoryGeneration: envelope.repositoryGeneration,
+		repositoryHead: envelope.repositoryHead,
+		repositoryArchiveSha256: envelope.repositoryArchiveSha256,
+		sentCommitSha: envelope.sentCommitSha,
+		fieldGeneration: envelope.fieldGeneration,
+		createdAt: envelope.createdAt,
+		updatedAt: envelope.updatedAt
+	};
+}
+
+export function toPublicEnvelopeListPage(page: EnvelopeListPage): PublicEnvelopeListPage {
+	return {
+		items: page.items.map(toPublicEnvelope),
+		nextCursor: page.nextCursor
+	};
+}
+
+/**
  * `envelopeId` and `auditEventId` are freshly minted UUIDv7 candidates for a
  * first attempt. They are not derived from the idempotency key, so a store must
  * resolve a replay from its durable idempotency record and return the envelope

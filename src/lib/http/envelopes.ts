@@ -8,6 +8,7 @@ import type {
 	EnvelopeListQuery,
 	EnvelopeRequestActor
 } from '$lib/application/envelopes/model';
+import { toPublicEnvelope, toPublicEnvelopeListPage } from '$lib/application/envelopes/model';
 import { signkitIdentifierSchema } from './identifier-schema';
 import {
 	authorizeScopedOrganizationRequest,
@@ -240,7 +241,7 @@ export function createEnvelopeHttpHandlers(
 				location: `/api/v1/envelopes/${result.envelope.id}`
 			});
 			if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
-			return new Response(JSON.stringify({ envelope: result.envelope }), {
+			return new Response(JSON.stringify({ envelope: toPublicEnvelope(result.envelope) }), {
 				status: 201,
 				headers
 			});
@@ -289,7 +290,7 @@ export function createEnvelopeHttpHandlers(
 		};
 		try {
 			const page: EnvelopeListPage = await application.list(actor, query);
-			return new Response(JSON.stringify(page), {
+			return new Response(JSON.stringify(toPublicEnvelopeListPage(page)), {
 				status: 200,
 				headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
 			});
@@ -348,7 +349,7 @@ export function createEnvelopeHttpHandlers(
 			}
 			return new Response(
 				JSON.stringify({
-					envelope: detail.envelope,
+					envelope: toPublicEnvelope(detail.envelope),
 					recipients: detail.recipients,
 					readyAuditEventId: detail.readyAuditEventId,
 					fields: detail.fields
