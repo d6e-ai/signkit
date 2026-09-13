@@ -24,8 +24,11 @@ import {
 import {
 	WebhookTargetRejectedError,
 	assertWebhookHttpsUrl,
-	assertWebhookTargetSafe
+	assertWebhookTargetSafe,
+	createDrainBatchDnsCache,
+	type WebhookDnsResolver
 } from '$lib/security/webhook-url';
+import type { WebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
 
 const MAX_CREDENTIAL_ATTEMPTS: number = 3;
 
@@ -94,12 +97,14 @@ export interface WebhookApplicationPort {
 
 export class WebhookApplication implements WebhookApplicationPort {
 	readonly #store: WebhookStore;
+	readonly #sealer: WebhookSigningSecretSealer;
 	readonly #newId: UuidV7Generator;
 	readonly #now: () => Date;
 	readonly #dispatch: typeof dispatchWebhook;
 
 	constructor(
 		store: WebhookStore,
+		sealer: WebhookSigningSecretSealer,
 		options: {
 			newId?: UuidV7Generator;
 			now?: () => Date;
@@ -107,6 +112,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 		} = {}
 	) {
 		this.#store = store;
+		this.#sealer = sealer;
 		this.#newId = options.newId ?? newUuidV7;
 		this.#now = options.now ?? ((): Date => new Date());
 		this.#dispatch = options.dispatch ?? dispatchWebhook;
@@ -130,8 +136,13 @@ export class WebhookApplication implements WebhookApplicationPort {
 
 		for (let attempt = 0; attempt < MAX_CREDENTIAL_ATTEMPTS; attempt += 1) {
 			const issued = await issueWebhookSecret();
+			const endpointId: string = this.#newId();
+			const sealed = await this.#sealer.seal(issued.secret, {
+				organizationId: actor.organizationId,
+				endpointId
+			});
 			const result: CreateWebhookEndpointResult = await this.#store.createEndpoint({
-				id: this.#newId(),
+				id: endpointId,
 				organizationId: actor.organizationId,
 				actorId: actor.id,
 				idempotencyKey: input.idempotencyKey,
@@ -140,7 +151,8 @@ export class WebhookApplication implements WebhookApplicationPort {
 				description,
 				eventsJson,
 				secretHash: issued.secretHash,
-				signingSecret: issued.secret,
+				signingSecret: sealed.sealedSigningSecret,
+				sealingKeyId: sealed.sealingKeyId,
 				secretPrefix: issued.secretPrefix,
 				createdAt
 			});
@@ -214,6 +226,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 		const staleBefore: string = new Date(
 			claimedAt.valueOf() - WEBHOOK_CLAIM_LEASE_MS
 		).toISOString();
+		await this.#resealStaleSecrets(boundWebhookClaimLimit(limit));
 		const rows: readonly WebhookOutboxRow[] = await this.#store.claimPendingDeliveries({
 			claimToken: newOpaqueToken(),
 			claimedAt: claimedAtIso,
@@ -223,8 +236,9 @@ export class WebhookApplication implements WebhookApplicationPort {
 		let delivered = 0;
 		let retried = 0;
 		let failed = 0;
+		const resolveAddresses: WebhookDnsResolver = createDrainBatchDnsCache();
 		for (const row of rows) {
-			const outcome = await this.#deliverOne(row, claimedAt);
+			const outcome = await this.#deliverOne(row, claimedAt, resolveAddresses);
 			if (outcome === 'delivered') delivered += 1;
 			else if (outcome === 'retried') retried += 1;
 			else failed += 1;
@@ -232,9 +246,37 @@ export class WebhookApplication implements WebhookApplicationPort {
 		return { claimed: rows.length, delivered, retried, failed };
 	}
 
+	async #resealStaleSecrets(limit: number): Promise<void> {
+		const activeKeyId: string = await this.#sealer.currentSealingKeyId();
+		const rows = await this.#store.listStaleSigningSecrets(activeKeyId, limit);
+		for (const row of rows) {
+			try {
+				const plaintext: string = await this.#sealer.open(
+					row.signingSecret,
+					{ organizationId: row.organizationId, endpointId: row.endpointId },
+					row.sealingKeyId
+				);
+				const sealed = await this.#sealer.reseal(plaintext, {
+					organizationId: row.organizationId,
+					endpointId: row.endpointId
+				});
+				await this.#store.resealSigningSecret({
+					organizationId: row.organizationId,
+					endpointId: row.endpointId,
+					previousSealingKeyId: row.sealingKeyId,
+					signingSecret: sealed.sealedSigningSecret,
+					sealingKeyId: sealed.sealingKeyId
+				});
+			} catch {
+				continue;
+			}
+		}
+	}
+
 	async #deliverOne(
 		row: WebhookOutboxRow,
-		claimedAt: Date
+		claimedAt: Date,
+		resolveAddresses: WebhookDnsResolver
 	): Promise<'delivered' | 'retried' | 'failed'> {
 		const timestamp: string = String(Math.floor(claimedAt.valueOf() / 1000));
 		try {
@@ -252,15 +294,23 @@ export class WebhookApplication implements WebhookApplicationPort {
 				});
 				return 'failed';
 			}
-			const result = await this.#dispatch({
-				url: row.endpointUrl,
-				secret: row.signingSecret,
-				timestamp,
-				body: row.payloadJson,
-				eventType: row.eventType,
-				endpointId: row.endpointId,
-				auditEventId: row.auditEventId
-			});
+			const secret: string = await this.#sealer.open(
+				row.signingSecret,
+				{ organizationId: row.organizationId, endpointId: row.endpointId },
+				row.sealingKeyId
+			);
+			const result = await this.#dispatch(
+				{
+					url: row.endpointUrl,
+					secret,
+					timestamp,
+					body: row.payloadJson,
+					eventType: row.eventType,
+					endpointId: row.endpointId,
+					auditEventId: row.auditEventId
+				},
+				resolveAddresses
+			);
 			if (result.ok) {
 				await this.#store.completeDelivery({
 					organizationId: row.organizationId,
@@ -316,12 +366,13 @@ export interface WebhookDispatchRequest {
 }
 
 export async function dispatchWebhook(
-	request: WebhookDispatchRequest
+	request: WebhookDispatchRequest,
+	resolveAddresses?: WebhookDnsResolver
 ): Promise<
 	| { ok: true; status: number }
 	| { ok: false; retryable: boolean; status: number | null; errorCode: string }
 > {
-	await assertWebhookTargetSafe(request.url);
+	await assertWebhookTargetSafe(request.url, resolveAddresses);
 	const signature: string = await signWebhookPayload(
 		request.secret,
 		request.timestamp,

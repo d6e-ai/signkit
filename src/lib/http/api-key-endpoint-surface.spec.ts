@@ -6,6 +6,8 @@ import { createApiKeyHttpHandlers } from './api-keys';
 import { createApiKeyRevokeHandler } from './api-key-revoke';
 import { createApiKeyOrganizationGrantHandlers } from './api-key-organization-grants';
 import { createCompletionArtifactStatusHandler } from './completion-artifact-status';
+import { createCompletionEvidenceHandler } from './completion-evidence';
+import { createCompletionPdfHandler } from './completion-pdf';
 import { createDeliveryStatusHandler } from './delivery-status';
 import { createDraftHttpHandlers } from './drafts';
 import { createDocxExportHandler } from './docx-export';
@@ -285,13 +287,69 @@ function completionArtifactCase(): ReadCase {
 	};
 }
 
+function completionEvidenceCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/evidence',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/evidence`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const organizationIds: string[] = [];
+			const handler: RequestHandler = createCompletionEvidenceHandler(() => ({
+				readEvidence: vi.fn(async (organizationId: string) => {
+					organizationIds.push(organizationId);
+					return null;
+				}),
+				readPdf: vi.fn(),
+				envelopeExists: vi.fn(async () => false)
+			}));
+			const response: Response = await handler(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/evidence`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, organizationIds };
+		}
+	};
+}
+
+function completionPdfCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/pdf',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const organizationIds: string[] = [];
+			const handler: RequestHandler = createCompletionPdfHandler(() => ({
+				readEvidence: vi.fn(),
+				readPdf: vi.fn(async (organizationId: string) => {
+					organizationIds.push(organizationId);
+					return null;
+				}),
+				envelopeExists: vi.fn(async () => false)
+			}));
+			const response: Response = await handler(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, organizationIds };
+		}
+	};
+}
+
 const READ_CASES: readonly ReadCase[] = [
 	envelopeListCase(),
 	envelopeGetCase(),
 	draftGetCase(),
 	docxGetCase(),
 	deliveriesCase(),
-	completionArtifactCase()
+	completionArtifactCase(),
+	completionEvidenceCase(),
+	completionPdfCase()
 ];
 
 describe('API key read surface', () => {

@@ -11,7 +11,11 @@ import {
 } from '$lib/application/drafts/draft-persistence';
 import { DocxImportService } from '$lib/application/documents/docx-import-service';
 import { MAX_DRAFT_GENERATION } from '$lib/domain/draft';
-import { DocxImportError, MAX_DOCX_INPUT_BYTES } from '$lib/adapters/documents/docx-import';
+import {
+	DocxImportError,
+	resolveDocxImportLimits,
+	type DocxImportLimits
+} from '$lib/adapters/documents/docx-import';
 import {
 	authorizeScopedOrganizationRequest,
 	type AuthorizedApiActor
@@ -134,7 +138,11 @@ async function readBoundedBytes(
 	return { ok: true, bytes };
 }
 
-async function parseImport(request: Request, url: URL): Promise<ParsedImport> {
+async function parseImport(
+	request: Request,
+	url: URL,
+	limits: DocxImportLimits
+): Promise<ParsedImport> {
 	const type: string = mediaType(request);
 	if (type === 'multipart/form-data') {
 		let form: FormData;
@@ -166,10 +174,10 @@ async function parseImport(request: Request, url: URL): Promise<ParsedImport> {
 				})
 			};
 		}
-		if (fileValue.size > MAX_DOCX_INPUT_BYTES) {
+		if (fileValue.size > limits.maxInputBytes) {
 			return {
 				ok: false,
-				response: tooLarge(url.pathname)
+				response: tooLarge(url.pathname, limits.maxInputBytes)
 			};
 		}
 		const pathResult = markdownPathSchema.safeParse(form.get('targetPath'));
@@ -222,9 +230,9 @@ async function parseImport(request: Request, url: URL): Promise<ParsedImport> {
 				})
 			};
 		}
-		const bodyResult = await readBoundedBytes(request, MAX_DOCX_INPUT_BYTES);
+		const bodyResult = await readBoundedBytes(request, limits.maxInputBytes);
 		if (!bodyResult.ok && bodyResult.reason === 'too_large') {
-			return { ok: false, response: tooLarge(url.pathname) };
+			return { ok: false, response: tooLarge(url.pathname, limits.maxInputBytes) };
 		}
 		if (!bodyResult.ok) {
 			return {
@@ -259,12 +267,12 @@ async function parseImport(request: Request, url: URL): Promise<ParsedImport> {
 	};
 }
 
-function tooLarge(instance: string): Response {
+function tooLarge(instance: string, maxBytes: number): Response {
 	return problemResponse({
 		type: 'urn:signkit:problem:request-body-too-large',
 		title: 'Request body too large',
 		status: 413,
-		detail: `The uploaded DOCX file must not exceed ${MAX_DOCX_INPUT_BYTES} bytes.`,
+		detail: `The uploaded DOCX file must not exceed ${maxBytes} bytes.`,
 		instance
 	});
 }
@@ -328,7 +336,8 @@ export function createDocxImportHandler(
 			});
 		}
 
-		const parsed: ParsedImport = await parseImport(request, url);
+		const limits: DocxImportLimits = resolveDocxImportLimits(platform);
+		const parsed: ParsedImport = await parseImport(request, url, limits);
 		if (!parsed.ok) return parsed.response;
 
 		let persistence: Pick<DraftPersistenceService, 'commit'> | null;
@@ -354,7 +363,8 @@ export function createDocxImportHandler(
 				expectedGeneration: parsed.expectedGeneration,
 				actor: draftActor(authorized),
 				idempotencyKey: idempotencyResult.data,
-				docxBytes: parsed.docxBytes
+				docxBytes: parsed.docxBytes,
+				limits
 			});
 			const revision = {
 				generation: result.revision.generation,
@@ -371,7 +381,7 @@ export function createDocxImportHandler(
 		} catch (error: unknown) {
 			if (error instanceof DocxImportError) {
 				if (error.code === 'too_large' || error.code === 'entry_too_large') {
-					return tooLarge(url.pathname);
+					return tooLarge(url.pathname, limits.maxInputBytes);
 				}
 				return problemResponse({
 					type: 'urn:signkit:problem:validation-failed',

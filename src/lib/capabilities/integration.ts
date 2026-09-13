@@ -18,7 +18,11 @@ export const integrationCapabilities = {
 			'/api/v1/envelopes/{envelopeId}/draft',
 			'/api/v1/envelopes/{envelopeId}/docx',
 			'/api/v1/envelopes/{envelopeId}/deliveries',
-			'/api/v1/envelopes/{envelopeId}/completion-artifact'
+			'/api/v1/envelopes/{envelopeId}/completion-artifact',
+			'/api/v1/envelopes/{envelopeId}/evidence',
+			'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
+			'/api/v1/envelopes/{envelopeId}/pdf',
+			'/api/v1/envelopes/{envelopeId}/completion-artifact/pdf'
 		],
 		writeEndpoints: {
 			'drafts:write': [
@@ -72,7 +76,8 @@ export const integrationCapabilities = {
 			'no-loopback',
 			'no-private',
 			'no-link-local',
-			'dns-re-resolution'
+			'no-multicast',
+			'hostname-memoized-dns'
 		]
 	},
 	openapi: {

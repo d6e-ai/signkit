@@ -3,6 +3,12 @@
 -- truthfully stamp envelope.voided. SQLite cannot ALTER a CHECK, so the
 -- table is rebuilt. DROP TABLE also drops envelope_void_command_publish;
 -- recreate it with the same hash_version = 2 semantics as 0023.
+--
+-- No inbound FKs reference envelope_void_command, but D1 still applies this
+-- file inside a transaction. Defer FK checks until COMMIT so DROP/rename is
+-- safe the same way 0036 is (PRAGMA foreign_keys is a no-op in a transaction).
+
+PRAGMA defer_foreign_keys = ON;
 
 CREATE TABLE envelope_void_command_next (
   organization_id TEXT NOT NULL,

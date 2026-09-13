@@ -1,7 +1,13 @@
 import { zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { exportMarkdownToDocx } from './docx-export';
-import { DocxImportError, importDocxToMarkdown, MAX_DOCX_INPUT_BYTES } from './docx-import';
+import {
+	CLOUDFLARE_DOCX_IMPORT_LIMITS,
+	DocxImportError,
+	importDocxToMarkdown,
+	MAX_DOCX_INPUT_BYTES,
+	resolveDocxImportLimits
+} from './docx-import';
 
 const COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567';
 
@@ -139,5 +145,45 @@ describe('importDocxToMarkdown', () => {
 			expect(error).toBeInstanceOf(DocxImportError);
 			expect((error as DocxImportError).code).toBe('invalid_xml');
 		}
+	});
+
+	it('selects Cloudflare bounds when the D1 binding is present', () => {
+		expect(resolveDocxImportLimits({ env: { DB: {} } }).maxInputBytes).toBe(
+			CLOUDFLARE_DOCX_IMPORT_LIMITS.maxInputBytes
+		);
+		expect(resolveDocxImportLimits(undefined).maxInputBytes).toBe(MAX_DOCX_INPUT_BYTES);
+	});
+
+	it('rejects uploads that fit Node but exceed the Cloudflare input bound', () => {
+		const oversized = new Uint8Array(CLOUDFLARE_DOCX_IMPORT_LIMITS.maxInputBytes + 1);
+		oversized[0] = 0x50;
+		oversized[1] = 0x4b;
+		try {
+			importDocxToMarkdown(oversized, CLOUDFLARE_DOCX_IMPORT_LIMITS);
+			expect.unreachable('expected importDocxToMarkdown to throw');
+		} catch (error) {
+			expect(error).toBeInstanceOf(DocxImportError);
+			expect((error as DocxImportError).code).toBe('too_large');
+		}
+	});
+
+	it('rejects a ZIP whose entry count exceeds the Cloudflare bound while remaining under Node', () => {
+		const files: Record<string, Uint8Array> = {
+			'word/document.xml': new TextEncoder().encode(
+				'<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hi</w:t></w:r></w:p></w:body></w:document>'
+			)
+		};
+		for (let index = 0; index < CLOUDFLARE_DOCX_IMPORT_LIMITS.maxZipEntries + 1; index += 1) {
+			files[`junk/${index}.txt`] = new Uint8Array([0]);
+		}
+		const docx = zipSync(files);
+		try {
+			importDocxToMarkdown(docx, CLOUDFLARE_DOCX_IMPORT_LIMITS);
+			expect.unreachable('expected Cloudflare-bounded import to throw');
+		} catch (error) {
+			expect(error).toBeInstanceOf(DocxImportError);
+			expect((error as DocxImportError).code).toBe('too_many_entries');
+		}
+		expect(importDocxToMarkdown(docx)).toContain('Hi');
 	});
 });

@@ -5,7 +5,10 @@ import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-s
 import {
 	MAX_SIGNATURE_ASSET_BYTES,
 	SignatureAssetApplication,
-	signatureAssetKey
+	parseSignatureAssetKey,
+	referencedSignatureAssetKeys,
+	signatureAssetKey,
+	signatureAssetRefValueJson
 } from './signature-asset';
 
 const context: RecipientSigningContext = {
@@ -166,5 +169,45 @@ describe('SignatureAssetApplication', () => {
 			pngBytes: pngBytes()
 		});
 		expect(result).toEqual({ outcome: 'integrity_error' });
+	});
+});
+
+describe('signature asset object keys', () => {
+	const sha256: string = 'a'.repeat(64);
+	const key: string = signatureAssetKey(
+		context.organizationId,
+		context.envelopeId,
+		context.recipientId,
+		sha256
+	);
+
+	it('round-trips a classified signature-assets/v1 key', () => {
+		expect(parseSignatureAssetKey(key)).toEqual({
+			organizationId: context.organizationId,
+			envelopeId: context.envelopeId,
+			recipientId: context.recipientId,
+			sha256
+		});
+	});
+
+	it('classifies a field_value sig:sha256 reference as the reconstructed object key', () => {
+		const referenced = referencedSignatureAssetKeys(
+			[key, 'drafts/unrelated.git.gz'],
+			[
+				{
+					organizationId: context.organizationId,
+					envelopeId: context.envelopeId,
+					recipientId: context.recipientId,
+					valueJson: signatureAssetRefValueJson(sha256)
+				},
+				{
+					organizationId: 'org-other',
+					envelopeId: context.envelopeId,
+					recipientId: context.recipientId,
+					valueJson: signatureAssetRefValueJson(sha256)
+				}
+			]
+		);
+		expect([...referenced]).toEqual([key]);
 	});
 });

@@ -69,13 +69,30 @@ export async function resolvePublicWebhookAddresses(hostname: string): Promise<r
 	return assertPublicAddresses(await resolveViaDoh(hostname));
 }
 
-export async function assertWebhookTargetSafe(raw: string): Promise<URL> {
+export type WebhookDnsResolver = (hostname: string) => Promise<readonly string[]>;
+
+/**
+ * One resolve per hostname per drain batch. Fail-closed SSRF still runs on the
+ * resolved set. Residual limitation: this is not a double-resolve rebinding
+ * detector, so DNS can still change between this lookup and `fetch`.
+ */
+export function createDrainBatchDnsCache(): WebhookDnsResolver {
+	const memo: Map<string, Promise<readonly string[]>> = new Map();
+	return (hostname: string): Promise<readonly string[]> => {
+		const cached: Promise<readonly string[]> | undefined = memo.get(hostname);
+		if (cached !== undefined) return cached;
+		const pending: Promise<readonly string[]> = resolvePublicWebhookAddresses(hostname);
+		memo.set(hostname, pending);
+		return pending;
+	};
+}
+
+export async function assertWebhookTargetSafe(
+	raw: string,
+	resolveAddresses: WebhookDnsResolver = resolvePublicWebhookAddresses
+): Promise<URL> {
 	const url: URL = assertWebhookHttpsUrl(raw);
-	const first: readonly string[] = await resolvePublicWebhookAddresses(url.hostname);
-	const second: readonly string[] = await resolvePublicWebhookAddresses(url.hostname);
-	if (!sameAddressSet(first, second)) {
-		throw new WebhookTargetRejectedError('Webhook hostname DNS re-resolution disagreed');
-	}
+	await resolveAddresses(url.hostname);
 	return url;
 }
 
@@ -163,7 +180,7 @@ function isBlockedIpv4(address: string): boolean {
 		return true;
 	}
 	const [a, b] = parts;
-	if (a === 0 || a === 10 || a === 127 || a === 224 || a >= 240) return true;
+	if (a === 0 || a === 10 || a === 127 || a >= 224) return true;
 	if (a === 169 && b === 254) return true;
 	if (a === 172 && b >= 16 && b <= 31) return true;
 	if (a === 192 && b === 168) return true;
@@ -196,13 +213,4 @@ function isBlockedIpv6(address: string): boolean {
 	if (mappedIpv4 !== null) return isBlockedIpv4(mappedIpv4[1]);
 	if (normalized.startsWith('::ffff:')) return true;
 	return false;
-}
-
-function sameAddressSet(left: readonly string[], right: readonly string[]): boolean {
-	if (left.length !== right.length) return false;
-	const expected: Set<string> = new Set(left);
-	for (const address of right) {
-		if (!expected.has(address)) return false;
-	}
-	return true;
 }

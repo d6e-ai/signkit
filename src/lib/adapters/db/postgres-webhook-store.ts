@@ -13,11 +13,13 @@ import {
 	type FailWebhookDeliveryCommand,
 	type RevokeWebhookEndpointCommand,
 	type RevokeWebhookEndpointResult,
+	type ResealWebhookSigningSecretCommand,
 	type WebhookDeliveryLogPage,
 	type WebhookEndpointMetadata,
 	type WebhookListPage,
 	type WebhookListQuery,
 	type WebhookOutboxRow,
+	type WebhookSigningSecretRow,
 	type WebhookStatus,
 	type WebhookStore
 } from '$lib/ports/webhook-store';
@@ -64,6 +66,7 @@ interface OutboxRow {
 	lockedAt: Date | string | null;
 	endpointUrl: string;
 	signingSecret: string;
+	sealingKeyId: string | null;
 }
 
 interface LogRow {
@@ -126,11 +129,11 @@ export class PostgresWebhookStore implements WebhookStore {
 				await sql`
 					INSERT INTO webhook_endpoint (
 						id, organization_id, url, description, status, events_json,
-						secret_hash, signing_secret, secret_prefix, created_at, created_by_user_id
+						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
 					) VALUES (
 						${command.id}, ${command.organizationId}, ${command.url}, ${command.description},
 						'active', ${command.eventsJson}, ${command.secretHash}, ${command.signingSecret},
-						${command.secretPrefix}, ${command.createdAt}::timestamptz, ${command.actorId}
+						${command.sealingKeyId}, ${command.secretPrefix}, ${command.createdAt}::timestamptz, ${command.actorId}
 					)`;
 				await sql`
 					INSERT INTO webhook_endpoint_command (
@@ -309,7 +312,8 @@ export class PostgresWebhookStore implements WebhookStore {
 				outbox.claim_token AS "claimToken",
 				outbox.locked_at AS "lockedAt",
 				endpoint.url AS "endpointUrl",
-				endpoint.signing_secret AS "signingSecret"`;
+				endpoint.signing_secret AS "signingSecret",
+				endpoint.sealing_key_id AS "sealingKeyId"`;
 		return rows.map(outboxFromRow);
 	}
 
@@ -333,7 +337,8 @@ export class PostgresWebhookStore implements WebhookStore {
 				outbox.claim_token AS "claimToken",
 				outbox.locked_at AS "lockedAt",
 				endpoint.url AS "endpointUrl",
-				endpoint.signing_secret AS "signingSecret"
+				endpoint.signing_secret AS "signingSecret",
+				endpoint.sealing_key_id AS "sealingKeyId"
 			FROM webhook_outbox outbox
 			INNER JOIN webhook_endpoint endpoint
 				ON endpoint.organization_id = outbox.organization_id
@@ -405,6 +410,42 @@ export class PostgresWebhookStore implements WebhookStore {
 				AND endpoint_id = ${command.endpointId}
 				AND audit_event_id = ${command.auditEventId}`;
 		return { outcome: 'failed' };
+	}
+
+	async listStaleSigningSecrets(
+		activeSealingKeyId: string,
+		limit: number
+	): Promise<readonly WebhookSigningSecretRow[]> {
+		const rows: WebhookSigningSecretRow[] = await this.#sql<WebhookSigningSecretRow[]>`
+			SELECT organization_id AS "organizationId", id AS "endpointId",
+				signing_secret AS "signingSecret", sealing_key_id AS "sealingKeyId"
+			FROM webhook_endpoint
+			WHERE sealing_key_id IS NULL OR sealing_key_id <> ${activeSealingKeyId}
+			ORDER BY created_at ASC, id ASC
+			LIMIT ${limit}`;
+		return rows;
+	}
+
+	async resealSigningSecret(
+		command: ResealWebhookSigningSecretCommand
+	): Promise<{ outcome: 'resealed' | 'stale' }> {
+		const rows: { endpointId: string }[] =
+			command.previousSealingKeyId === null
+				? await this.#sql<{ endpointId: string }[]>`
+					UPDATE webhook_endpoint
+					SET signing_secret = ${command.signingSecret}, sealing_key_id = ${command.sealingKeyId}
+					WHERE organization_id = ${command.organizationId}
+						AND id = ${command.endpointId}
+						AND sealing_key_id IS NULL
+					RETURNING id AS "endpointId"`
+				: await this.#sql<{ endpointId: string }[]>`
+					UPDATE webhook_endpoint
+					SET signing_secret = ${command.signingSecret}, sealing_key_id = ${command.sealingKeyId}
+					WHERE organization_id = ${command.organizationId}
+						AND id = ${command.endpointId}
+						AND sealing_key_id = ${command.previousSealingKeyId}
+					RETURNING id AS "endpointId"`;
+		return rows.length === 1 ? { outcome: 'resealed' } : { outcome: 'stale' };
 	}
 
 	async listDeliveryLogs(
@@ -510,6 +551,7 @@ function outboxFromRow(row: OutboxRow): WebhookOutboxRow {
 		payloadJson: row.payloadJson,
 		endpointUrl: row.endpointUrl,
 		signingSecret: row.signingSecret,
+		sealingKeyId: row.sealingKeyId,
 		claimToken: row.claimToken,
 		status: 'processing',
 		attempts: row.attempts,

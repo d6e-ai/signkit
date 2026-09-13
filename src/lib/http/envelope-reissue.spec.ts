@@ -86,6 +86,37 @@ describe('envelope reissue HTTP handler', () => {
 		expect(resolver).not.toHaveBeenCalled();
 	});
 
+	it('refuses an authenticated API key because reissue is session-only', async () => {
+		const resolver: EnvelopeReissueApplicationResolver = vi.fn(() => null);
+		const response: Response = await createEnvelopeReissueHandler(resolver)(
+			event({
+				locals: {
+					...locals(),
+					apiKeyAuthentication: {
+						state: 'authenticated',
+						principal: {
+							apiKeyId: recipientId,
+							keyPrefix: 'signkit_abcdefgh',
+							ownerUserId: 'user-1',
+							organizationId,
+							organizationName: 'Workspace',
+							scopes: ['envelopes:send', 'drafts:write', 'envelopes:read'],
+							expiresAt: '2026-12-11T00:00:00.000Z'
+						}
+					}
+				},
+				body: JSON.stringify({}),
+				headers: { 'idempotency-key': 'reissue-1' },
+				recipientId
+			})
+		);
+		expect(response.status).toBe(403);
+		expect(await response.json()).toMatchObject({
+			type: 'urn:signkit:problem:api-key-not-permitted'
+		});
+		expect(resolver).not.toHaveBeenCalled();
+	});
+
 	it('requires a UUID envelope and visible-ASCII idempotency key', async () => {
 		const handler = createEnvelopeReissueHandler(() => application());
 		const invalidEnv: Response = await handler(

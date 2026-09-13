@@ -5,6 +5,7 @@ import type {
 	CommitDraftResult
 } from '$lib/application/drafts/draft-persistence';
 import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
+import { CLOUDFLARE_DOCX_IMPORT_LIMITS } from '$lib/adapters/documents/docx-import';
 import { DocxImportService } from '$lib/application/documents/docx-import-service';
 import { createDocxImportHandler } from './docx-import';
 import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
@@ -146,6 +147,35 @@ describe('DOCX import HTTP handler', () => {
 			})
 		);
 		expect(response.status).toBe(400);
+		expect(commit).not.toHaveBeenCalled();
+	});
+
+	it('applies the Cloudflare input bound when the D1 binding is present', async () => {
+		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
+			committed()
+		);
+		const oversized = new Uint8Array(CLOUDFLARE_DOCX_IMPORT_LIMITS.maxInputBytes + 1);
+		oversized[0] = 0x50;
+		oversized[1] = 0x4b;
+		const response: Response = await createDocxImportHandler(() => ({ commit }))(
+			createHttpRequestEvent({
+				pathname: `${pathname}?targetPath=documents/agreement.md&expectedGeneration=0`,
+				method: 'POST',
+				locals: locals(),
+				params: { envelopeId },
+				platform: { env: { DB: {} as D1Database } } as App.Platform,
+				headers: {
+					'idempotency-key': 'import-cf-bound',
+					'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+				},
+				body: requestBody(oversized)
+			})
+		);
+		expect(response.status).toBe(413);
+		expect(await response.json()).toMatchObject({
+			type: 'urn:signkit:problem:request-body-too-large',
+			detail: `The uploaded DOCX file must not exceed ${CLOUDFLARE_DOCX_IMPORT_LIMITS.maxInputBytes} bytes.`
+		});
 		expect(commit).not.toHaveBeenCalled();
 	});
 });

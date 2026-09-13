@@ -1,9 +1,10 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
-import type {
-	CompletionEvidenceApplicationPort,
-	CompletionEvidenceResult,
-	CompletionPdfResult
+import {
+	CompletionEvidenceReadError,
+	type CompletionEvidenceApplicationPort,
+	type CompletionEvidenceResult,
+	type CompletionPdfResult
 } from '$lib/application/completion-artifacts/completion-evidence-service';
 import { createCompletionEvidenceHandler } from './completion-evidence';
 import { createCompletionPdfHandler } from './completion-pdf';
@@ -162,6 +163,29 @@ describe('Completion Evidence HTTP Handler', () => {
 		const bodyEnvMissing = (await resEnvMissing.json()) as { type: string };
 		expect(bodyEnvMissing.type).toBe('urn:signkit:problem:envelope-not-found');
 	});
+
+	it('logs a stable error name and code without object keys when evidence read fails', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const leakedKey =
+			'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/abc.json.gz';
+		const handler = createCompletionEvidenceHandler(() =>
+			mockService({
+				readEvidence: async () => {
+					throw new CompletionEvidenceReadError('artifact_object_missing');
+				}
+			})
+		);
+		const response = await handler(event({ pathname: `/api/v1/envelopes/${envelopeId}/evidence` }));
+		expect(response.status).toBe(503);
+		const logged = String(errorSpy.mock.calls[0]?.[0]);
+		expect(logged).toContain('completion_evidence_failed');
+		expect(logged).toContain('CompletionEvidenceReadError');
+		expect(logged).toContain('artifact_object_missing');
+		expect(logged).not.toContain('completion-artifacts/');
+		expect(logged).not.toContain(leakedKey);
+		expect(logged).not.toContain('"message"');
+		errorSpy.mockRestore();
+	});
 });
 
 describe('Completion PDF HTTP Handler', () => {
@@ -230,5 +254,25 @@ describe('Completion PDF HTTP Handler', () => {
 		expect(resEnvMissing.status).toBe(404);
 		const bodyEnvMissing = (await resEnvMissing.json()) as { type: string };
 		expect(bodyEnvMissing.type).toBe('urn:signkit:problem:envelope-not-found');
+	});
+
+	it('logs a stable error name and code without object keys when PDF read fails', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const handler = createCompletionPdfHandler(() =>
+			mockService({
+				readPdf: async () => {
+					throw new CompletionEvidenceReadError('pdf_object_missing');
+				}
+			})
+		);
+		const response = await handler(event({ pathname: `/api/v1/envelopes/${envelopeId}/pdf` }));
+		expect(response.status).toBe(503);
+		const logged = String(errorSpy.mock.calls[0]?.[0]);
+		expect(logged).toContain('completion_pdf_failed');
+		expect(logged).toContain('CompletionEvidenceReadError');
+		expect(logged).toContain('pdf_object_missing');
+		expect(logged).not.toContain('completion-artifacts/');
+		expect(logged).not.toContain('"message"');
+		errorSpy.mockRestore();
 	});
 });

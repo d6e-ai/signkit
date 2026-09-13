@@ -151,7 +151,7 @@ Authoring and send/void mutations. JSON from `--file` (default stdin). Flags ove
 
 ### `signkit envelopes import-docx <ENVELOPE_ID>`
 
-Converts a bounded DOCX file into one Markdown draft commit (`drafts:write`). Reads a regular file or stdin (`--file`, default `-`), refuses symbolic links, and caps input at 20 MiB. Requires `--target-path documents/....md`, `--expected-generation`, and `Idempotency-Key`.
+Converts a bounded DOCX file into one Markdown draft commit (`drafts:write`). Reads a regular file or stdin (`--file`, default `-`), refuses symbolic links, and caps input at the server's deploy-target bound (Node 20 MiB; Cloudflare Workers 2 MiB). Requires `--target-path documents/....md`, `--expected-generation`, and `Idempotency-Key`.
 
 ```sh
 signkit --base-url https://signkit.example.com --org org_12345 \

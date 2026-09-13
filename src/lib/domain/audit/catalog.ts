@@ -31,7 +31,12 @@ export const AUDIT_EVENT_CATALOG: Readonly<
 	'recipient.approved': { actorTypes: ['recipient'] },
 	'recipient.declined': { actorTypes: ['recipient'] },
 	'envelope.completed': { actorTypes: ['recipient'] },
-	'envelope.completion_artifact_published': { actorTypes: ['system'] }
+	'envelope.completion_artifact_published': { actorTypes: ['system'] },
+	// D1 0036 / Postgres 0034. HTTP reissue is session-only (user); agent is
+	// catalogued for hash v2 so a later agent writer cannot mint an invisible actor.
+	'recipient.capability_reissued': { actorTypes: ['user', 'agent'] },
+	// D1 0034. System expiry drain; webhook-subscribable like other catalog events.
+	'envelope.expired': { actorTypes: ['system'] }
 };
 
 /**

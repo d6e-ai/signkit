@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	WebhookTargetRejectedError,
 	assertWebhookHttpsUrl,
+	assertWebhookTargetSafe,
+	createDrainBatchDnsCache,
 	isBlockedIpAddress,
 	resolvePublicWebhookAddresses
 } from './webhook-url';
@@ -43,6 +45,9 @@ describe('isBlockedIpAddress', () => {
 		'169.254.1.1',
 		'172.16.0.2',
 		'100.64.0.1',
+		'224.0.0.1',
+		'225.1.2.3',
+		'239.255.255.255',
 		'::1',
 		'fc00::1',
 		'fe80::1'
@@ -52,6 +57,7 @@ describe('isBlockedIpAddress', () => {
 
 	it('allows a public IPv4 address', () => {
 		expect(isBlockedIpAddress('1.1.1.1')).toBe(false);
+		expect(isBlockedIpAddress('223.255.255.255')).toBe(false);
 	});
 });
 
@@ -96,6 +102,45 @@ describe('resolvePublicWebhookAddresses DoH fallback', () => {
 		);
 
 		await expect(resolvePublicWebhookAddresses('hooks.example.com')).rejects.toBeInstanceOf(
+			WebhookTargetRejectedError
+		);
+	});
+
+	it('memoizes DoH resolution once per hostname for a drain batch', async () => {
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = new URL(String(input));
+			const type = url.searchParams.get('type');
+			return new Response(
+				JSON.stringify({
+					Status: 0,
+					Answer: type === 'A' ? [{ type: 1, data: '1.1.1.1' }] : []
+				}),
+				{ status: 200, headers: { 'content-type': 'application/dns-json' } }
+			);
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		const resolve = createDrainBatchDnsCache();
+		await assertWebhookTargetSafe('https://hooks.example.com/a', resolve);
+		await assertWebhookTargetSafe('https://hooks.example.com/b', resolve);
+		// One DoH resolution per hostname, each resolution queries both A and AAAA
+		// so a blocked IPv6 answer cannot hide behind a benign A record.
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('blocks a hostname whose AAAA record is private even though its A record is public', async () => {
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = new URL(String(input));
+			const type = url.searchParams.get('type');
+			return new Response(
+				JSON.stringify({
+					Status: 0,
+					Answer: type === 'A' ? [{ type: 1, data: '1.1.1.1' }] : [{ type: 28, data: 'fd00::1' }]
+				}),
+				{ status: 200, headers: { 'content-type': 'application/dns-json' } }
+			);
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		await expect(resolvePublicWebhookAddresses('hooks.example.com')).rejects.toThrow(
 			WebhookTargetRejectedError
 		);
 	});

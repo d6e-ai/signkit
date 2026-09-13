@@ -2,8 +2,14 @@
 -- Allows reissuing delivery for released pending or viewed recipients,
 -- creating an append-only capability lineage without mutating first-view evidence.
 
+-- PostgreSQL truncates identifiers over 63 bytes, so the constraint that
+-- CREATE TABLE auto-named "..._kind_key" (65 bytes) was actually stored as
+-- "..._ki_key". Drop both spellings so this is correct regardless of which
+-- truncation a given PostgreSQL build applies.
 ALTER TABLE delivery_outbox
   DROP CONSTRAINT IF EXISTS delivery_outbox_organization_id_envelope_id_recipient_id_kind_key;
+ALTER TABLE delivery_outbox
+  DROP CONSTRAINT IF EXISTS delivery_outbox_organization_id_envelope_id_recipient_id_ki_key;
 
 CREATE INDEX IF NOT EXISTS delivery_outbox_recipient
   ON delivery_outbox(organization_id, envelope_id, recipient_id, kind, created_at);

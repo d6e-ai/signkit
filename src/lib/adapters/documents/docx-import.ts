@@ -1,14 +1,54 @@
 import { unzipSync, type UnzipFileInfo } from 'fflate';
 import { normalizeMarkdownContent } from '$lib/domain/draft';
 
-/** Bounded to keep unzip and XML parsing work proportional to a plausible document, never adversarial input. */
-export const MAX_DOCX_INPUT_BYTES = 20 * 1024 * 1024;
-const MAX_ZIP_ENTRIES = 2_000;
-const MAX_ENTRY_UNCOMPRESSED_BYTES = 20 * 1024 * 1024;
-const MAX_TOTAL_UNCOMPRESSED_BYTES = 40 * 1024 * 1024;
-const MAX_XML_TOKENS = 500_000;
+export interface DocxImportLimits {
+	readonly maxInputBytes: number;
+	readonly maxZipEntries: number;
+	readonly maxEntryUncompressedBytes: number;
+	readonly maxTotalUncompressedBytes: number;
+	readonly maxXmlTokens: number;
+}
+
+/** Node/Vercel: keep unzip and XML parsing proportional to a plausible document. */
+export const NODE_DOCX_IMPORT_LIMITS: DocxImportLimits = {
+	maxInputBytes: 20 * 1024 * 1024,
+	maxZipEntries: 2_000,
+	maxEntryUncompressedBytes: 20 * 1024 * 1024,
+	maxTotalUncompressedBytes: 40 * 1024 * 1024,
+	maxXmlTokens: 500_000
+};
+
+/**
+ * Cloudflare Workers isolate memory is much smaller than Node. These bounds
+ * keep the ZIP inflate plus UTF-8 XML string plus token array inside a
+ * conservative fraction of the isolate; tests pass this object without a
+ * Cloudflare build.
+ */
+export const CLOUDFLARE_DOCX_IMPORT_LIMITS: DocxImportLimits = {
+	maxInputBytes: 2 * 1024 * 1024,
+	maxZipEntries: 500,
+	maxEntryUncompressedBytes: 2 * 1024 * 1024,
+	maxTotalUncompressedBytes: 4 * 1024 * 1024,
+	maxXmlTokens: 80_000
+};
+
+/** Default (Node) input cap, kept for callers that do not pass explicit limits. */
+export const MAX_DOCX_INPUT_BYTES = NODE_DOCX_IMPORT_LIMITS.maxInputBytes;
 const MAX_ATTRS_PER_TAG = 32;
 const DOCUMENT_XML_PATH = 'word/document.xml';
+
+/**
+ * Cloudflare is identified by the D1 binding present only on that deploy
+ * target. Node and Vercel keep the larger Node budget.
+ */
+export function resolveDocxImportLimits(
+	platform?: Pick<App.Platform, 'env'> | { env?: { DB?: unknown } }
+): DocxImportLimits {
+	if (platform?.env !== undefined && platform.env.DB !== undefined) {
+		return CLOUDFLARE_DOCX_IMPORT_LIMITS;
+	}
+	return NODE_DOCX_IMPORT_LIMITS;
+}
 
 export class DocxImportError extends Error {
 	readonly code: string;
@@ -31,10 +71,13 @@ export class DocxImportError extends Error {
  * recognized; lists, tables, images, and other OOXML features degrade to
  * plain paragraph text.
  */
-export function importDocxToMarkdown(bytes: Uint8Array): string {
+export function importDocxToMarkdown(
+	bytes: Uint8Array,
+	limits: DocxImportLimits = NODE_DOCX_IMPORT_LIMITS
+): string {
 	if (bytes.byteLength === 0)
 		throw new DocxImportError('empty_input', 'The uploaded file is empty');
-	if (bytes.byteLength > MAX_DOCX_INPUT_BYTES) {
+	if (bytes.byteLength > limits.maxInputBytes) {
 		throw new DocxImportError('too_large', 'The uploaded DOCX file exceeds the import size limit');
 	}
 	if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
@@ -48,18 +91,18 @@ export function importDocxToMarkdown(bytes: Uint8Array): string {
 		extracted = unzipSync(bytes, {
 			filter(info: UnzipFileInfo): boolean {
 				entryCount += 1;
-				if (entryCount > MAX_ZIP_ENTRIES) {
+				if (entryCount > limits.maxZipEntries) {
 					throw new DocxImportError('too_many_entries', 'The DOCX package has too many entries');
 				}
 				if (info.name !== DOCUMENT_XML_PATH) return false;
-				if (info.originalSize > MAX_ENTRY_UNCOMPRESSED_BYTES) {
+				if (info.originalSize > limits.maxEntryUncompressedBytes) {
 					throw new DocxImportError(
 						'entry_too_large',
 						'word/document.xml exceeds the import size limit'
 					);
 				}
 				totalUncompressed += info.originalSize;
-				if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES) {
+				if (totalUncompressed > limits.maxTotalUncompressedBytes) {
 					throw new DocxImportError('too_large', 'The DOCX package exceeds the import size limit');
 				}
 				return true;
@@ -85,7 +128,7 @@ export function importDocxToMarkdown(bytes: Uint8Array): string {
 		throw new DocxImportError('invalid_xml', 'word/document.xml is not valid UTF-8');
 	}
 
-	const tokens: readonly XmlToken[] = tokenizeXml(xmlText);
+	const tokens: readonly XmlToken[] = tokenizeXml(xmlText, limits.maxXmlTokens);
 	const paragraphs: readonly DocxParagraph[] = buildParagraphs(tokens);
 	const markdown: string = renderParagraphsAsMarkdown(paragraphs);
 	return normalizeMarkdownContent(markdown);
@@ -101,13 +144,13 @@ type XmlToken =
 const TAG_NAME_PATTERN = /^[^\s/>]+/;
 const ATTRIBUTE_PATTERN = /([a-zA-Z0-9_:.-]+)\s*=\s*"([^"]*)"/g;
 
-function tokenizeXml(xml: string): readonly XmlToken[] {
+function tokenizeXml(xml: string, maxXmlTokens: number): readonly XmlToken[] {
 	const tokens: XmlToken[] = [];
 	const length = xml.length;
 	let index = 0;
 
 	while (index < length) {
-		if (tokens.length > MAX_XML_TOKENS) {
+		if (tokens.length > maxXmlTokens) {
 			throw new DocxImportError(
 				'too_complex',
 				'word/document.xml exceeds the import complexity budget'

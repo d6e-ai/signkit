@@ -4,7 +4,7 @@ Status: mixed — localization and bounded DOCX import/export are implemented; P
 
 ## Documents and evidence
 
-DOCX import is a bounded conversion on `POST /api/v1/envelopes/{envelopeId}/draft/docx`: hostile DOCX ZIP/XML → sanitized constrained representation → a Markdown-only `documents/*.md` commit through the existing draft persistence boundary. The original DOCX never enters Git or the object draft archive. The upload is capped (`MAX_DOCX_INPUT_BYTES`, 20 MiB) and requires `drafts:write`, an `Idempotency-Key`, and the expected Git generation.
+DOCX import is a bounded conversion on `POST /api/v1/envelopes/{envelopeId}/draft/docx`: hostile DOCX ZIP/XML → sanitized constrained representation → a Markdown-only `documents/*.md` commit through the existing draft persistence boundary. The original DOCX never enters Git or the object draft archive. The upload is capped by deploy target (`CLOUDFLARE_DOCX_IMPORT_LIMITS` 2 MiB input / 4 MiB uncompressed on Workers; Node/Vercel keep 20 MiB / 40 MiB) and requires `drafts:write`, an `Idempotency-Key`, and the expected Git generation.
 
 DOCX export is `GET /api/v1/envelopes/{envelopeId}/docx` (`envelopes:read`). It renders the envelope's current trusted locator (`sentCommitSha` when present, otherwise `repositoryHead`) through `readImmutableDraftRevision` and returns WordprocessingML bytes plus `x-signkit-commit-sha`. Those bytes are derived for the response; they are not stored in Git.
 

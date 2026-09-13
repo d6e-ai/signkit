@@ -25,6 +25,27 @@ export interface CompletionEvidenceApplicationPort {
 	envelopeExists(organizationId: string, envelopeId: string): Promise<boolean>;
 }
 
+export class CompletionEvidenceReadError extends Error {
+	readonly code: string;
+
+	constructor(code: string) {
+		super(code);
+		this.name = 'CompletionEvidenceReadError';
+		this.code = code;
+	}
+}
+
+export function completionEvidenceFailureLog(error: unknown): {
+	errorName: string;
+	code?: string;
+} {
+	const errorName: string = error instanceof Error ? error.name : 'UnknownError';
+	if (error instanceof CompletionEvidenceReadError) {
+		return { errorName, code: error.code };
+	}
+	return { errorName };
+}
+
 export class CompletionEvidenceService implements CompletionEvidenceApplicationPort {
 	readonly #store: CompletionArtifactStore;
 	readonly #objects: ObjectStore;
@@ -61,7 +82,7 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 
 		const stream = await this.#objects.get(key);
 		if (stream === null) {
-			throw new Error(`Immutable completion artifact not found in object storage: ${key}`);
+			throw new CompletionEvidenceReadError('artifact_object_missing');
 		}
 
 		const gzipped = await readStreamBounded(stream, MAX_MANIFEST_GZIP_BYTES);
@@ -83,9 +104,7 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 
 		const stream = await this.#objects.get(pdfRecord.pdfObjectKey);
 		if (stream === null) {
-			throw new Error(
-				`Immutable completion PDF not found in object storage: ${pdfRecord.pdfObjectKey}`
-			);
+			throw new CompletionEvidenceReadError('pdf_object_missing');
 		}
 
 		return {
@@ -114,7 +133,7 @@ async function readStreamBounded(
 			if (value) {
 				totalBytes += value.byteLength;
 				if (totalBytes > maxBytes) {
-					throw new Error(`Stream exceeds maximum allowed bytes of ${maxBytes}`);
+					throw new CompletionEvidenceReadError('stream_too_large');
 				}
 				chunks.push(value);
 			}

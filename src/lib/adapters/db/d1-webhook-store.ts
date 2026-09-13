@@ -12,11 +12,13 @@ import {
 	type FailWebhookDeliveryCommand,
 	type RevokeWebhookEndpointCommand,
 	type RevokeWebhookEndpointResult,
+	type ResealWebhookSigningSecretCommand,
 	type WebhookDeliveryLogPage,
 	type WebhookEndpointMetadata,
 	type WebhookListPage,
 	type WebhookListQuery,
 	type WebhookOutboxRow,
+	type WebhookSigningSecretRow,
 	type WebhookStatus,
 	type WebhookStore
 } from '$lib/ports/webhook-store';
@@ -57,6 +59,7 @@ interface OutboxRow {
 	locked_at: string | null;
 	endpoint_url: string;
 	signing_secret: string;
+	sealing_key_id: string | null;
 }
 
 interface LogRow {
@@ -107,8 +110,8 @@ export class D1WebhookStore implements WebhookStore {
 					.prepare(
 						`INSERT INTO webhook_endpoint (
 							id, organization_id, url, description, status, events_json,
-							secret_hash, signing_secret, secret_prefix, created_at, created_by_user_id
-						) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
+							secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
+						) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
 						command.id,
@@ -118,6 +121,7 @@ export class D1WebhookStore implements WebhookStore {
 						command.eventsJson,
 						command.secretHash,
 						command.signingSecret,
+						command.sealingKeyId,
 						command.secretPrefix,
 						command.createdAt,
 						command.actorId
@@ -318,7 +322,8 @@ export class D1WebhookStore implements WebhookStore {
 					webhook_outbox.envelope_id, webhook_outbox.event_type, webhook_outbox.payload_json,
 					webhook_outbox.status, webhook_outbox.attempts, webhook_outbox.available_at,
 					webhook_outbox.claim_token, webhook_outbox.locked_at,
-					webhook_endpoint.url AS endpoint_url, webhook_endpoint.signing_secret
+					webhook_endpoint.url AS endpoint_url, webhook_endpoint.signing_secret,
+					webhook_endpoint.sealing_key_id
 				 FROM webhook_outbox
 				 INNER JOIN webhook_endpoint
 					ON webhook_endpoint.organization_id = webhook_outbox.organization_id
@@ -343,7 +348,8 @@ export class D1WebhookStore implements WebhookStore {
 					webhook_outbox.envelope_id, webhook_outbox.event_type, webhook_outbox.payload_json,
 					webhook_outbox.status, webhook_outbox.attempts, webhook_outbox.available_at,
 					webhook_outbox.claim_token, webhook_outbox.locked_at,
-					webhook_endpoint.url AS endpoint_url, webhook_endpoint.signing_secret
+					webhook_endpoint.url AS endpoint_url, webhook_endpoint.signing_secret,
+					webhook_endpoint.sealing_key_id
 				 FROM webhook_outbox
 				 INNER JOIN webhook_endpoint
 					ON webhook_endpoint.organization_id = webhook_outbox.organization_id
@@ -449,6 +455,68 @@ export class D1WebhookStore implements WebhookStore {
 				)
 		]);
 		return (results[0]?.meta.changes ?? 0) === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
+	}
+
+	async listStaleSigningSecrets(
+		activeSealingKeyId: string,
+		limit: number
+	): Promise<readonly WebhookSigningSecretRow[]> {
+		const result: D1Result<{
+			organization_id: string;
+			id: string;
+			signing_secret: string;
+			sealing_key_id: string | null;
+		}> = await this.#database
+			.prepare(
+				`SELECT organization_id, id, signing_secret, sealing_key_id
+				 FROM webhook_endpoint
+				 WHERE sealing_key_id IS NULL OR sealing_key_id <> ?
+				 ORDER BY created_at ASC, id ASC
+				 LIMIT ?`
+			)
+			.bind(activeSealingKeyId, limit)
+			.all();
+		return (result.results ?? []).map((row): WebhookSigningSecretRow => ({
+			organizationId: row.organization_id,
+			endpointId: row.id,
+			signingSecret: row.signing_secret,
+			sealingKeyId: row.sealing_key_id
+		}));
+	}
+
+	async resealSigningSecret(
+		command: ResealWebhookSigningSecretCommand
+	): Promise<{ outcome: 'resealed' | 'stale' }> {
+		const result: D1Result =
+			command.previousSealingKeyId === null
+				? await this.#database
+						.prepare(
+							`UPDATE webhook_endpoint
+							 SET signing_secret = ?, sealing_key_id = ?
+							 WHERE organization_id = ? AND id = ? AND sealing_key_id IS NULL`
+						)
+						.bind(
+							command.signingSecret,
+							command.sealingKeyId,
+							command.organizationId,
+							command.endpointId
+						)
+						.run()
+				: await this.#database
+						.prepare(
+							`UPDATE webhook_endpoint
+							 SET signing_secret = ?, sealing_key_id = ?
+							 WHERE organization_id = ? AND id = ? AND sealing_key_id = ?`
+						)
+						.bind(
+							command.signingSecret,
+							command.sealingKeyId,
+							command.organizationId,
+							command.endpointId,
+							command.previousSealingKeyId
+						)
+						.run();
+		return (result.meta.changes ?? 0) === 1 ? { outcome: 'resealed' } : { outcome: 'stale' };
 	}
 
 	async listDeliveryLogs(
@@ -557,6 +625,7 @@ function outboxFromRow(row: OutboxRow): WebhookOutboxRow {
 		payloadJson: row.payload_json,
 		endpointUrl: row.endpoint_url,
 		signingSecret: row.signing_secret,
+		sealingKeyId: row.sealing_key_id,
 		claimToken: row.claim_token,
 		status: 'processing',
 		attempts: row.attempts,

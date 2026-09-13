@@ -91,6 +91,10 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 	}
 }
 
+const SIGNATURE_ASSET_KEY_PATTERN: RegExp =
+	/^signature-assets\/v1\/organizations\/([^/]+)\/envelopes\/([^/]+)\/recipients\/([^/]+)\/sha256\/([a-f0-9]{64})\.png$/;
+const SHA256_HEX_PATTERN: RegExp = /^[a-f0-9]{64}$/;
+
 export function signatureAssetKey(
 	organizationId: string,
 	envelopeId: string,
@@ -98,6 +102,78 @@ export function signatureAssetKey(
 	sha256: string
 ): string {
 	return `signature-assets/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/recipients/${encodeScopeSegment(recipientId)}/sha256/${sha256}.png`;
+}
+
+export interface ParsedSignatureAssetKey {
+	organizationId: string;
+	envelopeId: string;
+	recipientId: string;
+	sha256: string;
+}
+
+export function parseSignatureAssetKey(key: string): ParsedSignatureAssetKey | null {
+	const match: RegExpExecArray | null = SIGNATURE_ASSET_KEY_PATTERN.exec(key);
+	if (match === null) return null;
+	try {
+		const parsed: ParsedSignatureAssetKey = {
+			organizationId: decodeURIComponent(match[1]),
+			envelopeId: decodeURIComponent(match[2]),
+			recipientId: decodeURIComponent(match[3]),
+			sha256: match[4]
+		};
+		if (
+			signatureAssetKey(
+				parsed.organizationId,
+				parsed.envelopeId,
+				parsed.recipientId,
+				parsed.sha256
+			) !== key
+		) {
+			return null;
+		}
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+export function signatureAssetRefValueJson(sha256: string): string {
+	return JSON.stringify(`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`);
+}
+
+export function referencedSignatureAssetKeys(
+	candidates: readonly string[],
+	fieldValues: readonly {
+		organizationId: string;
+		envelopeId: string;
+		recipientId: string;
+		valueJson: string;
+	}[]
+): Set<string> {
+	const wanted: Set<string> = new Set(
+		candidates.filter((key: string): boolean => parseSignatureAssetKey(key) !== null)
+	);
+	const referenced: Set<string> = new Set();
+	if (wanted.size === 0) return referenced;
+	for (const row of fieldValues) {
+		let value: unknown;
+		try {
+			value = JSON.parse(row.valueJson);
+		} catch {
+			continue;
+		}
+		if (typeof value !== 'string' || !value.startsWith(SIGNATURE_ASSET_REF_PREFIX)) continue;
+		const sha256: string = value.slice(SIGNATURE_ASSET_REF_PREFIX.length);
+		if (!SHA256_HEX_PATTERN.test(sha256)) continue;
+		const key: string = signatureAssetKey(
+			row.organizationId,
+			row.envelopeId,
+			row.recipientId,
+			sha256
+		);
+		if (wanted.has(key)) referenced.add(key);
+	}
+	return referenced;
 }
 
 function isPngSignature(bytes: Uint8Array): boolean {

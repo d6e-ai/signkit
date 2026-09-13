@@ -209,7 +209,11 @@ describe('GET /api/v1/system/capabilities', () => {
 				'/api/v1/envelopes/{envelopeId}/draft',
 				'/api/v1/envelopes/{envelopeId}/docx',
 				'/api/v1/envelopes/{envelopeId}/deliveries',
-				'/api/v1/envelopes/{envelopeId}/completion-artifact'
+				'/api/v1/envelopes/{envelopeId}/completion-artifact',
+				'/api/v1/envelopes/{envelopeId}/evidence',
+				'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
+				'/api/v1/envelopes/{envelopeId}/pdf',
+				'/api/v1/envelopes/{envelopeId}/completion-artifact/pdf'
 			],
 			writeEndpoints: {
 				'drafts:write': [

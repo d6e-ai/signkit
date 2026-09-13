@@ -32,6 +32,7 @@ export interface CreateWebhookEndpointCommand {
 	eventsJson: string;
 	secretHash: string;
 	signingSecret: string;
+	sealingKeyId: string;
 	secretPrefix: string;
 	createdAt: string;
 }
@@ -75,6 +76,7 @@ export interface WebhookOutboxRow {
 	payloadJson: string;
 	endpointUrl: string;
 	signingSecret: string;
+	sealingKeyId: string | null;
 	claimToken: string;
 	status: 'processing';
 	attempts: number;
@@ -110,6 +112,21 @@ export interface FailWebhookDeliveryCommand {
 	httpStatus: number | null;
 }
 
+export interface WebhookSigningSecretRow {
+	organizationId: string;
+	endpointId: string;
+	signingSecret: string;
+	sealingKeyId: string | null;
+}
+
+export interface ResealWebhookSigningSecretCommand {
+	organizationId: string;
+	endpointId: string;
+	previousSealingKeyId: string | null;
+	signingSecret: string;
+	sealingKeyId: string;
+}
+
 export interface WebhookDeliveryLogPage {
 	items: readonly {
 		id: string;
@@ -141,6 +158,13 @@ export interface WebhookStore {
 		command: CompleteWebhookDeliveryCommand
 	): Promise<{ outcome: 'completed' | 'stale' }>;
 	failDelivery(command: FailWebhookDeliveryCommand): Promise<{ outcome: 'failed' | 'stale' }>;
+	listStaleSigningSecrets(
+		activeSealingKeyId: string,
+		limit: number
+	): Promise<readonly WebhookSigningSecretRow[]>;
+	resealSigningSecret(
+		command: ResealWebhookSigningSecretCommand
+	): Promise<{ outcome: 'resealed' | 'stale' }>;
 	listDeliveryLogs(
 		organizationId: string,
 		webhookId: string,

@@ -7,7 +7,10 @@ describe('API key surface allowlist', () => {
 		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001',
 		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/draft',
 		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/deliveries',
-		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/completion-artifact'
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/completion-artifact',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/evidence',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/pdf',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/reissue'
 	])('resolves an API key on the operator envelope surface %s', (pathname) => {
 		expect(isApiKeyAuthenticatedPath(pathname)).toBe(true);
 	});

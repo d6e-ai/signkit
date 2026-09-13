@@ -1,8 +1,9 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import type { ZodType } from 'zod';
-import type {
-	CompletionEvidenceApplicationPort,
-	CompletionEvidenceResult
+import {
+	completionEvidenceFailureLog,
+	type CompletionEvidenceApplicationPort,
+	type CompletionEvidenceResult
 } from '$lib/application/completion-artifacts/completion-evidence-service';
 import {
 	authorizeScopedOrganizationRequest,
@@ -50,7 +51,7 @@ export function createCompletionEvidenceHandler(
 			console.error(
 				JSON.stringify({
 					event: 'completion_evidence_resolution_failed',
-					message: error instanceof Error ? error.name : 'UnknownError'
+					...completionEvidenceFailureLog(error)
 				})
 			);
 			service = null;
@@ -99,7 +100,7 @@ export function createCompletionEvidenceHandler(
 			console.error(
 				JSON.stringify({
 					event: 'completion_evidence_failed',
-					message: error instanceof Error ? error.message : 'UnknownError'
+					...completionEvidenceFailureLog(error)
 				})
 			);
 			return unavailable(url.pathname);

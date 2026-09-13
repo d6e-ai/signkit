@@ -12,7 +12,7 @@ Every mutation requires:
 - provenance such as API client, automation run, or user session;
 - an optional external ID for reconciliation.
 
-The API will use OpenAPI 3.1, structured validation, RFC 9457 problem responses, cursor pagination, and signed retryable webhooks. Stable events include `draft.revision_created`, `envelope.ready`, `envelope.fields_placed`, `envelope.sent`, `recipient.viewed`, `recipient.signed`, `recipient.declined`, `recipient.approved`, `envelope.completed`, `envelope.completion_artifact_published`, and `envelope.voided`.
+The API will use OpenAPI 3.1, structured validation, RFC 9457 problem responses, cursor pagination, and signed retryable webhooks. Stable events include `draft.revision_created`, `envelope.ready`, `envelope.fields_placed`, `envelope.sent`, `recipient.viewed`, `recipient.signed`, `recipient.declined`, `recipient.approved`, `recipient.capability_reissued`, `envelope.completed`, `envelope.completion_artifact_published`, `envelope.voided`, and `envelope.expired`.
 
 ## Rust CLI architecture (`signkit`)
 

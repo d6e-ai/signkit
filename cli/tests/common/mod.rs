@@ -167,13 +167,19 @@ pub fn sample_capabilities_json() -> &'static str {
           "/api/v1/envelopes",
           "/api/v1/envelopes/{envelopeId}",
           "/api/v1/envelopes/{envelopeId}/draft",
+          "/api/v1/envelopes/{envelopeId}/docx",
           "/api/v1/envelopes/{envelopeId}/deliveries",
-          "/api/v1/envelopes/{envelopeId}/completion-artifact"
+          "/api/v1/envelopes/{envelopeId}/completion-artifact",
+          "/api/v1/envelopes/{envelopeId}/evidence",
+          "/api/v1/envelopes/{envelopeId}/completion-artifact/evidence",
+          "/api/v1/envelopes/{envelopeId}/pdf",
+          "/api/v1/envelopes/{envelopeId}/completion-artifact/pdf"
         ],
         "writeEndpoints": {
           "drafts:write": [
             "/api/v1/envelopes",
             "/api/v1/envelopes/{envelopeId}/draft/commits",
+            "/api/v1/envelopes/{envelopeId}/draft/docx",
             "/api/v1/envelopes/{envelopeId}/ready",
             "/api/v1/envelopes/{envelopeId}/fields"
           ],

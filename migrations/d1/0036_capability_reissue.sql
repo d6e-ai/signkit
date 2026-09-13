@@ -3,8 +3,12 @@
 -- creating an append-only capability lineage without mutating first-view evidence.
 -- Recreated command triggers must stamp audit_event.hash_version = 2 explicitly:
 -- SQLite cannot ALTER COLUMN SET DEFAULT (see 0023_audit_hash_v2.sql).
+--
+-- D1 applies each migration inside a transaction. PRAGMA foreign_keys cannot
+-- change inside a transaction (SQLite treats it as a no-op), so toggling it
+-- here would not disable checks. Defer every FK until COMMIT instead.
 
-PRAGMA foreign_keys = OFF;
+PRAGMA defer_foreign_keys = ON;
 
 -- Drop dependent triggers that reference delivery_outbox before rebuild.
 DROP TRIGGER IF EXISTS envelope_expiry_command_publish;
@@ -75,8 +79,6 @@ FROM delivery_outbox;
 
 DROP TABLE delivery_outbox;
 ALTER TABLE delivery_outbox_new RENAME TO delivery_outbox;
-
-PRAGMA foreign_keys = ON;
 
 CREATE INDEX delivery_outbox_claim
   ON delivery_outbox(status, available_at, created_at)

@@ -14,6 +14,26 @@ export function applyD1Migrations(sqlite: DatabaseSync): void {
 	}
 }
 
+export function applyD1MigrationsThrough(sqlite: DatabaseSync, lastPath: string): void {
+	for (const path of d1MigrationPaths()) {
+		sqlite.exec(readFileSync(path, 'utf8'));
+		if (path === lastPath) return;
+	}
+	throw new Error(`D1 migration not found: ${lastPath}`);
+}
+
+/** Mimics Cloudflare D1: each migration file runs inside one transaction. */
+export function applyD1MigrationInTransaction(sqlite: DatabaseSync, path: string): void {
+	sqlite.exec('BEGIN IMMEDIATE');
+	try {
+		sqlite.exec(readFileSync(path, 'utf8'));
+		sqlite.exec('COMMIT');
+	} catch (error: unknown) {
+		sqlite.exec('ROLLBACK');
+		throw error;
+	}
+}
+
 class SqliteD1Statement {
 	constructor(
 		private readonly database: DatabaseSync,

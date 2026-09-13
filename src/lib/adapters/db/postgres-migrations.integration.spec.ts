@@ -8,7 +8,10 @@ import {
 	draftArchiveKey
 } from '$lib/application/drafts/draft-persistence';
 import { buildVerifiedAuditChain } from '$lib/application/completion-artifacts/audit-chain-test-support';
-import { auditEventHashPreimage } from '$lib/application/completion-artifacts/audit-event-integrity';
+import {
+	auditEventHashPreimage,
+	verifyCompletionAuditChain
+} from '$lib/application/completion-artifacts/audit-event-integrity';
 import { CompletionArtifactPublicationService } from '$lib/application/completion-artifacts/completion-artifact-service';
 import { sha256TextHex } from '$lib/application/completion-artifacts/completion-manifest';
 import { EnvelopeApplication } from '$lib/application/envelopes/service';
@@ -18,9 +21,14 @@ import {
 	EnvelopeReadyApplication,
 	type ReadyRecipientInput
 } from '$lib/application/envelopes/ready';
+import { RecipientCapabilityReissueApplication } from '$lib/application/signing/recipient-capability-reissue';
 import { EnvelopeSendApplication } from '$lib/application/envelopes/send';
 import { EnvelopeVoidApplication } from '$lib/application/envelopes/void';
-import { PostgresOrphanSweepCheckpointStore } from '$lib/application/maintenance/orphan-collector';
+import {
+	PostgresOrphanReferenceStore,
+	PostgresOrphanSweepCheckpointStore
+} from '$lib/application/maintenance/orphan-collector';
+import { signatureAssetKey } from '$lib/application/documents/signature-asset';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import {
 	RecipientApprovedApplication,
@@ -72,6 +80,7 @@ import { PostgresEnvelopeVoidStore } from './postgres-envelope-void-store';
 import { PostgresRecipientApproveStore } from './postgres-recipient-approve-store';
 import { PostgresRecipientDeclineStore } from './postgres-recipient-decline-store';
 import { PostgresRecipientDeclinedReceiptStore } from './postgres-recipient-declined-receipt-store';
+import { PostgresRecipientCapabilityReissueStore } from './postgres-recipient-capability-reissue-store';
 import { PostgresRecipientSignStore } from './postgres-recipient-sign-store';
 import { PostgresApiKeyStore } from './postgres-api-key-store';
 
@@ -134,6 +143,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0021_api_key_organization_grants.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0035_orphan_sweep_checkpoint.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0036_envelope_void_agent_actor.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0037_webhook_signing_secret_seal.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -1234,6 +1244,57 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		}
 	});
 
+	it('classifies a signature-assets/v1 key referenced by field_value sig:sha256 as live', async () => {
+		const sha256: string = 'ab'.repeat(32);
+		const recipientId: string = '01900000-0000-7000-8000-000000000201';
+		const fieldId: string = '01900000-0000-7000-8000-000000000202';
+		const assetKey: string = signatureAssetKey(ORGANIZATION_ID, ENVELOPE_ID, recipientId, sha256);
+		const foreignAssetKey: string = signatureAssetKey(
+			'org-other',
+			ENVELOPE_ID,
+			recipientId,
+			sha256
+		);
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, created_at, updated_at
+		) VALUES (
+			${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'completed', 1,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			${recipientId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'signer@example.test', 'Signer',
+			'signer', 'en', 1, 'completed', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await database()`INSERT INTO envelope_field (
+			id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
+			required, position, created_at, updated_at
+		) VALUES (
+			${fieldId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${recipientId}, 'documents/agreement.md',
+			'signature', 'Signature', true, 0, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await database()`INSERT INTO field_value (
+			organization_id, field_id, envelope_id, recipient_id, field_type, value_json,
+			value_sha256, created_at
+		) VALUES (
+			${ORGANIZATION_ID}, ${fieldId}, ${ENVELOPE_ID}, ${recipientId}, 'signature',
+			${JSON.stringify(`sig:sha256:${sha256}`)}, ${'c'.repeat(64)}, '2026-09-11T00:00:00.000Z'
+		)`;
+		const store = new PostgresOrphanReferenceStore(database());
+		const referenced = await store.filterReferencedKeys([
+			assetKey,
+			foreignAssetKey,
+			'drafts/orphan.git.gz'
+		]);
+		expect(referenced.has(assetKey)).toBe(true);
+		expect(referenced.has(foreignAssetKey)).toBe(false);
+		expect(referenced.has('drafts/orphan.git.gz')).toBe(false);
+	});
+
 	it('serializes two real concurrent sends into one publication and one replay', async () => {
 		await seedDraftEnvelope();
 		const ready = await readyEnvelope();
@@ -2308,10 +2369,10 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 	it('publishes a completion artifact end to end from an audit chain written entirely by real writer paths', async () => {
 		// Positive control: every audit event here — envelope.created,
 		// draft.revision_created, envelope.ready, envelope.sent,
-		// recipient.signed, envelope.completed — is produced by the real
-		// application classes, not seeded SQL. This proves the recompute in
-		// verifyCompletionAuditChain matches what real writers actually hash,
-		// not just what a test fixture was built to satisfy.
+		// recipient.capability_reissued, recipient.signed, envelope.completed —
+		// is produced by the real application classes, not seeded SQL. This proves
+		// the recompute in verifyCompletionAuditChain matches what real writers
+		// actually hash, including the reissue catalog event on the webhook surface.
 		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
 			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
 
@@ -2370,15 +2431,30 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		});
 		if (sent.outcome !== 'published') throw new Error('Expected send to succeed');
 
+		const reissued = await new RecipientCapabilityReissueApplication(
+			new PostgresRecipientCapabilityReissueStore(database()),
+			sealer
+		).reissue(ACTOR, {
+			envelopeId,
+			recipientId: signerId,
+			idempotencyKey: 'real-writer-reissue'
+		});
+		if (reissued.outcome !== 'published' && reissued.outcome !== 'replayed') {
+			throw new Error(`Expected reissue to succeed, got ${reissued.outcome}`);
+		}
+
 		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
 		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${envelopeId}
 				AND id = ${signerId}`;
 		const delivery = await database()<
-			{ deliveryId: string; sealedCapability: string }[]
-		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
+			{ deliveryId: string; sealedCapability: string; sealingKeyId: string }[]
+		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability",
+				sealing_key_id AS "sealingKeyId" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${envelopeId}
-				AND recipient_id = ${signerId}`;
+				AND recipient_id = ${signerId} AND status = 'pending'
+				AND sealed_capability IS NOT NULL`;
+		expect(delivery).toHaveLength(1);
 		const token: string = await sealer.open(
 			delivery[0].sealedCapability,
 			{
@@ -2387,7 +2463,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				recipientId: signerId,
 				deliveryId: delivery[0].deliveryId
 			},
-			await sealer.currentSealingKeyId()
+			delivery[0].sealingKeyId
 		);
 		const signResult = await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
@@ -2415,6 +2491,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			'draft.revision_created',
 			'envelope.ready',
 			'envelope.sent',
+			'recipient.capability_reissued',
 			'recipient.signed',
 			'envelope.completed'
 		]);
@@ -2426,6 +2503,15 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			});
 			expect(await sha256TextHex(preimage)).toBe(event.eventHash);
 		}
+		await expect(
+			verifyCompletionAuditChain(
+				evidence.auditEvents,
+				{ organizationId: ORGANIZATION_ID, envelopeId },
+				5_000
+			)
+		).resolves.toMatchObject({
+			proof: { hashChainVerified: true, anchorEventType: 'envelope.completed' }
+		});
 
 		const service = new CompletionArtifactPublicationService(
 			store,

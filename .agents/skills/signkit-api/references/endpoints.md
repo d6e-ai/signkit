@@ -20,11 +20,17 @@ The table below summarizes key endpoints and required authorities. Interactive o
 | `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx` | Import bounded DOCX as Markdown commit | `drafts:write` (session or API key) | Yes (`drafts:write`) |
 | `GET` | `/api/v1/envelopes/{envelopeId}/deliveries` | Read invitation delivery status | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
 | `GET` | `/api/v1/envelopes/{envelopeId}/completion-artifact` | Read artifact publication status | `Bearer signkit_...` + `SignKit-Organization-Id` | **Yes (`envelopes:read`)** |
+| `GET` | `/api/v1/envelopes/{envelopeId}/evidence` | Read published completion evidence JSON/Markdown | `envelopes:read` (session or API key) | **Yes (`envelopes:read`)** |
+| `GET` | `/api/v1/envelopes/{envelopeId}/completion-artifact/evidence` | Alias of `/evidence` | `envelopes:read` (session or API key) | **Yes (`envelopes:read`)** |
+| `GET` | `/api/v1/envelopes/{envelopeId}/pdf` | Read published completion PDF | `envelopes:read` (session or API key) | **Yes (`envelopes:read`)** |
+| `GET` | `/api/v1/envelopes/{envelopeId}/completion-artifact/pdf` | Alias of `/pdf` | `envelopes:read` (session or API key) | **Yes (`envelopes:read`)** |
 | `POST` | `/api/v1/envelopes` | Create new envelope | `drafts:write` (session or API key) | Yes (`drafts:write`) |
 | `POST` | `/api/v1/envelopes/{envelopeId}/ready` | Freeze recipient graph | `drafts:write` (session or API key) | Yes (`drafts:write`) |
 | `POST` | `/api/v1/envelopes/{envelopeId}/fields` | Place signing fields | `drafts:write` (session or API key) | Yes (`drafts:write`) |
 | `POST` | `/api/v1/envelopes/{envelopeId}/send` | Send envelope & start delivery | `envelopes:send` (session or API key) | Yes (`envelopes:send`) |
 | `POST` | `/api/v1/envelopes/{envelopeId}/void` | Void envelope terminally | `envelopes:send` (session or API key) | Yes (`envelopes:send`) |
+| `POST` | `/api/v1/envelopes/{envelopeId}/reissue` | Reissue a recipient capability (body `recipientId`) | Interactive operator session | **No (403 refused)** |
+| `POST` | `/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/reissue` | Reissue that recipient's capability | Interactive operator session | **No (403 refused)** |
 | `POST` | `/api/v1/api-keys` | Mint owner-scoped API key | Verified identity session | No (403 refused) |
 | `GET` | `/api/v1/api-keys` | List owner's API keys | Verified identity session | No (403 refused) |
 | `POST` | `/api/v1/api-keys/{id}/revoke` | Revoke owner's API key | Verified identity session | No (403 refused) |

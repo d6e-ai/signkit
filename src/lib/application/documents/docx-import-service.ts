@@ -3,7 +3,11 @@ import type {
 	DraftPersistenceService
 } from '$lib/application/drafts/draft-persistence';
 import type { DraftActor } from '$lib/ports/draft-repository';
-import { importDocxToMarkdown } from '$lib/adapters/documents/docx-import';
+import {
+	importDocxToMarkdown,
+	NODE_DOCX_IMPORT_LIMITS,
+	type DocxImportLimits
+} from '$lib/adapters/documents/docx-import';
 
 export interface DocxImportCommitInput {
 	organizationId: string;
@@ -13,6 +17,7 @@ export interface DocxImportCommitInput {
 	actor: DraftActor;
 	idempotencyKey: string;
 	docxBytes: Uint8Array;
+	limits?: DocxImportLimits;
 }
 
 /**
@@ -26,7 +31,10 @@ export class DocxImportService {
 	constructor(private readonly drafts: Pick<DraftPersistenceService, 'commit'>) {}
 
 	async importAndCommit(input: DocxImportCommitInput): Promise<CommitDraftResult> {
-		const markdown: string = importDocxToMarkdown(input.docxBytes);
+		const markdown: string = importDocxToMarkdown(
+			input.docxBytes,
+			input.limits ?? NODE_DOCX_IMPORT_LIMITS
+		);
 		return this.drafts.commit({
 			organizationId: input.organizationId,
 			envelopeId: input.envelopeId,
