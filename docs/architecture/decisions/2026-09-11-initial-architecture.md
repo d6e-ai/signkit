@@ -1,6 +1,6 @@
 # Initial architecture decisions — 2026-09-11
 
-These notes record the rationale behind the normative design in `docs/design.md`.
+These notes record the rationale behind the normative design in [docs/architecture/](../README.md).
 
 - Scaffolded the application at the repository root with the official `sv create` CLI and pnpm.
 - Chose the shadcn-svelte Luma preset and its official Sidebar primitive for the application shell.

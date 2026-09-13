@@ -4,7 +4,7 @@ Production-quality, agent-first Rust CLI for SignKit located under `cli/` (requi
 
 ## Architecture & Current Truth
 
-The SignKit CLI is designed for non-interactive and machine-automated workflows. It adheres strictly to the current authorization reality documented in [api.md](api.md) and [design.md](design.md):
+The SignKit CLI is designed for non-interactive and machine-automated workflows. It adheres strictly to the current authorization reality documented in [api.md](api.md) and [architecture/](architecture/README.md):
 
 - **Enabled surface:** API-key Bearer authentication with the `envelopes:read` scope on all five enabled read endpoints, plus public system capabilities.
 - **Unavailable operations (by design):**

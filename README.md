@@ -52,7 +52,7 @@ npx skills add https://github.com/d6e-ai/signkit
 
 ## Documentation
 
-- [docs/design.md](docs/design.md) — normative architecture, security, and evidence contracts.
+- [docs/architecture/](docs/architecture/README.md) — normative architecture, security, and evidence contracts.
 - [docs/api.md](docs/api.md) — current HTTP surface and its operational semantics.
 - [docs/cli.md](docs/cli.md) — agent-first Rust CLI reference, commands, security, and exit codes.
 - [docs/deployment.md](docs/deployment.md) — deployment profiles, configuration, and background jobs.
