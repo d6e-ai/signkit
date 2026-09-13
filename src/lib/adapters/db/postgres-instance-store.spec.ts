@@ -1685,7 +1685,34 @@ describe('PostgresInstanceStore', () => {
 					nextCursor: null
 				}
 			});
-			expect(scripted.texts()[1]).toContain('ORDER BY user_id ASC');
+			// COLLATE "C" forces byte-wise ordering, matching D1/SQLite's BINARY
+			// collation on TEXT columns, rather than PostgreSQL's locale-dependent
+			// default.
+			expect(scripted.texts()[1]).toContain('ORDER BY user_id COLLATE "C" ASC');
+		});
+
+		it('orders and paginates a cursor page with the same explicit "C" collation on both sides of the comparison', async () => {
+			const scripted = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }], // member check
+				[
+					{
+						userId: 'zzz',
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				] // page query
+			]);
+
+			await store(scripted).listInstanceMembers(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: MEMBER_ID, limit: 10 }
+			);
+
+			expect(scripted.texts()[1]).toContain('WHERE (user_id COLLATE "C") > (');
+			expect(scripted.texts()[1]).toContain('COLLATE "C")');
+			expect(scripted.texts()[1]).toContain('ORDER BY user_id COLLATE "C" ASC');
 		});
 
 		it('refuses listing when caller is member role', async () => {
@@ -1770,7 +1797,12 @@ describe('PostgresInstanceStore', () => {
 			expect(scripted.texts()[4]).toContain('INSERT INTO instance_member_command');
 		});
 
-		it('refuses immediately when actor is a plain member, running no receipt check', async () => {
+		it('refuses forbidden after checking for a receipt that does not exist', async () => {
+			// The receipt check now runs unconditionally, ahead of the actor
+			// authorization check, so an exact replay is reachable even for an
+			// actor since demoted or suspended (see the dedicated replay test
+			// below) -- at the cost of this one extra query when no receipt
+			// exists at all.
 			const scripted = new ScriptedPostgres([
 				[], // advisory lock
 				[
@@ -1781,7 +1813,8 @@ describe('PostgresInstanceStore', () => {
 						createdAt: CREATED_AT,
 						updatedAt: CREATED_AT
 					}
-				] // lock rows
+				], // lock rows
+				[] // receipt check
 			]);
 
 			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
@@ -1790,7 +1823,7 @@ describe('PostgresInstanceStore', () => {
 
 			expect(result).toEqual({ outcome: 'forbidden' });
 			expect(scripted.rollbacks).toBe(1);
-			expect(scripted.queries).toHaveLength(2);
+			expect(scripted.queries).toHaveLength(3);
 		});
 
 		it('refuses immediately when actor is suspended', async () => {
@@ -1804,7 +1837,8 @@ describe('PostgresInstanceStore', () => {
 						createdAt: CREATED_AT,
 						updatedAt: CREATED_AT
 					}
-				] // lock rows
+				], // lock rows
+				[] // receipt check
 			]);
 
 			const result: SetInstanceMemberRoleStoreResult =
@@ -2104,6 +2138,128 @@ describe('PostgresInstanceStore', () => {
 			expect(result).toEqual({ outcome: 'idempotency_conflict' });
 			expect(scripted.rollbacks).toBe(1);
 		});
+
+		it('replays a matching receipt even when the actor row now shows a demoted or suspended actor', async () => {
+			const receiptRow = {
+				requestHash: REQUEST_FINGERPRINT,
+				commandType: 'set_role',
+				targetUserId: TARGET_ID,
+				previousRole: 'member',
+				previousStatus: 'active',
+				resultRole: 'admin',
+				resultStatus: 'active',
+				revokedInvitationCount: 0,
+				occurredAt: UPDATED_AT,
+				targetRowUserId: TARGET_ID,
+				targetRowCreatedAt: CREATED_AT
+			};
+			const expected = {
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'admin',
+					status: 'active',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 0
+			};
+
+			const demoted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since demoted to plain member)
+				[receiptRow] // receipt check
+			]);
+			const demotedResult: SetInstanceMemberRoleStoreResult =
+				await store(demoted).setInstanceMemberRole(setRoleCommand());
+			expect(demotedResult).toEqual(expected);
+			expect(demoted.rollbacks).toBe(1);
+
+			const suspended = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'suspended',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since suspended)
+				[receiptRow] // receipt check
+			]);
+			const suspendedResult: SetInstanceMemberRoleStoreResult =
+				await store(suspended).setInstanceMemberRole(setRoleCommand());
+			expect(suspendedResult).toEqual(expected);
+			expect(suspended.rollbacks).toBe(1);
+		});
+
+		it('refuses role_not_permitted, not forbidden, when an active admin requests a role above member on itself', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: ADMIN_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor === target, single row)
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({
+					actor: { type: 'user', id: ADMIN_ID },
+					targetUserId: ADMIN_ID,
+					role: 'owner'
+				})
+			);
+
+			expect(result).toEqual({ outcome: 'role_not_permitted' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('classifies as integrity_error, running no mutation, when updatedAt regresses behind the target current updatedAt', async () => {
+			const LATER_AT: Date = new Date('2026-09-14T13:00:00.000Z');
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: LATER_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult =
+				await store(scripted).setInstanceMemberRole(setRoleCommand());
+
+			expect(result).toEqual({ outcome: 'integrity_error' });
+			expect(scripted.rollbacks).toBe(1);
+			expect(scripted.queries).toHaveLength(3);
+		});
 	});
 
 	describe('setInstanceMemberStatus', () => {
@@ -2402,6 +2558,101 @@ describe('PostgresInstanceStore', () => {
 
 			expect(result).toEqual({ outcome: 'idempotency_conflict' });
 			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('replays a matching receipt even when the actor row now shows a demoted or suspended actor', async () => {
+			const receiptRow = {
+				requestHash: REQUEST_FINGERPRINT,
+				commandType: 'set_status',
+				targetUserId: TARGET_ID,
+				previousRole: 'member',
+				previousStatus: 'active',
+				resultRole: 'member',
+				resultStatus: 'suspended',
+				revokedInvitationCount: 1,
+				occurredAt: UPDATED_AT,
+				targetRowUserId: TARGET_ID,
+				targetRowCreatedAt: CREATED_AT
+			};
+			const expected = {
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 1
+			};
+
+			const demoted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since demoted to plain member)
+				[receiptRow] // receipt check
+			]);
+			const demotedResult: SetInstanceMemberStatusStoreResult =
+				await store(demoted).setInstanceMemberStatus(setStatusCommand());
+			expect(demotedResult).toEqual(expected);
+			expect(demoted.rollbacks).toBe(1);
+
+			const suspended = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'suspended',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since suspended)
+				[receiptRow] // receipt check
+			]);
+			const suspendedResult: SetInstanceMemberStatusStoreResult =
+				await store(suspended).setInstanceMemberStatus(setStatusCommand());
+			expect(suspendedResult).toEqual(expected);
+			expect(suspended.rollbacks).toBe(1);
+		});
+
+		it('classifies as integrity_error, running no mutation, when updatedAt regresses behind the target current updatedAt', async () => {
+			const LATER_AT: Date = new Date('2026-09-14T13:00:00.000Z');
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: LATER_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult =
+				await store(scripted).setInstanceMemberStatus(setStatusCommand());
+
+			expect(result).toEqual({ outcome: 'integrity_error' });
+			expect(scripted.rollbacks).toBe(1);
+			expect(scripted.queries).toHaveLength(3);
 		});
 	});
 });

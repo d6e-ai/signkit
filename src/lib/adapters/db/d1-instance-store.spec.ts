@@ -934,7 +934,10 @@ describe('D1InstanceStore unit tests', () => {
 			});
 			const store = new D1InstanceStore(fake.database);
 
-			const result = await store.setInstanceMemberRole({ ...setRoleCommand, targetUserId: 'ghost' });
+			const result = await store.setInstanceMemberRole({
+				...setRoleCommand,
+				targetUserId: 'ghost'
+			});
 			expect(result).toEqual({ outcome: 'member_not_found' });
 		});
 
@@ -991,7 +994,7 @@ describe('D1InstanceStore unit tests', () => {
 							revoked_invitation_count: 2,
 							occurred_at: UPDATED_AT,
 							target_row_user_id: TARGET_ID,
-							target_row_created_at: CREATED_AT,
+							target_row_created_at: CREATED_AT
 						}
 					],
 					[{ count: 1 }]
@@ -1040,7 +1043,7 @@ describe('D1InstanceStore unit tests', () => {
 							revoked_invitation_count: 0,
 							occurred_at: UPDATED_AT,
 							target_row_user_id: TARGET_ID,
-							target_row_created_at: CREATED_AT,
+							target_row_created_at: CREATED_AT
 						}
 					],
 					[{ count: 1 }]
@@ -1050,6 +1053,125 @@ describe('D1InstanceStore unit tests', () => {
 
 			const result = await store.setInstanceMemberRole(setRoleCommand);
 			expect(result).toEqual({ outcome: 'idempotency_conflict' });
+		});
+
+		it('replays a matching receipt even when the actor row now shows a demoted or suspended actor', async () => {
+			const receiptRow = {
+				request_hash: REQUEST_FINGERPRINT,
+				command_type: 'set_role',
+				target_user_id: TARGET_ID,
+				previous_role: 'admin',
+				previous_status: 'active',
+				result_role: 'member',
+				result_status: 'active',
+				revoked_invitation_count: 2,
+				occurred_at: UPDATED_AT,
+				target_row_user_id: TARGET_ID,
+				target_row_created_at: CREATED_AT
+			};
+			const targetRow = [
+				{
+					user_id: TARGET_ID,
+					role: 'member',
+					status: 'active',
+					created_at: CREATED_AT,
+					updated_at: UPDATED_AT
+				}
+			];
+			const expected = {
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'active',
+					createdAt: CREATED_AT,
+					updatedAt: UPDATED_AT
+				},
+				appliedAt: UPDATED_AT,
+				revokedInvitationCount: 2
+			};
+
+			const demotedActor = fakeD1({
+				batchResults: [
+					[{ role: 'member', status: 'active' }],
+					targetRow,
+					[receiptRow],
+					[{ count: 1 }]
+				]
+			});
+			const demotedResult = await new D1InstanceStore(demotedActor.database).setInstanceMemberRole(
+				setRoleCommand
+			);
+			expect(demotedResult).toEqual(expected);
+			expect(demotedActor.batches).toHaveLength(1);
+
+			const suspendedActor = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'suspended' }],
+					targetRow,
+					[receiptRow],
+					[{ count: 1 }]
+				]
+			});
+			const suspendedResult = await new D1InstanceStore(
+				suspendedActor.database
+			).setInstanceMemberRole(setRoleCommand);
+			expect(suspendedResult).toEqual(expected);
+			expect(suspendedActor.batches).toHaveLength(1);
+		});
+
+		it('refuses at the gate with role_not_permitted, not forbidden, when an admin requests a role above member on itself', async () => {
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'admin', status: 'active' }],
+					[
+						{
+							user_id: 'admin-1',
+							role: 'admin',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: CREATED_AT
+						}
+					],
+					[],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole({
+				...setRoleCommand,
+				actor: { type: 'user', id: 'admin-1' },
+				targetUserId: 'admin-1',
+				role: 'admin'
+			});
+			expect(result).toEqual({ outcome: 'role_not_permitted' });
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('classifies at the gate as integrity_error when updatedAt regresses behind the target current updatedAt, running no mutation batch', async () => {
+			const LATER_AT: string = '2026-09-14T12:00:00.000Z';
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }],
+					[
+						{
+							user_id: TARGET_ID,
+							role: 'admin',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: LATER_AT
+						}
+					],
+					[],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberRole(setRoleCommand);
+			expect(result).toEqual({ outcome: 'integrity_error' });
+			expect(fake.batches).toHaveLength(1);
 		});
 	});
 
@@ -1255,7 +1377,7 @@ describe('D1InstanceStore unit tests', () => {
 							revoked_invitation_count: 1,
 							occurred_at: UPDATED_AT,
 							target_row_user_id: TARGET_ID,
-							target_row_created_at: CREATED_AT,
+							target_row_created_at: CREATED_AT
 						}
 					],
 					[{ count: 1 }]
@@ -1276,6 +1398,96 @@ describe('D1InstanceStore unit tests', () => {
 				appliedAt: UPDATED_AT,
 				revokedInvitationCount: 1
 			});
+			expect(fake.batches).toHaveLength(1);
+		});
+
+		it('replays a matching receipt even when the actor row now shows a demoted or suspended actor', async () => {
+			const receiptRow = {
+				request_hash: REQUEST_FINGERPRINT,
+				command_type: 'set_status',
+				target_user_id: TARGET_ID,
+				previous_role: 'member',
+				previous_status: 'active',
+				result_role: 'member',
+				result_status: 'suspended',
+				revoked_invitation_count: 1,
+				occurred_at: UPDATED_AT,
+				target_row_user_id: TARGET_ID,
+				target_row_created_at: CREATED_AT
+			};
+			const targetRow = [
+				{
+					user_id: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					created_at: CREATED_AT,
+					updated_at: UPDATED_AT
+				}
+			];
+			const expected = {
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					createdAt: CREATED_AT,
+					updatedAt: UPDATED_AT
+				},
+				appliedAt: UPDATED_AT,
+				revokedInvitationCount: 1
+			};
+
+			const demotedActor = fakeD1({
+				batchResults: [
+					[{ role: 'member', status: 'active' }],
+					targetRow,
+					[receiptRow],
+					[{ count: 1 }]
+				]
+			});
+			const demotedResult = await new D1InstanceStore(
+				demotedActor.database
+			).setInstanceMemberStatus(setStatusCommand);
+			expect(demotedResult).toEqual(expected);
+			expect(demotedActor.batches).toHaveLength(1);
+
+			const suspendedActor = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'suspended' }],
+					targetRow,
+					[receiptRow],
+					[{ count: 1 }]
+				]
+			});
+			const suspendedResult = await new D1InstanceStore(
+				suspendedActor.database
+			).setInstanceMemberStatus(setStatusCommand);
+			expect(suspendedResult).toEqual(expected);
+			expect(suspendedActor.batches).toHaveLength(1);
+		});
+
+		it('classifies at the gate as integrity_error when updatedAt regresses behind the target current updatedAt, running no mutation batch', async () => {
+			const LATER_AT: string = '2026-09-14T12:00:00.000Z';
+			const fake = fakeD1({
+				batchResults: [
+					[{ role: 'owner', status: 'active' }],
+					[
+						{
+							user_id: TARGET_ID,
+							role: 'member',
+							status: 'active',
+							created_at: CREATED_AT,
+							updated_at: LATER_AT
+						}
+					],
+					[],
+					[{ count: 1 }]
+				]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.setInstanceMemberStatus(setStatusCommand);
+			expect(result).toEqual({ outcome: 'integrity_error' });
 			expect(fake.batches).toHaveLength(1);
 		});
 	});

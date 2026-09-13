@@ -290,20 +290,27 @@ export interface SetInstanceMemberRoleCommand {
  *   `appliedAt`, and `revokedInvitationCount` from the original call rather
  *   than any state produced by later commands.
  * - `forbidden`: the actor is not currently an active `owner` or `admin`,
- *   or the actor is an `admin` targeting a member whose current role is not
- *   `member` (an `admin` may only administer current `member`-role
- *   targets).
+ *   or the actor is an `admin` requesting `member` for a target whose
+ *   current role is not `member` (an `admin` may only administer current
+ *   `member`-role targets). Checked only after `role_not_permitted` below,
+ *   so an admin requesting a role above `member` never falls through to
+ *   this outcome merely because the target (possibly the admin itself)
+ *   also happens to not currently be a plain member.
  * - `member_suspended`: the actor exists but is not `active`.
  * - `role_not_permitted`: the actor is an active `admin` requesting a role
- *   above `member` (an `admin` cannot grant `admin` or `owner`, including
- *   to itself).
+ *   above `member`, checked before `forbidden` above (an `admin` cannot
+ *   grant `admin` or `owner`, including to itself, regardless of the
+ *   target's current role).
  * - `member_not_found`: `targetUserId` does not identify a current instance
  *   member.
  * - `last_active_owner`: the target is the last active `owner` and this
  *   change would leave the instance with no active owner.
  * - `idempotency_conflict`: the Idempotency-Key was reused for a different
  *   request.
- * - `integrity_error`: the receipt and member rows disagree.
+ * - `integrity_error`: the receipt and member rows disagree, or `updatedAt`
+ *   regresses behind the target's current `updatedAt` (member rows are
+ *   monotonic in `updatedAt`; a command claiming an earlier instant is
+ *   rejected rather than silently applied or corrupting ordering).
  */
 export type SetInstanceMemberRoleStoreResult =
 	| {
@@ -365,7 +372,10 @@ export interface SetInstanceMemberStatusCommand {
  *   actor's role.
  * - `idempotency_conflict`: the Idempotency-Key was reused for a different
  *   request.
- * - `integrity_error`: the receipt and member rows disagree.
+ * - `integrity_error`: the receipt and member rows disagree, or `updatedAt`
+ *   regresses behind the target's current `updatedAt` (member rows are
+ *   monotonic in `updatedAt`; a command claiming an earlier instant is
+ *   rejected rather than silently applied or corrupting ordering).
  */
 export type SetInstanceMemberStatusStoreResult =
 	| {

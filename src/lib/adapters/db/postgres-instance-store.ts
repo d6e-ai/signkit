@@ -944,6 +944,12 @@ export class PostgresInstanceStore implements InstanceStore {
 			const limit: number = boundInstanceMemberListLimit(query.limit);
 			const fetchLimit: number = limit + 1;
 
+			// COLLATE "C" forces byte-wise comparison, matching SQLite/D1's
+			// BINARY collation on TEXT columns: PostgreSQL's default collation
+			// is locale-dependent and can order Unicode user_id values
+			// differently than D1, which would desynchronize keyset pagination
+			// (and any provider-parity ordering guarantee) between the two
+			// adapters.
 			const rows: MemberRow[] =
 				query.cursor === null
 					? await transaction<MemberRow[]>`
@@ -951,7 +957,7 @@ export class PostgresInstanceStore implements InstanceStore {
 									user_id AS "userId", role, status,
 									created_at AS "createdAt", updated_at AS "updatedAt"
 								FROM instance_member
-								ORDER BY user_id ASC
+								ORDER BY user_id COLLATE "C" ASC
 								LIMIT ${fetchLimit}
 							`
 					: await transaction<MemberRow[]>`
@@ -959,8 +965,8 @@ export class PostgresInstanceStore implements InstanceStore {
 									user_id AS "userId", role, status,
 									created_at AS "createdAt", updated_at AS "updatedAt"
 								FROM instance_member
-								WHERE user_id > ${query.cursor}
-								ORDER BY user_id ASC
+								WHERE (user_id COLLATE "C") > (${query.cursor} COLLATE "C")
+								ORDER BY user_id COLLATE "C" ASC
 								LIMIT ${fetchLimit}
 							`;
 
@@ -1026,13 +1032,11 @@ export class PostgresInstanceStore implements InstanceStore {
 						lockedRows.find((row: MemberRow): boolean => row.userId === command.targetUserId) ??
 						null;
 
-					if (actorRow === null || actorRow.role === 'member') {
-						throw new InstanceRollback({ outcome: 'forbidden' });
-					}
-					if (actorRow.status === 'suspended') {
-						throw new InstanceRollback({ outcome: 'member_suspended' });
-					}
-
+					// Exact receipt replay is checked first, ahead of the actor's
+					// current role/status: evaluateSetRoleReceipt answers entirely
+					// from the receipt and the target's row, so a replay by an actor
+					// since demoted or suspended is still classified correctly
+					// without a separate branch here.
 					const receiptRow: MemberCommandReceiptRow | null = await this.#findMemberCommandReceipt(
 						transaction,
 						command.actor.type,
@@ -1043,16 +1047,29 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback(evaluateSetRoleReceipt(receiptRow, command));
 					}
 
+					if (actorRow === null || actorRow.role === 'member') {
+						throw new InstanceRollback({ outcome: 'forbidden' });
+					}
+					if (actorRow.status === 'suspended') {
+						throw new InstanceRollback({ outcome: 'member_suspended' });
+					}
+
 					if (targetRow === null) {
 						throw new InstanceRollback({ outcome: 'member_not_found' });
 					}
 
 					if (actorRow.role === 'admin') {
-						if (targetRow.role !== 'member') {
-							throw new InstanceRollback({ outcome: 'forbidden' });
-						}
+						// Requesting a role above member is checked before the target's
+						// current role, so an admin requesting admin/owner is always
+						// role_not_permitted -- including a self-targeting request,
+						// where the target row is the admin's own and would otherwise
+						// fail the role !== 'member' check below with the wrong
+						// outcome.
 						if (command.role !== 'member') {
 							throw new InstanceRollback({ outcome: 'role_not_permitted' });
+						}
+						if (targetRow.role !== 'member') {
+							throw new InstanceRollback({ outcome: 'forbidden' });
 						}
 					}
 
@@ -1068,6 +1085,10 @@ export class PostgresInstanceStore implements InstanceStore {
 						if (otherActiveOwners === 0) {
 							throw new InstanceRollback({ outcome: 'last_active_owner' });
 						}
+					}
+
+					if (Date.parse(command.updatedAt) < Date.parse(toIso(targetRow.updatedAt))) {
+						throw new InstanceRollback({ outcome: 'integrity_error' });
 					}
 
 					const cascadeKind: RoleCascadeKind = roleCascadeKind(targetRow.role, command.role);
@@ -1191,13 +1212,11 @@ export class PostgresInstanceStore implements InstanceStore {
 						lockedRows.find((row: MemberRow): boolean => row.userId === command.targetUserId) ??
 						null;
 
-					if (actorRow === null || actorRow.role === 'member') {
-						throw new InstanceRollback({ outcome: 'forbidden' });
-					}
-					if (actorRow.status === 'suspended') {
-						throw new InstanceRollback({ outcome: 'member_suspended' });
-					}
-
+					// Exact receipt replay is checked first, ahead of the actor's
+					// current role/status: evaluateSetStatusReceipt answers entirely
+					// from the receipt and the target's row, so a replay by an actor
+					// since demoted or suspended is still classified correctly
+					// without a separate branch here.
 					const receiptRow: MemberCommandReceiptRow | null = await this.#findMemberCommandReceipt(
 						transaction,
 						command.actor.type,
@@ -1206,6 +1225,13 @@ export class PostgresInstanceStore implements InstanceStore {
 					);
 					if (receiptRow !== null) {
 						throw new InstanceRollback(evaluateSetStatusReceipt(receiptRow, command));
+					}
+
+					if (actorRow === null || actorRow.role === 'member') {
+						throw new InstanceRollback({ outcome: 'forbidden' });
+					}
+					if (actorRow.status === 'suspended') {
+						throw new InstanceRollback({ outcome: 'member_suspended' });
 					}
 
 					// Status self-change is never permitted, regardless of role --
@@ -1235,6 +1261,10 @@ export class PostgresInstanceStore implements InstanceStore {
 						if (otherActiveOwners === 0) {
 							throw new InstanceRollback({ outcome: 'last_active_owner' });
 						}
+					}
+
+					if (Date.parse(command.updatedAt) < Date.parse(toIso(targetRow.updatedAt))) {
+						throw new InstanceRollback({ outcome: 'integrity_error' });
 					}
 
 					const cascades: boolean = command.status === 'suspended';
@@ -1783,11 +1813,11 @@ export class PostgresInstanceStore implements InstanceStore {
 		}
 
 		if (actor.role === 'admin') {
-			if (target.role !== 'member') {
-				return { outcome: 'forbidden' };
-			}
 			if (command.role !== 'member') {
 				return { outcome: 'role_not_permitted' };
+			}
+			if (target.role !== 'member') {
+				return { outcome: 'forbidden' };
 			}
 		}
 

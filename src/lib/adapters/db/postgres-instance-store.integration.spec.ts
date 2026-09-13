@@ -1560,6 +1560,57 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		expect(suspendedList).toEqual({ outcome: 'member_suspended' });
 	});
 
+	it('orders and paginates members by user_id in raw byte order across mixed-case and Unicode ids, matching D1/SQLite BINARY collation', async (): Promise<void> => {
+		// This container runs on musl libc (Alpine), whose "locale" support is
+		// effectively always byte order, so it cannot by itself demonstrate a
+		// PostgreSQL default-collation divergence the way a glibc/ICU-backed
+		// PostgreSQL (e.g. most managed cloud instances) could. The explicit
+		// COLLATE "C" in the query still pins the guarantee independently of
+		// the underlying platform's default collation, and this test fixes
+		// the expected byte order across digits, ASCII case, '_', and two
+		// non-ASCII BMP characters so a regression to unqualified `user_id`
+		// ordering would be caught wherever the default collation differs.
+		await insertMember(OWNER_ID, 'owner');
+		const ids: readonly string[] = [
+			'1-digit',
+			'A-upper',
+			'_underscore',
+			'a-lower',
+			'é-eacute',
+			'Ω-omega'
+		];
+		for (const id of ids) {
+			await insertMember(id, 'member');
+		}
+
+		const page1Result: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: OWNER_ID },
+			memberListQuery({ limit: 3 })
+		);
+		expect(page1Result.outcome).toBe('listed');
+		const page1: InstanceMemberListPage = (
+			page1Result as Extract<ListInstanceMembersStoreResult, { outcome: 'listed' }>
+		).page;
+		expect(page1.items.map((item) => item.userId)).toEqual(['1-digit', 'A-upper', '_underscore']);
+		expect(page1.nextCursor).toBe('_underscore');
+
+		const page2Result: ListInstanceMembersStoreResult = await store().listInstanceMembers(
+			{ type: 'user', id: OWNER_ID },
+			memberListQuery({ cursor: page1.nextCursor, limit: 10 })
+		);
+		expect(page2Result.outcome).toBe('listed');
+		const page2: InstanceMemberListPage = (
+			page2Result as Extract<ListInstanceMembersStoreResult, { outcome: 'listed' }>
+		).page;
+		expect(page2.items.map((item) => item.userId)).toEqual([
+			'a-lower',
+			OWNER_ID,
+			'é-eacute',
+			'Ω-omega'
+		]);
+		expect(page2.nextCursor).toBeNull();
+	});
+
 	it('lets an owner administer any member, lets an admin administer only current member-role targets, and never grants above member from an admin', async (): Promise<void> => {
 		await insertMember(OWNER_ID, 'owner');
 		await insertMember(ADMIN_ID, 'admin');
@@ -1764,6 +1815,147 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		expect(currentStatus[0]?.status).toBe('active');
 	});
 
+	it('returns replayed for exact set-role replay after the actor is later demoted or suspended by another owner', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(OWNER2_ID, 'owner');
+		await insertMember(TARGET_ID, 'member');
+
+		const cmd: SetInstanceMemberRoleCommand = setRoleCommand({
+			role: 'admin',
+			idempotencyKey: 'role-replay-actor-demoted-or-suspended'
+		});
+		const first: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(cmd);
+		expect(first.outcome).toBe('updated');
+
+		// Another owner demotes the acting owner to plain member.
+		const demoteActor: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				targetUserId: OWNER_ID,
+				role: 'member',
+				idempotencyKey: 'owner2-demotes-owner1',
+				updatedAt: LATER_AT
+			})
+		);
+		expect(demoteActor.outcome).toBe('updated');
+
+		// Demoted actor's exact replay still succeeds with replayed.
+		const demotedReplay: SetInstanceMemberRoleStoreResult =
+			await store().setInstanceMemberRole(cmd);
+		expect(demotedReplay.outcome).toBe('replayed');
+
+		// Another owner suspends the actor.
+		const suspendActor: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				targetUserId: OWNER_ID,
+				status: 'suspended',
+				idempotencyKey: 'owner2-suspends-owner1',
+				updatedAt: '2026-09-15T13:00:00.000Z'
+			})
+		);
+		expect(suspendActor.outcome).toBe('updated');
+
+		// Suspended actor's exact replay still succeeds with replayed.
+		const suspendedReplay: SetInstanceMemberRoleStoreResult =
+			await store().setInstanceMemberRole(cmd);
+		expect(suspendedReplay.outcome).toBe('replayed');
+	});
+
+	it('returns replayed for exact set-status replay after the actor is later demoted or suspended by another owner', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(OWNER2_ID, 'owner');
+		await insertMember(TARGET_ID, 'member');
+
+		const cmd: SetInstanceMemberStatusCommand = setStatusCommand({
+			status: 'suspended',
+			idempotencyKey: 'status-replay-actor-demoted-or-suspended'
+		});
+		const first: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(cmd);
+		expect(first.outcome).toBe('updated');
+
+		// Another owner demotes the acting owner to plain member.
+		const demoteActor: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				targetUserId: OWNER_ID,
+				role: 'member',
+				idempotencyKey: 'owner2-demotes-owner1-status',
+				updatedAt: LATER_AT
+			})
+		);
+		expect(demoteActor.outcome).toBe('updated');
+
+		// Demoted actor's exact replay still succeeds with replayed.
+		const demotedReplay: SetInstanceMemberStatusStoreResult =
+			await store().setInstanceMemberStatus(cmd);
+		expect(demotedReplay.outcome).toBe('replayed');
+
+		// Another owner suspends the actor.
+		const suspendActor: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({
+				actor: { type: 'user', id: OWNER2_ID },
+				targetUserId: OWNER_ID,
+				status: 'suspended',
+				idempotencyKey: 'owner2-suspends-owner1-status',
+				updatedAt: '2026-09-15T13:00:00.000Z'
+			})
+		);
+		expect(suspendActor.outcome).toBe('updated');
+
+		// Suspended actor's exact replay still succeeds with replayed.
+		const suspendedReplay: SetInstanceMemberStatusStoreResult =
+			await store().setInstanceMemberStatus(cmd);
+		expect(suspendedReplay.outcome).toBe('replayed');
+	});
+
+	it('returns integrity_error and leaves member and receipt unchanged when command updatedAt is older than target updatedAt', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(TARGET_ID, 'member');
+
+		const initial: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				role: 'admin',
+				idempotencyKey: 'initial-role-command',
+				updatedAt: UPDATED_AT
+			})
+		);
+		expect(initial.outcome).toBe('updated');
+
+		const olderRole: SetInstanceMemberRoleStoreResult = await store().setInstanceMemberRole(
+			setRoleCommand({
+				role: 'member',
+				idempotencyKey: 'older-role-command',
+				updatedAt: CREATED_AT
+			})
+		);
+		expect(olderRole).toEqual({ outcome: 'integrity_error' });
+
+		const olderStatus: SetInstanceMemberStatusStoreResult = await store().setInstanceMemberStatus(
+			setStatusCommand({
+				status: 'suspended',
+				idempotencyKey: 'older-status-command',
+				updatedAt: CREATED_AT
+			})
+		);
+		expect(olderStatus).toEqual({ outcome: 'integrity_error' });
+
+		const targetRows: { role: string; status: string; updatedAt: string }[] = await database()<
+			{ role: string; status: string; updatedAt: string }[]
+		>`SELECT role, status, updated_at AS "updatedAt" FROM instance_member WHERE user_id = ${TARGET_ID}`;
+		expect(targetRows[0]?.role).toBe('admin');
+		expect(targetRows[0]?.status).toBe('active');
+		expect(new Date(targetRows[0]?.updatedAt as string).toISOString()).toBe(
+			new Date(UPDATED_AT).toISOString()
+		);
+
+		const receiptRows: { idempotencyKey: string }[] = await database()<
+			{ idempotencyKey: string }[]
+		>`SELECT idempotency_key AS "idempotencyKey" FROM instance_member_command WHERE target_user_id = ${TARGET_ID}`;
+		expect(receiptRows).toHaveLength(1);
+		expect(receiptRows[0]?.idempotencyKey).toBe('initial-role-command');
+	});
+
 	it('rejects a reused idempotency key with a conflicting request fingerprint for role and status commands', async (): Promise<void> => {
 		await insertMember(OWNER_ID, 'owner');
 		await insertMember(TARGET_ID, 'member');
@@ -1884,18 +2076,25 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 	 * (owner A targeting owner B, and owner B targeting owner A) always
 	 * request their locks in the same sorted order and so never deadlock.
 	 *
-	 * The loser's specific rejection is 'forbidden' rather than
-	 * 'last_active_owner': whichever demotion commits first turns its actor
-	 * into a plain admin, and an admin may never administer a target whose
-	 * role isn't 'member' (the other command's target is still 'owner'). A
-	 * distinct active-owner actor always counts as "another active owner" of
-	 * its target in the owner-floor query, so 'last_active_owner' for a
-	 * non-self target is only reachable when the actor's own authority has
-	 * already lapsed some other way -- which the admin-ceiling check catches
-	 * first here. The invariant this test actually protects -- never both
-	 * succeed, and exactly one active owner survives -- holds either way.
+	/**
+	 * The core write-skew regression test for the shared member-admin advisory
+	 * lock: under plain READ COMMITTED and per-row locking alone, two owners
+	 * concurrently demoting each other would each read the other's row as
+	 * still an active owner and both succeed, leaving zero active owners. The
+	 * lock serializes the two mutations so the second always re-reads the
+	 * first's already-committed result, and this also exercises the
+	 * deterministic actor/target row-lock ordering: two symmetric mutations
+	 * (owner A targeting owner B, and owner B targeting owner A) always
+	 * request their locks in the same sorted order and so never deadlock.
+	 *
+	 * Whichever demotion commits first turns its actor into a plain admin.
+	 * When the second demotion runs, its actor is now an admin requesting
+	 * a role above member (role: 'admin'), which fails with 'role_not_permitted'
+	 * under the Opus-directed outcome ordering ahead of checking target role.
+	 * The invariant this test actually protects -- never both succeed, and
+	 * exactly one active owner survives -- holds either way.
 	 */
-	it('resolves two owners concurrently demoting each other to exactly one updated and one forbidden, leaving one active owner and one admin', async (): Promise<void> => {
+	it('resolves two owners concurrently demoting each other to exactly one updated and one role_not_permitted, leaving one active owner and one admin', async (): Promise<void> => {
 		await insertMember(OWNER_ID, 'owner');
 		await insertMember(OWNER2_ID, 'owner');
 
@@ -1928,7 +2127,7 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 			]);
 
 			const outcomes: string[] = [first.outcome, second.outcome].sort();
-			expect(outcomes).toEqual(['forbidden', 'updated']);
+			expect(outcomes).toEqual(['role_not_permitted', 'updated']);
 
 			const owners: { userId: string; role: string; status: string }[] = await database()<
 				{ userId: string; role: string; status: string }[]
@@ -2127,6 +2326,9 @@ function synchronizeBootstrap(delegates: readonly InstanceStore[]): readonly Ins
 		listInstanceInvitations: delegate.listInstanceInvitations.bind(delegate),
 		acceptInstanceInvitation: delegate.acceptInstanceInvitation.bind(delegate),
 		revokeInstanceInvitation: delegate.revokeInstanceInvitation.bind(delegate),
+		listInstanceMembers: delegate.listInstanceMembers.bind(delegate),
+		setInstanceMemberRole: delegate.setInstanceMemberRole.bind(delegate),
+		setInstanceMemberStatus: delegate.setInstanceMemberStatus.bind(delegate),
 		bootstrapInstance: async (
 			command: BootstrapInstanceCommand
 		): Promise<BootstrapInstanceStoreResult> => {

@@ -1162,6 +1162,15 @@ export class D1InstanceStore implements InstanceStore {
 		);
 		const ownerCountRow: CountRow | null = firstRow<CountRow>(results[3]);
 
+		// Exact receipt replay is checked first, ahead of the actor's current
+		// role/status: evaluateSetRoleReceipt answers entirely from the receipt
+		// and the target's row, so a replay by an actor since demoted or
+		// suspended is still classified correctly without a separate branch
+		// here.
+		if (receiptRow !== null) {
+			return { kind: 'outcome', result: evaluateSetRoleReceipt(receiptRow, command) };
+		}
+
 		if (actorRow === null || actorRow.role === 'member') {
 			return { kind: 'outcome', result: { outcome: 'forbidden' } };
 		}
@@ -1169,20 +1178,21 @@ export class D1InstanceStore implements InstanceStore {
 			return { kind: 'outcome', result: { outcome: 'member_suspended' } };
 		}
 
-		if (receiptRow !== null) {
-			return { kind: 'outcome', result: evaluateSetRoleReceipt(receiptRow, command) };
-		}
-
 		if (targetRow === null) {
 			return { kind: 'outcome', result: { outcome: 'member_not_found' } };
 		}
 
 		if (actorRow.role === 'admin') {
-			if (targetRow.role !== 'member') {
-				return { kind: 'outcome', result: { outcome: 'forbidden' } };
-			}
+			// Requesting a role above member is checked before the target's
+			// current role, so an admin requesting admin/owner is always
+			// role_not_permitted -- including a self-targeting request, where
+			// the target row is the admin's own and would otherwise fail the
+			// role !== 'member' check below with the wrong outcome.
 			if (command.role !== 'member') {
 				return { kind: 'outcome', result: { outcome: 'role_not_permitted' } };
+			}
+			if (targetRow.role !== 'member') {
+				return { kind: 'outcome', result: { outcome: 'forbidden' } };
 			}
 		}
 
@@ -1194,6 +1204,10 @@ export class D1InstanceStore implements InstanceStore {
 			otherActiveOwners === 0
 		) {
 			return { kind: 'outcome', result: { outcome: 'last_active_owner' } };
+		}
+
+		if (command.updatedAt < targetRow.updated_at) {
+			return { kind: 'outcome', result: { outcome: 'integrity_error' } };
 		}
 
 		return { kind: 'proceed', target: targetRow };
@@ -1249,15 +1263,20 @@ export class D1InstanceStore implements InstanceStore {
 		);
 		const ownerCountRow: CountRow | null = firstRow<CountRow>(results[3]);
 
+		// Exact receipt replay is checked first, ahead of the actor's current
+		// role/status: evaluateSetStatusReceipt answers entirely from the
+		// receipt and the target's row, so a replay by an actor since demoted
+		// or suspended is still classified correctly without a separate branch
+		// here.
+		if (receiptRow !== null) {
+			return { kind: 'outcome', result: evaluateSetStatusReceipt(receiptRow, command) };
+		}
+
 		if (actorRow === null || actorRow.role === 'member') {
 			return { kind: 'outcome', result: { outcome: 'forbidden' } };
 		}
 		if (actorRow.status === 'suspended') {
 			return { kind: 'outcome', result: { outcome: 'member_suspended' } };
-		}
-
-		if (receiptRow !== null) {
-			return { kind: 'outcome', result: evaluateSetStatusReceipt(receiptRow, command) };
 		}
 
 		if (command.targetUserId === command.actor.id) {
@@ -1280,6 +1299,10 @@ export class D1InstanceStore implements InstanceStore {
 			otherActiveOwners === 0
 		) {
 			return { kind: 'outcome', result: { outcome: 'last_active_owner' } };
+		}
+
+		if (command.updatedAt < targetRow.updated_at) {
+			return { kind: 'outcome', result: { outcome: 'integrity_error' } };
 		}
 
 		return { kind: 'proceed', target: targetRow };
