@@ -155,7 +155,7 @@ async fn test_envelopes_void_conflict_uses_existing_exit_code() {
 }
 
 #[tokio::test]
-async fn test_envelopes_audit_and_evidence_read_completion_artifact() {
+async fn test_envelopes_audit_reads_completion_artifact_status() {
     let mock_server = common::start_mock_server().await;
     let body = format!(
         r#"{{"completionArtifact":{{"status":"not_completed","envelopeId":"{}"}}}}"#,
@@ -168,24 +168,22 @@ async fn test_envelopes_audit_and_evidence_read_completion_artifact() {
             common::TEST_ENVELOPE_ID
         )))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
-        .expect(2)
+        .expect(1)
         .mount(&mock_server)
         .await;
 
     let _env = common::EnvScope::new(&[("SIGNKIT_API_KEY", Some(common::TEST_API_KEY))]).await;
-    for command in ["audit", "evidence"] {
-        let cli = Cli::parse_from([
-            "signkit",
-            "--base-url",
-            &mock_server.uri(),
-            "--org",
-            common::TEST_ORG,
-            "envelopes",
-            command,
-            common::TEST_ENVELOPE_ID,
-        ]);
-        assert_eq!(run_cli(cli).await, ExitCode::Success);
-    }
+    let cli = Cli::parse_from([
+        "signkit",
+        "--base-url",
+        &mock_server.uri(),
+        "--org",
+        common::TEST_ORG,
+        "envelopes",
+        "audit",
+        common::TEST_ENVELOPE_ID,
+    ]);
+    assert_eq!(run_cli(cli).await, ExitCode::Success);
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 import { WEBHOOK_AUDIT_EVENT_TYPES } from '$lib/domain/audit';
 import { recipientRoles, fieldTypes } from '$lib/domain/envelope';
+import { MAX_SIGNATURE_ASSET_BYTES } from '$lib/application/documents/signature-asset';
 
 const UUIDV7: Record<string, unknown> = {
 	type: 'string',
@@ -144,6 +145,7 @@ function op(input: {
 	parameters?: unknown[];
 	requestBody?: unknown;
 	responses: Record<string, unknown>;
+	includeProblemResponses?: boolean;
 }): Record<string, unknown> {
 	return {
 		summary: input.summary,
@@ -152,12 +154,22 @@ function op(input: {
 		security: input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }],
 		...(input.parameters === undefined ? {} : { parameters: input.parameters }),
 		...(input.requestBody === undefined ? {} : { requestBody: input.requestBody }),
-		responses: { ...input.responses, ...PROBLEM_RESPONSES }
+		responses:
+			input.includeProblemResponses === false
+				? { ...input.responses }
+				: { ...PROBLEM_RESPONSES, ...input.responses }
 	};
 }
 
 const envelopeIdParam = {
 	name: 'envelopeId',
+	in: 'path',
+	required: true,
+	schema: UUIDV7
+};
+
+const recipientIdParam = {
+	name: 'recipientId',
 	in: 'path',
 	required: true,
 	schema: UUIDV7
@@ -169,6 +181,47 @@ const webhookIdParam = {
 	required: true,
 	schema: UUIDV7
 };
+
+const evidenceFormatQuery = {
+	name: 'format',
+	in: 'query',
+	required: false,
+	schema: { type: 'string', enum: ['json', 'markdown'], default: 'json' },
+	description:
+		'Published evidence representation. Markdown is selected only when format=markdown; otherwise JSON.'
+};
+
+const publicCompletionFormatQuery = {
+	name: 'format',
+	in: 'query',
+	required: false,
+	schema: { type: 'string', enum: ['json', 'markdown', 'pdf'] },
+	description:
+		'Public completion representation. The API default is json; the link default is markdown. Unknown values are an opaque 404. pdf returns application/pdf bytes and is opaque 404 until the visual PDF is published.'
+};
+
+const reissueBodyProperties: Record<string, unknown> = {
+	recipientId: UUIDV7,
+	reason: { type: 'string', maxLength: 500 }
+};
+
+const reissueReceipt = jsonResponse('200', 'Reissue receipt without capability material', {
+	type: 'object',
+	required: ['reissued'],
+	additionalProperties: false,
+	properties: {
+		reissued: {
+			type: 'object',
+			required: ['envelopeId', 'recipientId', 'reissuedAt'],
+			additionalProperties: false,
+			properties: {
+				envelopeId: UUIDV7,
+				recipientId: UUIDV7,
+				reissuedAt: { type: 'string', format: 'date-time' }
+			}
+		}
+	}
+});
 
 const idempotencyHeader = {
 	name: 'Idempotency-Key',
@@ -559,6 +612,119 @@ export function openApiDocument(): Record<string, unknown> {
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [organizationHeader, envelopeIdParam],
 					responses: jsonResponse('200', 'Completion artifact status', { type: 'object' })
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/evidence': {
+				get: op({
+					summary: 'Download published completion evidence',
+					operationId: 'getEnvelopeEvidence',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [organizationHeader, envelopeIdParam, evidenceFormatQuery],
+					responses: {
+						'200': {
+							description:
+								'Immutable JSON or Markdown evidence bytes. Never includes object-store keys.',
+							content: {
+								'application/json': { schema: { type: 'object' } },
+								'text/markdown': { schema: { type: 'string' } }
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence': {
+				get: op({
+					summary: 'Download published completion evidence',
+					operationId: 'getEnvelopeCompletionArtifactEvidence',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [organizationHeader, envelopeIdParam, evidenceFormatQuery],
+					responses: {
+						'200': {
+							description: 'Alias of GET /api/v1/envelopes/{envelopeId}/evidence.',
+							content: {
+								'application/json': { schema: { type: 'object' } },
+								'text/markdown': { schema: { type: 'string' } }
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/pdf': {
+				get: op({
+					summary: 'Download the published visual completion PDF',
+					operationId: 'getEnvelopePdf',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [organizationHeader, envelopeIdParam],
+					responses: {
+						'200': {
+							description:
+								'Verified application/pdf bytes. Cryptographic PAdES sealing is not included.',
+							content: {
+								'application/pdf': { schema: { type: 'string', format: 'binary' } }
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/completion-artifact/pdf': {
+				get: op({
+					summary: 'Download the published visual completion PDF',
+					operationId: 'getEnvelopeCompletionArtifactPdf',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [organizationHeader, envelopeIdParam],
+					responses: {
+						'200': {
+							description: 'Alias of GET /api/v1/envelopes/{envelopeId}/pdf.',
+							content: {
+								'application/pdf': { schema: { type: 'string', format: 'binary' } }
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/reissue': {
+				post: op({
+					summary: 'Reissue a recipient capability',
+					operationId: 'reissueEnvelopeRecipientCapability',
+					tags: ['Envelopes'],
+					security: [{ SessionCookie: [] }],
+					parameters: [envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['recipientId'],
+									additionalProperties: false,
+									properties: reissueBodyProperties
+								}
+							}
+						}
+					},
+					responses: reissueReceipt
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/reissue': {
+				post: op({
+					summary: 'Reissue that recipient capability',
+					operationId: 'reissueNamedRecipientCapability',
+					tags: ['Envelopes'],
+					security: [{ SessionCookie: [] }],
+					parameters: [envelopeIdParam, recipientIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									additionalProperties: false,
+									properties: reissueBodyProperties
+								}
+							}
+						}
+					},
+					responses: reissueReceipt
 				})
 			},
 			'/api/v1/webhooks': {
@@ -955,13 +1121,76 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Signature receipt', { type: 'object' })
 				})
 			},
+			'/api/v1/signing/signature-assets': {
+				post: op({
+					summary: 'Upload a same-origin drawn signature PNG',
+					operationId: 'storeSigningSignatureAsset',
+					tags: ['Signing'],
+					security: [{ RecipientSessionCookie: [] }],
+					parameters: [
+						{
+							name: 'envelopeId',
+							in: 'query',
+							required: true,
+							schema: UUIDV7
+						},
+						{
+							name: 'recipientId',
+							in: 'query',
+							required: true,
+							schema: UUIDV7
+						}
+					],
+					requestBody: {
+						required: true,
+						description: `Same-origin image/png body, at most ${MAX_SIGNATURE_ASSET_BYTES} bytes. Content-addressed; no Idempotency-Key.`,
+						content: {
+							'image/png': {
+								schema: { type: 'string', format: 'binary' }
+							}
+						}
+					},
+					responses: jsonResponse('201', 'Stored signature asset reference', {
+						type: 'object',
+						required: ['assetRef'],
+						additionalProperties: false,
+						properties: {
+							assetRef: {
+								type: 'string',
+								description: 'Content-addressed sig:sha256 digest. Not an object-store key.'
+							}
+						}
+					})
+				})
+			},
 			'/api/v1/completion-artifacts': {
 				get: op({
 					summary: 'Read a public completion artifact',
 					operationId: 'getPublicCompletionArtifact',
 					tags: ['Completion artifacts'],
 					security: [{ CompletionArtifactGrant: [] }],
-					responses: jsonResponse('200', 'Public completion artifact', { type: 'object' })
+					includeProblemResponses: false,
+					parameters: [publicCompletionFormatQuery],
+					responses: {
+						'200': {
+							description:
+								'Published completion artifact for a valid skca1 grant. Never includes storage keys, tenant IDs, or cookies.',
+							content: {
+								'application/json': { schema: { type: 'object' } },
+								'text/markdown': { schema: { type: 'string' } },
+								'application/pdf': { schema: { type: 'string', format: 'binary' } }
+							}
+						},
+						'404': {
+							description:
+								'Opaque not found for unknown, expired, revoked, malformed, or unpublished format requests.',
+							content: { 'text/plain': { schema: { type: 'string' } } }
+						},
+						'500': {
+							description: 'Opaque internal error without tenant, object-key, or grant material.',
+							content: { 'text/plain': { schema: { type: 'string' } } }
+						}
+					}
 				})
 			}
 		},
@@ -993,6 +1222,12 @@ export function openApiDocument(): Record<string, unknown> {
 					type: 'http',
 					scheme: 'bearer',
 					bearerFormat: 'skr1'
+				},
+				RecipientSessionCookie: {
+					type: 'apiKey',
+					in: 'cookie',
+					name: 'signkit_recipient',
+					description: 'Encrypted recipient session cookie from GET /s/{token}. Not an API key.'
 				},
 				CompletionArtifactGrant: {
 					type: 'http',

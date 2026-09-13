@@ -17,7 +17,7 @@ Accept: application/json
 ```
 
 - **Unauthenticated:** Completely ignores any presented credentials or organization headers.
-- **Dynamic Truth:** Returns runtime profile (`node`, `cloudflare`, `vercel`), supported features, and dynamic API key authorization settings (`enabledScopes`, `readEndpoints`).
+- **Dynamic Truth:** Returns runtime profile (`node`, `cloudflare`, `vercel`), supported features, and dynamic API key authorization settings (`enabledScopes`, `readEndpoints`). Public completion formats (`json`, `markdown`, `pdf`) are advertised under `publicCompletionArtifact.formats`.
 - **Canonical Contracts:** Consult `docs/api.md` and `docs/architecture/` in this repository for normative contracts. Never invent unexposed endpoints, webhooks, or write scopes.
 
 ## Authentication & Authority Boundaries

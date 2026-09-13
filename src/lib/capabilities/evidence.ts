@@ -6,7 +6,7 @@ export const evidenceCapabilities = {
 		authentication: 'organization-session',
 		discovery: 'reconciliation-job',
 		manifestSchema: 'signkit-completion-manifest-v1',
-		artifacts: ['json', 'markdown'],
+		artifacts: ['json', 'markdown', 'pdf'],
 		auditVerification: 'bounded-per-event-hash-rederivation',
 		hashVersion: { current: 2, legacy: 1 },
 		ccDelivery: 'supported',
@@ -29,7 +29,7 @@ export const evidenceCapabilities = {
 		apiEndpoint: '/api/v1/completion-artifacts',
 		linkEndpoint: '/c/{token}',
 		authentication: 'bearer-token-or-path-token',
-		formats: ['json', 'markdown'],
+		formats: ['json', 'markdown', 'pdf'],
 		tokenPrefix: 'skca1',
 		cookies: false
 	}

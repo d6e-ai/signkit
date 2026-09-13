@@ -1,21 +1,21 @@
 use crate::args::{
-    EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeExportDocxArgs, EnvelopeFieldsArgs,
-    EnvelopeIdArg, EnvelopeImportDocxArgs, EnvelopeListArgs, EnvelopeReadyArgs, EnvelopeSendArgs,
-    EnvelopeVoidArgs, EnvelopesSubcommand,
+    EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeEvidenceArgs, EnvelopeExportDocxArgs,
+    EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeImportDocxArgs, EnvelopeListArgs, EnvelopePdfArgs,
+    EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeVoidArgs, EnvelopesSubcommand, EvidenceFormat,
 };
-use crate::client::SignKitClient;
+use crate::client::{BinaryGetSpec, SignKitClient};
 use crate::error::CliError;
 use crate::io::{
     overlay_string, overlay_u64, read_docx_bytes, read_json_object, read_json_value,
-    resolve_idempotency_key, write_output_bytes, MAX_DOCX_BYTES,
+    resolve_idempotency_key, write_output_bytes,
 };
 use crate::output::print_success;
 use crate::types::{
-    is_valid_uuid_v7, CompletionArtifactResponse, DeliveryStatusResponse, DocxExportReceipt,
-    DraftCommitRequest, DraftCommitResponse, DraftWorkspaceSnapshot, EnvelopeCreateRequest,
-    EnvelopeCreateResponse, EnvelopeGetResponse, EnvelopeListPage, PlaceFieldsRequest,
-    PlaceFieldsResponse, ReadyEnvelopeRequest, ReadyEnvelopeResponse, SendEnvelopeRequest,
-    SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
+    is_valid_uuid_v7, ArtifactDownloadReceipt, CompletionArtifactResponse, DeliveryStatusResponse,
+    DocxExportReceipt, DraftCommitRequest, DraftCommitResponse, DraftWorkspaceSnapshot,
+    EnvelopeCreateRequest, EnvelopeCreateResponse, EnvelopeGetResponse, EnvelopeListPage,
+    PlaceFieldsRequest, PlaceFieldsResponse, ReadyEnvelopeRequest, ReadyEnvelopeResponse,
+    SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
 };
 
 pub async fn execute(
@@ -37,11 +37,11 @@ pub async fn execute(
         EnvelopesSubcommand::Void(args) => void_envelope(client, args, raw, pretty).await,
         EnvelopesSubcommand::ImportDocx(args) => import_docx(client, args, raw, pretty).await,
         EnvelopesSubcommand::ExportDocx(args) => export_docx(client, args, raw, pretty).await,
-        EnvelopesSubcommand::CompletionArtifact(args)
-        | EnvelopesSubcommand::Audit(args)
-        | EnvelopesSubcommand::Evidence(args) => {
+        EnvelopesSubcommand::CompletionArtifact(args) | EnvelopesSubcommand::Audit(args) => {
             get_completion_artifact(client, args, raw, pretty).await
         }
+        EnvelopesSubcommand::Evidence(args) => download_evidence(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Pdf(args) => download_pdf(client, args, raw, pretty).await,
     }
 }
 
@@ -385,13 +385,78 @@ async fn export_docx(
         ));
     }
     let path = format!("/api/v1/envelopes/{}/docx", args.envelope_id);
-    let resp = client.get_bytes(&path, &[], true, MAX_DOCX_BYTES).await?;
+    let resp = client
+        .get_bytes(&path, &[], true, BinaryGetSpec::DOCX)
+        .await?;
     write_output_bytes(&args.output, &resp.bytes)?;
     if args.output != "-" {
         let receipt = DocxExportReceipt {
             path: args.output,
             bytes: resp.bytes.len() as u64,
             commit_sha: resp.commit_sha,
+        };
+        print_success(&receipt, raw, pretty)?;
+    }
+    Ok(())
+}
+
+async fn download_evidence(
+    client: &SignKitClient,
+    args: EnvelopeEvidenceArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if args.output.is_empty() {
+        return Err(CliError::usage(
+            "Provide --output PATH (use '-' to write evidence bytes to stdout).",
+        ));
+    }
+    let format: &'static str = args.format.as_str();
+    let spec: BinaryGetSpec = match args.format {
+        EvidenceFormat::Json => BinaryGetSpec::EVIDENCE_JSON,
+        EvidenceFormat::Markdown => BinaryGetSpec::EVIDENCE_MARKDOWN,
+    };
+    let path = format!("/api/v1/envelopes/{}/evidence", args.envelope_id);
+    let resp = client
+        .get_bytes(&path, &[("format", format)], true, spec)
+        .await?;
+    write_output_bytes(&args.output, &resp.bytes)?;
+    if args.output != "-" {
+        let receipt = ArtifactDownloadReceipt {
+            path: args.output,
+            bytes: resp.bytes.len() as u64,
+            format: format.to_string(),
+            content_type: resp.content_type,
+        };
+        print_success(&receipt, raw, pretty)?;
+    }
+    Ok(())
+}
+
+async fn download_pdf(
+    client: &SignKitClient,
+    args: EnvelopePdfArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if args.output.is_empty() {
+        return Err(CliError::usage(
+            "Provide --output PATH (use '-' to write PDF bytes to stdout).",
+        ));
+    }
+    let path = format!("/api/v1/envelopes/{}/pdf", args.envelope_id);
+    let resp = client
+        .get_bytes(&path, &[], true, BinaryGetSpec::PDF)
+        .await?;
+    write_output_bytes(&args.output, &resp.bytes)?;
+    if args.output != "-" {
+        let receipt = ArtifactDownloadReceipt {
+            path: args.output,
+            bytes: resp.bytes.len() as u64,
+            format: "pdf".to_string(),
+            content_type: resp.content_type,
         };
         print_success(&receipt, raw, pretty)?;
     }

@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -98,11 +98,14 @@ pub enum EnvelopesSubcommand {
     /// Read completion artifact publication status for an envelope.
     CompletionArtifact(EnvelopeIdArg),
 
-    /// Read completion artifact publication status (audit evidence).
+    /// Read completion artifact publication status.
     Audit(EnvelopeIdArg),
 
-    /// Read completion artifact publication status (audit evidence).
-    Evidence(EnvelopeIdArg),
+    /// Download published completion evidence bytes (JSON or Markdown).
+    Evidence(EnvelopeEvidenceArgs),
+
+    /// Download the published visual completion PDF.
+    Pdf(EnvelopePdfArgs),
 }
 
 #[derive(Debug, Args)]
@@ -270,6 +273,47 @@ pub struct EnvelopeImportDocxArgs {
 
 #[derive(Debug, Args)]
 pub struct EnvelopeExportDocxArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Destination file, or `-` for stdout.
+    #[arg(long, value_name = "PATH")]
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EvidenceFormat {
+    Json,
+    Markdown,
+}
+
+impl EvidenceFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeEvidenceArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Evidence representation to download.
+    #[arg(long, value_enum, default_value = "json")]
+    pub format: EvidenceFormat,
+
+    /// Destination file, or `-` for stdout.
+    #[arg(long, value_name = "PATH")]
+    pub output: String,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopePdfArgs {
     /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
     #[arg(value_name = "ENVELOPE_ID")]
     pub envelope_id: String,

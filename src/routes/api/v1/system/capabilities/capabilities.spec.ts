@@ -181,11 +181,12 @@ describe('GET /api/v1/system/capabilities', () => {
 		});
 
 		// Public completion artifact capabilities
+		expect(data.completionArtifact.artifacts).toEqual(['json', 'markdown', 'pdf']);
 		expect(data.publicCompletionArtifact).toEqual({
 			apiEndpoint: '/api/v1/completion-artifacts',
 			linkEndpoint: '/c/{token}',
 			authentication: 'bearer-token-or-path-token',
-			formats: ['json', 'markdown'],
+			formats: ['json', 'markdown', 'pdf'],
 			tokenPrefix: 'skca1',
 			cookies: false
 		});

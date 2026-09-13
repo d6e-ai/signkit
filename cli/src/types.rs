@@ -940,6 +940,16 @@ pub struct DocxExportReceipt {
     pub commit_sha: Option<String>,
 }
 
+/// Receipt written to stdout when evidence or PDF download lands on a regular file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactDownloadReceipt {
+    pub path: String,
+    pub bytes: u64,
+    pub format: String,
+    #[serde(rename = "contentType")]
+    pub content_type: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadyRecipient {
     pub email: String,

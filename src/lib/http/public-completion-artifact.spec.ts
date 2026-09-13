@@ -169,6 +169,22 @@ describe('Public Completion Artifact HTTP Handlers', () => {
 			expect(response.headers.get('content-type')).toBe('application/json');
 			expect(await response.text()).toBe(jsonBody);
 		});
+
+		it('GET /api/v1/completion-artifacts?format=pdf serves pdf bytes', async () => {
+			const issued = await issueCompletionToken();
+			const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]);
+			const service = mockService(async (_token, format) => {
+				expect(format).toBe('pdf');
+				return { content: pdfBytes, contentType: 'application/pdf' };
+			});
+
+			const handler = createPublicCompletionArtifactApiHandler(service, () => NOW);
+			const response = await handler(apiEvent(`Bearer ${issued.token}`, 'format=pdf'));
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get('content-type')).toBe('application/pdf');
+			expect(new Uint8Array(await response.arrayBuffer())).toEqual(pdfBytes);
+		});
 	});
 
 	describe('security headers and cookie isolation', () => {

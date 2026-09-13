@@ -41,7 +41,7 @@ cargo test --manifest-path cli/Cargo.toml
 
 The CLI strictly respects the current API authorization model:
 
-- **Enabled Operations:** Public capabilities (`signkit capabilities`), API-key `envelopes:read` inspection (`list`, `get`, `draft`, `deliveries`, `completion-artifact`, `export-docx`), `drafts:write` authoring (`create`, `commit`, `ready`, `fields`, `import-docx`), and `envelopes:send` (`send`, `void`).
+- **Enabled Operations:** Public capabilities (`signkit capabilities`), API-key `envelopes:read` inspection (`list`, `get`, `draft`, `deliveries`, `completion-artifact`, `audit`, `evidence`, `pdf`, `export-docx`), `drafts:write` authoring (`create`, `commit`, `ready`, `fields`, `import-docx`), and `envelopes:send` (`send`, `void`).
 - **Explicit Non-Goals (Do Not Attempt or Invent):**
   - **No Authentication Commands:** There is no `login`, `logout`, or browser exchange command.
   - **No Management Commands:** Key issuance, grant creation, and instance member administration reject API keys and are not in the CLI.

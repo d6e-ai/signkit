@@ -10,6 +10,12 @@ pub const MAX_JSON_INPUT_BYTES: usize = 2 * 1024 * 1024;
 /// Matches the server DOCX import bound (`MAX_DOCX_INPUT_BYTES`).
 pub const MAX_DOCX_BYTES: usize = 20 * 1024 * 1024;
 
+/// Matches the server decompressed evidence bound (`MAX_MANIFEST_SOURCE_BYTES`).
+pub const MAX_EVIDENCE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Matches the server visual completion PDF bound (`MAX_COMPLETION_PDF_BYTES`).
+pub const MAX_COMPLETION_PDF_BYTES: usize = 8 * 1024 * 1024;
+
 /// Reads JSON from a regular file, or from stdin when `path` is `-`.
 pub fn read_json_value(path: &str) -> Result<Value, CliError> {
     let bytes = if path == "-" {
@@ -35,7 +41,7 @@ pub fn write_output_bytes(path: &str, bytes: &[u8]) -> Result<(), CliError> {
     if path == "-" {
         io::stdout()
             .write_all(bytes)
-            .map_err(|err| CliError::usage(format!("Failed to write DOCX to stdout: {err}")))?;
+            .map_err(|err| CliError::usage(format!("Failed to write bytes to stdout: {err}")))?;
         return Ok(());
     }
     write_bounded_file(Path::new(path), bytes)
@@ -121,9 +127,7 @@ fn write_bounded_file(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
             ));
         }
         Ok(metadata) if !metadata.is_file() => {
-            return Err(CliError::usage(
-                "DOCX output path must name a regular file.",
-            ));
+            return Err(CliError::usage("Output path must name a regular file."));
         }
         Ok(_) | Err(_) => {}
     }

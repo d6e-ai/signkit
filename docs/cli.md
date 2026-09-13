@@ -6,7 +6,7 @@ Production-quality, agent-first Rust CLI for SignKit located under `cli/` (requi
 
 The SignKit CLI is designed for non-interactive and machine-automated workflows. It adheres strictly to the current authorization reality documented in [api.md](api.md) and [architecture/](architecture/README.md):
 
-- **Enabled surface:** API-key Bearer authentication with `envelopes:read`, `drafts:write`, and `envelopes:send` on the HTTP commands listed by `GET /api/v1/system/capabilities`, plus public system capabilities.
+- **Enabled surface:** API-key Bearer authentication with `envelopes:read`, `drafts:write`, and `envelopes:send` on the HTTP commands listed by `GET /api/v1/system/capabilities`, plus public system capabilities. `audit` reads publication status; `evidence` and `pdf` download published bytes.
 - **Unavailable operations (by design):**
   - **API-key and instance management** (`/api/v1/api-keys/**`, `/api/v1/instance/**`) reject API keys outright with HTTP 403 `api-key-not-permitted` to prevent self-escalation.
   - Recipient sign/approve/decline remain capability-cookie commands and are not in the CLI.
@@ -131,10 +131,28 @@ signkit --base-url https://signkit.example.com --org org_12345 envelopes deliver
 
 ### `signkit envelopes completion-artifact <ENVELOPE_ID>`
 
-Reads completion artifact publication status: `published`, `pending`, `processing`, `failed`, or `not_completed` (when the envelope has not reached terminal completion).
+Reads completion artifact publication status: `published`, `pending`, `processing`, `failed`, or `not_completed` (when the envelope has not reached terminal completion). `signkit envelopes audit` is an alias of this status read.
 
 ```sh
 signkit --base-url https://signkit.example.com --org org_12345 envelopes completion-artifact 0191b26f-4000-7000-8000-000000000001
+```
+
+### `signkit envelopes evidence <ENVELOPE_ID>`
+
+Downloads published immutable completion evidence (`GET .../evidence`). `--format json` (default) or `--format markdown`. `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout.
+
+```sh
+signkit --base-url https://signkit.example.com --org org_12345 \
+  envelopes evidence 0191b26f-4000-7000-8000-000000000001 --format markdown --output ./evidence.md
+```
+
+### `signkit envelopes pdf <ENVELOPE_ID>`
+
+Downloads the published visual completion PDF (`GET .../pdf`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout. Cryptographic PAdES sealing is not included.
+
+```sh
+signkit --base-url https://signkit.example.com --org org_12345 \
+  envelopes pdf 0191b26f-4000-7000-8000-000000000001 --output ./completion.pdf
 ```
 
 ### `signkit envelopes create`

@@ -130,7 +130,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "authentication": "organization-session",
         "discovery": "reconciliation-job",
         "manifestSchema": "signkit-completion-manifest-v1",
-        "artifacts": ["json", "markdown"],
+        "artifacts": ["json", "markdown", "pdf"],
         "auditVerification": "bounded-per-event-hash-rederivation",
         "ccDelivery": "supported",
         "publicArtifactGrants": "supported"
@@ -149,7 +149,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "apiEndpoint": "/api/v1/completion-artifacts",
         "linkEndpoint": "/c/{token}",
         "authentication": "bearer-token-or-path-token",
-        "formats": ["json", "markdown"],
+        "formats": ["json", "markdown", "pdf"],
         "tokenPrefix": "skca1",
         "cookies": false
       },

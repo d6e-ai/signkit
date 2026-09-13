@@ -10,10 +10,37 @@ use crate::types::ProblemDetail;
 /// Maximum JSON response body limit: 10 MiB.
 pub const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
+/// Accept header and byte bound for a binary GET.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinaryGetSpec {
+    pub accept: &'static str,
+    pub max_bytes: usize,
+}
+
+impl BinaryGetSpec {
+    pub const DOCX: Self = Self {
+        accept: "application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/problem+json",
+        max_bytes: crate::io::MAX_DOCX_BYTES,
+    };
+    pub const EVIDENCE_JSON: Self = Self {
+        accept: "application/json, application/problem+json",
+        max_bytes: crate::io::MAX_EVIDENCE_BYTES,
+    };
+    pub const EVIDENCE_MARKDOWN: Self = Self {
+        accept: "text/markdown, application/problem+json",
+        max_bytes: crate::io::MAX_EVIDENCE_BYTES,
+    };
+    pub const PDF: Self = Self {
+        accept: "application/pdf, application/problem+json",
+        max_bytes: crate::io::MAX_COMPLETION_PDF_BYTES,
+    };
+}
+
 /// Successful binary GET body plus optional commit pin header.
 pub struct BinaryResponse {
     pub bytes: Vec<u8>,
     pub commit_sha: Option<String>,
+    pub content_type: Option<String>,
 }
 
 /// Safe HTTP client for SignKit API interactions.
@@ -314,13 +341,13 @@ impl SignKitClient {
         }
     }
 
-    /// Bounded binary GET for DOCX export. JSON problem documents still parse as errors.
+    /// Bounded binary GET. JSON problem documents still parse as errors.
     pub async fn get_bytes(
         &self,
         path: &str,
         query: &[(&str, &str)],
         authenticated: bool,
-        max_bytes: usize,
+        spec: BinaryGetSpec,
     ) -> Result<BinaryResponse, CliError> {
         let relative = path.trim_start_matches('/');
         let url = self
@@ -330,12 +357,7 @@ impl SignKitClient {
             .map_err(|e| CliError::usage(format!("Failed to construct request URL: {e}")))?;
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static(
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/problem+json",
-            ),
-        );
+        headers.insert(ACCEPT, HeaderValue::from_static(spec.accept));
         self.apply_auth(&mut headers, authenticated)?;
 
         let mut request_builder = self.http.get(url).headers(headers);
@@ -372,10 +394,19 @@ impl SignKitClient {
             .get("x-signkit-commit-sha")
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let bytes = Self::read_bounded_body(response, max_bytes).await?;
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = Self::read_bounded_body(response, spec.max_bytes).await?;
 
         if status.is_success() {
-            return Ok(BinaryResponse { bytes, commit_sha });
+            return Ok(BinaryResponse {
+                bytes,
+                commit_sha,
+                content_type,
+            });
         }
         Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
     }
