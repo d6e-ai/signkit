@@ -6,9 +6,15 @@ SignKit is an open-core, Markdown-native agreement and electronic-signature plat
 
 SignKit is under active development and is **not yet a production signing service**.
 
-What exists today: the product shell and portable deployment boundary, core domain policies, an organization-scoped Envelope API, PostgreSQL and D1 migrations, S3/R2 adapters, d6e-auth OAuth, bounded compressed Git draft history, recipient/readiness, send, void, and recipient decision commands (view, decline, approve, sign), operator authoring UI (documents, field placement on the Markdown page preview, signature capture), bounded DOCX import to Markdown and commit-pinned DOCX export (DOCX bytes never enter Git), durable invitation delivery, immutable completion-artifact publication, completion delivery with fail-closed public recipient and completion access, and the first-party Rust CLI (`signkit` under `cli/`) for capabilities, API-key envelope inspection, authoring/send mutations, and DOCX import/export.
+Shipped today:
 
-What does not exist yet: PDF sealing. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
+- Portable product shell, organization-scoped Envelope API, PostgreSQL and D1 migrations, S3/R2 adapters, and d6e-auth OAuth
+- Markdown drafts with bounded Git history; recipient readiness; send, void, and capability reissue; recipient decisions (view, decline, approve, sign)
+- Operator authoring UI, bounded DOCX import/export (DOCX bytes never enter Git), durable invitation delivery, and signed retryable webhooks
+- Immutable completion artifacts with deterministic evidence and visual PDF rendering; public recipient/completion access as JSON, Markdown, or PDF
+- Background maintenance (durable drains, reseal sweeps, envelope expiry, orphan collection) and the first-party Rust CLI (`signkit` under `cli/`) for capabilities, API-key envelope inspection, authoring/send mutations, and DOCX import/export
+
+Not yet: cryptographic PDF sealing and certification (PAdES / timestamping authority). Visual completion PDFs and audit evidence exports exist; certification does not. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
 
 ## Core ideas
 

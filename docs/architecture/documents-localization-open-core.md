@@ -1,6 +1,6 @@
 # Documents, localization, and the open-core boundary
 
-Status: mixed — localization and bounded DOCX import/export are implemented; PDF sealing is backlog; the open-core boundary is policy
+Status: mixed — localization, bounded DOCX import/export, and visual completion PDF derivation are implemented; cryptographic PDF sealing is backlog; the open-core boundary is policy
 
 ## Documents and evidence
 
@@ -8,7 +8,7 @@ DOCX import is a bounded conversion on `POST /api/v1/envelopes/{envelopeId}/draf
 
 DOCX export is `GET /api/v1/envelopes/{envelopeId}/docx` (`envelopes:read`). It renders the envelope's current trusted locator (`sentCommitSha` when present, otherwise `repositoryHead`) through `readImmutableDraftRevision` and returns WordprocessingML bytes plus `x-signkit-commit-sha`. Those bytes are derived for the response; they are not stored in Git.
 
-PDF output is also derived from a pinned Git commit. The product must distinguish a visual electronic signature plus evidence trail from cryptographic PDF certification/PAdES. It must not claim the latter until certificate, timestamping, and long-term validation are implemented and verified.
+The visual completion PDF is a deterministic rendering of the published completion manifest plus the same pinned Git documents used to build that manifest. The product must distinguish that visual electronic signature plus evidence trail from cryptographic PDF certification/PAdES. It must not claim the latter until certificate, timestamping, and long-term validation are implemented and verified.
 
 Audit events are normalized append-only rows with tenant, envelope, sequence, actor, event type, canonical payload, time, previous hash, and event hash. Hash chaining improves evidence but does not make the operator-independent claim “tamper-proof.”
 
