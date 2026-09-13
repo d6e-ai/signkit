@@ -21,7 +21,7 @@
 	const items = $derived([
 		{ title: m.nav_dashboard(), href: '/', icon: IconLayoutDashboard },
 		{ title: m.nav_inbox(), href: '/inbox', icon: IconInbox, badge: '3' },
-		{ title: m.nav_agreements(), href: '/agreements', icon: IconFileText },
+		{ title: m.nav_agreements(), href: '/envelopes', icon: IconFileText },
 		{ title: m.nav_templates(), href: '/templates', icon: IconTemplate },
 		{ title: m.nav_contacts(), href: '/contacts', icon: IconAddressBook },
 		{ title: m.nav_automation(), href: '/automation', icon: IconRobot },
@@ -60,7 +60,7 @@
 		</Sidebar.Menu>
 		<Button
 			class="w-full group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:px-0"
-			href={localizeHref('/agreements/new')}
+			href={localizeHref('/envelopes/new')}
 		>
 			<IconPlus data-icon="inline-start" />
 			<span class="group-data-[collapsible=icon]:hidden">{m.new_agreement()}</span>

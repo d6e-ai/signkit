@@ -195,7 +195,8 @@ class CapturingStore implements EnvelopeFieldStore {
 					documentPath: field.documentPath,
 					fieldType: field.fieldType,
 					required: field.required,
-					position: field.position
+					position: field.position,
+					geometry: field.geometry
 				})),
 				updatedAt: command.updatedAt,
 				auditEventId: command.auditEventId
@@ -258,7 +259,8 @@ describe('EnvelopeFieldApplication', () => {
 				documentPath: field.documentPath,
 				fieldType: field.fieldType,
 				required: field.required,
-				position: field.position
+				position: field.position,
+				geometry: field.geometry
 			}))
 		});
 		expect(store.commands[0].auditPayloadJson).not.toContain('Sign here');
@@ -413,6 +415,71 @@ describe('EnvelopeFieldApplication', () => {
 
 		expect(result).toEqual({ outcome: 'field_generation_conflict' });
 		expect(store.publishFieldPlacement).not.toHaveBeenCalled();
+	});
+
+	it('publishes normalized page/x/y/width/height geometry alongside position', async () => {
+		const envelope: Envelope = await readyEnvelope();
+		const store: CapturingStore = new CapturingStore(envelope);
+		const drafts: DraftPersistenceService = await draftPersistenceFor(envelope, [
+			{ path: 'documents/agreement.md', content: '# Agreement' }
+		]);
+		const application: EnvelopeFieldApplication = new EnvelopeFieldApplication(store, drafts);
+		const geometry = { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 };
+
+		const result = await application.place(actor, envelopeId, {
+			idempotencyKey: 'fields-geometry',
+			expectedGeneration: 2,
+			expectedFieldGeneration: 0,
+			fields: [
+				{
+					recipientId: signerId,
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					label: 'Sign here',
+					required: true,
+					position: 1,
+					geometry
+				}
+			]
+		});
+
+		expect(result.outcome).toBe('published');
+		expect(store.commands[0].fields[0].geometry).toEqual(geometry);
+		const auditFields = JSON.parse(store.commands[0].auditPayloadJson).fields;
+		expect(auditFields[0].geometry).toEqual(geometry);
+	});
+
+	it.each([
+		{ page: 0, x: 0, y: 0, width: 0.1, height: 0.1 },
+		{ page: 1, x: -0.1, y: 0, width: 0.1, height: 0.1 },
+		{ page: 1, x: 0, y: 0, width: 0, height: 0.1 },
+		{ page: 1, x: 0, y: 0, width: 1.1, height: 0.1 }
+	])('rejects out-of-range field geometry %#', async (geometry) => {
+		const envelope: Envelope = await readyEnvelope();
+		const store: CapturingStore = new CapturingStore(envelope);
+		const drafts: DraftPersistenceService = await draftPersistenceFor(envelope, [
+			{ path: 'documents/agreement.md', content: '# Agreement' }
+		]);
+		const application: EnvelopeFieldApplication = new EnvelopeFieldApplication(store, drafts);
+
+		await expect(
+			application.place(actor, envelopeId, {
+				idempotencyKey: 'fields-geometry-invalid',
+				expectedGeneration: 2,
+				expectedFieldGeneration: 0,
+				fields: [
+					{
+						recipientId: signerId,
+						documentPath: 'documents/agreement.md',
+						fieldType: 'signature',
+						label: 'Sign here',
+						required: true,
+						position: 1,
+						geometry
+					}
+				]
+			})
+		).rejects.toBeInstanceOf(InvalidFieldPlacementError);
 	});
 
 	it('rejects repeated recipient/document positions before calling the store', async () => {

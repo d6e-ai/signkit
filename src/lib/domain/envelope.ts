@@ -57,8 +57,24 @@ export interface Recipient {
 }
 
 /**
- * A signing-field placement. Fields are declared only in SQL and describe
- * semantic document order, never page/x/y geometry.
+ * Normalized visual placement for a signing field, expressed as unit-square
+ * fractions (0..1) of one rendered page. Resolution- and zoom-independent by
+ * construction, so it never encodes device pixels or a specific viewer's
+ * layout. `page` is 1-indexed. Geometry is optional and additive: a field
+ * with `geometry: null` keeps its pre-existing document-order-only meaning.
+ */
+export interface FieldGeometry {
+	page: number;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+/**
+ * A signing-field placement. Fields are declared only in SQL. `position`
+ * describes semantic document order and remains authoritative for reading
+ * order; `geometry`, when present, additionally places the field visually.
  */
 export interface EnvelopeField {
 	id: string;
@@ -70,6 +86,7 @@ export interface EnvelopeField {
 	label: string;
 	required: boolean;
 	position: number;
+	geometry: FieldGeometry | null;
 }
 
 const allowedTransitions: Readonly<Record<EnvelopeStatus, readonly EnvelopeStatus[]>> = {

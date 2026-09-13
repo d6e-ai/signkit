@@ -65,7 +65,8 @@ const command: PublishFieldPlacementCommand = {
 			fieldType: 'signature',
 			label: 'Signature',
 			required: true,
-			position: 1
+			position: 1,
+			geometry: null
 		}
 	],
 	updatedAt: '2026-09-11T00:02:00.000Z',
@@ -86,7 +87,8 @@ command.requestFingerprint = createHash('sha256')
 				fieldType: field.fieldType,
 				label: field.label,
 				required: field.required,
-				position: field.position
+				position: field.position,
+				geometry: field.geometry
 			}))
 		})
 	)
@@ -101,7 +103,8 @@ command.auditPayloadJson = JSON.stringify({
 		documentPath: field.documentPath,
 		fieldType: field.fieldType,
 		required: field.required,
-		position: field.position
+		position: field.position,
+		geometry: field.geometry
 	}))
 });
 

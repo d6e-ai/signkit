@@ -30,6 +30,15 @@ const documentPathSchema: ZodType<string> = z
 	.refine((value: string): boolean => !value.includes('..'), {
 		message: 'Document paths must not contain ..'
 	});
+const geometrySchema = z
+	.object({
+		page: z.number().int().min(1).max(100_000),
+		x: z.number().min(0).max(1),
+		y: z.number().min(0).max(1),
+		width: z.number().gt(0).max(1),
+		height: z.number().gt(0).max(1)
+	})
+	.strict();
 const fieldSchema = z
 	.object({
 		recipientId: signkitIdentifierSchema,
@@ -44,7 +53,8 @@ const fieldSchema = z
 				message: 'Field labels must not contain control characters'
 			}),
 		required: z.boolean(),
-		position: z.number().int().min(0).max(100_000)
+		position: z.number().int().min(0).max(100_000),
+		geometry: geometrySchema.nullable().optional()
 	})
 	.strict();
 const fieldsSchema = z

@@ -1,5 +1,11 @@
 import postgres from 'postgres';
-import type { Envelope, EnvelopeField, FieldType, Recipient } from '$lib/domain/envelope';
+import type {
+	Envelope,
+	EnvelopeField,
+	FieldGeometry,
+	FieldType,
+	Recipient
+} from '$lib/domain/envelope';
 import type {
 	EnvelopeFieldStore,
 	FieldAuditHead,
@@ -196,11 +202,13 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 					await transaction`
 							INSERT INTO envelope_field (
 								id, organization_id, envelope_id, recipient_id, document_path, field_type,
-								label, required, position, created_at, updated_at
+								label, required, position, page, x, y, width, height, created_at, updated_at
 							) VALUES (
 								${field.id}, ${field.organizationId}, ${field.envelopeId}, ${field.recipientId},
 								${field.documentPath}, ${field.fieldType}, ${field.label}, ${field.required},
-								${field.position}, ${command.updatedAt}, ${command.updatedAt}
+								${field.position}, ${field.geometry?.page ?? null}, ${field.geometry?.x ?? null},
+								${field.geometry?.y ?? null}, ${field.geometry?.width ?? null},
+								${field.geometry?.height ?? null}, ${command.updatedAt}, ${command.updatedAt}
 							)
 						`;
 				}
@@ -393,7 +401,8 @@ async function validStoredReceipt(
 			fieldType: field.fieldType,
 			label: field.label,
 			required: field.required,
-			position: field.position
+			position: field.position,
+			geometry: field.geometry
 		}))
 	});
 	const expectedAuditPayload: string = JSON.stringify({
@@ -406,7 +415,8 @@ async function validStoredReceipt(
 			documentPath: field.documentPath,
 			fieldType: field.fieldType,
 			required: field.required,
-			position: field.position
+			position: field.position,
+			geometry: field.geometry
 		}))
 	});
 	return (
@@ -444,7 +454,21 @@ function isEnvelopeField(value: unknown): value is EnvelopeField {
 		typeof candidate.label === 'string' &&
 		typeof candidate.required === 'boolean' &&
 		typeof candidate.position === 'number' &&
-		Number.isSafeInteger(candidate.position)
+		Number.isSafeInteger(candidate.position) &&
+		isFieldGeometryOrNull(candidate.geometry)
+	);
+}
+
+function isFieldGeometryOrNull(value: unknown): value is FieldGeometry | null {
+	if (value === null) return true;
+	if (typeof value !== 'object') return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		typeof candidate.page === 'number' &&
+		typeof candidate.x === 'number' &&
+		typeof candidate.y === 'number' &&
+		typeof candidate.width === 'number' &&
+		typeof candidate.height === 'number'
 	);
 }
 
@@ -459,7 +483,8 @@ function toPublicField(field: EnvelopeField): PublicEnvelopeField {
 		documentPath: field.documentPath,
 		fieldType: field.fieldType,
 		required: field.required,
-		position: field.position
+		position: field.position,
+		geometry: field.geometry
 	};
 }
 

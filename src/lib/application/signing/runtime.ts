@@ -34,6 +34,10 @@ import {
 	RecipientSignedApplication,
 	type RecipientSignedApplicationPort
 } from './recipient-signed';
+import {
+	SignatureAssetApplication,
+	type SignatureAssetApplicationPort
+} from '$lib/application/documents/signature-asset';
 
 export interface RecipientAccessRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -171,4 +175,38 @@ export async function resolveRecipientSignedApplication(
 	const { resolvePostgresRecipientSignedApplication } =
 		await import('$lib/application/envelopes/runtime-postgres');
 	return resolvePostgresRecipientSignedApplication(databaseUrl);
+}
+
+export async function resolveSignatureAssetApplication(
+	context: RecipientAccessRuntimeContext
+): Promise<SignatureAssetApplicationPort | null> {
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		const bucket: R2Bucket | undefined = context.platform.env.OBJECTS;
+		if (database === undefined || bucket === undefined) return null;
+		return new SignatureAssetApplication(
+			new RecipientAccessService(new D1RecipientAccessStore(database)),
+			new R2ObjectStore(bucket)
+		);
+	}
+
+	const configuration = {
+		databaseUrl: env.DATABASE_URL,
+		endpoint: env.S3_ENDPOINT,
+		region: env.S3_REGION,
+		bucket: env.S3_BUCKET,
+		accessKeyId: env.S3_ACCESS_KEY_ID,
+		secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+		forcePathStyle: env.S3_FORCE_PATH_STYLE
+	};
+	if (Object.values(configuration).every((value: string | undefined): boolean => !value?.trim())) {
+		return null;
+	}
+	const { resolveS3ObjectStore } = await import('$lib/application/drafts/runtime-s3');
+	const { resolvePostgresRecipientAccessApplication } =
+		await import('$lib/application/envelopes/runtime-postgres');
+	return new SignatureAssetApplication(
+		await resolvePostgresRecipientAccessApplication(configuration.databaseUrl as string),
+		resolveS3ObjectStore(configuration)
+	);
 }

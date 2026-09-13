@@ -4007,7 +4007,8 @@ function fieldCommand(options: {
 		fieldType: 'signature',
 		label: 'Signature',
 		required: true,
-		position: 1
+		position: 1,
+		geometry: null
 	};
 	return {
 		organizationId: ORGANIZATION_ID,

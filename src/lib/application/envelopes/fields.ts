@@ -1,4 +1,9 @@
-import { fieldTypes, type EnvelopeField, type FieldType } from '$lib/domain/envelope';
+import {
+	fieldTypes,
+	type EnvelopeField,
+	type FieldGeometry,
+	type FieldType
+} from '$lib/domain/envelope';
 import type {
 	DraftPersistenceService,
 	DraftWorkspaceSnapshot
@@ -26,6 +31,7 @@ export interface FieldPlacementInput {
 	label: string;
 	required: boolean;
 	position: number;
+	geometry?: FieldGeometry | null;
 }
 
 export interface PlaceFieldsInput {
@@ -147,7 +153,8 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				fieldType: field.fieldType,
 				label: field.label,
 				required: field.required,
-				position: field.position
+				position: field.position,
+				geometry: field.geometry ?? null
 			})
 		);
 
@@ -163,7 +170,8 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				documentPath: field.documentPath,
 				fieldType: field.fieldType,
 				required: field.required,
-				position: field.position
+				position: field.position,
+				geometry: field.geometry
 			}))
 		});
 		const auditEventHash: string = await sha256(
@@ -249,11 +257,30 @@ function assertFieldsInput(
 		) {
 			throw new InvalidFieldPlacementError('Field position is invalid');
 		}
+		assertGeometry(field.geometry ?? null);
 		const locator: string = [field.recipientId, field.documentPath, field.position].join('\x00');
 		if (locators.has(locator)) {
 			throw new InvalidFieldPlacementError('Field declarations must not repeat the same locator');
 		}
 		locators.add(locator);
+	}
+}
+
+function assertGeometry(geometry: FieldGeometry | null): void {
+	if (geometry === null) return;
+	const { page, x, y, width, height } = geometry;
+	if (!Number.isSafeInteger(page) || page < 1 || page > MAX_POSITION) {
+		throw new InvalidFieldPlacementError('Field geometry page is invalid');
+	}
+	for (const value of [x, y]) {
+		if (!Number.isFinite(value) || value < 0 || value > 1) {
+			throw new InvalidFieldPlacementError('Field geometry coordinates must be between 0 and 1');
+		}
+	}
+	for (const value of [width, height]) {
+		if (!Number.isFinite(value) || value <= 0 || value > 1) {
+			throw new InvalidFieldPlacementError('Field geometry dimensions must be between 0 and 1');
+		}
 	}
 }
 
@@ -267,7 +294,8 @@ function canonicalizeFields(
 			fieldType: field.fieldType,
 			label: field.label.trim(),
 			required: field.required,
-			position: field.position
+			position: field.position,
+			geometry: field.geometry ?? null
 		}))
 		.sort(
 			(left: FieldPlacementInput, right: FieldPlacementInput): number =>
