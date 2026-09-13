@@ -6,9 +6,9 @@ SignKit is an open-core, Markdown-native agreement and electronic-signature plat
 
 SignKit is under active development and is **not yet a production signing service**.
 
-What exists today: the product shell and portable deployment boundary, core domain policies, an organization-scoped Envelope API, PostgreSQL and D1 migrations, S3/R2 adapters, d6e-auth OAuth, bounded compressed Git draft history, recipient/readiness, send, void, and recipient decision commands (view, decline, approve, sign), durable invitation delivery, immutable completion-artifact publication, and completion delivery with fail-closed public recipient and completion access.
+What exists today: the product shell and portable deployment boundary, core domain policies, an organization-scoped Envelope API, PostgreSQL and D1 migrations, S3/R2 adapters, d6e-auth OAuth, bounded compressed Git draft history, recipient/readiness, send, void, and recipient decision commands (view, decline, approve, sign), durable invitation delivery, immutable completion-artifact publication, completion delivery with fail-closed public recipient and completion access, and the first-party Rust CLI slice (`signkit` under `cli/`) for capabilities and API-key `envelopes:read` inspection.
 
-What does not exist yet: ink capture, PDF sealing, DOCX conversion, webhooks, a Rust CLI, and broader job orchestration. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
+What does not exist yet: ink capture, PDF sealing, DOCX conversion, webhooks, CLI mutations / write scopes, and broader job orchestration. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
 
 ## Core ideas
 
@@ -43,6 +43,7 @@ Fill in `.env` with your d6e-auth client, encryption keys, public origin, and Po
 
 - [docs/design.md](docs/design.md) — normative architecture, security, and evidence contracts.
 - [docs/api.md](docs/api.md) — current HTTP surface and its operational semantics.
+- [docs/cli.md](docs/cli.md) — agent-first Rust CLI reference, commands, security, and exit codes.
 - [docs/deployment.md](docs/deployment.md) — deployment profiles, configuration, and background jobs.
 - [docs/development.md](docs/development.md) — local setup, tests, builds, and CI expectations.
 
