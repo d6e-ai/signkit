@@ -31,7 +31,7 @@ CREATE TABLE envelope_void_command (
 CREATE TRIGGER envelope_void_command_publish
 AFTER INSERT ON envelope_void_command
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.revocation_evidence_version <> 1
       OR NEW.revoked_recipient_count <> json_array_length(NEW.revoked_recipient_ids_json)
       OR NEW.revoked_recipient_ids_json <> (
@@ -48,9 +48,9 @@ BEGIN
         ) revocable
       )
     THEN RAISE(ABORT, 'envelope void revocation evidence conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_valid(NEW.audit_payload_json) <> 1
       OR json_extract(NEW.audit_payload_json, '$.previousStatus') IS NOT NEW.previous_status
       OR json_extract(NEW.audit_payload_json, '$.generation') IS NOT NEW.expected_generation
@@ -61,9 +61,9 @@ BEGIN
       OR json_extract(NEW.audit_payload_json, '$.revokedCapabilities.recipientIds')
         IS NOT NEW.revoked_recipient_ids_json
     THEN RAISE(ABORT, 'envelope void audit payload conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -72,7 +72,7 @@ BEGIN
         AND status = 'processing'
     )
     THEN RAISE(ABORT, 'envelope void delivery in flight')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -90,7 +90,7 @@ BEGIN
       OR (status = 'failed' AND retryable = 1)
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -103,7 +103,7 @@ BEGIN
         )
     )
     THEN RAISE(ABORT, 'envelope void delivery cleanup conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
@@ -114,10 +114,10 @@ BEGIN
     AND capability_hash IS NOT NULL
     AND capability_revoked_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> NEW.revoked_recipient_count
     THEN RAISE(ABORT, 'envelope void revocation evidence conflict')
-  END;
+  END);
 
   UPDATE envelope
   SET status = 'voided',
@@ -145,9 +145,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'envelope void publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,

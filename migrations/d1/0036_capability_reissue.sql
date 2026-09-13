@@ -234,7 +234,7 @@ CREATE TRIGGER recipient_capability_reissue_command_publish
 AFTER INSERT ON recipient_capability_reissue_command
 BEGIN
   -- Predicate 1: Envelope must be sent or in_progress
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM envelope
       WHERE organization_id = NEW.organization_id
@@ -242,11 +242,11 @@ BEGIN
         AND status IN ('sent', 'in_progress')
     )
     THEN RAISE(ABORT, 'reissue envelope not eligible')
-  END;
+  END);
 
   -- Predicate 2: Recipient must be pending or viewed, already released (capability_expires_at IS NOT NULL),
   -- and matching previous_capability_hash
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -258,10 +258,10 @@ BEGIN
         AND capability_revoked_at IS NULL
     )
     THEN RAISE(ABORT, 'reissue recipient not eligible')
-  END;
+  END);
 
   -- Predicate 3: No in-flight delivery lease on current outbox row, and current outbox is not blocked
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM delivery_outbox
       WHERE organization_id = NEW.organization_id
@@ -270,9 +270,9 @@ BEGIN
         AND status = 'processing'
     )
     THEN RAISE(ABORT, 'reissue delivery in flight')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM delivery_outbox
       WHERE organization_id = NEW.organization_id
@@ -281,10 +281,10 @@ BEGIN
         AND status = 'blocked'
     )
     THEN RAISE(ABORT, 'reissue delivery blocked')
-  END;
+  END);
 
   -- Predicate 4: Audit head sequence and previous hash
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM audit_event
       WHERE organization_id = NEW.organization_id
@@ -293,7 +293,7 @@ BEGIN
         AND event_hash = NEW.previous_audit_hash
     )
     THEN RAISE(ABORT, 'reissue audit head conflict')
-  END;
+  END);
 
   -- Actions:
   -- 1. Supersede predecessor in issuance ledger
@@ -370,7 +370,7 @@ END;
 CREATE TRIGGER envelope_expiry_command_publish
 AFTER INSERT ON envelope_expiry_command
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -390,9 +390,9 @@ BEGIN
         AND julianday(capability_expires_at) > julianday(NEW.updated_at)
     )
     THEN RAISE(ABORT, 'envelope expiry eligibility conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.revoked_recipient_count <> json_array_length(NEW.revoked_recipient_ids_json)
       OR NEW.revoked_recipient_ids_json <> (
         SELECT json_group_array(id)
@@ -408,9 +408,9 @@ BEGIN
         ) revocable
       )
     THEN RAISE(ABORT, 'envelope expiry revocation evidence conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_valid(NEW.audit_payload_json) <> 1
       OR json_extract(NEW.audit_payload_json, '$.previousStatus') IS NOT NEW.previous_status
       OR json_extract(NEW.audit_payload_json, '$.generation') IS NOT NEW.expected_generation
@@ -421,7 +421,7 @@ BEGIN
       OR json_extract(NEW.audit_payload_json, '$.revokedCapabilities.recipientIds')
         IS NOT NEW.revoked_recipient_ids_json
     THEN RAISE(ABORT, 'envelope expiry audit payload conflict')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -448,10 +448,10 @@ BEGIN
     AND capability_hash IS NOT NULL
     AND capability_revoked_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> NEW.revoked_recipient_count
     THEN RAISE(ABORT, 'envelope expiry revocation evidence conflict')
-  END;
+  END);
 
   UPDATE envelope
   SET status = 'expired',
@@ -479,9 +479,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'envelope expiry publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
@@ -581,9 +581,9 @@ BEGIN
             OR target.capability_expires_at IS NOT NULL)))
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'envelope send publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
@@ -601,7 +601,7 @@ END;
 CREATE TRIGGER envelope_void_command_publish
 AFTER INSERT ON envelope_void_command
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.revocation_evidence_version <> 1
       OR NEW.revoked_recipient_count <> json_array_length(NEW.revoked_recipient_ids_json)
       OR NEW.revoked_recipient_ids_json <> (
@@ -618,9 +618,9 @@ BEGIN
         ) revocable
       )
     THEN RAISE(ABORT, 'envelope void revocation evidence conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_valid(NEW.audit_payload_json) <> 1
       OR json_extract(NEW.audit_payload_json, '$.previousStatus') IS NOT NEW.previous_status
       OR json_extract(NEW.audit_payload_json, '$.generation') IS NOT NEW.expected_generation
@@ -631,9 +631,9 @@ BEGIN
       OR json_extract(NEW.audit_payload_json, '$.revokedCapabilities.recipientIds')
         IS NOT NEW.revoked_recipient_ids_json
     THEN RAISE(ABORT, 'envelope void audit payload conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -642,7 +642,7 @@ BEGIN
         AND status = 'processing'
     )
     THEN RAISE(ABORT, 'envelope void delivery in flight')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -660,7 +660,7 @@ BEGIN
       OR (status = 'failed' AND retryable = 1)
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -673,7 +673,7 @@ BEGIN
         )
     )
     THEN RAISE(ABORT, 'envelope void delivery cleanup conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
@@ -684,10 +684,10 @@ BEGIN
     AND capability_hash IS NOT NULL
     AND capability_revoked_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> NEW.revoked_recipient_count
     THEN RAISE(ABORT, 'envelope void revocation evidence conflict')
-  END;
+  END);
 
   UPDATE envelope
   SET status = 'voided',
@@ -715,9 +715,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'envelope void publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
@@ -750,20 +750,20 @@ BEGIN
     AND capability_expires_at IS NOT NULL
     AND julianday(capability_expires_at) > julianday(NEW.updated_at);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL
      AND (
        julianday(NEW.next_capability_expires_at) <= julianday(NEW.updated_at)
        OR julianday(NEW.next_capability_expires_at) > julianday(NEW.updated_at, '+15 days')
      )
     THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -771,9 +771,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NULL AND NOT EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -781,9 +781,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -792,9 +792,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NULL
      AND NEW.completed_audit_event_id IS NULL
      AND NOT EXISTS (
@@ -805,9 +805,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL
      AND (
        SELECT MIN(routing_order) FROM recipient
@@ -818,7 +818,7 @@ BEGIN
          AND routing_order > NEW.routing_order
      ) IS NOT NEW.next_routing_order
     THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_expires_at = NEW.next_capability_expires_at,
@@ -833,10 +833,10 @@ BEGIN
     AND capability_revoked_at IS NULL
     AND capability_expires_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND changes() <> NEW.released_delivery_count
     THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'pending',
@@ -862,17 +862,17 @@ BEGIN
         AND target.capability_hash = delivery_outbox.capability_hash
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND changes() <> NEW.released_delivery_count
     THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
   UPDATE envelope
-  SET status = CASE
+  SET status = (CASE
         WHEN NEW.completed_audit_event_id IS NOT NULL THEN 'completed'
         WHEN status = 'sent' THEN 'in_progress'
         ELSE status
-      END,
+      END),
       updated_at = NEW.updated_at
   WHERE organization_id = NEW.organization_id
     AND id = NEW.envelope_id
@@ -895,9 +895,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
@@ -919,7 +919,7 @@ BEGIN
     NEW.updated_at, 2
   WHERE NEW.completed_audit_event_id IS NOT NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND (
       SELECT COUNT(*) FROM audit_event
       WHERE organization_id = NEW.organization_id
@@ -930,7 +930,7 @@ BEGIN
         AND previous_hash = NEW.audit_event_hash
         AND event_hash = NEW.completed_audit_event_hash
     ) <> 1 THEN RAISE(ABORT, 'recipient approved publish conflict')
-  END;
+  END);
 END;
 
 -- Restored from 0015_observer_routing_semantics.sql
@@ -938,14 +938,14 @@ CREATE TRIGGER recipient_approved_completion_guard
 BEFORE INSERT ON recipient_approved_command
 WHEN NEW.completed_audit_event_id IS NOT NULL
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM delivery_outbox
       WHERE organization_id = NEW.organization_id
         AND envelope_id = NEW.envelope_id
         AND status = 'processing'
     ) THEN RAISE(ABORT, 'recipient approved delivery in flight')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -960,7 +960,7 @@ BEGIN
     AND envelope_id = NEW.envelope_id
     AND (status IN ('blocked', 'pending') OR (status = 'failed' AND retryable = 1));
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM delivery_outbox
       WHERE organization_id = NEW.organization_id
@@ -969,7 +969,7 @@ BEGIN
           OR (status = 'failed' AND retryable = 1)
           OR sealed_capability IS NOT NULL)
     ) THEN RAISE(ABORT, 'recipient approved delivery cleanup conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
@@ -986,7 +986,7 @@ END;
 CREATE TRIGGER recipient_declined_command_publish
 AFTER INSERT ON recipient_declined_command
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.revocation_evidence_version <> 2
       OR NEW.revoked_recipient_count <> json_array_length(NEW.revoked_recipient_ids_json)
       OR NEW.revoked_recipient_ids_json <> (
@@ -1004,21 +1004,21 @@ BEGIN
         ) revocable
       )
     THEN RAISE(ABORT, 'recipient declined revocation evidence conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_valid(NEW.audit_payload_json) <> 1
     THEN RAISE(ABORT, 'recipient declined audit payload conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_extract(NEW.audit_payload_json, '$.revokedCapabilities.reason') IS NOT 'envelope_declined'
       OR json_extract(NEW.audit_payload_json, '$.revokedCapabilities.recipientIds')
         IS NOT NEW.revoked_recipient_ids_json
     THEN RAISE(ABORT, 'recipient declined audit payload conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -1027,7 +1027,7 @@ BEGIN
         AND status = 'processing'
     )
     THEN RAISE(ABORT, 'recipient declined delivery in flight')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -1045,7 +1045,7 @@ BEGIN
       OR (status = 'failed' AND retryable = 1)
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
@@ -1057,7 +1057,7 @@ BEGIN
         )
     )
     THEN RAISE(ABORT, 'recipient declined delivery cleanup conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET status = 'declined',
@@ -1075,9 +1075,9 @@ BEGIN
     AND capability_expires_at IS NOT NULL
     AND julianday(capability_expires_at) > julianday(NEW.updated_at);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient declined publish conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
@@ -1089,10 +1089,10 @@ BEGIN
     AND capability_hash IS NOT NULL
     AND capability_revoked_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> NEW.revoked_recipient_count
     THEN RAISE(ABORT, 'recipient declined revocation evidence conflict')
-  END;
+  END);
 
   UPDATE envelope
   SET status = 'declined',
@@ -1118,9 +1118,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient declined publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
@@ -1153,25 +1153,25 @@ BEGIN
     AND capability_expires_at IS NOT NULL
     AND julianday(capability_expires_at) > julianday(NEW.updated_at);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM envelope
       WHERE organization_id = NEW.organization_id
         AND id = NEW.envelope_id
         AND field_generation = NEW.expected_field_generation
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_array_length(NEW.field_values_json) <> NEW.field_count
     THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN (
       SELECT COUNT(*) FROM envelope_field
       WHERE organization_id = NEW.organization_id
@@ -1179,9 +1179,9 @@ BEGIN
         AND recipient_id = NEW.recipient_id
     ) <> NEW.field_count
     THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM json_each(NEW.field_values_json) declared
       WHERE NOT EXISTS (
@@ -1193,18 +1193,18 @@ BEGIN
           AND field.field_type = json_extract(declared.value, '$.fieldType')
       )
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL
      AND (
        julianday(NEW.next_capability_expires_at) <= julianday(NEW.updated_at)
        OR julianday(NEW.next_capability_expires_at) > julianday(NEW.updated_at, '+15 days')
      )
     THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -1212,9 +1212,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NULL AND NOT EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -1222,9 +1222,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -1233,9 +1233,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NULL
      AND NEW.completed_audit_event_id IS NULL
      AND NOT EXISTS (
@@ -1246,9 +1246,9 @@ BEGIN
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL
      AND (
        SELECT MIN(routing_order) FROM recipient
@@ -1259,7 +1259,7 @@ BEGIN
          AND routing_order > NEW.routing_order
      ) IS NOT NEW.next_routing_order
     THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_expires_at = NEW.next_capability_expires_at,
@@ -1274,10 +1274,10 @@ BEGIN
     AND capability_revoked_at IS NULL
     AND capability_expires_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND changes() <> NEW.released_delivery_count
     THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'pending',
@@ -1303,17 +1303,17 @@ BEGIN
         AND target.capability_hash = delivery_outbox.capability_hash
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND changes() <> NEW.released_delivery_count
     THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
   UPDATE envelope
-  SET status = CASE
+  SET status = (CASE
         WHEN NEW.completed_audit_event_id IS NOT NULL THEN 'completed'
         WHEN status = 'sent' THEN 'in_progress'
         ELSE status
-      END,
+      END),
       updated_at = NEW.updated_at
   WHERE organization_id = NEW.organization_id
     AND id = NEW.envelope_id
@@ -1336,9 +1336,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
@@ -1360,7 +1360,7 @@ BEGIN
     NEW.updated_at, 2
   WHERE NEW.completed_audit_event_id IS NOT NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND (
       SELECT COUNT(*) FROM audit_event
       WHERE organization_id = NEW.organization_id
@@ -1371,7 +1371,7 @@ BEGIN
         AND previous_hash = NEW.audit_event_hash
         AND event_hash = NEW.completed_audit_event_hash
     ) <> 1 THEN RAISE(ABORT, 'recipient signed publish conflict')
-  END;
+  END);
 END;
 
 -- Restored from 0015_observer_routing_semantics.sql
@@ -1379,14 +1379,14 @@ CREATE TRIGGER recipient_signed_completion_guard
 BEFORE INSERT ON recipient_signed_command
 WHEN NEW.completed_audit_event_id IS NOT NULL
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM delivery_outbox
       WHERE organization_id = NEW.organization_id
         AND envelope_id = NEW.envelope_id
         AND status = 'processing'
     ) THEN RAISE(ABORT, 'recipient signed delivery in flight')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -1401,7 +1401,7 @@ BEGIN
     AND envelope_id = NEW.envelope_id
     AND (status IN ('blocked', 'pending') OR (status = 'failed' AND retryable = 1));
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM delivery_outbox
       WHERE organization_id = NEW.organization_id
@@ -1410,7 +1410,7 @@ BEGIN
           OR (status = 'failed' AND retryable = 1)
           OR sealed_capability IS NOT NULL)
     ) THEN RAISE(ABORT, 'recipient signed delivery cleanup conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,

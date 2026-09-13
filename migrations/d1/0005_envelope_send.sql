@@ -172,9 +172,9 @@ BEGIN
             OR target.capability_expires_at IS NOT NULL)))
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'envelope send publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,

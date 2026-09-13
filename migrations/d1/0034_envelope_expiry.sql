@@ -30,7 +30,7 @@ CREATE TABLE envelope_expiry_command (
 CREATE TRIGGER envelope_expiry_command_publish
 AFTER INSERT ON envelope_expiry_command
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM recipient
       WHERE organization_id = NEW.organization_id
@@ -50,9 +50,9 @@ BEGIN
         AND julianday(capability_expires_at) > julianday(NEW.updated_at)
     )
     THEN RAISE(ABORT, 'envelope expiry eligibility conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.revoked_recipient_count <> json_array_length(NEW.revoked_recipient_ids_json)
       OR NEW.revoked_recipient_ids_json <> (
         SELECT json_group_array(id)
@@ -68,9 +68,9 @@ BEGIN
         ) revocable
       )
     THEN RAISE(ABORT, 'envelope expiry revocation evidence conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN json_valid(NEW.audit_payload_json) <> 1
       OR json_extract(NEW.audit_payload_json, '$.previousStatus') IS NOT NEW.previous_status
       OR json_extract(NEW.audit_payload_json, '$.generation') IS NOT NEW.expected_generation
@@ -81,7 +81,7 @@ BEGIN
       OR json_extract(NEW.audit_payload_json, '$.revokedCapabilities.recipientIds')
         IS NOT NEW.revoked_recipient_ids_json
     THEN RAISE(ABORT, 'envelope expiry audit payload conflict')
-  END;
+  END);
 
   UPDATE delivery_outbox
   SET status = 'failed',
@@ -108,10 +108,10 @@ BEGIN
     AND capability_hash IS NOT NULL
     AND capability_revoked_at IS NULL;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> NEW.revoked_recipient_count
     THEN RAISE(ABORT, 'envelope expiry revocation evidence conflict')
-  END;
+  END);
 
   UPDATE envelope
   SET status = 'expired',
@@ -139,9 +139,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'envelope expiry publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,

@@ -92,7 +92,7 @@ CREATE TABLE completion_artifact_publish_command (
 CREATE TRIGGER completion_artifact_publish_command_publish
 AFTER INSERT ON completion_artifact_publish_command
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM envelope
       WHERE organization_id = NEW.organization_id
@@ -102,9 +102,9 @@ BEGIN
         AND sent_commit_sha = repository_head
         AND field_generation = NEW.field_generation
     ) THEN RAISE(ABORT, 'completion artifact envelope state conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM audit_event previous
       WHERE previous.organization_id = NEW.organization_id
@@ -114,18 +114,18 @@ BEGIN
         AND previous.event_hash = NEW.previous_audit_hash
         AND previous.event_type = 'envelope.completed'
     ) THEN RAISE(ABORT, 'completion artifact audit anchor conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM audit_event newer
       WHERE newer.organization_id = NEW.organization_id
         AND newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     ) THEN RAISE(ABORT, 'completion artifact audit head conflict')
-  END;
+  END);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM completion_artifact_job
       WHERE organization_id = NEW.organization_id
@@ -133,7 +133,7 @@ BEGIN
         AND status = 'processing'
         AND claim_token = NEW.claim_token
     ) THEN RAISE(ABORT, 'completion artifact lease conflict')
-  END;
+  END);
 
   INSERT INTO completion_artifact (
     organization_id, envelope_id, schema_version, manifest_sha256,
@@ -153,9 +153,9 @@ BEGIN
   WHERE organization_id = NEW.organization_id AND envelope_id = NEW.envelope_id
     AND status = 'processing' AND claim_token = NEW.claim_token;
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'completion artifact job update conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,

@@ -91,9 +91,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'envelope ready publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,

@@ -214,7 +214,7 @@ CREATE TABLE api_key_organization_grant_revoke_command (
 CREATE TRIGGER api_key_organization_grant_immutable_guard
 BEFORE UPDATE ON api_key_organization_grant
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.id <> OLD.id
       OR NEW.api_key_id <> OLD.api_key_id
       OR NEW.organization_id <> OLD.organization_id
@@ -222,11 +222,11 @@ BEGIN
       OR NEW.granted_organization_role <> OLD.granted_organization_role
       OR NEW.granted_at <> OLD.granted_at
     THEN RAISE(ABORT, 'cannot modify immutable api key organization grant fields')
-  END;
+  END);
   -- Revocation is one-way: NULL may become a stamp, a stamp may never change
   -- or be cleared. An organization grant is never resurrected; re-granting
   -- inserts a new row.
-  SELECT CASE
+  SELECT (CASE
     WHEN OLD.revoked_at IS NOT NULL AND (
       NEW.revoked_at IS NULL
       OR NEW.revoked_at <> OLD.revoked_at
@@ -234,7 +234,7 @@ BEGIN
       OR NEW.revoked_by_authority IS NOT OLD.revoked_by_authority
     )
     THEN RAISE(ABORT, 'api key organization grant revocation is immutable')
-  END;
+  END);
 END;
 
 CREATE TRIGGER api_key_organization_grant_no_delete_guard

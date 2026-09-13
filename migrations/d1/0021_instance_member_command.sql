@@ -168,12 +168,12 @@ CREATE INDEX instance_member_command_actor_occurred
 CREATE TRIGGER instance_member_immutable_fields_guard
 BEFORE UPDATE ON instance_member
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.user_id <> OLD.user_id
       OR NEW.created_at <> OLD.created_at
       OR NEW.updated_at < OLD.updated_at
     THEN RAISE(ABORT, 'cannot modify immutable instance member fields')
-  END;
+  END);
 END;
 
 -- The owner floor, enforced on the write itself rather than on the receipt
@@ -187,7 +187,7 @@ WHEN OLD.role = 'owner'
   AND OLD.status = 'active'
   AND NOT (NEW.role = 'owner' AND NEW.status = 'active')
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM instance_member
       WHERE role = 'owner'
@@ -195,7 +195,7 @@ BEGIN
         AND user_id <> OLD.user_id
     )
     THEN RAISE(ABORT, 'instance must retain at least one active owner')
-  END;
+  END);
 END;
 
 CREATE TRIGGER instance_member_no_delete_guard
@@ -227,39 +227,39 @@ BEGIN
   -- columns, which describe the target -- i.e. the actor itself here, and
   -- which instance_member_command_self_target_active_owner pins to an
   -- active owner.
-  SELECT CASE
+  SELECT (CASE
     WHEN (
-      CASE WHEN NEW.actor_id = NEW.target_user_id THEN NEW.previous_status
+      (CASE WHEN NEW.actor_id = NEW.target_user_id THEN NEW.previous_status
         ELSE (SELECT status FROM instance_member WHERE user_id = NEW.actor_id)
-      END
+      END)
     ) <> 'active'
     OR (
-      CASE WHEN NEW.actor_id = NEW.target_user_id THEN NEW.previous_role
+      (CASE WHEN NEW.actor_id = NEW.target_user_id THEN NEW.previous_role
         ELSE (SELECT role FROM instance_member WHERE user_id = NEW.actor_id)
-      END
+      END)
     ) NOT IN ('owner', 'admin')
     THEN RAISE(ABORT, 'instance member command actor evidence conflict')
-  END;
+  END);
 
   -- An admin actor may only administer a target that was a plain member
   -- immediately before this command, and set_role may never grant that
   -- target a role above member.
-  SELECT CASE
+  SELECT (CASE
     WHEN (
-      CASE WHEN NEW.actor_id = NEW.target_user_id THEN NEW.previous_role
+      (CASE WHEN NEW.actor_id = NEW.target_user_id THEN NEW.previous_role
         ELSE (SELECT role FROM instance_member WHERE user_id = NEW.actor_id)
-      END
+      END)
     ) = 'admin'
     AND (
       NEW.previous_role <> 'member'
       OR (NEW.command_type = 'set_role' AND NEW.result_role <> 'member')
     )
     THEN RAISE(ABORT, 'instance member command role ceiling conflict')
-  END;
+  END);
 
   -- The target's current row must exactly match the receipt's claimed
   -- result, timestamped at occurred_at.
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM instance_member
       WHERE user_id = NEW.target_user_id
@@ -268,7 +268,7 @@ BEGIN
         AND updated_at = NEW.occurred_at
     )
     THEN RAISE(ABORT, 'instance member command receipt state mismatch')
-  END;
+  END);
 
   -- revoked_invitation_count may not claim more cascade-revoked
   -- invitations than the target actually had revoked at this instant. An
@@ -278,7 +278,7 @@ BEGIN
   -- revoke to an individual command needs a correlation column this schema
   -- does not have, so this stays a bound and the exact figure stays
   -- adapter-recorded evidence written in the same atomic batch.
-  SELECT CASE
+  SELECT (CASE
     WHEN NEW.revoked_invitation_count > (
       SELECT COUNT(*) FROM instance_invitation
       WHERE invited_by_user_id = NEW.target_user_id
@@ -286,15 +286,15 @@ BEGIN
         AND revoked_at = NEW.occurred_at
     )
     THEN RAISE(ABORT, 'instance member command revoked invitation count exceeds revoked invitations')
-  END;
+  END);
 
   -- Backstop for the owner floor that instance_member_owner_floor_guard
   -- already enforces on every UPDATE: a receipt may never be recorded
   -- against an instance with no active owner at all.
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM instance_member WHERE role = 'owner' AND status = 'active'
     )
     THEN RAISE(ABORT, 'instance member command leaves no active owner')
-  END;
+  END);
 END;

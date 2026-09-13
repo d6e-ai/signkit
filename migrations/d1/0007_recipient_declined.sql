@@ -50,9 +50,9 @@ BEGIN
     AND capability_expires_at IS NOT NULL
     AND julianday(capability_expires_at) > julianday(NEW.updated_at);
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient declined publish conflict')
-  END;
+  END);
 
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
@@ -88,9 +88,9 @@ BEGIN
         AND newer.sequence >= NEW.audit_sequence
     );
 
-  SELECT CASE
+  SELECT (CASE
     WHEN changes() <> 1 THEN RAISE(ABORT, 'recipient declined publish conflict')
-  END;
+  END);
 
   INSERT INTO audit_event (
     id, organization_id, envelope_id, sequence, event_type, actor_type,
