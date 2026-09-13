@@ -1,12 +1,20 @@
 import {
 	DeleteObjectCommand,
+	DeleteObjectsCommand,
 	GetObjectCommand,
 	HeadObjectCommand,
+	ListObjectsV2Command,
 	PutObjectCommand,
 	type S3Client
 } from '@aws-sdk/client-s3';
-import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
-import { assertObjectKey } from '$lib/ports/object-store';
+import type {
+	ListObjectsOptions,
+	ListObjectsResult,
+	ObjectMetadata,
+	ObjectStore,
+	PutObject
+} from '$lib/ports/object-store';
+import { assertObjectKey, MAX_LIST_OBJECTS_LIMIT } from '$lib/ports/object-store';
 
 export class S3ObjectStore implements ObjectStore {
 	constructor(
@@ -74,5 +82,44 @@ export class S3ObjectStore implements ObjectStore {
 	async delete(key: string): Promise<void> {
 		assertObjectKey(key);
 		await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+	}
+
+	async list(options?: ListObjectsOptions): Promise<ListObjectsResult> {
+		const limit = Math.min(options?.limit ?? 1000, MAX_LIST_OBJECTS_LIMIT);
+		const result = await this.client.send(
+			new ListObjectsV2Command({
+				Bucket: this.bucket,
+				Prefix: options?.prefix,
+				ContinuationToken: options?.cursor,
+				MaxKeys: limit
+			})
+		);
+		const objects = (result.Contents ?? []).map((item) => ({
+			key: item.Key ?? '',
+			size: item.Size ?? 0,
+			uploadedAt: item.LastModified?.toISOString()
+		}));
+		return {
+			objects,
+			truncated: result.IsTruncated ?? false,
+			cursor: result.NextContinuationToken
+		};
+	}
+
+	async deleteMany(keys: readonly string[]): Promise<void> {
+		if (keys.length === 0) return;
+		for (const key of keys) assertObjectKey(key);
+		for (let i = 0; i < keys.length; i += 1000) {
+			const batch = keys.slice(i, i + 1000);
+			await this.client.send(
+				new DeleteObjectsCommand({
+					Bucket: this.bucket,
+					Delete: {
+						Objects: batch.map((Key) => ({ Key })),
+						Quiet: true
+					}
+				})
+			);
+		}
 	}
 }

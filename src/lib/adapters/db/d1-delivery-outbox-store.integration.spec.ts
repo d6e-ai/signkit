@@ -223,4 +223,77 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 			sqlite.close();
 		}
 	});
+
+	it('finds and reseals a non-processing row sealed under a stale key', async () => {
+		const { database, sqlite } = fixture();
+		try {
+			const store = new D1DeliveryOutboxStore(database);
+			const stale = await store.findStaleSealedCapabilities({
+				activeSealingKeyId: 'key-2',
+				limit: 25
+			});
+			expect(stale).toEqual([
+				{
+					deliveryId: '01940000-0000-7000-8000-000000000001',
+					organizationId: 'org-1',
+					envelopeId: '01920000-0000-7000-8000-000000000001',
+					recipientId: '01930000-0000-7000-8000-000000000001',
+					sealedCapability: 'skdc1_ciphertext',
+					sealingKeyId: 'key-1'
+				}
+			]);
+
+			await expect(
+				store.resealCapability({
+					organizationId: 'org-1',
+					deliveryId: '01940000-0000-7000-8000-000000000001',
+					previousSealingKeyId: 'key-1',
+					sealedCapability: 'skdc1_resealed',
+					sealingKeyId: 'key-2',
+					sealedCapabilitySha256: 'resealed-hash',
+					updatedAt: '2026-09-12T00:05:00.000Z'
+				})
+			).resolves.toEqual({ outcome: 'resealed' });
+
+			const row = sqlite
+				.prepare('SELECT sealed_capability, sealing_key_id FROM delivery_outbox')
+				.get();
+			expect(row).toEqual({ sealed_capability: 'skdc1_resealed', sealing_key_id: 'key-2' });
+
+			await expect(
+				store.findStaleSealedCapabilities({ activeSealingKeyId: 'key-2', limit: 25 })
+			).resolves.toEqual([]);
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('does not reseal a row already claimed for processing, or a stale CAS', async () => {
+		const { database, sqlite } = fixture();
+		try {
+			const store = new D1DeliveryOutboxStore(database);
+			sqlite.exec(`
+				UPDATE delivery_outbox
+				SET status = 'processing', claim_token = 'lease-token-0001', locked_at = '2026-09-12T00:00:00.000Z'
+				WHERE id = '01940000-0000-7000-8000-000000000001';
+			`);
+
+			await expect(
+				store.findStaleSealedCapabilities({ activeSealingKeyId: 'key-2', limit: 25 })
+			).resolves.toEqual([]);
+			await expect(
+				store.resealCapability({
+					organizationId: 'org-1',
+					deliveryId: '01940000-0000-7000-8000-000000000001',
+					previousSealingKeyId: 'key-1',
+					sealedCapability: 'skdc1_resealed',
+					sealingKeyId: 'key-2',
+					sealedCapabilitySha256: 'resealed-hash',
+					updatedAt: '2026-09-12T00:05:00.000Z'
+				})
+			).resolves.toEqual({ outcome: 'stale' });
+		} finally {
+			sqlite.close();
+		}
+	});
 });

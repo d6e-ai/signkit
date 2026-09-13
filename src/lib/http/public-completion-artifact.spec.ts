@@ -291,7 +291,7 @@ describe('Public Completion Artifact HTTP Handlers', () => {
 			}));
 			const handler = createPublicCompletionArtifactApiHandler(service, () => NOW);
 
-			for (const badFormat of ['xml', 'pdf', 'html', 'json;charset=utf-8']) {
+			for (const badFormat of ['xml', 'html', 'json;charset=utf-8']) {
 				const response = await handler(apiEvent(`Bearer ${issued.token}`, `format=${badFormat}`));
 				expect(response.status).toBe(404);
 				expect(await response.text()).toBe('Not Found');

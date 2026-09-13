@@ -1,13 +1,10 @@
-import type { Cookies, RequestHandler } from '@sveltejs/kit';
+import type { RequestHandler } from '@sveltejs/kit';
 import { z, type ZodType } from 'zod';
 import type {
 	RecipientViewedApplicationPort,
 	RecipientViewedResult
 } from '$lib/application/signing/recipient-viewed';
-import {
-	RECIPIENT_SESSION_COOKIE,
-	RECIPIENT_SESSION_COOKIE_PATH
-} from '$lib/server/recipient-session';
+import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -66,7 +63,6 @@ export function createRecipientViewedHandler(
 			return unavailable(url.pathname);
 		}
 		if (token === null) {
-			clearSession(cookies);
 			return accessNotFound(url.pathname);
 		}
 
@@ -86,7 +82,6 @@ export function createRecipientViewedHandler(
 				expectedRecipientId: parsed.data.recipientId,
 				idempotencyKey: idempotencyKey.data
 			});
-			if (result.outcome === 'not_found') clearSession(cookies);
 			return resultResponse(result, url.pathname);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_viewed_failed' }));
@@ -96,7 +91,11 @@ export function createRecipientViewedHandler(
 }
 
 function resultResponse(result: RecipientViewedResult, instance: string): Response {
-	if (result.outcome === 'published' || result.outcome === 'replayed') {
+	if (
+		result.outcome === 'published' ||
+		result.outcome === 'replayed' ||
+		result.outcome === 'continued'
+	) {
 		const headers: Headers = new Headers(securityHeaders({ 'content-type': 'application/json' }));
 		if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
 		return new Response(
@@ -106,7 +105,8 @@ function resultResponse(result: RecipientViewedResult, instance: string): Respon
 					recipientId: result.result.recipientId,
 					recipientStatus: 'viewed',
 					envelopeStatus: result.result.envelopeStatus,
-					viewedAt: result.result.viewedAt
+					viewedAt: result.result.viewedAt,
+					...(result.outcome === 'continued' ? { continuation: true } : {})
 				}
 			}),
 			{ status: 200, headers }
@@ -253,10 +253,6 @@ function unavailable(instance: string): Response {
 		},
 		securityHeaders()
 	);
-}
-
-function clearSession(cookies: Cookies): void {
-	cookies.delete(RECIPIENT_SESSION_COOKIE, { path: RECIPIENT_SESSION_COOKIE_PATH });
 }
 
 function acceptsJson(request: Request): boolean {

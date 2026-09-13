@@ -5,6 +5,7 @@ import {
 } from '$lib/adapters/mail/cloudflare-email';
 import type { ObjectStore } from '$lib/ports/object-store';
 import { AesGcmCompletionTokenSealer } from '$lib/security/completion-token-sealer';
+import { CompletionDeliveryResealSweepService } from './completion-reseal-sweep-service';
 import { CompletionDeliveryService } from './completion-delivery-service';
 import { PublicCompletionArtifactService } from './public-completion-artifact';
 
@@ -19,13 +20,16 @@ export async function resolvePublicCompletionArtifactService(
 		const database: D1Database | undefined = context.platform.env.DB;
 		const bucket: R2Bucket | undefined = context.platform.env.OBJECTS;
 		if (database === undefined || bucket === undefined) return null;
-		const [{ D1CompletionDeliveryStore }, { R2ObjectStore }] = await Promise.all([
-			import('$lib/adapters/db/d1-completion-delivery-store'),
-			import('$lib/adapters/object/r2')
-		]);
+		const [{ D1CompletionDeliveryStore }, { D1CompletionArtifactPdfStore }, { R2ObjectStore }] =
+			await Promise.all([
+				import('$lib/adapters/db/d1-completion-delivery-store'),
+				import('$lib/adapters/db/d1-completion-artifact-pdf-store'),
+				import('$lib/adapters/object/r2')
+			]);
 		return new PublicCompletionArtifactService(
 			new D1CompletionDeliveryStore(database),
-			new R2ObjectStore(bucket)
+			new R2ObjectStore(bucket),
+			new D1CompletionArtifactPdfStore(database)
 		);
 	}
 
@@ -44,16 +48,22 @@ export async function resolvePublicCompletionArtifactService(
 	) {
 		return null;
 	}
-	const [{ PostgresCompletionDeliveryStore }, { resolvePostgresSql }, { resolveS3ObjectStore }] =
-		await Promise.all([
-			import('$lib/adapters/db/postgres-completion-delivery-store'),
-			import('$lib/application/envelopes/runtime-postgres'),
-			import('$lib/application/drafts/runtime-s3')
-		]);
+	const [
+		{ PostgresCompletionDeliveryStore },
+		{ PostgresCompletionArtifactPdfStore },
+		{ resolvePostgresSql },
+		{ resolveS3ObjectStore }
+	] = await Promise.all([
+		import('$lib/adapters/db/postgres-completion-delivery-store'),
+		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
+		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/drafts/runtime-s3')
+	]);
 	const objects: ObjectStore = resolveS3ObjectStore({ databaseUrl, ...s3OnlyConfiguration });
 	return new PublicCompletionArtifactService(
 		new PostgresCompletionDeliveryStore(resolvePostgresSql(databaseUrl)),
-		objects
+		objects,
+		new PostgresCompletionArtifactPdfStore(resolvePostgresSql(databaseUrl))
 	);
 }
 
@@ -62,7 +72,10 @@ export async function resolveCompletionDeliveryService(
 ): Promise<CompletionDeliveryService | null> {
 	const configuration: DeliveryConfiguration | null = deliveryConfiguration(context.platform?.env);
 	if (configuration === null) return null;
-	const sealer = new AesGcmCompletionTokenSealer(configuration.encryptionKey);
+	const sealer = new AesGcmCompletionTokenSealer(
+		configuration.encryptionKey,
+		configuration.previousEncryptionKey
+	);
 
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
@@ -96,8 +109,44 @@ export async function resolveCompletionDeliveryService(
 	);
 }
 
+export async function resolveCompletionDeliveryResealSweepService(
+	context: CompletionDeliveryRuntimeContext
+): Promise<CompletionDeliveryResealSweepService | null> {
+	const encryptionKey: string | undefined = nonempty(
+		context.platform?.env?.DELIVERY_ENCRYPTION_KEY ?? env.DELIVERY_ENCRYPTION_KEY
+	);
+	if (encryptionKey === undefined) return null;
+	const previousEncryptionKey: string | undefined = nonempty(
+		context.platform?.env?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS
+	);
+	const sealer = new AesGcmCompletionTokenSealer(encryptionKey, previousEncryptionKey);
+
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		if (database === undefined) return null;
+		const { D1CompletionDeliveryStore } =
+			await import('$lib/adapters/db/d1-completion-delivery-store');
+		return new CompletionDeliveryResealSweepService(
+			new D1CompletionDeliveryStore(database),
+			sealer
+		);
+	}
+
+	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
+	if (databaseUrl === undefined) return null;
+	const [{ PostgresCompletionDeliveryStore }, { resolvePostgresSql }] = await Promise.all([
+		import('$lib/adapters/db/postgres-completion-delivery-store'),
+		import('$lib/application/envelopes/runtime-postgres')
+	]);
+	return new CompletionDeliveryResealSweepService(
+		new PostgresCompletionDeliveryStore(resolvePostgresSql(databaseUrl)),
+		sealer
+	);
+}
+
 interface DeliveryConfiguration {
 	encryptionKey: string;
+	previousEncryptionKey: string | undefined;
 	publicOrigin: string;
 	fromEmail: string;
 	fromName: string;
@@ -108,6 +157,9 @@ function deliveryConfiguration(
 ): DeliveryConfiguration | null {
 	const encryptionKey: string | undefined = nonempty(
 		platformEnv?.DELIVERY_ENCRYPTION_KEY ?? env.DELIVERY_ENCRYPTION_KEY
+	);
+	const previousEncryptionKey: string | undefined = nonempty(
+		platformEnv?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS
 	);
 	const publicOrigin: string | undefined = nonempty(
 		platformEnv?.SIGNKIT_PUBLIC_ORIGIN ?? env.SIGNKIT_PUBLIC_ORIGIN
@@ -126,7 +178,7 @@ function deliveryConfiguration(
 	) {
 		return null;
 	}
-	return { encryptionKey, publicOrigin, fromEmail, fromName };
+	return { encryptionKey, previousEncryptionKey, publicOrigin, fromEmail, fromName };
 }
 
 function nonempty(value: string | undefined): string | undefined {

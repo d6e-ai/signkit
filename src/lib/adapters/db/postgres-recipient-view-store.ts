@@ -101,7 +101,35 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 			}
 			return replay;
 		}
-		if (row.recipientStatus === 'viewed') return { outcome: 'integrity_error' };
+		if (row.recipientStatus === 'viewed') {
+			const viewedCommand: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
+				this.#sql,
+				key.organizationId,
+				key.recipientId
+			);
+			if (
+				viewedCommand === null ||
+				!validAuditEvidence(viewedCommand) ||
+				!(await validStoredReceipt(viewedCommand))
+			) {
+				return { outcome: 'integrity_error' };
+			}
+			if (viewedCommand.capabilityHash === key.capabilityHash) {
+				return { outcome: 'integrity_error' };
+			}
+			const lineageProven = await this.#verifyLineage(
+				this.#sql,
+				key.organizationId,
+				key.recipientId,
+				viewedCommand.capabilityHash,
+				key.capabilityHash
+			);
+			if (!lineageProven) return { outcome: 'integrity_error' };
+			return {
+				outcome: 'continued',
+				result: resultFromRow(viewedCommand)
+			};
+		}
 		const auditHead: ViewedAuditHead | null = await this.#readAuditHead(
 			this.#sql,
 			key.organizationId,
@@ -166,7 +194,35 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 					}
 					return publishFromPreparation(raced);
 				}
-				if (recipientRow.recipientStatus === 'viewed') return { outcome: 'integrity_error' };
+				if (recipientRow.recipientStatus === 'viewed') {
+					const viewedCommand: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
+						transaction,
+						command.organizationId,
+						command.recipientId
+					);
+					if (
+						viewedCommand === null ||
+						!validAuditEvidence(viewedCommand) ||
+						!(await validStoredReceipt(viewedCommand))
+					) {
+						return { outcome: 'integrity_error' };
+					}
+					if (viewedCommand.capabilityHash === command.capabilityHash) {
+						return { outcome: 'integrity_error' };
+					}
+					const lineageProven = await this.#verifyLineage(
+						transaction,
+						command.organizationId,
+						command.recipientId,
+						viewedCommand.capabilityHash,
+						command.capabilityHash
+					);
+					if (!lineageProven) return { outcome: 'integrity_error' };
+					return {
+						outcome: 'continued',
+						result: resultFromRow(viewedCommand)
+					};
+				}
 				if (
 					recipientRow.recipientRole !== command.recipientRole ||
 					recipientRow.routingOrder !== command.routingOrder
@@ -322,13 +378,41 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 			key.recipientId
 		);
 		if (byRecipient === null) return null;
-		if (
-			byRecipient.envelopeId !== key.envelopeId ||
-			byRecipient.capabilityHash !== key.capabilityHash
-		) {
-			return { outcome: 'not_found' };
+		if (byRecipient.envelopeId !== key.envelopeId) {
+			return { outcome: 'integrity_error' };
+		}
+		if (byRecipient.capabilityHash !== key.capabilityHash) {
+			return null;
 		}
 		return await this.#evidenceResult(byRecipient);
+	}
+
+	async #verifyLineage(
+		sql: Sql,
+		organizationId: string,
+		recipientId: string,
+		initialHash: string,
+		currentHash: string
+	): Promise<boolean> {
+		if (initialHash === currentHash) return true;
+		const rows = await sql<{ count: string | number }[]>`
+			WITH RECURSIVE lineage AS (
+				SELECT capability_hash, predecessor_capability_hash
+				FROM recipient_capability_issuance
+				WHERE organization_id = ${organizationId}
+					AND recipient_id = ${recipientId}
+					AND capability_hash = ${currentHash}
+				UNION ALL
+				SELECT prev.capability_hash, prev.predecessor_capability_hash
+				FROM recipient_capability_issuance prev
+				INNER JOIN lineage curr ON curr.predecessor_capability_hash = prev.capability_hash
+				WHERE prev.organization_id = ${organizationId}
+					AND prev.recipient_id = ${recipientId}
+			)
+			SELECT count(*) AS count
+			FROM lineage
+			WHERE capability_hash = ${initialHash}`;
+		return Number(rows[0]?.count ?? 0) > 0;
 	}
 
 	async #readCommandRow(

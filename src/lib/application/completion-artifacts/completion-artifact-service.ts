@@ -7,6 +7,11 @@ import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import type {
+	CompletionArtifactPdfStore,
+	PublishCompletionArtifactPdfCommand
+} from '$lib/ports/completion-artifact-pdf-store';
+import type { CompletionPdfEvidenceStore } from '$lib/ports/completion-pdf-evidence-store';
 import {
 	boundCompletionArtifactClaimLimit,
 	CompletionArtifactBoundExceededError,
@@ -34,6 +39,13 @@ import {
 	type CompletionManifestDocument,
 	type CompletionManifestV1
 } from './completion-manifest';
+import {
+	buildCompletionPdfManifest,
+	buildCompletionPdfPages,
+	canonicalPdfManifestJson,
+	CompletionPdfBoundExceededError,
+	renderCompletionPdf
+} from './completion-pdf';
 
 export const COMPLETION_ARTIFACT_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -42,6 +54,8 @@ export const MAX_COMPLETION_ARTIFACT_ATTEMPTS: number = 10;
 const COMPLETION_ARTIFACT_CONCURRENCY: number = 3;
 const JSON_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+json.gz';
 const MARKDOWN_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+markdown.gz';
+const PDF_CONTENT_TYPE: string = 'application/pdf';
+const PDF_MANIFEST_CONTENT_TYPE: string = 'application/vnd.signkit.completion-pdf-manifest+json.gz';
 
 export type CompletionArtifactItemOutcome =
 	| { envelopeId: string; outcome: 'published' }
@@ -76,6 +90,8 @@ export class CompletionArtifactPublicationService {
 	readonly #now: () => Date;
 	readonly #newClaimToken: OpaqueTokenGenerator;
 	readonly #newId: UuidV7Generator;
+	readonly #pdfStore: CompletionArtifactPdfStore | null;
+	readonly #pdfEvidenceStore: CompletionPdfEvidenceStore | null;
 
 	constructor(
 		store: CompletionArtifactStore,
@@ -85,7 +101,14 @@ export class CompletionArtifactPublicationService {
 		// A lease token is opaque unguessable material, never a row identifier:
 		// 256 random bits with no embedded creation time.
 		newClaimToken: OpaqueTokenGenerator = newOpaqueToken,
-		newId: UuidV7Generator = newUuidV7
+		newId: UuidV7Generator = newUuidV7,
+		// Optional: when omitted, PDF rendering is skipped entirely and only
+		// the JSON/Markdown manifest (Slice A) is published. PDF generation
+		// is a pure function of already-published evidence, so it is always
+		// safe to backfill later without touching the manifest publication
+		// this constructor's other parameters govern.
+		pdfStore: CompletionArtifactPdfStore | null = null,
+		pdfEvidenceStore: CompletionPdfEvidenceStore | null = null
 	) {
 		this.#store = store;
 		this.#objects = objects;
@@ -93,6 +116,8 @@ export class CompletionArtifactPublicationService {
 		this.#now = now;
 		this.#newClaimToken = newClaimToken;
 		this.#newId = newId;
+		this.#pdfStore = pdfStore;
+		this.#pdfEvidenceStore = pdfEvidenceStore;
 	}
 
 	async publishPendingCompletionArtifacts(
@@ -257,6 +282,56 @@ export class CompletionArtifactPublicationService {
 				{ organizationId: claim.organizationId, envelopeId: claim.envelopeId }
 			);
 
+			let pdfCommand: PublishCompletionArtifactPdfCommand | null = null;
+			if (this.#pdfStore !== null && this.#pdfEvidenceStore !== null) {
+				const fieldGeometry = await this.#pdfEvidenceStore.readFieldGeometry(
+					claim.organizationId,
+					claim.envelopeId
+				);
+				const pages = buildCompletionPdfPages(manifest, documents, fieldGeometry);
+				const pdfBytes = renderCompletionPdf(pages);
+				const pdfSha256 = await sha256Hex(pdfBytes);
+				const pdfKey = completionArtifactObjectKey(
+					claim.organizationId,
+					claim.envelopeId,
+					'pdf',
+					pdfSha256
+				);
+				await this.#persistImmutable(pdfKey, pdfBytes, pdfSha256, PDF_CONTENT_TYPE);
+
+				const pdfManifest = await buildCompletionPdfManifest({
+					manifest,
+					manifestSha256,
+					pdfBytes,
+					fieldGeometry
+				});
+				const pdfManifestJson = canonicalPdfManifestJson(pdfManifest);
+				const pdfManifestGzip = gzipCompletionArtifact(pdfManifestJson);
+				const pdfManifestSha256 = await sha256Hex(pdfManifestGzip);
+				const pdfManifestKey = completionArtifactObjectKey(
+					claim.organizationId,
+					claim.envelopeId,
+					'pdf-manifest',
+					pdfManifestSha256
+				);
+				await this.#persistImmutable(
+					pdfManifestKey,
+					pdfManifestGzip,
+					pdfManifestSha256,
+					PDF_MANIFEST_CONTENT_TYPE
+				);
+
+				pdfCommand = {
+					organizationId: claim.organizationId,
+					envelopeId: claim.envelopeId,
+					pdfObjectKey: pdfKey,
+					pdfSha256,
+					pdfManifestObjectKey: pdfManifestKey,
+					pdfManifestSha256,
+					publishedAt: now.toISOString()
+				};
+			}
+
 			const publish: PublishCompletionArtifactResult = await this.#store.publishCompletionArtifact({
 				organizationId: claim.organizationId,
 				envelopeId: claim.envelopeId,
@@ -277,6 +352,15 @@ export class CompletionArtifactPublicationService {
 				auditPayloadJson
 			});
 			if (publish.outcome === 'published' || publish.outcome === 'replayed') {
+				if (this.#pdfStore !== null && pdfCommand !== null) {
+					const pdfResult = await this.#pdfStore.publishCompletionArtifactPdf(pdfCommand);
+					if (
+						pdfResult.outcome === 'integrity_error' ||
+						pdfResult.outcome === 'artifact_not_found'
+					) {
+						throw new CompletionArtifactIntegrityError('Failed to publish completion artifact PDF');
+					}
+				}
 				return { envelopeId: claim.envelopeId, outcome: 'published' };
 			}
 			if (publish.outcome === 'stale') return { envelopeId: claim.envelopeId, outcome: 'stale' };
@@ -296,7 +380,10 @@ export class CompletionArtifactPublicationService {
 			// DraftIntegrityError from readImmutableDraftRevision (missing object,
 			// SHA mismatch, scope mismatch, size, or Git verification failure) is
 			// exactly as much an integrity failure here as our own checks.
-			if (error instanceof CompletionArtifactBoundExceededError) {
+			if (
+				error instanceof CompletionArtifactBoundExceededError ||
+				error instanceof CompletionPdfBoundExceededError
+			) {
 				return this.#finishFailure(
 					claim,
 					claimToken,
@@ -421,10 +508,11 @@ export function completionArtifactRetryAvailableAt(now: Date, attempts: number):
 export function completionArtifactObjectKey(
 	organizationId: string,
 	envelopeId: string,
-	kind: 'json' | 'markdown',
+	kind: 'json' | 'markdown' | 'pdf' | 'pdf-manifest',
 	sha256: string
 ): string {
-	const extension: string = kind === 'json' ? 'json.gz' : 'md.gz';
+	const extension: string =
+		kind === 'json' || kind === 'pdf-manifest' ? 'json.gz' : kind === 'markdown' ? 'md.gz' : 'pdf';
 	return `completion-artifacts/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.${extension}`;
 }
 

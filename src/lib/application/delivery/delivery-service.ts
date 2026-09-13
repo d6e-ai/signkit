@@ -34,7 +34,12 @@ export interface InvitationSenderConfig {
 
 export interface RecipientCapabilityOpener {
 	currentSealingKeyId(): Promise<string>;
-	open(sealedCapability: string, context: CapabilitySealContext): Promise<string>;
+	isKnownSealingKeyId(keyId: string): Promise<boolean>;
+	open(
+		sealedCapability: string,
+		context: CapabilitySealContext,
+		sealingKeyId: string
+	): Promise<string>;
 }
 
 export type InvitationDeliveryItemOutcome =
@@ -165,7 +170,11 @@ export class InvitationDeliveryService {
 
 		let token: string;
 		try {
-			token = await this.#opener.open(requiredSealedCapability(claim), sealContext(claim));
+			token = await this.#opener.open(
+				requiredSealedCapability(claim),
+				sealContext(claim),
+				claim.sealingKeyId
+			);
 		} catch {
 			return this.#finishFailure(
 				claim,
@@ -276,8 +285,9 @@ export class InvitationDeliveryService {
 		}
 		const digest: string = await sha256Hex(claim.sealedCapability);
 		if (digest !== claim.sealedCapabilitySha256) return 'ciphertext_digest_mismatch';
-		const currentKeyId: string = await this.#opener.currentSealingKeyId();
-		if (currentKeyId !== claim.sealingKeyId) return 'sealing_key_mismatch';
+		if (!(await this.#opener.isKnownSealingKeyId(claim.sealingKeyId))) {
+			return 'sealing_key_mismatch';
+		}
 		return null;
 	}
 

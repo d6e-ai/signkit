@@ -70,7 +70,7 @@ export function createPublicCompletionArtifactHandler(
 		let format: PublicCompletionArtifactFormat;
 		if (rawFormat === null || rawFormat === '') {
 			format = options.defaultFormat;
-		} else if (rawFormat === 'json' || rawFormat === 'markdown') {
+		} else if (rawFormat === 'json' || rawFormat === 'markdown' || rawFormat === 'pdf') {
 			format = rawFormat;
 		} else {
 			return opaqueNotFoundResponse();
@@ -90,7 +90,7 @@ export function createPublicCompletionArtifactHandler(
 
 		try {
 			const artifact: PublicCompletionArtifact = await service.read(rawToken, format, now());
-			return new Response(artifact.content, {
+			return new Response(artifactResponseBody(artifact.content), {
 				status: 200,
 				headers: publicCompletionHeaders(artifact.contentType)
 			});
@@ -115,6 +115,13 @@ function extractBearerToken(authorization: string | null): string | null {
 	if (authorization === null || authorization.includes(',')) return null;
 	const match: RegExpMatchArray | null = authorization.match(/^Bearer ([^\s]+)$/i);
 	return match?.[1] ?? null;
+}
+
+function artifactResponseBody(content: string | Uint8Array): BodyInit {
+	if (typeof content === 'string') return content;
+	const body: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(content.byteLength));
+	body.set(content);
+	return body;
 }
 
 function publicCompletionHeaders(contentType: string): Headers {

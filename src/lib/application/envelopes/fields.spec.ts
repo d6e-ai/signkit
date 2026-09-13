@@ -90,6 +90,14 @@ class MemoryObjectStore implements ObjectStore {
 	}
 
 	async delete(): Promise<void> {}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('Unexpected object list');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('Unexpected object deleteMany');
+	}
 }
 
 class FixedDraftRepository implements DraftRepository {

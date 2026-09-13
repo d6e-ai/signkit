@@ -705,12 +705,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND status = 'pending'`;
 		expect(pending).toHaveLength(1);
-		const token: string = await sealer.open(pending[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: pending[0].recipientId,
-			deliveryId: pending[0].deliveryId
-		});
+		const token: string = await sealer.open(
+			pending[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: pending[0].recipientId,
+				deliveryId: pending[0].deliveryId
+			},
+			await sealer.currentSealingKeyId()
+		);
 		const declinedAt: string = new Date(Date.now() + 2_000).toISOString();
 		const application = new RecipientDeclinedApplication(
 			new PostgresRecipientDeclineStore(database()),
@@ -903,12 +907,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				(row: { role: string }): boolean => row.role === role
 			);
 			if (actorDelivery === undefined) throw new Error(`Missing ${role} delivery`);
-			const token: string = await sealer.open(actorDelivery.sealedCapability, {
-				organizationId: ORGANIZATION_ID,
-				envelopeId: ENVELOPE_ID,
-				recipientId: actorDelivery.recipientId,
-				deliveryId: actorDelivery.deliveryId
-			});
+			const token: string = await sealer.open(
+				actorDelivery.sealedCapability,
+				{
+					organizationId: ORGANIZATION_ID,
+					envelopeId: ENVELOPE_ID,
+					recipientId: actorDelivery.recipientId,
+					deliveryId: actorDelivery.deliveryId
+				},
+				await sealer.currentSealingKeyId()
+			);
 			const completedAt: string = new Date(Date.now() + 3_000).toISOString();
 			await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
 				WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
@@ -1418,12 +1426,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND recipient_id = ${signerId}`;
-		const token: string = await sealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+		const token: string = await sealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			await sealer.currentSealingKeyId()
+		);
 		const signResult = await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -1554,12 +1566,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND recipient_id = ${signerId}`;
-		const token: string = await invitationSealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+		const token: string = await invitationSealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			await invitationSealer.currentSealingKeyId()
+		);
 		await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -2230,12 +2246,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${envelopeId}
 				AND recipient_id = ${signerId}`;
-		const token: string = await sealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+		const token: string = await sealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			await sealer.currentSealingKeyId()
+		);
 		const signResult = await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -2434,12 +2454,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		>`SELECT id AS "deliveryId", sealed_capability AS "sealedCapability" FROM delivery_outbox
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
 				AND recipient_id = ${signerId}`;
-		const token: string = await sealer.open(delivery[0].sealedCapability, {
-			organizationId: ORGANIZATION_ID,
-			envelopeId: ENVELOPE_ID,
-			recipientId: signerId,
-			deliveryId: delivery[0].deliveryId
-		});
+		const token: string = await sealer.open(
+			delivery[0].sealedCapability,
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				recipientId: signerId,
+				deliveryId: delivery[0].deliveryId
+			},
+			await sealer.currentSealingKeyId()
+		);
 		const signResult = await new RecipientSignedApplication(
 			new PostgresRecipientSignStore(database()),
 			(): Date => new Date(completedAt)
@@ -3811,6 +3835,14 @@ class RealMemoryObjectStore implements ObjectStore {
 	async delete(key: string): Promise<void> {
 		this.objects.delete(key);
 	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('unused');
+	}
 }
 
 class SeededPostgresObjectStore implements ObjectStore {
@@ -3841,6 +3873,14 @@ class SeededPostgresObjectStore implements ObjectStore {
 	}
 
 	async delete(): Promise<void> {
+		throw new Error('unused');
+	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
 		throw new Error('unused');
 	}
 }
@@ -3879,6 +3919,14 @@ class UnreachablePostgresObjectStore implements ObjectStore {
 
 	async delete(): Promise<void> {
 		throw new Error('Object store must not be read before field value integrity is verified');
+	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('Object store must not be listed before field value integrity is verified');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('Object store must not be deleted before field value integrity is verified');
 	}
 }
 

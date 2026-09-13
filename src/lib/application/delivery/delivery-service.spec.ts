@@ -87,10 +87,19 @@ class FakeStore implements DeliveryOutboxStore {
 		this.failures.push(command);
 		return this.failResult;
 	}
+
+	async findStaleSealedCapabilities(): Promise<[]> {
+		return [];
+	}
+
+	async resealCapability(): Promise<{ outcome: 'stale' }> {
+		return { outcome: 'stale' };
+	}
 }
 
 class FakeOpener implements RecipientCapabilityOpener {
-	readonly openCalls: { sealed: string; context: CapabilitySealContext }[] = [];
+	readonly openCalls: { sealed: string; context: CapabilitySealContext; sealingKeyId: string }[] =
+		[];
 	keyLookups: number = 0;
 	currentKeyId: string = 'key-1';
 	throwOnOpen: boolean = false;
@@ -107,8 +116,17 @@ class FakeOpener implements RecipientCapabilityOpener {
 		return this.currentKeyId;
 	}
 
-	async open(sealedCapability: string, context: CapabilitySealContext): Promise<string> {
-		this.openCalls.push({ sealed: sealedCapability, context });
+	async isKnownSealingKeyId(keyId: string): Promise<boolean> {
+		this.keyLookups += 1;
+		return keyId === this.currentKeyId;
+	}
+
+	async open(
+		sealedCapability: string,
+		context: CapabilitySealContext,
+		sealingKeyId: string
+	): Promise<string> {
+		this.openCalls.push({ sealed: sealedCapability, context, sealingKeyId });
 		if (this.throwOnOpen) throw this.openError;
 		return this.token;
 	}
@@ -330,8 +348,12 @@ describe('InvitationDeliveryService', () => {
 		store.rows = [claim];
 		const opener: RecipientCapabilityOpener = {
 			currentSealingKeyId: async (): Promise<string> => sealed.sealingKeyId,
-			open: (sealedCapability: string, seal: CapabilitySealContext): Promise<string> =>
-				sealer.open(sealedCapability, seal)
+			isKnownSealingKeyId: async (keyId: string): Promise<boolean> => keyId === sealed.sealingKeyId,
+			open: (
+				sealedCapability: string,
+				seal: CapabilitySealContext,
+				sealingKeyId: string
+			): Promise<string> => sealer.open(sealedCapability, seal, sealingKeyId)
 		};
 		const mail: FakeMail = new FakeMail();
 		const result = await service(store, opener, mail).deliverPendingInvitations(99);

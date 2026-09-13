@@ -101,6 +101,40 @@ export interface CompletionArtifactLocator {
 	markdownSha256: string;
 }
 
+export const MAX_COMPLETION_DELIVERY_RESEAL_SWEEP_BATCH: number = 50;
+
+/**
+ * A non-terminal outbox row (`pending` or `failed`, never `processing`)
+ * whose ciphertext is still sealed under a key other than the active one,
+ * discovered by the bounded reseal sweep — never on the hot delivery-claim
+ * path.
+ */
+export interface StaleSealedCompletionTokenRow {
+	deliveryId: string;
+	organizationId: string;
+	envelopeId: string;
+	recipientId: string;
+	sealedToken: string;
+	sealingKeyId: string;
+}
+
+export interface FindStaleSealedCompletionTokensCommand {
+	activeSealingKeyId: string;
+	limit: number;
+}
+
+export interface ResealCompletionTokenCommand {
+	organizationId: string;
+	deliveryId: string;
+	previousSealingKeyId: string;
+	sealedToken: string;
+	sealingKeyId: string;
+	sealedTokenSha256: string;
+	updatedAt: string;
+}
+
+export type ResealCompletionTokenResult = { outcome: 'resealed' } | { outcome: 'stale' };
+
 export interface CompletionDeliveryStore {
 	discoverEligibleRecipients(
 		limit: number
@@ -120,6 +154,17 @@ export interface CompletionDeliveryStore {
 		tokenHash: string,
 		at: string
 	): Promise<CompletionArtifactLocator | null>;
+	findStaleSealedCompletionTokens(
+		command: FindStaleSealedCompletionTokensCommand
+	): Promise<readonly StaleSealedCompletionTokenRow[]>;
+	resealCompletionToken(
+		command: ResealCompletionTokenCommand
+	): Promise<ResealCompletionTokenResult>;
+}
+
+export function boundCompletionDeliveryResealSweepLimit(limit: number): number {
+	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	return Math.min(limit, MAX_COMPLETION_DELIVERY_RESEAL_SWEEP_BATCH);
 }
 
 export function sanitizeCompletionDeliveryErrorCode(code: string): string {

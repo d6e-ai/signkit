@@ -6,6 +6,7 @@ import {
 import { AesGcmRecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import { DeliveryStatusService } from './delivery-status';
 import { InvitationDeliveryService } from './delivery-service';
+import { DeliveryResealSweepService } from './reseal-sweep-service';
 
 export interface InvitationDeliveryRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -17,7 +18,8 @@ export async function resolveInvitationDeliveryService(
 	const configuration: DeliveryConfiguration | null = deliveryConfiguration(context.platform?.env);
 	if (configuration === null) return null;
 	const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
-		configuration.encryptionKey
+		configuration.encryptionKey,
+		configuration.previousEncryptionKey
 	);
 
 	if (context.platform?.env !== undefined) {
@@ -51,6 +53,40 @@ export async function resolveInvitationDeliveryService(
 	);
 }
 
+export async function resolveDeliveryResealSweepService(
+	context: InvitationDeliveryRuntimeContext
+): Promise<DeliveryResealSweepService | null> {
+	const encryptionKey: string | undefined = nonempty(
+		context.platform?.env?.DELIVERY_ENCRYPTION_KEY ?? env.DELIVERY_ENCRYPTION_KEY
+	);
+	if (encryptionKey === undefined) return null;
+	const previousEncryptionKey: string | undefined = nonempty(
+		context.platform?.env?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS
+	);
+	const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
+		encryptionKey,
+		previousEncryptionKey
+	);
+
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		if (database === undefined) return null;
+		const { D1DeliveryOutboxStore } = await import('$lib/adapters/db/d1-delivery-outbox-store');
+		return new DeliveryResealSweepService(new D1DeliveryOutboxStore(database), sealer);
+	}
+
+	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
+	if (databaseUrl === undefined) return null;
+	const [{ PostgresDeliveryOutboxStore }, { resolvePostgresSql }] = await Promise.all([
+		import('$lib/adapters/db/postgres-delivery-outbox-store'),
+		import('$lib/application/envelopes/runtime-postgres')
+	]);
+	return new DeliveryResealSweepService(
+		new PostgresDeliveryOutboxStore(resolvePostgresSql(databaseUrl)),
+		sealer
+	);
+}
+
 export async function resolveDeliveryStatusService(
 	context: InvitationDeliveryRuntimeContext
 ): Promise<DeliveryStatusService | null> {
@@ -74,6 +110,7 @@ export async function resolveDeliveryStatusService(
 
 interface DeliveryConfiguration {
 	encryptionKey: string;
+	previousEncryptionKey: string | undefined;
 	publicOrigin: string;
 	fromEmail: string;
 	fromName: string;
@@ -84,6 +121,11 @@ function deliveryConfiguration(
 ): DeliveryConfiguration | null {
 	const encryptionKey: string | undefined = nonempty(
 		platformEnv?.DELIVERY_ENCRYPTION_KEY ?? env.DELIVERY_ENCRYPTION_KEY
+	);
+	// Optional: the retiring key, kept only long enough for the bounded
+	// reseal sweep to migrate outstanding ciphertext onto the active key.
+	const previousEncryptionKey: string | undefined = nonempty(
+		platformEnv?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS
 	);
 	const publicOrigin: string | undefined = nonempty(
 		platformEnv?.SIGNKIT_PUBLIC_ORIGIN ?? env.SIGNKIT_PUBLIC_ORIGIN
@@ -102,7 +144,7 @@ function deliveryConfiguration(
 	) {
 		return null;
 	}
-	return { encryptionKey, publicOrigin, fromEmail, fromName };
+	return { encryptionKey, previousEncryptionKey, publicOrigin, fromEmail, fromName };
 }
 
 function nonempty(value: string | undefined): string | undefined {

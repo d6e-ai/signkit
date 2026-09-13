@@ -12,8 +12,12 @@ import type {
 	EnrollCompletionDeliveryItem,
 	FailCompletionDeliveryCommand,
 	FailCompletionDeliveryResult,
+	FindStaleSealedCompletionTokensCommand,
 	ReadClaimedCompletionDeliveryCommand,
-	RecipientLocale
+	RecipientLocale,
+	ResealCompletionTokenCommand,
+	ResealCompletionTokenResult,
+	StaleSealedCompletionTokenRow
 } from '$lib/ports/completion-delivery-store';
 
 const MAX_COMPLETION_DELIVERY_TERMINAL_CLEANUP_BATCH: number = 100;
@@ -365,6 +369,55 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 			markdownObjectKey: row.markdownObjectKey,
 			markdownSha256: row.markdownSha256
 		};
+	}
+
+	async findStaleSealedCompletionTokens(
+		command: FindStaleSealedCompletionTokensCommand
+	): Promise<readonly StaleSealedCompletionTokenRow[]> {
+		const rows = await this.#sql<
+			{
+				deliveryId: string;
+				organizationId: string;
+				envelopeId: string;
+				recipientId: string;
+				sealedToken: string;
+				sealingKeyId: string;
+			}[]
+		>`
+			SELECT id AS "deliveryId", organization_id AS "organizationId",
+				envelope_id AS "envelopeId", recipient_id AS "recipientId",
+				sealed_token AS "sealedToken", sealing_key_id AS "sealingKeyId"
+			FROM completion_delivery_outbox
+			WHERE status IN ('pending', 'failed')
+				AND sealed_token IS NOT NULL
+				AND sealing_key_id <> ${command.activeSealingKeyId}
+			ORDER BY updated_at ASC, id ASC
+			LIMIT ${command.limit}`;
+		return rows.map((row): StaleSealedCompletionTokenRow => ({
+			deliveryId: row.deliveryId,
+			organizationId: row.organizationId,
+			envelopeId: row.envelopeId,
+			recipientId: row.recipientId,
+			sealedToken: row.sealedToken,
+			sealingKeyId: row.sealingKeyId
+		}));
+	}
+
+	async resealCompletionToken(
+		command: ResealCompletionTokenCommand
+	): Promise<ResealCompletionTokenResult> {
+		const rows = await this.#sql<{ id: string }[]>`
+			UPDATE completion_delivery_outbox
+			SET sealed_token = ${command.sealedToken},
+				sealing_key_id = ${command.sealingKeyId},
+				sealed_token_sha256 = ${command.sealedTokenSha256},
+				updated_at = ${command.updatedAt}::timestamptz
+			WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+				AND status <> 'processing'
+				AND sealed_token IS NOT NULL
+				AND sealing_key_id = ${command.previousSealingKeyId}
+			RETURNING id`;
+		return rows.length === 1 ? { outcome: 'resealed' } : { outcome: 'stale' };
 	}
 }
 

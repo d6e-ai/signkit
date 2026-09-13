@@ -99,7 +99,33 @@ export class D1RecipientViewStore implements RecipientViewStore {
 			}
 			return replay;
 		}
-		if (row.recipient_status === 'viewed') return { outcome: 'integrity_error' };
+		if (row.recipient_status === 'viewed') {
+			const viewedCommand: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
+				key.organizationId,
+				key.recipientId
+			);
+			if (
+				viewedCommand === null ||
+				!validAuditEvidence(viewedCommand) ||
+				!(await validStoredReceipt(viewedCommand))
+			) {
+				return { outcome: 'integrity_error' };
+			}
+			if (viewedCommand.capability_hash === key.capabilityHash) {
+				return { outcome: 'integrity_error' };
+			}
+			const lineageProven = await this.#verifyLineage(
+				key.organizationId,
+				key.recipientId,
+				viewedCommand.capability_hash,
+				key.capabilityHash
+			);
+			if (!lineageProven) return { outcome: 'integrity_error' };
+			return {
+				outcome: 'continued',
+				result: resultFromRow(viewedCommand)
+			};
+		}
 		const auditHead: ViewedAuditHead | null = await this.#readAuditHead(
 			key.organizationId,
 			key.envelopeId
@@ -219,13 +245,44 @@ export class D1RecipientViewStore implements RecipientViewStore {
 			key.recipientId
 		);
 		if (byRecipient === null) return null;
-		if (
-			byRecipient.envelope_id !== key.envelopeId ||
-			byRecipient.capability_hash !== key.capabilityHash
-		) {
-			return { outcome: 'not_found' };
+		if (byRecipient.envelope_id !== key.envelopeId) {
+			return { outcome: 'integrity_error' };
+		}
+		if (byRecipient.capability_hash !== key.capabilityHash) {
+			return null;
 		}
 		return await this.#evidenceResult(byRecipient);
+	}
+
+	async #verifyLineage(
+		organizationId: string,
+		recipientId: string,
+		initialHash: string,
+		currentHash: string
+	): Promise<boolean> {
+		if (initialHash === currentHash) return true;
+		const row = await this.#database
+			.prepare(
+				`WITH RECURSIVE lineage AS (
+					SELECT capability_hash, predecessor_capability_hash
+					FROM recipient_capability_issuance
+					WHERE organization_id = ?
+						AND recipient_id = ?
+						AND capability_hash = ?
+					UNION ALL
+					SELECT prev.capability_hash, prev.predecessor_capability_hash
+					FROM recipient_capability_issuance prev
+					INNER JOIN lineage curr ON curr.predecessor_capability_hash = prev.capability_hash
+					WHERE prev.organization_id = ?
+						AND prev.recipient_id = ?
+				)
+				SELECT count(*) AS count
+				FROM lineage
+				WHERE capability_hash = ?`
+			)
+			.bind(organizationId, recipientId, currentHash, organizationId, recipientId, initialHash)
+			.first<{ count: number }>();
+		return Number(row?.count ?? 0) > 0;
 	}
 
 	async #readCommandRow(

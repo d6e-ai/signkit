@@ -489,6 +489,14 @@ class MemoryObjectStore implements ObjectStore {
 		this.deleteCalls += 1;
 		this.objects.delete(key);
 	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('unused');
+	}
 }
 
 class CountingDraftRepository implements DraftRepository {

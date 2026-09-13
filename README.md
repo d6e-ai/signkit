@@ -57,6 +57,7 @@ npx skills add https://github.com/d6e-ai/signkit
 - [docs/cli.md](docs/cli.md) — agent-first Rust CLI reference, commands, security, and exit codes.
 - [docs/deployment.md](docs/deployment.md) — deployment profiles, configuration, and background jobs.
 - [docs/development.md](docs/development.md) — local setup, tests, builds, and CI expectations.
+- [docs/operations/](docs/operations/README.md) — D1 Time Travel and R2 restore runbooks.
 
 ## License
 

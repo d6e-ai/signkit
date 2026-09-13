@@ -867,6 +867,14 @@ class UnreachableObjectStore implements ObjectStore {
 	async delete(): Promise<void> {
 		throw new Error('Object store must not be read before field value integrity is verified');
 	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('Object store must not be listed before field value integrity is verified');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('Object store must not be deleted before field value integrity is verified');
+	}
 }
 
 class UnreachableDraftRepository implements DraftRepository {
@@ -916,6 +924,14 @@ class SeededObjectStore implements ObjectStore {
 	async delete(): Promise<void> {
 		throw new Error('unused');
 	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('unused');
+	}
 }
 
 /** A fully functional object store, for scenarios where a healthy sibling must actually publish. */
@@ -961,6 +977,14 @@ class WorkingObjectStore implements ObjectStore {
 	}
 
 	async delete(): Promise<void> {
+		throw new Error('unused');
+	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
 		throw new Error('unused');
 	}
 }

@@ -80,6 +80,14 @@ class MemoryObjectStore implements ObjectStore {
 	async delete(): Promise<void> {
 		throw new Error('unused');
 	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('unused');
+	}
 }
 
 /** Simulates a transient object-store outage: every read fails with a plain Error, never DraftIntegrityError. */
@@ -97,6 +105,14 @@ class ThrowingObjectStore implements ObjectStore {
 	}
 
 	async delete(): Promise<void> {
+		throw new Error('object store unavailable');
+	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('object store unavailable');
+	}
+
+	async deleteMany(): Promise<void> {
 		throw new Error('object store unavailable');
 	}
 }
@@ -134,6 +150,14 @@ class ArchiveOnlyObjectStore implements ObjectStore {
 	}
 
 	async delete(): Promise<void> {
+		throw new Error('unused');
+	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('unused');
+	}
+
+	async deleteMany(): Promise<void> {
 		throw new Error('unused');
 	}
 }

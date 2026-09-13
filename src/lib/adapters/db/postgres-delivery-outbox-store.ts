@@ -8,8 +8,12 @@ import type {
 	DeliveryOutboxStore,
 	FailInvitationDeliveryCommand,
 	FailInvitationDeliveryResult,
+	FindStaleSealedCapabilitiesCommand,
 	ReadClaimedInvitationCommand,
-	RecipientLocale
+	RecipientLocale,
+	ResealCapabilityCommand,
+	ResealCapabilityResult,
+	StaleSealedCapabilityRow
 } from '$lib/ports/delivery-outbox-store';
 
 const MAX_INVITATION_TERMINAL_CLEANUP_BATCH: number = 100;
@@ -245,6 +249,53 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING id`;
 		return rows.length === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
+	}
+
+	async findStaleSealedCapabilities(
+		command: FindStaleSealedCapabilitiesCommand
+	): Promise<readonly StaleSealedCapabilityRow[]> {
+		const rows = await this.#sql<
+			{
+				deliveryId: string;
+				organizationId: string;
+				envelopeId: string;
+				recipientId: string;
+				sealedCapability: string;
+				sealingKeyId: string;
+			}[]
+		>`
+			SELECT id AS "deliveryId", organization_id AS "organizationId",
+				envelope_id AS "envelopeId", recipient_id AS "recipientId",
+				sealed_capability AS "sealedCapability", sealing_key_id AS "sealingKeyId"
+			FROM delivery_outbox
+			WHERE status IN ('blocked', 'pending', 'failed')
+				AND sealed_capability IS NOT NULL
+				AND sealing_key_id <> ${command.activeSealingKeyId}
+			ORDER BY updated_at ASC, id ASC
+			LIMIT ${command.limit}`;
+		return rows.map((row): StaleSealedCapabilityRow => ({
+			deliveryId: row.deliveryId,
+			organizationId: row.organizationId,
+			envelopeId: row.envelopeId,
+			recipientId: row.recipientId,
+			sealedCapability: row.sealedCapability,
+			sealingKeyId: row.sealingKeyId
+		}));
+	}
+
+	async resealCapability(command: ResealCapabilityCommand): Promise<ResealCapabilityResult> {
+		const rows = await this.#sql<{ id: string }[]>`
+			UPDATE delivery_outbox
+			SET sealed_capability = ${command.sealedCapability},
+				sealing_key_id = ${command.sealingKeyId},
+				sealed_capability_sha256 = ${command.sealedCapabilitySha256},
+				updated_at = ${command.updatedAt}
+			WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+				AND status <> 'processing'
+				AND sealed_capability IS NOT NULL
+				AND sealing_key_id = ${command.previousSealingKeyId}
+			RETURNING id`;
+		return rows.length === 1 ? { outcome: 'resealed' } : { outcome: 'stale' };
 	}
 }
 

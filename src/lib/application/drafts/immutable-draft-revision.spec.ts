@@ -32,6 +32,14 @@ class ReadOnlyObjectStore implements ObjectStore {
 	async delete(): Promise<void> {
 		throw new Error('not implemented');
 	}
+
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		throw new Error('not implemented');
+	}
+
+	async deleteMany(): Promise<void> {
+		throw new Error('not implemented');
+	}
 }
 
 describe('readImmutableDraftRevision', () => {

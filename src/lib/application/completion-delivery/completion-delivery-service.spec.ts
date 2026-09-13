@@ -106,11 +106,23 @@ class FakeStore implements CompletionDeliveryStore {
 	async resolveArtifactLocatorByTokenHash(): Promise<CompletionArtifactLocator | null> {
 		return null;
 	}
+
+	async findStaleSealedCompletionTokens(): Promise<[]> {
+		return [];
+	}
+
+	async resealCompletionToken(): Promise<{ outcome: 'stale' }> {
+		return { outcome: 'stale' };
+	}
 }
 
 class FakeCryptor implements CompletionTokenCryptor {
 	readonly sealCalls: { token: string; context: CompletionTokenSealContext }[] = [];
-	readonly openCalls: { sealed: string; context: CompletionTokenSealContext }[] = [];
+	readonly openCalls: {
+		sealed: string;
+		context: CompletionTokenSealContext;
+		sealingKeyId: string;
+	}[] = [];
 	keyLookups: number = 0;
 	currentKeyId: string = 'key-1';
 	throwOnOpen: boolean = false;
@@ -127,6 +139,11 @@ class FakeCryptor implements CompletionTokenCryptor {
 		return this.currentKeyId;
 	}
 
+	async isKnownSealingKeyId(keyId: string): Promise<boolean> {
+		this.keyLookups += 1;
+		return keyId === this.currentKeyId;
+	}
+
 	async seal(token: string, context: CompletionTokenSealContext): Promise<SealedCompletionToken> {
 		this.sealCalls.push({ token, context });
 		const sealedToken: string = `skcd1_fake_sealed_${token.slice(6)}`;
@@ -137,8 +154,12 @@ class FakeCryptor implements CompletionTokenCryptor {
 		};
 	}
 
-	async open(sealedToken: string, context: CompletionTokenSealContext): Promise<string> {
-		this.openCalls.push({ sealed: sealedToken, context });
+	async open(
+		sealedToken: string,
+		context: CompletionTokenSealContext,
+		sealingKeyId: string
+	): Promise<string> {
+		this.openCalls.push({ sealed: sealedToken, context, sealingKeyId });
 		if (this.throwOnOpen) throw this.openError;
 		return this.token;
 	}

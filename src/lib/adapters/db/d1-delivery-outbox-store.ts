@@ -7,8 +7,12 @@ import type {
 	DeliveryOutboxStore,
 	FailInvitationDeliveryCommand,
 	FailInvitationDeliveryResult,
+	FindStaleSealedCapabilitiesCommand,
 	ReadClaimedInvitationCommand,
-	RecipientLocale
+	RecipientLocale,
+	ResealCapabilityCommand,
+	ResealCapabilityResult,
+	StaleSealedCapabilityRow
 } from '$lib/ports/delivery-outbox-store';
 
 const MAX_INVITATION_TERMINAL_CLEANUP_BATCH: number = 100;
@@ -266,6 +270,62 @@ export class D1DeliveryOutboxStore implements DeliveryOutboxStore {
 					)
 					.run();
 		return result.meta.changes === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
+	}
+
+	async findStaleSealedCapabilities(
+		command: FindStaleSealedCapabilitiesCommand
+	): Promise<readonly StaleSealedCapabilityRow[]> {
+		interface StaleRow {
+			delivery_id: string;
+			organization_id: string;
+			envelope_id: string;
+			recipient_id: string;
+			sealed_capability: string;
+			sealing_key_id: string;
+		}
+		const result: D1Result<StaleRow> = await this.#database
+			.prepare(
+				`SELECT id AS delivery_id, organization_id, envelope_id, recipient_id,
+					sealed_capability, sealing_key_id
+				 FROM delivery_outbox
+				 WHERE status IN ('blocked', 'pending', 'failed')
+					AND sealed_capability IS NOT NULL
+					AND sealing_key_id <> ?
+				 ORDER BY updated_at ASC, id ASC
+				 LIMIT ?`
+			)
+			.bind(command.activeSealingKeyId, command.limit)
+			.all<StaleRow>();
+		return result.results.map((row: StaleRow): StaleSealedCapabilityRow => ({
+			deliveryId: row.delivery_id,
+			organizationId: row.organization_id,
+			envelopeId: row.envelope_id,
+			recipientId: row.recipient_id,
+			sealedCapability: row.sealed_capability,
+			sealingKeyId: row.sealing_key_id
+		}));
+	}
+
+	async resealCapability(command: ResealCapabilityCommand): Promise<ResealCapabilityResult> {
+		const result: D1Result = await this.#database
+			.prepare(
+				`UPDATE delivery_outbox
+				 SET sealed_capability = ?, sealing_key_id = ?, sealed_capability_sha256 = ?,
+					updated_at = ?
+				 WHERE organization_id = ? AND id = ? AND status <> 'processing'
+					AND sealed_capability IS NOT NULL AND sealing_key_id = ?`
+			)
+			.bind(
+				command.sealedCapability,
+				command.sealingKeyId,
+				command.sealedCapabilitySha256,
+				command.updatedAt,
+				command.organizationId,
+				command.deliveryId,
+				command.previousSealingKeyId
+			)
+			.run();
+		return result.meta.changes === 1 ? { outcome: 'resealed' } : { outcome: 'stale' };
 	}
 }
 

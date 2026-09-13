@@ -68,6 +68,40 @@ export type CompleteInvitationDeliveryResult = { outcome: 'completed' } | { outc
 
 export type FailInvitationDeliveryResult = { outcome: 'failed' } | { outcome: 'stale' };
 
+export const MAX_DELIVERY_RESEAL_SWEEP_BATCH: number = 50;
+
+/**
+ * A non-terminal outbox row (`blocked`, `pending`, or `failed`, never
+ * `processing`) whose ciphertext is still sealed under a key other than the
+ * active one, discovered by the bounded reseal sweep — never on the hot
+ * delivery-claim path.
+ */
+export interface StaleSealedCapabilityRow {
+	deliveryId: string;
+	organizationId: string;
+	envelopeId: string;
+	recipientId: string;
+	sealedCapability: string;
+	sealingKeyId: string;
+}
+
+export interface FindStaleSealedCapabilitiesCommand {
+	activeSealingKeyId: string;
+	limit: number;
+}
+
+export interface ResealCapabilityCommand {
+	organizationId: string;
+	deliveryId: string;
+	previousSealingKeyId: string;
+	sealedCapability: string;
+	sealingKeyId: string;
+	sealedCapabilitySha256: string;
+	updatedAt: string;
+}
+
+export type ResealCapabilityResult = { outcome: 'resealed' } | { outcome: 'stale' };
+
 export interface DeliveryOutboxStore {
 	claimPendingInvitations(
 		command: ClaimInvitationDeliveriesCommand
@@ -81,6 +115,27 @@ export interface DeliveryOutboxStore {
 	failInvitationDelivery(
 		command: FailInvitationDeliveryCommand
 	): Promise<FailInvitationDeliveryResult>;
+	/**
+	 * Bounded discovery for the reseal sweep: rows never claimed for delivery
+	 * (or claimed only long after a key rotation) can otherwise sit
+	 * indefinitely on a retiring key, so this is a maintenance path
+	 * independent of `claimPendingInvitations`.
+	 */
+	findStaleSealedCapabilities(
+		command: FindStaleSealedCapabilitiesCommand
+	): Promise<readonly StaleSealedCapabilityRow[]>;
+	/**
+	 * CAS on `previousSealingKeyId` and a non-`processing` status: a
+	 * concurrent claim or terminal cleanup that has since scrubbed or
+	 * mutated the row makes this a safe no-op `stale` result rather than a
+	 * clobber.
+	 */
+	resealCapability(command: ResealCapabilityCommand): Promise<ResealCapabilityResult>;
+}
+
+export function boundDeliveryResealSweepLimit(limit: number): number {
+	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	return Math.min(limit, MAX_DELIVERY_RESEAL_SWEEP_BATCH);
 }
 
 export function sanitizeDeliveryErrorCode(code: string): string {

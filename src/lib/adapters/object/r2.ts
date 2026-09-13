@@ -1,5 +1,11 @@
-import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
-import { assertObjectKey } from '$lib/ports/object-store';
+import type {
+	ListObjectsOptions,
+	ListObjectsResult,
+	ObjectMetadata,
+	ObjectStore,
+	PutObject
+} from '$lib/ports/object-store';
+import { assertObjectKey, MAX_LIST_OBJECTS_LIMIT } from '$lib/ports/object-store';
 
 export class R2ObjectStore implements ObjectStore {
 	constructor(private readonly bucket: R2Bucket) {}
@@ -30,6 +36,30 @@ export class R2ObjectStore implements ObjectStore {
 	async delete(key: string): Promise<void> {
 		assertObjectKey(key);
 		await this.bucket.delete(key);
+	}
+
+	async list(options?: ListObjectsOptions): Promise<ListObjectsResult> {
+		const limit = Math.min(options?.limit ?? 1000, MAX_LIST_OBJECTS_LIMIT);
+		const listed = await this.bucket.list({
+			prefix: options?.prefix,
+			cursor: options?.cursor,
+			limit
+		});
+		return {
+			objects: listed.objects.map((obj) => ({
+				key: obj.key,
+				size: obj.size,
+				uploadedAt: obj.uploaded.toISOString()
+			})),
+			truncated: listed.truncated,
+			...(listed.truncated ? { cursor: listed.cursor } : {})
+		};
+	}
+
+	async deleteMany(keys: readonly string[]): Promise<void> {
+		if (keys.length === 0) return;
+		for (const key of keys) assertObjectKey(key);
+		await this.bucket.delete([...keys]);
 	}
 
 	private metadata(object: R2Object): ObjectMetadata {

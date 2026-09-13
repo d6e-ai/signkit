@@ -56,8 +56,13 @@ export type CompletionDeliverySenderConfig = CompletionSenderConfig;
 
 export interface CompletionTokenCryptor {
 	currentSealingKeyId(): Promise<string>;
+	isKnownSealingKeyId(keyId: string): Promise<boolean>;
 	seal(token: string, context: CompletionTokenSealContext): Promise<SealedCompletionToken>;
-	open(sealedToken: string, context: CompletionTokenSealContext): Promise<string>;
+	open(
+		sealedToken: string,
+		context: CompletionTokenSealContext,
+		sealingKeyId: string
+	): Promise<string>;
 }
 
 export type CompletionDeliveryItemOutcome =
@@ -122,12 +127,17 @@ export class CompletionDeliveryService {
 				? cryptor
 				: {
 						currentSealingKeyId: (): Promise<string> => cryptor.sealer.currentSealingKeyId(),
+						isKnownSealingKeyId: (keyId: string): Promise<boolean> =>
+							cryptor.opener.isKnownSealingKeyId(keyId),
 						seal: (
 							token: string,
 							context: CompletionTokenSealContext
 						): Promise<SealedCompletionToken> => cryptor.sealer.seal(token, context),
-						open: (sealedToken: string, context: CompletionTokenSealContext): Promise<string> =>
-							cryptor.opener.open(sealedToken, context)
+						open: (
+							sealedToken: string,
+							context: CompletionTokenSealContext,
+							sealingKeyId: string
+						): Promise<string> => cryptor.opener.open(sealedToken, context, sealingKeyId)
 					};
 		this.#mail = mail;
 		this.#publicHttpsOrigin = assertPublicHttpsOrigin(publicHttpsOrigin);
@@ -282,7 +292,11 @@ export class CompletionDeliveryService {
 
 		let token: string;
 		try {
-			token = await this.#cryptor.open(requiredSealedToken(claim), sealContext(claim));
+			token = await this.#cryptor.open(
+				requiredSealedToken(claim),
+				sealContext(claim),
+				claim.sealingKeyId
+			);
 		} catch {
 			return this.#finishFailure(
 				claim,
@@ -397,8 +411,7 @@ export class CompletionDeliveryService {
 		if (digest !== claim.sealedTokenSha256) {
 			return 'ciphertext_digest_mismatch';
 		}
-		const currentKeyId: string = await this.#cryptor.currentSealingKeyId();
-		if (currentKeyId !== claim.sealingKeyId) {
+		if (!(await this.#cryptor.isKnownSealingKeyId(claim.sealingKeyId))) {
 			return 'sealing_key_mismatch';
 		}
 		return null;
