@@ -72,6 +72,25 @@ interface LogRow {
 	occurred_at: string;
 }
 
+function isWebhookLimitExceededError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const message = error.message.toLowerCase();
+	return (
+		message.includes('organization active webhook endpoint limit exceeded') ||
+		message.includes('limit exceeded')
+	);
+}
+
+function isWebhookConflictError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	const message = error.message.toLowerCase();
+	return (
+		message.includes('unique constraint failed') ||
+		message.includes('foreign key constraint failed') ||
+		message.includes('primary key')
+	);
+}
+
 export class D1WebhookStore implements WebhookStore {
 	readonly #database: D1Database;
 
@@ -145,7 +164,7 @@ export class D1WebhookStore implements WebhookStore {
 			if (!results.every((result: D1Result): boolean => (result.meta.changes ?? 0) === 1)) {
 				return { outcome: 'conflict' };
 			}
-		} catch {
+		} catch (error: unknown) {
 			const again: D1Result<CommandRow> = await this.#database
 				.prepare(
 					`SELECT request_hash, webhook_id FROM webhook_endpoint_command
@@ -154,7 +173,27 @@ export class D1WebhookStore implements WebhookStore {
 				.bind(command.organizationId, command.actorId, command.idempotencyKey)
 				.all();
 			if (again.results.length === 1) return this.#replayOrConflict(command, again.results[0]);
-			throw new Error('Webhook endpoint create failed');
+
+			if (isWebhookLimitExceededError(error)) {
+				return { outcome: 'limit_exceeded' };
+			}
+
+			const countAfter: D1Result<{ n: number }> = await this.#database
+				.prepare(
+					`SELECT COUNT(*) AS n FROM webhook_endpoint
+					 WHERE organization_id = ? AND status = 'active'`
+				)
+				.bind(command.organizationId)
+				.all();
+			if ((countAfter.results[0]?.n ?? 0) >= WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION) {
+				return { outcome: 'limit_exceeded' };
+			}
+
+			if (isWebhookConflictError(error)) {
+				return { outcome: 'conflict' };
+			}
+
+			throw error;
 		}
 		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(
 			command.organizationId,

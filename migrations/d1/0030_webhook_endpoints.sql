@@ -23,7 +23,14 @@ CREATE TABLE webhook_endpoint (
     AND url GLOB 'https://*'
   ),
   CONSTRAINT webhook_endpoint_secret_hash_sha256 CHECK (
-    length(secret_hash) = 64 AND secret_hash GLOB '[0-9a-f]*'
+    length(secret_hash) = 64
+    AND secret_hash NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT webhook_endpoint_signing_secret_bound CHECK (
+    length(signing_secret) BETWEEN 20 AND 200
+  ),
+  CONSTRAINT webhook_endpoint_secret_prefix_bound CHECK (
+    length(secret_prefix) BETWEEN 1 AND 32
   ),
   CONSTRAINT webhook_endpoint_terminal_exclusive CHECK (
     (status = 'active' AND revoked_at IS NULL AND revoked_by_user_id IS NULL)
@@ -45,5 +52,40 @@ CREATE TABLE webhook_endpoint_command (
   PRIMARY KEY (organization_id, actor_id, idempotency_key),
   UNIQUE (organization_id, webhook_id, command_type),
   FOREIGN KEY (organization_id, webhook_id) REFERENCES webhook_endpoint(organization_id, id),
-  CONSTRAINT webhook_endpoint_command_type_known CHECK (command_type IN ('create', 'revoke'))
+  CONSTRAINT webhook_endpoint_command_type_known CHECK (command_type IN ('create', 'revoke')),
+  CONSTRAINT webhook_endpoint_command_request_hash_sha256 CHECK (
+    length(request_hash) = 64
+    AND request_hash NOT GLOB '*[^0-9a-f]*'
+  )
 );
+
+CREATE TRIGGER webhook_endpoint_active_cap_guard
+BEFORE INSERT ON webhook_endpoint
+WHEN NEW.status = 'active'
+BEGIN
+  SELECT (CASE
+    WHEN (
+      SELECT COUNT(*)
+      FROM webhook_endpoint
+      WHERE organization_id = NEW.organization_id
+        AND status = 'active'
+    ) >= 20
+    THEN RAISE(ABORT, 'organization active webhook endpoint limit exceeded')
+  END);
+END;
+
+CREATE TRIGGER webhook_endpoint_active_cap_update_guard
+BEFORE UPDATE OF status ON webhook_endpoint
+WHEN NEW.status = 'active' AND OLD.status <> 'active'
+BEGIN
+  SELECT (CASE
+    WHEN (
+      SELECT COUNT(*)
+      FROM webhook_endpoint
+      WHERE organization_id = NEW.organization_id
+        AND status = 'active'
+    ) >= 20
+    THEN RAISE(ABORT, 'organization active webhook endpoint limit exceeded')
+  END);
+END;
+

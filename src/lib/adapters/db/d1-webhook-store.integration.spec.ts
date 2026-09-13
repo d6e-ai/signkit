@@ -1,8 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { WebhookApplication } from '$lib/application/webhooks/webhook-service';
-import type { FailWebhookDeliveryCommand } from '$lib/ports/webhook-store';
-import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_PAYLOAD_BYTES } from '$lib/security/webhook';
+import type {
+	CreateWebhookEndpointCommand,
+	FailWebhookDeliveryCommand
+} from '$lib/ports/webhook-store';
+import {
+	WEBHOOK_MAX_ATTEMPTS,
+	WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION,
+	WEBHOOK_MAX_PAYLOAD_BYTES
+} from '$lib/security/webhook';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 import { D1WebhookStore } from './d1-webhook-store';
@@ -289,5 +296,197 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 			store.claimPendingDeliveries({ ...claimCommand, claimToken: 'claim-token-reclaim-0002' })
 		).resolves.toEqual([]);
 		expect(outboxState(sqlite, auditEventId).attempts).toBe(WEBHOOK_MAX_ATTEMPTS);
+	});
+});
+
+describe('D1WebhookStore.createEndpoint', () => {
+	function createCommand(
+		overrides: Partial<CreateWebhookEndpointCommand> = {}
+	): CreateWebhookEndpointCommand {
+		return {
+			id: '01900000-0000-7000-8000-000000000701',
+			organizationId: ORGANIZATION_ID,
+			actorId: ACTOR_ID,
+			idempotencyKey: 'idemp-create-001',
+			requestFingerprint: 'f'.repeat(64),
+			url: 'https://hooks.example.com/target',
+			description: 'Webhook Endpoint',
+			eventsJson: '["envelope.completed"]',
+			secretHash: 'b'.repeat(64),
+			signingSecret: 'skwhs1_v1_' + 'C'.repeat(80),
+			sealingKeyId: '0123456789abcdef',
+			secretPrefix: 'skwh1_abcd',
+			createdAt: AVAILABLE_AT,
+			...overrides
+		};
+	}
+
+	it('creates a new webhook endpoint and records create command', async () => {
+		const { store, sqlite } = await createFixture();
+		const command = createCommand();
+		const result = await store.createEndpoint(command);
+		expect(result).toMatchObject({
+			outcome: 'created',
+			endpoint: {
+				id: command.id,
+				organizationId: ORGANIZATION_ID,
+				url: command.url,
+				description: command.description,
+				status: 'active'
+			}
+		});
+
+		const endpointRow = sqlite
+			.prepare('SELECT id, status, secret_hash, signing_secret FROM webhook_endpoint WHERE id = ?')
+			.get(command.id) as {
+			id: string;
+			status: string;
+			secret_hash: string;
+			signing_secret: string;
+		};
+		expect(endpointRow.status).toBe('active');
+		expect(endpointRow.secret_hash).toBe(command.secretHash);
+		expect(endpointRow.signing_secret).toBe(command.signingSecret);
+
+		const commandRow = sqlite
+			.prepare(
+				'SELECT command_type, request_hash FROM webhook_endpoint_command WHERE organization_id = ? AND actor_id = ? AND idempotency_key = ?'
+			)
+			.get(ORGANIZATION_ID, command.actorId, command.idempotencyKey) as {
+			command_type: string;
+			request_hash: string;
+		};
+		expect(commandRow.command_type).toBe('create');
+		expect(commandRow.request_hash).toBe(command.requestFingerprint);
+	});
+
+	it('replays endpoint creation when idempotency key and fingerprint match', async () => {
+		const { store } = await createFixture();
+		const command = createCommand();
+		const first = await store.createEndpoint(command);
+		expect(first.outcome).toBe('created');
+
+		const replay = await store.createEndpoint(command);
+		expect(replay).toEqual({
+			outcome: 'replayed',
+			endpoint: (first as { outcome: 'created'; endpoint: unknown }).endpoint
+		});
+	});
+
+	it('returns conflict when idempotency key is reused with mismatched fingerprint', async () => {
+		const { store } = await createFixture();
+		const command = createCommand();
+		await store.createEndpoint(command);
+
+		const conflict = await store.createEndpoint({
+			...command,
+			requestFingerprint: 'e'.repeat(64)
+		});
+		expect(conflict).toEqual({ outcome: 'conflict' });
+	});
+
+	it('enforces active endpoint limit when already at capacity', async () => {
+		const { store, sqlite } = await createFixture();
+		// Fixture already inserted 1 active endpoint (ENDPOINT_ID). Insert 19 more to reach 20.
+		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION; i++) {
+			const hex = i.toString(16).padStart(4, '0');
+			const id = `01900000-0000-7000-8000-00000000${hex}`;
+			sqlite
+				.prepare(
+					`INSERT INTO webhook_endpoint (
+						id, organization_id, url, description, status, events_json,
+						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
+					) VALUES (?, ?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]',
+						?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
+				)
+				.run(id, ORGANIZATION_ID, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
+		}
+
+		const result = await store.createEndpoint(
+			createCommand({
+				id: '01900000-0000-7000-8000-000000000999',
+				idempotencyKey: 'idemp-cap-001'
+			})
+		);
+		expect(result).toEqual({ outcome: 'limit_exceeded' });
+	});
+
+	it('classifies database trigger abort as limit_exceeded with PostgreSQL parity', async () => {
+		const { store, sqlite } = await createFixture();
+		// Insert up to 20 endpoints
+		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION; i++) {
+			const hex = i.toString(16).padStart(4, '0');
+			const id = `01900000-0000-7000-8000-00000000${hex}`;
+			sqlite
+				.prepare(
+					`INSERT INTO webhook_endpoint (
+						id, organization_id, url, description, status, events_json,
+						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
+					) VALUES (?, ?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]',
+						?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
+				)
+				.run(id, ORGANIZATION_ID, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
+		}
+
+		// When creating endpoint 21, the database trigger webhook_endpoint_active_cap_guard fires
+		// and createEndpoint classifies it cleanly as limit_exceeded.
+		const result = await store.createEndpoint(
+			createCommand({
+				id: '01900000-0000-7000-8000-000000000998',
+				idempotencyKey: 'idemp-trigger-001'
+			})
+		);
+		expect(result).toEqual({ outcome: 'limit_exceeded' });
+	});
+
+	it('resolves concurrent creation race atomically without exceeding cap', async () => {
+		const { store, sqlite } = await createFixture();
+		// Fixture has 1 active endpoint. Insert 18 more so there are 19 active (1 below cap).
+		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION - 1; i++) {
+			const hex = i.toString(16).padStart(4, '0');
+			const id = `01900000-0000-7000-8000-00000000${hex}`;
+			sqlite
+				.prepare(
+					`INSERT INTO webhook_endpoint (
+						id, organization_id, url, description, status, events_json,
+						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
+					) VALUES (?, ?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]',
+						?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
+				)
+				.run(id, ORGANIZATION_ID, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
+		}
+
+		// Exactly 1 spot remaining before reaching cap of 20
+		const countBefore = sqlite
+			.prepare(
+				'SELECT COUNT(*) AS n FROM webhook_endpoint WHERE organization_id = ? AND status = ?'
+			)
+			.get(ORGANIZATION_ID, 'active') as { n: number };
+		expect(countBefore.n).toBe(19);
+
+		// Two concurrent requests to create endpoint 20
+		const cmdA = createCommand({
+			id: '01900000-0000-7000-8000-0000000000aa',
+			idempotencyKey: 'idemp-race-a'
+		});
+		const cmdB = createCommand({
+			id: '01900000-0000-7000-8000-0000000000bb',
+			idempotencyKey: 'idemp-race-b'
+		});
+
+		const [resA, resB] = await Promise.all([
+			store.createEndpoint(cmdA),
+			store.createEndpoint(cmdB)
+		]);
+		const outcomes = [resA.outcome, resB.outcome].sort();
+		expect(outcomes).toEqual(['created', 'limit_exceeded']);
+
+		// Final active endpoint count must be exactly 20, never 21
+		const countAfter = sqlite
+			.prepare(
+				'SELECT COUNT(*) AS n FROM webhook_endpoint WHERE organization_id = ? AND status = ?'
+			)
+			.get(ORGANIZATION_ID, 'active') as { n: number };
+		expect(countAfter.n).toBe(20);
 	});
 });
