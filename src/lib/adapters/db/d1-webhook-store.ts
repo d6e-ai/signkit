@@ -454,48 +454,51 @@ export class D1WebhookStore implements WebhookStore {
 	): Promise<{ outcome: 'failed' | 'stale' }> {
 		const logId: string = newUuidV7();
 		const logStatus: string = command.retryable ? 'retrying' : 'failed';
-		const results: D1Result[] = await this.#database.batch([
-			this.#database
-				.prepare(
-					`UPDATE webhook_outbox
-					 SET status = 'failed', claim_token = NULL, locked_at = NULL,
-						available_at = ?, last_error = ?, updated_at = ?, retryable = ?
-					 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
-						AND status = 'processing' AND claim_token = ?`
+		const updated: D1Result = await this.#database
+			.prepare(
+				`UPDATE webhook_outbox
+				 SET status = 'failed', claim_token = NULL, locked_at = NULL,
+					available_at = ?, last_error = ?, updated_at = ?, retryable = ?
+				 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+					AND status = 'processing' AND claim_token = ?`
+			)
+			.bind(
+				command.nextAvailableAt,
+				command.errorCode,
+				command.failedAt,
+				command.retryable ? 1 : 0,
+				command.organizationId,
+				command.endpointId,
+				command.auditEventId,
+				command.claimToken
+			)
+			.run();
+		if ((updated.meta.changes ?? 0) !== 1) {
+			return { outcome: 'stale' };
+		}
+		await this.#database
+			.prepare(
+				`INSERT INTO webhook_delivery_log (
+					id, organization_id, endpoint_id, audit_event_id, event_type, status,
+					attempt, http_status, error_code, occurred_at
 				)
-				.bind(
-					command.nextAvailableAt,
-					command.errorCode,
-					command.failedAt,
-					command.retryable ? 1 : 0,
-					command.organizationId,
-					command.endpointId,
-					command.auditEventId,
-					command.claimToken
-				),
-			this.#database
-				.prepare(
-					`INSERT INTO webhook_delivery_log (
-						id, organization_id, endpoint_id, audit_event_id, event_type, status,
-						attempt, http_status, error_code, occurred_at
-					)
-					SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, ?,
-						attempts, ?, ?, ?
-					FROM webhook_outbox
-					WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?`
-				)
-				.bind(
-					logId,
-					logStatus,
-					command.httpStatus,
-					command.errorCode,
-					command.failedAt,
-					command.organizationId,
-					command.endpointId,
-					command.auditEventId
-				)
-		]);
-		return (results[0]?.meta.changes ?? 0) === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
+				SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, ?,
+					attempts, ?, ?, ?
+				FROM webhook_outbox
+				WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?`
+			)
+			.bind(
+				logId,
+				logStatus,
+				command.httpStatus,
+				command.errorCode,
+				command.failedAt,
+				command.organizationId,
+				command.endpointId,
+				command.auditEventId
+			)
+			.run();
+		return { outcome: 'failed' };
 	}
 
 	async listStaleSigningSecrets(

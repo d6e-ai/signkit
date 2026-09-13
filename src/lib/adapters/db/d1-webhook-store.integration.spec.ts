@@ -137,6 +137,24 @@ function outboxState(
 	};
 }
 
+function deliveryLogRows(
+	sqlite: DatabaseSync,
+	auditEventId: string
+): { status: string; attempt: number; http_status: number | null; error_code: string | null }[] {
+	return sqlite
+		.prepare(
+			`SELECT status, attempt, http_status, error_code FROM webhook_delivery_log
+			 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+			 ORDER BY occurred_at ASC`
+		)
+		.all(ORGANIZATION_ID, ENDPOINT_ID, auditEventId) as {
+		status: string;
+		attempt: number;
+		http_status: number | null;
+		error_code: string | null;
+	}[];
+}
+
 const claimCommand = {
 	claimToken: 'claim-token-reclaim-0001',
 	claimedAt: CLAIMED_AT,
@@ -296,6 +314,100 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 			store.claimPendingDeliveries({ ...claimCommand, claimToken: 'claim-token-reclaim-0002' })
 		).resolves.toEqual([]);
 		expect(outboxState(sqlite, auditEventId).attempts).toBe(WEBHOOK_MAX_ATTEMPTS);
+	});
+});
+
+describe('D1WebhookStore.failDelivery', () => {
+	function failCommand(
+		auditEventId: string,
+		overrides: Partial<FailWebhookDeliveryCommand> = {}
+	): FailWebhookDeliveryCommand {
+		return {
+			organizationId: ORGANIZATION_ID,
+			endpointId: ENDPOINT_ID,
+			auditEventId,
+			claimToken: 'claim-current',
+			failedAt: CLAIMED_AT,
+			retryable: true,
+			nextAvailableAt: AVAILABLE_AT,
+			errorCode: 'http_500',
+			httpStatus: 500,
+			...overrides
+		};
+	}
+
+	it('does not log a delivery when the claim is stale', async () => {
+		const { store, sqlite } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000531';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'processing',
+			attempts: 2,
+			claimToken: 'claim-current',
+			lockedAt: CLAIMED_AT
+		});
+
+		await expect(
+			store.failDelivery(failCommand(auditEventId, { claimToken: 'claim-wrong' }))
+		).resolves.toEqual({ outcome: 'stale' });
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'processing',
+			attempts: 2,
+			retryable: 1
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([]);
+	});
+
+	it('logs exactly one retrying entry for a valid retryable failure', async () => {
+		const { store, sqlite } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000532';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'processing',
+			attempts: 3,
+			claimToken: 'claim-current',
+			lockedAt: CLAIMED_AT
+		});
+
+		await expect(
+			store.failDelivery(
+				failCommand(auditEventId, { retryable: true, errorCode: 'http_500', httpStatus: 500 })
+			)
+		).resolves.toEqual({ outcome: 'failed' });
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'failed',
+			attempts: 3,
+			retryable: 1
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([
+			{ status: 'retrying', attempt: 3, http_status: 500, error_code: 'http_500' }
+		]);
+	});
+
+	it('logs exactly one failed entry for a valid terminal failure', async () => {
+		const { store, sqlite } = await createFixture();
+		const auditEventId: string = '01900000-0000-7000-8000-000000000533';
+		insertOutbox(sqlite, auditEventId, {
+			status: 'processing',
+			attempts: 5,
+			claimToken: 'claim-current',
+			lockedAt: CLAIMED_AT
+		});
+
+		await expect(
+			store.failDelivery(
+				failCommand(auditEventId, { retryable: false, errorCode: 'http_400', httpStatus: 400 })
+			)
+		).resolves.toEqual({ outcome: 'failed' });
+
+		expect(outboxState(sqlite, auditEventId)).toEqual({
+			status: 'failed',
+			attempts: 5,
+			retryable: 0
+		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([
+			{ status: 'failed', attempt: 5, http_status: 400, error_code: 'http_400' }
+		]);
 	});
 });
 
