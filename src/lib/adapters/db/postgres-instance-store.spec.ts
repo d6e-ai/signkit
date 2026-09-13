@@ -11,8 +11,13 @@ import type {
 	InstanceCallerContext,
 	InstanceInvitationListQuery,
 	ListInstanceInvitationsStoreResult,
+	ListInstanceMembersStoreResult,
 	RevokeInstanceInvitationCommand,
-	RevokeInstanceInvitationStoreResult
+	RevokeInstanceInvitationStoreResult,
+	SetInstanceMemberRoleCommand,
+	SetInstanceMemberRoleStoreResult,
+	SetInstanceMemberStatusCommand,
+	SetInstanceMemberStatusStoreResult
 } from '$lib/ports/instance-store';
 import { PostgresInstanceStore } from './postgres-instance-store';
 
@@ -20,6 +25,7 @@ const ACTOR_ID: string = 'user-owner-1';
 const OWNER_ID: string = 'user-owner-1';
 const ADMIN_ID: string = 'user-admin-1';
 const MEMBER_ID: string = 'user-member-1';
+const TARGET_ID: string = 'user-target-1';
 const ACCEPTOR_ID: string = 'user-acceptor-1';
 const IDEMPOTENCY_KEY: string = 'bootstrap-idem-key-1';
 const REQUEST_FINGERPRINT: string = 'a'.repeat(64);
@@ -31,6 +37,7 @@ const CREATED_AT: Date = new Date('2026-09-12T12:00:00.000Z');
 const EXPIRES_AT: Date = new Date('2026-09-19T12:00:00.000Z');
 const ACCEPTED_AT: Date = new Date('2026-09-13T12:00:00.000Z');
 const REVOKED_AT: Date = new Date('2026-09-13T12:00:00.000Z');
+const UPDATED_AT: Date = new Date('2026-09-13T13:00:00.000Z');
 
 interface RecordedQuery {
 	text: string;
@@ -151,6 +158,34 @@ function revokeCommand(
 		requestFingerprint: REQUEST_FINGERPRINT,
 		invitationId: INVITATION_ID,
 		revokedAt: REVOKED_AT.toISOString(),
+		...overrides
+	};
+}
+
+function setRoleCommand(
+	overrides: Partial<SetInstanceMemberRoleCommand> = {}
+): SetInstanceMemberRoleCommand {
+	return {
+		actor: { type: 'user', id: OWNER_ID },
+		idempotencyKey: 'role-idem-1',
+		requestFingerprint: REQUEST_FINGERPRINT,
+		targetUserId: TARGET_ID,
+		role: 'admin',
+		updatedAt: UPDATED_AT.toISOString(),
+		...overrides
+	};
+}
+
+function setStatusCommand(
+	overrides: Partial<SetInstanceMemberStatusCommand> = {}
+): SetInstanceMemberStatusCommand {
+	return {
+		actor: { type: 'user', id: OWNER_ID },
+		idempotencyKey: 'status-idem-1',
+		requestFingerprint: REQUEST_FINGERPRINT,
+		targetUserId: TARGET_ID,
+		status: 'suspended',
+		updatedAt: UPDATED_AT.toISOString(),
 		...overrides
 	};
 }
@@ -1612,6 +1647,1012 @@ describe('PostgresInstanceStore', () => {
 
 			expect(result).toEqual({ outcome: 'idempotency_conflict' });
 			expect(scripted.rollbacks).toBe(1);
+		});
+	});
+
+	describe('listInstanceMembers', () => {
+		it('lists members with bounded limit for an active owner', async () => {
+			const scripted = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }], // member check
+				[
+					{
+						userId: MEMBER_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				] // page query
+			]);
+
+			const result: ListInstanceMembersStoreResult = await store(scripted).listInstanceMembers(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: null, limit: 10 }
+			);
+
+			expect(result).toEqual({
+				outcome: 'listed',
+				page: {
+					items: [
+						{
+							userId: MEMBER_ID,
+							role: 'member',
+							status: 'active',
+							createdAt: CREATED_AT.toISOString(),
+							updatedAt: CREATED_AT.toISOString()
+						}
+					],
+					nextCursor: null
+				}
+			});
+			// COLLATE "C" forces byte-wise ordering, matching D1/SQLite's BINARY
+			// collation on TEXT columns, rather than PostgreSQL's locale-dependent
+			// default.
+			expect(scripted.texts()[1]).toContain('ORDER BY user_id COLLATE "C" ASC');
+		});
+
+		it('orders and paginates a cursor page with the same explicit "C" collation on both sides of the comparison', async () => {
+			const scripted = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }], // member check
+				[
+					{
+						userId: 'zzz',
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				] // page query
+			]);
+
+			await store(scripted).listInstanceMembers(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: MEMBER_ID, limit: 10 }
+			);
+
+			expect(scripted.texts()[1]).toContain('WHERE (user_id COLLATE "C") > (');
+			expect(scripted.texts()[1]).toContain('COLLATE "C")');
+			expect(scripted.texts()[1]).toContain('ORDER BY user_id COLLATE "C" ASC');
+		});
+
+		it('refuses listing when caller is member role', async () => {
+			const scripted = new ScriptedPostgres([[{ role: 'member', status: 'active' }]]);
+
+			const result: ListInstanceMembersStoreResult = await store(scripted).listInstanceMembers(
+				{ type: 'user', id: MEMBER_ID },
+				{ cursor: null, limit: 10 }
+			);
+
+			expect(result).toEqual({ outcome: 'forbidden' });
+		});
+
+		it('refuses listing when caller is suspended', async () => {
+			const scripted = new ScriptedPostgres([[{ role: 'owner', status: 'suspended' }]]);
+
+			const result: ListInstanceMembersStoreResult = await store(scripted).listInstanceMembers(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: null, limit: 10 }
+			);
+
+			expect(result).toEqual({ outcome: 'member_suspended' });
+		});
+	});
+
+	describe('setInstanceMemberRole', () => {
+		it('acquires the shared member-admin advisory lock, locks actor/target rows in sorted order, updates the role, and records a receipt', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock actor + target rows
+				[], // receipt check
+				[
+					{
+						userId: TARGET_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: UPDATED_AT
+					}
+				], // UPDATE ... RETURNING
+				[{ actorId: OWNER_ID }] // receipt insert RETURNING
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult =
+				await store(scripted).setInstanceMemberRole(setRoleCommand());
+
+			expect(result).toEqual({
+				outcome: 'updated',
+				member: {
+					userId: TARGET_ID,
+					role: 'admin',
+					status: 'active',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 0
+			});
+			expect(scripted.beginCalls).toBe(1);
+			expect(scripted.rollbacks).toBe(0);
+			expect(scripted.texts()[0]).toContain('pg_advisory_xact_lock');
+			expect(scripted.texts()[0]).toContain("hashtext('instance_member_admin')");
+			expect(scripted.texts()[1]).toContain('= ANY(');
+			expect(scripted.texts()[1]).toContain('FOR UPDATE');
+			expect(scripted.queries[1].values).toEqual([[OWNER_ID, TARGET_ID].sort()]);
+			expect(scripted.texts()[3]).toContain('UPDATE instance_member');
+			expect(scripted.texts()[4]).toContain('INSERT INTO instance_member_command');
+		});
+
+		it('refuses forbidden after checking for a receipt that does not exist', async () => {
+			// The receipt check now runs unconditionally, ahead of the actor
+			// authorization check, so an exact replay is reachable even for an
+			// actor since demoted or suspended (see the dedicated replay test
+			// below) -- at the cost of this one extra query when no receipt
+			// exists at all.
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: MEMBER_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({ actor: { type: 'user', id: MEMBER_ID }, targetUserId: TARGET_ID })
+			);
+
+			expect(result).toEqual({ outcome: 'forbidden' });
+			expect(scripted.rollbacks).toBe(1);
+			expect(scripted.queries).toHaveLength(3);
+		});
+
+		it('refuses immediately when actor is suspended', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'suspended',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult =
+				await store(scripted).setInstanceMemberRole(setRoleCommand());
+
+			expect(result).toEqual({ outcome: 'member_suspended' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('refuses role_not_permitted when an active admin requests a role above member', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: ADMIN_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({ actor: { type: 'user', id: ADMIN_ID }, role: 'owner' })
+			);
+
+			expect(result).toEqual({ outcome: 'role_not_permitted' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('refuses forbidden when an active admin targets a non-member', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: ADMIN_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: 'other-admin',
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({
+					actor: { type: 'user', id: ADMIN_ID },
+					targetUserId: 'other-admin',
+					role: 'member'
+				})
+			);
+
+			expect(result).toEqual({ outcome: 'forbidden' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns member_not_found when the target does not exist', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (target missing)
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult =
+				await store(scripted).setInstanceMemberRole(setRoleCommand());
+
+			expect(result).toEqual({ outcome: 'member_not_found' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns last_active_owner when self-demoting as the sole active owner', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor === target, single row)
+				[], // receipt check
+				[{ count: '0' }] // owner count excluding self
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({ targetUserId: OWNER_ID, role: 'admin' })
+			);
+
+			expect(result).toEqual({ outcome: 'last_active_owner' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('cascades every pending invitation the target can no longer hold on an owner->member demotion', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[], // receipt check
+				[{ count: '1' }], // owner count excluding target (OWNER_ID remains)
+				[
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: UPDATED_AT
+					}
+				], // UPDATE RETURNING
+				[{ id: 'inv-1' }, { id: 'inv-2' }], // cascade UPDATE RETURNING
+				[{ actorId: OWNER_ID }] // receipt insert
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({ targetUserId: TARGET_ID, role: 'member' })
+			);
+
+			expect(result).toEqual({
+				outcome: 'updated',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'active',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 2
+			});
+			expect(scripted.texts()[5]).not.toContain("role <> 'member'");
+		});
+
+		it('cascades only non-member invitations on an owner->admin demotion', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[], // receipt check
+				[{ count: '1' }], // owner count excluding target
+				[
+					{
+						userId: TARGET_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: UPDATED_AT
+					}
+				], // UPDATE RETURNING
+				[{ id: 'inv-1' }], // cascade UPDATE RETURNING (non-member only)
+				[{ actorId: OWNER_ID }] // receipt insert
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({ targetUserId: TARGET_ID, role: 'admin' })
+			);
+
+			expect(result.outcome).toBe('updated');
+			if (result.outcome === 'updated') {
+				expect(result.revokedInvitationCount).toBe(1);
+			}
+			expect(scripted.texts()[5]).toContain("role <> 'member'");
+		});
+
+		it('replays a matching receipt without running the mutation', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[
+					{
+						requestHash: REQUEST_FINGERPRINT,
+						commandType: 'set_role',
+						targetUserId: TARGET_ID,
+						previousRole: 'member',
+						previousStatus: 'active',
+						resultRole: 'admin',
+						resultStatus: 'active',
+						revokedInvitationCount: 0,
+						occurredAt: UPDATED_AT,
+						targetRowUserId: TARGET_ID,
+						targetRowCreatedAt: CREATED_AT
+					}
+				] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult =
+				await store(scripted).setInstanceMemberRole(setRoleCommand());
+
+			expect(result).toEqual({
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'admin',
+					status: 'active',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 0
+			});
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns idempotency_conflict when the receipt request fingerprint differs', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[
+					{
+						requestHash: OTHER_REQUEST_FINGERPRINT,
+						commandType: 'set_role',
+						targetUserId: TARGET_ID,
+						previousRole: 'member',
+						previousStatus: 'active',
+						resultRole: 'admin',
+						resultStatus: 'active',
+						revokedInvitationCount: 0,
+						occurredAt: UPDATED_AT,
+						targetRowUserId: TARGET_ID,
+						targetRowCreatedAt: CREATED_AT
+					}
+				] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult =
+				await store(scripted).setInstanceMemberRole(setRoleCommand());
+
+			expect(result).toEqual({ outcome: 'idempotency_conflict' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('replays a matching receipt even when the actor row now shows a demoted or suspended actor', async () => {
+			const receiptRow = {
+				requestHash: REQUEST_FINGERPRINT,
+				commandType: 'set_role',
+				targetUserId: TARGET_ID,
+				previousRole: 'member',
+				previousStatus: 'active',
+				resultRole: 'admin',
+				resultStatus: 'active',
+				revokedInvitationCount: 0,
+				occurredAt: UPDATED_AT,
+				targetRowUserId: TARGET_ID,
+				targetRowCreatedAt: CREATED_AT
+			};
+			const expected = {
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'admin',
+					status: 'active',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 0
+			};
+
+			const demoted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since demoted to plain member)
+				[receiptRow] // receipt check
+			]);
+			const demotedResult: SetInstanceMemberRoleStoreResult =
+				await store(demoted).setInstanceMemberRole(setRoleCommand());
+			expect(demotedResult).toEqual(expected);
+			expect(demoted.rollbacks).toBe(1);
+
+			const suspended = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'suspended',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since suspended)
+				[receiptRow] // receipt check
+			]);
+			const suspendedResult: SetInstanceMemberRoleStoreResult =
+				await store(suspended).setInstanceMemberRole(setRoleCommand());
+			expect(suspendedResult).toEqual(expected);
+			expect(suspended.rollbacks).toBe(1);
+		});
+
+		it('refuses role_not_permitted, not forbidden, when an active admin requests a role above member on itself', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: ADMIN_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor === target, single row)
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult = await store(scripted).setInstanceMemberRole(
+				setRoleCommand({
+					actor: { type: 'user', id: ADMIN_ID },
+					targetUserId: ADMIN_ID,
+					role: 'owner'
+				})
+			);
+
+			expect(result).toEqual({ outcome: 'role_not_permitted' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('classifies as integrity_error, running no mutation, when updatedAt regresses behind the target current updatedAt', async () => {
+			const LATER_AT: Date = new Date('2026-09-14T13:00:00.000Z');
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: LATER_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberRoleStoreResult =
+				await store(scripted).setInstanceMemberRole(setRoleCommand());
+
+			expect(result).toEqual({ outcome: 'integrity_error' });
+			expect(scripted.rollbacks).toBe(1);
+			expect(scripted.queries).toHaveLength(3);
+		});
+	});
+
+	describe('setInstanceMemberStatus', () => {
+		it('atomically suspends a target, cascades revocation of its pending invitations, and records a receipt', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[], // receipt check
+				[
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'suspended',
+						createdAt: CREATED_AT,
+						updatedAt: UPDATED_AT
+					}
+				], // UPDATE RETURNING
+				[{ id: 'inv-1' }], // cascade UPDATE RETURNING
+				[{ actorId: OWNER_ID }] // receipt insert
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult =
+				await store(scripted).setInstanceMemberStatus(setStatusCommand());
+
+			expect(result).toEqual({
+				outcome: 'updated',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 1
+			});
+			expect(scripted.beginCalls).toBe(1);
+			expect(scripted.rollbacks).toBe(0);
+			expect(scripted.texts()[0]).toContain("hashtext('instance_member_admin')");
+		});
+
+		it('reactivates a target without cascading', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'suspended',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[], // receipt check
+				[
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: UPDATED_AT
+					}
+				], // UPDATE RETURNING
+				[{ actorId: OWNER_ID }] // receipt insert
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult = await store(
+				scripted
+			).setInstanceMemberStatus(setStatusCommand({ status: 'active' }));
+
+			expect(result).toEqual({
+				outcome: 'updated',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'active',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 0
+			});
+		});
+
+		it('rejects status self-targeting regardless of role', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor === target, single row)
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult = await store(
+				scripted
+			).setInstanceMemberStatus(
+				setStatusCommand({ actor: { type: 'user', id: OWNER_ID }, targetUserId: OWNER_ID })
+			);
+
+			expect(result).toEqual({ outcome: 'cannot_target_self' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('refuses forbidden when an active admin targets a non-member', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: ADMIN_ID,
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: 'other-admin',
+						role: 'admin',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult = await store(
+				scripted
+			).setInstanceMemberStatus(
+				setStatusCommand({ actor: { type: 'user', id: ADMIN_ID }, targetUserId: 'other-admin' })
+			);
+
+			expect(result).toEqual({ outcome: 'forbidden' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns member_not_found when the target does not exist', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (target missing)
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult = await store(
+				scripted
+			).setInstanceMemberStatus(setStatusCommand({ targetUserId: 'ghost-user' }));
+
+			expect(result).toEqual({ outcome: 'member_not_found' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns last_active_owner when suspending the sole active owner', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[], // receipt check
+				[{ count: '0' }] // owner count excluding target
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult = await store(
+				scripted
+			).setInstanceMemberStatus(setStatusCommand({ targetUserId: TARGET_ID }));
+
+			expect(result).toEqual({ outcome: 'last_active_owner' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('replays a matching receipt without running the mutation', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[
+					{
+						requestHash: REQUEST_FINGERPRINT,
+						commandType: 'set_status',
+						targetUserId: TARGET_ID,
+						previousRole: 'member',
+						previousStatus: 'active',
+						resultRole: 'member',
+						resultStatus: 'suspended',
+						revokedInvitationCount: 1,
+						occurredAt: UPDATED_AT,
+						targetRowUserId: TARGET_ID,
+						targetRowCreatedAt: CREATED_AT
+					}
+				] // receipt check
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult =
+				await store(scripted).setInstanceMemberStatus(setStatusCommand());
+
+			expect(result).toEqual({
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 1
+			});
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns idempotency_conflict when the receipt request fingerprint differs', async () => {
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows
+				[
+					{
+						requestHash: OTHER_REQUEST_FINGERPRINT,
+						commandType: 'set_status',
+						targetUserId: TARGET_ID,
+						previousRole: 'member',
+						previousStatus: 'active',
+						resultRole: 'member',
+						resultStatus: 'suspended',
+						revokedInvitationCount: 0,
+						occurredAt: UPDATED_AT,
+						targetRowUserId: TARGET_ID,
+						targetRowCreatedAt: CREATED_AT
+					}
+				] // receipt check
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult =
+				await store(scripted).setInstanceMemberStatus(setStatusCommand());
+
+			expect(result).toEqual({ outcome: 'idempotency_conflict' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('replays a matching receipt even when the actor row now shows a demoted or suspended actor', async () => {
+			const receiptRow = {
+				requestHash: REQUEST_FINGERPRINT,
+				commandType: 'set_status',
+				targetUserId: TARGET_ID,
+				previousRole: 'member',
+				previousStatus: 'active',
+				resultRole: 'member',
+				resultStatus: 'suspended',
+				revokedInvitationCount: 1,
+				occurredAt: UPDATED_AT,
+				targetRowUserId: TARGET_ID,
+				targetRowCreatedAt: CREATED_AT
+			};
+			const expected = {
+				outcome: 'replayed',
+				member: {
+					userId: TARGET_ID,
+					role: 'member',
+					status: 'suspended',
+					createdAt: CREATED_AT.toISOString(),
+					updatedAt: UPDATED_AT.toISOString()
+				},
+				appliedAt: UPDATED_AT.toISOString(),
+				revokedInvitationCount: 1
+			};
+
+			const demoted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since demoted to plain member)
+				[receiptRow] // receipt check
+			]);
+			const demotedResult: SetInstanceMemberStatusStoreResult =
+				await store(demoted).setInstanceMemberStatus(setStatusCommand());
+			expect(demotedResult).toEqual(expected);
+			expect(demoted.rollbacks).toBe(1);
+
+			const suspended = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'suspended',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					}
+				], // lock rows (actor since suspended)
+				[receiptRow] // receipt check
+			]);
+			const suspendedResult: SetInstanceMemberStatusStoreResult =
+				await store(suspended).setInstanceMemberStatus(setStatusCommand());
+			expect(suspendedResult).toEqual(expected);
+			expect(suspended.rollbacks).toBe(1);
+		});
+
+		it('classifies as integrity_error, running no mutation, when updatedAt regresses behind the target current updatedAt', async () => {
+			const LATER_AT: Date = new Date('2026-09-14T13:00:00.000Z');
+			const scripted = new ScriptedPostgres([
+				[], // advisory lock
+				[
+					{
+						userId: OWNER_ID,
+						role: 'owner',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: CREATED_AT
+					},
+					{
+						userId: TARGET_ID,
+						role: 'member',
+						status: 'active',
+						createdAt: CREATED_AT,
+						updatedAt: LATER_AT
+					}
+				], // lock rows
+				[] // receipt check
+			]);
+
+			const result: SetInstanceMemberStatusStoreResult =
+				await store(scripted).setInstanceMemberStatus(setStatusCommand());
+
+			expect(result).toEqual({ outcome: 'integrity_error' });
+			expect(scripted.rollbacks).toBe(1);
+			expect(scripted.queries).toHaveLength(3);
 		});
 	});
 });

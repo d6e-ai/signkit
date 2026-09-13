@@ -129,6 +129,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0017_api_keys.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0018_instance_bootstrap.sql');
 		expect(MIGRATION_PATHS).toContain('migrations/postgres/0019_instance_invitations.sql');
+		expect(MIGRATION_PATHS).toContain('migrations/postgres/0020_instance_member_command.sql');
 		const relations = await database()<
 			{ name: string }[]
 		>`SELECT table_name AS name FROM information_schema.tables
@@ -152,6 +153,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				'instance_bootstrap_command',
 				'instance_invitation',
 				'instance_invitation_command',
+				'instance_member_command',
 				'api_key',
 				'api_key_create_command',
 				'api_key_revoke_command'
@@ -2841,6 +2843,270 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					${otherInvitationId}, 'member', 'revoked', ${createdAt}::timestamptz
 				)`
 		).rejects.toMatchObject({ code: '23514' });
+	});
+
+	it('keeps instance member command receipts zero-PII and enforces their structural invariants', async () => {
+		const createdAt: string = '2026-09-12T12:00:00.000Z';
+		const otherUserId: string = 'user-member-other';
+
+		const piiColumns = await database()<
+			{ columnName: string }[]
+		>`SELECT column_name AS "columnName" FROM information_schema.columns
+			WHERE table_schema = ${schemaName}
+				AND table_name = 'instance_member_command'
+				AND column_name IN ('email', 'name', 'token', 'secret', 'plaintext', 'credential')`;
+		expect(piiColumns).toEqual([]);
+
+		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES (${ACTOR.id}, 'owner', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES (${otherUserId}, 'member', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+
+		await database()`INSERT INTO instance_member_command (
+				actor_type, actor_id, idempotency_key, command_type, request_hash,
+				target_user_id, previous_role, previous_status, result_role, result_status,
+				revoked_invitation_count, occurred_at
+			) VALUES (
+				'user', ${ACTOR.id}, 'member-cmd-1', 'set_role', ${'1'.repeat(64)},
+				${otherUserId}, 'member', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+			)`;
+
+		// Same (actor_type, actor_id, idempotency_key): primary key conflict.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-1', 'set_status', ${'2'.repeat(64)},
+					${otherUserId}, 'admin', 'active', 'admin', 'suspended', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23505' });
+
+		// set_role must not also change status.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-2', 'set_role', ${'3'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'suspended', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		// set_status must not also change role.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-3', 'set_status', ${'4'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'suspended', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		// set_status may never self-target.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-4', 'set_status', ${'5'.repeat(64)},
+					${ACTOR.id}, 'owner', 'active', 'owner', 'suspended', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		// Unknown command_type/role/status enums.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-5', 'delete', ${'6'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-6', 'set_role', ${'7'.repeat(64)},
+					${otherUserId}, 'superadmin', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		// Malformed request hash and idempotency key.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-7', 'set_role', 'not-sha256',
+					${otherUserId}, 'member', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, '', 'set_role', ${'8'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		// Negative revoked invitation counts are rejected.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-8', 'set_role', ${'9'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'active', -1, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+
+		// Actor and target must each reference an existing instance member.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', 'missing-actor', 'member-cmd-9', 'set_role', ${'a'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23503' });
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member-cmd-10', 'set_role', ${'b'.repeat(64)},
+					'missing-target', 'member', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23503' });
+
+		// Whitespace is outside the printable-ASCII Idempotency-Key charset.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'member cmd 11', 'set_role', ${'c'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'active', 0, ${createdAt}::timestamptz
+				)`
+		).rejects.toMatchObject({ code: '23514' });
+	});
+
+	it('mirrors the D1 member command row-local evidence constraints', async () => {
+		const createdAt: string = '2026-09-12T12:00:00.000Z';
+		const appliedAt: string = '2026-09-12T13:00:00.000Z';
+		const otherUserId: string = 'user-member-other';
+
+		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES (${ACTOR.id}, 'owner', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+		await database()`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES (${otherUserId}, 'member', 'active', ${createdAt}::timestamptz, ${createdAt}::timestamptz)`;
+
+		// A self-targeting receipt may only ever claim an active owner: set_status
+		// can never self-target, and an admin may only administer a current
+		// member-role target, which its own row never is.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'self-admin', 'set_role', ${'1'.repeat(64)},
+					${ACTOR.id}, 'admin', 'active', 'member', 'active', 0, ${appliedAt}::timestamptz
+				)`
+		).rejects.toMatchObject({
+			code: '23514',
+			constraint_name: 'instance_member_command_self_target_active_owner'
+		});
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'self-suspended', 'set_role', ${'2'.repeat(64)},
+					${ACTOR.id}, 'owner', 'suspended', 'admin', 'suspended', 0, ${appliedAt}::timestamptz
+				)`
+		).rejects.toMatchObject({
+			code: '23514',
+			constraint_name: 'instance_member_command_self_target_active_owner'
+		});
+
+		// Only a suspension or a demotion can cascade-revoke the target's pending
+		// invitations; a promotion or a reactivation revokes nothing.
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'promotion-cascade', 'set_role', ${'3'.repeat(64)},
+					${otherUserId}, 'member', 'active', 'admin', 'active', 1, ${appliedAt}::timestamptz
+				)`
+		).rejects.toMatchObject({
+			code: '23514',
+			constraint_name: 'instance_member_command_cascade_requires_demotion'
+		});
+		await expect(
+			database()`INSERT INTO instance_member_command (
+					actor_type, actor_id, idempotency_key, command_type, request_hash,
+					target_user_id, previous_role, previous_status, result_role, result_status,
+					revoked_invitation_count, occurred_at
+				) VALUES (
+					'user', ${ACTOR.id}, 'reactivation-cascade', 'set_status', ${'4'.repeat(64)},
+					${otherUserId}, 'member', 'suspended', 'member', 'active', 1, ${appliedAt}::timestamptz
+				)`
+		).rejects.toMatchObject({
+			code: '23514',
+			constraint_name: 'instance_member_command_cascade_requires_demotion'
+		});
+
+		// A self-demotion by an active owner, a demotion carrying a cascade count,
+		// and a suspension carrying one are all accepted.
+		await database()`INSERT INTO instance_member_command (
+				actor_type, actor_id, idempotency_key, command_type, request_hash,
+				target_user_id, previous_role, previous_status, result_role, result_status,
+				revoked_invitation_count, occurred_at
+			) VALUES (
+				'user', ${ACTOR.id}, 'self-demote', 'set_role', ${'5'.repeat(64)},
+				${ACTOR.id}, 'owner', 'active', 'admin', 'active', 2, ${appliedAt}::timestamptz
+			)`;
+		await database()`INSERT INTO instance_member_command (
+				actor_type, actor_id, idempotency_key, command_type, request_hash,
+				target_user_id, previous_role, previous_status, result_role, result_status,
+				revoked_invitation_count, occurred_at
+			) VALUES (
+				'user', ${ACTOR.id}, 'suspend-member', 'set_status', ${'6'.repeat(64)},
+				${otherUserId}, 'member', 'active', 'member', 'suspended', 3, ${appliedAt}::timestamptz
+			)`;
+
+		const receipts = await database()<
+			{ idempotencyKey: string; revokedInvitationCount: number }[]
+		>`SELECT idempotency_key AS "idempotencyKey",
+				revoked_invitation_count AS "revokedInvitationCount"
+			FROM instance_member_command ORDER BY idempotency_key`;
+		expect(receipts).toEqual([
+			{ idempotencyKey: 'self-demote', revokedInvitationCount: 2 },
+			{ idempotencyKey: 'suspend-member', revokedInvitationCount: 3 }
+		]);
 	});
 
 	describe('PostgresApiKeyStore', () => {

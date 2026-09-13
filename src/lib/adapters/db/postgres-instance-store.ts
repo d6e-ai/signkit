@@ -1,6 +1,7 @@
 import postgres from 'postgres';
 import {
 	boundInstanceInvitationListLimit,
+	boundInstanceMemberListLimit,
 	isInstanceInvitationId,
 	isInstanceInvitationStatus,
 	isInstanceMemberRole,
@@ -16,12 +17,18 @@ import {
 	type InstanceCallerContext,
 	type InstanceInvitationListQuery,
 	type InstanceInvitationMetadata,
+	type InstanceMemberListQuery,
 	type InstanceMemberMetadata,
 	type InstanceMemberRole,
 	type InstanceStore,
 	type ListInstanceInvitationsStoreResult,
+	type ListInstanceMembersStoreResult,
 	type RevokeInstanceInvitationCommand,
-	type RevokeInstanceInvitationStoreResult
+	type RevokeInstanceInvitationStoreResult,
+	type SetInstanceMemberRoleCommand,
+	type SetInstanceMemberRoleStoreResult,
+	type SetInstanceMemberStatusCommand,
+	type SetInstanceMemberStatusStoreResult
 } from '$lib/ports/instance-store';
 import { secretsEqual } from '$lib/security/bearer-secret';
 
@@ -150,6 +157,45 @@ interface RevokeInvitationReceiptRow {
 	invAcceptedByUserId: string | null;
 	invRevokedAt: Date | string | null;
 	invRevokedByUserId: string | null;
+}
+
+/**
+ * Unlike instance_invitation, a member row keeps changing across its
+ * lifetime, so a replay cannot cross-check the receipt's claimed
+ * role/status against the target's *current* row the way create/accept/
+ * revoke check against an invitation's terminal, never-mutated-again state.
+ * Only `userId` (existence) and `createdAt` (immutable once the row exists)
+ * are safe to join for cross-checking; the replayed role/status/timestamp
+ * come from the receipt's own result_role/result_status/occurred_at.
+ */
+interface MemberCommandReceiptRow {
+	requestHash: string;
+	commandType: string;
+	targetUserId: string;
+	previousRole: string;
+	previousStatus: string;
+	resultRole: string;
+	resultStatus: string;
+	revokedInvitationCount: number | string;
+	occurredAt: Date | string;
+	targetRowUserId: string | null;
+	targetRowCreatedAt: Date | string | null;
+}
+
+type RoleCascadeKind = 'none' | 'non_member' | 'all';
+
+/**
+ * Which of the target's own live pending invitations (as inviter) stop
+ * being grantable once its role changes, mirroring the D1 adapter's
+ * roleCascadeKind: promotions and no-op role changes never shrink what the
+ * target may grant, so only the two demotion paths the
+ * instance_member_command_cascade_requires_demotion constraint recognizes
+ * can cascade.
+ */
+function roleCascadeKind(previousRole: string, resultRole: string): RoleCascadeKind {
+	if (resultRole === 'member' && previousRole !== 'member') return 'all';
+	if (resultRole === 'admin' && previousRole === 'owner') return 'non_member';
+	return 'none';
 }
 
 export class PostgresInstanceStore implements InstanceStore {
@@ -871,6 +917,435 @@ export class PostgresInstanceStore implements InstanceStore {
 		}
 	}
 
+	/**
+	 * Keyset-paginated by `user_id` ascending, mirroring the D1 adapter: a
+	 * member has no separate surrogate id and no natural chronological
+	 * ordering column worth exposing, and `user_id` is already the table's
+	 * primary key, so it is both the sort key and the cursor value directly.
+	 * An unknown or stale cursor simply matches nothing greater than itself.
+	 */
+	async listInstanceMembers(
+		actor: InstanceActor,
+		query: InstanceMemberListQuery
+	): Promise<ListInstanceMembersStoreResult> {
+		return await this.#sql.begin(async (transaction): Promise<ListInstanceMembersStoreResult> => {
+			const memberRow: MemberRoleStatusRow | null = await this.#findMemberRoleStatus(
+				transaction,
+				actor.id,
+				true
+			);
+			if (memberRow === null || memberRow.role === 'member') {
+				return { outcome: 'forbidden' };
+			}
+			if (memberRow.status === 'suspended') {
+				return { outcome: 'member_suspended' };
+			}
+
+			const limit: number = boundInstanceMemberListLimit(query.limit);
+			const fetchLimit: number = limit + 1;
+
+			// COLLATE "C" forces byte-wise comparison, matching SQLite/D1's
+			// BINARY collation on TEXT columns: PostgreSQL's default collation
+			// is locale-dependent and can order Unicode user_id values
+			// differently than D1, which would desynchronize keyset pagination
+			// (and any provider-parity ordering guarantee) between the two
+			// adapters.
+			const rows: MemberRow[] =
+				query.cursor === null
+					? await transaction<MemberRow[]>`
+								SELECT
+									user_id AS "userId", role, status,
+									created_at AS "createdAt", updated_at AS "updatedAt"
+								FROM instance_member
+								ORDER BY user_id COLLATE "C" ASC
+								LIMIT ${fetchLimit}
+							`
+					: await transaction<MemberRow[]>`
+								SELECT
+									user_id AS "userId", role, status,
+									created_at AS "createdAt", updated_at AS "updatedAt"
+								FROM instance_member
+								WHERE (user_id COLLATE "C") > (${query.cursor} COLLATE "C")
+								ORDER BY user_id COLLATE "C" ASC
+								LIMIT ${fetchLimit}
+							`;
+
+			const hasNextPage: boolean = rows.length > limit;
+			const pageRows: MemberRow[] = hasNextPage ? rows.slice(0, limit) : rows;
+			const items: readonly InstanceMemberMetadata[] = pageRows.map(memberMetadataFromRow);
+			const lastItem: InstanceMemberMetadata | undefined = items.at(-1);
+
+			return {
+				outcome: 'listed',
+				page: {
+					items,
+					nextCursor: hasNextPage && lastItem !== undefined ? lastItem.userId : null
+				}
+			};
+		});
+	}
+
+	async setInstanceMemberRole(
+		command: SetInstanceMemberRoleCommand
+	): Promise<SetInstanceMemberRoleStoreResult> {
+		try {
+			return await this.#sql.begin(
+				async (transaction): Promise<SetInstanceMemberRoleStoreResult> => {
+					// A shared advisory transaction lock serializing every member-admin
+					// mutation (set_role and set_status alike). PostgreSQL has no
+					// adapter-visible durable trigger enforcing the owner floor the way
+					// the D1/SQLite migration's instance_member_owner_floor_guard does,
+					// so without this lock two concurrent demotions of two different
+					// owners (each targeting the other) would each read the other's row
+					// as still an active owner under READ COMMITTED and both proceed,
+					// leaving zero active owners -- a classic write-skew race. Holding
+					// one global key for the whole transaction forces the second
+					// mutation to wait until the first commits, so its owner-floor count
+					// below is always read against already-committed state.
+					await transaction`SELECT pg_advisory_xact_lock(hashtext('instance_member_admin'))`;
+
+					// Lock the actor's and target's member rows together, sorted by
+					// user_id, so two symmetric mutations (owner A targeting owner B,
+					// and owner B targeting owner A, submitted concurrently) always
+					// request their two row locks in the same order and cannot deadlock
+					// against each other. This also matches the invitation adapter's
+					// convention of locking `instance_member` rows before ever touching
+					// `instance_invitation` rows (the cascade below), so a member-admin
+					// mutation and an accept/revoke/create can never deadlock either --
+					// neither path ever acquires a member-row lock after an
+					// invitation-row lock.
+					const ids: readonly string[] = [
+						...new Set([command.actor.id, command.targetUserId])
+					].sort();
+					const lockedRows: MemberRow[] = await transaction<MemberRow[]>`
+						SELECT
+							user_id AS "userId", role, status,
+							created_at AS "createdAt", updated_at AS "updatedAt"
+						FROM instance_member
+						WHERE user_id = ANY(${ids})
+						ORDER BY user_id
+						FOR UPDATE
+					`;
+					const actorRow: MemberRow | null =
+						lockedRows.find((row: MemberRow): boolean => row.userId === command.actor.id) ?? null;
+					const targetRow: MemberRow | null =
+						lockedRows.find((row: MemberRow): boolean => row.userId === command.targetUserId) ??
+						null;
+
+					// Exact receipt replay is checked first, ahead of the actor's
+					// current role/status: evaluateSetRoleReceipt answers entirely
+					// from the receipt and the target's row, so a replay by an actor
+					// since demoted or suspended is still classified correctly
+					// without a separate branch here.
+					const receiptRow: MemberCommandReceiptRow | null = await this.#findMemberCommandReceipt(
+						transaction,
+						command.actor.type,
+						command.actor.id,
+						command.idempotencyKey
+					);
+					if (receiptRow !== null) {
+						throw new InstanceRollback(evaluateSetRoleReceipt(receiptRow, command));
+					}
+
+					if (actorRow === null || actorRow.role === 'member') {
+						throw new InstanceRollback({ outcome: 'forbidden' });
+					}
+					if (actorRow.status === 'suspended') {
+						throw new InstanceRollback({ outcome: 'member_suspended' });
+					}
+
+					if (targetRow === null) {
+						throw new InstanceRollback({ outcome: 'member_not_found' });
+					}
+
+					if (actorRow.role === 'admin') {
+						// Requesting a role above member is checked before the target's
+						// current role, so an admin requesting admin/owner is always
+						// role_not_permitted -- including a self-targeting request,
+						// where the target row is the admin's own and would otherwise
+						// fail the role !== 'member' check below with the wrong
+						// outcome.
+						if (command.role !== 'member') {
+							throw new InstanceRollback({ outcome: 'role_not_permitted' });
+						}
+						if (targetRow.role !== 'member') {
+							throw new InstanceRollback({ outcome: 'forbidden' });
+						}
+					}
+
+					if (
+						targetRow.role === 'owner' &&
+						targetRow.status === 'active' &&
+						command.role !== 'owner'
+					) {
+						const otherActiveOwners: number = await this.#countOtherActiveOwners(
+							transaction,
+							command.targetUserId
+						);
+						if (otherActiveOwners === 0) {
+							throw new InstanceRollback({ outcome: 'last_active_owner' });
+						}
+					}
+
+					if (Date.parse(command.updatedAt) < Date.parse(toIso(targetRow.updatedAt))) {
+						throw new InstanceRollback({ outcome: 'integrity_error' });
+					}
+
+					const cascadeKind: RoleCascadeKind = roleCascadeKind(targetRow.role, command.role);
+
+					const updatedRows = await transaction<MemberRow[]>`
+						UPDATE instance_member
+						SET role = ${command.role}, updated_at = ${command.updatedAt}::timestamptz
+						WHERE user_id = ${command.targetUserId}
+						  AND role = ${targetRow.role}
+						  AND status = ${targetRow.status}
+						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+					`;
+					if (updatedRows.length !== 1) {
+						throw new InstanceRollback(await this.#classifySetRoleFailure(transaction, command));
+					}
+					const updatedMember: MemberRow = updatedRows[0];
+
+					let revokedInvitationCount: number = 0;
+					if (cascadeKind !== 'none') {
+						const cascadeRows =
+							cascadeKind === 'all'
+								? await transaction<{ id: string }[]>`
+										UPDATE instance_invitation
+										SET status = 'revoked',
+											revoked_at = ${command.updatedAt}::timestamptz,
+											revoked_by_user_id = ${command.actor.id}
+										WHERE invited_by_user_id = ${command.targetUserId}
+										  AND status = 'pending'
+										  AND expires_at > ${command.updatedAt}::timestamptz
+										RETURNING id
+									`
+								: await transaction<{ id: string }[]>`
+										UPDATE instance_invitation
+										SET status = 'revoked',
+											revoked_at = ${command.updatedAt}::timestamptz,
+											revoked_by_user_id = ${command.actor.id}
+										WHERE invited_by_user_id = ${command.targetUserId}
+										  AND status = 'pending'
+										  AND expires_at > ${command.updatedAt}::timestamptz
+										  AND role <> 'member'
+										RETURNING id
+									`;
+						revokedInvitationCount = cascadeRows.length;
+					}
+
+					const insertedReceipt = await transaction<{ actorId: string }[]>`
+						INSERT INTO instance_member_command (
+							actor_type, actor_id, idempotency_key, command_type, request_hash,
+							target_user_id, previous_role, previous_status, result_role, result_status,
+							revoked_invitation_count, occurred_at
+						) VALUES (
+							${command.actor.type},
+							${command.actor.id},
+							${command.idempotencyKey},
+							'set_role',
+							${command.requestFingerprint},
+							${command.targetUserId},
+							${targetRow.role},
+							${targetRow.status},
+							${updatedMember.role},
+							${updatedMember.status},
+							${revokedInvitationCount},
+							${command.updatedAt}::timestamptz
+						)
+						ON CONFLICT DO NOTHING
+						RETURNING actor_id AS "actorId"
+					`;
+					if (insertedReceipt.length !== 1) {
+						throw new InstanceRollback(await this.#classifySetRoleFailure(transaction, command));
+					}
+
+					return {
+						outcome: 'updated',
+						member: memberMetadataFromRow(updatedMember),
+						appliedAt: toIso(updatedMember.updatedAt),
+						revokedInvitationCount
+					};
+				}
+			);
+		} catch (error: unknown) {
+			if (error instanceof InstanceRollback) {
+				return error.result as SetInstanceMemberRoleStoreResult;
+			}
+			const classified: SetInstanceMemberRoleStoreResult = await this.#classifySetRoleFailure(
+				this.#sql,
+				command
+			);
+			if (classified.outcome !== 'integrity_error') {
+				return classified;
+			}
+			throw error;
+		}
+	}
+
+	async setInstanceMemberStatus(
+		command: SetInstanceMemberStatusCommand
+	): Promise<SetInstanceMemberStatusStoreResult> {
+		try {
+			return await this.#sql.begin(
+				async (transaction): Promise<SetInstanceMemberStatusStoreResult> => {
+					// See setInstanceMemberRole: the same shared advisory lock
+					// serializes both command types, since either can move a member
+					// into or out of the active-owner set.
+					await transaction`SELECT pg_advisory_xact_lock(hashtext('instance_member_admin'))`;
+
+					const ids: readonly string[] = [
+						...new Set([command.actor.id, command.targetUserId])
+					].sort();
+					const lockedRows: MemberRow[] = await transaction<MemberRow[]>`
+						SELECT
+							user_id AS "userId", role, status,
+							created_at AS "createdAt", updated_at AS "updatedAt"
+						FROM instance_member
+						WHERE user_id = ANY(${ids})
+						ORDER BY user_id
+						FOR UPDATE
+					`;
+					const actorRow: MemberRow | null =
+						lockedRows.find((row: MemberRow): boolean => row.userId === command.actor.id) ?? null;
+					const targetRow: MemberRow | null =
+						lockedRows.find((row: MemberRow): boolean => row.userId === command.targetUserId) ??
+						null;
+
+					// Exact receipt replay is checked first, ahead of the actor's
+					// current role/status: evaluateSetStatusReceipt answers entirely
+					// from the receipt and the target's row, so a replay by an actor
+					// since demoted or suspended is still classified correctly
+					// without a separate branch here.
+					const receiptRow: MemberCommandReceiptRow | null = await this.#findMemberCommandReceipt(
+						transaction,
+						command.actor.type,
+						command.actor.id,
+						command.idempotencyKey
+					);
+					if (receiptRow !== null) {
+						throw new InstanceRollback(evaluateSetStatusReceipt(receiptRow, command));
+					}
+
+					if (actorRow === null || actorRow.role === 'member') {
+						throw new InstanceRollback({ outcome: 'forbidden' });
+					}
+					if (actorRow.status === 'suspended') {
+						throw new InstanceRollback({ outcome: 'member_suspended' });
+					}
+
+					// Status self-change is never permitted, regardless of role --
+					// unlike role self-handoff, which an active owner may perform on
+					// itself.
+					if (command.targetUserId === command.actor.id) {
+						throw new InstanceRollback({ outcome: 'cannot_target_self' });
+					}
+
+					if (targetRow === null) {
+						throw new InstanceRollback({ outcome: 'member_not_found' });
+					}
+
+					if (actorRow.role === 'admin' && targetRow.role !== 'member') {
+						throw new InstanceRollback({ outcome: 'forbidden' });
+					}
+
+					if (
+						targetRow.role === 'owner' &&
+						targetRow.status === 'active' &&
+						command.status === 'suspended'
+					) {
+						const otherActiveOwners: number = await this.#countOtherActiveOwners(
+							transaction,
+							command.targetUserId
+						);
+						if (otherActiveOwners === 0) {
+							throw new InstanceRollback({ outcome: 'last_active_owner' });
+						}
+					}
+
+					if (Date.parse(command.updatedAt) < Date.parse(toIso(targetRow.updatedAt))) {
+						throw new InstanceRollback({ outcome: 'integrity_error' });
+					}
+
+					const cascades: boolean = command.status === 'suspended';
+
+					const updatedRows = await transaction<MemberRow[]>`
+						UPDATE instance_member
+						SET status = ${command.status}, updated_at = ${command.updatedAt}::timestamptz
+						WHERE user_id = ${command.targetUserId}
+						  AND role = ${targetRow.role}
+						  AND status = ${targetRow.status}
+						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+					`;
+					if (updatedRows.length !== 1) {
+						throw new InstanceRollback(await this.#classifySetStatusFailure(transaction, command));
+					}
+					const updatedMember: MemberRow = updatedRows[0];
+
+					let revokedInvitationCount: number = 0;
+					if (cascades) {
+						const cascadeRows = await transaction<{ id: string }[]>`
+							UPDATE instance_invitation
+							SET status = 'revoked',
+								revoked_at = ${command.updatedAt}::timestamptz,
+								revoked_by_user_id = ${command.actor.id}
+							WHERE invited_by_user_id = ${command.targetUserId}
+							  AND status = 'pending'
+							  AND expires_at > ${command.updatedAt}::timestamptz
+							RETURNING id
+						`;
+						revokedInvitationCount = cascadeRows.length;
+					}
+
+					const insertedReceipt = await transaction<{ actorId: string }[]>`
+						INSERT INTO instance_member_command (
+							actor_type, actor_id, idempotency_key, command_type, request_hash,
+							target_user_id, previous_role, previous_status, result_role, result_status,
+							revoked_invitation_count, occurred_at
+						) VALUES (
+							${command.actor.type},
+							${command.actor.id},
+							${command.idempotencyKey},
+							'set_status',
+							${command.requestFingerprint},
+							${command.targetUserId},
+							${targetRow.role},
+							${targetRow.status},
+							${updatedMember.role},
+							${updatedMember.status},
+							${revokedInvitationCount},
+							${command.updatedAt}::timestamptz
+						)
+						ON CONFLICT DO NOTHING
+						RETURNING actor_id AS "actorId"
+					`;
+					if (insertedReceipt.length !== 1) {
+						throw new InstanceRollback(await this.#classifySetStatusFailure(transaction, command));
+					}
+
+					return {
+						outcome: 'updated',
+						member: memberMetadataFromRow(updatedMember),
+						appliedAt: toIso(updatedMember.updatedAt),
+						revokedInvitationCount
+					};
+				}
+			);
+		} catch (error: unknown) {
+			if (error instanceof InstanceRollback) {
+				return error.result as SetInstanceMemberStatusStoreResult;
+			}
+			const classified: SetInstanceMemberStatusStoreResult = await this.#classifySetStatusFailure(
+				this.#sql,
+				command
+			);
+			if (classified.outcome !== 'integrity_error') {
+				return classified;
+			}
+			throw error;
+		}
+	}
+
 	async #findMemberRoleStatus(
 		sql: Sql,
 		userId: string,
@@ -900,6 +1375,54 @@ export class PostgresInstanceStore implements InstanceStore {
 			  AND expires_at > ${asOf}::timestamptz
 		`;
 		return Number(rows[0]?.count ?? 0);
+	}
+
+	async #countOtherActiveOwners(sql: Sql, excludeUserId: string): Promise<number> {
+		const rows = await sql<CountRow[]>`
+			SELECT count(*)::int AS count
+			FROM instance_member
+			WHERE role = 'owner' AND status = 'active' AND user_id <> ${excludeUserId}
+		`;
+		return Number(rows[0]?.count ?? 0);
+	}
+
+	async #findMember(sql: Sql, userId: string): Promise<MemberRow | null> {
+		const rows = await sql<MemberRow[]>`
+			SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+			FROM instance_member
+			WHERE user_id = ${userId}
+			LIMIT 1
+		`;
+		return rows[0] ?? null;
+	}
+
+	async #findMemberCommandReceipt(
+		sql: Sql,
+		actorType: string,
+		actorId: string,
+		idempotencyKey: string
+	): Promise<MemberCommandReceiptRow | null> {
+		const rows = await sql<MemberCommandReceiptRow[]>`
+			SELECT
+				command.request_hash AS "requestHash",
+				command.command_type AS "commandType",
+				command.target_user_id AS "targetUserId",
+				command.previous_role AS "previousRole",
+				command.previous_status AS "previousStatus",
+				command.result_role AS "resultRole",
+				command.result_status AS "resultStatus",
+				command.revoked_invitation_count AS "revokedInvitationCount",
+				command.occurred_at AS "occurredAt",
+				target.user_id AS "targetRowUserId",
+				target.created_at AS "targetRowCreatedAt"
+			FROM instance_member_command command
+			LEFT JOIN instance_member target ON target.user_id = command.target_user_id
+			WHERE command.actor_type = ${actorType}
+			  AND command.actor_id = ${actorId}
+			  AND command.idempotency_key = ${idempotencyKey}
+			LIMIT 1
+		`;
+		return rows[0] ?? null;
 	}
 
 	async #findCreateReceipt(
@@ -1257,6 +1780,183 @@ export class PostgresInstanceStore implements InstanceStore {
 
 		return { outcome: 'integrity_error' };
 	}
+
+	async #classifySetRoleFailure(
+		sql: Sql,
+		command: SetInstanceMemberRoleCommand
+	): Promise<SetInstanceMemberRoleStoreResult> {
+		const receipt: MemberCommandReceiptRow | null = await this.#findMemberCommandReceipt(
+			sql,
+			command.actor.type,
+			command.actor.id,
+			command.idempotencyKey
+		);
+		if (receipt !== null) {
+			return evaluateSetRoleReceipt(receipt, command);
+		}
+
+		const actor: MemberRoleStatusRow | null = await this.#findMemberRoleStatus(
+			sql,
+			command.actor.id,
+			false
+		);
+		if (actor === null || actor.role === 'member') {
+			return { outcome: 'forbidden' };
+		}
+		if (actor.status === 'suspended') {
+			return { outcome: 'member_suspended' };
+		}
+
+		const target: MemberRow | null = await this.#findMember(sql, command.targetUserId);
+		if (target === null) {
+			return { outcome: 'member_not_found' };
+		}
+
+		if (actor.role === 'admin') {
+			if (command.role !== 'member') {
+				return { outcome: 'role_not_permitted' };
+			}
+			if (target.role !== 'member') {
+				return { outcome: 'forbidden' };
+			}
+		}
+
+		if (target.role === 'owner' && target.status === 'active' && command.role !== 'owner') {
+			const otherActiveOwners: number = await this.#countOtherActiveOwners(
+				sql,
+				command.targetUserId
+			);
+			if (otherActiveOwners === 0) {
+				return { outcome: 'last_active_owner' };
+			}
+		}
+
+		return { outcome: 'integrity_error' };
+	}
+
+	async #classifySetStatusFailure(
+		sql: Sql,
+		command: SetInstanceMemberStatusCommand
+	): Promise<SetInstanceMemberStatusStoreResult> {
+		const receipt: MemberCommandReceiptRow | null = await this.#findMemberCommandReceipt(
+			sql,
+			command.actor.type,
+			command.actor.id,
+			command.idempotencyKey
+		);
+		if (receipt !== null) {
+			return evaluateSetStatusReceipt(receipt, command);
+		}
+
+		const actor: MemberRoleStatusRow | null = await this.#findMemberRoleStatus(
+			sql,
+			command.actor.id,
+			false
+		);
+		if (actor === null || actor.role === 'member') {
+			return { outcome: 'forbidden' };
+		}
+		if (actor.status === 'suspended') {
+			return { outcome: 'member_suspended' };
+		}
+
+		if (command.targetUserId === command.actor.id) {
+			return { outcome: 'cannot_target_self' };
+		}
+
+		const target: MemberRow | null = await this.#findMember(sql, command.targetUserId);
+		if (target === null) {
+			return { outcome: 'member_not_found' };
+		}
+
+		if (actor.role === 'admin' && target.role !== 'member') {
+			return { outcome: 'forbidden' };
+		}
+
+		if (target.role === 'owner' && target.status === 'active' && command.status === 'suspended') {
+			const otherActiveOwners: number = await this.#countOtherActiveOwners(
+				sql,
+				command.targetUserId
+			);
+			if (otherActiveOwners === 0) {
+				return { outcome: 'last_active_owner' };
+			}
+		}
+
+		return { outcome: 'integrity_error' };
+	}
+}
+
+function evaluateSetRoleReceipt(
+	row: MemberCommandReceiptRow,
+	command: SetInstanceMemberRoleCommand
+): SetInstanceMemberRoleStoreResult {
+	if (row.requestHash !== command.requestFingerprint) {
+		return { outcome: 'idempotency_conflict' };
+	}
+	if (
+		row.commandType !== 'set_role' ||
+		row.targetUserId !== command.targetUserId ||
+		row.resultRole !== command.role
+	) {
+		return { outcome: 'idempotency_conflict' };
+	}
+	if (
+		row.targetRowUserId === null ||
+		row.targetRowCreatedAt === null ||
+		!isInstanceMemberRole(row.resultRole) ||
+		!isInstanceMemberStatus(row.resultStatus)
+	) {
+		return { outcome: 'integrity_error' };
+	}
+	return {
+		outcome: 'replayed',
+		member: {
+			userId: row.targetRowUserId,
+			role: row.resultRole,
+			status: row.resultStatus,
+			createdAt: toIso(row.targetRowCreatedAt),
+			updatedAt: toIso(row.occurredAt)
+		},
+		appliedAt: toIso(row.occurredAt),
+		revokedInvitationCount: Number(row.revokedInvitationCount)
+	};
+}
+
+function evaluateSetStatusReceipt(
+	row: MemberCommandReceiptRow,
+	command: SetInstanceMemberStatusCommand
+): SetInstanceMemberStatusStoreResult {
+	if (row.requestHash !== command.requestFingerprint) {
+		return { outcome: 'idempotency_conflict' };
+	}
+	if (
+		row.commandType !== 'set_status' ||
+		row.targetUserId !== command.targetUserId ||
+		row.resultStatus !== command.status
+	) {
+		return { outcome: 'idempotency_conflict' };
+	}
+	if (
+		row.targetRowUserId === null ||
+		row.targetRowCreatedAt === null ||
+		!isInstanceMemberRole(row.resultRole) ||
+		!isInstanceMemberStatus(row.resultStatus)
+	) {
+		return { outcome: 'integrity_error' };
+	}
+	return {
+		outcome: 'replayed',
+		member: {
+			userId: row.targetRowUserId,
+			role: row.resultRole,
+			status: row.resultStatus,
+			createdAt: toIso(row.targetRowCreatedAt),
+			updatedAt: toIso(row.occurredAt)
+		},
+		appliedAt: toIso(row.occurredAt),
+		revokedInvitationCount: Number(row.revokedInvitationCount)
+	};
 }
 
 function evaluateCreateReceipt(

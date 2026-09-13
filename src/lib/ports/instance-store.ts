@@ -13,6 +13,8 @@ export const MAX_INSTANCE_INVITATION_LIST_LIMIT: number = 100;
 export const DEFAULT_INSTANCE_INVITATION_LIST_LIMIT: number = 25;
 /** Maximum number of simultaneously live (unexpired) pending invitations per instance. */
 export const MAX_PENDING_INSTANCE_INVITATIONS: number = 200;
+export const MAX_INSTANCE_MEMBER_LIST_LIMIT: number = 100;
+export const DEFAULT_INSTANCE_MEMBER_LIST_LIMIT: number = 25;
 
 export type InstanceActorType = 'user';
 
@@ -240,17 +242,176 @@ export type RevokeInstanceInvitationStoreResult =
 	| { outcome: 'member_suspended' }
 	| { outcome: 'integrity_error' };
 
+export interface InstanceMemberListQuery {
+	cursor: string | null;
+	limit: number;
+}
+
+export interface InstanceMemberListPage {
+	items: readonly InstanceMemberMetadata[];
+	nextCursor: string | null;
+}
+
 /**
- * Durable zero-PII instance invitation management, extending the same
- * `InstanceStore` port rather than a separate membership port. Create and
- * list require the actor to be a currently active `owner` or `admin`.
- * Accept requires only that the bearer token and asserted email resolve a
- * `pending`, unexpired invitation; it enrolls the actor as an instance
- * member atomically with consuming the invitation. Create, accept, and
- * revoke are single atomic units that write the state change and its
- * command receipt together. Idempotency is primary-keyed by actor plus
- * Idempotency-Key, matching {@link BootstrapInstanceCommand} and the API key
- * store.
+ * - `listed`: the page was resolved for a currently active `owner` or
+ *   `admin` actor.
+ * - `forbidden`: the actor is not currently an active `owner` or `admin`.
+ * - `member_suspended`: the actor exists but is not `active`.
+ */
+export type ListInstanceMembersStoreResult =
+	| { outcome: 'listed'; page: InstanceMemberListPage }
+	| { outcome: 'forbidden' }
+	| { outcome: 'member_suspended' };
+
+/**
+ * One role-change attempt. The actor is the administrator; `targetUserId`
+ * identifies the member whose role is being set. Self-targeting
+ * (`targetUserId === actor.id`) is permitted, subject to the owner floor
+ * captured by the `last_active_owner` outcome below.
+ */
+export interface SetInstanceMemberRoleCommand {
+	actor: InstanceActor;
+	idempotencyKey: string;
+	requestFingerprint: string;
+	targetUserId: string;
+	role: InstanceMemberRole;
+	updatedAt: string;
+}
+
+/**
+ * Provider-independent role-change outcomes.
+ *
+ * - `updated`: the target's role was durably changed and the command
+ *   receipt was written atomically. Demoting the target may atomically
+ *   revoke pending invitations the target invited that its new role can no
+ *   longer permit; `revokedInvitationCount` reports how many.
+ * - `replayed`: an exact replay of the same request under the same
+ *   Idempotency-Key, returning the receipt-recorded member state,
+ *   `appliedAt`, and `revokedInvitationCount` from the original call rather
+ *   than any state produced by later commands.
+ * - `forbidden`: the actor is not currently an active `owner` or `admin`,
+ *   or the actor is an `admin` requesting `member` for a target whose
+ *   current role is not `member` (an `admin` may only administer current
+ *   `member`-role targets). Checked only after `role_not_permitted` below,
+ *   so an admin requesting a role above `member` never falls through to
+ *   this outcome merely because the target (possibly the admin itself)
+ *   also happens to not currently be a plain member.
+ * - `member_suspended`: the actor exists but is not `active`.
+ * - `role_not_permitted`: the actor is an active `admin` requesting a role
+ *   above `member`, checked before `forbidden` above (an `admin` cannot
+ *   grant `admin` or `owner`, including to itself, regardless of the
+ *   target's current role).
+ * - `member_not_found`: `targetUserId` does not identify a current instance
+ *   member.
+ * - `last_active_owner`: the target is the last active `owner` and this
+ *   change would leave the instance with no active owner.
+ * - `idempotency_conflict`: the Idempotency-Key was reused for a different
+ *   request.
+ * - `integrity_error`: the receipt and member rows disagree, or `updatedAt`
+ *   regresses behind the target's current `updatedAt` (member rows are
+ *   monotonic in `updatedAt`; a command claiming an earlier instant is
+ *   rejected rather than silently applied or corrupting ordering).
+ */
+export type SetInstanceMemberRoleStoreResult =
+	| {
+			outcome: 'updated';
+			member: InstanceMemberMetadata;
+			appliedAt: string;
+			revokedInvitationCount: number;
+	  }
+	| {
+			outcome: 'replayed';
+			member: InstanceMemberMetadata;
+			appliedAt: string;
+			revokedInvitationCount: number;
+	  }
+	| { outcome: 'forbidden' }
+	| { outcome: 'member_suspended' }
+	| { outcome: 'role_not_permitted' }
+	| { outcome: 'member_not_found' }
+	| { outcome: 'last_active_owner' }
+	| { outcome: 'idempotency_conflict' }
+	| { outcome: 'integrity_error' };
+
+/**
+ * One status-change attempt (suspend or reactivate). Self-targeting is
+ * never permitted — see `cannot_target_self` below.
+ */
+export interface SetInstanceMemberStatusCommand {
+	actor: InstanceActor;
+	idempotencyKey: string;
+	requestFingerprint: string;
+	targetUserId: string;
+	status: InstanceMemberStatus;
+	updatedAt: string;
+}
+
+/**
+ * Provider-independent status-change outcomes.
+ *
+ * - `updated`: the target's status was durably changed and the command
+ *   receipt was written atomically. Suspending the target atomically
+ *   revokes the target's own pending invitations, since a suspended member
+ *   may no longer act as an inviter; `revokedInvitationCount` reports how
+ *   many.
+ * - `replayed`: an exact replay of the same request under the same
+ *   Idempotency-Key, returning the receipt-recorded member state,
+ *   `appliedAt`, and `revokedInvitationCount` from the original call rather
+ *   than any state produced by later commands.
+ * - `forbidden`: the actor is not currently an active `owner` or `admin`,
+ *   or the actor is an `admin` targeting a member whose current role is not
+ *   `member` (an `admin` may only administer current `member`-role
+ *   targets).
+ * - `member_suspended`: the actor exists but is not `active`.
+ * - `member_not_found`: `targetUserId` does not identify a current instance
+ *   member.
+ * - `last_active_owner`: the target is the last active `owner` and
+ *   suspending them would leave the instance with no active owner.
+ * - `cannot_target_self`: `targetUserId` is the actor's own id. Unlike role
+ *   changes, status self-change is never permitted regardless of the
+ *   actor's role.
+ * - `idempotency_conflict`: the Idempotency-Key was reused for a different
+ *   request.
+ * - `integrity_error`: the receipt and member rows disagree, or `updatedAt`
+ *   regresses behind the target's current `updatedAt` (member rows are
+ *   monotonic in `updatedAt`; a command claiming an earlier instant is
+ *   rejected rather than silently applied or corrupting ordering).
+ */
+export type SetInstanceMemberStatusStoreResult =
+	| {
+			outcome: 'updated';
+			member: InstanceMemberMetadata;
+			appliedAt: string;
+			revokedInvitationCount: number;
+	  }
+	| {
+			outcome: 'replayed';
+			member: InstanceMemberMetadata;
+			appliedAt: string;
+			revokedInvitationCount: number;
+	  }
+	| { outcome: 'forbidden' }
+	| { outcome: 'member_suspended' }
+	| { outcome: 'member_not_found' }
+	| { outcome: 'last_active_owner' }
+	| { outcome: 'cannot_target_self' }
+	| { outcome: 'idempotency_conflict' }
+	| { outcome: 'integrity_error' };
+
+/**
+ * Durable zero-PII instance invitation and member administration, extending
+ * the same `InstanceStore` port rather than a separate membership port.
+ * Create and list invitations require the actor to be a currently active
+ * `owner` or `admin`. Accept requires only that the bearer token and
+ * asserted email resolve a `pending`, unexpired invitation; it enrolls the
+ * actor as an instance member atomically with consuming the invitation.
+ * Member administration (`setInstanceMemberRole`, `setInstanceMemberStatus`)
+ * lets an `owner` administer any member and lets an `admin` administer only
+ * current `member`-role targets, never granting above `member`. Create,
+ * accept, revoke, and the member administration commands are each single
+ * atomic units that write the state change and its command receipt
+ * together. Idempotency is primary-keyed by actor plus Idempotency-Key,
+ * matching {@link BootstrapInstanceCommand} and the API key store.
  */
 export interface InstanceStore {
 	bootstrapInstance(command: BootstrapInstanceCommand): Promise<BootstrapInstanceStoreResult>;
@@ -268,6 +429,16 @@ export interface InstanceStore {
 	revokeInstanceInvitation(
 		command: RevokeInstanceInvitationCommand
 	): Promise<RevokeInstanceInvitationStoreResult>;
+	listInstanceMembers(
+		actor: InstanceActor,
+		query: InstanceMemberListQuery
+	): Promise<ListInstanceMembersStoreResult>;
+	setInstanceMemberRole(
+		command: SetInstanceMemberRoleCommand
+	): Promise<SetInstanceMemberRoleStoreResult>;
+	setInstanceMemberStatus(
+		command: SetInstanceMemberStatusCommand
+	): Promise<SetInstanceMemberStatusStoreResult>;
 }
 
 export function isInstanceIdempotencyKey(value: string): boolean {
@@ -293,6 +464,11 @@ export function isInstanceInvitationStatus(value: unknown): value is InstanceInv
 export function boundInstanceInvitationListLimit(limit: number): number {
 	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
 	return Math.min(limit, MAX_INSTANCE_INVITATION_LIST_LIMIT);
+}
+
+export function boundInstanceMemberListLimit(limit: number): number {
+	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	return Math.min(limit, MAX_INSTANCE_MEMBER_LIST_LIMIT);
 }
 
 /**

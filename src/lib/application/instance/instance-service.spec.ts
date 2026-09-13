@@ -9,10 +9,16 @@ import type {
 	InstanceActor,
 	InstanceCallerContext,
 	InstanceInvitationListQuery,
+	InstanceMemberListQuery,
 	InstanceStore,
 	ListInstanceInvitationsStoreResult,
+	ListInstanceMembersStoreResult,
 	RevokeInstanceInvitationCommand,
-	RevokeInstanceInvitationStoreResult
+	RevokeInstanceInvitationStoreResult,
+	SetInstanceMemberRoleCommand,
+	SetInstanceMemberRoleStoreResult,
+	SetInstanceMemberStatusCommand,
+	SetInstanceMemberStatusStoreResult
 } from '$lib/ports/instance-store';
 import { InstanceApplication, InvalidInstanceBootstrapRequestError } from './instance-service';
 
@@ -75,6 +81,29 @@ class MockInstanceStore implements InstanceStore {
 	async revokeInstanceInvitation(
 		command: RevokeInstanceInvitationCommand
 	): Promise<RevokeInstanceInvitationStoreResult> {
+		void command;
+		return { outcome: 'forbidden' };
+	}
+
+	async listInstanceMembers(
+		actor: InstanceActor,
+		query: InstanceMemberListQuery
+	): Promise<ListInstanceMembersStoreResult> {
+		void actor;
+		void query;
+		return { outcome: 'forbidden' };
+	}
+
+	async setInstanceMemberRole(
+		command: SetInstanceMemberRoleCommand
+	): Promise<SetInstanceMemberRoleStoreResult> {
+		void command;
+		return { outcome: 'forbidden' };
+	}
+
+	async setInstanceMemberStatus(
+		command: SetInstanceMemberStatusCommand
+	): Promise<SetInstanceMemberStatusStoreResult> {
 		void command;
 		return { outcome: 'forbidden' };
 	}
