@@ -28,6 +28,9 @@ import {
 	normalizeInstanceInvitationEmail,
 	type IssuedInstanceInvitationToken
 } from '$lib/security/instance-invitation';
+import { canonicalJson, sha256Hex } from '$lib/application/instance/instance-command-fingerprint';
+
+export { canonicalJson, sha256Hex };
 
 /** Maximum collision retries for generated UUIDv7 or credential tokenHash collisions. */
 const MAX_CREDENTIAL_ATTEMPTS: number = 3;
@@ -480,38 +483,6 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 }
 
 export { InstanceInvitationApplication as InstanceInvitationService };
-
-/** Deterministic canonical JSON serialization with recursively sorted object keys. */
-export function canonicalJson(value: unknown): string {
-	return JSON.stringify(sortJsonKeys(value));
-}
-
-function sortJsonKeys(value: unknown): unknown {
-	if (value === null || typeof value !== 'object') {
-		return value;
-	}
-	if (Array.isArray(value)) {
-		return value.map(sortJsonKeys);
-	}
-	const sortedEntries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-		a.localeCompare(b)
-	);
-	const sortedObj: Record<string, unknown> = {};
-	for (const [key, val] of sortedEntries) {
-		sortedObj[key] = sortJsonKeys(val);
-	}
-	return sortedObj;
-}
-
-export async function sha256Hex(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
-}
 
 function assertActor(actor: InstanceInvitationActor): InstanceActor {
 	if (!actor || typeof actor.id !== 'string' || actor.id.length < 1 || actor.id.length > 200) {

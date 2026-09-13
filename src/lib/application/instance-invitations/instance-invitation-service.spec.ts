@@ -16,8 +16,13 @@ import {
 	type InstanceMemberMetadata,
 	type InstanceStore,
 	type ListInstanceInvitationsStoreResult,
+	type ListInstanceMembersStoreResult,
 	type RevokeInstanceInvitationCommand,
-	type RevokeInstanceInvitationStoreResult
+	type RevokeInstanceInvitationStoreResult,
+	type SetInstanceMemberRoleCommand,
+	type SetInstanceMemberRoleStoreResult,
+	type SetInstanceMemberStatusCommand,
+	type SetInstanceMemberStatusStoreResult
 } from '$lib/ports/instance-store';
 import {
 	canonicalJson,
@@ -123,6 +128,24 @@ class FakeInstanceStore implements InstanceStore {
 
 	async getInstanceCallerContext(): Promise<InstanceCallerContext> {
 		return { member: null, bootstrapped: false };
+	}
+
+	async listInstanceMembers(): Promise<ListInstanceMembersStoreResult> {
+		return { outcome: 'forbidden' };
+	}
+
+	async setInstanceMemberRole(
+		command: SetInstanceMemberRoleCommand
+	): Promise<SetInstanceMemberRoleStoreResult> {
+		void command;
+		return { outcome: 'forbidden' };
+	}
+
+	async setInstanceMemberStatus(
+		command: SetInstanceMemberStatusCommand
+	): Promise<SetInstanceMemberStatusStoreResult> {
+		void command;
+		return { outcome: 'forbidden' };
 	}
 }
 
