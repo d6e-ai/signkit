@@ -5,19 +5,13 @@ import {
 	createDeliveryDrainHandler,
 	type InvitationDeliveryServiceResolver
 } from './delivery-drain';
+import { createDrainRequestEvent } from './drain-test-support';
 
 const PATHNAME: string = '/api/v1/system/deliveries/drain';
 const SECRET: string = 'delivery-worker-secret-0123456789abcdef';
 
 function event(authorization?: string, platform?: App.Platform): RequestEvent {
-	const url: URL = new URL(`https://signkit.internal${PATHNAME}`);
-	const headers: Headers = new Headers();
-	if (authorization !== undefined) headers.set('authorization', authorization);
-	return {
-		platform,
-		request: new Request(url, { method: 'POST', headers }),
-		url
-	} as RequestEvent;
+	return createDrainRequestEvent(PATHNAME, authorization, platform);
 }
 
 function service() {
