@@ -26,6 +26,7 @@ describe('envelope authoring page contracts', () => {
 		// Placement happens against the same deterministic rendering a recipient
 		// will be shown, so a box dropped on page 3 means page 3 for the signer.
 		expect(source).toContain('<PdfDocumentView');
+		expect(source).toContain('{#key envelopeId}');
 		expect(source).toContain('/document-pdf');
 		expect(source).toContain('/document-pdf/pages');
 		expect(source).toContain('documentPathForPage');
@@ -33,6 +34,10 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('startDrag');
 		expect(source).toContain('handleFieldKeydown');
 		expect(source).toContain('clampGeometry');
+		expect(source).toContain('reloadAuthoringSurface');
+		expect(source).toContain('invalidateDocumentPageMap');
+		expect(source).toContain('refreshDocumentPageMapAfterReload');
+		expect(source).toContain('fieldPlacementReady');
 		// The coordinate spinners are gone: geometry comes from the document.
 		expect(source).not.toContain('id="geo-page"');
 		expect(source).not.toContain('id="geo-x"');

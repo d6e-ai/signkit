@@ -22,7 +22,6 @@ interface RecipientPageContext {
 	accessHint: string | null;
 	envelopeId: string;
 	cookie: string | null;
-	clearSession(): void;
 	recoverDeclined?: (token: string, at: Date) => Promise<RecipientDeclinedReceipt | null>;
 	platform?: Readonly<App.Platform>;
 }
@@ -36,7 +35,6 @@ type SessionUnsealer = (cookie: string, envelopeId: string) => Promise<string | 
 interface DeclinedReceiptPageContext {
 	envelopeId: string;
 	cookie: string | null;
-	clearSession(): void;
 	platform?: Readonly<App.Platform>;
 }
 
@@ -58,6 +56,9 @@ export async function resolveRecipientPage(
 	unsealSession: SessionUnsealer,
 	now: () => Date = (): Date => new Date()
 ): Promise<RecipientPageState> {
+	// Non-terminal invalid/unreadable/mismatch outcomes are overwrite-only:
+	// they must not Set-Cookie delete, or a late response can wipe a newer
+	// same-envelope /s exchange.
 	if (context.accessHint === 'invalid') return { state: 'invalid' };
 	if (context.accessHint === 'unavailable') return { state: 'unavailable' };
 	if (context.cookie === null) return { state: 'invalid' };
@@ -65,7 +66,6 @@ export async function resolveRecipientPage(
 	try {
 		const token: string | null = await unsealSession(context.cookie, context.envelopeId);
 		if (token === null) {
-			context.clearSession();
 			return { state: 'invalid' };
 		}
 		const resolvedAt: Date = now();
@@ -75,7 +75,6 @@ export async function resolveRecipientPage(
 				: await context.recoverDeclined(token, resolvedAt);
 		if (declined !== null) {
 			if (declined.envelopeId !== context.envelopeId) {
-				context.clearSession();
 				return { state: 'invalid' };
 			}
 			return { state: 'declined', ...declined };
@@ -90,11 +89,9 @@ export async function resolveRecipientPage(
 			resolvedAt.toISOString()
 		);
 		if (workspace === null) {
-			context.clearSession();
 			return { state: 'invalid' };
 		}
 		if (workspace.access.envelopeId !== context.envelopeId) {
-			context.clearSession();
 			return { state: 'invalid' };
 		}
 		return { state: 'active', ...workspace };
@@ -130,7 +127,6 @@ export async function resolveDeclinedReceiptPage(
 			locator.envelopeId !== context.envelopeId ||
 			isDeclinedReceiptExpired(locator, resolvedAt)
 		) {
-			context.clearSession();
 			return { state: 'invalid' };
 		}
 		const application: RecipientDeclinedReceiptApplicationPort | null = await resolveApplication({
@@ -151,7 +147,6 @@ export async function resolveDeclinedReceiptPage(
 			resolvedAt
 		);
 		if (authorized === null || authorized.receipt.envelopeId !== context.envelopeId) {
-			context.clearSession();
 			return { state: 'invalid' };
 		}
 		return { state: 'declined', ...authorized.receipt };

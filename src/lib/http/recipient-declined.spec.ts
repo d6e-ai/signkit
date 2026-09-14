@@ -280,7 +280,7 @@ describe('recipient declined HTTP handler', () => {
 		}
 	});
 
-	it('clears a definitively inactive or unreadable recipient session', async () => {
+	it('preserves a stale or unreadable recipient session instead of deleting it', async () => {
 		for (const mode of ['inactive', 'unreadable'] as const) {
 			const { event, deleted } = requestEvent({ idempotencyKey: 'decline-1' });
 			const response: Response = await createRecipientDeclinedHandler(
@@ -288,7 +288,7 @@ describe('recipient declined HTTP handler', () => {
 				async (): Promise<string | null> => (mode === 'unreadable' ? null : token)
 			)(event);
 			expect(response.status).toBe(404);
-			expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+			expect(deleted).not.toHaveBeenCalled();
 		}
 	});
 

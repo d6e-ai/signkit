@@ -106,7 +106,6 @@ export function createRecipientDeclinedHandler(
 			return unavailable(url.pathname);
 		}
 		if (token === null) {
-			clearSession(cookies, envelopeId);
 			return accessNotFound(url.pathname);
 		}
 
@@ -171,7 +170,6 @@ async function resultResponse(
 		);
 	}
 	if (result.outcome === 'not_found') {
-		clearSession(cookies, envelopeId);
 		return accessNotFound(instance);
 	}
 	if (result.outcome === 'context_mismatch' || result.outcome === 'role_not_actionable') {
@@ -263,6 +261,8 @@ async function exchangeDeclinedReceipt(
 			secure: !isInsecureLocalDevelopment(url, options.allowInsecureLocalDevelopment ?? dev),
 			maxAge: remainingSeconds
 		});
+		// Durable terminal decline: this response also sets the receipt cookie
+		// for the same envelope, then drops only this envelope's live session.
 		clearSession(cookies, envelopeId);
 		return true;
 	} catch {

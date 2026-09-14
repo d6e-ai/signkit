@@ -56,6 +56,7 @@ describe('recipient document rendering', () => {
 		expect(source.indexOf("{#if data.state === 'declined' || isDeclined}")).toBeLessThan(
 			source.indexOf('<PdfDocumentView')
 		);
+		expect(source).toContain('{#key agreementPdfPath}');
 		expect(source).not.toContain('recipientStatus as string');
 	});
 
@@ -126,6 +127,8 @@ describe('recipient document rendering', () => {
 		expect(source).toContain('declinedReceiptCookieName');
 		expect(source).toContain('readRecipientSessionCookie(cookies, envelopeId)');
 		expect(source).toContain('readDeclinedReceiptCookie(cookies, envelopeId)');
+		expect(source).not.toContain('deleteRecipientSessionCookie');
+		expect(source).not.toContain('deleteDeclinedReceiptCookie');
 		expect(source).not.toContain("cookies.get('signkit_recipient')");
 		expect(source).not.toContain("cookies.get('signkit_declined_receipt')");
 	});

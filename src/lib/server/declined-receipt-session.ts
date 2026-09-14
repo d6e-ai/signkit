@@ -32,15 +32,6 @@ export function readDeclinedReceiptCookie(
 	return cookies.get(name);
 }
 
-export function deleteDeclinedReceiptCookie(
-	cookies: { delete(name: string, opts: { path: string }): void },
-	envelopeId: string
-): void {
-	const name: string | null = declinedReceiptCookieName(envelopeId);
-	if (name === null) return;
-	cookies.delete(name, { path: DECLINED_RECEIPT_COOKIE_PATH });
-}
-
 export const DECLINED_RECEIPT_COOKIE_OPTIONS = {
 	path: DECLINED_RECEIPT_COOKIE_PATH,
 	httpOnly: true,

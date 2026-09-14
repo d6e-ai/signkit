@@ -65,6 +65,7 @@ const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
 };
 
 interface TestEvent {
+	jar: Record<string, string>;
 	cookieDelete: ReturnType<typeof vi.fn>;
 	cookieGet: ReturnType<typeof vi.fn>;
 	cookieSet: ReturnType<typeof vi.fn>;
@@ -76,11 +77,17 @@ function testEvent(
 	protocol: 'http:' | 'https:' = 'https:',
 	cookies: Record<string, string> = {}
 ): TestEvent {
-	const cookieDelete = vi.fn();
-	const cookieGet = vi.fn((name: string): string | undefined => cookies[name]);
-	const cookieSet = vi.fn();
+	const jar: Record<string, string> = { ...cookies };
+	const cookieDelete = vi.fn((name: string): void => {
+		delete jar[name];
+	});
+	const cookieGet = vi.fn((name: string): string | undefined => jar[name]);
+	const cookieSet = vi.fn((name: string, value: string): void => {
+		jar[name] = value;
+	});
 	const url: URL = new URL(`${protocol}//signkit.example/s/${value}`);
 	return {
+		jar,
 		cookieDelete,
 		cookieGet,
 		cookieSet,
@@ -158,7 +165,27 @@ describe('recipient link exchange', () => {
 		expect(response.headers.get('location')).not.toContain(token);
 		expect(JSON.stringify([...response.headers.entries()])).not.toContain(token);
 		expect(receipts.resolveApplication).not.toHaveBeenCalled();
-		expect(input.cookieDelete).toHaveBeenCalledWith(declinedCookieName, { path: '/' });
+		expect(input.cookieDelete).not.toHaveBeenCalled();
+	});
+
+	it('does not delete a terminal declined receipt when a stale active /s later sets an invalid live cookie', async () => {
+		const input: TestEvent = testEvent(token, 'https:', {
+			[declinedCookieName]: 'terminal-receipt'
+		});
+		const sealer = vi.fn(async (): Promise<string> => {
+			// Concurrent terminal decline has already persisted the receipt cookie.
+			return 'stale-live-cookie';
+		});
+		const response: Response = await createRecipientLinkHandler(
+			() => application(),
+			sealer,
+			() => new Date('2026-09-11T00:00:00.000Z')
+		)(input.event);
+
+		expect(input.jar[activeCookieName]).toBe('stale-live-cookie');
+		expect(input.jar[declinedCookieName]).toBe('terminal-receipt');
+		expect(input.cookieDelete).not.toHaveBeenCalled();
+		expect(response.headers.get('location')).toBe(`/ja/sign/${envelopeId}`);
 	});
 
 	it('does not guess a cookie or expose the token when the envelope ID is not UUIDv7', async () => {
@@ -225,6 +252,7 @@ describe('recipient link exchange', () => {
 			envelopeId
 		);
 		expect(same.cookieDelete).toHaveBeenCalledWith(activeCookieName, { path: '/' });
+		expect(same.jar[activeCookieName]).toBeUndefined();
 
 		const unrelated: TestEvent = testEvent(token, 'https:', {
 			[activeCookieName]: 'other-active-cookie'
@@ -247,6 +275,7 @@ describe('recipient link exchange', () => {
 		expect(unrelated.cookieDelete).not.toHaveBeenCalledWith(activeCookieName, {
 			path: '/'
 		});
+		expect(unrelated.jar[activeCookieName]).toBe('other-active-cookie');
 	});
 
 	it('leaves a second envelope cookie untouched while exchanging the first', async () => {

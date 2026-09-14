@@ -39,6 +39,12 @@ export function readRecipientSessionCookie(
 	return cookies.get(name);
 }
 
+/**
+ * Emit a deletion only after a durable terminal command for this envelope, or
+ * as part of an ordered same-envelope cookie exchange that also sets a
+ * replacement. Non-terminal invalid/not_found paths must not call this, or a
+ * late response can wipe a newer /s cookie of the same name.
+ */
 export function deleteRecipientSessionCookie(
 	cookies: { delete(name: string, opts: { path: string }): void },
 	envelopeId: string

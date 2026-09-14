@@ -15,13 +15,11 @@ import {
 	DECLINED_RECEIPT_COOKIE_OPTIONS,
 	type DeclinedReceiptSessionLocator,
 	declinedReceiptCookieName,
-	deleteDeclinedReceiptCookie,
 	readDeclinedReceiptCookie,
 	sealDeclinedReceiptSession,
 	unsealDeclinedReceiptSession
 } from '$lib/server/declined-receipt-session';
 import {
-	deleteRecipientSessionCookie,
 	readRecipientSessionCookie,
 	recipientSessionCookieName,
 	unsealRecipientSession
@@ -49,7 +47,6 @@ export const load: PageServerLoad = async ({ cookies, params, platform, setHeade
 				accessHint: null,
 				envelopeId,
 				cookie: activeCookie,
-				clearSession: (): void => deleteRecipientSessionCookie(cookies, envelopeId),
 				recoverDeclined: async (token, resolvedAt) => {
 					const application = await resolveRecipientDeclinedReceiptApplication({ platform });
 					if (application === null) return null;
@@ -73,7 +70,6 @@ export const load: PageServerLoad = async ({ cookies, params, platform, setHeade
 						secure: !isInsecureLocalDevelopment(url),
 						maxAge: Math.min(remainingSeconds, DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS)
 					});
-					deleteRecipientSessionCookie(cookies, envelopeId);
 					return authorized.receipt;
 				},
 				platform
@@ -81,9 +77,6 @@ export const load: PageServerLoad = async ({ cookies, params, platform, setHeade
 			resolveRecipientWorkspaceApplication,
 			unsealRecipientSession
 		);
-		if (activePage.state === 'active') {
-			deleteDeclinedReceiptCookie(cookies, envelopeId);
-		}
 		if (activePage.state !== 'invalid') return activePage;
 	}
 
@@ -91,7 +84,6 @@ export const load: PageServerLoad = async ({ cookies, params, platform, setHeade
 		{
 			envelopeId,
 			cookie: readDeclinedReceiptCookie(cookies, envelopeId) ?? null,
-			clearSession: (): void => deleteDeclinedReceiptCookie(cookies, envelopeId),
 			platform
 		},
 		resolveRecipientDeclinedReceiptApplication,

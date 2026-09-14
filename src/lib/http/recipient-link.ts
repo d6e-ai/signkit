@@ -12,7 +12,6 @@ import {
 	DECLINED_RECEIPT_COOKIE_OPTIONS,
 	type DeclinedReceiptSessionLocator,
 	declinedReceiptCookieName,
-	deleteDeclinedReceiptCookie,
 	sealDeclinedReceiptSession
 } from '$lib/server/declined-receipt-session';
 import {
@@ -100,7 +99,10 @@ export function createRecipientLinkHandler(
 				secure: !isInsecureLocalDevelopment(url, allowInsecureLocalDevelopment),
 				maxAge: Math.min(remainingSeconds, RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS)
 			});
-			deleteDeclinedReceiptCookie(cookies, context.envelopeId);
+			// Do not delete a same-envelope declined receipt. Terminal decline is
+			// irreversible; a late live /s that resolved before the decline must
+			// not wipe the receipt. The page prefers active durable authorization
+			// and falls back to the receipt if that cookie is invalid.
 			return redirectResponse(`/${context.recipientLocale}/sign/${context.envelopeId}`);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_link_exchange_failed' }));
@@ -153,6 +155,8 @@ async function exchangeDeclinedReceipt(
 			options.unsealActiveSession ?? unsealRecipientSession;
 		try {
 			if ((await unsealActive(activeCookie, locator.envelopeId)) === token) {
+				// Same-token exchange only: a different live cookie for this
+				// envelope is left untouched, so a concurrent /s cannot be wiped.
 				deleteRecipientSessionCookie(cookies, locator.envelopeId);
 			}
 		} catch {

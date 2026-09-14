@@ -1,14 +1,11 @@
-import type { Cookies, RequestHandler } from '@sveltejs/kit';
+import type { RequestHandler } from '@sveltejs/kit';
 import type { ZodType } from 'zod';
 import {
 	MAX_SIGNATURE_ASSET_BYTES,
 	type SignatureAssetApplicationPort,
 	type StoreSignatureAssetResult
 } from '$lib/application/documents/signature-asset';
-import {
-	deleteRecipientSessionCookie,
-	readRecipientSessionCookie
-} from '$lib/server/recipient-session';
+import { readRecipientSessionCookie } from '$lib/server/recipient-session';
 import { boundEnvelopeId } from './envelope-binding';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
@@ -74,7 +71,7 @@ export function createSignatureAssetHandler(
 				expectedRecipientId: recipientId.data,
 				pngBytes: bytes
 			});
-			return resultResponse(result, url.pathname, cookies, envelopeId);
+			return resultResponse(result, url.pathname);
 		} catch {
 			console.error(JSON.stringify({ event: 'signature_asset_store_failed' }));
 			return unavailable(url.pathname);
@@ -82,12 +79,7 @@ export function createSignatureAssetHandler(
 	};
 }
 
-function resultResponse(
-	result: StoreSignatureAssetResult,
-	instance: string,
-	cookies: Cookies,
-	envelopeId: string
-): Response {
+function resultResponse(result: StoreSignatureAssetResult, instance: string): Response {
 	if (result.outcome === 'stored') {
 		return new Response(JSON.stringify({ assetRef: result.assetRef }), {
 			status: 201,
@@ -95,17 +87,14 @@ function resultResponse(
 		});
 	}
 	if (result.outcome === 'not_found' || result.outcome === 'context_mismatch') {
-		return accessNotFound(instance, cookies, envelopeId);
+		return accessNotFound(instance);
 	}
 	if (result.outcome === 'too_large') return bodyTooLarge(instance);
 	if (result.outcome === 'invalid_image') return invalidCommand(instance);
 	return unavailable(instance);
 }
 
-function accessNotFound(instance: string, cookies?: Cookies, envelopeId?: string): Response {
-	if (cookies !== undefined && envelopeId !== undefined) {
-		deleteRecipientSessionCookie(cookies, envelopeId);
-	}
+function accessNotFound(instance: string): Response {
 	return problemResponse(
 		{
 			type: 'urn:signkit:problem:recipient-access-not-found',

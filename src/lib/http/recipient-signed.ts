@@ -127,6 +127,7 @@ function resultResponse(
 	envelopeId: string
 ): Response {
 	if (result.outcome === 'published' || result.outcome === 'replayed') {
+		// Durable terminal sign: drop only this envelope's live session cookie.
 		clearSession(cookies, envelopeId);
 		const headers: Headers = new Headers(securityHeaders({ 'content-type': 'application/json' }));
 		if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');

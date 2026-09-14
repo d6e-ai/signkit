@@ -321,4 +321,126 @@ describe('envelope authoring page remounts durable send state', () => {
 		expect(sendPanel.element().textContent).not.toMatch(/\bpending\b/);
 		expect(sendPanel.element().textContent).not.toMatch(/\bsigner\b/);
 	});
+
+	it('does not render field placement until pages match the current ready revision', async () => {
+		let releasePages: (value: Response) => void = (): void => undefined;
+		const pagesResponse: Promise<Response> = new Promise((resolve) => {
+			releasePages = resolve;
+		});
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse(detail);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+					return jsonResponse(deliveries);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf/pages`)) {
+					return pagesResponse;
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf`)) {
+					return new Response(new Uint8Array(), {
+						status: 200,
+						headers: { 'content-type': 'application/pdf' }
+					});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		expect(screen.container.textContent).not.toContain('Field placement');
+
+		releasePages(
+			jsonResponse({
+				commitSha: readyEnvelope.repositoryHead,
+				generation: readyEnvelope.repositoryGeneration,
+				pageCount: 1,
+				pageWidth: 595.28,
+				pageHeight: 841.89,
+				documents: [
+					{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 1 }
+				]
+			})
+		);
+
+		await expect.element(screen.getByText('Field placement')).toBeVisible();
+	});
+
+	it('rejects a stale page map so placement stays gated off', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse(detail);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+					return jsonResponse(deliveries);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf/pages`)) {
+					return jsonResponse({
+						commitSha: 'ffffffffffffffffffffffffffffffffffffffff',
+						generation: 0,
+						pageCount: 1,
+						pageWidth: 595.28,
+						pageHeight: 841.89,
+						documents: [
+							{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 1 }
+						]
+					});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
+		expect(screen.container.textContent).not.toContain('Field placement');
+	});
+
+	it('does not fetch a page map while the envelope is still draft', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		expect(
+			mockFetch.mock.calls.some((call) => String(call[0]).includes('/document-pdf/pages'))
+		).toBe(false);
+	});
 });

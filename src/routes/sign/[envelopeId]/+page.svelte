@@ -1351,25 +1351,27 @@
 				{#if isSigner && placedFields.length > 0 && !isSigned}
 					<p class="text-sm text-muted-foreground">{m.signing_fields_overlay_hint()}</p>
 				{/if}
-				<PdfDocumentView
-					src={agreementPdfPath}
-					label={m.signing_document_label()}
-					expectedPageCount={data.document.pageCount}
-					loadingLabel={m.signing_document_loading()}
-					errorTitle={m.signing_document_error_title()}
-					errorDescription={m.signing_document_error_description()}
-					openLabel={m.signing_document_open()}
-				>
-					{#snippet overlay(page: PdfRenderedPage)}
-						<div id={`agreement-page-${page.pageNumber}`} class="absolute inset-0">
-							{#if isSigner && !isSigned}
-								{#each fieldsOnPage(page.pageNumber) as field (field.id)}
-									{@render fieldBox(field)}
-								{/each}
-							{/if}
-						</div>
-					{/snippet}
-				</PdfDocumentView>
+				{#key agreementPdfPath}
+					<PdfDocumentView
+						src={agreementPdfPath}
+						label={m.signing_document_label()}
+						expectedPageCount={data.document.pageCount}
+						loadingLabel={m.signing_document_loading()}
+						errorTitle={m.signing_document_error_title()}
+						errorDescription={m.signing_document_error_description()}
+						openLabel={m.signing_document_open()}
+					>
+						{#snippet overlay(page: PdfRenderedPage)}
+							<div id={`agreement-page-${page.pageNumber}`} class="absolute inset-0">
+								{#if isSigner && !isSigned}
+									{#each fieldsOnPage(page.pageNumber) as field (field.id)}
+										{@render fieldBox(field)}
+									{/each}
+								{/if}
+							</div>
+						{/snippet}
+					</PdfDocumentView>
+				{/key}
 			</section>
 
 			{#if isSigner && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}

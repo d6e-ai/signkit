@@ -41,6 +41,14 @@
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale, localizeHref } from '$lib/paraglide/runtime';
+	import {
+		type EnvelopeDocumentPageMap,
+		fieldPlacementReady,
+		invalidateDocumentPageMap,
+		type PageMapRevision,
+		refreshDocumentPageMap,
+		refreshDocumentPageMapAfterReload
+	} from './document-page-map';
 
 	const client = createEnvelopesClient();
 	const envelopeId = $derived(page.params.envelopeId as string);
@@ -112,17 +120,10 @@
 	 * The page geometry of the exact document rendering a recipient will be
 	 * shown. Placement is expressed against this, not against the Markdown
 	 * source, so a box the sender drops on page 3 is the box the signer sees on
-	 * page 3.
+	 * page 3. Null until the current ready revision's map has loaded.
 	 */
-	interface DocumentPageMap {
-		commitSha: string;
-		generation: number;
-		pageCount: number;
-		pageWidth: number;
-		pageHeight: number;
-		documents: readonly { path: string; title: string; firstPage: number; lastPage: number }[];
-	}
-	let documentPages = $state<DocumentPageMap | null>(null);
+	let documentPages = $state<EnvelopeDocumentPageMap | null>(null);
+	let documentPagesLoading = $state(false);
 	let selectedFieldKey = $state<string | null>(null);
 	/** Default box, as a fraction of one page: roughly a signature line. */
 	const DEFAULT_FIELD_WIDTH = 0.26;
@@ -338,6 +339,7 @@
 				}))
 			};
 			dirtyPaths.clear();
+			documentPages = invalidateDocumentPageMap();
 		} catch (cause) {
 			commitError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_commit_unavailable();
@@ -383,7 +385,7 @@
 			});
 			readyRecipients = result.ready.recipients;
 			readyAuditEventId = result.ready.auditEventId;
-			await load();
+			await reloadAuthoringSurface();
 		} catch (cause) {
 			readyError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_ready_unavailable();
@@ -396,17 +398,50 @@
 		return readyRecipients.filter((recipient) => recipient.role === 'signer');
 	}
 
+	function currentPageMapRevision(): PageMapRevision | null {
+		if (envelope === null) return null;
+		return {
+			status: envelope.status,
+			repositoryHead: envelope.repositoryHead,
+			repositoryGeneration: envelope.repositoryGeneration
+		};
+	}
+
+	async function fetchDocumentPages(): Promise<EnvelopeDocumentPageMap | null> {
+		const response = await fetch(`/api/v1/envelopes/${envelopeId}/document-pdf/pages`, {
+			credentials: 'same-origin',
+			headers: { accept: 'application/json' }
+		});
+		if (!response.ok) return null;
+		return (await response.json()) as EnvelopeDocumentPageMap;
+	}
+
 	async function loadDocumentPages(): Promise<void> {
-		documentPages = null;
+		documentPages = invalidateDocumentPageMap();
+		documentPagesLoading = true;
 		try {
-			const response = await fetch(`/api/v1/envelopes/${envelopeId}/document-pdf/pages`, {
-				credentials: 'same-origin',
-				headers: { accept: 'application/json' }
+			documentPages = await refreshDocumentPageMap({
+				revision: currentPageMapRevision(),
+				loadPages: fetchDocumentPages
 			});
-			if (!response.ok) return;
-			documentPages = (await response.json()) as DocumentPageMap;
-		} catch {
-			documentPages = null;
+		} finally {
+			documentPagesLoading = false;
+		}
+	}
+
+	async function reloadAuthoringSurface(): Promise<void> {
+		documentPages = invalidateDocumentPageMap();
+		documentPagesLoading = true;
+		try {
+			documentPages = await refreshDocumentPageMapAfterReload({
+				reload: async (): Promise<PageMapRevision | null> => {
+					await load();
+					return currentPageMapRevision();
+				},
+				loadPages: fetchDocumentPages
+			});
+		} finally {
+			documentPagesLoading = false;
 		}
 	}
 
@@ -618,7 +653,7 @@
 				expectedReadyAuditEventId: readyAuditEventId
 			});
 			sendDialogOpen = false;
-			await load();
+			await reloadAuthoringSurface();
 		} catch (cause) {
 			sendError = cause instanceof EnvelopesApiError ? cause.detail : m.envelope_send_unavailable();
 		} finally {
@@ -646,7 +681,7 @@
 				file
 			});
 			activeDocPath = targetPath;
-			await load();
+			await reloadAuthoringSurface();
 		} catch (cause) {
 			importError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_import_unavailable();
@@ -690,7 +725,7 @@
 				expectedGeneration: envelope.repositoryGeneration
 			});
 			voidDialogOpen = false;
-			await load();
+			await reloadAuthoringSurface();
 		} catch (cause) {
 			voidError = cause instanceof EnvelopesApiError ? cause.detail : m.envelope_void_unavailable();
 		} finally {
@@ -710,7 +745,11 @@
 			: null
 	);
 	const placementReady = $derived(
-		envelope?.status === 'ready' && signerRecipients().length > 0 && documentPages !== null
+		fieldPlacementReady({
+			status: envelope?.status,
+			hasSigners: signerRecipients().length > 0,
+			pageMap: documentPages
+		})
 	);
 
 	function draftsOnPage(page: number): readonly FieldDraft[] {
@@ -726,10 +765,7 @@
 	}
 
 	onMount(() => {
-		void (async () => {
-			await load();
-			await loadDocumentPages();
-		})();
+		void reloadAuthoringSurface();
 	});
 </script>
 
@@ -771,7 +807,9 @@
 				<p class="text-sm font-medium text-destructive">
 					{loadError ?? m.envelope_detail_unavailable()}
 				</p>
-				<Button variant="outline" onclick={() => void load()}>{m.common_retry()}</Button>
+				<Button variant="outline" onclick={() => void reloadAuthoringSurface()}
+					>{m.common_retry()}</Button
+				>
 			</Card.Content>
 		</Card.Root>
 	{:else}
@@ -1194,6 +1232,21 @@
 					<p class="text-sm text-muted-foreground">{m.envelope_fields_requires_ready()}</p>
 				{:else if signerRecipients().length === 0}
 					<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
+				{:else if documentPages === null}
+					{#if documentPagesLoading}
+						<Skeleton class="h-64 w-full rounded-2xl" />
+					{:else}
+						<Card.Root>
+							<Card.Content class="flex flex-col items-center gap-3 py-10 text-center">
+								<p class="text-sm font-medium text-destructive">
+									{m.signing_document_error_description()}
+								</p>
+								<Button variant="outline" onclick={() => void loadDocumentPages()}>
+									{m.common_retry()}
+								</Button>
+							</Card.Content>
+						</Card.Root>
+					{/if}
 				{:else}
 					<Card.Root>
 						<Card.Header>
@@ -1280,72 +1333,75 @@
 										{m.envelope_placement_needs_signer()}
 									</p>
 								{/if}
-								<PdfDocumentView
-									src={`/api/v1/envelopes/${envelopeId}/document-pdf`}
-									label={m.signing_document_label()}
-									expectedPageCount={documentPages?.pageCount ?? 1}
-									loadingLabel={m.signing_document_loading()}
-									errorTitle={m.signing_document_error_title()}
-									errorDescription={m.signing_document_error_description()}
-									openLabel={m.signing_document_open()}
-								>
-									{#snippet overlay(page: PdfRenderedPage)}
-										<!-- svelte-ignore a11y_no_static_element_interactions -->
-										<!-- svelte-ignore a11y_click_events_have_key_events -->
-										<div
-											class="absolute inset-0"
-											class:cursor-crosshair={placementReady && newField.recipientId !== ''}
-											onclick={(event) => handlePageClick(event, page.pageNumber)}
-										>
-											{#each publishedOnPage(page.pageNumber) as field (field.id)}
-												{#if field.geometry}
-													<span
-														class="pointer-events-none absolute rounded border border-muted-foreground/50 bg-muted/40 text-[10px] text-muted-foreground"
-														style={`left:${field.geometry.x * 100}%;top:${field.geometry.y * 100}%;width:${field.geometry.width * 100}%;height:${field.geometry.height * 100}%;`}
-													>
-														<span class="block truncate px-1">
-															{fieldTypeLabel(field.fieldType)}
-														</span>
-													</span>
-												{/if}
-											{/each}
-											{#each draftsOnPage(page.pageNumber) as fieldDraft (fieldDraft.key)}
-												{#if fieldDraft.geometry}
-													<div
-														role="button"
-														tabindex="0"
-														aria-label={m.envelope_placement_box_label({
-															label: fieldDraft.label,
-															recipient: recipientName(fieldDraft.recipientId),
-															page: String(fieldDraft.geometry.page)
-														})}
-														aria-pressed={selectedFieldKey === fieldDraft.key}
-														class="absolute cursor-move touch-none rounded border-2 border-primary bg-primary/20 text-[10px] font-medium text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-														class:ring-2={selectedFieldKey === fieldDraft.key}
-														style={`left:${fieldDraft.geometry.x * 100}%;top:${fieldDraft.geometry.y * 100}%;width:${fieldDraft.geometry.width * 100}%;height:${fieldDraft.geometry.height * 100}%;`}
-														onpointerdown={(event) => startDrag(event, fieldDraft.key, 'move')}
-														onpointermove={continueDrag}
-														onpointerup={endDrag}
-														onpointercancel={endDrag}
-														onkeydown={(event) => handleFieldKeydown(event, fieldDraft.key)}
-														onfocus={() => (selectedFieldKey = fieldDraft.key)}
-														onclick={(event) => event.stopPropagation()}
-													>
-														<span class="block truncate px-1">{fieldDraft.label}</span>
+								{#key envelopeId}
+									<PdfDocumentView
+										src={`/api/v1/envelopes/${envelopeId}/document-pdf`}
+										label={m.signing_document_label()}
+										expectedPageCount={documentPages?.pageCount ?? 1}
+										loadingLabel={m.signing_document_loading()}
+										errorTitle={m.signing_document_error_title()}
+										errorDescription={m.signing_document_error_description()}
+										openLabel={m.signing_document_open()}
+									>
+										{#snippet overlay(page: PdfRenderedPage)}
+											<!-- svelte-ignore a11y_no_static_element_interactions -->
+											<!-- svelte-ignore a11y_click_events_have_key_events -->
+											<div
+												class="absolute inset-0"
+												class:cursor-crosshair={placementReady && newField.recipientId !== ''}
+												onclick={(event) => handlePageClick(event, page.pageNumber)}
+											>
+												{#each publishedOnPage(page.pageNumber) as field (field.id)}
+													{#if field.geometry}
 														<span
-															role="presentation"
-															class="absolute right-0 bottom-0 size-3 cursor-se-resize touch-none rounded-sm bg-primary"
-															onpointerdown={(event) => startDrag(event, fieldDraft.key, 'resize')}
+															class="pointer-events-none absolute rounded border border-muted-foreground/50 bg-muted/40 text-[10px] text-muted-foreground"
+															style={`left:${field.geometry.x * 100}%;top:${field.geometry.y * 100}%;width:${field.geometry.width * 100}%;height:${field.geometry.height * 100}%;`}
+														>
+															<span class="block truncate px-1">
+																{fieldTypeLabel(field.fieldType)}
+															</span>
+														</span>
+													{/if}
+												{/each}
+												{#each draftsOnPage(page.pageNumber) as fieldDraft (fieldDraft.key)}
+													{#if fieldDraft.geometry}
+														<div
+															role="button"
+															tabindex="0"
+															aria-label={m.envelope_placement_box_label({
+																label: fieldDraft.label,
+																recipient: recipientName(fieldDraft.recipientId),
+																page: String(fieldDraft.geometry.page)
+															})}
+															aria-pressed={selectedFieldKey === fieldDraft.key}
+															class="absolute cursor-move touch-none rounded border-2 border-primary bg-primary/20 text-[10px] font-medium text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+															class:ring-2={selectedFieldKey === fieldDraft.key}
+															style={`left:${fieldDraft.geometry.x * 100}%;top:${fieldDraft.geometry.y * 100}%;width:${fieldDraft.geometry.width * 100}%;height:${fieldDraft.geometry.height * 100}%;`}
+															onpointerdown={(event) => startDrag(event, fieldDraft.key, 'move')}
 															onpointermove={continueDrag}
 															onpointerup={endDrag}
 															onpointercancel={endDrag}
-														></span>
-													</div>
-												{/if}
-											{/each}
-										</div>
-									{/snippet}
-								</PdfDocumentView>
+															onkeydown={(event) => handleFieldKeydown(event, fieldDraft.key)}
+															onfocus={() => (selectedFieldKey = fieldDraft.key)}
+															onclick={(event) => event.stopPropagation()}
+														>
+															<span class="block truncate px-1">{fieldDraft.label}</span>
+															<span
+																role="presentation"
+																class="absolute right-0 bottom-0 size-3 cursor-se-resize touch-none rounded-sm bg-primary"
+																onpointerdown={(event) =>
+																	startDrag(event, fieldDraft.key, 'resize')}
+																onpointermove={continueDrag}
+																onpointerup={endDrag}
+																onpointercancel={endDrag}
+															></span>
+														</div>
+													{/if}
+												{/each}
+											</div>
+										{/snippet}
+									</PdfDocumentView>
+								{/key}
 							</div>
 
 							{#if fieldDrafts.length > 0}

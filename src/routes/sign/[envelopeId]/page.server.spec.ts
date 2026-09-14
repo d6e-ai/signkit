@@ -63,7 +63,8 @@ vi.mock('$lib/server/declined-receipt-session', async () => {
 	return {
 		...actual,
 		unsealDeclinedReceiptSession: (cookie: string, envelopeId: string) =>
-			unsealDeclined(cookie, envelopeId)
+			unsealDeclined(cookie, envelopeId),
+		sealDeclinedReceiptSession: async () => 'sealed-declined-receipt'
 	};
 });
 
@@ -158,6 +159,88 @@ describe('envelope-scoped signing page load', () => {
 		expect(second.store[cookieA]).toBe('sealed-a');
 	});
 
+	it('does not delete a same-envelope cookie when a stale unreadable session fails', async () => {
+		const input = event(envelopeA, { [cookieA]: 'stale' });
+		unsealActive.mockImplementation(async () => {
+			input.store[cookieA] = 'newer-from-s';
+			return null;
+		});
+		unsealDeclined.mockResolvedValue(null);
+
+		const page = await load(input as never);
+
+		expect(page).toEqual({ state: 'invalid' });
+		expect(input.deleted).toEqual([]);
+		expect(input.store[cookieA]).toBe('newer-from-s');
+	});
+
+	it('does not delete a same-envelope cookie when durable access is gone', async () => {
+		const input = event(envelopeA, { [cookieA]: 'stale' });
+		unsealActive.mockResolvedValue(`skr1_${'A'.repeat(43)}`);
+		resolveWorkspace.mockImplementation(async () => {
+			input.store[cookieA] = 'newer-from-s';
+			return null;
+		});
+		unsealDeclined.mockResolvedValue(null);
+
+		const page = await load(input as never);
+
+		expect(page).toEqual({ state: 'invalid' });
+		expect(input.deleted).toEqual([]);
+		expect(input.store[cookieA]).toBe('newer-from-s');
+	});
+
+	it('does not delete a declined receipt cookie after a successful active load', async () => {
+		const declinedName: string = declinedReceiptCookieName(envelopeA) as string;
+		unsealActive.mockResolvedValue(`skr1_${'A'.repeat(43)}`);
+		resolveWorkspace.mockResolvedValue(workspaceFor(envelopeA));
+		const input = event(envelopeA, {
+			[cookieA]: 'sealed-a',
+			[declinedName]: 'stale-declined'
+		});
+
+		const page = await load(input as never);
+
+		expect(page).toMatchObject({ state: 'active', access: { envelopeId: envelopeA } });
+		expect(input.deleted).toEqual([]);
+		expect(input.store[declinedName]).toBe('stale-declined');
+		expect(input.store[cookieA]).toBe('sealed-a');
+	});
+
+	it('recovers a declined receipt by overwrite without deleting a newer live cookie', async () => {
+		const declinedName: string = declinedReceiptCookieName(envelopeA) as string;
+		const input = event(envelopeA, { [cookieA]: 'stale' });
+		unsealActive.mockResolvedValue(`skr1_${'A'.repeat(43)}`);
+		resolveDeclined.mockImplementation(async () => {
+			input.store[cookieA] = 'newer-from-s';
+			return {
+				receipt: {
+					envelopeId: envelopeA,
+					recipientId: '01910000-0000-7000-8000-000000000002',
+					recipientStatus: 'declined',
+					envelopeStatus: 'declined',
+					declinedAt: '2026-09-11T00:02:00.000Z',
+					locale: 'en'
+				},
+				locator: {
+					organizationId: '01910000-0000-7000-8000-000000000003',
+					envelopeId: envelopeA,
+					recipientId: '01910000-0000-7000-8000-000000000002',
+					idempotencyKey: 'decline-1',
+					capabilityHash: 'b'.repeat(64),
+					declinedAt: '2026-09-11T00:02:00.000Z',
+					expiresAt: '2026-10-11T00:02:00.000Z'
+				}
+			};
+		});
+		const page = await load(input as never);
+
+		expect(page).toMatchObject({ state: 'declined', envelopeId: envelopeA });
+		expect(input.deleted).not.toContain(cookieA);
+		expect(input.store[cookieA]).toBe('newer-from-s');
+		expect(input.store[declinedName]).toBe('sealed-declined-receipt');
+	});
+
 	it('fails closed for a non-UUIDv7 path without reading cookies', async () => {
 		const input = event('not-a-uuid', { [cookieA]: 'sealed-a' });
 		const page = await load(input as never);
@@ -175,5 +258,20 @@ describe('envelope-scoped signing page load', () => {
 		expect(unsealActive).not.toHaveBeenCalled();
 		expect(input.deleted).not.toContain(cookieB);
 		expect(input.deleted).not.toContain(declinedReceiptCookieName(envelopeB));
+	});
+
+	it('does not delete a declined receipt cookie when a stale locator fails', async () => {
+		const declinedName: string = declinedReceiptCookieName(envelopeA) as string;
+		const input = event(envelopeA, { [declinedName]: 'stale-declined' });
+		unsealDeclined.mockImplementation(async () => {
+			input.store[declinedName] = 'newer-receipt';
+			return null;
+		});
+
+		const page = await load(input as never);
+
+		expect(page).toEqual({ state: 'invalid' });
+		expect(input.deleted).toEqual([]);
+		expect(input.store[declinedName]).toBe('newer-receipt');
 	});
 });
