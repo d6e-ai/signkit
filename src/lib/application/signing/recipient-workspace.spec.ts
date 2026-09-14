@@ -93,6 +93,7 @@ describe('RecipientWorkspaceService', () => {
 			access: {
 				envelopeId: 'env-1',
 				recipientId: 'recipient-1',
+				recipientName: 'Private Recipient',
 				role: 'signer',
 				locale: 'en',
 				recipientStatus: 'viewed',
@@ -113,7 +114,7 @@ describe('RecipientWorkspaceService', () => {
 			],
 			fieldGeneration: 1
 		});
-		expect(JSON.stringify(workspace)).not.toMatch(/org-secret|Private Recipient|private\/archive/);
+		expect(JSON.stringify(workspace)).not.toMatch(/org-secret|private\/archive/);
 	});
 
 	it('does not read object storage for inactive access', async () => {

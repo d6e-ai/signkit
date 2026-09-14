@@ -9,6 +9,7 @@ const workspace: RecipientWorkspace = {
 	access: {
 		envelopeId: 'env-1',
 		recipientId: 'recipient-1',
+		recipientName: 'Alex Rivera',
 		role: 'approver',
 		locale: 'en',
 		recipientStatus: 'viewed',
@@ -63,7 +64,7 @@ describe('recipient signing page resolution', () => {
 
 		expect(app.resolve).toHaveBeenCalledWith('raw-token', '2026-09-11T00:00:00.000Z');
 		expect(result).toEqual({ state: 'active', ...workspace });
-		expect(JSON.stringify(result)).not.toMatch(/organization|archive|recipientName/);
+		expect(JSON.stringify(result)).not.toMatch(/organization|archive/);
 	});
 
 	it('deletes the cookie when durable state no longer authorizes the recipient', async () => {

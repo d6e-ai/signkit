@@ -5,7 +5,7 @@ import SignPage from './+page.svelte';
 import type { PageData } from './$types';
 
 function document(path: `documents/${string}.md`, content: string) {
-	return { path, content, rendered: renderRecipientMarkdown(content) };
+	return { path, rendered: renderRecipientMarkdown(content) };
 }
 
 describe('recipient document review page', () => {
@@ -15,6 +15,7 @@ describe('recipient document review page', () => {
 			access: {
 				envelopeId: 'env-1',
 				recipientId: 'recipient-1',
+				recipientName: 'Alex Rivera',
 				role: 'signer',
 				locale: 'en',
 				recipientStatus: 'pending',
@@ -38,8 +39,7 @@ describe('recipient document review page', () => {
 		expect(body).toMatch(/<h1[^>]*>.*Terms.*<\/h1>/su);
 		expect(body).toContain('&lt;script>alert(1)&lt;/script>');
 		expect(body).not.toContain('<script>alert(1)</script>');
-		expect(body).toContain('Formatted');
-		expect(body).toContain('Source');
+		expect(body).not.toContain('Exact Markdown source');
 		expect(body).not.toContain('{@html');
 	});
 
@@ -49,6 +49,7 @@ describe('recipient document review page', () => {
 			access: {
 				envelopeId: 'env-1',
 				recipientId: 'recipient-1',
+				recipientName: 'Alex Rivera',
 				role: 'viewer',
 				locale: 'ja',
 				recipientStatus: 'viewed',
@@ -119,6 +120,7 @@ describe('recipient document review page', () => {
 				access: {
 					envelopeId: '01910000-0000-7000-8000-000000000001',
 					recipientId: '01910000-0000-7000-8000-000000000002',
+					recipientName: 'Alex Rivera',
 					role,
 					locale: 'en',
 					recipientStatus: 'pending',
@@ -147,6 +149,7 @@ describe('recipient document review page', () => {
 				access: {
 					envelopeId: '01910000-0000-7000-8000-000000000001',
 					recipientId: '01910000-0000-7000-8000-000000000002',
+					recipientName: 'Alex Rivera',
 					role,
 					locale: 'en',
 					recipientStatus: 'pending',
@@ -178,6 +181,7 @@ describe('recipient document review page', () => {
 				access: {
 					envelopeId: '01910000-0000-7000-8000-000000000001',
 					recipientId: '01910000-0000-7000-8000-000000000002',
+					recipientName: 'Alex Rivera',
 					role,
 					locale: 'en',
 					recipientStatus,
@@ -243,6 +247,7 @@ describe('recipient document review page', () => {
 			access: {
 				envelopeId: '01910000-0000-7000-8000-000000000001',
 				recipientId: '01910000-0000-7000-8000-000000000002',
+				recipientName: 'Alex Rivera',
 				role: 'signer',
 				locale: 'en',
 				recipientStatus: 'viewed',
@@ -265,6 +270,7 @@ describe('recipient document review page', () => {
 		};
 		const { body } = render(SignPage, { props: { data } });
 		expect(body).toContain('Your signature');
+		expect(body).toContain('Add signature');
 		expect(body).toContain('Sign and complete');
 		expect(body).toContain('min-h-[44px]');
 		expect(body).toContain('JavaScript is required to submit and record your signature.');
@@ -277,6 +283,7 @@ describe('recipient document review page', () => {
 			access: {
 				envelopeId: '01910000-0000-7000-8000-000000000001',
 				recipientId: '01910000-0000-7000-8000-000000000002',
+				recipientName: 'Alex Rivera',
 				role: 'approver',
 				locale: 'en',
 				recipientStatus: 'viewed',
@@ -314,5 +321,26 @@ describe('recipient document review page', () => {
 			expect(combined).not.toMatch(/\bpdf\b/i);
 			expect(combined).not.toMatch(/pades/i);
 		}
+	});
+
+	it('provides localized signature dialog copy that requires explicit confirmation', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		expect(en.signature_dialog_title).toBeTruthy();
+		expect(en.signature_dialog_description).toMatch(/until you confirm/i);
+		expect(en.signature_trigger_empty).toBe('Add signature');
+		expect(ja.signature_dialog_title).toBeTruthy();
+		expect(ja.signature_dialog_description).toContain('確定するまで');
+		expect(ja.signature_trigger_empty).toBe('署名を追加');
+		for (const messages of [en, ja]) {
+			expect(messages.signature_dialog_confirm).toBeTruthy();
+			expect(messages.signature_dialog_cancel).toBeTruthy();
+			expect(messages.signature_dialog_close).toBeTruthy();
+			expect(messages.signature_canvas_tab_type).toBeTruthy();
+			expect(messages.signature_canvas_tab_draw).toBeTruthy();
+		}
+		expect(en.signature_dialog_close).toBe('Close');
+		expect(ja.signature_dialog_close).toBe('閉じる');
 	});
 });

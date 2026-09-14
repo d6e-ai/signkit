@@ -92,6 +92,7 @@ describe('recipient access HTTP handler', () => {
 			access: {
 				envelopeId: 'env-1',
 				recipientId: 'recipient-1',
+				recipientName: 'Private Recipient',
 				role: 'signer',
 				locale: 'ja',
 				recipientStatus: 'pending',
@@ -100,7 +101,7 @@ describe('recipient access HTTP handler', () => {
 				expiresAt: '2026-09-12T00:00:00.000Z'
 			}
 		});
-		expect(text).not.toMatch(/org-secret|Private Recipient|skr1_|token|hash|email/i);
+		expect(text).not.toMatch(/org-secret|skr1_|token|hash|email/i);
 	});
 
 	it('uses the same 404 for a well-formed capability with no active context', async () => {

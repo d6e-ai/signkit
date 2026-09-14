@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 describe('recipient document rendering', () => {
 	it('renders only the server-sanitized node model through escaped Svelte interpolation', () => {
 		const source: string = readFileSync('src/routes/sign/+page.svelte', 'utf8');
-		expect(source).toContain('{document.content}');
+		expect(source).not.toContain('{document.content}');
+		expect(source).not.toContain('signing_document_source_view');
+		expect(source).not.toContain('signing_document_source_description');
 		expect(source).toContain('{@render renderMarkdownNode(node)}');
 		expect(source).toContain('<svelte:element this={node.tag} {...node.attributes}>');
 		expect(source).not.toContain('{@html');
@@ -16,6 +18,9 @@ describe('recipient document rendering', () => {
 		expect(source).not.toContain('resolveRecipientViewedApplication');
 		expect(source).not.toContain('/api/v1/signing/viewed');
 		expect(source).not.toContain('recipient.viewed');
+		expect(source).toContain(
+			'return { path: document.path, rendered: renderRecipientMarkdown(document.content) }'
+		);
 	});
 
 	it('makes the authoritative terminal decline branch precede all document rendering', () => {
