@@ -279,7 +279,7 @@ async function deployOrUpgrade(
 		const newlyApplied = pending;
 		const appliedMigrations = unionAppliedMigrations(existing?.appliedMigrations, newlyApplied);
 
-		const previousVersionId = current.versions[0]?.id ?? existing?.lastWorkerVersionId;
+		const previousVersionId = existing?.lastWorkerVersionId ?? current.versions[0]?.id;
 		const deployOptions = {
 			cwd: extracted.root,
 			configPath: extracted.configPath,

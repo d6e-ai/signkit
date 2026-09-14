@@ -229,10 +229,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
 		throw usage('--r2 must be a valid R2 bucket name');
 	}
 
-	const domain = values.get('domain');
-	if (domain !== undefined && !DOMAIN_PATTERN.test(domain)) {
+	const domainRaw = values.get('domain');
+	if (domainRaw !== undefined && !DOMAIN_PATTERN.test(domainRaw)) {
 		throw usage('--domain must be a DNS hostname (no scheme or path)');
 	}
+	const domain = domainRaw?.toLowerCase();
 
 	const publicOriginRaw = values.get('public-origin');
 	const publicOrigin =

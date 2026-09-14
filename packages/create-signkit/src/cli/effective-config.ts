@@ -45,7 +45,9 @@ export function resolveEffectiveConfig(
 		: (state?.workerName ?? parsed.workerName ?? DEFAULT_WORKER_NAME);
 	const d1 = parsed.overrides.d1 ? parsed.d1 : (state?.d1.name ?? parsed.d1 ?? DEFAULT_D1_NAME);
 	const r2 = parsed.overrides.r2 ? parsed.r2 : (state?.r2.name ?? parsed.r2 ?? DEFAULT_R2_NAME);
-	const domain = parsed.overrides.domain ? parsed.domain : (state?.domain ?? parsed.domain);
+	const domain = (
+		parsed.overrides.domain ? parsed.domain : (state?.domain ?? parsed.domain)
+	)?.toLowerCase();
 	const publicOrigin = resolvePublicOrigin(parsed, state, domain);
 
 	let d6eAuthBaseUrl = DEFAULT_D6E_AUTH_BASE_URL;
