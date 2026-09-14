@@ -123,13 +123,28 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 		} catch (error: unknown) {
 			// A provider can fail a precondition or lose the response after
 			// accepting the write. Reuse is only safe once we have read the
-			// immutable object back and re-derived its digest ourselves.
+			// immutable object back and re-derived its digest ourselves -- `head`
+			// metadata can be stale, echoed from the request, or missing its
+			// digest entirely, none of which proves the stored bytes match.
 			const existing: ObjectMetadata | null = await this.objects.head(rendered.objectKey);
 			if (
 				existing === null ||
 				existing.sha256 !== rendered.sha256 ||
 				existing.size !== rendered.byteSize
 			) {
+				throw error;
+			}
+			const stream: ReadableStream<Uint8Array> | null = await this.objects.get(
+				rendered.objectKey
+			);
+			if (stream === null) throw error;
+			let body: Uint8Array;
+			try {
+				body = await readStreamBounded(stream, rendered.byteSize);
+			} catch {
+				throw error;
+			}
+			if (body.byteLength !== rendered.byteSize || (await sha256Hex(body)) !== rendered.sha256) {
 				throw error;
 			}
 		}
@@ -238,4 +253,34 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
+}
+
+async function readStreamBounded(
+	stream: ReadableStream<Uint8Array>,
+	maximumBytes: number
+): Promise<Uint8Array> {
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let size: number = 0;
+	try {
+		for (;;) {
+			const result = await reader.read();
+			if (result.done) break;
+			size += result.value.byteLength;
+			if (size > maximumBytes) {
+				await reader.cancel('sent agreement PDF exceeds its pinned size');
+				throw new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size');
+			}
+			chunks.push(result.value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes: Uint8Array = new Uint8Array(size);
+	let offset: number = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return bytes;
 }

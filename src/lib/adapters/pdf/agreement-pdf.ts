@@ -379,7 +379,9 @@ function inlineRuns(
 ): readonly InlineRun[] {
 	const runs: InlineRun[] = [];
 	const visit = (node: RecipientMarkdownNode, current: InlineStyle, depth: number): void => {
-		if (depth > MAX_TREE_DEPTH) return;
+		if (depth > MAX_TREE_DEPTH) {
+			throw new AgreementPdfBoundExceededError('Document nesting is too deep');
+		}
 		if (node.type === 'text') {
 			if (node.value.length > 0) runs.push({ text: node.value, style: current });
 			return;
@@ -413,7 +415,9 @@ function inlineRuns(
 function plainText(nodes: readonly RecipientMarkdownNode[]): string {
 	let text: string = '';
 	const visit = (node: RecipientMarkdownNode, depth: number): void => {
-		if (depth > MAX_TREE_DEPTH) return;
+		if (depth > MAX_TREE_DEPTH) {
+			throw new AgreementPdfBoundExceededError('Document nesting is too deep');
+		}
 		if (node.type === 'text') {
 			text += node.value;
 			return;
@@ -884,7 +888,10 @@ function paginate(lines: readonly PositionedLine[], pages: PdfPage[]): void {
 		cursor = MARGIN_TOP;
 	};
 	for (const line of lines) {
-		if (cursor + line.height > MARGIN_TOP + usableHeight && operations.length > 0) flush();
+		// Spacer lines advance the cursor without emitting any operations, so
+		// `operations.length` alone cannot tell a genuinely fresh page from one
+		// that has already spent part of its usable height on leading gaps.
+		if (cursor + line.height > MARGIN_TOP + usableHeight && cursor > MARGIN_TOP) flush();
 		operations.push(...line.draw(cursor));
 		cursor += line.height;
 		if (pages.length > MAX_AGREEMENT_PDF_PAGES) {
