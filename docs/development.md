@@ -90,6 +90,7 @@ A new SignKit-owned identifier column needs the UUIDv7 check in both dialects (P
 | `src/lib/adapters`           | PostgreSQL/D1, S3/R2, and mail implementations                        |
 | `src/lib/history`            | bounded Git draft repository handling                                 |
 | `cli`                        | production Rust CLI workspace (`signkit`)                             |
+| `packages/create-signkit`    | npm deployment CLI (`create-signkit --cloudflare ...`)                |
 | `migrations/{postgres,d1}`   | dialect-specific SQL migrations                                       |
 | `messages`, `project.inlang` | Paraglide `en`/`ja` message catalogues                                |
 
@@ -108,10 +109,23 @@ cargo build
 
 The test suite uses `wiremock` to test against a local mock HTTP server, verifying capabilities, envelope read endpoints, mandatory organization enforcement, secure stdin/env API-key handling, strict redirect refusal, bounded response streaming, and exact exit-code contracts.
 
+## create-signkit (`packages/create-signkit`)
+
+The Cloudflare deployment CLI is a separate ESM package. It is not the Rust API CLI.
+
+```sh
+pnpm --filter create-signkit test
+pnpm --filter create-signkit build
+```
+
+Tests inject HTTP and process layers and must not contact real GitHub or Cloudflare. See [create-signkit.md](create-signkit.md).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests and pushes to `main`:
 
 - **validate** — `lint`, `check`, Chromium install, and the full `test` script against a `postgres:18-alpine` service with `POSTGRES_TEST_URL` set, so PostgreSQL integration suites always run in CI.
-- **build** — a matrix over `node`, `cloudflare`, and `vercel`. The Node build additionally runs `test:node-build`; the Cloudflare build checks generated binding types, applies local D1 migrations, and runs `wrangler deploy --dry-run`.
+- **build** — a matrix over `node`, `cloudflare`, and `vercel`. The Node build additionally runs `test:node-build`; the Cloudflare build checks generated binding types, applies local D1 migrations, runs `wrangler deploy --dry-run`, builds create-signkit, then builds and verifies a synthetic `v0.0.0-ci` release bundle (`SIGNKIT_RELEASE_TAG` overrides `GITHUB_REF_NAME` so the branch name cannot become the tag) and deletes `.release`.
 - **rust-cli** — isolated Rust CI job on Rust 1.88.0 running `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.
+
+Tag workflow `.github/workflows/release-cloudflare-bundle.yml` runs create-signkit tests, builds the Cloudflare bundle, verifies it, uploads GitHub Release assets, then may `npm publish` create-signkit with a version-checked npm CLI >= 11.5.1 installed into an isolated prefix (OIDC Trusted Publishing with optional `NODE_AUTH_TOKEN`; pnpm is used for workspace install and to invoke that npm CLI). Prerelease tags publish to npm dist-tag `beta`; stable tags publish to `latest`. The first npm publication of the still-unpublished package needs a short-lived token or a manual publish before Trusted Publisher can be attached.

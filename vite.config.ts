@@ -9,6 +9,11 @@ import { sveltekit } from '@sveltejs/kit/vite';
 
 const deployTarget = process.env.DEPLOY_TARGET ?? 'node';
 
+const postgresLiveSpecs: string[] = [
+	'src/**/postgres-*.integration.spec.ts',
+	'src/lib/adapters/db/postgres-envelope-document-store.spec.ts'
+];
+
 function deploymentAdapter() {
 	switch (deployTarget) {
 		case 'cloudflare':
@@ -93,7 +98,24 @@ export default defineConfig({
 					name: 'server',
 					environment: 'node',
 					include: ['src/**/*.{test,spec}.{js,ts}'],
-					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}', 'src/**/*.browser.spec.ts']
+					exclude: [
+						'src/**/*.svelte.{test,spec}.{js,ts}',
+						'src/**/*.browser.spec.ts',
+						...postgresLiveSpecs
+					]
+				}
+			},
+			{
+				extends: './vite.config.ts',
+				test: {
+					name: 'postgres',
+					environment: 'node',
+					include: postgresLiveSpecs,
+					// Live PostgreSQL suites apply migrations into one shared database.
+					// Concurrent files race catalog lookups ("could not open relation with OID").
+					fileParallelism: false,
+					maxWorkers: 1,
+					sequence: { groupOrder: 1 }
 				}
 			},
 			{

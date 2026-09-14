@@ -2,6 +2,8 @@
 
 How the three deployment profiles differ, what to configure, and how background jobs are driven. The normative boundary is [architecture/deployment-and-risks.md § Deployment](architecture/deployment-and-risks.md#deployment) and [architecture/persistence.md § Persistence](architecture/persistence.md#persistence); this document is the operational companion.
 
+The Cloudflare Workers profile can be published from a GitHub Release with [`create-signkit`](create-signkit.md) (`npx create-signkit --cloudflare ...`). That deployment CLI is not the Rust API CLI documented in [cli.md](cli.md).
+
 ## Profiles
 
 `DEPLOY_TARGET` selects the adapter at build time. Each target produces its own artifact; there is no universal runtime build.

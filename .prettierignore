@@ -20,4 +20,8 @@ bun.lockb
 
 # Rust CLI
 /cli/
+
+# create-signkit build output
+/packages/create-signkit/dist/
+/.release/
 src/lib/adapters/pdf/fonts/document-font.ts

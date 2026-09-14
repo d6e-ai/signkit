@@ -31,3 +31,8 @@ vite.config.ts.timestamp-*
 # Rust
 target/
 cli/target/
+
+# create-signkit
+packages/create-signkit/dist/
+packages/create-signkit/LICENSE
+.release/

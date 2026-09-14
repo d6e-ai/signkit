@@ -39,6 +39,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run check
+      - run: pnpm run build:create-signkit
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run test
 
@@ -66,6 +67,22 @@ jobs:
         run: pnpm exec wrangler d1 migrations apply signkit --local
       - if: matrix.target == 'cloudflare'
         run: pnpm exec wrangler deploy --dry-run
+      - if: matrix.target == 'cloudflare'
+        run: pnpm run build:create-signkit
+      - if: matrix.target == 'cloudflare'
+        env:
+          SIGNKIT_RELEASE_TAG: v0.0.0-ci
+          GITHUB_REF_NAME: should-not-become-the-bundle-tag
+          GITHUB_SHA: ${{ github.sha }}
+        run: node scripts/build-cloudflare-release-bundle.mjs
+      - if: matrix.target == 'cloudflare'
+        env:
+          SIGNKIT_RELEASE_TAG: v0.0.0-ci
+          GITHUB_REF_NAME: should-not-become-the-bundle-tag
+          GITHUB_SHA: ${{ github.sha }}
+        run: node scripts/verify-cloudflare-release-bundle.mjs
+      - if: matrix.target == 'cloudflare'
+        run: rm -rf .release
 
   rust-cli:
     runs-on: ubuntu-latest

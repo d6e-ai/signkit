@@ -13,6 +13,7 @@ Shipped today:
 - Operator authoring UI, bounded DOCX import/export (DOCX bytes never enter Git), durable invitation delivery, and signed retryable webhooks
 - Immutable completion artifacts with deterministic evidence and visual PDF rendering; public recipient/completion access as JSON, Markdown, or PDF
 - Background maintenance (durable drains, reseal sweeps, envelope expiry, orphan collection) and the first-party Rust CLI (`signkit` under `cli/`) for capabilities, API-key envelope inspection, authoring/send mutations, and DOCX import/export
+- Cloudflare deployment CLI (`npx create-signkit --cloudflare ...`) that reconciles Worker/D1/R2 from GitHub Releases
 
 Not yet: cryptographic PDF sealing and certification (PAdES / timestamping authority). Visual completion PDFs and audit evidence exports exist; certification does not. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
 
@@ -61,6 +62,7 @@ npx skills add https://github.com/d6e-ai/signkit
 - [docs/architecture/](docs/architecture/README.md) — normative architecture, security, and evidence contracts.
 - [docs/api.md](docs/api.md) — current HTTP surface and its operational semantics.
 - [docs/cli.md](docs/cli.md) — agent-first Rust CLI reference, commands, security, and exit codes.
+- [docs/create-signkit.md](docs/create-signkit.md) — Cloudflare deployment CLI (`create-signkit`), distinct from the Rust API CLI.
 - [docs/deployment.md](docs/deployment.md) — deployment profiles, configuration, and background jobs.
 - [docs/development.md](docs/development.md) — local setup, tests, builds, and CI expectations.
 - [docs/operations/](docs/operations/README.md) — D1 Time Travel and R2 restore runbooks.
