@@ -9,7 +9,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Spinner } from '$lib/components/ui/spinner';
-	import { IconShield } from '@tabler/icons-svelte';
+	import { IconLogout, IconShield } from '@tabler/icons-svelte';
 
 	const client = createInstanceManagementClient();
 
@@ -100,5 +100,13 @@
 				</form>
 			{/if}
 		</Card.Content>
+		<Card.Footer>
+			<form method="POST" action="/auth/logout" class="w-full">
+				<Button type="submit" variant="outline" class="w-full">
+					<IconLogout data-icon="inline-start" />
+					<span>{m.sign_out()}</span>
+				</Button>
+			</form>
+		</Card.Footer>
 	</Card.Root>
 </div>
