@@ -9,7 +9,6 @@ import {
 	resolveRecipientPage,
 	type RecipientPageState
 } from '$lib/application/signing/recipient-page';
-import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 import {
 	DECLINED_RECEIPT_COOKIE,
 	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
@@ -23,9 +22,6 @@ import {
 	RECIPIENT_SESSION_COOKIE_PATH,
 	unsealRecipientSession
 } from '$lib/server/recipient-session';
-
-const MAX_RECIPIENT_DOCUMENTS = 50;
-const MAX_RECIPIENT_TOTAL_SOURCE_BYTES = 1024 * 1024;
 
 export const load: PageServerLoad = async ({ cookies, platform, setHeaders, url }) => {
 	setHeaders({
@@ -76,7 +72,7 @@ export const load: PageServerLoad = async ({ cookies, platform, setHeaders, url 
 		if (activePage.state === 'active') {
 			cookies.delete(DECLINED_RECEIPT_COOKIE, { path: DECLINED_RECEIPT_COOKIE_OPTIONS.path });
 		}
-		if (activePage.state !== 'invalid') return renderActivePage(activePage);
+		if (activePage.state !== 'invalid') return activePage;
 	}
 
 	const page: RecipientPageState = await resolveDeclinedReceiptPage(
@@ -91,28 +87,8 @@ export const load: PageServerLoad = async ({ cookies, platform, setHeaders, url 
 		resolveRecipientDeclinedReceiptApplication,
 		unsealDeclinedReceiptSession
 	);
-	return renderActivePage(page);
+	return page;
 };
-
-function renderActivePage(page: RecipientPageState) {
-	if (page.state !== 'active') return page;
-
-	try {
-		let totalSourceBytes = 0;
-		if (page.documents.length > MAX_RECIPIENT_DOCUMENTS) throw new Error('document_count');
-		const documents = page.documents.map((document) => {
-			totalSourceBytes += new TextEncoder().encode(document.content).byteLength;
-			if (totalSourceBytes > MAX_RECIPIENT_TOTAL_SOURCE_BYTES) {
-				throw new Error('document_bytes');
-			}
-			return { path: document.path, rendered: renderRecipientMarkdown(document.content) };
-		});
-		return { ...page, documents };
-	} catch {
-		console.error(JSON.stringify({ event: 'recipient_page_render_failed' }));
-		return { state: 'unavailable' as const };
-	}
-}
 
 function isInsecureLocalDevelopment(url: URL): boolean {
 	if (!dev || url.protocol !== 'http:') return false;

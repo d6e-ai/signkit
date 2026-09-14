@@ -14,6 +14,11 @@ import type {
 	PublishedSentEnvelope,
 	SendPreparation
 } from '$lib/ports/envelope-send-store';
+import type { ImmutableDraftRevision } from '$lib/application/drafts/draft-persistence';
+import type {
+	SentDocumentPdfPort,
+	SentPdfArtifact
+} from '$lib/application/documents/sent-document-pdf';
 import { issueRecipientCapability } from '$lib/security/recipient-capability';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import type { EnvelopeRequestActor } from './model';
@@ -34,7 +39,8 @@ export type SendEnvelopeResult =
 	| { outcome: 'not_ready' }
 	| { outcome: 'generation_conflict' }
 	| { outcome: 'audit_conflict' }
-	| { outcome: 'integrity_error' };
+	| { outcome: 'integrity_error' }
+	| { outcome: 'document_render_failed' };
 
 export interface EnvelopeSendApplicationPort {
 	send(
@@ -54,15 +60,18 @@ export class InvalidSendCommandError extends Error {
 export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 	readonly #store: EnvelopeSendStore;
 	readonly #sealer: RecipientCapabilitySealer;
+	readonly #documentPdf: SentDocumentPdfPort;
 	readonly #newId: UuidV7Generator;
 
 	constructor(
 		store: EnvelopeSendStore,
 		sealer: RecipientCapabilitySealer,
+		documentPdf: SentDocumentPdfPort,
 		newId: UuidV7Generator = newUuidV7
 	) {
 		this.#store = store;
 		this.#sealer = sealer;
+		this.#documentPdf = documentPdf;
 		this.#newId = newId;
 	}
 
@@ -115,6 +124,27 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		const initialRoutingOrder: number = Math.min(
 			...actionableRecipients.map((recipient: Recipient): number => recipient.routingOrder)
 		);
+
+		// Render and store the recipient-facing artifact before anything durable
+		// references it. Object writes first, exactly as draft archives do: a
+		// failed publication then leaves an unreferenced, content-addressed
+		// object for the orphan sweep rather than a pointer to bytes that were
+		// never written.
+		const revision: ImmutableDraftRevision | null = pinnedRevision(preparation.envelope);
+		if (revision === null) return { outcome: 'integrity_error' };
+		let sentPdf: SentPdfArtifact;
+		try {
+			sentPdf = await this.#documentPdf.publish(revision);
+		} catch (error: unknown) {
+			console.error(
+				JSON.stringify({
+					event: 'envelope_send_document_pdf_failed',
+					code: error instanceof Error ? error.name : 'unknown'
+				})
+			);
+			return { outcome: 'document_render_failed' };
+		}
+
 		const updatedAt: string = new Date().toISOString();
 		const initialCapabilityExpiresAt: string = new Date(
 			Date.parse(updatedAt) + INITIAL_CAPABILITY_TTL_MS
@@ -174,7 +204,14 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 			).length,
 			reservedCapabilityCount: deliveries.length,
 			deliveryManifestHash,
-			initialCapabilityExpiresAt
+			initialCapabilityExpiresAt,
+			// The rendering's own digest, size, and page count are part of the
+			// signed audit chain: the storage key is derivable from the digest
+			// and the envelope scope, so pinning the digest pins the artifact
+			// without writing an infrastructure key into the evidence record.
+			sentPdfSha256: sentPdf.sha256,
+			sentPdfBytes: sentPdf.byteSize,
+			sentPdfPageCount: sentPdf.pageCount
 		});
 		const auditEventHash: string = await hashAuditEventV2(
 			{
@@ -190,6 +227,7 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		);
 		const command: PublishSentEnvelopeCommand = {
 			...key,
+			sentPdf,
 			expectedGeneration: input.expectedGeneration,
 			expectedReadyAuditEventId: input.expectedReadyAuditEventId,
 			commitSha: requiredHead(preparation.envelope.repositoryHead),
@@ -218,6 +256,33 @@ function assertExpectedGeneration(expectedGeneration: number): void {
 	) {
 		throw new InvalidSendCommandError('Expected generation is outside the supported range');
 	}
+}
+
+/**
+ * The exact revision the envelope is being sent at, taken from the durable
+ * envelope row rather than from anything the caller supplied.
+ */
+function pinnedRevision(envelope: {
+	organizationId: string;
+	id: string;
+	repositoryHead: string | null;
+	repositoryArchiveKey: string | null;
+	repositoryArchiveSha256: string | null;
+}): ImmutableDraftRevision | null {
+	if (
+		envelope.repositoryHead === null ||
+		envelope.repositoryArchiveKey === null ||
+		envelope.repositoryArchiveSha256 === null
+	) {
+		return null;
+	}
+	return {
+		organizationId: envelope.organizationId,
+		envelopeId: envelope.id,
+		commitSha: envelope.repositoryHead,
+		archiveKey: envelope.repositoryArchiveKey,
+		archiveSha256: envelope.repositoryArchiveSha256
+	};
 }
 
 function requiredHead(value: string | null): string {

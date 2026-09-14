@@ -1,4 +1,4 @@
-import type { FieldType } from '$lib/domain/envelope';
+import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
 import type {
 	RecipientFieldDeclaration,
 	RecipientFieldDeclarationStore,
@@ -12,6 +12,11 @@ interface FieldRow {
 	label: string;
 	required: number;
 	position: number;
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
 }
 
 export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarationStore {
@@ -36,7 +41,8 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 		if (envelope === null) return null;
 		const result: D1Result<FieldRow> = await this.#database
 			.prepare(
-				`SELECT id, document_path, field_type, label, required, position
+				`SELECT id, document_path, field_type, label, required, position,
+					page, x, y, width, height
 				 FROM envelope_field
 				 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = ?
 				 ORDER BY document_path, position, id`
@@ -51,8 +57,33 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 				fieldType: row.field_type,
 				label: row.label,
 				required: row.required === 1,
-				position: row.position
+				position: row.position,
+				geometry: toGeometry(row)
 			}))
 		};
 	}
+}
+
+/**
+ * Geometry is all-or-nothing. A row with a partial or absent placement is
+ * reported as having none, rather than as a half-built box a caller might
+ * treat as real.
+ */
+function toGeometry(row: {
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
+}): FieldGeometry | null {
+	if (
+		typeof row.page !== 'number' ||
+		typeof row.x !== 'number' ||
+		typeof row.y !== 'number' ||
+		typeof row.width !== 'number' ||
+		typeof row.height !== 'number'
+	) {
+		return null;
+	}
+	return { page: row.page, x: row.x, y: row.y, width: row.width, height: row.height };
 }

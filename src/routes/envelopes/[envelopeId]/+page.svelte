@@ -8,6 +8,7 @@
 	import IconSend from '@tabler/icons-svelte/icons/send';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
+	import PdfDocumentView, { type PdfRenderedPage } from '$lib/components/pdf-document-view.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -87,7 +88,8 @@
 		label: string;
 		required: boolean;
 		position: number;
-		geometry: FieldGeometry | null;
+		/** Always set: a draft is only ever created by dropping a box on a page. */
+		geometry: FieldGeometry;
 	}
 	let fieldDrafts = $state<FieldDraft[]>([]);
 	let placementPending = $state(false);
@@ -95,27 +97,47 @@
 	let placedFields = $state<readonly PublicEnvelopeFieldResponse[]>([]);
 	let newField = $state<{
 		recipientId: string;
-		documentPath: string;
 		fieldType: FieldType;
 		label: string;
 		required: boolean;
-		page: number;
-		x: number;
-		y: number;
-		width: number;
-		height: number;
 	}>({
 		recipientId: '',
-		documentPath: '',
 		fieldType: 'signature',
 		label: '',
-		required: true,
-		page: 1,
-		x: 0.1,
-		y: 0.1,
-		width: 0.25,
-		height: 0.06
+		required: true
 	});
+
+	/**
+	 * The page geometry of the exact document rendering a recipient will be
+	 * shown. Placement is expressed against this, not against the Markdown
+	 * source, so a box the sender drops on page 3 is the box the signer sees on
+	 * page 3.
+	 */
+	interface DocumentPageMap {
+		commitSha: string;
+		generation: number;
+		pageCount: number;
+		pageWidth: number;
+		pageHeight: number;
+		documents: readonly { path: string; title: string; firstPage: number; lastPage: number }[];
+	}
+	let documentPages = $state<DocumentPageMap | null>(null);
+	let selectedFieldKey = $state<string | null>(null);
+	/** Default box, as a fraction of one page: roughly a signature line. */
+	const DEFAULT_FIELD_WIDTH = 0.26;
+	const DEFAULT_FIELD_HEIGHT = 0.05;
+	const MIN_FIELD_SIZE = 0.02;
+	const KEYBOARD_STEP = 0.005;
+	let dragState: {
+		key: string;
+		mode: 'move' | 'resize';
+		pointerId: number;
+		originX: number;
+		originY: number;
+		geometry: FieldGeometry;
+		pageWidth: number;
+		pageHeight: number;
+	} | null = null;
 
 	let sendPending = $state(false);
 	let sendError = $state<string | null>(null);
@@ -201,9 +223,6 @@
 				);
 				dirtyPaths.clear();
 				activeDocPath ??= workspace.documents[0]?.path ?? null;
-				if (newField.documentPath === '' && workspace.documents[0]) {
-					newField = { ...newField, documentPath: workspace.documents[0].path };
-				}
 			} else {
 				draft = await client.getDraft(envelopeId).catch(() => null);
 			}
@@ -337,53 +356,183 @@
 		return readyRecipients.filter((recipient) => recipient.role === 'signer');
 	}
 
-	function addFieldDraft(): void {
-		if (
-			newField.recipientId === '' ||
-			newField.documentPath === '' ||
-			newField.label.trim() === ''
-		) {
-			return;
+	async function loadDocumentPages(): Promise<void> {
+		documentPages = null;
+		try {
+			const response = await fetch(`/api/v1/envelopes/${envelopeId}/document-pdf/pages`, {
+				credentials: 'same-origin',
+				headers: { accept: 'application/json' }
+			});
+			if (!response.ok) return;
+			documentPages = (await response.json()) as DocumentPageMap;
+		} catch {
+			documentPages = null;
 		}
+	}
+
+	/**
+	 * Which document a page belongs to. Deriving the path from the page rather
+	 * than asking the sender to pick one separately is what makes it impossible
+	 * to place a field on a page outside the document it claims.
+	 */
+	function documentPathForPage(page: number): string | null {
+		for (const entry of documentPages?.documents ?? []) {
+			if (page >= entry.firstPage && page <= entry.lastPage) return entry.path;
+		}
+		return null;
+	}
+
+	function roundFraction(value: number): number {
+		return Math.round(value * 10_000) / 10_000;
+	}
+
+	/** Keeps every box finite, non-degenerate, and fully inside its page. */
+	function clampGeometry(geometry: FieldGeometry): FieldGeometry {
+		const width = Math.min(1, Math.max(MIN_FIELD_SIZE, geometry.width));
+		const height = Math.min(1, Math.max(MIN_FIELD_SIZE, geometry.height));
+		return {
+			page: geometry.page,
+			x: roundFraction(Math.min(1 - width, Math.max(0, geometry.x))),
+			y: roundFraction(Math.min(1 - height, Math.max(0, geometry.y))),
+			width: roundFraction(width),
+			height: roundFraction(height)
+		};
+	}
+
+	function addFieldAt(page: number, x: number, y: number): void {
+		const documentPath = documentPathForPage(page);
+		if (newField.recipientId === '' || documentPath === null) return;
+		const key = crypto.randomUUID();
 		fieldDrafts = [
 			...fieldDrafts,
 			{
-				key: crypto.randomUUID(),
+				key,
 				recipientId: newField.recipientId,
-				documentPath: newField.documentPath,
+				documentPath,
 				fieldType: newField.fieldType,
-				label: newField.label.trim(),
+				label: newField.label.trim() || fieldTypeLabel(newField.fieldType),
 				required: newField.required,
 				position: fieldDrafts.length + 1,
-				geometry: {
-					page: newField.page,
-					x: newField.x,
-					y: newField.y,
-					width: newField.width,
-					height: newField.height
-				}
+				geometry: clampGeometry({
+					page,
+					x: x - DEFAULT_FIELD_WIDTH / 2,
+					y: y - DEFAULT_FIELD_HEIGHT / 2,
+					width: DEFAULT_FIELD_WIDTH,
+					height: DEFAULT_FIELD_HEIGHT
+				})
 			}
 		];
+		selectedFieldKey = key;
 		newField = { ...newField, label: '' };
+	}
+
+	function handlePageClick(
+		event: MouseEvent & { currentTarget: EventTarget & HTMLElement },
+		page: number
+	): void {
+		const rect = event.currentTarget.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return;
+		addFieldAt(
+			page,
+			(event.clientX - rect.left) / rect.width,
+			(event.clientY - rect.top) / rect.height
+		);
+	}
+
+	function updateGeometry(key: string, next: FieldGeometry): void {
+		fieldDrafts = fieldDrafts.map((draftItem) =>
+			draftItem.key === key ? { ...draftItem, geometry: clampGeometry(next) } : draftItem
+		);
+	}
+
+	function geometryOf(key: string): FieldGeometry | null {
+		return fieldDrafts.find((draftItem) => draftItem.key === key)?.geometry ?? null;
+	}
+
+	function startDrag(event: PointerEvent, key: string, mode: 'move' | 'resize'): void {
+		const target = event.currentTarget as HTMLElement;
+		const page = target.closest('[data-pdf-page]');
+		const geometry = geometryOf(key);
+		if (!(page instanceof HTMLElement) || geometry === null) return;
+		const rect = page.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return;
+		event.preventDefault();
+		event.stopPropagation();
+		target.setPointerCapture(event.pointerId);
+		selectedFieldKey = key;
+		dragState = {
+			key,
+			mode,
+			pointerId: event.pointerId,
+			originX: event.clientX,
+			originY: event.clientY,
+			geometry,
+			pageWidth: rect.width,
+			pageHeight: rect.height
+		};
+	}
+
+	function continueDrag(event: PointerEvent): void {
+		const state = dragState;
+		if (state === null || state.pointerId !== event.pointerId) return;
+		const deltaX = (event.clientX - state.originX) / state.pageWidth;
+		const deltaY = (event.clientY - state.originY) / state.pageHeight;
+		updateGeometry(
+			state.key,
+			state.mode === 'move'
+				? { ...state.geometry, x: state.geometry.x + deltaX, y: state.geometry.y + deltaY }
+				: {
+						...state.geometry,
+						width: state.geometry.width + deltaX,
+						height: state.geometry.height + deltaY
+					}
+		);
+	}
+
+	function endDrag(event: PointerEvent): void {
+		if (dragState?.pointerId !== event.pointerId) return;
+		dragState = null;
+	}
+
+	function handleFieldKeydown(event: KeyboardEvent, key: string): void {
+		const geometry = geometryOf(key);
+		if (geometry === null) return;
+		if (event.key === 'Delete' || event.key === 'Backspace') {
+			event.preventDefault();
+			removeFieldDraft(key);
+			return;
+		}
+		const step = event.shiftKey ? KEYBOARD_STEP * 2 : KEYBOARD_STEP;
+		let next: FieldGeometry | null = null;
+		const resizing = event.altKey;
+		if (event.key === 'ArrowLeft') {
+			next = resizing
+				? { ...geometry, width: geometry.width - step }
+				: { ...geometry, x: geometry.x - step };
+		} else if (event.key === 'ArrowRight') {
+			next = resizing
+				? { ...geometry, width: geometry.width + step }
+				: { ...geometry, x: geometry.x + step };
+		} else if (event.key === 'ArrowUp') {
+			next = resizing
+				? { ...geometry, height: geometry.height - step }
+				: { ...geometry, y: geometry.y - step };
+		} else if (event.key === 'ArrowDown') {
+			next = resizing
+				? { ...geometry, height: geometry.height + step }
+				: { ...geometry, y: geometry.y + step };
+		}
+		if (next === null) return;
+		event.preventDefault();
+		selectedFieldKey = key;
+		updateGeometry(key, next);
 	}
 
 	function removeFieldDraft(key: string): void {
 		fieldDrafts = fieldDrafts
 			.filter((draftItem) => draftItem.key !== key)
 			.map((draftItem, index) => ({ ...draftItem, position: index + 1 }));
-	}
-
-	function setNewFieldNumber(key: 'page' | 'x' | 'y' | 'width' | 'height', raw: string): void {
-		const parsed = Number(raw);
-		if (!Number.isFinite(parsed)) return;
-		newField = { ...newField, [key]: parsed };
-	}
-
-	function placeOnPage(event: MouseEvent & { currentTarget: EventTarget & HTMLElement }): void {
-		const rect = event.currentTarget.getBoundingClientRect();
-		const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-		const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
-		newField = { ...newField, x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 };
+		if (selectedFieldKey === key) selectedFieldKey = null;
 	}
 
 	async function publishFields(): Promise<void> {
@@ -520,64 +669,27 @@
 			? renderRecipientMarkdown(editedContent[activeDocPath])
 			: null
 	);
-	const placementSource = $derived.by(() => {
-		const path = newField.documentPath || activeDocPath;
-		if (path === null || path === '') return '';
-		return (
-			editedContent[path] ??
-			draft?.documents.find((document) => document.path === path)?.content ??
-			''
-		);
-	});
-	const placementPreview = $derived(
-		placementSource.length > 0 ? renderRecipientMarkdown(placementSource) : null
+	const placementReady = $derived(
+		envelope?.status === 'ready' && signerRecipients().length > 0 && documentPages !== null
 	);
-	const visiblePlacementFields = $derived.by(() => {
-		const path = newField.documentPath || activeDocPath;
-		const overlays: {
-			key: string;
-			label: string;
-			geometry: FieldGeometry;
-			current: boolean;
-		}[] = [];
-		if (path === null || path === '') return overlays;
-		for (const field of placedFields) {
-			if (field.documentPath !== path || field.geometry === null) continue;
-			if (field.geometry.page !== newField.page) continue;
-			overlays.push({
-				key: field.id,
-				label: fieldTypeLabel(field.fieldType),
-				geometry: field.geometry,
-				current: false
-			});
-		}
-		for (const field of fieldDrafts) {
-			if (field.documentPath !== path || field.geometry === null) continue;
-			if (field.geometry.page !== newField.page) continue;
-			overlays.push({
-				key: field.key,
-				label: field.label,
-				geometry: field.geometry,
-				current: false
-			});
-		}
-		overlays.push({
-			key: 'current',
-			label: newField.label.trim() || fieldTypeLabel(newField.fieldType),
-			geometry: {
-				page: newField.page,
-				x: newField.x,
-				y: newField.y,
-				width: newField.width,
-				height: newField.height
-			},
-			current: true
-		});
-		return overlays;
-	});
+
+	function draftsOnPage(page: number): readonly FieldDraft[] {
+		return fieldDrafts.filter((draftItem) => draftItem.geometry?.page === page);
+	}
+
+	function publishedOnPage(page: number): readonly PublicEnvelopeFieldResponse[] {
+		return placedFields.filter((field) => field.geometry?.page === page);
+	}
+
+	function recipientName(recipientId: string): string {
+		return readyRecipients.find((recipient) => recipient.id === recipientId)?.name ?? recipientId;
+	}
 
 	onMount(() => {
-		void load();
+		void (async () => {
+			await load();
+			await loadDocumentPages();
+		})();
 	});
 </script>
 
@@ -750,6 +862,13 @@
 															{@render renderMarkdownNode(node)}
 														{/each}
 													</div>
+													<!-- Shown only when the document actually contains them, and
+													     shown here because this is where an author can still fix it. -->
+													{#if preview.hasVisibleUnicodeControls}
+														<p class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
+															{m.envelope_document_unicode_warning()}
+														</p>
+													{/if}
 												{/if}
 											</div>
 										</div>
@@ -803,16 +922,28 @@
 							<p class="text-sm font-medium text-destructive" role="alert">{exportError}</p>
 						{/if}
 						{#each draft.documents as document (document.path)}
+							{@const title = documentTitle(document.path)}
+							{@const rendered = renderRecipientMarkdown(document.content)}
 							<Card.Root>
-								<Card.Header>
-									<Card.Title>{documentTitle(document.path)}</Card.Title>
-								</Card.Header>
-								<Card.Content>
+								<!-- A document with no readable authored title renders no header at
+								     all, rather than an empty one: an empty header leaves a band of
+								     padding above the text that reads like a layout bug. -->
+								{#if title.length > 0}
+									<Card.Header>
+										<Card.Title>{title}</Card.Title>
+									</Card.Header>
+								{/if}
+								<Card.Content class={title.length > 0 ? undefined : 'pt-6'}>
 									<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
-										{#each renderRecipientMarkdown(document.content).nodes as node, nodeIndex (nodeIndex)}
+										{#each rendered.nodes as node, nodeIndex (nodeIndex)}
 											{@render renderMarkdownNode(node)}
 										{/each}
 									</div>
+									{#if rendered.hasVisibleUnicodeControls}
+										<p class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
+											{m.envelope_document_unicode_warning()}
+										</p>
+									{/if}
 								</Card.Content>
 							</Card.Root>
 						{/each}
@@ -1054,30 +1185,9 @@
 									</Select.Root>
 								</Field.Field>
 								<Field.Field>
-									<Field.FieldLabel for="field-document">
-										{m.envelope_field_document_label()}
+									<Field.FieldLabel for="field-type">
+										{m.envelope_field_type_label()}
 									</Field.FieldLabel>
-									<Select.Root type="single" bind:value={newField.documentPath}>
-										<Select.Trigger id="field-document" class="w-full">
-											{newField.documentPath
-												? documentTitle(newField.documentPath)
-												: m.envelope_field_select_placeholder()}
-										</Select.Trigger>
-										<Select.Content>
-											<Select.Group>
-												{#each draft?.documents ?? [] as document (document.path)}
-													<Select.Item value={document.path} label={documentTitle(document.path)}>
-														{documentTitle(document.path)}
-													</Select.Item>
-												{/each}
-											</Select.Group>
-										</Select.Content>
-									</Select.Root>
-								</Field.Field>
-								<Field.Field>
-									<Field.FieldLabel for="field-type"
-										>{m.envelope_field_type_label()}</Field.FieldLabel
-									>
 									<Select.Root type="single" bind:value={newField.fieldType}>
 										<Select.Trigger id="field-type" class="w-full">
 											{fieldTypeLabel(newField.fieldType)}
@@ -1104,9 +1214,9 @@
 									</Select.Root>
 								</Field.Field>
 								<Field.Field>
-									<Field.FieldLabel for="field-label"
-										>{m.envelope_field_label_label()}</Field.FieldLabel
-									>
+									<Field.FieldLabel for="field-label">
+										{m.envelope_field_label_label()}
+									</Field.FieldLabel>
 									<Input id="field-label" bind:value={newField.label} maxlength={200} />
 								</Field.Field>
 								<Field.Field orientation="horizontal">
@@ -1119,121 +1229,86 @@
 
 							<div class="flex flex-col gap-3">
 								<div>
-									<p class="text-sm font-medium">{m.envelope_field_geometry_label()}</p>
+									<p class="text-sm font-medium">{m.envelope_placement_title()}</p>
 									<p class="text-xs text-muted-foreground">
-										{m.envelope_field_geometry_description()}
+										{m.envelope_placement_description()}
+									</p>
+									<p class="mt-1 text-xs text-muted-foreground">
+										{m.envelope_placement_keyboard_hint()}
 									</p>
 								</div>
-								<div
-									class="relative min-h-96 w-full overflow-hidden rounded-2xl border bg-background"
+								{#if newField.recipientId === ''}
+									<p class="text-sm text-muted-foreground">
+										{m.envelope_placement_needs_signer()}
+									</p>
+								{/if}
+								<PdfDocumentView
+									src={`/api/v1/envelopes/${envelopeId}/document-pdf`}
+									label={m.signing_document_label()}
+									expectedPageCount={documentPages?.pageCount ?? 1}
+									loadingLabel={m.signing_document_loading()}
+									errorTitle={m.signing_document_error_title()}
+									errorDescription={m.signing_document_error_description()}
+									openLabel={m.signing_document_open()}
 								>
-									<div class="pointer-events-none p-6">
-										{#if placementPreview !== null}
-											<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
-												{#each placementPreview.nodes as node, nodeIndex (nodeIndex)}
-													{@render renderMarkdownNode(node)}
-												{/each}
-											</div>
-										{:else}
-											<p class="text-sm text-muted-foreground">{m.envelope_documents_empty()}</p>
-										{/if}
-									</div>
-									<button
-										type="button"
-										tabindex="-1"
-										class="absolute inset-0 cursor-crosshair bg-transparent"
-										aria-label={m.envelope_field_geometry_page_aria()}
-										onclick={placeOnPage}
-									></button>
-									{#each visiblePlacementFields as overlay (overlay.key)}
-										<span
-											class={overlay.current
-												? 'pointer-events-none absolute rounded border-2 border-primary bg-primary/20 text-[10px] font-medium text-primary'
-												: 'pointer-events-none absolute rounded border border-muted-foreground/50 bg-muted/40 text-[10px] text-muted-foreground'}
-											style={`left:${overlay.geometry.x * 100}%;top:${overlay.geometry.y * 100}%;width:${overlay.geometry.width * 100}%;height:${overlay.geometry.height * 100}%;`}
+									{#snippet overlay(page: PdfRenderedPage)}
+										<!-- svelte-ignore a11y_no_static_element_interactions -->
+										<!-- svelte-ignore a11y_click_events_have_key_events -->
+										<div
+											class="absolute inset-0"
+											class:cursor-crosshair={placementReady && newField.recipientId !== ''}
+											onclick={(event) => handlePageClick(event, page.pageNumber)}
 										>
-											<span class="block truncate px-1">{overlay.label}</span>
-										</span>
-									{/each}
-								</div>
-								<Field.FieldGroup class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
-									<Field.Field>
-										<Field.FieldLabel for="geo-page" class="text-xs">
-											{m.envelope_field_geometry_page()}
-										</Field.FieldLabel>
-										<Input
-											id="geo-page"
-											type="number"
-											min="1"
-											value={newField.page}
-											oninput={(event) => setNewFieldNumber('page', event.currentTarget.value)}
-										/>
-									</Field.Field>
-									<Field.Field>
-										<Field.FieldLabel for="geo-x" class="text-xs">x</Field.FieldLabel>
-										<Input
-											id="geo-x"
-											type="number"
-											min="0"
-											max="1"
-											step="0.01"
-											value={newField.x}
-											oninput={(event) => setNewFieldNumber('x', event.currentTarget.value)}
-										/>
-									</Field.Field>
-									<Field.Field>
-										<Field.FieldLabel for="geo-y" class="text-xs">y</Field.FieldLabel>
-										<Input
-											id="geo-y"
-											type="number"
-											min="0"
-											max="1"
-											step="0.01"
-											value={newField.y}
-											oninput={(event) => setNewFieldNumber('y', event.currentTarget.value)}
-										/>
-									</Field.Field>
-									<Field.Field>
-										<Field.FieldLabel for="geo-width" class="text-xs">
-											{m.envelope_field_geometry_width()}
-										</Field.FieldLabel>
-										<Input
-											id="geo-width"
-											type="number"
-											min="0.01"
-											max="1"
-											step="0.01"
-											value={newField.width}
-											oninput={(event) => setNewFieldNumber('width', event.currentTarget.value)}
-										/>
-									</Field.Field>
-									<Field.Field>
-										<Field.FieldLabel for="geo-height" class="text-xs">
-											{m.envelope_field_geometry_height()}
-										</Field.FieldLabel>
-										<Input
-											id="geo-height"
-											type="number"
-											min="0.01"
-											max="1"
-											step="0.01"
-											value={newField.height}
-											oninput={(event) => setNewFieldNumber('height', event.currentTarget.value)}
-										/>
-									</Field.Field>
-								</Field.FieldGroup>
+											{#each publishedOnPage(page.pageNumber) as field (field.id)}
+												{#if field.geometry}
+													<span
+														class="pointer-events-none absolute rounded border border-muted-foreground/50 bg-muted/40 text-[10px] text-muted-foreground"
+														style={`left:${field.geometry.x * 100}%;top:${field.geometry.y * 100}%;width:${field.geometry.width * 100}%;height:${field.geometry.height * 100}%;`}
+													>
+														<span class="block truncate px-1">
+															{fieldTypeLabel(field.fieldType)}
+														</span>
+													</span>
+												{/if}
+											{/each}
+											{#each draftsOnPage(page.pageNumber) as fieldDraft (fieldDraft.key)}
+												{#if fieldDraft.geometry}
+													<div
+														role="button"
+														tabindex="0"
+														aria-label={m.envelope_placement_box_label({
+															label: fieldDraft.label,
+															recipient: recipientName(fieldDraft.recipientId),
+															page: String(fieldDraft.geometry.page)
+														})}
+														aria-pressed={selectedFieldKey === fieldDraft.key}
+														class="absolute cursor-move touch-none rounded border-2 border-primary bg-primary/20 text-[10px] font-medium text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+														class:ring-2={selectedFieldKey === fieldDraft.key}
+														style={`left:${fieldDraft.geometry.x * 100}%;top:${fieldDraft.geometry.y * 100}%;width:${fieldDraft.geometry.width * 100}%;height:${fieldDraft.geometry.height * 100}%;`}
+														onpointerdown={(event) => startDrag(event, fieldDraft.key, 'move')}
+														onpointermove={continueDrag}
+														onpointerup={endDrag}
+														onpointercancel={endDrag}
+														onkeydown={(event) => handleFieldKeydown(event, fieldDraft.key)}
+														onfocus={() => (selectedFieldKey = fieldDraft.key)}
+														onclick={(event) => event.stopPropagation()}
+													>
+														<span class="block truncate px-1">{fieldDraft.label}</span>
+														<span
+															role="presentation"
+															class="absolute right-0 bottom-0 size-3 cursor-se-resize touch-none rounded-sm bg-primary"
+															onpointerdown={(event) => startDrag(event, fieldDraft.key, 'resize')}
+															onpointermove={continueDrag}
+															onpointerup={endDrag}
+															onpointercancel={endDrag}
+														></span>
+													</div>
+												{/if}
+											{/each}
+										</div>
+									{/snippet}
+								</PdfDocumentView>
 							</div>
-
-							<Button
-								variant="outline"
-								class="w-fit"
-								disabled={newField.recipientId === '' ||
-									newField.documentPath === '' ||
-									newField.label.trim() === ''}
-								onclick={addFieldDraft}
-							>
-								<IconPlus data-icon="inline-start" />{m.envelope_add_field()}
-							</Button>
 
 							{#if fieldDrafts.length > 0}
 								<Table.Root>

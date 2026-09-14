@@ -1,3 +1,4 @@
+import { FakeSentDocumentPdf } from '$lib/application/documents/sent-document-pdf-test-support';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
@@ -74,7 +75,11 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 	it('publishes parallel initial recipients, blocks later routes, excludes CC, and replays', async () => {
 		const { database, sqlite } = fixture();
 		try {
-			const application = new EnvelopeSendApplication(new D1EnvelopeSendStore(database), sealer);
+			const application = new EnvelopeSendApplication(
+				new D1EnvelopeSendStore(database),
+				sealer,
+				new FakeSentDocumentPdf()
+			);
 			const input = {
 				idempotencyKey: 'send-integration',
 				expectedGeneration: 1,
@@ -221,7 +226,11 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 				UPDATE envelope SET field_generation = 1, updated_at = '2026-09-11T00:02:30.000Z'
 				WHERE organization_id = '${ORGANIZATION_ID}' AND id = '${ENVELOPE_ID}';
 			`);
-			const application = new EnvelopeSendApplication(new D1EnvelopeSendStore(database), sealer);
+			const application = new EnvelopeSendApplication(
+				new D1EnvelopeSendStore(database),
+				sealer,
+				new FakeSentDocumentPdf()
+			);
 			const first = await application.send(ACTOR, ENVELOPE_ID, {
 				idempotencyKey: 'send-after-fields',
 				expectedGeneration: 1,
@@ -272,7 +281,11 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 			};
 			const results = await Promise.all(
 				stores.map((store: EnvelopeSendStore) =>
-					new EnvelopeSendApplication(store, sealer).send(ACTOR, ENVELOPE_ID, input)
+					new EnvelopeSendApplication(store, sealer, new FakeSentDocumentPdf()).send(
+						ACTOR,
+						ENVELOPE_ID,
+						input
+					)
 				)
 			);
 			expect(results.map((result): string => result.outcome).sort()).toEqual([
@@ -322,11 +335,15 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 					return { outcome: 'integrity_error' };
 				}
 			};
-			await new EnvelopeSendApplication(captureStore, sealer).send(ACTOR, ENVELOPE_ID, {
-				idempotencyKey: 'send-invalid-manifest',
-				expectedGeneration: 1,
-				expectedReadyAuditEventId: READY_AUDIT_ID
-			});
+			await new EnvelopeSendApplication(captureStore, sealer, new FakeSentDocumentPdf()).send(
+				ACTOR,
+				ENVELOPE_ID,
+				{
+					idempotencyKey: 'send-invalid-manifest',
+					expectedGeneration: 1,
+					expectedReadyAuditEventId: READY_AUDIT_ID
+				}
+			);
 			const command: PublishSentEnvelopeCommand = requiredCommand(captured);
 			await expect(
 				store.publishSend({

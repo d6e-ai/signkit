@@ -23,20 +23,19 @@ const workspace: RecipientWorkspace = {
 		envelopeStatus: 'sent',
 		expiresAt: '2026-09-12T00:00:00.000Z'
 	},
-	documents: [
-		{
-			path: 'documents/agreement.md',
-			content: '# Agreement\n\n<script>alert("escaped by Svelte")</script>\n'
-		}
-	],
+	document: {
+		pageCount: 2,
+		pageWidth: 595.28,
+		pageHeight: 841.89,
+		sections: [{ title: 'agreement', firstPage: 1, lastPage: 2 }]
+	},
 	fields: [
 		{
 			id: 'field-1',
-			documentPath: 'documents/agreement.md',
 			fieldType: 'signature',
 			label: 'Your signature',
 			required: true,
-			position: 0
+			geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 		}
 	],
 	fieldGeneration: 1
@@ -71,7 +70,7 @@ describe('recipient documents HTTP handler', () => {
 		}
 	);
 
-	it('returns allowlisted access and exact Markdown without storage internals', async () => {
+	it('returns allowlisted access and page geometry, never Markdown or storage internals', async () => {
 		const app: RecipientWorkspaceApplicationPort = application();
 		const response: Response = await createRecipientDocumentsHandler(
 			() => app,
@@ -85,11 +84,14 @@ describe('recipient documents HTTP handler', () => {
 		expect(app.resolve).toHaveBeenCalledWith(token, '2026-09-11T00:00:00.000Z');
 		expect(body).toEqual({
 			access: workspace.access,
-			documents: workspace.documents
+			document: workspace.document
 		});
 		const serialized: string = JSON.stringify(body);
 		expect(serialized).not.toMatch(/organization|archiveKey|archiveSha256|skr1_/);
 		expect(serialized).not.toMatch(/Your signature|fieldGeneration|field-1/);
+		// The agreement text itself is never part of a JSON response: recipients
+		// read the rendered PDF from the session-protected endpoint instead.
+		expect(serialized).not.toMatch(/# Agreement|documents\/|\.md/);
 	});
 
 	it.each([

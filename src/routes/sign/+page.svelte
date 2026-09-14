@@ -736,19 +736,22 @@
 		IconUserCheck
 	} from '@tabler/icons-svelte';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import PdfDocumentView, { type PdfRenderedPage } from '$lib/components/pdf-document-view.svelte';
 	import SignatureCanvas from '$lib/components/signature-canvas.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Checkbox } from '$lib/components/ui/checkbox';
-	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
 	import { Spinner } from '$lib/components/ui/spinner';
-	import { Textarea } from '$lib/components/ui/textarea';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
-	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
+	import { isSignatureAssetRef } from '$lib/components/signature-draft';
+	import type { RecipientPlacedField } from '$lib/application/signing/recipient-workspace';
 	import type { PageData } from './$types';
+
+	/** Same-origin, cookie-authenticated. Deliberately carries no token. */
+	const AGREEMENT_PDF_PATH: string = '/sign/agreement.pdf';
 
 	let { data }: { data: PageData } = $props();
 
@@ -793,6 +796,22 @@
 		)
 	);
 
+	let placedFields = $derived(data.state === 'active' ? data.fields : []);
+	let isSigner = $derived(data.state === 'active' && data.access.role === 'signer');
+	let isApprover = $derived(data.state === 'active' && data.access.role === 'approver');
+	let canAct = $derived((isSigner || isApprover) && !isDeclined && !isSigned && !isApproved);
+	let fieldsEditable = $derived(
+		isSigner &&
+			!isSigned &&
+			!isDeclined &&
+			signStatus !== 'pending' &&
+			signStatus !== 'transient_failure'
+	);
+
+	function fieldsOnPage(pageNumber: number): readonly RecipientPlacedField[] {
+		return placedFields.filter((field) => field.geometry.page === pageNumber);
+	}
+
 	function roleLabel(role: string): string {
 		if (role === 'signer') return m.signing_role_signer();
 		if (role === 'approver') return m.signing_role_approver();
@@ -800,11 +819,17 @@
 		return m.signing_role_prefill();
 	}
 
+	/**
+	 * The recipient-facing completion status. `viewed` is audit evidence that a
+	 * document was opened, not a statement that the recipient is done, so while
+	 * a signature or approval is still outstanding this reports the action, not
+	 * the observation.
+	 */
 	function statusLabel(status: string): string {
 		if (status === 'declined') return m.signing_status_declined();
 		if (status === 'signed') return m.signing_status_signed();
 		if (status === 'approved' || status === 'completed') return m.signing_status_approved();
-		return status === 'viewed' ? m.signing_status_viewed() : m.signing_status_pending();
+		return m.signing_status_pending();
 	}
 
 	function fieldTypeLabel(fieldType: string): string {
@@ -813,18 +838,6 @@
 		if (fieldType === 'date') return m.signing_field_type_date();
 		if (fieldType === 'checkbox') return m.signing_field_type_checkbox();
 		return m.signing_field_type_text();
-	}
-
-	function fieldsByDocument<T extends { documentPath: string }>(
-		fields: readonly T[]
-	): Array<[string, T[]]> {
-		const grouped: Array<[string, T[]]> = [];
-		for (const field of fields) {
-			const existing = grouped.find(([path]) => path === field.documentPath);
-			if (existing) existing[1].push(field);
-			else grouped.push([field.documentPath, [field]]);
-		}
-		return grouped;
 	}
 
 	function isFieldValueMissing(
@@ -843,11 +856,10 @@
 		}).format(new Date(expiresAt));
 	}
 
-	function documentName(path: string): string {
-		return path
-			.replace(/^documents\//, '')
-			.replace(/\.md$/, '')
-			.replaceAll(/[-_]+/g, ' ');
+	/** A safe, local rendering of what the signer entered; never document content. */
+	function signaturePreview(value: unknown): string {
+		if (typeof value !== 'string' || value.trim().length === 0) return '';
+		return isSignatureAssetRef(value) ? m.signature_trigger_drawn() : value;
 	}
 
 	function handleDeclineStatus(status: RecipientDeclineStatus): void {
@@ -1057,27 +1069,143 @@
 	<meta name="referrer" content="no-referrer" />
 </svelte:head>
 
-{#snippet renderMarkdownNode(node: RecipientMarkdownNode)}
-	{#if node.type === 'text'}
-		{node.value}
-	{:else if node.tag === 'br'}
-		<br />
-	{:else if node.tag === 'hr'}
-		<hr />
+{#snippet declineAction()}
+	{#if declineStatus === 'terminal_failure'}
+		<p class="text-xs font-medium text-destructive" role="alert">{m.signing_decline_failed()}</p>
 	{:else}
-		<svelte:element this={node.tag} {...node.attributes}>
-			{#each node.children as child, childIndex (childIndex)}
-				{@render renderMarkdownNode(child)}
-			{/each}
-		</svelte:element>
+		<div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+			{#if declineStatus === 'transient_failure'}
+				<p class="text-xs font-medium text-destructive" role="status" aria-live="polite">
+					{m.signing_decline_retry_pending()}
+				</p>
+			{/if}
+			<AlertDialog.Root bind:open={dialogOpen}>
+				<AlertDialog.Trigger>
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="destructive"
+							class="min-h-[44px] w-full text-sm sm:w-auto"
+							disabled={declinePending}
+						>
+							{declineStatus === 'transient_failure'
+								? m.signing_decline_retry()
+								: m.signing_decline_action()}
+						</Button>
+					{/snippet}
+				</AlertDialog.Trigger>
+				<AlertDialog.Content class="max-w-[calc(100vw-2rem)] sm:max-w-md">
+					<AlertDialog.Header>
+						<AlertDialog.Title>{m.signing_decline_dialog_title()}</AlertDialog.Title>
+						<AlertDialog.Description>
+							{m.signing_decline_dialog_description()}
+						</AlertDialog.Description>
+					</AlertDialog.Header>
+					{#if declineStatus === 'transient_failure'}
+						<p class="text-xs text-destructive" role="status" aria-live="polite">
+							{m.signing_decline_retry_pending()}
+						</p>
+					{:else if declineStatus === 'pending'}
+						<p class="text-xs text-muted-foreground" role="status" aria-live="polite">
+							{m.signing_decline_pending()}
+						</p>
+					{/if}
+					<AlertDialog.Footer class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+						<AlertDialog.Cancel class="min-h-[44px]" disabled={declinePending}>
+							{m.signing_decline_dialog_cancel()}
+						</AlertDialog.Cancel>
+						<AlertDialog.Action
+							variant="destructive"
+							class="min-h-[44px]"
+							disabled={declinePending}
+							onclick={async (event) => {
+								event.preventDefault();
+								await handleDeclineConfirm();
+							}}
+						>
+							{#if declinePending}
+								<Spinner data-icon="inline-start" />
+							{/if}
+							{declinePending
+								? m.signing_decline_pending()
+								: declineStatus === 'transient_failure'
+									? m.signing_decline_retry()
+									: m.signing_decline_dialog_confirm()}
+						</AlertDialog.Action>
+					</AlertDialog.Footer>
+				</AlertDialog.Content>
+			</AlertDialog.Root>
+		</div>
 	{/if}
+{/snippet}
+
+{#snippet fieldBox(field: RecipientPlacedField)}
+	{@const invalid = signAttempted && isFieldValueMissing(field, fieldValues[field.id])}
+	<div
+		class="absolute"
+		style="left: {field.geometry.x * 100}%; top: {field.geometry.y * 100}%; width: {field.geometry
+			.width * 100}%; height: {field.geometry.height * 100}%;"
+		data-field-id={field.id}
+	>
+		{#if field.fieldType === 'checkbox'}
+			<div
+				class="flex size-full items-center justify-center rounded-md border-2 border-dashed border-primary/60 bg-primary/5"
+				data-invalid={invalid || undefined}
+			>
+				<Checkbox
+					id={field.id}
+					aria-label="{field.label} — {fieldTypeLabel(field.fieldType)}"
+					aria-invalid={invalid || undefined}
+					checked={fieldValues[field.id] === true}
+					disabled={!fieldsEditable}
+					onCheckedChange={(value) => (fieldValues[field.id] = value === true)}
+				/>
+			</div>
+		{:else if field.fieldType === 'signature' || field.fieldType === 'initials'}
+			<SignatureCanvas
+				id={field.id}
+				envelopeId={data.state === 'active' ? data.access.envelopeId : ''}
+				recipientId={data.state === 'active' ? data.access.recipientId : ''}
+				recipientName={data.state === 'active' ? data.access.recipientName : ''}
+				label="{field.label} — {fieldTypeLabel(field.fieldType)}"
+				triggerClass="size-full min-h-0 justify-center rounded-md border-2 border-dashed border-primary/60 bg-primary/5 px-1 text-center"
+				{invalid}
+				disabled={!fieldsEditable}
+				bind:value={() => fieldValues[field.id] as string, (next) => (fieldValues[field.id] = next)}
+			/>
+		{:else if field.fieldType === 'date'}
+			<Input
+				id={field.id}
+				type="date"
+				aria-label="{field.label} — {fieldTypeLabel(field.fieldType)}"
+				aria-invalid={invalid || undefined}
+				disabled={!fieldsEditable}
+				class="size-full min-h-0 rounded-md border-2 border-dashed border-primary/60 bg-primary/5 px-1 text-xs"
+				value={fieldValues[field.id] as string}
+				oninput={(event) => (fieldValues[field.id] = event.currentTarget.value)}
+			/>
+		{:else}
+			<Input
+				id={field.id}
+				type="text"
+				aria-label="{field.label} — {fieldTypeLabel(field.fieldType)}"
+				aria-invalid={invalid || undefined}
+				disabled={!fieldsEditable}
+				maxlength={field.fieldType === 'text' ? 4000 : 20}
+				placeholder={field.label}
+				class="size-full min-h-0 rounded-md border-2 border-dashed border-primary/60 bg-primary/5 px-1 text-xs"
+				value={fieldValues[field.id] as string}
+				oninput={(event) => (fieldValues[field.id] = event.currentTarget.value)}
+			/>
+		{/if}
+	</div>
 {/snippet}
 
 <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
 	{liveMessage}
 </div>
 
-<div class="mx-auto flex min-h-[calc(100svh-7.5rem)] w-full max-w-5xl items-center justify-center">
+<div class="flex w-full flex-col items-center gap-6">
 	{#if data.state === 'declined' || isDeclined}
 		<Card.Root class="w-full max-w-2xl border-destructive/20 shadow-sm">
 			<Card.Header class="items-center gap-4 pt-10 text-center">
@@ -1108,7 +1236,7 @@
 			</Card.Footer>
 		</Card.Root>
 	{:else if data.state === 'active'}
-		<div class="w-full space-y-6">
+		<div class="flex w-full flex-col gap-6">
 			<Card.Root class="w-full overflow-hidden shadow-sm">
 				<div class="h-1 bg-primary"></div>
 				<Card.Header class="gap-4 pb-4">
@@ -1118,9 +1246,7 @@
 						>
 							<IconShieldCheck class="size-6" />
 						</div>
-						<Badge variant="outline" class="border-emerald-200 bg-emerald-50 text-emerald-700">
-							{m.signing_secure_access()}
-						</Badge>
+						<Badge variant="outline">{m.signing_secure_access()}</Badge>
 					</div>
 					<div>
 						<Card.Title class="text-2xl">{data.access.envelopeTitle}</Card.Title>
@@ -1129,7 +1255,7 @@
 						</Card.Description>
 					</div>
 				</Card.Header>
-				<Card.Content class="space-y-5">
+				<Card.Content class="flex flex-col gap-5">
 					<div class="grid gap-3 sm:grid-cols-2">
 						<div class="rounded-xl border bg-muted/25 p-4">
 							<div class="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1142,17 +1268,7 @@
 								<IconFileText class="size-4" />{m.signing_status()}
 							</div>
 							<div class="mt-2 flex flex-wrap items-center gap-2">
-								<Badge
-									variant="outline"
-									class={isDeclined
-										? 'border-destructive/30 bg-destructive/10 text-destructive'
-										: isApproved ||
-											  isSigned ||
-											  viewRecorded ||
-											  data.access.recipientStatus === 'viewed'
-											? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300'
-											: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300'}
-								>
+								<Badge variant={isApproved || isSigned ? 'secondary' : 'outline'}>
 									{statusLabel(
 										isDeclined
 											? 'declined'
@@ -1160,9 +1276,7 @@
 												? 'completed'
 												: isSigned
 													? 'signed'
-													: viewRecorded
-														? 'viewed'
-														: data.access.recipientStatus
+													: data.access.recipientStatus
 									)}
 								</Badge>
 								{#if retryPending && !viewRecorded && data.access.recipientStatus !== 'viewed' && !isDeclined}
@@ -1192,83 +1306,71 @@
 						</div>
 					</div>
 				</Card.Content>
-				<Card.Footer class="border-t bg-muted/20 py-4 text-sm text-muted-foreground">
-					{isDeclined
-						? m.signing_declined_receipt_description()
-						: isApproved
-							? m.signing_approved_receipt_description()
-							: isSigned
-								? m.signing_signed_receipt_description()
-								: m.signing_controls_next()}
+				<Card.Footer
+					class="flex flex-col gap-3 border-t bg-muted/20 py-4 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
+				>
+					<p class="min-w-0">
+						{isDeclined
+							? m.signing_declined_receipt_description()
+							: isApproved
+								? m.signing_approved_receipt_description()
+								: isSigned
+									? m.signing_signed_receipt_description()
+									: m.signing_decline_description()}
+					</p>
+					{#if canAct}
+						{@render declineAction()}
+					{/if}
 				</Card.Footer>
 			</Card.Root>
 
-			<section aria-labelledby="agreement-documents" class="space-y-4">
+			<section aria-labelledby="agreement-documents" class="flex w-full flex-col gap-4">
 				<div>
 					<h2 id="agreement-documents" class="text-xl font-semibold tracking-tight">
 						{m.signing_documents_title()}
 					</h2>
 					<p class="mt-1 text-sm text-muted-foreground">{m.signing_documents_description()}</p>
 				</div>
-				<div class="grid gap-4 lg:grid-cols-[13rem_minmax(0,1fr)]">
-					<nav
-						class="sticky top-16 z-20 -mx-4 flex snap-x snap-mandatory gap-2 overflow-x-auto bg-muted/90 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:flex-col lg:overflow-visible lg:bg-transparent lg:p-0"
-						aria-label={m.signing_documents_title()}
-					>
-						{#each data.documents as document, index (document.path)}
+				{#if data.document.sections.length > 1}
+					<nav class="flex flex-wrap gap-2" aria-label={m.signing_document_sections()}>
+						{#each data.document.sections as section, index (index)}
 							<a
-								href={`#document-${index + 1}`}
-								class="min-h-11 min-w-fit snap-start rounded-lg border bg-background px-3 py-2 text-sm hover:bg-muted lg:min-w-0"
+								href={`#agreement-page-${section.firstPage}`}
+								class="min-h-11 rounded-lg border bg-background px-3 py-2 text-sm hover:bg-muted"
 							>
 								<span class="block text-xs text-muted-foreground">
-									{m.signing_document_number({ number: String(index + 1) })}
+									{m.signing_document_page({ page: String(section.firstPage) })}
 								</span>
-								<span class="block truncate font-medium">{documentName(document.path)}</span>
+								<span class="block max-w-[14rem] truncate font-medium">{section.title}</span>
 							</a>
 						{/each}
 					</nav>
-					<div class="min-w-0 space-y-4">
-						{#each data.documents as document, index (document.path)}
-							<Card.Root
-								id={`document-${index + 1}`}
-								class="scroll-mt-36 overflow-hidden shadow-sm lg:scroll-mt-20"
-							>
-								<Card.Header
-									class="flex-row items-center justify-between gap-3 border-b bg-muted/20 py-4"
-								>
-									<Card.Title class="min-w-0 truncate text-base">
-										<span class="mr-2 text-xs font-normal text-muted-foreground">
-											{m.signing_document_number({ number: String(index + 1) })}
-										</span>
-										{documentName(document.path)}
-									</Card.Title>
-									<Badge variant="secondary" class="shrink-0">{m.signing_document_format()}</Badge>
-								</Card.Header>
-								<Card.Content class="p-0">
-									<div
-										class="prose max-w-none overflow-x-auto p-5 [overflow-wrap:anywhere] prose-neutral sm:p-7 dark:prose-invert"
-										dir="auto"
-									>
-										{#each document.rendered.nodes as node, nodeIndex (nodeIndex)}
-											{@render renderMarkdownNode(node)}
-										{/each}
-									</div>
-									<p class="border-t bg-muted/10 px-5 py-3 text-xs text-muted-foreground sm:px-7">
-										{m.signing_document_rendering_policy()}
-										{#if document.rendered.hasVisibleUnicodeControls}
-											<span class="ml-1 font-medium text-amber-700 dark:text-amber-300">
-												{m.signing_document_unicode_warning()}
-											</span>
-										{/if}
-									</p>
-								</Card.Content>
-							</Card.Root>
-						{/each}
-					</div>
-				</div>
+				{/if}
+				{#if isSigner && placedFields.length > 0 && !isSigned}
+					<p class="text-sm text-muted-foreground">{m.signing_fields_overlay_hint()}</p>
+				{/if}
+				<PdfDocumentView
+					src={AGREEMENT_PDF_PATH}
+					label={m.signing_document_label()}
+					expectedPageCount={data.document.pageCount}
+					loadingLabel={m.signing_document_loading()}
+					errorTitle={m.signing_document_error_title()}
+					errorDescription={m.signing_document_error_description()}
+					openLabel={m.signing_document_open()}
+				>
+					{#snippet overlay(page: PdfRenderedPage)}
+						<div id={`agreement-page-${page.pageNumber}`} class="absolute inset-0">
+							{#if isSigner && !isSigned}
+								{#each fieldsOnPage(page.pageNumber) as field (field.id)}
+									{@render fieldBox(field)}
+								{/each}
+							{/if}
+						</div>
+					{/snippet}
+				</PdfDocumentView>
 			</section>
 
-			{#if data.access.role === 'signer' && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}
+			{#if isSigner && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}
 				<section aria-label={m.signing_fields_title()} class="flex w-full flex-col gap-4">
 					{#if isSigned}
 						<Card.Root class="border-primary/20 bg-primary/[0.03] shadow-sm">
@@ -1305,106 +1407,28 @@
 									</div>
 								</div>
 							</Card.Header>
-							<Card.Content class="flex flex-col gap-6">
-								{#each fieldsByDocument(data.fields) as [documentPath, fields] (documentPath)}
-									<Field.FieldSet>
-										<Field.FieldLegend>{documentName(documentPath)}</Field.FieldLegend>
-										<Field.FieldGroup>
-											{#each fields as field (field.id)}
-												{@const invalid =
-													signAttempted && isFieldValueMissing(field, fieldValues[field.id])}
-												{#if field.fieldType === 'checkbox'}
-													<Field.Field orientation="horizontal" data-invalid={invalid || undefined}>
-														<Checkbox
-															id={field.id}
-															aria-invalid={invalid || undefined}
-															checked={fieldValues[field.id] === true}
-															disabled={signStatus === 'pending' ||
-																signStatus === 'transient_failure'}
-															onCheckedChange={(value) => (fieldValues[field.id] = value === true)}
-														/>
-														<Field.FieldLabel for={field.id} class="font-normal">
-															{field.label}
-														</Field.FieldLabel>
-														{#if invalid}
-															<Field.FieldDescription class="text-destructive">
-																{m.signing_field_missing()}
-															</Field.FieldDescription>
-														{/if}
-													</Field.Field>
-												{:else}
-													<Field.Field data-invalid={invalid || undefined}>
-														<Field.FieldLabel for={field.id}>
-															{field.label}
-															<Badge variant="secondary" class="ml-1">
-																{fieldTypeLabel(field.fieldType)}
-															</Badge>
-															{#if field.required}
-																<span class="text-xs font-normal text-muted-foreground">
-																	({m.signing_field_required()})
-																</span>
-															{/if}
-														</Field.FieldLabel>
-														{#if field.fieldType === 'text'}
-															<Textarea
-																id={field.id}
-																aria-invalid={invalid || undefined}
-																disabled={signStatus === 'pending' ||
-																	signStatus === 'transient_failure'}
-																maxlength={4000}
-																value={fieldValues[field.id] as string}
-																oninput={(event) =>
-																	(fieldValues[field.id] = event.currentTarget.value)}
-															/>
-														{:else if field.fieldType === 'signature'}
-															<SignatureCanvas
-																id={field.id}
-																envelopeId={data.access.envelopeId}
-																recipientId={data.access.recipientId}
-																recipientName={data.access.recipientName}
-																{invalid}
-																disabled={signStatus === 'pending' ||
-																	signStatus === 'transient_failure'}
-																bind:value={
-																	() => fieldValues[field.id] as string,
-																	(next) => (fieldValues[field.id] = next)
-																}
-															/>
-														{:else if field.fieldType === 'date'}
-															<Input
-																id={field.id}
-																type="date"
-																aria-invalid={invalid || undefined}
-																disabled={signStatus === 'pending' ||
-																	signStatus === 'transient_failure'}
-																value={fieldValues[field.id] as string}
-																oninput={(event) =>
-																	(fieldValues[field.id] = event.currentTarget.value)}
-															/>
-														{:else}
-															<Input
-																id={field.id}
-																type="text"
-																aria-invalid={invalid || undefined}
-																disabled={signStatus === 'pending' ||
-																	signStatus === 'transient_failure'}
-																maxlength={20}
-																value={fieldValues[field.id] as string}
-																oninput={(event) =>
-																	(fieldValues[field.id] = event.currentTarget.value)}
-															/>
-														{/if}
-														{#if invalid}
-															<Field.FieldDescription class="text-destructive">
-																{m.signing_field_missing()}
-															</Field.FieldDescription>
-														{/if}
-													</Field.Field>
-												{/if}
-											{/each}
-										</Field.FieldGroup>
-									</Field.FieldSet>
-								{/each}
+							<Card.Content class="flex flex-col gap-2">
+								<ul class="flex flex-col gap-1 text-sm">
+									{#each placedFields as field (field.id)}
+										{@const done = !isFieldValueMissing(
+											{ fieldType: field.fieldType, required: true },
+											fieldValues[field.id]
+										)}
+										<li class="flex items-center justify-between gap-3">
+											<a
+												class="min-w-0 truncate underline-offset-4 hover:underline"
+												href={`#agreement-page-${field.geometry.page}`}
+											>
+												{field.label}
+											</a>
+											<span class="shrink-0 text-xs text-muted-foreground">
+												{done
+													? (signaturePreview(fieldValues[field.id]) ?? m.signing_field_complete())
+													: m.signing_document_page({ page: String(field.geometry.page) })}
+											</span>
+										</li>
+									{/each}
+								</ul>
 								{#if signStatus === 'validation_failure'}
 									<p class="text-sm font-medium text-destructive" role="alert">
 										{m.signing_sign_validation_failed()}
@@ -1482,7 +1506,7 @@
 				</section>
 			{/if}
 
-			{#if data.access.role === 'approver' && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}
+			{#if isApprover && !isDeclined && (viewRecorded || data.access.recipientStatus === 'viewed')}
 				<section aria-label={m.signing_approve_action()} class="w-full">
 					{#if isApproved}
 						<Card.Root class="border-primary/20 bg-primary/[0.03] shadow-sm">
@@ -1504,22 +1528,24 @@
 						</Card.Root>
 					{:else}
 						<Card.Root class="border-primary/20 shadow-sm">
-							<Card.Content
-								class="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6"
+							<Card.Header>
+								<Card.Title class="text-base">{m.signing_approve_action()}</Card.Title>
+								<Card.Description>{m.signing_approve_description()}</Card.Description>
+							</Card.Header>
+							<Card.Footer
+								class="flex flex-col gap-3 border-t bg-muted/20 py-4 sm:flex-row sm:items-center sm:justify-between"
 							>
-								<div class="min-w-0 space-y-1">
-									<h3 class="text-base font-semibold">{m.signing_approve_action()}</h3>
-									<p class="text-sm text-muted-foreground">{m.signing_approve_description()}</p>
-									{#if approveStatus === 'transient_failure'}
-										<p class="text-xs font-medium text-destructive">
-											{m.signing_approve_retry_pending()}
-										</p>
-									{:else if approveStatus === 'terminal_failure'}
-										<p class="text-xs font-medium text-destructive">
-											{m.signing_approve_failed()}
-										</p>
-									{/if}
-								</div>
+								{#if approveStatus === 'transient_failure'}
+									<p class="text-xs font-medium text-destructive">
+										{m.signing_approve_retry_pending()}
+									</p>
+								{:else if approveStatus === 'terminal_failure'}
+									<p class="text-xs font-medium text-destructive">
+										{m.signing_approve_failed()}
+									</p>
+								{:else}
+									<span></span>
+								{/if}
 								{#if approveStatus !== 'terminal_failure'}
 									<AlertDialog.Root bind:open={approveDialogOpen}>
 										<AlertDialog.Trigger>
@@ -1578,7 +1604,7 @@
 										</AlertDialog.Content>
 									</AlertDialog.Root>
 								{/if}
-							</Card.Content>
+							</Card.Footer>
 						</Card.Root>
 						<noscript>
 							<p class="mt-2 text-sm text-muted-foreground">
@@ -1588,140 +1614,11 @@
 					{/if}
 				</section>
 			{/if}
-
-			{#if !isApproved && !isSigned && (data.access.role === 'signer' || data.access.role === 'approver')}
-				<section aria-label={m.signing_decline_action()} class="w-full">
-					{#if isDeclined}
-						<Card.Root class="border-destructive/20 bg-destructive/[0.03] shadow-sm">
-							<Card.Header class="gap-2">
-								<div class="flex items-start gap-4">
-									<div
-										class="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-destructive/10 text-destructive"
-									>
-										<IconCircleX class="size-6" />
-									</div>
-									<div>
-										<Card.Title class="text-xl text-destructive">
-											{m.signing_declined_receipt_title()}
-										</Card.Title>
-										<Card.Description class="mt-1.5 text-sm leading-6">
-											{m.signing_declined_receipt_description()}
-										</Card.Description>
-									</div>
-								</div>
-							</Card.Header>
-						</Card.Root>
-					{:else}
-						<Card.Root class="border-destructive/20 shadow-sm">
-							<Card.Content
-								class="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6"
-							>
-								<div class="min-w-0 space-y-1">
-									<h3 class="text-base font-semibold">{m.signing_decline_action()}</h3>
-									<p class="text-sm text-muted-foreground">
-										{m.signing_decline_description()}
-									</p>
-									{#if declineStatus === 'transient_failure'}
-										<p class="text-xs font-medium text-destructive">
-											{m.signing_decline_retry_pending()}
-										</p>
-									{:else if declineStatus === 'terminal_failure'}
-										<p class="text-xs font-medium text-destructive">
-											{m.signing_decline_failed()}
-										</p>
-									{/if}
-								</div>
-								<div
-									class="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row sm:items-center"
-								>
-									{#if declineStatus === 'transient_failure'}
-										<Button
-											variant="outline"
-											class="min-h-[44px] w-full text-sm sm:w-auto"
-											disabled={declinePending}
-											onclick={() => handleDeclineConfirm()}
-										>
-											{m.signing_decline_retry()}
-										</Button>
-									{/if}
-									{#if declineStatus !== 'terminal_failure'}
-										<AlertDialog.Root bind:open={dialogOpen}>
-											<AlertDialog.Trigger>
-												{#snippet child({ props })}
-													<Button
-														{...props}
-														variant="destructive"
-														class="min-h-[44px] w-full text-sm sm:w-auto"
-														disabled={declinePending}
-													>
-														{m.signing_decline_action()}
-													</Button>
-												{/snippet}
-											</AlertDialog.Trigger>
-											<AlertDialog.Content class="max-w-[calc(100vw-2rem)] sm:max-w-md">
-												<AlertDialog.Header>
-													<AlertDialog.Title>
-														{m.signing_decline_dialog_title()}
-													</AlertDialog.Title>
-													<AlertDialog.Description>
-														{m.signing_decline_dialog_description()}
-													</AlertDialog.Description>
-												</AlertDialog.Header>
-												{#if declineStatus === 'transient_failure'}
-													<p class="text-xs text-destructive" role="status" aria-live="polite">
-														{m.signing_decline_retry_pending()}
-													</p>
-												{:else if declineStatus === 'pending'}
-													<p class="text-xs text-muted-foreground" role="status" aria-live="polite">
-														{m.signing_decline_pending()}
-													</p>
-												{/if}
-												<AlertDialog.Footer
-													class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"
-												>
-													<AlertDialog.Cancel class="min-h-[44px]" disabled={declinePending}>
-														{m.signing_decline_dialog_cancel()}
-													</AlertDialog.Cancel>
-													<AlertDialog.Action
-														variant="destructive"
-														class="min-h-[44px]"
-														disabled={declinePending}
-														onclick={async (e) => {
-															e.preventDefault();
-															await handleDeclineConfirm();
-														}}
-													>
-														{#if declinePending}
-															<Spinner data-icon="inline-start" />
-														{/if}
-														{declinePending
-															? m.signing_decline_pending()
-															: declineStatus === 'transient_failure'
-																? m.signing_decline_retry()
-																: m.signing_decline_dialog_confirm()}
-													</AlertDialog.Action>
-												</AlertDialog.Footer>
-											</AlertDialog.Content>
-										</AlertDialog.Root>
-									{/if}
-								</div>
-							</Card.Content>
-						</Card.Root>
-						<noscript>
-							<p class="mt-2 text-sm text-muted-foreground">
-								{m.signing_decline_no_js_explanation()}
-							</p>
-						</noscript>
-					{/if}
-				</section>
-			{/if}
 		</div>
 	{:else}
 		<Card.Root class="w-full max-w-2xl text-center shadow-sm">
 			<Card.Header class="items-center gap-4 py-10">
-				<div
-					class="flex size-12 items-center justify-center rounded-2xl bg-amber-100 text-amber-700"
-				>
+				<div class="flex size-12 items-center justify-center rounded-2xl bg-muted text-foreground">
 					<IconAlertTriangle class="size-6" />
 				</div>
 				<Card.Title>

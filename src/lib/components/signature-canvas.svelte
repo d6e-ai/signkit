@@ -7,8 +7,8 @@
 	import { Spinner } from '$lib/components/ui/spinner';
 	import * as Tabs from '$lib/components/ui/tabs';
 	import * as m from '$lib/paraglide/messages';
+	import { cn } from '$lib/utils';
 	import {
-		committedFromDraft,
 		draftFromCommitted,
 		isSignatureAssetRef,
 		type SignatureDraft,
@@ -27,6 +27,8 @@
 		value = $bindable(''),
 		disabled = false,
 		invalid = false,
+		label = '',
+		triggerClass = '',
 		id
 	}: {
 		envelopeId: string;
@@ -35,23 +37,41 @@
 		value?: string;
 		disabled?: boolean;
 		invalid?: boolean;
+		/** Accessible name for the trigger when it is an overlay box on a page. */
+		label?: string;
+		triggerClass?: string;
 		id: string;
 	} = $props();
 
 	let open = $state(false);
 	let mode = $state<SignatureMode>('type');
 	let typedValue = $state('');
-	let draftAssetRef = $state('');
+	/**
+	 * An asset the field already committed, carried into the dialog so an
+	 * unchanged drawn signature can be re-confirmed without a second upload.
+	 * Any new stroke, a clear, or a mode switch discards it: reusing it after
+	 * the canvas changed would commit a picture the signer no longer sees.
+	 */
+	let committedAssetRef = $state('');
 	let canvasElement = $state<HTMLCanvasElement | null>(null);
 	let typedInput = $state<HTMLInputElement | null>(null);
 	let hasDrawing = $state(false);
 	let drawing = $state(false);
 	let uploadPending = $state(false);
 	let uploadError = $state<string | null>(null);
+	/**
+	 * Incremented by every action that invalidates an in-flight upload. A
+	 * response that arrives with a stale token is discarded rather than
+	 * committed, so a slow network cannot resurrect a drawing the signer
+	 * cleared, replaced, or cancelled.
+	 */
 	let uploadToken = $state(0);
 
 	const canConfirm = $derived(
-		!uploadPending && committedFromDraft({ mode, typedValue, assetRef: draftAssetRef }) !== null
+		!uploadPending &&
+			(mode === 'type'
+				? typedValue.trim().length > 0
+				: hasDrawing || isSignatureAssetRef(committedAssetRef))
 	);
 
 	function triggerText(): string {
@@ -63,7 +83,7 @@
 	function applyDraft(draft: SignatureDraft): void {
 		mode = draft.mode;
 		typedValue = draft.typedValue;
-		draftAssetRef = draft.assetRef;
+		committedAssetRef = draft.assetRef;
 		hasDrawing = false;
 		drawing = false;
 		uploadPending = false;
@@ -75,6 +95,10 @@
 
 	function handleOpenChange(next: boolean): void {
 		open = next;
+		// Closing for any reason -- Cancel, Escape, the overlay, the close
+		// button -- abandons the draft and any upload it started. Only the
+		// confirm button ever writes to `value`.
+		if (!next) uploadToken += 1;
 		if (next) applyDraft(draftFromCommitted(value, recipientName));
 	}
 
@@ -99,19 +123,13 @@
 		};
 	}
 
-	function invalidateDraftAsset(): void {
-		uploadToken += 1;
-		uploadPending = false;
-		uploadError = null;
-		draftAssetRef = '';
-	}
-
+	/** Drawing is local. Nothing leaves the browser until the signer confirms. */
 	function handlePointerDown(event: PointerEvent): void {
 		if (disabled) return;
 		const ctx = context();
 		if (!ctx) return;
 		(event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
-		invalidateDraftAsset();
+		discardDraftAsset();
 		drawing = true;
 		const point = pointFromEvent(event);
 		ctx.strokeStyle = STROKE_COLOR;
@@ -132,25 +150,31 @@
 		hasDrawing = true;
 	}
 
-	async function handlePointerUp(): Promise<void> {
-		if (!drawing) return;
+	function handlePointerUp(): void {
 		drawing = false;
-		if (hasDrawing) await uploadDrawing();
+	}
+
+	function discardDraftAsset(): void {
+		uploadToken += 1;
+		uploadPending = false;
+		uploadError = null;
+		committedAssetRef = '';
 	}
 
 	function clearCanvas(): void {
-		invalidateDraftAsset();
+		discardDraftAsset();
 		const ctx = context();
 		if (ctx) ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 		hasDrawing = false;
 		drawing = false;
 	}
 
-	async function uploadDrawing(): Promise<void> {
-		if (!canvasElement) return;
-		const token = ++uploadToken;
-		uploadPending = true;
-		uploadError = null;
+	/**
+	 * Uploads the current canvas exactly once and returns the asset reference,
+	 * or null when the attempt failed or was invalidated while in flight.
+	 */
+	async function uploadDrawing(token: number): Promise<string | null> {
+		if (!canvasElement) return null;
 		try {
 			const blob: Blob | null = await new Promise((resolve) =>
 				canvasElement?.toBlob(resolve, 'image/png')
@@ -168,29 +192,57 @@
 			);
 			if (!response.ok) throw new Error(`upload failed with status ${response.status}`);
 			const data = (await response.json()) as { assetRef: string };
-			if (token !== uploadToken || !open) return;
+			if (token !== uploadToken || !open) return null;
 			if (typeof data.assetRef !== 'string' || !isSignatureAssetRef(data.assetRef)) {
 				throw new Error('upload returned an invalid asset reference');
 			}
-			draftAssetRef = data.assetRef;
+			return data.assetRef;
 		} catch {
-			if (token !== uploadToken || !open) return;
+			if (token !== uploadToken || !open) return null;
 			uploadError = m.signature_canvas_upload_failed();
-			draftAssetRef = '';
-		} finally {
-			if (token === uploadToken) uploadPending = false;
+			return null;
 		}
 	}
 
 	function handleModeChange(next: string): void {
-		mode = next === 'draw' ? 'draw' : 'type';
+		const requested: SignatureMode = next === 'draw' ? 'draw' : 'type';
+		if (requested === mode) return;
+		// Switching modes abandons whatever the other mode was holding, in-flight
+		// upload included, so a confirm can only ever commit what is on screen.
+		discardDraftAsset();
+		hasDrawing = false;
+		mode = requested;
 	}
 
-	function confirmSignature(): void {
-		const next = committedFromDraft({ mode, typedValue, assetRef: draftAssetRef });
-		if (next === null || uploadPending) return;
-		value = next;
-		open = false;
+	async function confirmSignature(): Promise<void> {
+		if (uploadPending || disabled) return;
+		if (mode === 'type') {
+			const trimmed: string = typedValue.trim();
+			if (trimmed.length === 0) return;
+			value = trimmed;
+			open = false;
+			return;
+		}
+
+		if (hasDrawing) {
+			const token: number = uploadToken;
+			uploadPending = true;
+			uploadError = null;
+			const assetRef: string | null = await uploadDrawing(token);
+			if (token === uploadToken) uploadPending = false;
+			// A stale token means the signer cleared, redrew, switched modes, or
+			// closed the dialog while this was in flight; committing now would
+			// attach an asset that no longer matches the canvas.
+			if (assetRef === null || token !== uploadToken || !open) return;
+			value = assetRef;
+			open = false;
+			return;
+		}
+
+		if (isSignatureAssetRef(committedAssetRef)) {
+			value = committedAssetRef;
+			open = false;
+		}
 	}
 </script>
 
@@ -201,8 +253,9 @@
 				{...props}
 				{id}
 				variant="outline"
-				class="min-h-[44px] w-full justify-start"
+				class={cn('min-h-[44px] w-full justify-start', triggerClass)}
 				{disabled}
+				aria-label={label.length > 0 ? `${label}: ${triggerText()}` : undefined}
 				aria-invalid={invalid || undefined}
 			>
 				<span class="truncate">{triggerText()}</span>
@@ -270,9 +323,11 @@
 									</span>
 								{:else if uploadError}
 									<Field.FieldError>{uploadError}</Field.FieldError>
-								{:else if draftAssetRef}
+								{:else if hasDrawing}
+									<span class="text-sm text-muted-foreground">{m.signature_canvas_drawn()}</span>
+								{:else if isSignatureAssetRef(committedAssetRef)}
 									<span class="text-sm text-muted-foreground">{m.signature_canvas_ready()}</span>
-								{:else if !hasDrawing}
+								{:else}
 									<span class="text-sm text-muted-foreground">{m.signature_canvas_empty()}</span>
 								{/if}
 							</div>
@@ -289,7 +344,11 @@
 					</Button>
 				{/snippet}
 			</Dialog.Close>
-			<Button class="min-h-[44px]" disabled={disabled || !canConfirm} onclick={confirmSignature}>
+			<Button
+				class="min-h-[44px]"
+				disabled={disabled || !canConfirm}
+				onclick={() => void confirmSignature()}
+			>
 				{#if uploadPending}
 					<Spinner data-icon="inline-start" />
 				{/if}

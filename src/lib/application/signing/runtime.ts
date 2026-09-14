@@ -6,14 +6,17 @@ import { D1RecipientDeclinedReceiptStore } from '$lib/adapters/db/d1-recipient-d
 import { D1RecipientFieldDeclarationStore } from '$lib/adapters/db/d1-recipient-field-declaration-store';
 import { D1RecipientSignStore } from '$lib/adapters/db/d1-recipient-sign-store';
 import { D1RecipientViewStore } from '$lib/adapters/db/d1-recipient-view-store';
+import { D1EnvelopeSentPdfStore } from '$lib/adapters/db/d1-envelope-sent-pdf-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
-import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
-import { readImmutableDraftRevision } from '$lib/application/drafts/draft-persistence';
 import { RecipientAccessService, type RecipientAccessApplicationPort } from './recipient-access';
 import {
 	RecipientWorkspaceService,
 	type RecipientWorkspaceApplicationPort
 } from './recipient-workspace';
+import {
+	RecipientSentPdfService,
+	type RecipientSentPdfApplicationPort
+} from './recipient-sent-pdf';
 import {
 	RecipientViewedApplication,
 	type RecipientViewedApplicationPort
@@ -64,19 +67,59 @@ export async function resolveRecipientWorkspaceApplication(
 ): Promise<RecipientWorkspaceApplicationPort | null> {
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
-		const bucket: R2Bucket | undefined = context.platform.env.OBJECTS;
-		if (database === undefined || bucket === undefined) return null;
-		const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
-		const objects: R2ObjectStore = new R2ObjectStore(bucket);
+		if (database === undefined) return null;
 		const fields: D1RecipientFieldDeclarationStore = new D1RecipientFieldDeclarationStore(database);
 		return new RecipientWorkspaceService(
 			new RecipientAccessService(new D1RecipientAccessStore(database)),
-			(revision) => readImmutableDraftRevision(revision, objects, repository),
+			new D1EnvelopeSentPdfStore(database),
 			(context) =>
 				fields.listOwnFields(context.organizationId, context.envelopeId, context.recipientId)
 		);
 	}
 
+	const configuration = objectStorageConfiguration();
+	if (configuration === null) return null;
+	const { resolveS3RecipientWorkspaceApplication } =
+		await import('$lib/application/drafts/runtime-s3');
+	return resolveS3RecipientWorkspaceApplication(configuration);
+}
+
+/**
+ * The bytes of the sent agreement, resolved for whoever holds the recipient
+ * session. Kept separate from the workspace resolver because the workspace
+ * deliberately never touches object storage: page data carries geometry, and
+ * only this path ever reads a document.
+ */
+export async function resolveRecipientSentPdfApplication(
+	context: RecipientAccessRuntimeContext
+): Promise<RecipientSentPdfApplicationPort | null> {
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		const bucket: R2Bucket | undefined = context.platform.env.OBJECTS;
+		if (database === undefined || bucket === undefined) return null;
+		return new RecipientSentPdfService(
+			new RecipientAccessService(new D1RecipientAccessStore(database)),
+			new D1EnvelopeSentPdfStore(database),
+			new R2ObjectStore(bucket)
+		);
+	}
+
+	const configuration = objectStorageConfiguration();
+	if (configuration === null) return null;
+	const { resolveS3RecipientSentPdfApplication } =
+		await import('$lib/application/drafts/runtime-s3');
+	return resolveS3RecipientSentPdfApplication(configuration);
+}
+
+function objectStorageConfiguration(): {
+	databaseUrl: string | undefined;
+	endpoint: string | undefined;
+	region: string | undefined;
+	bucket: string | undefined;
+	accessKeyId: string | undefined;
+	secretAccessKey: string | undefined;
+	forcePathStyle: string | undefined;
+} | null {
 	const configuration = {
 		databaseUrl: env.DATABASE_URL,
 		endpoint: env.S3_ENDPOINT,
@@ -89,9 +132,7 @@ export async function resolveRecipientWorkspaceApplication(
 	if (Object.values(configuration).every((value: string | undefined): boolean => !value?.trim())) {
 		return null;
 	}
-	const { resolveS3RecipientWorkspaceApplication } =
-		await import('$lib/application/drafts/runtime-s3');
-	return resolveS3RecipientWorkspaceApplication(configuration);
+	return configuration;
 }
 
 export async function resolveRecipientViewedApplication(

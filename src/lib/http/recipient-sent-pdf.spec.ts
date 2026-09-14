@@ -1,0 +1,157 @@
+import type { Cookies, RequestEvent } from '@sveltejs/kit';
+import { describe, expect, it, vi } from 'vitest';
+import type {
+	RecipientSentPdfApplicationPort,
+	RecipientSentPdfResult
+} from '$lib/application/signing/recipient-sent-pdf';
+import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { createRecipientSentPdfHandler } from './recipient-sent-pdf';
+
+const TOKEN: string = `skr1_${'A'.repeat(43)}`;
+const BYTES: Uint8Array = new TextEncoder().encode('%PDF-1.7\nbody\n%%EOF\n');
+const SHA256: string = 'a'.repeat(64);
+
+function event(options: { cookie?: string; method?: string } = {}): RequestEvent {
+	const cookies = {
+		get: (name: string): string | undefined =>
+			name === RECIPIENT_SESSION_COOKIE ? options.cookie : undefined
+	} as unknown as Cookies;
+	return {
+		cookies,
+		platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } },
+		request: new Request('https://signkit.example/sign/agreement.pdf', {
+			method: options.method ?? 'GET'
+		}),
+		url: new URL('https://signkit.example/sign/agreement.pdf')
+	} as unknown as RequestEvent;
+}
+
+function application(result: RecipientSentPdfResult): RecipientSentPdfApplicationPort {
+	return { read: vi.fn(async (): Promise<RecipientSentPdfResult> => result) };
+}
+
+const ok: RecipientSentPdfResult = {
+	outcome: 'ok',
+	bytes: BYTES,
+	sha256: SHA256,
+	byteSize: BYTES.byteLength
+};
+
+const unseal = async (): Promise<string> => TOKEN;
+
+describe('recipient sent PDF HTTP handler', () => {
+	it('serves application/pdf with private, unframeable headers', async () => {
+		const app: RecipientSentPdfApplicationPort = application(ok);
+		const response: Response = await createRecipientSentPdfHandler(
+			() => app,
+			unseal
+		)(event({ cookie: 'sealed' }));
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get('content-type')).toBe('application/pdf');
+		expect(response.headers.get('cache-control')).toBe(
+			'private, no-store, max-age=0, must-revalidate'
+		);
+		expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+		expect(response.headers.get('vary')).toBe('Cookie');
+		expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+		// The viewer fetches these bytes and draws them itself, so no origin
+		// needs framing permission and none is granted.
+		expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+		expect(response.headers.get('x-frame-options')).toBe('DENY');
+		expect(response.headers.get('content-length')).toBe(String(BYTES.byteLength));
+		expect(app.read).toHaveBeenCalledWith(TOKEN);
+		expect(new Uint8Array(await response.arrayBuffer())).toEqual(BYTES);
+	});
+
+	it('names the download generically, never after the envelope or recipient', async () => {
+		const response: Response = await createRecipientSentPdfHandler(
+			() => application(ok),
+			unseal
+		)(event({ cookie: 'sealed' }));
+		expect(response.headers.get('content-disposition')).toBe('inline; filename="agreement.pdf"');
+	});
+
+	it.each([
+		['no session cookie', undefined],
+		['a cookie that will not unseal', 'garbage']
+	] as const)('answers %s with an opaque, empty 404', async (_name, cookie) => {
+		const resolveApplication = vi.fn(() => application(ok));
+		const response: Response = await createRecipientSentPdfHandler(
+			resolveApplication,
+			async (): Promise<string | null> => null
+		)(event({ cookie }));
+
+		expect(response.status).toBe(404);
+		expect(await response.text()).toBe('');
+		expect(response.headers.get('content-type')).toBeNull();
+		expect(resolveApplication).not.toHaveBeenCalled();
+	});
+
+	it('answers inactive access with the same opaque 404 as an unknown path', async () => {
+		const response: Response = await createRecipientSentPdfHandler(
+			() => application({ outcome: 'not_found' }),
+			unseal
+		)(event({ cookie: 'sealed' }));
+
+		expect(response.status).toBe(404);
+		expect(await response.text()).toBe('');
+	});
+
+	it.each([
+		['an unresolvable runtime', null],
+		['an integrity failure', application({ outcome: 'unavailable' })]
+	] as const)('answers %s with a fixed, empty 503', async (_name, resolved) => {
+		const response: Response = await createRecipientSentPdfHandler(
+			() => resolved,
+			unseal
+		)(event({ cookie: 'sealed' }));
+
+		expect(response.status).toBe(503);
+		expect(await response.text()).toBe('');
+		expect(response.headers.get('cache-control')).toBe(
+			'private, no-store, max-age=0, must-revalidate'
+		);
+	});
+
+	it('never leaks a provider error, an identifier, or an object key', async () => {
+		const exploding: RecipientSentPdfApplicationPort = {
+			read: async (): Promise<RecipientSentPdfResult> => {
+				throw new Error('r2: NoSuchKey sent-documents/v1/organizations/org-1/...');
+			}
+		};
+		const response: Response = await createRecipientSentPdfHandler(
+			() => exploding,
+			unseal
+		)(event({ cookie: 'sealed' }));
+
+		expect(response.status).toBe(503);
+		const body: string = await response.text();
+		expect(body).toBe('');
+		expect(JSON.stringify([...response.headers.entries()])).not.toMatch(
+			/org-1|sent-documents|NoSuchKey|skr1_/
+		);
+	});
+
+	it('rejects a write method with the same opaque 404', async () => {
+		const resolveApplication = vi.fn(() => application(ok));
+		const response: Response = await createRecipientSentPdfHandler(
+			resolveApplication,
+			unseal
+		)(event({ cookie: 'sealed', method: 'POST' }));
+
+		expect(response.status).toBe(404);
+		expect(resolveApplication).not.toHaveBeenCalled();
+	});
+
+	it('answers HEAD with the headers but no body', async () => {
+		const response: Response = await createRecipientSentPdfHandler(
+			() => application(ok),
+			unseal
+		)(event({ cookie: 'sealed', method: 'HEAD' }));
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get('content-length')).toBe(String(BYTES.byteLength));
+		expect(await response.text()).toBe('');
+	});
+});

@@ -73,6 +73,7 @@ export default defineConfig({
 		// dep optimizer prebundles them on the initial cold-start scan instead of discovering
 		// them mid-run, which forces a disruptive reload of in-flight browser test modules.
 		include: [
+			'pdfjs-dist',
 			'@tabler/icons-svelte',
 			'@tabler/icons-svelte/icons/alert-triangle',
 			'@tabler/icons-svelte/icons/ban',

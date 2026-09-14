@@ -1,5 +1,4 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { DraftIntegrityError } from '$lib/application/drafts/draft-persistence';
 import type {
 	RecipientWorkspace,
 	RecipientWorkspaceApplicationPort
@@ -39,10 +38,14 @@ export function createRecipientDocumentsHandler(
 				now().toISOString()
 			);
 			if (workspace === null) return accessNotFound(url.pathname);
+			// Deliberately no Markdown and no storage key: a recipient is entitled
+			// to the agreement they were sent, which is the PDF served from the
+			// session-protected endpoint, not to SignKit's source representation
+			// of it. What travels here is only enough to describe that document.
 			return new Response(
 				JSON.stringify({
 					access: workspace.access,
-					documents: workspace.documents
+					document: workspace.document
 				}),
 				{
 					status: 200,
@@ -53,7 +56,6 @@ export function createRecipientDocumentsHandler(
 			console.error(
 				JSON.stringify({
 					event:
-						error instanceof DraftIntegrityError ||
 						error instanceof RecipientWorkspaceIntegrityError
 							? 'recipient_documents_integrity_failed'
 							: 'recipient_documents_failed'

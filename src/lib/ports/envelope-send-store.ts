@@ -1,4 +1,5 @@
 import type { Envelope, Recipient } from '$lib/domain/envelope';
+import type { SentPdfArtifact } from '$lib/application/documents/sent-document-pdf';
 
 export interface SendCommandKey {
 	organizationId: string;
@@ -68,6 +69,14 @@ export type SendPreparation =
 	| { outcome: 'integrity_error' };
 
 export interface PublishSentEnvelopeCommand extends SendCommandKey {
+	/**
+	 * The immutable PDF rendering of `commitSha`, already written to object
+	 * storage. Implementations publish this pointer inside the same atomic
+	 * boundary as the status flip and the audit event, so a lost CAS, a stale
+	 * generation, an audit conflict, or an idempotency conflict can never
+	 * leave a sent envelope pointing at a rendering of something else.
+	 */
+	sentPdf: SentPdfArtifact;
 	expectedGeneration: number;
 	expectedReadyAuditEventId: string;
 	commitSha: string;

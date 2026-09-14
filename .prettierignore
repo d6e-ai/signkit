@@ -20,3 +20,4 @@ bun.lockb
 
 # Rust CLI
 /cli/
+src/lib/adapters/pdf/fonts/document-font.ts

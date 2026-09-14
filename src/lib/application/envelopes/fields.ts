@@ -18,6 +18,11 @@ import type {
 	PublishedFieldPlacement
 } from '$lib/ports/envelope-field-store';
 import type { Envelope, Recipient } from '$lib/domain/envelope';
+import {
+	renderRevisionPdf,
+	SentDocumentPdfError
+} from '$lib/application/documents/sent-document-pdf';
+import type { AgreementPdfResult } from '$lib/adapters/pdf/agreement-pdf';
 import type { EnvelopeRequestActor } from './model';
 import { envelopeActorType } from './model';
 
@@ -33,7 +38,12 @@ export interface FieldPlacementInput {
 	label: string;
 	required: boolean;
 	position: number;
-	geometry?: FieldGeometry | null;
+	/**
+	 * Where the box sits on the sent PDF. Required: a field a signer cannot
+	 * see is a field they cannot complete, and ordinal-only placement gives
+	 * the recipient surface nothing to draw.
+	 */
+	geometry: FieldGeometry;
 }
 
 export interface PlaceFieldsInput {
@@ -53,6 +63,7 @@ export type PlaceFieldsResult =
 	| { outcome: 'audit_conflict' }
 	| { outcome: 'invalid_document' }
 	| { outcome: 'invalid_recipient' }
+	| { outcome: 'invalid_geometry' }
 	| { outcome: 'integrity_error' };
 
 export interface EnvelopeFieldApplicationPort {
@@ -142,6 +153,31 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 			if (!documentPaths.has(field.documentPath)) return { outcome: 'invalid_document' };
 		}
 
+		// Geometry names a page of the rendered agreement, so it can only be
+		// validated against that rendering. The renderer is deterministic and
+		// reads the same pinned revision send will read, so the page map proved
+		// here is the page map the recipient will be shown.
+		let rendered: AgreementPdfResult;
+		try {
+			rendered = renderRevisionPdf(workspace.documents);
+		} catch (error: unknown) {
+			if (error instanceof SentDocumentPdfError) return { outcome: 'invalid_document' };
+			throw error;
+		}
+		const pagesByPath: Map<string, { firstPage: number; lastPage: number }> = new Map(
+			rendered.documents.map((entry) => [
+				workspace.documents[entry.index].path,
+				{ firstPage: entry.firstPage, lastPage: entry.lastPage }
+			])
+		);
+		for (const field of canonicalFields) {
+			const range = pagesByPath.get(field.documentPath);
+			if (range === undefined) return { outcome: 'invalid_document' };
+			if (field.geometry.page < range.firstPage || field.geometry.page > range.lastPage) {
+				return { outcome: 'invalid_geometry' };
+			}
+		}
+
 		// Each published field set mints its own identifiers. Placement is a
 		// whole-set replace guarded by `expectedFieldGeneration`, so a client that
 		// republishes must re-read the set rather than assume stable IDs; a lost
@@ -157,7 +193,7 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				label: field.label,
 				required: field.required,
 				position: field.position,
-				geometry: field.geometry ?? null
+				geometry: field.geometry
 			})
 		);
 
@@ -261,7 +297,7 @@ function assertFieldsInput(
 		) {
 			throw new InvalidFieldPlacementError('Field position is invalid');
 		}
-		assertGeometry(field.geometry ?? null);
+		assertGeometry(field.geometry);
 		const locator: string = [field.recipientId, field.documentPath, field.position].join('\x00');
 		if (locators.has(locator)) {
 			throw new InvalidFieldPlacementError('Field declarations must not repeat the same locator');
@@ -270,8 +306,10 @@ function assertFieldsInput(
 	}
 }
 
-function assertGeometry(geometry: FieldGeometry | null): void {
-	if (geometry === null) return;
+function assertGeometry(geometry: FieldGeometry): void {
+	if (geometry === null || typeof geometry !== 'object') {
+		throw new InvalidFieldPlacementError('Field geometry is required');
+	}
 	const { page, x, y, width, height } = geometry;
 	if (!Number.isSafeInteger(page) || page < 1 || page > MAX_POSITION) {
 		throw new InvalidFieldPlacementError('Field geometry page is invalid');
@@ -286,6 +324,12 @@ function assertGeometry(geometry: FieldGeometry | null): void {
 			throw new InvalidFieldPlacementError('Field geometry dimensions must be between 0 and 1');
 		}
 	}
+	// Rounding at the pixel-to-fraction boundary can produce a box that ends a
+	// hair past the page edge; anything beyond that tolerance is a box that
+	// would be clipped, which is the same as a box a signer cannot fill in.
+	if (x + width > 1.0001 || y + height > 1.0001) {
+		throw new InvalidFieldPlacementError('Field geometry must stay inside the page');
+	}
 }
 
 function canonicalizeFields(
@@ -299,7 +343,7 @@ function canonicalizeFields(
 			label: field.label.trim(),
 			required: field.required,
 			position: field.position,
-			geometry: field.geometry ?? null
+			geometry: field.geometry
 		}))
 		.sort(
 			(left: FieldPlacementInput, right: FieldPlacementInput): number =>

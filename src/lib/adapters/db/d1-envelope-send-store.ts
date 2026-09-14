@@ -58,6 +58,13 @@ interface SendCommandRow {
 	previous_audit_hash: string;
 	audit_event_hash: string;
 	audit_payload_json: string;
+	sent_pdf_object_key: string | null;
+	sent_pdf_sha256: string | null;
+	sent_pdf_bytes: number | null;
+	sent_pdf_page_count: number | null;
+	sent_pdf_page_width: number | null;
+	sent_pdf_page_height: number | null;
+	sent_pdf_document_pages_json: string | null;
 	evidence_event_id: string | null;
 	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
@@ -149,8 +156,10 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 					expected_generation, ready_audit_event_id, commit_sha, initial_routing_order,
 					delivery_count, queued_delivery_count, delivery_manifest_hash, delivery_manifest_json,
 					initial_capability_expires_at, updated_at, audit_event_id, audit_sequence,
-					previous_audit_hash, audit_event_hash, audit_payload_json
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					previous_audit_hash, audit_event_hash, audit_payload_json,
+					sent_pdf_object_key, sent_pdf_sha256, sent_pdf_bytes, sent_pdf_page_count,
+					sent_pdf_page_width, sent_pdf_page_height, sent_pdf_document_pages_json
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					command.organizationId,
@@ -173,7 +182,14 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 					command.expectedAuditSequence + 1,
 					command.previousAuditHash,
 					command.auditEventHash,
-					command.auditPayloadJson
+					command.auditPayloadJson,
+					command.sentPdf.objectKey,
+					command.sentPdf.sha256,
+					command.sentPdf.byteSize,
+					command.sentPdf.pageCount,
+					command.sentPdf.pageWidth,
+					command.sentPdf.pageHeight,
+					JSON.stringify(command.sentPdf.documents)
 				),
 			...command.deliveries.flatMap((delivery): D1PreparedStatement[] => [
 				this.#database
@@ -472,9 +488,19 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 		queuedDeliveryCount: row.queued_delivery_count,
 		reservedCapabilityCount: row.delivery_count,
 		deliveryManifestHash: row.delivery_manifest_hash,
-		initialCapabilityExpiresAt: row.initial_capability_expires_at
+		initialCapabilityExpiresAt: row.initial_capability_expires_at,
+		sentPdfSha256: row.sent_pdf_sha256,
+		sentPdfBytes: row.sent_pdf_bytes,
+		sentPdfPageCount: row.sent_pdf_page_count
 	});
 	return (
+		row.sent_pdf_object_key !== null &&
+		row.sent_pdf_sha256 !== null &&
+		row.sent_pdf_bytes !== null &&
+		row.sent_pdf_page_count !== null &&
+		row.sent_pdf_page_width !== null &&
+		row.sent_pdf_page_height !== null &&
+		row.sent_pdf_document_pages_json !== null &&
 		requestHash === row.request_hash &&
 		auditPayload === row.audit_payload_json &&
 		(await sha256(row.delivery_manifest_json)) === row.delivery_manifest_hash

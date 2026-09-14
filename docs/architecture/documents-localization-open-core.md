@@ -1,5 +1,7 @@
 # Documents, localization, and the open-core boundary
 
+> **Recipient-facing rendering.** Everything below concerns DOCX derivation and the completion-evidence PDF. The agreement a recipient is shown is a different artifact with a different renderer: see [envelope-model.md](envelope-model.md#sent-agreement-rendering) and [decisions/2026-09-14-sent-agreement-pdf.md](decisions/2026-09-14-sent-agreement-pdf.md). The completion-evidence writer described here still substitutes `?` for characters outside WinAnsi and is deliberately not reused for recipient-facing documents.
+
 Status: mixed — localization, bounded DOCX import/export, and visual completion PDF derivation are implemented; cryptographic PDF sealing is backlog; the open-core boundary is policy
 
 ## Documents and evidence

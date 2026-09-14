@@ -38,16 +38,21 @@
 <Tooltip.Provider>
 	{#if bareShell}
 		<div class="min-h-svh bg-muted/25">
-			<header
-				class="flex h-16 items-center border-b bg-background/90 px-4 backdrop-blur-xl sm:px-6"
-			>
-				<a href="/" class="font-semibold tracking-tight">{m.app_name()}</a>
-				<div class="ml-auto flex items-center gap-1">
-					<ThemeSwitch />
-					<LanguageSwitch />
+			<!-- Header contents share the same container as the page body, so the
+			     brand and the page content line up on wide screens instead of the
+			     header running edge to edge past it. -->
+			<header class="border-b bg-background/90 backdrop-blur-xl">
+				<div class="container mx-auto flex h-16 w-full items-center px-4 sm:px-6">
+					<a href="/" class="font-semibold tracking-tight">{m.app_name()}</a>
+					<div class="ml-auto flex items-center gap-1">
+						<ThemeSwitch />
+						<LanguageSwitch />
+					</div>
 				</div>
 			</header>
-			<main class="p-4 sm:p-6 lg:p-10">{@render children()}</main>
+			<main class="container mx-auto w-full px-4 py-6 sm:px-6 sm:py-8 lg:py-10">
+				{@render children()}
+			</main>
 		</div>
 	{:else}
 		<Sidebar.Provider>

@@ -24,18 +24,24 @@ afterEach((): void => {
 });
 
 describe('resolveRecipientWorkspaceApplication', () => {
-	it('fails closed on a Cloudflare request missing either D1 or R2', async () => {
+	it('fails closed on a Cloudflare request with no D1 binding', async () => {
 		setCompleteNodeConfiguration();
-		await expect(
-			resolveRecipientWorkspaceApplication({
-				platform: { env: { DB: {} as D1Database } } as App.Platform
-			})
-		).resolves.toBeNull();
 		await expect(
 			resolveRecipientWorkspaceApplication({
 				platform: { env: { OBJECTS: {} as R2Bucket } } as App.Platform
 			})
 		).resolves.toBeNull();
+	});
+
+	it('resolves the workspace from D1 alone, because it never reads a document', async () => {
+		// The workspace carries page geometry only; the bytes of the agreement
+		// come from the separate, session-bound PDF endpoint, which is the only
+		// path that touches object storage.
+		await expect(
+			resolveRecipientWorkspaceApplication({
+				platform: { env: { DB: {} as D1Database } } as App.Platform
+			})
+		).resolves.toBeInstanceOf(RecipientWorkspaceService);
 	});
 
 	it('uses request-scoped D1 and R2 together', async () => {

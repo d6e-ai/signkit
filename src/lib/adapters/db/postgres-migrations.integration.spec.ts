@@ -1,3 +1,8 @@
+import {
+	FakeSentDocumentPdf,
+	fakeSentPdfArtifact
+} from '$lib/application/documents/sent-document-pdf-test-support';
+import { PostgresEnvelopeSentPdfStore } from './postgres-envelope-sent-pdf-store';
 import { createHash, randomUUID } from 'node:crypto';
 import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -449,7 +454,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					fieldType: 'signature',
 					label: 'Signature',
 					required: true,
-					position: 1
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -468,7 +474,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					fieldType: 'signature',
 					label: 'Updated signature',
 					required: true,
-					position: 2
+					position: 2,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				},
 				{
 					recipientId: signerId,
@@ -476,7 +483,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					fieldType: 'date',
 					label: 'Signed date',
 					required: true,
-					position: 3
+					position: 3,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -497,7 +505,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		const sealer: RecipientCapabilitySealer = capabilitySealer();
 		const sent = await new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
-			sealer
+			sealer,
+			new FakeSentDocumentPdf()
 		).send(ACTOR, ENVELOPE_ID, {
 			idempotencyKey: 'send-integration',
 			expectedGeneration: 1,
@@ -517,6 +526,21 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			fieldGeneration: 2,
 			sentCommitSha: COMMIT_SHA
 		});
+		// The pinned agreement rendering lands in the same transaction as the
+		// status flip, scoped to the commit the envelope was sent at.
+		const sentPdf = await new PostgresEnvelopeSentPdfStore(database()).findSentPdf(
+			ORGANIZATION_ID,
+			ENVELOPE_ID,
+			COMMIT_SHA
+		);
+		expect(sentPdf).toMatchObject(fakeSentPdfArtifact(ORGANIZATION_ID, ENVELOPE_ID));
+		await expect(
+			new PostgresEnvelopeSentPdfStore(database()).findSentPdf(
+				ORGANIZATION_ID,
+				ENVELOPE_ID,
+				'0000000000000000000000000000000000000000'
+			)
+		).resolves.toBeNull();
 		const auditTypes = await database()<
 			{ eventType: string }[]
 		>`SELECT event_type AS "eventType" FROM audit_event
@@ -592,7 +616,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 
 		const application = new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
-			capabilitySealer()
+			capabilitySealer(),
+			new FakeSentDocumentPdf()
 		);
 		const input = {
 			idempotencyKey: 'send-legacy-prefill',
@@ -633,7 +658,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		const ready = await readyEnvelope();
 		const application = new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
-			capabilitySealer()
+			capabilitySealer(),
+			new FakeSentDocumentPdf()
 		);
 		const input = {
 			idempotencyKey: 'send-lifecycle-replay',
@@ -710,7 +736,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		const sealer = new AesGcmRecipientCapabilitySealer(TEST_DELIVERY_ENCRYPTION_KEY);
 		const sent = await new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
-			sealer
+			sealer,
+			new FakeSentDocumentPdf()
 		).send(ACTOR, ENVELOPE_ID, {
 			idempotencyKey: 'send-before-decline',
 			expectedGeneration: 1,
@@ -897,15 +924,15 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			]);
 			const sealer = new AesGcmRecipientCapabilitySealer(TEST_DELIVERY_ENCRYPTION_KEY);
 			await expect(
-				new EnvelopeSendApplication(new PostgresEnvelopeSendStore(database()), sealer).send(
-					ACTOR,
-					ENVELOPE_ID,
-					{
-						idempotencyKey: `send-before-${role}-completion`,
-						expectedGeneration: 1,
-						expectedReadyAuditEventId: ready.auditEventId
-					}
-				)
+				new EnvelopeSendApplication(
+					new PostgresEnvelopeSendStore(database()),
+					sealer,
+					new FakeSentDocumentPdf()
+				).send(ACTOR, ENVELOPE_ID, {
+					idempotencyKey: `send-before-${role}-completion`,
+					expectedGeneration: 1,
+					expectedReadyAuditEventId: ready.auditEventId
+				})
 			).resolves.toMatchObject({
 				outcome: 'published',
 				result: { queuedDeliveryCount: 2, reservedCapabilityCount: 2 }
@@ -1050,7 +1077,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		await expect(
 			new EnvelopeSendApplication(
 				new PostgresEnvelopeSendStore(database()),
-				capabilitySealer()
+				capabilitySealer(),
+				new FakeSentDocumentPdf()
 			).send(ACTOR, ENVELOPE_ID, {
 				idempotencyKey: 'send-before-void',
 				expectedGeneration: 1,
@@ -1176,7 +1204,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		await expect(
 			new EnvelopeSendApplication(
 				new PostgresEnvelopeSendStore(database()),
-				capabilitySealer()
+				capabilitySealer(),
+				new FakeSentDocumentPdf()
 			).send(ACTOR, ENVELOPE_ID, {
 				idempotencyKey: 'send-before-agent-void',
 				expectedGeneration: 1,
@@ -1326,7 +1355,11 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			};
 			const results = await Promise.all(
 				stores.map((store: EnvelopeSendStore) =>
-					new EnvelopeSendApplication(store, capabilitySealer()).send(ACTOR, ENVELOPE_ID, input)
+					new EnvelopeSendApplication(store, capabilitySealer(), new FakeSentDocumentPdf()).send(
+						ACTOR,
+						ENVELOPE_ID,
+						input
+					)
 				)
 			);
 			expect(results.map((result): string => result.outcome).sort()).toEqual([
@@ -1524,7 +1557,11 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				return { outcome: 'integrity_error' };
 			}
 		};
-		await new EnvelopeSendApplication(captureStore, capabilitySealer()).send(ACTOR, ENVELOPE_ID, {
+		await new EnvelopeSendApplication(
+			captureStore,
+			capabilitySealer(),
+			new FakeSentDocumentPdf()
+		).send(ACTOR, ENVELOPE_ID, {
 			idempotencyKey: 'capture-invalid-ready-anchor-send',
 			expectedGeneration: 1,
 			expectedReadyAuditEventId: ready.auditEventId
@@ -1613,15 +1650,15 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
 			TEST_DELIVERY_ENCRYPTION_KEY
 		);
-		await new EnvelopeSendApplication(new PostgresEnvelopeSendStore(database()), sealer).send(
-			ACTOR,
-			ENVELOPE_ID,
-			{
-				idempotencyKey: 'send-before-completion-artifact',
-				expectedGeneration: 1,
-				expectedReadyAuditEventId: ready.auditEventId
-			}
-		);
+		await new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			sealer,
+			new FakeSentDocumentPdf()
+		).send(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'send-before-completion-artifact',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		});
 		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
 		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}
@@ -1756,7 +1793,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		const invitationSealer = new AesGcmRecipientCapabilitySealer(TEST_DELIVERY_ENCRYPTION_KEY);
 		await new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
-			invitationSealer
+			invitationSealer,
+			new FakeSentDocumentPdf()
 		).send(ACTOR, ENVELOPE_ID, {
 			idempotencyKey: 'send-before-completion-delivery',
 			expectedGeneration: 1,
@@ -2434,7 +2472,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		);
 		const sent = await new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
-			sealer
+			sealer,
+			new FakeSentDocumentPdf()
 		).send(ACTOR, envelopeId, {
 			idempotencyKey: 'real-writer-send',
 			expectedGeneration: 1,
@@ -2656,7 +2695,8 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 					fieldType: 'signature',
 					label: 'Signature',
 					required: true,
-					position: 1
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -2666,15 +2706,15 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
 			TEST_DELIVERY_ENCRYPTION_KEY
 		);
-		await new EnvelopeSendApplication(new PostgresEnvelopeSendStore(database()), sealer).send(
-			ACTOR,
-			ENVELOPE_ID,
-			{
-				idempotencyKey: 'send-before-tamper',
-				expectedGeneration: 1,
-				expectedReadyAuditEventId: ready.auditEventId
-			}
-		);
+		await new EnvelopeSendApplication(
+			new PostgresEnvelopeSendStore(database()),
+			sealer,
+			new FakeSentDocumentPdf()
+		).send(ACTOR, ENVELOPE_ID, {
+			idempotencyKey: 'send-before-tamper',
+			expectedGeneration: 1,
+			expectedReadyAuditEventId: ready.auditEventId
+		});
 		const completedAt: string = new Date(Date.now() + 1_000).toISOString();
 		await database()`UPDATE recipient SET status = 'viewed', updated_at = ${completedAt}
 			WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}

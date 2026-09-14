@@ -17,7 +17,12 @@ const workspace: RecipientWorkspace = {
 		envelopeStatus: 'in_progress',
 		expiresAt: '2026-09-12T00:00:00.000Z'
 	},
-	documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+	document: {
+		pageCount: 2,
+		pageWidth: 595.28,
+		pageHeight: 841.89,
+		sections: [{ title: 'agreement', firstPage: 1, lastPage: 2 }]
+	},
 	fields: [],
 	fieldGeneration: 1
 };

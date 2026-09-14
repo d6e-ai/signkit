@@ -155,6 +155,13 @@ function sendResponse(result: SendEnvelopeResult, instance: string): Response {
 		Exclude<SendEnvelopeResult['outcome'], 'published' | 'replayed'>,
 		{ type: string; title: string; status: number; detail: string }
 	> = {
+		document_render_failed: {
+			type: 'urn:signkit:problem:send-document-render-failed',
+			title: 'Agreement rendering failed',
+			status: 503,
+			detail:
+				'The agreement could not be rendered into the immutable PDF a recipient is shown, so the envelope was not sent.'
+		},
 		idempotency_conflict: {
 			type: 'urn:signkit:problem:send-idempotency-conflict',
 			title: 'Idempotency key conflict',
