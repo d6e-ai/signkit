@@ -323,9 +323,17 @@
 	"signature_canvas_label": "署名",
 	"signature_canvas_instructions": "マウス、スタイラス、または指で署名を描画してください。",
 	"signature_canvas_clear": "クリア",
-	"signature_canvas_empty": "署名する前に、上の欄に署名を描画してください。",
+	"signature_canvas_empty": "確定する前に、上の欄に署名を描画してください。",
+	"signature_canvas_ready": "描画した署名を保存しました。確定して使うか、描き直して置き換えてください。",
 	"signature_canvas_typed_label": "入力署名",
 	"signature_canvas_typed_placeholder": "氏名を入力してください",
 	"signature_canvas_uploading": "署名を保存しています…",
-	"signature_canvas_upload_failed": "描画した署名を保存できませんでした。再試行するか、入力署名に切り替えてください。"
+	"signature_canvas_upload_failed": "描画した署名を保存できませんでした。再試行するか、入力署名に切り替えてください。",
+	"signature_dialog_title": "署名を追加",
+	"signature_dialog_description": "氏名を入力するか、署名を描画してください。確定するまでこの項目は空のままです。",
+	"signature_dialog_confirm": "この署名を使用",
+	"signature_dialog_cancel": "キャンセル",
+	"signature_dialog_close": "閉じる",
+	"signature_trigger_empty": "署名を追加",
+	"signature_trigger_drawn": "描画した署名"
 }

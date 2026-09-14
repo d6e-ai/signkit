@@ -79,7 +79,8 @@ export default defineConfig({
 			'@tabler/icons-svelte/icons/download',
 			'@tabler/icons-svelte/icons/plus',
 			'@tabler/icons-svelte/icons/send',
-			'@tabler/icons-svelte/icons/trash'
+			'@tabler/icons-svelte/icons/trash',
+			'@tabler/icons-svelte/icons/x'
 		]
 	},
 	test: {

@@ -12,6 +12,7 @@ test('hydrates the sanitized document surface without active or remote content',
 		access: {
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
+			recipientName: 'Alex Rivera',
 			role: 'viewer',
 			locale: 'en',
 			recipientStatus: 'viewed',
@@ -22,7 +23,6 @@ test('hydrates the sanitized document surface without active or remote content',
 		documents: [
 			{
 				path: 'documents/agreement.md',
-				content: exactSource,
 				rendered: renderRecipientMarkdown(exactSource)
 			}
 		],
@@ -49,8 +49,7 @@ test('hydrates the sanitized document surface without active or remote content',
 	await expect.element(screen.getByText('⟦U+202E⟧')).toBeVisible();
 	await expect.element(screen.getByText('code:⟦U+2067⟧')).toBeVisible();
 
-	await screen.getByRole('tab', { name: 'Source' }).click();
-	const source = container.querySelector('pre');
-	expect(source?.textContent).toBe(exactSource);
-	await expect.element(screen.getByText('Exact Markdown source for verification.')).toBeVisible();
+	expect(container.querySelector('[role="tab"]')).toBeNull();
+	expect(container.querySelector('pre')).toBeNull();
+	expect(container.textContent).not.toContain('Exact Markdown source for verification.');
 });

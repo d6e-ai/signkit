@@ -105,7 +105,7 @@ function renderActivePage(page: RecipientPageState) {
 			if (totalSourceBytes > MAX_RECIPIENT_TOTAL_SOURCE_BYTES) {
 				throw new Error('document_bytes');
 			}
-			return { ...document, rendered: renderRecipientMarkdown(document.content) };
+			return { path: document.path, rendered: renderRecipientMarkdown(document.content) };
 		});
 		return { ...page, documents };
 	} catch {

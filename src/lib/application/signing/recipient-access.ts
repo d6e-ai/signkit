@@ -18,6 +18,7 @@ export interface RecipientAccessApplicationPort {
 export interface PublicRecipientAccessContext {
 	envelopeId: string;
 	recipientId: string;
+	recipientName: string;
 	role: RecipientSigningContext['recipientRole'];
 	locale: RecipientSigningContext['recipientLocale'];
 	recipientStatus: RecipientSigningContext['recipientStatus'];
@@ -32,6 +33,7 @@ export function toPublicRecipientAccess(
 	return {
 		envelopeId: context.envelopeId,
 		recipientId: context.recipientId,
+		recipientName: context.recipientName,
 		role: context.recipientRole,
 		locale: context.recipientLocale,
 		recipientStatus: context.recipientStatus,

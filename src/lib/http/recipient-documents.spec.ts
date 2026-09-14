@@ -15,6 +15,7 @@ const workspace: RecipientWorkspace = {
 	access: {
 		envelopeId: 'env-1',
 		recipientId: 'recipient-1',
+		recipientName: 'Alex Rivera',
 		role: 'signer',
 		locale: 'ja',
 		recipientStatus: 'pending',

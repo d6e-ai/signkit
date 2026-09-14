@@ -4,7 +4,7 @@ import type {
 	RecipientSigningContext
 } from '$lib/ports/recipient-access-store';
 import { issueRecipientCapability } from '$lib/security/recipient-capability';
-import { RecipientAccessService } from './recipient-access';
+import { RecipientAccessService, toPublicRecipientAccess } from './recipient-access';
 
 class StubRecipientAccessStore implements RecipientAccessStore {
 	constructor(private readonly context: RecipientSigningContext | null) {}
@@ -77,5 +77,36 @@ describe('RecipientAccessService', () => {
 		await expect(
 			completedRecipient.resolve(capability.token, '2026-09-11T00:00:00.000Z')
 		).resolves.toBeNull();
+	});
+});
+
+describe('toPublicRecipientAccess', () => {
+	it('exposes the sender-provided name only on the capability-bound public context', () => {
+		const access = toPublicRecipientAccess(activeContext);
+		expect(access).toEqual({
+			envelopeId: 'env_1',
+			recipientId: 'recipient_1',
+			recipientName: 'Recipient',
+			role: 'signer',
+			locale: 'ja',
+			recipientStatus: 'pending',
+			envelopeTitle: 'Agreement',
+			envelopeStatus: 'sent',
+			expiresAt: '2026-09-12T00:00:00.000Z'
+		});
+		expect(Object.keys(access).sort()).toEqual(
+			[
+				'envelopeId',
+				'envelopeStatus',
+				'envelopeTitle',
+				'expiresAt',
+				'locale',
+				'recipientId',
+				'recipientName',
+				'recipientStatus',
+				'role'
+			].sort()
+		);
+		expect(JSON.stringify(access)).not.toMatch(/org_1|email|archive|token|hash/i);
 	});
 });

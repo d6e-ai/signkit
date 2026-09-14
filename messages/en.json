@@ -323,9 +323,17 @@
 	"signature_canvas_label": "Signature",
 	"signature_canvas_instructions": "Draw your signature with a mouse, stylus, or finger.",
 	"signature_canvas_clear": "Clear",
-	"signature_canvas_empty": "Draw your signature above before signing.",
+	"signature_canvas_empty": "Draw your signature above before confirming.",
+	"signature_canvas_ready": "Drawn signature saved. Confirm to use it, or draw again to replace it.",
 	"signature_canvas_typed_label": "Typed signature",
 	"signature_canvas_typed_placeholder": "Type your full name",
 	"signature_canvas_uploading": "Saving signature…",
-	"signature_canvas_upload_failed": "Could not save your drawn signature. Try again or switch to typed signature."
+	"signature_canvas_upload_failed": "Could not save your drawn signature. Try again or switch to typed signature.",
+	"signature_dialog_title": "Add your signature",
+	"signature_dialog_description": "Type your name or draw your signature. This field stays empty until you confirm.",
+	"signature_dialog_confirm": "Use this signature",
+	"signature_dialog_cancel": "Cancel",
+	"signature_dialog_close": "Close",
+	"signature_trigger_empty": "Add signature",
+	"signature_trigger_drawn": "Drawn signature"
 }
