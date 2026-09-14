@@ -171,7 +171,7 @@
 		} catch {
 			if (token !== uploadToken || !open) return;
 			uploadError = m.signature_canvas_upload_failed();
-			draftAssetRef = isSignatureAssetRef(value) ? value : '';
+			draftAssetRef = '';
 		} finally {
 			if (token === uploadToken) uploadPending = false;
 		}
