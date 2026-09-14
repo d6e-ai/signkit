@@ -414,13 +414,46 @@ describe('InvitationDeliveryService', () => {
 		expect(mail.messages[0].subject).toBe('「業務委託契約」の確認をお願いします');
 		expect(mail.messages[0].text).toContain('佐藤 様');
 		expect(mail.messages[0].html).toContain('lang="ja"');
-		expect(mail.messages[0].html).toContain('合意書を開く');
+		expect(mail.messages[0].html).toContain('契約書を開く');
+		expect(mail.messages[0].html).not.toContain('合意書');
+		expect(mail.messages[0].text).not.toContain('合意書');
+		expect(mail.messages[0].html).toContain('#ca3500');
+		expect(mail.messages[0].html).toContain('role="presentation"');
 		expect(opener.openCalls[0]?.context).toEqual({
 			organizationId: 'org-1',
 			envelopeId: 'envelope-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
 		});
+	});
+
+	it('localizes invitation copy from stored recipientLocale, never the mailbox', async () => {
+		const japaneseMailbox = await eligibleClaim({
+			recipientLocale: 'ja',
+			recipientEmail: 'alex@example.com',
+			recipientName: 'Alex'
+		});
+		const englishMailbox = await eligibleClaim({
+			recipientLocale: 'en',
+			recipientEmail: 'sato@example.co.jp',
+			recipientName: '佐藤',
+			deliveryId: 'delivery-2',
+			recipientId: 'recipient-2'
+		});
+		const store: FakeStore = new FakeStore();
+		store.rows = [japaneseMailbox.claim];
+		const jaMail: FakeMail = new FakeMail();
+		await service(store, new FakeOpener(japaneseMailbox.token), jaMail).deliverPendingInvitations();
+		expect(jaMail.messages[0].html).toContain('lang="ja"');
+		expect(jaMail.messages[0].html).toContain('契約書を開く');
+		expect(jaMail.messages[0].html).not.toContain('Open the agreement');
+
+		store.rows = [englishMailbox.claim];
+		const enMail: FakeMail = new FakeMail();
+		await service(store, new FakeOpener(englishMailbox.token), enMail).deliverPendingInvitations();
+		expect(enMail.messages[0].html).toContain('lang="en"');
+		expect(enMail.messages[0].html).toContain('Open the agreement');
+		expect(enMail.messages[0].html).not.toContain('契約書を開く');
 	});
 
 	it('delivers a claimed batch with bounded concurrency so leases do not idle sequentially', async () => {

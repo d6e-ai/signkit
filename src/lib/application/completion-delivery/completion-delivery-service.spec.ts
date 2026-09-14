@@ -446,7 +446,7 @@ describe('CompletionDeliveryService', () => {
 			expect(msg.html).toContain('lang="en"');
 			expect(msg.html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
 			expect(msg.html).toContain('O&#39;Connor');
-			expect(msg.html).toContain('&quot;NDA &quot;Special&quot; &amp; &lt;Offer&gt; 2026&quot;');
+			expect(msg.html).toContain('NDA &quot;Special&quot; &amp; &lt;Offer&gt; 2026');
 			expect(msg.html).toContain(`href="https://signkit.example/c/${token}"`);
 			expect(msg.html).toContain('View completed agreement');
 			expect(msg.html).not.toContain('<script>');
@@ -477,11 +477,11 @@ describe('CompletionDeliveryService', () => {
 			expect(msg.html).toContain('lang="ja"');
 			expect(msg.html).toContain('&lt;次郎&gt;');
 			expect(msg.html).toContain('&quot;顧問&quot;');
-			expect(msg.html).toContain(
-				'「業務委託契約書 &lt;甲乙&gt; &amp; &quot;覚書&quot;」の手続きが完了しました。'
-			);
+			expect(msg.html).toContain('業務委託契約書 &lt;甲乙&gt; &amp; &quot;覚書&quot;');
 			expect(msg.html).toContain(`href="https://signkit.example/c/${token}"`);
-			expect(msg.html).toContain('完了した合意書を開く');
+			expect(msg.html).toContain('完了した契約書を開く');
+			expect(msg.html).not.toContain('合意書');
+			expect(msg.text).not.toContain('合意書');
 		});
 	});
 

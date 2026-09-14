@@ -18,6 +18,10 @@ import {
 import type { CapabilitySealContext } from '$lib/security/delivery-capability';
 import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import { hashRecipientCapability, recipientSigningPath } from '$lib/security/recipient-capability';
+import {
+	renderInvitationMail,
+	type TransactionalMailCopy
+} from '$lib/application/mail/transactional-email';
 
 export const INVITATION_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const INVITATION_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -371,10 +375,12 @@ function invitationMessage(
 	const signingUrl: string = new URL(recipientSigningPath(token), origin).href;
 	const title: string = safeDisplayText(claim.envelopeTitle);
 	const name: string = safeDisplayText(claim.recipientName);
-	const copy: InvitationCopy =
-		claim.recipientLocale === 'ja'
-			? japaneseCopy(name, title, signingUrl)
-			: englishCopy(name, title, signingUrl);
+	const copy: TransactionalMailCopy = renderInvitationMail(
+		claim.recipientLocale === 'ja' ? 'ja' : 'en',
+		name,
+		title,
+		signingUrl
+	);
 	return {
 		to: claim.recipientEmail,
 		from: { email: sender.fromEmail, name: sender.fromName },
@@ -383,71 +389,6 @@ function invitationMessage(
 		html: copy.html,
 		deliveryKey: `signkit-invitation-v1:${claim.organizationId}:${claim.deliveryId}`
 	};
-}
-
-interface InvitationCopy {
-	subject: string;
-	text: string;
-	html: string;
-}
-
-function englishCopy(name: string, title: string, signingUrl: string): InvitationCopy {
-	const safeName: string = escapeHtml(name);
-	const safeTitle: string = escapeHtml(title);
-	const safeUrl: string = escapeHtml(signingUrl);
-	return {
-		subject: `Please review "${title}"`,
-		text: [
-			`Hello ${name},`,
-			'',
-			`You have been invited to review "${title}".`,
-			'',
-			'Open this link to continue:',
-			signingUrl
-		].join('\n'),
-		html: htmlDocument(
-			'en',
-			`<p>Hello ${safeName},</p>` +
-				`<p>You have been invited to review &quot;${safeTitle}&quot;.</p>` +
-				`<p><a href="${safeUrl}">Open the agreement</a></p>`
-		)
-	};
-}
-
-function japaneseCopy(name: string, title: string, signingUrl: string): InvitationCopy {
-	const safeName: string = escapeHtml(name);
-	const safeTitle: string = escapeHtml(title);
-	const safeUrl: string = escapeHtml(signingUrl);
-	return {
-		subject: `「${title}」の確認をお願いします`,
-		text: [
-			`${name} 様`,
-			'',
-			`「${title}」の確認依頼が届いています。`,
-			'',
-			'次のリンクを開いて手続きを続けてください。',
-			signingUrl
-		].join('\n'),
-		html: htmlDocument(
-			'ja',
-			`<p>${safeName} 様</p>` +
-				`<p>「${safeTitle}」の確認依頼が届いています。</p>` +
-				`<p><a href="${safeUrl}">合意書を開く</a></p>`
-		)
-	};
-}
-
-function htmlDocument(lang: 'en' | 'ja', body: string): string {
-	return `<!doctype html><html lang="${lang}"><body>${body}</body></html>`;
-}
-
-function escapeHtml(value: string): string {
-	return value
-		.replaceAll('&', '&amp;')
-		.replaceAll('<', '&lt;')
-		.replaceAll('>', '&gt;')
-		.replaceAll('"', '&quot;')
-		.replaceAll("'", '&#39;');
 }
 
 function sealContext(claim: ClaimedInvitationDelivery): CapabilitySealContext {
