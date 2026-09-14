@@ -177,6 +177,44 @@ function insertApiKeyOrganizationGrant(sqlite: DatabaseSync, id: string): void {
 	`);
 }
 
+function insertEnvelopeDocument(sqlite: DatabaseSync, id: string): void {
+	sqlite.exec(`
+		INSERT INTO envelope_document (
+			id, organization_id, envelope_id, markdown_path, title, position, created_at, updated_at
+		) VALUES (
+			'${id}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'documents/agreement.md', 'Agreement',
+			0, '${NOW}', '${NOW}'
+		)
+	`);
+}
+
+function insertInstanceInvitation(sqlite: DatabaseSync, id: string): void {
+	sqlite.exec(`
+		INSERT INTO instance_member (user_id, status, created_at, updated_at)
+		VALUES ('user_d6e_1', 'active', '${NOW}', '${NOW}')
+		ON CONFLICT (user_id) DO NOTHING;
+		INSERT INTO instance_invitation (
+			id, role, status, token_hash, email_binding, invited_by_user_id, created_at, expires_at
+		) VALUES (
+			'${id}', 'member', 'pending', '${SHA256}', '${'b'.repeat(64)}', 'user_d6e_1',
+			'${NOW}', '2026-09-15T00:00:00.000Z'
+		)
+	`);
+}
+
+function insertWebhookEndpoint(sqlite: DatabaseSync, id: string): void {
+	sqlite.exec(`
+		INSERT INTO webhook_endpoint (
+			id, organization_id, url, status, events_json,
+			secret_hash, signing_secret, secret_prefix, created_at, created_by_user_id
+		) VALUES (
+			'${id}', '${ORGANIZATION_ID}', 'https://example.com/hooks', 'active',
+			'["envelope.completed"]', '${SHA256}', '${'s'.repeat(32)}', 'skwh1_',
+			'${NOW}', 'user_d6e_1'
+		)
+	`);
+}
+
 const CONSTRAINED_TABLES: readonly [string, (sqlite: DatabaseSync, id: string) => void, string][] =
 	[
 		['envelope', insertEnvelope, 'envelope_id_uuidv7'],
@@ -190,7 +228,10 @@ const CONSTRAINED_TABLES: readonly [string, (sqlite: DatabaseSync, id: string) =
 			'api_key_organization_grant',
 			insertApiKeyOrganizationGrant,
 			'api_key_organization_grant_id_uuidv7'
-		]
+		],
+		['webhook_endpoint', insertWebhookEndpoint, 'webhook_endpoint_id_uuidv7'],
+		['envelope_document', insertEnvelopeDocument, 'envelope_document_id_uuidv7'],
+		['instance_invitation', insertInstanceInvitation, 'instance_invitation_id_uuidv7']
 	];
 
 describe('D1 UUIDv7 identifier constraints', () => {

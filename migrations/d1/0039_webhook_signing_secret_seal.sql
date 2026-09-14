@@ -7,6 +7,8 @@ ALTER TABLE webhook_endpoint
     sealing_key_id IS NULL
     OR (
       length(sealing_key_id) = 16
-      AND sealing_key_id GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+      -- Short negated class only: a per-character GLOB would exceed the
+      -- Cloudflare D1 LIKE/GLOB pattern complexity cap.
+      AND sealing_key_id NOT GLOB '*[^0-9a-f]*'
     )
   );

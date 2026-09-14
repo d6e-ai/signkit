@@ -154,8 +154,7 @@ CREATE TABLE instance_member_command (
   ),
   CONSTRAINT instance_member_command_occurred_at_iso CHECK (
     length(occurred_at) = 24
-    AND occurred_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(occurred_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at) IS occurred_at
   )
 );
 

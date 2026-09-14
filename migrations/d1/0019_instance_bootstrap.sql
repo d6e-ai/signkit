@@ -11,8 +11,7 @@ CREATE TABLE instance_bootstrap (
   ),
   CONSTRAINT instance_bootstrap_created_at_iso CHECK (
     length(created_at) = 24
-    AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(created_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at
   )
 );
 
@@ -44,7 +43,6 @@ CREATE TABLE instance_bootstrap_command (
   ),
   CONSTRAINT instance_bootstrap_command_created_at_iso CHECK (
     length(created_at) = 24
-    AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(created_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at
   )
 );
