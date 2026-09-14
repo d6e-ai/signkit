@@ -1301,8 +1301,9 @@ export function openApiDocument(): Record<string, unknown> {
 				RecipientSessionCookie: {
 					type: 'apiKey',
 					in: 'cookie',
-					name: 'signkit_recipient',
-					description: 'Encrypted recipient session cookie from GET /s/{token}. Not an API key.'
+					name: 'signkit_recipient_{envelopeId}',
+					description:
+						'Envelope-scoped encrypted HttpOnly recipient session cookie from GET /s/{token}. Cookie name embeds the UUIDv7 envelope ID. Not an API key.'
 				},
 				CompletionArtifactGrant: {
 					type: 'http',

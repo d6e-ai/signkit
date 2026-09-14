@@ -65,6 +65,35 @@ describe('agreement PDF rendering', () => {
 		expect(result.documents[1].lastPage).toBeGreaterThan(result.documents[1].firstPage);
 	});
 
+	it('does not inject the metadata title into page content', () => {
+		const body = 'Only authored body text.\n';
+		const named = renderAgreementPdf([document('agreement', body)]);
+		const renamed = renderAgreementPdf([document('zxq-synthetic-title', body)]);
+		expect(Array.from(named.bytes)).toEqual(Array.from(renamed.bytes));
+		expect(named.documents[0]?.title).toBe('agreement');
+		expect(renamed.documents[0]?.title).toBe('zxq-synthetic-title');
+	});
+
+	it('still occupies a page for an empty document so the next document starts after it', () => {
+		const result = renderAgreementPdf([
+			document('Cover', ''),
+			document('Agreement', 'Short body.\n')
+		]);
+		expect(result.documents[0]).toMatchObject({
+			index: 0,
+			title: 'Cover',
+			firstPage: 1,
+			lastPage: 1
+		});
+		expect(result.documents[1]).toMatchObject({
+			index: 1,
+			title: 'Agreement',
+			firstPage: 2,
+			lastPage: 2
+		});
+		expect(result.pageCount).toBe(2);
+	});
+
 	it('produces a structurally valid PDF with one page object per rendered page', () => {
 		const result = renderAgreementPdf([document('Agreement', '# Agreement\n\nHello.\n')]);
 		const text: string = new TextDecoder('latin1').decode(result.bytes);

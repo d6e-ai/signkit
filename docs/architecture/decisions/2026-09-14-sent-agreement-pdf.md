@@ -32,7 +32,7 @@ Layout is bounded on every axis that could run away: page count, block count, tr
 
 ## Serving it
 
-`GET /sign/agreement.pdf` is same-origin and authenticated **only** by the sealed, http-only recipient session cookie. No token appears in the URL, in page data, or anywhere JavaScript can read it, so the address is not a bearer credential and cannot leak through history, referrers, logs, or a shared link.
+`GET /sign/{envelopeId}/agreement.pdf` is same-origin and authenticated **only** by the envelope-scoped sealed, http-only recipient session cookie. The path carries the non-secret UUIDv7 envelope ID so two tabs can request different documents; no token appears in the URL, in page data, or anywhere JavaScript can read it, so the address is not a bearer credential and cannot leak through history, referrers, logs, or a shared link. A path/cookie mismatch fails closed.
 
 The capability and the pinned commit are revalidated _after_ the object read as well as before it, because object storage is slow enough for a revocation to land in between. Failures are deliberately uninformative: an inactive, expired, revoked, or absent session is an empty 404, indistinguishable from a path that was never valid; every storage or integrity problem is the same fixed, empty 503. Neither carries an identifier, a name, an object key, or a provider message.
 

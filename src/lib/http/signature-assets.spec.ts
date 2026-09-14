@@ -4,7 +4,7 @@ import type {
 	SignatureAssetApplicationPort,
 	StoreSignatureAssetResult
 } from '$lib/application/documents/signature-asset';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { recipientSessionCookieName } from '$lib/server/recipient-session';
 import {
 	createSignatureAssetHandler,
 	type RecipientSessionUnsealer,
@@ -41,7 +41,7 @@ function buildEvent(options: {
 			: (options.cookie ?? 'sealed-session');
 	const cookies = {
 		get: vi.fn((name: string): string | undefined =>
-			name === RECIPIENT_SESSION_COOKIE ? cookie : undefined
+			name === recipientSessionCookieName(envelopeId) ? cookie : undefined
 		),
 		delete: deleted
 	} as unknown as Cookies;

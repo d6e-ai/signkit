@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { render } from 'svelte/server';
 import type { RecipientPlacedField } from '$lib/application/signing/recipient-workspace';
-import SignPage from './+page.svelte';
-import type { PageData } from './$types';
+import SignPage from './[envelopeId]/+page.svelte';
+import type { PageData } from './[envelopeId]/$types';
 
 const ENVELOPE_ID = '01910000-0000-7000-8000-000000000001';
 const RECIPIENT_ID = '01910000-0000-7000-8000-000000000002';
@@ -62,7 +62,7 @@ describe('recipient signing page', () => {
 		expect(body).toContain('schedule a');
 		// The PDF address is same-origin and token-free: authority is the
 		// http-only session cookie, never anything reachable from page data.
-		expect(body).toContain('/sign/agreement.pdf');
+		expect(body).toContain(`/sign/${ENVELOPE_ID}/agreement.pdf`);
 		expect(body).not.toMatch(/skr1_|token=|capability/i);
 		expect(body).not.toContain('{@html');
 		// Removed with the Markdown surface itself.
@@ -107,7 +107,7 @@ describe('recipient signing page', () => {
 		expect(body).toContain(expected);
 		expect(body).not.toContain('Agreement documents');
 		expect(body).not.toContain('Decline request');
-		expect(body).not.toContain('/sign/agreement.pdf');
+		expect(body).not.toContain(`/sign/${ENVELOPE_ID}/agreement.pdf`);
 	});
 
 	it('renders a durable decline receipt without any document workspace or controls', () => {
@@ -129,7 +129,7 @@ describe('recipient signing page', () => {
 		expect(body).not.toContain('Decline request');
 		expect(body).not.toContain('Approve agreement');
 		expect(body).not.toContain('Sign and complete');
-		expect(body).not.toContain('/sign/agreement.pdf');
+		expect(body).not.toContain(`/sign/${ENVELOPE_ID}/agreement.pdf`);
 	});
 
 	it('puts the decline action in the summary card footer for actionable roles', () => {

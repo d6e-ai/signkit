@@ -4,7 +4,7 @@ import type {
 	RecipientApprovedApplicationPort,
 	RecipientApprovedResult
 } from '$lib/application/signing/recipient-approved';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { recipientSessionCookieName } from '$lib/server/recipient-session';
 import {
 	createRecipientApprovedHandler,
 	type RecipientApprovedApplicationResolver
@@ -133,7 +133,7 @@ describe('recipient approved HTTP handler', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('cache-control')).toBe('no-store');
 		expect(response.headers.get('vary')).toBe('Cookie, Origin');
-		expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
 		const body: unknown = await response.json();
 		expect(body).toEqual({
 			approved: {
@@ -179,7 +179,7 @@ describe('recipient approved HTTP handler', () => {
 		)(event);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('idempotency-replayed')).toBe('true');
-		expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
 	});
 
 	it('preserves the cookie for opaque not_found, context_mismatch, and role_not_actionable outcomes', async () => {

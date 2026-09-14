@@ -8,8 +8,8 @@ import type {
 	AuthorizedRecipientDeclinedReceipt,
 	RecipientDeclinedReceiptApplicationPort
 } from '$lib/application/signing/recipient-declined-receipt';
-import { DECLINED_RECEIPT_COOKIE } from '$lib/server/declined-receipt-session';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { declinedReceiptCookieName } from '$lib/server/declined-receipt-session';
+import { recipientSessionCookieName } from '$lib/server/recipient-session';
 import {
 	createRecipientDeclinedHandler,
 	type RecipientDeclinedApplicationResolver,
@@ -190,9 +190,13 @@ describe('recipient declined HTTP handler', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('cache-control')).toBe('no-store');
 		expect(response.headers.get('vary')).toBe('Cookie, Origin');
-		expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+		expect(deleted).not.toHaveBeenCalledWith(
+			recipientSessionCookieName('01910000-0000-7000-8000-000000000099'),
+			{ path: '/' }
+		);
 		expect(set).toHaveBeenCalledWith(
-			DECLINED_RECEIPT_COOKIE,
+			declinedReceiptCookieName(envelopeId),
 			'sealed-receipt',
 			expect.objectContaining({ httpOnly: true, sameSite: 'lax', secure: true })
 		);
@@ -230,7 +234,7 @@ describe('recipient declined HTTP handler', () => {
 		)(event);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('idempotency-replayed')).toBe('true');
-		expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
 	});
 
 	it('preserves active authority and returns a secret-free 503 when receipt recovery fails after publication', async () => {
@@ -284,7 +288,7 @@ describe('recipient declined HTTP handler', () => {
 				async (): Promise<string | null> => (mode === 'unreadable' ? null : token)
 			)(event);
 			expect(response.status).toBe(404);
-			expect(deleted).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+			expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
 		}
 	});
 

@@ -1,6 +1,6 @@
 import type { Cookies, RequestEvent } from '@sveltejs/kit';
 import { vi } from 'vitest';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { recipientSessionCookieName } from '$lib/server/recipient-session';
 
 export interface RecipientRequestEventInput {
 	/** The signing-action endpoint under test; every handler spec has its own. */
@@ -37,9 +37,12 @@ export function createRecipientRequestEvent(
 	}
 	const deleted = vi.fn();
 	const cookie: string | undefined = input.cookie ?? 'sealed-session';
+	const envelopeId: string | null = envelopeIdFrom(input.body ?? input.defaultBody);
+	const cookieName: string | null =
+		envelopeId === null ? null : recipientSessionCookieName(envelopeId);
 	const cookies = {
 		get: vi.fn((name: string): string | undefined =>
-			name === RECIPIENT_SESSION_COOKIE ? cookie : undefined
+			cookieName !== null && name === cookieName ? cookie : undefined
 		),
 		delete: deleted
 	} as unknown as Cookies;
@@ -58,4 +61,10 @@ export function createRecipientRequestEvent(
 		deleted,
 		cookies
 	};
+}
+
+function envelopeIdFrom(body: unknown): string | null {
+	if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+	const envelopeId: unknown = (body as { envelopeId?: unknown }).envelopeId;
+	return typeof envelopeId === 'string' ? envelopeId : null;
 }

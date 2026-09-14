@@ -5,9 +5,12 @@ import { RecipientWorkspaceIntegrityError } from './recipient-workspace';
 import { resolveDeclinedReceiptPage, resolveRecipientPage } from './recipient-page';
 import type { DeclinedReceiptSessionLocator } from '$lib/server/declined-receipt-session';
 
+const envelopeId: string = '01910000-0000-7000-8000-000000000010';
+const otherEnvelopeId: string = '01910000-0000-7000-8000-000000000011';
+
 const workspace: RecipientWorkspace = {
 	access: {
-		envelopeId: 'env-1',
+		envelopeId,
 		recipientId: 'recipient-1',
 		recipientName: 'Alex Rivera',
 		role: 'approver',
@@ -38,7 +41,7 @@ describe('recipient signing page resolution', () => {
 		const unseal = vi.fn(async (): Promise<string | null> => 'token');
 		await expect(
 			resolveRecipientPage(
-				{ accessHint: 'invalid', cookie: 'old', clearSession: vi.fn() },
+				{ accessHint: 'invalid', envelopeId, cookie: 'old', clearSession: vi.fn() },
 				() => application(),
 				unseal
 			)
@@ -50,7 +53,7 @@ describe('recipient signing page resolution', () => {
 		const clearSession = vi.fn();
 		await expect(
 			resolveRecipientPage(
-				{ accessHint: null, cookie: 'bad', clearSession },
+				{ accessHint: null, envelopeId, cookie: 'bad', clearSession },
 				() => application(),
 				async (): Promise<null> => null
 			)
@@ -61,7 +64,7 @@ describe('recipient signing page resolution', () => {
 	it('revalidates the decrypted capability and returns the public workspace', async () => {
 		const app: RecipientWorkspaceApplicationPort = application();
 		const result = await resolveRecipientPage(
-			{ accessHint: null, cookie: 'sealed', clearSession: vi.fn() },
+			{ accessHint: null, envelopeId, cookie: 'sealed', clearSession: vi.fn() },
 			() => app,
 			async (): Promise<string> => 'raw-token',
 			() => new Date('2026-09-11T00:00:00.000Z')
@@ -76,7 +79,7 @@ describe('recipient signing page resolution', () => {
 		const clearSession = vi.fn();
 		await expect(
 			resolveRecipientPage(
-				{ accessHint: null, cookie: 'sealed', clearSession },
+				{ accessHint: null, envelopeId, cookie: 'sealed', clearSession },
 				() => application(null),
 				async (): Promise<string> => 'raw-token'
 			)
@@ -87,7 +90,7 @@ describe('recipient signing page resolution', () => {
 	it('recovers a durable decline receipt without returning the document workspace', async () => {
 		const clearSession = vi.fn();
 		const recoverDeclined = vi.fn(async () => ({
-			envelopeId: 'env-1',
+			envelopeId,
 			recipientId: 'recipient-1',
 			recipientStatus: 'declined' as const,
 			envelopeStatus: 'declined' as const,
@@ -97,6 +100,7 @@ describe('recipient signing page resolution', () => {
 		const result = await resolveRecipientPage(
 			{
 				accessHint: null,
+				envelopeId,
 				cookie: 'sealed',
 				clearSession,
 				recoverDeclined
@@ -109,7 +113,7 @@ describe('recipient signing page resolution', () => {
 		expect(recoverDeclined).toHaveBeenCalledWith('raw-token', new Date('2026-09-11T00:03:00.000Z'));
 		expect(result).toEqual({
 			state: 'declined',
-			envelopeId: 'env-1',
+			envelopeId: envelopeId,
 			recipientId: 'recipient-1',
 			recipientStatus: 'declined',
 			envelopeStatus: 'declined',
@@ -124,7 +128,7 @@ describe('recipient signing page resolution', () => {
 		const clearSession = vi.fn();
 		await expect(
 			resolveRecipientPage(
-				{ accessHint: null, cookie: 'sealed', clearSession },
+				{ accessHint: null, envelopeId, cookie: 'sealed', clearSession },
 				() => null,
 				async (): Promise<string> => 'raw-token'
 			)
@@ -137,7 +141,7 @@ describe('recipient signing page resolution', () => {
 		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 		await expect(
 			resolveRecipientPage(
-				{ accessHint: null, cookie: 'sealed', clearSession },
+				{ accessHint: null, envelopeId, cookie: 'sealed', clearSession },
 				() => application(),
 				async (): Promise<string> => {
 					throw new Error('configuration detail that must not be logged');
@@ -157,7 +161,7 @@ describe('recipient signing page resolution', () => {
 		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 		await expect(
 			resolveRecipientPage(
-				{ accessHint: null, cookie: 'sealed', clearSession },
+				{ accessHint: null, envelopeId, cookie: 'sealed', clearSession },
 				() => ({
 					resolve: async (): Promise<RecipientWorkspace> => {
 						throw new RecipientWorkspaceIntegrityError();
@@ -171,6 +175,18 @@ describe('recipient signing page resolution', () => {
 			JSON.stringify({ event: 'recipient_page_integrity_failed' })
 		);
 		error.mockRestore();
+	});
+
+	it('fails closed when the workspace envelope ID does not match the path', async () => {
+		const clearSession = vi.fn();
+		await expect(
+			resolveRecipientPage(
+				{ accessHint: null, envelopeId: otherEnvelopeId, cookie: 'sealed', clearSession },
+				() => application(),
+				async (): Promise<string> => 'raw-token'
+			)
+		).resolves.toEqual({ state: 'invalid' });
+		expect(clearSession).toHaveBeenCalledOnce();
 	});
 });
 
@@ -206,7 +222,7 @@ describe('terminal decline receipt page resolution', () => {
 	it('evidence-checks the encrypted locator without returning a workspace', async () => {
 		const application: RecipientDeclinedReceiptApplicationPort = declinedReceiptApplication();
 		const result = await resolveDeclinedReceiptPage(
-			{ cookie: 'sealed', clearSession: vi.fn() },
+			{ envelopeId: declinedLocator.envelopeId, cookie: 'sealed', clearSession: vi.fn() },
 			() => application,
 			async (): Promise<DeclinedReceiptSessionLocator> => declinedLocator,
 			() => new Date('2026-09-11T00:03:00.000Z')
@@ -237,7 +253,7 @@ describe('terminal decline receipt page resolution', () => {
 				vi.mocked(application.resolveLocator).mockResolvedValue(null);
 			}
 			const result = await resolveDeclinedReceiptPage(
-				{ cookie: 'sealed', clearSession },
+				{ envelopeId: declinedLocator.envelopeId, cookie: 'sealed', clearSession },
 				() => application,
 				async (): Promise<DeclinedReceiptSessionLocator | null> =>
 					scenario === 'unreadable' ? null : declinedLocator,
@@ -254,12 +270,25 @@ describe('terminal decline receipt page resolution', () => {
 		const clearSession = vi.fn();
 		await expect(
 			resolveDeclinedReceiptPage(
-				{ cookie: 'sealed', clearSession },
+				{ envelopeId: declinedLocator.envelopeId, cookie: 'sealed', clearSession },
 				() => null,
 				async (): Promise<DeclinedReceiptSessionLocator> => declinedLocator,
 				() => new Date('2026-09-11T00:03:00.000Z')
 			)
 		).resolves.toEqual({ state: 'unavailable' });
 		expect(clearSession).not.toHaveBeenCalled();
+	});
+
+	it('fails closed when the receipt locator envelope does not match the path', async () => {
+		const clearSession = vi.fn();
+		await expect(
+			resolveDeclinedReceiptPage(
+				{ envelopeId: '01910000-0000-7000-8000-000000000099', cookie: 'sealed', clearSession },
+				() => declinedReceiptApplication(),
+				async (): Promise<DeclinedReceiptSessionLocator> => declinedLocator,
+				() => new Date('2026-09-11T00:03:00.000Z')
+			)
+		).resolves.toEqual({ state: 'invalid' });
+		expect(clearSession).toHaveBeenCalledOnce();
 	});
 });

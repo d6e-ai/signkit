@@ -6,9 +6,10 @@ import {
 	type StoreSignatureAssetResult
 } from '$lib/application/documents/signature-asset';
 import {
-	RECIPIENT_SESSION_COOKIE,
-	RECIPIENT_SESSION_COOKIE_PATH
+	deleteRecipientSessionCookie,
+	readRecipientSessionCookie
 } from '$lib/server/recipient-session';
+import { boundEnvelopeId } from './envelope-binding';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -22,7 +23,10 @@ export type SignatureAssetApplicationResolver = (
 	context: ResolverContext
 ) => SignatureAssetApplicationPort | null | Promise<SignatureAssetApplicationPort | null>;
 
-export type RecipientSessionUnsealer = (cookie: string) => Promise<string | null>;
+export type RecipientSessionUnsealer = (
+	cookie: string,
+	envelopeId: string
+) => Promise<string | null>;
 
 export function createSignatureAssetHandler(
 	resolveApplication: SignatureAssetApplicationResolver,
@@ -31,20 +35,20 @@ export function createSignatureAssetHandler(
 	return async ({ cookies, platform, request, url }): Promise<Response> => {
 		if (request.headers.get('origin') !== url.origin) return crossOriginDenied(url.pathname);
 
-		const envelopeId = idSchema.safeParse(url.searchParams.get('envelopeId'));
+		const envelopeId = boundEnvelopeId(url.searchParams.get('envelopeId'));
 		const recipientId = idSchema.safeParse(url.searchParams.get('recipientId'));
-		if (!envelopeId.success || !recipientId.success) return invalidCommand(url.pathname);
+		if (envelopeId === null || !recipientId.success) return invalidCommand(url.pathname);
 
 		if (!isPngContentType(request.headers.get('content-type'))) {
 			return unsupportedMediaType(url.pathname);
 		}
 
-		const sealed: string | undefined = cookies.get(RECIPIENT_SESSION_COOKIE);
+		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
 		if (sealed === undefined) return accessNotFound(url.pathname);
 
 		let token: string | null;
 		try {
-			token = await unsealSession(sealed);
+			token = await unsealSession(sealed, envelopeId);
 		} catch {
 			console.error(JSON.stringify({ event: 'signature_asset_session_failed' }));
 			return unavailable(url.pathname);
@@ -66,11 +70,11 @@ export function createSignatureAssetHandler(
 		try {
 			const result: StoreSignatureAssetResult = await application.store({
 				token,
-				expectedEnvelopeId: envelopeId.data,
+				expectedEnvelopeId: envelopeId,
 				expectedRecipientId: recipientId.data,
 				pngBytes: bytes
 			});
-			return resultResponse(result, url.pathname, cookies);
+			return resultResponse(result, url.pathname, cookies, envelopeId);
 		} catch {
 			console.error(JSON.stringify({ event: 'signature_asset_store_failed' }));
 			return unavailable(url.pathname);
@@ -81,7 +85,8 @@ export function createSignatureAssetHandler(
 function resultResponse(
 	result: StoreSignatureAssetResult,
 	instance: string,
-	cookies: Cookies
+	cookies: Cookies,
+	envelopeId: string
 ): Response {
 	if (result.outcome === 'stored') {
 		return new Response(JSON.stringify({ assetRef: result.assetRef }), {
@@ -90,15 +95,17 @@ function resultResponse(
 		});
 	}
 	if (result.outcome === 'not_found' || result.outcome === 'context_mismatch') {
-		return accessNotFound(instance, cookies);
+		return accessNotFound(instance, cookies, envelopeId);
 	}
 	if (result.outcome === 'too_large') return bodyTooLarge(instance);
 	if (result.outcome === 'invalid_image') return invalidCommand(instance);
 	return unavailable(instance);
 }
 
-function accessNotFound(instance: string, cookies?: Cookies): Response {
-	if (cookies) cookies.delete(RECIPIENT_SESSION_COOKIE, { path: RECIPIENT_SESSION_COOKIE_PATH });
+function accessNotFound(instance: string, cookies?: Cookies, envelopeId?: string): Response {
+	if (cookies !== undefined && envelopeId !== undefined) {
+		deleteRecipientSessionCookie(cookies, envelopeId);
+	}
 	return problemResponse(
 		{
 			type: 'urn:signkit:problem:recipient-access-not-found',

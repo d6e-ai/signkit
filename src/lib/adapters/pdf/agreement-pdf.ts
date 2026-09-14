@@ -72,7 +72,7 @@ export class AgreementPdfBoundExceededError extends Error {
 }
 
 export interface AgreementPdfDocument {
-	/** Human-readable heading rendered above the document body. */
+	/** Metadata title for navigation, field mapping, and APIs. Not drawn on the page. */
 	title: string;
 	nodes: readonly RecipientMarkdownNode[];
 }
@@ -172,14 +172,9 @@ export function renderAgreementPdf(documents: readonly AgreementPdfDocument[]): 
 		const blocks: LayoutBlock[] = [];
 		collectBlocks(document.nodes, blocks, { indent: 0, quoted: false, style: PLAIN, depth: 0 });
 		const lines: PositionedLine[] = [];
-		// Each document starts on a fresh page and leads with its own title, so
-		// a recipient can never mistake where one agreement document ends and
-		// the next begins -- and so a field's page number maps to exactly one
-		// document.
-		lines.push(...layoutHeading(cache, document.title, 'h1'));
-		lines.push(spacer(PARAGRAPH_GAP));
-		lines.push(ruleLine());
-		lines.push(spacer(PARAGRAPH_GAP * 2));
+		// Each document starts on a fresh page so a field's page number maps to
+		// exactly one document. Only authored Markdown is drawn; the metadata
+		// title is kept for navigation and APIs, not injected as a heading.
 		for (const block of blocks) lines.push(...layoutBlock(cache, block));
 
 		const firstPage: number = pages.length + 1;
@@ -602,20 +597,6 @@ function layoutTable(
 	}
 	lines.push(spacer(PARAGRAPH_GAP));
 	return lines;
-}
-
-function layoutHeading(
-	cache: GlyphCache,
-	text: string,
-	level: keyof typeof HEADING_SIZES
-): PositionedLine[] {
-	return layoutRuns(
-		cache,
-		[{ text, style: { ...PLAIN, bold: true } }],
-		HEADING_SIZES[level],
-		MARGIN_X,
-		CONTENT_WIDTH
-	);
 }
 
 function layoutRuns(

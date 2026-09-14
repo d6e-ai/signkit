@@ -25,7 +25,7 @@ export type RecipientSentPdfResult =
 	| { outcome: 'unavailable' };
 
 export interface RecipientSentPdfApplicationPort {
-	read(token: string): Promise<RecipientSentPdfResult>;
+	read(token: string, expectedEnvelopeId: string): Promise<RecipientSentPdfResult>;
 }
 
 export class RecipientSentPdfService implements RecipientSentPdfApplicationPort {
@@ -36,12 +36,13 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 		private readonly now: () => Date = (): Date => new Date()
 	) {}
 
-	async read(token: string): Promise<RecipientSentPdfResult> {
+	async read(token: string, expectedEnvelopeId: string): Promise<RecipientSentPdfResult> {
 		const before: RecipientSigningContext | null = await this.access.resolve(
 			token,
 			this.now().toISOString()
 		);
 		if (before === null) return { outcome: 'not_found' };
+		if (before.envelopeId !== expectedEnvelopeId) return { outcome: 'not_found' };
 
 		const pointer: SentPdfPointer | null = await this.#pointer(before);
 		if (pointer === null) return { outcome: 'unavailable' };
@@ -62,6 +63,7 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 			this.now().toISOString()
 		);
 		if (after === null) return { outcome: 'not_found' };
+		if (after.envelopeId !== expectedEnvelopeId) return { outcome: 'not_found' };
 		if (
 			after.organizationId !== before.organizationId ||
 			after.envelopeId !== before.envelopeId ||

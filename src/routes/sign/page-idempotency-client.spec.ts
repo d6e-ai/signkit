@@ -4,7 +4,7 @@ import {
 	createRecipientDeclineController,
 	createRecipientSignController,
 	initRecipientViewed
-} from './+page.svelte';
+} from './[envelopeId]/+page.svelte';
 
 const envelopeId = '01910000-0000-7000-8000-000000000001';
 const recipientId = '01910000-0000-7000-8000-000000000002';

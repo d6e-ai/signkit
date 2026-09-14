@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { AesGcmSealingKeyring, decodeBase64SealingKey } from '$lib/security/sealing-keyring';
 
 export interface DeclinedReceiptSessionLocator {
@@ -12,10 +13,33 @@ export interface DeclinedReceiptSessionLocator {
 	expiresAt: string;
 }
 
-export const DECLINED_RECEIPT_COOKIE: string = 'signkit_declined_receipt';
+export const DECLINED_RECEIPT_COOKIE_PREFIX: string = 'signkit_declined_receipt_';
 export const DECLINED_RECEIPT_COOKIE_PATH: string = '/';
 export const DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS: number = 60 * 60 * 24 * 30;
 export const DECLINED_RECEIPT_COOKIE_MAX_LENGTH: number = 1024;
+
+export function declinedReceiptCookieName(envelopeId: string): string | null {
+	if (!isUuidV7(envelopeId)) return null;
+	return `${DECLINED_RECEIPT_COOKIE_PREFIX}${envelopeId}`;
+}
+
+export function readDeclinedReceiptCookie(
+	cookies: { get(name: string): string | undefined },
+	envelopeId: string
+): string | undefined {
+	const name: string | null = declinedReceiptCookieName(envelopeId);
+	if (name === null) return undefined;
+	return cookies.get(name);
+}
+
+export function deleteDeclinedReceiptCookie(
+	cookies: { delete(name: string, opts: { path: string }): void },
+	envelopeId: string
+): void {
+	const name: string | null = declinedReceiptCookieName(envelopeId);
+	if (name === null) return;
+	cookies.delete(name, { path: DECLINED_RECEIPT_COOKIE_PATH });
+}
 
 export const DECLINED_RECEIPT_COOKIE_OPTIONS = {
 	path: DECLINED_RECEIPT_COOKIE_PATH,
@@ -28,7 +52,6 @@ export const DECLINED_RECEIPT_COOKIE_OPTIONS = {
 const IV_BYTES: number = 12;
 const TAG_BYTES: number = 16;
 const KEY_ID_HEX_LENGTH: number = 16;
-const UUID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_KEY_PATTERN: RegExp = /^[\x21-\x7e]{1,200}$/;
 const SHA256_HEX_PATTERN: RegExp = /^[0-9a-f]{64}$/;
 const LOCATOR_KEYS: readonly string[] = [
@@ -41,7 +64,7 @@ const LOCATOR_KEYS: readonly string[] = [
 	'recipientId',
 	'version'
 ];
-const AAD: Uint8Array<ArrayBuffer> = utf8('signkit:declined-receipt-cookie:v1');
+const AAD_PREFIX: string = 'signkit:declined-receipt-cookie:v1:';
 const HKDF_SALT: Uint8Array<ArrayBuffer> = utf8('signkit:session-key-derivation:v1');
 const HKDF_INFO: Uint8Array<ArrayBuffer> = utf8('signkit:declined-receipt-key:v1');
 const ENV_VAR_NAME: string = 'SESSION_ENCRYPTION_KEY';
@@ -51,10 +74,12 @@ export async function sealDeclinedReceiptSession(
 ): Promise<string> {
 	if (!isDeclinedReceiptSessionLocator(locator))
 		throw new Error('Invalid declined receipt locator');
+	const aad: Uint8Array<ArrayBuffer> | null = declinedReceiptAad(locator.envelopeId);
+	if (aad === null) throw new Error('Invalid declined receipt locator');
 
 	const keyring: AesGcmSealingKeyring = await declinedReceiptKeyring();
 	const plaintext: Uint8Array<ArrayBuffer> = utf8(JSON.stringify(locator));
-	const sealed = await keyring.sealWithActive(plaintext, AAD);
+	const sealed = await keyring.sealWithActive(plaintext, aad);
 	const keyIdBytes: Uint8Array<ArrayBuffer> = utf8(sealed.keyId);
 	if (keyIdBytes.byteLength !== KEY_ID_HEX_LENGTH)
 		throw new Error('Unexpected sealing key ID length');
@@ -72,8 +97,11 @@ export async function sealDeclinedReceiptSession(
 }
 
 export async function unsealDeclinedReceiptSession(
-	cookie: string
+	cookie: string,
+	envelopeId: string
 ): Promise<DeclinedReceiptSessionLocator | null> {
+	const aad: Uint8Array<ArrayBuffer> | null = declinedReceiptAad(envelopeId);
+	if (aad === null) return null;
 	if (cookie.length === 0 || cookie.length > DECLINED_RECEIPT_COOKIE_MAX_LENGTH) return null;
 
 	let combined: Uint8Array<ArrayBuffer>;
@@ -92,10 +120,11 @@ export async function unsealDeclinedReceiptSession(
 	const ciphertext: Uint8Array<ArrayBuffer> = combined.slice(KEY_ID_HEX_LENGTH + IV_BYTES);
 	const keyring: AesGcmSealingKeyring = await declinedReceiptKeyring();
 	try {
-		const plaintext: Uint8Array = await keyring.openWithKeyId(keyId, iv, ciphertext, AAD);
+		const plaintext: Uint8Array = await keyring.openWithKeyId(keyId, iv, ciphertext, aad);
 		const decoded: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 		const candidate: unknown = JSON.parse(decoded);
-		return isDeclinedReceiptSessionLocator(candidate) ? candidate : null;
+		if (!isDeclinedReceiptSessionLocator(candidate)) return null;
+		return candidate.envelopeId === envelopeId ? candidate : null;
 	} catch {
 		return null;
 	}
@@ -119,9 +148,9 @@ export function isDeclinedReceiptSessionLocator(
 	}
 
 	if (value.version !== 1) return false;
-	if (!isUuid(value.organizationId)) return false;
-	if (!isUuid(value.envelopeId)) return false;
-	if (!isUuid(value.recipientId)) return false;
+	if (!isUuidV7String(value.organizationId)) return false;
+	if (!isUuidV7String(value.envelopeId)) return false;
+	if (!isUuidV7String(value.recipientId)) return false;
 	if (typeof value.idempotencyKey !== 'string') return false;
 	if (!IDEMPOTENCY_KEY_PATTERN.test(value.idempotencyKey)) return false;
 	if (typeof value.capabilityHash !== 'string') return false;
@@ -175,8 +204,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isUuid(value: unknown): value is string {
-	return typeof value === 'string' && UUID_PATTERN.test(value);
+function declinedReceiptAad(envelopeId: string): Uint8Array<ArrayBuffer> | null {
+	if (!isUuidV7(envelopeId)) return null;
+	return utf8(`${AAD_PREFIX}${envelopeId}`);
+}
+
+function isUuidV7String(value: unknown): value is string {
+	return typeof value === 'string' && isUuidV7(value);
 }
 
 function isCanonicalIsoTimestamp(value: string): boolean {

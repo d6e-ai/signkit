@@ -86,7 +86,10 @@ describe('RecipientSentPdfService', () => {
 		const { port, resolve } = access(context, context);
 		const pointers: EnvelopeSentPdfStore = store(pointer, pointer);
 
-		const result = await new RecipientSentPdfService(port, pointers, objects).read(TOKEN);
+		const result = await new RecipientSentPdfService(port, pointers, objects).read(
+			TOKEN,
+			ENVELOPE_ID
+		);
 
 		expect(result).toEqual({
 			outcome: 'ok',
@@ -110,7 +113,22 @@ describe('RecipientSentPdfService', () => {
 		const pointers: EnvelopeSentPdfStore = store();
 
 		await expect(
-			new RecipientSentPdfService(access(null).port, pointers, objects).read(TOKEN)
+			new RecipientSentPdfService(access(null).port, pointers, objects).read(TOKEN, ENVELOPE_ID)
+		).resolves.toEqual({ outcome: 'not_found' });
+		expect(pointers.findSentPdf).not.toHaveBeenCalled();
+		expect(get).not.toHaveBeenCalled();
+	});
+
+	it('reports not_found when the path envelope ID does not match the capability', async () => {
+		const objects: ObjectStore = new InMemoryObjectStore();
+		const get = vi.spyOn(objects, 'get');
+		const pointers: EnvelopeSentPdfStore = store();
+
+		await expect(
+			new RecipientSentPdfService(access(context).port, pointers, objects).read(
+				TOKEN,
+				'other-envelope'
+			)
 		).resolves.toEqual({ outcome: 'not_found' });
 		expect(pointers.findSentPdf).not.toHaveBeenCalled();
 		expect(get).not.toHaveBeenCalled();
@@ -124,14 +142,17 @@ describe('RecipientSentPdfService', () => {
 				access(context, null).port,
 				store(pointer, pointer),
 				objects
-			).read(TOKEN)
+			).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'not_found' });
 	});
 
 	it('is unavailable when no rendering has been published for the sent commit', async () => {
 		const objects: ObjectStore = new InMemoryObjectStore();
 		await expect(
-			new RecipientSentPdfService(access(context, context).port, store(null), objects).read(TOKEN)
+			new RecipientSentPdfService(access(context, context).port, store(null), objects).read(
+				TOKEN,
+				ENVELOPE_ID
+			)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -142,7 +163,7 @@ describe('RecipientSentPdfService', () => {
 				access(context, context).port,
 				store(pointer, pointer),
 				new InMemoryObjectStore()
-			).read(TOKEN)
+			).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -161,7 +182,7 @@ describe('RecipientSentPdfService', () => {
 				access(context, context).port,
 				store(pointer, pointer),
 				objects
-			).read(TOKEN)
+			).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -181,7 +202,7 @@ describe('RecipientSentPdfService', () => {
 				access(context, context).port,
 				store(pointer, pointer),
 				objects
-			).read(TOKEN)
+			).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -198,7 +219,7 @@ describe('RecipientSentPdfService', () => {
 				access(context, context).port,
 				store(crossTenant, crossTenant),
 				objects
-			).read(TOKEN)
+			).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -216,7 +237,7 @@ describe('RecipientSentPdfService', () => {
 				access(context, context).port,
 				store(pointer, replaced),
 				objects
-			).read(TOKEN)
+			).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -233,7 +254,7 @@ describe('RecipientSentPdfService', () => {
 				access(context, repinned).port,
 				store(pointer, pointer),
 				objects
-			).read(TOKEN)
+			).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 });

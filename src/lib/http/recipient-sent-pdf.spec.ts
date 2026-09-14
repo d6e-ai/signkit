@@ -4,25 +4,34 @@ import type {
 	RecipientSentPdfApplicationPort,
 	RecipientSentPdfResult
 } from '$lib/application/signing/recipient-sent-pdf';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { recipientSessionCookieName } from '$lib/server/recipient-session';
 import { createRecipientSentPdfHandler } from './recipient-sent-pdf';
 
 const TOKEN: string = `skr1_${'A'.repeat(43)}`;
+const ENVELOPE_ID: string = '01910000-0000-7000-8000-000000000001';
+const OTHER_ENVELOPE_ID: string = '01910000-0000-7000-8000-000000000011';
+const COOKIE_NAME: string = recipientSessionCookieName(ENVELOPE_ID) as string;
 const BYTES: Uint8Array = new TextEncoder().encode('%PDF-1.7\nbody\n%%EOF\n');
 const SHA256: string = 'a'.repeat(64);
 
-function event(options: { cookie?: string; method?: string } = {}): RequestEvent {
+function event(
+	options: { cookie?: string; method?: string; envelopeId?: string } = {}
+): RequestEvent {
+	const envelopeId: string = options.envelopeId ?? ENVELOPE_ID;
+	const cookieName: string | null = recipientSessionCookieName(envelopeId);
 	const cookies = {
 		get: (name: string): string | undefined =>
-			name === RECIPIENT_SESSION_COOKIE ? options.cookie : undefined
+			cookieName !== null && name === cookieName ? options.cookie : undefined
 	} as unknown as Cookies;
+	const pathname = `/sign/${envelopeId}/agreement.pdf`;
 	return {
 		cookies,
+		params: { envelopeId },
 		platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } },
-		request: new Request('https://signkit.example/sign/agreement.pdf', {
+		request: new Request(`https://signkit.example${pathname}`, {
 			method: options.method ?? 'GET'
 		}),
-		url: new URL('https://signkit.example/sign/agreement.pdf')
+		url: new URL(`https://signkit.example${pathname}`)
 	} as unknown as RequestEvent;
 }
 
@@ -55,12 +64,10 @@ describe('recipient sent PDF HTTP handler', () => {
 		expect(response.headers.get('x-content-type-options')).toBe('nosniff');
 		expect(response.headers.get('vary')).toBe('Cookie');
 		expect(response.headers.get('referrer-policy')).toBe('no-referrer');
-		// The viewer fetches these bytes and draws them itself, so no origin
-		// needs framing permission and none is granted.
 		expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
 		expect(response.headers.get('x-frame-options')).toBe('DENY');
 		expect(response.headers.get('content-length')).toBe(String(BYTES.byteLength));
-		expect(app.read).toHaveBeenCalledWith(TOKEN);
+		expect(app.read).toHaveBeenCalledWith(TOKEN, ENVELOPE_ID);
 		expect(new Uint8Array(await response.arrayBuffer())).toEqual(BYTES);
 	});
 
@@ -85,6 +92,49 @@ describe('recipient sent PDF HTTP handler', () => {
 		expect(response.status).toBe(404);
 		expect(await response.text()).toBe('');
 		expect(response.headers.get('content-type')).toBeNull();
+		expect(resolveApplication).not.toHaveBeenCalled();
+	});
+
+	it('answers a non-UUIDv7 path with the same opaque 404 without reading cookies', async () => {
+		const resolveApplication = vi.fn(() => application(ok));
+		const cookies = { get: vi.fn() } as unknown as Cookies;
+		const response: Response = await createRecipientSentPdfHandler(
+			resolveApplication,
+			unseal
+		)({
+			cookies,
+			params: { envelopeId: 'not-a-uuid' },
+			platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } },
+			request: new Request('https://signkit.example/sign/not-a-uuid/agreement.pdf'),
+			url: new URL('https://signkit.example/sign/not-a-uuid/agreement.pdf')
+		} as unknown as RequestEvent);
+
+		expect(response.status).toBe(404);
+		expect(cookies.get).not.toHaveBeenCalled();
+		expect(resolveApplication).not.toHaveBeenCalled();
+	});
+
+	it('does not use another envelope cookie when the path names a different envelope', async () => {
+		const resolveApplication = vi.fn(() => application(ok));
+		const cookies = {
+			get: vi.fn((name: string): string | undefined =>
+				name === COOKIE_NAME ? 'sealed-for-other-envelope' : undefined
+			)
+		} as unknown as Cookies;
+		const response: Response = await createRecipientSentPdfHandler(
+			resolveApplication,
+			unseal
+		)({
+			cookies,
+			params: { envelopeId: OTHER_ENVELOPE_ID },
+			platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } },
+			request: new Request(`https://signkit.example/sign/${OTHER_ENVELOPE_ID}/agreement.pdf`),
+			url: new URL(`https://signkit.example/sign/${OTHER_ENVELOPE_ID}/agreement.pdf`)
+		} as unknown as RequestEvent);
+
+		expect(response.status).toBe(404);
+		expect(cookies.get).toHaveBeenCalledWith(recipientSessionCookieName(OTHER_ENVELOPE_ID));
+		expect(cookies.get).not.toHaveBeenCalledWith(COOKIE_NAME);
 		expect(resolveApplication).not.toHaveBeenCalled();
 	});
 

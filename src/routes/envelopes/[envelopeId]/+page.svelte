@@ -36,6 +36,7 @@
 		type RecipientRole,
 		type VoidableEnvelopeStatus
 	} from '$lib/client/envelopes';
+	import type { RecipientStatus } from '$lib/domain/envelope';
 	import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
 	import * as m from '$lib/paraglide/messages';
@@ -203,6 +204,45 @@
 
 	function recipientLocaleLabel(locale: 'en' | 'ja'): string {
 		return locale === 'ja' ? '日本語' : 'English';
+	}
+
+	function recipientWorkflowStatusLabel(status: string): string {
+		const workflowStatus: RecipientStatus | null =
+			status === 'pending' || status === 'viewed' || status === 'completed' || status === 'declined'
+				? status
+				: null;
+		if (workflowStatus === null) return m.envelope_recipient_status_unknown();
+		switch (workflowStatus) {
+			case 'pending':
+				return m.envelope_recipient_status_pending();
+			case 'viewed':
+				return m.envelope_recipient_status_viewed();
+			case 'completed':
+				return m.envelope_recipient_status_completed();
+			case 'declined':
+				return m.envelope_recipient_status_declined();
+		}
+	}
+
+	type InvitationDeliveryStatus = PublicEnvelopeDeliveryStatus['deliveries'][number]['status'];
+
+	function deliveryStateLabel(status: InvitationDeliveryStatus): string {
+		switch (status) {
+			case 'blocked':
+				return m.envelope_delivery_status_blocked();
+			case 'pending':
+				return m.envelope_delivery_status_pending();
+			case 'processing':
+				return m.envelope_delivery_status_processing();
+			case 'delivered':
+				return m.envelope_delivery_status_delivered();
+			case 'failed':
+				return m.envelope_delivery_status_failed();
+		}
+	}
+
+	function recipientForDelivery(recipientId: string): ReadyRecipientPublic | undefined {
+		return readyRecipients.find((recipient) => recipient.id === recipientId);
 	}
 
 	async function load(): Promise<void> {
@@ -1116,7 +1156,6 @@
 										<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
 										<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
 										<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
 										<Table.Head>{m.envelope_recipient_col_status()}</Table.Head>
 									</Table.Row>
 								</Table.Header>
@@ -1125,10 +1164,9 @@
 										<Table.Row>
 											<Table.Cell>{recipient.email}</Table.Cell>
 											<Table.Cell>{recipient.name}</Table.Cell>
-											<Table.Cell>{recipient.role}</Table.Cell>
+											<Table.Cell>{recipientRoleLabel(recipient.role)}</Table.Cell>
 											<Table.Cell>{recipientLocaleLabel(recipient.locale)}</Table.Cell>
-											<Table.Cell>{recipient.routingOrder}</Table.Cell>
-											<Table.Cell>{recipient.status}</Table.Cell>
+											<Table.Cell>{recipientWorkflowStatusLabel(recipient.status)}</Table.Cell>
 										</Table.Row>
 									{/each}
 								</Table.Body>
@@ -1413,23 +1451,33 @@
 							<p class="text-sm text-muted-foreground">{m.envelope_send_requires_ready()}</p>
 						{/if}
 
-						{#if delivery !== null}
+						{#if delivery !== null && delivery.deliveries.length > 0}
 							<Table.Root>
 								<Table.Header>
 									<Table.Row>
+										<Table.Head>{m.envelope_delivery_col_recipient()}</Table.Head>
 										<Table.Head>{m.envelope_delivery_col_role()}</Table.Head>
-										<Table.Head>{m.envelope_delivery_col_order()}</Table.Head>
 										<Table.Head>{m.envelope_delivery_col_status()}</Table.Head>
-										<Table.Head>{m.envelope_delivery_col_attempts()}</Table.Head>
 									</Table.Row>
 								</Table.Header>
 								<Table.Body>
 									{#each delivery.deliveries as item (item.recipientId)}
+										{@const matched = recipientForDelivery(item.recipientId)}
 										<Table.Row>
-											<Table.Cell>{item.recipientRole}</Table.Cell>
-											<Table.Cell>{item.routingOrder}</Table.Cell>
-											<Table.Cell><Badge variant="secondary">{item.status}</Badge></Table.Cell>
-											<Table.Cell>{item.attempts}</Table.Cell>
+											<Table.Cell>
+												{#if matched}
+													<div class="flex flex-col">
+														<span>{matched.name}</span>
+														<span class="text-muted-foreground">{matched.email}</span>
+													</div>
+												{/if}
+											</Table.Cell>
+											<Table.Cell>
+												{recipientRoleLabel(matched?.role ?? item.recipientRole)}
+											</Table.Cell>
+											<Table.Cell>
+												<Badge variant="secondary">{deliveryStateLabel(item.status)}</Badge>
+											</Table.Cell>
 										</Table.Row>
 									{/each}
 								</Table.Body>

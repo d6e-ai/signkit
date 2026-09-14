@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import type { RecipientPlacedField } from '$lib/application/signing/recipient-workspace';
-import SignPage from './+page.svelte';
-import type { PageData } from './$types';
+import SignPage from './[envelopeId]/+page.svelte';
+import type { PageData } from './[envelopeId]/$types';
 
 const signatureField: RecipientPlacedField = {
 	id: '01910000-0000-7000-8000-000000000003',

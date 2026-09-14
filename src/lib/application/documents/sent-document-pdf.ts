@@ -134,9 +134,7 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 			) {
 				throw error;
 			}
-			const stream: ReadableStream<Uint8Array> | null = await this.objects.get(
-				rendered.objectKey
-			);
+			const stream: ReadableStream<Uint8Array> | null = await this.objects.get(rendered.objectKey);
 			if (stream === null) throw error;
 			let body: Uint8Array;
 			try {
@@ -194,9 +192,9 @@ export function renderRevisionPdf(documents: readonly DraftDocument[]): Agreemen
 }
 
 /**
- * The heading shown above a document in the PDF. Derived from the Markdown
- * path with the same rule the browser uses for its document navigation, so a
- * recipient sees one consistent name in both places.
+ * Metadata title for a document in the sent PDF page map. Derived from the
+ * Markdown path with the same rule the browser uses for document navigation.
+ * It is not drawn onto the page; authored Markdown is the only body content.
  */
 export function agreementDocumentTitle(path: string): string {
 	const name: string = path

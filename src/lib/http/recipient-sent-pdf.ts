@@ -3,7 +3,8 @@ import type {
 	RecipientSentPdfApplicationPort,
 	RecipientSentPdfResult
 } from '$lib/application/signing/recipient-sent-pdf';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
+import { readRecipientSessionCookie } from '$lib/server/recipient-session';
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
@@ -13,16 +14,21 @@ export type RecipientSentPdfApplicationResolver = (
 	context: ResolverContext
 ) => RecipientSentPdfApplicationPort | null | Promise<RecipientSentPdfApplicationPort | null>;
 
-export type RecipientSessionUnsealer = (cookie: string) => Promise<string | null>;
+export type RecipientSessionUnsealer = (
+	cookie: string,
+	envelopeId: string
+) => Promise<string | null>;
 
 /**
  * Serves the sent agreement PDF to the browser that already holds an active
- * recipient session.
+ * recipient session for the envelope named in the path.
  *
- * Authority comes only from the sealed, http-only session cookie. No token
- * appears in the URL, in page data, or anywhere JavaScript can read it, so
- * the address of this document is not a bearer credential and cannot leak
- * through history, referrers, logs, or a shared link.
+ * Authority comes only from the sealed, http-only session cookie bound to
+ * that envelope ID. No token appears in the URL, in page data, or anywhere
+ * JavaScript can read it, so the address of this document is not a bearer
+ * credential and cannot leak through history, referrers, logs, or a shared
+ * link. A path/cookie mismatch, a missing session, or a non-UUIDv7 path
+ * segment fails closed as an opaque 404.
  *
  * The response is deliberately uninformative on failure: an inactive,
  * expired, revoked, or absent session is indistinguishable from a path that
@@ -34,15 +40,18 @@ export function createRecipientSentPdfHandler(
 	resolveApplication: RecipientSentPdfApplicationResolver,
 	unsealSession: RecipientSessionUnsealer
 ): RequestHandler {
-	return async ({ cookies, platform, request }): Promise<Response> => {
+	return async ({ cookies, params, platform, request }): Promise<Response> => {
 		if (request.method !== 'GET' && request.method !== 'HEAD') return notFound();
 
-		const sealed: string | undefined = cookies.get(RECIPIENT_SESSION_COOKIE);
+		const envelopeId: string | undefined = params.envelopeId;
+		if (envelopeId === undefined || !isUuidV7(envelopeId)) return notFound();
+
+		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
 		if (sealed === undefined) return notFound();
 
 		let token: string | null;
 		try {
-			token = await unsealSession(sealed);
+			token = await unsealSession(sealed, envelopeId);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_sent_pdf_session_failed' }));
 			return unavailable();
@@ -60,7 +69,7 @@ export function createRecipientSentPdfHandler(
 
 		let result: RecipientSentPdfResult;
 		try {
-			result = await application.read(token);
+			result = await application.read(token, envelopeId);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_sent_pdf_read_failed' }));
 			return unavailable();

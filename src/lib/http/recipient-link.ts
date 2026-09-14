@@ -5,18 +5,22 @@ import type {
 	AuthorizedRecipientDeclinedReceipt,
 	RecipientDeclinedReceiptApplicationPort
 } from '$lib/application/signing/recipient-declined-receipt';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import {
-	DECLINED_RECEIPT_COOKIE,
 	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
 	DECLINED_RECEIPT_COOKIE_OPTIONS,
 	type DeclinedReceiptSessionLocator,
+	declinedReceiptCookieName,
+	deleteDeclinedReceiptCookie,
 	sealDeclinedReceiptSession
 } from '$lib/server/declined-receipt-session';
 import {
-	RECIPIENT_SESSION_COOKIE,
 	RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS,
 	RECIPIENT_SESSION_COOKIE_OPTIONS,
+	deleteRecipientSessionCookie,
+	readRecipientSessionCookie,
+	recipientSessionCookieName,
 	sealRecipientSession,
 	unsealRecipientSession
 } from '$lib/server/recipient-session';
@@ -29,8 +33,11 @@ export type RecipientLinkApplicationResolver = (
 	context: ResolverContext
 ) => RecipientAccessApplicationPort | null | Promise<RecipientAccessApplicationPort | null>;
 
-export type RecipientSessionSealer = (token: string) => Promise<string>;
-export type RecipientSessionUnsealer = (cookie: string) => Promise<string | null>;
+export type RecipientSessionSealer = (token: string, envelopeId: string) => Promise<string>;
+export type RecipientSessionUnsealer = (
+	cookie: string,
+	envelopeId: string
+) => Promise<string | null>;
 
 export type RecipientDeclinedReceiptApplicationResolver = (
 	context: ResolverContext
@@ -78,20 +85,23 @@ export function createRecipientLinkHandler(
 					receiptOptions
 				);
 			}
+			if (!isUuidV7(context.envelopeId)) return cleanRedirect(url, 'invalid');
 			const remainingSeconds: number = Math.floor(
 				(Date.parse(context.expiresAt) - accessedAt.valueOf()) / 1000
 			);
 			if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) {
 				return cleanRedirect(url, 'invalid');
 			}
-			const sealed: string = await sealSession(token);
-			cookies.set(RECIPIENT_SESSION_COOKIE, sealed, {
+			const cookieName: string | null = recipientSessionCookieName(context.envelopeId);
+			if (cookieName === null) return cleanRedirect(url, 'invalid');
+			const sealed: string = await sealSession(token, context.envelopeId);
+			cookies.set(cookieName, sealed, {
 				...RECIPIENT_SESSION_COOKIE_OPTIONS,
 				secure: !isInsecureLocalDevelopment(url, allowInsecureLocalDevelopment),
 				maxAge: Math.min(remainingSeconds, RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS)
 			});
-			cookies.delete(DECLINED_RECEIPT_COOKIE, { path: DECLINED_RECEIPT_COOKIE_OPTIONS.path });
-			return redirectResponse(`/${context.recipientLocale}/sign`);
+			deleteDeclinedReceiptCookie(cookies, context.envelopeId);
+			return redirectResponse(`/${context.recipientLocale}/sign/${context.envelopeId}`);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_link_exchange_failed' }));
 			return cleanRedirect(url, 'unavailable');
@@ -117,6 +127,7 @@ async function exchangeDeclinedReceipt(
 		accessedAt
 	);
 	if (authorized === null) return cleanRedirect(url, 'invalid');
+	if (!isUuidV7(authorized.receipt.envelopeId)) return cleanRedirect(url, 'invalid');
 	const remainingSeconds: number = remainingReceiptSeconds(
 		authorized.locator.expiresAt,
 		accessedAt
@@ -126,26 +137,29 @@ async function exchangeDeclinedReceipt(
 		...authorized.locator,
 		version: 1
 	};
+	if (locator.envelopeId !== authorized.receipt.envelopeId) return cleanRedirect(url, 'invalid');
+	const receiptCookieName: string | null = declinedReceiptCookieName(locator.envelopeId);
+	if (receiptCookieName === null) return cleanRedirect(url, 'invalid');
 	const seal: DeclinedReceiptSessionSealer = options.sealSession ?? sealDeclinedReceiptSession;
 	const sealed: string = await seal(locator);
-	cookies.set(DECLINED_RECEIPT_COOKIE, sealed, {
+	cookies.set(receiptCookieName, sealed, {
 		...DECLINED_RECEIPT_COOKIE_OPTIONS,
 		secure: !isInsecureLocalDevelopment(url, allowInsecureLocalDevelopment),
 		maxAge: remainingSeconds
 	});
-	const activeCookie: string | undefined = cookies.get(RECIPIENT_SESSION_COOKIE);
+	const activeCookie: string | undefined = readRecipientSessionCookie(cookies, locator.envelopeId);
 	if (activeCookie !== undefined) {
 		const unsealActive: RecipientSessionUnsealer =
 			options.unsealActiveSession ?? unsealRecipientSession;
 		try {
-			if ((await unsealActive(activeCookie)) === token) {
-				cookies.delete(RECIPIENT_SESSION_COOKIE, { path: RECIPIENT_SESSION_COOKIE_OPTIONS.path });
+			if ((await unsealActive(activeCookie, locator.envelopeId)) === token) {
+				deleteRecipientSessionCookie(cookies, locator.envelopeId);
 			}
 		} catch {
 			// A declined link must never destroy an unreadable or unrelated live session.
 		}
 	}
-	return redirectResponse(`/${authorized.receipt.locale}/sign`);
+	return redirectResponse(`/${authorized.receipt.locale}/sign/${locator.envelopeId}`);
 }
 
 function remainingReceiptSeconds(expiresAt: string, now: Date): number {

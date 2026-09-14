@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createRecipientSignController, validateSignedReceipt } from './+page.svelte';
+import { createRecipientSignController, validateSignedReceipt } from './[envelopeId]/+page.svelte';
 
 const base = {
 	envelopeId: '01910000-0000-7000-8000-000000000001',
