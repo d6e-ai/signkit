@@ -40,18 +40,40 @@ describe('app sidebar shell', () => {
 		expect(headerBody).not.toMatch(/\bh-16\b/);
 	});
 
-	it('shows the authenticated email in the footer via an email prop, never a d6e-auth label', () => {
-		expect(source).toContain('let { email }: { email: string | null } = $props();');
-		expect(source).toMatch(/<span[^>]*>\s*\{email\}\s*<\/span>/);
+	it('derives a non-empty display name (trimmed name -> trimmed email -> app name) for the account row', () => {
+		expect(source).toContain('function displayName(): string {');
+		expect(source).toMatch(/const trimmedName = name\?\.trim\(\);/);
+		expect(source).toMatch(/if \(trimmedName\) return trimmedName;/);
+		expect(source).toMatch(/const trimmedEmail = email\?\.trim\(\);/);
+		expect(source).toMatch(/if \(trimmedEmail\) return trimmedEmail;/);
+		expect(source).toMatch(/return m\.app_name\(\);/);
+		expect(source).toContain('const accountDisplayName = $derived(displayName());');
+		expect(source).toContain(
+			'const accountInitial = $derived(accountDisplayName.charAt(0).toUpperCase());'
+		);
+	});
+
+	it('uses the derived display name for the account row, the dropdown label, and the trigger aria-label', () => {
+		expect(source).toMatch(/<span[^>]*font-semibold[^>]*>\{accountDisplayName\}<\/span>/);
+		expect(source).toMatch(/<p[^>]*font-semibold[^>]*>\{accountDisplayName\}<\/p>/);
+		expect(source).toMatch(/aria-label=\{accountDisplayName\}/);
+		expect(source).not.toMatch(/aria-label=\{name \?\? email/);
+		expect(source).not.toMatch(/\{name\}/);
 		expect(source).not.toMatch(/d6e-auth/i);
 	});
 
-	it('gives the footer an account dropdown with a sign-out form', () => {
+	it('gives the footer an account dropdown with only an identity label and a sign-out form', () => {
 		const footerStart: number = source.indexOf('<Sidebar.Footer>');
 		expect(footerStart).toBeGreaterThan(-1);
 		const footerBlock: string = source.slice(footerStart);
 		expect(footerBlock).toContain('<DropdownMenu.Root>');
 		expect(footerBlock).toContain('method="POST" action="/auth/logout"');
+	});
+
+	it('removes the instance-administration/settings entry from the footer dropdown entirely', () => {
+		const footerStart: number = source.indexOf('<Sidebar.Footer>');
+		const footerBlock: string = source.slice(footerStart);
+		expect(footerBlock).not.toMatch(/nav_settings|IconAdjustmentsHorizontal/);
 	});
 
 	it('never links to the fabricated /inbox, /templates, /contacts, or /automation routes', () => {
@@ -63,16 +85,75 @@ describe('app sidebar shell', () => {
 		expect(source).not.toMatch(/MenuBadge|badge:/);
 	});
 
-	it('keeps only the real Dashboard, Agreements, and Settings destinations', () => {
+	it('keeps the real Dashboard and Agreements destinations as flat items', () => {
 		expect(source).toMatch(/m\.nav_dashboard\(\), href: '\/'/);
 		expect(source).toMatch(/m\.nav_agreements\(\), href: '\/envelopes'/);
-		expect(source).toMatch(/m\.nav_settings\(\), href: '\/settings'/);
 	});
 
-	it('navigates to settings from the account dropdown via a real anchor, not a JS-only click handler', () => {
-		const footerStart: number = source.indexOf('<Sidebar.Footer>');
-		const footerBlock: string = source.slice(footerStart);
-		expect(footerBlock).not.toMatch(/onclick=\{.*window\.location/);
-		expect(footerBlock).toMatch(/<a \{\.\.\.props\} href=\{localizeHref\('\/settings'\)\}>/);
+	it('replaces the single settings link with an expandable Instance administration menu', () => {
+		expect(source).toContain("from '$lib/components/ui/collapsible'");
+		expect(source).toContain('<Collapsible.Root');
+		expect(source).toContain('<Collapsible.Trigger>');
+		expect(source).toContain('<Collapsible.Content>');
+		expect(source).toContain('<Sidebar.MenuSub>');
+		expect(source).toMatch(/tooltipContent=\{m\.nav_settings\(\)\}/);
+	});
+
+	it('composes Collapsible.Root via its child snippet so Sidebar.MenuItem is the direct ul child, never a wrapping div', () => {
+		// A bare `<Collapsible.Root>...</Collapsible.Root>` around
+		// `<Sidebar.MenuItem>` renders `<ul><div><li>...</li></div></ul>` --
+		// invalid: a `<ul>`'s children must be `<li>` elements. The child
+		// snippet lets Collapsible.Root render *as* whatever the snippet
+		// returns instead of wrapping it in its own element, so
+		// `Sidebar.MenuItem` (an `<li>`) becomes the actual root.
+		const collapsibleRootMatch = source.match(
+			/<Collapsible\.Root[^>]*>\s*\{#snippet child\(\{ props: collapsibleProps \}\)\}\s*<Sidebar\.MenuItem \{\.\.\.collapsibleProps\}>/
+		);
+		expect(collapsibleRootMatch).not.toBeNull();
+	});
+
+	it('links every settings sub-item to its own dedicated route', () => {
+		expect(source).toMatch(/m\.settings_tab_members\(\), href: '\/settings\/members'/);
+		expect(source).toMatch(/m\.settings_tab_invitations\(\), href: '\/settings\/invitations'/);
+		expect(source).toMatch(/m\.settings_tab_api_keys\(\), href: '\/settings\/api-keys'/);
+	});
+
+	it('filters the settings submenu by instanceMemberRole: owner/admin see all three, a plain member sees only API keys, everyone else sees none', () => {
+		expect(source).toContain('const visibleSettingsItems = $derived.by(() => {');
+		expect(source).toMatch(
+			/if \(instanceMemberRole === 'owner' \|\| instanceMemberRole === 'admin'\) return settingsItems;/
+		);
+		expect(source).toMatch(/if \(instanceMemberRole === 'member'\) \{/);
+		expect(source).toMatch(
+			/return settingsItems\.filter\(\(item\) => item\.href === '\/settings\/api-keys'\);/
+		);
+		expect(source).toMatch(/return \[\];\s*\}\);/);
+		// The whole collapsible entry, not just its children, must disappear
+		// when there is nothing privileged to show -- never a dead expandable
+		// menu with an empty submenu inside.
+		expect(source).toMatch(/\{#if visibleSettingsItems\.length > 0\}\s*<Collapsible\.Root/);
+		expect(source).toContain('{#each visibleSettingsItems as item (item.href)}');
+	});
+
+	it('opens the settings menu automatically while on a settings route', () => {
+		expect(source).toContain('onSettingsRoute');
+		expect(source).toMatch(
+			/\$effect\(\(\) => \{\s*if \(onSettingsRoute\) settingsMenuOpen = true;/
+		);
+	});
+
+	it('expands an icon-collapsed sidebar when the settings trigger is clicked, composing (not replacing) the Collapsible trigger behavior via mergeProps', () => {
+		expect(source).toContain("import { mergeProps } from 'bits-ui';");
+		expect(source).toContain('function expandSidebarForSettings(): void {');
+		expect(source).toMatch(/!sidebar\.isMobile && sidebar\.state === 'collapsed'/);
+		expect(source).toContain('sidebar.setOpen(true);');
+		expect(source).toMatch(/mergeProps\(triggerProps, \{ onclick: expandSidebarForSettings \}\)/);
+	});
+
+	it('navigates to settings sub-items via real anchors, not JS-only click handlers', () => {
+		const subStart: number = source.indexOf('<Sidebar.MenuSub>');
+		const subBlock: string = source.slice(subStart, source.indexOf('</Sidebar.MenuSub>'));
+		expect(subBlock).not.toMatch(/onclick=\{.*window\.location/);
+		expect(subBlock).toMatch(/<Sidebar\.MenuSubButton\s+href=\{localizeHref\(item\.href\)\}/);
 	});
 });

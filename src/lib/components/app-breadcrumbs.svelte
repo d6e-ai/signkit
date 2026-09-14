@@ -19,6 +19,16 @@
 		if (currentPath.startsWith('/setup')) return m.setup_title();
 		return breadcrumbFallbackLabel(currentPath);
 	});
+
+	// A settings child route gets a third crumb identifying which subsection is
+	// active, since "Instance administration" alone no longer distinguishes
+	// Members from Invitations from API keys now that each is its own route.
+	const settingsChildLabel = $derived.by((): string | null => {
+		if (currentPath === '/settings/members') return m.settings_tab_members();
+		if (currentPath === '/settings/invitations') return m.settings_tab_invitations();
+		if (currentPath === '/settings/api-keys') return m.settings_tab_api_keys();
+		return null;
+	});
 </script>
 
 <Breadcrumb.Root>
@@ -29,7 +39,18 @@
 		{#if routeLabel !== null}
 			<Breadcrumb.Separator />
 			<Breadcrumb.Item>
+				<!-- Never a link: /settings is only a redirector for a non-member
+				     accepting an invitation or an active member being routed to
+				     their own child route -- it is not a stable page any caller
+				     who is already on a settings child route could usefully land
+				     back on. -->
 				<Breadcrumb.Page>{routeLabel}</Breadcrumb.Page>
+			</Breadcrumb.Item>
+		{/if}
+		{#if settingsChildLabel !== null}
+			<Breadcrumb.Separator />
+			<Breadcrumb.Item>
+				<Breadcrumb.Page>{settingsChildLabel}</Breadcrumb.Page>
 			</Breadcrumb.Item>
 		{/if}
 	</Breadcrumb.List>

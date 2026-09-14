@@ -132,7 +132,10 @@ describe('verifyAccessToken', () => {
 	it('rejects (not unavailable) a token signed by an untrusted key', async () => {
 		mockFetchJwks();
 		const otherPair = await generateKeyPair('RS256', { extractable: true });
-		const token: string = await signToken({ email: 'user@example.com' }, { key: otherPair.privateKey });
+		const token: string = await signToken(
+			{ email: 'user@example.com' },
+			{ key: otherPair.privateKey }
+		);
 
 		await expect(verifyAccessToken(token)).rejects.toBeInstanceOf(D6eAuthRejectedError);
 	});

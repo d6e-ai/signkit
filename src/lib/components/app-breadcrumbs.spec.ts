@@ -38,4 +38,23 @@ describe('app breadcrumbs', () => {
 	it('only renders the second crumb when a label is available, never an empty one', () => {
 		expect(source).toMatch(/\{#if routeLabel !== null\}/);
 	});
+
+	it('identifies the active settings subsection as a third crumb', () => {
+		expect(source).toMatch(/currentPath === '\/settings\/members'.*m\.settings_tab_members/);
+		expect(source).toMatch(
+			/currentPath === '\/settings\/invitations'.*m\.settings_tab_invitations/
+		);
+		expect(source).toMatch(/currentPath === '\/settings\/api-keys'.*m\.settings_tab_api_keys/);
+		expect(source).toMatch(/\{#if settingsChildLabel !== null\}/);
+	});
+
+	it('renders the intermediate settings crumb as a Page, never a link to /settings', () => {
+		// /settings is only a redirector (non-member accept flow, role-based
+		// handoff), not a stable page, so a caller already on a child route
+		// must not be offered it as a navigation target.
+		const pageCount = source.match(/<Breadcrumb\.Page>/g) ?? [];
+		expect(pageCount.length).toBeGreaterThanOrEqual(2);
+		expect(source).not.toMatch(/<Breadcrumb\.Link[^>]*\/settings/);
+		expect(source).not.toMatch(/href=\{localizeHref\('\/settings'\)\}/);
+	});
 });

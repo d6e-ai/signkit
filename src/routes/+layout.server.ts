@@ -2,7 +2,7 @@ import { error, redirect } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 import { resolveInstanceApplication } from '$lib/application/instance/instance-runtime';
 import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
-import type { InstanceCallerContext } from '$lib/ports/instance-store';
+import type { InstanceCallerContext, InstanceMemberRole } from '$lib/ports/instance-store';
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { isSettingsSurfacePath } from '$lib/navigation/settings-surface';
 import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
@@ -51,6 +51,7 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 	}
 
 	const email: string = locals.principal.email;
+	const name: string = locals.principal.name;
 
 	let application: InstanceApplicationPort | null;
 	try {
@@ -78,7 +79,7 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 
 	if (!context.bootstrapped) {
 		if (!isSetupSurfacePath(url.pathname)) redirect(302, localizeHref('/setup'));
-		return { email };
+		return { email, name, instanceMemberRole: null };
 	}
 	if (isSetupSurfacePath(url.pathname)) redirect(302, localizeHref('/'));
 
@@ -87,5 +88,15 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 		redirect(302, localizeHref('/settings'));
 	}
 
-	return { email };
+	// Absent for a non-member, and deliberately null (not the suspended
+	// member's actual role) for an inactive one too: every consumer of this
+	// field -- the sidebar's role-filtered settings links, the settings child
+	// route guards -- treats "has a usable role" and "is an active member" as
+	// the same question, so a suspended owner must never be handed `'owner'`
+	// here only to have some future caller forget to also check `status`.
+	const instanceMemberRole: InstanceMemberRole | null = isActiveMember
+		? context.member!.role
+		: null;
+
+	return { email, name, instanceMemberRole };
 };

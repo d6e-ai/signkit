@@ -6,7 +6,9 @@
  * root crumb rather than a second crumb that repeats the brand name.
  */
 export function breadcrumbFallbackLabel(pathname: string): string | null {
-	const segments: string[] = pathname.split('/').filter((segment: string): boolean => segment.length > 0);
+	const segments: string[] = pathname
+		.split('/')
+		.filter((segment: string): boolean => segment.length > 0);
 	const lastSegment: string | undefined = segments.at(-1);
 	if (!lastSegment) return null;
 	return lastSegment

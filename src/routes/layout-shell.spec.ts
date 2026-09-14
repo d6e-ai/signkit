@@ -11,9 +11,23 @@ describe('application layout shell', () => {
 
 	it('uses the shadcn sidebar shell outside recipient surfaces', () => {
 		expect(source).toContain('<Sidebar.Provider>');
-		expect(source).toContain('<AppSidebar email={data.email ?? null} />');
+		expect(source).toContain('<AppSidebar');
+		expect(source).toContain('name={data.name ?? null}');
+		expect(source).toContain('email={data.email ?? null}');
+		expect(source).toContain('instanceMemberRole={data.instanceMemberRole ?? null}');
 		expect(source).toContain('<Sidebar.Inset');
 		expect(source).toContain('<Sidebar.Trigger />');
+	});
+
+	it('applies the stored theme before paint via ModeWatcher', () => {
+		expect(source).toContain("import { ModeWatcher } from 'mode-watcher';");
+		expect(source).toContain('<ModeWatcher />');
+	});
+
+	it('places a theme switch next to the language switch in both header variants', () => {
+		expect(source).toContain("import ThemeSwitch from '$lib/components/theme-switch.svelte';");
+		const themeSwitchCount = source.match(/<ThemeSwitch \/>/g) ?? [];
+		expect(themeSwitchCount).toHaveLength(2);
 	});
 
 	it('never applies the rounded/floating inset-variant shell styling', () => {
@@ -57,7 +71,9 @@ describe('application layout shell', () => {
 
 	it('uses the bare shell for the unbootstrapped setup surface, since the sidebar has nowhere to link yet', () => {
 		expect(source).toContain('isSetupSurfacePath');
-		expect(source).toMatch(/isSignedOutSurfacePath\(page\.url\.pathname\)\s*\|\|\s*isSetupSurfacePath\(page\.url\.pathname\)/);
+		expect(source).toMatch(
+			/isSignedOutSurfacePath\(page\.url\.pathname\)\s*\|\|\s*isSetupSurfacePath\(page\.url\.pathname\)/
+		);
 	});
 
 	it('never reintroduces Markdown-native/open-core/agent-ready product-marketing metadata', () => {

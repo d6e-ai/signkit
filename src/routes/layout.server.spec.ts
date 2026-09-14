@@ -146,7 +146,7 @@ describe('root layout access gate', () => {
 		const data = await load(
 			event({ pathname: '/envelopes', appLocals: locals('no_active_organization') })
 		);
-		expect(data).toEqual({ email: 'user@example.com' });
+		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: 'owner' });
 	});
 
 	it('forces an authenticated caller on an unbootstrapped instance to /setup', async () => {
@@ -158,12 +158,12 @@ describe('root layout access gate', () => {
 		expect(redirected.location).toBe('/setup');
 	});
 
-	it('lets an authenticated caller stay on /setup while the instance is unbootstrapped', async () => {
+	it('lets an authenticated caller stay on /setup while the instance is unbootstrapped, with a null role', async () => {
 		resolveInstanceApplication.mockResolvedValue(
 			application({ bootstrapped: false, member: null })
 		);
 		const data = await load(event({ pathname: '/setup' }));
-		expect(data).toEqual({ email: 'user@example.com' });
+		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: null });
 	});
 
 	it('redirects away from /setup once the instance is already bootstrapped', async () => {
@@ -194,18 +194,41 @@ describe('root layout access gate', () => {
 		expect(redirected.location).toBe('/settings');
 	});
 
-	it('lets a non-member reach /settings directly, for invitation acceptance', async () => {
+	it('lets a non-member reach /settings directly, for invitation acceptance, with a null role', async () => {
 		resolveInstanceApplication.mockResolvedValue(application({ bootstrapped: true, member: null }));
 		const data = await load(event({ pathname: '/settings' }));
-		expect(data).toEqual({ email: 'user@example.com' });
+		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: null });
 	});
 
-	it('grants an active member normal access to any page', async () => {
+	it('gives a suspended member reaching /settings a null role, never their suspended role', async () => {
+		resolveInstanceApplication.mockResolvedValue(
+			application({
+				bootstrapped: true,
+				member: { ...activeOwner(), status: 'suspended' }
+			})
+		);
+		const data = await load(event({ pathname: '/settings' }));
+		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: null });
+	});
+
+	it('grants an active member normal access to any page and reports their real role', async () => {
 		resolveInstanceApplication.mockResolvedValue(
 			application({ bootstrapped: true, member: activeOwner() })
 		);
 		const data = await load(event({ pathname: '/envelopes/new' }));
-		expect(data).toEqual({ email: 'user@example.com' });
+		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: 'owner' });
+	});
+
+	it('reports an active plain member as role "member"', async () => {
+		resolveInstanceApplication.mockResolvedValue(
+			application({ bootstrapped: true, member: { ...activeOwner(), role: 'member' } })
+		);
+		const data = await load(event({ pathname: '/envelopes' }));
+		expect(data).toEqual({
+			email: 'user@example.com',
+			name: 'User',
+			instanceMemberRole: 'member'
+		});
 	});
 
 	it('fails closed with a 503, never rendering a normal page, when the durable instance store cannot be resolved', async () => {

@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { navigating } from '$app/state';
+	import { ModeWatcher } from 'mode-watcher';
 	import AppBreadcrumbs from '$lib/components/app-breadcrumbs.svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import LanguageSwitch from '$lib/components/language-switch.svelte';
+	import ThemeSwitch from '$lib/components/theme-switch.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
 	import { Spinner } from '$lib/components/ui/spinner';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -29,6 +31,10 @@
 	<meta name="description" content="Electronic signature workspace." />
 </svelte:head>
 
+<!-- Applies the stored theme before paint, so a dark-mode reader does not get a
+     white flash on every navigation. -->
+<ModeWatcher />
+
 <Tooltip.Provider>
 	{#if bareShell}
 		<div class="min-h-svh bg-muted/25">
@@ -36,13 +42,20 @@
 				class="flex h-16 items-center border-b bg-background/90 px-4 backdrop-blur-xl sm:px-6"
 			>
 				<a href="/" class="font-semibold tracking-tight">{m.app_name()}</a>
-				<div class="ml-auto"><LanguageSwitch /></div>
+				<div class="ml-auto flex items-center gap-1">
+					<ThemeSwitch />
+					<LanguageSwitch />
+				</div>
 			</header>
 			<main class="p-4 sm:p-6 lg:p-10">{@render children()}</main>
 		</div>
 	{:else}
 		<Sidebar.Provider>
-			<AppSidebar email={data.email ?? null} />
+			<AppSidebar
+				name={data.name ?? null}
+				email={data.email ?? null}
+				instanceMemberRole={data.instanceMemberRole ?? null}
+			/>
 			<Sidebar.Inset class="min-w-0">
 				<header
 					class="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl"
@@ -54,6 +67,7 @@
 						<AppBreadcrumbs />
 					{/if}
 					<div class="ml-auto flex min-w-0 items-center gap-1">
+						<ThemeSwitch />
 						<LanguageSwitch />
 					</div>
 				</header>

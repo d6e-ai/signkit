@@ -10,7 +10,12 @@ import { isApiKeyAuthenticatedPath, isApiKeyRejectedPath } from '$lib/navigation
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { SIGNKIT_ORGANIZATION_HEADER } from '$lib/ports/api-key-authentication-store';
 import { hasAuthorizationHeader, parseBearerApiKey } from '$lib/security/api-key';
-import { D6eAuthRejectedError, organizations, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
+import {
+	D6eAuthRejectedError,
+	organizations,
+	refresh,
+	verifyAccessToken
+} from '$lib/server/d6e-auth';
 import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key-authentication';
 import {
 	ORGANIZATION_COOKIE,
