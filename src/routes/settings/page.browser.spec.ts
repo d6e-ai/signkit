@@ -144,14 +144,25 @@ describe('settings instance-management page in browser', () => {
 		await expect.element(screen.getByText('Authentication required')).toBeVisible();
 	});
 
-	it('renders unbootstrapped state when instance has no owner', async () => {
+	it('falls through to the invitation-accept card on the unreachable unbootstrapped state', async () => {
+		// The root layout guard redirects an unbootstrapped instance to /setup
+		// before this page can render, so this branch is dead in production. The
+		// bootstrap claim card lives on /setup now, not here; member is always
+		// null pre-bootstrap, so this page shows the same card as any non-member.
 		const mockFetch = vi
 			.fn()
 			.mockImplementation(async () => jsonResponse({ bootstrapped: false, member: null }));
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(SettingsPage);
-		await expect.element(screen.getByText('Bootstrap instance owner')).toBeVisible();
+		await expect
+			.element(
+				screen.getByText(
+					'You are not currently a member of this instance. Enter an invitation token to join.'
+				)
+			)
+			.toBeVisible();
+		expect(screen.getByText('Bootstrap instance owner').query()).toBeNull();
 	});
 
 	it('renders access restricted card for a suspended member, not the tabs', async () => {
@@ -626,24 +637,6 @@ describe('settings instance-management page in browser', () => {
 		await expect
 			.element(screen.getByText('Could not copy to clipboard. Copy the value manually.'))
 			.toBeVisible();
-	});
-
-	it('requires a bootstrap secret of at least 32 characters before enabling submit', async () => {
-		const mockFetch = vi
-			.fn()
-			.mockImplementation(async () => jsonResponse({ bootstrapped: false, member: null }));
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(SettingsPage);
-		const submit = screen.getByRole('button', { name: 'Claim owner role' });
-		await expect.element(submit).toBeDisabled();
-
-		const secretInput = screen.getByLabelText('Bootstrap secret');
-		await secretInput.fill('short-secret');
-		await expect.element(submit).toBeDisabled();
-
-		await secretInput.fill('x'.repeat(32));
-		await expect.element(submit).toBeEnabled();
 	});
 
 	it('surfaces a rejected role change in the list banner with a refresh action, never a Retry', async () => {

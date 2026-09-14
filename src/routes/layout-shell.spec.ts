@@ -11,8 +11,58 @@ describe('application layout shell', () => {
 
 	it('uses the shadcn sidebar shell outside recipient surfaces', () => {
 		expect(source).toContain('<Sidebar.Provider>');
-		expect(source).toContain('<AppSidebar />');
+		expect(source).toContain('<AppSidebar email={data.email ?? null} />');
 		expect(source).toContain('<Sidebar.Inset');
 		expect(source).toContain('<Sidebar.Trigger />');
+	});
+
+	it('never applies the rounded/floating inset-variant shell styling', () => {
+		expect(source).not.toMatch(/rounded-2xl|shadow-sm/);
+	});
+
+	it('matches the ai-gateway inset shell exactly: min-w-0 and nothing else', () => {
+		expect(source).toContain('<Sidebar.Inset class="min-w-0">');
+	});
+
+	it('carries no dead header search action', () => {
+		expect(source).not.toMatch(/IconSearch|aria-label="Search"/);
+	});
+
+	it('places no separator between the sidebar trigger and the breadcrumb', () => {
+		const triggerIndex: number = source.indexOf('<Sidebar.Trigger />');
+		const breadcrumbIndex: number = source.indexOf('<AppBreadcrumbs />');
+		expect(triggerIndex).toBeGreaterThan(-1);
+		expect(breadcrumbIndex).toBeGreaterThan(triggerIndex);
+		const between: string = source.slice(triggerIndex, breadcrumbIndex);
+		expect(between).not.toMatch(/bg-border|<Sidebar\.Separator/);
+	});
+
+	it('renders the route-aware breadcrumb and swaps it for a spinner while navigating', () => {
+		expect(source).toContain('import AppBreadcrumbs from ');
+		expect(source).toMatch(/navigating\.to\s*!==\s*null/);
+		expect(source).toMatch(/\{#if navigationPending\}\s*<Spinner/);
+		expect(source).toContain('<AppBreadcrumbs />');
+	});
+
+	it('never shows a header sign-in action, since anonymous callers are redirected server-side', () => {
+		expect(source).not.toMatch(/auth\/login/);
+	});
+
+	it('uses the bare recipient-style shell for the public signed-out surface too', () => {
+		expect(source).toContain('isSignedOutSurfacePath');
+		expect(source).toMatch(
+			/isRecipientSurfacePath\(page\.url\.pathname\)\s*\|\|\s*isSignedOutSurfacePath\(page\.url\.pathname\)/
+		);
+	});
+
+	it('uses the bare shell for the unbootstrapped setup surface, since the sidebar has nowhere to link yet', () => {
+		expect(source).toContain('isSetupSurfacePath');
+		expect(source).toMatch(/isSignedOutSurfacePath\(page\.url\.pathname\)\s*\|\|\s*isSetupSurfacePath\(page\.url\.pathname\)/);
+	});
+
+	it('never reintroduces Markdown-native/open-core/agent-ready product-marketing metadata', () => {
+		expect(source).not.toMatch(/Markdown-native/i);
+		expect(source).not.toMatch(/open-core/i);
+		expect(source).not.toMatch(/agent-ready/i);
 	});
 });

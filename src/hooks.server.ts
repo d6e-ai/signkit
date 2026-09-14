@@ -10,7 +10,7 @@ import { isApiKeyAuthenticatedPath, isApiKeyRejectedPath } from '$lib/navigation
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { SIGNKIT_ORGANIZATION_HEADER } from '$lib/ports/api-key-authentication-store';
 import { hasAuthorizationHeader, parseBearerApiKey } from '$lib/security/api-key';
-import { organizations, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
+import { D6eAuthRejectedError, organizations, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
 import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key-authentication';
 import {
 	ORGANIZATION_COOKIE,
@@ -232,7 +232,18 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 				message: error instanceof Error ? error.message : 'unknown error'
 			})
 		);
-		event.locals.identityState = 'unavailable';
+		if (error instanceof D6eAuthRejectedError) {
+			// The provider explicitly rejected this session -- an expired or
+			// revoked refresh/access token -- rather than being unreachable.
+			// Clearing the cookie and leaving the anonymous defaults set above in
+			// place lets the root layout gate redirect to /auth/login normally,
+			// instead of trapping the caller behind a 503 that never recovers
+			// until they clear cookies by hand.
+			event.cookies.delete(SESSION_COOKIE, { path: '/' });
+			event.locals.identityState = 'anonymous';
+		} else {
+			event.locals.identityState = 'unavailable';
+		}
 	}
 
 	return resolve(event);

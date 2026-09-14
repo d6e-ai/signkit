@@ -157,14 +157,12 @@ describe('bearer mode selection', () => {
 	});
 
 	/**
-	 * Bootstrap is exempt: its `Authorization` header carries
-	 * `SIGNKIT_BOOTSTRAP_SECRET`, checked constant-time before identity, so a
-	 * `signkit_`-shaped value there is just a wrong deployment secret and already
-	 * fails closed with an opaque 404 on that path.
+	 * Bootstrap is cookie-session-only like the rest of instance management, so a
+	 * well-formed API key there is rejected rather than resolved or ignored.
 	 */
-	it('preserves the bootstrap deployment-secret flow', () => {
+	it('rejects a well-formed API key on the bootstrap endpoint', () => {
 		expect(resolveApiKeyBearerMode('/api/v1/instance/bootstrap', `Bearer ${TOKEN}`)).toEqual({
-			mode: 'cookie'
+			mode: 'rejected'
 		});
 	});
 });

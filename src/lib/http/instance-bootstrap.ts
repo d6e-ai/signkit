@@ -1,4 +1,3 @@
-import { env } from '$env/dynamic/private';
 import type { RequestHandler } from '@sveltejs/kit';
 import { z, type ZodIssue, type ZodType } from 'zod';
 import {
@@ -6,11 +5,6 @@ import {
 	type BootstrapInstanceResult,
 	type InstanceApplicationPort
 } from '$lib/application/instance/instance-service';
-import {
-	BEARER_SECRET_PATTERN,
-	parseBearerSecret,
-	secretsEqual
-} from '$lib/security/bearer-secret';
 import {
 	acceptsJson,
 	readJsonBody,
@@ -37,25 +31,6 @@ interface ResolverContext {
 export type InstanceApplicationResolver = (
 	context: ResolverContext
 ) => InstanceApplicationPort | null | Promise<InstanceApplicationPort | null>;
-
-export type BootstrapSecretResolver = (platform?: Readonly<App.Platform>) => string | null;
-
-export function resolveBootstrapSecret(platform?: Readonly<App.Platform>): string | null {
-	const value: string | undefined =
-		platform?.env?.SIGNKIT_BOOTSTRAP_SECRET ?? env.SIGNKIT_BOOTSTRAP_SECRET;
-	if (value === undefined || !BEARER_SECRET_PATTERN.test(value)) return null;
-	return value;
-}
-
-function opaqueNotFound(instance: string): Response {
-	return problemResponse({
-		type: 'urn:signkit:problem:not-found',
-		title: 'Not found',
-		status: 404,
-		detail: 'The requested resource was not found.',
-		instance
-	});
-}
 
 function validationFailed(
 	instance: string,
@@ -148,23 +123,13 @@ function errorMessage(error: unknown): string {
 }
 
 export function createInstanceBootstrapHandler(
-	resolveApplication: InstanceApplicationResolver,
-	resolveSecret: BootstrapSecretResolver = resolveBootstrapSecret
+	resolveApplication: InstanceApplicationResolver
 ): RequestHandler {
 	return async ({ locals, platform, request, url }): Promise<Response> => {
-		// Secret check before identity check: unset or mismatch is opaque 404
-		const presentedSecret: string | null = parseBearerSecret(request.headers.get('authorization'));
-		const expectedSecret: string | null = resolveSecret(platform);
-
-		const left: string = presentedSecret ?? '0'.repeat(32);
-		const right: string = expectedSecret ?? '1'.repeat(32);
-		const matches: boolean = await secretsEqual(left, right);
-
-		if (presentedSecret === null || expectedSecret === null || !matches) {
-			return opaqueNotFound(url.pathname);
-		}
-
-		// Verified d6e-auth cookie identity
+		// Bootstrap is cookie-session-only: a `signkit_` API key is already
+		// rejected upstream in hooks.server.ts (instance management surfaces never
+		// resolve one), so a non-absent apiKeyAuthentication state here can only be
+		// that rejection, and authorizeIdentityRequest below answers it with 403.
 		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
 			locals,
 			url.pathname
@@ -196,6 +161,20 @@ export function createInstanceBootstrapHandler(
 				'The bootstrap request body must be an empty JSON object.',
 				validationErrors(parsed.error.issues, true)
 			);
+		}
+
+		// Consistent with instance-invitations.ts acceptance: claiming instance
+		// ownership on the strength of a session is not a provider-verified
+		// inbox guarantee, so a missing or false `email_verified` claim fails
+		// closed here too.
+		if (authorized.emailVerified !== true) {
+			return problemResponse({
+				type: 'urn:signkit:problem:email-verification-required',
+				title: 'Email verification required',
+				status: 403,
+				detail: 'Claiming instance ownership requires a provider-verified email claim.',
+				instance: url.pathname
+			});
 		}
 
 		let application: InstanceApplicationPort | null;

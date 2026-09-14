@@ -70,10 +70,6 @@ export interface RequestOptions {
 	idempotencyKey?: string;
 }
 
-export interface BootstrapOwnerOptions extends RequestOptions {
-	bootstrapSecret?: string;
-}
-
 export interface ListPaginationParams {
 	cursor?: string;
 	limit?: number;
@@ -330,7 +326,7 @@ export class InstanceManagementClient {
 		return this.getCurrentMember(options);
 	}
 
-	async bootstrapOwner(options?: BootstrapOwnerOptions): Promise<BootstrapOwnerResponse> {
+	async bootstrapOwner(options?: RequestOptions): Promise<BootstrapOwnerResponse> {
 		const url = this.buildUrl('/api/v1/instance/bootstrap');
 		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
 		const headers: Record<string, string> = {
@@ -338,9 +334,6 @@ export class InstanceManagementClient {
 			accept: 'application/json, application/problem+json',
 			'idempotency-key': idempotencyKey
 		};
-		if (options?.bootstrapSecret) {
-			headers['authorization'] = `Bearer ${options.bootstrapSecret}`;
-		}
 		const { data, response } = await this.request<{
 			member: InstanceMemberMetadata;
 			bootstrapped: boolean;

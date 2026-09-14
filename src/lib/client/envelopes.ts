@@ -619,3 +619,39 @@ export class EnvelopesClient {
 export function createEnvelopesClient(options?: EnvelopesClientOptions): EnvelopesClient {
 	return new EnvelopesClient(options);
 }
+
+/**
+ * A page-count ceiling for {@link fetchAllEnvelopes}, not an expected page
+ * count: at the maximum page size this covers 20,000 envelopes, and it exists
+ * purely as a cycle/runaway guard against a store bug that never returns a
+ * null `nextCursor`. Reaching it is logged rather than silently truncated.
+ */
+export const MAX_ENVELOPE_LIST_PAGES: number = 200;
+const ENVELOPE_LIST_PAGE_SIZE: number = 100;
+
+/**
+ * Fetches every envelope page via `nextCursor` rather than just the first, so
+ * operational counts derived from the result (dashboard stats and the like)
+ * reflect the whole organization instead of being silently capped at one
+ * page's `limit`.
+ */
+export async function fetchAllEnvelopes(
+	client: Pick<EnvelopesClient, 'list'>,
+	options?: RequestOptions
+): Promise<Envelope[]> {
+	const envelopes: Envelope[] = [];
+	let cursor: string | undefined;
+	for (let page = 0; page < MAX_ENVELOPE_LIST_PAGES; page += 1) {
+		const result: ListEnvelopesResponse = await client.list(
+			{ cursor, limit: ENVELOPE_LIST_PAGE_SIZE },
+			options
+		);
+		envelopes.push(...result.items);
+		if (result.nextCursor === null) return envelopes;
+		cursor = result.nextCursor;
+	}
+	console.warn(
+		JSON.stringify({ event: 'envelope_list_page_limit_reached', pages: MAX_ENVELOPE_LIST_PAGES })
+	);
+	return envelopes;
+}

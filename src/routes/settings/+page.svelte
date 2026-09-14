@@ -17,7 +17,6 @@
 		API_KEY_MAX_EXPIRY_DAYS,
 		API_KEY_SCOPES
 	} from '$lib/security/api-key';
-	import { BEARER_SECRET_MAX_LENGTH, BEARER_SECRET_MIN_LENGTH } from '$lib/security/bearer-secret';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale, localizeHref } from '$lib/paraglide/runtime';
 	import { Button } from '$lib/components/ui/button';
@@ -60,12 +59,6 @@
 	const signInHref = $derived(
 		localizeHref(`/auth/login?return=${encodeURIComponent(page.url.pathname)}`)
 	);
-
-	// Bootstrap State
-	let bootstrapSecret = $state('');
-	let bootstrapPending = $state(false);
-	let bootstrapError = $state<string | null>(null);
-	let bootstrapSuccess = $state<string | null>(null);
 
 	// Invitation Accept State
 	let invitationToken = $state('');
@@ -143,7 +136,6 @@
 		return key.revokedAt === null && Date.parse(key.expiresAt) <= Date.now();
 	}
 
-	const isBootstrapped = $derived(callerContext?.bootstrapped ?? false);
 	const currentMember = $derived(callerContext?.member ?? null);
 	const isActiveMember = $derived(currentMember?.status === 'active');
 	const isOwnerOrAdmin = $derived(
@@ -161,6 +153,10 @@
 		apiKeysLoadAttempted = false;
 		try {
 			callerContext = await client.getCurrentMember();
+			// The root layout guard already redirects an unbootstrapped instance to
+			// /setup before this page can render. `member` is always null pre-
+			// bootstrap, so on the unreachable path where this still executes, it
+			// falls through to the same invitation-accept card as a non-member.
 			const member = callerContext.member;
 			if (member && member.status === 'active' && member.role === 'member') {
 				// Only the API keys tab exists for a plain active member.
@@ -174,25 +170,6 @@
 			}
 		} finally {
 			initialLoading = false;
-		}
-	}
-
-	async function handleBootstrap(event: SubmitEvent) {
-		event.preventDefault();
-		const trimmedSecret = bootstrapSecret.trim();
-		if (trimmedSecret.length < BEARER_SECRET_MIN_LENGTH) return;
-		bootstrapPending = true;
-		bootstrapError = null;
-		bootstrapSuccess = null;
-		try {
-			await client.bootstrapOwner({ bootstrapSecret: trimmedSecret });
-			bootstrapSuccess = m.settings_bootstrap_success();
-			bootstrapSecret = '';
-			await loadContext();
-		} catch (err: unknown) {
-			bootstrapError = err instanceof Error ? err.message : String(err);
-		} finally {
-			bootstrapPending = false;
 		}
 	}
 
@@ -544,60 +521,6 @@
 				{m.common_retry()}
 			</Button>
 		</div>
-	{:else if !isBootstrapped}
-		<Card.Root class="mx-auto max-w-lg">
-			<Card.Header>
-				<div
-					class="mb-2 flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary"
-				>
-					<IconShield class="size-5" />
-				</div>
-				<Card.Title>{m.settings_bootstrap_title()}</Card.Title>
-				<Card.Description>{m.settings_bootstrap_description()}</Card.Description>
-			</Card.Header>
-			<Card.Content>
-				<form onsubmit={handleBootstrap} class="space-y-4">
-					<div class="space-y-1.5">
-						<label for="bootstrap-secret" class="text-sm font-medium text-foreground">
-							{m.settings_bootstrap_secret_label()}
-						</label>
-						<Input
-							id="bootstrap-secret"
-							type="password"
-							placeholder={m.settings_bootstrap_secret_placeholder()}
-							bind:value={bootstrapSecret}
-							disabled={bootstrapPending}
-							required
-							minlength={BEARER_SECRET_MIN_LENGTH}
-							maxlength={BEARER_SECRET_MAX_LENGTH}
-						/>
-						<p class="text-xs text-muted-foreground">{m.settings_bootstrap_secret_hint()}</p>
-					</div>
-
-					{#if bootstrapError}
-						<p class="text-xs font-medium text-destructive" role="alert">{bootstrapError}</p>
-					{/if}
-					{#if bootstrapSuccess}
-						<p class="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-							{bootstrapSuccess}
-						</p>
-					{/if}
-
-					<Button
-						type="submit"
-						class="w-full"
-						disabled={bootstrapPending || bootstrapSecret.trim().length < BEARER_SECRET_MIN_LENGTH}
-					>
-						{#if bootstrapPending}
-							<Spinner class="size-4" />
-							<span>{m.settings_bootstrap_pending()}</span>
-						{:else}
-							<span>{m.settings_bootstrap_action()}</span>
-						{/if}
-					</Button>
-				</form>
-			</Card.Content>
-		</Card.Root>
 	{:else if !currentMember}
 		<Card.Root class="mx-auto max-w-lg">
 			<Card.Header>

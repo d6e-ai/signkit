@@ -1,19 +1,17 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import {
-		IconAlertTriangle,
-		IconArrowRight,
-		IconBrandGit,
-		IconClock,
-		IconFileText,
-		IconRobot
-	} from '@tabler/icons-svelte';
+	import { IconAlertTriangle, IconArrowRight, IconFileText } from '@tabler/icons-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import { createEnvelopesClient, EnvelopesApiError, type Envelope } from '$lib/client/envelopes';
+	import {
+		createEnvelopesClient,
+		fetchAllEnvelopes,
+		EnvelopesApiError,
+		type Envelope
+	} from '$lib/client/envelopes';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale, localizeHref } from '$lib/paraglide/runtime';
 
@@ -85,8 +83,7 @@
 		authRequired = false;
 		errorMessage = null;
 		try {
-			const result = await client.list({ limit: 100 });
-			envelopes = [...result.items];
+			envelopes = await fetchAllEnvelopes(client);
 		} catch (cause) {
 			if (cause instanceof EnvelopesApiError && cause.status === 401) {
 				authRequired = true;
@@ -107,11 +104,6 @@
 <div class="mx-auto flex w-full max-w-7xl flex-col gap-6">
 	<section class="flex flex-col justify-between gap-4 md:flex-row md:items-end">
 		<div class="max-w-2xl">
-			<div
-				class="mb-2 flex items-center gap-2 text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
-			>
-				<span class="size-1.5 rounded-full bg-primary"></span>Open core · Agent native
-			</div>
 			<h1 class="text-3xl font-semibold tracking-tight md:text-4xl">{m.dashboard_title()}</h1>
 			<p class="mt-2 text-sm leading-6 text-muted-foreground md:text-base">
 				{m.dashboard_description()}
@@ -171,75 +163,45 @@
 			>
 		</section>
 
-		<section class="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(19rem,0.7fr)]">
-			<Card.Root class="overflow-hidden">
-				<Card.Header class="flex-row items-start justify-between gap-4"
-					><div>
-						<Card.Title>{m.recent_title()}</Card.Title><Card.Description
-							>{m.recent_description()}</Card.Description
-						>
+		<Card.Root class="overflow-hidden">
+			<Card.Header class="flex-row items-start justify-between gap-4"
+				><div>
+					<Card.Title>{m.recent_title()}</Card.Title><Card.Description
+						>{m.recent_description()}</Card.Description
+					>
+				</div>
+				<Button variant="ghost" size="sm" href={localizeHref('/envelopes')}
+					>{m.view_all()}<IconArrowRight data-icon="inline-end" /></Button
+				></Card.Header
+			>
+			<Card.Content class="px-0">
+				{#if recent.length === 0}
+					<p class="px-6 py-8 text-center text-sm text-muted-foreground">
+						{m.envelope_list_empty_description()}
+					</p>
+				{:else}
+					<div class="divide-y border-t">
+						{#each recent as envelope (envelope.id)}
+							<a
+								href={localizeHref(`/envelopes/${envelope.id}`)}
+								class="group grid gap-3 px-6 py-4 transition-colors hover:bg-muted/45 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+							>
+								<div class="min-w-0">
+									<div class="flex items-center gap-2">
+										<p class="truncate text-sm font-medium">{envelope.title}</p>
+										<Badge variant="outline" class={statusClass(envelope.status)}
+											>{statusLabel(envelope.status)}</Badge
+										>
+									</div>
+								</div>
+								<div class="flex items-center gap-3 text-xs text-muted-foreground sm:justify-end">
+									<span>{formatDate(envelope.updatedAt)}</span>
+								</div>
+							</a>
+						{/each}
 					</div>
-					<Button variant="ghost" size="sm" href={localizeHref('/envelopes')}
-						>{m.view_all()}<IconArrowRight data-icon="inline-end" /></Button
-					></Card.Header
-				>
-				<Card.Content class="px-0">
-					{#if recent.length === 0}
-						<p class="px-6 py-8 text-center text-sm text-muted-foreground">
-							{m.envelope_list_empty_description()}
-						</p>
-					{:else}
-						<div class="divide-y border-t">
-							{#each recent as envelope (envelope.id)}
-								<a
-									href={localizeHref(`/envelopes/${envelope.id}`)}
-									class="group grid gap-3 px-6 py-4 transition-colors hover:bg-muted/45 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-								>
-									<div class="min-w-0">
-										<div class="flex items-center gap-2">
-											<p class="truncate text-sm font-medium">{envelope.title}</p>
-											<Badge variant="outline" class={statusClass(envelope.status)}
-												>{statusLabel(envelope.status)}</Badge
-											>
-										</div>
-									</div>
-									<div class="flex items-center gap-3 text-xs text-muted-foreground sm:justify-end">
-										<span>{formatDate(envelope.updatedAt)}</span>
-									</div>
-								</a>
-							{/each}
-						</div>
-					{/if}
-				</Card.Content>
-			</Card.Root>
-
-			<div class="flex flex-col gap-6">
-				<Card.Root class="border-primary/20 bg-primary/[0.035]"
-					><Card.Header class="pb-3"
-						><div
-							class="mb-2 flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground"
-						>
-							<IconRobot class="size-5" />
-						</div>
-						<Card.Title>{m.agent_ready()}</Card.Title><Card.Description
-							>{m.agent_ready_description()}</Card.Description
-						></Card.Header
-					></Card.Root
-				>
-			</div>
-		</section>
+				{/if}
+			</Card.Content>
+		</Card.Root>
 	{/if}
-
-	<section
-		class="grid gap-3 rounded-2xl border bg-card p-5 md:grid-cols-[auto_1fr_auto] md:items-center"
-	>
-		<div class="flex size-10 items-center justify-center rounded-xl bg-muted"><IconBrandGit /></div>
-		<div>
-			<h2 class="font-medium">{m.source_history()}</h2>
-			<p class="mt-1 text-sm text-muted-foreground">{m.source_history_description()}</p>
-		</div>
-		<div class="flex items-center gap-2 text-xs text-muted-foreground">
-			<IconClock class="size-4" />SHA-256 · CAS
-		</div>
-	</section>
 </div>

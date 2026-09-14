@@ -151,7 +151,7 @@ describe('InstanceManagementClient', () => {
 			expect(fetchMock).toHaveBeenCalledTimes(3);
 		});
 
-		it('POST bootstrap owner with and without bootstrapSecret', async () => {
+		it('POST bootstrap owner as a cookie-session-only request with no authorization header', async () => {
 			const mockMember = {
 				userId: 'usr-owner',
 				role: 'owner',
@@ -167,7 +167,7 @@ describe('InstanceManagementClient', () => {
 				newIdempotencyKey: () => 'bootstrap-idemp-1'
 			});
 
-			const resultWithoutSecret = await client.bootstrapOwner();
+			const result = await client.bootstrapOwner();
 			expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/instance/bootstrap', {
 				method: 'POST',
 				credentials: 'same-origin',
@@ -178,15 +178,11 @@ describe('InstanceManagementClient', () => {
 				},
 				body: '{}'
 			});
-			expect(resultWithoutSecret).toEqual({
+			expect(result).toEqual({
 				member: mockMember,
 				bootstrapped: true,
 				replayed: false
 			});
-
-			await client.bootstrapOwner({ bootstrapSecret: 'super-secret-token' });
-			const lastHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
-			expect(lastHeaders['authorization']).toBe('Bearer super-secret-token');
 		});
 
 		it('GET list members with and without pagination parameters', async () => {

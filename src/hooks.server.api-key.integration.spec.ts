@@ -324,11 +324,11 @@ describe('hooks API key authentication (real D1 store)', () => {
 	});
 
 	/**
-	 * The exemption, proven rather than assumed: bootstrap's `Authorization` header
-	 * is its own deployment secret, so an API-key-shaped value there stays outside
-	 * this slice entirely and that endpoint's constant-time secret gate still runs.
+	 * Bootstrap is cookie-session-only, exactly like the rest of instance
+	 * management: a live API key there is rejected outright and the cookie is
+	 * never read, never treated as a deployment-secret credential family.
 	 */
-	it('leaves the bootstrap deployment-secret flow untouched', async () => {
+	it('rejects a live API key on bootstrap and reads no cookie', async () => {
 		const fixture: Fixture = await createFixture();
 		try {
 			const outcome: Outcome = await runHandle(fixture, {
@@ -337,8 +337,10 @@ describe('hooks API key authentication (real D1 store)', () => {
 				sessionCookie: 'sealed-session'
 			});
 
-			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'absent' });
-			expect(outcome.cookieReads).toContain('signkit_session');
+			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'rejected_surface' });
+			expect(outcome.cookieReads).toEqual([]);
+			expect(outcome.locals.principal).toBeNull();
+			expect(outcome.locals.identityState).toBe('anonymous');
 		} finally {
 			fixture.sqlite.close();
 		}

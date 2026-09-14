@@ -967,7 +967,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Bootstrap the instance',
 					operationId: 'bootstrapInstance',
 					tags: ['Instance'],
-					security: [{ BootstrapSecret: [] }],
+					security: [{ SessionCookie: [] }],
 					requestBody: JSON_BODY,
 					responses: jsonResponse('200', 'Bootstrap result', { type: 'object' })
 				})
@@ -1212,11 +1212,6 @@ export function openApiDocument(): Record<string, unknown> {
 					type: 'http',
 					scheme: 'bearer',
 					description: 'Deployment worker secret for drain endpoints.'
-				},
-				BootstrapSecret: {
-					type: 'http',
-					scheme: 'bearer',
-					description: 'Instance bootstrap secret. Failures are opaque 404.'
 				},
 				RecipientCapability: {
 					type: 'http',

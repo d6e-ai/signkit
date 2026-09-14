@@ -10,8 +10,8 @@ Node runs as a non-root user in the supplied multi-stage Docker image. A reverse
 
 ## Primary risks
 
+- first-user-wins instance bootstrap: `POST /api/v1/instance/bootstrap` authorizes on the verified d6e-auth cookie session alone, with no deployment secret gate, so whichever authenticated identity reaches an empty instance first claims the sole `owner` slot. The atomic empty-instance check and idempotency receipt prevent a second claim once one succeeds, but they do not prevent the _first_ claim from being made by the wrong person — that is an operational race, not a defect the store can close. The mitigation is procedural: claim the initial owner immediately after deploy, before the instance URL is shared or otherwise discoverable (see [deployment.md § Claim the initial owner immediately after deploy](../deployment.md#claim-the-initial-owner-immediately-after-deploy)).
 - AGPL contamination from copying upstream implementation or distinctive assets.
-- the current d6e-auth session principal asserts an email without a distinct `email_verified` claim; instance invitation acceptance trusts that authenticated/asserted email claim as-is rather than as a provider-verified address, so this is tracked as a risk to revisit once d6e-auth exposes verification state rather than a gap to silently work around.
 - cross-tenant reads or writes caused by missing organization predicates.
 - inconsistent SQL/object pointers during concurrent draft commits.
 - Worker exhaustion from large Git archives, DOCX ZIP bombs, PDFs, or fonts.

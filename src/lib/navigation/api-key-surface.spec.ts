@@ -67,6 +67,7 @@ describe('API key rejected surface', () => {
 		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/organization-grants',
 		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/organization-grants/01900000-0000-7000-8000-000000000301/revoke',
 		'/api/v1/instance',
+		'/api/v1/instance/bootstrap',
 		'/api/v1/instance/members',
 		'/api/v1/instance/members/me',
 		'/api/v1/instance/members/user-2/role',
@@ -82,13 +83,12 @@ describe('API key rejected surface', () => {
 	});
 
 	/**
-	 * Bootstrap is exempt because its `Authorization` header is not a
-	 * credential-family selector: it carries `SIGNKIT_BOOTSTRAP_SECRET`, checked
-	 * constant-time before identity, so an API-key-shaped value there is simply a
-	 * wrong deployment secret and already fails closed with an opaque 404.
+	 * Bootstrap is cookie-session-only, exactly like the rest of instance
+	 * management: a well-formed `signkit_` key there is rejected, never treated as
+	 * an absent credential that would let an accompanying cookie ride through.
 	 */
-	it('exempts instance bootstrap so its deployment-secret flow is unchanged', () => {
-		expect(isApiKeyRejectedPath('/api/v1/instance/bootstrap')).toBe(false);
+	it('rejects instance bootstrap like every other instance management endpoint', () => {
+		expect(isApiKeyRejectedPath('/api/v1/instance/bootstrap')).toBe(true);
 	});
 
 	/**
