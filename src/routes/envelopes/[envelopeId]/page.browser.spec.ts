@@ -144,4 +144,83 @@ describe('envelope authoring page remounts durable send state', () => {
 			expectedReadyAuditEventId: READY_AUDIT_ID
 		});
 	});
+
+	it('shows each recipient language in the immutable post-ready table', async () => {
+		const jaRecipientId = '01900000-0000-7000-8000-000000000012';
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						...detail,
+						recipients: [
+							...detail.recipients,
+							{
+								id: jaRecipientId,
+								email: 'sato@example.com',
+								name: '佐藤',
+								role: 'approver',
+								locale: 'ja',
+								routingOrder: 2,
+								status: 'pending'
+							}
+						]
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+					return jsonResponse(deliveries);
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Recipients' }).click();
+		await expect.element(screen.getByText('Language')).toBeVisible();
+		await expect.element(screen.getByText('English')).toBeVisible();
+		await expect.element(screen.getByText('日本語')).toBeVisible();
+	});
+
+	it('lets operators choose recipient role and language with shadcn selects', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Recipients' }).click();
+		await screen.getByRole('button', { name: 'Add recipient' }).click();
+		const languageSelect = screen.getByLabelText('Language');
+		await expect.element(screen.getByLabelText('Role')).toBeVisible();
+		await expect.element(languageSelect).toBeVisible();
+		await expect.element(languageSelect).toHaveTextContent('English');
+		await languageSelect.click();
+		await expect.element(screen.getByRole('option', { name: '日本語' })).toBeVisible();
+		await screen.getByRole('option', { name: '日本語' }).click();
+		await expect.element(languageSelect).toHaveTextContent('日本語');
+	});
 });

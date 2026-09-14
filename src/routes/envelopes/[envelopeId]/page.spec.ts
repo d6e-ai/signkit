@@ -39,4 +39,15 @@ describe('envelope authoring page contracts', () => {
 		}
 		expect(source).not.toContain('{@html');
 	});
+
+	it('uses shadcn Select and Field for recipient role and language and shows locale after ready', () => {
+		expect(source).toContain('<Select.Root type="single" bind:value={draftItem.role}>');
+		expect(source).toContain('<Select.Root type="single" bind:value={draftItem.locale}>');
+		expect(source).toContain('<Field.Field>');
+		expect(source).toContain('<Field.FieldGroup>');
+		expect(source).toContain('recipientLocaleLabel(recipient.locale)');
+		expect(source).toContain('locale: draftItem.locale');
+		expect(source).toContain("getLocale() === 'ja' ? 'ja' : 'en'");
+		expect(source).not.toMatch(/<select[\s>]/);
+	});
 });

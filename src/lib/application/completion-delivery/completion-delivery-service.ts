@@ -33,6 +33,10 @@ import type {
 	CompletionTokenSealer,
 	SealedCompletionToken
 } from '$lib/security/completion-token-sealer';
+import {
+	renderCompletionMail,
+	type TransactionalMailCopy
+} from '$lib/application/mail/transactional-email';
 
 export const COMPLETION_DELIVERY_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_DELIVERY_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -501,10 +505,12 @@ function completionMessage(
 	const completionUrl: string = new URL(completionAccessPath(token), origin).href;
 	const title: string = safeDisplayText(claim.envelopeTitle).slice(0, 300);
 	const name: string = safeDisplayText(claim.recipientName).slice(0, 200);
-	const copy: CompletionCopy =
-		claim.recipientLocale === 'ja'
-			? japaneseCopy(name, title, completionUrl)
-			: englishCopy(name, title, completionUrl);
+	const copy: TransactionalMailCopy = renderCompletionMail(
+		claim.recipientLocale === 'ja' ? 'ja' : 'en',
+		name,
+		title,
+		completionUrl
+	);
 	return {
 		to: claim.recipientEmail,
 		from: { email: sender.fromEmail, name: sender.fromName },
@@ -513,71 +519,6 @@ function completionMessage(
 		html: copy.html,
 		deliveryKey: `signkit-completion-delivery-v1:${claim.organizationId}:${claim.deliveryId}`
 	};
-}
-
-interface CompletionCopy {
-	subject: string;
-	text: string;
-	html: string;
-}
-
-function englishCopy(name: string, title: string, completionUrl: string): CompletionCopy {
-	const safeName: string = escapeHtml(name);
-	const safeTitle: string = escapeHtml(title);
-	const safeUrl: string = escapeHtml(completionUrl);
-	return {
-		subject: `Completed: "${title}"`,
-		text: [
-			`Hello ${name},`,
-			'',
-			`"${title}" has been completed by all participants.`,
-			'',
-			'Open this link to view or download the completed agreement:',
-			completionUrl
-		].join('\n'),
-		html: htmlDocument(
-			'en',
-			`<p>Hello ${safeName},</p>` +
-				`<p>&quot;${safeTitle}&quot; has been completed by all participants.</p>` +
-				`<p><a href="${safeUrl}">View completed agreement</a></p>`
-		)
-	};
-}
-
-function japaneseCopy(name: string, title: string, completionUrl: string): CompletionCopy {
-	const safeName: string = escapeHtml(name);
-	const safeTitle: string = escapeHtml(title);
-	const safeUrl: string = escapeHtml(completionUrl);
-	return {
-		subject: `「${title}」の手続きが完了しました`,
-		text: [
-			`${name} 様`,
-			'',
-			`「${title}」の手続きが完了しました。`,
-			'',
-			'次のリンクを開いて完了した合意書を確認またはダウンロードしてください。',
-			completionUrl
-		].join('\n'),
-		html: htmlDocument(
-			'ja',
-			`<p>${safeName} 様</p>` +
-				`<p>「${safeTitle}」の手続きが完了しました。</p>` +
-				`<p><a href="${safeUrl}">完了した合意書を開く</a></p>`
-		)
-	};
-}
-
-function htmlDocument(lang: 'en' | 'ja', body: string): string {
-	return `<!doctype html><html lang="${lang}"><body>${body}</body></html>`;
-}
-
-function escapeHtml(value: string): string {
-	return value
-		.replaceAll('&', '&amp;')
-		.replaceAll('<', '&lt;')
-		.replaceAll('>', '&gt;')
-		.replaceAll('"', '&quot;')
-		.replaceAll("'", '&#39;');
 }
 
 function sealContext(claim: ClaimedCompletionDelivery): CompletionTokenSealContext {

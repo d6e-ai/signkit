@@ -164,6 +164,25 @@
 		return m.signing_field_type_text();
 	}
 
+	function recipientRoleLabel(role: RecipientRole): string {
+		switch (role) {
+			case 'signer':
+				return m.signing_role_signer();
+			case 'approver':
+				return m.signing_role_approver();
+			case 'viewer':
+				return m.signing_role_viewer();
+			case 'cc':
+				return m.envelope_role_cc();
+			case 'prefill':
+				return m.signing_role_prefill();
+		}
+	}
+
+	function recipientLocaleLabel(locale: 'en' | 'ja'): string {
+		return locale === 'ja' ? '日本語' : 'English';
+	}
+
 	async function load(): Promise<void> {
 		loading = true;
 		authRequired = false;
@@ -811,86 +830,150 @@
 					</Card.Header>
 					<Card.Content class="flex flex-col gap-4">
 						{#if envelope.status === 'draft'}
-							<Table.Root>
-								<Table.Header>
-									<Table.Row>
-										<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
-										<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
-									</Table.Row>
-								</Table.Header>
-								<Table.Body>
-									{#each recipientDrafts as draftItem (draftItem.key)}
+							<Field.FieldGroup>
+								<Table.Root>
+									<Table.Header>
 										<Table.Row>
-											<Table.Cell>
-												<Input
-													type="email"
-													bind:value={draftItem.email}
-													aria-label={m.envelope_recipient_col_email()}
-												/>
-											</Table.Cell>
-											<Table.Cell>
-												<Input
-													bind:value={draftItem.name}
-													aria-label={m.envelope_recipient_col_name()}
-												/>
-											</Table.Cell>
-											<Table.Cell>
-												<select
-													bind:value={draftItem.role}
-													aria-label={m.envelope_recipient_col_role()}
-													class="flex h-9 w-full rounded-2xl border border-input bg-input/50 px-3 py-1.5 text-sm font-medium focus-visible:ring-3 focus-visible:ring-ring/30"
-												>
-													<option value="signer">{m.signing_role_signer()}</option>
-													<option value="approver">{m.signing_role_approver()}</option>
-													<option value="viewer">{m.signing_role_viewer()}</option>
-													<option value="cc">{m.envelope_role_cc()}</option>
-												</select>
-											</Table.Cell>
-											<Table.Cell>
-												<select
-													bind:value={draftItem.locale}
-													aria-label={m.envelope_recipient_col_locale()}
-													class="flex h-9 w-full rounded-2xl border border-input bg-input/50 px-3 py-1.5 text-sm font-medium focus-visible:ring-3 focus-visible:ring-ring/30"
-												>
-													<option value="en">English</option>
-													<option value="ja">日本語</option>
-												</select>
-											</Table.Cell>
-											<Table.Cell>
-												<Input
-													type="number"
-													min="1"
-													max="1000"
-													value={draftItem.routingOrder}
-													oninput={(event) => {
-														const parsed = Number(event.currentTarget.value);
-														if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
-													}}
-													aria-label={m.envelope_recipient_col_order()}
-													class="w-20"
-												/>
-											</Table.Cell>
-											<Table.Cell>
-												<Button
-													size="icon"
-													variant="ghost"
-													aria-label={m.common_remove()}
-													onclick={() => removeRecipientDraft(draftItem.key)}
-												>
-													<IconTrash />
-												</Button>
-											</Table.Cell>
+											<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
+											<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
 										</Table.Row>
-									{/each}
-								</Table.Body>
-							</Table.Root>
-							<Button variant="outline" onclick={addRecipientDraft} class="w-fit">
-								<IconPlus data-icon="inline-start" />{m.envelope_add_recipient()}
-							</Button>
+									</Table.Header>
+									<Table.Body>
+										{#each recipientDrafts as draftItem (draftItem.key)}
+											<Table.Row>
+												<Table.Cell>
+													<Field.Field>
+														<Field.FieldLabel
+															class="contents"
+															for={`recipient-email-${draftItem.key}`}
+														>
+															<span class="sr-only">{m.envelope_recipient_col_email()}</span>
+														</Field.FieldLabel>
+														<Input
+															id={`recipient-email-${draftItem.key}`}
+															type="email"
+															bind:value={draftItem.email}
+														/>
+													</Field.Field>
+												</Table.Cell>
+												<Table.Cell>
+													<Field.Field>
+														<Field.FieldLabel
+															class="contents"
+															for={`recipient-name-${draftItem.key}`}
+														>
+															<span class="sr-only">{m.envelope_recipient_col_name()}</span>
+														</Field.FieldLabel>
+														<Input
+															id={`recipient-name-${draftItem.key}`}
+															bind:value={draftItem.name}
+														/>
+													</Field.Field>
+												</Table.Cell>
+												<Table.Cell>
+													<Field.Field>
+														<Field.FieldLabel
+															class="contents"
+															for={`recipient-role-${draftItem.key}`}
+														>
+															<span class="sr-only">{m.envelope_recipient_col_role()}</span>
+														</Field.FieldLabel>
+														<Select.Root type="single" bind:value={draftItem.role}>
+															<Select.Trigger
+																id={`recipient-role-${draftItem.key}`}
+																class="w-full"
+																aria-label={m.envelope_recipient_col_role()}
+															>
+																{recipientRoleLabel(draftItem.role)}
+															</Select.Trigger>
+															<Select.Content>
+																<Select.Group>
+																	<Select.Item value="signer" label={m.signing_role_signer()}>
+																		{m.signing_role_signer()}
+																	</Select.Item>
+																	<Select.Item value="approver" label={m.signing_role_approver()}>
+																		{m.signing_role_approver()}
+																	</Select.Item>
+																	<Select.Item value="viewer" label={m.signing_role_viewer()}>
+																		{m.signing_role_viewer()}
+																	</Select.Item>
+																	<Select.Item value="cc" label={m.envelope_role_cc()}>
+																		{m.envelope_role_cc()}
+																	</Select.Item>
+																</Select.Group>
+															</Select.Content>
+														</Select.Root>
+													</Field.Field>
+												</Table.Cell>
+												<Table.Cell>
+													<Field.Field>
+														<Field.FieldLabel
+															class="contents"
+															for={`recipient-locale-${draftItem.key}`}
+														>
+															<span class="sr-only">{m.envelope_recipient_col_locale()}</span>
+														</Field.FieldLabel>
+														<Select.Root type="single" bind:value={draftItem.locale}>
+															<Select.Trigger
+																id={`recipient-locale-${draftItem.key}`}
+																class="w-full"
+																aria-label={m.envelope_recipient_col_locale()}
+															>
+																{recipientLocaleLabel(draftItem.locale)}
+															</Select.Trigger>
+															<Select.Content>
+																<Select.Group>
+																	<Select.Item value="en" label="English">English</Select.Item>
+																	<Select.Item value="ja" label="日本語">日本語</Select.Item>
+																</Select.Group>
+															</Select.Content>
+														</Select.Root>
+													</Field.Field>
+												</Table.Cell>
+												<Table.Cell>
+													<Field.Field>
+														<Field.FieldLabel
+															class="contents"
+															for={`recipient-order-${draftItem.key}`}
+														>
+															<span class="sr-only">{m.envelope_recipient_col_order()}</span>
+														</Field.FieldLabel>
+														<Input
+															id={`recipient-order-${draftItem.key}`}
+															type="number"
+															min="1"
+															max="1000"
+															value={draftItem.routingOrder}
+															oninput={(event) => {
+																const parsed = Number(event.currentTarget.value);
+																if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
+															}}
+															class="w-20"
+														/>
+													</Field.Field>
+												</Table.Cell>
+												<Table.Cell>
+													<Button
+														size="icon"
+														variant="ghost"
+														aria-label={m.common_remove()}
+														onclick={() => removeRecipientDraft(draftItem.key)}
+													>
+														<IconTrash />
+													</Button>
+												</Table.Cell>
+											</Table.Row>
+										{/each}
+									</Table.Body>
+								</Table.Root>
+								<Button variant="outline" onclick={addRecipientDraft} class="w-fit">
+									<IconPlus data-icon="inline-start" />{m.envelope_add_recipient()}
+								</Button>
+							</Field.FieldGroup>
 							{#if readyError}
 								<p class="text-sm font-medium text-destructive" role="alert">{readyError}</p>
 							{/if}
@@ -901,6 +984,7 @@
 										<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
 										<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
 										<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
+										<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
 										<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
 										<Table.Head>{m.envelope_recipient_col_status()}</Table.Head>
 									</Table.Row>
@@ -911,6 +995,7 @@
 											<Table.Cell>{recipient.email}</Table.Cell>
 											<Table.Cell>{recipient.name}</Table.Cell>
 											<Table.Cell>{recipient.role}</Table.Cell>
+											<Table.Cell>{recipientLocaleLabel(recipient.locale)}</Table.Cell>
 											<Table.Cell>{recipient.routingOrder}</Table.Cell>
 											<Table.Cell>{recipient.status}</Table.Cell>
 										</Table.Row>
