@@ -1,10 +1,11 @@
 import { env } from '$env/dynamic/private';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import { AesGcmSealingKeyring, decodeBase64SealingKey } from '$lib/security/sealing-keyring';
 
-export const RECIPIENT_SESSION_COOKIE: string = 'signkit_recipient';
-// The exchange is under /s while localized review pages are under /en/sign
-// and /ja/sign, so one host-only cookie needs the shared root path.
+export const RECIPIENT_SESSION_COOKIE_PREFIX: string = 'signkit_recipient_';
+// The exchange is under /s while localized review pages are under
+// /{locale}/sign/{envelopeId}, so one host-only cookie needs the shared root path.
 export const RECIPIENT_SESSION_COOKIE_PATH: string = '/';
 export const RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS: number = 60 * 60 * 24 * 30;
 
@@ -19,22 +20,55 @@ const IV_BYTES: number = 12;
 const TAG_BYTES: number = 16;
 const MAX_COOKIE_LENGTH: number = 300;
 const KEY_ID_HEX_LENGTH: number = 16;
-const AAD: Uint8Array<ArrayBuffer> = utf8('signkit:recipient-session-cookie:v1');
+const AAD_PREFIX: string = 'signkit:recipient-session-cookie:v1:';
 const HKDF_SALT: Uint8Array<ArrayBuffer> = utf8('signkit:session-key-derivation:v1');
 const HKDF_INFO: Uint8Array<ArrayBuffer> = utf8('signkit:recipient-session-key:v1');
 const ENV_VAR_NAME: string = 'SESSION_ENCRYPTION_KEY';
+
+export function recipientSessionCookieName(envelopeId: string): string | null {
+	if (!isUuidV7(envelopeId)) return null;
+	return `${RECIPIENT_SESSION_COOKIE_PREFIX}${envelopeId}`;
+}
+
+export function readRecipientSessionCookie(
+	cookies: { get(name: string): string | undefined },
+	envelopeId: string
+): string | undefined {
+	const name: string | null = recipientSessionCookieName(envelopeId);
+	if (name === null) return undefined;
+	return cookies.get(name);
+}
+
+/**
+ * Emit a deletion only after a durable terminal command for this envelope, or
+ * as part of an ordered same-envelope cookie exchange that also sets a
+ * replacement. Non-terminal invalid/not_found paths must not call this, or a
+ * late response can wipe a newer /s cookie of the same name.
+ */
+export function deleteRecipientSessionCookie(
+	cookies: { delete(name: string, opts: { path: string }): void },
+	envelopeId: string
+): void {
+	const name: string | null = recipientSessionCookieName(envelopeId);
+	if (name === null) return;
+	cookies.delete(name, { path: RECIPIENT_SESSION_COOKIE_PATH });
+}
 
 /**
  * Cookie envelope is `base64url(keyId(16 hex ascii) | iv(12) | ciphertext+tag)`.
  * The key ID travels with the ciphertext so opening is fail-closed by
  * explicit ID — active or previous HKDF-derived subkey, nothing else —
  * exactly like the delivery capability and completion token sealers.
+ * Additional authenticated data binds the ciphertext to this envelope ID
+ * so a cookie value cannot be copied onto another envelope's cookie name.
  */
-export async function sealRecipientSession(token: string): Promise<string> {
+export async function sealRecipientSession(token: string, envelopeId: string): Promise<string> {
 	if (!isRecipientCapability(token)) throw new Error('Invalid recipient capability token');
+	const aad: Uint8Array<ArrayBuffer> | null = recipientSessionAad(envelopeId);
+	if (aad === null) throw new Error('Invalid recipient session envelope ID');
 	const keyring: AesGcmSealingKeyring = await recipientSessionKeyring();
 	const plaintext: Uint8Array<ArrayBuffer> = utf8(token);
-	const sealed = await keyring.sealWithActive(plaintext, AAD);
+	const sealed = await keyring.sealWithActive(plaintext, aad);
 	const keyIdBytes: Uint8Array<ArrayBuffer> = utf8(sealed.keyId);
 	if (keyIdBytes.byteLength !== KEY_ID_HEX_LENGTH)
 		throw new Error('Unexpected sealing key ID length');
@@ -51,7 +85,12 @@ export async function sealRecipientSession(token: string): Promise<string> {
 	return cookie;
 }
 
-export async function unsealRecipientSession(cookie: string): Promise<string | null> {
+export async function unsealRecipientSession(
+	cookie: string,
+	envelopeId: string
+): Promise<string | null> {
+	const aad: Uint8Array<ArrayBuffer> | null = recipientSessionAad(envelopeId);
+	if (aad === null) return null;
 	if (cookie.length === 0 || cookie.length > MAX_COOKIE_LENGTH) return null;
 	let combined: Uint8Array<ArrayBuffer>;
 	try {
@@ -69,12 +108,17 @@ export async function unsealRecipientSession(cookie: string): Promise<string | n
 	const ciphertext: Uint8Array<ArrayBuffer> = combined.slice(KEY_ID_HEX_LENGTH + IV_BYTES);
 	const keyring: AesGcmSealingKeyring = await recipientSessionKeyring();
 	try {
-		const plaintext: Uint8Array = await keyring.openWithKeyId(keyId, iv, ciphertext, AAD);
+		const plaintext: Uint8Array = await keyring.openWithKeyId(keyId, iv, ciphertext, aad);
 		const token: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
 		return isRecipientCapability(token) ? token : null;
 	} catch {
 		return null;
 	}
+}
+
+function recipientSessionAad(envelopeId: string): Uint8Array<ArrayBuffer> | null {
+	if (!isUuidV7(envelopeId)) return null;
+	return utf8(`${AAD_PREFIX}${envelopeId}`);
 }
 
 async function recipientSessionKeyring(): Promise<AesGcmSealingKeyring> {

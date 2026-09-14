@@ -7,12 +7,12 @@ import type {
 } from '$lib/application/signing/recipient-declined-receipt';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import {
-	DECLINED_RECEIPT_COOKIE,
-	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS
+	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
+	declinedReceiptCookieName
 } from '$lib/server/declined-receipt-session';
 import {
-	RECIPIENT_SESSION_COOKIE,
-	RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS
+	RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS,
+	recipientSessionCookieName
 } from '$lib/server/recipient-session';
 import {
 	createRecipientLinkHandler,
@@ -21,10 +21,15 @@ import {
 } from './recipient-link';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
+const envelopeId: string = '01910000-0000-7000-8000-000000000001';
+const otherEnvelopeId: string = '01910000-0000-7000-8000-000000000011';
+const activeCookieName: string = recipientSessionCookieName(envelopeId) as string;
+const declinedCookieName: string = declinedReceiptCookieName(envelopeId) as string;
+const otherActiveCookieName: string = recipientSessionCookieName(otherEnvelopeId) as string;
 const context: RecipientSigningContext = {
 	organizationId: 'org-secret',
-	envelopeId: 'env-1',
-	recipientId: 'recipient-1',
+	envelopeId,
+	recipientId: '01910000-0000-7000-8000-000000000002',
 	recipientName: 'Private Recipient',
 	recipientLocale: 'ja',
 	recipientRole: 'signer',
@@ -41,7 +46,7 @@ const context: RecipientSigningContext = {
 
 const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
 	receipt: {
-		envelopeId: '01910000-0000-7000-8000-000000000001',
+		envelopeId,
 		recipientId: '01910000-0000-7000-8000-000000000002',
 		recipientStatus: 'declined',
 		envelopeStatus: 'declined',
@@ -50,7 +55,7 @@ const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
 	},
 	locator: {
 		organizationId: '01910000-0000-7000-8000-000000000003',
-		envelopeId: '01910000-0000-7000-8000-000000000001',
+		envelopeId,
 		recipientId: '01910000-0000-7000-8000-000000000002',
 		idempotencyKey: 'decline-1',
 		capabilityHash: 'b'.repeat(64),
@@ -60,6 +65,7 @@ const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
 };
 
 interface TestEvent {
+	jar: Record<string, string>;
 	cookieDelete: ReturnType<typeof vi.fn>;
 	cookieGet: ReturnType<typeof vi.fn>;
 	cookieSet: ReturnType<typeof vi.fn>;
@@ -69,15 +75,19 @@ interface TestEvent {
 function testEvent(
 	value: string = token,
 	protocol: 'http:' | 'https:' = 'https:',
-	activeSessionCookie?: string
+	cookies: Record<string, string> = {}
 ): TestEvent {
-	const cookieDelete = vi.fn();
-	const cookieGet = vi.fn((name: string): string | undefined =>
-		name === RECIPIENT_SESSION_COOKIE ? activeSessionCookie : undefined
-	);
-	const cookieSet = vi.fn();
+	const jar: Record<string, string> = { ...cookies };
+	const cookieDelete = vi.fn((name: string): void => {
+		delete jar[name];
+	});
+	const cookieGet = vi.fn((name: string): string | undefined => jar[name]);
+	const cookieSet = vi.fn((name: string, value: string): void => {
+		jar[name] = value;
+	});
 	const url: URL = new URL(`${protocol}//signkit.example/s/${value}`);
 	return {
+		jar,
 		cookieDelete,
 		cookieGet,
 		cookieSet,
@@ -128,7 +138,7 @@ describe('recipient link exchange', () => {
 		expect(input.cookieDelete).not.toHaveBeenCalled();
 	});
 
-	it('exchanges an active capability for a bounded HttpOnly cookie and clean locale URL', async () => {
+	it('exchanges an active capability for an envelope-scoped HttpOnly cookie and clean locale URL', async () => {
 		const input: TestEvent = testEvent();
 		const app: RecipientAccessApplicationPort = application();
 		const sealer = vi.fn(async (): Promise<string> => 'sealed-cookie');
@@ -142,8 +152,8 @@ describe('recipient link exchange', () => {
 		)(input.event);
 
 		expect(app.resolve).toHaveBeenCalledWith(token, '2026-09-11T00:00:00.000Z');
-		expect(sealer).toHaveBeenCalledWith(token);
-		expect(input.cookieSet).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, 'sealed-cookie', {
+		expect(sealer).toHaveBeenCalledWith(token, envelopeId);
+		expect(input.cookieSet).toHaveBeenCalledWith(activeCookieName, 'sealed-cookie', {
 			path: '/',
 			httpOnly: true,
 			sameSite: 'lax',
@@ -151,10 +161,45 @@ describe('recipient link exchange', () => {
 			maxAge: RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS
 		});
 		expect(response.status).toBe(303);
-		expect(response.headers.get('location')).toBe('/ja/sign');
+		expect(response.headers.get('location')).toBe(`/ja/sign/${envelopeId}`);
 		expect(response.headers.get('location')).not.toContain(token);
+		expect(JSON.stringify([...response.headers.entries()])).not.toContain(token);
 		expect(receipts.resolveApplication).not.toHaveBeenCalled();
-		expect(input.cookieDelete).toHaveBeenCalledWith(DECLINED_RECEIPT_COOKIE, { path: '/' });
+		expect(input.cookieDelete).not.toHaveBeenCalled();
+	});
+
+	it('does not delete a terminal declined receipt when a stale active /s later sets an invalid live cookie', async () => {
+		const input: TestEvent = testEvent(token, 'https:', {
+			[declinedCookieName]: 'terminal-receipt'
+		});
+		const sealer = vi.fn(async (): Promise<string> => {
+			// Concurrent terminal decline has already persisted the receipt cookie.
+			return 'stale-live-cookie';
+		});
+		const response: Response = await createRecipientLinkHandler(
+			() => application(),
+			sealer,
+			() => new Date('2026-09-11T00:00:00.000Z')
+		)(input.event);
+
+		expect(input.jar[activeCookieName]).toBe('stale-live-cookie');
+		expect(input.jar[declinedCookieName]).toBe('terminal-receipt');
+		expect(input.cookieDelete).not.toHaveBeenCalled();
+		expect(response.headers.get('location')).toBe(`/ja/sign/${envelopeId}`);
+	});
+
+	it('does not guess a cookie or expose the token when the envelope ID is not UUIDv7', async () => {
+		const input: TestEvent = testEvent();
+		const response: Response = await createRecipientLinkHandler(
+			() => application({ ...context, envelopeId: 'env-1' }),
+			async (): Promise<string> => 'sealed-cookie',
+			() => new Date('2026-09-11T00:00:00.000Z')
+		)(input.event);
+
+		expect(response.headers.get('location')).toBe('/sign?access=invalid');
+		expect(input.cookieSet).not.toHaveBeenCalled();
+		expect(input.cookieDelete).not.toHaveBeenCalled();
+		expect(response.headers.get('location')).not.toContain(token);
 	});
 
 	it('recovers an inactive declined capability into a purpose-separated receipt cookie', async () => {
@@ -173,7 +218,7 @@ describe('recipient link exchange', () => {
 		expect(receipts.resolveApplication).toHaveBeenCalledTimes(1);
 		expect(receipts.sealSession).toHaveBeenCalledWith({ ...declinedReceipt.locator, version: 1 });
 		expect(input.cookieSet).toHaveBeenCalledWith(
-			DECLINED_RECEIPT_COOKIE,
+			declinedCookieName,
 			'sealed-receipt',
 			expect.objectContaining({
 				httpOnly: true,
@@ -182,13 +227,15 @@ describe('recipient link exchange', () => {
 				maxAge: DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS - 60
 			})
 		);
-		expect(input.cookieDelete).not.toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
-		expect(response.headers.get('location')).toBe('/ja/sign');
+		expect(input.cookieDelete).not.toHaveBeenCalledWith(activeCookieName, { path: '/' });
+		expect(response.headers.get('location')).toBe(`/ja/sign/${envelopeId}`);
 		expect(response.headers.get('location')).not.toContain(token);
 	});
 
-	it('clears only an active session containing the same declined capability', async () => {
-		const same: TestEvent = testEvent(token, 'https:', 'sealed-active-cookie');
+	it('clears only an active session containing the same declined capability for that envelope', async () => {
+		const same: TestEvent = testEvent(token, 'https:', {
+			[activeCookieName]: 'sealed-active-cookie'
+		});
 		const sameOptions: RecipientLinkReceiptOptions = {
 			...receiptOptions(),
 			unsealActiveSession: vi.fn(async (): Promise<string> => token)
@@ -200,10 +247,16 @@ describe('recipient link exchange', () => {
 			false,
 			sameOptions
 		)(same.event);
-		expect(sameOptions.unsealActiveSession).toHaveBeenCalledWith('sealed-active-cookie');
-		expect(same.cookieDelete).toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, { path: '/' });
+		expect(sameOptions.unsealActiveSession).toHaveBeenCalledWith(
+			'sealed-active-cookie',
+			envelopeId
+		);
+		expect(same.cookieDelete).toHaveBeenCalledWith(activeCookieName, { path: '/' });
+		expect(same.jar[activeCookieName]).toBeUndefined();
 
-		const unrelated: TestEvent = testEvent(token, 'https:', 'other-active-cookie');
+		const unrelated: TestEvent = testEvent(token, 'https:', {
+			[activeCookieName]: 'other-active-cookie'
+		});
 		const unrelatedOptions: RecipientLinkReceiptOptions = {
 			...receiptOptions(),
 			unsealActiveSession: vi.fn(async (): Promise<string> => `skr1_${'B'.repeat(43)}`)
@@ -215,10 +268,33 @@ describe('recipient link exchange', () => {
 			false,
 			unrelatedOptions
 		)(unrelated.event);
-		expect(unrelatedOptions.unsealActiveSession).toHaveBeenCalledWith('other-active-cookie');
-		expect(unrelated.cookieDelete).not.toHaveBeenCalledWith(RECIPIENT_SESSION_COOKIE, {
+		expect(unrelatedOptions.unsealActiveSession).toHaveBeenCalledWith(
+			'other-active-cookie',
+			envelopeId
+		);
+		expect(unrelated.cookieDelete).not.toHaveBeenCalledWith(activeCookieName, {
 			path: '/'
 		});
+		expect(unrelated.jar[activeCookieName]).toBe('other-active-cookie');
+	});
+
+	it('leaves a second envelope cookie untouched while exchanging the first', async () => {
+		const input: TestEvent = testEvent(token, 'https:', {
+			[otherActiveCookieName]: 'other-envelope-session'
+		});
+		await createRecipientLinkHandler(
+			() => application(),
+			async (): Promise<string> => 'sealed-cookie',
+			() => new Date('2026-09-11T00:00:00.000Z')
+		)(input.event);
+
+		expect(input.cookieSet).toHaveBeenCalledWith(
+			activeCookieName,
+			'sealed-cookie',
+			expect.objectContaining({ httpOnly: true })
+		);
+		expect(input.cookieDelete).not.toHaveBeenCalledWith(otherActiveCookieName, { path: '/' });
+		expect(input.cookieGet).not.toHaveBeenCalledWith(otherActiveCookieName);
 	});
 
 	it('preserves existing cookies and returns a clean unavailable redirect when receipt minting fails', async () => {
@@ -255,7 +331,7 @@ describe('recipient link exchange', () => {
 			true
 		)(input.event);
 		expect(input.cookieSet).toHaveBeenCalledWith(
-			RECIPIENT_SESSION_COOKIE,
+			activeCookieName,
 			'sealed-cookie',
 			expect.objectContaining({ secure: false })
 		);
@@ -270,7 +346,7 @@ describe('recipient link exchange', () => {
 			true
 		)(remote.event);
 		expect(remote.cookieSet).toHaveBeenCalledWith(
-			RECIPIENT_SESSION_COOKIE,
+			activeCookieName,
 			'sealed-cookie',
 			expect.objectContaining({ secure: true })
 		);
@@ -284,7 +360,7 @@ describe('recipient link exchange', () => {
 			false
 		)(productionLocal.event);
 		expect(productionLocal.cookieSet).toHaveBeenCalledWith(
-			RECIPIENT_SESSION_COOKIE,
+			activeCookieName,
 			'sealed-cookie',
 			expect.objectContaining({ secure: true })
 		);
@@ -303,7 +379,7 @@ describe('recipient link exchange', () => {
 			() => new Date('2026-09-11T00:00:00.000Z')
 		)(input.event);
 		expect(input.cookieSet).toHaveBeenCalledWith(
-			RECIPIENT_SESSION_COOKIE,
+			activeCookieName,
 			'sealed-cookie',
 			expect.objectContaining({ maxAge: 3600 })
 		);

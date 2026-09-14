@@ -15,6 +15,8 @@ const RECIPIENT_ID: string = '01930000-0000-7000-8000-000000000001';
 const READY_AUDIT_ID: string = '01960000-0000-7000-8000-0000000000a0';
 const FIELDS_AUDIT_ID: string = '01960000-0000-7000-8000-0000000000a2';
 const SENT_AUDIT_ID: string = '01960000-0000-7000-8000-0000000000a1';
+const SENT_PDF_SHA256: string = 'f'.repeat(64);
+const SENT_PDF_KEY: string = `sent-documents/v1/organizations/org-1/envelopes/${ENVELOPE_ID}/sha256/${SENT_PDF_SHA256}.pdf`;
 
 function seedReadyThenFields(sqlite: DatabaseSync): void {
 	sqlite.exec(`
@@ -77,6 +79,8 @@ function insertCommand(
 		deliveryCount?: number;
 		idempotencyKey?: string;
 		auditEventId?: string;
+		/** 0042 and earlier have no pinned-rendering columns yet. */
+		withSentPdf?: boolean;
 	} = {}
 ): void {
 	const readyAuditEventId: string = overrides.readyAuditEventId ?? READY_AUDIT_ID;
@@ -86,14 +90,25 @@ function insertCommand(
 	const deliveryCount: number = overrides.deliveryCount ?? 1;
 	const idempotencyKey: string = overrides.idempotencyKey ?? 'send-1';
 	const auditEventId: string = overrides.auditEventId ?? SENT_AUDIT_ID;
+	const withSentPdf: boolean = overrides.withSentPdf ?? true;
+	const pdfColumns: string = withSentPdf
+		? `,
+		sent_pdf_object_key,sent_pdf_sha256,sent_pdf_bytes,sent_pdf_page_count,
+		sent_pdf_page_width,sent_pdf_page_height,sent_pdf_document_pages_json`
+		: '';
+	const pdfValues: string = withSentPdf
+		? `,
+		'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,1,595.28,841.89,
+		'[{"path":"documents/agreement.md","title":"agreement","firstPage":1,"lastPage":1}]'`
+		: '';
 	sqlite.exec(`INSERT INTO envelope_send_command (
 		organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
 		expected_generation,ready_audit_event_id,commit_sha,initial_routing_order,
 		delivery_count,queued_delivery_count,delivery_manifest_hash,delivery_manifest_json,initial_capability_expires_at,
-		updated_at,audit_event_id,audit_sequence,previous_audit_hash,audit_event_hash,audit_payload_json
+		updated_at,audit_event_id,audit_sequence,previous_audit_hash,audit_event_hash,audit_payload_json${pdfColumns}
 	) VALUES ('org-1','${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${readyAuditEventId}','commit-1',1,
 		${deliveryCount},${queuedDeliveryCount},'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
-		'${auditEventId}',${auditSequence},'${previousAuditHash}','hash-5','{}')`);
+		'${auditEventId}',${auditSequence},'${previousAuditHash}','hash-5','{}'${pdfValues})`);
 }
 
 function reserveDelivery(sqlite: DatabaseSync): void {
@@ -166,7 +181,7 @@ describe('D1 envelope send ready-anchor migration 0042', () => {
 			applyD1MigrationsThrough(sqlite, BEFORE_FIX);
 			seedReadyThenFields(sqlite);
 			sqlite.exec('BEGIN');
-			insertCommand(sqlite);
+			insertCommand(sqlite, { withSentPdf: false });
 			reserveDelivery(sqlite);
 			expect((): void => publish(sqlite)).toThrow(/publish conflict/);
 			sqlite.exec('ROLLBACK');
@@ -182,7 +197,7 @@ describe('D1 envelope send ready-anchor migration 0042', () => {
 			applyD1MigrationInTransaction(sqlite, READY_ANCHOR_MIGRATION);
 
 			sqlite.exec('BEGIN');
-			insertCommand(sqlite);
+			insertCommand(sqlite, { withSentPdf: false });
 			reserveDelivery(sqlite);
 			publish(sqlite);
 			sqlite.exec('COMMIT');

@@ -522,7 +522,8 @@ export function openApiDocument(): Record<string, unknown> {
 													'fieldType',
 													'label',
 													'required',
-													'position'
+													'position',
+													'geometry'
 												],
 												additionalProperties: false,
 												properties: {
@@ -531,7 +532,21 @@ export function openApiDocument(): Record<string, unknown> {
 													fieldType: { type: 'string', enum: [...fieldTypes] },
 													label: { type: 'string' },
 													required: { type: 'boolean' },
-													position: { type: 'integer', minimum: 0, maximum: 100000 }
+													position: { type: 'integer', minimum: 0, maximum: 100000 },
+													geometry: {
+														type: 'object',
+														description:
+															'Where the field sits on the rendered document, as unit-square fractions of one page. Required: a field a signer cannot see is a field they cannot complete. The page must belong to the named document.',
+														required: ['page', 'x', 'y', 'width', 'height'],
+														additionalProperties: false,
+														properties: {
+															page: { type: 'integer', minimum: 1, maximum: 100000 },
+															x: { type: 'number', minimum: 0, maximum: 1 },
+															y: { type: 'number', minimum: 0, maximum: 1 },
+															width: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+															height: { type: 'number', exclusiveMinimum: 0, maximum: 1 }
+														}
+													}
 												}
 											}
 										}
@@ -644,6 +659,71 @@ export function openApiDocument(): Record<string, unknown> {
 							content: {
 								'application/json': { schema: { type: 'object' } },
 								'text/markdown': { schema: { type: 'string' } }
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/document-pdf': {
+				get: op({
+					summary:
+						'Render the pinned revision as the PDF a recipient will be shown, for field placement',
+					operationId: 'getEnvelopeDocumentPdf',
+					tags: ['Envelopes', 'Documents'],
+					parameters: [organizationHeader, envelopeIdParam],
+					responses: {
+						'200': {
+							description: 'Deterministic application/pdf rendering of the pinned revision.',
+							content: {
+								'application/pdf': { schema: { type: 'string', format: 'binary' } }
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/document-pdf/pages': {
+				get: op({
+					summary: 'Read the page count, page size, and document-to-page map of that rendering',
+					operationId: 'getEnvelopeDocumentPdfPages',
+					tags: ['Envelopes', 'Documents'],
+					parameters: [organizationHeader, envelopeIdParam],
+					responses: {
+						'200': {
+							description: 'Page geometry for the pinned revision.',
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: [
+											'commitSha',
+											'generation',
+											'pageCount',
+											'pageWidth',
+											'pageHeight',
+											'documents'
+										],
+										properties: {
+											commitSha: { type: 'string' },
+											generation: { type: 'integer' },
+											pageCount: { type: 'integer' },
+											pageWidth: { type: 'number' },
+											pageHeight: { type: 'number' },
+											documents: {
+												type: 'array',
+												items: {
+													type: 'object',
+													required: ['path', 'title', 'firstPage', 'lastPage'],
+													properties: {
+														path: { type: 'string' },
+														title: { type: 'string' },
+														firstPage: { type: 'integer' },
+														lastPage: { type: 'integer' }
+													}
+												}
+											}
+										}
+									}
+								}
 							}
 						}
 					}
@@ -1221,8 +1301,9 @@ export function openApiDocument(): Record<string, unknown> {
 				RecipientSessionCookie: {
 					type: 'apiKey',
 					in: 'cookie',
-					name: 'signkit_recipient',
-					description: 'Encrypted recipient session cookie from GET /s/{token}. Not an API key.'
+					name: 'signkit_recipient_{envelopeId}',
+					description:
+						'Envelope-scoped encrypted HttpOnly recipient session cookie from GET /s/{token}. Cookie name embeds the UUIDv7 envelope ID. Not an API key.'
 				},
 				CompletionArtifactGrant: {
 					type: 'http',

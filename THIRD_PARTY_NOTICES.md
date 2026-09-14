@@ -31,6 +31,31 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Zen Kaku Gothic New (bundled PDF typeface)
+
+SignKit renders the recipient-facing agreement PDF itself and embeds the glyphs
+it needs, so the typeface travels inside the deployment bundle as
+`src/lib/adapters/pdf/fonts/document-font.ts` (a gzipped, table-stripped copy of
+Zen Kaku Gothic New Regular, base64-encoded). Regenerate it with
+`node scripts/build-pdf-font.mjs <path-to-source.ttf>`.
+
+Copyright 2022 The Zen Kaku Gothic Project Authors
+(https://github.com/googlefonts/zen-kakugothic), licensed under the SIL Open
+Font License, Version 1.1. The full license text ships beside the artifact at
+`src/lib/adapters/pdf/fonts/OFL.txt`.
+
+The OFL permits bundling and modification (here: dropping tables the PDF
+embedder does not read, and subsetting to the glyphs a given agreement uses).
+The font is not sold on its own and retains its Reserved Font Name.
+
+## pdfjs-dist
+
+The sender's field-placement editor and the recipient's signing page render the
+agreement to a canvas with [pdf.js](https://github.com/mozilla/pdf.js)
+(`pdfjs-dist`), licensed under the Apache License 2.0, Copyright Mozilla
+Foundation and contributors. Rendering happens entirely in the browser against a
+same-origin, session-authenticated document; pdf.js is never used server-side.
+
 Generated Cloudflare type declarations retain their upstream Apache-2.0 notices
 inline. Release artifacts will add a generated dependency notice and SBOM before
 the first production release.

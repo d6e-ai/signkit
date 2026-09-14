@@ -1,5 +1,5 @@
 import postgres from 'postgres';
-import type { FieldType } from '$lib/domain/envelope';
+import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
 import type {
 	RecipientFieldDeclaration,
 	RecipientFieldDeclarationStore,
@@ -13,6 +13,11 @@ interface FieldRow {
 	label: string;
 	required: boolean;
 	position: number;
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
 }
 
 export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDeclarationStore {
@@ -36,7 +41,7 @@ export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDec
 		if (envelope === undefined) return null;
 		const rows = await this.#sql<FieldRow[]>`
 			SELECT id, document_path AS "documentPath", field_type AS "fieldType",
-				label, required, position
+				label, required, position, page, x, y, width, height
 			FROM envelope_field
 			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
 				AND recipient_id = ${recipientId}
@@ -49,8 +54,39 @@ export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDec
 				fieldType: row.fieldType,
 				label: row.label,
 				required: row.required,
-				position: row.position
+				position: row.position,
+				geometry: toGeometry(row)
 			}))
 		};
 	}
+}
+
+/**
+ * Geometry is all-or-nothing. A row with a partial or absent placement is
+ * reported as having none, rather than as a half-built box a caller might
+ * treat as real.
+ */
+function toGeometry(row: {
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
+}): FieldGeometry | null {
+	if (
+		typeof row.page !== 'number' ||
+		typeof row.x !== 'number' ||
+		typeof row.y !== 'number' ||
+		typeof row.width !== 'number' ||
+		typeof row.height !== 'number'
+	) {
+		return null;
+	}
+	return {
+		page: Number(row.page),
+		x: Number(row.x),
+		y: Number(row.y),
+		width: Number(row.width),
+		height: Number(row.height)
+	};
 }

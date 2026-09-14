@@ -197,7 +197,10 @@ describe('EnvelopeFieldApplication', () => {
 					fieldType: 'initials',
 					label: 'Initial here',
 					required: false,
-					position: 1
+					position: 1,
+					// The appendix is the second document, and every document starts
+					// on a fresh page in the rendering, so its first page is 2.
+					geometry: { page: 2, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				},
 				{
 					recipientId: signerId,
@@ -205,7 +208,8 @@ describe('EnvelopeFieldApplication', () => {
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
-					position: 1
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -238,6 +242,63 @@ describe('EnvelopeFieldApplication', () => {
 		expect(store.commands[0].auditPayloadJson).not.toContain('Initial here');
 	});
 
+	it('refuses a field placed on a page outside its own document', async () => {
+		const envelope: Envelope = await readyEnvelope();
+		const store: CapturingStore = new CapturingStore(envelope);
+		const drafts: DraftPersistenceService = await draftPersistenceFor(envelope, [
+			{ path: 'documents/agreement.md', content: '# Agreement' },
+			{ path: 'documents/appendix.md', content: '# Appendix' }
+		]);
+
+		const result = await new EnvelopeFieldApplication(store, drafts).place(actor, envelopeId, {
+			idempotencyKey: 'fields-bad-page',
+			expectedGeneration: 2,
+			expectedFieldGeneration: 0,
+			fields: [
+				{
+					recipientId: signerId,
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					label: 'Sign here',
+					required: true,
+					position: 1,
+					geometry: { page: 2, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
+				}
+			]
+		});
+
+		expect(result).toEqual({ outcome: 'invalid_geometry' });
+		expect(store.commands).toHaveLength(0);
+	});
+
+	it('refuses a box that would extend past the edge of its page', async () => {
+		const envelope: Envelope = await readyEnvelope();
+		const store: CapturingStore = new CapturingStore(envelope);
+		const drafts: DraftPersistenceService = await draftPersistenceFor(envelope, [
+			{ path: 'documents/agreement.md', content: '# Agreement' }
+		]);
+
+		await expect(
+			new EnvelopeFieldApplication(store, drafts).place(actor, envelopeId, {
+				idempotencyKey: 'fields-overflow',
+				expectedGeneration: 2,
+				expectedFieldGeneration: 0,
+				fields: [
+					{
+						recipientId: signerId,
+						documentPath: 'documents/agreement.md',
+						fieldType: 'signature',
+						label: 'Sign here',
+						required: true,
+						position: 1,
+						geometry: { page: 1, x: 0.9, y: 0.1, width: 0.25, height: 0.05 }
+					}
+				]
+			})
+		).rejects.toThrow(/inside the page/);
+		expect(store.commands).toHaveLength(0);
+	});
+
 	it('mints a distinct canonical UUIDv7 per published field set, even for the same locator', async () => {
 		const envelope: Envelope = await readyEnvelope();
 		const drafts: DraftPersistenceService = await draftPersistenceFor(envelope, [
@@ -250,7 +311,8 @@ describe('EnvelopeFieldApplication', () => {
 			documentPath: 'documents/agreement.md' as const,
 			fieldType: 'signature' as const,
 			required: true,
-			position: 1
+			position: 1,
+			geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 		};
 
 		await new EnvelopeFieldApplication(first, drafts).place(actor, envelopeId, {
@@ -295,7 +357,8 @@ describe('EnvelopeFieldApplication', () => {
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
-					position: 1
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -323,7 +386,8 @@ describe('EnvelopeFieldApplication', () => {
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
-					position: 1
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -351,7 +415,8 @@ describe('EnvelopeFieldApplication', () => {
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
-					position: 1
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -379,7 +444,8 @@ describe('EnvelopeFieldApplication', () => {
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
-					position: 1
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				}
 			]
 		});
@@ -466,7 +532,8 @@ describe('EnvelopeFieldApplication', () => {
 			fieldType: 'signature' as const,
 			label: 'Sign here',
 			required: true,
-			position: 1
+			position: 1,
+			geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 		};
 
 		await expect(
@@ -499,7 +566,8 @@ describe('EnvelopeFieldApplication', () => {
 						fieldType: 'signature',
 						label: 'Sign here',
 						required: true,
-						position: 1
+						position: 1,
+						geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 					}
 				]
 			})
@@ -520,7 +588,8 @@ describe('EnvelopeFieldApplication', () => {
 				fieldType: 'signature' as const,
 				label: 'Sign here',
 				required: true,
-				position: 1
+				position: 1,
+				geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 			},
 			{
 				recipientId: signerId,
@@ -528,7 +597,8 @@ describe('EnvelopeFieldApplication', () => {
 				fieldType: 'initials' as const,
 				label: 'Initial here',
 				required: false,
-				position: 1
+				position: 1,
+				geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 			}
 		];
 		const first: CapturingStore = new CapturingStore(envelope);

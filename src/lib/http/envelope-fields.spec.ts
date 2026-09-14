@@ -42,7 +42,8 @@ function validBody(): string {
 				fieldType: 'signature',
 				label: 'Sign here',
 				required: true,
-				position: 1
+				position: 1,
+				geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 			}
 		]
 	});
@@ -161,7 +162,8 @@ describe('envelope fields HTTP handler', () => {
 			fieldType: 'signature',
 			label: 'Sign here',
 			required: true,
-			position: 1
+			position: 1,
+			geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 		};
 		const response: Response = await handler(
 			event({
@@ -245,7 +247,8 @@ describe('envelope fields HTTP handler', () => {
 						fieldType: 'signature',
 						label: 'Sign here',
 						required: true,
-						position: 1
+						position: 1,
+						geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 					}
 				]
 			}
@@ -305,7 +308,7 @@ describe('envelope fields HTTP handler', () => {
 		expect(text).not.toContain('archive');
 	});
 
-	it('accepts an optional normalized geometry object and forwards it verbatim', async () => {
+	it('forwards the required normalized geometry object verbatim', async () => {
 		const app: EnvelopeFieldApplicationPort = application();
 		const geometry = { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 };
 		const response: Response = await createEnvelopeFieldsHandler(() => app)(

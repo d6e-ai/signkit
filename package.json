@@ -76,6 +76,7 @@
 		"jose": "^6.2.12",
 		"mode-watcher": "^1.1.0",
 		"nodemailer": "^10.0.9",
+		"pdfjs-dist": "^6.3.289",
 		"postgres": "^3.4.9",
 		"rehype-sanitize": "^6.0.0",
 		"remark-gfm": "^4.0.1",

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { initRecipientViewed } from './+page.svelte';
+import { initRecipientViewed } from './[envelopeId]/+page.svelte';
 
 function browser(initialVisibility: DocumentVisibilityState = 'visible') {
 	const documentListeners = new Map<string, (event?: unknown) => void>();

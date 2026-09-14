@@ -5,10 +5,11 @@ const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
 import {
-	DECLINED_RECEIPT_COOKIE,
 	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
 	DECLINED_RECEIPT_COOKIE_MAX_LENGTH,
 	DECLINED_RECEIPT_COOKIE_OPTIONS,
+	DECLINED_RECEIPT_COOKIE_PREFIX,
+	declinedReceiptCookieName,
 	isDeclinedReceiptExpired,
 	sealDeclinedReceiptSession,
 	type DeclinedReceiptSessionLocator,
@@ -18,14 +19,15 @@ import { sealRecipientSession, unsealRecipientSession } from './recipient-sessio
 
 const locator: DeclinedReceiptSessionLocator = {
 	version: 1,
-	organizationId: '00000000-0000-4000-8000-000000000001',
-	envelopeId: '00000000-0000-4000-8000-000000000002',
-	recipientId: '00000000-0000-4000-8000-000000000003',
+	organizationId: '01910000-0000-7000-8000-000000000001',
+	envelopeId: '01910000-0000-7000-8000-000000000002',
+	recipientId: '01910000-0000-7000-8000-000000000003',
 	idempotencyKey: 'decline-command-1',
 	capabilityHash: 'a'.repeat(64),
 	declinedAt: '2026-09-12T01:02:03.000Z',
 	expiresAt: '2026-10-12T01:02:03.000Z'
 };
+const otherEnvelopeId: string = '01910000-0000-7000-8000-000000000012';
 const recipientCapability: string = `skr1_${'A'.repeat(43)}`;
 
 beforeEach((): void => {
@@ -37,8 +39,11 @@ afterEach((): void => {
 });
 
 describe('declined receipt session sealing', () => {
-	it('exposes a host-only, root-path, 30-day receipt cookie contract', () => {
-		expect(DECLINED_RECEIPT_COOKIE).toBe('signkit_declined_receipt');
+	it('exposes a host-only, root-path, 30-day, envelope-scoped receipt cookie contract', () => {
+		expect(declinedReceiptCookieName(locator.envelopeId)).toBe(
+			`${DECLINED_RECEIPT_COOKIE_PREFIX}${locator.envelopeId}`
+		);
+		expect(declinedReceiptCookieName('not-a-uuid')).toBeNull();
 		expect(DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS).toBe(60 * 60 * 24 * 30);
 		expect(DECLINED_RECEIPT_COOKIE_OPTIONS).toEqual({
 			path: '/',
@@ -56,29 +61,47 @@ describe('declined receipt session sealing', () => {
 		expect(first).not.toBe(second);
 		expect(first).toMatch(/^[A-Za-z0-9_-]+$/);
 		expect(first.length).toBeLessThanOrEqual(DECLINED_RECEIPT_COOKIE_MAX_LENGTH);
-		await expect(unsealDeclinedReceiptSession(first)).resolves.toEqual(locator);
-		await expect(unsealDeclinedReceiptSession(second)).resolves.toEqual(locator);
+		await expect(unsealDeclinedReceiptSession(first, locator.envelopeId)).resolves.toEqual(locator);
+		await expect(unsealDeclinedReceiptSession(second, locator.envelopeId)).resolves.toEqual(
+			locator
+		);
 	});
 
 	it('fails closed for tampering, malformed encoding, oversized input, and key changes', async () => {
 		const sealed: string = await sealDeclinedReceiptSession(locator);
 		const tampered: string = `${sealed[0] === 'A' ? 'B' : 'A'}${sealed.slice(1)}`;
 
-		await expect(unsealDeclinedReceiptSession(tampered)).resolves.toBeNull();
-		await expect(unsealDeclinedReceiptSession('not+base64')).resolves.toBeNull();
+		await expect(unsealDeclinedReceiptSession(tampered, locator.envelopeId)).resolves.toBeNull();
 		await expect(
-			unsealDeclinedReceiptSession('A'.repeat(DECLINED_RECEIPT_COOKIE_MAX_LENGTH + 1))
+			unsealDeclinedReceiptSession('not+base64', locator.envelopeId)
+		).resolves.toBeNull();
+		await expect(
+			unsealDeclinedReceiptSession(
+				'A'.repeat(DECLINED_RECEIPT_COOKIE_MAX_LENGTH + 1),
+				locator.envelopeId
+			)
 		).resolves.toBeNull();
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 8).toString('base64');
-		await expect(unsealDeclinedReceiptSession(sealed)).resolves.toBeNull();
+		await expect(unsealDeclinedReceiptSession(sealed, locator.envelopeId)).resolves.toBeNull();
 	});
 
 	it('cannot interchange active recipient and declined receipt ciphertexts', async () => {
 		const receiptCookie: string = await sealDeclinedReceiptSession(locator);
-		const activeCookie: string = await sealRecipientSession(recipientCapability);
+		const activeCookie: string = await sealRecipientSession(
+			recipientCapability,
+			locator.envelopeId
+		);
 
-		await expect(unsealDeclinedReceiptSession(activeCookie)).resolves.toBeNull();
-		await expect(unsealRecipientSession(receiptCookie)).resolves.toBeNull();
+		await expect(
+			unsealDeclinedReceiptSession(activeCookie, locator.envelopeId)
+		).resolves.toBeNull();
+		await expect(unsealRecipientSession(receiptCookie, locator.envelopeId)).resolves.toBeNull();
+	});
+
+	it('fails closed when the envelope ID used to unseal does not match the locator', async () => {
+		const sealed: string = await sealDeclinedReceiptSession(locator);
+		await expect(unsealDeclinedReceiptSession(sealed, otherEnvelopeId)).resolves.toBeNull();
+		await expect(unsealDeclinedReceiptSession(sealed, 'not-a-uuid')).resolves.toBeNull();
 	});
 
 	it.each<readonly [string, unknown]>([
@@ -86,7 +109,12 @@ describe('declined receipt session sealing', () => {
 		['an extra key', { ...locator, authority: 'active' }],
 		['a missing key', omit(locator, 'recipientId')],
 		['a malformed organization UUID', { ...locator, organizationId: 'org-1' }],
+		[
+			'a UUIDv4 organization ID',
+			{ ...locator, organizationId: '00000000-0000-4000-8000-000000000001' }
+		],
 		['a malformed envelope UUID', { ...locator, envelopeId: 'env-1' }],
+		['a UUIDv4 envelope ID', { ...locator, envelopeId: '00000000-0000-4000-8000-000000000002' }],
 		['a malformed recipient UUID', { ...locator, recipientId: 'recipient-1' }],
 		['an empty idempotency key', { ...locator, idempotencyKey: '' }],
 		['a non-printable idempotency key', { ...locator, idempotencyKey: 'key with space' }],
@@ -110,8 +138,10 @@ describe('declined receipt session sealing', () => {
 			expiresAt: '2026-07-31T00:00:00.000Z'
 		};
 		const sealed: string = await sealDeclinedReceiptSession(expiredLocator);
-		const recovered: DeclinedReceiptSessionLocator | null =
-			await unsealDeclinedReceiptSession(sealed);
+		const recovered: DeclinedReceiptSessionLocator | null = await unsealDeclinedReceiptSession(
+			sealed,
+			expiredLocator.envelopeId
+		);
 
 		expect(recovered).toEqual(expiredLocator);
 		expect(
@@ -131,7 +161,9 @@ describe('declined receipt session sealing', () => {
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
 		const sealed: string = await sealDeclinedReceiptSession(locator);
 		privateEnv.SESSION_ENCRYPTION_KEY = undefined;
-		await expect(unsealDeclinedReceiptSession(sealed)).rejects.toThrow(/is not set/);
+		await expect(unsealDeclinedReceiptSession(sealed, locator.envelopeId)).rejects.toThrow(
+			/is not set/
+		);
 	});
 
 	it('opens a receipt cookie sealed under the previous key once the active key rotates', async () => {
@@ -140,7 +172,9 @@ describe('declined receipt session sealing', () => {
 		privateEnv.SESSION_ENCRYPTION_KEY_PREVIOUS = privateEnv.SESSION_ENCRYPTION_KEY;
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64');
 
-		await expect(unsealDeclinedReceiptSession(sealedUnderOldActive)).resolves.toEqual(locator);
+		await expect(
+			unsealDeclinedReceiptSession(sealedUnderOldActive, locator.envelopeId)
+		).resolves.toEqual(locator);
 	});
 
 	it('fails closed once a key is retired outside the active/previous window', async () => {
@@ -149,7 +183,9 @@ describe('declined receipt session sealing', () => {
 		privateEnv.SESSION_ENCRYPTION_KEY_PREVIOUS = Buffer.alloc(32, 9).toString('base64');
 		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 10).toString('base64');
 
-		await expect(unsealDeclinedReceiptSession(sealedUnderRetiredKey)).resolves.toBeNull();
+		await expect(
+			unsealDeclinedReceiptSession(sealedUnderRetiredKey, locator.envelopeId)
+		).resolves.toBeNull();
 	});
 });
 

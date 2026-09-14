@@ -1,3 +1,4 @@
+import { fakeSentPdfArtifact } from '$lib/application/documents/sent-document-pdf-test-support';
 import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
@@ -91,6 +92,7 @@ function sendCommand(): PublishSentEnvelopeCommand {
 	]);
 	return {
 		...key,
+		sentPdf: fakeSentPdfArtifact(key.organizationId, key.envelopeId),
 		expectedGeneration: 2,
 		expectedReadyAuditEventId: 'ready-audit',
 		commitSha: 'commit-2',
@@ -221,6 +223,9 @@ describe('PostgresEnvelopeSendStore', () => {
 			[],
 			[{ deliveryCount: 1, queuedCount: 1 }],
 			[{ id: 'env-1' }],
+			[],
+			// The pinned agreement rendering is inserted in the same transaction
+			// as the status flip and the audit event.
 			[]
 		]);
 
@@ -232,6 +237,11 @@ describe('PostgresEnvelopeSendStore', () => {
 		});
 		expect(
 			database.queries.some((query): boolean => query.text.includes('INSERT INTO delivery_outbox'))
+		).toBe(true);
+		expect(
+			database.queries.some((query): boolean =>
+				query.text.includes('INSERT INTO envelope_sent_pdf')
+			)
 		).toBe(true);
 	});
 });

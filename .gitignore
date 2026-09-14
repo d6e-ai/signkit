@@ -20,6 +20,10 @@ Thumbs.db
 !.env.example
 !.env.test
 
+# Vitest browser failure artifacts
+.vitest-attachments/
+**/__screenshots__/
+
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*

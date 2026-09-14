@@ -22,13 +22,47 @@ describe('envelope authoring page contracts', () => {
 		);
 	});
 
-	it('places fields on the selected document preview while keeping keyboard geometry inputs', () => {
-		expect(source).toContain('placementPreview');
-		expect(source).toContain('visiblePlacementFields');
-		expect(source).toContain('id="geo-page"');
-		expect(source).toContain('id="geo-x"');
-		expect(source).toContain('{@render renderMarkdownNode(node)}');
-		expect(source).not.toContain('max-w-64 cursor-crosshair rounded-lg border bg-muted/20');
+	it('places fields on the rendered document PDF, by pointer and by keyboard', () => {
+		// Placement happens against the same deterministic rendering a recipient
+		// will be shown, so a box dropped on page 3 means page 3 for the signer.
+		expect(source).toContain('<PdfDocumentView');
+		expect(source).toContain('{#key envelopeId}');
+		expect(source).toContain('/document-pdf');
+		expect(source).toContain('/document-pdf/pages');
+		expect(source).toContain('documentPathForPage');
+		expect(source).toContain('handlePageClick');
+		expect(source).toContain('startDrag');
+		expect(source).toContain('handleFieldKeydown');
+		expect(source).toContain('clampGeometry');
+		expect(source).toContain('reloadAuthoringSurface');
+		expect(source).toContain('invalidateDocumentPageMap');
+		expect(source).toContain('refreshDocumentPageMapAfterReload');
+		expect(source).toContain('fieldPlacementReady');
+		// The coordinate spinners are gone: geometry comes from the document.
+		expect(source).not.toContain('id="geo-page"');
+		expect(source).not.toContain('id="geo-x"');
+		expect(source).not.toContain('setNewFieldNumber');
+	});
+
+	it('keeps every placed box finite, non-degenerate, and inside its page', () => {
+		expect(source).toContain('const MIN_FIELD_SIZE = 0.02');
+		expect(source).toContain('Math.min(1, Math.max(MIN_FIELD_SIZE, geometry.width))');
+		expect(source).toContain('Math.min(1 - width, Math.max(0, geometry.x))');
+		expect(source).toContain('Math.min(1 - height, Math.max(0, geometry.y))');
+	});
+
+	it('warns about invisible Unicode controls only when a document has them', () => {
+		expect(source).toContain('rendered.hasVisibleUnicodeControls');
+		expect(source).toContain('preview.hasVisibleUnicodeControls');
+		expect(source).toContain('envelope_document_unicode_warning');
+		// No unconditional rendering-policy sentence on any surface.
+		expect(source).not.toContain('signing_document_rendering_policy');
+		expect(source).not.toContain('m.signing_document_format()');
+	});
+
+	it('omits a document card header entirely when the document has no title', () => {
+		expect(source).toContain('{#if title.length > 0}');
+		expect(source).toContain("class={title.length > 0 ? undefined : 'pt-6'}");
 	});
 
 	it('keeps keyed each blocks and does not render raw HTML', () => {
@@ -49,5 +83,39 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('locale: draftItem.locale');
 		expect(source).toContain("getLocale() === 'ja' ? 'ja' : 'en'");
 		expect(source).not.toMatch(/<select[\s>]/);
+	});
+
+	it('renders localized recipient role and workflow status, never raw enums', () => {
+		expect(source).toContain('recipientRoleLabel(recipient.role)');
+		expect(source).toContain('recipientWorkflowStatusLabel(recipient.status)');
+		expect(source).toContain('<Table.Cell>{recipientRoleLabel(recipient.role)}</Table.Cell>');
+		expect(source).toContain(
+			'<Table.Cell>{recipientWorkflowStatusLabel(recipient.status)}</Table.Cell>'
+		);
+		expect(source).not.toContain('<Table.Cell>{recipient.role}</Table.Cell>');
+		expect(source).not.toContain('<Table.Cell>{recipient.status}</Table.Cell>');
+		expect(source).not.toContain('<Table.Cell>{recipient.routingOrder}</Table.Cell>');
+		const readyTable: string = source.slice(
+			source.indexOf('{:else if readyRecipients.length > 0}')
+		);
+		expect(readyTable).not.toContain('envelope_recipient_col_order');
+		expect(source).toContain('id={`recipient-order-${draftItem.key}`}');
+	});
+
+	it('joins delivery rows to recipients and localizes invitation delivery state', () => {
+		expect(source).toContain('recipientForDelivery(item.recipientId)');
+		expect(source).toContain('deliveryStateLabel(item.status)');
+		expect(source).toContain('envelope_delivery_col_recipient');
+		expect(source).not.toContain('envelope_delivery_col_order');
+		expect(source).not.toContain('envelope_delivery_col_attempts');
+		expect(source).not.toContain('<Table.Cell>{item.recipientRole}</Table.Cell>');
+		expect(source).not.toContain('<Table.Cell>{item.routingOrder}</Table.Cell>');
+		expect(source).not.toContain('<Table.Cell>{item.attempts}</Table.Cell>');
+		expect(source).not.toContain('<Badge variant="secondary">{item.status}</Badge>');
+		expect(source).toContain("case 'blocked':");
+		expect(source).toContain("case 'processing':");
+		expect(source).toContain("case 'delivered':");
+		expect(source).toContain("case 'failed':");
+		expect(source).toContain('envelope_delivery_status_pending');
 	});
 });

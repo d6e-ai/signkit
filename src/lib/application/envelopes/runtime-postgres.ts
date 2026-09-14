@@ -5,6 +5,7 @@ import { PostgresEnvelopeFieldStore } from '$lib/adapters/db/postgres-envelope-f
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
 import { PostgresEnvelopeVoidStore } from '$lib/adapters/db/postgres-envelope-void-store';
+import { PostgresEnvelopeSentPdfStore } from '$lib/adapters/db/postgres-envelope-sent-pdf-store';
 import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
 import { PostgresRecipientFieldDeclarationStore } from '$lib/adapters/db/postgres-recipient-field-declaration-store';
 import { PostgresRecipientApproveStore } from '$lib/adapters/db/postgres-recipient-approve-store';
@@ -21,6 +22,7 @@ import {
 	RecipientAccessService,
 	type RecipientAccessApplicationPort
 } from '$lib/application/signing/recipient-access';
+import type { SentDocumentPdfPort } from '$lib/application/documents/sent-document-pdf';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import {
 	RecipientApprovedApplication,
@@ -102,10 +104,21 @@ export function resolvePostgresEnvelopeFieldApplication(
 
 export function resolvePostgresEnvelopeSendApplication(
 	databaseUrl: string,
-	sealer: RecipientCapabilitySealer
+	sealer: RecipientCapabilitySealer,
+	documentPdf: SentDocumentPdfPort
 ): EnvelopeSendApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
-	return new EnvelopeSendApplication(new PostgresEnvelopeSendStore(resources.sql), sealer);
+	return new EnvelopeSendApplication(
+		new PostgresEnvelopeSendStore(resources.sql),
+		sealer,
+		documentPdf
+	);
+}
+
+export function resolvePostgresEnvelopeSentPdfStore(
+	databaseUrl: string
+): PostgresEnvelopeSentPdfStore {
+	return new PostgresEnvelopeSentPdfStore(resolvePostgresResources(databaseUrl).sql);
 }
 
 export function resolvePostgresEnvelopeVoidApplication(

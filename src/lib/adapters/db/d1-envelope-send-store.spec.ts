@@ -1,3 +1,4 @@
+import { fakeSentPdfArtifact } from '$lib/application/documents/sent-document-pdf-test-support';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { PublishSentEnvelopeCommand } from '$lib/ports/envelope-send-store';
@@ -41,6 +42,7 @@ function fakeD1(firstResults: readonly unknown[], allResults: readonly unknown[]
 const sealedDigest: string = createHash('sha256').update('sealed').digest('hex');
 
 const command: PublishSentEnvelopeCommand = {
+	sentPdf: fakeSentPdfArtifact('org-1', 'env-1'),
 	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	actorType: 'user',

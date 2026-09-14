@@ -1,4 +1,4 @@
-import type { FieldType } from '$lib/domain/envelope';
+import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
 
 /**
  * A signer's own field declaration, read for /sign rendering. Unlike
@@ -13,6 +13,13 @@ export interface RecipientFieldDeclaration {
 	label: string;
 	required: boolean;
 	position: number;
+	/**
+	 * Where the field sits on the sent PDF. Null only for placements made
+	 * before geometry became mandatory; a recipient surface that cannot place
+	 * a field visually must treat that as a fail-closed integrity problem
+	 * rather than silently hiding a field the signer is required to complete.
+	 */
+	geometry: FieldGeometry | null;
 }
 
 export interface RecipientOwnFields {

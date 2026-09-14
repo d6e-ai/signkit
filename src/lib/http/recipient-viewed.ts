@@ -4,7 +4,8 @@ import type {
 	RecipientViewedApplicationPort,
 	RecipientViewedResult
 } from '$lib/application/signing/recipient-viewed';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { readRecipientSessionCookie } from '$lib/server/recipient-session';
+import { boundEnvelopeId } from './envelope-binding';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -30,7 +31,10 @@ export type RecipientViewedApplicationResolver = (
 	context: ResolverContext
 ) => RecipientViewedApplicationPort | null | Promise<RecipientViewedApplicationPort | null>;
 
-export type RecipientSessionUnsealer = (cookie: string) => Promise<string | null>;
+export type RecipientSessionUnsealer = (
+	cookie: string,
+	envelopeId: string
+) => Promise<string | null>;
 
 type JsonBodyResult = { ok: true; value: unknown } | { ok: false; reason: 'invalid' | 'too_large' };
 
@@ -51,13 +55,18 @@ export function createRecipientViewedHandler(
 		}
 		const parsed = bodySchema.safeParse(body.value);
 		if (!parsed.success) return invalidCommand(url.pathname);
+		const envelopeId: string | null = boundEnvelopeId(
+			parsed.data.envelopeId,
+			url.searchParams.get('envelopeId')
+		);
+		if (envelopeId === null) return invalidCommand(url.pathname);
 
-		const sealed: string | undefined = cookies.get(RECIPIENT_SESSION_COOKIE);
+		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
 		if (sealed === undefined) return accessNotFound(url.pathname);
 
 		let token: string | null;
 		try {
-			token = await unsealSession(sealed);
+			token = await unsealSession(sealed, envelopeId);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_viewed_session_failed' }));
 			return unavailable(url.pathname);
@@ -78,7 +87,7 @@ export function createRecipientViewedHandler(
 		try {
 			const result: RecipientViewedResult = await application.view({
 				token,
-				expectedEnvelopeId: parsed.data.envelopeId,
+				expectedEnvelopeId: envelopeId,
 				expectedRecipientId: parsed.data.recipientId,
 				idempotencyKey: idempotencyKey.data
 			});

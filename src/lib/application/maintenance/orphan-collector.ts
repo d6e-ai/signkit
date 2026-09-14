@@ -204,9 +204,11 @@ export class D1OrphanReferenceStore implements OrphanReferenceStore {
 				SELECT pdf_object_key AS key FROM completion_artifact_pdf WHERE pdf_object_key IN (${placeholders})
 				UNION
 				SELECT pdf_manifest_object_key AS key FROM completion_artifact_pdf WHERE pdf_manifest_object_key IN (${placeholders})
+				UNION
+				SELECT object_key AS key FROM envelope_sent_pdf WHERE object_key IN (${placeholders})
 			`;
 
-			const bindings = [...chunk, ...chunk, ...chunk, ...chunk, ...chunk, ...chunk];
+			const bindings = [...chunk, ...chunk, ...chunk, ...chunk, ...chunk, ...chunk, ...chunk];
 
 			const rows = await this.#database
 				.prepare(query)
@@ -255,6 +257,8 @@ export class PostgresOrphanReferenceStore implements OrphanReferenceStore {
 				SELECT pdf_object_key AS key FROM completion_artifact_pdf WHERE pdf_object_key = ANY(${chunk})
 				UNION
 				SELECT pdf_manifest_object_key AS key FROM completion_artifact_pdf WHERE pdf_manifest_object_key = ANY(${chunk})
+				UNION
+				SELECT object_key AS key FROM envelope_sent_pdf WHERE object_key = ANY(${chunk})
 			`;
 
 			for (const row of rows) {

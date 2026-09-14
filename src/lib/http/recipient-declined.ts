@@ -10,16 +10,17 @@ import type {
 	RecipientDeclinedReceiptApplicationPort
 } from '$lib/application/signing/recipient-declined-receipt';
 import {
-	DECLINED_RECEIPT_COOKIE,
 	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
 	DECLINED_RECEIPT_COOKIE_OPTIONS,
 	type DeclinedReceiptSessionLocator,
+	declinedReceiptCookieName,
 	sealDeclinedReceiptSession
 } from '$lib/server/declined-receipt-session';
 import {
-	RECIPIENT_SESSION_COOKIE,
-	RECIPIENT_SESSION_COOKIE_PATH
+	deleteRecipientSessionCookie,
+	readRecipientSessionCookie
 } from '$lib/server/recipient-session';
+import { boundEnvelopeId } from './envelope-binding';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -45,7 +46,10 @@ export type RecipientDeclinedApplicationResolver = (
 	context: ResolverContext
 ) => RecipientDeclinedApplicationPort | null | Promise<RecipientDeclinedApplicationPort | null>;
 
-export type RecipientSessionUnsealer = (cookie: string) => Promise<string | null>;
+export type RecipientSessionUnsealer = (
+	cookie: string,
+	envelopeId: string
+) => Promise<string | null>;
 
 export type RecipientDeclinedReceiptApplicationResolver = (
 	context: ResolverContext
@@ -85,19 +89,23 @@ export function createRecipientDeclinedHandler(
 		}
 		const parsed = bodySchema.safeParse(body.value);
 		if (!parsed.success) return invalidCommand(url.pathname);
+		const envelopeId: string | null = boundEnvelopeId(
+			parsed.data.envelopeId,
+			url.searchParams.get('envelopeId')
+		);
+		if (envelopeId === null) return invalidCommand(url.pathname);
 
-		const sealed: string | undefined = cookies.get(RECIPIENT_SESSION_COOKIE);
+		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
 		if (sealed === undefined) return accessNotFound(url.pathname);
 
 		let token: string | null;
 		try {
-			token = await unsealSession(sealed);
+			token = await unsealSession(sealed, envelopeId);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_declined_session_failed' }));
 			return unavailable(url.pathname);
 		}
 		if (token === null) {
-			clearSession(cookies);
 			return accessNotFound(url.pathname);
 		}
 
@@ -113,11 +121,11 @@ export function createRecipientDeclinedHandler(
 		try {
 			const result: RecipientDeclinedResult = await application.decline({
 				token,
-				expectedEnvelopeId: parsed.data.envelopeId,
+				expectedEnvelopeId: envelopeId,
 				expectedRecipientId: parsed.data.recipientId,
 				idempotencyKey: idempotencyKey.data
 			});
-			return await resultResponse(result, token, url, platform, cookies, options);
+			return await resultResponse(result, token, envelopeId, url, platform, cookies, options);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_declined_failed' }));
 			return unavailable(url.pathname);
@@ -128,6 +136,7 @@ export function createRecipientDeclinedHandler(
 async function resultResponse(
 	result: RecipientDeclinedResult,
 	token: string,
+	envelopeId: string,
 	url: URL,
 	platform: Readonly<App.Platform> | undefined,
 	cookies: Cookies,
@@ -138,6 +147,7 @@ async function resultResponse(
 		const exchanged: boolean = await exchangeDeclinedReceipt(
 			result,
 			token,
+			envelopeId,
 			url,
 			platform,
 			cookies,
@@ -160,7 +170,6 @@ async function resultResponse(
 		);
 	}
 	if (result.outcome === 'not_found') {
-		clearSession(cookies);
 		return accessNotFound(instance);
 	}
 	if (result.outcome === 'context_mismatch' || result.outcome === 'role_not_actionable') {
@@ -218,6 +227,7 @@ async function resultResponse(
 async function exchangeDeclinedReceipt(
 	result: Extract<RecipientDeclinedResult, { outcome: 'published' | 'replayed' }>,
 	token: string,
+	envelopeId: string,
 	url: URL,
 	platform: Readonly<App.Platform> | undefined,
 	cookies: Cookies,
@@ -233,22 +243,27 @@ async function exchangeDeclinedReceipt(
 			token,
 			now
 		);
-		if (authorized === null || !samePublishedReceipt(result, authorized)) return false;
+		if (authorized === null || !samePublishedReceipt(result, authorized, envelopeId)) return false;
 		const remainingSeconds: number = remainingReceiptSeconds(authorized.locator.expiresAt, now);
 		if (remainingSeconds <= 0) return false;
 		const locator: DeclinedReceiptSessionLocator = {
 			...authorized.locator,
 			version: 1
 		};
+		if (locator.envelopeId !== envelopeId) return false;
+		const receiptCookieName: string | null = declinedReceiptCookieName(envelopeId);
+		if (receiptCookieName === null) return false;
 		const seal: DeclinedReceiptSessionSealer =
 			options.sealReceiptSession ?? sealDeclinedReceiptSession;
 		const sealed: string = await seal(locator);
-		cookies.set(DECLINED_RECEIPT_COOKIE, sealed, {
+		cookies.set(receiptCookieName, sealed, {
 			...DECLINED_RECEIPT_COOKIE_OPTIONS,
 			secure: !isInsecureLocalDevelopment(url, options.allowInsecureLocalDevelopment ?? dev),
 			maxAge: remainingSeconds
 		});
-		clearSession(cookies);
+		// Durable terminal decline: this response also sets the receipt cookie
+		// for the same envelope, then drops only this envelope's live session.
+		clearSession(cookies, envelopeId);
 		return true;
 	} catch {
 		console.error(JSON.stringify({ event: 'recipient_declined_receipt_exchange_failed' }));
@@ -258,9 +273,11 @@ async function exchangeDeclinedReceipt(
 
 function samePublishedReceipt(
 	result: Extract<RecipientDeclinedResult, { outcome: 'published' | 'replayed' }>,
-	authorized: AuthorizedRecipientDeclinedReceipt
+	authorized: AuthorizedRecipientDeclinedReceipt,
+	envelopeId: string
 ): boolean {
 	return (
+		authorized.receipt.envelopeId === envelopeId &&
 		authorized.receipt.envelopeId === result.result.envelopeId &&
 		authorized.receipt.recipientId === result.result.recipientId &&
 		authorized.receipt.declinedAt === result.result.declinedAt
@@ -382,8 +399,8 @@ function unavailable(instance: string): Response {
 	);
 }
 
-function clearSession(cookies: Cookies): void {
-	cookies.delete(RECIPIENT_SESSION_COOKIE, { path: RECIPIENT_SESSION_COOKIE_PATH });
+function clearSession(cookies: Cookies, envelopeId: string): void {
+	deleteRecipientSessionCookie(cookies, envelopeId);
 }
 
 function acceptsJson(request: Request): boolean {

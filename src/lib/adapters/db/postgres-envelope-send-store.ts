@@ -72,6 +72,13 @@ interface SendCommandRow {
 	previousAuditHash: string;
 	auditEventHash: string;
 	auditPayloadJson: string;
+	sentPdfObjectKey: string | null;
+	sentPdfSha256: string | null;
+	sentPdfBytes: number | string | null;
+	sentPdfPageCount: number | null;
+	sentPdfPageWidth: number | null;
+	sentPdfPageHeight: number | null;
+	sentPdfDocumentPagesJson: string | null;
 	evidenceEventId: string | null;
 	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
@@ -252,7 +259,9 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					expected_generation, ready_audit_event_id, commit_sha, initial_routing_order,
 					delivery_count, queued_delivery_count, delivery_manifest_hash, delivery_manifest_json,
 					initial_capability_expires_at, updated_at, audit_event_id, audit_sequence,
-					previous_audit_hash, audit_event_hash, audit_payload_json
+					previous_audit_hash, audit_event_hash, audit_payload_json,
+					sent_pdf_object_key, sent_pdf_sha256, sent_pdf_bytes, sent_pdf_page_count,
+					sent_pdf_page_width, sent_pdf_page_height, sent_pdf_document_pages_json
 				) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.actorType}, ${command.actorId},
 					${command.idempotencyKey}, ${command.requestFingerprint}, ${command.expectedGeneration},
 					${command.expectedReadyAuditEventId}, ${command.commitSha}, ${command.initialRoutingOrder},
@@ -260,7 +269,9 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					${command.deliveryManifestJson},
 					${command.initialCapabilityExpiresAt}, ${command.updatedAt}, ${command.auditEventId},
 					${command.expectedAuditSequence + 1}, ${command.previousAuditHash}, ${command.auditEventHash},
-					${command.auditPayloadJson})`;
+					${command.auditPayloadJson}, ${command.sentPdf.objectKey}, ${command.sentPdf.sha256},
+					${command.sentPdf.byteSize}, ${command.sentPdf.pageCount}, ${command.sentPdf.pageWidth},
+					${command.sentPdf.pageHeight}, ${JSON.stringify(command.sentPdf.documents)})`;
 				for (const delivery of command.deliveries) {
 					const updated = await transaction<{ id: string }[]>`UPDATE recipient SET
 						capability_hash = ${delivery.capabilityHash}, capability_expires_at = ${delivery.capabilityExpiresAt},
@@ -301,6 +312,18 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				) VALUES (${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
 					${command.expectedAuditSequence + 1}, 'envelope.sent', ${command.actorType}, ${command.actorId},
 					${command.auditPayloadJson}, ${command.previousAuditHash}, ${command.auditEventHash}, ${command.updatedAt})`;
+				// Same transaction as the status flip and the audit event, which is
+				// the PostgreSQL equivalent of D1's send-publish trigger body: a
+				// rollback from any of the checks above takes the pointer with it,
+				// so a sent envelope never references a rendering of another
+				// revision.
+				await transaction`INSERT INTO envelope_sent_pdf (
+					organization_id, envelope_id, commit_sha, object_key, sha256, byte_size,
+					page_count, page_width, page_height, document_pages_json, created_at
+				) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.commitSha},
+					${command.sentPdf.objectKey}, ${command.sentPdf.sha256}, ${command.sentPdf.byteSize},
+					${command.sentPdf.pageCount}, ${command.sentPdf.pageWidth}, ${command.sentPdf.pageHeight},
+					${JSON.stringify(command.sentPdf.documents)}, ${command.updatedAt})`;
 				return { outcome: 'published', result: resultFromCommand(command) };
 			});
 		} catch (error: unknown) {
@@ -427,7 +450,11 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			command.initial_capability_expires_at AS "initialCapabilityExpiresAt", command.updated_at AS "updatedAt",
 			command.audit_event_id AS "auditEventId", command.audit_sequence AS "auditSequence",
 			command.previous_audit_hash AS "previousAuditHash", command.audit_event_hash AS "auditEventHash",
-			command.audit_payload_json AS "auditPayloadJson", evidence.id AS "evidenceEventId",
+			command.audit_payload_json AS "auditPayloadJson",
+			command.sent_pdf_object_key AS "sentPdfObjectKey", command.sent_pdf_sha256 AS "sentPdfSha256",
+			command.sent_pdf_bytes AS "sentPdfBytes", command.sent_pdf_page_count AS "sentPdfPageCount",
+			command.sent_pdf_page_width AS "sentPdfPageWidth", command.sent_pdf_page_height AS "sentPdfPageHeight",
+			command.sent_pdf_document_pages_json AS "sentPdfDocumentPagesJson", evidence.id AS "evidenceEventId",
 			evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
 			evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 			evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
@@ -547,9 +574,19 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 		queuedDeliveryCount: row.queuedDeliveryCount,
 		reservedCapabilityCount: row.deliveryCount,
 		deliveryManifestHash: row.deliveryManifestHash,
-		initialCapabilityExpiresAt: isoTimestamp(row.initialCapabilityExpiresAt)
+		initialCapabilityExpiresAt: isoTimestamp(row.initialCapabilityExpiresAt),
+		sentPdfSha256: row.sentPdfSha256,
+		sentPdfBytes: row.sentPdfBytes === null ? null : Number(row.sentPdfBytes),
+		sentPdfPageCount: row.sentPdfPageCount
 	});
 	return (
+		row.sentPdfObjectKey !== null &&
+		row.sentPdfSha256 !== null &&
+		row.sentPdfBytes !== null &&
+		row.sentPdfPageCount !== null &&
+		row.sentPdfPageWidth !== null &&
+		row.sentPdfPageHeight !== null &&
+		row.sentPdfDocumentPagesJson !== null &&
 		requestHash === row.requestHash &&
 		auditPayload === row.auditPayloadJson &&
 		(await sha256(row.deliveryManifestJson)) === row.deliveryManifestHash

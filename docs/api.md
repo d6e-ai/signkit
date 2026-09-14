@@ -48,6 +48,8 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 | `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact`              | completion artifact publication status             | envelopes:read |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/evidence`                         | read published completion evidence (JSON/Markdown) | envelopes:read |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact/evidence`     | alias of `/evidence`                               | envelopes:read |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/document-pdf`                     | render the pinned revision as the recipient PDF    | envelopes:read |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/document-pdf/pages`               | page geometry of that rendering                    | envelopes:read |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/pdf`                              | read published completion PDF                      | envelopes:read |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact/pdf`          | alias of `/pdf`                                    | envelopes:read |
 
@@ -63,13 +65,15 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 
 **Ready** takes the expected Git generation plus a complete recipient graph. `signer` and `approver` are action-bearing; `viewer` is read-only and must share a routing order with an action-bearing recipient; `prefill` is pre-send-only and is rejected until its authoring command exists; `cc` stays outside the capability graph entirely.
 
-**Fields** is an idempotent replace-all placement command, valid only while the envelope is `ready` and unsent. The body carries `expectedGeneration`, `expectedFieldGeneration`, and 1–50 fields, each naming a recipient, a `documents/*.md` path, a `fieldType` (`signature`, `initials`, `text`, `date`, `checkbox`), a label, a required flag, a semantic document-order `position`, and optional normalized page geometry (`page`, `x`, `y`, `width`, `height` in `[0, 1]` unit-square fractions; `page` is 1-indexed). `position` is still the reading-order authority; geometry is additive. Only signer recipients in the same organization and envelope may own a field, and every path must exist in the exact workspace pinned by `expectedGeneration`. Field IDs are minted per published set. Publication atomically rechecks generation, Git head, field generation, envelope state, and recipient scope, then replaces the projection, bumps the field generation, and appends one PII-minimized `envelope.fields_placed` event. The response echoes no labels.
+**Fields** is an idempotent replace-all placement command, valid only while the envelope is `ready` and unsent. The body carries `expectedGeneration`, `expectedFieldGeneration`, and 1–50 fields, each naming a recipient, a `documents/*.md` path, a `fieldType` (`signature`, `initials`, `text`, `date`, `checkbox`), a label, a required flag, a semantic document-order `position`, and **required** normalized page geometry (`page`, `x`, `y`, `width`, `height` in `[0, 1]` unit-square fractions; `page` is 1-indexed into the whole rendered agreement). `position` remains the reading-order authority; geometry is what makes the field reachable, and a field a signer cannot see is a field they cannot complete. The named page must fall inside the page range its own document occupies in the deterministic rendering of the pinned revision, and the box must stay inside the page; otherwise the command fails `422 urn:signkit:problem:field-invalid-geometry`. Only signer recipients in the same organization and envelope may own a field, and every path must exist in the exact workspace pinned by `expectedGeneration`. Field IDs are minted per published set. Publication atomically rechecks generation, Git head, field generation, envelope state, and recipient scope, then replaces the projection, bumps the field generation, and appends one PII-minimized `envelope.fields_placed` event. The response echoes no labels.
 
 **Send** pins the Git commit, reserves capabilities and durable delivery intents for signer, approver, and viewer recipients only, and activates the first actionable routing order together with its co-routed viewers. Later groups stay blocked.
 
 **Void** is the operator terminal command for `draft`, `ready`, `sent`, and `in_progress` envelopes. It requires both the expected status and the expected Git generation so a stale confirmation page cannot void a concurrently changed envelope. One atomic operation fences active delivery leases, scrubs still-deliverable invitation ciphertext, revokes every issued non-completed capability without changing recipient statuses, moves the envelope to `voided`, and appends a PII-free `envelope.voided` event. Provider-accepted messages and existing permanent evidence are never rewritten.
 
 **Capability reissue** (`POST .../reissue` or `POST .../recipients/{recipientId}/reissue`) requires an authenticated operator session (API keys are refused with 403 `api-key-not-permitted`). It mints a fresh capability and delivery intent for an already-released pending or viewed recipient in a `sent` or `in_progress` envelope, atomically superseding prior capabilities without rewriting first-view or delivery history.
+
+**Document rendering** (`GET .../document-pdf`, `GET .../document-pdf/pages`) renders the envelope's currently pinned revision through the same deterministic pipeline that publishes the immutable artifact at send time. The bytes feed the sender's field-placement canvas; the `pages` variant returns `{ commitSha, generation, pageCount, pageWidth, pageHeight, documents[] }` so the editor knows which pages belong to which document before it will let a field be dropped there. Both are `private, no-store` and organization-scoped; neither returns a storage key.
 
 **Completion evidence and PDF** (`GET .../evidence` and `GET .../pdf`, also aliased under `.../completion-artifact/*`) allow operators and agents (`envelopes:read`) to download published JSON or Markdown evidence (`?format=markdown` selects Markdown; otherwise JSON) and the visual completion PDF. Cryptographic PDF certification and sealing (PAdES) remain backlog.
 
@@ -125,15 +129,15 @@ Subscribed events are a nonempty unique subset of the audit catalog. Deliveries 
 
 Authority is the recipient capability — as a `Bearer` token for the two read endpoints, and as the encrypted cookie for every mutation. Submitted envelope and recipient IDs are equality constraints against a freshly resolved capability, never an alternate authority.
 
-| Method | Path                               | Notes                                                   |
-| ------ | ---------------------------------- | ------------------------------------------------------- |
-| `GET`  | `/api/v1/signing/context`          | `Bearer` capability; minimal allowlisted context        |
-| `GET`  | `/api/v1/signing/documents`        | `Bearer` capability; documents at the pinned revision   |
-| `POST` | `/api/v1/signing/viewed`           | records the first foreground view                       |
-| `POST` | `/api/v1/signing/decline`          | terminal signer/approver decision                       |
-| `POST` | `/api/v1/signing/approve`          | approver decision, releases the next order or completes |
-| `POST` | `/api/v1/signing/sign`             | one-shot signer completion                              |
-| `POST` | `/api/v1/signing/signature-assets` | same-origin PNG upload; encrypted cookie                |
+| Method | Path                               | Notes                                                    |
+| ------ | ---------------------------------- | -------------------------------------------------------- |
+| `GET`  | `/api/v1/signing/context`          | `Bearer` capability; minimal allowlisted context         |
+| `GET`  | `/api/v1/signing/documents`        | `Bearer` capability; page geometry of the sent rendering |
+| `POST` | `/api/v1/signing/viewed`           | records the first foreground view                        |
+| `POST` | `/api/v1/signing/decline`          | terminal signer/approver decision                        |
+| `POST` | `/api/v1/signing/approve`          | approver decision, releases the next order or completes  |
+| `POST` | `/api/v1/signing/sign`             | one-shot signer completion                               |
+| `POST` | `/api/v1/signing/signature-assets` | same-origin PNG upload; encrypted cookie                 |
 
 **Context** requires a non-revoked, future-dated capability and actionable recipient/envelope state in the database query itself. Operator OAuth sessions and organization input are deliberately not part of this route.
 
@@ -141,7 +145,7 @@ Authority is the recipient capability — as a `Bearer` token for the two read e
 
 **Viewed** exists so that a page `GET` never becomes a mutation. It requires the encrypted cookie, an exact same-origin request, an `Idempotency-Key`, and matching IDs. The recipient transition, the optional `sent` → `in_progress` envelope transition, the command receipt, and the `recipient.viewed` event publish atomically. Stale tabs, inactive capabilities, key reuse, and audit-head races fail closed without revealing whether another recipient session is valid.
 
-**Decline** is available only to an active signer or approver. Publication atomically marks the actor and envelope declined, revokes every other issued non-completed capability without forging their statuses, terminally fails still-deliverable invitation intents and scrubs their ciphertext, and appends one PII-free `recipient.declined` event carrying the sorted sibling-revocation manifest. Already-delivered and permanent-failure evidence is retained. A delivery lease observed before publication returns a retryable conflict with no partial write, so a terminal commit cannot race a new provider submission. On success the active capability cookie is replaced by a purpose-separated terminal-receipt cookie that expires at `declinedAt + 30 days`; it cannot read Git or object storage or call recipient mutations, and every reload re-proves the stored command, the audit event and its predecessor, and the current terminal projection before returning only IDs, statuses, timestamp, and locale.
+**Decline** is available only to an active signer or approver. Publication atomically marks the actor and envelope declined, revokes every other issued non-completed capability without forging their statuses, terminally fails still-deliverable invitation intents and scrubs their ciphertext, and appends one PII-free `recipient.declined` event carrying the sorted sibling-revocation manifest. Already-delivered and permanent-failure evidence is retained. A delivery lease observed before publication returns a retryable conflict with no partial write, so a terminal commit cannot race a new provider submission. On success the active capability cookie for that envelope is replaced by a purpose-separated terminal-receipt cookie scoped to the same UUIDv7 envelope ID that expires at `declinedAt + 30 days`; it cannot read Git or object storage or call recipient mutations, and every reload re-proves the stored command, the audit event and its predecessor, and the current terminal projection before returning only IDs, statuses, timestamp, and locale.
 
 **Approve** requires an active approver who has already viewed the documents. It marks the actor `completed`, revokes its capability, and appends `recipient.approved`. If later actions remain, it releases the next signer/approver order and its co-routed viewers; if none remain, it performs the lease-fenced terminal cleanup and appends a chained `envelope.completed` event.
 
@@ -149,7 +153,7 @@ Authority is the recipient capability — as a `Bearer` token for the two read e
 
 ## Browser link exchange
 
-`GET /s/{token}` is a one-time exchange surface, not the signing page. It resolves durable state, seals the active token into a purpose-separated, `HttpOnly`, `SameSite=Lax` cookie whose lifetime cannot exceed the durable capability expiry or 30 days, and redirects to the locale-specific `/{locale}/sign` URL.
+`GET /s/{token}` is a one-time exchange surface, not the signing page. It resolves durable state, seals the active token into a purpose-separated, envelope-scoped, `HttpOnly`, `SameSite=Lax` cookie whose name embeds the UUIDv7 envelope ID and whose lifetime cannot exceed the durable capability expiry or 30 days, and redirects to the locale-specific `/{locale}/sign/{envelopeId}` URL. The capability token never appears in the destination URL, page data, or JavaScript. Bare `/sign` fails closed and never guesses a cookie. Path, body, query, and cookie envelope IDs must agree; any mismatch fails closed. Two envelopes opened in separate tabs keep independent cookies and reload independently.
 
 The signing page rechecks durable authorization both before and after loading the pinned revision, never exposes the raw token to client-side code, and renders only a bounded, server-sanitized Markdown node model: raw HTML stays visible as escaped text, external images become inert notices, unsafe link schemes are non-interactive, invisible Unicode controls become visible markers, and the exact escaped Markdown source stays available in a separate tab.
 

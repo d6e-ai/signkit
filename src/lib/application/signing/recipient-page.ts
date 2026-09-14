@@ -20,8 +20,8 @@ export type RecipientPageState =
 
 interface RecipientPageContext {
 	accessHint: string | null;
+	envelopeId: string;
 	cookie: string | null;
-	clearSession(): void;
 	recoverDeclined?: (token: string, at: Date) => Promise<RecipientDeclinedReceipt | null>;
 	platform?: Readonly<App.Platform>;
 }
@@ -30,11 +30,11 @@ type ApplicationResolver = (context: {
 	platform?: Readonly<App.Platform>;
 }) => RecipientWorkspaceApplicationPort | null | Promise<RecipientWorkspaceApplicationPort | null>;
 
-type SessionUnsealer = (cookie: string) => Promise<string | null>;
+type SessionUnsealer = (cookie: string, envelopeId: string) => Promise<string | null>;
 
 interface DeclinedReceiptPageContext {
+	envelopeId: string;
 	cookie: string | null;
-	clearSession(): void;
 	platform?: Readonly<App.Platform>;
 }
 
@@ -46,7 +46,8 @@ type DeclinedReceiptApplicationResolver = (context: {
 	| Promise<RecipientDeclinedReceiptApplicationPort | null>;
 
 type DeclinedReceiptSessionUnsealer = (
-	cookie: string
+	cookie: string,
+	envelopeId: string
 ) => Promise<DeclinedReceiptSessionLocator | null>;
 
 export async function resolveRecipientPage(
@@ -55,14 +56,16 @@ export async function resolveRecipientPage(
 	unsealSession: SessionUnsealer,
 	now: () => Date = (): Date => new Date()
 ): Promise<RecipientPageState> {
+	// Non-terminal invalid/unreadable/mismatch outcomes are overwrite-only:
+	// they must not Set-Cookie delete, or a late response can wipe a newer
+	// same-envelope /s exchange.
 	if (context.accessHint === 'invalid') return { state: 'invalid' };
 	if (context.accessHint === 'unavailable') return { state: 'unavailable' };
 	if (context.cookie === null) return { state: 'invalid' };
 
 	try {
-		const token: string | null = await unsealSession(context.cookie);
+		const token: string | null = await unsealSession(context.cookie, context.envelopeId);
 		if (token === null) {
-			context.clearSession();
 			return { state: 'invalid' };
 		}
 		const resolvedAt: Date = now();
@@ -70,7 +73,12 @@ export async function resolveRecipientPage(
 			context.recoverDeclined === undefined
 				? null
 				: await context.recoverDeclined(token, resolvedAt);
-		if (declined !== null) return { state: 'declined', ...declined };
+		if (declined !== null) {
+			if (declined.envelopeId !== context.envelopeId) {
+				return { state: 'invalid' };
+			}
+			return { state: 'declined', ...declined };
+		}
 
 		const application: RecipientWorkspaceApplicationPort | null = await resolveApplication({
 			platform: context.platform
@@ -81,7 +89,9 @@ export async function resolveRecipientPage(
 			resolvedAt.toISOString()
 		);
 		if (workspace === null) {
-			context.clearSession();
+			return { state: 'invalid' };
+		}
+		if (workspace.access.envelopeId !== context.envelopeId) {
 			return { state: 'invalid' };
 		}
 		return { state: 'active', ...workspace };
@@ -107,10 +117,16 @@ export async function resolveDeclinedReceiptPage(
 	if (context.cookie === null) return { state: 'invalid' };
 
 	try {
-		const locator: DeclinedReceiptSessionLocator | null = await unsealSession(context.cookie);
+		const locator: DeclinedReceiptSessionLocator | null = await unsealSession(
+			context.cookie,
+			context.envelopeId
+		);
 		const resolvedAt: Date = now();
-		if (locator === null || isDeclinedReceiptExpired(locator, resolvedAt)) {
-			context.clearSession();
+		if (
+			locator === null ||
+			locator.envelopeId !== context.envelopeId ||
+			isDeclinedReceiptExpired(locator, resolvedAt)
+		) {
 			return { state: 'invalid' };
 		}
 		const application: RecipientDeclinedReceiptApplicationPort | null = await resolveApplication({
@@ -130,8 +146,7 @@ export async function resolveDeclinedReceiptPage(
 			receiptLocator,
 			resolvedAt
 		);
-		if (authorized === null) {
-			context.clearSession();
+		if (authorized === null || authorized.receipt.envelopeId !== context.envelopeId) {
 			return { state: 'invalid' };
 		}
 		return { state: 'declined', ...authorized.receipt };

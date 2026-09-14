@@ -19,6 +19,8 @@ These files are the normative architecture, security, and evidence contracts for
 | [documents-localization-open-core.md](documents-localization-open-core.md)                   | DOCX/PDF derivation, localization, open-core licensing boundary                                           | mixed — localization, bounded DOCX, visual completion PDF; cryptographic PDF sealing is backlog; open-core boundary is policy |
 | [deployment-and-risks.md](deployment-and-risks.md)                                           | Deployment target boundary and the primary risk register                                                  | mixed — deployment targets are implemented (scaffolded); the risk list is policy, not a status claim                          |
 
+The recipient-facing agreement rendering — the deterministic PDF an envelope is converted to at send time, how its pointer is pinned, and how it reaches a recipient — is specified in [envelope-model.md](envelope-model.md#sent-agreement-rendering).
+
 Rationale for early decisions, not normative today, lives in [decisions/](decisions/README.md).
 
 ## Reading order

@@ -12,7 +12,25 @@ describe('D1RecipientFieldDeclarationStore', () => {
 					field_type: 'signature',
 					label: 'Your signature',
 					required: 1,
-					position: 0
+					position: 0,
+					page: 2,
+					x: 0.1,
+					y: 0.2,
+					width: 0.3,
+					height: 0.05
+				},
+				{
+					id: 'field-2',
+					document_path: 'documents/agreement.md',
+					field_type: 'date',
+					label: 'Date',
+					required: 0,
+					position: 1,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
 				}
 			]
 		}));
@@ -32,12 +50,24 @@ describe('D1RecipientFieldDeclarationStore', () => {
 					fieldType: 'signature',
 					label: 'Your signature',
 					required: true,
-					position: 0
+					position: 0,
+					geometry: { page: 2, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
+				},
+				{
+					id: 'field-2',
+					documentPath: 'documents/agreement.md',
+					fieldType: 'date',
+					label: 'Date',
+					required: false,
+					position: 1,
+					// All-or-nothing: a row without a complete placement reports none.
+					geometry: null
 				}
 			]
 		});
 		expect(prepare.mock.calls[0][0]).toContain('field_generation');
 		expect(prepare.mock.calls[1][0]).toContain('recipient_id = ?');
+		expect(prepare.mock.calls[1][0]).toContain('page, x, y, width, height');
 	});
 
 	it('returns null when the envelope pointer is missing', async () => {

@@ -10,6 +10,10 @@ import type {
 	CapabilitySealContext,
 	RecipientCapabilitySealer
 } from '$lib/security/delivery-capability';
+import {
+	FakeSentDocumentPdf,
+	fakeSentPdfArtifact
+} from '$lib/application/documents/sent-document-pdf-test-support';
 import { EnvelopeSendApplication } from './send';
 
 const envelope: Envelope = {
@@ -135,11 +139,15 @@ const sealer: RecipientCapabilitySealer = {
 describe('EnvelopeSendApplication', () => {
 	it('reserves signer, approver, and viewer capabilities but queues only the first routing group', async () => {
 		const store: CapturingStore = new CapturingStore();
-		const result = await new EnvelopeSendApplication(store, sealer).send(actor, envelope.id, {
-			idempotencyKey: 'send-1',
-			expectedGeneration: 2,
-			expectedReadyAuditEventId: readyEventId
-		});
+		const result = await new EnvelopeSendApplication(store, sealer, new FakeSentDocumentPdf()).send(
+			actor,
+			envelope.id,
+			{
+				idempotencyKey: 'send-1',
+				expectedGeneration: 2,
+				expectedReadyAuditEventId: readyEventId
+			}
+		);
 		expect(result.outcome).toBe('published');
 		expect(store.commands[0].deliveries).toHaveLength(3);
 		expect(
@@ -181,7 +189,11 @@ describe('EnvelopeSendApplication', () => {
 			}))
 		};
 
-		const result = await new EnvelopeSendApplication(store, localSealer).send(actor, envelope.id, {
+		const result = await new EnvelopeSendApplication(
+			store,
+			localSealer,
+			new FakeSentDocumentPdf()
+		).send(actor, envelope.id, {
 			idempotencyKey: 'send-prefill',
 			expectedGeneration: 2,
 			expectedReadyAuditEventId: readyEventId
@@ -197,7 +209,11 @@ describe('EnvelopeSendApplication', () => {
 		const store: CapturingStore = new CapturingStore([recipients[0], detachedViewer]);
 		const localSealer: RecipientCapabilitySealer = { seal: vi.fn() };
 
-		const result = await new EnvelopeSendApplication(store, localSealer).send(actor, envelope.id, {
+		const result = await new EnvelopeSendApplication(
+			store,
+			localSealer,
+			new FakeSentDocumentPdf()
+		).send(actor, envelope.id, {
 			idempotencyKey: 'send-detached-viewer',
 			expectedGeneration: 2,
 			expectedReadyAuditEventId: readyEventId
@@ -208,21 +224,111 @@ describe('EnvelopeSendApplication', () => {
 		expect(store.commands).toHaveLength(0);
 	});
 
+	it('renders and pins the agreement PDF, and binds its digest into the audit chain', async () => {
+		const store: CapturingStore = new CapturingStore();
+		const documentPdf: FakeSentDocumentPdf = new FakeSentDocumentPdf();
+		const result = await new EnvelopeSendApplication(store, sealer, documentPdf).send(
+			actor,
+			envelope.id,
+			{
+				idempotencyKey: 'send-pdf',
+				expectedGeneration: 2,
+				expectedReadyAuditEventId: readyEventId
+			}
+		);
+
+		expect(result.outcome).toBe('published');
+		// The rendering is read from the envelope's own durable pointer, not
+		// from anything the caller supplied.
+		expect(documentPdf.published).toEqual([
+			{
+				organizationId: envelope.organizationId,
+				envelopeId: envelope.id,
+				commitSha: envelope.repositoryHead,
+				archiveKey: envelope.repositoryArchiveKey,
+				archiveSha256: envelope.repositoryArchiveSha256
+			}
+		]);
+		const expected = fakeSentPdfArtifact(envelope.organizationId, envelope.id);
+		expect(store.commands[0].sentPdf).toEqual(expected);
+		expect(JSON.parse(store.commands[0].auditPayloadJson)).toMatchObject({
+			sentPdfSha256: expected.sha256,
+			sentPdfBytes: expected.byteSize,
+			sentPdfPageCount: expected.pageCount
+		});
+		// The storage key stays out of the evidence record; the digest pins it.
+		expect(store.commands[0].auditPayloadJson).not.toContain('sent-documents/');
+	});
+
+	it('does not publish a send it cannot render an agreement for', async () => {
+		const store: CapturingStore = new CapturingStore();
+		const localSealer: RecipientCapabilitySealer = {
+			seal: vi.fn(async () => ({
+				sealedCapability: 'sealed',
+				sealingKeyId: 'key-1',
+				sealedCapabilitySha256: 'c'.repeat(64)
+			}))
+		};
+		const failing: FakeSentDocumentPdf = new FakeSentDocumentPdf(
+			new Error('object storage unavailable')
+		);
+
+		const result = await new EnvelopeSendApplication(store, localSealer, failing).send(
+			actor,
+			envelope.id,
+			{
+				idempotencyKey: 'send-render-failure',
+				expectedGeneration: 2,
+				expectedReadyAuditEventId: readyEventId
+			}
+		);
+
+		expect(result).toEqual({ outcome: 'document_render_failed' });
+		expect(store.commands).toHaveLength(0);
+		// No capability is minted for an envelope that will not be sent.
+		expect(localSealer.seal).not.toHaveBeenCalled();
+	});
+
+	it('refuses to send an envelope with an incomplete repository pointer', async () => {
+		class PointerlessStore extends CapturingStore {
+			override async prepareSend(key: SendCommandKey): Promise<SendPreparation> {
+				const preparation = await super.prepareSend(key);
+				if (preparation.outcome !== 'ready') return preparation;
+				return {
+					...preparation,
+					envelope: { ...preparation.envelope, repositoryArchiveSha256: null }
+				};
+			}
+		}
+		const store: PointerlessStore = new PointerlessStore();
+		const documentPdf: FakeSentDocumentPdf = new FakeSentDocumentPdf();
+
+		await expect(
+			new EnvelopeSendApplication(store, sealer, documentPdf).send(actor, envelope.id, {
+				idempotencyKey: 'send-no-pointer',
+				expectedGeneration: 2,
+				expectedReadyAuditEventId: readyEventId
+			})
+		).resolves.toEqual({ outcome: 'integrity_error' });
+		expect(documentPdf.published).toHaveLength(0);
+		expect(store.commands).toHaveLength(0);
+	});
+
 	it('returns preparation failures without creating secrets', async () => {
 		const blocked: EnvelopeSendStore = {
 			prepareSend: vi.fn(async (): Promise<SendPreparation> => ({ outcome: 'audit_conflict' })),
 			publishSend: vi.fn()
 		};
 		const localSealer: RecipientCapabilitySealer = { seal: vi.fn() };
-		const result = await new EnvelopeSendApplication(blocked, localSealer).send(
-			actor,
-			envelope.id,
-			{
-				idempotencyKey: 'send-1',
-				expectedGeneration: 2,
-				expectedReadyAuditEventId: readyEventId
-			}
-		);
+		const result = await new EnvelopeSendApplication(
+			blocked,
+			localSealer,
+			new FakeSentDocumentPdf()
+		).send(actor, envelope.id, {
+			idempotencyKey: 'send-1',
+			expectedGeneration: 2,
+			expectedReadyAuditEventId: readyEventId
+		});
 		expect(result).toEqual({ outcome: 'audit_conflict' });
 		expect(localSealer.seal).not.toHaveBeenCalled();
 		expect(blocked.publishSend).not.toHaveBeenCalled();

@@ -4,6 +4,55 @@ import { SIGNATURE_ASSET_REF_PREFIX } from '$lib/application/documents/signature
 import SignatureCanvasTestHost from './signature-canvas-test-host.svelte';
 
 const assetRef = `${SIGNATURE_ASSET_REF_PREFIX}${'a'.repeat(64)}`;
+const secondAssetRef = `${SIGNATURE_ASSET_REF_PREFIX}${'b'.repeat(64)}`;
+
+interface FetchRecorder {
+	calls: number;
+	restore(): void;
+}
+
+/** Replaces `window.fetch` and counts every call the component makes. */
+function recordFetch(respond: (call: number) => Promise<Response>): FetchRecorder {
+	const original = window.fetch;
+	const recorder: FetchRecorder = {
+		calls: 0,
+		restore: (): void => {
+			window.fetch = original;
+		}
+	};
+	window.fetch = (async (): Promise<Response> => {
+		recorder.calls += 1;
+		return respond(recorder.calls);
+	}) as typeof fetch;
+	return recorder;
+}
+
+function jsonResponse(ref: string): Response {
+	return new Response(JSON.stringify({ assetRef: ref }), {
+		status: 201,
+		headers: { 'content-type': 'application/json' }
+	});
+}
+
+function draw(canvas: HTMLCanvasElement, offset: number = 0): void {
+	canvas.dispatchEvent(
+		new PointerEvent('pointerdown', {
+			bubbles: true,
+			clientX: 10 + offset,
+			clientY: 10,
+			pointerId: 1
+		})
+	);
+	canvas.dispatchEvent(
+		new PointerEvent('pointermove', {
+			bubbles: true,
+			clientX: 40 + offset,
+			clientY: 30,
+			pointerId: 1
+		})
+	);
+	canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+}
 
 test('keeps the field empty until the dialog is confirmed, including a prefilled typed name', async () => {
 	const screen = await render(SignatureCanvasTestHost, { recipientName: 'Alex Rivera' });
@@ -52,9 +101,8 @@ test('reopening a confirmed typed signature shows that value, not a discarded ed
 	await expect.element(screen.getByLabelText('Typed signature')).toHaveValue('Jordan Lee');
 });
 
-test('draw mode needs an uploaded asset before confirm, and upload errors stay in the dialog', async () => {
-	const originalFetch = window.fetch;
-	window.fetch = (async () => new Response('nope', { status: 500 })) as typeof fetch;
+test('drawing uploads nothing, and confirming uploads exactly once', async () => {
+	const recorder = recordFetch(async () => jsonResponse(assetRef));
 	try {
 		const screen = await render(SignatureCanvasTestHost, { recipientName: 'Alex Rivera' });
 		await screen.getByRole('button', { name: 'Add signature' }).click();
@@ -63,96 +111,54 @@ test('draw mode needs an uploaded asset before confirm, and upload errors stay i
 
 		const canvas = screen.getByLabelText('Signature', { exact: true });
 		const node = canvas.element() as HTMLCanvasElement;
-		node.dispatchEvent(
-			new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, pointerId: 1 })
-		);
-		node.dispatchEvent(
-			new PointerEvent('pointermove', { bubbles: true, clientX: 40, clientY: 30, pointerId: 1 })
-		);
-		node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+		draw(node);
+		// Pointer events only touch the local canvas. Nothing leaves the browser
+		// until the signer says this is their signature.
+		draw(node, 20);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(recorder.calls).toBe(0);
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe('(empty)');
+		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeEnabled();
 
+		await screen.getByRole('button', { name: 'Use this signature' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Drawn signature' })).toBeVisible();
+		expect(recorder.calls).toBe(1);
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+	} finally {
+		recorder.restore();
+	}
+});
+
+test('a failed upload keeps the dialog open and commits nothing', async () => {
+	const recorder = recordFetch(async () => new Response('nope', { status: 500 }));
+	try {
+		const screen = await render(SignatureCanvasTestHost, { recipientName: 'Alex Rivera' });
+		await screen.getByRole('button', { name: 'Add signature' }).click();
+		await screen.getByRole('tab', { name: 'Draw' }).click();
+		const canvas = screen.getByLabelText('Signature', { exact: true });
+		draw(canvas.element() as HTMLCanvasElement);
+		expect(recorder.calls).toBe(0);
+
+		await screen.getByRole('button', { name: 'Use this signature' }).click();
 		await expect
 			.element(screen.getByRole('alert'))
 			.toHaveTextContent('Could not save your drawn signature');
-		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeDisabled();
+		// Still open, still one attempt, still nothing committed.
+		await expect.element(screen.getByRole('dialog', { name: 'Add your signature' })).toBeVisible();
+		expect(recorder.calls).toBe(1);
 		expect(screen.getByTestId('committed-signature').element().textContent).toBe('(empty)');
 	} finally {
-		window.fetch = originalFetch;
+		recorder.restore();
 	}
 });
 
-test('clearing a drawing invalidates an in-flight upload', async () => {
-	const originalFetch = window.fetch;
-	let finish: ((response: Response) => void) | undefined;
-	window.fetch = () =>
-		new Promise((resolve) => {
-			finish = resolve;
-		});
-	try {
-		const screen = await render(SignatureCanvasTestHost, { recipientName: 'Alex Rivera' });
-		await screen.getByRole('button', { name: 'Add signature' }).click();
-		await screen.getByRole('tab', { name: 'Draw' }).click();
-
-		const canvas = screen.getByLabelText('Signature', { exact: true });
-		const node = canvas.element() as HTMLCanvasElement;
-		node.dispatchEvent(
-			new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, pointerId: 1 })
-		);
-		node.dispatchEvent(
-			new PointerEvent('pointermove', { bubbles: true, clientX: 40, clientY: 30, pointerId: 1 })
-		);
-		node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
-
-		await expect.element(screen.getByRole('button', { name: 'Saving signature…' })).toBeVisible();
-		await screen.getByRole('button', { name: 'Clear' }).click();
-		finish?.(
-			new Response(JSON.stringify({ assetRef }), {
-				status: 201,
-				headers: { 'content-type': 'application/json' }
-			})
-		);
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeDisabled();
-		expect(screen.getByTestId('committed-signature').element().textContent).toBe('(empty)');
-		expect(screen.container.textContent).not.toContain('Drawn signature saved');
-	} finally {
-		window.fetch = originalFetch;
-	}
-});
-
-test('a failed redraw of a confirmed drawn signature does not reuse the old asset', async () => {
-	const originalFetch = window.fetch;
-	window.fetch = (async () => new Response('nope', { status: 500 })) as typeof fetch;
+test('confirming an unchanged previously drawn signature reuses the asset without uploading', async () => {
+	const recorder = recordFetch(async () => jsonResponse(secondAssetRef));
 	try {
 		const screen = await render(SignatureCanvasTestHost, {
 			recipientName: 'Alex Rivera',
 			initialValue: assetRef
 		});
-		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
-
-		await screen.getByRole('button', { name: 'Drawn signature' }).click();
-		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeEnabled();
-
-		const canvas = screen.getByLabelText('Signature', { exact: true });
-		const node = canvas.element() as HTMLCanvasElement;
-		node.dispatchEvent(
-			new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, pointerId: 1 })
-		);
-		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeDisabled();
-		node.dispatchEvent(
-			new PointerEvent('pointermove', { bubbles: true, clientX: 40, clientY: 30, pointerId: 1 })
-		);
-		node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
-
-		await expect
-			.element(screen.getByRole('alert'))
-			.toHaveTextContent('Could not save your drawn signature');
-		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeDisabled();
-		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
-
-		await screen.getByRole('button', { name: 'Cancel' }).click();
-		await expect.element(screen.getByRole('button', { name: 'Drawn signature' })).toBeVisible();
-		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
 
 		await screen.getByRole('button', { name: 'Drawn signature' }).click();
 		await expect
@@ -160,23 +166,119 @@ test('a failed redraw of a confirmed drawn signature does not reuse the old asse
 			.toHaveAttribute('aria-selected', 'true');
 		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeEnabled();
 		await screen.getByRole('button', { name: 'Use this signature' }).click();
+
+		expect(recorder.calls).toBe(0);
 		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
 	} finally {
-		window.fetch = originalFetch;
+		recorder.restore();
 	}
 });
 
-test('confirming a previously saved drawn signature keeps the asset ref contract', async () => {
-	const screen = await render(SignatureCanvasTestHost, {
-		recipientName: 'Alex Rivera',
-		initialValue: assetRef
-	});
+test('a redraw never reuses the previously committed asset, and a failed redraw commits nothing', async () => {
+	const recorder = recordFetch(async () => new Response('nope', { status: 500 }));
+	try {
+		const screen = await render(SignatureCanvasTestHost, {
+			recipientName: 'Alex Rivera',
+			initialValue: assetRef
+		});
 
-	await expect.element(screen.getByRole('button', { name: 'Drawn signature' })).toBeVisible();
-	await screen.getByRole('button', { name: 'Drawn signature' }).click();
-	await expect
-		.element(screen.getByRole('tab', { name: 'Draw' }))
-		.toHaveAttribute('aria-selected', 'true');
-	await screen.getByRole('button', { name: 'Use this signature' }).click();
-	expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+		await screen.getByRole('button', { name: 'Drawn signature' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeEnabled();
+
+		const canvas = screen.getByLabelText('Signature', { exact: true });
+		draw(canvas.element() as HTMLCanvasElement);
+		await screen.getByRole('button', { name: 'Use this signature' }).click();
+		await expect
+			.element(screen.getByRole('alert'))
+			.toHaveTextContent('Could not save your drawn signature');
+		expect(recorder.calls).toBe(1);
+		// The old asset is still the committed value, but the dialog will not
+		// silently re-confirm it now that the canvas shows something else.
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+
+		await screen.getByRole('button', { name: 'Cancel' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Drawn signature' })).toBeVisible();
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+	} finally {
+		recorder.restore();
+	}
+});
+
+test('clearing during an upload discards the stale response', async () => {
+	let finish: ((response: Response) => void) | undefined;
+	const recorder = recordFetch(
+		() =>
+			new Promise<Response>((resolve) => {
+				finish = resolve;
+			})
+	);
+	try {
+		const screen = await render(SignatureCanvasTestHost, { recipientName: 'Alex Rivera' });
+		await screen.getByRole('button', { name: 'Add signature' }).click();
+		await screen.getByRole('tab', { name: 'Draw' }).click();
+		const canvas = screen.getByLabelText('Signature', { exact: true });
+		draw(canvas.element() as HTMLCanvasElement);
+		await screen.getByRole('button', { name: 'Use this signature' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Saving signature…' })).toBeVisible();
+
+		await screen.getByRole('button', { name: 'Clear' }).click();
+		finish?.(jsonResponse(assetRef));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		expect(recorder.calls).toBe(1);
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe('(empty)');
+		await expect.element(screen.getByRole('dialog', { name: 'Add your signature' })).toBeVisible();
+		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeDisabled();
+	} finally {
+		recorder.restore();
+	}
+});
+
+test('cancelling during an upload never commits the late response', async () => {
+	let finish: ((response: Response) => void) | undefined;
+	const recorder = recordFetch(
+		() =>
+			new Promise<Response>((resolve) => {
+				finish = resolve;
+			})
+	);
+	try {
+		const screen = await render(SignatureCanvasTestHost, { recipientName: 'Alex Rivera' });
+		await screen.getByRole('button', { name: 'Add signature' }).click();
+		await screen.getByRole('tab', { name: 'Draw' }).click();
+		const canvas = screen.getByLabelText('Signature', { exact: true });
+		draw(canvas.element() as HTMLCanvasElement);
+		await screen.getByRole('button', { name: 'Use this signature' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Saving signature…' })).toBeVisible();
+
+		await screen.getByRole('button', { name: 'Cancel' }).click();
+		finish?.(jsonResponse(assetRef));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		expect(recorder.calls).toBe(1);
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe('(empty)');
+		await expect.element(screen.getByRole('button', { name: 'Add signature' })).toBeVisible();
+	} finally {
+		recorder.restore();
+	}
+});
+
+test('switching modes after drawing abandons the drawing rather than uploading it', async () => {
+	const recorder = recordFetch(async () => jsonResponse(assetRef));
+	try {
+		const screen = await render(SignatureCanvasTestHost, { recipientName: 'Alex Rivera' });
+		await screen.getByRole('button', { name: 'Add signature' }).click();
+		await screen.getByRole('tab', { name: 'Draw' }).click();
+		const canvas = screen.getByLabelText('Signature', { exact: true });
+		draw(canvas.element() as HTMLCanvasElement);
+
+		await screen.getByRole('tab', { name: 'Type' }).click();
+		await screen.getByLabelText('Typed signature').fill('Alex Rivera');
+		await screen.getByRole('button', { name: 'Use this signature' }).click();
+
+		expect(recorder.calls).toBe(0);
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe('Alex Rivera');
+	} finally {
+		recorder.restore();
+	}
 });

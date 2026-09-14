@@ -156,4 +156,20 @@ describe('recipient viewed HTTP handler', () => {
 		expect(response.status).toBe(status);
 		expect(response.headers.get('content-type')).toContain('application/problem+json');
 	});
+
+	it('rejects a query envelopeId that does not match the body', async () => {
+		const { event, deleted } = createRecipientRequestEvent({
+			pathname: '/api/v1/signing/viewed?envelopeId=01910000-0000-7000-8000-000000000099',
+			defaultBody: { envelopeId, recipientId },
+			idempotencyKey: 'view-1'
+		});
+		const resolver: RecipientViewedApplicationResolver = vi.fn(() => application(published));
+		const response: Response = await createRecipientViewedHandler(
+			resolver,
+			async (): Promise<string> => token
+		)(event);
+		expect(response.status).toBe(400);
+		expect(resolver).not.toHaveBeenCalled();
+		expect(deleted).not.toHaveBeenCalled();
+	});
 });

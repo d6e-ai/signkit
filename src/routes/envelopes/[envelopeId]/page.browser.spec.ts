@@ -145,7 +145,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		});
 	});
 
-	it('shows each recipient language in the immutable post-ready table', async () => {
+	it('shows each recipient language, localized role, and workflow status in the immutable post-ready table', async () => {
 		const jaRecipientId = '01900000-0000-7000-8000-000000000012';
 		const mockFetch = vi
 			.fn()
@@ -155,7 +155,15 @@ describe('envelope authoring page remounts durable send state', () => {
 					return jsonResponse({
 						...detail,
 						recipients: [
-							...detail.recipients,
+							{
+								id: SIGNER_ID,
+								email: 'alice@example.com',
+								name: 'Alice Chen',
+								role: 'signer',
+								locale: 'en',
+								routingOrder: 1,
+								status: 'pending'
+							},
 							{
 								id: jaRecipientId,
 								email: 'sato@example.com',
@@ -163,7 +171,7 @@ describe('envelope authoring page remounts durable send state', () => {
 								role: 'approver',
 								locale: 'ja',
 								routingOrder: 2,
-								status: 'pending'
+								status: 'viewed'
 							}
 						]
 					});
@@ -182,10 +190,21 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
+		await expect.element(screen.getByText('Revision 1')).toBeVisible();
 		await screen.getByRole('tab', { name: 'Recipients' }).click();
-		await expect.element(screen.getByText('Language')).toBeVisible();
-		await expect.element(screen.getByText('English')).toBeVisible();
-		await expect.element(screen.getByText('日本語')).toBeVisible();
+		const recipientsPanel = screen.getByRole('tabpanel', { name: 'Recipients' });
+		await expect.element(recipientsPanel.getByText('Language')).toBeVisible();
+		await expect.element(recipientsPanel.getByText('English')).toBeVisible();
+		await expect.element(recipientsPanel.getByText('日本語')).toBeVisible();
+		await expect.element(recipientsPanel.getByRole('cell', { name: 'Alice Chen' })).toBeVisible();
+		await expect.element(recipientsPanel.getByRole('cell', { name: 'Signer' })).toBeVisible();
+		await expect.element(recipientsPanel.getByRole('cell', { name: 'Approver' })).toBeVisible();
+		await expect.element(recipientsPanel.getByRole('cell', { name: 'Waiting' })).toBeVisible();
+		await expect.element(recipientsPanel.getByRole('cell', { name: 'Viewed' })).toBeVisible();
+		expect(recipientsPanel.element().textContent).not.toContain('signer');
+		expect(recipientsPanel.element().textContent).not.toContain('pending');
+		expect(recipientsPanel.element().textContent).not.toContain('Routing order');
+		expect(screen.container.textContent).not.toContain('Git generation');
 	});
 
 	it('lets operators choose recipient role and language with shadcn selects', async () => {
@@ -216,11 +235,212 @@ describe('envelope authoring page remounts durable send state', () => {
 		await screen.getByRole('button', { name: 'Add recipient' }).click();
 		const languageSelect = screen.getByLabelText('Language');
 		await expect.element(screen.getByLabelText('Role')).toBeVisible();
+		await expect.element(screen.getByRole('cell', { name: 'Order' })).toBeVisible();
 		await expect.element(languageSelect).toBeVisible();
 		await expect.element(languageSelect).toHaveTextContent('English');
 		await languageSelect.click();
 		await expect.element(screen.getByRole('option', { name: '日本語' })).toBeVisible();
 		await screen.getByRole('option', { name: '日本語' }).click();
 		await expect.element(languageSelect).toHaveTextContent('日本語');
+	});
+
+	it('joins delivery rows to recipients and shows invitation state, not workflow enums', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						...detail,
+						envelope: { ...readyEnvelope, status: 'sent' },
+						recipients: [
+							{
+								id: SIGNER_ID,
+								email: 'alice@example.com',
+								name: 'Alice Chen',
+								role: 'signer',
+								locale: 'en',
+								routingOrder: 1,
+								status: 'pending'
+							}
+						]
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+					return jsonResponse({
+						delivery: {
+							envelopeId: ENVELOPE_ID,
+							envelopeStatus: 'sent',
+							deliveries: [
+								{
+									recipientId: SIGNER_ID,
+									recipientRole: 'signer',
+									routingOrder: 1,
+									status: 'pending',
+									attempts: 3,
+									availableAt: '2026-09-12T00:00:00.000Z',
+									deliveredAt: null,
+									updatedAt: '2026-09-12T00:00:00.000Z',
+									errorCode: null
+								},
+								{
+									recipientId: '01900000-0000-7000-8000-000000000013',
+									recipientRole: 'approver',
+									routingOrder: 2,
+									status: 'blocked',
+									attempts: 0,
+									availableAt: null,
+									deliveredAt: null,
+									updatedAt: '2026-09-12T00:00:00.000Z',
+									errorCode: null
+								}
+							]
+						}
+					});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Send & status' }).click();
+		const sendPanel = screen.getByRole('tabpanel', { name: 'Send & status' });
+		await expect.element(sendPanel.getByText('Alice Chen')).toBeVisible();
+		await expect.element(sendPanel.getByText('alice@example.com')).toBeVisible();
+		await expect.element(sendPanel.getByText('Waiting to send')).toBeVisible();
+		await expect.element(sendPanel.getByText('Waiting for earlier recipients')).toBeVisible();
+		await expect.element(sendPanel.getByRole('cell', { name: 'Signer' })).toBeVisible();
+		expect(sendPanel.element().textContent).not.toContain('Routing order');
+		expect(sendPanel.element().textContent).not.toContain('Attempts');
+		expect(sendPanel.element().textContent).not.toMatch(/\bpending\b/);
+		expect(sendPanel.element().textContent).not.toMatch(/\bsigner\b/);
+	});
+
+	it('does not render field placement until pages match the current ready revision', async () => {
+		let releasePages: (value: Response) => void = (): void => undefined;
+		const pagesResponse: Promise<Response> = new Promise((resolve) => {
+			releasePages = resolve;
+		});
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse(detail);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+					return jsonResponse(deliveries);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf/pages`)) {
+					return pagesResponse;
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf`)) {
+					return new Response(new Uint8Array(), {
+						status: 200,
+						headers: { 'content-type': 'application/pdf' }
+					});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		expect(screen.container.textContent).not.toContain('Field placement');
+
+		releasePages(
+			jsonResponse({
+				commitSha: readyEnvelope.repositoryHead,
+				generation: readyEnvelope.repositoryGeneration,
+				pageCount: 1,
+				pageWidth: 595.28,
+				pageHeight: 841.89,
+				documents: [
+					{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 1 }
+				]
+			})
+		);
+
+		await expect.element(screen.getByText('Field placement')).toBeVisible();
+	});
+
+	it('rejects a stale page map so placement stays gated off', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse(detail);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+					return jsonResponse(deliveries);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf/pages`)) {
+					return jsonResponse({
+						commitSha: 'ffffffffffffffffffffffffffffffffffffffff',
+						generation: 0,
+						pageCount: 1,
+						pageWidth: 595.28,
+						pageHeight: 841.89,
+						documents: [
+							{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 1 }
+						]
+					});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
+		expect(screen.container.textContent).not.toContain('Field placement');
+	});
+
+	it('does not fetch a page map while the envelope is still draft', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		expect(
+			mockFetch.mock.calls.some((call) => String(call[0]).includes('/document-pdf/pages'))
+		).toBe(false);
 	});
 });

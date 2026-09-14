@@ -2,16 +2,21 @@ import { S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import { S3ObjectStore } from '$lib/adapters/object/s3';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import {
+	resolvePostgresEnvelopeSentPdfStore,
 	resolvePostgresEnvelopeStore,
 	resolvePostgresRecipientAccessApplication,
 	resolvePostgresRecipientFieldDeclarationStore
 } from '$lib/application/envelopes/runtime-postgres';
 import type { PostgresRecipientFieldDeclarationStore } from '$lib/adapters/db/postgres-recipient-field-declaration-store';
-import { DraftPersistenceService, readImmutableDraftRevision } from './draft-persistence';
+import { DraftPersistenceService } from './draft-persistence';
 import {
 	RecipientWorkspaceService,
 	type RecipientWorkspaceApplicationPort
 } from '$lib/application/signing/recipient-workspace';
+import {
+	RecipientSentPdfService,
+	type RecipientSentPdfApplicationPort
+} from '$lib/application/signing/recipient-sent-pdf';
 
 export interface S3DraftRuntimeConfiguration {
 	databaseUrl?: string;
@@ -66,15 +71,25 @@ export function resolveS3RecipientWorkspaceApplication(
 	configuration: S3DraftRuntimeConfiguration
 ): RecipientWorkspaceApplicationPort {
 	const validated: ValidatedS3DraftRuntimeConfiguration = validateConfiguration(configuration);
-	const resources: CachedS3Resources = resolveS3Resources(validated);
-	const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
 	const fields: PostgresRecipientFieldDeclarationStore =
 		resolvePostgresRecipientFieldDeclarationStore(validated.databaseUrl);
 	return new RecipientWorkspaceService(
 		resolvePostgresRecipientAccessApplication(validated.databaseUrl),
-		(revision) => readImmutableDraftRevision(revision, resources.objects, repository),
+		resolvePostgresEnvelopeSentPdfStore(validated.databaseUrl),
 		(context) =>
 			fields.listOwnFields(context.organizationId, context.envelopeId, context.recipientId)
+	);
+}
+
+export function resolveS3RecipientSentPdfApplication(
+	configuration: S3DraftRuntimeConfiguration
+): RecipientSentPdfApplicationPort {
+	const validated: ValidatedS3DraftRuntimeConfiguration = validateConfiguration(configuration);
+	const resources: CachedS3Resources = resolveS3Resources(validated);
+	return new RecipientSentPdfService(
+		resolvePostgresRecipientAccessApplication(validated.databaseUrl),
+		resolvePostgresEnvelopeSentPdfStore(validated.databaseUrl),
+		resources.objects
 	);
 }
 

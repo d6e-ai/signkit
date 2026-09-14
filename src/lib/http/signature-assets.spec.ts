@@ -4,7 +4,7 @@ import type {
 	SignatureAssetApplicationPort,
 	StoreSignatureAssetResult
 } from '$lib/application/documents/signature-asset';
-import { RECIPIENT_SESSION_COOKIE } from '$lib/server/recipient-session';
+import { recipientSessionCookieName } from '$lib/server/recipient-session';
 import {
 	createSignatureAssetHandler,
 	type RecipientSessionUnsealer,
@@ -27,23 +27,31 @@ function buildEvent(options: {
 	contentType?: string | null;
 	cookie?: string | null;
 	body?: Uint8Array | null;
-}): { event: RequestEvent; deleted: ReturnType<typeof vi.fn> } {
+}): {
+	event: RequestEvent;
+	deleted: ReturnType<typeof vi.fn>;
+	store: Record<string, string>;
+} {
 	const pathname =
 		options.pathname ??
 		`/api/v1/signing/signature-assets?envelopeId=${envelopeId}&recipientId=${recipientId}`;
 	const headers = new Headers();
 	if (options.origin !== null) headers.set('origin', options.origin ?? 'https://signkit.example');
 	if (options.contentType !== null) headers.set('content-type', options.contentType ?? 'image/png');
-	const deleted = vi.fn();
-	const cookie: string | undefined =
-		'cookie' in options && options.cookie === null
-			? undefined
-			: (options.cookie ?? 'sealed-session');
+	const cookieName: string = recipientSessionCookieName(envelopeId) as string;
+	const store: Record<string, string> = {};
+	if (!('cookie' in options && options.cookie === null)) {
+		store[cookieName] = options.cookie ?? 'sealed-session';
+	}
+	const deleted = vi.fn((name: string): void => {
+		delete store[name];
+	});
 	const cookies = {
-		get: vi.fn((name: string): string | undefined =>
-			name === RECIPIENT_SESSION_COOKIE ? cookie : undefined
-		),
-		delete: deleted
+		get: (name: string): string | undefined => store[name],
+		delete: deleted,
+		set: (name: string, value: string): void => {
+			store[name] = value;
+		}
 	} as unknown as Cookies;
 	const body = options.body === undefined ? pngBytes() : options.body;
 	const request = new Request(`https://signkit.example${pathname}`, {
@@ -58,7 +66,8 @@ function buildEvent(options: {
 			request,
 			url: new URL(request.url)
 		} as unknown as RequestEvent,
-		deleted
+		deleted,
+		store
 	};
 }
 
@@ -125,11 +134,30 @@ describe('signature asset HTTP handler', () => {
 		['too_large', 413],
 		['invalid_image', 400],
 		['integrity_error', 503]
-	] as const)('maps %s to status %i', async (outcome, status) => {
-		const { event } = buildEvent({});
-		const resolver: SignatureAssetApplicationResolver = () => application({ outcome });
+	] as const)(
+		'maps %s to status %i without deleting the session cookie',
+		async (outcome, status) => {
+			const { event, deleted } = buildEvent({});
+			const resolver: SignatureAssetApplicationResolver = () => application({ outcome });
+			const response = await createSignatureAssetHandler(resolver, unseal)(event);
+			expect(response.status).toBe(status);
+			expect(deleted).not.toHaveBeenCalled();
+		}
+	);
+
+	it('does not delete a cookie when a stale upload fails after a newer same-envelope session was set', async () => {
+		const cookieName: string = recipientSessionCookieName(envelopeId) as string;
+		const { event, deleted, store } = buildEvent({});
+		const resolver: SignatureAssetApplicationResolver = () => ({
+			store: vi.fn(async () => {
+				event.cookies.set(cookieName, 'newer-from-s', { path: '/' });
+				return { outcome: 'not_found' as const };
+			})
+		});
 		const response = await createSignatureAssetHandler(resolver, unseal)(event);
-		expect(response.status).toBe(status);
+		expect(response.status).toBe(404);
+		expect(deleted).not.toHaveBeenCalled();
+		expect(store[cookieName]).toBe('newer-from-s');
 	});
 
 	it('returns 503 when the application cannot be resolved', async () => {

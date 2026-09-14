@@ -151,7 +151,8 @@ export interface FieldPlacementInput {
 	label: string;
 	required: boolean;
 	position: number;
-	geometry?: FieldGeometry | null;
+	/** Required: placement is visual, so every field names a page and a box. */
+	geometry: FieldGeometry;
 }
 
 export interface PlaceFieldsInput {

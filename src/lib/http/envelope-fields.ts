@@ -30,6 +30,12 @@ const documentPathSchema: ZodType<string> = z
 	.refine((value: string): boolean => !value.includes('..'), {
 		message: 'Document paths must not contain ..'
 	});
+/**
+ * Unit-square fractions of one rendered page. Expressing placement this way
+ * rather than in device pixels is what keeps a box in the same spot across
+ * zoom levels, screen sizes, and the sender's monitor versus the signer's
+ * phone.
+ */
 const geometrySchema = z
 	.object({
 		page: z.number().int().min(1).max(100_000),
@@ -54,7 +60,7 @@ const fieldSchema = z
 			}),
 		required: z.boolean(),
 		position: z.number().int().min(0).max(100_000),
-		geometry: geometrySchema.nullable().optional()
+		geometry: geometrySchema
 	})
 	.strict();
 const fieldsSchema = z
@@ -298,6 +304,12 @@ function fieldsResponse(result: PlaceFieldsResult, instance: string): Response {
 			title: 'Field recipient invalid',
 			status: 422,
 			detail: 'A field referenced a recipient who is not a signer on this envelope.'
+		},
+		invalid_geometry: {
+			type: 'urn:signkit:problem:field-invalid-geometry',
+			title: 'Field geometry invalid',
+			status: 422,
+			detail: 'A field was placed on a page that does not belong to its document.'
 		},
 		integrity_error: {
 			type: 'urn:signkit:problem:fields-integrity-error',
