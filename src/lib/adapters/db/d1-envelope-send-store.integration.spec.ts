@@ -207,6 +207,57 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 		}
 	});
 
+	it('publishes after field placement advanced the audit head past envelope.ready', async () => {
+		const { database, sqlite } = fixture();
+		try {
+			sqlite.exec(`
+				INSERT INTO audit_event (
+					id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+					payload_json, previous_hash, event_hash, occurred_at
+				) VALUES (
+					'01960000-0000-7000-8000-0000000000a2','${ORGANIZATION_ID}','${ENVELOPE_ID}',4,
+					'envelope.fields_placed','user','${ACTOR.id}','{}','hash-3','hash-4','2026-09-11T00:02:30.000Z'
+				);
+				UPDATE envelope SET field_generation = 1, updated_at = '2026-09-11T00:02:30.000Z'
+				WHERE organization_id = '${ORGANIZATION_ID}' AND id = '${ENVELOPE_ID}';
+			`);
+			const application = new EnvelopeSendApplication(new D1EnvelopeSendStore(database), sealer);
+			const first = await application.send(ACTOR, ENVELOPE_ID, {
+				idempotencyKey: 'send-after-fields',
+				expectedGeneration: 1,
+				expectedReadyAuditEventId: READY_AUDIT_ID
+			});
+			expect(first).toMatchObject({
+				outcome: 'published',
+				result: { queuedDeliveryCount: 2, reservedCapabilityCount: 4 }
+			});
+			if (first.outcome !== 'published') throw new Error('Expected send after fields to publish');
+			await expect(
+				application.send(ACTOR, ENVELOPE_ID, {
+					idempotencyKey: 'send-after-fields',
+					expectedGeneration: 1,
+					expectedReadyAuditEventId: READY_AUDIT_ID
+				})
+			).resolves.toEqual({ outcome: 'replayed', result: first.result });
+			const evidence = sqlite
+				.prepare(
+					`SELECT envelope.status, envelope.field_generation,
+						(SELECT sequence FROM audit_event WHERE event_type='envelope.sent') AS sent_sequence,
+						(SELECT previous_hash FROM audit_event WHERE event_type='envelope.sent') AS previous_hash
+					 FROM envelope WHERE id='${ENVELOPE_ID}'`
+				)
+				.get() as Record<string, unknown>;
+			expect(evidence).toEqual({
+				status: 'sent',
+				field_generation: 1,
+				sent_sequence: 5,
+				previous_hash: 'hash-4'
+			});
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('serializes two concurrent sends into one publication and one replay', async () => {
 		const { database, sqlite } = fixture();
 		try {
