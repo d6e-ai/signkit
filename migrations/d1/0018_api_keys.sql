@@ -71,13 +71,11 @@ CREATE TABLE api_key (
   ),
   CONSTRAINT api_key_created_at_iso CHECK (
     length(created_at) = 24
-    AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(created_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at
   ),
   CONSTRAINT api_key_expires_at_iso CHECK (
     length(expires_at) = 24
-    AND expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(expires_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) IS expires_at
   ),
   CONSTRAINT api_key_expiry_bound CHECK (
     datetime(expires_at) > datetime(created_at)
@@ -86,16 +84,14 @@ CREATE TABLE api_key (
   CONSTRAINT api_key_revoked_at_order CHECK (
     revoked_at IS NULL OR (
       length(revoked_at) = 24
-      AND revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-      AND datetime(revoked_at) IS NOT NULL
+      AND strftime('%Y-%m-%dT%H:%M:%fZ', revoked_at) IS revoked_at
       AND datetime(revoked_at) >= datetime(created_at)
     )
   ),
   CONSTRAINT api_key_last_used_at_order CHECK (
     last_used_at IS NULL OR (
       length(last_used_at) = 24
-      AND last_used_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-      AND datetime(last_used_at) IS NOT NULL
+      AND strftime('%Y-%m-%dT%H:%M:%fZ', last_used_at) IS last_used_at
       AND datetime(last_used_at) >= datetime(created_at)
     )
   ),
@@ -106,8 +102,7 @@ CREATE TABLE api_key (
       rate_window_started_at IS NULL
       OR (
         length(rate_window_started_at) = 24
-        AND rate_window_started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-        AND datetime(rate_window_started_at) IS NOT NULL
+        AND strftime('%Y-%m-%dT%H:%M:%fZ', rate_window_started_at) IS rate_window_started_at
         AND datetime(rate_window_started_at) >= datetime(created_at)
       )
     )
@@ -180,13 +175,11 @@ CREATE TABLE api_key_create_command (
   ),
   CONSTRAINT api_key_create_created_at_iso CHECK (
     length(created_at) = 24
-    AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(created_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at
   ),
   CONSTRAINT api_key_create_expires_at_iso CHECK (
     length(expires_at) = 24
-    AND expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(expires_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) IS expires_at
   ),
   CONSTRAINT api_key_create_expiry_bound CHECK (
     datetime(expires_at) > datetime(created_at)
@@ -226,7 +219,6 @@ CREATE TABLE api_key_revoke_command (
   ),
   CONSTRAINT api_key_revoke_revoked_at_iso CHECK (
     length(revoked_at) = 24
-    AND revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(revoked_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', revoked_at) IS revoked_at
   )
 );

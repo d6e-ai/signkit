@@ -58,13 +58,11 @@ CREATE TABLE instance_invitation (
   ),
   CONSTRAINT instance_invitation_created_at_iso CHECK (
     length(created_at) = 24
-    AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(created_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at
   ),
   CONSTRAINT instance_invitation_expires_at_iso CHECK (
     length(expires_at) = 24
-    AND expires_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(expires_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) IS expires_at
   ),
   CONSTRAINT instance_invitation_expiry_bound CHECK (
     datetime(expires_at) > datetime(created_at)
@@ -77,8 +75,7 @@ CREATE TABLE instance_invitation (
   CONSTRAINT instance_invitation_accepted_at_iso CHECK (
     accepted_at IS NULL OR (
       length(accepted_at) = 24
-      AND accepted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-      AND datetime(accepted_at) IS NOT NULL
+      AND strftime('%Y-%m-%dT%H:%M:%fZ', accepted_at) IS accepted_at
       AND datetime(accepted_at) >= datetime(created_at)
     )
   ),
@@ -89,8 +86,7 @@ CREATE TABLE instance_invitation (
   CONSTRAINT instance_invitation_revoked_at_iso CHECK (
     revoked_at IS NULL OR (
       length(revoked_at) = 24
-      AND revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-      AND datetime(revoked_at) IS NOT NULL
+      AND strftime('%Y-%m-%dT%H:%M:%fZ', revoked_at) IS revoked_at
       AND datetime(revoked_at) >= datetime(created_at)
     )
   ),
@@ -163,8 +159,7 @@ CREATE TABLE instance_invitation_command (
   ),
   CONSTRAINT instance_invitation_command_occurred_at_iso CHECK (
     length(occurred_at) = 24
-    AND occurred_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(occurred_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', occurred_at) IS occurred_at
   )
 );
 

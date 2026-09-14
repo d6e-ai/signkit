@@ -79,14 +79,12 @@ CREATE TABLE api_key_organization_grant (
   ),
   CONSTRAINT api_key_organization_grant_granted_at_iso CHECK (
     length(granted_at) = 24
-    AND granted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(granted_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', granted_at) IS granted_at
   ),
   CONSTRAINT api_key_organization_grant_revoked_at_order CHECK (
     revoked_at IS NULL OR (
       length(revoked_at) = 24
-      AND revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-      AND datetime(revoked_at) IS NOT NULL
+      AND strftime('%Y-%m-%dT%H:%M:%fZ', revoked_at) IS revoked_at
       AND datetime(revoked_at) >= datetime(granted_at)
     )
   ),
@@ -159,8 +157,7 @@ CREATE TABLE api_key_organization_grant_command (
   ),
   CONSTRAINT api_key_organization_grant_command_granted_at_iso CHECK (
     length(granted_at) = 24
-    AND granted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(granted_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', granted_at) IS granted_at
   )
 );
 
@@ -202,8 +199,7 @@ CREATE TABLE api_key_organization_grant_revoke_command (
   ),
   CONSTRAINT api_key_organization_grant_revoke_revoked_at_iso CHECK (
     length(revoked_at) = 24
-    AND revoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(revoked_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', revoked_at) IS revoked_at
   )
 );
 

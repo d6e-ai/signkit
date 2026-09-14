@@ -14,8 +14,18 @@ CREATE TABLE webhook_endpoint (
   revoked_by_user_id TEXT,
   PRIMARY KEY (organization_id, id),
   FOREIGN KEY (organization_id) REFERENCES organization(id),
+  -- Same portable UUIDv7 shape as 0001_core.sql: a per-character GLOB would
+  -- exceed the Cloudflare D1 LIKE/GLOB pattern complexity cap.
   CONSTRAINT webhook_endpoint_id_uuidv7 CHECK (
-    id GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-7[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+    length(id) = 36
+    AND substr(id, 9, 1) = '-'
+    AND substr(id, 14, 1) = '-'
+    AND substr(id, 15, 1) = '7'
+    AND substr(id, 19, 1) = '-'
+    AND substr(id, 20, 1) IN ('8', '9', 'a', 'b')
+    AND substr(id, 24, 1) = '-'
+    AND length(replace(id, '-', '')) = 32
+    AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*'
   ),
   CONSTRAINT webhook_endpoint_status_known CHECK (status IN ('active', 'revoked')),
   CONSTRAINT webhook_endpoint_url_https CHECK (

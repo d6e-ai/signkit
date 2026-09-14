@@ -393,6 +393,16 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				code: '23514',
 				constraint_name: 'api_key_organization_grant_id_uuidv7'
 			});
+			await expect(
+				database()`INSERT INTO webhook_endpoint (
+					id, organization_id, url, status, events_json, secret_hash,
+					signing_secret, secret_prefix, created_at, created_by_user_id
+				) VALUES (
+					${id}, ${ORGANIZATION_ID}, 'https://example.com/hooks', 'active',
+					'["envelope.completed"]', ${'a'.repeat(64)}, ${'s'.repeat(32)}, 'skwh1_',
+					now(), ${ACTOR.id}
+				)`
+			).rejects.toMatchObject({ code: '23514', constraint_name: 'webhook_endpoint_id_uuidv7' });
 		}
 
 		// External d6e-auth identifiers and caller-chosen idempotency keys are

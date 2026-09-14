@@ -6,6 +6,14 @@ PRAGMA foreign_keys = ON;
 -- SQLite has no regular expressions, so every UUIDv7 check below uses the same
 -- portable length/separator/GLOB shape, including the version nibble (`7`) and
 -- the RFC 9562 variant nibble (`8`, `9`, `a`, or `b`).
+--
+-- Cloudflare D1 caps LIKE/GLOB pattern complexity and fails any longer pattern
+-- at evaluation time with "LIKE or GLOB pattern too complex", so GLOB is only
+-- ever used here with a short character-class pattern. Timestamps are instead
+-- pinned to canonical UTC ISO-8601 milliseconds (`YYYY-MM-DDTHH:MM:SS.sssZ`)
+-- by round-tripping through strftime: the round trip accepts only the exact
+-- canonical rendering of a real instant, and the comparison uses `IS` so that
+-- a NULL from an unparsable value fails the CHECK instead of passing it.
 CREATE TABLE organization (
   id TEXT PRIMARY KEY,
   d6e_organization_id TEXT NOT NULL UNIQUE,
@@ -36,13 +44,11 @@ CREATE TABLE instance_member (
   ),
   CONSTRAINT instance_member_created_at_iso CHECK (
     length(created_at) = 24
-    AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(created_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', created_at) IS created_at
   ),
   CONSTRAINT instance_member_updated_at_iso CHECK (
     length(updated_at) = 24
-    AND updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
-    AND datetime(updated_at) IS NOT NULL
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', updated_at) IS updated_at
   ),
   CONSTRAINT instance_member_updated_order CHECK (
     datetime(updated_at) >= datetime(created_at)
