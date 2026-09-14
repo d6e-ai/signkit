@@ -27,24 +27,16 @@ const API_KEY_PATH_PREFIXES: readonly string[] = ['/api/v1/envelopes'];
  * administering instance members. Treating the key as a hard rejection also
  * suppresses the cookie for that request, so the two authorities can never
  * compose on the surfaces where composing them would matter most.
+ *
+ * `/api/v1/instance` covers bootstrap too: it is cookie-session-only, so a
+ * presented `signkit_` key is rejected there exactly like every other instance
+ * management endpoint, never treated as a deployment-secret credential family.
  */
 const API_KEY_REJECTED_PATH_PREFIXES: readonly string[] = [
 	'/api/v1/api-keys',
 	'/api/v1/instance',
 	'/api/v1/webhooks'
 ];
-
-/**
- * Instance bootstrap is deliberately exempt.
- *
- * Its `Authorization` header is not a credential-family selector at all: it
- * carries `SIGNKIT_BOOTSTRAP_SECRET`, which is checked constant-time *before*
- * identity precisely so an invalid or unconfigured secret returns an opaque 404.
- * A `signkit_`-shaped value there is simply a wrong deployment secret and
- * already fails closed on that path, so classifying it as an API key would
- * change a documented flow without adding any protection.
- */
-const BOOTSTRAP_PATH: string = '/api/v1/instance/bootstrap';
 
 function matchesPrefix(pathname: string, prefixes: readonly string[]): boolean {
 	return prefixes.some(
@@ -57,6 +49,5 @@ export function isApiKeyAuthenticatedPath(pathname: string): boolean {
 }
 
 export function isApiKeyRejectedPath(pathname: string): boolean {
-	if (pathname === BOOTSTRAP_PATH) return false;
 	return matchesPrefix(pathname, API_KEY_REJECTED_PATH_PREFIXES);
 }

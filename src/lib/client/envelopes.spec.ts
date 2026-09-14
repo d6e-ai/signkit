@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createEnvelopesClient, EnvelopesApiError } from './envelopes';
+import {
+	createEnvelopesClient,
+	fetchAllEnvelopes,
+	EnvelopesApiError,
+	MAX_ENVELOPE_LIST_PAGES,
+	type Envelope,
+	type ListEnvelopesResponse,
+	type RequestOptions
+} from './envelopes';
 
 function mockJsonResponse(
 	data: unknown,
@@ -227,5 +235,83 @@ describe('EnvelopesClient', () => {
 			detail: ''
 		});
 		expect(error.message).toBe('Request failed with status 503');
+	});
+});
+
+describe('fetchAllEnvelopes', () => {
+	function envelopeAt(index: number): Envelope {
+		return {
+			...envelope,
+			id: `01900000-0000-7000-8000-0000000000${String(index).padStart(2, '0')}`
+		};
+	}
+
+	it('follows nextCursor until it is null, concatenating every page', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>();
+		fetchMock
+			.mockResolvedValueOnce(
+				mockJsonResponse({ items: [envelopeAt(1), envelopeAt(2)], nextCursor: 'page-2' })
+			)
+			.mockResolvedValueOnce(mockJsonResponse({ items: [envelopeAt(3)], nextCursor: null }));
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		const result: Envelope[] = await fetchAllEnvelopes(client);
+
+		expect(result.map((item) => item.id)).toEqual([
+			envelopeAt(1).id,
+			envelopeAt(2).id,
+			envelopeAt(3).id
+		]);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const [firstUrl] = fetchMock.mock.calls[0];
+		const [secondUrl] = fetchMock.mock.calls[1];
+		expect(firstUrl).toBe('/api/v1/envelopes?limit=100');
+		expect(secondUrl).toBe('/api/v1/envelopes?cursor=page-2&limit=100');
+	});
+
+	it('returns every item across a single page with no further cursor', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ items: [envelope], nextCursor: null })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		const result: Envelope[] = await fetchAllEnvelopes(client);
+
+		expect(result).toEqual([envelope]);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('stops at the page-count safety ceiling instead of looping forever on a cursor that never ends', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ items: [envelope], nextCursor: 'always-more' })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+		const result: Envelope[] = await fetchAllEnvelopes(client);
+
+		expect(fetchMock).toHaveBeenCalledTimes(MAX_ENVELOPE_LIST_PAGES);
+		expect(result).toHaveLength(MAX_ENVELOPE_LIST_PAGES);
+		expect(warn).toHaveBeenCalledTimes(1);
+		warn.mockRestore();
+	});
+
+	it('forwards request options like a custom fetch to every page', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ items: [envelope], nextCursor: null })
+		);
+		const options: RequestOptions = { fetch: fetchMock };
+
+		await fetchAllEnvelopes(createEnvelopesClient(), options);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('accepts any client exposing just a list method, not only the full EnvelopesClient', async () => {
+		const narrowClient: { list: (params?: unknown) => Promise<ListEnvelopesResponse> } = {
+			list: async () => ({ items: [envelope], nextCursor: null })
+		};
+
+		await expect(fetchAllEnvelopes(narrowClient)).resolves.toEqual([envelope]);
 	});
 });

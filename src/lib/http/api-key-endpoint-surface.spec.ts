@@ -653,6 +653,17 @@ describe('API key rejected surface', () => {
 	 */
 	const MANAGEMENT: readonly [string, () => Promise<Response>][] = [
 		[
+			'POST /api/v1/instance/bootstrap',
+			async (): Promise<Response> =>
+				createInstanceBootstrapHandler(() => null)(
+					event({
+						pathname: '/api/v1/instance/bootstrap',
+						method: 'POST',
+						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+					})
+				)
+		],
+		[
 			'POST /api/v1/api-keys',
 			async (): Promise<Response> =>
 				createApiKeyHttpHandlers(() => null).create(
@@ -815,25 +826,5 @@ describe('API key rejected surface', () => {
 
 		expect(response.status).toBe(403);
 		expect(await problemType(response)).toBe('urn:signkit:problem:api-key-not-permitted');
-	});
-
-	/**
-	 * Bootstrap keeps its own distinct shape and must not be reshaped by this
-	 * slice. Its deployment-secret bearer check runs constant-time *before*
-	 * identity, so a request carrying an API key never reaches the API key guard at
-	 * all -- it gets the same opaque 404 as any caller without the secret. That is
-	 * still fail-closed, and preserving it matters because the 404 is deliberately
-	 * indistinguishable from an unconfigured or wrong secret.
-	 */
-	it('answers an API key on POST /api/v1/instance/bootstrap with the opaque secret-gate 404', async () => {
-		const response: Response = await createInstanceBootstrapHandler(() => null)(
-			event({
-				pathname: '/api/v1/instance/bootstrap',
-				method: 'POST',
-				apiKeyAuthentication: { state: 'authenticated', principal: principal() }
-			})
-		);
-
-		expect(response.status).toBe(404);
 	});
 });

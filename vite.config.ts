@@ -99,6 +99,10 @@ export default defineConfig({
 				test: {
 					name: 'browser',
 					include: ['src/**/*.browser.spec.ts'],
+					// Svelte component browser specs use per-file module mocks and run in a
+					// single shared Chromium instance, so concurrent files interfere with
+					// each other's mocks/runtime; force serial execution.
+					fileParallelism: false,
 					browser: {
 						enabled: true,
 						headless: true,

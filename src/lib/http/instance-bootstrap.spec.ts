@@ -2,10 +2,9 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
 import type { InstanceMemberMetadata } from '$lib/ports/instance-store';
-import { identityOnlyLocals as locals } from './http-handler-test-support';
-import { createInstanceBootstrapHandler, type BootstrapSecretResolver } from './instance-bootstrap';
+import { identityOnlyLocals } from './http-handler-test-support';
+import { createInstanceBootstrapHandler } from './instance-bootstrap';
 
-const VALID_SECRET: string = 'signkit-bootstrap-secret-0123456789abcdef';
 const NOW: string = '2026-09-12T12:00:00.000Z';
 
 const mockMember: InstanceMemberMetadata = {
@@ -16,124 +15,63 @@ const mockMember: InstanceMemberMetadata = {
 	updatedAt: NOW
 };
 
-function event(input: {
-	locals?: App.Locals;
-	body?: string;
-	headers?: HeadersInit;
-	secret?: string | null;
-}): { event: RequestEvent; resolveSecret: BootstrapSecretResolver } {
+/** Claiming ownership additionally requires a verified email, like instance invitation acceptance. */
+function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
+	return identityOnlyLocals(state, { emailVerified: true });
+}
+
+function event(input: { locals?: App.Locals; body?: string; headers?: HeadersInit }): RequestEvent {
 	const pathname: string = '/api/v1/instance/bootstrap';
 	const url: URL = new URL(`https://signkit.example${pathname}`);
 	const headers: Headers = new Headers(input.headers);
 	if (input.body !== undefined && !headers.has('content-type')) {
 		headers.set('content-type', 'application/json');
 	}
-	const requestEvent: RequestEvent = {
+	return {
 		locals: input.locals ?? locals(),
 		params: {},
 		request: new Request(url, { method: 'POST', headers, body: input.body }),
 		url
 	} as RequestEvent;
-
-	const resolveSecret: BootstrapSecretResolver = (): string | null =>
-		input.secret !== undefined ? input.secret : VALID_SECRET;
-
-	return { event: requestEvent, resolveSecret };
 }
 
 describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
-	it('checks secret before identity and returns opaque 404 on unset or mismatch', async () => {
+	it('is cookie-session-only: a presented signkit_ API key is rejected, never resolved', async () => {
 		const app: InstanceApplicationPort = {
 			bootstrapInstance: vi.fn(),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => null
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
-		// Unset secret
-		const res1 = await handler(
+		const res = await handler(
 			event({
-				secret: null,
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
-				body: '{}'
-			}).event
-		);
-		expect(res1.status).toBe(404);
-		expect(await res1.json()).toMatchObject({
-			type: 'urn:signkit:problem:not-found',
-			status: 404
-		});
-
-		// Missing authorization header
-		const handlerWithSecret = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
-		const res2 = await handlerWithSecret(
-			event({
+				locals: { ...locals(), apiKeyAuthentication: { state: 'rejected_surface' } },
 				headers: { 'idempotency-key': 'key-1' },
 				body: '{}'
-			}).event
+			})
 		);
-		expect(res2.status).toBe(404);
-
-		// Mismatched secret
-		const res3 = await handlerWithSecret(
-			event({
-				headers: {
-					authorization: 'Bearer wrong-secret-0123456789abcdef01234567',
-					'idempotency-key': 'key-1'
-				},
-				body: '{}'
-			}).event
-		);
-		expect(res3.status).toBe(404);
-
-		// Malformed header (non-Bearer)
-		const res4 = await handlerWithSecret(
-			event({
-				headers: {
-					authorization: `Basic ${VALID_SECRET}`,
-					'idempotency-key': 'key-1'
-				},
-				body: '{}'
-			}).event
-		);
-		expect(res4.status).toBe(404);
-
-		// Secret shorter than strict bounds (< 32 chars)
-		const res5 = await handlerWithSecret(
-			event({
-				headers: {
-					authorization: 'Bearer short',
-					'idempotency-key': 'key-1'
-				},
-				body: '{}'
-			}).event
-		);
-		expect(res5.status).toBe(404);
+		expect(res.status).toBe(403);
+		expect(await res.json()).toMatchObject({
+			type: 'urn:signkit:problem:api-key-not-permitted',
+			status: 403
+		});
 		expect(app.bootstrapInstance).not.toHaveBeenCalled();
 	});
 
-	it('requires verified identity after secret verification', async () => {
+	it('requires verified identity', async () => {
 		const app: InstanceApplicationPort = {
 			bootstrapInstance: vi.fn(),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
 		// Anonymous caller
 		const anonRes = await handler(
 			event({
 				locals: locals('anonymous'),
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
+				headers: { 'idempotency-key': 'key-1' },
 				body: '{}'
-			}).event
+			})
 		);
 		expect(anonRes.status).toBe(401);
 		expect(await anonRes.json()).toMatchObject({
@@ -145,9 +83,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		const unavailRes = await handler(
 			event({
 				locals: locals('unavailable'),
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
+				headers: { 'idempotency-key': 'key-1' },
 				body: '{}'
-			}).event
+			})
 		);
 		expect(unavailRes.status).toBe(503);
 		expect(await unavailRes.json()).toMatchObject({
@@ -156,23 +94,47 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		});
 	});
 
+	it.each([
+		['missing', undefined],
+		['false', false]
+	] as const)(
+		'fails closed when the authenticated emailVerified claim is %s',
+		async (_name, emailVerified) => {
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn(),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
+
+			const res = await handler(
+				event({
+					locals: identityOnlyLocals(
+						'authorized',
+						emailVerified === undefined ? {} : { emailVerified }
+					),
+					headers: { 'idempotency-key': 'key-1' },
+					body: '{}'
+				})
+			);
+
+			expect(res.status).toBe(403);
+			expect(await res.json()).toMatchObject({
+				type: 'urn:signkit:problem:email-verification-required',
+				status: 403
+			});
+			expect(app.bootstrapInstance).not.toHaveBeenCalled();
+		}
+	);
+
 	it('requires valid visible-ASCII Idempotency-Key header', async () => {
 		const app: InstanceApplicationPort = {
 			bootstrapInstance: vi.fn(),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
 		// Missing idempotency key
-		const missingRes = await handler(
-			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}` },
-				body: '{}'
-			}).event
-		);
+		const missingRes = await handler(event({ body: '{}' }));
 		expect(missingRes.status).toBe(400);
 		expect(await missingRes.json()).toMatchObject({
 			type: 'urn:signkit:problem:idempotency-key-required',
@@ -182,9 +144,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		// Invalid ASCII in idempotency key
 		const invalidRes = await handler(
 			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key with spaces' },
+				headers: { 'idempotency-key': 'key with spaces' },
 				body: '{}'
-			}).event
+			})
 		);
 		expect(invalidRes.status).toBe(400);
 	});
@@ -194,21 +156,14 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			bootstrapInstance: vi.fn(),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
 		// Non-JSON content-type
 		const nonJsonRes = await handler(
 			event({
-				headers: {
-					authorization: `Bearer ${VALID_SECRET}`,
-					'idempotency-key': 'key-1',
-					'content-type': 'text/plain'
-				},
+				headers: { 'idempotency-key': 'key-1', 'content-type': 'text/plain' },
 				body: '{}'
-			}).event
+			})
 		);
 		expect(nonJsonRes.status).toBe(415);
 		expect(await nonJsonRes.json()).toMatchObject({
@@ -219,9 +174,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		// Invalid JSON
 		const invalidJsonRes = await handler(
 			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
+				headers: { 'idempotency-key': 'key-1' },
 				body: '{invalid'
-			}).event
+			})
 		);
 		expect(invalidJsonRes.status).toBe(400);
 		expect(await invalidJsonRes.json()).toMatchObject({
@@ -232,9 +187,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		// Non-empty object body (extra properties)
 		const extraPropRes = await handler(
 			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
+				headers: { 'idempotency-key': 'key-1' },
 				body: JSON.stringify({ extra: 'property' })
-			}).event
+			})
 		);
 		expect(extraPropRes.status).toBe(400);
 		expect(await extraPropRes.json()).toMatchObject({
@@ -245,9 +200,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		// Array instead of object
 		const arrayRes = await handler(
 			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
+				headers: { 'idempotency-key': 'key-1' },
 				body: '[]'
-			}).event
+			})
 		);
 		expect(arrayRes.status).toBe(400);
 	});
@@ -257,10 +212,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			bootstrapInstance: vi.fn(),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
 		const body: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
 			start(controller: ReadableStreamDefaultController<Uint8Array>): void {
@@ -269,11 +221,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		});
 		const request: Request = new Request('https://signkit.example/api/v1/instance/bootstrap', {
 			method: 'POST',
-			headers: {
-				authorization: `Bearer ${VALID_SECRET}`,
-				'idempotency-key': 'key-1',
-				'content-type': 'application/json'
-			},
+			headers: { 'idempotency-key': 'key-1', 'content-type': 'application/json' },
 			body,
 			duplex: 'half'
 		} as RequestInit & { duplex: 'half' });
@@ -297,10 +245,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			bootstrapInstance: vi.fn(),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
 		let cancelled: boolean = false;
 		const body: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
@@ -313,11 +258,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		});
 		const request: Request = new Request('https://signkit.example/api/v1/instance/bootstrap', {
 			method: 'POST',
-			headers: {
-				authorization: `Bearer ${VALID_SECRET}`,
-				'idempotency-key': 'key-1',
-				'content-type': 'application/json'
-			},
+			headers: { 'idempotency-key': 'key-1', 'content-type': 'application/json' },
 			body,
 			duplex: 'half'
 		} as RequestInit & { duplex: 'half' });
@@ -345,17 +286,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			}),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
-		const res = await handler(
-			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
-				body: '{}'
-			}).event
-		);
+		const res = await handler(event({ headers: { 'idempotency-key': 'key-1' }, body: '{}' }));
 
 		expect(res.status).toBe(201);
 		expect(res.headers.get('cache-control')).toBe('no-store');
@@ -375,17 +308,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			}),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
-		const res = await handler(
-			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
-				body: '{}'
-			}).event
-		);
+		const res = await handler(event({ headers: { 'idempotency-key': 'key-1' }, body: '{}' }));
 
 		expect(res.status).toBe(200);
 		expect(res.headers.get('cache-control')).toBe('no-store');
@@ -403,17 +328,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			}),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
-		const res = await handler(
-			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
-				body: '{}'
-			}).event
-		);
+		const res = await handler(event({ headers: { 'idempotency-key': 'key-1' }, body: '{}' }));
 
 		expect(res.status).toBe(409);
 		expect(res.headers.get('cache-control')).toBe('no-store');
@@ -431,17 +348,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			}),
 			getCurrentMember: vi.fn()
 		};
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort => app,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
 
-		const res = await handler(
-			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'fresh-key-2' },
-				body: '{}'
-			}).event
-		);
+		const res = await handler(event({ headers: { 'idempotency-key': 'fresh-key-2' }, body: '{}' }));
 
 		expect(res.status).toBe(409);
 		expect(res.headers.get('cache-control')).toBe('no-store');
@@ -452,17 +361,9 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 	});
 
 	it('returns 503 problem when persistence is unavailable', async () => {
-		const handler = createInstanceBootstrapHandler(
-			(): InstanceApplicationPort | null => null,
-			() => VALID_SECRET
-		);
+		const handler = createInstanceBootstrapHandler((): InstanceApplicationPort | null => null);
 
-		const res = await handler(
-			event({
-				headers: { authorization: `Bearer ${VALID_SECRET}`, 'idempotency-key': 'key-1' },
-				body: '{}'
-			}).event
-		);
+		const res = await handler(event({ headers: { 'idempotency-key': 'key-1' }, body: '{}' }));
 
 		expect(res.status).toBe(503);
 		expect(await res.json()).toMatchObject({
