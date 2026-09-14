@@ -120,6 +120,52 @@ test('clearing a drawing invalidates an in-flight upload', async () => {
 	}
 });
 
+test('a failed redraw of a confirmed drawn signature does not reuse the old asset', async () => {
+	const originalFetch = window.fetch;
+	window.fetch = (async () => new Response('nope', { status: 500 })) as typeof fetch;
+	try {
+		const screen = await render(SignatureCanvasTestHost, {
+			recipientName: 'Alex Rivera',
+			initialValue: assetRef
+		});
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+
+		await screen.getByRole('button', { name: 'Drawn signature' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeEnabled();
+
+		const canvas = screen.getByLabelText('Signature', { exact: true });
+		const node = canvas.element() as HTMLCanvasElement;
+		node.dispatchEvent(
+			new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, pointerId: 1 })
+		);
+		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeDisabled();
+		node.dispatchEvent(
+			new PointerEvent('pointermove', { bubbles: true, clientX: 40, clientY: 30, pointerId: 1 })
+		);
+		node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+
+		await expect
+			.element(screen.getByRole('alert'))
+			.toHaveTextContent('Could not save your drawn signature');
+		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeDisabled();
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+
+		await screen.getByRole('button', { name: 'Cancel' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Drawn signature' })).toBeVisible();
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+
+		await screen.getByRole('button', { name: 'Drawn signature' }).click();
+		await expect
+			.element(screen.getByRole('tab', { name: 'Draw' }))
+			.toHaveAttribute('aria-selected', 'true');
+		await expect.element(screen.getByRole('button', { name: 'Use this signature' })).toBeEnabled();
+		await screen.getByRole('button', { name: 'Use this signature' }).click();
+		expect(screen.getByTestId('committed-signature').element().textContent).toBe(assetRef);
+	} finally {
+		window.fetch = originalFetch;
+	}
+});
+
 test('confirming a previously saved drawn signature keeps the asset ref contract', async () => {
 	const screen = await render(SignatureCanvasTestHost, {
 		recipientName: 'Alex Rivera',

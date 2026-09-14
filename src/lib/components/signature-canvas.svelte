@@ -99,11 +99,19 @@
 		};
 	}
 
+	function invalidateDraftAsset(): void {
+		uploadToken += 1;
+		uploadPending = false;
+		uploadError = null;
+		draftAssetRef = '';
+	}
+
 	function handlePointerDown(event: PointerEvent): void {
 		if (disabled) return;
 		const ctx = context();
 		if (!ctx) return;
 		(event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
+		invalidateDraftAsset();
 		drawing = true;
 		const point = pointFromEvent(event);
 		ctx.strokeStyle = STROKE_COLOR;
@@ -131,14 +139,11 @@
 	}
 
 	function clearCanvas(): void {
-		uploadToken += 1;
+		invalidateDraftAsset();
 		const ctx = context();
 		if (ctx) ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 		hasDrawing = false;
 		drawing = false;
-		uploadPending = false;
-		uploadError = null;
-		draftAssetRef = '';
 	}
 
 	async function uploadDrawing(): Promise<void> {
