@@ -61,6 +61,7 @@ declare global {
 				SIGNKIT_PUBLIC_ORIGIN?: string;
 				SIGNKIT_EMAIL_FROM?: string;
 				SIGNKIT_EMAIL_FROM_NAME?: string;
+				SIGNKIT_MAIL_PROVIDER?: string;
 				SESSION_ENCRYPTION_KEY?: string;
 				SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
 			};

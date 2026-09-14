@@ -60,6 +60,23 @@ describe('resolveCompletionDeliveryService', () => {
 		const platform = {
 			env: {
 				DB: {} as D1Database,
+				SIGNKIT_MAIL_PROVIDER: 'cloudflare',
+				DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
+				SIGNKIT_PUBLIC_ORIGIN: TEST_PUBLIC_ORIGIN,
+				SIGNKIT_EMAIL_FROM: TEST_FROM_EMAIL,
+				SIGNKIT_EMAIL_FROM_NAME: TEST_FROM_NAME
+			}
+		} as unknown as App.Platform;
+
+		await expect(resolveCompletionDeliveryService({ platform })).resolves.toBeNull();
+	});
+
+	it('fails closed on Workers when SIGNKIT_MAIL_PROVIDER is smtp instead of cloudflare', async () => {
+		const platform = {
+			env: {
+				DB: {} as D1Database,
+				EMAIL: {} as SendEmail,
+				SIGNKIT_MAIL_PROVIDER: 'smtp',
 				DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
 				SIGNKIT_PUBLIC_ORIGIN: TEST_PUBLIC_ORIGIN,
 				SIGNKIT_EMAIL_FROM: TEST_FROM_EMAIL,
@@ -75,6 +92,7 @@ describe('resolveCompletionDeliveryService', () => {
 			env: {
 				DB: {} as D1Database,
 				EMAIL: {} as SendEmail,
+				SIGNKIT_MAIL_PROVIDER: 'cloudflare',
 				DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
 				SIGNKIT_PUBLIC_ORIGIN: TEST_PUBLIC_ORIGIN,
 				SIGNKIT_EMAIL_FROM: TEST_FROM_EMAIL,
@@ -86,9 +104,25 @@ describe('resolveCompletionDeliveryService', () => {
 		expect(service).toBeInstanceOf(CompletionDeliveryService);
 	});
 
+	it('fails closed on Node when the mail provider is unset', async () => {
+		setCompleteNodeConfiguration();
+		setCompleteDeliveryConfiguration();
+
+		await expect(resolveCompletionDeliveryService({})).resolves.toBeNull();
+	});
+
+	it('fails closed on Node when the mail provider is invalid', async () => {
+		setCompleteNodeConfiguration();
+		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'sendgrid';
+
+		await expect(resolveCompletionDeliveryService({})).resolves.toBeNull();
+	});
+
 	it('fails closed on Node when Cloudflare REST credentials are missing', async () => {
 		setCompleteNodeConfiguration();
 		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'cloudflare';
 
 		await expect(resolveCompletionDeliveryService({})).resolves.toBeNull();
 	});
@@ -96,8 +130,30 @@ describe('resolveCompletionDeliveryService', () => {
 	it('constructs a PostgreSQL and Cloudflare REST delivery service from a complete Node configuration', async () => {
 		setCompleteNodeConfiguration();
 		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'cloudflare';
 		privateEnv.CLOUDFLARE_EMAIL_ACCOUNT_ID = '0123456789abcdef0123456789abcdef';
 		privateEnv.CLOUDFLARE_EMAIL_API_TOKEN = 'cloudflare-api-token';
+
+		const service = await resolveCompletionDeliveryService({});
+		expect(service).toBeInstanceOf(CompletionDeliveryService);
+	});
+
+	it('fails closed on Node when the mail provider is smtp but the SMTP configuration is incomplete', async () => {
+		setCompleteNodeConfiguration();
+		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'smtp';
+		privateEnv.SIGNKIT_SMTP_HOST = 'smtp.example.com';
+
+		await expect(resolveCompletionDeliveryService({})).resolves.toBeNull();
+	});
+
+	it('constructs a PostgreSQL and SMTP delivery service from a complete Node configuration', async () => {
+		setCompleteNodeConfiguration();
+		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'smtp';
+		privateEnv.SIGNKIT_SMTP_HOST = 'smtp.example.com';
+		privateEnv.SIGNKIT_SMTP_PORT = '587';
+		privateEnv.SIGNKIT_SMTP_SECURE = 'false';
 
 		const service = await resolveCompletionDeliveryService({});
 		expect(service).toBeInstanceOf(CompletionDeliveryService);

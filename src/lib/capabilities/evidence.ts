@@ -18,7 +18,7 @@ export const evidenceCapabilities = {
 		semantics: 'at-least-once',
 		transports: {
 			cloudflare: 'email-binding',
-			node: 'cloudflare-email-rest'
+			node: 'smtp-or-cloudflare-email-rest'
 		},
 		roles: ['signer', 'approver', 'viewer', 'cc'],
 		prerequisite: 'published-completion-artifact',

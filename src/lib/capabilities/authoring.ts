@@ -38,7 +38,7 @@ export const authoringCapabilities = {
 		semantics: 'at-least-once',
 		transports: {
 			cloudflare: 'email-binding',
-			node: 'cloudflare-email-rest'
+			node: 'smtp-or-cloudflare-email-rest'
 		}
 	},
 	recipientAccess: {
