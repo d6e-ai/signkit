@@ -1,0 +1,108 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://signkit.dev/schema/release-manifest.v1.json",
+	"title": "SignKit Cloudflare release manifest",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schemaVersion",
+		"kind",
+		"repository",
+		"tag",
+		"commit",
+		"channel",
+		"createdAt",
+		"bundle",
+		"worker",
+		"bindings",
+		"requiredSecrets",
+		"requiredVars",
+		"migrationPolicy"
+	],
+	"properties": {
+		"schemaVersion": { "const": 1 },
+		"kind": { "const": "signkit-cloudflare-release" },
+		"repository": { "const": "d6e-ai/signkit" },
+		"tag": {
+			"type": "string",
+			"minLength": 1,
+			"pattern": "^v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z]+(?:\\.[0-9A-Za-z]+)*)?$"
+		},
+		"commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+		"channel": { "enum": ["stable", "beta"] },
+		"createdAt": { "type": "string", "format": "date-time" },
+		"bundle": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["assetName", "contentType", "size", "sha256"],
+			"properties": {
+				"assetName": {
+					"type": "string",
+					"pattern": "^signkit-cloudflare-[A-Za-z0-9._-]+\\.tar\\.gz$"
+				},
+				"contentType": { "type": "string" },
+				"size": { "type": "integer", "minimum": 1, "maximum": 262144000 },
+				"sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+			}
+		},
+		"worker": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": [
+				"main",
+				"compatibilityDate",
+				"compatibilityFlags",
+				"assetsDirectory",
+				"migrationsDirectory"
+			],
+			"properties": {
+				"main": {
+					"type": "string",
+					"pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+				},
+				"compatibilityDate": { "type": "string" },
+				"compatibilityFlags": { "type": "array", "items": { "type": "string" } },
+				"assetsDirectory": {
+					"type": "string",
+					"pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+				},
+				"migrationsDirectory": {
+					"type": "string",
+					"pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+				}
+			}
+		},
+		"bindings": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["d1", "r2", "assets", "email"],
+			"properties": {
+				"d1": { "type": "string" },
+				"r2": { "type": "string" },
+				"assets": { "type": "string" },
+				"email": { "type": "string" }
+			}
+		},
+		"requiredSecrets": {
+			"type": "array",
+			"uniqueItems": true,
+			"items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+		},
+		"requiredVars": {
+			"type": "array",
+			"uniqueItems": true,
+			"items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+		},
+		"migrationPolicy": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["compatibility", "notes"],
+			"properties": {
+				"compatibility": {
+					"const": "forward-and-backward-compatible-within-released-versions"
+				},
+				"notes": { "type": "string" }
+			}
+		}
+	}
+}

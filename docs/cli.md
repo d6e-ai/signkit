@@ -1,6 +1,6 @@
 # SignKit Rust CLI (`signkit`)
 
-Production-quality, agent-first Rust CLI for SignKit located under `cli/` (requires Rust 1.88.0+ / MSRV 1.88.0).
+Production-quality, agent-first Rust CLI for SignKit located under `cli/` (requires Rust 1.88.0+ / MSRV 1.88.0). This is the API client. It is not `create-signkit`, the npm deployment CLI that publishes a GitHub Release onto Cloudflare; see [create-signkit.md](create-signkit.md).
 
 ## Architecture & Current Truth
 

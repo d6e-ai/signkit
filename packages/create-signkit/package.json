@@ -1,0 +1,58 @@
+{
+	"name": "create-signkit",
+	"version": "0.0.1",
+	"description": "Deploy SignKit to Cloudflare Workers from GitHub Releases. This is the deployment CLI, not the Rust SignKit API CLI.",
+	"license": "AGPL-3.0-only",
+	"type": "module",
+	"bin": {
+		"create-signkit": "./dist/bin.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"schema",
+		"README.md",
+		"LICENSE"
+	],
+	"engines": {
+		"node": ">=22.14.0"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/d6e-ai/signkit.git",
+		"directory": "packages/create-signkit"
+	},
+	"keywords": [
+		"signkit",
+		"cloudflare",
+		"workers",
+		"d1",
+		"r2",
+		"npx"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
+		"prepack": "node scripts/copy-license.mjs && pnpm run build",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"tar": "^7.5.11",
+		"wrangler": "^4.130.0"
+	},
+	"devDependencies": {
+		"@types/node": "^24",
+		"ajv": "^8.20.0",
+		"ajv-formats": "^3.0.1",
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.8"
+	}
+}

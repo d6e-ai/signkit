@@ -6,7 +6,7 @@ Status: mixed — deployment profiles are implemented (scaffolded); the risk lis
 
 `DEPLOY_TARGET` selects `node`, `cloudflare`, or `vercel` at build time. Each target produces a separate artifact; there is no universal runtime build.
 
-Node runs as a non-root user in the supplied multi-stage Docker image. A reverse proxy must preserve the public HTTPS origin used to construct the registered `/auth/callback` URI. Cloudflare uses D1/R2 bindings, `nodejs_compat`, generated binding types, and observability. Vercel compiles in CI but is not supported for production until its issue is complete.
+Node runs as a non-root user in the supplied multi-stage Docker image. A reverse proxy must preserve the public HTTPS origin used to construct the registered `/auth/callback` URI. Cloudflare uses D1/R2 bindings, `nodejs_compat`, generated binding types, and observability. Production Cloudflare installs are created with `create-signkit --cloudflare` from a GitHub Release ([create-signkit.md](create-signkit.md)); that CLI is distinct from the Rust `signkit` API CLI. Vercel compiles in CI but is not supported for production until its issue is complete.
 
 ## Primary risks
 

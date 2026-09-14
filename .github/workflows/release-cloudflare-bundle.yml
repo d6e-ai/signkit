@@ -1,0 +1,144 @@
+name: Cloudflare release bundle
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter create-signkit test
+      - run: pnpm run build:create-signkit
+      - run: pnpm run build:cloudflare
+      - run: node scripts/build-cloudflare-release-bundle.mjs
+      - run: node scripts/verify-cloudflare-release-bundle.mjs
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          channel="$(node --input-type=module -e 'import { channelFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(channelFromReleaseTag(process.argv[1]));' "$tag")"
+          manifest_channel="$(node -e 'const m=require("./.release/assets/signkit-cloudflare-manifest.json"); process.stdout.write(String(m.channel||""));')"
+          if [ "$channel" != "stable" ] && [ "$channel" != "beta" ]; then
+            echo "unsupported release channel ${channel}" >&2
+            exit 1
+          fi
+          if [ "$channel" != "$manifest_channel" ]; then
+            echo "release tag ${tag} classified as ${channel} but manifest channel is ${manifest_channel}" >&2
+            exit 1
+          fi
+          prerelease_args=()
+          if [ "$channel" = "beta" ]; then
+            prerelease_args+=(--prerelease)
+          else
+            prerelease_args+=(--prerelease=false)
+          fi
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --generate-notes "${prerelease_args[@]}"
+          else
+            gh release edit "$tag" "${prerelease_args[@]}"
+          fi
+          gh release upload "$tag" \
+            .release/assets/signkit-cloudflare-manifest.json \
+            .release/assets/SHA256SUMS \
+            .release/assets/signkit-cloudflare-"$tag".tar.gz \
+            --clobber
+
+  publish-npm:
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:create-signkit
+      - name: Ensure npm CLI supports Trusted Publishing
+        id: npm_cli
+        run: |
+          set -euo pipefail
+          # Isolated prefix: GitHub-hosted `npm i -g` can miss the PATH that later
+          # steps use, and pnpm publish is not the CLI whose version we check.
+          prefix="${RUNNER_TEMP}/npm-trusted-publishing"
+          mkdir -p "$prefix"
+          pnpm exec npm install --prefix "$prefix" "npm@^11.5.1"
+          selected="${prefix}/node_modules/.bin/npm"
+          if [ ! -x "$selected" ]; then
+            echo "npm CLI was not found at ${selected}" >&2
+            exit 1
+          fi
+          version="$("$selected" --version)"
+          node -e '
+            const [maj, min, pat] = process.argv[1].split(".").map(Number);
+            if (![maj, min, pat].every(Number.isFinite)) {
+              console.error("could not parse npm CLI version", process.argv[1]);
+              process.exit(1);
+            }
+            if (maj < 11 || (maj === 11 && min < 5) || (maj === 11 && min === 5 && pat < 1)) {
+              console.error("npm CLI must be >= 11.5.1 for Trusted Publishing, got", process.argv[1]);
+              process.exit(1);
+            }
+          ' "$version"
+          echo "${prefix}/node_modules/.bin" >> "$GITHUB_PATH"
+          echo "bin=${selected}" >> "$GITHUB_OUTPUT"
+      - name: Enforce git tag version equals package.json
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./packages/create-signkit/package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "git tag version ${GITHUB_REF_NAME} does not match packages/create-signkit/package.json version ${pkg}" >&2
+            exit 1
+          fi
+          dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "$GITHUB_REF_NAME")"
+          pkg_dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "v${pkg}")"
+          if [ "$dist_tag" != "$pkg_dist_tag" ]; then
+            echo "git tag and package.json classified to different npm dist-tags: ${dist_tag} vs ${pkg_dist_tag}" >&2
+            exit 1
+          fi
+          if [ "$dist_tag" != "latest" ] && [ "$dist_tag" != "beta" ]; then
+            echo "refusing to publish with unexpected npm dist-tag ${dist_tag}" >&2
+            exit 1
+          fi
+          echo "dist_tag=${dist_tag}" >> "$GITHUB_OUTPUT"
+      - name: Publish create-signkit
+        working-directory: packages/create-signkit
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          NPM_CLI: ${{ steps.npm_cli.outputs.bin }}
+          NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          if [ ! -x "$NPM_CLI" ]; then
+            echo "version-checked npm CLI is missing" >&2
+            exit 1
+          fi
+          if [ "$NPM_DIST_TAG" != "latest" ] && [ "$NPM_DIST_TAG" != "beta" ]; then
+            echo "refusing to publish with unexpected npm dist-tag ${NPM_DIST_TAG}" >&2
+            exit 1
+          fi
+          pnpm exec "$NPM_CLI" publish --access public --tag "$NPM_DIST_TAG"

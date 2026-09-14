@@ -24,7 +24,9 @@
 		"test:unit": "vitest --project server",
 		"test:browser": "vitest --project browser --run",
 		"test:node-build": "node scripts/test-node-build.mjs",
-		"test": "pnpm run test:unit -- --run && pnpm run test:browser"
+		"test:create-signkit": "pnpm --filter create-signkit test",
+		"build:create-signkit": "pnpm --filter create-signkit build",
+		"test": "pnpm run test:unit -- --run && pnpm run test:browser && pnpm run test:create-signkit"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^5.20260911.1",
@@ -51,6 +53,7 @@
 		"eslint-plugin-svelte": "^3.19.0",
 		"globals": "^17.6.0",
 		"hast-util-sanitize": "^5.0.2",
+		"jsonc-parser": "^3.3.1",
 		"playwright": "^1.63.0",
 		"prettier": "^3.8.3",
 		"prettier-plugin-svelte": "^4.1.0",
