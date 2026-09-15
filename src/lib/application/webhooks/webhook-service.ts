@@ -29,6 +29,11 @@ import {
 	createDrainBatchDnsCache,
 	type WebhookDnsResolver
 } from '$lib/security/webhook-url';
+import {
+	assertWebhookHostAllowed,
+	WebhookHostNotAllowedError,
+	type WebhookHostPolicy
+} from '$lib/security/webhook-allowed-hosts';
 import type { WebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
 
 const MAX_CREDENTIAL_ATTEMPTS: number = 3;
@@ -96,12 +101,15 @@ export interface WebhookApplicationPort {
 	drainPendingDeliveries(limit: number): Promise<WebhookDeliveryBatchResult>;
 }
 
+export type WebhookAllowedHostsResolver = () => WebhookHostPolicy | null;
+
 export class WebhookApplication implements WebhookApplicationPort {
 	readonly #store: WebhookStore;
 	readonly #sealer: WebhookSigningSecretSealer;
 	readonly #newId: UuidV7Generator;
 	readonly #now: () => Date;
 	readonly #dispatch: typeof dispatchWebhook;
+	readonly #resolveAllowedHosts: WebhookAllowedHostsResolver;
 
 	constructor(
 		store: WebhookStore,
@@ -110,6 +118,19 @@ export class WebhookApplication implements WebhookApplicationPort {
 			newId?: UuidV7Generator;
 			now?: () => Date;
 			dispatch?: typeof dispatchWebhook;
+			/**
+			 * Deployer host policy resolver, supplied by the runtime layer from
+			 * `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` and re-evaluated on every
+			 * creation and delivery attempt.
+			 */
+			allowedHostsResolver?: WebhookAllowedHostsResolver;
+			/**
+			 * Explicit test-only injection of a fixed policy. Production code
+			 * must use `allowedHostsResolver`; passing a static policy from
+			 * production call sites would freeze the allowlist and bypass
+			 * re-evaluation, so this option exists for specs only.
+			 */
+			allowedHostsPolicyForTests?: WebhookHostPolicy | null;
 		} = {}
 	) {
 		this.#store = store;
@@ -117,6 +138,8 @@ export class WebhookApplication implements WebhookApplicationPort {
 		this.#newId = options.newId ?? newUuidV7;
 		this.#now = options.now ?? ((): Date => new Date());
 		this.#dispatch = options.dispatch ?? dispatchWebhook;
+		this.#resolveAllowedHosts =
+			options.allowedHostsResolver ?? (() => options.allowedHostsPolicyForTests ?? null);
 	}
 
 	async createEndpoint(
@@ -127,6 +150,9 @@ export class WebhookApplication implements WebhookApplicationPort {
 		if (url.href.length > WEBHOOK_MAX_URL_LENGTH) {
 			throw new InvalidWebhookRequestError('Webhook URL exceeds the allowed length');
 		}
+		// Deployer allowlist is enforced before any durable write. An absent,
+		// empty, or invalid configuration denies creation by default.
+		assertWebhookHostAllowed(url.hostname, this.#resolveAllowedHosts());
 		const description: string | null = normalizeDescription(input.description);
 		const events: readonly string[] = canonicalizeWebhookEvents(input.events);
 		const eventsJson: string = JSON.stringify(events);
@@ -239,7 +265,14 @@ export class WebhookApplication implements WebhookApplicationPort {
 		let failed = 0;
 		const resolveAddresses: WebhookDnsResolver = createDrainBatchDnsCache();
 		for (const row of rows) {
-			const outcome = await this.#deliverOne(row, claimedAt, resolveAddresses);
+			// The policy resolver runs per row so every delivery attempt
+			// re-evaluates the current deployer configuration.
+			const outcome = await this.#deliverOne(
+				row,
+				claimedAt,
+				resolveAddresses,
+				this.#resolveAllowedHosts()
+			);
 			if (outcome === 'delivered') delivered += 1;
 			else if (outcome === 'retried') retried += 1;
 			else failed += 1;
@@ -277,10 +310,16 @@ export class WebhookApplication implements WebhookApplicationPort {
 	async #deliverOne(
 		row: WebhookOutboxRow,
 		claimedAt: Date,
-		resolveAddresses: WebhookDnsResolver
+		resolveAddresses: WebhookDnsResolver,
+		allowedHosts: WebhookHostPolicy | null
 	): Promise<'delivered' | 'retried' | 'failed'> {
 		const timestamp: string = String(Math.floor(claimedAt.valueOf() / 1000));
 		try {
+			// The deployer allowlist is re-evaluated on every delivery attempt,
+			// before any DNS or network work, so endpoints created under an
+			// older policy cannot outlive a tightened configuration. The DNS
+			// public-address checks below still run on every attempt.
+			assertWebhookHostAllowed(hostnameOf(row.endpointUrl), allowedHosts);
 			if (new TextEncoder().encode(row.payloadJson).byteLength > WEBHOOK_MAX_PAYLOAD_BYTES) {
 				await this.#store.failDelivery({
 					organizationId: row.organizationId,
@@ -339,6 +378,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 			});
 			return retryable ? 'retried' : 'failed';
 		} catch (error: unknown) {
+			const notAllowed: boolean = error instanceof WebhookHostNotAllowedError;
 			const rejected: boolean = error instanceof WebhookTargetRejectedError;
 			await this.#store.failDelivery({
 				organizationId: row.organizationId,
@@ -348,7 +388,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 				failedAt: claimedAt.toISOString(),
 				retryable: !rejected && row.attempts < WEBHOOK_MAX_ATTEMPTS,
 				nextAvailableAt: new Date(claimedAt.valueOf() + WEBHOOK_RETRY_BASE_DELAY_MS).toISOString(),
-				errorCode: rejected ? 'ssrf_rejected' : 'dispatch_failed',
+				errorCode: notAllowed ? 'host_not_allowed' : rejected ? 'ssrf_rejected' : 'dispatch_failed',
 				httpStatus: null
 			});
 			return rejected || row.attempts >= WEBHOOK_MAX_ATTEMPTS ? 'failed' : 'retried';
@@ -368,11 +408,15 @@ export interface WebhookDispatchRequest {
 
 export async function dispatchWebhook(
 	request: WebhookDispatchRequest,
-	resolveAddresses?: WebhookDnsResolver
+	resolveAddresses?: WebhookDnsResolver,
+	resolveAllowedHosts?: WebhookAllowedHostsResolver
 ): Promise<
 	| { ok: true; status: number }
 	| { ok: false; retryable: boolean; status: number | null; errorCode: string }
 > {
+	if (resolveAllowedHosts !== undefined) {
+		assertWebhookHostAllowed(hostnameOf(request.url), resolveAllowedHosts());
+	}
 	await assertWebhookTargetSafe(request.url, resolveAddresses);
 	const signature: string = await signWebhookPayload(
 		request.secret,
@@ -414,6 +458,20 @@ export async function dispatchWebhook(
 function boundListLimit(limit: number): number {
 	if (!Number.isSafeInteger(limit) || limit < 1) return DEFAULT_WEBHOOK_LIST_LIMIT;
 	return Math.min(limit, MAX_WEBHOOK_LIST_LIMIT);
+}
+
+/**
+ * Best-effort hostname extraction for stored endpoint URLs. Rows written
+ * before allowlist enforcement (or with since-tightened hosts) must still
+ * fail closed through the policy check rather than throwing a `TypeError`
+ * that would look like a retryable dispatch failure.
+ */
+function hostnameOf(raw: string): string {
+	try {
+		return new URL(raw).hostname;
+	} catch {
+		return '';
+	}
 }
 
 function normalizeDescription(value: string | null): string | null {

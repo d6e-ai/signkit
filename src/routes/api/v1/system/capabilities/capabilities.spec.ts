@@ -144,6 +144,15 @@ interface CapabilitiesResponse {
 		actorProvenance: boolean;
 		webhooks: string;
 	};
+	webhooks: {
+		status: string;
+		destinationAllowlist: {
+			env: string;
+			default: string;
+			entryKinds: string[];
+		};
+		ssrfDefense: string[];
+	};
 }
 
 describe('GET /api/v1/system/capabilities', () => {
@@ -249,6 +258,18 @@ describe('GET /api/v1/system/capabilities', () => {
 			grantAuthority: 'key-owner-and-d6e-organization-owner-or-admin',
 			grantRevokeAuthority: ['key_owner', 'organization_admin']
 		});
+
+		// Webhook destinations are deployer-allowlisted and deny by default; the
+		// capability advertisement names the variable so operators know where
+		// the policy lives without exposing its value.
+		expect(data.webhooks.destinationAllowlist).toEqual({
+			env: 'SIGNKIT_WEBHOOK_ALLOWED_HOSTS',
+			default: 'deny',
+			entryKinds: ['exact-host', 'wildcard-suffix']
+		});
+		expect(data.webhooks.ssrfDefense).toEqual(
+			expect.arrayContaining(['deployer-destination-allowlist', 'no-redirects'])
+		);
 
 		// No secrets or token material exposed
 		const serialized = JSON.stringify(data);

@@ -12,6 +12,10 @@ import {
 	WEBHOOK_MAX_PAYLOAD_BYTES
 } from '$lib/security/webhook';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
+import {
+	parseWebhookAllowedHosts,
+	type WebhookHostPolicy
+} from '$lib/security/webhook-allowed-hosts';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 import { D1WebhookStore } from './d1-webhook-store';
 import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
@@ -25,6 +29,17 @@ const TEST_KEY: string = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const CLAIMED_AT: string = '2026-09-13T00:10:00.000Z';
 const STALE_BEFORE: string = '2026-09-13T00:05:00.000Z';
 const AVAILABLE_AT: string = '2026-09-13T00:00:00.000Z';
+
+/**
+ * Explicit test-only allowlist for the `hooks.example.com` fixture
+ * endpoints. Production resolves `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` per
+ * operation instead.
+ */
+function testAllowlist(): WebhookHostPolicy {
+	const parsed: WebhookHostPolicy | null = parseWebhookAllowedHosts('hooks.example.com');
+	if (parsed === null) throw new Error('expected the test allowlist to parse');
+	return parsed;
+}
 
 interface Fixture {
 	database: D1Database;
@@ -232,7 +247,10 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 			insertOutbox(sqlite, testCase.auditEventId, { payloadJson: testCase.payloadJson });
 			const app = new WebhookApplication(store, sealer, {
 				now: () => new Date(CLAIMED_AT),
-				dispatch: testCase.dispatch
+				dispatch: testCase.dispatch,
+				// The fixture endpoints live at hooks.example.com; opt into the
+				// injected allowlist explicitly so the drain reaches dispatch.
+				allowedHostsPolicyForTests: testAllowlist()
 			});
 			await expect(app.drainPendingDeliveries(10)).resolves.toMatchObject({
 				claimed: 1,

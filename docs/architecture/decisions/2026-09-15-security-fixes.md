@@ -46,10 +46,28 @@ preserved by construction.
   checked against blocked ranges at create time and rechecked on every
   dispatch through the per-batch DNS cache, with SSRF rejections marked
   non-retryable.
+- Webhook destinations are deployer-allowlisted through
+  `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` (`src/lib/security/webhook-allowed-hosts.ts`):
+  an absent, empty, or invalid value denies webhook creation and every
+  delivery attempt by default. Only rigorously canonicalized exact hosts and
+  explicit `*.` wildcard suffixes are accepted — never credentials, IP
+  literals, ports, paths, or single-label public-suffix-like wildcards — and a
+  wildcard never covers its own bare suffix. The runtime layer
+  (`webhook-runtime.ts`, shared by the D1 and PostgreSQL paths) re-reads the
+  variable on every creation and every delivery attempt, so tightening the
+  policy stops older endpoints without a restart; the public-IP DNS checks
+  still run on every attempt, delivery fetches never follow redirects, and
+  allowlist denials end terminally as `host_not_allowed`. Specs inject a
+  fixed policy through the explicit test-only constructor option, never
+  through a production bypass.
 - Organization grants stay durable and explicit: key ownership alone
   authorizes nothing, the organization selector is never inferred, revocation
   of the key or the grant takes effect on the next request (nothing cached),
-  and API keys remain refused on management surfaces. See
+  and API keys remain refused on management surfaces. Each grant is an
+  explicit durable delegation independent of the key owner's later d6e
+  membership — losing membership never auto-revokes — while any current
+  organization `owner`/`admin` can revoke that organization's grants without
+  the key's owner; the API-key settings UI warns operators of exactly this. See
   `docs/api.md` and
   `architecture/authorization-and-instance-administration.md`.
 

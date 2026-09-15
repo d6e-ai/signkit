@@ -79,8 +79,15 @@ export const integrationCapabilities = {
 			'no-private',
 			'no-link-local',
 			'no-multicast',
+			'deployer-destination-allowlist',
+			'no-redirects',
 			'hostname-memoized-dns'
-		]
+		],
+		destinationAllowlist: {
+			env: 'SIGNKIT_WEBHOOK_ALLOWED_HOSTS',
+			default: 'deny',
+			entryKinds: ['exact-host', 'wildcard-suffix']
+		}
 	},
 	openapi: {
 		document: '/api/v1/openapi.json',

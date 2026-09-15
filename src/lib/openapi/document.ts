@@ -139,6 +139,7 @@ function jsonResponse(status: string, description: string, schema: Record<string
 
 function op(input: {
 	summary: string;
+	description?: string;
 	operationId: string;
 	tags: readonly string[];
 	security?: readonly Record<string, readonly string[]>[];
@@ -149,6 +150,7 @@ function op(input: {
 }): Record<string, unknown> {
 	return {
 		summary: input.summary,
+		...(input.description === undefined ? {} : { description: input.description }),
 		operationId: input.operationId,
 		tags: [...input.tags],
 		security: input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }],
@@ -939,6 +941,8 @@ export function openApiDocument(): Record<string, unknown> {
 				post: op({
 					summary: 'Create a webhook endpoint',
 					operationId: 'createWebhook',
+					description:
+						'The destination host must be in the deployer-configured SIGNKIT_WEBHOOK_ALLOWED_HOSTS allowlist (exact hosts and explicit wildcard suffixes). An absent, empty, or invalid allowlist denies creation by default; the policy is re-evaluated on every delivery attempt with redirects disabled.',
 					tags: ['Webhooks'],
 					security: [{ SessionCookie: [] }],
 					parameters: [idempotencyHeader],
@@ -951,7 +955,13 @@ export function openApiDocument(): Record<string, unknown> {
 									required: ['url', 'events'],
 									additionalProperties: false,
 									properties: {
-										url: { type: 'string', minLength: 12, maxLength: 2000 },
+										url: {
+											type: 'string',
+											minLength: 12,
+											maxLength: 2000,
+											description:
+												'HTTPS destination URL on the default port without credentials or fragment. The host must be allowlisted by the deployment; otherwise creation fails.'
+										},
 										description: { type: ['string', 'null'], maxLength: 200 },
 										events: {
 											type: 'array',

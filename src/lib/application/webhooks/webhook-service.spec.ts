@@ -8,6 +8,11 @@ import type {
 	WebhookOutboxRow,
 	WebhookStore
 } from '$lib/ports/webhook-store';
+import {
+	parseWebhookAllowedHosts,
+	WebhookHostNotAllowedError,
+	type WebhookHostPolicy
+} from '$lib/security/webhook-allowed-hosts';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
 import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_PAYLOAD_BYTES } from '$lib/security/webhook';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
@@ -83,10 +88,25 @@ function failDeliveryMock() {
 	});
 }
 
+/**
+ * Every spec that reaches `https://hooks.example.com/…` opts into this
+ * injected allowlist explicitly through the test-only constructor option.
+ * Production never passes a static policy; it resolves
+ * `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` per operation.
+ */
+function allowlist(): WebhookHostPolicy {
+	const parsed: WebhookHostPolicy | null = parseWebhookAllowedHosts('hooks.example.com');
+	if (parsed === null) throw new Error('expected the test allowlist to parse');
+	return parsed;
+}
+
 describe('WebhookApplication.createEndpoint', () => {
 	it('rejects a non-HTTPS target before persistence', async () => {
 		const persistence = store();
-		const app = new WebhookApplication(persistence, sealer(), { newId: () => ENDPOINT_ID });
+		const app = new WebhookApplication(persistence, sealer(), {
+			allowedHostsPolicyForTests: allowlist(),
+			newId: () => ENDPOINT_ID
+		});
 		await expect(
 			app.createEndpoint(
 				{ id: ACTOR_ID, organizationId: ORG },
@@ -114,7 +134,10 @@ describe('WebhookApplication.createEndpoint', () => {
 				})
 			}))
 		});
-		const app = new WebhookApplication(persistence, sealer(), { newId: () => ENDPOINT_ID });
+		const app = new WebhookApplication(persistence, sealer(), {
+			allowedHostsPolicyForTests: allowlist(),
+			newId: () => ENDPOINT_ID
+		});
 		const result = await app.createEndpoint(
 			{ id: ACTOR_ID, organizationId: ORG },
 			{
@@ -165,6 +188,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 			status: 200
 		}));
 		const app = new WebhookApplication(persistence, sealer(), {
+			allowedHostsPolicyForTests: allowlist(),
 			now: () => new Date('2026-09-13T00:00:00.000Z'),
 			dispatch
 		});
@@ -206,6 +230,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 			return { ok: true as const, status: 200 };
 		});
 		const app = new WebhookApplication(persistence, secretSealer, {
+			allowedHostsPolicyForTests: allowlist(),
 			now: () => new Date('2026-09-13T00:00:00.000Z'),
 			dispatch
 		});
@@ -235,6 +260,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 			resealSigningSecret
 		});
 		const app = new WebhookApplication(persistence, secretSealer, {
+			allowedHostsPolicyForTests: allowlist(),
 			now: () => new Date('2026-09-13T00:00:00.000Z')
 		});
 		await app.drainPendingDeliveries(10);
@@ -267,6 +293,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 			failDelivery
 		});
 		const app = new WebhookApplication(persistence, sealer(), {
+			allowedHostsPolicyForTests: allowlist(),
 			now: () => new Date('2026-09-13T00:00:00.000Z'),
 			dispatch
 		});
@@ -292,6 +319,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 			failDelivery
 		});
 		const app = new WebhookApplication(persistence, sealer(), {
+			allowedHostsPolicyForTests: allowlist(),
 			now: () => new Date('2026-09-13T00:00:00.000Z'),
 			dispatch: async () => {
 				throw new WebhookTargetRejectedError('Webhook URL hostname is not a public DNS name');
@@ -320,6 +348,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 				failDelivery
 			});
 			const app = new WebhookApplication(persistence, sealer(), {
+				allowedHostsPolicyForTests: allowlist(),
 				now: () => new Date('2026-09-13T00:00:00.000Z'),
 				dispatch: async () => ({
 					ok: false as const,
@@ -352,6 +381,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 				failDelivery
 			});
 			const app = new WebhookApplication(persistence, sealer(), {
+				allowedHostsPolicyForTests: allowlist(),
 				now: () => new Date('2026-09-13T00:00:00.000Z'),
 				dispatch: async () => ({
 					ok: false as const,
@@ -381,6 +411,7 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 			failDelivery
 		});
 		const app = new WebhookApplication(persistence, sealer(), {
+			allowedHostsPolicyForTests: allowlist(),
 			now: () => new Date('2026-09-13T00:00:00.000Z'),
 			dispatch: async () => ({
 				ok: false as const,
@@ -398,6 +429,185 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 		expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
 			retryable: false,
 			errorCode: 'http_500'
+		});
+	});
+});
+
+describe('WebhookApplication destination allowlist', () => {
+	function wildcardPolicy(): WebhookHostPolicy {
+		const parsed: WebhookHostPolicy | null = parseWebhookAllowedHosts('*.hooks.example.com');
+		if (parsed === null) throw new Error('expected the wildcard policy to parse');
+		return parsed;
+	}
+
+	it('denies creation by default when no policy is injected', async () => {
+		const persistence = store();
+		const app = new WebhookApplication(persistence, sealer(), { newId: () => ENDPOINT_ID });
+		await expect(
+			app.createEndpoint(
+				{ id: ACTOR_ID, organizationId: ORG },
+				{
+					idempotencyKey: 'wh-1',
+					url: 'https://hooks.example.com/signkit',
+					description: null,
+					events: ['envelope.completed']
+				}
+			)
+		).rejects.toBeInstanceOf(WebhookHostNotAllowedError);
+		expect(persistence.createEndpoint).not.toHaveBeenCalled();
+	});
+
+	it('denies creation for a host outside the injected policy', async () => {
+		const persistence = store();
+		const app = new WebhookApplication(persistence, sealer(), {
+			newId: () => ENDPOINT_ID,
+			allowedHostsPolicyForTests: allowlist()
+		});
+		await expect(
+			app.createEndpoint(
+				{ id: ACTOR_ID, organizationId: ORG },
+				{
+					idempotencyKey: 'wh-1',
+					url: 'https://evil.example.com/signkit',
+					description: null,
+					events: ['envelope.completed']
+				}
+			)
+		).rejects.toBeInstanceOf(WebhookHostNotAllowedError);
+		expect(persistence.createEndpoint).not.toHaveBeenCalled();
+	});
+
+	it('allows a wildcard subdomain but not the bare suffix on creation', async () => {
+		const persistence = store({
+			createEndpoint: vi.fn(async (command: CreateWebhookEndpointCommand) => ({
+				outcome: 'created' as const,
+				endpoint: metadata({ id: command.id, url: command.url })
+			}))
+		});
+		const app = new WebhookApplication(persistence, sealer(), {
+			newId: () => ENDPOINT_ID,
+			allowedHostsPolicyForTests: wildcardPolicy()
+		});
+		const allowed = await app.createEndpoint(
+			{ id: ACTOR_ID, organizationId: ORG },
+			{
+				idempotencyKey: 'wh-1',
+				url: 'https://a.hooks.example.com/signkit',
+				description: null,
+				events: ['envelope.completed']
+			}
+		);
+		expect(allowed.outcome).toBe('created');
+		await expect(
+			app.createEndpoint(
+				{ id: ACTOR_ID, organizationId: ORG },
+				{
+					idempotencyKey: 'wh-2',
+					url: 'https://hooks.example.com/signkit',
+					description: null,
+					events: ['envelope.completed']
+				}
+			)
+		).rejects.toBeInstanceOf(WebhookHostNotAllowedError);
+	});
+
+	it('fails a delivery terminally when the policy no longer covers the endpoint host', async () => {
+		const failDelivery = failDeliveryMock();
+		const dispatch = vi.fn(async () => ({ ok: true as const, status: 200 }));
+		const persistence = store({
+			createEndpoint: vi.fn(async (command: CreateWebhookEndpointCommand) => ({
+				outcome: 'created' as const,
+				endpoint: metadata({ id: command.id, url: command.url })
+			})),
+			claimPendingDeliveries: vi.fn(async () => [claimedRow()]),
+			failDelivery
+		});
+		let calls = 0;
+		const app = new WebhookApplication(persistence, sealer(), {
+			now: () => new Date('2026-09-13T00:00:00.000Z'),
+			dispatch,
+			// Creation-time policy covers the host; by delivery time the
+			// deployer has removed the allowlist, so the attempt must fail
+			// closed even though the endpoint row still exists.
+			allowedHostsResolver: () => {
+				calls += 1;
+				return calls === 1 ? allowlist() : null;
+			}
+		});
+		const created = await app.createEndpoint(
+			{ id: ACTOR_ID, organizationId: ORG },
+			{
+				idempotencyKey: 'wh-1',
+				url: 'https://hooks.example.com/signkit',
+				description: null,
+				events: ['envelope.completed']
+			}
+		);
+		expect(created.outcome).toBe('created');
+		await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+			claimed: 1,
+			delivered: 0,
+			retried: 0,
+			failed: 1
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(failDelivery).toHaveBeenCalledOnce();
+		expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+			retryable: false,
+			errorCode: 'host_not_allowed',
+			httpStatus: null
+		});
+	});
+
+	it('runs the policy check before any dispatch network work', async () => {
+		const failDelivery = failDeliveryMock();
+		const dispatch = vi.fn(async () => ({ ok: true as const, status: 200 }));
+		const persistence = store({
+			claimPendingDeliveries: vi.fn(async () => [
+				claimedRow({ endpointUrl: 'https://evil.example.com/signkit' })
+			]),
+			failDelivery
+		});
+		const app = new WebhookApplication(persistence, sealer(), {
+			now: () => new Date('2026-09-13T00:00:00.000Z'),
+			dispatch,
+			allowedHostsPolicyForTests: allowlist()
+		});
+		await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+			claimed: 1,
+			delivered: 0,
+			retried: 0,
+			failed: 1
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+			retryable: false,
+			errorCode: 'host_not_allowed'
+		});
+	});
+
+	it('still applies the DNS public-address checks for allowlisted hosts', async () => {
+		const failDelivery = failDeliveryMock();
+		const persistence = store({
+			claimPendingDeliveries: vi.fn(async () => [claimedRow()]),
+			failDelivery
+		});
+		const app = new WebhookApplication(persistence, sealer(), {
+			now: () => new Date('2026-09-13T00:00:00.000Z'),
+			dispatch: async () => {
+				throw new WebhookTargetRejectedError('Webhook hostname resolved to a blocked address');
+			},
+			allowedHostsPolicyForTests: allowlist()
+		});
+		await expect(app.drainPendingDeliveries(10)).resolves.toEqual({
+			claimed: 1,
+			delivered: 0,
+			retried: 0,
+			failed: 1
+		});
+		expect(failDelivery.mock.calls[0]?.[0]).toMatchObject({
+			retryable: false,
+			errorCode: 'ssrf_rejected'
 		});
 	});
 });

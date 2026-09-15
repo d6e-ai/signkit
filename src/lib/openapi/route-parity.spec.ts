@@ -97,6 +97,23 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 		expect(openApiOperations(document)).toEqual(shippedApiV1Operations());
 	});
 
+	it('documents the webhook destination allowlist default-deny on creation', () => {
+		const document = openApiDocument();
+		const post = pathItem(document, '/api/v1/webhooks').post;
+		expect(post.description).toContain('SIGNKIT_WEBHOOK_ALLOWED_HOSTS');
+		expect(post.description).toContain('denies creation by default');
+		const urlSchema = (
+			post.requestBody as {
+				content: {
+					'application/json': {
+						schema: { properties: { url: { description: string } } };
+					};
+				};
+			}
+		).content['application/json'].schema.properties.url;
+		expect(urlSchema.description).toContain('allowlisted');
+	});
+
 	it('documents session-only reissue aliases with UUIDv7, idempotency, and no API-key security', () => {
 		const document = openApiDocument();
 		for (const path of [
