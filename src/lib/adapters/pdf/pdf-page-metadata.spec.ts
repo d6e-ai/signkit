@@ -271,6 +271,67 @@ describe('parsePdfPageMetadata', () => {
 		expect(parsePdfPageMetadata(bytes)).toEqual({ pageCount: 1, pageWidth: 300, pageHeight: 200 });
 	});
 
+	it('accepts an identical /CropBox and the default /UserUnit', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+				{
+					num: 3,
+					body: '<< /Type /Page /Parent 2 0 R /MediaBox [10 20 210 320] /CropBox [10 20 210 320] /UserUnit 1 >>'
+				}
+			],
+			'/Root 1 0 R'
+		);
+		expect(parsePdfPageMetadata(bytes)).toEqual({ pageCount: 1, pageWidth: 200, pageHeight: 300 });
+	});
+
+	it('rejects a direct /CropBox that changes the signer-visible page', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+				{
+					num: 3,
+					body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /CropBox [20 20 180 280] >>'
+				}
+			],
+			'/Root 1 0 R'
+		);
+		expectReason(bytes, 'unsupported_page_geometry');
+	});
+
+	it('rejects a differing /CropBox inherited from the page tree', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{
+					num: 2,
+					body: '<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300] /CropBox [0 0 180 280] >>'
+				},
+				{ num: 3, body: '<< /Type /Page /Parent 2 0 R >>' }
+			],
+			'/Root 1 0 R'
+		);
+		expectReason(bytes, 'unsupported_page_geometry');
+	});
+
+	it('rejects a non-default /UserUnit, including an indirect value', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+				{
+					num: 3,
+					body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /UserUnit 4 0 R >>'
+				},
+				{ num: 4, body: '2' }
+			],
+			'/Root 1 0 R'
+		);
+		expectReason(bytes, 'unsupported_page_geometry');
+	});
+
 	it('reads a cross-reference-stream PDF with a normal (uncompressed) page tree', () => {
 		const bytes = buildXrefStreamPdfImpl(false, undefined, undefined);
 		expect(parsePdfPageMetadata(bytes)).toEqual({ pageCount: 1, pageWidth: 200, pageHeight: 300 });
@@ -533,6 +594,23 @@ describe('parsePdfPageMetadata', () => {
 			}
 		);
 
+		it('rejects a blocked annotation subtype hidden behind an indirect reference', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{ num: 4, body: '<< /Type /Annot /Subtype 5 0 R /Rect [0 0 1 1] >>' },
+					{ num: 5, body: '/FileAttachment' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_annotation_type');
+		});
+
 		it.each(['URI', 'Launch', 'JavaScript', 'SubmitForm', 'GoToR', 'ImportData', 'Named'])(
 			'rejects a /%s annotation action',
 			(actionSubtype) => {
@@ -554,6 +632,45 @@ describe('parsePdfPageMetadata', () => {
 				expectReason(bytes, 'active_content_action');
 			}
 		);
+
+		it('rejects an active action subtype hidden behind an indirect reference', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S 5 0 R /JS (app.alert(1)) >> >>'
+					},
+					{ num: 5, body: '/JavaScript' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('rejects an action with a missing or non-name /S instead of treating it as passive', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /URI (https://example.com) >> >>'
+					}
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
 
 		it('rejects a disallowed action reached through a /Next action chain', () => {
 			const bytes = buildClassicPdf(
@@ -638,6 +755,31 @@ describe('parsePdfPageMetadata', () => {
 						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (page1) >> >>'
 					},
 					{ num: 5, body: '<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents (hi) >>' }
+				],
+				'/Root 1 0 R'
+			);
+			expect(parsePdfPageMetadata(bytes)).toEqual({
+				pageCount: 1,
+				pageWidth: 200,
+				pageHeight: 300
+			});
+		});
+
+		it('accepts an internal /GoTo whose Link subtype and action subtype are indirect names', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype 5 0 R /Rect [0 0 1 1] /A << /S 6 0 R /D (page1) >> >>'
+					},
+					{ num: 5, body: '/Link' },
+					{ num: 6, body: '/GoTo' }
 				],
 				'/Root 1 0 R'
 			);

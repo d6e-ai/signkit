@@ -143,6 +143,33 @@ describe('composePdf', () => {
 		expect(raw).toContain('/ColorSpace /DeviceRGB');
 	});
 
+	it('rejects aggregate decoded image planes before composition exceeds its memory budget', () => {
+		const signature: Uint8Array = drawnSignaturePng(8, 4);
+		expect(() =>
+			composePdf({
+				sources: [
+					{
+						bytes: markdownPdf('Agreement body.'),
+						overlays: new Map([
+							[
+								0,
+								[
+									{ kind: 'image', imageId: 'first', x: 40, y: 40, width: 120, height: 40 },
+									{ kind: 'image', imageId: 'second', x: 40, y: 100, width: 120, height: 40 }
+								]
+							]
+						])
+					}
+				],
+				images: [
+					{ id: 'first', pngBytes: signature },
+					{ id: 'second', pngBytes: signature }
+				],
+				maxDecodedImageBytes: 200
+			})
+		).toThrowError(expect.objectContaining({ reason: 'decoded_image_budget_exceeded' }));
+	});
+
 	it('gives overlay resources names that cannot collide with the source page', () => {
 		const composed: ComposePdfResult = composePdf({
 			sources: [{ bytes: rotatedPdf(0), overlays: new Map([[0, [text()]]]) }]

@@ -52,6 +52,8 @@ export const MAX_COMPOSED_PDF_BYTES: number = 32 * 1024 * 1024;
 export const MAX_COMPOSED_PDF_OBJECTS: number = 50_000;
 export const MAX_COMPOSED_PDF_COPIED_STREAM_BYTES: number = 48 * 1024 * 1024;
 export const MAX_COMPOSED_PDF_IMAGES: number = 64;
+/** Aggregate decoded signature planes retained while the output is assembled. */
+export const MAX_COMPOSED_PDF_DECODED_IMAGE_BYTES: number = 32 * 1024 * 1024;
 export const MAX_COMPOSED_PDF_OVERLAY_OPERATIONS: number = 4_000;
 export const MAX_COMPOSED_PDF_TEXT_LENGTH: number = 512;
 const MAX_COPY_DEPTH: number = 48;
@@ -63,6 +65,7 @@ export type PdfCompositionReason =
 	| 'output_too_large'
 	| 'object_budget_exceeded'
 	| 'too_many_images'
+	| 'decoded_image_budget_exceeded'
 	| 'too_many_operations'
 	| 'unknown_image'
 	| 'invalid_image'
@@ -140,6 +143,8 @@ export interface ComposePdfInput {
 	images?: readonly ComposePdfImage[];
 	maxPages?: number;
 	maxOutputBytes?: number;
+	/** Optional stricter ceiling, primarily useful for constrained runtimes and tests. */
+	maxDecodedImageBytes?: number;
 }
 
 export interface ComposePdfResult {
@@ -152,6 +157,15 @@ export interface ComposePdfResult {
 export function composePdf(input: ComposePdfInput): ComposePdfResult {
 	const maxPages: number = input.maxPages ?? MAX_COMPOSED_PDF_PAGES;
 	const maxOutputBytes: number = input.maxOutputBytes ?? MAX_COMPOSED_PDF_BYTES;
+	const requestedDecodedImageBytes: number =
+		input.maxDecodedImageBytes ?? MAX_COMPOSED_PDF_DECODED_IMAGE_BYTES;
+	if (!Number.isSafeInteger(requestedDecodedImageBytes) || requestedDecodedImageBytes < 0) {
+		throw fail('decoded_image_budget_exceeded', 'Decoded image budget is invalid');
+	}
+	const maxDecodedImageBytes: number = Math.min(
+		requestedDecodedImageBytes,
+		MAX_COMPOSED_PDF_DECODED_IMAGE_BYTES
+	);
 	if (input.sources.length === 0) {
 		throw fail('invalid_source', 'A composed PDF needs at least one source document');
 	}
@@ -196,7 +210,7 @@ export function composePdf(input: ComposePdfInput): ComposePdfResult {
 
 	const shaper: OverlayShaper = new OverlayShaper();
 	const shaped: ShapedOverlays = shapeOverlays(input.sources, pagesBySource, shaper);
-	const decoded: Map<string, DecodedPngImage> = decodeImages(images);
+	const decoded: Map<string, DecodedPngImage> = decodeImages(images, maxDecodedImageBytes);
 
 	const writer: ObjectWriter = new ObjectWriter();
 	const catalogId: number = writer.reserve();
@@ -414,17 +428,39 @@ function shapeOverlays(
 	return { runs, usedGlyphs: shaper.used };
 }
 
-function decodeImages(images: readonly ComposePdfImage[]): Map<string, DecodedPngImage> {
+function decodeImages(
+	images: readonly ComposePdfImage[],
+	maximumDecodedBytes: number
+): Map<string, DecodedPngImage> {
 	const decoded: Map<string, DecodedPngImage> = new Map();
+	let retainedBytes: number = 0;
 	for (const image of images) {
 		if (decoded.has(image.id)) continue;
 		try {
-			decoded.set(image.id, decodePng(image.pngBytes));
+			const png: DecodedPngImage = decodePng(image.pngBytes, {
+				maximumDecodedBytes: maximumDecodedBytes - retainedBytes
+			});
+			retainedBytes += png.samples.byteLength + (png.alpha?.byteLength ?? 0);
+			if (retainedBytes > maximumDecodedBytes) {
+				throw fail(
+					'decoded_image_budget_exceeded',
+					'Decoded overlay images exceed the aggregate composition budget'
+				);
+			}
+			decoded.set(image.id, png);
 		} catch (error: unknown) {
 			if (error instanceof PngDecodeError) {
-				throw new PdfCompositionError('invalid_image', 'An overlay image could not be decoded', {
-					cause: error
-				});
+				const reason: PdfCompositionReason =
+					error.reason === 'decoded_budget_exceeded'
+						? 'decoded_image_budget_exceeded'
+						: 'invalid_image';
+				throw new PdfCompositionError(
+					reason,
+					reason === 'decoded_image_budget_exceeded'
+						? 'Decoded overlay images exceed the aggregate composition budget'
+						: 'An overlay image could not be decoded',
+					{ cause: error }
+				);
 			}
 			throw error;
 		}

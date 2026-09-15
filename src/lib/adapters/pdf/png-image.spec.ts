@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { decodePng, MAX_PNG_DIMENSION, PngDecodeError, type DecodedPngImage } from './png-image';
-import { drawnSignaturePng, encodeTestPng } from './png-image-test-support';
+import {
+	drawnSignaturePng,
+	encodeTestPng,
+	encodeTestPngWithInflatedScanlines
+} from './png-image-test-support';
 
 describe('decodePng', () => {
 	it('decodes an 8-bit RGBA signature into RGB samples and a soft mask', () => {
@@ -135,5 +139,25 @@ describe('decodePng', () => {
 		const truncated: Uint8Array = bytes.subarray(0, bytes.byteLength - 30);
 
 		expect(() => decodePng(truncated)).toThrowError(PngDecodeError);
+	});
+
+	it('bounds zlib output to the exact IHDR-derived scanline size before inflation', () => {
+		const bytes: Uint8Array = encodeTestPngWithInflatedScanlines(
+			{ width: 1, height: 1, colorType: 6, samples: new Uint8Array(4) },
+			new Uint8Array(1024 * 1024)
+		);
+
+		expect(() => decodePng(bytes)).toThrowError(
+			expect.objectContaining({ reason: 'damaged_image_data' })
+		);
+	});
+
+	it('rejects a decoded image before sample-plane allocation when the caller budget is too small', () => {
+		const bytes: Uint8Array = drawnSignaturePng(8, 4);
+
+		expect(() => decodePng(bytes, { maximumDecodedBytes: 127 })).toThrowError(
+			expect.objectContaining({ reason: 'decoded_budget_exceeded' })
+		);
+		expect(decodePng(bytes, { maximumDecodedBytes: 128 }).samples.byteLength).toBe(96);
 	});
 });

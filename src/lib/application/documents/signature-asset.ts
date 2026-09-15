@@ -56,18 +56,6 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 		if (input.pngBytes.byteLength === 0 || input.pngBytes.byteLength > MAX_SIGNATURE_ASSET_BYTES) {
 			return { outcome: 'too_large' };
 		}
-		// Decoding here, not just sniffing the magic bytes, is what keeps a
-		// signature compositable: the executed agreement PDF has to turn these
-		// exact bytes into an image XObject long after signing, and an asset it
-		// could not decode would strand that envelope's completion artifact.
-		if (!isPngSignature(input.pngBytes)) return { outcome: 'invalid_image' };
-		try {
-			decodePng(input.pngBytes);
-		} catch (error: unknown) {
-			if (error instanceof PngDecodeError) return { outcome: 'invalid_image' };
-			throw error;
-		}
-
 		const context: RecipientSigningContext | null = await this.access.resolve(
 			input.token,
 			this.now().toISOString()
@@ -78,6 +66,18 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 			context.recipientId !== input.expectedRecipientId
 		) {
 			return { outcome: 'context_mismatch' };
+		}
+
+		// Resolve the capability and its route binding before CPU- and
+		// allocation-heavy image decoding. Decoding here, rather than merely
+		// sniffing magic bytes, still guarantees that an accepted asset can be
+		// composited into the executed agreement later.
+		if (!isPngSignature(input.pngBytes)) return { outcome: 'invalid_image' };
+		try {
+			decodePng(input.pngBytes);
+		} catch (error: unknown) {
+			if (error instanceof PngDecodeError) return { outcome: 'invalid_image' };
+			throw error;
 		}
 
 		const sha256: string = await sha256Hex(input.pngBytes);

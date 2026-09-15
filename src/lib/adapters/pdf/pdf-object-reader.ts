@@ -34,6 +34,7 @@ export type PdfPageMetadataReason =
 	| 'zero_pages'
 	| 'too_many_pages'
 	| 'oversized_page'
+	| 'unsupported_page_geometry'
 	| 'prev_cycle'
 	| 'prev_chain_too_long'
 	| 'page_tree_cycle'
@@ -164,7 +165,7 @@ export class PdfObjectReader {
 		const pagesRef: PdfValue | undefined = catalog.entries.get('Pages');
 		if (pagesRef === undefined) throw fail('damaged_xref', 'PDF catalog is missing /Pages');
 		const pages: PdfPageNode[] = [];
-		this.#walkPageTree(pagesRef, null, null, null, 0, new Set(), pages);
+		this.#walkPageTree(pagesRef, null, null, null, null, 0, new Set(), pages);
 		if (pages.length === 0) throw fail('zero_pages', 'The PDF contains no pages');
 		if (pages.length > MAX_UPLOADED_PDF_PAGES) {
 			throw fail('too_many_pages', 'The PDF has too many pages');
@@ -454,6 +455,7 @@ export class PdfObjectReader {
 	#walkPageTree(
 		nodeValue: PdfValue,
 		inheritedMediaBox: PdfArray | null,
+		inheritedCropBox: PdfArray | null,
 		inheritedRotate: number | null,
 		inheritedResources: PdfValue | null,
 		depth: number,
@@ -475,13 +477,30 @@ export class PdfObjectReader {
 		const type: PdfValue | undefined = dict.entries.get('Type');
 		const mediaBox: PdfArray | null =
 			this.#optionalMediaBox(dict.entries.get('MediaBox')) ?? inheritedMediaBox;
+		const cropBox: PdfArray | null =
+			this.#optionalPageBox(dict.entries.get('CropBox'), 'CropBox') ?? inheritedCropBox;
 		const rotate: number | null =
 			this.#optionalRotate(dict.entries.get('Rotate')) ?? inheritedRotate;
 		const resources: PdfValue | null = dict.entries.get('Resources') ?? inheritedResources;
 		if (isName(type, 'Page')) {
+			const mediaBoxNumbers: readonly [number, number, number, number] =
+				this.#mediaBoxNumbers(mediaBox);
+			if (cropBox !== null) {
+				const cropBoxNumbers: readonly [number, number, number, number] = this.#pageBoxNumbers(
+					cropBox,
+					'CropBox'
+				);
+				if (!samePageBox(mediaBoxNumbers, cropBoxNumbers)) {
+					throw fail(
+						'unsupported_page_geometry',
+						'PDF pages whose /CropBox differs from /MediaBox are not accepted'
+					);
+				}
+			}
+			this.#assertDefaultUserUnit(dict.entries.get('UserUnit'));
 			pages.push({
 				dict,
-				mediaBox: this.#mediaBoxNumbers(mediaBox),
+				mediaBox: mediaBoxNumbers,
 				rotate: normalizeRotation(rotate),
 				resources,
 				contents: dict.entries.get('Contents')
@@ -500,7 +519,7 @@ export class PdfObjectReader {
 		}
 		const kids: PdfArray = this.#asArray(this.#resolve(kidsValue), 'damaged_xref');
 		for (const kid of kids.items) {
-			this.#walkPageTree(kid, mediaBox, rotate, resources, depth + 1, visited, pages);
+			this.#walkPageTree(kid, mediaBox, cropBox, rotate, resources, depth + 1, visited, pages);
 		}
 		if (isRef(nodeValue)) visited.delete(nodeValue.objectNumber);
 	}
@@ -537,6 +556,45 @@ export class PdfObjectReader {
 	#optionalMediaBox(value: PdfValue | undefined): PdfArray | null {
 		if (value === undefined) return null;
 		return this.#asArray(this.#resolve(value), 'damaged_xref');
+	}
+
+	#optionalPageBox(value: PdfValue | undefined, name: 'CropBox'): PdfArray | null {
+		if (value === undefined) return null;
+		const resolved: PdfValue = this.#resolve(value);
+		if (!isArray(resolved)) throw fail('damaged_xref', `PDF /${name} is invalid`);
+		return resolved;
+	}
+
+	#pageBoxNumbers(box: PdfArray, name: 'CropBox'): readonly [number, number, number, number] {
+		if (box.items.length !== 4) throw fail('damaged_xref', `PDF /${name} is invalid`);
+		const numbers: number[] = [];
+		for (const item of box.items) {
+			const resolved: PdfValue = this.#resolve(item);
+			if (typeof resolved !== 'number' || !Number.isFinite(resolved)) {
+				throw fail('damaged_xref', `PDF /${name} is invalid`);
+			}
+			numbers.push(resolved);
+		}
+		return [
+			Math.min(numbers[0], numbers[2]),
+			Math.min(numbers[1], numbers[3]),
+			Math.max(numbers[0], numbers[2]),
+			Math.max(numbers[1], numbers[3])
+		];
+	}
+
+	#assertDefaultUserUnit(value: PdfValue | undefined): void {
+		if (value === undefined) return;
+		const resolved: PdfValue = this.#resolve(value);
+		if (typeof resolved !== 'number' || !Number.isFinite(resolved) || resolved <= 0) {
+			throw fail('damaged_xref', 'PDF /UserUnit is invalid');
+		}
+		if (resolved !== 1) {
+			throw fail(
+				'unsupported_page_geometry',
+				'PDF pages with a non-default /UserUnit are not accepted'
+			);
+		}
 	}
 
 	#optionalRotate(value: PdfValue | undefined): number | null {
@@ -1087,6 +1145,13 @@ export function normalizeRotation(rotate: number | null): number {
 	const angle: number = (((rotate ?? 0) % 360) + 360) % 360;
 	if (angle === 90 || angle === 180 || angle === 270) return angle;
 	return 0;
+}
+
+function samePageBox(
+	left: readonly [number, number, number, number],
+	right: readonly [number, number, number, number]
+): boolean {
+	return left.every((value: number, index: number): boolean => value === right[index]);
 }
 
 function asDictOrEmpty(value: PdfValue): PdfDict {

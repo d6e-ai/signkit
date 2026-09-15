@@ -29,6 +29,7 @@ export type PngDecodeReason =
 	| 'unsupported_bit_depth'
 	| 'interlaced'
 	| 'oversized'
+	| 'decoded_budget_exceeded'
 	| 'missing_palette'
 	| 'damaged_image_data';
 
@@ -55,6 +56,14 @@ export interface DecodedPngImage {
 	alpha: Uint8Array | null;
 }
 
+export interface DecodePngOptions {
+	/**
+	 * Optional caller-wide retained/working-byte ceiling. The decoder checks
+	 * this from IHDR before inflating or allocating sample planes.
+	 */
+	maximumDecodedBytes?: number;
+}
+
 const PNG_SIGNATURE: readonly number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 interface PngHeader {
@@ -71,7 +80,7 @@ export function isPngSignature(bytes: Uint8Array): boolean {
 	);
 }
 
-export function decodePng(bytes: Uint8Array): DecodedPngImage {
+export function decodePng(bytes: Uint8Array, options: DecodePngOptions = {}): DecodedPngImage {
 	if (!isPngSignature(bytes)) throw fail('invalid_signature', 'PNG signature is missing');
 	let header: PngHeader | null = null;
 	let palette: Uint8Array | null = null;
@@ -115,7 +124,17 @@ export function decodePng(bytes: Uint8Array): DecodedPngImage {
 	if (header.colorType === 3 && palette === null) {
 		throw fail('missing_palette', 'PNG palette image has no palette');
 	}
-	const raw: Uint8Array = inflateImageData(data);
+	const decodedWorkingBytes: number = decodedImageWorkingBytes(header);
+	const maximumDecodedBytes: number = options.maximumDecodedBytes ?? Number.MAX_SAFE_INTEGER;
+	if (
+		!Number.isSafeInteger(maximumDecodedBytes) ||
+		maximumDecodedBytes < 0 ||
+		decodedWorkingBytes > maximumDecodedBytes
+	) {
+		throw fail('decoded_budget_exceeded', 'PNG decoded image exceeds the caller decode budget');
+	}
+	const expectedInflatedBytes: number = inflatedScanlineBytes(header);
+	const raw: Uint8Array = inflateImageData(data, expectedInflatedBytes);
 	const scanlines: Uint8Array = unfilter(raw, header);
 	return toSamples(header, scanlines, palette, transparency);
 }
@@ -154,7 +173,7 @@ function allowedBitDepths(colorType: number): readonly number[] {
 	return [8, 16];
 }
 
-function inflateImageData(chunks: readonly Uint8Array[]): Uint8Array {
+function inflateImageData(chunks: readonly Uint8Array[], expectedBytes: number): Uint8Array {
 	let total: number = 0;
 	for (const chunk of chunks) total += chunk.byteLength;
 	const joined: Uint8Array = new Uint8Array(total);
@@ -165,14 +184,36 @@ function inflateImageData(chunks: readonly Uint8Array[]): Uint8Array {
 	}
 	let inflated: Uint8Array;
 	try {
-		inflated = unzlibSync(joined);
+		// fflate truncates into a caller-supplied output buffer. One sentinel
+		// byte beyond the exact IHDR-derived length distinguishes an overlong
+		// stream without ever allocating its attacker-controlled expansion.
+		inflated = unzlibSync(joined, { out: new Uint8Array(expectedBytes + 1) });
 	} catch (error: unknown) {
 		throw new PngDecodeError('damaged_image_data', 'PNG image data is damaged', { cause: error });
 	}
-	if (inflated.byteLength > MAX_PNG_INFLATE_BYTES) {
-		throw fail('oversized', 'PNG image data exceeds the decode budget');
+	if (inflated.byteLength !== expectedBytes) {
+		throw fail('damaged_image_data', 'PNG scanline bytes do not match the IHDR dimensions');
 	}
 	return inflated;
+}
+
+function inflatedScanlineBytes(header: PngHeader): number {
+	const channels: number = channelsFor(header.colorType);
+	const bitsPerPixel: number = channels * header.bitDepth;
+	const rowBytes: number = Math.ceil((header.width * bitsPerPixel) / 8);
+	const expected: number = (rowBytes + 1) * header.height;
+	if (!Number.isSafeInteger(expected) || expected > MAX_PNG_INFLATE_BYTES) {
+		throw fail('oversized', 'PNG image data exceeds the decode budget');
+	}
+	return expected;
+}
+
+function decodedImageWorkingBytes(header: PngHeader): number {
+	const pixels: number = header.width * header.height;
+	const sampleComponents: number = header.colorType === 0 || header.colorType === 4 ? 1 : 3;
+	// `toSamples` always builds an alpha plane while checking opacity, even
+	// when the returned image can ultimately omit it.
+	return pixels * sampleComponents + pixels;
 }
 
 function channelsFor(colorType: number): number {
@@ -189,7 +230,9 @@ function unfilter(raw: Uint8Array, header: PngHeader): Uint8Array {
 	const bytesPerPixel: number = Math.max(1, Math.ceil(bitsPerPixel / 8));
 	const rowBytes: number = Math.ceil((header.width * bitsPerPixel) / 8);
 	const expected: number = (rowBytes + 1) * header.height;
-	if (raw.byteLength < expected) throw fail('damaged_image_data', 'PNG scanlines are truncated');
+	if (raw.byteLength !== expected) {
+		throw fail('damaged_image_data', 'PNG scanline bytes do not match the IHDR dimensions');
+	}
 	const output: Uint8Array = new Uint8Array(rowBytes * header.height);
 	for (let row: number = 0; row < header.height; row += 1) {
 		const filterType: number = raw[row * (rowBytes + 1)];

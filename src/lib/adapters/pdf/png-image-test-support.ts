@@ -53,6 +53,27 @@ export function encodeTestPng(input: TestPngInput): Uint8Array {
 		}
 	}
 
+	return encodePngChunks(input, bitDepth, rows);
+}
+
+/**
+ * Builds an intentionally malformed fixture whose zlib stream does not match
+ * the IHDR-derived scanline length. This exercises bounded inflate handling
+ * without relying on a corrupted zlib wrapper.
+ */
+export function encodeTestPngWithInflatedScanlines(
+	input: TestPngInput,
+	inflatedScanlines: Uint8Array
+): Uint8Array {
+	const bitDepth: number = input.bitDepth ?? 8;
+	return encodePngChunks(input, bitDepth, inflatedScanlines);
+}
+
+function encodePngChunks(
+	input: TestPngInput,
+	bitDepth: number,
+	inflatedScanlines: Uint8Array
+): Uint8Array {
 	const header: Uint8Array = new Uint8Array(13);
 	writeUint32(header, 0, input.width);
 	writeUint32(header, 4, input.height);
@@ -66,7 +87,7 @@ export function encodeTestPng(input: TestPngInput): Uint8Array {
 	];
 	if (input.palette !== undefined) chunks.push(chunk('PLTE', input.palette));
 	if (input.transparency !== undefined) chunks.push(chunk('tRNS', input.transparency));
-	chunks.push(chunk('IDAT', zlibSync(rows, { level: 6 })));
+	chunks.push(chunk('IDAT', zlibSync(inflatedScanlines, { level: 6 })));
 	chunks.push(chunk('IEND', new Uint8Array(0)));
 	return concat(chunks);
 }

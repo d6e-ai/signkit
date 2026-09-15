@@ -487,6 +487,7 @@ function translateCompositionError(error: unknown): Error {
 		case 'too_many_pages':
 		case 'too_many_sources':
 		case 'too_many_images':
+		case 'decoded_image_budget_exceeded':
 		case 'too_many_operations':
 		case 'input_too_large':
 		case 'output_too_large':

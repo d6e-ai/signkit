@@ -136,6 +136,25 @@ describe('SignatureAssetApplication', () => {
 		expect(result).toEqual({ outcome: 'not_found' });
 	});
 
+	it('rejects an inactive capability before attempting an expensive PNG decode', async () => {
+		const application: SignatureAssetApplication = new SignatureAssetApplication(
+			new FakeAccess(null),
+			new InMemoryObjectStore()
+		);
+		const fakePngBomb: Uint8Array = Uint8Array.from([
+			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xff, 0xff, 0xff
+		]);
+
+		const result = await application.store({
+			token: 'inactive-token',
+			expectedEnvelopeId: context.envelopeId,
+			expectedRecipientId: context.recipientId,
+			pngBytes: fakePngBomb
+		});
+
+		expect(result).toEqual({ outcome: 'not_found' });
+	});
+
 	it('rejects a request whose envelope or recipient does not match the resolved context', async () => {
 		const application = new SignatureAssetApplication(new FakeAccess(), new InMemoryObjectStore());
 		const result = await application.store({

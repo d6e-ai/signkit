@@ -158,8 +158,15 @@ function assertAnnotationsSafe(
 				'PDFs with annotation additional actions are not accepted'
 			);
 		}
-		const subtype: PdfValue | undefined = annotation.entries.get('Subtype');
-		if (isNameValue(subtype) && BLOCKED_ANNOTATION_SUBTYPES.has(subtype.value)) {
+		const subtypeValue: PdfValue | undefined = annotation.entries.get('Subtype');
+		if (subtypeValue === undefined) {
+			throw fail('active_content_annotation_type', 'PDF annotations must name a passive subtype');
+		}
+		const subtype: PdfValue = reader.resolve(subtypeValue);
+		if (!isNameValue(subtype)) {
+			throw fail('active_content_annotation_type', 'PDF annotation subtype is invalid');
+		}
+		if (BLOCKED_ANNOTATION_SUBTYPES.has(subtype.value)) {
 			throw fail(
 				'active_content_annotation_type',
 				`PDFs with a /${subtype.value} annotation are not accepted`
@@ -188,9 +195,26 @@ function assertActionChainSafe(
 	countNode(budget);
 	const resolved: PdfValue = reader.resolve(actionValue);
 	if (!isDict(resolved)) throw fail('damaged_xref', 'PDF dictionary is required');
-	const subtype: PdfValue | undefined = resolved.entries.get('S');
-	if (isNameValue(subtype) && !ALLOWED_ACTION_SUBTYPES.has(subtype.value)) {
-		throw fail('active_content_action', `PDFs with a /${subtype.value} action are not accepted`);
+	const subtypeValue: PdfValue | undefined = resolved.entries.get('S');
+	if (subtypeValue === undefined) {
+		throw fail('active_content_action', 'PDF actions must name a safe subtype');
+	}
+	const subtype: PdfValue = reader.resolve(subtypeValue);
+	if (!isNameValue(subtype) || !ALLOWED_ACTION_SUBTYPES.has(subtype.value)) {
+		const label: string = isNameValue(subtype) ? `/${subtype.value}` : 'an invalidly typed';
+		throw fail('active_content_action', `PDFs with ${label} action are not accepted`);
+	}
+	const destinationValue: PdfValue | undefined = resolved.entries.get('D');
+	if (destinationValue === undefined) {
+		throw fail('active_content_action', 'PDF /GoTo actions must name an internal destination');
+	}
+	const destination: PdfValue = reader.resolve(destinationValue);
+	if (
+		typeof destination !== 'string' &&
+		!isNameValue(destination) &&
+		(!isArray(destination) || destination.items.length < 2)
+	) {
+		throw fail('active_content_action', 'PDF /GoTo action destination is invalid');
 	}
 	const nextValue: PdfValue | undefined = resolved.entries.get('Next');
 	if (nextValue === undefined) return;
