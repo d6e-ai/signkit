@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-16
+
+### Added
+
+- Safe Cloudflare secret bootstrap for `create-signkit` (#102): pristine deployments accept the d6e-auth OAuth pair through bounded exact-key stdin and generate the three independent internal secrets before any Cloudflare mutation.
+
+### Changed
+
+- Recovery material is stored as an exclusive target-bound `0600` pair, revalidated by fingerprint, and copied to a private temporary `--secrets-file`; existing deployments restore only missing secret names without resetting present values.
+
+### Security
+
+- Unknown secret taxonomies, unsafe paths, target drift, post-validation recovery changes, and Windows hosts without enforceable POSIX owner/mode guarantees now fail closed.
+
 ## [0.1.1] - 2026-09-15
 
 ### Changed
