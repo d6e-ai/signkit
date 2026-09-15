@@ -7,7 +7,9 @@
 	import * as m from '$lib/paraglide/messages';
 
 	const currentPath = $derived(deLocalizeHref(page.url.pathname));
-	const isEnvelopeDetail = $derived(/^\/envelopes\/[^/]+$/.test(currentPath));
+	const isEnvelopeDetail = $derived(
+		currentPath !== '/envelopes/new' && /^\/envelopes\/[^/]+$/.test(currentPath)
+	);
 
 	// Falls back to a label derived from the path itself, never a repeated
 	// `m.app_name()`: the root crumb already carries the brand, so a second

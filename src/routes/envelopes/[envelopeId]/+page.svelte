@@ -760,6 +760,10 @@
 			});
 			activeDocPath = targetPath;
 			await reloadAuthoringSurface();
+			const committed = draft?.documentSet?.documents.find(
+				(document) => document.kind === 'markdown' && document.path === targetPath
+			);
+			activeDocumentKey = committed !== undefined ? `set:${committed.id}` : `pending:${targetPath}`;
 		} catch (cause) {
 			importError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_import_unavailable();
