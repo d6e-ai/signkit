@@ -67,6 +67,29 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).not.toMatch(/docker push/);
 	});
 
+	it('keeps the release draft until npm succeeds and refuses an existing public release', async () => {
+		const yaml = await readFile(workflowPath, 'utf8');
+		// Draft-first creation in the release job.
+		expect(yaml).toMatch(/gh release create "\$tag" --draft/);
+		// Rerun path inspects draft status before uploading/editing and fails
+		// closed on an existing public release.
+		expect(yaml).toMatch(/gh release view "\$tag" --json isDraft/);
+		expect(yaml).toMatch(/is_draft/);
+		expect(yaml).toMatch(/refusing to upload to existing public release/);
+		// Never turn a public release back into a draft.
+		expect(yaml).not.toMatch(/--draft=true/);
+		expect(yaml).not.toMatch(/--draft true/);
+		const draftFalseMatches = yaml.match(/--draft=false/g) ?? [];
+		expect(draftFalseMatches).toHaveLength(1);
+		// Public flip happens only after the npm gate succeeds.
+		expect(yaml).toMatch(/needs:\s*publish-npm/);
+		const publishReleaseSection = yaml.slice(yaml.indexOf('publish-release:'));
+		expect(publishReleaseSection).toMatch(/gh release edit "\$tag" --draft=false/);
+		const releaseSection = yaml.slice(0, yaml.indexOf('publish-npm:'));
+		expect(releaseSection).not.toMatch(/--draft=false/);
+		expect(releaseSection).toMatch(/gh release upload "\$tag"/);
+	});
+
 	it('derives GitHub prerelease and npm dist-tag from the same semver channel', async () => {
 		const yaml = await readFile(workflowPath, 'utf8');
 		expect(yaml).toMatch(/channelFromReleaseTag\(process\.argv\[1\]\)/);

@@ -65,9 +65,9 @@ export function resolveBootstrapOwnerGate({
 	return 'owner_required';
 }
 
-/** The unsafe flag opts in only on the exact string `true` (case-insensitive, trimmed). */
+/** The unsafe flag opts in only on exactly `true` after trimming. */
 export function isUnsafeBootstrapOptIn(value: string | undefined): boolean {
-	return value !== undefined && value.trim().toLowerCase() === 'true';
+	return value !== undefined && value.trim() === 'true';
 }
 
 export interface BootstrapEnvironmentInput {

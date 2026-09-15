@@ -127,8 +127,15 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --draft --generate-notes "${prerelease_args[@]}"
           else
-            # Rerun path: keep the existing draft status untouched and only
-            # align the prerelease flag; publication happens in publish-release.
+            # Rerun path: refuse an existing public release before uploading or
+            # editing. Uploads and edits happen only on a draft; publication
+            # happens in publish-release after npm succeeds. Never flip a
+            # public release back into a draft.
+            is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+            if [ "$is_draft" != "true" ]; then
+              echo "refusing to upload to existing public release ${tag}: rerun recovery requires a draft release" >&2
+              exit 1
+            fi
             gh release edit "$tag" "${prerelease_args[@]}"
           fi
           gh release upload "$tag" \

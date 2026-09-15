@@ -79,9 +79,12 @@ describe('resolveBootstrapOwnerGate', () => {
 });
 
 describe('isUnsafeBootstrapOptIn', () => {
-	it('accepts only the exact string true', () => {
+	it('accepts only exactly true after trimming', () => {
 		expect(isUnsafeBootstrapOptIn('true')).toBe(true);
-		expect(isUnsafeBootstrapOptIn(' TRUE ')).toBe(true);
+		expect(isUnsafeBootstrapOptIn(' true ')).toBe(true);
+		expect(isUnsafeBootstrapOptIn('TRUE')).toBe(false);
+		expect(isUnsafeBootstrapOptIn('True')).toBe(false);
+		expect(isUnsafeBootstrapOptIn(' TRUE ')).toBe(false);
 		expect(isUnsafeBootstrapOptIn(undefined)).toBe(false);
 		expect(isUnsafeBootstrapOptIn('')).toBe(false);
 		expect(isUnsafeBootstrapOptIn('1')).toBe(false);
