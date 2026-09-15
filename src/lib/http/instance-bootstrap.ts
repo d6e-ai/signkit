@@ -257,26 +257,6 @@ export function createInstanceBootstrapHandler(
 			});
 		}
 
-		// Deploy-time bootstrap protection: uninitialized instances fail closed
-		// unless the configured owner email matches or the local-development
-		// unsafe opt-in applies. Checked before the store is ever consulted,
-		// so a refused caller never consumes the single empty-instance window
-		// that the real owner still needs. The configured email is compared
-		// here and never logged or echoed.
-		const unsafeContext: BootstrapUnsafeContext = resolveUnsafeContext(platform);
-		const ownerGate = resolveBootstrapOwnerGate({
-			configuredEmail: resolveOwnerEmail(platform),
-			actorEmail: authorized.email,
-			unsafeOptIn: unsafeContext.unsafeOptIn,
-			localDevelopment: unsafeContext.localDevelopment
-		});
-		if (ownerGate === 'owner_mismatch') {
-			return ownerMismatch(url.pathname);
-		}
-		if (ownerGate === 'owner_required') {
-			return ownerRequired(url.pathname);
-		}
-
 		let application: InstanceApplicationPort | null;
 		try {
 			application = await resolveApplication({ platform });
@@ -291,6 +271,39 @@ export function createInstanceBootstrapHandler(
 		}
 		if (application === null) {
 			return persistenceUnavailable(url.pathname);
+		}
+
+		// Deploy-time bootstrap protection: uninitialized instances fail closed
+		// unless the configured owner email matches or the local-development
+		// unsafe opt-in applies. The gate stops mattering the moment the
+		// instance is claimed (bootstrap-owner-gate.ts), so a caller who would
+		// otherwise be refused is only actually refused when the store still
+		// shows an empty instance; once claimed, every caller falls through to
+		// the store's own idempotent-replay / already-bootstrapped handling
+		// below instead of a gate rejection that no longer applies. A failure
+		// to resolve the current bootstrap state fails closed to the gate
+		// rejection, matching the pre-existing behavior. The configured email
+		// is compared here and never logged or echoed.
+		const unsafeContext: BootstrapUnsafeContext = resolveUnsafeContext(platform);
+		const ownerGate = resolveBootstrapOwnerGate({
+			configuredEmail: resolveOwnerEmail(platform),
+			actorEmail: authorized.email,
+			unsafeOptIn: unsafeContext.unsafeOptIn,
+			localDevelopment: unsafeContext.localDevelopment
+		});
+		if (ownerGate !== 'allowed') {
+			let alreadyBootstrapped: boolean = false;
+			try {
+				alreadyBootstrapped = (await application.getCurrentMember({ id: authorized.id }))
+					.bootstrapped;
+			} catch {
+				alreadyBootstrapped = false;
+			}
+			if (!alreadyBootstrapped) {
+				return ownerGate === 'owner_mismatch'
+					? ownerMismatch(url.pathname)
+					: ownerRequired(url.pathname);
+			}
 		}
 
 		try {

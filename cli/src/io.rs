@@ -13,8 +13,8 @@ pub const MAX_DOCX_BYTES: usize = 20 * 1024 * 1024;
 /// Matches the server decompressed evidence bound (`MAX_MANIFEST_SOURCE_BYTES`).
 pub const MAX_EVIDENCE_BYTES: usize = 2 * 1024 * 1024;
 
-/// Matches the server executed agreement PDF bound (`MAX_COMPLETION_PDF_BYTES`).
-pub const MAX_COMPLETION_PDF_BYTES: usize = 8 * 1024 * 1024;
+/// Matches the server executed agreement PDF bound (`MAX_EXECUTED_PDF_BYTES`).
+pub const MAX_COMPLETION_PDF_BYTES: usize = 32 * 1024 * 1024;
 
 /// Reads JSON from a regular file, or from stdin when `path` is `-`.
 pub fn read_json_value(path: &str) -> Result<Value, CliError> {
@@ -165,8 +165,14 @@ fn open_no_follow(path: &Path, mode: OpenMode) -> io::Result<File> {
     let mut options = OpenOptions::new();
     let nonblocking_extra = match mode {
         OpenMode::Read => {
+            // `O_NONBLOCK` keeps a pre-existing FIFO at `path` from blocking this
+            // open indefinitely: opening a FIFO read-only without it blocks
+            // until a writer connects, which could be never. The immediately
+            // following `is_file()` check rejects the FIFO (and every other
+            // non-regular type) before anything is read; regular files are
+            // unaffected by `O_NONBLOCK` on read.
             options.read(true);
-            0
+            libc::O_NONBLOCK
         }
         OpenMode::Write => {
             // `O_NONBLOCK` keeps a pre-existing FIFO at `path` from blocking
