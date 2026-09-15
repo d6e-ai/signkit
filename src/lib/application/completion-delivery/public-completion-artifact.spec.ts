@@ -128,9 +128,34 @@ describe('PublicCompletionArtifactService', () => {
 
 		expect(result).toEqual({
 			content: markdownContent,
-			contentType: 'text/markdown'
+			contentType: 'text/markdown; charset=utf-8'
 		});
 		expect(objects.get).toHaveBeenCalledWith(objectKey);
+	});
+
+	it('preserves non-ASCII Japanese text and reports an explicit UTF-8 charset for Markdown', async () => {
+		const issued = await issueCompletionToken();
+		const markdownContent = '# 完了証明\n- タイトル: テスト契約書\n- 署名者: 山田太郎';
+		const gzipped = gzipSync(new TextEncoder().encode(markdownContent), { level: 9, mtime: 0 });
+		const digest = await sha256Hex(gzipped);
+		const objectKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'markdown', digest);
+
+		const objects = mockObjectStore(new Map([[objectKey, gzipped]]));
+		const locator: CompletionArtifactLocator = {
+			organizationId: ORG_ID,
+			envelopeId: ENV_ID,
+			jsonObjectKey: 'unused-json-key',
+			jsonSha256: 'b'.repeat(64),
+			markdownObjectKey: objectKey,
+			markdownSha256: digest
+		};
+		const store = mockStore(async () => locator);
+
+		const service = new PublicCompletionArtifactService(store, objects);
+		const result = await service.read(issued.token, 'markdown', NOW);
+
+		expect(result.content).toBe(markdownContent);
+		expect(result.contentType).toBe('text/markdown; charset=utf-8');
 	});
 
 	it('rejects an skr1 cross-purpose token as not found without querying store', async () => {
