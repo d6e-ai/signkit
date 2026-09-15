@@ -1,4 +1,4 @@
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 # Docker builds have no TTY, and recent pnpm refuses `prune` without one unless
@@ -14,7 +14,7 @@ RUN pnpm rebuild
 RUN pnpm run build:node
 RUN pnpm prune --prod --ignore-scripts
 
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=3000
