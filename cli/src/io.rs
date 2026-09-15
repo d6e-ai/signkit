@@ -13,7 +13,7 @@ pub const MAX_DOCX_BYTES: usize = 20 * 1024 * 1024;
 /// Matches the server decompressed evidence bound (`MAX_MANIFEST_SOURCE_BYTES`).
 pub const MAX_EVIDENCE_BYTES: usize = 2 * 1024 * 1024;
 
-/// Matches the server visual completion PDF bound (`MAX_COMPLETION_PDF_BYTES`).
+/// Matches the server executed agreement PDF bound (`MAX_COMPLETION_PDF_BYTES`).
 pub const MAX_COMPLETION_PDF_BYTES: usize = 8 * 1024 * 1024;
 
 /// Reads JSON from a regular file, or from stdin when `path` is `-`.

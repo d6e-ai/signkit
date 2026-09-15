@@ -148,7 +148,7 @@ signkit --base-url https://signkit.example.com --org org_12345 \
 
 ### `signkit envelopes pdf <ENVELOPE_ID>`
 
-Downloads the published visual completion PDF (`GET .../pdf`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout. Cryptographic PAdES sealing is not included.
+Downloads the published executed agreement PDF (`GET .../pdf`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout. Cryptographic PAdES sealing is not included.
 
 ```sh
 signkit --base-url https://signkit.example.com --org org_12345 \

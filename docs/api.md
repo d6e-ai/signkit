@@ -75,7 +75,7 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 
 **Document rendering** (`GET .../document-pdf`, `GET .../document-pdf/pages`) renders the envelope's currently pinned revision through the same deterministic pipeline that publishes the immutable artifact at send time. The bytes feed the sender's field-placement canvas; the `pages` variant returns `{ commitSha, generation, pageCount, pageWidth, pageHeight, documents[] }` so the editor knows which pages belong to which document before it will let a field be dropped there. Both are `private, no-store` and organization-scoped; neither returns a storage key.
 
-**Completion evidence and PDF** (`GET .../evidence` and `GET .../pdf`, also aliased under `.../completion-artifact/*`) allow operators and agents (`envelopes:read`) to download published JSON or Markdown evidence (`?format=markdown` selects Markdown; otherwise JSON) and the visual completion PDF. Cryptographic PDF certification and sealing (PAdES) remain backlog.
+**Completion evidence and PDF** (`GET .../evidence` and `GET .../pdf`, also aliased under `.../completion-artifact/*`) allow operators and agents (`envelopes:read`) to download published JSON or Markdown evidence (`?format=markdown` selects Markdown; otherwise JSON) and the executed agreement PDF — the sent documents with the signed values drawn at their frozen geometry, plus the evidence summary as an appendix. Cryptographic PDF certification and sealing (PAdES) remain backlog.
 
 ## Instance and API keys
 

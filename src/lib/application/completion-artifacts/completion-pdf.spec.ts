@@ -8,7 +8,7 @@ import {
 	COMPLETION_PDF_MANIFEST_SCHEMA,
 	renderCompletionPdf
 } from './completion-pdf';
-import type { CompletionManifestV1 } from './completion-manifest';
+import { CompletionArtifactIntegrityError, type CompletionManifestV1 } from './completion-manifest';
 
 const MANIFEST: CompletionManifestV1 = {
 	schema: 'signkit-completion-manifest-v1',
@@ -52,9 +52,12 @@ const DOCUMENTS: readonly DraftDocument[] = [
 const GEOMETRY: readonly CompletionPdfFieldGeometry[] = [
 	{
 		id: '01940000-0000-7000-8000-000000000001',
+		documentId: null,
 		documentPath: 'documents/agreement.md',
 		position: 1,
-		recipientId: '01930000-0000-7000-8000-000000000001'
+		recipientId: '01930000-0000-7000-8000-000000000001',
+		fieldType: 'signature',
+		geometry: { page: 2, x: 0.25, y: 0.5, width: 0.3, height: 0.05 }
 	}
 ];
 
@@ -74,7 +77,7 @@ describe('buildCompletionPdfPages + renderCompletionPdf', () => {
 		expect(text).toContain('documents/agreement.md');
 		expect(text).toContain('This is the agreement text.');
 		expect(text).toContain('ink-sha256:' + 'd'.repeat(64));
-		expect(text).toContain('documents/agreement.md#1');
+		expect(text).toContain('documents/agreement.md#1 page 2 at 0.25,0.5 size 0.3x0.05');
 		expect(text).toContain('01930000-0000-7000-8000-000000000001');
 		expect(text).toContain('envelope.completed');
 	});
@@ -134,7 +137,13 @@ describe('buildCompletionPdfManifest', () => {
 			manifest: MANIFEST,
 			manifestSha256: 'e'.repeat(64),
 			pdfBytes,
-			fieldGeometry: GEOMETRY
+			fieldGeometry: GEOMETRY,
+			artifactKind: 'executed-agreement-v1',
+			pageCount: 4,
+			appendixFirstPage: 3,
+			documentPages: new Map([
+				['01900000-0000-7000-8000-000000000021', { firstPage: 1, lastPage: 2 }]
+			])
 		});
 
 		expect(pdfManifest.schema).toBe(COMPLETION_PDF_MANIFEST_SCHEMA);
@@ -149,21 +158,55 @@ describe('buildCompletionPdfManifest', () => {
 				id: '01940000-0000-7000-8000-000000000001',
 				fieldType: 'signature',
 				inkSha256: 'd'.repeat(64),
-				geometry: { documentPath: 'documents/agreement.md', position: 1 }
+				geometry: {
+					documentId: null,
+					documentPath: 'documents/agreement.md',
+					position: 1,
+					page: 2,
+					x: 0.25,
+					y: 0.5,
+					width: 0.3,
+					height: 0.05
+				}
 			}
 		]);
 		expect(pdfManifest.generatedAt).toBe(MANIFEST.completedAt);
 	});
 
-	it('records null geometry when placement evidence is unavailable', async () => {
+	it('records null geometry for a legacy evidence summary with no placement rows', async () => {
 		const pdfBytes = renderCompletionPdf(buildCompletionPdfPages(MANIFEST, DOCUMENTS, []));
 		const pdfManifest = await buildCompletionPdfManifest({
 			manifest: MANIFEST,
 			manifestSha256: 'e'.repeat(64),
 			pdfBytes,
-			fieldGeometry: []
+			fieldGeometry: [],
+			artifactKind: 'evidence-summary-v1',
+			pageCount: 1
 		});
+		expect(pdfManifest.artifactKind).toBe('evidence-summary-v1');
 		expect(pdfManifest.fields[0].geometry).toBeNull();
+		expect(pdfManifest.appendixFirstPage).toBeNull();
+	});
+
+	it.each([
+		['no placement row at all', []],
+		[
+			'a placement row without frozen geometry',
+			[{ ...GEOMETRY[0], geometry: null }] as readonly CompletionPdfFieldGeometry[]
+		]
+	])('refuses to publish an executed agreement with %s', async (_label, fieldGeometry) => {
+		const pdfBytes = renderCompletionPdf(buildCompletionPdfPages(MANIFEST, DOCUMENTS, []));
+
+		await expect(
+			buildCompletionPdfManifest({
+				manifest: MANIFEST,
+				manifestSha256: 'e'.repeat(64),
+				pdfBytes,
+				fieldGeometry,
+				artifactKind: 'executed-agreement-v1',
+				pageCount: 2
+			})
+		).rejects.toThrowError(CompletionArtifactIntegrityError);
 	});
 
 	it('serializes to deterministic fixed-key JSON', async () => {
@@ -172,7 +215,9 @@ describe('buildCompletionPdfManifest', () => {
 			manifest: MANIFEST,
 			manifestSha256: 'e'.repeat(64),
 			pdfBytes,
-			fieldGeometry: GEOMETRY
+			fieldGeometry: GEOMETRY,
+			artifactKind: 'executed-agreement-v1',
+			pageCount: 4
 		});
 		expect(canonicalPdfManifestJson(pdfManifest)).toBe(canonicalPdfManifestJson(pdfManifest));
 	});

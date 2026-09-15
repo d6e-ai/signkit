@@ -810,7 +810,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/envelopes/{envelopeId}/pdf': {
 				get: op({
-					summary: 'Download the published visual completion PDF',
+					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopePdf',
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [organizationHeader, envelopeIdParam],
@@ -827,7 +827,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/envelopes/{envelopeId}/completion-artifact/pdf': {
 				get: op({
-					summary: 'Download the published visual completion PDF',
+					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopeCompletionArtifactPdf',
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [organizationHeader, envelopeIdParam],

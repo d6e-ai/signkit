@@ -1,3 +1,4 @@
+import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
 import type {
 	CompletionPdfEvidenceStore,
 	CompletionPdfFieldGeometry
@@ -16,24 +17,60 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 	): Promise<readonly CompletionPdfFieldGeometry[]> {
 		interface Row {
 			id: string;
-			document_path: string;
+			document_id: string | null;
+			document_path: string | null;
 			position: number;
 			recipient_id: string;
+			field_type: string;
+			page: number | null;
+			x: number | null;
+			y: number | null;
+			width: number | null;
+			height: number | null;
 		}
 		const result: D1Result<Row> = await this.#database
 			.prepare(
-				`SELECT id, document_path, position, recipient_id
+				`SELECT id, document_id, document_path, position, recipient_id, field_type,
+				        page, x, y, width, height
 				 FROM envelope_field
 				 WHERE organization_id = ? AND envelope_id = ?
-				 ORDER BY document_path ASC, position ASC, id ASC`
+				 ORDER BY document_id ASC, document_path ASC, position ASC, id ASC`
 			)
 			.bind(organizationId, envelopeId)
 			.all<Row>();
 		return result.results.map((row: Row): CompletionPdfFieldGeometry => ({
 			id: row.id,
+			documentId: row.document_id,
 			documentPath: row.document_path,
 			position: row.position,
-			recipientId: row.recipient_id
+			recipientId: row.recipient_id,
+			fieldType: row.field_type as FieldType,
+			geometry: toGeometry(row)
 		}));
 	}
+}
+
+/**
+ * The schema constrains page/x/y/width/height to be present together, so a
+ * partially populated row is corruption: it reads as no geometry at all
+ * rather than as a box with guessed edges.
+ */
+function toGeometry(row: {
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
+}): FieldGeometry | null {
+	const { page, x, y, width, height } = row;
+	if (
+		typeof page !== 'number' ||
+		typeof x !== 'number' ||
+		typeof y !== 'number' ||
+		typeof width !== 'number' ||
+		typeof height !== 'number'
+	) {
+		return null;
+	}
+	return { page, x, y, width, height };
 }

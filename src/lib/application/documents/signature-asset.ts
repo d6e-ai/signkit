@@ -1,3 +1,4 @@
+import { decodePng, isPngSignature, PngDecodeError } from '$lib/adapters/pdf/png-image';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
@@ -10,7 +11,6 @@ import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
  */
 export const MAX_SIGNATURE_ASSET_BYTES: number = 64 * 1024;
 
-const PNG_MAGIC: readonly number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 /** `sig:sha256:` (11) + 64 hex chars = 75, well inside the 200-char signature field value budget. */
 export const SIGNATURE_ASSET_REF_PREFIX: string = 'sig:sha256:';
 
@@ -56,7 +56,17 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 		if (input.pngBytes.byteLength === 0 || input.pngBytes.byteLength > MAX_SIGNATURE_ASSET_BYTES) {
 			return { outcome: 'too_large' };
 		}
+		// Decoding here, not just sniffing the magic bytes, is what keeps a
+		// signature compositable: the executed agreement PDF has to turn these
+		// exact bytes into an image XObject long after signing, and an asset it
+		// could not decode would strand that envelope's completion artifact.
 		if (!isPngSignature(input.pngBytes)) return { outcome: 'invalid_image' };
+		try {
+			decodePng(input.pngBytes);
+		} catch (error: unknown) {
+			if (error instanceof PngDecodeError) return { outcome: 'invalid_image' };
+			throw error;
+		}
 
 		const context: RecipientSigningContext | null = await this.access.resolve(
 			input.token,
@@ -174,11 +184,6 @@ export function referencedSignatureAssetKeys(
 		if (wanted.has(key)) referenced.add(key);
 	}
 	return referenced;
-}
-
-function isPngSignature(bytes: Uint8Array): boolean {
-	if (bytes.byteLength < PNG_MAGIC.length) return false;
-	return PNG_MAGIC.every((expected: number, index: number): boolean => bytes[index] === expected);
 }
 
 function encodeScopeSegment(value: string): string {

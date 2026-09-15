@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { drawnSignaturePng, encodeTestPng } from '$lib/adapters/pdf/png-image-test-support';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
@@ -30,12 +31,8 @@ const context: RecipientSigningContext = {
 	}
 };
 
-const PNG_MAGIC = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-function pngBytes(extra: number = 32): Uint8Array {
-	const bytes = new Uint8Array(PNG_MAGIC.byteLength + extra);
-	bytes.set(PNG_MAGIC);
-	return bytes;
+function pngBytes(): Uint8Array {
+	return drawnSignaturePng();
 }
 
 class FakeAccess implements RecipientAccessApplicationPort {
@@ -89,6 +86,29 @@ describe('SignatureAssetApplication', () => {
 			pngBytes: new Uint8Array(MAX_SIGNATURE_ASSET_BYTES + 1)
 		});
 		expect(result).toEqual({ outcome: 'too_large' });
+	});
+
+	it('rejects a PNG the executed agreement PDF could not composite later', async () => {
+		const objects = new InMemoryObjectStore();
+		const application = new SignatureAssetApplication(new FakeAccess(), objects);
+
+		const result = await application.store({
+			token: 'token',
+			expectedEnvelopeId: context.envelopeId,
+			expectedRecipientId: context.recipientId,
+			// Well-formed PNG bytes, but interlaced: decodable by a browser and
+			// not by the compositor, so it must never reach a signed field value.
+			pngBytes: encodeTestPng({
+				width: 2,
+				height: 2,
+				colorType: 6,
+				samples: new Uint8Array(2 * 2 * 4),
+				interlace: 1
+			})
+		});
+
+		expect(result).toEqual({ outcome: 'invalid_image' });
+		expect(objects.size).toBe(0);
 	});
 
 	it('rejects bytes that are not a PNG', async () => {
