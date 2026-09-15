@@ -51,7 +51,7 @@ describe('release-cloudflare-bundle workflow', () => {
 		);
 		expect(yaml).toMatch(/pnpm exec "\$NPM_CLI" publish --access public --tag "\$NPM_DIST_TAG"/);
 		expect(yaml).not.toMatch(/pnpm exec "\$NPM_CLI" publish --access public\s*$/m);
-		expect(yaml).toMatch('NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}');
+		expect(yaml).not.toMatch(/NODE_AUTH_TOKEN/);
 		expect(yaml).not.toMatch(/echo[^|\n]*NODE_AUTH_TOKEN/);
 		expect(yaml).toMatch(/lockfile-pinned npm CLI mismatch/);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease\)/);
