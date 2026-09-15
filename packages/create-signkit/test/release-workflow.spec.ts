@@ -78,6 +78,13 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).toMatch(/require\('\.\/package\.json'\)\.version/);
 		expect(yaml).toMatch(/require\('\.\/packages\/create-signkit\/package\.json'\)\.version/);
 		expect(yaml).toMatch(/cli\/Cargo\.toml/);
+		// Regression: `node -p` prints the evaluated expression, so combining
+		// it with `process.stdout.write(m[1])` captures e.g. `0.1.0true`.
+		// The CLI gate must use `node -e` with the explicit write instead.
+		expect(yaml).not.toMatch(/node -p[^\n]*process\.stdout\.write/);
+		expect(
+			yaml.match(/node -e "const fs=require\('fs'\);[^\n]*process\.stdout\.write\(m\[1\]\)/g) ?? []
+		).toHaveLength(3);
 		// npm publish is hard-gated on the release job.
 		expect(yaml).toMatch(/needs:\s*release/);
 		// No deployment: no wrangler deploy, no registry push.

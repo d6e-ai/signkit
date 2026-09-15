@@ -70,7 +70,7 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           root="$(node -p "require('./package.json').version")"
           csk="$(node -p "require('./packages/create-signkit/package.json').version")"
-          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           for v in "$root" "$csk" "$cli"; do
             if [ "$tag" != "$v" ]; then
               echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
@@ -260,7 +260,7 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./packages/create-signkit/package.json').version")"
           root="$(node -p "require('./package.json').version")"
-          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           if [ "$tag" != "$pkg" ]; then
             echo "git tag version ${GITHUB_REF_NAME} does not match packages/create-signkit/package.json version ${pkg}" >&2
             exit 1
@@ -321,7 +321,7 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           root="$(node -p "require('./package.json').version")"
           csk="$(node -p "require('./packages/create-signkit/package.json').version")"
-          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           for v in "$root" "$csk" "$cli"; do
             if [ "$tag" != "$v" ]; then
               echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
