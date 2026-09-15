@@ -12,11 +12,19 @@
 -- otherwise SQLite reports `error in trigger …: no such table main.envelope_field`.
 -- Exactly one of document_id and document_path is set.
 --
+-- field_value has a composite FK into envelope_field and is rebuilt alongside
+-- it rather than left alone: see the comment above field_value_new below for
+-- why leaving it pointed at a table this migration drops and recreates is
+-- not safe to depend on.
+--
 -- SQLite cannot ALTER a trigger, so envelope_send_publish_guard is dropped
--- (0043 still requires sent_pdf_object_key) and recreated with a document-set
--- hash/count/receipt guard that also requires count(envelope_sent_document)
--- to match. New publishes must carry the document-set receipt; legacy rows
--- keep their sent_pdf_* values and are never re-inserted through this trigger.
+-- (0043 still requires sent_pdf_object_key) and recreated to require either a
+-- complete document-set receipt (hash/count/sent_documents_json, with
+-- count(envelope_sent_document) matching) or a complete legacy sent_pdf_*
+-- receipt, never a partial or mixed combination of the two. The still-serving
+-- pre-migration Worker only ever writes the legacy shape, so its sends keep
+-- publishing during rollout; legacy rows already committed keep their
+-- sent_pdf_* values and are never re-inserted through this trigger.
 
 PRAGMA defer_foreign_keys = ON;
 
@@ -135,11 +143,56 @@ SELECT
   page, x, y, width, height
 FROM envelope_field;
 
+-- field_value has a composite FK into envelope_field (via the
+-- envelope_field_identity unique index). Rebuilding envelope_field alone
+-- would leave field_value pointed at a dropped/recreated parent for part of
+-- this transaction; whether that survives to COMMIT depends on D1's SQLite
+-- build honoring defer_foreign_keys across a DROP+RENAME of the referenced
+-- table, which is not safe to depend on. Rebuild field_value in lockstep
+-- instead: field_value_new is created and populated while it can still
+-- reference envelope_field_new directly (which already holds every row and
+-- the unique index its FK needs), so its parent reference is satisfiable at
+-- every point, deferred or not. envelope_field is dropped only once nothing
+-- named "envelope_field" or "field_value" has a live row referencing it, and
+-- ALTER TABLE RENAME rewrites REFERENCES clauses that name a renamed table,
+-- so renaming envelope_field_new to envelope_field carries field_value_new's
+-- FK along with it.
+CREATE UNIQUE INDEX envelope_field_new_identity
+  ON envelope_field_new(organization_id, id, recipient_id, envelope_id, field_type);
+
+CREATE TABLE field_value_new (
+  organization_id TEXT NOT NULL,
+  field_id TEXT NOT NULL,
+  envelope_id TEXT NOT NULL,
+  recipient_id TEXT NOT NULL,
+  field_type TEXT NOT NULL CHECK (field_type IN ('signature','initials','text','date','checkbox')),
+  value_json TEXT NOT NULL,
+  value_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (organization_id, field_id),
+  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  FOREIGN KEY (organization_id, field_id, recipient_id, envelope_id, field_type)
+    REFERENCES envelope_field_new(organization_id, id, recipient_id, envelope_id, field_type)
+);
+
+INSERT INTO field_value_new (
+  organization_id, field_id, envelope_id, recipient_id, field_type,
+  value_json, value_sha256, created_at
+)
+SELECT
+  organization_id, field_id, envelope_id, recipient_id, field_type,
+  value_json, value_sha256, created_at
+FROM field_value;
+
 -- Drop dependent triggers that reference envelope_field before rebuild.
 DROP TRIGGER IF EXISTS recipient_signed_command_publish;
 
+DROP TABLE field_value;
 DROP TABLE envelope_field;
 ALTER TABLE envelope_field_new RENAME TO envelope_field;
+ALTER TABLE field_value_new RENAME TO field_value;
+
+DROP INDEX envelope_field_new_identity;
 
 CREATE INDEX envelope_field_document_order
   ON envelope_field(organization_id, envelope_id, document_id, position, id)
@@ -162,6 +215,9 @@ CREATE UNIQUE INDEX envelope_field_recipient_document_path_position
 
 CREATE UNIQUE INDEX envelope_field_identity
   ON envelope_field(organization_id, id, recipient_id, envelope_id, field_type);
+
+CREATE INDEX field_value_recipient
+  ON field_value(organization_id, recipient_id);
 
 -- Restored from 0036_capability_reissue.sql. Recreated command triggers must
 -- stamp audit_event.hash_version = 2 explicitly.
@@ -415,19 +471,38 @@ DROP TRIGGER IF EXISTS envelope_send_publish_guard;
 CREATE TRIGGER envelope_send_publish_guard
 AFTER INSERT ON envelope_send_publish
 BEGIN
-  -- The send command carries the pinned document-set hash and count. Refusing
-  -- a publication that lacks them, or whose pre-inserted per-document rows do
-  -- not match that count, is what keeps "sent" and "there is an exact rendering
-  -- of each document that was sent" the same fact.
+  -- The send command carries either the pinned document-set hash/count (new
+  -- Worker) or the pinned legacy sent_pdf_* pointer (still-serving old
+  -- Worker mid-rollout) -- never a partial or mixed combination of the two.
+  -- Requiring one complete shape, and for the document-set shape that the
+  -- pre-inserted per-document rows match the pinned count, is what keeps
+  -- "sent" and "there is an exact rendering of each document that was sent"
+  -- the same fact regardless of which Worker version handled the send.
   SELECT (CASE WHEN (
-      SELECT command.document_set_hash IS NULL OR command.document_count IS NULL
-        OR command.sent_documents_json IS NULL
+      SELECT NOT (
+        (
+          command.document_set_hash IS NOT NULL AND command.document_count IS NOT NULL
+            AND command.sent_documents_json IS NOT NULL
+            AND command.sent_pdf_object_key IS NULL AND command.sent_pdf_sha256 IS NULL
+            AND command.sent_pdf_bytes IS NULL AND command.sent_pdf_page_count IS NULL
+            AND command.sent_pdf_page_width IS NULL AND command.sent_pdf_page_height IS NULL
+            AND command.sent_pdf_document_pages_json IS NULL
+            AND (
+              SELECT COUNT(*) FROM envelope_sent_document docs
+              WHERE docs.organization_id = command.organization_id
+                AND docs.envelope_id = command.envelope_id
+                AND docs.commit_sha = command.commit_sha
+            ) = command.document_count
+        )
         OR (
-          SELECT COUNT(*) FROM envelope_sent_document docs
-          WHERE docs.organization_id = command.organization_id
-            AND docs.envelope_id = command.envelope_id
-            AND docs.commit_sha = command.commit_sha
-        ) <> command.document_count
+          command.sent_pdf_object_key IS NOT NULL AND command.sent_pdf_sha256 IS NOT NULL
+            AND command.sent_pdf_bytes IS NOT NULL AND command.sent_pdf_page_count IS NOT NULL
+            AND command.sent_pdf_page_width IS NOT NULL AND command.sent_pdf_page_height IS NOT NULL
+            AND command.sent_pdf_document_pages_json IS NOT NULL
+            AND command.document_set_hash IS NULL AND command.document_count IS NULL
+            AND command.sent_documents_json IS NULL
+        )
+      )
       FROM envelope_send_command command
       WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
@@ -550,12 +625,35 @@ BEGIN
   -- the status flip and the audit event: a stale generation, a lost CAS, an
   -- audit conflict, or an idempotency conflict aborts all three together, so
   -- a mismatched document set is not reachable. The per-document rows are
-  -- pre-inserted; this marker is what makes them readable.
+  -- pre-inserted; this marker is what makes them readable. Skipped for a
+  -- legacy send (document_set_hash IS NULL): envelope_sent_document_set's
+  -- columns are NOT NULL, and a legacy send's evidence lives in
+  -- envelope_sent_pdf / envelope_send_command.sent_pdf_* instead.
   INSERT INTO envelope_sent_document_set (
     organization_id, envelope_id, commit_sha, document_set_hash, document_count, created_at
   ) SELECT command.organization_id, command.envelope_id, command.commit_sha,
       command.document_set_hash, command.document_count, command.updated_at
     FROM envelope_send_command command
     WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
-      AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key;
+      AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
+      AND command.document_set_hash IS NOT NULL;
+
+  -- Mirrors the insert 0043 made unconditionally: the still-serving
+  -- pre-migration Worker only ever pins the legacy sent_pdf_* shape, and
+  -- envelope_sent_pdf was that shape's only publisher. Without this insert a
+  -- legacy send flips the envelope to sent with no rendering pointer at all.
+  -- Gated on sent_pdf_object_key IS NOT NULL so a new-shape (document-set)
+  -- send, whose sent_pdf_* columns are all NULL, does not insert a row that
+  -- would fail envelope_sent_pdf's NOT NULL columns.
+  INSERT INTO envelope_sent_pdf (
+    organization_id, envelope_id, commit_sha, object_key, sha256, byte_size,
+    page_count, page_width, page_height, document_pages_json, created_at
+  ) SELECT command.organization_id, command.envelope_id, command.commit_sha,
+      command.sent_pdf_object_key, command.sent_pdf_sha256, command.sent_pdf_bytes,
+      command.sent_pdf_page_count, command.sent_pdf_page_width, command.sent_pdf_page_height,
+      command.sent_pdf_document_pages_json, command.updated_at
+    FROM envelope_send_command command
+    WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
+      AND command.sent_pdf_object_key IS NOT NULL;
 END;
