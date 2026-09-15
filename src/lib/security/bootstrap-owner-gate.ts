@@ -13,9 +13,10 @@
  *
  * "Local development" is deliberately narrow and follows the existing
  * runtime/profile conventions (see `docs/architecture/deployment-and-risks.md`
- * § Primary risks): the request is not served by Cloudflare Workers (no
- * `platform.env`, which also covers `wrangler dev`), not served by Vercel
- * (no `VERCEL` indicator in process env), and the configured
+ * § Primary risks): `NODE_ENV` is exactly `development`, the request is not
+ * served by Cloudflare Workers (no `platform.env`, which also covers
+ * `wrangler dev`), not served by Vercel (no `VERCEL` indicator in process
+ * env), and the configured
  * `SIGNKIT_PUBLIC_ORIGIN` names a loopback host (`localhost`, `127.0.0.1`,
  * `::1`) — the same loopback exception the d6e-auth base-URL validation and
  * the recipient-link Secure-cookie handling already use. A `true` unsafe flag
@@ -71,6 +72,8 @@ export function isUnsafeBootstrapOptIn(value: string | undefined): boolean {
 }
 
 export interface BootstrapEnvironmentInput {
+	/** Raw `NODE_ENV`; unsafe bootstrap requires exactly `development`. */
+	readonly nodeEnvironment?: string;
 	/** True when running on Cloudflare Workers (platform env present, including `wrangler dev`). */
 	readonly hasPlatformEnv: boolean;
 	/** Raw `VERCEL` process-env indicator, if any. */
@@ -80,16 +83,19 @@ export interface BootstrapEnvironmentInput {
 }
 
 /**
- * Narrow local-development check for the unsafe bootstrap opt-in. All three
- * must hold: not Cloudflare Workers, not Vercel, and a loopback public
- * origin. Anything else — Node production, Cloudflare, Vercel, or a missing
- * or non-loopback origin — returns `false` so the unsafe flag is ignored.
+ * Narrow local-development check for the unsafe bootstrap opt-in. All four
+ * must hold: `NODE_ENV=development`, not Cloudflare Workers, not Vercel, and
+ * a loopback public origin. The explicit runtime mode is independent of the
+ * configured public origin, so a production reverse proxy that accidentally
+ * advertises a loopback origin cannot reopen first-user-wins bootstrap.
  */
 export function isLocalDevelopmentBootstrapEnvironment({
+	nodeEnvironment,
 	hasPlatformEnv,
 	vercelIndicator,
 	publicOrigin
 }: BootstrapEnvironmentInput): boolean {
+	if (nodeEnvironment?.trim() !== 'development') return false;
 	if (hasPlatformEnv) return false;
 	if (isVercelEnvironment(vercelIndicator)) return false;
 	return isLoopbackOrigin(publicOrigin);

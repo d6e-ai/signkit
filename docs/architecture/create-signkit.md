@@ -4,7 +4,7 @@ Status: implemented (Cloudflare slice)
 
 Last updated: 2026-09-15
 
-`create-signkit` is the **deployment** CLI. It publishes a GitHub Release of SignKit onto Cloudflare Workers, D1, and R2. Manifest SHA-256 is integrity against the GitHub download, not a cryptographic signature. It is not the Rust SignKit API CLI (`signkit` under `cli/`), which talks to an already-running instance over `/api/v1`.
+`create-signkit` is the **deployment** CLI. It publishes a GitHub Release of SignKit onto Cloudflare Workers, D1, and R2. Manifest SHA-256 is integrity against the GitHub download, not a cryptographic signature. The release workflow generates GitHub provenance attestations, but this CLI does not yet verify them. It is not the Rust SignKit API CLI (`signkit` under `cli/`), which talks to an already-running instance over `/api/v1`.
 
 The two CLIs do not share configuration, credentials, or state. Mixing them is a usage error, not a fallback.
 
@@ -56,13 +56,13 @@ A failed HTTPS smoke check rolls the Worker back only when a previous Worker ver
 
 ## Version resolution
 
-Versions come from GitHub Releases of `d6e-ai/signkit`, never from arbitrary git refs. Tags with semver build metadata (`+build`) are rejected. Manifest `channel` is classified from the tag's semver prerelease component (`v1.2.3-beta.1` is beta; `v1.2.3` is stable), not from a substring match. The tag workflow marks the GitHub Release `prerelease` from that same classification and normalizes the flag both directions on reruns. npm publish uses dist-tag `beta` for prereleases and `latest` for stable, also from that classification. `SIGNKIT_RELEASE_TAG` overrides `GITHUB_REF_NAME` when both are set so CI branch names cannot become the synthetic bundle tag.
+Versions come from GitHub Releases of `d6e-ai/signkit`, never from arbitrary git refs. Tags with semver build metadata (`+build`) are rejected. Manifest `channel` is classified from the tag's semver prerelease component (`v1.2.3-beta.1` is beta; `v1.2.3` is stable), not from a substring match. The tag workflow creates the GitHub Release as a draft with the matching `prerelease` flag. A rerun refuses a public release or mismatched draft metadata instead of editing it, and it reuses an existing expected asset only after downloading and comparing the complete bytes; mismatched or unexpected assets fail closed and are never replaced. npm publish uses dist-tag `beta` for prereleases and `latest` for stable, also from that classification. `SIGNKIT_RELEASE_TAG` overrides `GITHUB_REF_NAME` when both are set so CI branch names cannot become the synthetic bundle tag.
 
 - `--version latest --channel stable` uses `/releases/latest` (non-draft, non-prerelease, stable semver tag). A beta/prerelease is refused.
 - `--version latest --channel beta` selects the highest valid semver prerelease tag among non-draft releases, independent of GitHub API order. Drafts, stable tags, and invalid/build-metadata tags are ignored. If none exists, the CLI fails rather than selecting a stable release.
 - `--version v1.2.3` is an exact tag fetched from `/releases/tags/v1.2.3`. `--channel` is still enforced against the tag, GitHub prerelease metadata, and the manifest channel, so stable never resolves a beta.
 
-Each release must publish `signkit-cloudflare-manifest.json` and a `signkit-cloudflare-<tag>.tar.gz` bundle. The CLI validates schema, repository, tag, commit, size, and SHA-256, and will only download from GitHub release/API hosts with bounded response sizes. SHA-256 in the manifest is transport/repository integrity, not a signature. The npx package does not require this repository or pnpm; it depends on Wrangler and a tar extractor.
+Each release must publish `signkit-cloudflare-manifest.json` and a `signkit-cloudflare-<tag>.tar.gz` bundle. The CLI validates schema, repository, tag, commit, size, and SHA-256, and will only download from GitHub release/API hosts with bounded response sizes. The tag workflow also asks GitHub to create signed build-provenance attestations for the generated release assets before upload. Those attestations are stored and verified through GitHub; `create-signkit` does not currently retrieve or verify them, so its runtime trust boundary remains the official GitHub repository plus the manifest digest. SHA-256 in the manifest is transport/repository integrity, not a publisher signature. The npx package does not require this repository or pnpm; it depends on Wrangler and a tar extractor.
 
 ## State and secrets
 
@@ -74,7 +74,7 @@ The **initial managed deploy** is `deploy` with no local Cloudflare state, even 
 
 Release tarballs accept only regular files and directories. Extraction fails closed if uncompressed regular-file bytes or member count exceed the cap, and rejects link, device, FIFO, and tar extension/PAX members. Bundle paths stay short relative POSIX names so PAX long-link headers are not required.
 
-This CLI does **not** add a bootstrap secret. First-owner claim remains first-authenticated-identity-wins; operators must call `POST /api/v1/instance/bootstrap` before advertising the URL. See [authorization-and-instance-administration.md](authorization-and-instance-administration.md#instance-bootstrap).
+This CLI does **not** add a bootstrap secret. It requires a deployer-selected `--bootstrap-owner-email` and writes it as the non-secret `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` Worker variable, so only that verified d6e-auth email can make the first-owner claim. Operators must still call `POST /api/v1/instance/bootstrap` before advertising the URL. See [authorization-and-instance-administration.md](authorization-and-instance-administration.md#instance-bootstrap).
 
 ## Drift
 

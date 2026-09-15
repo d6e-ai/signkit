@@ -2,8 +2,10 @@ name: Release
 
 # Draft-first full-tag release: one tag in, one DRAFT GitHub Release out with
 # every shippable artifact (Node bundle, Cloudflare bundle, Rust CLI release
-# binary, Docker image) plus a unified SHA256SUMS, then an optionally
-# hard-gated npm publish, and only then is the draft marked public.
+# binary, Docker image) plus a unified SHA256SUMS and GitHub provenance
+# attestations, then a hard-gated npm publish, and only then is the draft
+# marked public. Draft reruns reuse only byte-identical assets; nothing
+# clobbers an existing name or mutates a public release.
 #
 # A `v*` tag therefore never creates a PUBLIC GitHub Release before npm
 # publication succeeds: `release` uploads everything to a draft, `publish-npm`
@@ -36,6 +38,11 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -121,31 +128,75 @@ jobs:
           prerelease_args=()
           if [ "$channel" = "beta" ]; then
             prerelease_args+=(--prerelease)
+            expected_prerelease="true"
           else
             prerelease_args+=(--prerelease=false)
+            expected_prerelease="false"
           fi
+
+          expected_assets=(
+            ".release/assets/signkit-cloudflare-manifest.json"
+            ".release/assets/SHA256SUMS"
+            ".release/assets/signkit-cloudflare-${tag}.tar.gz"
+            ".release/assets/signkit-node-${tag}.tar.gz"
+            ".release/assets/signkit-${tag}-x86_64-unknown-linux-gnu.tar.gz"
+            ".release/assets/signkit-docker-${tag}.tar.gz"
+          )
+
+          remote_assets=""
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --draft --generate-notes "${prerelease_args[@]}"
           else
-            # Rerun path: refuse an existing public release before uploading or
-            # editing. Uploads and edits happen only on a draft; publication
-            # happens in publish-release after npm succeeds. Never flip a
-            # public release back into a draft.
-            is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+            # Rerun path: an existing release is immutable from this job. It
+            # must still be a draft with matching channel metadata, and every
+            # existing asset must be one of this build's expected names.
+            release_json="$(gh release view "$tag" --json isDraft,isPrerelease,assets)"
+            is_draft="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.isDraft));' "$release_json")"
             if [ "$is_draft" != "true" ]; then
               echo "refusing to upload to existing public release ${tag}: rerun recovery requires a draft release" >&2
               exit 1
             fi
-            gh release edit "$tag" "${prerelease_args[@]}"
+            actual_prerelease="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.isPrerelease));' "$release_json")"
+            if [ "$actual_prerelease" != "$expected_prerelease" ]; then
+              echo "refusing to mutate draft release ${tag}: prerelease metadata does not match the tag channel" >&2
+              exit 1
+            fi
+            remote_assets="$(node -e 'const value=JSON.parse(process.argv[1]); for (const asset of value.assets ?? []) console.log(asset.name);' "$release_json")"
+            while IFS= read -r remote_asset; do
+              [ -z "$remote_asset" ] && continue
+              expected="false"
+              for local_asset in "${expected_assets[@]}"; do
+                if [ "$remote_asset" = "$(basename "$local_asset")" ]; then
+                  expected="true"
+                  break
+                fi
+              done
+              if [ "$expected" != "true" ]; then
+                echo "refusing to mutate draft release ${tag}: unexpected existing asset ${remote_asset}" >&2
+                exit 1
+              fi
+            done <<< "$remote_assets"
           fi
-          gh release upload "$tag" \
-            .release/assets/signkit-cloudflare-manifest.json \
-            .release/assets/SHA256SUMS \
-            .release/assets/signkit-cloudflare-"$tag".tar.gz \
-            .release/assets/signkit-node-"$tag".tar.gz \
-            .release/assets/signkit-"$tag"-x86_64-unknown-linux-gnu.tar.gz \
-            .release/assets/signkit-docker-"$tag".tar.gz \
-            --clobber
+
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          for local_asset in "${expected_assets[@]}"; do
+            asset_name="$(basename "$local_asset")"
+            if printf '%s\n' "$remote_assets" | grep -Fxq "$asset_name"; then
+              gh release download "$tag" --pattern "$asset_name" --dir "$verify_dir"
+              if ! cmp -s "$local_asset" "$verify_dir/$asset_name"; then
+                echo "refusing to replace mismatched existing asset ${asset_name} on draft release ${tag}" >&2
+                exit 1
+              fi
+              echo "reusing byte-identical draft asset ${asset_name}"
+            else
+              gh release upload "$tag" "$local_asset"
+            fi
+          done
+      - name: Generate GitHub build-provenance attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: .release/assets/*
 
   publish-npm:
     needs: release
@@ -165,33 +216,24 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:create-signkit
-      - name: Ensure npm CLI supports Trusted Publishing
+      - name: Select the lockfile-pinned npm CLI
         id: npm_cli
         run: |
           set -euo pipefail
-          # Isolated prefix: GitHub-hosted `npm i -g` can miss the PATH that later
-          # steps use, and pnpm publish is not the CLI whose version we check.
-          prefix="${RUNNER_TEMP}/npm-trusted-publishing"
-          mkdir -p "$prefix"
-          pnpm exec npm install --prefix "$prefix" "npm@^11.5.1"
-          selected="${prefix}/node_modules/.bin/npm"
+          # `pnpm install --frozen-lockfile` above materializes the exact npm
+          # version and registry integrity recorded in package.json/pnpm-lock.yaml.
+          # Never resolve a range dynamically in a privileged release job.
+          expected="$(node -p "require('./package.json').devDependencies.npm")"
+          selected="$(pnpm exec which npm)"
           if [ ! -x "$selected" ]; then
             echo "npm CLI was not found at ${selected}" >&2
             exit 1
           fi
           version="$("$selected" --version)"
-          node -e '
-            const [maj, min, pat] = process.argv[1].split(".").map(Number);
-            if (![maj, min, pat].every(Number.isFinite)) {
-              console.error("could not parse npm CLI version", process.argv[1]);
-              process.exit(1);
-            }
-            if (maj < 11 || (maj === 11 && min < 5) || (maj === 11 && min === 5 && pat < 1)) {
-              console.error("npm CLI must be >= 11.5.1 for Trusted Publishing, got", process.argv[1]);
-              process.exit(1);
-            }
-          ' "$version"
-          echo "${prefix}/node_modules/.bin" >> "$GITHUB_PATH"
+          if [ "$version" != "$expected" ]; then
+            echo "lockfile-pinned npm CLI mismatch: expected ${expected}, got ${version}" >&2
+            exit 1
+          fi
           echo "bin=${selected}" >> "$GITHUB_OUTPUT"
       - name: Enforce git tag version equals package.json
         id: version
@@ -278,6 +320,9 @@ jobs:
             echo "expected draft release ${tag} from the release job, but it does not exist" >&2
             exit 1
           fi
-          # Idempotent: already-public stays public, so re-running this job
-          # after a partial failure converges instead of failing.
+          is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+          if [ "$is_draft" != "true" ]; then
+            echo "release ${tag} is already public; refusing any further mutation"
+            exit 0
+          fi
           gh release edit "$tag" --draft=false

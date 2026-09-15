@@ -8,6 +8,7 @@ import {
 	resolveBootstrapOwnerEmail,
 	resolveBootstrapUnsafeContext
 } from './instance-bootstrap';
+import { isLocalDevelopmentBootstrapEnvironment } from '$lib/security/bootstrap-owner-gate';
 
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 
@@ -55,6 +56,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		// explicit resolvers instead of relying on this default.
 		privateEnv.SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP = 'true';
 		privateEnv.SIGNKIT_PUBLIC_ORIGIN = 'http://localhost:5173';
+		privateEnv.NODE_ENV = 'development';
 		delete privateEnv.SIGNKIT_BOOTSTRAP_OWNER_EMAIL;
 		delete privateEnv.VERCEL;
 	});
@@ -575,6 +577,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		const OWNER = 'SIGNKIT_BOOTSTRAP_OWNER_EMAIL';
 		const UNSAFE = 'SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP';
 		const ORIGIN = 'SIGNKIT_PUBLIC_ORIGIN';
+		const NODE_ENV = 'NODE_ENV';
 		const VERCEL = 'VERCEL';
 
 		it('reads the owner email from the Cloudflare platform env first', () => {
@@ -627,6 +630,52 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 				unsafeOptIn: true,
 				localDevelopment: false
 			});
+		});
+
+		it('refuses NODE_ENV=production even when a reverse proxy misconfigures the public origin as loopback', () => {
+			privateEnv[UNSAFE] = 'true';
+			privateEnv[ORIGIN] = 'http://127.0.0.1:3000';
+			privateEnv[NODE_ENV] = 'production';
+			expect(resolveBootstrapUnsafeContext(undefined)).toEqual({
+				unsafeOptIn: true,
+				localDevelopment: false
+			});
+		});
+
+		it('keeps the instance unclaimed under that production proxy misconfiguration', async () => {
+			privateEnv[UNSAFE] = 'true';
+			privateEnv[ORIGIN] = 'http://localhost:3000';
+			privateEnv[NODE_ENV] = 'production';
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn(),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler((): InstanceApplicationPort => app);
+			const response = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('stranger@example.com'),
+					headers: { 'idempotency-key': 'proxy-misconfiguration' },
+					body: '{}'
+				})
+			);
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toMatchObject({
+				type: 'urn:signkit:problem:bootstrap-owner-required'
+			});
+			expect(app.bootstrapInstance).not.toHaveBeenCalled();
+		});
+
+		it('requires an explicit development runtime signal in addition to a loopback origin', () => {
+			for (const nodeEnvironment of [undefined, '', 'test', 'Development']) {
+				expect(
+					isLocalDevelopmentBootstrapEnvironment({
+						nodeEnvironment,
+						hasPlatformEnv: false,
+						publicOrigin: 'http://[::1]:5173'
+					})
+				).toBe(false);
+			}
 		});
 	});
 });

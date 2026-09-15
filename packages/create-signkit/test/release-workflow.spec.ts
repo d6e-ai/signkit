@@ -20,26 +20,37 @@ const verifyScriptPath = fileURLToPath(
 const workflowPath = fileURLToPath(
 	new URL('../../../.github/workflows/release-cloudflare-bundle.yml', import.meta.url)
 );
+const rootPackagePath = fileURLToPath(new URL('../../../package.json', import.meta.url));
+const lockfilePath = fileURLToPath(new URL('../../../pnpm-lock.yaml', import.meta.url));
 
 describe('release-cloudflare-bundle workflow', () => {
 	it('publishes create-signkit with the version-checked npm CLI, not pnpm publish', async () => {
 		const yaml = await readFile(workflowPath, 'utf8');
+		const rootPackage = JSON.parse(await readFile(rootPackagePath, 'utf8')) as {
+			devDependencies: Record<string, string>;
+		};
+		const lockfile = await readFile(lockfilePath, 'utf8');
 		expect(yaml).not.toMatch(/^\s*run:\s*pnpm publish\b/m);
-		expect(yaml).toMatch(/pnpm exec npm install --prefix/);
+		expect(yaml).not.toMatch(/npm install --prefix/);
+		expect(yaml).not.toMatch(/npm@\^/);
+		expect(rootPackage.devDependencies.npm).toBe('11.5.1');
+		expect(lockfile).toMatch(/npm:\n\s+specifier: 11\.5\.1\n\s+version: 11\.5\.1/);
+		expect(lockfile).toMatch(/npm@11\.5\.1:\n\s+resolution: \{integrity: sha512-/);
+		expect(yaml).toMatch(/selected="\$\(pnpm exec which npm\)"/);
 		expect(yaml).toMatch(/pnpm exec "\$NPM_CLI" publish --access public --tag "\$NPM_DIST_TAG"/);
 		expect(yaml).not.toMatch(/pnpm exec "\$NPM_CLI" publish --access public\s*$/m);
 		expect(yaml).toMatch('NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}');
 		expect(yaml).not.toMatch(/echo[^|\n]*NODE_AUTH_TOKEN/);
-		expect(yaml).toMatch(/npm CLI must be >= 11\.5\.1/);
+		expect(yaml).toMatch(/lockfile-pinned npm CLI mismatch/);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease\)/);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease=false\)/);
-		expect(yaml).toMatch(/gh release edit "\$tag" "\$\{prerelease_args\[@\]\}"/);
+		expect(yaml).not.toMatch(/gh release edit "\$tag" "\$\{prerelease_args\[@\]\}"/);
 		expect(yaml).toMatch(/channelFromReleaseTag/);
 		expect(yaml).toMatch(/npmDistTagFromReleaseTag/);
 		expect(yaml).toMatch(/packages\/create-signkit\/dist\/release\/semver\.js/);
 	});
 
-	it('builds every artifact and uploads them atomically behind version gates', async () => {
+	it('builds every artifact and publishes only expected names behind version gates', async () => {
 		const yaml = await readFile(workflowPath, 'utf8');
 		// Full-tag coverage: Node, Cloudflare, Rust, Docker.
 		expect(yaml).toMatch(/pnpm run build:node/);
@@ -52,10 +63,10 @@ describe('release-cloudflare-bundle workflow', () => {
 		// Unified checksums regenerated over all assets and verified before upload.
 		expect(yaml).toMatch(/sha256sum -c SHA256SUMS/);
 		// Every shippable family is attached in the single upload step.
-		expect(yaml).toMatch(/signkit-cloudflare-"\$tag"\.tar\.gz/);
-		expect(yaml).toMatch(/signkit-node-"\$tag"\.tar\.gz/);
+		expect(yaml).toMatch(/signkit-cloudflare-\$\{tag\}\.tar\.gz/);
+		expect(yaml).toMatch(/signkit-node-\$\{tag\}\.tar\.gz/);
 		expect(yaml).toMatch(/x86_64-unknown-linux-gnu\.tar\.gz/);
-		expect(yaml).toMatch(/signkit-docker-"\$tag"\.tar\.gz/);
+		expect(yaml).toMatch(/signkit-docker-\$\{tag\}\.tar\.gz/);
 		// Hard tag-equals-version gates cover all three versioned packages.
 		expect(yaml).toMatch(/require\('\.\/package\.json'\)\.version/);
 		expect(yaml).toMatch(/require\('\.\/packages\/create-signkit\/package\.json'\)\.version/);
@@ -73,9 +84,16 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).toMatch(/gh release create "\$tag" --draft/);
 		// Rerun path inspects draft status before uploading/editing and fails
 		// closed on an existing public release.
-		expect(yaml).toMatch(/gh release view "\$tag" --json isDraft/);
+		expect(yaml).toMatch(/gh release view "\$tag" --json isDraft,isPrerelease,assets/);
 		expect(yaml).toMatch(/is_draft/);
 		expect(yaml).toMatch(/refusing to upload to existing public release/);
+		expect(yaml).toMatch(/prerelease metadata does not match the tag channel/);
+		expect(yaml).toMatch(/unexpected existing asset/);
+		expect(yaml).not.toMatch(/--clobber/);
+		expect(yaml).toMatch(/gh release download "\$tag" --pattern "\$asset_name"/);
+		expect(yaml).toMatch(/cmp -s "\$local_asset" "\$verify_dir\/\$asset_name"/);
+		expect(yaml).toMatch(/reusing byte-identical draft asset/);
+		expect(yaml).toMatch(/refusing to replace mismatched existing asset/);
 		// Never turn a public release back into a draft.
 		expect(yaml).not.toMatch(/--draft=true/);
 		expect(yaml).not.toMatch(/--draft true/);
@@ -84,10 +102,25 @@ describe('release-cloudflare-bundle workflow', () => {
 		// Public flip happens only after the npm gate succeeds.
 		expect(yaml).toMatch(/needs:\s*publish-npm/);
 		const publishReleaseSection = yaml.slice(yaml.indexOf('publish-release:'));
+		expect(publishReleaseSection).toMatch(
+			/release \$\{tag\} is already public; refusing any further mutation/
+		);
 		expect(publishReleaseSection).toMatch(/gh release edit "\$tag" --draft=false/);
 		const releaseSection = yaml.slice(0, yaml.indexOf('publish-npm:'));
 		expect(releaseSection).not.toMatch(/--draft=false/);
 		expect(releaseSection).toMatch(/gh release upload "\$tag"/);
+	});
+
+	it('generates GitHub build provenance for the exact release assets', async () => {
+		const yaml = await readFile(workflowPath, 'utf8');
+		expect(yaml).toMatch(/id-token: write/);
+		expect(yaml).toMatch(/attestations: write/);
+		expect(yaml).toMatch(/artifact-metadata: write/);
+		expect(yaml).toMatch(/uses: actions\/attest@v4/);
+		expect(yaml).toMatch(/subject-path: \.release\/assets\/\*/);
+		expect(yaml.indexOf('Generate GitHub build-provenance attestations')).toBeGreaterThan(
+			yaml.indexOf('Publish release assets to a draft release')
+		);
 	});
 
 	it('derives GitHub prerelease and npm dist-tag from the same semver channel', async () => {

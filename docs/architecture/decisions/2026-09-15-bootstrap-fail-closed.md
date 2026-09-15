@@ -13,15 +13,15 @@ refused attempt never consumes the single empty-instance window.
 
 ## Decision
 
-- The unsafe flag is honored only in local development, determined from the
-  existing runtime/profile conventions rather than a new trust signal: no
-  Cloudflare Workers `platform.env` (which also covers `wrangler dev`), no
-  Vercel indicator in process env, and a `SIGNKIT_PUBLIC_ORIGIN` naming a
+- The unsafe flag is honored only when explicit and independent development
+  signals all agree: `NODE_ENV=development`, no Cloudflare Workers
+  `platform.env` (which also covers `wrangler dev`), no Vercel indicator in
+  process env, and a `SIGNKIT_PUBLIC_ORIGIN` naming a
   loopback host (`localhost`, `127.0.0.1`, `::1`) — the same loopback
   exception the d6e-auth base-URL validation and the recipient-link
-  Secure-cookie handling already use. A `true` flag anywhere else is ignored,
-  so it can never reopen the race in Node production, on Cloudflare, or on
-  Vercel.
+  Secure-cookie handling already use. Runtime mode is not inferred from the
+  origin, so a production proxy misconfigured with a loopback origin remains
+  closed. A `true` flag anywhere else is ignored.
 - The expected email is never echoed: both refusals carry generic problem
   details, and the comparison lives in one gate
   (`src/lib/security/bootstrap-owner-gate.ts`) shared by the D1 (Cloudflare
@@ -46,8 +46,9 @@ refused attempt never consumes the single empty-instance window.
   unconfigured non-local instances stay unclaimed (403) instead of going to
   whoever arrives first. Already-claimed instances are unaffected: bootstrap
   never runs again, so the value is inert for them.
-- Local development sets `SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP=true`
-  with a loopback origin, or configures an owner email like production.
+- Local development sets `NODE_ENV=development`,
+  `SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP=true`, and a loopback origin, or
+  configures an owner email like production.
 - PDFs with external links are rejected at upload even when the viewer would
   open them in a separate browser.
 - Webhook allowlists using two-label wildcards must add a label or switch to

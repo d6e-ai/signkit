@@ -188,6 +188,7 @@ export function resolveBootstrapUnsafeContext(
 		platformEnv?.[UNSAFE_BOOTSTRAP_ENV_VAR] ?? env[UNSAFE_BOOTSTRAP_ENV_VAR]
 	);
 	const localDevelopment: boolean = isLocalDevelopmentBootstrapEnvironment({
+		nodeEnvironment: env.NODE_ENV,
 		hasPlatformEnv: platform?.env !== undefined,
 		vercelIndicator: env.VERCEL,
 		publicOrigin: platformEnv?.[PUBLIC_ORIGIN_ENV_VAR] ?? env[PUBLIC_ORIGIN_ENV_VAR]

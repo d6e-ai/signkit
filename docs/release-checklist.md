@@ -76,10 +76,15 @@ no implementation is a release blocker.
 1. The `release` job rebuilds everything (Node bundle + smoke test,
    Cloudflare bundle + verify, Rust `--locked --release` binary, Docker
    image), regenerates a unified `.release/assets/SHA256SUMS` over all
-   assets, verifies it with `sha256sum -c`, and uploads every asset to the
-   GitHub Release in one step with `--clobber`.
-2. The `publish-npm` job runs only after `release` succeeds. It installs an
-   isolated npm CLI `>= 11.5.1`, re-checks tag-equals-version across all
+   assets and verifies it with `sha256sum -c`. A first run uploads missing
+   assets to a draft. A rerun refuses a public release, mismatched prerelease
+   metadata, unexpected assets, or different bytes under an expected name;
+   byte-identical assets are downloaded, verified, and reused without
+   replacement. Only after that succeeds does the job generate GitHub build-
+   provenance attestations for the verified local files.
+2. The `publish-npm` job runs only after `release` succeeds. It uses the exact
+   npm CLI version pinned in root `package.json` and `pnpm-lock.yaml` (including
+   registry integrity), re-checks tag-equals-version across all
    three packages, derives the dist-tag from the same semver channel
    (`beta` for prereleases, `latest` for stable), and publishes with that
    explicit `--tag`. It never runs `pnpm publish` and never prints
@@ -89,3 +94,10 @@ no implementation is a release blocker.
    by deploying the previous tag, and npm dist-tags are moved rather than
    unpublishing. Do not delete and re-push a tag to "fix" a release; cut a
    new prerelease or patch version instead.
+
+GitHub stores the provenance attestations separately from the release assets.
+They can be verified with a compatible GitHub CLI, but the local release
+checks and `create-signkit` do not currently verify them. A policy that makes
+attestation verification mandatory at deploy time needs a follow-up issue and
+a fail-closed verifier in `create-signkit`; do not describe generation alone as
+end-to-end enforcement.

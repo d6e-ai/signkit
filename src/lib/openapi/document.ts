@@ -1164,7 +1164,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Bootstrap the instance',
 					operationId: 'bootstrapInstance',
 					description:
-						'Cookie-session-only first-owner claim on an empty instance. Uninitialized instances fail closed: the verified session email must exactly match the deployer-configured SIGNKIT_BOOTSTRAP_OWNER_EMAIL (403 bootstrap-owner-mismatch otherwise), or the local-development-only SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP opt-in must apply (403 bootstrap-owner-required otherwise). A mismatched or unconfigured attempt never consumes the single empty-instance window. Already-bootstrapped instances answer 409.',
+						'Cookie-session-only first-owner claim on an empty instance. Uninitialized instances fail closed: the verified session email must exactly match the deployer-configured SIGNKIT_BOOTSTRAP_OWNER_EMAIL (403 bootstrap-owner-mismatch otherwise), or the local-development-only SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP opt-in must apply on Node with NODE_ENV=development and a loopback public origin (403 bootstrap-owner-required otherwise). Runtime mode and public origin are independent checks, so a production proxy misconfigured with a loopback origin stays closed. A mismatched or unconfigured attempt never consumes the single empty-instance window. Already-bootstrapped instances answer 409.',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
 					requestBody: JSON_BODY,
