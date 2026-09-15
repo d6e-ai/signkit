@@ -282,6 +282,38 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect.element(languageSelect).toHaveTextContent('日本語');
 	});
 
+	it('opens one document picker with PDF and Word choices', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		expect(screen.container.textContent).not.toContain('New document name');
+		await screen.getByRole('button', { name: 'Add document' }).click();
+		const dialog = screen.getByRole('dialog');
+		await expect.element(dialog.getByRole('heading', { name: 'Add a document' })).toBeVisible();
+		await expect.element(dialog.getByText('Upload PDF')).toBeVisible();
+		await expect.element(dialog.getByText('Upload Word document')).toBeVisible();
+	});
+
 	it('joins delivery rows to recipients and shows invitation state, not workflow enums', async () => {
 		const mockFetch = vi
 			.fn()

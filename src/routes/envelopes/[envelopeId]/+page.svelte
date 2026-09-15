@@ -10,11 +10,14 @@
 	import IconSend from '@tabler/icons-svelte/icons/send';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
+	import IconFileTypeDocx from '@tabler/icons-svelte/icons/file-type-docx';
+	import IconFileTypePdf from '@tabler/icons-svelte/icons/file-type-pdf';
 	import PdfDocumentView, { type PdfRenderedPage } from '$lib/components/pdf-document-view.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Checkbox } from '$lib/components/ui/checkbox';
+	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
 	import * as Select from '$lib/components/ui/select';
@@ -40,6 +43,7 @@
 	} from '$lib/client/envelopes';
 	import type { DocumentSetLeaf, DocumentSetManifest } from '$lib/domain/document-set';
 	import { isMarkdownPath, type MarkdownPath, type RecipientStatus } from '$lib/domain/envelope';
+	import { envelopeBreadcrumbTitle } from '$lib/navigation/envelope-breadcrumb-title';
 	import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
 	import * as m from '$lib/paraglide/messages';
@@ -67,7 +71,9 @@
 	let editedContent = $state<Record<string, string>>({});
 	const dirtyPaths = new SvelteSet<string>();
 	let activeDocPath = $state<string | null>(null);
-	let newDocumentName = $state('');
+	let addDocumentDialogOpen = $state(false);
+	let docxInput = $state<HTMLInputElement | null>(null);
+	let pdfInput = $state<HTMLInputElement | null>(null);
 	let commitPending = $state(false);
 	let commitError = $state<string | null>(null);
 	let previewMode = $state<'formatted' | 'source'>('formatted');
@@ -369,25 +375,6 @@
 		} finally {
 			loading = false;
 		}
-	}
-
-	function addDocument(): void {
-		const name = newDocumentName
-			.trim()
-			.toLowerCase()
-			.replaceAll(/[^a-z0-9._-]+/g, '-')
-			.replace(/^-+|-+$/g, '');
-		if (name.length === 0) return;
-		const path = `documents/${name}.md`;
-		if (path in editedContent) {
-			activeDocPath = path;
-			return;
-		}
-		editedContent = { ...editedContent, [path]: `# ${documentTitle(path)}\n\n` };
-		dirtyPaths.add(path);
-		activeDocPath = path;
-		activeDocumentKey = `pending:${path}`;
-		newDocumentName = '';
 	}
 
 	function updateContent(path: string, content: string): void {
@@ -754,17 +741,15 @@
 		}
 	}
 
-	async function importDocx(fileList: FileList | null): Promise<void> {
-		if (fileList === null || fileList.length === 0 || draft === null || importPending) return;
-		const file = fileList[0];
+	async function importDocx(file: File | null): Promise<void> {
+		if (file === null || draft === null || importPending) return;
 		const sourceName = file.name.replace(/\.docx$/i, '');
 		const slug = sourceName
 			.trim()
 			.toLowerCase()
 			.replaceAll(/[^a-z0-9._-]+/g, '-')
 			.replace(/^-+|-+$/g, '');
-		const targetPath = (activeDocPath ??
-			`documents/${slug.length > 0 ? slug : 'imported'}.md`) as `documents/${string}.md`;
+		const targetPath = uniqueImportedDocumentPath(slug.length > 0 ? slug : 'imported');
 		importPending = true;
 		importError = null;
 		try {
@@ -781,6 +766,22 @@
 		} finally {
 			importPending = false;
 		}
+	}
+
+	function uniqueImportedDocumentPath(slug: string): `documents/${string}.md` {
+		const occupied = new Set<string>([
+			...Object.keys(editedContent),
+			...(draft?.documentSet?.documents.flatMap((document) =>
+				document.kind === 'markdown' ? [document.path] : []
+			) ?? [])
+		]);
+		let suffix = 1;
+		let path = `documents/${slug}.md` as `documents/${string}.md`;
+		while (occupied.has(path)) {
+			suffix += 1;
+			path = `documents/${slug}-${suffix}.md`;
+		}
+		return path;
 	}
 
 	async function exportDocx(): Promise<void> {
@@ -808,9 +809,8 @@
 		}
 	}
 
-	async function uploadPdf(fileList: FileList | null): Promise<void> {
-		if (fileList === null || fileList.length === 0 || draft === null || pdfUploadPending) return;
-		const file = fileList[0];
+	async function uploadPdf(file: File | null): Promise<void> {
+		if (file === null || draft === null || pdfUploadPending) return;
 		pdfUploadPending = true;
 		pdfUploadError = null;
 		try {
@@ -949,6 +949,11 @@
 	onMount(() => {
 		void reloadAuthoringSurface();
 	});
+
+	$effect(() => {
+		envelopeBreadcrumbTitle.set(envelope?.title.trim() || null);
+		return () => envelopeBreadcrumbTitle.set(null);
+	});
 </script>
 
 {#snippet renderMarkdownNode(node: RecipientMarkdownNode)}
@@ -1017,66 +1022,76 @@
 				{#if envelope.status === 'draft'}
 					<Card.Root>
 						<Card.Header class="flex-row items-center justify-between gap-3">
-							<div>
+							<div class="min-w-0">
 								<Card.Title>{m.envelope_documents_title()}</Card.Title>
 								<Card.Description>{m.envelope_documents_description()}</Card.Description>
 							</div>
+							<Button
+								variant="outline"
+								disabled={importPending || pdfUploadPending || draft === null}
+								onclick={() => (addDocumentDialogOpen = true)}
+							>
+								{#if importPending || pdfUploadPending}
+									<Spinner data-icon="inline-start" />
+								{:else}
+									<IconPlus data-icon="inline-start" />
+								{/if}
+								{m.envelope_add_document()}
+							</Button>
 						</Card.Header>
 						<Card.Content class="flex flex-col gap-4">
-							<div class="flex flex-wrap items-end gap-2">
-								<Field.Field class="min-w-48 flex-1">
-									<Field.FieldLabel for="new-doc-name">
-										{m.envelope_new_document_label()}
-									</Field.FieldLabel>
+							<Dialog.Root bind:open={addDocumentDialogOpen}>
+								<Dialog.Content closeLabel={m.common_cancel()}>
+									<Dialog.Header>
+										<Dialog.Title>{m.envelope_add_document_title()}</Dialog.Title>
+										<Dialog.Description>{m.envelope_add_document_description()}</Dialog.Description>
+									</Dialog.Header>
+									<div class="flex flex-col gap-3">
+										<Button
+											variant="outline"
+											class="h-auto justify-start py-4"
+											onclick={() => pdfInput?.click()}
+										>
+											<IconFileTypePdf data-icon="inline-start" />
+											{m.envelope_upload_pdf_action()}
+										</Button>
+										<Button
+											variant="outline"
+											class="h-auto justify-start py-4"
+											onclick={() => docxInput?.click()}
+										>
+											<IconFileTypeDocx data-icon="inline-start" />
+											{m.envelope_upload_docx_action()}
+										</Button>
+									</div>
 									<Input
-										id="new-doc-name"
-										bind:value={newDocumentName}
-										placeholder={m.envelope_new_document_placeholder()}
-									/>
-								</Field.Field>
-								<Button
-									variant="outline"
-									onclick={addDocument}
-									disabled={newDocumentName.trim().length === 0}
-								>
-									<IconPlus data-icon="inline-start" />{m.envelope_add_document()}
-								</Button>
-								<Field.Field class="w-fit">
-									<Field.FieldLabel for="docx-import"
-										>{m.envelope_import_docx_label()}</Field.FieldLabel
-									>
-									<Input
-										id="docx-import"
+										bind:ref={pdfInput}
+										class="sr-only"
 										type="file"
-										accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-										disabled={importPending || draft === null}
+										accept="application/pdf,.pdf"
+										aria-label={m.envelope_upload_pdf_action()}
 										onchange={(event) => {
-											const files = event.currentTarget.files;
+											const file = event.currentTarget.files?.[0] ?? null;
 											event.currentTarget.value = '';
-											void importDocx(files);
+											addDocumentDialogOpen = false;
+											void uploadPdf(file);
 										}}
 									/>
-									<Field.FieldDescription>{m.envelope_import_docx_hint()}</Field.FieldDescription>
-								</Field.Field>
-								<Field.Field class="w-fit">
-									<Field.FieldLabel for="pdf-upload">{m.envelope_add_pdf_label()}</Field.FieldLabel>
-									<div class="flex items-center gap-2">
-										<Input
-											id="pdf-upload"
-											type="file"
-											accept="application/pdf,.pdf"
-											disabled={pdfUploadPending || draft === null}
-											onchange={(event) => {
-												const files = event.currentTarget.files;
-												event.currentTarget.value = '';
-												void uploadPdf(files);
-											}}
-										/>
-										{#if pdfUploadPending}<Spinner data-icon="inline-start" />{/if}
-									</div>
-									<Field.FieldDescription>{m.envelope_add_pdf_hint()}</Field.FieldDescription>
-								</Field.Field>
-							</div>
+									<Input
+										bind:ref={docxInput}
+										class="sr-only"
+										type="file"
+										accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+										aria-label={m.envelope_upload_docx_action()}
+										onchange={(event) => {
+											const file = event.currentTarget.files?.[0] ?? null;
+											event.currentTarget.value = '';
+											addDocumentDialogOpen = false;
+											void importDocx(file);
+										}}
+									/>
+								</Dialog.Content>
+							</Dialog.Root>
 
 							{#if authoringDocuments.length === 0}
 								<p class="text-sm text-muted-foreground">{m.envelope_documents_empty()}</p>

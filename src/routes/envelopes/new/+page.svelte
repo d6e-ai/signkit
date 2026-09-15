@@ -68,7 +68,7 @@
 					</Field.Field>
 				</Field.FieldGroup>
 			</Card.Content>
-			<Card.Footer class="justify-end gap-2 border-t bg-muted/20 py-4">
+			<Card.Footer class="justify-end gap-2">
 				<Button variant="outline" href={localizeHref('/envelopes')} disabled={pending}>
 					{m.common_cancel()}
 				</Button>

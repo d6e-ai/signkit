@@ -25,7 +25,10 @@ describe('envelope list product copy', () => {
 
 		expect(en.envelope_generation_label).toBe('Revision {generation}');
 		expect(ja.envelope_generation_label).toBe('リビジョン {generation}');
-		expect(en.envelope_documents_description).toMatch(/markdown/i);
+		expect(en.envelope_documents_description).toMatch(/PDF.*Word/i);
+		expect(ja.envelope_documents_description).toMatch(/PDF.*Word/);
+		expect(en.envelope_documents_description).not.toMatch(/markdown/i);
+		expect(ja.envelope_documents_description).not.toMatch(/Markdown/i);
 		expect(en.envelope_documents_description).not.toMatch(/git/i);
 		expect(en.envelope_documents_description).not.toMatch(/generation/i);
 		expect(en.envelope_documents_description).not.toMatch(/commit/i);
@@ -33,6 +36,8 @@ describe('envelope list product copy', () => {
 		expect(en.envelope_import_docx_hint).not.toMatch(/git/i);
 		expect(en.envelope_import_docx_hint).not.toMatch(/commit/i);
 		expect(ja.envelope_import_docx_hint).not.toMatch(/Git|コミット/);
+		expect(en.envelope_import_docx_hint).not.toMatch(/markdown/i);
+		expect(ja.envelope_import_docx_hint).not.toMatch(/Markdown/i);
 
 		for (const messages of [en, ja]) {
 			for (const [key, value] of Object.entries(messages)) {
