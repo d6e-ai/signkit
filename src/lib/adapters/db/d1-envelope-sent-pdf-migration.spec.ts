@@ -456,6 +456,25 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 					}
 				).count
 			).toBe(0);
+			expect(
+				sqlite
+					.prepare(
+						`SELECT object_key, sha256, byte_size, page_count, page_width, page_height,
+							document_pages_json, created_at
+						FROM envelope_sent_pdf
+						WHERE organization_id='${ORGANIZATION_ID}' AND envelope_id='${ENVELOPE_ID}' AND commit_sha='${COMMIT_SHA}'`
+					)
+					.get()
+			).toEqual({
+				object_key: SENT_PDF_KEY,
+				sha256: SENT_PDF_SHA256,
+				byte_size: 4096,
+				page_count: 2,
+				page_width: 595.28,
+				page_height: 841.89,
+				document_pages_json: DOCUMENT_PAGES,
+				created_at: '2026-09-11T00:02:00.000Z'
+			});
 		} finally {
 			sqlite.close();
 		}
