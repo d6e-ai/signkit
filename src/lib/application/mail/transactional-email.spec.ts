@@ -78,7 +78,7 @@ describe('transactional completion mail', () => {
 		expect(copy.text).toContain('Hello Morgan,');
 		expect(copy.text).toContain('"Partnership Agreement" has been completed by all participants.');
 		expect(copy.text).toContain(COMPLETION_URL);
-		expect(copy.html).toContain('View completed agreement');
+		expect(copy.html).toContain('View completed documents');
 		assertRichTemplate(copy.html, 'en');
 	});
 

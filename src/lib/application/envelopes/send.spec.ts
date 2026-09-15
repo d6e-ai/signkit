@@ -12,7 +12,7 @@ import type {
 } from '$lib/security/delivery-capability';
 import {
 	FakeSentDocumentPdf,
-	fakeSentPdfArtifact
+	fakeSentDocumentSetArtifact
 } from '$lib/application/documents/sent-document-pdf-test-support';
 import { EnvelopeSendApplication } from './send';
 
@@ -249,12 +249,17 @@ describe('EnvelopeSendApplication', () => {
 				archiveSha256: envelope.repositoryArchiveSha256
 			}
 		]);
-		const expected = fakeSentPdfArtifact(envelope.organizationId, envelope.id);
-		expect(store.commands[0].sentPdf).toEqual(expected);
+		const expected = fakeSentDocumentSetArtifact(envelope.organizationId, envelope.id);
+		expect(store.commands[0].sentDocumentSet).toEqual(expected);
 		expect(JSON.parse(store.commands[0].auditPayloadJson)).toMatchObject({
-			sentPdfSha256: expected.sha256,
-			sentPdfBytes: expected.byteSize,
-			sentPdfPageCount: expected.pageCount
+			documentSetHash: expected.documentSetHash,
+			documentCount: expected.documentCount,
+			documents: expected.documents.map((document) => ({
+				id: document.documentId,
+				sha256: document.sha256,
+				byteSize: document.byteSize,
+				pageCount: document.pageCount
+			}))
 		});
 		// The storage key stays out of the evidence record; the digest pins it.
 		expect(store.commands[0].auditPayloadJson).not.toContain('sent-documents/');

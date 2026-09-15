@@ -22,14 +22,28 @@ describe('envelope authoring page contracts', () => {
 		);
 	});
 
+	it('lets senders add, reorder, and remove mixed Markdown and PDF documents', () => {
+		expect(source).toContain('client.uploadPdf');
+		expect(source).toContain('client.orderDocuments');
+		expect(source).toContain('accept="application/pdf,.pdf"');
+		expect(source).toContain('envelope_add_pdf_label');
+		expect(source).toContain('envelope_document_kind_markdown');
+		expect(source).toContain('envelope_document_kind_pdf');
+		expect(source).toContain('envelope_document_remove_title');
+		expect(source).toContain('moveCommittedDocument');
+		expect(source).toContain('confirmRemoveDocument');
+	});
+
 	it('places fields on the rendered document PDF, by pointer and by keyboard', () => {
 		// Placement happens against the same deterministic rendering a recipient
 		// will be shown, so a box dropped on page 3 means page 3 for the signer.
 		expect(source).toContain('<PdfDocumentView');
-		expect(source).toContain('{#key envelopeId}');
+		expect(source).toContain('{#key `${envelopeId}:${documentIdForPlacement()');
 		expect(source).toContain('/document-pdf');
 		expect(source).toContain('/document-pdf/pages');
-		expect(source).toContain('documentPathForPage');
+		expect(source).toContain('draft?.documentSet?.documents[0]?.id');
+		expect(source).toContain('pageMap.documentId !== documentId');
+		expect(source).toContain('documentIdForPlacement');
 		expect(source).toContain('handlePageClick');
 		expect(source).toContain('startDrag');
 		expect(source).toContain('handleFieldKeydown');

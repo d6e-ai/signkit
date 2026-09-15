@@ -2,6 +2,7 @@ import type {
 	Envelope,
 	FieldGeometry,
 	FieldType,
+	MarkdownPath,
 	RecipientRole,
 	RecipientStatus
 } from '$lib/domain/envelope';
@@ -120,7 +121,8 @@ export interface PublicEnvelopeRecipient {
 export interface PublicEnvelopeDetailField {
 	id: string;
 	recipientId: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string | null;
+	documentPath: MarkdownPath | null;
 	fieldType: FieldType;
 	required: boolean;
 	position: number;

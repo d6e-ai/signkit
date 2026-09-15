@@ -46,7 +46,7 @@ export interface CompletionPdfManifestV1 {
 	/** Pointer back to the completion manifest this PDF was deterministically derived from. */
 	manifestSha256: string;
 	pdfSha256: string;
-	documents: readonly { path: string; sha256: string }[];
+	documents: readonly { path?: string; sha256: string }[];
 	fields: readonly CompletionPdfManifestField[];
 	generatedAt: string;
 }
@@ -79,15 +79,29 @@ export function buildCompletionPdfPages(
 	lines.push(`Draft archive SHA-256: ${manifest.draftArchiveSha256}`);
 	lines.push(`Field generation: ${manifest.fieldGeneration}`);
 	lines.push(`Completed at: ${manifest.completedAt}`);
+	if (manifest.documentSetHash !== undefined) {
+		lines.push(`Document set hash: ${manifest.documentSetHash}`);
+	}
 	lines.push('');
 
 	for (const document of manifest.documents) {
 		lines.push('-'.repeat(PDF_CHARS_PER_LINE));
-		lines.push(`Document: ${toPdfSafeText(document.path)}`);
+		if (document.kind === 'pdf') {
+			lines.push(`Document: ${toPdfSafeText(document.title ?? document.id ?? 'PDF')}`);
+			lines.push('Kind: pdf');
+			if (document.pageCount !== undefined) lines.push(`Pages: ${document.pageCount}`);
+			lines.push(`SHA-256: ${document.sha256}`);
+			if (document.byteSize !== undefined) lines.push(`Size: ${document.byteSize} bytes`);
+			lines.push('-'.repeat(PDF_CHARS_PER_LINE));
+			lines.push('');
+			continue;
+		}
+		lines.push(`Document: ${toPdfSafeText(document.path ?? document.title ?? 'Document')}`);
 		lines.push(`SHA-256: ${document.sha256}`);
 		lines.push('-'.repeat(PDF_CHARS_PER_LINE));
 		lines.push('');
-		const content: DraftDocument | undefined = documentsByPath.get(document.path);
+		const content: DraftDocument | undefined =
+			document.path === undefined ? undefined : documentsByPath.get(document.path);
 		if (content !== undefined) {
 			lines.push(...wrapPlainTextLines(toPdfSafeText(content.content), PDF_CHARS_PER_LINE));
 		}
@@ -165,10 +179,13 @@ export async function buildCompletionPdfManifest(
 		envelopeId: input.manifest.envelopeId,
 		manifestSha256: input.manifestSha256,
 		pdfSha256: await sha256Hex(input.pdfBytes),
-		documents: input.manifest.documents.map((document) => ({
-			path: document.path,
-			sha256: document.sha256
-		})),
+		documents: input.manifest.documents.map((document) => {
+			const entry: { path?: string; sha256: string } =
+				document.path === undefined
+					? { sha256: document.sha256 }
+					: { path: document.path, sha256: document.sha256 };
+			return entry;
+		}),
 		fields: input.manifest.fields.map((field): CompletionPdfManifestField => {
 			const geometry: CompletionPdfFieldGeometry | undefined = geometryById.get(field.id);
 			return {

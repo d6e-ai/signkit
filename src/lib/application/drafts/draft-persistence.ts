@@ -1,6 +1,24 @@
 import { hashAuditEventV2 } from '$lib/domain/audit';
 import { MAX_DRAFT_GENERATION, normalizeMarkdownContent } from '$lib/domain/draft';
-import { assertMarkdownPath, type Envelope } from '$lib/domain/envelope';
+import {
+	appendPdfDocument,
+	DOCUMENT_SET_MANIFEST_PATH,
+	documentSetHash,
+	DocumentSetError,
+	materializeMarkdownLeaves,
+	parseDocumentSet,
+	reorderDocumentSet,
+	serializeDocumentSet,
+	upsertMarkdownDocument,
+	type DocumentSetManifest,
+	type DocumentSetLeaf
+} from '$lib/domain/document-set';
+import {
+	assertDraftPath,
+	isMarkdownPath,
+	type Envelope,
+	type MarkdownPath
+} from '$lib/domain/envelope';
 import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	DraftMutationStore,
@@ -11,11 +29,13 @@ import type {
 } from '$lib/ports/draft-mutation-store';
 import type {
 	DraftActor,
+	DraftCommitOptions,
 	DraftDocument,
 	DraftEdit,
 	DraftRepository,
 	DraftVersion
 } from '$lib/ports/draft-repository';
+import type { EnvelopeUploadedDocumentStore } from '$lib/ports/envelope-uploaded-document-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 
 const ARCHIVE_CONTENT_TYPE = 'application/vnd.signkit.git-archive+gzip';
@@ -36,6 +56,19 @@ export interface ReadCurrentDraftInput {
 	envelopeId: string;
 }
 
+export type DocumentSetMutation =
+	| {
+			op: 'appendPdf';
+			title: string;
+			sha256: string;
+			byteSize: number;
+			pageCount: number;
+			pageWidth: number;
+			pageHeight: number;
+			position?: number;
+	  }
+	| { op: 'reorder'; documentIds: readonly string[] };
+
 export interface CommitDraftInput extends ReadCurrentDraftInput {
 	expectedGeneration: number;
 	edits: readonly DraftEdit[];
@@ -44,6 +77,7 @@ export interface CommitDraftInput extends ReadCurrentDraftInput {
 	idempotencyKey: string;
 	provenance?: DraftCommitProvenance;
 	updatedAt?: string;
+	documentSet?: DocumentSetMutation;
 }
 
 export interface DraftCommitProvenance {
@@ -79,6 +113,7 @@ export interface DraftWorkspaceSnapshot {
 	archiveKey: string | null;
 	archiveSha256: string | null;
 	documents: readonly DraftDocument[];
+	documentSet: DocumentSetManifest | null;
 }
 
 export interface ImmutableDraftRevision {
@@ -87,6 +122,12 @@ export interface ImmutableDraftRevision {
 	commitSha: string;
 	archiveKey: string;
 	archiveSha256: string;
+}
+
+/** Archive bytes already scope-checked and SHA-256-verified against `archiveKey`. */
+export interface VerifiedImmutableDraftRevision {
+	documents: readonly DraftDocument[];
+	archive: Uint8Array;
 }
 
 export class DraftEnvelopeNotFoundError extends Error {
@@ -143,6 +184,15 @@ export class DraftReadConflictError extends Error {
 	}
 }
 
+export class DraftDocumentSetError extends Error {
+	readonly code = 'DRAFT_DOCUMENT_SET_CONFLICT';
+
+	constructor(message: string = 'The draft document set does not match its Git tree') {
+		super(message);
+		this.name = 'DraftDocumentSetError';
+	}
+}
+
 /**
  * Coordinates the mutable Git archive with an immutable object store and the
  * database's atomic publication of the envelope pointer, idempotency result,
@@ -155,6 +205,7 @@ export class DraftPersistenceService {
 		private readonly store: DraftMutationStore,
 		private readonly objects: ObjectStore,
 		private readonly repository: DraftRepository,
+		private readonly uploadedDocuments: Pick<EnvelopeUploadedDocumentStore, 'find'> | null = null,
 		private readonly newId: UuidV7Generator = newUuidV7
 	) {}
 
@@ -179,12 +230,17 @@ export class DraftPersistenceService {
 			snapshot.archive,
 			snapshot.commitSha
 		);
+		const documentSet: DocumentSetManifest | null = await this.loadDocumentSet(
+			snapshot.archive,
+			snapshot.commitSha
+		);
 		return {
 			generation: snapshot.generation,
 			commitSha: snapshot.commitSha,
 			archiveKey: snapshot.archiveKey,
 			archiveSha256: snapshot.archiveSha256,
-			documents
+			documents,
+			documentSet
 		};
 	}
 
@@ -202,8 +258,9 @@ export class DraftPersistenceService {
 				envelopeId: input.envelopeId,
 				expectedGeneration: input.expectedGeneration,
 				message: canonical.message,
-				edits: canonical.edits,
-				provenance: canonical.provenance
+				edits: canonical.markdownEdits,
+				provenance: canonical.provenance,
+				documentSet: canonical.documentSet
 			})
 		);
 		const key: DraftRevisionKey = {
@@ -245,11 +302,21 @@ export class DraftPersistenceService {
 		assertSha256(preparation.auditHead.eventHash);
 
 		const current = await this.loadSnapshot(preparation.envelope);
+		const next = await this.buildDocumentSetCommit(input, current, canonical);
+		const commitOptions: DraftCommitOptions = { replaceTrackedPaths: true };
 		const version = await this.repository.commit(
 			current.archive,
-			canonical.edits,
+			next.edits,
 			canonical.message,
-			input.actor
+			input.actor,
+			commitOptions
+		);
+		await this.assertResultingDocumentSet(
+			input.organizationId,
+			input.envelopeId,
+			version.paths,
+			next.manifest,
+			next.markdownByPath
 		);
 		const archiveSha256: string = await verifyRepositoryVersion(version);
 		const archiveKey: string = draftArchiveKey(
@@ -272,8 +339,9 @@ export class DraftPersistenceService {
 			generation: nextGeneration,
 			commitSha: version.commitSha,
 			archiveSha256,
-			changedPaths: canonical.edits.map((edit: DraftEdit): string => edit.path),
-			provenance: canonical.provenance
+			changedPaths: next.edits.map((edit: DraftEdit): string => edit.path),
+			provenance: canonical.provenance,
+			documentSetHash: await documentSetHash(next.manifest)
 		};
 		const auditPayloadJson: string = JSON.stringify(auditPayload);
 		// The durable command row binds this event to the idempotency key and
@@ -316,6 +384,183 @@ export class DraftPersistenceService {
 		}
 		throwForPublicationFailure(publication, input.expectedGeneration);
 		throw new DraftIntegrityError('Draft publication returned an unsupported outcome');
+	}
+
+	private async loadDocumentSet(
+		archive: Uint8Array | null,
+		commitSha: string | null
+	): Promise<DocumentSetManifest | null> {
+		if (typeof this.repository.readManifest !== 'function') return null;
+		const manifestJson: string | null = await this.repository.readManifest(archive, commitSha);
+		if (manifestJson === null) return null;
+		try {
+			return parseDocumentSet(manifestJson);
+		} catch {
+			throw new DraftIntegrityError('Pinned document set is invalid');
+		}
+	}
+
+	private async buildDocumentSetCommit(
+		input: CommitDraftInput,
+		current: DraftSnapshot,
+		canonical: CanonicalDraftCommitInput
+	): Promise<{
+		manifest: DocumentSetManifest;
+		edits: readonly DraftEdit[];
+		markdownByPath: Map<MarkdownPath, string>;
+	}> {
+		const currentDocuments: readonly DraftDocument[] = await this.repository.read(
+			current.archive,
+			current.commitSha
+		);
+		const currentManifest: DocumentSetManifest | null = await this.loadDocumentSet(
+			current.archive,
+			current.commitSha
+		);
+		const markdownByPath: Map<MarkdownPath, string> = new Map(
+			currentDocuments.map((document: DraftDocument): [MarkdownPath, string] => [
+				document.path,
+				document.content
+			])
+		);
+		for (const edit of canonical.markdownEdits) {
+			if (!isMarkdownPath(edit.path)) {
+				throw new Error('Draft commits accept Markdown files under documents/ only');
+			}
+			markdownByPath.set(edit.path, edit.content);
+		}
+
+		let manifest: DocumentSetManifest;
+		try {
+			if (canonical.documentSet?.op === 'reorder') {
+				if (currentManifest === null) {
+					throw new DraftDocumentSetError('The draft has no document set to reorder');
+				}
+				manifest = reorderDocumentSet(currentManifest, canonical.documentSet.documentIds);
+				const keep: Set<string> = new Set(
+					manifest.documents.flatMap((leaf: DocumentSetLeaf): string[] =>
+						leaf.kind === 'markdown' ? [leaf.path] : []
+					)
+				);
+				for (const path of [...markdownByPath.keys()]) {
+					if (!keep.has(path)) markdownByPath.delete(path);
+				}
+			} else if (canonical.documentSet?.op === 'appendPdf') {
+				const base: DocumentSetManifest | null =
+					currentManifest ??
+					(markdownByPath.size > 0 ? await this.materializeFromMarkdown(markdownByPath) : null);
+				manifest = appendPdfDocument(
+					base,
+					{
+						title: canonical.documentSet.title,
+						sha256: canonical.documentSet.sha256,
+						byteSize: canonical.documentSet.byteSize,
+						pageCount: canonical.documentSet.pageCount,
+						pageWidth: canonical.documentSet.pageWidth,
+						pageHeight: canonical.documentSet.pageHeight,
+						position: canonical.documentSet.position
+					},
+					this.newId
+				);
+			} else if (currentManifest === null) {
+				manifest = await this.materializeFromMarkdown(markdownByPath);
+			} else {
+				manifest = currentManifest;
+				for (const edit of canonical.markdownEdits) {
+					if (!isMarkdownPath(edit.path)) continue;
+					manifest = upsertMarkdownDocument(
+						manifest,
+						edit.path,
+						await sha256Text(edit.content),
+						this.newId
+					);
+				}
+			}
+
+			const keepMarkdown: Set<string> = new Set(
+				manifest.documents.flatMap((leaf: DocumentSetLeaf): string[] =>
+					leaf.kind === 'markdown' ? [leaf.path] : []
+				)
+			);
+			for (const path of [...markdownByPath.keys()]) {
+				if (!keepMarkdown.has(path)) markdownByPath.delete(path);
+			}
+
+			const edits: DraftEdit[] = [
+				...[...markdownByPath.entries()]
+					.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+					.map(([path, content]: [MarkdownPath, string]): DraftEdit => ({
+						path,
+						content
+					})),
+				{ path: DOCUMENT_SET_MANIFEST_PATH, content: serializeDocumentSet(manifest) }
+			];
+			void input;
+			return { manifest, edits, markdownByPath };
+		} catch (error: unknown) {
+			if (error instanceof DraftDocumentSetError) throw error;
+			if (error instanceof DocumentSetError) {
+				throw new DraftDocumentSetError(error.message);
+			}
+			throw error;
+		}
+	}
+
+	private async materializeFromMarkdown(
+		markdownByPath: Map<MarkdownPath, string>
+	): Promise<DocumentSetManifest> {
+		if (markdownByPath.size < 1) {
+			throw new DraftDocumentSetError('A document set must contain at least one document');
+		}
+		const paths: MarkdownPath[] = [...markdownByPath.keys()];
+		const contentSha256ByPath: Map<string, string> = new Map();
+		for (const [path, content] of markdownByPath) {
+			contentSha256ByPath.set(path, await sha256Text(content));
+		}
+		return materializeMarkdownLeaves(paths, contentSha256ByPath, this.newId);
+	}
+
+	private async assertResultingDocumentSet(
+		organizationId: string,
+		envelopeId: string,
+		paths: readonly string[],
+		manifest: DocumentSetManifest,
+		markdownByPath: Map<MarkdownPath, string>
+	): Promise<void> {
+		const tracked: string[] = [...paths].sort();
+		const markdownPaths: MarkdownPath[] = manifest.documents.flatMap(
+			(leaf: DocumentSetLeaf): MarkdownPath[] => (leaf.kind === 'markdown' ? [leaf.path] : [])
+		);
+		const expected: string[] = [...markdownPaths, DOCUMENT_SET_MANIFEST_PATH].sort();
+		if (
+			tracked.length !== expected.length ||
+			tracked.some((path, index) => path !== expected[index])
+		) {
+			throw new DraftDocumentSetError('The Git tree does not match the document set manifest');
+		}
+		for (const leaf of manifest.documents) {
+			if (leaf.kind !== 'markdown') continue;
+			const content: string | undefined = markdownByPath.get(leaf.path);
+			if (content === undefined) {
+				throw new DraftDocumentSetError(
+					'The document set names a Markdown path that is not tracked'
+				);
+			}
+			if ((await sha256Text(content)) !== leaf.contentSha256) {
+				throw new DraftDocumentSetError('Markdown contentSha256 does not match the tracked bytes');
+			}
+		}
+		for (const leaf of manifest.documents) {
+			if (leaf.kind !== 'pdf') continue;
+			if (this.uploadedDocuments === null) {
+				throw new DraftDocumentSetError('Uploaded PDF bytes are not bound to this envelope');
+			}
+			const record = await this.uploadedDocuments.find(organizationId, envelopeId, leaf.sha256);
+			if (record === null) {
+				throw new DraftDocumentSetError('Uploaded PDF digest is missing from the envelope ledger');
+			}
+		}
+		void markdownByPath;
 	}
 
 	private async findEnvelope(organizationId: string, envelopeId: string): Promise<Envelope> {
@@ -461,7 +706,7 @@ export async function readImmutableDraftRevision(
 	revision: ImmutableDraftRevision,
 	objects: ObjectStore,
 	repository: DraftRepository
-): Promise<readonly DraftDocument[]> {
+): Promise<VerifiedImmutableDraftRevision> {
 	if (!GIT_SHA_PATTERN.test(revision.commitSha)) {
 		throw new DraftIntegrityError('Pinned draft revision has an invalid Git commit SHA');
 	}
@@ -482,7 +727,7 @@ export async function readImmutableDraftRevision(
 		throw new DraftIntegrityError('Pinned draft repository archive failed SHA-256 verification');
 	}
 	try {
-		return await repository.read(archive, revision.commitSha);
+		return { documents: await repository.read(archive, revision.commitSha), archive };
 	} catch {
 		throw new DraftIntegrityError('Pinned draft repository failed Git verification');
 	}
@@ -490,11 +735,12 @@ export async function readImmutableDraftRevision(
 
 interface CanonicalDraftCommitInput {
 	message: string;
-	edits: readonly DraftEdit[];
+	markdownEdits: readonly DraftEdit[];
 	provenance: {
 		automationRunId: string | null;
 		externalId: string | null;
 	};
+	documentSet: DocumentSetMutation | null;
 }
 
 function canonicalizeCommitInput(input: CommitDraftInput): CanonicalDraftCommitInput {
@@ -509,13 +755,53 @@ function canonicalizeCommitInput(input: CommitDraftInput): CanonicalDraftCommitI
 	) {
 		throw new Error('Draft commit message is invalid');
 	}
+
+	const provenance = {
+		automationRunId: normalizeProvenanceValue(input.provenance?.automationRunId),
+		externalId: normalizeProvenanceValue(input.provenance?.externalId)
+	};
+
+	if (input.documentSet !== undefined) {
+		if (input.edits.length !== 0) {
+			throw new Error('Document set mutations cannot include document edits');
+		}
+		if (input.documentSet.op === 'appendPdf') {
+			const mutation: DocumentSetMutation = {
+				op: 'appendPdf',
+				title: input.documentSet.title,
+				sha256: input.documentSet.sha256,
+				byteSize: input.documentSet.byteSize,
+				pageCount: input.documentSet.pageCount,
+				pageWidth: input.documentSet.pageWidth,
+				pageHeight: input.documentSet.pageHeight,
+				position: input.documentSet.position
+			};
+			return { message, markdownEdits: [], provenance, documentSet: mutation };
+		}
+		if (input.documentSet.documentIds.length < 1 || input.documentSet.documentIds.length > 20) {
+			throw new Error('Document order must list between 1 and 20 documents');
+		}
+		for (const id of input.documentSet.documentIds) {
+			if (!isUuidV7(id)) throw new Error('Document order contains an invalid document id');
+		}
+		return {
+			message,
+			markdownEdits: [],
+			provenance,
+			documentSet: { op: 'reorder', documentIds: [...input.documentSet.documentIds] }
+		};
+	}
+
 	if (input.edits.length < 1 || input.edits.length > MAX_DRAFT_EDITS) {
 		throw new Error(`Draft commits require between 1 and ${MAX_DRAFT_EDITS} edits`);
 	}
 
 	let totalBytes: number = 0;
 	const edits: DraftEdit[] = input.edits.map((edit: DraftEdit): DraftEdit => {
-		assertMarkdownPath(edit.path);
+		assertDraftPath(edit.path);
+		if (!isMarkdownPath(edit.path)) {
+			throw new Error('Draft commits accept Markdown files under documents/ only');
+		}
 		if (new TextEncoder().encode(edit.path).byteLength > 240) {
 			throw new Error('Draft document path is too long');
 		}
@@ -544,11 +830,9 @@ function canonicalizeCommitInput(input: CommitDraftInput): CanonicalDraftCommitI
 
 	return {
 		message,
-		edits,
-		provenance: {
-			automationRunId: normalizeProvenanceValue(input.provenance?.automationRunId),
-			externalId: normalizeProvenanceValue(input.provenance?.externalId)
-		}
+		markdownEdits: edits,
+		provenance,
+		documentSet: null
 	};
 }
 

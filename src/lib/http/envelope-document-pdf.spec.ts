@@ -9,6 +9,7 @@ import { createEnvelopeDocumentPdfHandler } from './envelope-document-pdf';
 
 const ORGANIZATION_ID = '01900000-0000-7000-8000-000000000002';
 const ENVELOPE_ID = '01900000-0000-7000-8000-000000000001';
+const DOCUMENT_ID = '01900000-0000-7000-8000-000000000010';
 const BYTES: Uint8Array = new TextEncoder().encode('%PDF-1.7\nbody\n%%EOF\n');
 
 const ok: EnvelopeDocumentPdfResult = {
@@ -19,10 +20,21 @@ const ok: EnvelopeDocumentPdfResult = {
 		byteSize: BYTES.byteLength,
 		commitSha: 'b'.repeat(40),
 		generation: 3,
+		documentId: DOCUMENT_ID,
 		pageCount: 2,
 		pageWidth: 595.28,
 		pageHeight: 841.89,
-		documents: [{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 2 }]
+		documents: [
+			{
+				documentId: DOCUMENT_ID,
+				position: 0,
+				kind: 'markdown',
+				title: 'agreement',
+				pageCount: 2,
+				pageWidth: 595.28,
+				pageHeight: 841.89
+			}
+		]
 	}
 };
 
@@ -35,6 +47,7 @@ function event(
 ): RequestEvent {
 	return createHttpRequestEvent({
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/${options.path ?? 'document-pdf'}`,
+		search: `?documentId=${DOCUMENT_ID}`,
 		locals: organizationScopedLocals(options.identityState ?? 'authorized', ORGANIZATION_ID),
 		params: { envelopeId: options.envelopeId ?? ENVELOPE_ID },
 		platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } } as App.Platform
@@ -58,7 +71,7 @@ describe('envelope document PDF handler', () => {
 		// origin needs framing permission and none is granted.
 		expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
 		expect(response.headers.get('x-frame-options')).toBe('DENY');
-		expect(app.read).toHaveBeenCalledWith(ORGANIZATION_ID, ENVELOPE_ID);
+		expect(app.read).toHaveBeenCalledWith(ORGANIZATION_ID, ENVELOPE_ID, DOCUMENT_ID);
 		expect(new Uint8Array(await response.arrayBuffer())).toEqual(BYTES);
 	});
 
@@ -72,10 +85,21 @@ describe('envelope document PDF handler', () => {
 		expect(await response.json()).toEqual({
 			commitSha: ok.outcome === 'ok' ? ok.pdf.commitSha : '',
 			generation: 3,
+			documentId: DOCUMENT_ID,
 			pageCount: 2,
 			pageWidth: 595.28,
 			pageHeight: 841.89,
-			documents: [{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 2 }]
+			documents: [
+				{
+					documentId: DOCUMENT_ID,
+					position: 0,
+					kind: 'markdown',
+					title: 'agreement',
+					pageCount: 2,
+					pageWidth: 595.28,
+					pageHeight: 841.89
+				}
+			]
 		});
 	});
 

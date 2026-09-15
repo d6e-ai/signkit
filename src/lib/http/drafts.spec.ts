@@ -96,6 +96,7 @@ function workspace(overrides: Partial<DraftWorkspaceSnapshot> = {}): DraftWorksp
 		archiveKey: `draft-repositories/private/${envelopeId}.git.gz`,
 		archiveSha256: 'a'.repeat(64),
 		documents: [{ path: 'documents/agreement.md', content: '# Agreement' }],
+		documentSet: null,
 		...overrides
 	};
 }
@@ -167,7 +168,8 @@ describe('draft HTTP handlers', () => {
 			generation: 2,
 			commitSha: '1'.repeat(40),
 			archiveSha256: 'a'.repeat(64),
-			documents: [{ path: 'documents/agreement.md', content: '# Agreement' }]
+			documents: [{ path: 'documents/agreement.md', content: '# Agreement' }],
+			documentSet: null
 		});
 		expect(body).not.toHaveProperty('archiveKey');
 		expect(body).not.toHaveProperty('archive');

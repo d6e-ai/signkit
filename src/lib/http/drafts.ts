@@ -1,6 +1,7 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import { z, type ZodIssue, type ZodType } from 'zod';
 import {
+	DraftDocumentSetError,
 	DraftEnvelopeImmutableError,
 	DraftEnvelopeNotFoundError,
 	DraftGenerationConflictError,
@@ -279,7 +280,8 @@ export function createDraftHttpHandlers(
 				generation: workspace.generation,
 				commitSha: workspace.commitSha,
 				archiveSha256: workspace.archiveSha256,
-				documents: workspace.documents
+				documents: workspace.documents,
+				documentSet: workspace.documentSet
 			};
 			return new Response(JSON.stringify(body), {
 				status: 200,
@@ -467,6 +469,15 @@ export function createDraftHttpHandlers(
 					title: 'Envelope state conflict',
 					status: 409,
 					detail: 'Only draft envelopes can accept document revisions.',
+					instance: url.pathname
+				});
+			}
+			if (error instanceof DraftDocumentSetError) {
+				return problemResponse({
+					type: 'urn:signkit:problem:envelope-document-set-conflict',
+					title: 'Envelope document set conflict',
+					status: 409,
+					detail: error.message,
 					instance: url.pathname
 				});
 			}

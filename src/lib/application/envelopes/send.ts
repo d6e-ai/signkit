@@ -15,9 +15,10 @@ import type {
 	SendPreparation
 } from '$lib/ports/envelope-send-store';
 import type { ImmutableDraftRevision } from '$lib/application/drafts/draft-persistence';
-import type {
-	SentDocumentPdfPort,
-	SentPdfArtifact
+import {
+	sentAuditDocuments,
+	type SentDocumentPdfPort,
+	type SentDocumentSetArtifact
 } from '$lib/application/documents/sent-document-pdf';
 import { issueRecipientCapability } from '$lib/security/recipient-capability';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
@@ -132,9 +133,9 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		// never written.
 		const revision: ImmutableDraftRevision | null = pinnedRevision(preparation.envelope);
 		if (revision === null) return { outcome: 'integrity_error' };
-		let sentPdf: SentPdfArtifact;
+		let sentDocumentSet: SentDocumentSetArtifact;
 		try {
-			sentPdf = await this.#documentPdf.publish(revision);
+			sentDocumentSet = await this.#documentPdf.publish(revision);
 		} catch (error: unknown) {
 			console.error(
 				JSON.stringify({
@@ -209,9 +210,9 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 			// signed audit chain: the storage key is derivable from the digest
 			// and the envelope scope, so pinning the digest pins the artifact
 			// without writing an infrastructure key into the evidence record.
-			sentPdfSha256: sentPdf.sha256,
-			sentPdfBytes: sentPdf.byteSize,
-			sentPdfPageCount: sentPdf.pageCount
+			documentSetHash: sentDocumentSet.documentSetHash,
+			documentCount: sentDocumentSet.documentCount,
+			documents: sentAuditDocuments(sentDocumentSet.documents)
 		});
 		const auditEventHash: string = await hashAuditEventV2(
 			{
@@ -227,7 +228,7 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		);
 		const command: PublishSentEnvelopeCommand = {
 			...key,
-			sentPdf,
+			sentDocumentSet,
 			expectedGeneration: input.expectedGeneration,
 			expectedReadyAuditEventId: input.expectedReadyAuditEventId,
 			commitSha: requiredHead(preparation.envelope.repositoryHead),

@@ -25,6 +25,10 @@ class FixedDraftRepository implements DraftRepository {
 		return this.documents;
 	}
 
+	async readManifest(): Promise<string | null> {
+		return null;
+	}
+
 	async commit(): Promise<DraftVersion> {
 		throw new Error('Unexpected repository commit');
 	}
@@ -50,7 +54,8 @@ describe('exportPinnedDocx', () => {
 
 		const docx = await exportPinnedDocx(revision, objects, repository);
 
-		const files = unzipSync(docx);
+		const files = unzipSync(docx.bytes);
+		expect(docx.skippedPdfCount).toBe(0);
 		const documentXml = new TextDecoder().decode(files['word/document.xml']);
 		expect(documentXml).toContain('Agreement');
 		expect(documentXml).toContain('Pinned content.');

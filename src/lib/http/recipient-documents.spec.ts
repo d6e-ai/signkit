@@ -23,15 +23,22 @@ const workspace: RecipientWorkspace = {
 		envelopeStatus: 'sent',
 		expiresAt: '2026-09-12T00:00:00.000Z'
 	},
-	document: {
-		pageCount: 2,
-		pageWidth: 595.28,
-		pageHeight: 841.89,
-		sections: [{ title: 'agreement', firstPage: 1, lastPage: 2 }]
-	},
+	documents: [
+		{
+			documentId: 'legacy',
+			position: 0,
+			title: 'agreement',
+			kind: 'legacy',
+			pageCount: 2,
+			pageWidth: 595.28,
+			pageHeight: 841.89
+		}
+	],
+	source: 'legacy' as const,
 	fields: [
 		{
 			id: 'field-1',
+			documentId: 'legacy',
 			fieldType: 'signature',
 			label: 'Your signature',
 			required: true,
@@ -84,7 +91,8 @@ describe('recipient documents HTTP handler', () => {
 		expect(app.resolve).toHaveBeenCalledWith(token, '2026-09-11T00:00:00.000Z');
 		expect(body).toEqual({
 			access: workspace.access,
-			document: workspace.document
+			documents: workspace.documents,
+			source: workspace.source
 		});
 		const serialized: string = JSON.stringify(body);
 		expect(serialized).not.toMatch(/organization|archiveKey|archiveSha256|skr1_/);

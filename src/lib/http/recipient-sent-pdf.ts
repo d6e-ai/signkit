@@ -45,6 +45,8 @@ export function createRecipientSentPdfHandler(
 
 		const envelopeId: string | undefined = params.envelopeId;
 		if (envelopeId === undefined || !isUuidV7(envelopeId)) return notFound();
+		const documentId: string | undefined = params.documentId;
+		if (documentId !== undefined && !isUuidV7(documentId)) return notFound();
 
 		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
 		if (sealed === undefined) return notFound();
@@ -69,7 +71,7 @@ export function createRecipientSentPdfHandler(
 
 		let result: RecipientSentPdfResult;
 		try {
-			result = await application.read(token, envelopeId);
+			result = await application.read(token, envelopeId, documentId);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_sent_pdf_read_failed' }));
 			return unavailable();
@@ -83,7 +85,7 @@ export function createRecipientSentPdfHandler(
 		// A generic filename: the envelope title and the recipient's name are
 		// exactly the kind of thing a download folder, a proxy log, or a
 		// screenshot would carry further than the session that earned it.
-		headers.set('content-disposition', 'inline; filename="agreement.pdf"');
+		headers.set('content-disposition', 'attachment; filename="agreement.pdf"');
 		headers.set('etag', `"${result.sha256}"`);
 		return new Response(request.method === 'HEAD' ? null : bodyOf(result.bytes), {
 			status: 200,

@@ -140,7 +140,7 @@ function completionContent(
 		greeting: `Hello ${name},`,
 		intro: 'All participants have completed the following agreement.',
 		documentLabel: 'Agreement',
-		ctaLabel: 'View completed agreement',
+		ctaLabel: 'View completed documents',
 		fallbackIntro: 'If the button does not work, copy and paste this URL into your browser:',
 		footer: 'This link is unique to you. If you were not expecting this email, you can ignore it.',
 		textLines: [
@@ -148,7 +148,7 @@ function completionContent(
 			'',
 			`"${title}" has been completed by all participants.`,
 			'',
-			'Open this link to view or download the completed agreement:',
+			'Open this link to view or download the completed documents:',
 			''
 		]
 	};

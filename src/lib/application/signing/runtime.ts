@@ -7,6 +7,7 @@ import { D1RecipientFieldDeclarationStore } from '$lib/adapters/db/d1-recipient-
 import { D1RecipientSignStore } from '$lib/adapters/db/d1-recipient-sign-store';
 import { D1RecipientViewStore } from '$lib/adapters/db/d1-recipient-view-store';
 import { D1EnvelopeSentPdfStore } from '$lib/adapters/db/d1-envelope-sent-pdf-store';
+import { D1EnvelopeSentDocumentStore } from '$lib/adapters/db/d1-envelope-sent-document-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import { RecipientAccessService, type RecipientAccessApplicationPort } from './recipient-access';
 import {
@@ -71,6 +72,7 @@ export async function resolveRecipientWorkspaceApplication(
 		const fields: D1RecipientFieldDeclarationStore = new D1RecipientFieldDeclarationStore(database);
 		return new RecipientWorkspaceService(
 			new RecipientAccessService(new D1RecipientAccessStore(database)),
+			new D1EnvelopeSentDocumentStore(database),
 			new D1EnvelopeSentPdfStore(database),
 			(context) =>
 				fields.listOwnFields(context.organizationId, context.envelopeId, context.recipientId)
@@ -99,6 +101,7 @@ export async function resolveRecipientSentPdfApplication(
 		if (database === undefined || bucket === undefined) return null;
 		return new RecipientSentPdfService(
 			new RecipientAccessService(new D1RecipientAccessStore(database)),
+			new D1EnvelopeSentDocumentStore(database),
 			new D1EnvelopeSentPdfStore(database),
 			new R2ObjectStore(bucket)
 		);

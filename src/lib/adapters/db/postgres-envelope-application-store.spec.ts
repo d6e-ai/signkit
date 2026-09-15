@@ -297,7 +297,8 @@ describe('PostgresEnvelopeApplicationStore', () => {
 				{
 					id: '01900000-0000-7000-8000-000000000022',
 					recipientId: '01900000-0000-7000-8000-000000000021',
-					documentPath: 'documents/agreement.md',
+					documentId: '01900000-0000-7000-8000-000000000021',
+					documentPath: null,
 					fieldType: 'signature',
 					required: true,
 					position: 1,

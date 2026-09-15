@@ -60,7 +60,10 @@ describe('readImmutableDraftRevision', () => {
 				objects,
 				repository
 			)
-		).resolves.toEqual([{ path: 'documents/agreement.md', content: '# Agreement\n' }]);
+		).resolves.toEqual({
+			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+			archive: version.archive
+		});
 	});
 
 	it('rejects an unscoped key before reading object storage', async () => {

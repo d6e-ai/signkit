@@ -21,12 +21,18 @@ const workspaceFor = (envelopeId: string): RecipientWorkspace => ({
 		envelopeStatus: 'sent',
 		expiresAt: '2026-09-12T00:00:00.000Z'
 	},
-	document: {
-		pageCount: 1,
-		pageWidth: 595.28,
-		pageHeight: 841.89,
-		sections: [{ title: 'agreement', firstPage: 1, lastPage: 1 }]
-	},
+	documents: [
+		{
+			documentId: 'legacy',
+			position: 0,
+			title: 'agreement',
+			kind: 'legacy',
+			pageCount: 1,
+			pageWidth: 595.28,
+			pageHeight: 841.89
+		}
+	],
+	source: 'legacy' as const,
 	fields: [],
 	fieldGeneration: 1
 });

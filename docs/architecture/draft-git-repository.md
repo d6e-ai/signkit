@@ -5,10 +5,11 @@ Status: implemented (streaming archive production is in place; orphan collection
 Tracked content is deliberately narrow:
 
 ```text
-documents/<stable-document-id>.md
+document-set.json
+documents/<slug>.md
 ```
 
-The database owns titles, ordering, recipients, field coordinates, state, and artifact references. Git never contains DOCX, PDF, signature images, access tokens, or evidence bundles.
+The database owns titles for PDF leaves (via the Git manifest), recipients, field coordinates, state, and artifact references. Git never contains DOCX, PDF bytes, signature images, access tokens, or evidence bundles. `document-set.json` is the sole authority for document identity, order, and kind.
 
 Each edit performs these steps:
 

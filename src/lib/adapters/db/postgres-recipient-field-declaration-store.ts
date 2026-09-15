@@ -1,5 +1,5 @@
 import postgres from 'postgres';
-import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
+import type { FieldGeometry, FieldType, MarkdownPath } from '$lib/domain/envelope';
 import type {
 	RecipientFieldDeclaration,
 	RecipientFieldDeclarationStore,
@@ -8,7 +8,8 @@ import type {
 
 interface FieldRow {
 	id: string;
-	documentPath: string;
+	documentId: string | null;
+	documentPath: string | null;
 	fieldType: FieldType;
 	label: string;
 	required: boolean;
@@ -40,17 +41,19 @@ export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDec
 		const envelope: { fieldGeneration: number } | undefined = envelopes[0];
 		if (envelope === undefined) return null;
 		const rows = await this.#sql<FieldRow[]>`
-			SELECT id, document_path AS "documentPath", field_type AS "fieldType",
+			SELECT id, document_id AS "documentId", document_path AS "documentPath",
+				field_type AS "fieldType",
 				label, required, position, page, x, y, width, height
 			FROM envelope_field
 			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
 				AND recipient_id = ${recipientId}
-			ORDER BY document_path, position, id`;
+			ORDER BY COALESCE(document_id, document_path), position, id`;
 		return {
 			fieldGeneration: envelope.fieldGeneration,
 			fields: rows.map((row: FieldRow): RecipientFieldDeclaration => ({
 				id: row.id,
-				documentPath: row.documentPath as `documents/${string}.md`,
+				documentId: row.documentId,
+				documentPath: (row.documentPath as MarkdownPath | null) ?? null,
 				fieldType: row.fieldType,
 				label: row.label,
 				required: row.required,

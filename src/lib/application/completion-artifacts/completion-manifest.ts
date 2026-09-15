@@ -32,12 +32,19 @@ const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 const GIT_SHA_PATTERN: RegExp = /^[a-f0-9]{40}$/;
 const PUBLISHED_EVENT_TYPE: string = 'envelope.completion_artifact_published';
 const READY_EVENT_TYPE: string = 'envelope.ready';
+const SENT_EVENT_TYPE: string = 'envelope.sent';
 const SIGNED_EVENT_TYPE: string = 'recipient.signed';
 const APPROVED_EVENT_TYPE: string = 'recipient.approved';
 
 export interface CompletionManifestDocument {
-	path: string;
+	path?: string;
 	sha256: string;
+	id?: string;
+	kind?: 'markdown' | 'pdf';
+	position?: number;
+	title?: string;
+	byteSize?: number;
+	pageCount?: number;
 }
 
 export interface CompletionManifestRecipient {
@@ -66,6 +73,7 @@ export interface CompletionManifestV1 {
 	draftArchiveSha256: string;
 	fieldGeneration: number;
 	completedAt: string;
+	documentSetHash?: string;
 	documents: readonly CompletionManifestDocument[];
 	recipients: readonly CompletionManifestRecipient[];
 	fields: readonly CompletionManifestField[];
@@ -79,6 +87,7 @@ export interface BuildCompletionManifestInput {
 	sentCommitSha: string;
 	draftArchiveSha256: string;
 	fieldGeneration: number;
+	documentSetHash?: string;
 	documents: readonly CompletionManifestDocument[];
 	recipients: readonly CompletionEvidenceRecipient[];
 	fields: readonly CompletionEvidenceField[];
@@ -142,14 +151,34 @@ export async function buildCompletionManifest(
 	verifyRecipientRosterMatchesReadyEvent(input.auditEvents, payloadsByEventId, input.recipients);
 	verifyRecipientDecisionsMatchAuditTrail(input.auditEvents, input.recipients);
 
+	const attestedDocumentSetHash: string | null = attestedSentDocumentSetHash(
+		input.auditEvents,
+		payloadsByEventId
+	);
+	if (input.documentSetHash !== undefined) {
+		if (attestedDocumentSetHash !== input.documentSetHash) {
+			throw new CompletionArtifactIntegrityError(
+				'Completion document set hash does not match the verified envelope.sent payload'
+			);
+		}
+	} else if (attestedDocumentSetHash !== null) {
+		throw new CompletionArtifactIntegrityError(
+			'Verified envelope.sent payload attests a document set hash the pinned revision does not bind'
+		);
+	}
+
+	if (input.documentSetHash !== undefined && !SHA256_PATTERN.test(input.documentSetHash)) {
+		throw new CompletionArtifactIntegrityError('Completion document set hash is invalid');
+	}
+
 	const documents: CompletionManifestDocument[] = input.documents
 		.map((document: CompletionManifestDocument): CompletionManifestDocument => {
 			if (!SHA256_PATTERN.test(document.sha256)) {
 				throw new CompletionArtifactIntegrityError('Completion document has an invalid SHA-256');
 			}
-			return document;
+			return canonicalCompletionDocument(document);
 		})
-		.sort((left, right): number => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+		.sort((left, right): number => compareCompletionDocuments(left, right));
 	const recipients: CompletionManifestRecipient[] = input.recipients
 		.map((recipient: CompletionEvidenceRecipient): CompletionManifestRecipient => ({
 			id: recipient.id,
@@ -177,11 +206,65 @@ export async function buildCompletionManifest(
 		draftArchiveSha256: input.draftArchiveSha256,
 		fieldGeneration: input.fieldGeneration,
 		completedAt: anchor.occurredAt,
+		...(input.documentSetHash === undefined ? {} : { documentSetHash: input.documentSetHash }),
 		documents,
 		recipients,
 		fields,
 		auditProof
 	};
+}
+
+function canonicalCompletionDocument(
+	document: CompletionManifestDocument
+): CompletionManifestDocument {
+	const canonical: CompletionManifestDocument =
+		document.path === undefined
+			? { sha256: document.sha256 }
+			: { path: document.path, sha256: document.sha256 };
+	if (document.id !== undefined) canonical.id = document.id;
+	if (document.kind !== undefined) canonical.kind = document.kind;
+	if (document.position !== undefined) canonical.position = document.position;
+	if (document.title !== undefined) canonical.title = document.title;
+	if (document.byteSize !== undefined) canonical.byteSize = document.byteSize;
+	if (document.pageCount !== undefined) canonical.pageCount = document.pageCount;
+	return canonical;
+}
+
+function compareCompletionDocuments(
+	left: CompletionManifestDocument,
+	right: CompletionManifestDocument
+): number {
+	if (left.position !== undefined && right.position !== undefined) {
+		return left.position - right.position;
+	}
+	const leftPath: string = left.path ?? '';
+	const rightPath: string = right.path ?? '';
+	return leftPath < rightPath ? -1 : leftPath > rightPath ? 1 : 0;
+}
+
+function attestedSentDocumentSetHash(
+	auditEvents: readonly CompletionEvidenceAuditEvent[],
+	payloadsByEventId: ReadonlyMap<string, unknown>
+): string | null {
+	const sentEvents: CompletionEvidenceAuditEvent[] = auditEvents.filter(
+		(event: CompletionEvidenceAuditEvent): boolean => event.eventType === SENT_EVENT_TYPE
+	);
+	if (sentEvents.length === 0) return null;
+	if (sentEvents.length !== 1) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion evidence has more than one envelope.sent event'
+		);
+	}
+	const payload: unknown = payloadsByEventId.get(sentEvents[0].id);
+	if (typeof payload !== 'object' || payload === null) {
+		throw new CompletionArtifactIntegrityError('Verified envelope.sent payload is missing');
+	}
+	const hash: unknown = (payload as Record<string, unknown>).documentSetHash;
+	if (hash === undefined) return null;
+	if (typeof hash !== 'string' || !SHA256_PATTERN.test(hash)) {
+		throw new CompletionArtifactIntegrityError('Verified envelope.sent documentSetHash is invalid');
+	}
+	return hash;
 }
 
 /**
@@ -415,14 +498,29 @@ export function renderCompletionMarkdown(manifest: CompletionManifestV1): string
 		`- Draft archive SHA-256: ${manifest.draftArchiveSha256}`,
 		`- Field generation: ${manifest.fieldGeneration}`,
 		`- Completed at: ${manifest.completedAt}`,
+		...(manifest.documentSetHash === undefined
+			? []
+			: [`- Document set hash: ${manifest.documentSetHash}`]),
 		'',
 		'## Documents',
 		'',
-		'| Path | SHA-256 |',
-		'| --- | --- |'
+		...(manifest.documents.some((document) => document.kind !== undefined)
+			? [
+					'| ID | Kind | Position | Title | Path | SHA-256 | Pages | Bytes |',
+					'| --- | --- | --- | --- | --- | --- | --- | --- |'
+				]
+			: ['| Path | SHA-256 |', '| --- | --- |'])
 	];
 	for (const document of manifest.documents) {
-		lines.push(`| ${escapeMarkdownCell(document.path)} | ${escapeMarkdownCell(document.sha256)} |`);
+		if (document.kind !== undefined) {
+			lines.push(
+				`| ${escapeMarkdownCell(document.id ?? '')} | ${escapeMarkdownCell(document.kind)} | ${document.position ?? ''} | ${escapeMarkdownCell(document.title ?? '')} | ${escapeMarkdownCell(document.path ?? '')} | ${escapeMarkdownCell(document.sha256)} | ${document.pageCount ?? ''} | ${document.byteSize ?? ''} |`
+			);
+			continue;
+		}
+		lines.push(
+			`| ${escapeMarkdownCell(document.path ?? '')} | ${escapeMarkdownCell(document.sha256)} |`
+		);
 	}
 	lines.push(
 		'',

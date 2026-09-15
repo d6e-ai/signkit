@@ -2,9 +2,11 @@ export const authoringCapabilities = {
 	draftHistory: {
 		format: 'git',
 		archive: 'gzip',
-		trackedFiles: ['documents/*.md'],
+		trackedFiles: ['document-set.json', 'documents/*.md'],
 		commitEndpoint: '/api/v1/envelopes/{envelopeId}/draft/commits',
 		docxImportEndpoint: '/api/v1/envelopes/{envelopeId}/draft/docx',
+		pdfUploadEndpoint: '/api/v1/envelopes/{envelopeId}/documents/pdf',
+		documentOrderEndpoint: '/api/v1/envelopes/{envelopeId}/documents/order',
 		docxExportEndpoint: '/api/v1/envelopes/{envelopeId}/docx',
 		concurrency: 'expected-generation',
 		idempotency: 'required'

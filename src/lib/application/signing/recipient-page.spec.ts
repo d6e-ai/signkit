@@ -20,12 +20,18 @@ const workspace: RecipientWorkspace = {
 		envelopeStatus: 'in_progress',
 		expiresAt: '2026-09-12T00:00:00.000Z'
 	},
-	document: {
-		pageCount: 2,
-		pageWidth: 595.28,
-		pageHeight: 841.89,
-		sections: [{ title: 'agreement', firstPage: 1, lastPage: 2 }]
-	},
+	documents: [
+		{
+			documentId: 'legacy',
+			position: 0,
+			title: 'agreement',
+			kind: 'legacy',
+			pageCount: 2,
+			pageWidth: 595.28,
+			pageHeight: 841.89
+		}
+	],
+	source: 'legacy' as const,
 	fields: [],
 	fieldGeneration: 1
 };

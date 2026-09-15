@@ -68,6 +68,7 @@ describe('DOCX export HTTP handler', () => {
 			objects,
 			repository: {
 				read: async () => [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+				readManifest: async () => null,
 				commit: async () => {
 					throw new Error('Unexpected repository commit');
 				}
@@ -104,6 +105,7 @@ describe('DOCX export HTTP handler', () => {
 			objects: new InMemoryObjectStore(),
 			repository: {
 				read: async () => [],
+				readManifest: async () => null,
 				commit: async () => {
 					throw new Error('Unexpected repository commit');
 				}
@@ -131,6 +133,7 @@ describe('DOCX export HTTP handler', () => {
 			objects: new InMemoryObjectStore(),
 			repository: {
 				read: async () => [],
+				readManifest: async () => null,
 				commit: async () => {
 					throw new Error('Unexpected repository commit');
 				}

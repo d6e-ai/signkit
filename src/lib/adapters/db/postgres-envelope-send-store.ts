@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { sentAuditDocuments } from '$lib/application/documents/sent-document-pdf';
 import {
 	isActionableRecipientRole,
 	isPostSendInvitationRecipientRole,
@@ -75,10 +76,13 @@ interface SendCommandRow {
 	sentPdfObjectKey: string | null;
 	sentPdfSha256: string | null;
 	sentPdfBytes: number | string | null;
-	sentPdfPageCount: number | null;
-	sentPdfPageWidth: number | null;
-	sentPdfPageHeight: number | null;
+	sentPdfPageCount: number | string | null;
+	sentPdfPageWidth: number | string | null;
+	sentPdfPageHeight: number | string | null;
 	sentPdfDocumentPagesJson: string | null;
+	documentSetHash: string | null;
+	documentCount: number | string | null;
+	sentDocumentsJson: string | null;
 	evidenceEventId: string | null;
 	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
@@ -260,8 +264,7 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					delivery_count, queued_delivery_count, delivery_manifest_hash, delivery_manifest_json,
 					initial_capability_expires_at, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json,
-					sent_pdf_object_key, sent_pdf_sha256, sent_pdf_bytes, sent_pdf_page_count,
-					sent_pdf_page_width, sent_pdf_page_height, sent_pdf_document_pages_json
+					document_set_hash, document_count, sent_documents_json
 				) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.actorType}, ${command.actorId},
 					${command.idempotencyKey}, ${command.requestFingerprint}, ${command.expectedGeneration},
 					${command.expectedReadyAuditEventId}, ${command.commitSha}, ${command.initialRoutingOrder},
@@ -269,9 +272,9 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					${command.deliveryManifestJson},
 					${command.initialCapabilityExpiresAt}, ${command.updatedAt}, ${command.auditEventId},
 					${command.expectedAuditSequence + 1}, ${command.previousAuditHash}, ${command.auditEventHash},
-					${command.auditPayloadJson}, ${command.sentPdf.objectKey}, ${command.sentPdf.sha256},
-					${command.sentPdf.byteSize}, ${command.sentPdf.pageCount}, ${command.sentPdf.pageWidth},
-					${command.sentPdf.pageHeight}, ${JSON.stringify(command.sentPdf.documents)})`;
+					${command.auditPayloadJson}, ${command.sentDocumentSet.documentSetHash},
+					${command.sentDocumentSet.documentCount},
+					${JSON.stringify(sentAuditDocuments(command.sentDocumentSet.documents))})`;
 				for (const delivery of command.deliveries) {
 					const updated = await transaction<{ id: string }[]>`UPDATE recipient SET
 						capability_hash = ${delivery.capabilityHash}, capability_expires_at = ${delivery.capabilityExpiresAt},
@@ -317,13 +320,31 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				// rollback from any of the checks above takes the pointer with it,
 				// so a sent envelope never references a rendering of another
 				// revision.
-				await transaction`INSERT INTO envelope_sent_pdf (
-					organization_id, envelope_id, commit_sha, object_key, sha256, byte_size,
-					page_count, page_width, page_height, document_pages_json, created_at
+				for (const document of command.sentDocumentSet.documents) {
+					await transaction`INSERT INTO envelope_sent_document (
+						organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+						object_key, sha256, byte_size, page_count, page_width, page_height, created_at
+					) VALUES (
+						${command.organizationId}, ${command.envelopeId}, ${command.commitSha},
+						${document.documentId}, ${document.position}, ${document.kind}, ${document.title},
+						${document.objectKey}, ${document.sha256}, ${document.byteSize},
+						${document.pageCount}, ${document.pageWidth}, ${document.pageHeight},
+						${command.updatedAt}
+					) ON CONFLICT (organization_id, envelope_id, commit_sha, document_id) DO NOTHING`;
+				}
+				const sentDocumentCount = await transaction<{ count: number }[]>`
+					SELECT COUNT(*)::int AS count FROM envelope_sent_document
+					WHERE organization_id = ${command.organizationId}
+						AND envelope_id = ${command.envelopeId}
+						AND commit_sha = ${command.commitSha}`;
+				if (sentDocumentCount[0]?.count !== command.sentDocumentSet.documentCount) {
+					throw new SendPublicationIntegrityError();
+				}
+				await transaction`INSERT INTO envelope_sent_document_set (
+					organization_id, envelope_id, commit_sha, document_set_hash, document_count, created_at
 				) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.commitSha},
-					${command.sentPdf.objectKey}, ${command.sentPdf.sha256}, ${command.sentPdf.byteSize},
-					${command.sentPdf.pageCount}, ${command.sentPdf.pageWidth}, ${command.sentPdf.pageHeight},
-					${JSON.stringify(command.sentPdf.documents)}, ${command.updatedAt})`;
+					${command.sentDocumentSet.documentSetHash}, ${command.sentDocumentSet.documentCount},
+					${command.updatedAt})`;
 				return { outcome: 'published', result: resultFromCommand(command) };
 			});
 		} catch (error: unknown) {
@@ -454,7 +475,10 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			command.sent_pdf_object_key AS "sentPdfObjectKey", command.sent_pdf_sha256 AS "sentPdfSha256",
 			command.sent_pdf_bytes AS "sentPdfBytes", command.sent_pdf_page_count AS "sentPdfPageCount",
 			command.sent_pdf_page_width AS "sentPdfPageWidth", command.sent_pdf_page_height AS "sentPdfPageHeight",
-			command.sent_pdf_document_pages_json AS "sentPdfDocumentPagesJson", evidence.id AS "evidenceEventId",
+			command.sent_pdf_document_pages_json AS "sentPdfDocumentPagesJson",
+			command.document_set_hash AS "documentSetHash", command.document_count AS "documentCount",
+			command.sent_documents_json AS "sentDocumentsJson",
+			evidence.id AS "evidenceEventId",
 			evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
 			evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 			evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
@@ -566,31 +590,119 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 			expectedReadyAuditEventId: row.readyAuditEventId
 		})
 	);
-	const auditPayload: string = JSON.stringify({
-		commitSha: row.commitSha,
-		generation: row.expectedGeneration,
-		readyAuditEventId: row.readyAuditEventId,
-		initialRoutingOrder: row.initialRoutingOrder,
-		queuedDeliveryCount: row.queuedDeliveryCount,
-		reservedCapabilityCount: row.deliveryCount,
-		deliveryManifestHash: row.deliveryManifestHash,
-		initialCapabilityExpiresAt: isoTimestamp(row.initialCapabilityExpiresAt),
-		sentPdfSha256: row.sentPdfSha256,
-		sentPdfBytes: row.sentPdfBytes === null ? null : Number(row.sentPdfBytes),
-		sentPdfPageCount: row.sentPdfPageCount
-	});
+	if (
+		requestHash !== row.requestHash ||
+		(await sha256(row.deliveryManifestJson)) !== row.deliveryManifestHash
+	) {
+		return false;
+	}
+	if (isDocumentSetReceipt(row)) {
+		const documents = parseSentAuditDocuments(row.sentDocumentsJson);
+		const documentCount: number = Number(row.documentCount);
+		if (documents === null || documents.length !== documentCount) return false;
+		return (
+			JSON.stringify({
+				commitSha: row.commitSha,
+				generation: row.expectedGeneration,
+				readyAuditEventId: row.readyAuditEventId,
+				initialRoutingOrder: row.initialRoutingOrder,
+				queuedDeliveryCount: row.queuedDeliveryCount,
+				reservedCapabilityCount: row.deliveryCount,
+				deliveryManifestHash: row.deliveryManifestHash,
+				initialCapabilityExpiresAt: isoTimestamp(row.initialCapabilityExpiresAt),
+				documentSetHash: row.documentSetHash,
+				documentCount,
+				documents
+			}) === row.auditPayloadJson
+		);
+	}
+	if (isLegacySentPdfReceipt(row)) {
+		return (
+			JSON.stringify({
+				commitSha: row.commitSha,
+				generation: row.expectedGeneration,
+				readyAuditEventId: row.readyAuditEventId,
+				initialRoutingOrder: row.initialRoutingOrder,
+				queuedDeliveryCount: row.queuedDeliveryCount,
+				reservedCapabilityCount: row.deliveryCount,
+				deliveryManifestHash: row.deliveryManifestHash,
+				initialCapabilityExpiresAt: isoTimestamp(row.initialCapabilityExpiresAt),
+				sentPdfSha256: row.sentPdfSha256,
+				sentPdfBytes: row.sentPdfBytes === null ? null : Number(row.sentPdfBytes),
+				sentPdfPageCount: row.sentPdfPageCount === null ? null : Number(row.sentPdfPageCount)
+			}) === row.auditPayloadJson
+		);
+	}
+	return false;
+}
+
+function isDocumentSetReceipt(row: SendCommandRow): row is SendCommandRow & {
+	documentSetHash: string;
+	documentCount: number | string;
+	sentDocumentsJson: string;
+} {
 	return (
+		row.documentSetHash !== null &&
+		row.documentCount !== null &&
+		row.sentDocumentsJson !== null &&
+		row.sentPdfObjectKey === null &&
+		row.sentPdfSha256 === null &&
+		row.sentPdfBytes === null &&
+		row.sentPdfPageCount === null &&
+		row.sentPdfPageWidth === null &&
+		row.sentPdfPageHeight === null &&
+		row.sentPdfDocumentPagesJson === null
+	);
+}
+
+function isLegacySentPdfReceipt(row: SendCommandRow): boolean {
+	return (
+		row.documentSetHash === null &&
+		row.documentCount === null &&
+		row.sentDocumentsJson === null &&
 		row.sentPdfObjectKey !== null &&
 		row.sentPdfSha256 !== null &&
 		row.sentPdfBytes !== null &&
 		row.sentPdfPageCount !== null &&
 		row.sentPdfPageWidth !== null &&
 		row.sentPdfPageHeight !== null &&
-		row.sentPdfDocumentPagesJson !== null &&
-		requestHash === row.requestHash &&
-		auditPayload === row.auditPayloadJson &&
-		(await sha256(row.deliveryManifestJson)) === row.deliveryManifestHash
+		row.sentPdfDocumentPagesJson !== null
 	);
+}
+
+function parseSentAuditDocuments(
+	value: string
+): readonly { id: string; sha256: string; byteSize: number; pageCount: number }[] | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value) as unknown;
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 20) return null;
+	const documents: { id: string; sha256: string; byteSize: number; pageCount: number }[] = [];
+	for (const candidate of parsed) {
+		if (typeof candidate !== 'object' || candidate === null) return null;
+		const entry = candidate as Record<string, unknown>;
+		if (
+			Object.keys(entry).length !== 4 ||
+			typeof entry.id !== 'string' ||
+			typeof entry.sha256 !== 'string' ||
+			typeof entry.byteSize !== 'number' ||
+			!Number.isInteger(entry.byteSize) ||
+			typeof entry.pageCount !== 'number' ||
+			!Number.isInteger(entry.pageCount)
+		) {
+			return null;
+		}
+		documents.push({
+			id: entry.id,
+			sha256: entry.sha256,
+			byteSize: entry.byteSize,
+			pageCount: entry.pageCount
+		});
+	}
+	return documents;
 }
 
 function parseDeliveryManifest(value: string): readonly DeliveryManifestEntry[] | null {

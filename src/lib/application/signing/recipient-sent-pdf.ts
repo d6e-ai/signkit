@@ -1,4 +1,8 @@
 import { sentPdfObjectKey } from '$lib/application/documents/sent-document-pdf';
+import type {
+	EnvelopeSentDocumentStore,
+	SentDocumentPointer
+} from '$lib/ports/envelope-sent-document-store';
 import type { EnvelopeSentPdfStore, SentPdfPointer } from '$lib/ports/envelope-sent-pdf-store';
 import type { ObjectStore } from '$lib/ports/object-store';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
@@ -25,18 +29,27 @@ export type RecipientSentPdfResult =
 	| { outcome: 'unavailable' };
 
 export interface RecipientSentPdfApplicationPort {
-	read(token: string, expectedEnvelopeId: string): Promise<RecipientSentPdfResult>;
+	read(
+		token: string,
+		expectedEnvelopeId: string,
+		documentId?: string
+	): Promise<RecipientSentPdfResult>;
 }
 
 export class RecipientSentPdfService implements RecipientSentPdfApplicationPort {
 	constructor(
 		private readonly access: RecipientAccessApplicationPort,
+		private readonly sentDocuments: EnvelopeSentDocumentStore,
 		private readonly sentPdf: EnvelopeSentPdfStore,
 		private readonly objects: ObjectStore,
 		private readonly now: () => Date = (): Date => new Date()
 	) {}
 
-	async read(token: string, expectedEnvelopeId: string): Promise<RecipientSentPdfResult> {
+	async read(
+		token: string,
+		expectedEnvelopeId: string,
+		documentId?: string
+	): Promise<RecipientSentPdfResult> {
 		const before: RecipientSigningContext | null = await this.access.resolve(
 			token,
 			this.now().toISOString()
@@ -44,7 +57,8 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 		if (before === null) return { outcome: 'not_found' };
 		if (before.envelopeId !== expectedEnvelopeId) return { outcome: 'not_found' };
 
-		const pointer: SentPdfPointer | null = await this.#pointer(before);
+		const pointer: { objectKey: string; sha256: string; byteSize: number } | null =
+			await this.#pointer(before, documentId);
 		if (pointer === null) return { outcome: 'unavailable' };
 
 		const stream: ReadableStream<Uint8Array> | null = await this.objects.get(pointer.objectKey);
@@ -72,7 +86,8 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 		) {
 			return { outcome: 'unavailable' };
 		}
-		const afterPointer: SentPdfPointer | null = await this.#pointer(after);
+		const afterPointer: { objectKey: string; sha256: string; byteSize: number } | null =
+			await this.#pointer(after, documentId);
 		if (
 			afterPointer === null ||
 			afterPointer.objectKey !== pointer.objectKey ||
@@ -85,16 +100,33 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 		return { outcome: 'ok', bytes, sha256: pointer.sha256, byteSize: pointer.byteSize };
 	}
 
-	async #pointer(context: RecipientSigningContext): Promise<SentPdfPointer | null> {
+	async #pointer(
+		context: RecipientSigningContext,
+		documentId: string | undefined
+	): Promise<{ objectKey: string; sha256: string; byteSize: number } | null> {
+		if (documentId !== undefined) {
+			const document: SentDocumentPointer | null = await this.sentDocuments.findDocument(
+				context.organizationId,
+				context.envelopeId,
+				context.sentRevision.commitSha,
+				documentId
+			);
+			if (document === null) return null;
+			return this.#verifiedKey(context, document);
+		}
 		const pointer: SentPdfPointer | null = await this.sentPdf.findSentPdf(
 			context.organizationId,
 			context.envelopeId,
 			context.sentRevision.commitSha
 		);
 		if (pointer === null) return null;
-		// The key is content-addressed and tenant-scoped by construction, so
-		// recomputing it is a cheap proof that the stored pointer was never
-		// rewritten to reach into another organization or envelope.
+		return this.#verifiedKey(context, pointer);
+	}
+
+	#verifiedKey(
+		context: RecipientSigningContext,
+		pointer: { objectKey: string; sha256: string; byteSize: number }
+	): { objectKey: string; sha256: string; byteSize: number } | null {
 		let expectedKey: string;
 		try {
 			expectedKey = sentPdfObjectKey(context.organizationId, context.envelopeId, pointer.sha256);
@@ -103,7 +135,11 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 		}
 		if (pointer.objectKey !== expectedKey) return null;
 		if (!Number.isSafeInteger(pointer.byteSize) || pointer.byteSize <= 0) return null;
-		return pointer;
+		return {
+			objectKey: pointer.objectKey,
+			sha256: pointer.sha256,
+			byteSize: pointer.byteSize
+		};
 	}
 }
 

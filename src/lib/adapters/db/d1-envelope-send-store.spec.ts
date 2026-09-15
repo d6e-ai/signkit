@@ -1,4 +1,5 @@
-import { fakeSentPdfArtifact } from '$lib/application/documents/sent-document-pdf-test-support';
+import { fakeSentDocumentSetArtifact } from '$lib/application/documents/sent-document-pdf-test-support';
+import { sentAuditDocuments } from '$lib/application/documents/sent-document-pdf';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { PublishSentEnvelopeCommand } from '$lib/ports/envelope-send-store';
@@ -42,7 +43,7 @@ function fakeD1(firstResults: readonly unknown[], allResults: readonly unknown[]
 const sealedDigest: string = createHash('sha256').update('sealed').digest('hex');
 
 const command: PublishSentEnvelopeCommand = {
-	sentPdf: fakeSentPdfArtifact('org-1', 'env-1'),
+	sentDocumentSet: fakeSentDocumentSetArtifact('org-1', 'env-1'),
 	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	actorType: 'user',
@@ -102,7 +103,10 @@ command.auditPayloadJson = JSON.stringify({
 	queuedDeliveryCount: 1,
 	reservedCapabilityCount: 1,
 	deliveryManifestHash: command.deliveryManifestHash,
-	initialCapabilityExpiresAt: '2026-09-25T00:02:00.000Z'
+	initialCapabilityExpiresAt: '2026-09-25T00:02:00.000Z',
+	documentSetHash: command.sentDocumentSet.documentSetHash,
+	documentCount: command.sentDocumentSet.documentCount,
+	documents: sentAuditDocuments(command.sentDocumentSet.documents)
 });
 
 function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -127,6 +131,16 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		previous_audit_hash: 'hash-3',
 		audit_event_hash: 'hash-4',
 		audit_payload_json: command.auditPayloadJson,
+		sent_pdf_object_key: null,
+		sent_pdf_sha256: null,
+		sent_pdf_bytes: null,
+		sent_pdf_page_count: null,
+		sent_pdf_page_width: null,
+		sent_pdf_page_height: null,
+		sent_pdf_document_pages_json: null,
+		document_set_hash: command.sentDocumentSet.documentSetHash,
+		document_count: command.sentDocumentSet.documentCount,
+		sent_documents_json: JSON.stringify(sentAuditDocuments(command.sentDocumentSet.documents)),
 		evidence_event_id: 'sent-audit',
 		evidence_organization_id: 'org-1',
 		evidence_envelope_id: 'env-1',
@@ -152,6 +166,7 @@ describe('D1EnvelopeSendStore', () => {
 			expect.stringContaining('INSERT INTO envelope_send_command'),
 			expect.stringContaining('UPDATE recipient'),
 			expect.stringContaining('INSERT INTO delivery_outbox'),
+			expect.stringContaining('INSERT INTO envelope_sent_document'),
 			expect.stringContaining('INSERT INTO envelope_send_publish')
 		]);
 		expect(fake.batches[0][2].bindings).toContain('sealed');
@@ -268,5 +283,99 @@ describe('D1EnvelopeSendStore', () => {
 				).database
 			).prepareSend(command, 2, 'ready-audit')
 		).resolves.toEqual({ outcome: 'integrity_error' });
+	});
+
+	it('replays only a byte-exact canonical envelope.sent payload, including no unknown fields', async () => {
+		const evidence = [
+			{
+				id: 'delivery-1',
+				recipient_id: 'recipient-1',
+				status: 'pending',
+				retryable: 1,
+				capability_hash: 'cap-hash',
+				reserved_capability_expires_at: '2026-09-25T00:02:00.000Z',
+				sealed_capability: 'sealed',
+				sealing_key_id: 'key-1',
+				sealed_capability_sha256: sealedDigest,
+				recipient_capability_hash: 'cap-hash',
+				recipient_capability_expires_at: '2026-09-25T00:02:00.000Z'
+			}
+		];
+		const extraFieldPayload: string = `${command.auditPayloadJson.slice(0, -1)},"extra":true}`;
+		await expect(
+			new D1EnvelopeSendStore(
+				fakeD1(
+					[
+						storedRow({
+							audit_payload_json: extraFieldPayload,
+							evidence_payload_json: extraFieldPayload
+						})
+					],
+					[evidence]
+				).database
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toEqual({ outcome: 'integrity_error' });
+		const extraDocumentField: string = JSON.stringify([
+			{ ...sentAuditDocuments(command.sentDocumentSet.documents)[0], extra: true }
+		]);
+		await expect(
+			new D1EnvelopeSendStore(
+				fakeD1([storedRow({ sent_documents_json: extraDocumentField })], [evidence]).database
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toEqual({ outcome: 'integrity_error' });
+	});
+
+	it('replays a pre-migration sent-pdf receipt whose document_set_hash is null', async () => {
+		const evidence = [
+			{
+				id: 'delivery-1',
+				recipient_id: 'recipient-1',
+				status: 'pending',
+				retryable: 1,
+				capability_hash: 'cap-hash',
+				reserved_capability_expires_at: '2026-09-25T00:02:00.000Z',
+				sealed_capability: 'sealed',
+				sealing_key_id: 'key-1',
+				sealed_capability_sha256: sealedDigest,
+				recipient_capability_hash: 'cap-hash',
+				recipient_capability_expires_at: '2026-09-25T00:02:00.000Z'
+			}
+		];
+		const legacyPayload: string = JSON.stringify({
+			commitSha: 'commit-2',
+			generation: 2,
+			readyAuditEventId: 'ready-audit',
+			initialRoutingOrder: 1,
+			queuedDeliveryCount: 1,
+			reservedCapabilityCount: 1,
+			deliveryManifestHash: command.deliveryManifestHash,
+			initialCapabilityExpiresAt: '2026-09-25T00:02:00.000Z',
+			sentPdfSha256: 'f'.repeat(64),
+			sentPdfBytes: 4096,
+			sentPdfPageCount: 2
+		});
+		await expect(
+			new D1EnvelopeSendStore(
+				fakeD1(
+					[
+						storedRow({
+							document_set_hash: null,
+							document_count: null,
+							sent_documents_json: null,
+							sent_pdf_object_key: 'sent-documents/v1/legacy.pdf',
+							sent_pdf_sha256: 'f'.repeat(64),
+							sent_pdf_bytes: 4096,
+							sent_pdf_page_count: 2,
+							sent_pdf_page_width: 595.28,
+							sent_pdf_page_height: 841.89,
+							sent_pdf_document_pages_json: '[]',
+							audit_payload_json: legacyPayload,
+							evidence_payload_json: legacyPayload
+						})
+					],
+					[evidence]
+				).database
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toMatchObject({ outcome: 'replayed', result: { status: 'sent' } });
 	});
 });

@@ -136,15 +136,16 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 				this.#database
 					.prepare(
 						`INSERT INTO envelope_field (
-							id, organization_id, envelope_id, recipient_id, document_path, field_type,
+							id, organization_id, envelope_id, recipient_id, document_id, document_path, field_type,
 							label, required, position, page, x, y, width, height, created_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
 						field.id,
 						field.organizationId,
 						field.envelopeId,
 						field.recipientId,
+						field.documentId,
 						field.documentPath,
 						field.fieldType,
 						field.label,
@@ -332,7 +333,7 @@ async function validStoredReceipt(
 		expectedFieldGeneration: row.expected_field_generation,
 		fields: fields.map((field: EnvelopeField) => ({
 			recipientId: field.recipientId,
-			documentPath: field.documentPath,
+			documentId: field.documentId,
 			fieldType: field.fieldType,
 			label: field.label,
 			required: field.required,
@@ -347,6 +348,7 @@ async function validStoredReceipt(
 		fields: fields.map((field: EnvelopeField) => ({
 			id: field.id,
 			recipientId: field.recipientId,
+			documentId: field.documentId,
 			documentPath: field.documentPath,
 			fieldType: field.fieldType,
 			required: field.required,
@@ -384,7 +386,7 @@ function isEnvelopeField(value: unknown): value is EnvelopeField {
 		typeof candidate.organizationId === 'string' &&
 		typeof candidate.envelopeId === 'string' &&
 		typeof candidate.recipientId === 'string' &&
-		typeof candidate.documentPath === 'string' &&
+		isDocumentScope(candidate) &&
 		isFieldType(candidate.fieldType) &&
 		typeof candidate.label === 'string' &&
 		typeof candidate.required === 'boolean' &&
@@ -415,12 +417,19 @@ function toPublicField(field: EnvelopeField): PublicEnvelopeField {
 	return {
 		id: field.id,
 		recipientId: field.recipientId,
+		documentId: field.documentId,
 		documentPath: field.documentPath,
 		fieldType: field.fieldType,
 		required: field.required,
 		position: field.position,
 		geometry: field.geometry
 	};
+}
+
+function isDocumentScope(candidate: Record<string, unknown>): boolean {
+	const hasId: boolean = typeof candidate.documentId === 'string';
+	const hasPath: boolean = typeof candidate.documentPath === 'string';
+	return (hasId && candidate.documentPath === null) || (candidate.documentId === null && hasPath);
 }
 
 async function sha256(value: string): Promise<string> {

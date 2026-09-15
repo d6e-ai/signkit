@@ -9,13 +9,26 @@ import {
 	refreshDocumentPageMapAfterReload
 } from './document-page-map';
 
+const DOCUMENT_ID = '01900000-0000-7000-8000-000000000010';
+
 const stale: EnvelopeDocumentPageMap = {
 	commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 	generation: 1,
+	documentId: DOCUMENT_ID,
 	pageCount: 1,
 	pageWidth: 595.28,
 	pageHeight: 841.89,
-	documents: [{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 1 }]
+	documents: [
+		{
+			documentId: DOCUMENT_ID,
+			position: 0,
+			kind: 'markdown',
+			title: 'agreement',
+			pageCount: 1,
+			pageWidth: 595.28,
+			pageHeight: 841.89
+		}
+	]
 };
 
 const current: EnvelopeDocumentPageMap = {
@@ -50,6 +63,16 @@ describe('authoring document page map', () => {
 			})
 		).toBe(false);
 		expect(acceptCurrentRevisionPageMap(readyRevision, current)).toEqual(current);
+		expect(
+			acceptCurrentRevisionPageMap(readyRevision, {
+				...current,
+				documentId: '01900000-0000-7000-8000-000000000099'
+			})
+		).toBeNull();
+		expect(acceptCurrentRevisionPageMap(readyRevision, current, DOCUMENT_ID)).toEqual(current);
+		expect(
+			acceptCurrentRevisionPageMap(readyRevision, current, '01900000-0000-7000-8000-000000000099')
+		).toBeNull();
 	});
 
 	it('does not load pages while the envelope is still draft', async () => {

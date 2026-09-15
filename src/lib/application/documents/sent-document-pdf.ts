@@ -8,35 +8,36 @@ import {
 	readImmutableDraftRevision,
 	type ImmutableDraftRevision
 } from '$lib/application/drafts/draft-persistence';
+import { uploadedPdfObjectKey } from '$lib/application/documents/uploaded-pdf';
+import {
+	documentSetHash,
+	parseDocumentSet,
+	type DocumentSetLeaf,
+	type DocumentSetManifest,
+	type MarkdownDocumentLeaf,
+	type PdfDocumentLeaf
+} from '$lib/domain/document-set';
+import { isMarkdownPath } from '$lib/domain/envelope';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
-import type { SentPdfDocumentPages } from '$lib/ports/envelope-sent-pdf-store';
 import {
 	RecipientMarkdownRenderError,
 	renderRecipientMarkdown
 } from '$lib/security/recipient-markdown';
 
 /**
- * Renders and stores the PDF a recipient is actually shown.
+ * Renders and stores one PDF per document in the envelope's document set.
  *
- * The Git archive stays the source of truth for history, but it is never what
- * a recipient sees: they get a fixed-layout rendering of one exact commit, so
- * "what was agreed to" is a concrete artifact with concrete page coordinates
- * rather than whatever a given Markdown renderer happened to produce that
- * day. That is also what makes DocuSign-style field placement meaningful --
- * page 3 at (0.42, 0.61) has to mean the same thing for the sender placing
- * the field and the signer filling it in.
- *
- * The object is content-addressed and written immutably before any database
- * row references it, mirroring how draft archives are published: a failed
- * publication leaves an unreferenced object for the orphan sweep, never a
- * durable pointer to bytes that do not exist.
+ * The Git archive stays the source of truth for history. Recipients never see
+ * a concatenation: each document is its own content-addressed object. Uploaded
+ * PDFs are copied byte-identically; Markdown is rendered deterministically per
+ * document. Objects are written immutably before any database row references
+ * them.
  */
 
 export const SENT_PDF_CONTENT_TYPE: string = 'application/pdf';
-/** Comfortably above a long agreement, far below anything that could exhaust a Worker. */
 export const MAX_SENT_PDF_BYTES: number = 24 * 1024 * 1024;
-export const MAX_SENT_PDF_DOCUMENTS: number = 50;
+export const MAX_SENT_PDF_DOCUMENTS: number = 20;
 const MAX_TOTAL_MARKDOWN_BYTES: number = 1024 * 1024;
 
 export class SentDocumentPdfError extends Error {
@@ -48,25 +49,39 @@ export class SentDocumentPdfError extends Error {
 	}
 }
 
-export interface SentPdfArtifact {
+export interface SentDocumentArtifact {
+	documentId: string;
+	position: number;
+	kind: 'markdown' | 'pdf';
+	title: string;
 	objectKey: string;
 	sha256: string;
 	byteSize: number;
 	pageCount: number;
 	pageWidth: number;
 	pageHeight: number;
-	documents: readonly SentPdfDocumentPages[];
+}
+
+export interface SentDocumentSetArtifact {
+	documentSetHash: string;
+	documentCount: number;
+	documents: readonly SentDocumentArtifact[];
+}
+
+export interface RenderedSentDocument extends SentDocumentArtifact {
+	bytes: Uint8Array;
 }
 
 export interface SentDocumentPdfPort {
-	/** Renders, stores, and returns the pinned pointer for one immutable revision. */
-	publish(revision: ImmutableDraftRevision): Promise<SentPdfArtifact>;
-	/**
-	 * Renders one immutable revision without storing it. Used by the sender's
-	 * placement editor, which needs the same page geometry the recipient will
-	 * see before the envelope has been sent at all.
-	 */
-	render(revision: ImmutableDraftRevision): Promise<{ bytes: Uint8Array } & SentPdfArtifact>;
+	publish(revision: ImmutableDraftRevision): Promise<SentDocumentSetArtifact>;
+	renderDocument(
+		revision: ImmutableDraftRevision,
+		documentId: string
+	): Promise<RenderedSentDocument>;
+	listDocuments(revision: ImmutableDraftRevision): Promise<{
+		documentSetHash: string;
+		documents: readonly Omit<SentDocumentArtifact, 'objectKey' | 'sha256' | 'byteSize'>[];
+	}>;
 }
 
 export class SentDocumentPdfService implements SentDocumentPdfPort {
@@ -75,84 +90,234 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 		private readonly repository: DraftRepository
 	) {}
 
-	async render(revision: ImmutableDraftRevision): Promise<{ bytes: Uint8Array } & SentPdfArtifact> {
-		const documents: readonly DraftDocument[] = await readImmutableDraftRevision(
-			revision,
-			this.objects,
-			this.repository
+	async listDocuments(revision: ImmutableDraftRevision): Promise<{
+		documentSetHash: string;
+		documents: readonly Omit<SentDocumentArtifact, 'objectKey' | 'sha256' | 'byteSize'>[];
+	}> {
+		const loaded = await this.loadSet(revision);
+		const documents: Omit<SentDocumentArtifact, 'objectKey' | 'sha256' | 'byteSize'>[] = [];
+		for (const leaf of loaded.manifest.documents) {
+			documents.push(await this.summarizeLeaf(revision, loaded.markdown, leaf));
+		}
+		return { documentSetHash: loaded.documentSetHash, documents };
+	}
+
+	async renderDocument(
+		revision: ImmutableDraftRevision,
+		documentId: string
+	): Promise<RenderedSentDocument> {
+		const loaded = await this.loadSet(revision);
+		const leaf: DocumentSetLeaf | undefined = loaded.manifest.documents.find(
+			(entry: DocumentSetLeaf): boolean => entry.id === documentId
 		);
-		const result: AgreementPdfResult = renderRevisionPdf(documents);
+		if (leaf === undefined) {
+			throw new SentDocumentPdfError('The requested document is not in the sent revision');
+		}
+		return this.renderLeaf(revision, loaded.markdown, leaf);
+	}
+
+	async publish(revision: ImmutableDraftRevision): Promise<SentDocumentSetArtifact> {
+		const loaded = await this.loadSet(revision);
+		const documents: SentDocumentArtifact[] = [];
+		for (const leaf of loaded.manifest.documents) {
+			const rendered: RenderedSentDocument = await this.renderLeaf(revision, loaded.markdown, leaf);
+			await this.persistImmutablePdf(rendered.objectKey, rendered.bytes, rendered.sha256);
+			const { bytes: _bytes, ...artifact } = rendered;
+			void _bytes;
+			documents.push(artifact);
+		}
+		return {
+			documentSetHash: loaded.documentSetHash,
+			documentCount: documents.length,
+			documents
+		};
+	}
+
+	private async loadSet(revision: ImmutableDraftRevision): Promise<{
+		manifest: DocumentSetManifest;
+		markdown: ReadonlyMap<string, DraftDocument>;
+		documentSetHash: string;
+	}> {
+		if (typeof this.repository.readManifest !== 'function') {
+			throw new SentDocumentPdfError('The sent revision has no document set');
+		}
+		const verified = await readImmutableDraftRevision(revision, this.objects, this.repository);
+		let manifestJson: string | null;
+		try {
+			manifestJson = await this.repository.readManifest(verified.archive, revision.commitSha);
+		} catch {
+			throw new SentDocumentPdfError('The sent revision document set is invalid');
+		}
+		if (manifestJson === null) {
+			throw new SentDocumentPdfError('The sent revision has no document set');
+		}
+		let manifest: DocumentSetManifest;
+		try {
+			manifest = parseDocumentSet(manifestJson);
+		} catch {
+			throw new SentDocumentPdfError('The sent revision document set is invalid');
+		}
+		const markdown: Map<string, DraftDocument> = new Map(
+			verified.documents.map((document: DraftDocument): [string, DraftDocument] => [
+				document.path,
+				document
+			])
+		);
+		return {
+			manifest,
+			markdown,
+			documentSetHash: await documentSetHash(manifest)
+		};
+	}
+
+	private async summarizeLeaf(
+		revision: ImmutableDraftRevision,
+		markdown: ReadonlyMap<string, DraftDocument>,
+		leaf: DocumentSetLeaf
+	): Promise<Omit<SentDocumentArtifact, 'objectKey' | 'sha256' | 'byteSize'>> {
+		if (leaf.kind === 'pdf') {
+			return {
+				documentId: leaf.id,
+				position: leaf.position,
+				kind: 'pdf',
+				title: leaf.title,
+				pageCount: leaf.pageCount,
+				pageWidth: leaf.pageWidth,
+				pageHeight: leaf.pageHeight
+			};
+		}
+		const rendered: RenderedSentDocument = await this.renderMarkdownLeaf(revision, markdown, leaf);
+		return {
+			documentId: rendered.documentId,
+			position: rendered.position,
+			kind: rendered.kind,
+			title: rendered.title,
+			pageCount: rendered.pageCount,
+			pageWidth: rendered.pageWidth,
+			pageHeight: rendered.pageHeight
+		};
+	}
+
+	private async renderLeaf(
+		revision: ImmutableDraftRevision,
+		markdown: ReadonlyMap<string, DraftDocument>,
+		leaf: DocumentSetLeaf
+	): Promise<RenderedSentDocument> {
+		if (leaf.kind === 'pdf') return this.renderUploadedLeaf(revision, leaf);
+		return this.renderMarkdownLeaf(revision, markdown, leaf);
+	}
+
+	private async renderUploadedLeaf(
+		revision: ImmutableDraftRevision,
+		leaf: PdfDocumentLeaf
+	): Promise<RenderedSentDocument> {
+		const uploadedKey: string = uploadedPdfObjectKey(
+			revision.organizationId,
+			revision.envelopeId,
+			leaf.sha256
+		);
+		const stream: ReadableStream<Uint8Array> | null = await this.objects.get(uploadedKey);
+		if (stream === null) {
+			throw new SentDocumentPdfError('Uploaded agreement PDF is missing');
+		}
+		let bytes: Uint8Array;
+		try {
+			bytes = await readStreamBounded(stream, MAX_SENT_PDF_BYTES);
+		} catch (error: unknown) {
+			if (error instanceof SentDocumentPdfError) throw error;
+			throw new SentDocumentPdfError('Uploaded agreement PDF could not be read');
+		}
+		if (bytes.byteLength !== leaf.byteSize) {
+			throw new SentDocumentPdfError('Uploaded agreement PDF size does not match its manifest');
+		}
+		const digest: string = await sha256Hex(bytes);
+		if (digest !== leaf.sha256) {
+			throw new SentDocumentPdfError('Uploaded agreement PDF failed SHA-256 verification');
+		}
+		return {
+			bytes,
+			documentId: leaf.id,
+			position: leaf.position,
+			kind: 'pdf',
+			title: leaf.title,
+			objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
+			sha256: digest,
+			byteSize: bytes.byteLength,
+			pageCount: leaf.pageCount,
+			pageWidth: leaf.pageWidth,
+			pageHeight: leaf.pageHeight
+		};
+	}
+
+	private async renderMarkdownLeaf(
+		revision: ImmutableDraftRevision,
+		markdown: ReadonlyMap<string, DraftDocument>,
+		leaf: MarkdownDocumentLeaf
+	): Promise<RenderedSentDocument> {
+		if (!isMarkdownPath(leaf.path)) {
+			throw new SentDocumentPdfError('The sent revision Markdown path is invalid');
+		}
+		const document: DraftDocument | undefined = markdown.get(leaf.path);
+		if (document === undefined) {
+			throw new SentDocumentPdfError('The sent revision Markdown document is missing');
+		}
+		const result: AgreementPdfResult = renderMarkdownRevisionPdf([document]);
 		const bytes: Uint8Array = result.bytes;
 		if (bytes.byteLength === 0 || bytes.byteLength > MAX_SENT_PDF_BYTES) {
 			throw new SentDocumentPdfError('Rendered agreement PDF is outside the supported size');
 		}
-		const sha256: string = await sha256Hex(bytes);
+		const digest: string = await sha256Hex(bytes);
 		return {
 			bytes,
-			objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, sha256),
-			sha256,
+			documentId: leaf.id,
+			position: leaf.position,
+			kind: 'markdown',
+			title: leaf.title,
+			objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
+			sha256: digest,
 			byteSize: bytes.byteLength,
 			pageCount: result.pageCount,
 			pageWidth: result.pageWidth,
-			pageHeight: result.pageHeight,
-			documents: result.documents.map((entry): SentPdfDocumentPages => ({
-				path: documents[entry.index].path,
-				title: entry.title,
-				firstPage: entry.firstPage,
-				lastPage: entry.lastPage
-			}))
+			pageHeight: result.pageHeight
 		};
 	}
 
-	async publish(revision: ImmutableDraftRevision): Promise<SentPdfArtifact> {
-		const rendered = await this.render(revision);
+	private async persistImmutablePdf(key: string, bytes: Uint8Array, sha256: string): Promise<void> {
 		try {
-			const stored: ObjectMetadata = await this.objects.putImmutable(rendered.objectKey, {
+			const stored: ObjectMetadata = await this.objects.putImmutable(key, {
 				contentType: SENT_PDF_CONTENT_TYPE,
-				body: rendered.bytes,
-				sha256: rendered.sha256,
+				body: bytes,
+				sha256,
 				metadata: { format: 'signkit-sent-agreement-pdf-v1' }
 			});
-			if (
-				stored.key !== rendered.objectKey ||
-				stored.sha256 !== rendered.sha256 ||
-				stored.size !== rendered.byteSize
-			) {
+			if (stored.key !== key || stored.sha256 !== sha256 || stored.size !== bytes.byteLength) {
 				throw new SentDocumentPdfError('Object store did not confirm the sent agreement PDF');
 			}
 		} catch (error: unknown) {
-			// A provider can fail a precondition or lose the response after
-			// accepting the write. Reuse is only safe once we have read the
-			// immutable object back and re-derived its digest ourselves -- `head`
-			// metadata can be stale, echoed from the request, or missing its
-			// digest entirely, none of which proves the stored bytes match.
-			const existing: ObjectMetadata | null = await this.objects.head(rendered.objectKey);
-			if (
-				existing === null ||
-				existing.sha256 !== rendered.sha256 ||
-				existing.size !== rendered.byteSize
-			) {
+			const existing: ObjectMetadata | null = await this.objects.head(key);
+			if (existing === null || existing.sha256 !== sha256 || existing.size !== bytes.byteLength) {
 				throw error;
 			}
-			const stream: ReadableStream<Uint8Array> | null = await this.objects.get(rendered.objectKey);
+			const stream: ReadableStream<Uint8Array> | null = await this.objects.get(key);
 			if (stream === null) throw error;
 			let body: Uint8Array;
 			try {
-				body = await readStreamBounded(stream, rendered.byteSize);
+				body = await readStreamBounded(stream, bytes.byteLength);
 			} catch {
 				throw error;
 			}
-			if (body.byteLength !== rendered.byteSize || (await sha256Hex(body)) !== rendered.sha256) {
+			if (body.byteLength !== bytes.byteLength || (await sha256Hex(body)) !== sha256) {
 				throw error;
 			}
 		}
-		const { bytes: _bytes, ...artifact } = rendered;
-		void _bytes;
-		return artifact;
 	}
 }
 
 export function renderRevisionPdf(documents: readonly DraftDocument[]): AgreementPdfResult {
+	return renderMarkdownRevisionPdf(documents);
+}
+
+function renderMarkdownRevisionPdf(documents: readonly DraftDocument[]): AgreementPdfResult {
 	if (documents.length === 0) {
 		throw new SentDocumentPdfError('The sent revision contains no documents');
 	}
@@ -172,9 +337,6 @@ export function renderRevisionPdf(documents: readonly DraftDocument[]): Agreemen
 				nodes: renderRecipientMarkdown(document.content).nodes
 			};
 		} catch (error: unknown) {
-			// A document too large or too deeply nested to sanitize is a bounded
-			// read failure, not a rendering bug: it collapses into the same
-			// fail-closed error every other bound here uses.
 			if (error instanceof RecipientMarkdownRenderError) {
 				throw new SentDocumentPdfError('A document exceeds the safe rendering budget');
 			}
@@ -191,11 +353,6 @@ export function renderRevisionPdf(documents: readonly DraftDocument[]): Agreemen
 	}
 }
 
-/**
- * Metadata title for a document in the sent PDF page map. Derived from the
- * Markdown path with the same rule the browser uses for document navigation.
- * It is not drawn onto the page; authored Markdown is the only body content.
- */
 export function agreementDocumentTitle(path: string): string {
 	const name: string = path
 		.replace(/^documents\//, '')
@@ -251,6 +408,31 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
+}
+
+export interface SentAuditDocument {
+	id: string;
+	sha256: string;
+	byteSize: number;
+	pageCount: number;
+}
+
+export function sentAuditDocuments(
+	documents: readonly Pick<
+		SentDocumentArtifact,
+		'documentId' | 'sha256' | 'byteSize' | 'pageCount'
+	>[]
+): readonly SentAuditDocument[] {
+	return documents.map(
+		(
+			document: Pick<SentDocumentArtifact, 'documentId' | 'sha256' | 'byteSize' | 'pageCount'>
+		): SentAuditDocument => ({
+			id: document.documentId,
+			sha256: document.sha256,
+			byteSize: document.byteSize,
+			pageCount: document.pageCount
+		})
+	);
 }
 
 async function readStreamBounded(

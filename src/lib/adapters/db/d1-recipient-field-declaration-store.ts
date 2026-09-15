@@ -1,4 +1,4 @@
-import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
+import type { FieldGeometry, FieldType, MarkdownPath } from '$lib/domain/envelope';
 import type {
 	RecipientFieldDeclaration,
 	RecipientFieldDeclarationStore,
@@ -7,7 +7,8 @@ import type {
 
 interface FieldRow {
 	id: string;
-	document_path: string;
+	document_id: string | null;
+	document_path: string | null;
 	field_type: FieldType;
 	label: string;
 	required: number;
@@ -41,11 +42,11 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 		if (envelope === null) return null;
 		const result: D1Result<FieldRow> = await this.#database
 			.prepare(
-				`SELECT id, document_path, field_type, label, required, position,
+				`SELECT id, document_id, document_path, field_type, label, required, position,
 					page, x, y, width, height
 				 FROM envelope_field
 				 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = ?
-				 ORDER BY document_path, position, id`
+				 ORDER BY COALESCE(document_id, document_path), position, id`
 			)
 			.bind(organizationId, envelopeId, recipientId)
 			.all<FieldRow>();
@@ -53,7 +54,8 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 			fieldGeneration: envelope.field_generation,
 			fields: result.results.map((row: FieldRow): RecipientFieldDeclaration => ({
 				id: row.id,
-				documentPath: row.document_path as `documents/${string}.md`,
+				documentId: row.document_id,
+				documentPath: (row.document_path as MarkdownPath | null) ?? null,
 				fieldType: row.field_type,
 				label: row.label,
 				required: row.required === 1,

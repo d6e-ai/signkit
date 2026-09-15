@@ -11,7 +11,7 @@ import type {
 } from '$lib/ports/draft-mutation-store';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
-import type { Envelope, Recipient } from '$lib/domain/envelope';
+import type { Envelope, MarkdownPath, Recipient } from '$lib/domain/envelope';
 import type {
 	EnvelopeFieldStore,
 	FieldCommandKey,
@@ -20,11 +20,21 @@ import type {
 } from '$lib/ports/envelope-field-store';
 import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { EnvelopeFieldApplication, InvalidFieldPlacementError } from './fields';
+import {
+	appendPdfDocument,
+	serializeDocumentSet,
+	upsertMarkdownDocument,
+	type DocumentSetManifest
+} from '$lib/domain/document-set';
 
 const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 const signerId: string = '01900000-0000-7000-8000-000000000003';
 const viewerId: string = '01900000-0000-7000-8000-000000000004';
+const AGREEMENT_ID: string = '01900000-0000-7000-8000-000000000021';
+const APPENDIX_ID: string = '01900000-0000-7000-8000-000000000022';
+const PDF_ID: string = '01900000-0000-7000-8000-000000000023';
+const MISSING_ID: string = '01900000-0000-7000-8000-000000000099';
 const commitSha: string = '0123456789abcdef0123456789abcdef01234567';
 
 const actor = {
@@ -64,10 +74,48 @@ class FixedEnvelopeStore implements DraftMutationStore {
 }
 
 class FixedDraftRepository implements DraftRepository {
-	constructor(private readonly documents: readonly DraftDocument[]) {}
+	constructor(
+		private readonly documents: readonly DraftDocument[],
+		private readonly pdfLeaves: readonly {
+			id: string;
+			title: string;
+			pageCount: number;
+		}[] = []
+	) {}
 
 	async read(): Promise<readonly DraftDocument[]> {
 		return this.documents;
+	}
+
+	async readManifest(): Promise<string | null> {
+		if (this.documents.length === 0 && this.pdfLeaves.length === 0) return null;
+		let manifest: DocumentSetManifest | null = null;
+		const ids: readonly string[] = [AGREEMENT_ID, APPENDIX_ID];
+		for (const [index, document] of this.documents.entries()) {
+			manifest = upsertMarkdownDocument(
+				manifest,
+				document.path as MarkdownPath,
+				'a'.repeat(64),
+				() => ids[index] ?? MISSING_ID
+			);
+		}
+		for (const leaf of this.pdfLeaves) {
+			manifest = appendPdfDocument(
+				manifest,
+				{
+					id: leaf.id,
+					title: leaf.title,
+					sha256: 'b'.repeat(64),
+					byteSize: 4096,
+					pageCount: leaf.pageCount,
+					pageWidth: 595.28,
+					pageHeight: 841.89
+				},
+				() => leaf.id
+			);
+		}
+		if (manifest === null) return null;
+		return serializeDocumentSet(manifest);
 	}
 
 	async commit(): Promise<DraftVersion> {
@@ -75,20 +123,23 @@ class FixedDraftRepository implements DraftRepository {
 	}
 }
 
+class NullManifestRepository extends FixedDraftRepository {
+	override async readManifest(): Promise<string | null> {
+		return null;
+	}
+}
+
 async function draftPersistenceFor(
 	envelope: Envelope,
-	documents: readonly DraftDocument[]
+	documents: readonly DraftDocument[],
+	repository: DraftRepository = new FixedDraftRepository(documents)
 ): Promise<DraftPersistenceService> {
 	const objects = new InMemoryObjectStore();
 	if (envelope.repositoryArchiveKey !== null) {
 		const archive: Uint8Array = new TextEncoder().encode('archive');
 		objects.seed(envelope.repositoryArchiveKey, archive);
 	}
-	return new DraftPersistenceService(
-		new FixedEnvelopeStore(envelope),
-		objects,
-		new FixedDraftRepository(documents)
-	);
+	return new DraftPersistenceService(new FixedEnvelopeStore(envelope), objects, repository);
 }
 
 async function readyEnvelope(overrides: Partial<Envelope> = {}): Promise<Envelope> {
@@ -163,6 +214,7 @@ class CapturingStore implements EnvelopeFieldStore {
 				fields: command.fields.map((field) => ({
 					id: field.id,
 					recipientId: field.recipientId,
+					documentId: field.documentId,
 					documentPath: field.documentPath,
 					fieldType: field.fieldType,
 					required: field.required,
@@ -193,18 +245,16 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/appendix.md',
+					documentId: APPENDIX_ID,
 					fieldType: 'initials',
 					label: 'Initial here',
 					required: false,
 					position: 1,
-					// The appendix is the second document, and every document starts
-					// on a fresh page in the rendering, so its first page is 2.
-					geometry: { page: 2, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
 				},
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_ID,
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
@@ -215,9 +265,9 @@ describe('EnvelopeFieldApplication', () => {
 		});
 
 		expect(result.outcome).toBe('published');
-		expect(store.commands[0].fields.map((field) => field.documentPath)).toEqual([
-			'documents/agreement.md',
-			'documents/appendix.md'
+		expect(store.commands[0].fields.map((field) => field.documentId)).toEqual([
+			AGREEMENT_ID,
+			APPENDIX_ID
 		]);
 		expect(store.commands[0]).toMatchObject({
 			expectedCommitSha: envelope.repositoryHead,
@@ -231,6 +281,7 @@ describe('EnvelopeFieldApplication', () => {
 			fields: store.commands[0].fields.map((field) => ({
 				id: field.id,
 				recipientId: field.recipientId,
+				documentId: field.documentId,
 				documentPath: field.documentPath,
 				fieldType: field.fieldType,
 				required: field.required,
@@ -257,7 +308,7 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_ID,
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
@@ -286,7 +337,7 @@ describe('EnvelopeFieldApplication', () => {
 				fields: [
 					{
 						recipientId: signerId,
-						documentPath: 'documents/agreement.md',
+						documentId: AGREEMENT_ID,
 						fieldType: 'signature',
 						label: 'Sign here',
 						required: true,
@@ -308,7 +359,7 @@ describe('EnvelopeFieldApplication', () => {
 		const second: CapturingStore = new CapturingStore(envelope);
 		const baseField = {
 			recipientId: signerId,
-			documentPath: 'documents/agreement.md' as const,
+			documentId: AGREEMENT_ID,
 			fieldType: 'signature' as const,
 			required: true,
 			position: 1,
@@ -353,7 +404,7 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [
 				{
 					recipientId: viewerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_ID,
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
@@ -382,7 +433,7 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/missing.md',
+					documentId: MISSING_ID,
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
@@ -411,7 +462,7 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_ID,
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
@@ -440,7 +491,7 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_ID,
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
@@ -470,7 +521,7 @@ describe('EnvelopeFieldApplication', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_ID,
 					fieldType: 'signature',
 					label: 'Sign here',
 					required: true,
@@ -507,7 +558,7 @@ describe('EnvelopeFieldApplication', () => {
 				fields: [
 					{
 						recipientId: signerId,
-						documentPath: 'documents/agreement.md',
+						documentId: AGREEMENT_ID,
 						fieldType: 'signature',
 						label: 'Sign here',
 						required: true,
@@ -528,7 +579,7 @@ describe('EnvelopeFieldApplication', () => {
 		const application: EnvelopeFieldApplication = new EnvelopeFieldApplication(store, drafts);
 		const duplicate = {
 			recipientId: signerId,
-			documentPath: 'documents/agreement.md' as const,
+			documentId: AGREEMENT_ID,
 			fieldType: 'signature' as const,
 			label: 'Sign here',
 			required: true,
@@ -562,7 +613,7 @@ describe('EnvelopeFieldApplication', () => {
 				fields: [
 					{
 						recipientId: signerId,
-						documentPath: 'documents/agreement.md',
+						documentId: AGREEMENT_ID,
 						fieldType: 'signature',
 						label: 'Sign here',
 						required: true,
@@ -584,7 +635,7 @@ describe('EnvelopeFieldApplication', () => {
 		const fields = [
 			{
 				recipientId: signerId,
-				documentPath: 'documents/agreement.md' as const,
+				documentId: AGREEMENT_ID,
 				fieldType: 'signature' as const,
 				label: 'Sign here',
 				required: true,
@@ -593,7 +644,7 @@ describe('EnvelopeFieldApplication', () => {
 			},
 			{
 				recipientId: signerId,
-				documentPath: 'documents/appendix.md' as const,
+				documentId: APPENDIX_ID,
 				fieldType: 'initials' as const,
 				label: 'Initial here',
 				required: false,
@@ -617,5 +668,86 @@ describe('EnvelopeFieldApplication', () => {
 		});
 
 		expect(first.keys[0].requestFingerprint).toBe(second.keys[0].requestFingerprint);
+	});
+
+	it('accepts placement on a later PDF document page and rejects a page past that leaf', async () => {
+		const envelope: Envelope = await readyEnvelope();
+		const store: CapturingStore = new CapturingStore(envelope);
+		const drafts: DraftPersistenceService = await draftPersistenceFor(
+			envelope,
+			[{ path: 'documents/agreement.md', content: '# Agreement' }],
+			new FixedDraftRepository(
+				[{ path: 'documents/agreement.md', content: '# Agreement' }],
+				[{ id: PDF_ID, title: 'Schedule A', pageCount: 12 }]
+			)
+		);
+		const application: EnvelopeFieldApplication = new EnvelopeFieldApplication(store, drafts);
+
+		const accepted = await application.place(actor, envelopeId, {
+			idempotencyKey: 'fields-pdf-page-3',
+			expectedGeneration: 2,
+			expectedFieldGeneration: 0,
+			fields: [
+				{
+					recipientId: signerId,
+					documentId: PDF_ID,
+					fieldType: 'signature',
+					label: 'Sign schedule',
+					required: true,
+					position: 1,
+					geometry: { page: 3, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
+				}
+			]
+		});
+		expect(accepted.outcome).toBe('published');
+		expect(store.commands[0].fields[0]?.documentId).toBe(PDF_ID);
+
+		const rejected = await application.place(actor, envelopeId, {
+			idempotencyKey: 'fields-pdf-page-13',
+			expectedGeneration: 2,
+			expectedFieldGeneration: 0,
+			fields: [
+				{
+					recipientId: signerId,
+					documentId: PDF_ID,
+					fieldType: 'signature',
+					label: 'Sign schedule',
+					required: true,
+					position: 1,
+					geometry: { page: 13, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
+				}
+			]
+		});
+		expect(rejected).toEqual({ outcome: 'invalid_geometry' });
+	});
+
+	it('tells the operator to re-place when a ready envelope has no document-set manifest', async () => {
+		const envelope: Envelope = await readyEnvelope();
+		const store: CapturingStore = new CapturingStore(envelope);
+		const drafts: DraftPersistenceService = await draftPersistenceFor(
+			envelope,
+			[{ path: 'documents/agreement.md', content: '# Agreement' }],
+			new NullManifestRepository([{ path: 'documents/agreement.md', content: '# Agreement' }])
+		);
+
+		const result = await new EnvelopeFieldApplication(store, drafts).place(actor, envelopeId, {
+			idempotencyKey: 'fields-legacy-path',
+			expectedGeneration: 2,
+			expectedFieldGeneration: 0,
+			fields: [
+				{
+					recipientId: signerId,
+					documentId: AGREEMENT_ID,
+					fieldType: 'signature',
+					label: 'Sign here',
+					required: true,
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
+				}
+			]
+		});
+
+		expect(result).toEqual({ outcome: 'document_set_not_materialized' });
+		expect(store.commands).toHaveLength(0);
 	});
 });

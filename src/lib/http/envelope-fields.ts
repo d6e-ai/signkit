@@ -23,13 +23,7 @@ const idempotencyKeySchema: ZodType<string> = z
 	.min(1)
 	.max(200)
 	.regex(/^[\x21-\x7E]+$/, 'Idempotency-Key must contain visible ASCII characters only');
-const documentPathSchema: ZodType<string> = z
-	.string()
-	.max(240)
-	.regex(/^documents\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/, 'Document path must be under documents/')
-	.refine((value: string): boolean => !value.includes('..'), {
-		message: 'Document paths must not contain ..'
-	});
+const documentIdSchema: ZodType<string> = signkitIdentifierSchema;
 /**
  * Unit-square fractions of one rendered page. Expressing placement this way
  * rather than in device pixels is what keeps a box in the same spot across
@@ -48,7 +42,7 @@ const geometrySchema = z
 const fieldSchema = z
 	.object({
 		recipientId: signkitIdentifierSchema,
-		documentPath: documentPathSchema,
+		documentId: documentIdSchema,
 		fieldType: z.enum(fieldTypes),
 		label: z
 			.string()
@@ -79,7 +73,7 @@ const fieldsSchema = z
 		for (const [index, field] of value.fields.entries()) {
 			const locator: string = [
 				field.recipientId.toLowerCase(),
-				field.documentPath,
+				field.documentId,
 				field.position
 			].join('\u0000');
 			if (locators.has(locator)) {
@@ -208,7 +202,7 @@ export function createEnvelopeFieldsHandler(
 			expectedFieldGeneration: parsed.data.expectedFieldGeneration,
 			fields: parsed.data.fields.map((field) => ({
 				...field,
-				documentPath: field.documentPath as `documents/${string}.md`
+				documentId: field.documentId
 			}))
 		};
 		try {
@@ -297,7 +291,7 @@ function fieldsResponse(result: PlaceFieldsResult, instance: string): Response {
 			type: 'urn:signkit:problem:field-invalid-document',
 			title: 'Field document not found',
 			status: 422,
-			detail: 'A field referenced a document path that does not exist in the current draft.'
+			detail: 'A field referenced a document that does not exist in the current document set.'
 		},
 		invalid_recipient: {
 			type: 'urn:signkit:problem:field-invalid-recipient',
@@ -310,6 +304,13 @@ function fieldsResponse(result: PlaceFieldsResult, instance: string): Response {
 			title: 'Field geometry invalid',
 			status: 422,
 			detail: 'A field was placed on a page that does not belong to its document.'
+		},
+		document_set_not_materialized: {
+			type: 'urn:signkit:problem:document-set-not-materialized',
+			title: 'Document set not materialized',
+			status: 409,
+			detail:
+				'This ready envelope still uses path-scoped fields. Return it to draft, commit once to materialize the document set, then re-place fields.'
 		},
 		integrity_error: {
 			type: 'urn:signkit:problem:fields-integrity-error',

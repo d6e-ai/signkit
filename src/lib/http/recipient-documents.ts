@@ -45,7 +45,8 @@ export function createRecipientDocumentsHandler(
 			return new Response(
 				JSON.stringify({
 					access: workspace.access,
-					document: workspace.document
+					documents: workspace.documents,
+					source: workspace.source
 				}),
 				{
 					status: 200,

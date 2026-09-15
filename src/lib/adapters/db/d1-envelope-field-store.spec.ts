@@ -54,7 +54,8 @@ const command: PublishFieldPlacementCommand = {
 			organizationId: 'org-1',
 			envelopeId: '01910000-0000-7000-8000-000000000001',
 			recipientId: '01910000-0000-7000-8000-000000000002',
-			documentPath: 'documents/agreement.md',
+			documentId: '01900000-0000-7000-8000-000000000021',
+			documentPath: null,
 			fieldType: 'signature',
 			label: 'Signature',
 			required: true,
@@ -76,7 +77,7 @@ command.requestFingerprint = createHash('sha256')
 			expectedFieldGeneration: command.expectedFieldGeneration,
 			fields: command.fields.map((field) => ({
 				recipientId: field.recipientId,
-				documentPath: field.documentPath,
+				documentId: field.documentId,
 				fieldType: field.fieldType,
 				label: field.label,
 				required: field.required,
@@ -93,6 +94,7 @@ command.auditPayloadJson = JSON.stringify({
 	fields: command.fields.map((field) => ({
 		id: field.id,
 		recipientId: field.recipientId,
+		documentId: field.documentId,
 		documentPath: field.documentPath,
 		fieldType: field.fieldType,
 		required: field.required,

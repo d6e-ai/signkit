@@ -9,16 +9,28 @@ import type {
 	PublishDraftRevisionCommand,
 	PublishDraftRevisionResult
 } from '$lib/ports/draft-mutation-store';
-import type { DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
+import type {
+	DraftActor,
+	DraftEdit,
+	DraftRepository,
+	DraftVersion
+} from '$lib/ports/draft-repository';
 import type { DraftPointerUpdate } from '$lib/ports/envelope-store';
+import type {
+	EnvelopeUploadedDocumentRecord,
+	EnvelopeUploadedDocumentStore,
+	InsertUploadedDocumentResult
+} from '$lib/ports/envelope-uploaded-document-store';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import {
+	DraftDocumentSetError,
 	DraftGenerationConflictError,
 	DraftIdempotencyConflictError,
 	DraftIntegrityError,
 	DraftPersistenceService,
 	draftArchiveKey
 } from './draft-persistence';
+import { documentSetHash } from '$lib/domain/document-set';
 
 const actor = { id: 'user_1', name: 'Yu Kimura', email: 'yu@example.test', type: 'user' as const };
 
@@ -58,8 +70,9 @@ describe('DraftPersistenceService', () => {
 			generation: 1,
 			commitSha: committed.commitSha,
 			archiveSha256: committed.archiveSha256,
-			changedPaths: ['documents/agreement.md'],
-			provenance: { automationRunId: null, externalId: null }
+			changedPaths: ['documents/agreement.md', 'document-set.json'],
+			provenance: { automationRunId: null, externalId: null },
+			documentSetHash: expect.stringMatching(/^[a-f0-9]{64}$/)
 		});
 		expect(
 			await service.readCurrent({ organizationId: 'org_1', envelopeId: 'env_1' })
@@ -73,7 +86,17 @@ describe('DraftPersistenceService', () => {
 			service.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
 		).resolves.toMatchObject({
 			generation: 1,
-			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+			documentSet: {
+				schema: 'signkit-document-set-v1',
+				documents: [
+					expect.objectContaining({
+						kind: 'markdown',
+						path: 'documents/agreement.md',
+						position: 0
+					})
+				]
+			}
 		});
 	});
 
@@ -269,6 +292,170 @@ describe('DraftPersistenceService', () => {
 			})
 		).rejects.toBeInstanceOf(DraftIntegrityError);
 	});
+
+	it('binds documentSetHash in the revision audit payload to a recomputation from the workspace', async () => {
+		const envelopes = new MemoryEnvelopeStore(emptyEnvelope());
+		const service = new DraftPersistenceService(
+			envelopes,
+			new InMemoryObjectStore(),
+			new IsomorphicGitDraftRepository()
+		);
+		await service.commit({
+			organizationId: 'org_1',
+			envelopeId: 'env_1',
+			expectedGeneration: 0,
+			edits: [{ path: 'documents/agreement.md', content: '# Agreement' }],
+			message: 'Create agreement',
+			actor,
+			idempotencyKey: 'hash-1',
+			updatedAt: '2026-09-11T00:00:00.000Z'
+		});
+		const workspace = await service.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' });
+		expect(workspace.documentSet).not.toBeNull();
+		const payload = JSON.parse(envelopes.lastPublication?.auditPayloadJson ?? '{}') as {
+			documentSetHash: string;
+		};
+		expect(payload.documentSetHash).toBe(await documentSetHash(workspace.documentSet!));
+	});
+
+	it('refuses a repository tree that does not match the document set', async () => {
+		const service = new DraftPersistenceService(
+			new MemoryEnvelopeStore(emptyEnvelope()),
+			new InMemoryObjectStore(),
+			new ExtraPathDraftRepository()
+		);
+		await expect(
+			service.commit({
+				organizationId: 'org_1',
+				envelopeId: 'env_1',
+				expectedGeneration: 0,
+				edits: [{ path: 'documents/agreement.md', content: '# Agreement' }],
+				message: 'Create agreement',
+				actor,
+				idempotencyKey: 'extra-path-1'
+			})
+		).rejects.toBeInstanceOf(DraftDocumentSetError);
+	});
+
+	it('appends a PDF leaf to an empty bundle, a Markdown-only bundle, and a bundle that already has a PDF', async () => {
+		const firstDigest: string = 'c'.repeat(64);
+		const secondDigest: string = 'd'.repeat(64);
+		const uploaded = (): MemoryUploadedDocuments => {
+			const store = new MemoryUploadedDocuments();
+			store.add({
+				organizationId: 'org_1',
+				envelopeId: 'env_1',
+				sha256: firstDigest,
+				objectKey: `uploaded/${firstDigest}.pdf`,
+				byteSize: 4096,
+				pageCount: 2,
+				pageWidth: 595.28,
+				pageHeight: 841.89,
+				createdAt: '2026-09-11T00:00:00.000Z'
+			});
+			store.add({
+				organizationId: 'org_1',
+				envelopeId: 'env_1',
+				sha256: secondDigest,
+				objectKey: `uploaded/${secondDigest}.pdf`,
+				byteSize: 2048,
+				pageCount: 1,
+				pageWidth: 595.28,
+				pageHeight: 841.89,
+				createdAt: '2026-09-11T00:00:00.000Z'
+			});
+			return store;
+		};
+		const pdfLeaf = {
+			op: 'appendPdf' as const,
+			title: 'Schedule',
+			sha256: firstDigest,
+			byteSize: 4096,
+			pageCount: 2,
+			pageWidth: 595.28,
+			pageHeight: 841.89
+		};
+
+		const emptyService = new DraftPersistenceService(
+			new MemoryEnvelopeStore(emptyEnvelope()),
+			new InMemoryObjectStore(),
+			new IsomorphicGitDraftRepository(),
+			uploaded()
+		);
+		await emptyService.commit({
+			organizationId: 'org_1',
+			envelopeId: 'env_1',
+			expectedGeneration: 0,
+			edits: [],
+			message: 'Upload PDF Schedule',
+			actor,
+			idempotencyKey: 'pdf-empty',
+			documentSet: pdfLeaf,
+			updatedAt: '2026-09-11T00:00:00.000Z'
+		});
+		expect(
+			(await emptyService.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' }))
+				.documentSet?.documents
+		).toEqual([
+			expect.objectContaining({ kind: 'pdf', title: 'Schedule', sha256: firstDigest, position: 0 })
+		]);
+
+		const mixedService = new DraftPersistenceService(
+			new MemoryEnvelopeStore(emptyEnvelope()),
+			new InMemoryObjectStore(),
+			new IsomorphicGitDraftRepository(),
+			uploaded()
+		);
+		await mixedService.commit({
+			organizationId: 'org_1',
+			envelopeId: 'env_1',
+			expectedGeneration: 0,
+			edits: [{ path: 'documents/nda.md', content: '# NDA' }],
+			message: 'Add NDA',
+			actor,
+			idempotencyKey: 'md-1',
+			updatedAt: '2026-09-11T00:01:00.000Z'
+		});
+		await mixedService.commit({
+			organizationId: 'org_1',
+			envelopeId: 'env_1',
+			expectedGeneration: 1,
+			edits: [],
+			message: 'Upload PDF Schedule',
+			actor,
+			idempotencyKey: 'pdf-on-markdown',
+			documentSet: pdfLeaf,
+			updatedAt: '2026-09-11T00:02:00.000Z'
+		});
+		expect(
+			(
+				await mixedService.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
+			).documentSet?.documents.map((leaf) => leaf.kind)
+		).toEqual(['markdown', 'pdf']);
+
+		await mixedService.commit({
+			organizationId: 'org_1',
+			envelopeId: 'env_1',
+			expectedGeneration: 2,
+			edits: [],
+			message: 'Upload PDF Exhibit',
+			actor,
+			idempotencyKey: 'pdf-second',
+			documentSet: {
+				...pdfLeaf,
+				title: 'Exhibit',
+				sha256: secondDigest,
+				byteSize: 2048,
+				pageCount: 1
+			},
+			updatedAt: '2026-09-11T00:03:00.000Z'
+		});
+		expect(
+			(
+				await mixedService.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
+			).documentSet?.documents.map((leaf) => leaf.kind)
+		).toEqual(['markdown', 'pdf', 'pdf']);
+	});
 });
 
 class MemoryEnvelopeStore implements DraftMutationStore {
@@ -438,9 +625,25 @@ class CountingDraftRepository implements DraftRepository {
 		return [];
 	}
 
+	async readManifest(): Promise<string | null> {
+		return null;
+	}
+
 	async commit(): Promise<DraftVersion> {
 		this.commitCalls += 1;
 		throw new Error('Unexpected repository commit');
+	}
+}
+
+class ExtraPathDraftRepository extends IsomorphicGitDraftRepository {
+	override async commit(
+		archive: Uint8Array | null,
+		edits: readonly DraftEdit[],
+		message: string,
+		actor: DraftActor
+	): Promise<DraftVersion> {
+		const version: DraftVersion = await super.commit(archive, edits, message, actor);
+		return { ...version, paths: [...version.paths, 'documents/ghost.md'] };
 	}
 }
 
@@ -449,11 +652,16 @@ class InvalidDigestDraftRepository implements DraftRepository {
 		return [];
 	}
 
+	async readManifest(): Promise<string | null> {
+		return null;
+	}
+
 	async commit(): Promise<DraftVersion> {
 		return {
 			commitSha: 'a'.repeat(40),
 			archive: new TextEncoder().encode('archive'),
-			archiveSha256: 'b'.repeat(64)
+			archiveSha256: 'b'.repeat(64),
+			paths: ['document-set.json', 'documents/agreement.md']
 		};
 	}
 }
@@ -498,4 +706,26 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte: number) =>
 		byte.toString(16).padStart(2, '0')
 	).join('');
+}
+
+class MemoryUploadedDocuments implements EnvelopeUploadedDocumentStore {
+	private readonly records = new Map<string, EnvelopeUploadedDocumentRecord>();
+
+	add(record: EnvelopeUploadedDocumentRecord): void {
+		this.records.set(record.sha256, record);
+	}
+
+	async insert(record: EnvelopeUploadedDocumentRecord): Promise<InsertUploadedDocumentResult> {
+		if (this.records.has(record.sha256)) return 'duplicate';
+		this.add(record);
+		return 'inserted';
+	}
+
+	async find(
+		_organizationId: string,
+		_envelopeId: string,
+		sha256: string
+	): Promise<EnvelopeUploadedDocumentRecord | null> {
+		return this.records.get(sha256) ?? null;
+	}
 }

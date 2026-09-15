@@ -14,6 +14,9 @@ describe('recipient document rendering', () => {
 		// same-origin, cookie-authenticated path -- never as Markdown in page
 		// data, and never with a capability anywhere in the URL.
 		expect(source).toContain('`/sign/${data.access.envelopeId}/agreement.pdf`');
+		expect(source).toContain(
+			'`/sign/${data.access.envelopeId}/documents/${selectedDocument.documentId}.pdf`'
+		);
 		expect(source).not.toMatch(/agreement\.pdf\?|agreement\.pdf#.*token/);
 	});
 
@@ -27,14 +30,20 @@ describe('recipient document rendering', () => {
 	});
 
 	it('serves the agreement PDF from a session-bound endpoint with no token in the URL', () => {
-		const source: string = readFileSync(
+		const legacy: string = readFileSync(
 			'src/routes/sign/[envelopeId]/agreement.pdf/+server.ts',
 			'utf8'
 		);
-		expect(source).toContain('createRecipientSentPdfHandler');
-		expect(source).toContain('unsealRecipientSession');
-		expect(source).toContain('envelope ID');
-		expect(source).not.toContain('searchParams');
+		const perDocument: string = readFileSync(
+			'src/routes/sign/[envelopeId]/documents/[documentId].pdf/+server.ts',
+			'utf8'
+		);
+		for (const source of [legacy, perDocument]) {
+			expect(source).toContain('createRecipientSentPdfHandler');
+			expect(source).toContain('unsealRecipientSession');
+			expect(source).not.toContain('searchParams');
+		}
+		expect(legacy).toContain('envelope ID');
 	});
 
 	it('makes the authoritative terminal decline branch precede all document rendering', () => {

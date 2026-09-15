@@ -1,4 +1,4 @@
-import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
+import type { FieldGeometry, FieldType, MarkdownPath } from '$lib/domain/envelope';
 
 /**
  * A signer's own field declaration, read for /sign rendering. Unlike
@@ -8,7 +8,8 @@ import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
  */
 export interface RecipientFieldDeclaration {
 	id: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string | null;
+	documentPath: MarkdownPath | null;
 	fieldType: FieldType;
 	label: string;
 	required: boolean;

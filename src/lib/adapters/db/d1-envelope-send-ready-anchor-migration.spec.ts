@@ -79,7 +79,7 @@ function insertCommand(
 		deliveryCount?: number;
 		idempotencyKey?: string;
 		auditEventId?: string;
-		/** 0042 and earlier have no pinned-rendering columns yet. */
+		/** After 0045 these are document_set_hash/document_count/sent_documents_json. 0042 and earlier have neither. */
 		withSentPdf?: boolean;
 	} = {}
 ): void {
@@ -92,14 +92,10 @@ function insertCommand(
 	const auditEventId: string = overrides.auditEventId ?? SENT_AUDIT_ID;
 	const withSentPdf: boolean = overrides.withSentPdf ?? true;
 	const pdfColumns: string = withSentPdf
-		? `,
-		sent_pdf_object_key,sent_pdf_sha256,sent_pdf_bytes,sent_pdf_page_count,
-		sent_pdf_page_width,sent_pdf_page_height,sent_pdf_document_pages_json`
+		? `, document_set_hash, document_count, sent_documents_json`
 		: '';
 	const pdfValues: string = withSentPdf
-		? `,
-		'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,1,595.28,841.89,
-		'[{"path":"documents/agreement.md","title":"agreement","firstPage":1,"lastPage":1}]'`
+		? `, '${SENT_PDF_SHA256}', 1, '[{"id":"01900000-0000-7000-8000-000000000010","sha256":"${SENT_PDF_SHA256}","byteSize":4096,"pageCount":1}]'`
 		: '';
 	sqlite.exec(`INSERT INTO envelope_send_command (
 		organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
@@ -109,6 +105,15 @@ function insertCommand(
 	) VALUES ('org-1','${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${readyAuditEventId}','commit-1',1,
 		${deliveryCount},${queuedDeliveryCount},'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
 		'${auditEventId}',${auditSequence},'${previousAuditHash}','hash-5','{}'${pdfValues})`);
+	if (withSentPdf) {
+		sqlite.exec(`INSERT INTO envelope_sent_document (
+			organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+			object_key, sha256, byte_size, page_count, page_width, page_height, created_at
+		) VALUES (
+			'org-1','${ENVELOPE_ID}','commit-1','01900000-0000-7000-8000-000000000010',0,'markdown','agreement',
+			'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,1,595.28,841.89,'2026-09-11T00:02:00.000Z'
+		)`);
+	}
 }
 
 function reserveDelivery(sqlite: DatabaseSync): void {

@@ -11,6 +11,7 @@ import type {
 import type {
 	Envelope,
 	EnvelopeStatus,
+	MarkdownPath,
 	FieldGeometry,
 	FieldType,
 	RecipientRole,
@@ -349,11 +350,11 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 
 		const fieldResult = await this.#database
 			.prepare(
-				`SELECT id, recipient_id, document_path, field_type, required, position,
+				`SELECT id, recipient_id, document_id, document_path, field_type, required, position,
 				        page, x, y, width, height
 				 FROM envelope_field
 				 WHERE organization_id = ? AND envelope_id = ?
-				 ORDER BY document_path ASC, position ASC, id ASC`
+				 ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC`
 			)
 			.bind(organizationId, envelopeId)
 			.all<DetailFieldRow>();
@@ -611,7 +612,8 @@ interface DetailRecipientRow {
 interface DetailFieldRow {
 	id: string;
 	recipient_id: string;
-	document_path: `documents/${string}.md`;
+	document_id: string | null;
+	document_path: MarkdownPath | null;
 	field_type: FieldType;
 	required: number | boolean;
 	position: number;
@@ -638,6 +640,7 @@ function fromFieldRow(row: DetailFieldRow): PublicEnvelopeDetailField {
 	return {
 		id: row.id,
 		recipientId: row.recipient_id,
+		documentId: row.document_id,
 		documentPath: row.document_path,
 		fieldType: row.field_type,
 		required: row.required === true || row.required === 1,
