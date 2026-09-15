@@ -51,8 +51,11 @@ await stat(migrationsDir);
 
 const staging = join(ROOT, '.release/cloudflare-bundle');
 const outDir = join(ROOT, '.release/assets');
+const bundleName = `signkit-cloudflare-${tag}.tar.gz`;
 await rm(staging, { recursive: true, force: true });
-await rm(outDir, { recursive: true, force: true });
+await rm(join(outDir, bundleName), { force: true });
+await rm(join(outDir, MANIFEST_NAME), { force: true });
+await rm(join(outDir, 'SHA256SUMS'), { force: true });
 await mkdir(join(staging, 'worker'), { recursive: true });
 await mkdir(join(staging, 'assets'), { recursive: true });
 await mkdir(join(staging, 'migrations/d1'), { recursive: true });
@@ -96,7 +99,6 @@ const wranglerConfig = {
 };
 await writeFile(join(staging, 'wrangler.jsonc'), `${JSON.stringify(wranglerConfig, null, '\t')}\n`);
 
-const bundleName = `signkit-cloudflare-${tag}.tar.gz`;
 const bundlePath = join(outDir, bundleName);
 await run('tar', [
 	'-czf',
