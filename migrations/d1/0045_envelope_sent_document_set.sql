@@ -637,4 +637,23 @@ BEGIN
     WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
       AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
       AND command.document_set_hash IS NOT NULL;
+
+  -- Mirrors the insert 0043 made unconditionally: the still-serving
+  -- pre-migration Worker only ever pins the legacy sent_pdf_* shape, and
+  -- envelope_sent_pdf was that shape's only publisher. Without this insert a
+  -- legacy send flips the envelope to sent with no rendering pointer at all.
+  -- Gated on sent_pdf_object_key IS NOT NULL so a new-shape (document-set)
+  -- send, whose sent_pdf_* columns are all NULL, does not insert a row that
+  -- would fail envelope_sent_pdf's NOT NULL columns.
+  INSERT INTO envelope_sent_pdf (
+    organization_id, envelope_id, commit_sha, object_key, sha256, byte_size,
+    page_count, page_width, page_height, document_pages_json, created_at
+  ) SELECT command.organization_id, command.envelope_id, command.commit_sha,
+      command.sent_pdf_object_key, command.sent_pdf_sha256, command.sent_pdf_bytes,
+      command.sent_pdf_page_count, command.sent_pdf_page_width, command.sent_pdf_page_height,
+      command.sent_pdf_document_pages_json, command.updated_at
+    FROM envelope_send_command command
+    WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
+      AND command.sent_pdf_object_key IS NOT NULL;
 END;
