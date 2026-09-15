@@ -75,7 +75,9 @@ describe('archive extraction safety', () => {
 			await writeFile(join(source, 'target'), 'secret\n');
 			await link(join(source, 'target'), join(source, 'hard'));
 			const archivePath = join(dir, 'evil.tar.gz');
-			await tarCreate({ gzip: true, file: archivePath, cwd: source }, ['target', 'hard']);
+			// tar's async packer can finalize gzip twice while resolving hardlink jobs under load.
+			// Build this adversarial fixture synchronously so the extraction test stays deterministic.
+			tarCreate({ gzip: true, sync: true, file: archivePath, cwd: source }, ['target', 'hard']);
 			const bytes = new Uint8Array(await readFile(archivePath));
 			const dest = join(dir, 'dest');
 			await mkdir(dest, { recursive: true });
