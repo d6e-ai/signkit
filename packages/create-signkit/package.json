@@ -49,7 +49,7 @@
 		"wrangler": "^4.131.2"
 	},
 	"devDependencies": {
-		"@types/node": "^24",
+		"@types/node": "^26",
 		"ajv": "^8.20.0",
 		"ajv-formats": "^3.0.1",
 		"typescript": "^6.0.3",
