@@ -22,6 +22,7 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 			position: number;
 			recipient_id: string;
 			field_type: string;
+			required: number;
 			page: number | null;
 			x: number | null;
 			y: number | null;
@@ -30,7 +31,7 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 		}
 		const result: D1Result<Row> = await this.#database
 			.prepare(
-				`SELECT id, document_id, document_path, position, recipient_id, field_type,
+				`SELECT id, document_id, document_path, position, recipient_id, field_type, required,
 				        page, x, y, width, height
 				 FROM envelope_field
 				 WHERE organization_id = ? AND envelope_id = ?
@@ -45,6 +46,7 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 			position: row.position,
 			recipientId: row.recipient_id,
 			fieldType: row.field_type as FieldType,
+			required: row.required === 1,
 			geometry: toGeometry(row)
 		}));
 	}

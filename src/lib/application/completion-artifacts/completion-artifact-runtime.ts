@@ -2,6 +2,7 @@ import { env } from '$env/dynamic/private';
 import { D1CompletionArtifactStore } from '$lib/adapters/db/d1-completion-artifact-store';
 import { D1CompletionArtifactPdfStore } from '$lib/adapters/db/d1-completion-artifact-pdf-store';
 import { D1CompletionPdfEvidenceStore } from '$lib/adapters/db/d1-completion-pdf-evidence-store';
+import { D1EnvelopeSentDocumentStore } from '$lib/adapters/db/d1-envelope-sent-document-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import type { ObjectStore } from '$lib/ports/object-store';
@@ -27,7 +28,8 @@ export async function resolveCompletionArtifactPublicationService(
 			undefined,
 			undefined,
 			new D1CompletionArtifactPdfStore(database),
-			new D1CompletionPdfEvidenceStore(database)
+			new D1CompletionPdfEvidenceStore(database),
+			new D1EnvelopeSentDocumentStore(database)
 		);
 	}
 
@@ -50,12 +52,14 @@ export async function resolveCompletionArtifactPublicationService(
 		{ PostgresCompletionArtifactStore },
 		{ PostgresCompletionArtifactPdfStore },
 		{ PostgresCompletionPdfEvidenceStore },
+		{ PostgresEnvelopeSentDocumentStore },
 		{ resolvePostgresSql },
 		{ resolveS3ObjectStore }
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
 		import('$lib/adapters/db/postgres-completion-pdf-evidence-store'),
+		import('$lib/adapters/db/postgres-envelope-sent-document-store'),
 		import('$lib/application/envelopes/runtime-postgres'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
@@ -69,7 +73,8 @@ export async function resolveCompletionArtifactPublicationService(
 		undefined,
 		undefined,
 		new PostgresCompletionArtifactPdfStore(sql),
-		new PostgresCompletionPdfEvidenceStore(sql)
+		new PostgresCompletionPdfEvidenceStore(sql),
+		new PostgresEnvelopeSentDocumentStore(sql)
 	);
 }
 

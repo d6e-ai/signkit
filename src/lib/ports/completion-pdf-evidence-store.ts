@@ -1,11 +1,11 @@
 import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
 
 /**
- * Read-only field placement for PDF rendering. `envelope_field` is immutable
- * once an envelope is sent (fields are a whole-set replace only while
- * `ready`), so this is safe to read independently of the audit-verified
- * completion evidence: it locates values the manifest already proved were
- * signed, and can never change what they are.
+ * Read-only field placement for PDF rendering. Although `envelope_field` is
+ * immutable through application APIs once an envelope is sent, it remains a
+ * mutable SQL projection. Completion therefore consumes these rows only after
+ * reconciling the complete set with the hash-chained `envelope.fields_placed`
+ * payload at the envelope's pinned field generation.
  *
  * For the executed agreement PDF this read is integrity-critical rather than
  * decorative: a field the executed artifact must draw and cannot place is a
@@ -22,6 +22,7 @@ export interface CompletionPdfFieldGeometry {
 	position: number;
 	recipientId: string;
 	fieldType: FieldType;
+	required: boolean;
 	/** The unit-square placement frozen at field publication, or `null` for legacy fields. */
 	geometry: FieldGeometry | null;
 }

@@ -57,6 +57,7 @@ const GEOMETRY: readonly CompletionPdfFieldGeometry[] = [
 		position: 1,
 		recipientId: '01930000-0000-7000-8000-000000000001',
 		fieldType: 'signature',
+		required: true,
 		geometry: { page: 2, x: 0.25, y: 0.5, width: 0.3, height: 0.05 }
 	}
 ];

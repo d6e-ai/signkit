@@ -12,6 +12,7 @@ interface GeometryRow {
 	position: number;
 	recipientId: string;
 	fieldType: string;
+	required: boolean;
 	page: number | null;
 	x: number | null;
 	y: number | null;
@@ -32,7 +33,7 @@ export class PostgresCompletionPdfEvidenceStore implements CompletionPdfEvidence
 	): Promise<readonly CompletionPdfFieldGeometry[]> {
 		const rows = await this.#sql<GeometryRow[]>`
 			SELECT id, document_id AS "documentId", document_path AS "documentPath", position,
-			       recipient_id AS "recipientId", field_type AS "fieldType",
+			       recipient_id AS "recipientId", field_type AS "fieldType", required,
 			       page, x, y, width, height
 			FROM envelope_field
 			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
@@ -44,6 +45,7 @@ export class PostgresCompletionPdfEvidenceStore implements CompletionPdfEvidence
 			position: row.position,
 			recipientId: row.recipientId,
 			fieldType: row.fieldType as FieldType,
+			required: row.required,
 			geometry: toGeometry(row)
 		}));
 	}

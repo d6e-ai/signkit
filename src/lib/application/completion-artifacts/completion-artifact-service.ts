@@ -15,6 +15,10 @@ import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import type {
+	EnvelopeSentDocumentStore,
+	SentDocumentSetPointer
+} from '$lib/ports/envelope-sent-document-store';
+import type {
 	CompletionArtifactPdfStore,
 	PublishCompletionArtifactPdfCommand
 } from '$lib/ports/completion-artifact-pdf-store';
@@ -109,6 +113,7 @@ export class CompletionArtifactPublicationService {
 	readonly #newId: UuidV7Generator;
 	readonly #pdfStore: CompletionArtifactPdfStore | null;
 	readonly #pdfEvidenceStore: CompletionPdfEvidenceStore | null;
+	readonly #sentDocuments: EnvelopeSentDocumentStore | null;
 
 	constructor(
 		store: CompletionArtifactStore,
@@ -125,7 +130,8 @@ export class CompletionArtifactPublicationService {
 		// safe to backfill later without touching the manifest publication
 		// this constructor's other parameters govern.
 		pdfStore: CompletionArtifactPdfStore | null = null,
-		pdfEvidenceStore: CompletionPdfEvidenceStore | null = null
+		pdfEvidenceStore: CompletionPdfEvidenceStore | null = null,
+		sentDocuments: EnvelopeSentDocumentStore | null = null
 	) {
 		this.#store = store;
 		this.#objects = objects;
@@ -135,6 +141,7 @@ export class CompletionArtifactPublicationService {
 		this.#newId = newId;
 		this.#pdfStore = pdfStore;
 		this.#pdfEvidenceStore = pdfEvidenceStore;
+		this.#sentDocuments = sentDocuments;
 	}
 
 	async publishPendingCompletionArtifacts(
@@ -319,6 +326,7 @@ export class CompletionArtifactPublicationService {
 					documentSet: pinnedDocumentSet,
 					documents: verified.documents,
 					fields: evidence.fields,
+					auditEvents: evidence.auditEvents,
 					fieldGeometry,
 					appendixPdfBytes: evidenceSummaryPdf
 				});
@@ -471,27 +479,36 @@ export class CompletionArtifactPublicationService {
 		documentSet: DocumentSetManifest | null;
 		documents: readonly DraftDocument[];
 		fields: readonly CompletionEvidenceField[];
+		auditEvents: readonly CompletionEvidenceAuditEvent[];
 		fieldGeometry: readonly CompletionPdfFieldGeometry[];
 		appendixPdfBytes: Uint8Array;
 	}): Promise<ExecutedPdfResult | null> {
 		if (input.documentSet === null) return null;
+		if (this.#sentDocuments === null) {
+			throw new CompletionArtifactIntegrityError(
+				'Executed agreement PDF requires the immutable sent document store'
+			);
+		}
+		const sentDocumentSet: SentDocumentSetPointer | null = await this.#sentDocuments.findSet(
+			input.claim.organizationId,
+			input.claim.envelopeId,
+			input.claim.sentCommitSha
+		);
+		if (sentDocumentSet === null) {
+			throw new CompletionArtifactIntegrityError(
+				'Executed agreement PDF is missing its immutable sent document set'
+			);
+		}
 		try {
 			return await assembleExecutedAgreementPdf({
 				objects: this.#objects,
-				revision: {
-					organizationId: input.claim.organizationId,
-					envelopeId: input.claim.envelopeId,
-					commitSha: input.claim.sentCommitSha,
-					archiveKey: input.claim.repositoryArchiveKey,
-					archiveSha256: input.claim.repositoryArchiveSha256
-				},
+				organizationId: input.claim.organizationId,
+				envelopeId: input.claim.envelopeId,
+				sentCommitSha: input.claim.sentCommitSha,
 				documentSet: input.documentSet,
-				markdown: new Map(
-					input.documents.map((document: DraftDocument): [string, DraftDocument] => [
-						document.path,
-						document
-					])
-				),
+				sentDocumentSet,
+				auditEvents: input.auditEvents,
+				fieldGeneration: input.claim.fieldGeneration,
 				fields: input.fields,
 				fieldGeometry: input.fieldGeometry,
 				appendixPdfBytes: input.appendixPdfBytes

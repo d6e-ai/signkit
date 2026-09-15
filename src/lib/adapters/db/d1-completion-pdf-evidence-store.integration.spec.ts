@@ -55,6 +55,7 @@ describe('D1CompletionPdfEvidenceStore integration', () => {
 					position: 1,
 					recipientId: RECIPIENT_ID,
 					fieldType: 'initials',
+					required: false,
 					// Placed before per-document sends: no frozen geometry exists,
 					// and none is invented here.
 					geometry: null
@@ -66,6 +67,7 @@ describe('D1CompletionPdfEvidenceStore integration', () => {
 					position: 0,
 					recipientId: RECIPIENT_ID,
 					fieldType: 'signature',
+					required: true,
 					geometry: { page: 2, x: 0.25, y: 0.5, width: 0.3, height: 0.05 }
 				}
 			]);
