@@ -9,7 +9,7 @@ name: Release
 #
 # A `v*` tag therefore never creates a PUBLIC GitHub Release before npm
 # publication succeeds: `release` uploads everything to a draft, `publish-npm`
-# publishes create-signkit (OIDC Trusted Publishing, `NODE_AUTH_TOKEN`
+# publishes create-signkit via OIDC Trusted Publishing only (no token
 # fallback — an explicit provenance/auth failure fails the workflow and the
 # draft stays private), and `publish-release` flips the draft public only
 # after `publish-npm` succeeds. The tag-equals-version gate runs in `release`
@@ -298,7 +298,6 @@ jobs:
       - name: Publish create-signkit
         working-directory: packages/create-signkit
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
           NPM_CLI: ${{ steps.npm_cli.outputs.bin }}
           NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
         run: |

@@ -90,8 +90,9 @@ no implementation is a release blocker.
    registry integrity), re-checks tag-equals-version across all
    three packages, derives the dist-tag from the same semver channel
    (`beta` for prereleases, `latest` for stable), and publishes with that
-   explicit `--tag`. It never runs `pnpm publish` and never prints
-   `NODE_AUTH_TOKEN`.
+   explicit `--tag` via OIDC Trusted Publishing only, with no token fallback.
+   It never runs `pnpm publish`. The package has completed its one-time
+   manual first publish, so normal releases use OIDC Trusted Publishing only.
 3. The `publish-release` job receives the exact six-name SHA-256 inventory from
    the build job. After npm succeeds and immediately before making the release
    public, it re-reads the draft's asset list, downloads every asset, and refuses
