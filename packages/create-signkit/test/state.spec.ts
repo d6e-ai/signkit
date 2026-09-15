@@ -37,6 +37,24 @@ describe('XDG state', () => {
 		expect(parseState(raw).accountId).toBe(ACCOUNT_ID);
 	});
 
+	it('round-trips the non-secret bootstrap owner email', async () => {
+		const fs = new MemoryFileSystem();
+		const store = createStateStore(fs, '/xdg/state/create-signkit/state.json');
+		await store.save({
+			schemaVersion: 1,
+			provider: 'cloudflare',
+			accountId: ACCOUNT_ID,
+			workerName: 'signkit',
+			d1: { name: 'signkit', id: '11111111-1111-1111-1111-111111111111' },
+			r2: { name: 'signkit-objects' },
+			channel: 'stable',
+			updatedAt: '2026-09-15T00:00:00.000Z',
+			bootstrapOwnerEmail: 'owner@example.com'
+		});
+		const loaded = await store.load();
+		expect(loaded?.bootstrapOwnerEmail).toBe('owner@example.com');
+	});
+
 	it('includes milliseconds in D1 backup names', () => {
 		expect(d1BackupFileName('signkit', new Date('2026-09-15T00:00:00.123Z'))).toBe(
 			'd1-signkit-20260915T000000123Z.sql'

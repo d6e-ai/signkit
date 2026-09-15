@@ -1,13 +1,27 @@
 name: Release
 
-# Atomic full-tag release: one tag in, one GitHub Release out, then an
-# optionally hard-gated npm publish. Pushing a `v*` tag builds and verifies
+# Draft-first full-tag release: one tag in, one DRAFT GitHub Release out with
 # every shippable artifact (Node bundle, Cloudflare bundle, Rust CLI release
-# binary, Docker image) into `.release/assets`, regenerates a unified
-# SHA256SUMS over all of them, verifies it, and attaches everything to the
-# GitHub Release in a single upload step. The `publish-npm` job only runs
-# after that job succeeds and additionally refuses to publish unless the tag
-# equals every versioned package (root, create-signkit, Rust CLI).
+# binary, Docker image) plus a unified SHA256SUMS, then an optionally
+# hard-gated npm publish, and only then is the draft marked public.
+#
+# A `v*` tag therefore never creates a PUBLIC GitHub Release before npm
+# publication succeeds: `release` uploads everything to a draft, `publish-npm`
+# publishes create-signkit (OIDC Trusted Publishing, `NODE_AUTH_TOKEN`
+# fallback — an explicit provenance/auth failure fails the workflow and the
+# draft stays private), and `publish-release` flips the draft public only
+# after `publish-npm` succeeds. The tag-equals-version gate runs in `release`
+# before any asset is built and is re-checked in `publish-npm` and
+# `publish-release` before anything is published.
+#
+# Perfect cross-registry atomicity is impossible: once `publish-release` runs,
+# the GitHub Release is public and the npm package is published, and no
+# workflow step can roll both back together. Recovery is explicit and manual:
+# if npm fails, the draft stays private — fix the cause, re-run the failed
+# jobs (or delete the draft and re-push the tag); if the draft was already
+# flipped public and npm must be withdrawn, deprecate/retract the npm version
+# (`npm deprecate`) and edit or delete the GitHub Release by hand. Neither
+# recovery step is automated here on purpose.
 #
 # Nothing here deploys anywhere: no Worker upload, no registry push, no
 # `npm publish` outside the gated job, and no secret is ever printed.
@@ -87,7 +101,7 @@ jobs:
           sha256sum signkit-* > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
-      - name: Publish release assets atomically
+      - name: Publish release assets to a draft release (never public yet)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -111,8 +125,10 @@ jobs:
             prerelease_args+=(--prerelease=false)
           fi
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --generate-notes "${prerelease_args[@]}"
+            gh release create "$tag" --draft --generate-notes "${prerelease_args[@]}"
           else
+            # Rerun path: keep the existing draft status untouched and only
+            # align the prerelease flag; publication happens in publish-release.
             gh release edit "$tag" "${prerelease_args[@]}"
           fi
           gh release upload "$tag" \
@@ -218,3 +234,43 @@ jobs:
             exit 1
           fi
           pnpm exec "$NPM_CLI" publish --access public --tag "$NPM_DIST_TAG"
+
+  publish-release:
+    # Runs only after the npm gate succeeds, so a v* tag can never leave a
+    # public GitHub Release behind an unpublished (or failed) npm package.
+    # An npm provenance/auth failure fails publish-npm and this job never
+    # starts; the draft from `release` stays private for operator recovery.
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+      - name: Enforce git tag version equals every package version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          root="$(node -p "require('./package.json').version")"
+          csk="$(node -p "require('./packages/create-signkit/package.json').version")"
+          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          for v in "$root" "$csk" "$cli"; do
+            if [ "$tag" != "$v" ]; then
+              echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
+              exit 1
+            fi
+          done
+      - name: Mark the draft release public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "expected draft release ${tag} from the release job, but it does not exist" >&2
+            exit 1
+          fi
+          # Idempotent: already-public stays public, so re-running this job
+          # after a partial failure converges instead of failing.
+          gh release edit "$tag" --draft=false

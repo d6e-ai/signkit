@@ -73,6 +73,8 @@ describe('parseWebhookAllowedHosts', () => {
 		'singlelabel',
 		'*.com',
 		'*.co',
+		'*.example.com',
+		'*.example.net',
 		'*.local',
 		'*.internal',
 		'*.localhost',
@@ -152,6 +154,15 @@ describe('isWebhookHostAllowed', () => {
 		expect(isWebhookHostAllowed('hooks.example.com', allowed)).toBe(false);
 		expect(isWebhookHostAllowed('nothooks.example.com', allowed)).toBe(false);
 		expect(isWebhookHostAllowed('hooks.example.com.evil.example.com', allowed)).toBe(false);
+	});
+
+	it('requires wildcard suffixes to carry at least three labels', () => {
+		expect(policy('*.hooks.example.com').suffixes).toEqual(['hooks.example.com']);
+		expect(() => parseWebhookAllowedHosts('*.example.com')).toThrow(WebhookHostPolicyError);
+		expect(() => parseWebhookAllowedHosts('*.com')).toThrow(WebhookHostPolicyError);
+		const exactOnly: WebhookHostPolicy = policy('hooks.example.com');
+		expect(isWebhookHostAllowed('hooks.example.com', exactOnly)).toBe(true);
+		expect(isWebhookHostAllowed('a.example.com', exactOnly)).toBe(false);
 	});
 });
 

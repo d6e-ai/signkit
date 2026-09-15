@@ -6,7 +6,14 @@ import {
 	type BootstrapInstanceResult,
 	type InstanceApplicationPort
 } from '$lib/application/instance/instance-service';
-import { resolveBootstrapOwnerGate } from '$lib/security/bootstrap-owner-gate';
+import {
+	BOOTSTRAP_OWNER_EMAIL_ENV_VAR,
+	PUBLIC_ORIGIN_ENV_VAR,
+	UNSAFE_BOOTSTRAP_ENV_VAR,
+	isLocalDevelopmentBootstrapEnvironment,
+	isUnsafeBootstrapOptIn,
+	resolveBootstrapOwnerGate
+} from '$lib/security/bootstrap-owner-gate';
 import {
 	acceptsJson,
 	readJsonBody,
@@ -135,6 +142,17 @@ function ownerMismatch(instance: string): Response {
 	});
 }
 
+function ownerRequired(instance: string): Response {
+	return problemResponse({
+		type: 'urn:signkit:problem:bootstrap-owner-required',
+		title: 'Bootstrap owner configuration required',
+		status: 403,
+		detail:
+			'This deployment refuses first-user-wins bootstrap. Configure SIGNKIT_BOOTSTRAP_OWNER_EMAIL for the intended owner, or use the local-development-only unsafe opt-in. The instance remains unclaimed.',
+		instance
+	});
+}
+
 /**
  * Reads the optional deploy-time owner-email allowlist. Checks `platform.env`
  * first so Cloudflare Workers vars/secrets take precedence, matching every
@@ -144,16 +162,47 @@ function ownerMismatch(instance: string): Response {
  */
 export function resolveBootstrapOwnerEmail(platform?: Readonly<App.Platform>): string | undefined {
 	const configured: string | undefined =
-		platform?.env?.SIGNKIT_BOOTSTRAP_OWNER_EMAIL ?? env.SIGNKIT_BOOTSTRAP_OWNER_EMAIL;
+		platform?.env?.[BOOTSTRAP_OWNER_EMAIL_ENV_VAR] ?? env[BOOTSTRAP_OWNER_EMAIL_ENV_VAR];
 	const trimmed: string | undefined = configured?.trim();
 	return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+export interface BootstrapUnsafeContext {
+	readonly unsafeOptIn: boolean;
+	readonly localDevelopment: boolean;
+}
+
+/**
+ * Resolves the local-development-only unsafe opt-in from the same env source
+ * as the owner email (Cloudflare Workers `platform.env` first, otherwise the
+ * Node/Vercel process environment). The `true` flag is honored only inside
+ * {@link isLocalDevelopmentBootstrapEnvironment}; anywhere else it is
+ * ignored and the gate still fails closed. Neither the expected email nor
+ * the flag value is ever logged.
+ */
+export function resolveBootstrapUnsafeContext(
+	platform?: Readonly<App.Platform>
+): BootstrapUnsafeContext {
+	const platformEnv = platform?.env as Record<string, string | undefined> | undefined;
+	const unsafeOptIn: boolean = isUnsafeBootstrapOptIn(
+		platformEnv?.[UNSAFE_BOOTSTRAP_ENV_VAR] ?? env[UNSAFE_BOOTSTRAP_ENV_VAR]
+	);
+	const localDevelopment: boolean = isLocalDevelopmentBootstrapEnvironment({
+		hasPlatformEnv: platform?.env !== undefined,
+		vercelIndicator: env.VERCEL,
+		publicOrigin: platformEnv?.[PUBLIC_ORIGIN_ENV_VAR] ?? env[PUBLIC_ORIGIN_ENV_VAR]
+	});
+	return { unsafeOptIn, localDevelopment };
 }
 
 export function createInstanceBootstrapHandler(
 	resolveApplication: InstanceApplicationResolver,
 	resolveOwnerEmail: (
 		platform?: Readonly<App.Platform>
-	) => string | undefined = resolveBootstrapOwnerEmail
+	) => string | undefined = resolveBootstrapOwnerEmail,
+	resolveUnsafeContext: (
+		platform?: Readonly<App.Platform>
+	) => BootstrapUnsafeContext = resolveBootstrapUnsafeContext
 ): RequestHandler {
 	return async ({ locals, platform, request, url }): Promise<Response> => {
 		// Bootstrap is cookie-session-only: a `signkit_` API key is already
@@ -207,15 +256,24 @@ export function createInstanceBootstrapHandler(
 			});
 		}
 
-		// Deploy-time bootstrap protection: checked before the store is ever
-		// consulted, so a mismatched caller never consumes the single
-		// empty-instance window that the real owner still needs.
+		// Deploy-time bootstrap protection: uninitialized instances fail closed
+		// unless the configured owner email matches or the local-development
+		// unsafe opt-in applies. Checked before the store is ever consulted,
+		// so a refused caller never consumes the single empty-instance window
+		// that the real owner still needs. The configured email is compared
+		// here and never logged or echoed.
+		const unsafeContext: BootstrapUnsafeContext = resolveUnsafeContext(platform);
 		const ownerGate = resolveBootstrapOwnerGate({
 			configuredEmail: resolveOwnerEmail(platform),
-			actorEmail: authorized.email
+			actorEmail: authorized.email,
+			unsafeOptIn: unsafeContext.unsafeOptIn,
+			localDevelopment: unsafeContext.localDevelopment
 		});
 		if (ownerGate === 'owner_mismatch') {
 			return ownerMismatch(url.pathname);
+		}
+		if (ownerGate === 'owner_required') {
+			return ownerRequired(url.pathname);
 		}
 
 		let application: InstanceApplicationPort | null;

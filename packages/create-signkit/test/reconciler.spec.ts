@@ -52,7 +52,9 @@ const INITIAL_DEPLOY_FLAGS = [
 	'--email-from',
 	'sign@example.com',
 	'--public-origin',
-	'https://signkit.example.workers.dev'
+	'https://signkit.example.workers.dev',
+	'--bootstrap-owner-email',
+	'Owner@Example.com'
 ];
 
 describe('plan is read-only', () => {
@@ -427,6 +429,8 @@ describe('failure and rollback reporting', () => {
 				'sign@example.com',
 				'--public-origin',
 				'https://signkit.example.workers.dev',
+				'--bootstrap-owner-email',
+				'owner@example.com',
 				'--yes',
 				'--json'
 			],
@@ -848,6 +852,176 @@ describe('upgrade routing flags', () => {
 	});
 });
 
+describe('bootstrap owner email', () => {
+	it('requires --bootstrap-owner-email for a fresh deploy', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.secrets.set('signkit', [
+			'DELIVERY_ENCRYPTION_KEY',
+			'SESSION_ENCRYPTION_KEY',
+			'DELIVERY_WORKER_SECRET',
+			'D6E_AUTH_CLIENT_ID',
+			'D6E_AUTH_CLIENT_SECRET'
+		]);
+		const denied = await run(
+			[
+				'--cloudflare',
+				'deploy',
+				'--account-id',
+				ACCOUNT_ID,
+				'--email-from',
+				'sign@example.com',
+				'--public-origin',
+				'https://signkit.example.workers.dev',
+				'--yes',
+				'--json'
+			],
+			wrangler
+		);
+		expect(denied.code).toBe(6);
+		expect(denied.stdout).toMatch(/--bootstrap-owner-email is required/);
+		expect(wrangler.calls).not.toContain('createD1:signkit');
+		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+	});
+
+	it('canonicalizes the flag, records it in state, and applies it as a non-secret Worker var', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.secrets.set('signkit', [
+			'DELIVERY_ENCRYPTION_KEY',
+			'SESSION_ENCRYPTION_KEY',
+			'DELIVERY_WORKER_SECRET',
+			'D6E_AUTH_CLIENT_ID',
+			'D6E_AUTH_CLIENT_SECRET'
+		]);
+		wrangler.versions.set('signkit', []);
+		const result = await run(
+			[
+				'--cloudflare',
+				'deploy',
+				'--account-id',
+				ACCOUNT_ID,
+				'--email-from',
+				'sign@example.com',
+				'--public-origin',
+				'https://signkit.example.workers.dev',
+				'--bootstrap-owner-email',
+				'Owner@Example.com',
+				'--yes',
+				'--json'
+			],
+			wrangler
+		);
+		expect(result.code).toBe(0);
+		const state = JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.bootstrapOwnerEmail).toBe('owner@example.com');
+		expect(wrangler.lastConfig).toMatch(/"SIGNKIT_BOOTSTRAP_OWNER_EMAIL": "owner@example\.com"/);
+		expect(wrangler.lastConfig).not.toContain('Owner@Example.com');
+		// The address is configuration, not a log line: human and JSON output
+		// name the var/flag but never repeat the address.
+		expect(result.stdout).not.toContain('owner@example.com');
+		expect(result.stdout).not.toContain('Owner@Example.com');
+		expect(result.stdout).toMatch(/bootstrap owner/i);
+	});
+
+	it('inherits the recorded address on upgrade so the flag is passed once', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(0);
+		expect(wrangler.calls).toContain('uploadVersion:signkit');
+		expect(result.stdout).not.toContain('owner@example.com');
+	});
+
+	it('requires the flag on upgrade when no address is recorded (pre-requirement state)', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = new MemoryFileSystem();
+		await fs.writeFile(
+			'/xdg/state/create-signkit/state.json',
+			JSON.stringify({
+				schemaVersion: 1,
+				provider: 'cloudflare',
+				accountId: ACCOUNT_ID,
+				workerName: 'signkit',
+				d1: { name: 'signkit', id: D1_ID },
+				r2: { name: 'signkit-objects' },
+				publicOrigin: 'https://signkit.example.workers.dev',
+				channel: 'stable',
+				updatedAt: '2026-09-15T00:00:00.000Z'
+			})
+		);
+		const denied = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(denied.code).toBe(6);
+		expect(denied.stdout).toMatch(/--bootstrap-owner-email is required/);
+		expect(wrangler.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
+
+		const allowed = await run(
+			[
+				'--cloudflare',
+				'upgrade',
+				'--account-id',
+				ACCOUNT_ID,
+				'--bootstrap-owner-email',
+				'owner@example.com',
+				'--yes',
+				'--json'
+			],
+			wrangler,
+			fs
+		);
+		expect(allowed.code).toBe(0);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.bootstrapOwnerEmail).toBe('owner@example.com');
+	});
+
+	it('accepts the flag on adopt without requiring it', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
+		wrangler.r2.add('signkit-prod-objects');
+		wrangler.secrets.set('signkit-prod', [
+			'DELIVERY_ENCRYPTION_KEY',
+			'SESSION_ENCRYPTION_KEY',
+			'DELIVERY_WORKER_SECRET',
+			'D6E_AUTH_CLIENT_ID',
+			'D6E_AUTH_CLIENT_SECRET'
+		]);
+		wrangler.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
+		const fs = new MemoryFileSystem();
+		const result = await run(
+			[
+				'--cloudflare',
+				'adopt',
+				'--account-id',
+				ACCOUNT_ID,
+				'--worker-name',
+				'signkit-prod',
+				'--d1',
+				'signkit-prod-db',
+				'--r2',
+				'signkit-prod-objects',
+				'--bootstrap-owner-email',
+				'owner@example.com',
+				'--yes',
+				'--json'
+			],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(0);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.bootstrapOwnerEmail).toBe('owner@example.com');
+		expect(result.stdout).not.toContain('owner@example.com');
+	});
+});
+
 describe('human plan output', () => {
 	it('writes non-JSON plan output to stdout, not stderr', async () => {
 		const wrangler = new FakeWrangler();
@@ -953,7 +1127,13 @@ describe('custom-domain smoke fallback', () => {
 				domain: 'sign.example.com',
 				publicOrigin: 'https://sign.example.com',
 				emailFrom: 'sign@example.com',
-				overrides: { domain: true, publicOrigin: true, emailFrom: true }
+				bootstrapOwnerEmail: 'owner@example.com',
+				overrides: {
+					domain: true,
+					publicOrigin: true,
+					emailFrom: true,
+					bootstrapOwnerEmail: true
+				}
 			}),
 			{
 				fs,

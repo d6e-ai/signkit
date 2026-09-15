@@ -942,7 +942,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Create a webhook endpoint',
 					operationId: 'createWebhook',
 					description:
-						'The destination host must be in the deployer-configured SIGNKIT_WEBHOOK_ALLOWED_HOSTS allowlist (exact hosts and explicit wildcard suffixes). An absent, empty, or invalid allowlist denies creation by default; the policy is re-evaluated on every delivery attempt with redirects disabled.',
+						'The destination host must be in the deployer-configured SIGNKIT_WEBHOOK_ALLOWED_HOSTS allowlist (exact hosts and explicit wildcard suffixes of at least three labels). An absent, empty, or invalid allowlist denies creation by default; the policy is re-evaluated on every delivery attempt with redirects disabled.',
 					tags: ['Webhooks'],
 					security: [{ SessionCookie: [] }],
 					parameters: [idempotencyHeader],
@@ -1163,6 +1163,8 @@ export function openApiDocument(): Record<string, unknown> {
 				post: op({
 					summary: 'Bootstrap the instance',
 					operationId: 'bootstrapInstance',
+					description:
+						'Cookie-session-only first-owner claim on an empty instance. Uninitialized instances fail closed: the verified session email must exactly match the deployer-configured SIGNKIT_BOOTSTRAP_OWNER_EMAIL (403 bootstrap-owner-mismatch otherwise), or the local-development-only SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP opt-in must apply (403 bootstrap-owner-required otherwise). A mismatched or unconfigured attempt never consumes the single empty-instance window. Already-bootstrapped instances answer 409.',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
 					requestBody: JSON_BODY,

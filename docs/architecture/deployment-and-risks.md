@@ -1,6 +1,6 @@
 # Deployment and risks
 
-Status: mixed — deployment profiles are implemented (scaffolded); the risk list is a living register, not a status claim
+Status: mixed — deployment profiles are supported on Node/Docker and Cloudflare Workers (Vercel is CI-only); the risk list is a living register, not a status claim
 
 ## Deployment
 
@@ -10,7 +10,7 @@ Node runs as a non-root user in the supplied multi-stage Docker image. A reverse
 
 ## Primary risks
 
-- first-user-wins instance bootstrap: `POST /api/v1/instance/bootstrap` authorizes on the verified d6e-auth cookie session alone, with no deployment secret gate by default, so whichever authenticated identity reaches an empty instance first claims the sole `owner` slot. The atomic empty-instance check and idempotency receipt prevent a second claim once one succeeds, but they do not prevent the _first_ claim from being made by the wrong person — that is an operational race, not a defect the store can close. The primary mitigation remains procedural: claim the initial owner immediately after deploy, before the instance URL is shared or otherwise discoverable (see [deployment.md § Claim the initial owner immediately after deploy](../deployment.md#claim-the-initial-owner-immediately-after-deploy)). Operators who know the intended owner's email in advance can additionally set `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` to restrict the claim to that address without adding another long-lived credential; it is ordinary configuration, becomes irrelevant once the instance is claimed, and is optional so local development needs no configuration at all.
+- first-user-wins instance bootstrap, closed by default: `POST /api/v1/instance/bootstrap` authorizes on the verified d6e-auth cookie session alone, with no deployment secret gate, so an uninitialized instance would let whichever authenticated identity reaches it first claim the sole `owner` slot. Uninitialized instances therefore fail closed instead: the claim succeeds only when `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` is configured and exactly matches the caller's verified email, or when the local-development-only `SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP=true` opt-in applies (Node with a loopback public origin; ignored on Cloudflare Workers, Vercel, production, and non-loopback origins). Anything else is refused with 403 and the empty-instance window stays open. The atomic empty-instance check and idempotency receipt prevent a second claim once one succeeds, but they do not prevent the _first_ claim from being made by the wrong person — that is an operational race, not a defect the store can close. The primary mitigation remains procedural: configure the owner email before the first deploy and claim the initial owner immediately after deploy, before the instance URL is shared or otherwise discoverable (see [deployment.md § Claim the initial owner immediately after deploy](../deployment.md#claim-the-initial-owner-immediately-after-deploy)). The owner email is ordinary configuration, becomes irrelevant once the instance is claimed, and already-claimed instances are unaffected by its value.
 - AGPL contamination from copying upstream implementation or distinctive assets.
 - cross-tenant reads or writes caused by missing organization predicates.
 - inconsistent SQL/object pointers during concurrent draft commits.

@@ -533,7 +533,7 @@ describe('parsePdfPageMetadata', () => {
 			}
 		);
 
-		it.each(['Launch', 'JavaScript', 'SubmitForm', 'GoToR', 'ImportData', 'Named'])(
+		it.each(['URI', 'Launch', 'JavaScript', 'SubmitForm', 'GoToR', 'ImportData', 'Named'])(
 			'rejects a /%s annotation action',
 			(actionSubtype) => {
 				const bytes = buildClassicPdf(
@@ -566,9 +566,29 @@ describe('parsePdfPageMetadata', () => {
 					},
 					{
 						num: 4,
-						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI (https://example.com) /Next 5 0 R >> >>'
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (page1) /Next 5 0 R >> >>'
 					},
 					{ num: 5, body: '<< /S /Launch /F (calc.exe) >>' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('rejects an external /URI action reached through a /Next action chain', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (page1) /Next 5 0 R >> >>'
+					},
+					{ num: 5, body: '<< /S /URI /URI (https://example.com) >>' }
 				],
 				'/Root 1 0 R'
 			);
@@ -603,7 +623,7 @@ describe('parsePdfPageMetadata', () => {
 			expectReason(bytes, 'active_content_action');
 		});
 
-		it('accepts a passive /URI and /GoTo Link annotation and a markup annotation with no action', () => {
+		it('accepts an internal /GoTo Link annotation and a markup annotation with no action', () => {
 			const bytes = buildClassicPdf(
 				[
 					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
@@ -611,18 +631,13 @@ describe('parsePdfPageMetadata', () => {
 					{
 						num: 3,
 						body:
-							'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] ' +
-							'/Annots [4 0 R 5 0 R 6 0 R] >>'
+							'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] ' + '/Annots [4 0 R 5 0 R] >>'
 					},
 					{
 						num: 4,
-						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI (https://example.com) >> >>'
-					},
-					{
-						num: 5,
 						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (page1) >> >>'
 					},
-					{ num: 6, body: '<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents (hi) >>' }
+					{ num: 5, body: '<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents (hi) >>' }
 				],
 				'/Root 1 0 R'
 			);
@@ -631,6 +646,25 @@ describe('parsePdfPageMetadata', () => {
 				pageWidth: 200,
 				pageHeight: 300
 			});
+		});
+
+		it('rejects an external /URI Link annotation even with no chain', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI (https://example.com) >> >>'
+					}
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
 		});
 
 		it('rejects an active-content annotation reached through an object stream', () => {

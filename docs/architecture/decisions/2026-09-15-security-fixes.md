@@ -24,9 +24,10 @@ preserved by construction.
 - The upload PDF parser treats every PDF as hostile and passive-only:
   catalog `/AcroForm` (covering nested `/XFA`), page and annotation `/AA`,
   inherently active annotation subtypes, and any action outside the
-  URI/GoTo allowlist are rejected, with `/Next` chains bounded so cyclic
-  graphs fail closed. Resolution runs through compressed object streams the
-  same way as classic indirect objects.
+  internal-`/GoTo`-only policy are rejected — external `/URI` actions
+  included, since an uploaded document must not reach outside itself — with
+  `/Next` chains bounded so cyclic graphs fail closed. Resolution runs
+  through compressed object streams the same way as classic indirect objects.
 - The operator session cookie is an explicit-key-ID envelope
   (`base64url(keyId | iv | ciphertext+tag)`) sealed under an HKDF-derived
   subkey with a fixed operator-session AAD tag, so ciphertext from another
@@ -51,8 +52,11 @@ preserved by construction.
   an absent, empty, or invalid value denies webhook creation and every
   delivery attempt by default. Only rigorously canonicalized exact hosts and
   explicit `*.` wildcard suffixes are accepted — never credentials, IP
-  literals, ports, paths, or single-label public-suffix-like wildcards — and a
-  wildcard never covers its own bare suffix. The runtime layer
+  literals, ports, paths, or short wildcards — and a
+  wildcard never covers its own bare suffix. Wildcard suffixes must carry at
+  least three labels (`*.hooks.example.com` is allowed; `*.example.com` and
+  `*.com` are rejected), so one compromised subdomain cannot stand in for a
+  whole registrable domain. The runtime layer
   (`webhook-runtime.ts`, shared by the D1 and PostgreSQL paths) re-reads the
   variable on every creation and every delivery attempt, so tightening the
   policy stops older endpoints without a restart; the public-IP DNS checks

@@ -17,6 +17,6 @@ Areas of particular interest, drawn from the project's own risk register in [doc
 - cross-tenant data leakage between organizations
 - webhook SSRF, DNS rebinding, or signing-secret handling
 - credential, session, and encryption-key handling
-- the first-user-wins instance bootstrap race
+- the fail-closed instance bootstrap gate (owner email match vs local-only unsafe opt-in)
 
 See that document for the full, current list of known risk classes before filing a report.

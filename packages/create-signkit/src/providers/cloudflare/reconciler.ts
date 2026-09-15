@@ -81,8 +81,15 @@ export interface ReconcileResult {
 	migrationPolicy: string;
 }
 
-const BOOTSTRAP_WARNING =
-	'Claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL. The first authenticated identity wins; create-signkit does not add a bootstrap secret.';
+const BOOTSTRAP_WARNING_CONFIGURED =
+	'The bootstrap owner email is configured as a non-secret Worker var. Claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL: only the matching verified identity can claim it, and the window stays open until then.';
+
+const BOOTSTRAP_WARNING_MISSING =
+	'No bootstrap owner email is configured: an uninitialized instance fails closed and cannot be claimed. Pass --bootstrap-owner-email <email> to deploy or upgrade; create-signkit applies it as a non-secret Worker var.';
+
+function bootstrapWarningFor(target: EffectiveTarget): string {
+	return target.bootstrapOwnerEmail ? BOOTSTRAP_WARNING_CONFIGURED : BOOTSTRAP_WARNING_MISSING;
+}
 
 export async function reconcileCloudflare(
 	input: ParsedCommand,
@@ -141,7 +148,7 @@ export async function reconcileCloudflare(
 			),
 			drift,
 			message: 'plan only; no Cloudflare resources were created or changed',
-			bootstrapWarning: BOOTSTRAP_WARNING,
+			bootstrapWarning: bootstrapWarningFor(target),
 			migrationPolicy: MIGRATION_POLICY_NOTES
 		};
 	}
@@ -185,7 +192,7 @@ async function adopt(
 		drift: [],
 		message:
 			'recorded existing Cloudflare resources in local state; no resources were created or deleted',
-		bootstrapWarning: BOOTSTRAP_WARNING,
+		bootstrapWarning: bootstrapWarningFor(target),
 		migrationPolicy: MIGRATION_POLICY_NOTES
 	};
 }
@@ -205,6 +212,12 @@ async function deployOrUpgrade(
 	const initialManagedDeploy = input.command === 'deploy' && existing === undefined;
 	assertNoTakeover(input, existing, current);
 	assertInitialManagedDeployVars(target, release, initialManagedDeploy);
+	if (input.command === 'deploy' && !initialManagedDeploy) {
+		assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, true);
+	}
+	if (input.command === 'upgrade') {
+		assertUpgradeBootstrapOwnerEmail(target);
+	}
 
 	if (input.command === 'upgrade') {
 		if (!current.d1 || !current.r2Exists || !current.workerExists) {
@@ -336,7 +349,7 @@ async function deployOrUpgrade(
 				drift: [],
 				rollback,
 				message: `HTTPS smoke check skipped: no production origin is known; refusing to use a version-preview URL as production verification. Pass --public-origin or --domain. ${rollback.guidance}`,
-				bootstrapWarning: BOOTSTRAP_WARNING,
+				bootstrapWarning: bootstrapWarningFor(target),
 				migrationPolicy: MIGRATION_POLICY_NOTES
 			};
 		}
@@ -378,7 +391,7 @@ async function deployOrUpgrade(
 				drift: [],
 				rollback,
 				message: `HTTPS smoke check failed: ${smoke.detail}. ${rollback.guidance}`,
-				bootstrapWarning: BOOTSTRAP_WARNING,
+				bootstrapWarning: bootstrapWarningFor(target),
 				migrationPolicy: MIGRATION_POLICY_NOTES
 			};
 		}
@@ -407,7 +420,7 @@ async function deployOrUpgrade(
 				input.command === 'upgrade'
 					? `upgraded ${target.workerName} to ${release.tag}`
 					: `deployed ${target.workerName} at ${release.tag}`,
-			bootstrapWarning: BOOTSTRAP_WARNING,
+			bootstrapWarning: bootstrapWarningFor(target),
 			migrationPolicy: MIGRATION_POLICY_NOTES
 		};
 	} finally {
@@ -647,6 +660,7 @@ function nextState(
 		d6eAuthBaseUrl: target.d6eAuthBaseUrl,
 		emailFrom: target.emailFrom ?? existing?.emailFrom,
 		emailFromName: target.emailFromName,
+		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
 		lastD1BackupPath: extra.lastD1BackupPath ?? existing?.lastD1BackupPath,
 		channel: input.channel,
 		version: release.tag,
@@ -679,6 +693,9 @@ function generatedWorkerVars(
 	if (initialManagedDeploy || !target.appliedDefaults.emailFromName) {
 		vars.SIGNKIT_EMAIL_FROM_NAME = target.emailFromName;
 	}
+	if (target.bootstrapOwnerEmail) {
+		vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL = target.bootstrapOwnerEmail;
+	}
 	return vars;
 }
 
@@ -700,7 +717,33 @@ function assertInitialManagedDeployVars(
 			'--public-origin or --domain is required for the initial managed deploy (SIGNKIT_PUBLIC_ORIGIN)'
 		);
 	}
+	assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, false);
 	assertRequiredVarsPresent(release.manifest.requiredVars, generatedWorkerVars(target, true), true);
+}
+
+/**
+ * A fresh uninitialized deployment must not be claimable without a bootstrap
+ * owner: deploy and upgrade both require the effective
+ * `--bootstrap-owner-email` (explicit flag or inherited state). State files
+ * written before this requirement stay loadable — the field is optional in
+ * the schema — but upgrading or redeploying with one requires passing the
+ * flag once, after which the value is recorded in state and inherited.
+ * Already-bootstrapped instances are unaffected by the value itself since
+ * bootstrap never runs again. Errors name the flag, never the address.
+ */
+function assertUpgradeBootstrapOwnerEmail(target: EffectiveTarget): void {
+	assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, true);
+}
+
+function assertValidBootstrapOwnerEmail(value: string | undefined, hasState: boolean): void {
+	const candidate: string | undefined = value?.trim().toLowerCase();
+	if (!candidate || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate) || candidate.includes('\0')) {
+		throw preflight(
+			hasState
+				? '--bootstrap-owner-email is required for deploy/upgrade (SIGNKIT_BOOTSTRAP_OWNER_EMAIL): no valid address is recorded in state, so pass the flag once to record it'
+				: '--bootstrap-owner-email is required for the initial managed deploy (SIGNKIT_BOOTSTRAP_OWNER_EMAIL): an uninitialized instance fails closed without it. Secrets are never accepted on argv.'
+		);
+	}
 }
 
 function assertRequiredVarsPresent(
@@ -753,6 +796,7 @@ function adoptState(
 		d6eAuthBaseUrl: target.d6eAuthBaseUrl,
 		emailFrom: target.emailFrom ?? existing?.emailFrom,
 		emailFromName: target.emailFromName,
+		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
 		lastD1BackupPath: retarget ? undefined : existing?.lastD1BackupPath,
 		channel: input.channel,
 		version: retarget ? undefined : existing?.version,
@@ -896,6 +940,7 @@ async function writeGeneratedConfig(
 		d6eAuthBaseUrl: vars.D6E_AUTH_BASE_URL,
 		emailFrom: vars.SIGNKIT_EMAIL_FROM,
 		emailFromName: vars.SIGNKIT_EMAIL_FROM_NAME,
+		bootstrapOwnerEmail: vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL,
 		manifest: release.manifest,
 		main: posixPath(extracted.root, extracted.main, 'generated Worker main'),
 		assetsDirectory: posixPath(

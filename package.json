@@ -72,7 +72,7 @@
 		"vite": "^8.0.16",
 		"vitest": "^4.1.8",
 		"vitest-browser-svelte": "^3.1.0",
-		"wrangler": "^4.130.0"
+		"wrangler": "^4.131.2"
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1129.0",

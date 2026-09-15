@@ -7,8 +7,7 @@ import { WebhookTargetRejectedError } from './webhook-url';
  * explicit wildcard suffix entries (`*.hooks.example.com`). When the variable
  * is absent, empty, or invalid, webhook creation and delivery default deny.
  */
-export const WEBHOOK_ALLOWED_HOSTS_ENV_VAR: 'SIGNKIT_WEBHOOK_ALLOWED_HOSTS' =
-	'SIGNKIT_WEBHOOK_ALLOWED_HOSTS';
+export const WEBHOOK_ALLOWED_HOSTS_ENV_VAR = 'SIGNKIT_WEBHOOK_ALLOWED_HOSTS' as const;
 
 const HOSTNAME_PATTERN: RegExp = /^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
 const LABEL_PATTERN: RegExp = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/i;
@@ -62,9 +61,9 @@ export function parseWebhookAllowedHosts(raw: string | undefined | null): Webhoo
 		}
 		if (trimmed.startsWith('*.')) {
 			const suffix: string = canonicalizeExactHost(trimmed.slice(2), 'wildcard');
-			if (!suffix.includes('.')) {
+			if (suffix.split('.').length < 3) {
 				throw new WebhookHostPolicyError(
-					'Webhook allowlist wildcard entries must name a multi-label suffix'
+					'Webhook allowlist wildcard entries must name a suffix of at least three labels'
 				);
 			}
 			if (!suffixes.includes(suffix)) suffixes.push(suffix);

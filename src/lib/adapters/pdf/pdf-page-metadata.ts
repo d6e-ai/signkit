@@ -21,7 +21,9 @@ import {
  * On top of the shared reader this module rejects passive-upload active
  * content recursively: a catalog `/AcroForm`, page or annotation additional
  * actions (`/AA`), inherently active annotation subtypes, and annotation
- * actions outside the URI/GoTo allowlist (followed through `/Next` chains).
+ * actions outside the internal-GoTo-only policy (followed through `/Next`
+ * chains). External `/URI` actions are rejected the same way as every other
+ * non-`/GoTo` action: an uploaded PDF must not reach outside the document.
  * The walk resolves through {@link PdfObjectReader.resolve} so references
  * hidden inside object streams are checked the same way as plain indirect
  * objects.
@@ -66,14 +68,17 @@ const BLOCKED_ANNOTATION_SUBTYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The only action subtypes that cannot execute code or reach outside the
- * PDF's own pages: `/URI` merely names a URL for the viewer to open (in a
- * separate browser, never automatically), and `/GoTo` navigates within the
- * same document. Every other action subtype -- `/Launch`, `/JavaScript`,
- * `/SubmitForm`, `/GoToR`, `/ImportData`, `/Named`, media/rendition actions,
- * and anything not on this list -- is rejected.
+ * The only action subtype that cannot execute code or reach outside the
+ * PDF's own pages is `/GoTo`, which navigates within the same document.
+ * External `/URI` actions are rejected recursively: a `/URI` entry names an
+ * outside URL for the viewer to open, so an uploaded document carrying one is
+ * not passive input even when the viewer would open it in a separate browser
+ * rather than automatically. Every other action subtype -- `/URI`,
+ * `/Launch`, `/JavaScript`, `/SubmitForm`, `/GoToR`, `/ImportData`,
+ * `/Named`, media/rendition actions, and anything not on this list -- is
+ * rejected.
  */
-const ALLOWED_ACTION_SUBTYPES: ReadonlySet<string> = new Set(['URI', 'GoTo']);
+const ALLOWED_ACTION_SUBTYPES: ReadonlySet<string> = new Set(['GoTo']);
 
 interface TraversalBudget {
 	count: number;
@@ -131,7 +136,7 @@ function assertPagePassive(
 /**
  * Rejects any annotation that is inherently active (rich media, file
  * attachments, form widgets, sound/movie) or that carries additional
- * actions or an action outside the URI/GoTo allowlist. Each annotation
+ * actions or an action outside the internal-GoTo-only policy. Each annotation
  * consumes one node from the shared traversal budget, so a huge or
  * cyclic `/Annots` array fails closed the same way an oversized page
  * tree does.
@@ -168,7 +173,7 @@ function assertAnnotationsSafe(
 /**
  * Actions can chain through `/Next` (a single action dict or an array of
  * them) to run several actions in sequence. Every link in the chain must
- * itself be on the URI/GoTo allowlist, and the chain is bounded so a
+ * itself be the internal `/GoTo` action, and the chain is bounded so a
  * crafted or cyclic `/Next` graph cannot force unbounded recursion.
  */
 function assertActionChainSafe(

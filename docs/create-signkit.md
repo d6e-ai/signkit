@@ -19,7 +19,7 @@ The provider flag is required and must appear before the command:
 
 ```sh
 create-signkit --cloudflare plan --account-id <32-hex-account-id>
-create-signkit --cloudflare deploy --account-id <id> --email-from ops@example.com --domain sign.example.com --yes
+create-signkit --cloudflare deploy --account-id <id> --email-from ops@example.com --domain sign.example.com --bootstrap-owner-email owner@example.com --yes
 create-signkit --cloudflare adopt --account-id <id> --yes
 create-signkit --cloudflare upgrade --account-id <id> --yes
 ```
@@ -28,22 +28,23 @@ Omitting `--cloudflare` exits 2. There is no implicit Cloudflare default.
 
 ## Flags
 
-| Flag                  | Meaning                                                             |
-| --------------------- | ------------------------------------------------------------------- |
-| `--account-id`        | Cloudflare account ID (required; never inherited)                   |
-| `--worker-name`       | Worker name (default `signkit` when there is no state)              |
-| `--d1`                | D1 name or UUID (default `signkit` when there is no state)          |
-| `--r2`                | R2 bucket name (default `signkit-objects` when there is no state)   |
-| `--domain`            | Optional custom hostname; implies `https://<hostname>`              |
-| `--public-origin`     | Public https origin; must agree with `--domain` when both are set   |
-| `--d6e-auth-base-url` | `D6E_AUTH_BASE_URL` (default `https://www.d6e.ai`)                  |
-| `--email-from`        | `SIGNKIT_EMAIL_FROM` (required for the initial managed deploy)      |
-| `--email-from-name`   | `SIGNKIT_EMAIL_FROM_NAME` (default `SignKit`)                       |
-| `--version`           | `latest` or an exact tag such as `v1.2.3`                           |
-| `--channel`           | `stable` (default) or `beta`; enforced against the selected release |
-| `--state`             | Override the XDG state file                                         |
-| `--yes`               | Required for deploy/adopt/upgrade                                   |
-| `--json`              | Machine-readable result on stdout                                   |
+| Flag                      | Meaning                                                                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `--account-id`            | Cloudflare account ID (required; never inherited)                                                                                        |
+| `--worker-name`           | Worker name (default `signkit` when there is no state)                                                                                   |
+| `--d1`                    | D1 name or UUID (default `signkit` when there is no state)                                                                               |
+| `--r2`                    | R2 bucket name (default `signkit-objects` when there is no state)                                                                        |
+| `--domain`                | Optional custom hostname; implies `https://<hostname>`                                                                                   |
+| `--public-origin`         | Public https origin; must agree with `--domain` when both are set                                                                        |
+| `--d6e-auth-base-url`     | `D6E_AUTH_BASE_URL` (default `https://www.d6e.ai`)                                                                                       |
+| `--email-from`            | `SIGNKIT_EMAIL_FROM` (required for the initial managed deploy)                                                                           |
+| `--email-from-name`       | `SIGNKIT_EMAIL_FROM_NAME` (default `SignKit`)                                                                                            |
+| `--bootstrap-owner-email` | `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it) |
+| `--version`               | `latest` or an exact tag such as `v1.2.3`                                                                                                |
+| `--channel`               | `stable` (default) or `beta`; enforced against the selected release                                                                      |
+| `--state`                 | Override the XDG state file                                                                                                              |
+| `--yes`                   | Required for deploy/adopt/upgrade                                                                                                        |
+| `--json`                  | Machine-readable result on stdout                                                                                                        |
 
 Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state **before** Cloudflare inspection. `SIGNKIT_MAIL_PROVIDER` is always `cloudflare`. Secrets are never accepted on argv.
 
@@ -62,11 +63,11 @@ Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state **befor
 
    Missing secret names are listed and the command stops **before creating D1 or R2**, rather than prompting for values.
 
-3. `create-signkit --cloudflare deploy --account-id <id> --email-from ops@example.com --domain sign.example.com --yes`
+3. `create-signkit --cloudflare deploy --account-id <id> --email-from ops@example.com --domain sign.example.com --bootstrap-owner-email owner@example.com --yes`
 
-   `--email-from` and `--public-origin` or `--domain` are required whenever local state is absent, including after a secret-put stub. `--public-origin` may be used instead of `--domain`. Both must agree when set together. Subsequent deploys inherit these non-secret vars from state; `--keep-vars` leaves extra remote vars in place.
+   `--email-from` and `--public-origin` or `--domain` are required whenever local state is absent, including after a secret-put stub. `--bootstrap-owner-email` is required for every deploy and upgrade (an explicit flag, or the address recorded in state from a previous run): the CLI validates and canonicalizes it to trimmed lowercase and applies it as a non-secret Worker var, never printing the address. Without it the deployment fails closed before creating anything — an uninitialized instance whose bootstrap endpoint anyone could claim is never produced. `--public-origin` may be used instead of `--domain`. Both must agree when set together. Subsequent deploys inherit these non-secret vars from state; `--keep-vars` leaves extra remote vars in place.
 
-4. Claim the owner immediately: sign in and `POST /api/v1/instance/bootstrap` before anyone else can. create-signkit does not add a bootstrap secret.
+4. Claim the owner immediately: sign in as the configured address and `POST /api/v1/instance/bootstrap` before anyone else can. Only that verified email can claim the empty instance; any other verified caller is refused without consuming the claim. Once claimed, the bootstrap address is inert — later upgrades keep applying it as configuration, but it authorizes nothing further.
 
 ## Adopt and upgrade
 
@@ -78,7 +79,7 @@ create-signkit --cloudflare adopt --account-id <id> --worker-name signkit --d1 s
 
 Adopt does not store a release tag/commit. Retargeting an identity clears previous Worker version metadata.
 
-Upgrade applies pending D1 migrations, then uploads a new Worker version from the selected release. Omitted resource flags keep the identity recorded in state. Upgrade without local state refuses to take over a remote Worker and requires `adopt` first:
+Upgrade applies pending D1 migrations, then uploads a new Worker version from the selected release. Omitted resource flags keep the identity recorded in state. Upgrade without local state refuses to take over a remote Worker and requires `adopt` first. Upgrade (like deploy) requires an effective `--bootstrap-owner-email`: pass the flag, or inherit the address recorded in state from a previous run. State files written before this requirement stay loadable, but the first upgrade with one must pass the flag once; after that it is inherited. Adopting an existing deployment accepts an optional `--bootstrap-owner-email` to record alongside the resources:
 
 ```sh
 create-signkit --cloudflare upgrade --account-id <id> --version latest --yes
@@ -110,7 +111,7 @@ If a smoke check fails, create-signkit rolls the Worker back only when a previou
 
 ## State
 
-Default path: `$XDG_STATE_HOME/create-signkit/state.json` (typically `~/.local/state/create-signkit/state.json`). It stores account id, Worker name, D1 name/id, R2 name, optional domain/origin/mail vars, last D1 backup path, release tag/commit, and version ids. It must never contain secrets.
+Default path: `$XDG_STATE_HOME/create-signkit/state.json` (typically `~/.local/state/create-signkit/state.json`). It stores account id, Worker name, D1 name/id, R2 name, optional domain/origin/mail vars, the canonicalized bootstrap owner email, last D1 backup path, release tag/commit, and version ids. It must never contain secrets.
 
 ## Distinguishing the CLIs
 

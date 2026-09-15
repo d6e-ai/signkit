@@ -1,9 +1,17 @@
 import type { RequestEvent } from '@sveltejs/kit';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
 import type { InstanceMemberMetadata } from '$lib/ports/instance-store';
 import { identityOnlyLocals } from './http-handler-test-support';
-import { createInstanceBootstrapHandler } from './instance-bootstrap';
+import {
+	createInstanceBootstrapHandler,
+	resolveBootstrapOwnerEmail,
+	resolveBootstrapUnsafeContext
+} from './instance-bootstrap';
+
+const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
+
+vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
 const NOW: string = '2026-09-12T12:00:00.000Z';
 
@@ -40,6 +48,20 @@ function event(input: { locals?: App.Locals; body?: string; headers?: HeadersIni
 }
 
 describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
+	beforeEach(() => {
+		// Default test environment is local development (unsafe opt-in plus a
+		// loopback origin), so the pre-existing store-interaction cases below
+		// keep exercising post-gate behavior. Gate-specific cases inject
+		// explicit resolvers instead of relying on this default.
+		privateEnv.SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP = 'true';
+		privateEnv.SIGNKIT_PUBLIC_ORIGIN = 'http://localhost:5173';
+		delete privateEnv.SIGNKIT_BOOTSTRAP_OWNER_EMAIL;
+		delete privateEnv.VERCEL;
+	});
+
+	afterEach(() => {
+		for (const key of Object.keys(privateEnv)) delete privateEnv[key];
+	});
 	it('is cookie-session-only: a presented signkit_ API key is rejected, never resolved', async () => {
 		const app: InstanceApplicationPort = {
 			bootstrapInstance: vi.fn(),
@@ -431,17 +453,15 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			expect(app.bootstrapInstance).toHaveBeenCalledTimes(1);
 		});
 
-		it('preserves original first-user-wins behavior when unconfigured (local-development escape hatch)', async () => {
+		it('fails closed when no owner email is configured (no first-user-wins)', async () => {
 			const app: InstanceApplicationPort = {
-				bootstrapInstance: vi.fn().mockResolvedValue({
-					outcome: 'bootstrapped',
-					member: mockMember
-				}),
+				bootstrapInstance: vi.fn(),
 				getCurrentMember: vi.fn()
 			};
 			const handler = createInstanceBootstrapHandler(
 				(): InstanceApplicationPort => app,
-				(): string | undefined => undefined
+				(): string | undefined => undefined,
+				() => ({ unsafeOptIn: false, localDevelopment: false })
 			);
 
 			const res = await handler(
@@ -452,8 +472,68 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 				})
 			);
 
+			expect(res.status).toBe(403);
+			const problem = await res.json();
+			expect(problem).toMatchObject({
+				type: 'urn:signkit:problem:bootstrap-owner-required',
+				status: 403
+			});
+			expect(app.bootstrapInstance).not.toHaveBeenCalled();
+		});
+
+		it('allows first-user bootstrap only under the local-development unsafe opt-in', async () => {
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn().mockResolvedValue({
+					outcome: 'bootstrapped',
+					member: mockMember
+				}),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler(
+				(): InstanceApplicationPort => app,
+				(): string | undefined => undefined,
+				() => ({ unsafeOptIn: true, localDevelopment: true })
+			);
+
+			const res = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('dev@example.com'),
+					headers: { 'idempotency-key': 'key-1' },
+					body: '{}'
+				})
+			);
+
 			expect(res.status).toBe(201);
 			expect(app.bootstrapInstance).toHaveBeenCalledTimes(1);
+		});
+
+		it('ignores the unsafe opt-in outside local development and never exposes the expected email', async () => {
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn(),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler(
+				(): InstanceApplicationPort => app,
+				(): string | undefined => undefined,
+				() => ({ unsafeOptIn: true, localDevelopment: false })
+			);
+
+			const res = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('stranger@example.com'),
+					headers: { 'idempotency-key': 'key-1' },
+					body: '{}'
+				})
+			);
+
+			expect(res.status).toBe(403);
+			const problem = await res.json();
+			expect(problem).toMatchObject({
+				type: 'urn:signkit:problem:bootstrap-owner-required',
+				status: 403
+			});
+			expect(JSON.stringify(problem)).not.toContain('stranger@example.com');
+			expect(app.bootstrapInstance).not.toHaveBeenCalled();
 		});
 
 		it('lets the real owner still claim after a mismatched attempt (the gate never burns the single claim window)', async () => {
@@ -488,6 +568,65 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			);
 			expect(accepted.status).toBe(201);
 			expect(app.bootstrapInstance).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe('bootstrap env resolvers (Cloudflare platform env vs Node process env)', () => {
+		const OWNER = 'SIGNKIT_BOOTSTRAP_OWNER_EMAIL';
+		const UNSAFE = 'SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP';
+		const ORIGIN = 'SIGNKIT_PUBLIC_ORIGIN';
+		const VERCEL = 'VERCEL';
+
+		it('reads the owner email from the Cloudflare platform env first', () => {
+			privateEnv[OWNER] = 'node@example.com';
+			const platform = { env: { SIGNKIT_BOOTSTRAP_OWNER_EMAIL: 'owner@example.com' } };
+			expect(resolveBootstrapOwnerEmail(platform as App.Platform)).toBe('owner@example.com');
+		});
+
+		it('falls back to the Node process env and treats blank as unconfigured', () => {
+			privateEnv[OWNER] = 'node@example.com';
+			expect(resolveBootstrapOwnerEmail(undefined)).toBe('node@example.com');
+			privateEnv[OWNER] = '   ';
+			expect(resolveBootstrapOwnerEmail(undefined)).toBeUndefined();
+			delete privateEnv[OWNER];
+			expect(resolveBootstrapOwnerEmail(undefined)).toBeUndefined();
+		});
+
+		it('honors the unsafe opt-in only for loopback origins on Node', () => {
+			privateEnv[UNSAFE] = 'true';
+			privateEnv[ORIGIN] = 'http://localhost:5173';
+			expect(resolveBootstrapUnsafeContext(undefined)).toEqual({
+				unsafeOptIn: true,
+				localDevelopment: true
+			});
+			privateEnv[ORIGIN] = 'https://sign.example.com';
+			expect(resolveBootstrapUnsafeContext(undefined)).toEqual({
+				unsafeOptIn: true,
+				localDevelopment: false
+			});
+		});
+
+		it('refuses the unsafe opt-in on Cloudflare even with a loopback origin', () => {
+			const platform = {
+				env: {
+					SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP: 'true',
+					SIGNKIT_PUBLIC_ORIGIN: 'http://localhost:5173'
+				}
+			};
+			expect(resolveBootstrapUnsafeContext(platform as App.Platform)).toEqual({
+				unsafeOptIn: true,
+				localDevelopment: false
+			});
+		});
+
+		it('refuses the unsafe opt-in on Vercel even with a loopback origin', () => {
+			privateEnv[UNSAFE] = 'true';
+			privateEnv[ORIGIN] = 'http://localhost:3000';
+			privateEnv[VERCEL] = '1';
+			expect(resolveBootstrapUnsafeContext(undefined)).toEqual({
+				unsafeOptIn: true,
+				localDevelopment: false
+			});
 		});
 	});
 });

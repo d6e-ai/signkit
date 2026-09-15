@@ -11,6 +11,7 @@ export interface WranglerConfigInput {
 	d6eAuthBaseUrl?: string;
 	emailFrom?: string;
 	emailFromName?: string;
+	bootstrapOwnerEmail?: string;
 	manifest: ReleaseManifest;
 	main: string;
 	assetsDirectory: string;
@@ -32,6 +33,9 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 	}
 	if (input.emailFromName) {
 		vars.SIGNKIT_EMAIL_FROM_NAME = input.emailFromName;
+	}
+	if (input.bootstrapOwnerEmail) {
+		vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL = input.bootstrapOwnerEmail;
 	}
 	const config = {
 		name: input.workerName,

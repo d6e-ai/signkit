@@ -65,6 +65,7 @@ declare global {
 				SESSION_ENCRYPTION_KEY?: string;
 				SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
 				SIGNKIT_BOOTSTRAP_OWNER_EMAIL?: string;
+				SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP?: string;
 			};
 			context?: { waitUntil(promise: Promise<unknown>): void };
 			caches?: CacheStorage;
