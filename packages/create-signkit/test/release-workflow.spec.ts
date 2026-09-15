@@ -239,6 +239,21 @@ describe('synthetic release tag precedence', () => {
 		expect(verify).toMatch(/resolveReleaseTag\(process\.env\)/);
 		expect(build).toMatch(/channelFromReleaseTag\(tag\)/);
 	});
+
+	it('preserves unrelated release assets when rebuilding the Cloudflare bundle', async () => {
+		const build = await readFile(buildScriptPath, 'utf8');
+		// Regression: recursively deleting .release/assets wipes the Node
+		// artifact built earlier in the release job.
+		expect(build).not.toMatch(/rm\(\s*outDir\s*,[^)]*recursive\s*:\s*true/);
+		// Cloudflare-owned staging may still be reset for the current run.
+		expect(build).toMatch(/rm\(\s*staging\s*,\s*\{\s*recursive:\s*true/);
+		// Only Cloudflare-owned outputs for the current tag are removed
+		// before the bundle, manifest, and temporary checksums are rewritten.
+		expect(build).toMatch(/rm\(\s*join\(\s*outDir\s*,\s*bundleName\s*\)/);
+		expect(build).toMatch(/rm\(\s*join\(\s*outDir\s*,\s*MANIFEST_NAME\s*\)/);
+		expect(build).toMatch(/rm\(\s*join\(\s*outDir\s*,\s*['"]SHA256SUMS['"]\s*\)/);
+		expect(build).toMatch(/mkdir\(\s*outDir\s*,\s*\{\s*recursive:\s*true/);
+	});
 });
 
 describe('semver release tags', () => {
