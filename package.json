@@ -24,7 +24,7 @@
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:unit": "vitest --project server --project postgres",
-		"test:browser": "vitest --project browser --run",
+		"test:browser": "node scripts/test-browser-guard.mjs",
 		"test:node-build": "node scripts/test-node-build.mjs",
 		"test:create-signkit": "pnpm --filter create-signkit test",
 		"build:create-signkit": "pnpm --filter create-signkit build",

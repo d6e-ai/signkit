@@ -7,6 +7,20 @@ import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import { sveltekit } from '@sveltejs/kit/vite';
 
+// Vitest browser mode's `vitest:browser:esm-injector` plugin (from
+// @vitest/mocker) rewrites every dynamic import() as
+// globalThis["__vitest_browser_runner__"].wrapDynamicImport(() => import(...))
+// without scoping the transform to the client environment, so SvelteKit dev
+// middleware SSR modules (e.g. .svelte-kit/generated/server/internal.js
+// get_hooks) evaluate the browser-only wrapper server-side where the global
+// does not exist, throwing `TypeError: Cannot read properties of undefined
+// (reading 'wrapDynamicImport')`. Install the same passthrough Vitest itself
+// prepends for worker chunks so SSR dynamic imports degrade to plain imports.
+// `??=` never overwrites the real browser runner.
+(globalThis as Record<string, unknown>)['__vitest_browser_runner__'] ??= {
+	wrapDynamicImport: (moduleFactory: () => unknown) => moduleFactory()
+};
+
 const deployTarget = process.env.DEPLOY_TARGET ?? 'node';
 
 const postgresLiveSpecs: string[] = [
