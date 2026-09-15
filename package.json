@@ -78,7 +78,7 @@
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1129.0",
 		"fflate": "^0.8.3",
-		"isomorphic-git": "^1.41.9",
+		"isomorphic-git": "^1.42.2",
 		"jose": "^6.2.12",
 		"mode-watcher": "^1.1.0",
 		"nodemailer": "^10.0.9",
