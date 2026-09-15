@@ -1,7 +1,7 @@
 {
 	"name": "signkit",
 	"private": true,
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"license": "AGPL-3.0-only",
 	"packageManager": "pnpm@11.24.0",
 	"type": "module",
@@ -14,6 +14,8 @@
 		"deploy:cloudflare": "pnpm run build:cloudflare && wrangler deploy",
 		"cf:typegen": "wrangler types src/worker-configuration.d.ts",
 		"preview": "vite preview",
+		"db:migrate:postgres": "node scripts/postgres-migrate.mjs",
+		"db:migrate:postgres:check": "node scripts/postgres-migrate.mjs --check",
 		"i18n:compile": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide --strategy url cookie baseLocale --emit-ts-declarations --silent",
 		"clean:kit-build": "node ./scripts/clean-kit-build.mjs",
 		"prepare": "pnpm run i18n:compile && svelte-kit sync",
@@ -22,7 +24,7 @@
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:unit": "vitest --project server --project postgres",
-		"test:browser": "vitest --project browser --run",
+		"test:browser": "node scripts/test-browser-guard.mjs",
 		"test:node-build": "node scripts/test-node-build.mjs",
 		"test:create-signkit": "pnpm --filter create-signkit test",
 		"build:create-signkit": "pnpm --filter create-signkit build",
@@ -54,6 +56,7 @@
 		"globals": "^17.6.0",
 		"hast-util-sanitize": "^5.0.2",
 		"jsonc-parser": "^3.3.1",
+		"npm": "11.5.1",
 		"playwright": "^1.63.0",
 		"prettier": "^3.8.3",
 		"prettier-plugin-svelte": "^4.1.0",
@@ -70,7 +73,7 @@
 		"vite": "^8.0.16",
 		"vitest": "^4.1.8",
 		"vitest-browser-svelte": "^3.1.0",
-		"wrangler": "^4.130.0"
+		"wrangler": "^4.131.2"
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1129.0",

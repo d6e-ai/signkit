@@ -139,6 +139,7 @@ function jsonResponse(status: string, description: string, schema: Record<string
 
 function op(input: {
 	summary: string;
+	description?: string;
 	operationId: string;
 	tags: readonly string[];
 	security?: readonly Record<string, readonly string[]>[];
@@ -149,6 +150,7 @@ function op(input: {
 }): Record<string, unknown> {
 	return {
 		summary: input.summary,
+		...(input.description === undefined ? {} : { description: input.description }),
 		operationId: input.operationId,
 		tags: [...input.tags],
 		security: input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }],
@@ -421,20 +423,33 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Import a bounded DOCX file as a Markdown draft commit',
 					operationId: 'importEnvelopeDocx',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [
+						organizationHeader,
+						envelopeIdParam,
+						idempotencyHeader,
+						{
+							name: 'targetPath',
+							in: 'query',
+							required: true,
+							schema: { type: 'string' }
+						},
+						{
+							name: 'expectedGeneration',
+							in: 'query',
+							required: true,
+							schema: { type: 'integer', minimum: 0 }
+						}
+					],
 					requestBody: {
 						required: true,
+						description:
+							'A raw WordprocessingML DOCX body. multipart/form-data is not supported: the whole request body is bounded and streamed against the size limit before it is buffered, which a multipart wrapper cannot preserve.',
 						content: {
-							'multipart/form-data': {
-								schema: {
-									type: 'object',
-									required: ['file', 'targetPath', 'expectedGeneration'],
-									properties: {
-										file: { type: 'string', format: 'binary' },
-										targetPath: { type: 'string' },
-										expectedGeneration: { type: 'integer', minimum: 0 }
-									}
-								}
+							'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {
+								schema: { type: 'string', format: 'binary' }
+							},
+							'application/octet-stream': {
+								schema: { type: 'string', format: 'binary' }
 							}
 						}
 					},
@@ -446,23 +461,38 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Append an uploaded PDF as a document in the envelope set',
 					operationId: 'uploadEnvelopePdf',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [
+						organizationHeader,
+						envelopeIdParam,
+						idempotencyHeader,
+						{
+							name: 'expectedGeneration',
+							in: 'query',
+							required: true,
+							schema: { type: 'integer', minimum: 0 }
+						},
+						{
+							name: 'title',
+							in: 'query',
+							required: false,
+							schema: { type: 'string' }
+						},
+						{
+							name: 'position',
+							in: 'query',
+							required: false,
+							schema: { type: 'integer', minimum: 0, maximum: 19 }
+						}
+					],
 					requestBody: {
 						required: true,
+						description:
+							'A raw PDF body. multipart/form-data is not supported: the whole request body is bounded and streamed against the size limit before it is buffered, which a multipart wrapper cannot preserve.',
 						content: {
-							'multipart/form-data': {
-								schema: {
-									type: 'object',
-									required: ['file', 'expectedGeneration'],
-									properties: {
-										file: { type: 'string', format: 'binary' },
-										expectedGeneration: { type: 'integer', minimum: 0 },
-										title: { type: 'string' },
-										position: { type: 'integer', minimum: 0, maximum: 19 }
-									}
-								}
-							},
 							'application/pdf': {
+								schema: { type: 'string', format: 'binary' }
+							},
+							'application/octet-stream': {
 								schema: { type: 'string', format: 'binary' }
 							}
 						}
@@ -810,7 +840,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/envelopes/{envelopeId}/pdf': {
 				get: op({
-					summary: 'Download the published visual completion PDF',
+					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopePdf',
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [organizationHeader, envelopeIdParam],
@@ -827,7 +857,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/envelopes/{envelopeId}/completion-artifact/pdf': {
 				get: op({
-					summary: 'Download the published visual completion PDF',
+					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopeCompletionArtifactPdf',
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [organizationHeader, envelopeIdParam],
@@ -911,6 +941,8 @@ export function openApiDocument(): Record<string, unknown> {
 				post: op({
 					summary: 'Create a webhook endpoint',
 					operationId: 'createWebhook',
+					description:
+						'The destination host must be in the deployer-configured SIGNKIT_WEBHOOK_ALLOWED_HOSTS allowlist (exact hosts and explicit wildcard suffixes of at least three labels). An absent, empty, or invalid allowlist denies creation by default; the policy is re-evaluated on every delivery attempt with redirects disabled.',
 					tags: ['Webhooks'],
 					security: [{ SessionCookie: [] }],
 					parameters: [idempotencyHeader],
@@ -923,7 +955,13 @@ export function openApiDocument(): Record<string, unknown> {
 									required: ['url', 'events'],
 									additionalProperties: false,
 									properties: {
-										url: { type: 'string', minLength: 12, maxLength: 2000 },
+										url: {
+											type: 'string',
+											minLength: 12,
+											maxLength: 2000,
+											description:
+												'HTTPS destination URL on the default port without credentials or fragment. The host must be allowlisted by the deployment; otherwise creation fails.'
+										},
 										description: { type: ['string', 'null'], maxLength: 200 },
 										events: {
 											type: 'array',
@@ -1125,6 +1163,8 @@ export function openApiDocument(): Record<string, unknown> {
 				post: op({
 					summary: 'Bootstrap the instance',
 					operationId: 'bootstrapInstance',
+					description:
+						'Cookie-session-only first-owner claim on an empty instance. Uninitialized instances fail closed: the verified session email must exactly match the deployer-configured SIGNKIT_BOOTSTRAP_OWNER_EMAIL (403 bootstrap-owner-mismatch otherwise), or the local-development-only SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP opt-in must apply on Node with NODE_ENV=development and a loopback public origin (403 bootstrap-owner-required otherwise). Runtime mode and public origin are independent checks, so a production proxy misconfigured with a loopback origin stays closed. A mismatched or unconfigured attempt never consumes the single empty-instance window. Already-bootstrapped instances answer 409.',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
 					requestBody: JSON_BODY,

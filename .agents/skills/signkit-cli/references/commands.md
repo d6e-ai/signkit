@@ -113,7 +113,7 @@ signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \
 
 ### 8. `signkit envelopes pdf <ENVELOPE_ID>`
 
-Downloads the published visual completion PDF (`GET .../pdf`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout.
+Downloads the published executed agreement PDF (`GET .../pdf`). `--output PATH` writes a regular file (refusing symlinks) and prints a JSON receipt; `--output -` writes bytes to stdout.
 
 ```sh
 signkit --base-url "$SIGNKIT_BASE_URL" --org "$SIGNKIT_ORG" \

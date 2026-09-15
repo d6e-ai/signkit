@@ -203,50 +203,7 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 		markdown: ReadonlyMap<string, DraftDocument>,
 		leaf: DocumentSetLeaf
 	): Promise<RenderedSentDocument> {
-		if (leaf.kind === 'pdf') return this.renderUploadedLeaf(revision, leaf);
-		return this.renderMarkdownLeaf(revision, markdown, leaf);
-	}
-
-	private async renderUploadedLeaf(
-		revision: ImmutableDraftRevision,
-		leaf: PdfDocumentLeaf
-	): Promise<RenderedSentDocument> {
-		const uploadedKey: string = uploadedPdfObjectKey(
-			revision.organizationId,
-			revision.envelopeId,
-			leaf.sha256
-		);
-		const stream: ReadableStream<Uint8Array> | null = await this.objects.get(uploadedKey);
-		if (stream === null) {
-			throw new SentDocumentPdfError('Uploaded agreement PDF is missing');
-		}
-		let bytes: Uint8Array;
-		try {
-			bytes = await readStreamBounded(stream, MAX_SENT_PDF_BYTES);
-		} catch (error: unknown) {
-			if (error instanceof SentDocumentPdfError) throw error;
-			throw new SentDocumentPdfError('Uploaded agreement PDF could not be read');
-		}
-		if (bytes.byteLength !== leaf.byteSize) {
-			throw new SentDocumentPdfError('Uploaded agreement PDF size does not match its manifest');
-		}
-		const digest: string = await sha256Hex(bytes);
-		if (digest !== leaf.sha256) {
-			throw new SentDocumentPdfError('Uploaded agreement PDF failed SHA-256 verification');
-		}
-		return {
-			bytes,
-			documentId: leaf.id,
-			position: leaf.position,
-			kind: 'pdf',
-			title: leaf.title,
-			objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
-			sha256: digest,
-			byteSize: bytes.byteLength,
-			pageCount: leaf.pageCount,
-			pageWidth: leaf.pageWidth,
-			pageHeight: leaf.pageHeight
-		};
+		return renderSentDocumentLeaf(this.objects, revision, markdown, leaf);
 	}
 
 	private async renderMarkdownLeaf(
@@ -254,32 +211,7 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 		markdown: ReadonlyMap<string, DraftDocument>,
 		leaf: MarkdownDocumentLeaf
 	): Promise<RenderedSentDocument> {
-		if (!isMarkdownPath(leaf.path)) {
-			throw new SentDocumentPdfError('The sent revision Markdown path is invalid');
-		}
-		const document: DraftDocument | undefined = markdown.get(leaf.path);
-		if (document === undefined) {
-			throw new SentDocumentPdfError('The sent revision Markdown document is missing');
-		}
-		const result: AgreementPdfResult = renderMarkdownRevisionPdf([document]);
-		const bytes: Uint8Array = result.bytes;
-		if (bytes.byteLength === 0 || bytes.byteLength > MAX_SENT_PDF_BYTES) {
-			throw new SentDocumentPdfError('Rendered agreement PDF is outside the supported size');
-		}
-		const digest: string = await sha256Hex(bytes);
-		return {
-			bytes,
-			documentId: leaf.id,
-			position: leaf.position,
-			kind: 'markdown',
-			title: leaf.title,
-			objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
-			sha256: digest,
-			byteSize: bytes.byteLength,
-			pageCount: result.pageCount,
-			pageWidth: result.pageWidth,
-			pageHeight: result.pageHeight
-		};
+		return renderMarkdownLeaf(revision, markdown, leaf);
 	}
 
 	private async persistImmutablePdf(key: string, bytes: Uint8Array, sha256: string): Promise<void> {
@@ -315,6 +247,101 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 
 export function renderRevisionPdf(documents: readonly DraftDocument[]): AgreementPdfResult {
 	return renderMarkdownRevisionPdf(documents);
+}
+
+/**
+ * Renders one document of a sent revision to the exact bytes recipients were
+ * served: an uploaded PDF is returned verbatim after passing its pinned size
+ * and SHA-256 checks, and Markdown is re-rendered deterministically.
+ *
+ * Exported because the executed agreement PDF has to start from the same
+ * bytes, and re-deriving them from the already-verified revision is safer than
+ * trusting a second, unverified pointer read.
+ */
+export async function renderSentDocumentLeaf(
+	objects: ObjectStore,
+	revision: ImmutableDraftRevision,
+	markdown: ReadonlyMap<string, DraftDocument>,
+	leaf: DocumentSetLeaf
+): Promise<RenderedSentDocument> {
+	if (leaf.kind === 'pdf') return renderUploadedLeaf(objects, revision, leaf);
+	return renderMarkdownLeaf(revision, markdown, leaf);
+}
+
+async function renderUploadedLeaf(
+	objects: ObjectStore,
+	revision: ImmutableDraftRevision,
+	leaf: PdfDocumentLeaf
+): Promise<RenderedSentDocument> {
+	const uploadedKey: string = uploadedPdfObjectKey(
+		revision.organizationId,
+		revision.envelopeId,
+		leaf.sha256
+	);
+	const stream: ReadableStream<Uint8Array> | null = await objects.get(uploadedKey);
+	if (stream === null) {
+		throw new SentDocumentPdfError('Uploaded agreement PDF is missing');
+	}
+	let bytes: Uint8Array;
+	try {
+		bytes = await readStreamBounded(stream, MAX_SENT_PDF_BYTES);
+	} catch (error: unknown) {
+		if (error instanceof SentDocumentPdfError) throw error;
+		throw new SentDocumentPdfError('Uploaded agreement PDF could not be read');
+	}
+	if (bytes.byteLength !== leaf.byteSize) {
+		throw new SentDocumentPdfError('Uploaded agreement PDF size does not match its manifest');
+	}
+	const digest: string = await sha256Hex(bytes);
+	if (digest !== leaf.sha256) {
+		throw new SentDocumentPdfError('Uploaded agreement PDF failed SHA-256 verification');
+	}
+	return {
+		bytes,
+		documentId: leaf.id,
+		position: leaf.position,
+		kind: 'pdf',
+		title: leaf.title,
+		objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
+		sha256: digest,
+		byteSize: bytes.byteLength,
+		pageCount: leaf.pageCount,
+		pageWidth: leaf.pageWidth,
+		pageHeight: leaf.pageHeight
+	};
+}
+
+async function renderMarkdownLeaf(
+	revision: ImmutableDraftRevision,
+	markdown: ReadonlyMap<string, DraftDocument>,
+	leaf: MarkdownDocumentLeaf
+): Promise<RenderedSentDocument> {
+	if (!isMarkdownPath(leaf.path)) {
+		throw new SentDocumentPdfError('The sent revision Markdown path is invalid');
+	}
+	const document: DraftDocument | undefined = markdown.get(leaf.path);
+	if (document === undefined) {
+		throw new SentDocumentPdfError('The sent revision Markdown document is missing');
+	}
+	const result: AgreementPdfResult = renderMarkdownRevisionPdf([document]);
+	const bytes: Uint8Array = result.bytes;
+	if (bytes.byteLength === 0 || bytes.byteLength > MAX_SENT_PDF_BYTES) {
+		throw new SentDocumentPdfError('Rendered agreement PDF is outside the supported size');
+	}
+	const digest: string = await sha256Hex(bytes);
+	return {
+		bytes,
+		documentId: leaf.id,
+		position: leaf.position,
+		kind: 'markdown',
+		title: leaf.title,
+		objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
+		sha256: digest,
+		byteSize: bytes.byteLength,
+		pageCount: result.pageCount,
+		pageWidth: result.pageWidth,
+		pageHeight: result.pageHeight
+	};
 }
 
 function renderMarkdownRevisionPdf(documents: readonly DraftDocument[]): AgreementPdfResult {

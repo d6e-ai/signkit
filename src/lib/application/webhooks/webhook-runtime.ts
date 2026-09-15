@@ -1,7 +1,16 @@
 import { env } from '$env/dynamic/private';
 import { D1WebhookStore } from '$lib/adapters/db/d1-webhook-store';
+import {
+	parseWebhookAllowedHosts,
+	WEBHOOK_ALLOWED_HOSTS_ENV_VAR,
+	type WebhookHostPolicy
+} from '$lib/security/webhook-allowed-hosts';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
-import { WebhookApplication, type WebhookApplicationPort } from './webhook-service';
+import {
+	WebhookApplication,
+	type WebhookAllowedHostsResolver,
+	type WebhookApplicationPort
+} from './webhook-service';
 
 export interface WebhookRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -14,16 +23,50 @@ export async function resolveWebhookApplication(
 		context.platform?.env
 	);
 	if (sealer === null) return null;
+	const allowedHostsResolver: WebhookAllowedHostsResolver = createWebhookAllowedHostsResolver(
+		context.platform?.env
+	);
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
 		return database === undefined
 			? null
-			: new WebhookApplication(new D1WebhookStore(database), sealer);
+			: new WebhookApplication(new D1WebhookStore(database), sealer, {
+					allowedHostsResolver
+				});
 	}
 	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
 	if (databaseUrl === undefined) return null;
 	const { resolvePostgresWebhookApplication } = await import('./runtime-postgres');
-	return resolvePostgresWebhookApplication(databaseUrl, sealer);
+	return resolvePostgresWebhookApplication(databaseUrl, sealer, allowedHostsResolver);
+}
+
+/**
+ * Builds the deployer allowlist resolver for the application layer. The
+ * resolver reads `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` on every call so a changed
+ * value takes effect on the next creation or delivery attempt without a
+ * restart. Absent, blank, or invalid values resolve to `null`, which the
+ * application treats as default-deny; diagnostics never echo the configured
+ * value. Exported for focused runtime specs; production call sites go through
+ * `resolveWebhookApplication`.
+ */
+export function createWebhookAllowedHostsResolver(
+	platformEnv: Readonly<App.Platform>['env'] | undefined
+): WebhookAllowedHostsResolver {
+	return (): WebhookHostPolicy | null => {
+		const raw: string | undefined =
+			platformEnv?.[WEBHOOK_ALLOWED_HOSTS_ENV_VAR] ?? env[WEBHOOK_ALLOWED_HOSTS_ENV_VAR];
+		try {
+			return parseWebhookAllowedHosts(raw);
+		} catch (error: unknown) {
+			console.error(
+				JSON.stringify({
+					event: 'webhook_allowed_hosts_invalid',
+					message: error instanceof Error ? error.message : 'UnknownError'
+				})
+			);
+			return null;
+		}
+	};
 }
 
 function webhookSigningSecretSealer(

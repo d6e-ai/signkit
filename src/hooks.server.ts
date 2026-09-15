@@ -197,10 +197,20 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 
 	const cookie = event.cookies.get(SESSION_COOKIE);
 	if (!cookie) return resolve(event);
-	let session = await unseal(cookie);
-	if (!session) {
+	const unsealed = await unseal(cookie);
+	if (!unsealed) {
 		event.cookies.delete(SESSION_COOKIE, { path: '/' });
 		return resolve(event);
+	}
+	let session = unsealed.session;
+	// Cookie was sealed under a legacy format or the previous key: migrate it
+	// onto the active key now so it keeps working after rotation completes,
+	// without forcing this operator to sign in again.
+	if (unsealed.resealedCookie) {
+		event.cookies.set(SESSION_COOKIE, unsealed.resealedCookie, {
+			...SESSION_COOKIE_OPTIONS,
+			secure: event.url.protocol === 'https:'
+		});
 	}
 
 	try {

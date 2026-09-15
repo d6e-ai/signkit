@@ -20,23 +20,156 @@ const verifyScriptPath = fileURLToPath(
 const workflowPath = fileURLToPath(
 	new URL('../../../.github/workflows/release-cloudflare-bundle.yml', import.meta.url)
 );
+const ciWorkflowPath = fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url));
+const codeqlWorkflowPath = fileURLToPath(
+	new URL('../../../.github/workflows/codeql.yml', import.meta.url)
+);
+const rootPackagePath = fileURLToPath(new URL('../../../package.json', import.meta.url));
+const lockfilePath = fileURLToPath(new URL('../../../pnpm-lock.yaml', import.meta.url));
 
 describe('release-cloudflare-bundle workflow', () => {
 	it('publishes create-signkit with the version-checked npm CLI, not pnpm publish', async () => {
 		const yaml = await readFile(workflowPath, 'utf8');
+		const rootPackage = JSON.parse(await readFile(rootPackagePath, 'utf8')) as {
+			devDependencies: Record<string, string>;
+		};
+		const lockfile = await readFile(lockfilePath, 'utf8');
 		expect(yaml).not.toMatch(/^\s*run:\s*pnpm publish\b/m);
-		expect(yaml).toMatch(/pnpm exec npm install --prefix/);
+		expect(yaml).not.toMatch(/npm install --prefix/);
+		expect(yaml).not.toMatch(/npm@\^/);
+		expect(rootPackage.devDependencies.npm).toBe('11.5.1');
+		expect(lockfile).toMatch(/npm:\n\s+specifier: 11\.5\.1\n\s+version: 11\.5\.1/);
+		expect(lockfile).toMatch(/npm@11\.5\.1:\n\s+resolution: \{integrity: sha512-/);
+		expect(yaml).toMatch(/selected="\$\(pnpm exec which npm\)"/);
 		expect(yaml).toMatch(/pnpm exec "\$NPM_CLI" publish --access public --tag "\$NPM_DIST_TAG"/);
 		expect(yaml).not.toMatch(/pnpm exec "\$NPM_CLI" publish --access public\s*$/m);
 		expect(yaml).toMatch('NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}');
 		expect(yaml).not.toMatch(/echo[^|\n]*NODE_AUTH_TOKEN/);
-		expect(yaml).toMatch(/npm CLI must be >= 11\.5\.1/);
+		expect(yaml).toMatch(/lockfile-pinned npm CLI mismatch/);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease\)/);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease=false\)/);
-		expect(yaml).toMatch(/gh release edit "\$tag" "\$\{prerelease_args\[@\]\}"/);
+		expect(yaml).not.toMatch(/gh release edit "\$tag" "\$\{prerelease_args\[@\]\}"/);
 		expect(yaml).toMatch(/channelFromReleaseTag/);
 		expect(yaml).toMatch(/npmDistTagFromReleaseTag/);
 		expect(yaml).toMatch(/packages\/create-signkit\/dist\/release\/semver\.js/);
+	});
+
+	it('builds every artifact and publishes only expected names behind version gates', async () => {
+		const yaml = await readFile(workflowPath, 'utf8');
+		// Full-tag coverage: Node, Cloudflare, Rust, Docker.
+		expect(yaml).toMatch(/pnpm run build:node/);
+		expect(yaml).toMatch(/pnpm run test:node-build/);
+		expect(yaml).toMatch(/node scripts\/build-cloudflare-release-bundle\.mjs/);
+		expect(yaml).toMatch(/node scripts\/verify-cloudflare-release-bundle\.mjs/);
+		expect(yaml).toMatch(/cargo build --locked --release/);
+		expect(yaml).toMatch(/docker build/);
+		expect(yaml).toMatch(/docker save/);
+		// Unified checksums regenerated over all assets and verified before upload.
+		expect(yaml).toMatch(/sha256sum -c SHA256SUMS/);
+		expect(yaml).toMatch(/expected_assets_sha256_base64/);
+		expect(yaml).toMatch(/steps\.release_asset_hashes\.outputs\.base64/);
+		expect(yaml).toMatch(/sha256sum "\$\{release_assets\[@\]\}"/);
+		// Every shippable family is attached in the single upload step.
+		expect(yaml).toMatch(/signkit-cloudflare-\$\{tag\}\.tar\.gz/);
+		expect(yaml).toMatch(/signkit-node-\$\{tag\}\.tar\.gz/);
+		expect(yaml).toMatch(/x86_64-unknown-linux-gnu\.tar\.gz/);
+		expect(yaml).toMatch(/signkit-docker-\$\{tag\}\.tar\.gz/);
+		// Hard tag-equals-version gates cover all three versioned packages.
+		expect(yaml).toMatch(/require\('\.\/package\.json'\)\.version/);
+		expect(yaml).toMatch(/require\('\.\/packages\/create-signkit\/package\.json'\)\.version/);
+		expect(yaml).toMatch(/cli\/Cargo\.toml/);
+		// npm publish is hard-gated on the release job.
+		expect(yaml).toMatch(/needs:\s*release/);
+		// No deployment: no wrangler deploy, no registry push.
+		expect(yaml).not.toMatch(/wrangler deploy[^-\n]/);
+		expect(yaml).not.toMatch(/docker push/);
+	});
+
+	it('keeps the release draft until npm succeeds and refuses an existing public release', async () => {
+		const yaml = await readFile(workflowPath, 'utf8');
+		// Draft-first creation in the release job.
+		expect(yaml).toMatch(/gh release create "\$tag" --draft/);
+		// Rerun path inspects draft status before uploading/editing and fails
+		// closed on an existing public release.
+		expect(yaml).toMatch(/gh release view "\$tag" --json isDraft,isPrerelease,assets/);
+		expect(yaml).toMatch(/is_draft/);
+		expect(yaml).toMatch(/refusing to upload to existing public release/);
+		expect(yaml).toMatch(/prerelease metadata does not match the tag channel/);
+		expect(yaml).toMatch(/unexpected existing asset/);
+		expect(yaml).not.toMatch(/--clobber/);
+		expect(yaml).toMatch(/gh release download "\$tag" --pattern "\$asset_name"/);
+		expect(yaml).toMatch(/cmp -s "\$local_asset" "\$verify_dir\/\$asset_name"/);
+		expect(yaml).toMatch(/reusing byte-identical draft asset/);
+		expect(yaml).toMatch(/refusing to replace mismatched existing asset/);
+		// Never turn a public release back into a draft.
+		expect(yaml).not.toMatch(/--draft=true/);
+		expect(yaml).not.toMatch(/--draft true/);
+		const draftFalseMatches = yaml.match(/--draft=false/g) ?? [];
+		expect(draftFalseMatches).toHaveLength(1);
+		// Public flip happens only after the npm gate succeeds.
+		expect(yaml).toMatch(/needs:\s*\[release, publish-npm\]/);
+		const publishReleaseSection = yaml.slice(yaml.indexOf('publish-release:'));
+		expect(publishReleaseSection).toMatch(
+			/release \$\{tag\} is already public; refusing any further mutation/
+		);
+		expect(publishReleaseSection).toMatch(/gh release edit "\$tag" --draft=false/);
+		expect(publishReleaseSection).toMatch(/needs\.release\.outputs\.expected_assets_sha256_base64/);
+		expect(publishReleaseSection).toMatch(/gh release view "\$tag" --json isDraft,assets/);
+		expect(publishReleaseSection).toMatch(/remote asset set differs from the release job/);
+		expect(publishReleaseSection).toMatch(
+			/gh release download "\$tag" --dir "\$downloaded_assets"/
+		);
+		expect(publishReleaseSection).toMatch(/downloaded asset set is incomplete or unexpected/);
+		expect(publishReleaseSection).toMatch(/sha256sum -c "\$expected_hashes"/);
+		expect(publishReleaseSection).toMatch(/downloaded asset bytes differ from the release job/);
+		expect(publishReleaseSection.indexOf('sha256sum -c "$expected_hashes"')).toBeLessThan(
+			publishReleaseSection.indexOf('gh release edit "$tag" --draft=false')
+		);
+		const releaseSection = yaml.slice(0, yaml.indexOf('publish-npm:'));
+		expect(releaseSection).not.toMatch(/--draft=false/);
+		expect(releaseSection).toMatch(/gh release upload "\$tag"/);
+	});
+
+	it('generates GitHub build provenance for the exact release assets', async () => {
+		const yaml = await readFile(workflowPath, 'utf8');
+		expect(yaml).toMatch(/id-token: write/);
+		expect(yaml).toMatch(/attestations: write/);
+		expect(yaml).toMatch(/artifact-metadata: write/);
+		expect(yaml).toMatch(
+			/uses: actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4\.2\.2/
+		);
+		expect(yaml).toMatch(/subject-path: \.release\/assets\/\*/);
+		expect(yaml.indexOf('Generate GitHub build-provenance attestations')).toBeGreaterThan(
+			yaml.indexOf('Publish release assets to a draft release')
+		);
+	});
+
+	it('pins privileged workflow actions to reviewed commits with version comments', async () => {
+		const workflows = await Promise.all([
+			readFile(workflowPath, 'utf8'),
+			readFile(ciWorkflowPath, 'utf8'),
+			readFile(codeqlWorkflowPath, 'utf8')
+		]);
+		const namedAction =
+			/uses:\s+(?:actions\/(?:checkout|setup-node|attest)|pnpm\/action-setup|dtolnay\/rust-toolchain)@/;
+		for (const yaml of workflows) {
+			for (const line of yaml.split('\n').filter((candidate) => namedAction.test(candidate))) {
+				expect(line).toMatch(/@[0-9a-f]{40} # (?:v?\d+\.\d+\.\d+)$/);
+			}
+		}
+		const combined = workflows.join('\n');
+		expect(combined).toMatch(
+			/actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\.4\.0/
+		);
+		expect(combined).toMatch(
+			/actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4\.4\.0/
+		);
+		expect(combined).toMatch(
+			/pnpm\/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4\.4\.0/
+		);
+		expect(combined).toMatch(
+			/dtolnay\/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1\.88\.0/
+		);
 	});
 
 	it('derives GitHub prerelease and npm dist-tag from the same semver channel', async () => {

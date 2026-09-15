@@ -4,7 +4,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
-import { D6eAuthRejectedError, organizations, refresh, verifyAccessToken } from './d6e-auth';
+import {
+	authorizeUrl,
+	D6eAuthRejectedError,
+	organizations,
+	refresh,
+	verifyAccessToken
+} from './d6e-auth';
 
 const BASE_URL: string = 'https://auth.example';
 const CLIENT_ID: string = 'client-1';
@@ -211,5 +217,86 @@ describe('organizations', () => {
 
 		const error: unknown = await organizations('access-token').catch((caught: unknown) => caught);
 		expect(error).not.toBeInstanceOf(D6eAuthRejectedError);
+	});
+});
+
+describe('D6E_AUTH_BASE_URL validation', () => {
+	it('accepts a canonical https origin', () => {
+		expect(authorizeUrl('https://app.example/callback', 'state')).toContain(
+			`${BASE_URL}/auth/login?`
+		);
+	});
+
+	it('accepts an https origin with a trailing slash, stripping it', () => {
+		privateEnv.D6E_AUTH_BASE_URL = `${BASE_URL}/`;
+		expect(authorizeUrl('https://app.example/callback', 'state')).toContain(
+			`${BASE_URL}/auth/login?`
+		);
+	});
+
+	it.each(['localhost', '127.0.0.1', '[::1]'])(
+		'accepts http for the exact loopback host %s (explicit development opt-in)',
+		(host) => {
+			const loopbackBase = `http://${host}:4000`;
+			privateEnv.D6E_AUTH_BASE_URL = loopbackBase;
+			expect(authorizeUrl('https://app.example/callback', 'state')).toContain(
+				`${loopbackBase}/auth/login?`
+			);
+		}
+	);
+
+	it('rejects http for a non-loopback host', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'http://auth.example';
+		expect(() => authorizeUrl('https://app.example/callback', 'state')).toThrow(
+			/canonical HTTPS origin/
+		);
+	});
+
+	it('rejects a non-URL value', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'not-a-url';
+		expect(() => authorizeUrl('https://app.example/callback', 'state')).toThrow(
+			/valid absolute URL/
+		);
+	});
+
+	it('rejects credentials embedded in the URL', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'https://user:pass@auth.example';
+		expect(() => authorizeUrl('https://app.example/callback', 'state')).toThrow(/credentials/);
+	});
+
+	it('rejects a non-root path', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'https://auth.example/v2';
+		expect(() => authorizeUrl('https://app.example/callback', 'state')).toThrow(/path/);
+	});
+
+	it('rejects a query string', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'https://auth.example?x=1';
+		expect(() => authorizeUrl('https://app.example/callback', 'state')).toThrow(
+			/query string or fragment/
+		);
+	});
+
+	it('rejects a fragment', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'https://auth.example#frag';
+		expect(() => authorizeUrl('https://app.example/callback', 'state')).toThrow(
+			/query string or fragment/
+		);
+	});
+
+	it('rejects other schemes', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'ftp://auth.example';
+		expect(() => authorizeUrl('https://app.example/callback', 'state')).toThrow(
+			/canonical HTTPS origin/
+		);
+	});
+
+	it('never includes the configured value in thrown error messages', () => {
+		privateEnv.D6E_AUTH_BASE_URL = 'http://attacker-controlled.example/secret-path';
+		try {
+			authorizeUrl('https://app.example/callback', 'state');
+			throw new Error('expected authorizeUrl to throw');
+		} catch (error: unknown) {
+			expect(String(error)).not.toContain('attacker-controlled.example');
+		}
 	});
 });

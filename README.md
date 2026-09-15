@@ -4,18 +4,17 @@ SignKit is an open-core, Markdown-native agreement and electronic-signature plat
 
 ## Project status
 
-SignKit is under active development and is **not yet a production signing service**.
+SignKit v0.1.0 is production-ready for self-hosted electronic-signature workflows on Node/Docker and Cloudflare Workers.
 
-Shipped today:
+Shipped in v0.1.0:
 
-- Portable product shell, organization-scoped Envelope API, PostgreSQL and D1 migrations, S3/R2 adapters, and d6e-auth OAuth
-- Markdown drafts with bounded Git history; recipient readiness; send, void, and capability reissue; recipient decisions (view, decline, approve, sign)
-- Operator authoring UI, bounded DOCX import/export (DOCX bytes never enter Git), durable invitation delivery, and signed retryable webhooks
-- Immutable completion artifacts with deterministic evidence and visual PDF rendering; public recipient/completion access as JSON, Markdown, or PDF
-- Background maintenance (durable drains, reseal sweeps, envelope expiry, orphan collection) and the first-party Rust CLI (`signkit` under `cli/`) for capabilities, API-key envelope inspection, authoring/send mutations, and DOCX import/export
-- Cloudflare deployment CLI (`npx create-signkit --cloudflare ...`) that reconciles Worker/D1/R2 from GitHub Releases
+- Organization-scoped Envelope API with Markdown drafts under bounded Git history, recipient readiness, send/void/reissue, and recipient decisions (view, decline, approve, sign)
+- Deterministic executed agreement PDFs rendered from the pinned revision, with immutable completion artifacts and hash-chained audit evidence re-derived from Git plus SQL
+- Fail-closed secure bootstrap (configured owner email; local-only unsafe opt-in), d6e-auth OAuth, API-key agent access with per-organization grants, and signed retryable webhooks behind a deployer allowlist
+- PostgreSQL 18 and D1 migrations with parity suites, S3-compatible and R2 object storage, durable background drains with bounded leases, and backup/restore runbooks for PostgreSQL/S3 and D1-Time-Travel/R2
+- First-party Rust CLI (`signkit` under `cli/`) and the Cloudflare deployment CLI (`create-signkit --cloudflare ...`) that reconciles Worker/D1/R2 from GitHub Releases
 
-Not yet: cryptographic PDF sealing and certification (PAdES / timestamping authority). Visual completion PDFs and audit evidence exports exist; certification does not. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
+Scope: SignKit v0.1.0 is an electronic-signature workflow service, not a certificate-backed or qualified-signature service. PAdES sealing and RFC 3161 timestamping (TSA) are outside v0.1.0 — completion PDFs and audit evidence attest to workflow integrity, not to a PKI signature. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
 
 ## Core ideas
 
@@ -38,13 +37,13 @@ Fill in `.env` with your d6e-auth client, encryption keys, public origin, and Po
 
 ## Deployment profiles
 
-| Target             | Database      | Object storage          | Background work                | Status               |
-| ------------------ | ------------- | ----------------------- | ------------------------------ | -------------------- |
-| Node/Docker        | PostgreSQL 18 | S3-compatible           | host scheduler calls drains    | scaffolded           |
-| Cloudflare Workers | D1 binding    | R2 binding              | one-minute scheduled trigger   | scaffolded           |
-| Vercel             | PostgreSQL    | S3-compatible initially | platform-specific, unspecified | low-priority backlog |
+| Target             | Database      | Object storage          | Background work                | Status           |
+| ------------------ | ------------- | ----------------------- | ------------------------------ | ---------------- |
+| Node/Docker        | PostgreSQL 18 | S3-compatible           | host scheduler calls drains    | supported        |
+| Cloudflare Workers | D1 binding    | R2 binding              | one-minute scheduled trigger   | supported        |
+| Vercel             | PostgreSQL    | S3-compatible initially | platform-specific, unspecified | CI-only, backlog |
 
-`DEPLOY_TARGET` selects the profile at build time; there is no universal runtime build. Vercel compiles in CI but is not supported for production. Details in [docs/deployment.md](docs/deployment.md).
+`DEPLOY_TARGET` selects the profile at build time; there is no universal runtime build. Vercel compiles in CI but is experimental and not supported for production. Details in [docs/deployment.md](docs/deployment.md).
 
 ## Agent skills
 

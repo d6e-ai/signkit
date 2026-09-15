@@ -44,12 +44,55 @@ export interface OrganizationMembership {
 	};
 }
 
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function isLoopbackHostname(hostname: string): boolean {
+	return LOOPBACK_HOSTNAMES.has(hostname.toLowerCase());
+}
+
+/**
+ * Validates D6E_AUTH_BASE_URL as a canonical origin before it can reach any
+ * token/JWKS/membership fetch: a parseable absolute URL with no userinfo,
+ * query, fragment, or non-root path, scheme HTTPS except for exact loopback
+ * hosts (localhost/127.0.0.1/::1), which may use HTTP -- the loopback
+ * exception is itself the explicit development opt-in, mirroring the CLI's
+ * `normalize_base_url` (cli/src/config.rs). Thrown messages never include
+ * the configured value: this runs on every request path and must not leak
+ * internal endpoint configuration into logs or error responses.
+ */
+function validatedBaseUrl(raw: string): string {
+	let url: URL;
+	try {
+		url = new URL(raw);
+	} catch {
+		throw new Error('D6E_AUTH_BASE_URL must be a valid absolute URL');
+	}
+	if (url.username || url.password) {
+		throw new Error('D6E_AUTH_BASE_URL must not contain credentials');
+	}
+	if (url.search || url.hash) {
+		throw new Error('D6E_AUTH_BASE_URL must not contain a query string or fragment');
+	}
+	if (url.pathname !== '/' && url.pathname !== '') {
+		throw new Error('D6E_AUTH_BASE_URL must not contain a path');
+	}
+	if (url.protocol === 'https:') {
+		return url.origin;
+	}
+	if (url.protocol === 'http:' && isLoopbackHostname(url.hostname)) {
+		return url.origin;
+	}
+	throw new Error(
+		'D6E_AUTH_BASE_URL must be a canonical HTTPS origin (HTTP is only permitted for loopback hosts in development)'
+	);
+}
+
 function configuration() {
-	const baseUrl = env.D6E_AUTH_BASE_URL?.replace(/\/+$/, '');
+	const rawBaseUrl = env.D6E_AUTH_BASE_URL;
 	const clientId = env.D6E_AUTH_CLIENT_ID;
 	const clientSecret = env.D6E_AUTH_CLIENT_SECRET;
-	if (!baseUrl || !clientId || !clientSecret) throw new Error('d6e-auth is not configured');
-	return { baseUrl, clientId, clientSecret };
+	if (!rawBaseUrl || !clientId || !clientSecret) throw new Error('d6e-auth is not configured');
+	return { baseUrl: validatedBaseUrl(rawBaseUrl), clientId, clientSecret };
 }
 
 export function authorizeUrl(redirectUri: string, state: string): string {

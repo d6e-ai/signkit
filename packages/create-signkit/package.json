@@ -1,6 +1,6 @@
 {
 	"name": "create-signkit",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "Deploy SignKit to Cloudflare Workers from GitHub Releases. This is the deployment CLI, not the Rust SignKit API CLI.",
 	"license": "AGPL-3.0-only",
 	"type": "module",
@@ -46,7 +46,7 @@
 	},
 	"dependencies": {
 		"tar": "^7.5.11",
-		"wrangler": "^4.130.0"
+		"wrangler": "^4.131.2"
 	},
 	"devDependencies": {
 		"@types/node": "^24",

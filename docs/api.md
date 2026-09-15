@@ -38,6 +38,7 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 | `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits`                    | commit Markdown draft changes                      | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx`                       | import bounded DOCX as a Markdown commit           | drafts:write   |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/docx`                             | export the pinned revision as DOCX                 | envelopes:read |
+| `POST` | `/api/v1/envelopes/{envelopeId}/documents/pdf`                    | append an uploaded PDF as a document               | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/ready`                            | freeze the recipient graph, mark ready             | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/fields`                           | replace the signing-field placement                | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/send`                             | pin the commit and start delivery                  | envelopes:send |
@@ -57,7 +58,9 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 
 **Draft commits** track `documents/*.md` in the envelope's own Git repository, use expected-generation concurrency, and accept optional automation provenance. See [architecture/draft-git-repository.md](architecture/draft-git-repository.md#draft-git-repository).
 
-**DOCX import** (`POST .../draft/docx`) accepts `multipart/form-data` (`file`, `targetPath`, `expectedGeneration`) or a WordprocessingML/octet-stream body with those fields as query parameters, requires `Idempotency-Key`, and converts the upload into one Markdown document committed through the same draft persistence path. The original DOCX is discarded; it is never stored in Git or the object draft archive. Oversized or hostile packages fail closed before `commit`.
+**DOCX import** (`POST .../draft/docx`) accepts a raw WordprocessingML (or `application/octet-stream`) body with `targetPath` and `expectedGeneration` as query parameters, requires `Idempotency-Key`, and converts the upload into one Markdown document committed through the same draft persistence path. The original DOCX is discarded; it is never stored in Git or the object draft archive. Oversized or hostile packages fail closed before `commit`. `multipart/form-data` is not accepted: the request body is bounded and streamed against the size limit before it is buffered, and a multipart wrapper cannot preserve that guarantee.
+
+**PDF upload** (`POST .../documents/pdf`) accepts a raw `application/pdf` (or `application/octet-stream`) body with `expectedGeneration` and optional `title`/`position` as query parameters, requires `Idempotency-Key`, and appends the file as a document in the envelope's document set. `multipart/form-data` is not accepted, for the same streaming-bound reason as DOCX import.
 
 **DOCX export** (`GET .../docx`) renders the envelope's pinned Git locator (`sentCommitSha` otherwise `repositoryHead`) to WordprocessingML. The response is an attachment with `x-signkit-commit-sha` and `cache-control: no-store`. An envelope with no pin returns 409 `urn:signkit:problem:docx-export-empty`.
 
@@ -75,7 +78,7 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 
 **Document rendering** (`GET .../document-pdf`, `GET .../document-pdf/pages`) renders the envelope's currently pinned revision through the same deterministic pipeline that publishes the immutable artifact at send time. The bytes feed the sender's field-placement canvas; the `pages` variant returns `{ commitSha, generation, pageCount, pageWidth, pageHeight, documents[] }` so the editor knows which pages belong to which document before it will let a field be dropped there. Both are `private, no-store` and organization-scoped; neither returns a storage key.
 
-**Completion evidence and PDF** (`GET .../evidence` and `GET .../pdf`, also aliased under `.../completion-artifact/*`) allow operators and agents (`envelopes:read`) to download published JSON or Markdown evidence (`?format=markdown` selects Markdown; otherwise JSON) and the visual completion PDF. Cryptographic PDF certification and sealing (PAdES) remain backlog.
+**Completion evidence and PDF** (`GET .../evidence` and `GET .../pdf`, also aliased under `.../completion-artifact/*`) allow operators and agents (`envelopes:read`) to download published JSON or Markdown evidence (`?format=markdown` selects Markdown; otherwise JSON) and the executed agreement PDF — the sent documents with the signed values drawn at their frozen geometry, plus the evidence summary as an appendix. Cryptographic PDF certification and sealing (PAdES) remain backlog.
 
 ## Instance and API keys
 
@@ -99,7 +102,7 @@ Requires the verified-identity authority above; none of these endpoints accept o
 | `GET`  | `/api/v1/api-keys/{apiKeyId}/organization-grants`                  | list the key's grant history (cursor-paginated)      |
 | `POST` | `/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke` | revoke one organization grant                        |
 
-**Bootstrap** is cookie-session-only — a verified d6e-auth session and nothing else — with no deployment secret gating it. It additionally requires the session's `email_verified` claim to be `true`, exactly like instance invitation acceptance; a missing or false claim returns 403 `email-verification-required`, since claiming ownership on the strength of a session is not a provider-verified inbox guarantee. The body must be the exact empty JSON object `{}`, bounded to 1 KiB. A first call on an empty instance claims the caller as the sole `owner` (201); because there is no secret gate, this is a first-user-wins claim, so the initial owner must be claimed immediately after deploy (see [architecture/deployment-and-risks.md § Primary risks](architecture/deployment-and-risks.md#primary-risks)). Exact idempotency replay returns 200 with `idempotency-replayed: true`; a conflicting request fingerprint under the same key returns 409 idempotency conflict; a cross-subject or post-bootstrap attempt returns 409 already-bootstrapped. There is no un-bootstrap or ownership transfer endpoint.
+**Bootstrap** is cookie-session-only — a verified d6e-auth session and nothing else — with no deployment secret gating it. It additionally requires the session's `email_verified` claim to be `true`, exactly like instance invitation acceptance; a missing or false claim returns 403 `email-verification-required`, since claiming ownership on the strength of a session is not a provider-verified inbox guarantee. The body must be the exact empty JSON object `{}`, bounded to 1 KiB. Uninitialized instances fail closed rather than first-user-wins: a first call on an empty instance claims the caller as the sole `owner` (201) only when the caller's verified email exactly matches the deployer-configured `SIGNKIT_BOOTSTRAP_OWNER_EMAIL`, or when the local-development-only `SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP=true` opt-in applies on Node with `NODE_ENV=development` and a loopback public origin. A mismatched caller gets 403 `bootstrap-owner-mismatch` and an unconfigured non-local instance gets 403 `bootstrap-owner-required`, both without consuming the single empty-instance window; production/test/unset runtime modes stay closed even if a proxy-facing public origin is misconfigured as loopback. Exact idempotency replay returns 200 with `idempotency-replayed: true`; a conflicting request fingerprint under the same key returns 409 idempotency conflict; a cross-subject or post-bootstrap attempt returns 409 already-bootstrapped. There is no un-bootstrap or ownership transfer endpoint.
 
 **Members/me** requires identity only and always returns `{ member, bootstrapped }`, where `member` is `null` for a caller who is not yet a member.
 
@@ -109,7 +112,7 @@ Requires the verified-identity authority above; none of these endpoints accept o
 
 **API keys** are owned by the calling `instance_member` and require that member to be currently `active`; a missing or suspended owner fails closed with `owner_not_active` before any key material is disclosed. Create accepts a name, an explicit scope list (for example `envelopes:read`, `drafts:write`, `envelopes:send`), and an optional expiry, and returns the plaintext `signkit_`-prefixed token exactly once on creation (a 200 replay carries only the stored metadata, never the token). List is cursor-paginated. Revoke is scoped to the caller's own key; an unknown or cross-owner ID returns opaque `not_found`. All three require a bounded `Idempotency-Key` and reuse the same bounded JSON body reader, `application/json` content-type check, and RFC 9457 validation shape as bootstrap. `envelopes:read`, `drafts:write`, and `envelopes:send` are usable on the endpoints listed above; `audit:read` can be minted and stored but no endpoint accepts it.
 
-**Organization grants** are what let a key reach a d6e organization at all — key ownership never implies organization access. Create requires _both_ authorities in one request: the caller must be the key's own currently active instance-member owner, and must hold a current `owner` or `admin` role in the session-selected d6e organization. The organization comes solely from that verified session; the body is the exact empty object bounded to 1 KiB and cannot name an organization, so a caller can only grant an organization they are already authorized for, and an instance administrator cannot grant on another member's key. A key may hold live grants for several organizations at once, with at most one live grant per `(key, organization)`; history is append-only, so revoking and later re-granting the same organization produces a second row rather than resurrecting the first. A fresh create returns 201 with `{ grant }`; an exact `Idempotency-Key` replay returns 200 with `idempotency-replayed: true`, while a fresh key naming an already-granted organization returns 200 _without_ that header, since it is a no-op rather than a replay of a request it never made. A revoked or expired key returns 409 `api-key-not-active`; an unknown or cross-owner key id returns the opaque 404 `api-key-organization-grant-not-found`. List is owner-scoped and cursor-paginated (25 by default, 100 maximum), forwards a malformed cursor unvalidated like every other list here, and there is deliberately no organization-side listing surface. Revoke accepts less authority than create, because de-escalation must never be harder than escalation: the key's own active owner may revoke with no organization membership at all, and separately a current `owner`/`admin` of the session-selected organization may revoke any grant _for that organization_ without owning the key or holding any local instance membership. The organization scope always comes from the verified session and never from a request field, so an identity-only caller cannot revoke grants for an organization they have no authority over. When a caller holds both paths, `key_owner` is recorded. Grant responses expose only identifiers, the asserted grantor organization role, timestamps, and the revoking actor and path — never an email, a display name, a token, a hash, or a key prefix. Losing d6e organization membership does not automatically revoke an existing grant; the organization-side revoke above is the immediate control, and automatic synchronization from d6e-auth is a follow-up.
+**Organization grants** are what let a key reach a d6e organization at all — key ownership never implies organization access. Create requires _both_ authorities in one request: the caller must be the key's own currently active instance-member owner, and must hold a current `owner` or `admin` role in the session-selected d6e organization. The organization comes solely from that verified session; the body is the exact empty object bounded to 1 KiB and cannot name an organization, so a caller can only grant an organization they are already authorized for, and an instance administrator cannot grant on another member's key. A key may hold live grants for several organizations at once, with at most one live grant per `(key, organization)`; history is append-only, so revoking and later re-granting the same organization produces a second row rather than resurrecting the first. A fresh create returns 201 with `{ grant }`; an exact `Idempotency-Key` replay returns 200 with `idempotency-replayed: true`, while a fresh key naming an already-granted organization returns 200 _without_ that header, since it is a no-op rather than a replay of a request it never made. A revoked or expired key returns 409 `api-key-not-active`; an unknown or cross-owner key id returns the opaque 404 `api-key-organization-grant-not-found`. List is owner-scoped and cursor-paginated (25 by default, 100 maximum), forwards a malformed cursor unvalidated like every other list here, and there is deliberately no organization-side listing surface. Revoke accepts less authority than create, because de-escalation must never be harder than escalation: the key's own active owner may revoke with no organization membership at all, and separately a current `owner`/`admin` of the session-selected organization may revoke any grant _for that organization_ without owning the key or holding any local instance membership. The organization scope always comes from the verified session and never from a request field, so an identity-only caller cannot revoke grants for an organization they have no authority over. When a caller holds both paths, `key_owner` is recorded. Grant responses expose only identifiers, the asserted grantor organization role, timestamps, and the revoking actor and path — never an email, a display name, a token, a hash, or a key prefix. Each grant is an explicit durable delegation that is independent of the key owner's later d6e membership: losing d6e organization membership does not automatically revoke an existing grant, and there is no background synchronization from d6e-auth today. The grant stays live until it is revoked — by the key's own active owner, or by any current `owner`/`admin` of the granted organization through the organization-side revoke path above — so an organization that removes an administrator should also revoke the grants that administrator created. The API-key settings UI carries this warning next to key management.
 
 ## Webhooks
 
@@ -124,6 +127,8 @@ Organization webhook management requires an authenticated operator session with 
 | `GET`  | `/api/v1/webhooks/{webhookId}/deliveries` | list delivery attempts (cursor-paginated) |
 
 Subscribed events are a nonempty unique subset of the audit catalog. Deliveries are HMAC-SHA256 over `timestamp.body` (`v1=<hex>`) with `signkit-webhook-timestamp` and `signkit-webhook-signature` headers, drained by `POST /api/v1/system/webhooks/drain`. See [architecture/agent-contract.md](architecture/agent-contract.md) and [architecture/deployment-and-risks.md § Primary risks](architecture/deployment-and-risks.md#primary-risks).
+
+**Destination allowlist.** Webhook destinations are deployer-owned: `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` lists the only hosts this deployment may call, as canonicalized exact hosts and explicit `*.` wildcard suffixes (a wildcard never covers its own bare suffix, and wildcard suffixes must carry at least three labels — `*.hooks.example.com` is allowed, `*.example.com` and `*.com` are rejected). An absent, empty, or invalid value denies by default — creation is refused with 400 and every delivery attempt ends terminally with `host_not_allowed` before any DNS or network work. The policy is re-evaluated on every creation and every delivery attempt, so tightening it stops older endpoints without a restart; the public-IP DNS checks still run on every attempt and delivery fetches never follow redirects. See [deployment.md § Webhook destination allowlist](deployment.md#webhook-destination-allowlist).
 
 ## Recipient surface
 
@@ -184,6 +189,55 @@ The public routes accept `?format=json|markdown|pdf` and need no cookies or d6e-
 | `POST` | `/api/v1/system/envelopes/expiry-drain`             | `Bearer DELIVERY_WORKER_SECRET`     |
 | `POST` | `/api/v1/system/webhooks/drain`                     | `Bearer DELIVERY_WORKER_SECRET`     |
 | `POST` | `/api/v1/system/objects/orphan-sweep`               | `Bearer DELIVERY_WORKER_SECRET`     |
+
+### Capabilities
+
+`GET /api/v1/system/capabilities` is the only unauthenticated system read. It
+is a static capability advertisement, not a health probe with live state: it
+reports the API version, the detected runtime, and the endpoint/shape
+contracts an agent or operator can rely on before composing any other request.
+The implementation lives in `src/lib/capabilities/` (`authoring.ts`,
+`evidence.ts`, `integration.ts`) and is served by
+`src/routes/api/v1/system/capabilities/+server.ts`.
+
+- **Runtime.** `runtime` is resolved per request from the serving environment
+  (`node` by default, `cloudflare` when the D1 `DB` binding is present,
+  `vercel` on Vercel) via `resolveSignKitRuntime`. `supportedProfiles` lists
+  the database, object store, and maturity status of every profile regardless
+  of the current runtime, so a caller can tell which profile it is talking to
+  (`runtime`) and which profiles exist at all.
+- **Authoring and delivery.** `draftHistory`, `readiness`, `sending`,
+  `voiding`, `delivery`, and `recipientAccess` name the exact endpoint paths,
+  concurrency tokens (`expected-generation`, expected status), idempotency
+  requirements, mail transports per profile (`email-binding` on Cloudflare,
+  `smtp-or-cloudflare-email-rest` on Node), and the at-least-once drain
+  semantics. Recipient access additionally names the link-exchange path
+  (`/s/{capability}`), the web surface (`/{locale}/sign/{envelopeId}`), and
+  the envelope-scoped encrypted-cookie session model.
+- **Completion evidence.** `completionArtifact` names the status and worker
+  endpoints, the `signkit-completion-manifest-v1` schema, the `json` /
+  `markdown` / `pdf` artifacts, and the bounded per-event hash re-derivation
+  proof. `completionDelivery` names the completion-drain endpoint, the
+  eligible roles, the `skca1` token format, and the 30-day grant retention.
+  `publicCompletionArtifact` names the `Bearer skca1_` / path-token routes,
+  the `json` / `markdown` / `pdf` formats, and the absence of cookies.
+- **Agent integration.** `apiKeyAuthentication` is the machine-readable
+  version of [Authority boundaries](#authority-boundaries) and
+  [Operator API](#operator-api): the `signkit_` scheme, the mandatory
+  `SignKit-Organization-Id` selector, the explicit-per-organization grant
+  model, the `enabledScopes` (`envelopes:read`, `drafts:write`,
+  `envelopes:send`) versus `mintedButUnusableScopes` (`audit:read`) split,
+  the exact `readEndpoints` / `writeEndpoints` path lists, the durable
+  120-requests-per-60-seconds rate window, `lastUsedAt` tracking, and the
+  grant create/list/revoke authorities. `webhooks` names the management
+  routes, the HMAC-SHA256 timestamp signature, the once-revealed secret, and
+  the SSRF defenses. `openapi` points at `/api/v1/openapi.json` (3.1) and
+  `automation` confirms idempotency keys and agent actor provenance.
+- **What it never contains.** No secrets, credentials, token material, object
+  keys, ciphertext, or per-tenant state — only endpoint paths, enum values,
+  and static policy strings. Agents should query it first and treat unknown
+  future fields as informational rather than as authorization to call an
+  endpoint not listed here.
 
 ### Background drains
 

@@ -59,7 +59,6 @@ type ParsedUpload =
 			ok: true;
 			expectedGeneration: number;
 			pdfBytes: Uint8Array;
-			filename?: string;
 			title?: string;
 			position?: number;
 	  }
@@ -98,78 +97,6 @@ function mediaType(request: Request): string {
 
 async function parseUpload(request: Request, url: URL): Promise<ParsedUpload> {
 	const type: string = mediaType(request);
-	if (type === 'multipart/form-data') {
-		let form: FormData;
-		try {
-			form = await request.formData();
-		} catch {
-			return {
-				ok: false,
-				response: problemResponse({
-					type: 'urn:signkit:problem:invalid-json',
-					title: 'Invalid multipart body',
-					status: 400,
-					detail: 'The multipart PDF upload body could not be parsed.',
-					instance: url.pathname
-				})
-			};
-		}
-		const fileValue: FormDataEntryValue | null = form.get('file');
-		if (!(fileValue instanceof File)) {
-			return {
-				ok: false,
-				response: problemResponse({
-					type: 'urn:signkit:problem:validation-failed',
-					title: 'Request validation failed',
-					status: 400,
-					detail: 'PDF upload requires a file field named file.',
-					instance: url.pathname,
-					errors: [{ path: 'file', message: 'A PDF file is required' }]
-				})
-			};
-		}
-		if (fileValue.size > MAX_UPLOADED_PDF_BYTES) {
-			return { ok: false, response: tooLarge(url.pathname) };
-		}
-		const generationResult = expectedGenerationSchema.safeParse(form.get('expectedGeneration'));
-		const titleValue: FormDataEntryValue | null = form.get('title');
-		const titleResult =
-			titleValue === null || titleValue === ''
-				? { success: true as const, data: undefined }
-				: titleSchema.safeParse(titleValue);
-		const positionValue: FormDataEntryValue | null = form.get('position');
-		const positionResult =
-			positionValue === null || positionValue === ''
-				? { success: true as const, data: undefined }
-				: positionSchema.safeParse(positionValue);
-		if (!generationResult.success || !titleResult.success || !positionResult.success) {
-			return {
-				ok: false,
-				response: problemResponse({
-					type: 'urn:signkit:problem:validation-failed',
-					title: 'Request validation failed',
-					status: 400,
-					detail: 'The PDF upload request did not match the required schema.',
-					instance: url.pathname,
-					errors: validationErrors([
-						...(generationResult.success ? [] : generationResult.error.issues),
-						...(!titleResult.success ? titleResult.error.issues : []),
-						...(!positionResult.success ? positionResult.error.issues : [])
-					])
-				})
-			};
-		}
-		const pdfBytes: Uint8Array = new Uint8Array(await fileValue.arrayBuffer());
-		return {
-			ok: true,
-			expectedGeneration: generationResult.data,
-			pdfBytes,
-			filename: fileValue.name,
-			title: titleResult.data,
-			position: positionResult.data
-		};
-	}
-
 	if (type === 'application/pdf' || type === 'application/octet-stream') {
 		const generationResult = expectedGenerationSchema.safeParse(
 			url.searchParams.get('expectedGeneration')
@@ -233,7 +160,8 @@ async function parseUpload(request: Request, url: URL): Promise<ParsedUpload> {
 			type: 'urn:signkit:problem:unsupported-media-type',
 			title: 'Unsupported media type',
 			status: 415,
-			detail: 'PDF upload accepts multipart/form-data or an application/pdf body.',
+			detail:
+				'PDF upload accepts a raw application/pdf (or application/octet-stream) body; multipart/form-data is not supported.',
 			instance: url.pathname
 		})
 	};
@@ -346,7 +274,6 @@ export function createPdfUploadHandler(
 				actor: draftActor(authorized),
 				idempotencyKey: idempotencyResult.data,
 				bytes: parsed.pdfBytes,
-				filename: parsed.filename,
 				title: parsed.title,
 				position: parsed.position
 			});

@@ -15,10 +15,17 @@ import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import type {
+	EnvelopeSentDocumentStore,
+	SentDocumentSetPointer
+} from '$lib/ports/envelope-sent-document-store';
+import type {
 	CompletionArtifactPdfStore,
 	PublishCompletionArtifactPdfCommand
 } from '$lib/ports/completion-artifact-pdf-store';
-import type { CompletionPdfEvidenceStore } from '$lib/ports/completion-pdf-evidence-store';
+import type {
+	CompletionPdfEvidenceStore,
+	CompletionPdfFieldGeometry
+} from '$lib/ports/completion-pdf-evidence-store';
 import {
 	boundCompletionArtifactClaimLimit,
 	CompletionArtifactBoundExceededError,
@@ -53,6 +60,13 @@ import {
 	CompletionPdfBoundExceededError,
 	renderCompletionPdf
 } from './completion-pdf';
+import { SentDocumentPdfError } from '$lib/application/documents/sent-document-pdf';
+import {
+	ExecutedPdfBoundExceededError,
+	ExecutedPdfIntegrityError,
+	type ExecutedPdfResult
+} from './executed-pdf';
+import { assembleExecutedAgreementPdf } from './executed-pdf-assembly';
 
 export const COMPLETION_ARTIFACT_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -99,6 +113,7 @@ export class CompletionArtifactPublicationService {
 	readonly #newId: UuidV7Generator;
 	readonly #pdfStore: CompletionArtifactPdfStore | null;
 	readonly #pdfEvidenceStore: CompletionPdfEvidenceStore | null;
+	readonly #sentDocuments: EnvelopeSentDocumentStore | null;
 
 	constructor(
 		store: CompletionArtifactStore,
@@ -115,7 +130,8 @@ export class CompletionArtifactPublicationService {
 		// safe to backfill later without touching the manifest publication
 		// this constructor's other parameters govern.
 		pdfStore: CompletionArtifactPdfStore | null = null,
-		pdfEvidenceStore: CompletionPdfEvidenceStore | null = null
+		pdfEvidenceStore: CompletionPdfEvidenceStore | null = null,
+		sentDocuments: EnvelopeSentDocumentStore | null = null
 	) {
 		this.#store = store;
 		this.#objects = objects;
@@ -125,6 +141,7 @@ export class CompletionArtifactPublicationService {
 		this.#newId = newId;
 		this.#pdfStore = pdfStore;
 		this.#pdfEvidenceStore = pdfEvidenceStore;
+		this.#sentDocuments = sentDocuments;
 	}
 
 	async publishPendingCompletionArtifacts(
@@ -224,8 +241,10 @@ export class CompletionArtifactPublicationService {
 			} catch {
 				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
 			}
+			const pinnedDocumentSet: DocumentSetManifest | null =
+				pinnedManifestJson === null ? null : parsePinnedDocumentSet(pinnedManifestJson);
 			const { documents: manifestDocuments, documentSetHash: pinnedDocumentSetHash } =
-				await completionDocumentsFromRevision(verified.documents, pinnedManifestJson);
+				await completionDocumentsFromRevision(verified.documents, pinnedDocumentSet);
 			const manifest: CompletionManifestV1 = await buildCompletionManifest({
 				organizationId: claim.organizationId,
 				envelopeId: claim.envelopeId,
@@ -301,7 +320,17 @@ export class CompletionArtifactPublicationService {
 					claim.envelopeId
 				);
 				const pages = buildCompletionPdfPages(manifest, verified.documents, fieldGeometry);
-				const pdfBytes = renderCompletionPdf(pages);
+				const evidenceSummaryPdf = renderCompletionPdf(pages);
+				const executed: ExecutedPdfResult | null = await this.#executeAgreement({
+					claim,
+					documentSet: pinnedDocumentSet,
+					documents: verified.documents,
+					fields: evidence.fields,
+					auditEvents: evidence.auditEvents,
+					fieldGeometry,
+					appendixPdfBytes: evidenceSummaryPdf
+				});
+				const pdfBytes: Uint8Array = executed?.bytes ?? evidenceSummaryPdf;
 				const pdfSha256 = await sha256Hex(pdfBytes);
 				const pdfKey = completionArtifactObjectKey(
 					claim.organizationId,
@@ -315,7 +344,20 @@ export class CompletionArtifactPublicationService {
 					manifest,
 					manifestSha256,
 					pdfBytes,
-					fieldGeometry
+					fieldGeometry,
+					artifactKind: executed === null ? 'evidence-summary-v1' : 'executed-agreement-v1',
+					pageCount: executed?.pageCount ?? pages.length,
+					appendixFirstPage: executed?.appendixFirstPage ?? null,
+					...(executed === null
+						? {}
+						: {
+								documentPages: new Map(
+									executed.documents.map((document) => [
+										document.documentId,
+										{ firstPage: document.firstPage, lastPage: document.lastPage }
+									])
+								)
+							})
 				});
 				const pdfManifestJson = canonicalPdfManifestJson(pdfManifest);
 				const pdfManifestGzip = gzipCompletionArtifact(pdfManifestJson);
@@ -415,6 +457,72 @@ export class CompletionArtifactPublicationService {
 				now,
 				integrity ? 'integrity_failed' : 'retryable_failed'
 			);
+		}
+	}
+
+	/**
+	 * Composes the executed agreement for envelopes sent with a document set.
+	 *
+	 * Returns `null` only for legacy envelopes whose sent revision predates
+	 * per-document publication: their fields are scoped to a Markdown path and
+	 * were never given page geometry, so there is nothing to execute against
+	 * and the evidence summary remains their PDF artifact. Every other failure
+	 * — a missing signature asset, a field without geometry, a document whose
+	 * bytes no longer verify — propagates and fails the publication closed.
+	 */
+	async #executeAgreement(input: {
+		claim: ClaimedCompletionArtifactJob & {
+			sentCommitSha: string;
+			repositoryArchiveKey: string;
+			repositoryArchiveSha256: string;
+		};
+		documentSet: DocumentSetManifest | null;
+		documents: readonly DraftDocument[];
+		fields: readonly CompletionEvidenceField[];
+		auditEvents: readonly CompletionEvidenceAuditEvent[];
+		fieldGeometry: readonly CompletionPdfFieldGeometry[];
+		appendixPdfBytes: Uint8Array;
+	}): Promise<ExecutedPdfResult | null> {
+		if (input.documentSet === null) return null;
+		if (this.#sentDocuments === null) {
+			throw new CompletionArtifactIntegrityError(
+				'Executed agreement PDF requires the immutable sent document store'
+			);
+		}
+		const sentDocumentSet: SentDocumentSetPointer | null = await this.#sentDocuments.findSet(
+			input.claim.organizationId,
+			input.claim.envelopeId,
+			input.claim.sentCommitSha
+		);
+		if (sentDocumentSet === null) {
+			throw new CompletionArtifactIntegrityError(
+				'Executed agreement PDF is missing its immutable sent document set'
+			);
+		}
+		try {
+			return await assembleExecutedAgreementPdf({
+				objects: this.#objects,
+				organizationId: input.claim.organizationId,
+				envelopeId: input.claim.envelopeId,
+				sentCommitSha: input.claim.sentCommitSha,
+				documentSet: input.documentSet,
+				sentDocumentSet,
+				auditEvents: input.auditEvents,
+				fieldGeneration: input.claim.fieldGeneration,
+				fields: input.fields,
+				fieldGeometry: input.fieldGeometry,
+				appendixPdfBytes: input.appendixPdfBytes
+			});
+		} catch (error: unknown) {
+			if (error instanceof ExecutedPdfBoundExceededError) {
+				throw new CompletionPdfBoundExceededError('Executed agreement PDF exceeds a size limit');
+			}
+			if (error instanceof ExecutedPdfIntegrityError || error instanceof SentDocumentPdfError) {
+				throw new CompletionArtifactIntegrityError(
+					'Executed agreement PDF could not be produced from the verified evidence'
+				);
+			}
+			throw error;
 		}
 	}
 
@@ -604,14 +712,22 @@ async function verifyFieldValueIntegrity(
 	}
 }
 
+function parsePinnedDocumentSet(manifestJson: string): DocumentSetManifest {
+	try {
+		return parseDocumentSet(manifestJson);
+	} catch {
+		throw new CompletionArtifactIntegrityError('Completion document set is invalid');
+	}
+}
+
 async function completionDocumentsFromRevision(
 	documents: readonly DraftDocument[],
-	manifestJson: string | null
+	manifest: DocumentSetManifest | null
 ): Promise<{
 	documents: CompletionManifestDocument[];
 	documentSetHash?: string;
 }> {
-	if (manifestJson === null) {
+	if (manifest === null) {
 		const legacy: CompletionManifestDocument[] = [];
 		for (const document of documents) {
 			if (!isMarkdownPath(document.path)) continue;
@@ -621,12 +737,6 @@ async function completionDocumentsFromRevision(
 			});
 		}
 		return { documents: legacy };
-	}
-	let manifest: DocumentSetManifest;
-	try {
-		manifest = parseDocumentSet(manifestJson);
-	} catch {
-		throw new CompletionArtifactIntegrityError('Completion document set is invalid');
 	}
 	const markdownByPath = new Map<string, DraftDocument>(
 		documents.map((document: DraftDocument): [string, DraftDocument] => [document.path, document])

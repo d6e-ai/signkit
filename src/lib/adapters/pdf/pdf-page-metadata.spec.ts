@@ -271,6 +271,67 @@ describe('parsePdfPageMetadata', () => {
 		expect(parsePdfPageMetadata(bytes)).toEqual({ pageCount: 1, pageWidth: 300, pageHeight: 200 });
 	});
 
+	it('accepts an identical /CropBox and the default /UserUnit', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+				{
+					num: 3,
+					body: '<< /Type /Page /Parent 2 0 R /MediaBox [10 20 210 320] /CropBox [10 20 210 320] /UserUnit 1 >>'
+				}
+			],
+			'/Root 1 0 R'
+		);
+		expect(parsePdfPageMetadata(bytes)).toEqual({ pageCount: 1, pageWidth: 200, pageHeight: 300 });
+	});
+
+	it('rejects a direct /CropBox that changes the signer-visible page', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+				{
+					num: 3,
+					body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /CropBox [20 20 180 280] >>'
+				}
+			],
+			'/Root 1 0 R'
+		);
+		expectReason(bytes, 'unsupported_page_geometry');
+	});
+
+	it('rejects a differing /CropBox inherited from the page tree', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{
+					num: 2,
+					body: '<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300] /CropBox [0 0 180 280] >>'
+				},
+				{ num: 3, body: '<< /Type /Page /Parent 2 0 R >>' }
+			],
+			'/Root 1 0 R'
+		);
+		expectReason(bytes, 'unsupported_page_geometry');
+	});
+
+	it('rejects a non-default /UserUnit, including an indirect value', () => {
+		const bytes: Uint8Array = buildClassicPdf(
+			[
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+				{
+					num: 3,
+					body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /UserUnit 4 0 R >>'
+				},
+				{ num: 4, body: '2' }
+			],
+			'/Root 1 0 R'
+		);
+		expectReason(bytes, 'unsupported_page_geometry');
+	});
+
 	it('reads a cross-reference-stream PDF with a normal (uncompressed) page tree', () => {
 		const bytes = buildXrefStreamPdfImpl(false, undefined, undefined);
 		expect(parsePdfPageMetadata(bytes)).toEqual({ pageCount: 1, pageWidth: 200, pageHeight: 300 });
@@ -458,6 +519,314 @@ describe('parsePdfPageMetadata', () => {
 		const bytes = buildLongPrevChain(MAX_PDF_PREV_CHAIN + 1);
 		expectReason(bytes, 'prev_chain_too_long');
 	});
+
+	describe('recursive active-content rejection', () => {
+		it('rejects a catalog carrying /AcroForm, which also covers nested /XFA', () => {
+			const bytes = buildClassicPdf(
+				[
+					{
+						num: 1,
+						body: '<< /Type /Catalog /Pages 2 0 R ' + '/AcroForm << /Fields [] /XFA 4 0 R >> >>'
+					},
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{ num: 3, body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] >>' },
+					{ num: 4, body: '<< /Length 0 >>\nstream\n\nendstream' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_acroform');
+		});
+
+		it('rejects a page carrying additional actions (/AA)', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /AA << /O 4 0 R >> >>'
+					},
+					{ num: 4, body: '<< /S /JavaScript /JS (app.alert(1)) >>' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_page_aa');
+		});
+
+		it('rejects an annotation carrying additional actions (/AA)', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Widget /Rect [0 0 1 1] /AA << /Fo 5 0 R >> >>'
+					},
+					{ num: 5, body: '<< /S /JavaScript /JS (app.alert(1)) >>' }
+				],
+				'/Root 1 0 R'
+			);
+			// The /Widget subtype alone would already fail closed; /AA is checked
+			// first, so this specifically exercises the annotation-AA path.
+			expectReason(bytes, 'active_content_annotation_aa');
+		});
+
+		it.each(['RichMedia', 'FileAttachment', 'Screen', '3D', 'Widget', 'Sound', 'Movie'])(
+			'rejects a /%s annotation regardless of whether it names an action',
+			(subtype) => {
+				const bytes = buildClassicPdf(
+					[
+						{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+						{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+						{
+							num: 3,
+							body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+						},
+						{ num: 4, body: `<< /Type /Annot /Subtype /${subtype} /Rect [0 0 1 1] >>` }
+					],
+					'/Root 1 0 R'
+				);
+				expectReason(bytes, 'active_content_annotation_type');
+			}
+		);
+
+		it('rejects a blocked annotation subtype hidden behind an indirect reference', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{ num: 4, body: '<< /Type /Annot /Subtype 5 0 R /Rect [0 0 1 1] >>' },
+					{ num: 5, body: '/FileAttachment' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_annotation_type');
+		});
+
+		it.each(['URI', 'Launch', 'JavaScript', 'SubmitForm', 'GoToR', 'ImportData', 'Named'])(
+			'rejects a /%s annotation action',
+			(actionSubtype) => {
+				const bytes = buildClassicPdf(
+					[
+						{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+						{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+						{
+							num: 3,
+							body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+						},
+						{
+							num: 4,
+							body: `<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /${actionSubtype} >> >>`
+						}
+					],
+					'/Root 1 0 R'
+				);
+				expectReason(bytes, 'active_content_action');
+			}
+		);
+
+		it('rejects an active action subtype hidden behind an indirect reference', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S 5 0 R /JS (app.alert(1)) >> >>'
+					},
+					{ num: 5, body: '/JavaScript' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('rejects an action with a missing or non-name /S instead of treating it as passive', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /URI (https://example.com) >> >>'
+					}
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('rejects a disallowed action reached through a /Next action chain', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (page1) /Next 5 0 R >> >>'
+					},
+					{ num: 5, body: '<< /S /Launch /F (calc.exe) >>' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('rejects an external /URI action reached through a /Next action chain', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (page1) /Next 5 0 R >> >>'
+					},
+					{ num: 5, body: '<< /S /URI /URI (https://example.com) >>' }
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('rejects an action chain longer than supported, whether or not it cycles', () => {
+			const objects: ObjectSpec[] = [
+				{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+				{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' }
+			];
+			// A cyclic /Next chain: each cheap node only costs one traversal
+			// step, so this also proves the chain is bounded by an explicit
+			// depth limit rather than relying solely on cycle detection.
+			objects.push({
+				num: 4,
+				body: '<< /S /GoTo /D (page1) /Next 5 0 R >>'
+			});
+			objects.push({
+				num: 5,
+				body: '<< /S /GoTo /D (page1) /Next 4 0 R >>'
+			});
+			objects.push({
+				num: 3,
+				body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [6 0 R] >>'
+			});
+			objects.push({
+				num: 6,
+				body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A 4 0 R >>'
+			});
+			const bytes = buildClassicPdf(objects, '/Root 1 0 R');
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('accepts an internal /GoTo Link annotation and a markup annotation with no action', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body:
+							'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] ' + '/Annots [4 0 R 5 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /GoTo /D (page1) >> >>'
+					},
+					{ num: 5, body: '<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents (hi) >>' }
+				],
+				'/Root 1 0 R'
+			);
+			expect(parsePdfPageMetadata(bytes)).toEqual({
+				pageCount: 1,
+				pageWidth: 200,
+				pageHeight: 300
+			});
+		});
+
+		it('accepts an internal /GoTo whose Link subtype and action subtype are indirect names', () => {
+			const bytes: Uint8Array = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype 5 0 R /Rect [0 0 1 1] /A << /S 6 0 R /D (page1) >> >>'
+					},
+					{ num: 5, body: '/Link' },
+					{ num: 6, body: '/GoTo' }
+				],
+				'/Root 1 0 R'
+			);
+			expect(parsePdfPageMetadata(bytes)).toEqual({
+				pageCount: 1,
+				pageWidth: 200,
+				pageHeight: 300
+			});
+		});
+
+		it('rejects an external /URI Link annotation even with no chain', () => {
+			const bytes = buildClassicPdf(
+				[
+					{ num: 1, body: '<< /Type /Catalog /Pages 2 0 R >>' },
+					{ num: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+					{
+						num: 3,
+						body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>'
+					},
+					{
+						num: 4,
+						body: '<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI (https://example.com) >> >>'
+					}
+				],
+				'/Root 1 0 R'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('rejects an active-content annotation reached through an object stream', () => {
+			const bytes = buildXrefStreamPdfWithCompressedAnnotation(
+				'<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /Launch /F (calc.exe) >> >>'
+			);
+			expectReason(bytes, 'active_content_action');
+		});
+
+		it('accepts a passive annotation reached through an object stream', () => {
+			const bytes = buildXrefStreamPdfWithCompressedAnnotation(
+				'<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents (hi) >>'
+			);
+			expect(parsePdfPageMetadata(bytes)).toEqual({
+				pageCount: 1,
+				pageWidth: 200,
+				pageHeight: 300
+			});
+		});
+	});
 });
 
 function buildSelfPrevPdfFixed(): Uint8Array {
@@ -481,6 +850,74 @@ function buildSelfPrevPdfFixed(): Uint8Array {
 	// detects the revisit.
 	builder.text(`trailer\n<< /Size 4 /Root 1 0 R /Prev ${xrefOffset} >>\n`);
 	builder.text(`startxref\n${xrefOffset}\n%%EOF`);
+	return builder.build();
+}
+
+/**
+ * A single-page cross-reference-stream PDF whose page carries one `/Annots`
+ * entry pointing at `annotationBody`, compressed inside an object stream
+ * (object 5) rather than stored as a plain indirect object -- exercising
+ * that the active-content walk resolves refs through `#loadCompressedObject`
+ * the same way it resolves classic indirect objects.
+ */
+function buildXrefStreamPdfWithCompressedAnnotation(annotationBody: string): Uint8Array {
+	const builder = new ByteBuilder().text('%PDF-1.7\n');
+	const entries: Map<number, { type: 0 | 1 | 2; field2: number; field3: number }> = new Map();
+	entries.set(0, { type: 0, field2: 0, field3: 65535 });
+
+	const catalogOffset: number = builder.offset;
+	builder.text('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+	entries.set(1, { type: 1, field2: catalogOffset, field3: 0 });
+
+	const pagesOffset: number = builder.offset;
+	builder.text('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+	entries.set(2, { type: 1, field2: pagesOffset, field3: 0 });
+
+	const pageOffset: number = builder.offset;
+	builder.text(
+		'3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Annots [4 0 R] >>\nendobj\n'
+	);
+	entries.set(3, { type: 1, field2: pageOffset, field3: 0 });
+
+	const header: string = '4 0';
+	const raw: Uint8Array = new TextEncoder().encode(`${header}\n${annotationBody}`);
+	const first: number = new TextEncoder().encode(`${header}\n`).byteLength;
+	const deflated: Uint8Array = deflateSync(raw);
+	const objStmOffset: number = builder.offset;
+	builder.text(
+		`5 0 obj\n<< /Type /ObjStm /N 1 /First ${first} /Filter /FlateDecode /Length ${deflated.byteLength} >>\nstream\n`
+	);
+	builder.bytes(deflated);
+	builder.text('\nendstream\nendobj\n');
+	entries.set(4, { type: 2, field2: 5, field3: 0 });
+	entries.set(5, { type: 1, field2: objStmOffset, field3: 0 });
+
+	const maxObjectNumber: number = 6;
+	const size: number = maxObjectNumber + 1;
+	for (let n = 0; n < size - 1; n += 1) {
+		if (!entries.has(n)) entries.set(n, { type: 0, field2: 0, field3: 0 });
+	}
+
+	const xrefStreamOffset: number = builder.offset;
+	const widths: readonly [number, number, number] = [1, 4, 2];
+	const rows: Uint8Array[] = [];
+	for (let n = 0; n < size - 1; n += 1) {
+		const entry = entries.get(n) as { type: 0 | 1 | 2; field2: number; field3: number };
+		rows.push(beUint(entry.type, widths[0]));
+		rows.push(beUint(entry.field2, widths[1]));
+		rows.push(beUint(entry.field3, widths[2]));
+	}
+	rows.push(beUint(1, widths[0]));
+	rows.push(beUint(xrefStreamOffset, widths[1]));
+	rows.push(beUint(0, widths[2]));
+	const rawXref: Uint8Array = new ByteBuilder().bytes(concatRows(rows)).build();
+	const deflatedXref: Uint8Array = deflateSync(rawXref);
+	builder.text(
+		`${maxObjectNumber} 0 obj\n<< /Type /XRef /Size ${size} /W [${widths.join(' ')}] /Root 1 0 R /Filter /FlateDecode /Length ${deflatedXref.byteLength} >>\nstream\n`
+	);
+	builder.bytes(deflatedXref);
+	builder.text('\nendstream\nendobj\n');
+	builder.text(`startxref\n${xrefStreamOffset}\n%%EOF`);
 	return builder.build();
 }
 

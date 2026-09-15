@@ -4,6 +4,7 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { WebhookApplication } from '$lib/application/webhooks/webhook-service';
 import type {
+	CompleteWebhookDeliveryCommand,
 	CreateWebhookEndpointCommand,
 	CreateWebhookEndpointResult,
 	FailWebhookDeliveryCommand,
@@ -16,6 +17,10 @@ import {
 	WEBHOOK_MAX_PAYLOAD_BYTES
 } from '$lib/security/webhook';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
+import {
+	parseWebhookAllowedHosts,
+	type WebhookHostPolicy
+} from '$lib/security/webhook-allowed-hosts';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 import { PostgresWebhookStore } from './postgres-webhook-store';
 
@@ -37,6 +42,17 @@ const TEST_KEY: string = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const CLAIMED_AT: string = '2026-09-13T00:10:00.000Z';
 const STALE_BEFORE: string = '2026-09-13T00:05:00.000Z';
 const AVAILABLE_AT: string = '2026-09-13T00:00:00.000Z';
+
+/**
+ * Explicit test-only allowlist for the `hooks.example.com` fixture
+ * endpoints. Production resolves `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` per
+ * operation instead.
+ */
+function testAllowlist(): WebhookHostPolicy {
+	const parsed: WebhookHostPolicy | null = parseWebhookAllowedHosts('hooks.example.com');
+	if (parsed === null) throw new Error('expected the test allowlist to parse');
+	return parsed;
+}
 const MIGRATION_PATHS: readonly string[] = readdirSync('migrations/postgres')
 	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
 	.sort()
@@ -79,6 +95,23 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 				'["envelope.voided"]', '${'a'.repeat(64)}', '${sealed.sealedSigningSecret}',
 				'${sealed.sealingKeyId}', 'skwh1_abcdefgh', '${AVAILABLE_AT}', '${ACTOR_ID}'
 			);
+		`);
+		// Forces the delivery-log INSERT half of completeDelivery/failDelivery to fail so
+		// tests can prove the paired webhook_outbox UPDATE rolls back with it, rather than
+		// leaving a completed/failed outbox row with no matching log entry. Sentinel HTTP
+		// status 599 is never used by a real dispatch outcome elsewhere in this file.
+		await sql.unsafe(`
+			CREATE FUNCTION webhook_delivery_log_test_poison() RETURNS trigger AS $$
+			BEGIN
+				IF NEW.http_status = 599 THEN
+					RAISE EXCEPTION 'signkit_test_forced_delivery_log_failure';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+			CREATE TRIGGER webhook_delivery_log_test_poison_trigger
+				BEFORE INSERT ON webhook_delivery_log
+				FOR EACH ROW EXECUTE FUNCTION webhook_delivery_log_test_poison();
 		`);
 	});
 
@@ -135,7 +168,10 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 			await insertOutbox(testCase.auditEventId, { payloadJson: testCase.payloadJson });
 			const app = new WebhookApplication(store, sealer, {
 				now: () => new Date(CLAIMED_AT),
-				dispatch: testCase.dispatch
+				dispatch: testCase.dispatch,
+				// The fixture endpoints live at hooks.example.com; opt into the
+				// injected allowlist explicitly so the drain reaches dispatch.
+				allowedHostsPolicyForTests: testAllowlist()
 			});
 			await expect(app.drainPendingDeliveries(10)).resolves.toMatchObject({
 				claimed: 1,
@@ -221,6 +257,110 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 		).resolves.toEqual([]);
 		expect((await outboxState(auditEventId)).attempts).toBe(WEBHOOK_MAX_ATTEMPTS);
 	});
+
+	it('rolls back the outbox completion when the paired delivery-log insert fails, leaving no stale log', async () => {
+		const store = new PostgresWebhookStore(database());
+		const auditEventId: string = '01900000-0000-7000-8000-000000000531';
+		const claimToken: string = 'claim-poison-token-0001';
+		await insertOutbox(auditEventId, {
+			status: 'processing',
+			attempts: 1,
+			claimToken,
+			lockedAt: CLAIMED_AT
+		});
+		const poisoned: CompleteWebhookDeliveryCommand = {
+			organizationId: ORGANIZATION_ID,
+			endpointId: ENDPOINT_ID,
+			auditEventId,
+			claimToken,
+			deliveredAt: CLAIMED_AT,
+			httpStatus: 599
+		};
+		await expect(store.completeDelivery(poisoned)).rejects.toThrow(
+			/signkit_test_forced_delivery_log_failure/
+		);
+		expect(await outboxState(auditEventId)).toMatchObject({ status: 'processing' });
+		expect(await outboxClaimToken(auditEventId)).toBe(claimToken);
+		expect(await deliveryLogCount(auditEventId)).toBe(0);
+
+		const retried: CompleteWebhookDeliveryCommand = { ...poisoned, httpStatus: 200 };
+		await expect(store.completeDelivery(retried)).resolves.toEqual({ outcome: 'completed' });
+		expect(await outboxState(auditEventId)).toMatchObject({ status: 'delivered' });
+		expect(await deliveryLogCount(auditEventId)).toBe(1);
+	});
+
+	it('rolls back the outbox failure when the paired delivery-log insert fails, leaving no stale log', async () => {
+		const store = new PostgresWebhookStore(database());
+		const auditEventId: string = '01900000-0000-7000-8000-000000000532';
+		const claimToken: string = 'claim-poison-token-0002';
+		await insertOutbox(auditEventId, {
+			status: 'processing',
+			attempts: 1,
+			claimToken,
+			lockedAt: CLAIMED_AT
+		});
+		const poisoned: FailWebhookDeliveryCommand = {
+			organizationId: ORGANIZATION_ID,
+			endpointId: ENDPOINT_ID,
+			auditEventId,
+			claimToken,
+			failedAt: CLAIMED_AT,
+			retryable: true,
+			nextAvailableAt: AVAILABLE_AT,
+			errorCode: 'http_500',
+			httpStatus: 599
+		};
+		await expect(store.failDelivery(poisoned)).rejects.toThrow(
+			/signkit_test_forced_delivery_log_failure/
+		);
+		expect(await outboxState(auditEventId)).toMatchObject({ status: 'processing' });
+		expect(await outboxClaimToken(auditEventId)).toBe(claimToken);
+		expect(await deliveryLogCount(auditEventId)).toBe(0);
+
+		const retried: FailWebhookDeliveryCommand = { ...poisoned, httpStatus: 500 };
+		await expect(store.failDelivery(retried)).resolves.toEqual({ outcome: 'failed' });
+		expect(await outboxState(auditEventId)).toMatchObject({ status: 'failed' });
+		expect(await deliveryLogCount(auditEventId)).toBe(1);
+	});
+
+	it('leaves no delivery log when completion targets a stale (already-reclaimed) claim', async () => {
+		const store = new PostgresWebhookStore(database());
+		const auditEventId: string = '01900000-0000-7000-8000-000000000533';
+		await insertOutbox(auditEventId, {
+			status: 'processing',
+			attempts: 1,
+			claimToken: 'claim-current-token-0001',
+			lockedAt: CLAIMED_AT
+		});
+		await expect(
+			store.completeDelivery({
+				organizationId: ORGANIZATION_ID,
+				endpointId: ENDPOINT_ID,
+				auditEventId,
+				claimToken: 'claim-stale-superseded-token',
+				deliveredAt: CLAIMED_AT,
+				httpStatus: 200
+			})
+		).resolves.toEqual({ outcome: 'stale' });
+		expect(await outboxState(auditEventId)).toMatchObject({ status: 'processing' });
+		expect(await deliveryLogCount(auditEventId)).toBe(0);
+
+		await expect(
+			store.failDelivery({
+				organizationId: ORGANIZATION_ID,
+				endpointId: ENDPOINT_ID,
+				auditEventId,
+				claimToken: 'claim-stale-superseded-token',
+				failedAt: CLAIMED_AT,
+				retryable: true,
+				nextAvailableAt: AVAILABLE_AT,
+				errorCode: 'http_500',
+				httpStatus: 500
+			})
+		).resolves.toEqual({ outcome: 'stale' });
+		expect(await outboxState(auditEventId)).toMatchObject({ status: 'processing' });
+		expect(await deliveryLogCount(auditEventId)).toBe(0);
+	});
 });
 
 function claimCommand(claimToken: string = 'claim-token-reclaim-0001'): {
@@ -282,6 +422,26 @@ async function outboxState(
 	const row = rows[0];
 	if (row === undefined) throw new Error(`missing webhook outbox row ${auditEventId}`);
 	return row;
+}
+
+async function outboxClaimToken(auditEventId: string): Promise<string | null> {
+	const rows: { claimToken: string | null }[] = await database()`
+		SELECT claim_token AS "claimToken" FROM webhook_outbox
+		WHERE organization_id = ${ORGANIZATION_ID}
+			AND endpoint_id = ${ENDPOINT_ID}
+			AND audit_event_id = ${auditEventId}`;
+	const row = rows[0];
+	if (row === undefined) throw new Error(`missing webhook outbox row ${auditEventId}`);
+	return row.claimToken;
+}
+
+async function deliveryLogCount(auditEventId: string): Promise<number> {
+	const [{ n }]: { n: string }[] = await database()`
+		SELECT COUNT(*)::text AS n FROM webhook_delivery_log
+		WHERE organization_id = ${ORGANIZATION_ID}
+			AND endpoint_id = ${ENDPOINT_ID}
+			AND audit_event_id = ${auditEventId}`;
+	return Number(n);
 }
 
 postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {

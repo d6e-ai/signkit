@@ -181,6 +181,40 @@ describe('parseArgv options', () => {
 		).toThrow(/must agree/);
 	});
 
+	it('parses --bootstrap-owner-email validated and canonicalized', () => {
+		for (const [input, expected] of [
+			['Owner@Example.com', 'owner@example.com'],
+			['owner+alerts@sub.example.co.uk', 'owner+alerts@sub.example.co.uk'],
+			[' first.last@example.travel ', 'first.last@example.travel']
+		]) {
+			const parsed = parse([
+				'--cloudflare',
+				'deploy',
+				'--account-id',
+				ACCOUNT_ID,
+				'--bootstrap-owner-email',
+				input
+			]);
+			expect(parsed).toMatchObject({
+				bootstrapOwnerEmail: expected,
+				overrides: { bootstrapOwnerEmail: true }
+			});
+		}
+		expect(() =>
+			parse([
+				'--cloudflare',
+				'deploy',
+				'--account-id',
+				ACCOUNT_ID,
+				'--bootstrap-owner-email',
+				'not-an-email'
+			])
+		).toThrow(/--bootstrap-owner-email must be an email address/);
+		expect(() =>
+			parse(['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--bootstrap-owner-email', ''])
+		).toThrow(/--bootstrap-owner-email must be an email address/);
+	});
+
 	it('accepts --json=true as JSON output', () => {
 		expect(
 			parse(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json=true'])

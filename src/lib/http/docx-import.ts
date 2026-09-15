@@ -145,69 +145,6 @@ async function parseImport(
 	limits: DocxImportLimits
 ): Promise<ParsedImport> {
 	const type: string = mediaType(request);
-	if (type === 'multipart/form-data') {
-		let form: FormData;
-		try {
-			form = await request.formData();
-		} catch {
-			return {
-				ok: false,
-				response: problemResponse({
-					type: 'urn:signkit:problem:invalid-json',
-					title: 'Invalid multipart body',
-					status: 400,
-					detail: 'The multipart DOCX import body could not be parsed.',
-					instance: url.pathname
-				})
-			};
-		}
-		const fileValue: FormDataEntryValue | null = form.get('file');
-		if (!(fileValue instanceof File)) {
-			return {
-				ok: false,
-				response: problemResponse({
-					type: 'urn:signkit:problem:validation-failed',
-					title: 'Request validation failed',
-					status: 400,
-					detail: 'DOCX import requires a file field named file.',
-					instance: url.pathname,
-					errors: [{ path: 'file', message: 'A DOCX file is required' }]
-				})
-			};
-		}
-		if (fileValue.size > limits.maxInputBytes) {
-			return {
-				ok: false,
-				response: tooLarge(url.pathname, limits.maxInputBytes)
-			};
-		}
-		const pathResult = markdownPathSchema.safeParse(form.get('targetPath'));
-		const generationResult = expectedGenerationSchema.safeParse(form.get('expectedGeneration'));
-		if (!pathResult.success || !generationResult.success) {
-			return {
-				ok: false,
-				response: problemResponse({
-					type: 'urn:signkit:problem:validation-failed',
-					title: 'Request validation failed',
-					status: 400,
-					detail: 'The DOCX import request did not match the required schema.',
-					instance: url.pathname,
-					errors: validationErrors([
-						...(pathResult.success ? [] : pathResult.error.issues),
-						...(generationResult.success ? [] : generationResult.error.issues)
-					])
-				})
-			};
-		}
-		const docxBytes: Uint8Array = new Uint8Array(await fileValue.arrayBuffer());
-		return {
-			ok: true,
-			targetPath: pathResult.data as `documents/${string}.md`,
-			expectedGeneration: generationResult.data,
-			docxBytes
-		};
-	}
-
 	if (type === DOCX_CONTENT_TYPE || type === 'application/octet-stream') {
 		const pathResult = markdownPathSchema.safeParse(
 			url.searchParams.get('targetPath') ?? url.searchParams.get('path')
@@ -262,7 +199,8 @@ async function parseImport(
 			type: 'urn:signkit:problem:unsupported-media-type',
 			title: 'Unsupported media type',
 			status: 415,
-			detail: 'DOCX import accepts multipart/form-data or a WordprocessingML DOCX body.',
+			detail:
+				'DOCX import accepts a raw WordprocessingML DOCX (or application/octet-stream) body; multipart/form-data is not supported.',
 			instance: url.pathname
 		})
 	};

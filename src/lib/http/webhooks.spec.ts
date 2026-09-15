@@ -6,6 +6,7 @@ import type {
 	WebhookRequestActor
 } from '$lib/application/webhooks/webhook-service';
 import type { WebhookEndpointMetadata } from '$lib/ports/webhook-store';
+import { WebhookHostNotAllowedError } from '$lib/security/webhook-allowed-hosts';
 import { createWebhookHttpHandlers, type WebhookApplicationResolver } from './webhooks';
 import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
@@ -188,5 +189,28 @@ describe('webhook HTTP handlers', () => {
 			status: 404,
 			type: 'urn:signkit:problem:webhook-not-found'
 		});
+	});
+
+	it('maps a destination-allowlist denial to a 400 validation failure on url', async () => {
+		const app = application();
+		(app.createEndpoint as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+			new WebhookHostNotAllowedError('Webhook destinations are not configured for this deployment')
+		);
+		const response = await createWebhookHttpHandlers(() => app).create(
+			event({
+				method: 'POST',
+				body: JSON.stringify({
+					url: 'https://hooks.example.com/signkit',
+					events: ['envelope.completed']
+				}),
+				headers: { 'idempotency-key': 'wh-1' }
+			})
+		);
+		const body = await expectProblemResponse(response, {
+			status: 400,
+			type: 'urn:signkit:problem:validation-failed'
+		});
+		expect(body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'url' })]));
+		expect(JSON.stringify(body)).not.toContain('hooks.example.com/signkit');
 	});
 });

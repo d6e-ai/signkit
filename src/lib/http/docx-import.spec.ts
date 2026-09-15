@@ -151,6 +151,82 @@ describe('DOCX import HTTP handler', () => {
 		expect(commit).not.toHaveBeenCalled();
 	});
 
+	it('rejects a multipart/form-data upload as unsupported media type instead of buffering it', async () => {
+		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
+			committed()
+		);
+		const resolver = vi.fn(() => ({ commit }));
+		const handler: RequestHandler = createDocxImportHandler(resolver);
+		const form = new FormData();
+		form.set('expectedGeneration', '0');
+		form.set('targetPath', 'documents/agreement.md');
+		form.set(
+			'file',
+			new File([requestBody(sampleDocx())], 'agreement.docx', {
+				type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+			})
+		);
+		const response: Response = await handler(
+			createHttpRequestEvent({
+				pathname,
+				method: 'POST',
+				locals: locals(),
+				params: { envelopeId },
+				headers: { 'idempotency-key': 'import-multipart' },
+				body: form
+			})
+		);
+		await expectProblemResponse(response, {
+			status: 415,
+			type: 'urn:signkit:problem:unsupported-media-type'
+		});
+		expect(resolver).not.toHaveBeenCalled();
+		expect(commit).not.toHaveBeenCalled();
+	});
+
+	it('rejects a chunked (no Content-Length) body that exceeds the bound mid-stream', async () => {
+		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
+			committed()
+		);
+		const handler: RequestHandler = createDocxImportHandler(() => ({ commit }));
+		let cancelReason: unknown;
+		const chunkBytes = 64 * 1024;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller: ReadableStreamDefaultController<Uint8Array>): void {
+				controller.enqueue(new Uint8Array(chunkBytes));
+			},
+			cancel(reason: unknown): void {
+				cancelReason = reason;
+			}
+		});
+		const url = new URL(
+			`https://signkit.example${pathname}?targetPath=documents/agreement.md&expectedGeneration=0`
+		);
+		const request = new Request(url, {
+			method: 'POST',
+			headers: {
+				'idempotency-key': 'import-chunked',
+				'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+			},
+			body,
+			duplex: 'half'
+		} as RequestInit & { duplex: 'half' });
+		const event = {
+			locals: locals(),
+			params: { envelopeId },
+			request,
+			url
+		} as unknown as RequestEvent;
+
+		const response: Response = await handler(event);
+		await expectProblemResponse(response, {
+			status: 413,
+			type: 'urn:signkit:problem:request-body-too-large'
+		});
+		expect(cancelReason).toBeDefined();
+		expect(commit).not.toHaveBeenCalled();
+	});
+
 	it('applies the Cloudflare input bound when the D1 binding is present', async () => {
 		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
 			committed()

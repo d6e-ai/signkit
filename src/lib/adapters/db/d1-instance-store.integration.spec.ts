@@ -1,5 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
+import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it } from 'vitest';
+import {
+	InstanceApplication,
+	type InstanceApplicationPort
+} from '$lib/application/instance/instance-service';
+import { createInstanceBootstrapHandler } from '$lib/http/instance-bootstrap';
+import { identityOnlyLocals } from '$lib/http/http-handler-test-support';
 import type {
 	AcceptInstanceInvitationCommand,
 	AcceptInstanceInvitationStoreResult,
@@ -2104,6 +2111,48 @@ describe('D1InstanceStore', () => {
 					.prepare('SELECT invitation_id, idempotency_key FROM instance_invitation_command')
 					.all() as { invitation_id: string; idempotency_key: string }[];
 				expect(commands).toHaveLength(1);
+			} finally {
+				sqlite.close();
+			}
+		});
+	});
+
+	describe('deploy-time bootstrap owner gate over the real HTTP handler + store', () => {
+		function bootstrapEvent(email: string, idempotencyKey: string): RequestEvent {
+			const pathname: string = '/api/v1/instance/bootstrap';
+			const url: URL = new URL(`https://signkit.example${pathname}`);
+			const headers: Headers = new Headers({
+				'content-type': 'application/json',
+				'idempotency-key': idempotencyKey
+			});
+			return {
+				locals: identityOnlyLocals('authorized', { subject: ACTOR_ID, emailVerified: true, email }),
+				params: {},
+				request: new Request(url, { method: 'POST', headers, body: '{}' }),
+				url
+			} as RequestEvent;
+		}
+
+		it('refuses a mismatched verified email against the real D1 store, then lets the configured owner claim it', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				const application = new InstanceApplication(store, () => new Date(CREATED_AT));
+				const handler = createInstanceBootstrapHandler(
+					(): InstanceApplicationPort => application,
+					(): string | undefined => 'owner@example.com'
+				);
+
+				const rejected = await handler(
+					bootstrapEvent('intruder@example.com', 'bootstrap-http-key-1')
+				);
+				expect(rejected.status).toBe(403);
+				expect(sqlite.prepare('SELECT user_id FROM instance_member').all()).toEqual([]);
+
+				const accepted = await handler(bootstrapEvent('owner@example.com', 'bootstrap-http-key-2'));
+				expect(accepted.status).toBe(201);
+				expect(sqlite.prepare('SELECT user_id AS userId, role FROM instance_member').all()).toEqual(
+					[{ userId: ACTOR_ID, role: 'owner' }]
+				);
 			} finally {
 				sqlite.close();
 			}

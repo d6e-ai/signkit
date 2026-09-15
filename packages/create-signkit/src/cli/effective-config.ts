@@ -20,6 +20,7 @@ export interface EffectiveTarget {
 	d6eAuthBaseUrl: string;
 	emailFrom?: string;
 	emailFromName: string;
+	bootstrapOwnerEmail?: string;
 	inherited: {
 		workerName: boolean;
 		d1: boolean;
@@ -29,6 +30,7 @@ export interface EffectiveTarget {
 		d6eAuthBaseUrl: boolean;
 		emailFrom: boolean;
 		emailFromName: boolean;
+		bootstrapOwnerEmail: boolean;
 	};
 	appliedDefaults: {
 		d6eAuthBaseUrl: boolean;
@@ -64,6 +66,13 @@ export function resolveEffectiveConfig(
 		? parsed.emailFrom
 		: (parsed.emailFrom ?? state?.emailFrom);
 
+	// Non-secret bootstrap owner: an explicit flag always wins so a typo can
+	// be corrected before the claim; otherwise the recorded state value is
+	// reused, preserving update compatibility for existing deployments.
+	const bootstrapOwnerEmail = parsed.overrides.bootstrapOwnerEmail
+		? parsed.bootstrapOwnerEmail
+		: (parsed.bootstrapOwnerEmail ?? state?.bootstrapOwnerEmail);
+
 	let emailFromName = DEFAULT_EMAIL_FROM_NAME;
 	let emailFromNameDefaulted = true;
 	if (parsed.overrides.emailFromName && parsed.emailFromName) {
@@ -91,6 +100,7 @@ export function resolveEffectiveConfig(
 		d6eAuthBaseUrl,
 		emailFrom,
 		emailFromName,
+		bootstrapOwnerEmail,
 		inherited: {
 			workerName: Boolean(state && !parsed.overrides.workerName),
 			d1: Boolean(state && !parsed.overrides.d1),
@@ -99,7 +109,8 @@ export function resolveEffectiveConfig(
 			publicOrigin: Boolean(state && !parsed.overrides.publicOrigin && !parsed.overrides.domain),
 			d6eAuthBaseUrl: Boolean(state && !parsed.overrides.d6eAuthBaseUrl),
 			emailFrom: Boolean(state && !parsed.overrides.emailFrom),
-			emailFromName: Boolean(state && !parsed.overrides.emailFromName)
+			emailFromName: Boolean(state && !parsed.overrides.emailFromName),
+			bootstrapOwnerEmail: Boolean(state && !parsed.overrides.bootstrapOwnerEmail)
 		},
 		appliedDefaults: {
 			d6eAuthBaseUrl: d6eAuthBaseUrlDefaulted,

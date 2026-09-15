@@ -33,6 +33,7 @@ export interface ParsedCommand {
 	d6eAuthBaseUrl?: string;
 	emailFrom?: string;
 	emailFromName?: string;
+	bootstrapOwnerEmail?: string;
 	version: string;
 	channel: ReleaseChannel;
 	statePath?: string;
@@ -47,6 +48,7 @@ export interface ParsedCommand {
 		d6eAuthBaseUrl: boolean;
 		emailFrom: boolean;
 		emailFromName: boolean;
+		bootstrapOwnerEmail: boolean;
 	};
 }
 
@@ -73,6 +75,7 @@ const VALUE_OPTION_FLAGS = new Set([
 	'd6e-auth-base-url',
 	'email-from',
 	'email-from-name',
+	'bootstrap-owner-email',
 	'version',
 	'channel',
 	'state'
@@ -252,6 +255,14 @@ export function parseArgv(argv: string[]): ParsedArgv {
 	if (emailFromName !== undefined && (emailFromName.length === 0 || emailFromName.includes('\0'))) {
 		throw usage('--email-from-name must be nonempty text');
 	}
+	const bootstrapOwnerEmailRaw = values.get('bootstrap-owner-email');
+	// Non-secret deployment configuration (like --email-from): validated and
+	// canonicalized to trimmed lowercase so the Worker var exactly matches the
+	// verified d6e-auth email comparison. Never logged; applied as a plain var.
+	const bootstrapOwnerEmail =
+		bootstrapOwnerEmailRaw === undefined
+			? undefined
+			: parseEmailAddress(bootstrapOwnerEmailRaw, '--bootstrap-owner-email').toLowerCase();
 
 	if (domain && publicOrigin) {
 		const implied = `https://${domain}`;
@@ -273,6 +284,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
 		d6eAuthBaseUrl,
 		emailFrom,
 		emailFromName,
+		bootstrapOwnerEmail,
 		version,
 		channel: channelRaw,
 		statePath: values.get('state'),
@@ -286,7 +298,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
 			publicOrigin: values.has('public-origin'),
 			d6eAuthBaseUrl: values.has('d6e-auth-base-url'),
 			emailFrom: values.has('email-from'),
-			emailFromName: values.has('email-from-name')
+			emailFromName: values.has('email-from-name'),
+			bootstrapOwnerEmail: values.has('bootstrap-owner-email')
 		}
 	};
 }
@@ -359,6 +372,7 @@ Options:
   --d6e-auth-base-url <url>  d6e-auth origin (default: ${DEFAULT_D6E_AUTH_BASE_URL})
   --email-from <email>    SIGNKIT_EMAIL_FROM (required for the initial managed deploy)
   --email-from-name <text>   SIGNKIT_EMAIL_FROM_NAME (default: ${DEFAULT_EMAIL_FROM_NAME})
+  --bootstrap-owner-email <email>  SIGNKIT_BOOTSTRAP_OWNER_EMAIL as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it)
   --version <tag|latest>  Release tag or "latest" (default: latest)
   --channel <stable|beta> Release channel (enforced against the selected tag; used to pick latest)
 

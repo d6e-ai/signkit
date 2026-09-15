@@ -104,7 +104,7 @@ pub enum EnvelopesSubcommand {
     /// Download published completion evidence bytes (JSON or Markdown).
     Evidence(EnvelopeEvidenceArgs),
 
-    /// Download the published visual completion PDF.
+    /// Download the published executed agreement PDF.
     Pdf(EnvelopePdfArgs),
 }
 

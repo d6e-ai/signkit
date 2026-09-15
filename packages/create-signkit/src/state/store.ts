@@ -18,6 +18,14 @@ export interface DeploymentState {
 	d6eAuthBaseUrl?: string;
 	emailFrom?: string;
 	emailFromName?: string;
+	/**
+	 * Canonicalized (trimmed, lowercased) bootstrap owner email recorded from
+	 * `--bootstrap-owner-email`. Non-secret deployment configuration like
+	 * `emailFrom`: inherited by later deploy/upgrade runs so the flag only
+	 * needs to be passed once. Never a secret; the state secret-guard rejects
+	 * secret-looking fields independently.
+	 */
+	bootstrapOwnerEmail?: string;
 	lastD1BackupPath?: string;
 	channel: ReleaseChannel;
 	version?: string;

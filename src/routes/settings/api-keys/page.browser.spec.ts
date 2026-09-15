@@ -85,6 +85,26 @@ describe('settings api-keys page in the browser', () => {
 		expect(gotoMock).not.toHaveBeenCalled();
 	});
 
+	it('shows the durable organization-grant warning next to key management', async () => {
+		const mockFetch = vi.fn().mockImplementation(async (url: RequestInfo | URL) => {
+			const urlStr = String(url);
+			if (urlStr.includes('/api/v1/instance/members/me')) {
+				return meResponse(member({ userId: 'plain-member', role: 'member' }));
+			}
+			if (urlStr.includes('/api/v1/api-keys')) {
+				return jsonResponse({ page: { items: [], nextCursor: null } });
+			}
+			return jsonResponse({});
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(ApiKeysPage);
+		await expect
+			.element(screen.getByText('Organization grants stay live until revoked'))
+			.toBeVisible();
+		await expect.element(screen.getByText(/nothing revokes it automatically/)).toBeVisible();
+	});
+
 	it('redirects a suspended member back to /settings', async () => {
 		const mockFetch = vi
 			.fn()

@@ -21,7 +21,15 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Spinner } from '$lib/components/ui/spinner';
 	import { settingsRevealState } from './settings-reveal-state.svelte';
-	import { IconCheck, IconCopy, IconKey, IconPlus, IconRefresh, IconX } from '@tabler/icons-svelte';
+	import {
+		IconAlertTriangle,
+		IconCheck,
+		IconCopy,
+		IconKey,
+		IconPlus,
+		IconRefresh,
+		IconX
+	} from '@tabler/icons-svelte';
 
 	const client = createInstanceManagementClient();
 
@@ -297,6 +305,17 @@
 			</Button>
 		</Card.Header>
 		<Card.Content>
+			<div
+				class="mb-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+				role="note"
+				aria-label={m.settings_api_keys_grant_durability_title()}
+			>
+				<IconAlertTriangle class="size-5 shrink-0" />
+				<div class="flex flex-col gap-1">
+					<p class="text-sm font-semibold">{m.settings_api_keys_grant_durability_title()}</p>
+					<p class="text-xs">{m.settings_api_keys_grant_durability_warning()}</p>
+				</div>
+			</div>
 			{#if apiKeysError}
 				<div
 					class="mb-4 flex items-center justify-between rounded-xl border border-destructive/20 bg-destructive/10 p-3 text-destructive"

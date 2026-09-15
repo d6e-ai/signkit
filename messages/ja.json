@@ -208,6 +208,8 @@
 	"settings_api_keys_empty": "APIキーはありません。",
 	"settings_api_keys_load_more": "さらに読み込む",
 	"settings_api_keys_refresh": "APIキー一覧を更新",
+	"settings_api_keys_grant_durability_title": "組織の付与は失効するまで有効です",
+	"settings_api_keys_grant_durability_warning": "組織への付与は、取り消すまで継続する明示的な委任です。付与を作成した人が後に組織メンバーでなくなっても有効なままで、自動的に失効することはありません。管理者を外す場合は、その管理者が作成した付与も取り消してください。キー所有者または現在の組織オーナー・管理者が取り消せます。",
 	"settings_clipboard_copy_failed": "クリップボードにコピーできませんでした。値を手動でコピーしてください。",
 	"common_retry": "再試行",
 	"common_cancel": "キャンセル",

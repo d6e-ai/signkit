@@ -7,9 +7,13 @@ import {
 	toPdfSafeText,
 	wrapPlainTextLines
 } from '$lib/adapters/pdf/deterministic-pdf-writer';
-import { sha256Hex, type CompletionManifestV1 } from './completion-manifest';
+import {
+	CompletionArtifactIntegrityError,
+	sha256Hex,
+	type CompletionManifestV1
+} from './completion-manifest';
 
-export const COMPLETION_PDF_MANIFEST_SCHEMA: string = 'signkit-completion-pdf-manifest-v1';
+export const COMPLETION_PDF_MANIFEST_SCHEMA: string = 'signkit-completion-pdf-manifest-v2';
 export const MAX_COMPLETION_PDF_BYTES: number = 8 * 1024 * 1024;
 
 export class CompletionPdfBoundExceededError extends Error {
@@ -20,16 +24,27 @@ export class CompletionPdfBoundExceededError extends Error {
 }
 
 /**
- * A field's placement geometry when available (envelope_field is read
- * independently of the audit-verified evidence — see
- * {@link CompletionPdfFieldGeometry} — and may be absent if that read fails
- * or the field row was since removed; the PDF and its manifest degrade to
- * `null` rather than failing the whole publication closed, since geometry is
- * presentation-only and never affects the manifest's own integrity proof).
+ * What the published PDF artifact actually is.
+ *
+ * `executed-agreement-v1` is the signed agreement: the sent document set in
+ * document order with every signed value drawn at its frozen geometry, then
+ * the evidence summary as an appendix. `evidence-summary-v1` is the older
+ * evidence-only rendering, still produced for envelopes sent before
+ * per-document sends existed, whose fields are scoped to a Markdown path and
+ * carry no geometry to execute against.
  */
+export type CompletionPdfArtifactKind = 'executed-agreement-v1' | 'evidence-summary-v1';
+
+/** A field's frozen placement, as published alongside the executed PDF. */
 export interface CompletionPdfManifestFieldGeometry {
-	documentPath: string;
+	documentId: string | null;
+	documentPath: string | null;
 	position: number;
+	page: number;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
 }
 
 export interface CompletionPdfManifestField {
@@ -40,21 +55,33 @@ export interface CompletionPdfManifestField {
 	geometry: CompletionPdfManifestFieldGeometry | null;
 }
 
-export interface CompletionPdfManifestV1 {
+export interface CompletionPdfManifestDocument {
+	path?: string;
+	sha256: string;
+	/** 1-based inclusive page range in the executed PDF, when one was produced. */
+	firstPage?: number;
+	lastPage?: number;
+}
+
+export interface CompletionPdfManifestV2 {
 	schema: typeof COMPLETION_PDF_MANIFEST_SCHEMA;
+	artifactKind: CompletionPdfArtifactKind;
 	envelopeId: string;
 	/** Pointer back to the completion manifest this PDF was deterministically derived from. */
 	manifestSha256: string;
 	pdfSha256: string;
-	documents: readonly { path?: string; sha256: string }[];
+	pageCount: number;
+	/** First page of the evidence appendix inside the executed PDF, when there is one. */
+	appendixFirstPage: number | null;
+	documents: readonly CompletionPdfManifestDocument[];
 	fields: readonly CompletionPdfManifestField[];
 	generatedAt: string;
 }
 
 /**
- * Builds the plain-text page grid for the completion PDF from already
- * audit-verified manifest data plus the same pinned document content used
- * to build that manifest. Deterministic: identical inputs always produce
+ * Builds the plain-text page grid for the completion evidence summary from
+ * already audit-verified manifest data plus the same pinned document content
+ * used to build that manifest. Deterministic: identical inputs always produce
  * identical pages, and therefore identical PDF bytes.
  */
 export function buildCompletionPdfPages(
@@ -113,11 +140,9 @@ export function buildCompletionPdfPages(
 	lines.push('-'.repeat(PDF_CHARS_PER_LINE));
 	for (const field of manifest.fields) {
 		const geometry: CompletionPdfFieldGeometry | undefined = geometryById.get(field.id);
-		const location: string =
-			geometry === undefined
-				? 'unplaced'
-				: `${toPdfSafeText(geometry.documentPath)}#${geometry.position}`;
-		lines.push(`${field.id} | ${field.fieldType} | ink-sha256:${field.valueSha256} | ${location}`);
+		lines.push(
+			`${field.id} | ${field.fieldType} | ink-sha256:${field.valueSha256} | ${fieldLocation(geometry)}`
+		);
 	}
 	lines.push('');
 
@@ -152,7 +177,23 @@ export function buildCompletionPdfPages(
 	return paginateLines(lines);
 }
 
-/** Renders the PDF and verifies it against {@link MAX_COMPLETION_PDF_BYTES}. */
+/** Where a field sits, in the document-order and unit-square terms the evidence records. */
+function fieldLocation(geometry: CompletionPdfFieldGeometry | undefined): string {
+	if (geometry === undefined) return 'unplaced';
+	const scope: string = toPdfSafeText(geometry.documentPath ?? geometry.documentId ?? 'unplaced');
+	const placement: string =
+		geometry.geometry === null
+			? ''
+			: ` page ${geometry.geometry.page} at ${round(geometry.geometry.x)},${round(geometry.geometry.y)}` +
+				` size ${round(geometry.geometry.width)}x${round(geometry.geometry.height)}`;
+	return `${scope}#${geometry.position}${placement}`;
+}
+
+function round(value: number): string {
+	return (Math.round(value * 1e4) / 1e4).toString();
+}
+
+/** Renders the evidence summary and verifies it against {@link MAX_COMPLETION_PDF_BYTES}. */
 export function renderCompletionPdf(pages: readonly (readonly string[])[]): Uint8Array {
 	const bytes: Uint8Array = renderDeterministicTextPdf(pages);
 	if (bytes.byteLength > MAX_COMPLETION_PDF_BYTES) {
@@ -166,36 +207,63 @@ export interface BuildCompletionPdfManifestInput {
 	manifestSha256: string;
 	pdfBytes: Uint8Array;
 	fieldGeometry: readonly CompletionPdfFieldGeometry[];
+	artifactKind: CompletionPdfArtifactKind;
+	pageCount: number;
+	appendixFirstPage?: number | null;
+	/** Page ranges of each document inside the executed PDF, keyed by document ID. */
+	documentPages?: ReadonlyMap<string, { firstPage: number; lastPage: number }>;
 }
 
 export async function buildCompletionPdfManifest(
 	input: BuildCompletionPdfManifestInput
-): Promise<CompletionPdfManifestV1> {
+): Promise<CompletionPdfManifestV2> {
 	const geometryById = new Map<string, CompletionPdfFieldGeometry>(
 		input.fieldGeometry.map((entry: CompletionPdfFieldGeometry) => [entry.id, entry] as const)
 	);
+	const executed: boolean = input.artifactKind === 'executed-agreement-v1';
 	return {
 		schema: COMPLETION_PDF_MANIFEST_SCHEMA,
+		artifactKind: input.artifactKind,
 		envelopeId: input.manifest.envelopeId,
 		manifestSha256: input.manifestSha256,
 		pdfSha256: await sha256Hex(input.pdfBytes),
-		documents: input.manifest.documents.map((document) => {
-			const entry: { path?: string; sha256: string } =
-				document.path === undefined
-					? { sha256: document.sha256 }
-					: { path: document.path, sha256: document.sha256 };
-			return entry;
+		pageCount: input.pageCount,
+		appendixFirstPage: input.appendixFirstPage ?? null,
+		documents: input.manifest.documents.map((document): CompletionPdfManifestDocument => {
+			const pages = document.id === undefined ? undefined : input.documentPages?.get(document.id);
+			return {
+				...(document.path === undefined ? {} : { path: document.path }),
+				sha256: document.sha256,
+				...(pages === undefined ? {} : { firstPage: pages.firstPage, lastPage: pages.lastPage })
+			};
 		}),
 		fields: input.manifest.fields.map((field): CompletionPdfManifestField => {
-			const geometry: CompletionPdfFieldGeometry | undefined = geometryById.get(field.id);
+			const placement: CompletionPdfFieldGeometry | undefined = geometryById.get(field.id);
+			// The executed agreement is only meaningful if every field it claims
+			// to carry was placed somewhere provable, so a gap here fails the
+			// publication rather than publishing a null.
+			if (executed && (placement === undefined || placement.geometry === null)) {
+				throw new CompletionArtifactIntegrityError(
+					'Executed agreement PDF is missing frozen geometry for a signed field'
+				);
+			}
 			return {
 				id: field.id,
 				fieldType: field.fieldType,
 				inkSha256: field.valueSha256,
 				geometry:
-					geometry === undefined
+					placement === undefined || placement.geometry === null
 						? null
-						: { documentPath: geometry.documentPath, position: geometry.position }
+						: {
+								documentId: placement.documentId,
+								documentPath: placement.documentPath,
+								position: placement.position,
+								page: placement.geometry.page,
+								x: placement.geometry.x,
+								y: placement.geometry.y,
+								width: placement.geometry.width,
+								height: placement.geometry.height
+							}
 			};
 		}),
 		generatedAt: input.manifest.completedAt
@@ -203,6 +271,6 @@ export async function buildCompletionPdfManifest(
 }
 
 /** Deterministic fixed-key JSON, matching the completion manifest's own convention. */
-export function canonicalPdfManifestJson(manifest: CompletionPdfManifestV1): string {
+export function canonicalPdfManifestJson(manifest: CompletionPdfManifestV2): string {
 	return JSON.stringify(manifest);
 }

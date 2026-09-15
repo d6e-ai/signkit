@@ -8,7 +8,7 @@ Ship `create-signkit` as an ESM npm package (`npx create-signkit` / `pnpm dlx cr
 
 One idempotent reconciler implements all four commands. `plan` is read-only. `deploy` may create missing D1/R2. `adopt` only records existing resources. `upgrade` never creates resources. Nothing deletes.
 
-Releases, not git refs, are the artifact source. Each tagged GitHub Release publishes a schema-validated manifest, SHA-256 checksums for transport/repository integrity (not a signature), and a prebundled Cloudflare tarball (Worker, static assets, D1 migrations). The CLI verifies origin, size, and digest before extraction.
+Releases, not git refs, are the artifact source. Each tagged GitHub Release publishes a schema-validated manifest, SHA-256 checksums for transport/repository integrity (not a signature), and a prebundled Cloudflare tarball (Worker, static assets, D1 migrations). The CLI verifies origin, size, and digest before extraction. The release workflow additionally generates GitHub build-provenance attestations, but the deployment CLI does not yet enforce them.
 
 Wrangler is a packaged dependency invoked through its Node entrypoint. Child env is an allowlist, not a copy of the parent process. `CLOUDFLARE_ACCOUNT_ID` is set only in that child environment. Dashboard vars/secrets are preserved with `--keep-vars`. Secrets never appear on argv or in XDG state.
 

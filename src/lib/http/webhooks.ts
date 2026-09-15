@@ -9,6 +9,7 @@ import {
 } from '$lib/application/webhooks/webhook-service';
 import { WEBHOOK_AUDIT_EVENT_TYPES } from '$lib/domain/audit';
 import { DEFAULT_WEBHOOK_LIST_LIMIT, MAX_WEBHOOK_LIST_LIMIT } from '$lib/ports/webhook-store';
+import { WebhookHostNotAllowedError } from '$lib/security/webhook-allowed-hosts';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 import {
 	acceptsJson,
@@ -119,6 +120,7 @@ export function createWebhookHttpHandlers(
 		} catch (error: unknown) {
 			if (
 				error instanceof InvalidWebhookRequestError ||
+				error instanceof WebhookHostNotAllowedError ||
 				error instanceof WebhookTargetRejectedError
 			) {
 				return validationFailed(url.pathname, error.message, [

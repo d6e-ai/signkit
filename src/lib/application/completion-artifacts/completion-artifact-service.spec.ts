@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
+import { gunzipSync } from 'fflate';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describe, expect, it } from 'vitest';
+import { drawnSignaturePng } from '$lib/adapters/pdf/png-image-test-support';
+import { signatureAssetKey } from '$lib/application/documents/signature-asset';
+import { renderRevisionPdf, sentPdfObjectKey } from '$lib/application/documents/sent-document-pdf';
 import { draftArchiveKey } from '$lib/application/drafts/draft-persistence';
+import type { FieldGeometry } from '$lib/domain/envelope';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
@@ -32,6 +38,10 @@ import type {
 	CompletionPdfEvidenceStore,
 	CompletionPdfFieldGeometry
 } from '$lib/ports/completion-pdf-evidence-store';
+import type {
+	EnvelopeSentDocumentStore,
+	SentDocumentSetPointer
+} from '$lib/ports/envelope-sent-document-store';
 import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import { OPAQUE_TOKEN_PATTERN } from '$lib/security/opaque-token';
 import { buildVerifiedAuditChain } from './audit-chain-test-support';
@@ -41,6 +51,7 @@ import {
 	MAX_COMPLETION_ARTIFACT_ATTEMPTS,
 	type CompletionArtifactBatchResult
 } from './completion-artifact-service';
+import { COMPLETION_PDF_MANIFEST_SCHEMA, type CompletionPdfManifestV2 } from './completion-pdf';
 
 const NOW: Date = new Date('2026-09-12T00:00:00.000Z');
 const SENT_COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
@@ -221,6 +232,18 @@ class FakeCompletionPdfEvidenceStore implements CompletionPdfEvidenceStore {
 	}
 }
 
+class FakeEnvelopeSentDocumentStore implements EnvelopeSentDocumentStore {
+	constructor(readonly set: SentDocumentSetPointer | null) {}
+
+	async findSet(): Promise<SentDocumentSetPointer | null> {
+		return this.set;
+	}
+
+	async findDocument(): Promise<null> {
+		return null;
+	}
+}
+
 function publishedFrom(
 	overrides: Partial<PublishedCompletionArtifact> | undefined
 ): PublishedCompletionArtifact {
@@ -270,7 +293,8 @@ function sha256Hex(bytes: Uint8Array): string {
 const SIGNED_AT: string = '2026-09-11T00:00:00.000Z';
 const COMPLETED_AT: string = '2026-09-11T00:01:00.000Z';
 
-async function baseEvidence(): Promise<CompletionEvidence> {
+async function baseEvidence(valueJson: string = FIELD_VALUE_JSON): Promise<CompletionEvidence> {
+	const valueSha256: string = sha256Hex(new TextEncoder().encode(valueJson));
 	const auditEvents = await buildVerifiedAuditChain(
 		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
 		[
@@ -305,7 +329,7 @@ async function baseEvidence(): Promise<CompletionEvidence> {
 					role: 'signer',
 					routingOrder: 1,
 					sentCommitSha: SENT_COMMIT_SHA,
-					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: FIELD_VALUE_SHA256 }],
+					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: valueSha256 }],
 					signedAt: SIGNED_AT
 				}
 			},
@@ -330,20 +354,18 @@ async function baseEvidence(): Promise<CompletionEvidence> {
 				decisionOccurredAt: SIGNED_AT
 			}
 		],
-		fields: [
-			{
-				id: 'field-1',
-				fieldType: 'signature',
-				valueJson: FIELD_VALUE_JSON,
-				valueSha256: FIELD_VALUE_SHA256
-			}
-		],
+		fields: [{ id: 'field-1', fieldType: 'signature', valueJson, valueSha256 }],
 		auditEvents
 	};
 }
 
-async function evidenceWithSent(sentPayload: Record<string, unknown>): Promise<CompletionEvidence> {
-	const evidence = await baseEvidence();
+async function evidenceWithSent(
+	sentPayload: Record<string, unknown>,
+	valueJson: string = FIELD_VALUE_JSON,
+	fieldPlacementPayload?: Record<string, unknown>
+): Promise<CompletionEvidence> {
+	const evidence = await baseEvidence(valueJson);
+	const valueSha256: string = sha256Hex(new TextEncoder().encode(valueJson));
 	const auditEvents = await buildVerifiedAuditChain(
 		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
 		[
@@ -367,6 +389,18 @@ async function evidenceWithSent(sentPayload: Record<string, unknown>): Promise<C
 					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
 				}
 			},
+			...(fieldPlacementPayload === undefined
+				? []
+				: [
+						{
+							id: 'event-fields',
+							eventType: 'envelope.fields_placed',
+							actorType: 'user',
+							actorId: 'user-1',
+							occurredAt: '2026-09-10T00:00:35.000Z',
+							payload: fieldPlacementPayload
+						}
+					]),
 			{
 				id: 'event-sent',
 				eventType: 'envelope.sent',
@@ -386,7 +420,7 @@ async function evidenceWithSent(sentPayload: Record<string, unknown>): Promise<C
 					role: 'signer',
 					routingOrder: 1,
 					sentCommitSha: SENT_COMMIT_SHA,
-					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: FIELD_VALUE_SHA256 }],
+					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256 }],
 					signedAt: SIGNED_AT
 				}
 			},
@@ -496,6 +530,208 @@ function claimWithSeededArchive(
 
 function documents(): readonly DraftDocument[] {
 	return [{ path: 'documents/agreement.md', content: 'Agreement body' }];
+}
+
+const MARKDOWN_DOCUMENT_ID: string = '01900000-0000-7000-8000-000000000021';
+const FIELD_GEOMETRY: FieldGeometry = { page: 1, x: 0.1, y: 0.6, width: 0.35, height: 0.08 };
+
+interface ExecutedScenarioOptions {
+	/** Defaults to a typed signature; pass a `sig:sha256:` reference for a drawn one. */
+	valueJson?: string;
+	geometry?: FieldGeometry | null;
+	seedSignature?: Uint8Array;
+	/** Seeds `seedSignature` under a different asset's digest, simulating tampering. */
+	seedSignatureUnderDigestOf?: Uint8Array;
+	/** Simulates a historical sent rendering that differs from today's renderer output. */
+	sentMarkdownContent?: string;
+}
+
+interface ExecutedScenario {
+	service: CompletionArtifactPublicationService;
+	store: FakeCompletionArtifactStore;
+	objects: InMemoryObjectStore;
+	pdfStore: FakeCompletionArtifactPdfStore;
+}
+
+/**
+ * A completed, document-set-era envelope: one Markdown document in the pinned
+ * revision, one signed field with frozen geometry, and a PDF store wired up.
+ */
+async function executedScenario(options: ExecutedScenarioOptions = {}): Promise<ExecutedScenario> {
+	const store = new FakeCompletionArtifactStore();
+	const objects = new InMemoryObjectStore();
+	store.claims = [claimWithSeededArchive(objects)];
+
+	const valueJson: string = options.valueJson ?? JSON.stringify('Alex Signer');
+	const manifest = upsertMarkdownDocument(
+		null,
+		'documents/agreement.md',
+		sha256Hex(new TextEncoder().encode('Agreement body')),
+		() => MARKDOWN_DOCUMENT_ID
+	);
+	const renderedSentPdf = renderRevisionPdf([
+		{
+			path: 'documents/agreement.md',
+			content: options.sentMarkdownContent ?? 'Agreement body'
+		}
+	]);
+	const sentPdfSha256: string = sha256Hex(renderedSentPdf.bytes);
+	const sentPdfKey: string = sentPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, sentPdfSha256);
+	objects.seed(sentPdfKey, renderedSentPdf.bytes, sentPdfSha256);
+	const leaf = manifest.documents[0];
+	const sentDocumentSet: SentDocumentSetPointer = {
+		organizationId: ORGANIZATION_ID,
+		envelopeId: ENVELOPE_ID,
+		commitSha: SENT_COMMIT_SHA,
+		documentSetHash: await documentSetHash(manifest),
+		documentCount: 1,
+		documents: [
+			{
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				commitSha: SENT_COMMIT_SHA,
+				documentId: leaf.id,
+				position: leaf.position,
+				kind: leaf.kind,
+				title: leaf.title,
+				objectKey: sentPdfKey,
+				sha256: sentPdfSha256,
+				byteSize: renderedSentPdf.bytes.byteLength,
+				pageCount: renderedSentPdf.pageCount,
+				pageWidth: renderedSentPdf.pageWidth,
+				pageHeight: renderedSentPdf.pageHeight,
+				createdAt: '2026-09-10T00:00:40.000Z'
+			}
+		],
+		createdAt: '2026-09-10T00:00:40.000Z'
+	};
+	store.evidenceByEnvelope.set(
+		ENVELOPE_ID,
+		await evidenceWithSent(
+			{
+				commitSha: SENT_COMMIT_SHA,
+				documentSetHash: sentDocumentSet.documentSetHash,
+				documentCount: 1,
+				documents: [
+					{
+						id: leaf.id,
+						sha256: sentPdfSha256,
+						byteSize: renderedSentPdf.bytes.byteLength,
+						pageCount: renderedSentPdf.pageCount
+					}
+				]
+			},
+			valueJson,
+			{
+				commitSha: SENT_COMMIT_SHA,
+				generation: 1,
+				fieldGeneration: 1,
+				fields: [
+					{
+						id: 'field-1',
+						recipientId: 'recipient-1',
+						documentId: MARKDOWN_DOCUMENT_ID,
+						documentPath: null,
+						fieldType: 'signature',
+						required: true,
+						position: 0,
+						geometry: FIELD_GEOMETRY
+					}
+				]
+			}
+		)
+	);
+	const repository = new FixedDraftRepository(
+		SENT_COMMIT_SHA,
+		documents(),
+		serializeDocumentSet(manifest)
+	);
+
+	const seeded: Uint8Array | undefined = options.seedSignature;
+	if (seeded !== undefined) {
+		const digestSource: Uint8Array = options.seedSignatureUnderDigestOf ?? seeded;
+		const key: string = signatureAssetKey(
+			ORGANIZATION_ID,
+			ENVELOPE_ID,
+			'recipient-1',
+			sha256Hex(digestSource)
+		);
+		objects.seed(key, seeded, sha256Hex(seeded));
+	}
+
+	const pdfStore = new FakeCompletionArtifactPdfStore();
+	const pdfEvidenceStore = new FakeCompletionPdfEvidenceStore([
+		{
+			id: 'field-1',
+			documentId: MARKDOWN_DOCUMENT_ID,
+			documentPath: null,
+			position: 0,
+			recipientId: 'recipient-1',
+			fieldType: 'signature',
+			required: true,
+			geometry: options.geometry === undefined ? FIELD_GEOMETRY : options.geometry
+		}
+	]);
+
+	return {
+		store,
+		objects,
+		pdfStore,
+		service: new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			() => NOW,
+			() => 'claim-token-executed',
+			undefined,
+			pdfStore,
+			pdfEvidenceStore,
+			new FakeEnvelopeSentDocumentStore(sentDocumentSet)
+		)
+	};
+}
+
+async function readObject(objects: InMemoryObjectStore, key: string): Promise<Uint8Array> {
+	const stream = await objects.get(key);
+	if (stream === null) throw new Error(`Expected a published object at ${key}`);
+	const chunks: Uint8Array[] = [];
+	const reader = stream.getReader();
+	for (;;) {
+		const result = await reader.read();
+		if (result.done) break;
+		chunks.push(result.value);
+	}
+	const total: number = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+	const bytes: Uint8Array = new Uint8Array(total);
+	let offset: number = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return bytes;
+}
+
+async function publishedPdfManifest(
+	objects: InMemoryObjectStore,
+	pdfStore: FakeCompletionArtifactPdfStore
+): Promise<CompletionPdfManifestV2> {
+	const gzip: Uint8Array = await readObject(objects, pdfStore.calls[0].pdfManifestObjectKey);
+	return JSON.parse(new TextDecoder().decode(gunzipSync(gzip))) as CompletionPdfManifestV2;
+}
+
+async function pageTextOf(bytes: Uint8Array, pageNumber: number): Promise<string> {
+	const task = getDocument({ data: Uint8Array.from(bytes) });
+	const document = await task.promise;
+	try {
+		const content = await (await document.getPage(pageNumber)).getTextContent();
+		return content.items
+			.map((item: unknown): string =>
+				typeof item === 'object' && item !== null && 'str' in item ? String(item.str) : ''
+			)
+			.join('');
+	} finally {
+		await task.destroy();
+	}
 }
 
 describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts', () => {
@@ -851,7 +1087,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(store.publishCalls).toHaveLength(1);
 	});
 
-	it('renders and publishes a completion PDF from the verified draft documents when a PDF store is configured', async () => {
+	it('publishes the evidence summary as the PDF artifact for a legacy path-scoped envelope', async () => {
 		const store = new FakeCompletionArtifactStore();
 		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
@@ -861,9 +1097,13 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		const pdfEvidenceStore = new FakeCompletionPdfEvidenceStore([
 			{
 				id: 'field-1',
+				documentId: null,
 				documentPath: 'documents/agreement.md',
 				position: 0,
-				recipientId: 'recipient-1'
+				recipientId: 'recipient-1',
+				fieldType: 'signature',
+				required: true,
+				geometry: null
 			}
 		]);
 		const service = new CompletionArtifactPublicationService(
@@ -887,6 +1127,130 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		});
 		expect(pdfStore.calls[0].pdfSha256).toMatch(/^[a-f0-9]{64}$/);
 		expect(pdfStore.calls[0].pdfManifestSha256).toMatch(/^[a-f0-9]{64}$/);
+		await expect(publishedPdfManifest(objects, pdfStore)).resolves.toMatchObject({
+			artifactKind: 'evidence-summary-v1',
+			appendixFirstPage: null
+		});
+	});
+
+	it('publishes the executed agreement with the signed values drawn on the sent documents', async () => {
+		const scenario = await executedScenario();
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
+		expect(scenario.pdfStore.calls).toHaveLength(1);
+		const pdfManifest = await publishedPdfManifest(scenario.objects, scenario.pdfStore);
+		expect(pdfManifest).toMatchObject({
+			artifactKind: 'executed-agreement-v1',
+			schema: COMPLETION_PDF_MANIFEST_SCHEMA
+		});
+		expect(pdfManifest.fields[0].geometry).toMatchObject({
+			documentId: MARKDOWN_DOCUMENT_ID,
+			page: 1,
+			x: 0.1,
+			y: 0.6
+		});
+		// The agreement's own pages come first and the evidence summary follows.
+		expect(pdfManifest.appendixFirstPage).toBeGreaterThan(1);
+		expect(pdfManifest.pageCount).toBeGreaterThanOrEqual(pdfManifest.appendixFirstPage ?? 0);
+
+		const pdfBytes = await readObject(scenario.objects, scenario.pdfStore.calls[0].pdfObjectKey);
+		expect(await pageTextOf(pdfBytes, 1)).toContain('Agreement body');
+		expect(await pageTextOf(pdfBytes, 1)).toContain('Alex Signer');
+	});
+
+	it('uses the exact immutable sent Markdown PDF bytes instead of rerendering the pinned source', async () => {
+		const scenario = await executedScenario({ sentMarkdownContent: 'Frozen sent rendering' });
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
+		const pdfBytes = await readObject(scenario.objects, scenario.pdfStore.calls[0].pdfObjectKey);
+		expect(await pageTextOf(pdfBytes, 1)).toContain('Frozen sent rendering');
+		expect(await pageTextOf(pdfBytes, 1)).not.toContain('Agreement body');
+	});
+
+	it('composites a drawn signature from its verified asset into the executed agreement', async () => {
+		const png = drawnSignaturePng(48, 20);
+		const digest = sha256Hex(png);
+		const scenario = await executedScenario({
+			valueJson: JSON.stringify(`sig:sha256:${digest}`),
+			seedSignature: png
+		});
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ published: 1, integrityFailed: 0 });
+		const pdfBytes = await readObject(scenario.objects, scenario.pdfStore.calls[0].pdfObjectKey);
+		expect(new TextDecoder('latin1').decode(pdfBytes)).toContain('/Subtype /Image');
+	});
+
+	it('fails closed when a drawn signature asset is missing from the object store', async () => {
+		const png = drawnSignaturePng(48, 20);
+		const scenario = await executedScenario({
+			valueJson: JSON.stringify(`sig:sha256:${sha256Hex(png)}`)
+		});
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ integrityFailed: 1, published: 0 });
+		expect(scenario.store.failCalls[0]).toMatchObject({
+			errorCode: 'completion_artifact_evidence_invalid',
+			retryable: false
+		});
+		expect(scenario.pdfStore.calls).toHaveLength(0);
+	});
+
+	it('fails closed when a stored signature asset no longer matches its digest', async () => {
+		const png = drawnSignaturePng(48, 20);
+		const scenario = await executedScenario({
+			valueJson: JSON.stringify(`sig:sha256:${sha256Hex(png)}`),
+			seedSignature: drawnSignaturePng(64, 24),
+			seedSignatureUnderDigestOf: png
+		});
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ integrityFailed: 1, published: 0 });
+		expect(scenario.store.publishCalls).toHaveLength(0);
+	});
+
+	it('fails closed when a signed field lost its frozen geometry', async () => {
+		const scenario = await executedScenario({ geometry: null });
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ integrityFailed: 1, published: 0 });
+		expect(scenario.store.failCalls[0]).toMatchObject({
+			errorCode: 'completion_artifact_evidence_invalid',
+			retryable: false
+		});
+	});
+
+	it('fails closed when a placement row geometry differs from the hash-chained event', async () => {
+		const scenario = await executedScenario({
+			geometry: { ...FIELD_GEOMETRY, x: FIELD_GEOMETRY.x + 0.05 }
+		});
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ integrityFailed: 1, published: 0 });
+		expect(scenario.store.publishCalls).toHaveLength(0);
+		expect(scenario.pdfStore.calls).toHaveLength(0);
+	});
+
+	it('republishes byte-identical executed agreement bytes for the same evidence', async () => {
+		const first = await executedScenario();
+		const second = await executedScenario();
+
+		await first.service.publishPendingCompletionArtifacts();
+		await second.service.publishPendingCompletionArtifacts();
+
+		expect(first.pdfStore.calls[0].pdfSha256).toBe(second.pdfStore.calls[0].pdfSha256);
+		expect(first.pdfStore.calls[0].pdfManifestSha256).toBe(
+			second.pdfStore.calls[0].pdfManifestSha256
+		);
 	});
 
 	it('classifies a missing draft archive as a non-retryable integrity failure', async () => {

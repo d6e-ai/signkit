@@ -1,3 +1,4 @@
+import { decodePng, isPngSignature, PngDecodeError } from '$lib/adapters/pdf/png-image';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
@@ -10,7 +11,6 @@ import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
  */
 export const MAX_SIGNATURE_ASSET_BYTES: number = 64 * 1024;
 
-const PNG_MAGIC: readonly number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 /** `sig:sha256:` (11) + 64 hex chars = 75, well inside the 200-char signature field value budget. */
 export const SIGNATURE_ASSET_REF_PREFIX: string = 'sig:sha256:';
 
@@ -56,8 +56,6 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 		if (input.pngBytes.byteLength === 0 || input.pngBytes.byteLength > MAX_SIGNATURE_ASSET_BYTES) {
 			return { outcome: 'too_large' };
 		}
-		if (!isPngSignature(input.pngBytes)) return { outcome: 'invalid_image' };
-
 		const context: RecipientSigningContext | null = await this.access.resolve(
 			input.token,
 			this.now().toISOString()
@@ -68,6 +66,18 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 			context.recipientId !== input.expectedRecipientId
 		) {
 			return { outcome: 'context_mismatch' };
+		}
+
+		// Resolve the capability and its route binding before CPU- and
+		// allocation-heavy image decoding. Decoding here, rather than merely
+		// sniffing magic bytes, still guarantees that an accepted asset can be
+		// composited into the executed agreement later.
+		if (!isPngSignature(input.pngBytes)) return { outcome: 'invalid_image' };
+		try {
+			decodePng(input.pngBytes);
+		} catch (error: unknown) {
+			if (error instanceof PngDecodeError) return { outcome: 'invalid_image' };
+			throw error;
 		}
 
 		const sha256: string = await sha256Hex(input.pngBytes);
@@ -174,11 +184,6 @@ export function referencedSignatureAssetKeys(
 		if (wanted.has(key)) referenced.add(key);
 	}
 	return referenced;
-}
-
-function isPngSignature(bytes: Uint8Array): boolean {
-	if (bytes.byteLength < PNG_MAGIC.length) return false;
-	return PNG_MAGIC.every((expected: number, index: number): boolean => bytes[index] === expected);
 }
 
 function encodeScopeSegment(value: string): string {

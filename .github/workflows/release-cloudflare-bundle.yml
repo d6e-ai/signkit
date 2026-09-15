@@ -1,4 +1,36 @@
-name: Cloudflare release bundle
+name: Release
+
+# Draft-first full-tag release: one tag in, one DRAFT GitHub Release out with
+# every shippable artifact (Node bundle, Cloudflare bundle, Rust CLI release
+# binary, Docker image) plus a unified SHA256SUMS and GitHub provenance
+# attestations, then a hard-gated npm publish, and only then is the draft
+# marked public. Draft reruns reuse only byte-identical assets; nothing
+# clobbers an existing name or mutates a public release.
+#
+# A `v*` tag therefore never creates a PUBLIC GitHub Release before npm
+# publication succeeds: `release` uploads everything to a draft, `publish-npm`
+# publishes create-signkit (OIDC Trusted Publishing, `NODE_AUTH_TOKEN`
+# fallback — an explicit provenance/auth failure fails the workflow and the
+# draft stays private), and `publish-release` flips the draft public only
+# after `publish-npm` succeeds. The tag-equals-version gate runs in `release`
+# before any asset is built and is re-checked in `publish-npm` and
+# `publish-release` before anything is published.
+# `publish-release` receives the build job's exact asset hashes, then
+# re-downloads and verifies the complete remote asset set immediately before
+# the public flip. Repository immutable releases must also be enabled before
+# the tag is pushed; this workflow does not configure that repository setting.
+#
+# Perfect cross-registry atomicity is impossible: once `publish-release` runs,
+# the GitHub Release is public and the npm package is published, and no
+# workflow step can roll both back together. Recovery is explicit and manual:
+# if npm fails, the draft stays private — fix the cause, re-run the failed
+# jobs (or delete the draft and re-push the tag); if the draft was already
+# flipped public and npm must be withdrawn, deprecate/retract the npm version
+# (`npm deprecate`) and edit or delete the GitHub Release by hand. Neither
+# recovery step is automated here on purpose.
+#
+# Nothing here deploys anywhere: no Worker upload, no registry push, no
+# `npm publish` outside the gated job, and no secret is ever printed.
 
 on:
   push:
@@ -8,24 +40,93 @@ permissions:
   contents: write
 
 jobs:
-  bundle:
+  release:
     runs-on: ubuntu-latest
+    outputs:
+      expected_assets_sha256_base64: ${{ steps.release_asset_hashes.outputs.base64 }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
         with:
           version: 11.24.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1.88.0
+        with:
+          components: rustfmt, clippy
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter create-signkit test
       - run: pnpm run build:create-signkit
-      - run: pnpm run build:cloudflare
-      - run: node scripts/build-cloudflare-release-bundle.mjs
-      - run: node scripts/verify-cloudflare-release-bundle.mjs
-      - name: Publish release assets
+      - name: Enforce tag equals all package versions
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          root="$(node -p "require('./package.json').version")"
+          csk="$(node -p "require('./packages/create-signkit/package.json').version")"
+          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          for v in "$root" "$csk" "$cli"; do
+            if [ "$tag" != "$v" ]; then
+              echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
+              exit 1
+            fi
+          done
+          node --input-type=module -e 'import { parseReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; parseReleaseTag(process.argv[1]);' "$GITHUB_REF_NAME"
+      - name: Build and smoke-check the Node profile
+        run: |
+          set -euo pipefail
+          pnpm run build:node
+          pnpm run test:node-build
+          tag="${GITHUB_REF_NAME}"
+          mkdir -p .release/assets
+          tar -czf ".release/assets/signkit-node-${tag}.tar.gz" build/node package.json
+      - name: Build and verify the Cloudflare release bundle
+        run: |
+          set -euo pipefail
+          pnpm run build:cloudflare
+          node scripts/build-cloudflare-release-bundle.mjs
+          node scripts/verify-cloudflare-release-bundle.mjs
+      - name: Build the Rust CLI release binary
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          cargo build --locked --release --manifest-path cli/Cargo.toml
+          mkdir -p .release/assets
+          tar -czf ".release/assets/signkit-${tag}-x86_64-unknown-linux-gnu.tar.gz" -C cli/target/release signkit
+      - name: Build the Docker image and archive it
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          docker build -t "signkit:${tag}" .
+          mkdir -p .release/assets
+          docker save "signkit:${tag}" | gzip > ".release/assets/signkit-docker-${tag}.tar.gz"
+      - name: Regenerate and verify unified checksums
+        id: release_asset_hashes
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          cd .release/assets
+          rm -f SHA256SUMS
+          checksum_assets=(
+            "signkit-cloudflare-manifest.json"
+            "signkit-cloudflare-${tag}.tar.gz"
+            "signkit-node-${tag}.tar.gz"
+            "signkit-${tag}-x86_64-unknown-linux-gnu.tar.gz"
+            "signkit-docker-${tag}.tar.gz"
+          )
+          sha256sum "${checksum_assets[@]}" > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+          release_assets=(SHA256SUMS "${checksum_assets[@]}")
+          sha256sum "${release_assets[@]}" | sort -k2 > ../expected-assets.sha256
+          echo "base64=$(base64 -w0 ../expected-assets.sha256)" >> "$GITHUB_OUTPUT"
+      - name: Publish release assets to a draft release (never public yet)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -41,68 +142,116 @@ jobs:
             echo "release tag ${tag} classified as ${channel} but manifest channel is ${manifest_channel}" >&2
             exit 1
           fi
+          (cd .release/assets && sha256sum -c SHA256SUMS)
           prerelease_args=()
           if [ "$channel" = "beta" ]; then
             prerelease_args+=(--prerelease)
+            expected_prerelease="true"
           else
             prerelease_args+=(--prerelease=false)
+            expected_prerelease="false"
           fi
+
+          expected_assets=(
+            ".release/assets/signkit-cloudflare-manifest.json"
+            ".release/assets/SHA256SUMS"
+            ".release/assets/signkit-cloudflare-${tag}.tar.gz"
+            ".release/assets/signkit-node-${tag}.tar.gz"
+            ".release/assets/signkit-${tag}-x86_64-unknown-linux-gnu.tar.gz"
+            ".release/assets/signkit-docker-${tag}.tar.gz"
+          )
+
+          remote_assets=""
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --generate-notes "${prerelease_args[@]}"
+            gh release create "$tag" --draft --generate-notes "${prerelease_args[@]}"
           else
-            gh release edit "$tag" "${prerelease_args[@]}"
+            # Rerun path: an existing release is immutable from this job. It
+            # must still be a draft with matching channel metadata, and every
+            # existing asset must be one of this build's expected names.
+            release_json="$(gh release view "$tag" --json isDraft,isPrerelease,assets)"
+            is_draft="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.isDraft));' "$release_json")"
+            if [ "$is_draft" != "true" ]; then
+              echo "refusing to upload to existing public release ${tag}: rerun recovery requires a draft release" >&2
+              exit 1
+            fi
+            actual_prerelease="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.isPrerelease));' "$release_json")"
+            if [ "$actual_prerelease" != "$expected_prerelease" ]; then
+              echo "refusing to mutate draft release ${tag}: prerelease metadata does not match the tag channel" >&2
+              exit 1
+            fi
+            remote_assets="$(node -e 'const value=JSON.parse(process.argv[1]); for (const asset of value.assets ?? []) console.log(asset.name);' "$release_json")"
+            while IFS= read -r remote_asset; do
+              [ -z "$remote_asset" ] && continue
+              expected="false"
+              for local_asset in "${expected_assets[@]}"; do
+                if [ "$remote_asset" = "$(basename "$local_asset")" ]; then
+                  expected="true"
+                  break
+                fi
+              done
+              if [ "$expected" != "true" ]; then
+                echo "refusing to mutate draft release ${tag}: unexpected existing asset ${remote_asset}" >&2
+                exit 1
+              fi
+            done <<< "$remote_assets"
           fi
-          gh release upload "$tag" \
-            .release/assets/signkit-cloudflare-manifest.json \
-            .release/assets/SHA256SUMS \
-            .release/assets/signkit-cloudflare-"$tag".tar.gz \
-            --clobber
+
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          for local_asset in "${expected_assets[@]}"; do
+            asset_name="$(basename "$local_asset")"
+            if printf '%s\n' "$remote_assets" | grep -Fxq "$asset_name"; then
+              gh release download "$tag" --pattern "$asset_name" --dir "$verify_dir"
+              if ! cmp -s "$local_asset" "$verify_dir/$asset_name"; then
+                echo "refusing to replace mismatched existing asset ${asset_name} on draft release ${tag}" >&2
+                exit 1
+              fi
+              echo "reusing byte-identical draft asset ${asset_name}"
+            else
+              gh release upload "$tag" "$local_asset"
+            fi
+          done
+      - name: Generate GitHub build-provenance attestations
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: .release/assets/*
 
   publish-npm:
-    needs: bundle
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
         with:
           version: 11.24.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:create-signkit
-      - name: Ensure npm CLI supports Trusted Publishing
+      - name: Select the lockfile-pinned npm CLI
         id: npm_cli
         run: |
           set -euo pipefail
-          # Isolated prefix: GitHub-hosted `npm i -g` can miss the PATH that later
-          # steps use, and pnpm publish is not the CLI whose version we check.
-          prefix="${RUNNER_TEMP}/npm-trusted-publishing"
-          mkdir -p "$prefix"
-          pnpm exec npm install --prefix "$prefix" "npm@^11.5.1"
-          selected="${prefix}/node_modules/.bin/npm"
+          # `pnpm install --frozen-lockfile` above materializes the exact npm
+          # version and registry integrity recorded in package.json/pnpm-lock.yaml.
+          # Never resolve a range dynamically in a privileged release job.
+          expected="$(node -p "require('./package.json').devDependencies.npm")"
+          selected="$(pnpm exec which npm)"
           if [ ! -x "$selected" ]; then
             echo "npm CLI was not found at ${selected}" >&2
             exit 1
           fi
           version="$("$selected" --version)"
-          node -e '
-            const [maj, min, pat] = process.argv[1].split(".").map(Number);
-            if (![maj, min, pat].every(Number.isFinite)) {
-              console.error("could not parse npm CLI version", process.argv[1]);
-              process.exit(1);
-            }
-            if (maj < 11 || (maj === 11 && min < 5) || (maj === 11 && min === 5 && pat < 1)) {
-              console.error("npm CLI must be >= 11.5.1 for Trusted Publishing, got", process.argv[1]);
-              process.exit(1);
-            }
-          ' "$version"
-          echo "${prefix}/node_modules/.bin" >> "$GITHUB_PATH"
+          if [ "$version" != "$expected" ]; then
+            echo "lockfile-pinned npm CLI mismatch: expected ${expected}, got ${version}" >&2
+            exit 1
+          fi
           echo "bin=${selected}" >> "$GITHUB_OUTPUT"
       - name: Enforce git tag version equals package.json
         id: version
@@ -110,8 +259,18 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./packages/create-signkit/package.json').version")"
+          root="$(node -p "require('./package.json').version")"
+          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           if [ "$tag" != "$pkg" ]; then
             echo "git tag version ${GITHUB_REF_NAME} does not match packages/create-signkit/package.json version ${pkg}" >&2
+            exit 1
+          fi
+          if [ "$tag" != "$root" ]; then
+            echo "git tag version ${GITHUB_REF_NAME} does not match root package.json version ${root}" >&2
+            exit 1
+          fi
+          if [ "$tag" != "$cli" ]; then
+            echo "git tag version ${GITHUB_REF_NAME} does not match cli/Cargo.toml version ${cli}" >&2
             exit 1
           fi
           dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "$GITHUB_REF_NAME")"
@@ -142,3 +301,85 @@ jobs:
             exit 1
           fi
           pnpm exec "$NPM_CLI" publish --access public --tag "$NPM_DIST_TAG"
+
+  publish-release:
+    # Runs only after the npm gate succeeds, so a v* tag can never leave a
+    # public GitHub Release behind an unpublished (or failed) npm package.
+    # An npm provenance/auth failure fails publish-npm and this job never
+    # starts; the draft from `release` stays private for operator recovery.
+    needs: [release, publish-npm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-tags: true
+      - name: Enforce git tag version equals every package version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          root="$(node -p "require('./package.json').version")"
+          csk="$(node -p "require('./packages/create-signkit/package.json').version")"
+          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          for v in "$root" "$csk" "$cli"; do
+            if [ "$tag" != "$v" ]; then
+              echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
+              exit 1
+            fi
+          done
+      - name: Mark the draft release public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ASSETS_SHA256_BASE64: ${{ needs.release.outputs.expected_assets_sha256_base64 }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! release_json="$(gh release view "$tag" --json isDraft,assets)"; then
+            echo "expected draft release ${tag} from the release job, but it does not exist" >&2
+            exit 1
+          fi
+          is_draft="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.isDraft));' "$release_json")"
+          if [ "$is_draft" != "true" ]; then
+            echo "release ${tag} is already public; refusing any further mutation"
+            exit 0
+          fi
+
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          expected_hashes="$verify_dir/expected-assets.sha256"
+          if [ -z "$EXPECTED_ASSETS_SHA256_BASE64" ]; then
+            echo "release job did not provide trusted expected asset hashes" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$EXPECTED_ASSETS_SHA256_BASE64" | base64 --decode > "$expected_hashes"; then
+            echo "release job provided invalid expected asset hashes" >&2
+            exit 1
+          fi
+          expected_names="$verify_dir/expected-assets.txt"
+          awk '{print $2}' "$expected_hashes" | sort > "$expected_names"
+          if [ "$(wc -l < "$expected_names")" -ne 6 ]; then
+            echo "release job provided an unexpected asset set" >&2
+            exit 1
+          fi
+          remote_names="$verify_dir/remote-assets.txt"
+          node -e 'const value=JSON.parse(process.argv[1]); for (const asset of value.assets ?? []) console.log(asset.name);' "$release_json" | sort > "$remote_names"
+          if ! cmp -s "$expected_names" "$remote_names"; then
+            echo "refusing to publish draft release ${tag}: remote asset set differs from the release job" >&2
+            exit 1
+          fi
+
+          downloaded_assets="$verify_dir/assets"
+          mkdir "$downloaded_assets"
+          gh release download "$tag" --dir "$downloaded_assets"
+          downloaded_names="$verify_dir/downloaded-assets.txt"
+          find "$downloaded_assets" -maxdepth 1 -type f -printf '%f\n' | sort > "$downloaded_names"
+          if ! cmp -s "$expected_names" "$downloaded_names"; then
+            echo "refusing to publish draft release ${tag}: downloaded asset set is incomplete or unexpected" >&2
+            exit 1
+          fi
+          if ! (cd "$downloaded_assets" && sha256sum -c "$expected_hashes"); then
+            echo "refusing to publish draft release ${tag}: downloaded asset bytes differ from the release job" >&2
+            exit 1
+          fi
+          gh release edit "$tag" --draft=false
