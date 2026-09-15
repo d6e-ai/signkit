@@ -6,6 +6,8 @@ import type { PublicEnvelopeDeliveryStatus } from '$lib/application/delivery/del
 export type Envelope = PublicEnvelope;
 export type { FieldGeometry, FieldType, RecipientRole, PublicEnvelopeDeliveryStatus };
 
+const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 export interface ProblemValidationError {
 	readonly path: string;
 	readonly message: string;
@@ -451,12 +453,12 @@ export class EnvelopesClient {
 		input: { expectedGeneration: number; targetPath: `documents/${string}.md`; file: Blob },
 		options?: RequestOptions
 	): Promise<CommitDraftResponse> {
-		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/draft/docx`);
+		const query = new URLSearchParams({
+			targetPath: input.targetPath,
+			expectedGeneration: String(input.expectedGeneration)
+		});
+		const url = `${this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/draft/docx`)}?${query}`;
 		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
-		const body = new FormData();
-		body.set('expectedGeneration', String(input.expectedGeneration));
-		body.set('targetPath', input.targetPath);
-		body.set('file', input.file, 'upload.docx');
 		const { data, response } = await this.request<{
 			revision: { generation: number; commitSha: string; archiveSha256: string };
 		}>(
@@ -465,9 +467,10 @@ export class EnvelopesClient {
 				method: 'POST',
 				headers: {
 					accept: 'application/json, application/problem+json',
+					'content-type': DOCX_CONTENT_TYPE,
 					'idempotency-key': idempotencyKey
 				},
-				body
+				body: input.file
 			},
 			options?.fetch
 		);
@@ -482,13 +485,11 @@ export class EnvelopesClient {
 		input: { expectedGeneration: number; file: Blob; title?: string; position?: number },
 		options?: RequestOptions
 	): Promise<CommitDraftResponse> {
-		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/documents/pdf`);
+		const query = new URLSearchParams({ expectedGeneration: String(input.expectedGeneration) });
+		if (input.title !== undefined) query.set('title', input.title);
+		if (input.position !== undefined) query.set('position', String(input.position));
+		const url = `${this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/documents/pdf`)}?${query}`;
 		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
-		const body = new FormData();
-		body.set('expectedGeneration', String(input.expectedGeneration));
-		if (input.title !== undefined) body.set('title', input.title);
-		if (input.position !== undefined) body.set('position', String(input.position));
-		body.set('file', input.file, 'upload.pdf');
 		const { data, response } = await this.request<{
 			revision: { generation: number; commitSha: string; archiveSha256: string };
 		}>(
@@ -497,9 +498,10 @@ export class EnvelopesClient {
 				method: 'POST',
 				headers: {
 					accept: 'application/json, application/problem+json',
+					'content-type': 'application/pdf',
 					'idempotency-key': idempotencyKey
 				},
-				body
+				body: input.file
 			},
 			options?.fetch
 		);
@@ -552,8 +554,7 @@ export class EnvelopesClient {
 			credentials: 'same-origin',
 			method: 'GET',
 			headers: {
-				accept:
-					'application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/problem+json'
+				accept: `${DOCX_CONTENT_TYPE}, application/problem+json`
 			}
 		});
 		if (!response.ok) throw await this.parseErrorResponse(response, url);

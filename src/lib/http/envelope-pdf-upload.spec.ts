@@ -68,10 +68,9 @@ function requestBody(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 	return copy;
 }
 
-function multipartBody(bytes: Uint8Array, extra: Record<string, string> = {}): FormData {
+function multipartBody(bytes: Uint8Array): FormData {
 	const form = new FormData();
-	form.set('expectedGeneration', extra.expectedGeneration ?? '0');
-	if (extra.title !== undefined) form.set('title', extra.title);
+	form.set('expectedGeneration', '0');
 	form.set('file', new File([requestBody(bytes)], 'agreement.pdf', { type: 'application/pdf' }));
 	return form;
 }
@@ -111,11 +110,12 @@ describe('PDF upload HTTP handler', () => {
 		const handler: RequestHandler = createPdfUploadHandler((): null => null);
 		const response: Response = await handler(
 			createHttpRequestEvent({
-				pathname,
+				pathname: `${pathname}?expectedGeneration=0`,
 				method: 'POST',
 				locals: locals(),
 				params: { envelopeId },
-				body: multipartBody(samplePdfBytes())
+				headers: { 'content-type': 'application/pdf' },
+				body: requestBody(samplePdfBytes())
 			})
 		);
 		await expectProblemResponse(response, {
@@ -142,10 +142,9 @@ describe('PDF upload HTTP handler', () => {
 		});
 	});
 
-	it('rejects a multipart upload without a file field', async () => {
-		const handler: RequestHandler = createPdfUploadHandler((): null => null);
-		const form = new FormData();
-		form.set('expectedGeneration', '0');
+	it('rejects a multipart/form-data upload as unsupported media type instead of buffering it', async () => {
+		const resolveDependencies = vi.fn((): null => null);
+		const handler: RequestHandler = createPdfUploadHandler(resolveDependencies);
 		const response: Response = await handler(
 			createHttpRequestEvent({
 				pathname,
@@ -153,35 +152,22 @@ describe('PDF upload HTTP handler', () => {
 				locals: locals(),
 				params: { envelopeId },
 				headers: { 'idempotency-key': 'upload-1' },
-				body: form
+				body: multipartBody(samplePdfBytes())
 			})
 		);
+		// FormData bodies get an automatic `multipart/form-data; boundary=...`
+		// content-type, so this exercises the media-type gate rather than a
+		// missing header.
 		await expectProblemResponse(response, {
-			status: 400,
-			type: 'urn:signkit:problem:validation-failed'
+			status: 415,
+			type: 'urn:signkit:problem:unsupported-media-type'
 		});
+		// Rejected on content-type before any dependency resolution or body
+		// buffering -- the whole point of removing multipart support.
+		expect(resolveDependencies).not.toHaveBeenCalled();
 	});
 
-	it('rejects a multipart file larger than the upload bound', async () => {
-		const handler: RequestHandler = createPdfUploadHandler((): null => null);
-		const oversized = new Uint8Array(MAX_UPLOADED_PDF_BYTES + 1);
-		const response: Response = await handler(
-			createHttpRequestEvent({
-				pathname,
-				method: 'POST',
-				locals: locals(),
-				params: { envelopeId },
-				headers: { 'idempotency-key': 'upload-1' },
-				body: multipartBody(oversized)
-			})
-		);
-		await expectProblemResponse(response, {
-			status: 413,
-			type: 'urn:signkit:problem:request-body-too-large'
-		});
-	});
-
-	it('rejects a raw application/pdf body larger than the upload bound', async () => {
+	it('rejects a raw application/pdf body larger than the upload bound via declared Content-Length', async () => {
 		const handler: RequestHandler = createPdfUploadHandler((): null => null);
 		const oversized = new Uint8Array(MAX_UPLOADED_PDF_BYTES + 1);
 		const response: Response = await handler(
@@ -200,17 +186,51 @@ describe('PDF upload HTTP handler', () => {
 		});
 	});
 
+	it('rejects a chunked (no Content-Length) body that exceeds the bound mid-stream', async () => {
+		const handler: RequestHandler = createPdfUploadHandler((): null => null);
+		let cancelReason: unknown;
+		const chunkBytes = 64 * 1024;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller: ReadableStreamDefaultController<Uint8Array>): void {
+				controller.enqueue(new Uint8Array(chunkBytes));
+			},
+			cancel(reason: unknown): void {
+				cancelReason = reason;
+			}
+		});
+		const url = new URL(`https://signkit.example${pathname}?expectedGeneration=0`);
+		const request = new Request(url, {
+			method: 'POST',
+			headers: { 'idempotency-key': 'upload-1', 'content-type': 'application/pdf' },
+			body,
+			duplex: 'half'
+		} as RequestInit & { duplex: 'half' });
+		const event = {
+			locals: locals(),
+			params: { envelopeId },
+			request,
+			url
+		} as unknown as RequestEvent;
+
+		const response: Response = await handler(event);
+		await expectProblemResponse(response, {
+			status: 413,
+			type: 'urn:signkit:problem:request-body-too-large'
+		});
+		expect(cancelReason).toBeDefined();
+	});
+
 	it('rejects a structurally invalid PDF as a 400 without ever calling commit', async () => {
 		const commit = vi.fn(async () => committed());
 		const handler: RequestHandler = createPdfUploadHandler(resolver(commit));
 		const response: Response = await handler(
 			createHttpRequestEvent({
-				pathname,
+				pathname: `${pathname}?expectedGeneration=0`,
 				method: 'POST',
 				locals: locals(),
 				params: { envelopeId },
-				headers: { 'idempotency-key': 'upload-1' },
-				body: multipartBody(new TextEncoder().encode('not a pdf'))
+				headers: { 'idempotency-key': 'upload-1', 'content-type': 'application/pdf' },
+				body: requestBody(new TextEncoder().encode('not a pdf'))
 			})
 		);
 		await expectProblemResponse(response, {
@@ -220,17 +240,17 @@ describe('PDF upload HTTP handler', () => {
 		expect(commit).not.toHaveBeenCalled();
 	});
 
-	it('uploads a valid multipart PDF and returns 201 with a commit Location', async () => {
+	it('uploads a valid raw application/pdf body and returns 201 with a commit Location', async () => {
 		const commit = vi.fn(async () => committed());
 		const handler: RequestHandler = createPdfUploadHandler(resolver(commit));
 		const response: Response = await handler(
 			createHttpRequestEvent({
-				pathname,
+				pathname: `${pathname}?expectedGeneration=0&title=Employment+Agreement`,
 				method: 'POST',
 				locals: locals(),
 				params: { envelopeId },
-				headers: { 'idempotency-key': 'upload-1' },
-				body: multipartBody(samplePdfBytes(), { title: 'Employment Agreement' })
+				headers: { 'idempotency-key': 'upload-1', 'content-type': 'application/pdf' },
+				body: requestBody(samplePdfBytes())
 			})
 		);
 		expect(response.status).toBe(201);
@@ -242,7 +262,7 @@ describe('PDF upload HTTP handler', () => {
 		expect(commit).toHaveBeenCalledTimes(1);
 	});
 
-	it('uploads a valid raw application/pdf body and returns 201', async () => {
+	it('accepts application/octet-stream as an alias for a raw PDF body', async () => {
 		const commit = vi.fn(async () => committed());
 		const handler: RequestHandler = createPdfUploadHandler(resolver(commit));
 		const response: Response = await handler(
@@ -251,7 +271,7 @@ describe('PDF upload HTTP handler', () => {
 				method: 'POST',
 				locals: locals(),
 				params: { envelopeId },
-				headers: { 'idempotency-key': 'upload-1', 'content-type': 'application/pdf' },
+				headers: { 'idempotency-key': 'upload-1', 'content-type': 'application/octet-stream' },
 				body: requestBody(samplePdfBytes())
 			})
 		);
@@ -267,12 +287,12 @@ describe('PDF upload HTTP handler', () => {
 		const handler: RequestHandler = createPdfUploadHandler(resolver(commit));
 		const response: Response = await handler(
 			createHttpRequestEvent({
-				pathname,
+				pathname: `${pathname}?expectedGeneration=0`,
 				method: 'POST',
 				locals: locals(),
 				params: { envelopeId },
-				headers: { 'idempotency-key': 'upload-1' },
-				body: multipartBody(samplePdfBytes())
+				headers: { 'idempotency-key': 'upload-1', 'content-type': 'application/pdf' },
+				body: requestBody(samplePdfBytes())
 			})
 		);
 		expect(response.status).toBe(201);
@@ -283,12 +303,12 @@ describe('PDF upload HTTP handler', () => {
 		const handler: RequestHandler = createPdfUploadHandler((): null => null);
 		const response: Response = await handler(
 			createHttpRequestEvent({
-				pathname,
+				pathname: `${pathname}?expectedGeneration=0`,
 				method: 'POST',
 				locals: locals(),
 				params: { envelopeId },
-				headers: { 'idempotency-key': 'upload-1' },
-				body: multipartBody(samplePdfBytes())
+				headers: { 'idempotency-key': 'upload-1', 'content-type': 'application/pdf' },
+				body: requestBody(samplePdfBytes())
 			})
 		);
 		await expectProblemResponse(response, {

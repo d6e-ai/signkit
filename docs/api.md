@@ -38,6 +38,7 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 | `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits`                    | commit Markdown draft changes                      | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx`                       | import bounded DOCX as a Markdown commit           | drafts:write   |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/docx`                             | export the pinned revision as DOCX                 | envelopes:read |
+| `POST` | `/api/v1/envelopes/{envelopeId}/documents/pdf`                    | append an uploaded PDF as a document               | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/ready`                            | freeze the recipient graph, mark ready             | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/fields`                           | replace the signing-field placement                | drafts:write   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/send`                             | pin the commit and start delivery                  | envelopes:send |
@@ -57,7 +58,9 @@ Requires an authenticated d6e-auth organization session. Reads marked `envelopes
 
 **Draft commits** track `documents/*.md` in the envelope's own Git repository, use expected-generation concurrency, and accept optional automation provenance. See [architecture/draft-git-repository.md](architecture/draft-git-repository.md#draft-git-repository).
 
-**DOCX import** (`POST .../draft/docx`) accepts `multipart/form-data` (`file`, `targetPath`, `expectedGeneration`) or a WordprocessingML/octet-stream body with those fields as query parameters, requires `Idempotency-Key`, and converts the upload into one Markdown document committed through the same draft persistence path. The original DOCX is discarded; it is never stored in Git or the object draft archive. Oversized or hostile packages fail closed before `commit`.
+**DOCX import** (`POST .../draft/docx`) accepts a raw WordprocessingML (or `application/octet-stream`) body with `targetPath` and `expectedGeneration` as query parameters, requires `Idempotency-Key`, and converts the upload into one Markdown document committed through the same draft persistence path. The original DOCX is discarded; it is never stored in Git or the object draft archive. Oversized or hostile packages fail closed before `commit`. `multipart/form-data` is not accepted: the request body is bounded and streamed against the size limit before it is buffered, and a multipart wrapper cannot preserve that guarantee.
+
+**PDF upload** (`POST .../documents/pdf`) accepts a raw `application/pdf` (or `application/octet-stream`) body with `expectedGeneration` and optional `title`/`position` as query parameters, requires `Idempotency-Key`, and appends the file as a document in the envelope's document set. `multipart/form-data` is not accepted, for the same streaming-bound reason as DOCX import.
 
 **DOCX export** (`GET .../docx`) renders the envelope's pinned Git locator (`sentCommitSha` otherwise `repositoryHead`) to WordprocessingML. The response is an attachment with `x-signkit-commit-sha` and `cache-control: no-store`. An envelope with no pin returns 409 `urn:signkit:problem:docx-export-empty`.
 

@@ -4,3 +4,4 @@ Dated notes recording the rationale behind choices made in [../](../README.md) a
 
 - [2026-09-15-ordered-multi-document-pdf-upload.md](./2026-09-15-ordered-multi-document-pdf-upload.md) — envelopes are ordered mixed Markdown/PDF document sets with a Merkle `documentSetHash`.
 - [2026-09-15-executed-agreement-pdf.md](./2026-09-15-executed-agreement-pdf.md) — the completion PDF is the executed agreement with signed values drawn at frozen geometry, not an evidence summary.
+- [2026-09-15-security-fixes.md](./2026-09-15-security-fixes.md) — fail-closed hardening for redirects, uploads, session sealing, d6e-auth origin, CLI I/O, and webhook delivery.

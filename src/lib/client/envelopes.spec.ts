@@ -110,7 +110,7 @@ describe('EnvelopesClient', () => {
 		await expect(client.get(envelope.id)).resolves.toEqual(envelope);
 	});
 
-	it('imports a DOCX file as multipart without setting a manual content-type', async () => {
+	it('imports a DOCX file as a raw body with metadata in the query string', async () => {
 		const revision = { generation: 1, commitSha: 'a'.repeat(40), archiveSha256: 'b'.repeat(64) };
 		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
 			mockJsonResponse({ revision }, 201)
@@ -126,10 +126,39 @@ describe('EnvelopesClient', () => {
 			file
 		});
 
-		const [, init] = fetchMock.mock.calls[0];
-		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/draft/docx`);
-		expect(init?.body).toBeInstanceOf(FormData);
-		expect(init?.headers).not.toHaveProperty('content-type');
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe(
+			`/api/v1/envelopes/${envelope.id}/draft/docx?targetPath=documents%2Fagreement.md&expectedGeneration=0`
+		);
+		expect(init?.body).toBe(file);
+		const headers = init?.headers as Record<string, string>;
+		expect(headers['content-type']).toBe(
+			'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+		);
+	});
+
+	it('uploads a PDF file as a raw body with metadata in the query string', async () => {
+		const revision = { generation: 1, commitSha: 'a'.repeat(40), archiveSha256: 'b'.repeat(64) };
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ revision }, 201)
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+		const file = new Blob(['%PDF-1.7'], { type: 'application/pdf' });
+
+		await client.uploadPdf(envelope.id, {
+			expectedGeneration: 0,
+			file,
+			title: 'Employment Agreement',
+			position: 2
+		});
+
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe(
+			`/api/v1/envelopes/${envelope.id}/documents/pdf?expectedGeneration=0&title=Employment+Agreement&position=2`
+		);
+		expect(init?.body).toBe(file);
+		const headers = init?.headers as Record<string, string>;
+		expect(headers['content-type']).toBe('application/pdf');
 	});
 
 	it('downloads commit-pinned DOCX bytes without JSON parsing', async () => {

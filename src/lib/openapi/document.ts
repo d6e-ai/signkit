@@ -421,20 +421,33 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Import a bounded DOCX file as a Markdown draft commit',
 					operationId: 'importEnvelopeDocx',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [
+						organizationHeader,
+						envelopeIdParam,
+						idempotencyHeader,
+						{
+							name: 'targetPath',
+							in: 'query',
+							required: true,
+							schema: { type: 'string' }
+						},
+						{
+							name: 'expectedGeneration',
+							in: 'query',
+							required: true,
+							schema: { type: 'integer', minimum: 0 }
+						}
+					],
 					requestBody: {
 						required: true,
+						description:
+							'A raw WordprocessingML DOCX body. multipart/form-data is not supported: the whole request body is bounded and streamed against the size limit before it is buffered, which a multipart wrapper cannot preserve.',
 						content: {
-							'multipart/form-data': {
-								schema: {
-									type: 'object',
-									required: ['file', 'targetPath', 'expectedGeneration'],
-									properties: {
-										file: { type: 'string', format: 'binary' },
-										targetPath: { type: 'string' },
-										expectedGeneration: { type: 'integer', minimum: 0 }
-									}
-								}
+							'application/vnd.openxmlformats-officedocument.wordprocessingml.document': {
+								schema: { type: 'string', format: 'binary' }
+							},
+							'application/octet-stream': {
+								schema: { type: 'string', format: 'binary' }
 							}
 						}
 					},
@@ -446,23 +459,38 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Append an uploaded PDF as a document in the envelope set',
 					operationId: 'uploadEnvelopePdf',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [
+						organizationHeader,
+						envelopeIdParam,
+						idempotencyHeader,
+						{
+							name: 'expectedGeneration',
+							in: 'query',
+							required: true,
+							schema: { type: 'integer', minimum: 0 }
+						},
+						{
+							name: 'title',
+							in: 'query',
+							required: false,
+							schema: { type: 'string' }
+						},
+						{
+							name: 'position',
+							in: 'query',
+							required: false,
+							schema: { type: 'integer', minimum: 0, maximum: 19 }
+						}
+					],
 					requestBody: {
 						required: true,
+						description:
+							'A raw PDF body. multipart/form-data is not supported: the whole request body is bounded and streamed against the size limit before it is buffered, which a multipart wrapper cannot preserve.',
 						content: {
-							'multipart/form-data': {
-								schema: {
-									type: 'object',
-									required: ['file', 'expectedGeneration'],
-									properties: {
-										file: { type: 'string', format: 'binary' },
-										expectedGeneration: { type: 'integer', minimum: 0 },
-										title: { type: 'string' },
-										position: { type: 'integer', minimum: 0, maximum: 19 }
-									}
-								}
-							},
 							'application/pdf': {
+								schema: { type: 'string', format: 'binary' }
+							},
+							'application/octet-stream': {
 								schema: { type: 'string', format: 'binary' }
 							}
 						}

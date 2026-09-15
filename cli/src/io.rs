@@ -1,6 +1,6 @@
 use crate::error::CliError;
 use serde_json::{Map, Value};
-use std::fs::{self, File};
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
@@ -83,17 +83,28 @@ pub fn resolve_idempotency_key(provided: Option<&str>) -> Result<String, CliErro
     }
 }
 
+/// Opens `path` for reading without ever following a trailing symlink, and
+/// without the separate check-then-open window a prior `symlink_metadata`
+/// call followed by `File::open` would leave: on Unix the no-follow
+/// enforcement is part of the single `open(2)` syscall, so nothing can swap
+/// a regular file for a symlink between the check and the use. Every
+/// property that matters -- "is it a symlink", "is it a regular file", "how
+/// big is it" -- is then read back from the open file descriptor
+/// (`fstat`-equivalent `File::metadata`), never re-derived from the path.
 fn read_bounded_file(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8>, CliError> {
     if path.as_os_str().is_empty() {
         return Err(CliError::usage("Input path must not be empty."));
     }
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|err| CliError::usage(format!("Failed to read '{}': {err}", path.display())))?;
-    if metadata.file_type().is_symlink() {
-        return Err(CliError::usage(
+    let mut file = open_no_follow(path, OpenMode::Read).map_err(|err| {
+        open_error(
+            path,
+            err,
             "Refusing to read a symbolic link. Provide a regular file or '-'.",
-        ));
-    }
+        )
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|err| CliError::usage(format!("Failed to read '{}': {err}", path.display())))?;
     if !metadata.is_file() {
         return Err(CliError::usage(format!(
             "{kind} input path must name a regular file."
@@ -104,8 +115,6 @@ fn read_bounded_file(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8
             "{kind} input exceeds the {max_bytes} byte limit."
         )));
     }
-    let mut file = File::open(path)
-        .map_err(|err| CliError::usage(format!("Failed to open '{}': {err}", path.display())))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     if buffer.len() > max_bytes {
@@ -116,23 +125,104 @@ fn read_bounded_file(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8
     Ok(buffer)
 }
 
+/// Opens `path` for writing with the same no-follow, descriptor-checked
+/// discipline as [`read_bounded_file`]: creating a missing file or
+/// truncating an existing regular one, in the one `open(2)` call, but never
+/// following a trailing symlink. This preserves the existing "overwrite an
+/// existing regular file, refuse a symlink" UX -- `create_new` alone would
+/// reject the ordinary overwrite case, so this uses `create` + `truncate`
+/// gated by the no-follow flag instead.
 fn write_bounded_file(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     if path.as_os_str().is_empty() {
         return Err(CliError::usage("Output path must not be empty."));
     }
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(CliError::usage(
-                "Refusing to write through a symbolic link. Provide a regular file or '-'.",
-            ));
-        }
-        Ok(metadata) if !metadata.is_file() => {
-            return Err(CliError::usage("Output path must name a regular file."));
-        }
-        Ok(_) | Err(_) => {}
+    let mut file = open_no_follow(path, OpenMode::Write).map_err(|err| {
+        open_error(
+            path,
+            err,
+            "Refusing to write through a symbolic link. Provide a regular file or '-'.",
+        )
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|err| CliError::usage(format!("Failed to write '{}': {err}", path.display())))?;
+    if !metadata.is_file() {
+        return Err(CliError::usage("Output path must name a regular file."));
     }
-    fs::write(path, bytes)
+    file.write_all(bytes)
         .map_err(|err| CliError::usage(format!("Failed to write '{}': {err}", path.display())))
+}
+
+#[derive(Clone, Copy)]
+enum OpenMode {
+    Read,
+    Write,
+}
+
+#[cfg(unix)]
+fn open_no_follow(path: &Path, mode: OpenMode) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = OpenOptions::new();
+    let nonblocking_extra = match mode {
+        OpenMode::Read => {
+            options.read(true);
+            0
+        }
+        OpenMode::Write => {
+            // `O_NONBLOCK` keeps a pre-existing FIFO at `path` from blocking
+            // this open indefinitely; the immediately following `is_file()`
+            // check rejects it (and every other non-regular type) before any
+            // byte is written.
+            options.write(true).create(true).truncate(true);
+            libc::O_NONBLOCK
+        }
+    };
+    options
+        .custom_flags(libc::O_NOFOLLOW | nonblocking_extra)
+        .open(path)
+}
+
+/// No portable no-follow open exists outside Unix, so this falls back to the
+/// pre-open `symlink_metadata` check the whole crate used before this fix --
+/// still racy against a concurrent swap on those platforms, but explicit
+/// about it rather than silently claiming the same atomicity `open_no_follow`
+/// provides on Unix. Every supported CI target (Linux) takes the Unix path
+/// above.
+#[cfg(not(unix))]
+const NON_UNIX_SYMLINK_SENTINEL: &str = "signkit: refusing symbolic link";
+
+#[cfg(not(unix))]
+fn open_no_follow(path: &Path, mode: OpenMode) -> io::Result<File> {
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::other(NON_UNIX_SYMLINK_SENTINEL));
+        }
+    }
+    match mode {
+        OpenMode::Read => OpenOptions::new().read(true).open(path),
+        OpenMode::Write => OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path),
+    }
+}
+
+#[cfg(unix)]
+fn is_symlink_open_error(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+fn is_symlink_open_error(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::Other && err.to_string() == NON_UNIX_SYMLINK_SENTINEL
+}
+
+fn open_error(path: &Path, err: io::Error, symlink_message: &str) -> CliError {
+    if is_symlink_open_error(&err) {
+        return CliError::usage(symlink_message);
+    }
+    CliError::usage(format!("Failed to open '{}': {err}", path.display()))
 }
 
 fn read_bounded_stdin(max_bytes: usize, kind: &str) -> Result<Vec<u8>, CliError> {
