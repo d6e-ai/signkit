@@ -243,6 +243,17 @@ jobs:
           # Never resolve a range dynamically in a privileged release job.
           expected="$(node -p "require('./package.json').devDependencies.npm")"
           selected="$(pnpm exec which npm)"
+          # Normalize to an absolute path at selection time: the publish step
+          # runs in packages/create-signkit, so a relative ./node_modules path
+          # would no longer resolve there.
+          selected="$(realpath -m "$selected")"
+          case "$selected" in
+            /*) ;;
+            *)
+              echo "npm CLI path is not absolute: ${selected}" >&2
+              exit 1
+              ;;
+          esac
           if [ ! -x "$selected" ]; then
             echo "npm CLI was not found at ${selected}" >&2
             exit 1

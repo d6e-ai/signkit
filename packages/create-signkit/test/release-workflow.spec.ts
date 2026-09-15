@@ -41,6 +41,14 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(lockfile).toMatch(/npm:\n\s+specifier: 11\.5\.1\n\s+version: 11\.5\.1/);
 		expect(lockfile).toMatch(/npm@11\.5\.1:\n\s+resolution: \{integrity: sha512-/);
 		expect(yaml).toMatch(/selected="\$\(pnpm exec which npm\)"/);
+		// Regression: the selected CLI must be normalized to an absolute path
+		// at selection time; the publish step runs in packages/create-signkit
+		// where a relative ./node_modules path no longer resolves.
+		expect(yaml).toMatch(/selected="\$\(realpath -m "\$selected"\)"/);
+		expect(yaml).toMatch(/npm CLI path is not absolute/);
+		expect(yaml.indexOf('case "$selected" in')).toBeLessThan(
+			yaml.indexOf('echo "bin=${selected}"')
+		);
 		expect(yaml).toMatch(/pnpm exec "\$NPM_CLI" publish --access public --tag "\$NPM_DIST_TAG"/);
 		expect(yaml).not.toMatch(/pnpm exec "\$NPM_CLI" publish --access public\s*$/m);
 		expect(yaml).toMatch('NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}');
