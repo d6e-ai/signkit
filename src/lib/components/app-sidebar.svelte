@@ -185,9 +185,12 @@
 								<Avatar.Root class="size-8">
 									<Avatar.Fallback>{accountInitial}</Avatar.Fallback>
 								</Avatar.Root>
-								<span class="grid min-w-0 flex-1 text-left leading-tight">
-									<span class="truncate text-sm font-semibold">{accountDisplayName}</span>
-									<span class="truncate text-xs text-muted-foreground">{email}</span>
+								<span class="grid min-w-0 flex-1 text-left">
+									<span class="truncate text-sm leading-none font-medium">{accountDisplayName}</span
+									>
+									<span class="mt-1 truncate text-xs leading-none text-muted-foreground"
+										>{email}</span
+									>
 								</span>
 								<IconSelector class="ml-auto" />
 							</Sidebar.MenuButton>
@@ -199,8 +202,8 @@
 						side={sidebar.isMobile ? 'bottom' : 'right'}
 					>
 						<DropdownMenu.Label class="font-normal">
-							<p class="truncate text-sm font-semibold text-foreground">{accountDisplayName}</p>
-							<p class="truncate text-xs text-muted-foreground">{email}</p>
+							<p class="truncate text-sm leading-none font-medium">{accountDisplayName}</p>
+							<p class="mt-1 truncate text-xs leading-none text-muted-foreground">{email}</p>
 						</DropdownMenu.Label>
 						<DropdownMenu.Separator />
 						<DropdownMenu.Group>

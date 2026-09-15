@@ -3,7 +3,9 @@ import { S3ObjectStore } from '$lib/adapters/object/s3';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import {
 	resolvePostgresEnvelopeSentPdfStore,
+	resolvePostgresEnvelopeSentDocumentStore,
 	resolvePostgresEnvelopeStore,
+	resolvePostgresEnvelopeUploadedDocumentStore,
 	resolvePostgresRecipientAccessApplication,
 	resolvePostgresRecipientFieldDeclarationStore
 } from '$lib/application/envelopes/runtime-postgres';
@@ -54,7 +56,8 @@ export function resolveS3DraftPersistenceService(
 	return new DraftPersistenceService(
 		resolvePostgresEnvelopeStore(validated.databaseUrl),
 		resources.objects,
-		new IsomorphicGitDraftRepository()
+		new IsomorphicGitDraftRepository(),
+		resolvePostgresEnvelopeUploadedDocumentStore(validated.databaseUrl)
 	);
 }
 
@@ -75,6 +78,7 @@ export function resolveS3RecipientWorkspaceApplication(
 		resolvePostgresRecipientFieldDeclarationStore(validated.databaseUrl);
 	return new RecipientWorkspaceService(
 		resolvePostgresRecipientAccessApplication(validated.databaseUrl),
+		resolvePostgresEnvelopeSentDocumentStore(validated.databaseUrl),
 		resolvePostgresEnvelopeSentPdfStore(validated.databaseUrl),
 		(context) =>
 			fields.listOwnFields(context.organizationId, context.envelopeId, context.recipientId)
@@ -88,6 +92,7 @@ export function resolveS3RecipientSentPdfApplication(
 	const resources: CachedS3Resources = resolveS3Resources(validated);
 	return new RecipientSentPdfService(
 		resolvePostgresRecipientAccessApplication(validated.databaseUrl),
+		resolvePostgresEnvelopeSentDocumentStore(validated.databaseUrl),
 		resolvePostgresEnvelopeSentPdfStore(validated.databaseUrl),
 		resources.objects
 	);

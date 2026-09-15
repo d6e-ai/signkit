@@ -38,7 +38,7 @@ function validBody(): string {
 		fields: [
 			{
 				recipientId,
-				documentPath: 'documents/agreement.md',
+				documentId: '01900000-0000-7000-8000-000000000021',
 				fieldType: 'signature',
 				label: 'Sign here',
 				required: true,
@@ -64,7 +64,8 @@ function application(result?: PlaceFieldsResult): EnvelopeFieldApplicationPort {
 							{
 								id: 'field-1',
 								recipientId,
-								documentPath: 'documents/agreement.md',
+								documentId: '01900000-0000-7000-8000-000000000021',
+								documentPath: null,
 								fieldType: 'signature',
 								required: true,
 								position: 1,
@@ -158,7 +159,7 @@ describe('envelope fields HTTP handler', () => {
 		const handler = createEnvelopeFieldsHandler(() => application());
 		const field = {
 			recipientId,
-			documentPath: 'documents/agreement.md',
+			documentId: '01900000-0000-7000-8000-000000000021',
 			fieldType: 'signature',
 			label: 'Sign here',
 			required: true,
@@ -243,7 +244,7 @@ describe('envelope fields HTTP handler', () => {
 				fields: [
 					{
 						recipientId,
-						documentPath: 'documents/agreement.md',
+						documentId: '01900000-0000-7000-8000-000000000021',
 						fieldType: 'signature',
 						label: 'Sign here',
 						required: true,
@@ -288,7 +289,8 @@ describe('envelope fields HTTP handler', () => {
 					{
 						id: 'field-1',
 						recipientId,
-						documentPath: 'documents/agreement.md',
+						documentId: '01900000-0000-7000-8000-000000000021',
+						documentPath: null,
 						fieldType: 'signature',
 						required: true,
 						position: 1,
@@ -320,7 +322,7 @@ describe('envelope fields HTTP handler', () => {
 					fields: [
 						{
 							recipientId,
-							documentPath: 'documents/agreement.md',
+							documentId: '01900000-0000-7000-8000-000000000021',
 							fieldType: 'signature',
 							label: 'Sign here',
 							required: true,
@@ -349,7 +351,7 @@ describe('envelope fields HTTP handler', () => {
 					fields: [
 						{
 							recipientId,
-							documentPath: 'documents/agreement.md',
+							documentId: '01900000-0000-7000-8000-000000000021',
 							fieldType: 'signature',
 							label: 'Sign here',
 							required: true,

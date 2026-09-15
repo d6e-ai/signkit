@@ -29,6 +29,8 @@ export const integrationCapabilities = {
 				'/api/v1/envelopes',
 				'/api/v1/envelopes/{envelopeId}/draft/commits',
 				'/api/v1/envelopes/{envelopeId}/draft/docx',
+				'/api/v1/envelopes/{envelopeId}/documents/pdf',
+				'/api/v1/envelopes/{envelopeId}/documents/order',
 				'/api/v1/envelopes/{envelopeId}/ready',
 				'/api/v1/envelopes/{envelopeId}/fields'
 			],

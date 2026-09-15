@@ -76,7 +76,8 @@ describe('EnvelopesClient', () => {
 			generation: 1,
 			commitSha: '0123456789abcdef0123456789abcdef01234567',
 			archiveSha256: 'a'.repeat(64),
-			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+			documentSet: null
 		};
 		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(workspace));
 		const client = createEnvelopesClient({ fetch: fetchMock });

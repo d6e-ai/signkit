@@ -1,4 +1,5 @@
-import { fakeSentPdfArtifact } from '$lib/application/documents/sent-document-pdf-test-support';
+import { fakeSentDocumentSetArtifact } from '$lib/application/documents/sent-document-pdf-test-support';
+import { sentAuditDocuments } from '$lib/application/documents/sent-document-pdf';
 import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
@@ -67,14 +68,18 @@ function envelopeRow(): Record<string, unknown> {
 function sendCommand(): PublishSentEnvelopeCommand {
 	const updatedAt: string = '2026-09-11T00:02:00.000Z';
 	const expiresAt: string = '2026-09-25T00:02:00.000Z';
+	const sealedCapability: string = 'sealed-capability';
+	const sealedCapabilitySha256: string = createHash('sha256')
+		.update(sealedCapability)
+		.digest('hex');
 	const delivery = {
 		id: 'delivery-signer',
 		recipientId: 'recipient-signer',
 		capabilityHash: 'capability-hash',
 		capabilityExpiresAt: expiresAt,
-		sealedCapability: 'sealed-capability',
+		sealedCapability,
 		sealingKeyId: 'key-1',
-		sealedCapabilitySha256: 'c'.repeat(64),
+		sealedCapabilitySha256,
 		status: 'pending' as const,
 		availableAt: updatedAt
 	};
@@ -92,7 +97,7 @@ function sendCommand(): PublishSentEnvelopeCommand {
 	]);
 	return {
 		...key,
-		sentPdf: fakeSentPdfArtifact(key.organizationId, key.envelopeId),
+		sentDocumentSet: fakeSentDocumentSetArtifact(key.organizationId, key.envelopeId),
 		expectedGeneration: 2,
 		expectedReadyAuditEventId: 'ready-audit',
 		commitSha: 'commit-2',
@@ -224,8 +229,8 @@ describe('PostgresEnvelopeSendStore', () => {
 			[{ deliveryCount: 1, queuedCount: 1 }],
 			[{ id: 'env-1' }],
 			[],
-			// The pinned agreement rendering is inserted in the same transaction
-			// as the status flip and the audit event.
+			[],
+			[{ count: 1 }],
 			[]
 		]);
 
@@ -240,8 +245,152 @@ describe('PostgresEnvelopeSendStore', () => {
 		).toBe(true);
 		expect(
 			database.queries.some((query): boolean =>
-				query.text.includes('INSERT INTO envelope_sent_pdf')
+				query.text.includes('INSERT INTO envelope_sent_document')
 			)
 		).toBe(true);
+	});
+
+	it('replays only a byte-exact canonical envelope.sent payload and preserves legacy sent-pdf receipts', async () => {
+		const command = sendCommand();
+		command.auditPayloadJson = JSON.stringify({
+			commitSha: command.commitSha,
+			generation: command.expectedGeneration,
+			readyAuditEventId: command.expectedReadyAuditEventId,
+			initialRoutingOrder: command.initialRoutingOrder,
+			queuedDeliveryCount: 1,
+			reservedCapabilityCount: 1,
+			deliveryManifestHash: command.deliveryManifestHash,
+			initialCapabilityExpiresAt: command.initialCapabilityExpiresAt,
+			documentSetHash: command.sentDocumentSet.documentSetHash,
+			documentCount: command.sentDocumentSet.documentCount,
+			documents: sentAuditDocuments(command.sentDocumentSet.documents)
+		});
+		command.requestFingerprint = createHash('sha256')
+			.update(
+				JSON.stringify({
+					expectedGeneration: command.expectedGeneration,
+					expectedReadyAuditEventId: command.expectedReadyAuditEventId
+				})
+			)
+			.digest('hex');
+		const evidence = [
+			{
+				id: 'delivery-signer',
+				status: 'pending',
+				retryable: true,
+				recipientId: 'recipient-signer',
+				capabilityHash: 'capability-hash',
+				reservedCapabilityExpiresAt: command.initialCapabilityExpiresAt,
+				sealedCapability: command.deliveries[0].sealedCapability,
+				sealingKeyId: 'key-1',
+				sealedCapabilitySha256: command.deliveries[0].sealedCapabilitySha256,
+				recipientCapabilityHash: 'capability-hash',
+				recipientCapabilityExpiresAt: command.initialCapabilityExpiresAt
+			}
+		];
+		function commandRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+			return {
+				organizationId: command.organizationId,
+				envelopeId: command.envelopeId,
+				actorType: command.actorType,
+				actorId: command.actorId,
+				requestHash: command.requestFingerprint,
+				expectedGeneration: command.expectedGeneration,
+				readyAuditEventId: command.expectedReadyAuditEventId,
+				commitSha: command.commitSha,
+				initialRoutingOrder: command.initialRoutingOrder,
+				deliveryCount: 1,
+				queuedDeliveryCount: 1,
+				deliveryManifestHash: command.deliveryManifestHash,
+				deliveryManifestJson: command.deliveryManifestJson,
+				initialCapabilityExpiresAt: command.initialCapabilityExpiresAt,
+				updatedAt: command.updatedAt,
+				auditEventId: command.auditEventId,
+				auditSequence: 4,
+				previousAuditHash: command.previousAuditHash,
+				auditEventHash: command.auditEventHash,
+				auditPayloadJson: command.auditPayloadJson,
+				sentPdfObjectKey: null,
+				sentPdfSha256: null,
+				sentPdfBytes: null,
+				sentPdfPageCount: null,
+				sentPdfPageWidth: null,
+				sentPdfPageHeight: null,
+				sentPdfDocumentPagesJson: null,
+				documentSetHash: command.sentDocumentSet.documentSetHash,
+				documentCount: command.sentDocumentSet.documentCount,
+				sentDocumentsJson: JSON.stringify(sentAuditDocuments(command.sentDocumentSet.documents)),
+				evidenceEventId: command.auditEventId,
+				evidenceOrganizationId: command.organizationId,
+				evidenceEnvelopeId: command.envelopeId,
+				evidenceSequence: 4,
+				evidenceEventType: 'envelope.sent',
+				evidenceActorType: command.actorType,
+				evidenceActorId: command.actorId,
+				evidencePayloadJson: command.auditPayloadJson,
+				evidencePreviousHash: command.previousAuditHash,
+				evidenceEventHash: command.auditEventHash,
+				evidenceOccurredAt: command.updatedAt,
+				...overrides
+			};
+		}
+
+		await expect(
+			new PostgresEnvelopeSendStore(
+				new ScriptedPostgres([[commandRow()], evidence]).client()
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toMatchObject({ outcome: 'replayed', result: { status: 'sent' } });
+
+		const extraFieldPayload: string = `${command.auditPayloadJson.slice(0, -1)},"extra":true}`;
+		await expect(
+			new PostgresEnvelopeSendStore(
+				new ScriptedPostgres([
+					[
+						commandRow({
+							auditPayloadJson: extraFieldPayload,
+							evidencePayloadJson: extraFieldPayload
+						})
+					],
+					evidence
+				]).client()
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toEqual({ outcome: 'integrity_error' });
+
+		const legacyPayload: string = JSON.stringify({
+			commitSha: command.commitSha,
+			generation: command.expectedGeneration,
+			readyAuditEventId: command.expectedReadyAuditEventId,
+			initialRoutingOrder: command.initialRoutingOrder,
+			queuedDeliveryCount: 1,
+			reservedCapabilityCount: 1,
+			deliveryManifestHash: command.deliveryManifestHash,
+			initialCapabilityExpiresAt: command.initialCapabilityExpiresAt,
+			sentPdfSha256: 'f'.repeat(64),
+			sentPdfBytes: 4096,
+			sentPdfPageCount: 2
+		});
+		await expect(
+			new PostgresEnvelopeSendStore(
+				new ScriptedPostgres([
+					[
+						commandRow({
+							documentSetHash: null,
+							documentCount: null,
+							sentDocumentsJson: null,
+							sentPdfObjectKey: 'sent-documents/v1/legacy.pdf',
+							sentPdfSha256: 'f'.repeat(64),
+							sentPdfBytes: 4096,
+							sentPdfPageCount: 2,
+							sentPdfPageWidth: 595.28,
+							sentPdfPageHeight: 841.89,
+							sentPdfDocumentPagesJson: '[]',
+							auditPayloadJson: legacyPayload,
+							evidencePayloadJson: legacyPayload
+						})
+					],
+					evidence
+				]).client()
+			).prepareSend(command, 2, 'ready-audit')
+		).resolves.toMatchObject({ outcome: 'replayed', result: { status: 'sent' } });
 	});
 });

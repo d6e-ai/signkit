@@ -5,6 +5,8 @@
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
+	import IconChevronUp from '@tabler/icons-svelte/icons/chevron-up';
+	import IconChevronDown from '@tabler/icons-svelte/icons/chevron-down';
 	import IconSend from '@tabler/icons-svelte/icons/send';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
@@ -36,7 +38,8 @@
 		type RecipientRole,
 		type VoidableEnvelopeStatus
 	} from '$lib/client/envelopes';
-	import type { RecipientStatus } from '$lib/domain/envelope';
+	import type { DocumentSetLeaf, DocumentSetManifest } from '$lib/domain/document-set';
+	import { isMarkdownPath, type MarkdownPath, type RecipientStatus } from '$lib/domain/envelope';
 	import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
 	import * as m from '$lib/paraglide/messages';
@@ -92,7 +95,7 @@
 	interface FieldDraft {
 		key: string;
 		recipientId: string;
-		documentPath: string;
+		documentId: string;
 		fieldType: FieldType;
 		label: string;
 		required: boolean;
@@ -125,6 +128,14 @@
 	let documentPages = $state<EnvelopeDocumentPageMap | null>(null);
 	let documentPagesLoading = $state(false);
 	let selectedFieldKey = $state<string | null>(null);
+	let selectedPlacementDocumentId = $state<string | null>(null);
+	let pdfUploadPending = $state(false);
+	let pdfUploadError = $state<string | null>(null);
+	let documentOrderPending = $state(false);
+	let documentOrderError = $state<string | null>(null);
+	let removeDocumentId = $state<string | null>(null);
+	let removeDialogOpen = $state(false);
+	let activeDocumentKey = $state<string | null>(null);
 	/** Default box, as a fraction of one page: roughly a signature line. */
 	const DEFAULT_FIELD_WIDTH = 0.26;
 	const DEFAULT_FIELD_HEIGHT = 0.05;
@@ -178,6 +189,68 @@
 			.replace(/^documents\//, '')
 			.replace(/\.md$/, '')
 			.replaceAll(/[-_]+/g, ' ');
+	}
+
+	type AuthoringDocument =
+		| { source: 'set'; leaf: DocumentSetLeaf; key: string }
+		| { source: 'pending'; path: MarkdownPath; key: string };
+
+	const authoringDocuments = $derived.by((): AuthoringDocument[] => {
+		const set: DocumentSetManifest | null = draft?.documentSet ?? null;
+		if (set !== null && set.documents.length > 0) {
+			const committedPaths = new Set(
+				set.documents.flatMap((leaf) => (leaf.kind === 'markdown' ? [leaf.path] : []))
+			);
+			const pending = Object.keys(editedContent)
+				.filter((path): path is MarkdownPath => isMarkdownPath(path) && !committedPaths.has(path))
+				.map((path): AuthoringDocument => ({
+					source: 'pending',
+					path,
+					key: `pending:${path}`
+				}));
+			return [
+				...set.documents.map((leaf): AuthoringDocument => ({
+					source: 'set',
+					leaf,
+					key: `set:${leaf.id}`
+				})),
+				...pending
+			];
+		}
+		return Object.keys(editedContent)
+			.filter((path): path is MarkdownPath => isMarkdownPath(path))
+			.map((path): AuthoringDocument => ({ source: 'pending', path, key: `pending:${path}` }));
+	});
+
+	const activePdfLeaf = $derived.by((): DocumentSetLeaf | null => {
+		if (activeDocumentKey === null || !activeDocumentKey.startsWith('set:')) return null;
+		const id = activeDocumentKey.slice(4);
+		const leaf = draft?.documentSet?.documents.find((entry) => entry.id === id);
+		return leaf?.kind === 'pdf' ? leaf : null;
+	});
+
+	function selectAuthoringDocument(entry: AuthoringDocument): void {
+		activeDocumentKey = entry.key;
+		if (entry.source === 'pending') {
+			activeDocPath = entry.path;
+			return;
+		}
+		if (entry.leaf.kind === 'markdown') {
+			activeDocPath = entry.leaf.path;
+			return;
+		}
+		activeDocPath = null;
+	}
+
+	function authoringDocumentTitle(entry: AuthoringDocument): string {
+		if (entry.source === 'pending') return documentTitle(entry.path);
+		return entry.leaf.title;
+	}
+
+	function placedDocumentTitle(documentId: string): string {
+		const fromPages = documentPages?.documents.find((entry) => entry.documentId === documentId);
+		if (fromPages !== undefined) return fromPages.title;
+		return documentId.slice(0, 8);
 	}
 
 	function fieldTypeLabel(fieldType: FieldType): string {
@@ -264,6 +337,15 @@
 				);
 				dirtyPaths.clear();
 				activeDocPath ??= workspace.documents[0]?.path ?? null;
+				if (activeDocumentKey === null) {
+					const first = workspace.documentSet?.documents[0];
+					activeDocumentKey =
+						first !== undefined
+							? `set:${first.id}`
+							: workspace.documents[0]?.path
+								? `pending:${workspace.documents[0].path}`
+								: null;
+				}
 			} else {
 				draft = await client.getDraft(envelopeId).catch(() => null);
 			}
@@ -304,6 +386,7 @@
 		editedContent = { ...editedContent, [path]: `# ${documentTitle(path)}\n\n` };
 		dirtyPaths.add(path);
 		activeDocPath = path;
+		activeDocumentKey = `pending:${path}`;
 		newDocumentName = '';
 	}
 
@@ -333,6 +416,7 @@
 				generation: result.revision.generation,
 				commitSha: result.revision.commitSha,
 				archiveSha256: result.revision.archiveSha256,
+				documentSet: draft.documentSet,
 				documents: Object.entries(editedContent).map(([path, content]) => ({
 					path: path as `documents/${string}.md`,
 					content
@@ -340,6 +424,7 @@
 			};
 			dirtyPaths.clear();
 			documentPages = invalidateDocumentPageMap();
+			await load();
 		} catch (cause) {
 			commitError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_commit_unavailable();
@@ -408,12 +493,23 @@
 	}
 
 	async function fetchDocumentPages(): Promise<EnvelopeDocumentPageMap | null> {
-		const response = await fetch(`/api/v1/envelopes/${envelopeId}/document-pdf/pages`, {
-			credentials: 'same-origin',
-			headers: { accept: 'application/json' }
-		});
+		const documentId: string | null =
+			selectedPlacementDocumentId ??
+			documentPages?.documentId ??
+			draft?.documentSet?.documents[0]?.id ??
+			null;
+		if (documentId === null) return null;
+		const response = await fetch(
+			`/api/v1/envelopes/${envelopeId}/document-pdf/pages?documentId=${encodeURIComponent(documentId)}`,
+			{
+				credentials: 'same-origin',
+				headers: { accept: 'application/json' }
+			}
+		);
 		if (!response.ok) return null;
-		return (await response.json()) as EnvelopeDocumentPageMap;
+		const pageMap = (await response.json()) as EnvelopeDocumentPageMap;
+		if (pageMap.documentId !== documentId) return null;
+		return pageMap;
 	}
 
 	async function loadDocumentPages(): Promise<void> {
@@ -450,11 +546,8 @@
 	 * than asking the sender to pick one separately is what makes it impossible
 	 * to place a field on a page outside the document it claims.
 	 */
-	function documentPathForPage(page: number): string | null {
-		for (const entry of documentPages?.documents ?? []) {
-			if (page >= entry.firstPage && page <= entry.lastPage) return entry.path;
-		}
-		return null;
+	function documentIdForPlacement(): string | null {
+		return selectedPlacementDocumentId ?? documentPages?.documentId ?? null;
 	}
 
 	function roundFraction(value: number): number {
@@ -475,15 +568,15 @@
 	}
 
 	function addFieldAt(page: number, x: number, y: number): void {
-		const documentPath = documentPathForPage(page);
-		if (newField.recipientId === '' || documentPath === null) return;
+		const documentId = documentIdForPlacement();
+		if (newField.recipientId === '' || documentId === null) return;
 		const key = crypto.randomUUID();
 		fieldDrafts = [
 			...fieldDrafts,
 			{
 				key,
 				recipientId: newField.recipientId,
-				documentPath,
+				documentId,
 				fieldType: newField.fieldType,
 				label: newField.label.trim() || fieldTypeLabel(newField.fieldType),
 				required: newField.required,
@@ -620,7 +713,7 @@
 				expectedFieldGeneration: envelope.fieldGeneration,
 				fields: fieldDrafts.map((draftItem) => ({
 					recipientId: draftItem.recipientId,
-					documentPath: draftItem.documentPath as `documents/${string}.md`,
+					documentId: draftItem.documentId,
 					fieldType: draftItem.fieldType,
 					label: draftItem.label,
 					required: draftItem.required,
@@ -715,6 +808,89 @@
 		}
 	}
 
+	async function uploadPdf(fileList: FileList | null): Promise<void> {
+		if (fileList === null || fileList.length === 0 || draft === null || pdfUploadPending) return;
+		const file = fileList[0];
+		pdfUploadPending = true;
+		pdfUploadError = null;
+		try {
+			await client.uploadPdf(envelopeId, {
+				expectedGeneration: draft.generation,
+				file,
+				title: file.name.replace(/\.pdf$/i, '')
+			});
+			await reloadAuthoringSurface();
+		} catch (cause) {
+			pdfUploadError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_pdf_upload_unavailable();
+		} finally {
+			pdfUploadPending = false;
+		}
+	}
+
+	async function persistDocumentOrder(documentIds: readonly string[]): Promise<void> {
+		if (draft === null || documentOrderPending) return;
+		documentOrderPending = true;
+		documentOrderError = null;
+		try {
+			await client.orderDocuments(envelopeId, {
+				expectedGeneration: draft.generation,
+				documentIds
+			});
+			await reloadAuthoringSurface();
+		} catch (cause) {
+			documentOrderError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_document_order_unavailable();
+		} finally {
+			documentOrderPending = false;
+		}
+	}
+
+	function committedDocumentIds(): string[] {
+		return (draft?.documentSet?.documents ?? []).map((leaf) => leaf.id);
+	}
+
+	async function moveCommittedDocument(documentId: string, direction: -1 | 1): Promise<void> {
+		const ids = committedDocumentIds();
+		const index = ids.indexOf(documentId);
+		const next = index + direction;
+		if (index < 0 || next < 0 || next >= ids.length) return;
+		const swapped = [...ids];
+		const current = swapped[index];
+		swapped[index] = swapped[next];
+		swapped[next] = current;
+		await persistDocumentOrder(swapped);
+	}
+
+	async function confirmRemoveDocument(): Promise<void> {
+		if (removeDocumentId === null) return;
+		const remaining = committedDocumentIds().filter((id) => id !== removeDocumentId);
+		if (remaining.length === 0) {
+			removeDocumentId = null;
+			removeDialogOpen = false;
+			return;
+		}
+		const removedId = removeDocumentId;
+		removeDocumentId = null;
+		removeDialogOpen = false;
+		await persistDocumentOrder(remaining);
+		if (activeDocumentKey === `set:${removedId}`) {
+			activeDocumentKey = remaining[0] !== undefined ? `set:${remaining[0]}` : null;
+			activeDocPath = null;
+		}
+	}
+
+	function removePendingMarkdown(path: string): void {
+		const next = { ...editedContent };
+		delete next[path];
+		editedContent = next;
+		dirtyPaths.delete(path);
+		if (activeDocPath === path) {
+			activeDocPath = Object.keys(next)[0] ?? null;
+			activeDocumentKey = activeDocPath !== null ? `pending:${activeDocPath}` : null;
+		}
+	}
+
 	async function voidEnvelopeAction(): Promise<void> {
 		if (envelope === null || voidPending) return;
 		voidPending = true;
@@ -753,11 +929,17 @@
 	);
 
 	function draftsOnPage(page: number): readonly FieldDraft[] {
-		return fieldDrafts.filter((draftItem) => draftItem.geometry?.page === page);
+		const documentId = documentIdForPlacement();
+		return fieldDrafts.filter(
+			(draftItem) => draftItem.documentId === documentId && draftItem.geometry?.page === page
+		);
 	}
 
 	function publishedOnPage(page: number): readonly PublicEnvelopeFieldResponse[] {
-		return placedFields.filter((field) => field.geometry?.page === page);
+		const documentId = documentIdForPlacement();
+		return placedFields.filter(
+			(field) => field.documentId === documentId && field.geometry?.page === page
+		);
 	}
 
 	function recipientName(recipientId: string): string {
@@ -876,25 +1058,109 @@
 									/>
 									<Field.FieldDescription>{m.envelope_import_docx_hint()}</Field.FieldDescription>
 								</Field.Field>
+								<Field.Field class="w-fit">
+									<Field.FieldLabel for="pdf-upload">{m.envelope_add_pdf_label()}</Field.FieldLabel>
+									<div class="flex items-center gap-2">
+										<Input
+											id="pdf-upload"
+											type="file"
+											accept="application/pdf,.pdf"
+											disabled={pdfUploadPending || draft === null}
+											onchange={(event) => {
+												const files = event.currentTarget.files;
+												event.currentTarget.value = '';
+												void uploadPdf(files);
+											}}
+										/>
+										{#if pdfUploadPending}<Spinner data-icon="inline-start" />{/if}
+									</div>
+									<Field.FieldDescription>{m.envelope_add_pdf_hint()}</Field.FieldDescription>
+								</Field.Field>
 							</div>
 
-							{#if Object.keys(editedContent).length === 0}
+							{#if authoringDocuments.length === 0}
 								<p class="text-sm text-muted-foreground">{m.envelope_documents_empty()}</p>
 							{:else}
-								<div class="flex flex-wrap gap-2">
-									{#each Object.keys(editedContent) as path (path)}
-										<Button
-											size="sm"
-											variant={activeDocPath === path ? 'default' : 'outline'}
-											onclick={() => (activeDocPath = path)}
-										>
-											{documentTitle(path)}
-											{#if dirtyPaths.has(path)}<span class="ml-1 text-xs">•</span>{/if}
-										</Button>
+								<div class="flex flex-col gap-2">
+									{#each authoringDocuments as entry, index (entry.key)}
+										<div class="flex flex-wrap items-center gap-2">
+											<Button
+												size="sm"
+												variant={activeDocumentKey === entry.key ? 'default' : 'outline'}
+												onclick={() => selectAuthoringDocument(entry)}
+											>
+												{authoringDocumentTitle(entry)}
+												{#if entry.source === 'pending' && dirtyPaths.has(entry.path)}
+													<span class="ml-1 text-xs">•</span>
+												{/if}
+											</Button>
+											<Badge variant="secondary">
+												{entry.source === 'set' && entry.leaf.kind === 'pdf'
+													? m.envelope_document_kind_pdf()
+													: m.envelope_document_kind_markdown()}
+											</Badge>
+											{#if entry.source === 'set'}
+												<Button
+													size="sm"
+													variant="ghost"
+													disabled={documentOrderPending || index === 0}
+													onclick={() => void moveCommittedDocument(entry.leaf.id, -1)}
+												>
+													<IconChevronUp />
+													<span class="sr-only">{m.envelope_document_move_up()}</span>
+												</Button>
+												<Button
+													size="sm"
+													variant="ghost"
+													disabled={documentOrderPending ||
+														index >= committedDocumentIds().length - 1}
+													onclick={() => void moveCommittedDocument(entry.leaf.id, 1)}
+												>
+													<IconChevronDown />
+													<span class="sr-only">{m.envelope_document_move_down()}</span>
+												</Button>
+												<Button
+													size="sm"
+													variant="ghost"
+													disabled={documentOrderPending || committedDocumentIds().length < 2}
+													onclick={() => {
+														removeDocumentId = entry.leaf.id;
+														removeDialogOpen = true;
+													}}
+												>
+													<IconTrash />
+													<span class="sr-only">{m.envelope_document_remove()}</span>
+												</Button>
+											{:else}
+												<Button
+													size="sm"
+													variant="ghost"
+													onclick={() => removePendingMarkdown(entry.path)}
+												>
+													<IconTrash />
+													<span class="sr-only">{m.envelope_document_remove()}</span>
+												</Button>
+											{/if}
+										</div>
 									{/each}
 								</div>
 
-								{#if activeDocPath !== null}
+								{#if activePdfLeaf !== null && activePdfLeaf.kind === 'pdf'}
+									<div class="rounded-2xl border p-4">
+										<div class="flex items-center gap-2">
+											<span class="text-sm font-medium">{activePdfLeaf.title}</span>
+											<Badge variant="secondary">{m.envelope_document_kind_pdf()}</Badge>
+										</div>
+										<p class="mt-2 text-sm text-muted-foreground">
+											{m.envelope_pdf_pages_label({ count: String(activePdfLeaf.pageCount) })}
+										</p>
+										<p class="mt-1 font-mono text-xs text-muted-foreground">
+											{m.envelope_pdf_digest_label({
+												digest: `${activePdfLeaf.sha256.slice(0, 12)}…`
+											})}
+										</p>
+									</div>
+								{:else if activeDocPath !== null}
 									<div class="grid gap-4 lg:grid-cols-2">
 										<Field.Field>
 											<Field.FieldLabel for="doc-editor"
@@ -954,8 +1220,16 @@
 								{/if}
 							{/if}
 
+							{#if documentOrderError}
+								<p class="text-sm font-medium text-destructive" role="alert">
+									{documentOrderError}
+								</p>
+							{/if}
 							{#if commitError}
 								<p class="text-sm font-medium text-destructive" role="alert">{commitError}</p>
+							{/if}
+							{#if pdfUploadError}
+								<p class="text-sm font-medium text-destructive" role="alert">{pdfUploadError}</p>
 							{/if}
 							{#if importError}
 								<p class="text-sm font-medium text-destructive" role="alert">{importError}</p>
@@ -963,6 +1237,31 @@
 							{#if exportError}
 								<p class="text-sm font-medium text-destructive" role="alert">{exportError}</p>
 							{/if}
+							<AlertDialog.Root bind:open={removeDialogOpen}>
+								<AlertDialog.Content>
+									<AlertDialog.Header>
+										<AlertDialog.Title>{m.envelope_document_remove_title()}</AlertDialog.Title>
+										<AlertDialog.Description>
+											{m.envelope_document_remove_description()}
+										</AlertDialog.Description>
+									</AlertDialog.Header>
+									<AlertDialog.Footer>
+										<AlertDialog.Cancel disabled={documentOrderPending}
+											>{m.common_cancel()}</AlertDialog.Cancel
+										>
+										<AlertDialog.Action
+											disabled={documentOrderPending}
+											onclick={(event) => {
+												event.preventDefault();
+												void confirmRemoveDocument();
+											}}
+										>
+											{#if documentOrderPending}<Spinner data-icon="inline-start" />{/if}
+											{m.envelope_document_remove()}
+										</AlertDialog.Action>
+									</AlertDialog.Footer>
+								</AlertDialog.Content>
+							</AlertDialog.Root>
 						</Card.Content>
 						<Card.Footer class="justify-end gap-2 border-t bg-muted/20 py-4">
 							<Button
@@ -1333,9 +1632,30 @@
 										{m.envelope_placement_needs_signer()}
 									</p>
 								{/if}
-								{#key envelopeId}
+								{#if documentPages !== null && documentPages.documents.length > 1}
+									<nav class="flex flex-wrap gap-2" aria-label={m.envelope_document_switcher()}>
+										{#each documentPages.documents as document (document.documentId)}
+											<Button
+												size="sm"
+												variant={documentIdForPlacement() === document.documentId
+													? 'default'
+													: 'outline'}
+												onclick={() => {
+													selectedPlacementDocumentId = document.documentId;
+													void loadDocumentPages();
+												}}
+											>
+												{document.title}
+												<Badge class="ml-1" variant="secondary">{document.kind}</Badge>
+											</Button>
+										{/each}
+									</nav>
+								{/if}
+								{#key `${envelopeId}:${documentIdForPlacement() ?? ''}`}
 									<PdfDocumentView
-										src={`/api/v1/envelopes/${envelopeId}/document-pdf`}
+										src={documentIdForPlacement() === null
+											? ''
+											: `/api/v1/envelopes/${envelopeId}/document-pdf?documentId=${encodeURIComponent(documentIdForPlacement() ?? '')}`}
 										label={m.signing_document_label()}
 										expectedPageCount={documentPages?.pageCount ?? 1}
 										loadingLabel={m.signing_document_loading()}
@@ -1420,7 +1740,7 @@
 											<Table.Row>
 												<Table.Cell>{fieldDraft.label}</Table.Cell>
 												<Table.Cell>{fieldTypeLabel(fieldDraft.fieldType)}</Table.Cell>
-												<Table.Cell>{documentTitle(fieldDraft.documentPath)}</Table.Cell>
+												<Table.Cell>{placedDocumentTitle(fieldDraft.documentId)}</Table.Cell>
 												<Table.Cell>{fieldDraft.position}</Table.Cell>
 												<Table.Cell>
 													<Button

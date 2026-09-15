@@ -81,7 +81,8 @@ export interface EnvelopeField {
 	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string | null;
+	documentPath: MarkdownPath | null;
 	fieldType: FieldType;
 	label: string;
 	required: boolean;
@@ -118,8 +119,25 @@ export function isPostSendInvitationRecipientRole(
 	return isActionableRecipientRole(role) || role === 'viewer';
 }
 
-export function assertMarkdownPath(path: string): asserts path is `documents/${string}.md` {
-	if (!/^documents\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/.test(path) || path.includes('..')) {
+export type MarkdownPath = `documents/${string}.md`;
+export type DraftPath = MarkdownPath;
+
+const MARKDOWN_PATH_PATTERN: RegExp = /^documents\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/;
+
+export function isMarkdownPath(path: string): path is MarkdownPath {
+	return MARKDOWN_PATH_PATTERN.test(path) && !path.includes('..');
+}
+
+export function isDraftPath(path: string): path is DraftPath {
+	return isMarkdownPath(path);
+}
+
+export function assertMarkdownPath(path: string): asserts path is MarkdownPath {
+	if (!isMarkdownPath(path)) {
 		throw new Error('Draft repositories accept Markdown files under documents/ only');
 	}
+}
+
+export function assertDraftPath(path: string): asserts path is DraftPath {
+	assertMarkdownPath(path);
 }

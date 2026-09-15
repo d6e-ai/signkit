@@ -232,7 +232,8 @@ describe('envelope HTTP handlers', () => {
 			{
 				id: '01900000-0000-7000-8000-000000000012',
 				recipientId: recipients[0].id,
-				documentPath: 'documents/agreement.md' as const,
+				documentId: '01900000-0000-7000-8000-000000000021',
+				documentPath: null,
 				fieldType: 'signature' as const,
 				required: true,
 				position: 1,

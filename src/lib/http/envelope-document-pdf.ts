@@ -53,6 +53,16 @@ export function createEnvelopeDocumentPdfHandler(
 				instance: url.pathname
 			});
 		}
+		const documentId = envelopeIdSchema.safeParse(url.searchParams.get('documentId'));
+		if (!documentId.success) {
+			return problemResponse({
+				type: 'urn:signkit:problem:validation-error',
+				title: 'Validation failed',
+				status: 400,
+				detail: 'A documentId query parameter is required.',
+				instance: url.pathname
+			});
+		}
 
 		let application: EnvelopeDocumentPdfApplicationPort | null;
 		try {
@@ -65,7 +75,7 @@ export function createEnvelopeDocumentPdfHandler(
 
 		let result: EnvelopeDocumentPdfResult;
 		try {
-			result = await application.read(authorized.organizationId, envelopeId.data);
+			result = await application.read(authorized.organizationId, envelopeId.data, documentId.data);
 		} catch {
 			console.error(JSON.stringify({ event: 'envelope_document_pdf_failed' }));
 			return unavailable(url.pathname);
@@ -96,6 +106,7 @@ export function createEnvelopeDocumentPdfHandler(
 				JSON.stringify({
 					commitSha: result.pdf.commitSha,
 					generation: result.pdf.generation,
+					documentId: result.pdf.documentId,
 					pageCount: result.pdf.pageCount,
 					pageWidth: result.pdf.pageWidth,
 					pageHeight: result.pdf.pageHeight,
@@ -120,7 +131,7 @@ export function createEnvelopeDocumentPdfHandler(
 				'content-type': 'application/pdf',
 				'cache-control': 'private, no-store',
 				etag: `"${result.pdf.sha256}"`,
-				'content-disposition': 'inline; filename="envelope-documents.pdf"',
+				'content-disposition': 'attachment; filename="envelope-documents.pdf"',
 				// Nothing frames this response. The placement editor fetches the
 				// bytes and draws them to a canvas itself, so no origin -- including
 				// this one -- needs framing permission, and refusing it outright

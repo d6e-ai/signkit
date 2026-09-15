@@ -14,6 +14,7 @@ import type {
 	EnvelopeStatus,
 	FieldGeometry,
 	FieldType,
+	MarkdownPath,
 	RecipientRole,
 	RecipientStatus
 } from '$lib/domain/envelope';
@@ -336,6 +337,7 @@ export class PostgresEnvelopeApplicationStore
 			SELECT
 				id,
 				recipient_id AS "recipientId",
+				document_id AS "documentId",
 				document_path AS "documentPath",
 				field_type AS "fieldType",
 				required,
@@ -347,7 +349,7 @@ export class PostgresEnvelopeApplicationStore
 				height
 			FROM envelope_field
 			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
-			ORDER BY document_path ASC, position ASC, id ASC
+			ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC
 		`;
 
 		return {
@@ -831,7 +833,8 @@ interface PostgresDetailRecipientRow {
 interface PostgresDetailFieldRow {
 	id: string;
 	recipientId: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string | null;
+	documentPath: MarkdownPath | null;
 	fieldType: FieldType;
 	required: boolean;
 	position: number;
@@ -858,6 +861,7 @@ function fromPostgresFieldRow(row: PostgresDetailFieldRow): PublicEnvelopeDetail
 	return {
 		id: row.id,
 		recipientId: row.recipientId,
+		documentId: row.documentId,
 		documentPath: row.documentPath,
 		fieldType: row.fieldType,
 		required: row.required,

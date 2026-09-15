@@ -7,10 +7,19 @@
 export interface EnvelopeDocumentPageMap {
 	commitSha: string;
 	generation: number;
+	documentId: string;
 	pageCount: number;
 	pageWidth: number;
 	pageHeight: number;
-	documents: readonly { path: string; title: string; firstPage: number; lastPage: number }[];
+	documents: readonly {
+		documentId: string;
+		position: number;
+		kind: 'markdown' | 'pdf';
+		title: string;
+		pageCount: number;
+		pageWidth: number;
+		pageHeight: number;
+	}[];
 }
 
 export interface PageMapRevision {
@@ -34,11 +43,22 @@ export function invalidateDocumentPageMap(): null {
 
 export function acceptCurrentRevisionPageMap(
 	revision: PageMapRevision | null,
-	pageMap: EnvelopeDocumentPageMap | null
+	pageMap: EnvelopeDocumentPageMap | null,
+	requestedDocumentId?: string | null
 ): EnvelopeDocumentPageMap | null {
 	if (revision === null || pageMap === null || revision.status !== 'ready') return null;
 	if (pageMap.commitSha !== revision.repositoryHead) return null;
 	if (pageMap.generation !== revision.repositoryGeneration) return null;
+	if (!pageMap.documents.some((document) => document.documentId === pageMap.documentId)) {
+		return null;
+	}
+	if (
+		requestedDocumentId !== undefined &&
+		requestedDocumentId !== null &&
+		pageMap.documentId !== requestedDocumentId
+	) {
+		return null;
+	}
 	return pageMap;
 }
 

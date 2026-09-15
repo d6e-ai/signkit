@@ -200,7 +200,9 @@ describe('D1 canonical ISO-8601 timestamp checks', () => {
 		}
 	});
 
-	it('rejects every non-canonical or invalid timestamp', () => {
+	// Each case applies the full D1 migration set into a fresh in-memory
+	// database. Under full-suite parallelism that exceeds Vitest's 5s default.
+	it('rejects every non-canonical or invalid timestamp', { timeout: 15_000 }, () => {
 		for (const { value, why } of REJECTED_TIMESTAMPS) {
 			const sqlite: DatabaseSync = database();
 			try {

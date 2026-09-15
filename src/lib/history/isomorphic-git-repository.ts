@@ -1,9 +1,15 @@
 import git from 'isomorphic-git';
 import { gzipSync } from 'fflate';
 import { normalizeMarkdownContent } from '$lib/domain/draft';
-import { assertMarkdownPath } from '$lib/domain/envelope';
+import {
+	assertDraftTrackedPath,
+	DOCUMENT_SET_MANIFEST_PATH,
+	isDocumentSetManifestPath
+} from '$lib/domain/document-set';
+import { isMarkdownPath } from '$lib/domain/envelope';
 import type {
 	DraftActor,
+	DraftCommitOptions,
 	DraftDocument,
 	DraftEdit,
 	DraftRepository,
@@ -49,7 +55,11 @@ export class IsomorphicGitDraftRepository implements DraftRepository {
 		const paths: string[] = await git.listFiles({ fs: client, dir: DIRECTORY });
 		const documents: DraftDocument[] = [];
 		for (const path of paths.sort()) {
-			assertMarkdownPath(path);
+			assertDraftTrackedPath(path);
+			if (isDocumentSetManifestPath(path)) continue;
+			if (!isMarkdownPath(path)) {
+				throw new Error('Draft repository contains an unrecognized path');
+			}
 			const content: Uint8Array | string = await fs.promises.readFile(
 				`${DIRECTORY}/${path}`,
 				'utf8'
@@ -60,23 +70,64 @@ export class IsomorphicGitDraftRepository implements DraftRepository {
 		return documents;
 	}
 
+	async readManifest(
+		archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<string | null> {
+		if (archive === null) {
+			if (expectedCommitSha !== null) throw new Error('Empty draft has an unexpected Git head');
+			return null;
+		}
+		if (expectedCommitSha === null) throw new Error('Persisted draft is missing its Git head');
+		const fs: MemoryFs = await restore(archive);
+		const client = fs.asClient();
+		const actualCommitSha: string = await git.resolveRef({
+			fs: client,
+			dir: DIRECTORY,
+			ref: 'HEAD'
+		});
+		if (actualCommitSha !== expectedCommitSha) {
+			throw new Error('Draft repository HEAD does not match its database pointer');
+		}
+		const paths: string[] = await git.listFiles({ fs: client, dir: DIRECTORY });
+		if (!paths.includes(DOCUMENT_SET_MANIFEST_PATH)) return null;
+		const content: Uint8Array | string = await fs.promises.readFile(
+			`${DIRECTORY}/${DOCUMENT_SET_MANIFEST_PATH}`,
+			'utf8'
+		);
+		if (typeof content !== 'string') throw new Error('Document set was not decoded as text');
+		return content;
+	}
+
 	async commit(
 		archive: Uint8Array | null,
 		edits: readonly DraftEdit[],
 		message: string,
-		actor: DraftActor
+		actor: DraftActor,
+		options?: DraftCommitOptions
 	): Promise<DraftVersion> {
 		if (edits.length === 0) throw new Error('At least one draft edit is required');
 		const fs = await restore(archive);
 		const client = fs.asClient();
 
 		if (archive === null) await git.init({ fs: client, dir: DIRECTORY, defaultBranch: 'main' });
+		if (options?.replaceTrackedPaths === true && archive !== null) {
+			const keep: Set<string> = new Set(edits.map((edit: DraftEdit): string => edit.path));
+			const tracked: string[] = await git.listFiles({ fs: client, dir: DIRECTORY });
+			for (const path of tracked) {
+				if (keep.has(path)) continue;
+				await git.remove({ fs: client, dir: DIRECTORY, filepath: path });
+				// git.remove() only unstages the file; it leaves it on disk, which would
+				// otherwise show up as untracked and make read() see uncommitted content.
+				await fs.promises.unlink(`${DIRECTORY}/${path}`);
+			}
+		}
 		for (const edit of edits) {
-			assertMarkdownPath(edit.path);
-			await fs.promises.writeFile(
-				`${DIRECTORY}/${edit.path}`,
-				normalizeMarkdownContent(edit.content)
-			);
+			assertDraftTrackedPath(edit.path);
+			const content: string = isMarkdownPath(edit.path)
+				? normalizeMarkdownContent(edit.content)
+				: edit.content;
+			await fs.promises.writeFile(`${DIRECTORY}/${edit.path}`, content);
 			await git.add({ fs: client, dir: DIRECTORY, filepath: edit.path });
 		}
 
@@ -86,8 +137,16 @@ export class IsomorphicGitDraftRepository implements DraftRepository {
 			message: `${message.trim()}\n\nActor-Type: ${actor.type}\nActor-ID: ${actor.id}`,
 			author: { name: actor.name, email: actor.email }
 		});
+		const nextPaths: string[] = (await git.listFiles({ fs: client, dir: DIRECTORY }))
+			.slice()
+			.sort();
 		const nextArchive = encodeArchive(fs.exportFiles());
-		return { commitSha, archive: nextArchive, archiveSha256: await sha256(nextArchive) };
+		return {
+			commitSha,
+			archive: nextArchive,
+			archiveSha256: await sha256(nextArchive),
+			paths: nextPaths
+		};
 	}
 }
 

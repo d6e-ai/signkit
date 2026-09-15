@@ -6,6 +6,8 @@ import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-r
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
 import { PostgresEnvelopeVoidStore } from '$lib/adapters/db/postgres-envelope-void-store';
 import { PostgresEnvelopeSentPdfStore } from '$lib/adapters/db/postgres-envelope-sent-pdf-store';
+import { PostgresEnvelopeSentDocumentStore } from '$lib/adapters/db/postgres-envelope-sent-document-store';
+import { PostgresEnvelopeUploadedDocumentStore } from '$lib/adapters/db/postgres-envelope-uploaded-document-store';
 import { PostgresRecipientAccessStore } from '$lib/adapters/db/postgres-recipient-access-store';
 import { PostgresRecipientFieldDeclarationStore } from '$lib/adapters/db/postgres-recipient-field-declaration-store';
 import { PostgresRecipientApproveStore } from '$lib/adapters/db/postgres-recipient-approve-store';
@@ -119,6 +121,18 @@ export function resolvePostgresEnvelopeSentPdfStore(
 	databaseUrl: string
 ): PostgresEnvelopeSentPdfStore {
 	return new PostgresEnvelopeSentPdfStore(resolvePostgresResources(databaseUrl).sql);
+}
+
+export function resolvePostgresEnvelopeSentDocumentStore(
+	databaseUrl: string
+): PostgresEnvelopeSentDocumentStore {
+	return new PostgresEnvelopeSentDocumentStore(resolvePostgresResources(databaseUrl).sql);
+}
+
+export function resolvePostgresEnvelopeUploadedDocumentStore(
+	databaseUrl: string
+): PostgresEnvelopeUploadedDocumentStore {
+	return new PostgresEnvelopeUploadedDocumentStore(resolvePostgresResources(databaseUrl).sql);
 }
 
 export function resolvePostgresEnvelopeVoidApplication(

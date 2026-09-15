@@ -6,6 +6,7 @@ import type { PageData } from './[envelopeId]/$types';
 
 const signatureField: RecipientPlacedField = {
 	id: '01910000-0000-7000-8000-000000000003',
+	documentId: 'legacy',
 	fieldType: 'signature',
 	label: 'Your signature',
 	required: true,
@@ -26,12 +27,18 @@ function data(overrides: Partial<{ role: 'signer' | 'viewer' }> = {}): PageData 
 			envelopeStatus: 'in_progress',
 			expiresAt: '2026-09-12T00:00:00.000Z'
 		},
-		document: {
-			pageCount: 1,
-			pageWidth: 595.28,
-			pageHeight: 841.89,
-			sections: [{ title: 'agreement', firstPage: 1, lastPage: 1 }]
-		},
+		documents: [
+			{
+				documentId: 'legacy',
+				position: 0,
+				title: 'agreement',
+				kind: 'legacy' as const,
+				pageCount: 1,
+				pageWidth: 595.28,
+				pageHeight: 841.89
+			}
+		],
+		source: 'legacy' as const,
 		fields: overrides.role === 'signer' ? [signatureField] : [],
 		fieldGeneration: 1
 	} as PageData;

@@ -15,7 +15,7 @@ const BYTES: Uint8Array = new TextEncoder().encode('%PDF-1.7\nbody\n%%EOF\n');
 const SHA256: string = 'a'.repeat(64);
 
 function event(
-	options: { cookie?: string; method?: string; envelopeId?: string } = {}
+	options: { cookie?: string; method?: string; envelopeId?: string; documentId?: string } = {}
 ): RequestEvent {
 	const envelopeId: string = options.envelopeId ?? ENVELOPE_ID;
 	const cookieName: string | null = recipientSessionCookieName(envelopeId);
@@ -23,10 +23,16 @@ function event(
 		get: (name: string): string | undefined =>
 			cookieName !== null && name === cookieName ? options.cookie : undefined
 	} as unknown as Cookies;
-	const pathname = `/sign/${envelopeId}/agreement.pdf`;
+	const pathname =
+		options.documentId === undefined
+			? `/sign/${envelopeId}/agreement.pdf`
+			: `/sign/${envelopeId}/documents/${options.documentId}.pdf`;
 	return {
 		cookies,
-		params: { envelopeId },
+		params: {
+			envelopeId,
+			...(options.documentId === undefined ? {} : { documentId: options.documentId })
+		},
 		platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } },
 		request: new Request(`https://signkit.example${pathname}`, {
 			method: options.method ?? 'GET'
@@ -67,7 +73,7 @@ describe('recipient sent PDF HTTP handler', () => {
 		expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
 		expect(response.headers.get('x-frame-options')).toBe('DENY');
 		expect(response.headers.get('content-length')).toBe(String(BYTES.byteLength));
-		expect(app.read).toHaveBeenCalledWith(TOKEN, ENVELOPE_ID);
+		expect(app.read).toHaveBeenCalledWith(TOKEN, ENVELOPE_ID, undefined);
 		expect(new Uint8Array(await response.arrayBuffer())).toEqual(BYTES);
 	});
 
@@ -76,7 +82,9 @@ describe('recipient sent PDF HTTP handler', () => {
 			() => application(ok),
 			unseal
 		)(event({ cookie: 'sealed' }));
-		expect(response.headers.get('content-disposition')).toBe('inline; filename="agreement.pdf"');
+		expect(response.headers.get('content-disposition')).toBe(
+			'attachment; filename="agreement.pdf"'
+		);
 	});
 
 	it.each([
@@ -203,5 +211,29 @@ describe('recipient sent PDF HTTP handler', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-length')).toBe(String(BYTES.byteLength));
 		expect(await response.text()).toBe('');
+	});
+
+	it('serves one document from the pinned set when documentId is in the path', async () => {
+		const documentId: string = '01900000-0000-7000-8000-000000000021';
+		const app: RecipientSentPdfApplicationPort = application(ok);
+		const response: Response = await createRecipientSentPdfHandler(
+			() => app,
+			unseal
+		)(event({ cookie: 'sealed', documentId }));
+
+		expect(response.status).toBe(200);
+		expect(app.read).toHaveBeenCalledWith(TOKEN, ENVELOPE_ID, documentId);
+		expect(new Uint8Array(await response.arrayBuffer())).toEqual(BYTES);
+	});
+
+	it('answers a non-UUIDv7 documentId with the same opaque 404', async () => {
+		const resolveApplication = vi.fn(() => application(ok));
+		const response: Response = await createRecipientSentPdfHandler(
+			resolveApplication,
+			unseal
+		)(event({ cookie: 'sealed', documentId: 'legacy' }));
+
+		expect(response.status).toBe(404);
+		expect(resolveApplication).not.toHaveBeenCalled();
 	});
 });

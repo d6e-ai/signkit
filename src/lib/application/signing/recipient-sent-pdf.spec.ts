@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { sentPdfObjectKey } from '$lib/application/documents/sent-document-pdf';
 import type { EnvelopeSentPdfStore, SentPdfPointer } from '$lib/ports/envelope-sent-pdf-store';
+import type { EnvelopeSentDocumentStore } from '$lib/ports/envelope-sent-document-store';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import type { ObjectStore } from '$lib/ports/object-store';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
@@ -69,6 +70,21 @@ function store(...results: readonly (SentPdfPointer | null)[]): EnvelopeSentPdfS
 	return { findSentPdf };
 }
 
+function emptySentDocuments(): EnvelopeSentDocumentStore {
+	return {
+		findSet: vi.fn(async () => null),
+		findDocument: vi.fn(async () => null)
+	};
+}
+
+function sentPdfService(
+	access: RecipientAccessApplicationPort,
+	pointers: EnvelopeSentPdfStore,
+	objects: ObjectStore
+): RecipientSentPdfService {
+	return new RecipientSentPdfService(access, emptySentDocuments(), pointers, objects);
+}
+
 async function objectsWith(pointer: SentPdfPointer, bytes: Uint8Array): Promise<ObjectStore> {
 	const objects: InMemoryObjectStore = new InMemoryObjectStore();
 	await objects.putImmutable(pointer.objectKey, {
@@ -86,10 +102,7 @@ describe('RecipientSentPdfService', () => {
 		const { port, resolve } = access(context, context);
 		const pointers: EnvelopeSentPdfStore = store(pointer, pointer);
 
-		const result = await new RecipientSentPdfService(port, pointers, objects).read(
-			TOKEN,
-			ENVELOPE_ID
-		);
+		const result = await sentPdfService(port, pointers, objects).read(TOKEN, ENVELOPE_ID);
 
 		expect(result).toEqual({
 			outcome: 'ok',
@@ -113,7 +126,7 @@ describe('RecipientSentPdfService', () => {
 		const pointers: EnvelopeSentPdfStore = store();
 
 		await expect(
-			new RecipientSentPdfService(access(null).port, pointers, objects).read(TOKEN, ENVELOPE_ID)
+			sentPdfService(access(null).port, pointers, objects).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'not_found' });
 		expect(pointers.findSentPdf).not.toHaveBeenCalled();
 		expect(get).not.toHaveBeenCalled();
@@ -125,10 +138,7 @@ describe('RecipientSentPdfService', () => {
 		const pointers: EnvelopeSentPdfStore = store();
 
 		await expect(
-			new RecipientSentPdfService(access(context).port, pointers, objects).read(
-				TOKEN,
-				'other-envelope'
-			)
+			sentPdfService(access(context).port, pointers, objects).read(TOKEN, 'other-envelope')
 		).resolves.toEqual({ outcome: 'not_found' });
 		expect(pointers.findSentPdf).not.toHaveBeenCalled();
 		expect(get).not.toHaveBeenCalled();
@@ -138,28 +148,24 @@ describe('RecipientSentPdfService', () => {
 		const pointer: SentPdfPointer = await pointerFor();
 		const objects: ObjectStore = await objectsWith(pointer, PDF_BYTES);
 		await expect(
-			new RecipientSentPdfService(
-				access(context, null).port,
-				store(pointer, pointer),
-				objects
-			).read(TOKEN, ENVELOPE_ID)
+			sentPdfService(access(context, null).port, store(pointer, pointer), objects).read(
+				TOKEN,
+				ENVELOPE_ID
+			)
 		).resolves.toEqual({ outcome: 'not_found' });
 	});
 
 	it('is unavailable when no rendering has been published for the sent commit', async () => {
 		const objects: ObjectStore = new InMemoryObjectStore();
 		await expect(
-			new RecipientSentPdfService(access(context, context).port, store(null), objects).read(
-				TOKEN,
-				ENVELOPE_ID
-			)
+			sentPdfService(access(context, context).port, store(null), objects).read(TOKEN, ENVELOPE_ID)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
 	it('is unavailable when the object is missing', async () => {
 		const pointer: SentPdfPointer = await pointerFor();
 		await expect(
-			new RecipientSentPdfService(
+			sentPdfService(
 				access(context, context).port,
 				store(pointer, pointer),
 				new InMemoryObjectStore()
@@ -178,11 +184,10 @@ describe('RecipientSentPdfService', () => {
 		});
 
 		await expect(
-			new RecipientSentPdfService(
-				access(context, context).port,
-				store(pointer, pointer),
-				objects
-			).read(TOKEN, ENVELOPE_ID)
+			sentPdfService(access(context, context).port, store(pointer, pointer), objects).read(
+				TOKEN,
+				ENVELOPE_ID
+			)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -198,11 +203,10 @@ describe('RecipientSentPdfService', () => {
 		});
 
 		await expect(
-			new RecipientSentPdfService(
-				access(context, context).port,
-				store(pointer, pointer),
-				objects
-			).read(TOKEN, ENVELOPE_ID)
+			sentPdfService(access(context, context).port, store(pointer, pointer), objects).read(
+				TOKEN,
+				ENVELOPE_ID
+			)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -215,11 +219,10 @@ describe('RecipientSentPdfService', () => {
 		const objects: ObjectStore = await objectsWith(crossTenant, PDF_BYTES);
 
 		await expect(
-			new RecipientSentPdfService(
-				access(context, context).port,
-				store(crossTenant, crossTenant),
-				objects
-			).read(TOKEN, ENVELOPE_ID)
+			sentPdfService(access(context, context).port, store(crossTenant, crossTenant), objects).read(
+				TOKEN,
+				ENVELOPE_ID
+			)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -233,11 +236,10 @@ describe('RecipientSentPdfService', () => {
 		};
 
 		await expect(
-			new RecipientSentPdfService(
-				access(context, context).port,
-				store(pointer, replaced),
-				objects
-			).read(TOKEN, ENVELOPE_ID)
+			sentPdfService(access(context, context).port, store(pointer, replaced), objects).read(
+				TOKEN,
+				ENVELOPE_ID
+			)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 
@@ -250,11 +252,10 @@ describe('RecipientSentPdfService', () => {
 		};
 
 		await expect(
-			new RecipientSentPdfService(
-				access(context, repinned).port,
-				store(pointer, pointer),
-				objects
-			).read(TOKEN, ENVELOPE_ID)
+			sentPdfService(access(context, repinned).port, store(pointer, pointer), objects).read(
+				TOKEN,
+				ENVELOPE_ID
+			)
 		).resolves.toEqual({ outcome: 'unavailable' });
 	});
 });

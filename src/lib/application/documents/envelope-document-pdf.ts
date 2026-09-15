@@ -1,28 +1,40 @@
 import type { Envelope } from '$lib/domain/envelope';
 import type { ImmutableDraftRevision } from '$lib/application/drafts/draft-persistence';
 import type { EnvelopeStore } from '$lib/ports/envelope-store';
-import type { SentPdfDocumentPages } from '$lib/ports/envelope-sent-pdf-store';
-import { SentDocumentPdfError, type SentDocumentPdfPort } from './sent-document-pdf';
+import {
+	SentDocumentPdfError,
+	type SentDocumentArtifact,
+	type SentDocumentPdfPort
+} from './sent-document-pdf';
 
 /**
- * The sender's view of the same rendering a recipient will get.
+ * The sender's view of one document in the envelope's pinned revision.
  *
  * Field placement is only meaningful if the sender is dragging boxes onto the
- * exact pages the signer will see, so the editor renders the envelope's
- * currently pinned revision through the identical deterministic pipeline used
- * at send time. Nothing is stored here: this is a read of a pure function of
- * an already-immutable revision.
+ * exact pages the signer will see for that document, so the editor renders
+ * through the identical deterministic pipeline used at send time.
  */
+export interface EnvelopeDocumentSummary {
+	documentId: string;
+	position: number;
+	kind: 'markdown' | 'pdf';
+	title: string;
+	pageCount: number;
+	pageWidth: number;
+	pageHeight: number;
+}
+
 export interface EnvelopeDocumentPdf {
 	bytes: Uint8Array;
 	sha256: string;
 	byteSize: number;
 	commitSha: string;
 	generation: number;
+	documentId: string;
 	pageCount: number;
 	pageWidth: number;
 	pageHeight: number;
-	documents: readonly SentPdfDocumentPages[];
+	documents: readonly EnvelopeDocumentSummary[];
 }
 
 export type EnvelopeDocumentPdfResult =
@@ -32,7 +44,11 @@ export type EnvelopeDocumentPdfResult =
 	| { outcome: 'unavailable' };
 
 export interface EnvelopeDocumentPdfApplicationPort {
-	read(organizationId: string, envelopeId: string): Promise<EnvelopeDocumentPdfResult>;
+	read(
+		organizationId: string,
+		envelopeId: string,
+		documentId: string
+	): Promise<EnvelopeDocumentPdfResult>;
 }
 
 export class EnvelopeDocumentPdfService implements EnvelopeDocumentPdfApplicationPort {
@@ -41,7 +57,11 @@ export class EnvelopeDocumentPdfService implements EnvelopeDocumentPdfApplicatio
 		private readonly documentPdf: SentDocumentPdfPort
 	) {}
 
-	async read(organizationId: string, envelopeId: string): Promise<EnvelopeDocumentPdfResult> {
+	async read(
+		organizationId: string,
+		envelopeId: string,
+		documentId: string
+	): Promise<EnvelopeDocumentPdfResult> {
 		const envelope: Envelope | null = await this.envelopes.findForOrganization(
 			organizationId,
 			envelopeId
@@ -62,7 +82,22 @@ export class EnvelopeDocumentPdfService implements EnvelopeDocumentPdfApplicatio
 			archiveSha256: envelope.repositoryArchiveSha256
 		};
 		try {
-			const rendered = await this.documentPdf.render(revision);
+			const listed = await this.documentPdf.listDocuments(revision);
+			const summaries: EnvelopeDocumentSummary[] = listed.documents.map(
+				(document: Omit<SentDocumentArtifact, 'objectKey' | 'sha256' | 'byteSize'>) => ({
+					documentId: document.documentId,
+					position: document.position,
+					kind: document.kind,
+					title: document.title,
+					pageCount: document.pageCount,
+					pageWidth: document.pageWidth,
+					pageHeight: document.pageHeight
+				})
+			);
+			if (!summaries.some((document) => document.documentId === documentId)) {
+				return { outcome: 'no_documents' };
+			}
+			const rendered = await this.documentPdf.renderDocument(revision, documentId);
 			return {
 				outcome: 'ok',
 				pdf: {
@@ -71,10 +106,11 @@ export class EnvelopeDocumentPdfService implements EnvelopeDocumentPdfApplicatio
 					byteSize: rendered.byteSize,
 					commitSha: envelope.repositoryHead,
 					generation: envelope.repositoryGeneration,
+					documentId: rendered.documentId,
 					pageCount: rendered.pageCount,
 					pageWidth: rendered.pageWidth,
 					pageHeight: rendered.pageHeight,
-					documents: rendered.documents
+					documents: summaries
 				}
 			};
 		} catch (error: unknown) {

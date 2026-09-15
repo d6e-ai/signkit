@@ -1,8 +1,11 @@
 import {
 	FakeSentDocumentPdf,
-	fakeSentPdfArtifact
+	fakeSentDocumentSetArtifact
 } from '$lib/application/documents/sent-document-pdf-test-support';
-import { PostgresEnvelopeSentPdfStore } from './postgres-envelope-sent-pdf-store';
+import { SentDocumentPdfService } from '$lib/application/documents/sent-document-pdf';
+import { PostgresEnvelopeSentDocumentStore } from './postgres-envelope-sent-document-store';
+import { PostgresEnvelopeUploadedDocumentStore } from './postgres-envelope-uploaded-document-store';
+import { uploadedPdfObjectKey } from '$lib/application/documents/uploaded-pdf';
 import { createHash, randomUUID } from 'node:crypto';
 import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -101,6 +104,7 @@ const postgresDescribe = TEST_DATABASE_URL === undefined ? describe.skip : descr
 const ORGANIZATION_ID: string = 'org-integration';
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 const COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
+const AGREEMENT_DOCUMENT_ID: string = '01900000-0000-7000-8000-000000000021';
 const ARCHIVE_SHA256: string = 'a'.repeat(64);
 const TEST_DELIVERY_ENCRYPTION_KEY: string = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const ACTOR: EnvelopeRequestActor = {
@@ -436,7 +440,20 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				commitSha: COMMIT_SHA,
 				archiveKey: 'archives/integration.git.gz',
 				archiveSha256: ARCHIVE_SHA256,
-				documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+				documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+				documentSet: {
+					schema: 'signkit-document-set-v1',
+					documents: [
+						{
+							id: AGREEMENT_DOCUMENT_ID,
+							position: 0,
+							kind: 'markdown',
+							title: 'agreement',
+							path: 'documents/agreement.md',
+							contentSha256: 'a'.repeat(64)
+						}
+					]
+				}
 			})
 		} as unknown as DraftPersistenceService;
 		const fieldApplication = new EnvelopeFieldApplication(
@@ -450,7 +467,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_DOCUMENT_ID,
 					fieldType: 'signature',
 					label: 'Signature',
 					required: true,
@@ -470,7 +487,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_DOCUMENT_ID,
 					fieldType: 'signature',
 					label: 'Updated signature',
 					required: true,
@@ -479,7 +496,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				},
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_DOCUMENT_ID,
 					fieldType: 'date',
 					label: 'Signed date',
 					required: true,
@@ -528,14 +545,14 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		});
 		// The pinned agreement rendering lands in the same transaction as the
 		// status flip, scoped to the commit the envelope was sent at.
-		const sentPdf = await new PostgresEnvelopeSentPdfStore(database()).findSentPdf(
+		const sentSet = await new PostgresEnvelopeSentDocumentStore(database()).findSet(
 			ORGANIZATION_ID,
 			ENVELOPE_ID,
 			COMMIT_SHA
 		);
-		expect(sentPdf).toMatchObject(fakeSentPdfArtifact(ORGANIZATION_ID, ENVELOPE_ID));
+		expect(sentSet).toMatchObject(fakeSentDocumentSetArtifact(ORGANIZATION_ID, ENVELOPE_ID));
 		await expect(
-			new PostgresEnvelopeSentPdfStore(database()).findSentPdf(
+			new PostgresEnvelopeSentDocumentStore(database()).findSet(
 				ORGANIZATION_ID,
 				ENVELOPE_ID,
 				'0000000000000000000000000000000000000000'
@@ -1335,6 +1352,169 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		expect(referenced.has('drafts/orphan.git.gz')).toBe(false);
 	});
 
+	it('classifies an uploaded-documents/v1 key referenced by envelope_uploaded_document as live', async () => {
+		const sha256: string = 'ab'.repeat(32);
+		const objectKey: string = uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, sha256);
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, created_at, updated_at
+		) VALUES (
+			${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'draft', 1,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		const store = new PostgresEnvelopeUploadedDocumentStore(database());
+		await expect(
+			store.insert({
+				organizationId: ORGANIZATION_ID,
+				envelopeId: ENVELOPE_ID,
+				sha256,
+				objectKey,
+				byteSize: 4096,
+				pageCount: 2,
+				pageWidth: 595.28,
+				pageHeight: 841.89,
+				createdAt: '2026-09-11T00:00:00.000Z'
+			})
+		).resolves.toBe('inserted');
+		const referenceStore = new PostgresOrphanReferenceStore(database());
+		const referenced = await referenceStore.filterReferencedKeys([
+			objectKey,
+			'uploaded-documents/v1/organizations/org-other/envelopes/env-other/sha256/' + sha256 + '.pdf',
+			'drafts/orphan.git.gz'
+		]);
+		expect(referenced.has(objectKey)).toBe(true);
+		expect(referenced.has('drafts/orphan.git.gz')).toBe(false);
+	});
+
+	it('enforces envelope_uploaded_document CHECK bounds, FK, and the per-envelope cap', async () => {
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, created_at, updated_at
+		) VALUES (
+			${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'draft', 1,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		const store = new PostgresEnvelopeUploadedDocumentStore(database());
+		const record = (
+			sha256: string,
+			overrides: Partial<Parameters<typeof store.insert>[0]> = {}
+		) => ({
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID,
+			sha256,
+			objectKey: uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, sha256),
+			byteSize: 4096,
+			pageCount: 2,
+			pageWidth: 595.28,
+			pageHeight: 841.89,
+			createdAt: '2026-09-11T00:00:00.000Z',
+			...overrides
+		});
+
+		for (const overrides of [
+			{ byteSize: 0 },
+			{ byteSize: 20_971_521 },
+			{ pageCount: 0 },
+			{ pageCount: 401 },
+			{ pageWidth: 0 },
+			{ pageWidth: 20_001 },
+			{ pageHeight: 0 },
+			{ pageHeight: 20_001 }
+		]) {
+			await expect(store.insert(record('a'.repeat(63) + '1', overrides))).rejects.toMatchObject({
+				code: '23514'
+			});
+		}
+
+		await expect(store.insert(record('b'.repeat(64)))).resolves.toBe('inserted');
+		await expect(store.insert(record('b'.repeat(64)))).resolves.toBe('duplicate');
+
+		for (let index = 1; index < 20; index += 1) {
+			await expect(store.insert(record(index.toString(16).padStart(64, '0')))).resolves.toBe(
+				'inserted'
+			);
+		}
+		await expect(store.insert(record('e'.repeat(64)))).resolves.toBe('cap_exceeded');
+
+		await expect(
+			store.insert(record('d'.repeat(64), { envelopeId: '01900000-0000-7000-8000-0000000000ff' }))
+		).resolves.toBe('not_found');
+	});
+
+	it('enforces sent-document bounds and envelope_field document_id XOR document_path', async () => {
+		await database()`INSERT INTO organization (id, d6e_organization_id, name, created_at)
+			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', '2026-09-11T00:00:00.000Z')`;
+		await database()`INSERT INTO envelope (
+			id, organization_id, title, status, repository_generation, created_at, updated_at
+		) VALUES (
+			${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'draft', 1,
+			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+		)`;
+		await database()`INSERT INTO recipient (
+			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			created_at, updated_at
+		) VALUES (
+			'01930000-0000-7000-8000-000000000001', ${ORGANIZATION_ID}, ${ENVELOPE_ID}, 'a@example.com', 'A',
+			'signer', 'en', 1, 'pending', now(), now()
+		)`;
+		await expect(
+			database()`INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_id, document_path, field_type,
+				label, required, position, created_at, updated_at
+			) VALUES (
+				'01950000-0000-7000-8000-000000000001', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
+				'01930000-0000-7000-8000-000000000001', NULL, NULL, 'signature', 'Signature', true, 1, now(), now()
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_id, document_path, field_type,
+				label, required, position, created_at, updated_at
+			) VALUES (
+				'01950000-0000-7000-8000-000000000002', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
+				'01930000-0000-7000-8000-000000000001', ${AGREEMENT_DOCUMENT_ID}, 'documents/agreement.md',
+				'signature', 'Signature', true, 1, now(), now()
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO envelope_sent_document (
+				organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+				object_key, sha256, byte_size, page_count, page_width, page_height, created_at
+			) VALUES (
+				${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${COMMIT_SHA}, ${AGREEMENT_DOCUMENT_ID}, 20, 'markdown',
+				'agreement', 'sent-documents/v1/x.pdf', ${'f'.repeat(64)}, 4096, 1, 595.28, 841.89, now()
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		await expect(
+			database()`INSERT INTO envelope_sent_document_set (
+				organization_id, envelope_id, commit_sha, document_set_hash, document_count, created_at
+			) VALUES (
+				${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${COMMIT_SHA}, ${'e'.repeat(64)}, 0, now()
+			)`
+		).rejects.toMatchObject({ code: '23514' });
+		const sendCommandColumns = await database()<
+			{ columnName: string }[]
+		>`SELECT column_name AS "columnName" FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'envelope_send_command'
+				AND column_name IN (
+					'sent_pdf_object_key', 'sent_pdf_sha256', 'document_set_hash', 'sent_documents_json'
+				)
+			ORDER BY column_name`;
+		expect(sendCommandColumns.map((row: { columnName: string }): string => row.columnName)).toEqual(
+			['document_set_hash', 'sent_documents_json', 'sent_pdf_object_key', 'sent_pdf_sha256']
+		);
+		await database()`INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_id, document_path, field_type,
+				label, required, position, created_at, updated_at
+			) VALUES (
+				'01950000-0000-7000-8000-000000000003', ${ORGANIZATION_ID}, ${ENVELOPE_ID},
+				'01930000-0000-7000-8000-000000000001', ${AGREEMENT_DOCUMENT_ID}, NULL,
+				'signature', 'Signature', true, 1, now(), now()
+			)`;
+	});
+
 	it('serializes two real concurrent sends into one publication and one replay', async () => {
 		await seedDraftEnvelope();
 		const ready = await readyEnvelope();
@@ -1488,6 +1668,127 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		} finally {
 			await database().unsafe(`SET search_path TO "${schemaName}"`);
 			await database().unsafe(`DROP SCHEMA IF EXISTS "${upgradeSchema}" CASCADE`);
+		}
+	});
+
+	it('accepts a genuine pre-0039 send command with every sent-artifact column null once 0041 applies', async () => {
+		const preDocumentSetSchema: string = `${schemaName}_pre_document_set`;
+		const documentSetMigrationIndex: number = MIGRATION_PATHS.indexOf(
+			'migrations/postgres/0041_envelope_sent_document_set.sql'
+		);
+		expect(documentSetMigrationIndex).toBeGreaterThan(0);
+		await database().unsafe(`CREATE SCHEMA "${preDocumentSetSchema}"`);
+		try {
+			await database().unsafe(`SET search_path TO "${preDocumentSetSchema}"`);
+			for (const path of MIGRATION_PATHS.slice(0, documentSetMigrationIndex)) {
+				await database().unsafe(readFileSync(path, 'utf8'));
+			}
+			// A genuine pre-0039 row: the insert never mentions the sent_pdf_*
+			// columns at all, exactly as the real pre-0039 write path never did,
+			// so they land NULL by column default rather than by an explicit
+			// legacy or document-set write. 0041 must not reject this row as an
+			// incomplete write of either artifact shape.
+			await database().unsafe(`
+				INSERT INTO organization (id, d6e_organization_id, name, created_at)
+				VALUES ('pre-document-set-org','pre-document-set-org','Pre Document Set Workspace','2026-09-11T00:00:00.000Z');
+				INSERT INTO envelope (
+					id, organization_id, title, status, repository_generation, repository_head,
+					sent_commit_sha, created_at, updated_at
+				) VALUES (
+					'01920000-0000-7000-8000-0000000000f7','pre-document-set-org','Agreement','sent',1,
+					'commit-1','commit-1','2026-09-11T00:00:00.000Z','2026-09-11T00:01:00.000Z'
+				);
+				INSERT INTO recipient (
+					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+					capability_hash, capability_expires_at, created_at, updated_at
+				) VALUES (
+					'01930000-0000-7000-8000-0000000000f7','pre-document-set-org','01920000-0000-7000-8000-0000000000f7',
+					'signer@example.com','Signer','signer','en',1,'pending',NULL,NULL,
+					'2026-09-11T00:00:00.000Z','2026-09-11T00:00:00.000Z'
+				);
+				INSERT INTO audit_event (
+					id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+					payload_json, previous_hash, event_hash, occurred_at
+				) VALUES (
+					'01940000-0000-7000-8000-0000000000f7','pre-document-set-org','01920000-0000-7000-8000-0000000000f7',
+					1,'envelope.ready','user','user-1','{}',NULL,'hash-ready','2026-09-11T00:00:30.000Z'
+				);
+				INSERT INTO envelope_send_command (
+					organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+					expected_generation, ready_audit_event_id, commit_sha, initial_routing_order,
+					delivery_count, queued_delivery_count, delivery_manifest_hash, delivery_manifest_json,
+					initial_capability_expires_at, updated_at, audit_event_id, audit_sequence,
+					previous_audit_hash, audit_event_hash, audit_payload_json
+				) VALUES (
+					'pre-document-set-org','01920000-0000-7000-8000-0000000000f7','user','user-1',
+					'pre-document-set-send','request-hash',1,'01940000-0000-7000-8000-0000000000f7','commit-1',1,
+					1,1,'manifest-hash','[]','2026-09-25T00:00:00.000Z','2026-09-11T00:01:00.000Z',
+					'01950000-0000-7000-8000-0000000000f7',2,'hash-ready','hash-sent','{}'
+				);
+			`);
+
+			for (const path of MIGRATION_PATHS.slice(documentSetMigrationIndex)) {
+				await database().unsafe(readFileSync(path, 'utf8'));
+			}
+
+			const rows = await database()<
+				{
+					sentPdfObjectKey: string | null;
+					sentPdfSha256: string | null;
+					sentPdfBytes: string | null;
+					sentPdfPageCount: number | null;
+					sentPdfPageWidth: number | null;
+					sentPdfPageHeight: number | null;
+					sentPdfDocumentPagesJson: string | null;
+					documentSetHash: string | null;
+					documentCount: number | null;
+					sentDocumentsJson: string | null;
+				}[]
+			>`SELECT
+					sent_pdf_object_key AS "sentPdfObjectKey", sent_pdf_sha256 AS "sentPdfSha256",
+					sent_pdf_bytes AS "sentPdfBytes", sent_pdf_page_count AS "sentPdfPageCount",
+					sent_pdf_page_width AS "sentPdfPageWidth", sent_pdf_page_height AS "sentPdfPageHeight",
+					sent_pdf_document_pages_json AS "sentPdfDocumentPagesJson",
+					document_set_hash AS "documentSetHash", document_count AS "documentCount",
+					sent_documents_json AS "sentDocumentsJson"
+				FROM envelope_send_command
+				WHERE organization_id = 'pre-document-set-org' AND idempotency_key = 'pre-document-set-send'`;
+			expect(rows).toEqual([
+				{
+					sentPdfObjectKey: null,
+					sentPdfSha256: null,
+					sentPdfBytes: null,
+					sentPdfPageCount: null,
+					sentPdfPageWidth: null,
+					sentPdfPageHeight: null,
+					sentPdfDocumentPagesJson: null,
+					documentSetHash: null,
+					documentCount: null,
+					sentDocumentsJson: null
+				}
+			]);
+
+			// The fixed constraint still rejects a partial mix of either shape.
+			await expect(
+				database().unsafe(`
+					INSERT INTO envelope_send_command (
+						organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+						expected_generation, ready_audit_event_id, commit_sha, initial_routing_order,
+						delivery_count, queued_delivery_count, delivery_manifest_hash, delivery_manifest_json,
+						initial_capability_expires_at, updated_at, audit_event_id, audit_sequence,
+						previous_audit_hash, audit_event_hash, audit_payload_json, document_set_hash
+					) VALUES (
+						'pre-document-set-org','01920000-0000-7000-8000-0000000000f7','user','user-1',
+						'pre-document-set-send-partial','request-hash',1,'01940000-0000-7000-8000-0000000000f7',
+						'commit-1',1,1,1,'manifest-hash','[]','2026-09-25T00:00:00.000Z',
+						'2026-09-11T00:01:00.000Z','01950000-0000-7000-8000-0000000000f8',3,'hash-ready',
+						'hash-sent-partial','{}', '${'e'.repeat(64)}'
+					)
+				`)
+			).rejects.toMatchObject({ code: '23514' });
+		} finally {
+			await database().unsafe(`SET search_path TO "${schemaName}"`);
+			await database().unsafe(`DROP SCHEMA IF EXISTS "${preDocumentSetSchema}" CASCADE`);
 		}
 	});
 
@@ -2470,10 +2771,15 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 		const sealer: AesGcmRecipientCapabilitySealer = new AesGcmRecipientCapabilitySealer(
 			TEST_DELIVERY_ENCRYPTION_KEY
 		);
+		// Real document rendering, not the fake fixed hash: the completion
+		// publisher recomputes documentSetHash from the pinned Git
+		// document-set.json and fails closed unless it matches what the
+		// envelope.sent audit event attested, so this positive control needs
+		// the actual hash a real send would have bound.
 		const sent = await new EnvelopeSendApplication(
 			new PostgresEnvelopeSendStore(database()),
 			sealer,
-			new FakeSentDocumentPdf()
+			new SentDocumentPdfService(objects, repository)
 		).send(ACTOR, envelopeId, {
 			idempotencyKey: 'real-writer-send',
 			expectedGeneration: 1,
@@ -2649,12 +2955,26 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			GROUP BY envelope_id`;
 		expect(artifactCounts).toEqual([{ envelopeId: ENVELOPE_ID, count: '1' }]);
 
-		// No object access at all for the corrupt row: only the healthy
-		// envelope's archive read and its two artifact writes happened.
+		const healthyArchiveKey: string = draftArchiveKey(
+			ORGANIZATION_ID,
+			ENVELOPE_ID,
+			VERIFIED_ARCHIVE_SHA256
+		);
+		// The healthy envelope's pinned Git archive is fetched once and its
+		// already-verified bytes are reused for both markdown documents and
+		// the document-set.json manifest read, never re-fetched. The corrupt
+		// sibling has a null repository pointer and never reaches object storage.
 		expect(objects.getCallCount).toBe(1);
+		expect([...objects.getCallsByKey.keys()]).toEqual([healthyArchiveKey]);
+		expect(objects.getCallsByKey.get(healthyArchiveKey)).toBe(1);
 		expect(objects.putCallsByKey.size).toBe(2);
+		for (const key of objects.getCallsByKey.keys()) {
+			expect(key).toContain(`/envelopes/${ENVELOPE_ID}/`);
+			expect(key).not.toContain(corruptEnvelopeId);
+		}
 		for (const key of objects.putCallsByKey.keys()) {
 			expect(key).toContain(`/envelopes/${ENVELOPE_ID}/`);
+			expect(key).not.toContain(corruptEnvelopeId);
 		}
 	});
 
@@ -2678,7 +2998,20 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 				commitSha: COMMIT_SHA,
 				archiveKey: 'archives/integration.git.gz',
 				archiveSha256: ARCHIVE_SHA256,
-				documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+				documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+				documentSet: {
+					schema: 'signkit-document-set-v1',
+					documents: [
+						{
+							id: AGREEMENT_DOCUMENT_ID,
+							position: 0,
+							kind: 'markdown',
+							title: 'agreement',
+							path: 'documents/agreement.md',
+							contentSha256: 'a'.repeat(64)
+						}
+					]
+				}
 			})
 		} as unknown as DraftPersistenceService;
 		const fieldResult = await new EnvelopeFieldApplication(
@@ -2691,7 +3024,7 @@ postgresDescribe('PostgreSQL migration and adapter integration', () => {
 			fields: [
 				{
 					recipientId: signerId,
-					documentPath: 'documents/agreement.md',
+					documentId: AGREEMENT_DOCUMENT_ID,
 					fieldType: 'signature',
 					label: 'Signature',
 					required: true,
@@ -4062,6 +4395,7 @@ interface StoredVerifiedArchive {
 class RealMemoryObjectStore implements ObjectStore {
 	private readonly objects = new Map<string, StoredVerifiedArchive>();
 	putCallsByKey = new Map<string, number>();
+	getCallsByKey = new Map<string, number>();
 	getCallCount: number = 0;
 
 	seed(key: string, body: Uint8Array): void {
@@ -4076,6 +4410,7 @@ class RealMemoryObjectStore implements ObjectStore {
 
 	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
 		this.getCallCount += 1;
+		this.getCallsByKey.set(key, (this.getCallsByKey.get(key) ?? 0) + 1);
 		const object = this.objects.get(key);
 		if (!object) return null;
 		const body = Uint8Array.from(object.body);
@@ -4169,6 +4504,10 @@ class FixedPostgresDraftRepository implements DraftRepository {
 		return this.documents;
 	}
 
+	async readManifest(): Promise<string | null> {
+		return null;
+	}
+
 	async commit(): Promise<DraftVersion> {
 		throw new Error('Unexpected repository commit');
 	}
@@ -4202,6 +4541,10 @@ class UnreachablePostgresObjectStore implements ObjectStore {
 
 class UnreachablePostgresDraftRepository implements DraftRepository {
 	async read(): Promise<readonly DraftDocument[]> {
+		throw new Error('Draft repository must not be read before field value integrity is verified');
+	}
+
+	async readManifest(): Promise<string | null> {
 		throw new Error('Draft repository must not be read before field value integrity is verified');
 	}
 
@@ -4321,6 +4664,7 @@ function fieldCommand(options: {
 		organizationId: ORGANIZATION_ID,
 		envelopeId: ENVELOPE_ID,
 		recipientId: options.recipientId,
+		documentId: null,
 		documentPath: 'documents/agreement.md',
 		fieldType: 'signature',
 		label: 'Signature',

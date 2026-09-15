@@ -607,12 +607,21 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				.get() as Record<string, unknown>;
 			expect(artifactCounts).toEqual({ healthy: 1, corrupt: 0 });
 
-			// No object access at all for the corrupt row: only the healthy
-			// envelope's archive read and its two artifact writes happened.
+			// The healthy envelope's pinned Git archive is fetched once and its
+			// already-verified bytes are reused for both markdown documents and
+			// the document-set.json manifest read, never re-fetched. The corrupt
+			// sibling has a null repository pointer and never reaches object storage.
 			expect(objects.getCallCount).toBe(1);
+			expect([...objects.getCallsByKey.keys()]).toEqual([ARCHIVE_KEY]);
+			expect(objects.getCallsByKey.get(ARCHIVE_KEY)).toBe(1);
 			expect(objects.putCallsByKey.size).toBe(2);
+			for (const key of objects.getCallsByKey.keys()) {
+				expect(key).toContain('/envelopes/01920000-0000-7000-8000-000000000001/');
+				expect(key).not.toContain('01920000-0000-7000-8000-0000000000c0');
+			}
 			for (const key of objects.putCallsByKey.keys()) {
 				expect(key).toContain('/envelopes/01920000-0000-7000-8000-000000000001/');
+				expect(key).not.toContain('01920000-0000-7000-8000-0000000000c0');
 			}
 		} finally {
 			sqlite.close();
@@ -882,6 +891,10 @@ class UnreachableDraftRepository implements DraftRepository {
 		throw new Error('Draft repository must not be read before field value integrity is verified');
 	}
 
+	async readManifest(): Promise<string | null> {
+		throw new Error('Draft repository must not be read before field value integrity is verified');
+	}
+
 	async commit(): Promise<DraftVersion> {
 		throw new Error(
 			'Draft repository must not be written before field value integrity is verified'
@@ -938,6 +951,7 @@ class SeededObjectStore implements ObjectStore {
 class WorkingObjectStore implements ObjectStore {
 	private readonly objects = new Map<string, StoredArchive>();
 	putCallsByKey = new Map<string, number>();
+	getCallsByKey = new Map<string, number>();
 	getCallCount: number = 0;
 
 	seed(key: string, body: Uint8Array): void {
@@ -950,6 +964,7 @@ class WorkingObjectStore implements ObjectStore {
 
 	async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
 		this.getCallCount += 1;
+		this.getCallsByKey.set(key, (this.getCallsByKey.get(key) ?? 0) + 1);
 		const object = this.objects.get(key);
 		if (!object) return null;
 		const body = Uint8Array.from(object.body);
@@ -1002,6 +1017,10 @@ class FixedDraftRepository implements DraftRepository {
 	): Promise<readonly DraftDocument[]> {
 		if (expectedCommitSha !== this.expectedCommitSha) throw new Error('Unexpected commit SHA');
 		return this.documents;
+	}
+
+	async readManifest(): Promise<string | null> {
+		return null;
 	}
 
 	async commit(): Promise<DraftVersion> {

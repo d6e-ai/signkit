@@ -752,9 +752,22 @@
 
 	let { data }: { data: PageData } = $props();
 
+	let selectedDocumentId = $state<string | null>(null);
+
 	/** Same-origin, cookie-authenticated. Deliberately carries no token. */
+	const selectedDocument = $derived(
+		data.state === 'active'
+			? (data.documents.find((document) => document.documentId === selectedDocumentId) ??
+					data.documents[0] ??
+					null)
+			: null
+	);
 	const agreementPdfPath: string = $derived(
-		data.state === 'active' ? `/sign/${data.access.envelopeId}/agreement.pdf` : ''
+		data.state === 'active' && selectedDocument !== null
+			? data.source === 'legacy'
+				? `/sign/${data.access.envelopeId}/agreement.pdf`
+				: `/sign/${data.access.envelopeId}/documents/${selectedDocument.documentId}.pdf`
+			: ''
 	);
 
 	let viewRecorded = $state(false);
@@ -811,7 +824,12 @@
 	);
 
 	function fieldsOnPage(pageNumber: number): readonly RecipientPlacedField[] {
-		return placedFields.filter((field) => field.geometry.page === pageNumber);
+		const documentId: string | null = selectedDocument?.documentId ?? null;
+		return placedFields.filter(
+			(field) =>
+				field.geometry.page === pageNumber &&
+				(documentId === null || field.documentId === documentId)
+		);
 	}
 
 	function roleLabel(role: string): string {
@@ -1333,18 +1351,18 @@
 					</h2>
 					<p class="mt-1 text-sm text-muted-foreground">{m.signing_documents_description()}</p>
 				</div>
-				{#if data.document.sections.length > 1}
-					<nav class="flex flex-wrap gap-2" aria-label={m.signing_document_sections()}>
-						{#each data.document.sections as section, index (index)}
-							<a
-								href={`#agreement-page-${section.firstPage}`}
-								class="min-h-11 rounded-lg border bg-background px-3 py-2 text-sm hover:bg-muted"
+				{#if data.state === 'active' && data.documents.length > 1}
+					<nav class="flex flex-wrap gap-2" aria-label={m.signing_document_switcher()}>
+						{#each data.documents as document (document.documentId)}
+							<Button
+								size="sm"
+								variant={selectedDocument?.documentId === document.documentId
+									? 'default'
+									: 'outline'}
+								onclick={() => (selectedDocumentId = document.documentId)}
 							>
-								<span class="block text-xs text-muted-foreground">
-									{m.signing_document_page({ page: String(section.firstPage) })}
-								</span>
-								<span class="block max-w-[14rem] truncate font-medium">{section.title}</span>
-							</a>
+								{document.title}
+							</Button>
 						{/each}
 					</nav>
 				{/if}
@@ -1355,7 +1373,7 @@
 					<PdfDocumentView
 						src={agreementPdfPath}
 						label={m.signing_document_label()}
-						expectedPageCount={data.document.pageCount}
+						expectedPageCount={selectedDocument?.pageCount ?? 1}
 						loadingLabel={m.signing_document_loading()}
 						errorTitle={m.signing_document_error_title()}
 						errorDescription={m.signing_document_error_description()}

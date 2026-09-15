@@ -3,6 +3,7 @@ import type {
 	EnvelopeField,
 	FieldGeometry,
 	FieldType,
+	MarkdownPath,
 	Recipient
 } from '$lib/domain/envelope';
 
@@ -28,7 +29,8 @@ export interface FieldAuditHead {
 export interface PublicEnvelopeField {
 	id: string;
 	recipientId: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string | null;
+	documentPath: MarkdownPath | null;
 	fieldType: FieldType;
 	required: boolean;
 	position: number;

@@ -28,6 +28,8 @@ function jsonResponse(data: unknown, status = 200): Response {
 	});
 }
 
+const DOCUMENT_ID = '01900000-0000-7000-8000-000000000010';
+
 const readyEnvelope = {
 	id: ENVELOPE_ID,
 	organizationId: 'org-1',
@@ -63,8 +65,44 @@ const draft = {
 	generation: 1,
 	commitSha: '0123456789abcdef0123456789abcdef01234567',
 	archiveSha256: 'a'.repeat(64),
-	documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }]
+	documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
+	documentSet: {
+		schema: 'signkit-document-set-v1',
+		documents: [
+			{
+				id: DOCUMENT_ID,
+				position: 0,
+				kind: 'markdown' as const,
+				title: 'agreement',
+				path: 'documents/agreement.md' as const,
+				contentSha256: 'a'.repeat(64)
+			}
+		]
+	}
 };
+
+function pageMapResponse(overrides: Record<string, unknown> = {}): Response {
+	return jsonResponse({
+		commitSha: readyEnvelope.repositoryHead,
+		generation: readyEnvelope.repositoryGeneration,
+		documentId: DOCUMENT_ID,
+		pageCount: 1,
+		pageWidth: 595.28,
+		pageHeight: 841.89,
+		documents: [
+			{
+				documentId: DOCUMENT_ID,
+				position: 0,
+				kind: 'markdown',
+				title: 'agreement',
+				pageCount: 1,
+				pageWidth: 595.28,
+				pageHeight: 841.89
+			}
+		],
+		...overrides
+	});
+}
 
 const deliveries = {
 	delivery: {
@@ -360,18 +398,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await screen.getByRole('tab', { name: 'Fields' }).click();
 		expect(screen.container.textContent).not.toContain('Field placement');
 
-		releasePages(
-			jsonResponse({
-				commitSha: readyEnvelope.repositoryHead,
-				generation: readyEnvelope.repositoryGeneration,
-				pageCount: 1,
-				pageWidth: 595.28,
-				pageHeight: 841.89,
-				documents: [
-					{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 1 }
-				]
-			})
-		);
+		releasePages(pageMapResponse());
 
 		await expect.element(screen.getByText('Field placement')).toBeVisible();
 	});
@@ -391,15 +418,9 @@ describe('envelope authoring page remounts durable send state', () => {
 					return jsonResponse(deliveries);
 				}
 				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf/pages`)) {
-					return jsonResponse({
+					return pageMapResponse({
 						commitSha: 'ffffffffffffffffffffffffffffffffffffffff',
-						generation: 0,
-						pageCount: 1,
-						pageWidth: 595.28,
-						pageHeight: 841.89,
-						documents: [
-							{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 1 }
-						]
+						generation: 0
 					});
 				}
 				return jsonResponse({});

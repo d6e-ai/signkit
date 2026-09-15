@@ -89,6 +89,42 @@ describe('buildCompletionPdfPages + renderCompletionPdf', () => {
 		const text = pages.flat().join('\n');
 		expect(text).not.toContain('@');
 	});
+
+	it('emits a reference block for a PDF leaf and never inlines the document-set manifest', () => {
+		const mixed: CompletionManifestV1 = {
+			...MANIFEST,
+			documentSetHash: 'e'.repeat(64),
+			documents: [
+				{
+					id: '01900000-0000-7000-8000-000000000021',
+					kind: 'markdown',
+					position: 0,
+					title: 'Agreement',
+					path: 'documents/agreement.md',
+					sha256: 'c'.repeat(64)
+				},
+				{
+					id: '01900000-0000-7000-8000-000000000022',
+					kind: 'pdf',
+					position: 1,
+					title: 'Schedule A',
+					sha256: 'f'.repeat(64),
+					byteSize: 812345,
+					pageCount: 12
+				}
+			]
+		};
+		const text = buildCompletionPdfPages(mixed, DOCUMENTS, GEOMETRY).flat().join('\n');
+		expect(text).toContain('Document set hash: ' + 'e'.repeat(64));
+		expect(text).toContain('This is the agreement text.');
+		expect(text).toContain('Kind: pdf');
+		expect(text).toContain('Pages: 12');
+		expect(text).toContain('SHA-256: ' + 'f'.repeat(64));
+		expect(text).toContain('Size: 812345 bytes');
+		expect(text).not.toContain('signkit-document-set-v1');
+		expect(text).not.toContain('%PDF');
+		expect(text).not.toContain(JSON.stringify(mixed.documents[1]));
+	});
 });
 
 describe('buildCompletionPdfManifest', () => {

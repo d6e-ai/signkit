@@ -201,11 +201,11 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 				for (const field of command.fields) {
 					await transaction`
 							INSERT INTO envelope_field (
-								id, organization_id, envelope_id, recipient_id, document_path, field_type,
+								id, organization_id, envelope_id, recipient_id, document_id, document_path, field_type,
 								label, required, position, page, x, y, width, height, created_at, updated_at
 							) VALUES (
 								${field.id}, ${field.organizationId}, ${field.envelopeId}, ${field.recipientId},
-								${field.documentPath}, ${field.fieldType}, ${field.label}, ${field.required},
+								${field.documentId}, ${field.documentPath}, ${field.fieldType}, ${field.label}, ${field.required},
 								${field.position}, ${field.geometry?.page ?? null}, ${field.geometry?.x ?? null},
 								${field.geometry?.y ?? null}, ${field.geometry?.width ?? null},
 								${field.geometry?.height ?? null}, ${command.updatedAt}, ${command.updatedAt}
@@ -397,7 +397,7 @@ async function validStoredReceipt(
 		expectedFieldGeneration: row.expectedFieldGeneration,
 		fields: fields.map((field: EnvelopeField) => ({
 			recipientId: field.recipientId,
-			documentPath: field.documentPath,
+			documentId: field.documentId,
 			fieldType: field.fieldType,
 			label: field.label,
 			required: field.required,
@@ -412,6 +412,7 @@ async function validStoredReceipt(
 		fields: fields.map((field: EnvelopeField) => ({
 			id: field.id,
 			recipientId: field.recipientId,
+			documentId: field.documentId,
 			documentPath: field.documentPath,
 			fieldType: field.fieldType,
 			required: field.required,
@@ -449,7 +450,7 @@ function isEnvelopeField(value: unknown): value is EnvelopeField {
 		typeof candidate.organizationId === 'string' &&
 		typeof candidate.envelopeId === 'string' &&
 		typeof candidate.recipientId === 'string' &&
-		typeof candidate.documentPath === 'string' &&
+		isDocumentScope(candidate) &&
 		isFieldType(candidate.fieldType) &&
 		typeof candidate.label === 'string' &&
 		typeof candidate.required === 'boolean' &&
@@ -480,12 +481,19 @@ function toPublicField(field: EnvelopeField): PublicEnvelopeField {
 	return {
 		id: field.id,
 		recipientId: field.recipientId,
+		documentId: field.documentId,
 		documentPath: field.documentPath,
 		fieldType: field.fieldType,
 		required: field.required,
 		position: field.position,
 		geometry: field.geometry
 	};
+}
+
+function isDocumentScope(candidate: Record<string, unknown>): boolean {
+	const hasId: boolean = typeof candidate.documentId === 'string';
+	const hasPath: boolean = typeof candidate.documentPath === 'string';
+	return (hasId && candidate.documentPath === null) || (candidate.documentId === null && hasPath);
 }
 
 function isoTimestamp(value: Date | string): string {

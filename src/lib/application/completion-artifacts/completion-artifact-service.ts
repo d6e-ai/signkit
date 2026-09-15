@@ -3,6 +3,13 @@ import {
 	DraftIntegrityError,
 	readImmutableDraftRevision
 } from '$lib/application/drafts/draft-persistence';
+import {
+	documentSetHash,
+	parseDocumentSet,
+	type DocumentSetLeaf,
+	type DocumentSetManifest
+} from '$lib/domain/document-set';
+import { isMarkdownPath } from '$lib/domain/envelope';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
@@ -197,7 +204,7 @@ export class CompletionArtifactPublicationService {
 				claim.envelopeId
 			);
 			await verifyFieldValueIntegrity(evidence.fields);
-			const documents: readonly DraftDocument[] = await readImmutableDraftRevision(
+			const verified = await readImmutableDraftRevision(
 				{
 					organizationId: claim.organizationId,
 					envelopeId: claim.envelopeId,
@@ -208,13 +215,17 @@ export class CompletionArtifactPublicationService {
 				this.#objects,
 				this.#repository
 			);
-			const manifestDocuments: CompletionManifestDocument[] = [];
-			for (const document of documents) {
-				manifestDocuments.push({
-					path: document.path,
-					sha256: await sha256TextHex(document.content)
-				});
+			let pinnedManifestJson: string | null;
+			try {
+				pinnedManifestJson = await this.#repository.readManifest(
+					verified.archive,
+					claim.sentCommitSha
+				);
+			} catch {
+				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
 			}
+			const { documents: manifestDocuments, documentSetHash: pinnedDocumentSetHash } =
+				await completionDocumentsFromRevision(verified.documents, pinnedManifestJson);
 			const manifest: CompletionManifestV1 = await buildCompletionManifest({
 				organizationId: claim.organizationId,
 				envelopeId: claim.envelopeId,
@@ -222,6 +233,7 @@ export class CompletionArtifactPublicationService {
 				sentCommitSha: claim.sentCommitSha,
 				draftArchiveSha256: claim.repositoryArchiveSha256,
 				fieldGeneration: claim.fieldGeneration,
+				...(pinnedDocumentSetHash === undefined ? {} : { documentSetHash: pinnedDocumentSetHash }),
 				documents: manifestDocuments,
 				recipients: evidence.recipients,
 				fields: evidence.fields,
@@ -288,7 +300,7 @@ export class CompletionArtifactPublicationService {
 					claim.organizationId,
 					claim.envelopeId
 				);
-				const pages = buildCompletionPdfPages(manifest, documents, fieldGeometry);
+				const pages = buildCompletionPdfPages(manifest, verified.documents, fieldGeometry);
 				const pdfBytes = renderCompletionPdf(pages);
 				const pdfSha256 = await sha256Hex(pdfBytes);
 				const pdfKey = completionArtifactObjectKey(
@@ -590,6 +602,69 @@ async function verifyFieldValueIntegrity(
 			);
 		}
 	}
+}
+
+async function completionDocumentsFromRevision(
+	documents: readonly DraftDocument[],
+	manifestJson: string | null
+): Promise<{
+	documents: CompletionManifestDocument[];
+	documentSetHash?: string;
+}> {
+	if (manifestJson === null) {
+		const legacy: CompletionManifestDocument[] = [];
+		for (const document of documents) {
+			if (!isMarkdownPath(document.path)) continue;
+			legacy.push({
+				path: document.path,
+				sha256: await sha256TextHex(document.content)
+			});
+		}
+		return { documents: legacy };
+	}
+	let manifest: DocumentSetManifest;
+	try {
+		manifest = parseDocumentSet(manifestJson);
+	} catch {
+		throw new CompletionArtifactIntegrityError('Completion document set is invalid');
+	}
+	const markdownByPath = new Map<string, DraftDocument>(
+		documents.map((document: DraftDocument): [string, DraftDocument] => [document.path, document])
+	);
+	const mapped: CompletionManifestDocument[] = [];
+	for (const leaf of manifest.documents) {
+		mapped.push(await completionDocumentFromLeaf(leaf, markdownByPath));
+	}
+	return { documents: mapped, documentSetHash: await documentSetHash(manifest) };
+}
+
+async function completionDocumentFromLeaf(
+	leaf: DocumentSetLeaf,
+	markdownByPath: ReadonlyMap<string, DraftDocument>
+): Promise<CompletionManifestDocument> {
+	if (leaf.kind === 'pdf') {
+		return {
+			sha256: leaf.sha256,
+			id: leaf.id,
+			kind: 'pdf',
+			position: leaf.position,
+			title: leaf.title,
+			byteSize: leaf.byteSize,
+			pageCount: leaf.pageCount
+		};
+	}
+	const content: DraftDocument | undefined = markdownByPath.get(leaf.path);
+	if (content === undefined) {
+		throw new CompletionArtifactIntegrityError('Completion markdown document is missing');
+	}
+	return {
+		path: leaf.path,
+		sha256: await sha256TextHex(content.content),
+		id: leaf.id,
+		kind: 'markdown',
+		position: leaf.position,
+		title: leaf.title
+	};
 }
 
 async function readStreamBounded(

@@ -1,4 +1,5 @@
-import type { FieldGeometry, FieldType, RecipientRole } from '$lib/domain/envelope';
+import type { DraftPath, FieldGeometry, FieldType, RecipientRole } from '$lib/domain/envelope';
+import type { DocumentSetManifest } from '$lib/domain/document-set';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
 import type { PublicEnvelopeDeliveryStatus } from '$lib/application/delivery/delivery-status';
 
@@ -73,7 +74,7 @@ export interface CreateEnvelopeResponse {
 }
 
 export interface DraftDocumentSnapshot {
-	path: `documents/${string}.md`;
+	path: DraftPath;
 	content: string;
 }
 
@@ -89,6 +90,7 @@ export interface DraftWorkspaceResponse {
 	commitSha: string | null;
 	archiveSha256: string | null;
 	documents: readonly DraftDocumentSnapshot[];
+	documentSet: DocumentSetManifest | null;
 }
 
 export interface CommitDraftEdit {
@@ -146,7 +148,7 @@ export interface ReadyEnvelopeResponse {
 
 export interface FieldPlacementInput {
 	recipientId: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string;
 	fieldType: FieldType;
 	label: string;
 	required: boolean;
@@ -164,7 +166,8 @@ export interface PlaceFieldsInput {
 export interface PublicEnvelopeFieldResponse {
 	id: string;
 	recipientId: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string | null;
+	documentPath: DraftPath | null;
 	fieldType: FieldType;
 	required: boolean;
 	position: number;
@@ -465,6 +468,71 @@ export class EnvelopesClient {
 					'idempotency-key': idempotencyKey
 				},
 				body
+			},
+			options?.fetch
+		);
+		return {
+			revision: data.revision,
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
+	async uploadPdf(
+		envelopeId: string,
+		input: { expectedGeneration: number; file: Blob; title?: string; position?: number },
+		options?: RequestOptions
+	): Promise<CommitDraftResponse> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/documents/pdf`);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const body = new FormData();
+		body.set('expectedGeneration', String(input.expectedGeneration));
+		if (input.title !== undefined) body.set('title', input.title);
+		if (input.position !== undefined) body.set('position', String(input.position));
+		body.set('file', input.file, 'upload.pdf');
+		const { data, response } = await this.request<{
+			revision: { generation: number; commitSha: string; archiveSha256: string };
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body
+			},
+			options?.fetch
+		);
+		return {
+			revision: data.revision,
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
+	async orderDocuments(
+		envelopeId: string,
+		input: { expectedGeneration: number; documentIds: readonly string[] },
+		options?: RequestOptions
+	): Promise<CommitDraftResponse> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/documents/order`
+		);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{
+			revision: { generation: number; commitSha: string; archiveSha256: string };
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					accept: 'application/json, application/problem+json',
+					'content-type': 'application/json',
+					'idempotency-key': idempotencyKey
+				},
+				body: JSON.stringify({
+					expectedGeneration: input.expectedGeneration,
+					documentIds: input.documentIds
+				})
 			},
 			options?.fetch
 		);

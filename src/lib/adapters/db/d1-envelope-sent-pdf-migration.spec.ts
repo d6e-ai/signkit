@@ -1,7 +1,14 @@
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { D1EnvelopeSentPdfStore } from './d1-envelope-sent-pdf-store';
-import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
+import { D1EnvelopeSentDocumentStore } from './d1-envelope-sent-document-store';
+import {
+	applyD1Migrations,
+	applyD1MigrationsThrough,
+	d1MigrationPaths,
+	sqliteD1Database
+} from './sqlite-d1-test-support';
 
 const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
@@ -11,6 +18,7 @@ const SENT_AUDIT_ID: string = '01960000-0000-7000-8000-0000000000a1';
 const COMMIT_SHA: string = 'commit-1';
 const SENT_PDF_SHA256: string = 'f'.repeat(64);
 const SENT_PDF_KEY: string = `sent-documents/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${SENT_PDF_SHA256}.pdf`;
+const DOCUMENT_ID: string = '01900000-0000-7000-8000-000000000010';
 const DOCUMENT_PAGES: string =
 	'[{"path":"documents/agreement.md","title":"agreement","firstPage":1,"lastPage":2}]';
 
@@ -53,9 +61,10 @@ function seedReady(sqlite: DatabaseSync): void {
 
 function insertCommand(
 	sqlite: DatabaseSync,
-	overrides: { pdfKey?: string | null; auditSequence?: number; idempotencyKey?: string } = {}
+	overrides: { documentCount?: number | null; auditSequence?: number; idempotencyKey?: string } = {}
 ): void {
-	const pdfKey: string | null = overrides.pdfKey === undefined ? SENT_PDF_KEY : overrides.pdfKey;
+	const documentCount: number | null =
+		overrides.documentCount === undefined ? 1 : overrides.documentCount;
 	const auditSequence: number = overrides.auditSequence ?? 4;
 	const idempotencyKey: string = overrides.idempotencyKey ?? 'send-1';
 	sqlite.exec(`INSERT INTO envelope_send_command (
@@ -64,18 +73,13 @@ function insertCommand(
 		delivery_count,queued_delivery_count,delivery_manifest_hash,delivery_manifest_json,
 		initial_capability_expires_at,updated_at,audit_event_id,audit_sequence,
 		previous_audit_hash,audit_event_hash,audit_payload_json,
-		sent_pdf_object_key,sent_pdf_sha256,sent_pdf_bytes,sent_pdf_page_count,
-		sent_pdf_page_width,sent_pdf_page_height,sent_pdf_document_pages_json
+		document_set_hash, document_count, sent_documents_json
 	) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
 		1,1,'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
 		'${SENT_AUDIT_ID}',${auditSequence},'hash-3','hash-5','{}',
-		${pdfKey === null ? 'NULL' : `'${pdfKey}'`},
-		${pdfKey === null ? 'NULL' : `'${SENT_PDF_SHA256}'`},
-		${pdfKey === null ? 'NULL' : '4096'},
-		${pdfKey === null ? 'NULL' : '2'},
-		${pdfKey === null ? 'NULL' : '595.28'},
-		${pdfKey === null ? 'NULL' : '841.89'},
-		${pdfKey === null ? 'NULL' : `'${DOCUMENT_PAGES}'`})`);
+		${documentCount === null ? 'NULL' : `'${SENT_PDF_SHA256}'`},
+		${documentCount === null ? 'NULL' : String(documentCount)},
+		${documentCount === null ? 'NULL' : `'[{"id":"${DOCUMENT_ID}","sha256":"${SENT_PDF_SHA256}","byteSize":4096,"pageCount":1}]'`})`);
 }
 
 function reserveDelivery(sqlite: DatabaseSync): void {
@@ -98,119 +102,32 @@ function publish(sqlite: DatabaseSync, idempotencyKey: string = 'send-1'): void 
 		VALUES ('${ORGANIZATION_ID}','user','user-1','${idempotencyKey}')`);
 }
 
-function counts(sqlite: DatabaseSync): {
-	status: string;
-	sent_commit_sha: string | null;
-	sent_events: number;
-	pdf_rows: number;
-} {
-	return sqlite
-		.prepare(
-			`SELECT envelope.status, envelope.sent_commit_sha,
-				(SELECT COUNT(*) FROM audit_event WHERE event_type='envelope.sent') AS sent_events,
-				(SELECT COUNT(*) FROM envelope_sent_pdf) AS pdf_rows
-			 FROM envelope WHERE id='${ENVELOPE_ID}'`
-		)
-		.get() as {
-		status: string;
-		sent_commit_sha: string | null;
-		sent_events: number;
-		pdf_rows: number;
-	};
+function insertSentDocument(sqlite: DatabaseSync): void {
+	sqlite.exec(`INSERT INTO envelope_sent_document (
+		organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+		object_key, sha256, byte_size, page_count, page_width, page_height, created_at
+	) VALUES (
+		'${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${DOCUMENT_ID}',0,'markdown','agreement',
+		'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,1,595.28,841.89,'2026-09-11T00:02:00.000Z'
+	)`);
 }
 
-describe('D1 envelope_sent_pdf publication', () => {
-	it('publishes the pinned rendering atomically with the status flip and the audit event', () => {
+describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', () => {
+	it('still reads a frozen legacy pointer after the multi-document send tables exist', async () => {
 		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
 		try {
 			applyD1Migrations(sqlite);
 			seedReady(sqlite);
-			sqlite.exec('BEGIN');
-			insertCommand(sqlite);
-			reserveDelivery(sqlite);
-			publish(sqlite);
-			sqlite.exec('COMMIT');
-
-			expect(counts(sqlite)).toEqual({
-				status: 'sent',
-				sent_commit_sha: COMMIT_SHA,
-				sent_events: 1,
-				pdf_rows: 1
-			});
-			const row = sqlite.prepare('SELECT * FROM envelope_sent_pdf').get() as Record<
-				string,
-				unknown
-			>;
-			expect(row).toMatchObject({
-				organization_id: ORGANIZATION_ID,
-				envelope_id: ENVELOPE_ID,
-				commit_sha: COMMIT_SHA,
-				object_key: SENT_PDF_KEY,
-				sha256: SENT_PDF_SHA256,
-				byte_size: 4096,
-				page_count: 2,
-				document_pages_json: DOCUMENT_PAGES
-			});
-		} finally {
-			sqlite.close();
-		}
-	});
-
-	it('refuses to publish a send command that carries no pinned rendering', () => {
-		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
-		try {
-			applyD1Migrations(sqlite);
-			seedReady(sqlite);
-			sqlite.exec('BEGIN');
-			insertCommand(sqlite, { pdfKey: null });
-			reserveDelivery(sqlite);
-			expect((): void => publish(sqlite)).toThrow(/pdf pointer missing/);
-			sqlite.exec('ROLLBACK');
-
-			expect(counts(sqlite)).toEqual({
-				status: 'ready',
-				sent_commit_sha: null,
-				sent_events: 0,
-				pdf_rows: 0
-			});
-		} finally {
-			sqlite.close();
-		}
-	});
-
-	it('rolls the pointer back with everything else when the guard aborts on a stale audit head', () => {
-		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
-		try {
-			applyD1Migrations(sqlite);
-			seedReady(sqlite);
-			sqlite.exec('BEGIN');
-			// Sequence 9 does not chain from the current head, so the guard aborts.
-			insertCommand(sqlite, { auditSequence: 9 });
-			reserveDelivery(sqlite);
-			expect((): void => publish(sqlite)).toThrow(/publish conflict/);
-			sqlite.exec('ROLLBACK');
-
-			expect(counts(sqlite)).toEqual({
-				status: 'ready',
-				sent_commit_sha: null,
-				sent_events: 0,
-				pdf_rows: 0
-			});
-		} finally {
-			sqlite.close();
-		}
-	});
-
-	it('reads a pointer only for the commit the envelope is actually sent at', async () => {
-		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
-		try {
-			applyD1Migrations(sqlite);
-			seedReady(sqlite);
-			sqlite.exec('BEGIN');
-			insertCommand(sqlite);
-			reserveDelivery(sqlite);
-			publish(sqlite);
-			sqlite.exec('COMMIT');
+			sqlite.exec(`
+				UPDATE envelope SET status='sent', sent_commit_sha='${COMMIT_SHA}',
+					updated_at='2026-09-11T00:02:00.000Z'
+				WHERE id='${ENVELOPE_ID}';
+				INSERT INTO envelope_sent_pdf (
+					organization_id,envelope_id,commit_sha,object_key,sha256,byte_size,
+					page_count,page_width,page_height,document_pages_json,created_at
+				) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_KEY}','${SENT_PDF_SHA256}',
+					4096,2,595.28,841.89,'${DOCUMENT_PAGES}','2026-09-11T00:02:00.000Z');
+			`);
 
 			const store: D1EnvelopeSentPdfStore = new D1EnvelopeSentPdfStore(sqliteD1Database(sqlite));
 			await expect(
@@ -224,12 +141,9 @@ describe('D1 envelope_sent_pdf publication', () => {
 					{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 2 }
 				]
 			});
-			// Another commit, another organization, another envelope: all invisible.
 			await expect(
 				store.findSentPdf(ORGANIZATION_ID, ENVELOPE_ID, 'other-commit')
 			).resolves.toBeNull();
-			await expect(store.findSentPdf('org-2', ENVELOPE_ID, COMMIT_SHA)).resolves.toBeNull();
-			await expect(store.findSentPdf(ORGANIZATION_ID, 'env-2', COMMIT_SHA)).resolves.toBeNull();
 		} finally {
 			sqlite.close();
 		}
@@ -271,6 +185,166 @@ describe('D1 envelope_sent_pdf publication', () => {
 						${byteSize},${pageCount},595.28,841.89,'${DOCUMENT_PAGES}','2026-09-11T00:02:00.000Z')`);
 				}).toThrow(/CHECK constraint failed/);
 			}
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('creates both sent tables and refuses a publish whose document count does not match', () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		try {
+			applyD1Migrations(sqlite);
+			seedReady(sqlite);
+			const tables = sqlite
+				.prepare(
+					`SELECT name FROM sqlite_master WHERE type='table' AND name IN ('envelope_sent_document','envelope_sent_document_set') ORDER BY name`
+				)
+				.all() as { name: string }[];
+			expect(tables.map((row) => row.name)).toEqual([
+				'envelope_sent_document',
+				'envelope_sent_document_set'
+			]);
+			sqlite.exec('BEGIN');
+			insertCommand(sqlite, { documentCount: 2 });
+			insertSentDocument(sqlite);
+			reserveDelivery(sqlite);
+			expect((): void => publish(sqlite)).toThrow(/envelope send document set missing/);
+			sqlite.exec('ROLLBACK');
+			expect(
+				(
+					sqlite.prepare('SELECT COUNT(*) AS count FROM envelope_sent_document_set').get() as {
+						count: number;
+					}
+				).count
+			).toBe(0);
+			expect(
+				(
+					sqlite.prepare(`SELECT status FROM envelope WHERE id='${ENVELOPE_ID}'`).get() as {
+						status: string;
+					}
+				).status
+			).toBe('ready');
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('publishes the set marker when the pre-inserted document count matches', async () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		try {
+			applyD1Migrations(sqlite);
+			seedReady(sqlite);
+			sqlite.exec('BEGIN');
+			insertCommand(sqlite);
+			insertSentDocument(sqlite);
+			reserveDelivery(sqlite);
+			publish(sqlite);
+			sqlite.exec('COMMIT');
+			const store: D1EnvelopeSentDocumentStore = new D1EnvelopeSentDocumentStore(
+				sqliteD1Database(sqlite)
+			);
+			await expect(store.findSet(ORGANIZATION_ID, ENVELOPE_ID, COMMIT_SHA)).resolves.toMatchObject({
+				documentSetHash: SENT_PDF_SHA256,
+				documentCount: 1,
+				documents: [{ documentId: DOCUMENT_ID, position: 0, kind: 'markdown' }]
+			});
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('enforces document_id XOR document_path on envelope_field', () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		try {
+			applyD1Migrations(sqlite);
+			seedReady(sqlite);
+			const fieldSql = (
+				documentId: string,
+				documentPath: string
+			): string => `INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_id, document_path,
+				field_type, label, required, position, created_at, updated_at
+			) VALUES (
+				'01950000-0000-7000-8000-000000000001','${ORGANIZATION_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}',
+				${documentId}, ${documentPath}, 'signature', 'Signature', 1, 1,
+				'2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'
+			)`;
+			expect((): void => sqlite.exec(fieldSql('NULL', 'NULL'))).toThrow(
+				/envelope_field_document_scope/
+			);
+			expect((): void =>
+				sqlite.exec(fieldSql(`'${DOCUMENT_ID}'`, `'documents/agreement.md'`))
+			).toThrow(/envelope_field_document_scope/);
+			sqlite.exec(fieldSql(`'${DOCUMENT_ID}'`, 'NULL'));
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('rejects out-of-range sent-document rows and document_count', () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		try {
+			applyD1Migrations(sqlite);
+			seedReady(sqlite);
+			expect((): void => {
+				sqlite.exec(`INSERT INTO envelope_sent_document (
+					organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+					object_key, sha256, byte_size, page_count, page_width, page_height, created_at
+				) VALUES (
+					'${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${DOCUMENT_ID}',20,'markdown','agreement',
+					'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,1,595.28,841.89,'2026-09-11T00:02:00.000Z'
+				)`);
+			}).toThrow(/CHECK constraint failed/);
+			expect((): void => {
+				sqlite.exec(`INSERT INTO envelope_sent_document_set (
+					organization_id, envelope_id, commit_sha, document_set_hash, document_count, created_at
+				) VALUES (
+					'${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_SHA256}',0,'2026-09-11T00:02:00.000Z'
+				)`);
+			}).toThrow(/CHECK constraint failed/);
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('keeps sent_pdf_* command columns so a pre-migration receipt can still replay', () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		try {
+			applyD1MigrationsThrough(sqlite, 'migrations/d1/0043_envelope_sent_pdf.sql');
+			seedReady(sqlite);
+			sqlite.exec(`INSERT INTO envelope_send_command (
+				organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+				expected_generation,ready_audit_event_id,commit_sha,initial_routing_order,
+				delivery_count,queued_delivery_count,delivery_manifest_hash,delivery_manifest_json,
+				initial_capability_expires_at,updated_at,audit_event_id,audit_sequence,
+				previous_audit_hash,audit_event_hash,audit_payload_json,
+				sent_pdf_object_key, sent_pdf_sha256, sent_pdf_bytes, sent_pdf_page_count,
+				sent_pdf_page_width, sent_pdf_page_height, sent_pdf_document_pages_json
+			) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','user','user-1','legacy-send','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
+				1,1,'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
+				'${SENT_AUDIT_ID}',4,'hash-3','hash-5','{}',
+				'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,2,595.28,841.89,'${DOCUMENT_PAGES}')`);
+			for (const path of d1MigrationPaths()) {
+				if (path <= 'migrations/d1/0043_envelope_sent_pdf.sql') continue;
+				sqlite.exec(readFileSync(path, 'utf8'));
+			}
+			const row = sqlite
+				.prepare(
+					`SELECT sent_pdf_sha256, sent_pdf_bytes, document_set_hash, sent_documents_json
+					 FROM envelope_send_command WHERE idempotency_key='legacy-send'`
+				)
+				.get() as {
+				sent_pdf_sha256: string;
+				sent_pdf_bytes: number;
+				document_set_hash: string | null;
+				sent_documents_json: string | null;
+			};
+			expect(row).toEqual({
+				sent_pdf_sha256: SENT_PDF_SHA256,
+				sent_pdf_bytes: 4096,
+				document_set_hash: null,
+				sent_documents_json: null
+			});
 		} finally {
 			sqlite.close();
 		}

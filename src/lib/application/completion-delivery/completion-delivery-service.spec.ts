@@ -384,7 +384,7 @@ describe('CompletionDeliveryService', () => {
 			expect(mail.messages[0].to).toBe('morgan@example.com');
 			expect(mail.messages[0].subject).toBe('Completed: "Partnership Agreement"');
 			expect(mail.messages[0].text).toContain('Hello Morgan,');
-			expect(mail.messages[0].html).toContain('View completed agreement');
+			expect(mail.messages[0].html).toContain('View completed documents');
 		});
 
 		it('mints a UUIDv7 delivery row identifier while the claim token stays opaque', async () => {
@@ -448,7 +448,7 @@ describe('CompletionDeliveryService', () => {
 			expect(msg.html).toContain('O&#39;Connor');
 			expect(msg.html).toContain('NDA &quot;Special&quot; &amp; &lt;Offer&gt; 2026');
 			expect(msg.html).toContain(`href="https://signkit.example/c/${token}"`);
-			expect(msg.html).toContain('View completed agreement');
+			expect(msg.html).toContain('View completed documents');
 			expect(msg.html).not.toContain('<script>');
 		});
 

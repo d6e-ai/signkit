@@ -66,8 +66,10 @@ pub fn sample_capabilities_json() -> &'static str {
       "draftHistory": {
         "format": "git",
         "archive": "gzip",
-        "trackedFiles": ["documents/*.md"],
+        "trackedFiles": ["document-set.json", "documents/*.md"],
         "commitEndpoint": "/api/v1/envelopes/{envelopeId}/draft/commits",
+        "pdfUploadEndpoint": "/api/v1/envelopes/{envelopeId}/documents/pdf",
+        "documentOrderEndpoint": "/api/v1/envelopes/{envelopeId}/documents/order",
         "concurrency": "expected-generation",
         "idempotency": "required"
       },
@@ -180,6 +182,8 @@ pub fn sample_capabilities_json() -> &'static str {
             "/api/v1/envelopes",
             "/api/v1/envelopes/{envelopeId}/draft/commits",
             "/api/v1/envelopes/{envelopeId}/draft/docx",
+            "/api/v1/envelopes/{envelopeId}/documents/pdf",
+            "/api/v1/envelopes/{envelopeId}/documents/order",
             "/api/v1/envelopes/{envelopeId}/ready",
             "/api/v1/envelopes/{envelopeId}/fields"
           ],

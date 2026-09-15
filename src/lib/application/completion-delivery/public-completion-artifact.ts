@@ -43,7 +43,7 @@ export class PublicCompletionArtifactStorageError extends Error {
 }
 
 const JSON_CONTENT_TYPE: string = 'application/json';
-const MARKDOWN_CONTENT_TYPE: string = 'text/markdown';
+const MARKDOWN_CONTENT_TYPE: string = 'text/markdown; charset=utf-8';
 const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 const GZIP_SLICE_BYTES: number = 16 * 1024;
 

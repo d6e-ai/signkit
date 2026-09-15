@@ -8,22 +8,46 @@ const ENVELOPE_ID = '01910000-0000-7000-8000-000000000001';
 const RECIPIENT_ID = '01910000-0000-7000-8000-000000000002';
 const FIELD_ID = '01910000-0000-7000-8000-000000000003';
 
-const sentDocument = {
-	pageCount: 2,
-	pageWidth: 595.28,
-	pageHeight: 841.89,
-	sections: [
-		{ title: 'NDA v1', firstPage: 1, lastPage: 1 },
-		{ title: 'schedule a', firstPage: 2, lastPage: 2 }
-	]
-};
+const DOCUMENT_A = '01900000-0000-7000-8000-000000000011';
+const DOCUMENT_B = '01900000-0000-7000-8000-000000000012';
+
+const sentDocuments = [
+	{
+		documentId: DOCUMENT_A,
+		position: 0,
+		title: 'NDA v1',
+		kind: 'markdown' as const,
+		pageCount: 1,
+		pageWidth: 595.28,
+		pageHeight: 841.89
+	},
+	{
+		documentId: DOCUMENT_B,
+		position: 1,
+		title: 'schedule a',
+		kind: 'markdown' as const,
+		pageCount: 1,
+		pageWidth: 595.28,
+		pageHeight: 841.89
+	}
+];
 
 const signatureField: RecipientPlacedField = {
 	id: FIELD_ID,
+	documentId: DOCUMENT_B,
 	fieldType: 'signature',
 	label: 'Your signature',
 	required: true,
-	geometry: { page: 2, x: 0.12, y: 0.34, width: 0.3, height: 0.06 }
+	geometry: { page: 1, x: 0.12, y: 0.34, width: 0.3, height: 0.06 }
+};
+
+const otherRecipientField: RecipientPlacedField = {
+	id: '01910000-0000-7000-8000-000000000099',
+	documentId: DOCUMENT_A,
+	fieldType: 'initials',
+	label: 'Countersignature',
+	required: true,
+	geometry: { page: 1, x: 0.12, y: 0.5, width: 0.2, height: 0.05 }
 };
 
 function activeData(
@@ -47,7 +71,8 @@ function activeData(
 			envelopeStatus: 'sent',
 			expiresAt: '2026-09-12T00:00:00.000Z'
 		},
-		document: sentDocument,
+		documents: sentDocuments,
+		source: 'document-set',
 		fields: overrides.fields ?? [],
 		fieldGeneration: 1
 	} as PageData;
@@ -62,7 +87,7 @@ describe('recipient signing page', () => {
 		expect(body).toContain('schedule a');
 		// The PDF address is same-origin and token-free: authority is the
 		// http-only session cookie, never anything reachable from page data.
-		expect(body).toContain(`/sign/${ENVELOPE_ID}/agreement.pdf`);
+		expect(body).toContain(`/sign/${ENVELOPE_ID}/documents/${DOCUMENT_A}.pdf`);
 		expect(body).not.toMatch(/skr1_|token=|capability/i);
 		expect(body).not.toContain('{@html');
 		// Removed with the Markdown surface itself.
@@ -107,7 +132,7 @@ describe('recipient signing page', () => {
 		expect(body).toContain(expected);
 		expect(body).not.toContain('Agreement documents');
 		expect(body).not.toContain('Decline request');
-		expect(body).not.toContain(`/sign/${ENVELOPE_ID}/agreement.pdf`);
+		expect(body).not.toContain(`/sign/${ENVELOPE_ID}/documents/`);
 	});
 
 	it('renders a durable decline receipt without any document workspace or controls', () => {
@@ -129,7 +154,7 @@ describe('recipient signing page', () => {
 		expect(body).not.toContain('Decline request');
 		expect(body).not.toContain('Approve agreement');
 		expect(body).not.toContain('Sign and complete');
-		expect(body).not.toContain(`/sign/${ENVELOPE_ID}/agreement.pdf`);
+		expect(body).not.toContain(`/sign/${ENVELOPE_ID}/documents/`);
 	});
 
 	it('puts the decline action in the summary card footer for actionable roles', () => {
@@ -188,9 +213,11 @@ describe('recipient signing page', () => {
 		expect(body).toContain('Sign and complete');
 		expect(body).toContain('min-h-[44px]');
 		expect(body).toContain('JavaScript is required to submit and record your signature.');
-		// The list is navigation into the document, not a duplicate form: the
-		// only editable control for a field lives on the page overlay.
-		expect(body).toContain('#agreement-page-2');
+		// Field geometry.page is document-scoped: this field lives on page 1 of
+		// DOCUMENT_B, not concatenated page 2 of the whole envelope.
+		expect(body).toContain('#agreement-page-1');
+		expect(body).not.toContain('#agreement-page-2');
+		expect(body).not.toContain(otherRecipientField.label);
 		expect(body).not.toContain('Approve agreement');
 	});
 

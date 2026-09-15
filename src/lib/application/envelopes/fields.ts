@@ -22,7 +22,7 @@ import {
 	renderRevisionPdf,
 	SentDocumentPdfError
 } from '$lib/application/documents/sent-document-pdf';
-import type { AgreementPdfResult } from '$lib/adapters/pdf/agreement-pdf';
+import type { DocumentSetLeaf } from '$lib/domain/document-set';
 import type { EnvelopeRequestActor } from './model';
 import { envelopeActorType } from './model';
 
@@ -33,7 +33,7 @@ const MAX_LABEL_LENGTH: number = 200;
 
 export interface FieldPlacementInput {
 	recipientId: string;
-	documentPath: `documents/${string}.md`;
+	documentId: string;
 	fieldType: FieldType;
 	label: string;
 	required: boolean;
@@ -64,6 +64,7 @@ export type PlaceFieldsResult =
 	| { outcome: 'invalid_document' }
 	| { outcome: 'invalid_recipient' }
 	| { outcome: 'invalid_geometry' }
+	| { outcome: 'document_set_not_materialized' }
 	| { outcome: 'integrity_error' };
 
 export interface EnvelopeFieldApplicationPort {
@@ -146,34 +147,28 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 		) {
 			return { outcome: 'generation_conflict' };
 		}
-		const documentPaths: Set<string> = new Set(
-			workspace.documents.map((document): string => document.path)
+		const documentSet = workspace.documentSet;
+		if (documentSet === null) return { outcome: 'document_set_not_materialized' };
+		const leavesById: Map<string, DocumentSetLeaf> = new Map(
+			documentSet.documents.map((leaf: DocumentSetLeaf) => [leaf.id, leaf])
 		);
 		for (const field of canonicalFields) {
-			if (!documentPaths.has(field.documentPath)) return { outcome: 'invalid_document' };
-		}
-
-		// Geometry names a page of the rendered agreement, so it can only be
-		// validated against that rendering. The renderer is deterministic and
-		// reads the same pinned revision send will read, so the page map proved
-		// here is the page map the recipient will be shown.
-		let rendered: AgreementPdfResult;
-		try {
-			rendered = renderRevisionPdf(workspace.documents);
-		} catch (error: unknown) {
-			if (error instanceof SentDocumentPdfError) return { outcome: 'invalid_document' };
-			throw error;
-		}
-		const pagesByPath: Map<string, { firstPage: number; lastPage: number }> = new Map(
-			rendered.documents.map((entry) => [
-				workspace.documents[entry.index].path,
-				{ firstPage: entry.firstPage, lastPage: entry.lastPage }
-			])
-		);
-		for (const field of canonicalFields) {
-			const range = pagesByPath.get(field.documentPath);
-			if (range === undefined) return { outcome: 'invalid_document' };
-			if (field.geometry.page < range.firstPage || field.geometry.page > range.lastPage) {
+			const leaf: DocumentSetLeaf | undefined = leavesById.get(field.documentId);
+			if (leaf === undefined) return { outcome: 'invalid_document' };
+			let pageCount: number;
+			if (leaf.kind === 'pdf') {
+				pageCount = leaf.pageCount;
+			} else {
+				const document = workspace.documents.find((entry) => entry.path === leaf.path);
+				if (document === undefined) return { outcome: 'invalid_document' };
+				try {
+					pageCount = renderRevisionPdf([document]).pageCount;
+				} catch (error: unknown) {
+					if (error instanceof SentDocumentPdfError) return { outcome: 'invalid_document' };
+					throw error;
+				}
+			}
+			if (field.geometry.page < 1 || field.geometry.page > pageCount) {
 				return { outcome: 'invalid_geometry' };
 			}
 		}
@@ -188,7 +183,8 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				organizationId: actor.organizationId,
 				envelopeId,
 				recipientId: field.recipientId,
-				documentPath: field.documentPath,
+				documentId: field.documentId,
+				documentPath: null,
 				fieldType: field.fieldType,
 				label: field.label,
 				required: field.required,
@@ -206,6 +202,7 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 			fields: fields.map((field: EnvelopeField) => ({
 				id: field.id,
 				recipientId: field.recipientId,
+				documentId: field.documentId,
 				documentPath: field.documentPath,
 				fieldType: field.fieldType,
 				required: field.required,
@@ -274,8 +271,8 @@ function assertFieldsInput(
 		if (!isUuidV7(field.recipientId)) {
 			throw new InvalidFieldPlacementError('Field recipient ID is invalid');
 		}
-		if (!/^documents\/[a-zA-Z0-9][a-zA-Z0-9._-]*\.md$/.test(field.documentPath)) {
-			throw new InvalidFieldPlacementError('Field document path is invalid');
+		if (!isUuidV7(field.documentId)) {
+			throw new InvalidFieldPlacementError('Field document ID is invalid');
 		}
 		if (!fieldTypes.includes(field.fieldType)) {
 			throw new InvalidFieldPlacementError('Field type is invalid');
@@ -298,7 +295,7 @@ function assertFieldsInput(
 			throw new InvalidFieldPlacementError('Field position is invalid');
 		}
 		assertGeometry(field.geometry);
-		const locator: string = [field.recipientId, field.documentPath, field.position].join('\x00');
+		const locator: string = [field.recipientId, field.documentId, field.position].join('\x00');
 		if (locators.has(locator)) {
 			throw new InvalidFieldPlacementError('Field declarations must not repeat the same locator');
 		}
@@ -338,7 +335,7 @@ function canonicalizeFields(
 	return fields
 		.map((field: FieldPlacementInput): FieldPlacementInput => ({
 			recipientId: field.recipientId.trim().toLowerCase(),
-			documentPath: field.documentPath,
+			documentId: field.documentId,
 			fieldType: field.fieldType,
 			label: field.label.trim(),
 			required: field.required,
@@ -347,7 +344,7 @@ function canonicalizeFields(
 		}))
 		.sort(
 			(left: FieldPlacementInput, right: FieldPlacementInput): number =>
-				compareCodeUnits(left.documentPath, right.documentPath) ||
+				compareCodeUnits(left.documentId, right.documentId) ||
 				left.position - right.position ||
 				compareCodeUnits(left.recipientId, right.recipientId) ||
 				compareCodeUnits(left.fieldType, right.fieldType)

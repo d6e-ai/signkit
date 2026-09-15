@@ -168,6 +168,13 @@ const envelopeIdParam = {
 	schema: UUIDV7
 };
 
+const documentIdQueryParam = {
+	name: 'documentId',
+	in: 'query',
+	required: true,
+	schema: UUIDV7
+};
+
 const recipientIdParam = {
 	name: 'recipientId',
 	in: 'path',
@@ -434,6 +441,65 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
 				})
 			},
+			'/api/v1/envelopes/{envelopeId}/documents/pdf': {
+				post: op({
+					summary: 'Append an uploaded PDF as a document in the envelope set',
+					operationId: 'uploadEnvelopePdf',
+					tags: ['Envelopes'],
+					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'multipart/form-data': {
+								schema: {
+									type: 'object',
+									required: ['file', 'expectedGeneration'],
+									properties: {
+										file: { type: 'string', format: 'binary' },
+										expectedGeneration: { type: 'integer', minimum: 0 },
+										title: { type: 'string' },
+										position: { type: 'integer', minimum: 0, maximum: 19 }
+									}
+								}
+							},
+							'application/pdf': {
+								schema: { type: 'string', format: 'binary' }
+							}
+						}
+					},
+					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/documents/order': {
+				post: op({
+					summary: 'Reorder or remove documents in the envelope set',
+					operationId: 'orderEnvelopeDocuments',
+					tags: ['Envelopes'],
+					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['expectedGeneration', 'documentIds'],
+									additionalProperties: false,
+									properties: {
+										expectedGeneration: { type: 'integer', minimum: 0 },
+										documentIds: {
+											type: 'array',
+											minItems: 1,
+											maxItems: 20,
+											items: UUIDV7
+										}
+									}
+								}
+							}
+						}
+					},
+					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+				})
+			},
 			'/api/v1/envelopes/{envelopeId}/docx': {
 				get: op({
 					summary: 'Export the pinned Markdown revision as DOCX',
@@ -518,7 +584,7 @@ export function openApiDocument(): Record<string, unknown> {
 												type: 'object',
 												required: [
 													'recipientId',
-													'documentPath',
+													'documentId',
 													'fieldType',
 													'label',
 													'required',
@@ -528,7 +594,7 @@ export function openApiDocument(): Record<string, unknown> {
 												additionalProperties: false,
 												properties: {
 													recipientId: UUIDV7,
-													documentPath: { type: 'string' },
+													documentId: UUIDV7,
 													fieldType: { type: 'string', enum: [...fieldTypes] },
 													label: { type: 'string' },
 													required: { type: 'boolean' },
@@ -667,10 +733,10 @@ export function openApiDocument(): Record<string, unknown> {
 			'/api/v1/envelopes/{envelopeId}/document-pdf': {
 				get: op({
 					summary:
-						'Render the pinned revision as the PDF a recipient will be shown, for field placement',
+						'Render one document from the pinned revision as the PDF a recipient will be shown',
 					operationId: 'getEnvelopeDocumentPdf',
 					tags: ['Envelopes', 'Documents'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [organizationHeader, envelopeIdParam, documentIdQueryParam],
 					responses: {
 						'200': {
 							description: 'Deterministic application/pdf rendering of the pinned revision.',
@@ -683,10 +749,10 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/envelopes/{envelopeId}/document-pdf/pages': {
 				get: op({
-					summary: 'Read the page count, page size, and document-to-page map of that rendering',
+					summary: 'Read page geometry for one document and the ordered document-set summary',
 					operationId: 'getEnvelopeDocumentPdfPages',
 					tags: ['Envelopes', 'Documents'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [organizationHeader, envelopeIdParam, documentIdQueryParam],
 					responses: {
 						'200': {
 							description: 'Page geometry for the pinned revision.',
@@ -697,6 +763,7 @@ export function openApiDocument(): Record<string, unknown> {
 										required: [
 											'commitSha',
 											'generation',
+											'documentId',
 											'pageCount',
 											'pageWidth',
 											'pageHeight',
@@ -705,6 +772,7 @@ export function openApiDocument(): Record<string, unknown> {
 										properties: {
 											commitSha: { type: 'string' },
 											generation: { type: 'integer' },
+											documentId: UUIDV7,
 											pageCount: { type: 'integer' },
 											pageWidth: { type: 'number' },
 											pageHeight: { type: 'number' },
@@ -712,12 +780,23 @@ export function openApiDocument(): Record<string, unknown> {
 												type: 'array',
 												items: {
 													type: 'object',
-													required: ['path', 'title', 'firstPage', 'lastPage'],
+													required: [
+														'documentId',
+														'position',
+														'kind',
+														'title',
+														'pageCount',
+														'pageWidth',
+														'pageHeight'
+													],
 													properties: {
-														path: { type: 'string' },
+														documentId: UUIDV7,
+														position: { type: 'integer' },
+														kind: { type: 'string', enum: ['markdown', 'pdf'] },
 														title: { type: 'string' },
-														firstPage: { type: 'integer' },
-														lastPage: { type: 'integer' }
+														pageCount: { type: 'integer' },
+														pageWidth: { type: 'number' },
+														pageHeight: { type: 'number' }
 													}
 												}
 											}

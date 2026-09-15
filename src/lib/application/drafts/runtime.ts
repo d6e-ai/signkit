@@ -1,5 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { D1EnvelopeApplicationStore } from '$lib/adapters/db/d1-envelope-application-store';
+import { D1EnvelopeUploadedDocumentStore } from '$lib/adapters/db/d1-envelope-uploaded-document-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import { DraftPersistenceService } from './draft-persistence';
@@ -20,7 +21,8 @@ export async function resolveDraftPersistenceService(
 		return new DraftPersistenceService(
 			new D1EnvelopeApplicationStore(database),
 			new R2ObjectStore(bucket),
-			new IsomorphicGitDraftRepository()
+			new IsomorphicGitDraftRepository(),
+			new D1EnvelopeUploadedDocumentStore(database)
 		);
 	}
 

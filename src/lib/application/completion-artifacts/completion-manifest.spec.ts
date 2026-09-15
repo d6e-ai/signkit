@@ -88,6 +88,21 @@ async function defaultAuditEvents(): Promise<CompletionEvidenceAuditEvent[]> {
 	return buildVerifiedAuditChain(CONTEXT, defaultSteps());
 }
 
+async function auditEventsWithSent(
+	payload: Record<string, unknown>
+): Promise<CompletionEvidenceAuditEvent[]> {
+	const steps: AuditChainStep[] = defaultSteps();
+	steps.splice(2, 0, {
+		id: 'audit-event-sent',
+		eventType: 'envelope.sent',
+		actorType: 'user',
+		actorId: 'user-1',
+		occurredAt: '2026-09-12T00:00:00.000Z',
+		payload
+	});
+	return buildVerifiedAuditChain(CONTEXT, steps);
+}
+
 function defaultRecipients(signedAt: string): CompletionEvidenceRecipient[] {
 	return [
 		{
@@ -178,6 +193,69 @@ describe('buildCompletionManifest', () => {
 			await buildCompletionManifest(await baseInput({ title: 'Different Agreement' }))
 		);
 		expect(first).not.toBe(second);
+	});
+
+	it('carries documentSetHash and per-document identity for a mixed bundle', async () => {
+		const documentSetHash: string = 'e'.repeat(64);
+		const manifest: CompletionManifestV1 = await buildCompletionManifest(
+			await baseInput({
+				documentSetHash,
+				auditEvents: await auditEventsWithSent({ documentSetHash }),
+				documents: [
+					{
+						id: '01900000-0000-7000-8000-000000000022',
+						kind: 'pdf',
+						position: 1,
+						title: 'Schedule A',
+						sha256: 'd'.repeat(64),
+						byteSize: 2048,
+						pageCount: 3
+					},
+					{
+						id: '01900000-0000-7000-8000-000000000021',
+						kind: 'markdown',
+						position: 0,
+						title: 'NDA',
+						path: 'documents/nda.md',
+						sha256: 'c'.repeat(64)
+					}
+				]
+			})
+		);
+		expect(manifest.documentSetHash).toBe('e'.repeat(64));
+		expect(manifest.documents.map((document) => document.id)).toEqual([
+			'01900000-0000-7000-8000-000000000021',
+			'01900000-0000-7000-8000-000000000022'
+		]);
+		expect(manifest.documents[0]).toMatchObject({ kind: 'markdown', path: 'documents/nda.md' });
+		expect(manifest.documents[1]).toMatchObject({
+			kind: 'pdf',
+			title: 'Schedule A',
+			byteSize: 2048,
+			pageCount: 3
+		});
+		expect(canonicalManifestJson(manifest)).toContain('"documentSetHash":"' + 'e'.repeat(64) + '"');
+	});
+
+	it('fails closed when the pinned documentSetHash does not match the verified envelope.sent payload', async () => {
+		await expect(
+			buildCompletionManifest(
+				await baseInput({
+					documentSetHash: 'e'.repeat(64),
+					auditEvents: await auditEventsWithSent({ documentSetHash: 'f'.repeat(64) })
+				})
+			)
+		).rejects.toThrow(/does not match the verified envelope\.sent payload/);
+	});
+
+	it('fails closed when envelope.sent attests a documentSetHash the pinned revision does not bind', async () => {
+		await expect(
+			buildCompletionManifest(
+				await baseInput({
+					auditEvents: await auditEventsWithSent({ documentSetHash: 'e'.repeat(64) })
+				})
+			)
+		).rejects.toThrow(/attests a document set hash the pinned revision does not bind/);
 	});
 
 	it('rejects an invalid Git commit SHA as a genuine integrity error, not a bound', async () => {

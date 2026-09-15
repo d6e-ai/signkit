@@ -6,9 +6,11 @@ import type { EnvelopeStore } from '$lib/ports/envelope-store';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectStore } from '$lib/ports/object-store';
 import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
+import { parseDocumentSet, type DocumentSetLeaf } from '$lib/domain/document-set';
+import { isMarkdownPath } from '$lib/domain/envelope';
 
 export type EnvelopeDocxExportResult =
-	| { outcome: 'exported'; bytes: Uint8Array; commitSha: string }
+	| { outcome: 'exported'; bytes: Uint8Array; commitSha: string; skippedPdfCount: number }
 	| { outcome: 'not_found' }
 	| { outcome: 'empty_draft' };
 
@@ -24,19 +26,45 @@ export async function exportPinnedDocx(
 	revision: ImmutableDraftRevision,
 	objects: ObjectStore,
 	repository: DraftRepository
-): Promise<Uint8Array> {
-	const documents: readonly DraftDocument[] = await readImmutableDraftRevision(
-		revision,
-		objects,
-		repository
+): Promise<{ bytes: Uint8Array; skippedPdfCount: number }> {
+	const verified = await readImmutableDraftRevision(revision, objects, repository);
+	const markdownDocuments: readonly DraftDocument[] = verified.documents.filter((document) =>
+		isMarkdownPath(document.path)
 	);
-	return exportMarkdownToDocx({
-		commitSha: revision.commitSha,
-		documents: documents.map((document: DraftDocument) => ({
-			path: document.path,
-			content: document.content
-		}))
-	});
+	if (markdownDocuments.length === 0) {
+		throw new Error('The pinned revision contains no Markdown documents to export');
+	}
+	const skippedPdfCount: number = await countSkippedPdfDocuments(
+		verified.archive,
+		repository,
+		revision.commitSha
+	);
+	return {
+		bytes: exportMarkdownToDocx({
+			commitSha: revision.commitSha,
+			documents: markdownDocuments.map((document: DraftDocument) => ({
+				path: document.path,
+				content: document.content
+			}))
+		}),
+		skippedPdfCount
+	};
+}
+
+async function countSkippedPdfDocuments(
+	archive: Uint8Array,
+	repository: DraftRepository,
+	commitSha: string
+): Promise<number> {
+	const manifestJson: string | null = await repository.readManifest(archive, commitSha);
+	if (manifestJson === null) return 0;
+	try {
+		return parseDocumentSet(manifestJson).documents.filter(
+			(leaf: DocumentSetLeaf): boolean => leaf.kind === 'pdf'
+		).length;
+	} catch {
+		return 0;
+	}
 }
 
 /**
@@ -61,7 +89,7 @@ export async function exportEnvelopeDocx(
 	) {
 		return { outcome: 'empty_draft' };
 	}
-	const bytes: Uint8Array = await exportPinnedDocx(
+	const exported = await exportPinnedDocx(
 		{
 			organizationId,
 			envelopeId,
@@ -72,5 +100,10 @@ export async function exportEnvelopeDocx(
 		objects,
 		repository
 	);
-	return { outcome: 'exported', bytes, commitSha };
+	return {
+		outcome: 'exported',
+		bytes: exported.bytes,
+		commitSha,
+		skippedPdfCount: exported.skippedPdfCount
+	};
 }

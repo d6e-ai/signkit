@@ -4,6 +4,11 @@ import { draftArchiveKey } from '$lib/application/drafts/draft-persistence';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
+import {
+	documentSetHash,
+	serializeDocumentSet,
+	upsertMarkdownDocument
+} from '$lib/domain/document-set';
 import type {
 	ClaimCompletionArtifactsCommand,
 	ClaimedCompletionArtifactJob,
@@ -17,6 +22,16 @@ import type {
 	PublishedCompletionArtifact,
 	ReadClaimedCompletionArtifactCommand
 } from '$lib/ports/completion-artifact-store';
+import type {
+	CompletionArtifactPdfRecord,
+	CompletionArtifactPdfStore,
+	PublishCompletionArtifactPdfCommand,
+	PublishCompletionArtifactPdfResult
+} from '$lib/ports/completion-artifact-pdf-store';
+import type {
+	CompletionPdfEvidenceStore,
+	CompletionPdfFieldGeometry
+} from '$lib/ports/completion-pdf-evidence-store';
 import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import { OPAQUE_TOKEN_PATTERN } from '$lib/security/opaque-token';
 import { buildVerifiedAuditChain } from './audit-chain-test-support';
@@ -107,7 +122,8 @@ class ArchiveOnlyObjectStore implements ObjectStore {
 class FixedDraftRepository implements DraftRepository {
 	constructor(
 		private readonly expectedCommitSha: string,
-		private readonly documents: readonly DraftDocument[]
+		private readonly documents: readonly DraftDocument[],
+		private readonly manifestJson: string | null = null
 	) {}
 
 	async read(
@@ -116,6 +132,10 @@ class FixedDraftRepository implements DraftRepository {
 	): Promise<readonly DraftDocument[]> {
 		if (expectedCommitSha !== this.expectedCommitSha) throw new Error('Unexpected commit SHA');
 		return this.documents;
+	}
+
+	async readManifest(): Promise<string | null> {
+		return this.manifestJson;
 	}
 
 	async commit(): Promise<DraftVersion> {
@@ -175,6 +195,29 @@ class FakeCompletionArtifactStore implements CompletionArtifactStore {
 
 	async findCompletionArtifactStatus(): Promise<CompletionArtifactStatusRow | null> {
 		return null;
+	}
+}
+
+class FakeCompletionArtifactPdfStore implements CompletionArtifactPdfStore {
+	calls: PublishCompletionArtifactPdfCommand[] = [];
+
+	async publishCompletionArtifactPdf(
+		command: PublishCompletionArtifactPdfCommand
+	): Promise<PublishCompletionArtifactPdfResult> {
+		this.calls.push(command);
+		return { outcome: 'published' };
+	}
+
+	async readCompletionArtifactPdf(): Promise<CompletionArtifactPdfRecord | null> {
+		return null;
+	}
+}
+
+class FakeCompletionPdfEvidenceStore implements CompletionPdfEvidenceStore {
+	constructor(private readonly geometry: readonly CompletionPdfFieldGeometry[] = []) {}
+
+	async readFieldGeometry(): Promise<readonly CompletionPdfFieldGeometry[]> {
+		return this.geometry;
 	}
 }
 
@@ -297,6 +340,67 @@ async function baseEvidence(): Promise<CompletionEvidence> {
 		],
 		auditEvents
 	};
+}
+
+async function evidenceWithSent(sentPayload: Record<string, unknown>): Promise<CompletionEvidence> {
+	const evidence = await baseEvidence();
+	const auditEvents = await buildVerifiedAuditChain(
+		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
+		[
+			{
+				id: 'event-1',
+				eventType: 'envelope.created',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:00.000Z',
+				payload: { title: 'Agreement' }
+			},
+			{
+				id: 'event-ready',
+				eventType: 'envelope.ready',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:30.000Z',
+				payload: {
+					commitSha: SENT_COMMIT_SHA,
+					generation: 1,
+					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
+				}
+			},
+			{
+				id: 'event-sent',
+				eventType: 'envelope.sent',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:40.000Z',
+				payload: sentPayload
+			},
+			{
+				id: 'event-2',
+				eventType: 'recipient.signed',
+				actorType: 'recipient',
+				actorId: 'recipient-1',
+				occurredAt: SIGNED_AT,
+				payload: {
+					recipientId: 'recipient-1',
+					role: 'signer',
+					routingOrder: 1,
+					sentCommitSha: SENT_COMMIT_SHA,
+					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: FIELD_VALUE_SHA256 }],
+					signedAt: SIGNED_AT
+				}
+			},
+			{
+				id: 'event-3',
+				eventType: 'envelope.completed',
+				actorType: 'recipient',
+				actorId: 'recipient-1',
+				occurredAt: COMPLETED_AT,
+				payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+			}
+		]
+	);
+	return { ...evidence, auditEvents };
 }
 
 async function agentAuthoredEvidence(): Promise<CompletionEvidence> {
@@ -433,6 +537,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(published.sentCommitSha).toBe(SENT_COMMIT_SHA);
 		expect(published.anchorAuditEventId).toBe('event-3');
 		expect(published.expectedAuditSequence).toBe(4);
+		expect(objects.getCallsByKey.get(requireString(store.claims[0].repositoryArchiveKey))).toBe(1);
 		expect(published.jsonObjectKey).toBe(
 			completionArtifactObjectKey(ORGANIZATION_ID, ENVELOPE_ID, 'json', published.jsonSha256)
 		);
@@ -681,6 +786,109 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(objects.putCallsByKey.size).toBe(0);
 	});
 
+	it('fails closed when the pinned documentSetHash does not match the verified envelope.sent payload', async () => {
+		const store = new FakeCompletionArtifactStore();
+		const objects = new InMemoryObjectStore();
+		store.claims = [claimWithSeededArchive(objects)];
+		const contentSha256: string = sha256Hex(new TextEncoder().encode('Agreement body'));
+		const manifest = upsertMarkdownDocument(
+			null,
+			'documents/agreement.md',
+			contentSha256,
+			() => '01900000-0000-7000-8000-000000000021'
+		);
+		store.evidenceByEnvelope.set(
+			ENVELOPE_ID,
+			await evidenceWithSent({ documentSetHash: 'f'.repeat(64) })
+		);
+		const repository = new FixedDraftRepository(
+			SENT_COMMIT_SHA,
+			documents(),
+			serializeDocumentSet(manifest)
+		);
+		const service = new CompletionArtifactPublicationService(store, objects, repository, () => NOW);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ integrityFailed: 1, published: 0 });
+		expect(store.failCalls[0]).toMatchObject({
+			errorCode: 'completion_artifact_evidence_invalid',
+			retryable: false
+		});
+		expect(store.publishCalls).toHaveLength(0);
+	});
+
+	it('publishes when the pinned documentSetHash matches the verified envelope.sent payload', async () => {
+		const store = new FakeCompletionArtifactStore();
+		const objects = new InMemoryObjectStore();
+		store.claims = [claimWithSeededArchive(objects)];
+		const contentSha256: string = sha256Hex(new TextEncoder().encode('Agreement body'));
+		const manifest = upsertMarkdownDocument(
+			null,
+			'documents/agreement.md',
+			contentSha256,
+			() => '01900000-0000-7000-8000-000000000021'
+		);
+		const pinnedHash: string = await documentSetHash(manifest);
+		store.evidenceByEnvelope.set(
+			ENVELOPE_ID,
+			await evidenceWithSent({ documentSetHash: pinnedHash })
+		);
+		const repository = new FixedDraftRepository(
+			SENT_COMMIT_SHA,
+			documents(),
+			serializeDocumentSet(manifest)
+		);
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			() => NOW,
+			() => 'claim-token-document-set'
+		);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
+		expect(store.publishCalls).toHaveLength(1);
+	});
+
+	it('renders and publishes a completion PDF from the verified draft documents when a PDF store is configured', async () => {
+		const store = new FakeCompletionArtifactStore();
+		const objects = new InMemoryObjectStore();
+		store.claims = [claimWithSeededArchive(objects)];
+		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
+		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
+		const pdfStore = new FakeCompletionArtifactPdfStore();
+		const pdfEvidenceStore = new FakeCompletionPdfEvidenceStore([
+			{
+				id: 'field-1',
+				documentPath: 'documents/agreement.md',
+				position: 0,
+				recipientId: 'recipient-1'
+			}
+		]);
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			() => NOW,
+			() => 'claim-token-pdf',
+			undefined,
+			pdfStore,
+			pdfEvidenceStore
+		);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
+		expect(store.publishCalls).toHaveLength(1);
+		expect(pdfStore.calls).toHaveLength(1);
+		expect(pdfStore.calls[0]).toMatchObject({
+			organizationId: ORGANIZATION_ID,
+			envelopeId: ENVELOPE_ID
+		});
+		expect(pdfStore.calls[0].pdfSha256).toMatch(/^[a-f0-9]{64}$/);
+		expect(pdfStore.calls[0].pdfManifestSha256).toMatch(/^[a-f0-9]{64}$/);
+	});
+
 	it('classifies a missing draft archive as a non-retryable integrity failure', async () => {
 		const store = new FakeCompletionArtifactStore();
 		const objects = new InMemoryObjectStore();
@@ -739,12 +947,14 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(store.failCalls.some((call) => call.envelopeId === ENVELOPE_ID)).toBe(false);
 
 		// No object access at all for the corrupt row: only the healthy
-		// envelope's archive read and json+markdown writes ever happened.
+		// envelope's verified archive is read once, and only its json+markdown
+		// artifacts are written.
 		expect(objects.putCallsByKey.size).toBe(2);
 		for (const key of objects.putCallsByKey.keys()) {
 			expect(key).toContain(`/envelopes/${ENVELOPE_ID}/`);
 			expect(key).not.toContain('envelope-corrupt');
 		}
+		expect(objects.getCalls).toBe(1);
 		expect(objects.getCallsByKey.size).toBe(1);
 		for (const key of objects.getCallsByKey.keys()) {
 			expect(key).not.toContain('envelope-corrupt');

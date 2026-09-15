@@ -186,7 +186,8 @@ function draftGetCase(): ReadCase {
 						commitSha: 'commit-1',
 						archiveKey: 'draft-repositories/v1/organizations/o/envelopes/e/sha256/a.git.gz',
 						archiveSha256: 'a'.repeat(64),
-						documents: []
+						documents: [],
+						documentSet: null
 					};
 				})
 			}));

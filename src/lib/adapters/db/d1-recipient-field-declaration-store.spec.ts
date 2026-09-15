@@ -8,6 +8,7 @@ describe('D1RecipientFieldDeclarationStore', () => {
 			results: [
 				{
 					id: 'field-1',
+					document_id: null,
 					document_path: 'documents/agreement.md',
 					field_type: 'signature',
 					label: 'Your signature',
@@ -21,6 +22,7 @@ describe('D1RecipientFieldDeclarationStore', () => {
 				},
 				{
 					id: 'field-2',
+					document_id: null,
 					document_path: 'documents/agreement.md',
 					field_type: 'date',
 					label: 'Date',
@@ -46,6 +48,7 @@ describe('D1RecipientFieldDeclarationStore', () => {
 			fields: [
 				{
 					id: 'field-1',
+					documentId: null,
 					documentPath: 'documents/agreement.md',
 					fieldType: 'signature',
 					label: 'Your signature',
@@ -55,6 +58,7 @@ describe('D1RecipientFieldDeclarationStore', () => {
 				},
 				{
 					id: 'field-2',
+					documentId: null,
 					documentPath: 'documents/agreement.md',
 					fieldType: 'date',
 					label: 'Date',
