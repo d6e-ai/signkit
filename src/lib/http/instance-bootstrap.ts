@@ -292,7 +292,7 @@ export function createInstanceBootstrapHandler(
 			localDevelopment: unsafeContext.localDevelopment
 		});
 		if (ownerGate !== 'allowed') {
-			let alreadyBootstrapped: boolean = false;
+			let alreadyBootstrapped: boolean;
 			try {
 				alreadyBootstrapped = (await application.getCurrentMember({ id: authorized.id }))
 					.bootstrapped;
