@@ -11,7 +11,8 @@ const deployTarget = process.env.DEPLOY_TARGET ?? 'node';
 
 const postgresLiveSpecs: string[] = [
 	'src/**/postgres-*.integration.spec.ts',
-	'src/lib/adapters/db/postgres-envelope-document-store.spec.ts'
+	'src/lib/adapters/db/postgres-envelope-document-store.spec.ts',
+	'scripts/postgres-migrate.spec.mjs'
 ];
 
 function deploymentAdapter() {

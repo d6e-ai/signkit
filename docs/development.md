@@ -58,6 +58,15 @@ pnpm run build:vercel      # adapter-vercel, nodejs22.x
 
 `pnpm run test:node-build` smoke-checks the Node bundle after `build:node`.
 
+## PostgreSQL local loop
+
+```sh
+DATABASE_URL=postgres://signkit:change-me@localhost:5432/signkit pnpm run db:migrate:postgres        # apply migrations/postgres
+DATABASE_URL=postgres://signkit:change-me@localhost:5432/signkit pnpm run db:migrate:postgres:check   # report pending/drift only, writes nothing
+```
+
+`scripts/postgres-migrate.mjs` is the same migration runner used in production (see [deployment.md § Applying PostgreSQL migrations](deployment.md#applying-postgresql-migrations)); local development does not need the role separation described there, since a local database has no other tenant to protect.
+
 ## Cloudflare local loop
 
 ```sh

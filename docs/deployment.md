@@ -22,6 +22,33 @@ PostgreSQL 18 is the database baseline for this profile: CI validates against `p
 
 The supplied multi-stage `Dockerfile` builds the Node profile and runs it as the non-root `signkit` user on port 3000. Its healthcheck polls `GET /api/v1/system/capabilities`, an unauthenticated read that reports the API version, the detected runtime, and the supported profiles.
 
+### Applying PostgreSQL migrations
+
+`scripts/postgres-migrate.mjs` (`pnpm run db:migrate:postgres`) is the migration runner for this profile. It applies every file in `migrations/postgres` in filename order, each inside its own transaction, and records a durable `schema_migrations` ledger row (filename plus a SHA-256 checksum of that file's contents) only once that migration's transaction commits. A session-level `pg_advisory_lock` held for the whole run means a second concurrent invocation against the same database blocks instead of racing DDL. If an already-applied file's contents ever change on disk, the recorded checksum no longer matches it, and the runner refuses to proceed — reapplying an edited migration or silently ignoring the mismatch would both be worse than stopping and asking an operator to look. It supports a fresh, empty PostgreSQL 18 database (applies everything) and an already-current one (reports up to date and does nothing) the same way. `pnpm run db:migrate:postgres:check` (`--check`) reports pending migrations and checksum drift without ever writing to the database — safe to run with a read-only role as a release or deploy gate. Diagnostics are always filenames, checksums, and counts; the connection string and any credential are never logged.
+
+**Run the migrator separately from the long-lived app process, with a different, more privileged database role.** The app's own `DATABASE_URL` should point at a role that can only read and write ordinary rows (`SELECT`/`INSERT`/`UPDATE`/`DELETE` on the application tables) — it never needs to create or alter a table while serving requests, so it should not be able to. The migrator needs `CREATE`/`ALTER`/`DROP` (schema DDL) plus read/write on `schema_migrations`; grant that to a separate role used only for this one-off invocation, for example:
+
+```sql
+-- One-time setup, run by an administrative role:
+CREATE ROLE signkit_migrator LOGIN PASSWORD '...';
+CREATE ROLE signkit_app LOGIN PASSWORD '...';
+GRANT CREATE ON DATABASE signkit TO signkit_migrator;
+GRANT ALL PRIVILEGES ON SCHEMA public TO signkit_migrator;
+-- After the first `db:migrate:postgres` run has created the application tables:
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO signkit_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE signkit_migrator IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO signkit_app;
+```
+
+The same Docker image serves both roles without any extra build: the app container's `CMD` is unchanged (`node build/node/index.js`, using `signkit_app`'s `DATABASE_URL`), while a migration is a short-lived, separate invocation of the same image with a different command and the `signkit_migrator` connection string, run once before rolling out a version that depends on new migrations and then discarded:
+
+```sh
+docker run --rm -e DATABASE_URL="postgres://signkit_migrator:...@host/signkit" \
+  <image> node scripts/postgres-migrate.mjs
+```
+
+Never set the app's long-lived `DATABASE_URL` to the migrator role — that would hand DDL rights to a process that accepts external requests, defeating the point of separating them.
+
 Put the app behind a reverse proxy that preserves the public HTTPS origin: `SIGNKIT_PUBLIC_ORIGIN` must match both the d6e-auth `/auth/callback` redirect URI registered for the client and the origin used to mint recipient signing and completion links.
 
 Objects go to any S3-compatible service. Most of them require path-style addressing (`S3_FORCE_PATH_STYLE=true`); set it to `false` for AWS S3 itself. R2 is not used through its S3 endpoint on this profile.
@@ -129,4 +156,4 @@ The orphan sweep lists at most 1,000 objects per run, skips anything younger tha
 
 ## Disaster recovery
 
-Point-in-time D1 restore and R2 object recovery runbooks live in [docs/operations/](operations/README.md); they are deliberately generic (no account, database, bucket, or Worker names) so they stay accurate as this deployment's specific resource names change.
+Point-in-time D1 restore, R2 object recovery, PostgreSQL backup/restore, and S3-compatible object storage backup/restore runbooks live in [docs/operations/](operations/README.md); they are deliberately generic (no account, database, bucket, or Worker names) so they stay accurate as this deployment's specific resource names change.

@@ -37,6 +37,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Apply PostgreSQL migrations to a fresh PostgreSQL 18 database
+        env:
+          DATABASE_URL: postgres://signkit_test:signkit_test@127.0.0.1:5432/signkit_test
+        run: |
+          node scripts/postgres-migrate.mjs
+          node scripts/postgres-migrate.mjs --check
       - run: pnpm run lint
       - run: pnpm run check
       - run: pnpm run build:create-signkit
