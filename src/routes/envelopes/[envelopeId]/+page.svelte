@@ -759,11 +759,13 @@
 				file
 			});
 			activeDocPath = targetPath;
+			activeDocumentKey = `pending:${targetPath}`;
 			await reloadAuthoringSurface();
-			const committed = draft?.documentSet?.documents.find(
+			const importedDocument = draft?.documentSet?.documents.find(
 				(document) => document.kind === 'markdown' && document.path === targetPath
 			);
-			activeDocumentKey = committed !== undefined ? `set:${committed.id}` : `pending:${targetPath}`;
+			activeDocumentKey =
+				importedDocument !== undefined ? `set:${importedDocument.id}` : `pending:${targetPath}`;
 		} catch (cause) {
 			importError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_import_unavailable();

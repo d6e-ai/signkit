@@ -42,6 +42,9 @@ describe('envelope authoring page contracts', () => {
 	it('imports a Word file as a new document instead of overwriting the active document', () => {
 		expect(source).toContain('uniqueImportedDocumentPath');
 		expect(source).not.toContain('const targetPath = (activeDocPath ??');
+		expect(source).toContain('activeDocumentKey = `pending:${targetPath}`');
+		expect(source).toContain("document.kind === 'markdown' && document.path === targetPath");
+		expect(source).toContain('`set:${importedDocument.id}`');
 	});
 
 	it('publishes the loaded title to the persistent envelope breadcrumb', () => {

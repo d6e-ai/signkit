@@ -23,6 +23,7 @@ describe('app breadcrumbs', () => {
 
 	it('shows an envelope collection link and the loaded envelope title on detail routes', () => {
 		expect(source).toContain('/^\\/envelopes\\/[^/]+$/.test(currentPath)');
+		expect(source).toContain("currentPath !== '/envelopes/new'");
 		expect(source).toContain("href={localizeHref('/envelopes')}");
 		expect(source).toContain('m.breadcrumb_envelopes()');
 		expect(source).toContain('$envelopeBreadcrumbTitle ?? m.envelope_detail_title()');
