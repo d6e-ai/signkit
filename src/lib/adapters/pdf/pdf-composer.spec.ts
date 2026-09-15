@@ -8,13 +8,20 @@ import {
 	fitOverlayTextSize,
 	measureOverlayText,
 	PdfCompositionError,
+	type ComposePdfInput,
 	type ComposePdfResult,
 	type OverlayOperation
 } from './pdf-composer';
 import { buildFixturePdf, textPage } from './pdf-fixture-test-support';
 import { PdfObjectReader } from './pdf-object-reader';
 import { parsePdfPageMetadata } from './pdf-page-metadata';
-import { drawnSignaturePng } from './png-image-test-support';
+import {
+	estimatePngDecodeMemory,
+	MAX_PNG_DIMENSION,
+	MAX_PNG_PIXELS,
+	type PngDecodeMemoryEstimate
+} from './png-image';
+import { drawnSignaturePng, encodeTestPngWithInflatedScanlines } from './png-image-test-support';
 
 const INK = { red: 0.05, green: 0.05, blue: 0.1 };
 
@@ -143,8 +150,82 @@ describe('composePdf', () => {
 		expect(raw).toContain('/ColorSpace /DeviceRGB');
 	});
 
-	it('rejects aggregate decoded image planes before composition exceeds its memory budget', () => {
+	it('accounts resident sources, retained planes, and current decode buffers at the threshold', () => {
 		const signature: Uint8Array = drawnSignaturePng(8, 4);
+		const source: Uint8Array = markdownPdf('Agreement body.');
+		const estimate: PngDecodeMemoryEstimate = estimatePngDecodeMemory(signature);
+		const residentSourceBytes: number = source.byteLength + signature.byteLength * 2;
+		const twoImagePeak: number =
+			residentSourceBytes + estimate.retainedBytes + estimate.peakWorkingBytes;
+		const input: ComposePdfInput = {
+			sources: [
+				{
+					bytes: source,
+					overlays: new Map([
+						[
+							0,
+							[
+								{
+									kind: 'image' as const,
+									imageId: 'first',
+									x: 40,
+									y: 40,
+									width: 120,
+									height: 40
+								},
+								{
+									kind: 'image' as const,
+									imageId: 'second',
+									x: 40,
+									y: 100,
+									width: 120,
+									height: 40
+								}
+							]
+						]
+					])
+				}
+			],
+			images: [
+				{ id: 'first', pngBytes: signature },
+				{ id: 'second', pngBytes: signature }
+			]
+		};
+		expect(() =>
+			composePdf({
+				...input,
+				maxImageWorkingSetBytes: twoImagePeak - 1
+			})
+		).toThrowError(expect.objectContaining({ reason: 'decoded_image_budget_exceeded' }));
+		expect(
+			composePdf({ ...input, maxImageWorkingSetBytes: twoImagePeak }).pageCount
+		).toBeGreaterThan(0);
+	});
+
+	it('enforces the resident source budget when there are no overlay images', () => {
+		const source: Uint8Array = markdownPdf('Agreement body.');
+
+		expect(() =>
+			composePdf({ sources: [{ bytes: source }], maxImageWorkingSetBytes: source.byteLength - 1 })
+		).toThrowError(expect.objectContaining({ reason: 'decoded_image_budget_exceeded' }));
+		expect(
+			composePdf({ sources: [{ bytes: source }], maxImageWorkingSetBytes: source.byteLength })
+				.pageCount
+		).toBeGreaterThan(0);
+	});
+
+	it('rejects maximum-dimension 16-bit RGBA header math before attempting inflation', () => {
+		const oversizedWorkingSet: Uint8Array = encodeTestPngWithInflatedScanlines(
+			{
+				width: MAX_PNG_DIMENSION,
+				height: Math.floor(MAX_PNG_PIXELS / MAX_PNG_DIMENSION),
+				colorType: 6,
+				bitDepth: 16,
+				samples: new Uint8Array(0)
+			},
+			Uint8Array.of(0)
+		);
+
 		expect(() =>
 			composePdf({
 				sources: [
@@ -154,18 +235,20 @@ describe('composePdf', () => {
 							[
 								0,
 								[
-									{ kind: 'image', imageId: 'first', x: 40, y: 40, width: 120, height: 40 },
-									{ kind: 'image', imageId: 'second', x: 40, y: 100, width: 120, height: 40 }
+									{
+										kind: 'image',
+										imageId: 'hostile',
+										x: 40,
+										y: 40,
+										width: 120,
+										height: 40
+									}
 								]
 							]
 						])
 					}
 				],
-				images: [
-					{ id: 'first', pngBytes: signature },
-					{ id: 'second', pngBytes: signature }
-				],
-				maxDecodedImageBytes: 200
+				images: [{ id: 'hostile', pngBytes: oversizedWorkingSet }]
 			})
 		).toThrowError(expect.objectContaining({ reason: 'decoded_image_budget_exceeded' }));
 	});

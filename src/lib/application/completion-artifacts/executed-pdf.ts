@@ -117,6 +117,8 @@ export interface BuildExecutedPdfInput {
 	appendixPdfBytes?: Uint8Array;
 	maxPages?: number;
 	maxOutputBytes?: number;
+	/** Optional stricter image-composition working-set ceiling. */
+	maxImageWorkingSetBytes?: number;
 }
 
 export interface ExecutedPdfDocumentPages {
@@ -205,7 +207,8 @@ export function buildExecutedPdf(input: BuildExecutedPdfInput): ExecutedPdfResul
 			sources,
 			images,
 			maxPages: input.maxPages ?? MAX_EXECUTED_PDF_PAGES,
-			maxOutputBytes: input.maxOutputBytes ?? MAX_EXECUTED_PDF_BYTES
+			maxOutputBytes: input.maxOutputBytes ?? MAX_EXECUTED_PDF_BYTES,
+			maxImageWorkingSetBytes: input.maxImageWorkingSetBytes
 		});
 	} catch (error: unknown) {
 		throw translateCompositionError(error);

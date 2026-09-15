@@ -21,6 +21,12 @@ export const MAX_PNG_DIMENSION: number = 4_096;
 export const MAX_PNG_PIXELS: number = 4_000_000;
 /** Ceiling on inflated raw scanline bytes, above the worst case for {@link MAX_PNG_PIXELS} at 16-bit RGBA. */
 export const MAX_PNG_INFLATE_BYTES: number = 40 * 1024 * 1024;
+/**
+ * Conservative allowance for fflate's live dynamic-Huffman tables while it
+ * fills the caller-provided output buffer. This covers both 15-bit lookup
+ * tables, a replacement table, and the smaller code-length arrays.
+ */
+export const MAX_PNG_INFLATE_SCRATCH_BYTES: number = 512 * 1024;
 
 export type PngDecodeReason =
 	| 'invalid_signature'
@@ -58,10 +64,30 @@ export interface DecodedPngImage {
 
 export interface DecodePngOptions {
 	/**
-	 * Optional caller-wide retained/working-byte ceiling. The decoder checks
-	 * this from IHDR before inflating or allocating sample planes.
+	 * Optional ceiling for every byte-buffer allocation performed by one decode,
+	 * excluding the caller-owned PNG input. The decoder checks it before
+	 * joining IDAT chunks, inflating, unfiltering, or allocating sample planes.
 	 */
-	maximumDecodedBytes?: number;
+	maximumWorkingBytes?: number;
+}
+
+export interface PngDecodeMemoryEstimate {
+	/** Copy needed to concatenate IDAT payloads for fflate. */
+	compressedCopyBytes: number;
+	/** Exact scanlines plus the sentinel byte used to detect overlong inflation. */
+	inflatedBytes: number;
+	/** Conservative allowance for inflater-owned lookup tables and scratch arrays. */
+	inflateScratchBytes: number;
+	/** Scanlines without one filter byte per row. */
+	unfilteredBytes: number;
+	/** Final grayscale/RGB sample plane. */
+	sampleBytes: number;
+	/** Worst-case final alpha plane; allocated while opacity is inspected. */
+	alphaBytes: number;
+	/** Conservative simultaneous working set, excluding caller-owned input bytes. */
+	peakWorkingBytes: number;
+	/** Worst-case planes retained by the caller after decode returns. */
+	retainedBytes: number;
 }
 
 const PNG_SIGNATURE: readonly number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -73,6 +99,14 @@ interface PngHeader {
 	colorType: number;
 }
 
+interface ParsedPng {
+	header: PngHeader;
+	palette: Uint8Array | null;
+	transparency: Uint8Array | null;
+	data: readonly Uint8Array[];
+	compressedBytes: number;
+}
+
 export function isPngSignature(bytes: Uint8Array): boolean {
 	if (bytes.byteLength < PNG_SIGNATURE.length) return false;
 	return PNG_SIGNATURE.every(
@@ -81,6 +115,30 @@ export function isPngSignature(bytes: Uint8Array): boolean {
 }
 
 export function decodePng(bytes: Uint8Array, options: DecodePngOptions = {}): DecodedPngImage {
+	const parsed: ParsedPng = parsePng(bytes);
+	const estimate: PngDecodeMemoryEstimate = memoryEstimate(parsed);
+	const maximumWorkingBytes: number = options.maximumWorkingBytes ?? Number.MAX_SAFE_INTEGER;
+	if (
+		!Number.isSafeInteger(maximumWorkingBytes) ||
+		maximumWorkingBytes < 0 ||
+		estimate.peakWorkingBytes > maximumWorkingBytes
+	) {
+		throw fail('decoded_budget_exceeded', 'PNG decode exceeds the caller working-set budget');
+	}
+	const raw: Uint8Array = inflateImageData(parsed.data, estimate.inflatedBytes - 1);
+	const scanlines: Uint8Array = unfilter(raw, parsed.header);
+	return toSamples(parsed.header, scanlines, parsed.palette, parsed.transparency);
+}
+
+/**
+ * Parses bounded PNG structure and estimates decode buffers without inflating
+ * or allocating from attacker-declared dimensions.
+ */
+export function estimatePngDecodeMemory(bytes: Uint8Array): PngDecodeMemoryEstimate {
+	return memoryEstimate(parsePng(bytes));
+}
+
+function parsePng(bytes: Uint8Array): ParsedPng {
 	if (!isPngSignature(bytes)) throw fail('invalid_signature', 'PNG signature is missing');
 	let header: PngHeader | null = null;
 	let palette: Uint8Array | null = null;
@@ -124,19 +182,7 @@ export function decodePng(bytes: Uint8Array, options: DecodePngOptions = {}): De
 	if (header.colorType === 3 && palette === null) {
 		throw fail('missing_palette', 'PNG palette image has no palette');
 	}
-	const decodedWorkingBytes: number = decodedImageWorkingBytes(header);
-	const maximumDecodedBytes: number = options.maximumDecodedBytes ?? Number.MAX_SAFE_INTEGER;
-	if (
-		!Number.isSafeInteger(maximumDecodedBytes) ||
-		maximumDecodedBytes < 0 ||
-		decodedWorkingBytes > maximumDecodedBytes
-	) {
-		throw fail('decoded_budget_exceeded', 'PNG decoded image exceeds the caller decode budget');
-	}
-	const expectedInflatedBytes: number = inflatedScanlineBytes(header);
-	const raw: Uint8Array = inflateImageData(data, expectedInflatedBytes);
-	const scanlines: Uint8Array = unfilter(raw, header);
-	return toSamples(header, scanlines, palette, transparency);
+	return { header, palette, transparency, data, compressedBytes };
 }
 
 function parseHeader(payload: Uint8Array): PngHeader {
@@ -197,23 +243,44 @@ function inflateImageData(chunks: readonly Uint8Array[], expectedBytes: number):
 	return inflated;
 }
 
-function inflatedScanlineBytes(header: PngHeader): number {
+function memoryEstimate(parsed: ParsedPng): PngDecodeMemoryEstimate {
+	const { header, compressedBytes } = parsed;
 	const channels: number = channelsFor(header.colorType);
 	const bitsPerPixel: number = channels * header.bitDepth;
 	const rowBytes: number = Math.ceil((header.width * bitsPerPixel) / 8);
-	const expected: number = (rowBytes + 1) * header.height;
-	if (!Number.isSafeInteger(expected) || expected > MAX_PNG_INFLATE_BYTES) {
+	const inflatedScanlineBytes: number = (rowBytes + 1) * header.height;
+	if (
+		!Number.isSafeInteger(inflatedScanlineBytes) ||
+		inflatedScanlineBytes > MAX_PNG_INFLATE_BYTES
+	) {
 		throw fail('oversized', 'PNG image data exceeds the decode budget');
 	}
-	return expected;
-}
-
-function decodedImageWorkingBytes(header: PngHeader): number {
 	const pixels: number = header.width * header.height;
 	const sampleComponents: number = header.colorType === 0 || header.colorType === 4 ? 1 : 3;
-	// `toSamples` always builds an alpha plane while checking opacity, even
-	// when the returned image can ultimately omit it.
-	return pixels * sampleComponents + pixels;
+	const unfilteredBytes: number = rowBytes * header.height;
+	const sampleBytes: number = pixels * sampleComponents;
+	const alphaBytes: number = pixels;
+	const inflatedBytes: number = inflatedScanlineBytes + 1;
+	const peakWorkingBytes: number =
+		compressedBytes +
+		inflatedBytes +
+		MAX_PNG_INFLATE_SCRATCH_BYTES +
+		unfilteredBytes +
+		sampleBytes +
+		alphaBytes;
+	if (!Number.isSafeInteger(peakWorkingBytes)) {
+		throw fail('oversized', 'PNG decode working set exceeds the supported range');
+	}
+	return {
+		compressedCopyBytes: compressedBytes,
+		inflatedBytes,
+		inflateScratchBytes: MAX_PNG_INFLATE_SCRATCH_BYTES,
+		unfilteredBytes,
+		sampleBytes,
+		alphaBytes,
+		peakWorkingBytes,
+		retainedBytes: sampleBytes + alphaBytes
+	};
 }
 
 function channelsFor(colorType: number): number {

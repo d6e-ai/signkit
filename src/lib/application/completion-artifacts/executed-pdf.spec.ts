@@ -296,6 +296,31 @@ describe('buildExecutedPdf', () => {
 		).toThrowError(ExecutedPdfBoundExceededError);
 	});
 
+	it('maps image working-set exhaustion to a completion bound error', () => {
+		expect(() =>
+			buildExecutedPdf({
+				documents: [markdownDocument()],
+				fields: [
+					field({
+						value: { kind: 'drawn-signature', sha256: SIGNATURE_SHA256 },
+						signaturePngBytes: drawnSignaturePng(8, 4)
+					})
+				],
+				maxImageWorkingSetBytes: 1
+			})
+		).toThrowError(ExecutedPdfBoundExceededError);
+	});
+
+	it('maps resident source exhaustion without an image to a completion bound error', () => {
+		expect(() =>
+			buildExecutedPdf({
+				documents: [markdownDocument()],
+				fields: [],
+				maxImageWorkingSetBytes: 1
+			})
+		).toThrowError(ExecutedPdfBoundExceededError);
+	});
+
 	it('fails closed when the envelope has more documents than the bound allows', () => {
 		const documents: ExecutedPdfDocument[] = Array.from({ length: 21 }, (_, index) =>
 			markdownDocument({ id: `document-${index}`, position: index })

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { decodePng, MAX_PNG_DIMENSION, PngDecodeError, type DecodedPngImage } from './png-image';
+import {
+	decodePng,
+	estimatePngDecodeMemory,
+	MAX_PNG_DIMENSION,
+	MAX_PNG_INFLATE_SCRATCH_BYTES,
+	MAX_PNG_PIXELS,
+	PngDecodeError,
+	type DecodedPngImage,
+	type PngDecodeMemoryEstimate
+} from './png-image';
 import {
 	drawnSignaturePng,
 	encodeTestPng,
@@ -152,12 +161,43 @@ describe('decodePng', () => {
 		);
 	});
 
-	it('rejects a decoded image before sample-plane allocation when the caller budget is too small', () => {
+	it('rejects a decode before buffer allocation when the caller working-set budget is too small', () => {
 		const bytes: Uint8Array = drawnSignaturePng(8, 4);
+		const estimate: PngDecodeMemoryEstimate = estimatePngDecodeMemory(bytes);
 
-		expect(() => decodePng(bytes, { maximumDecodedBytes: 127 })).toThrowError(
-			expect.objectContaining({ reason: 'decoded_budget_exceeded' })
+		expect(() =>
+			decodePng(bytes, { maximumWorkingBytes: estimate.peakWorkingBytes - 1 })
+		).toThrowError(expect.objectContaining({ reason: 'decoded_budget_exceeded' }));
+		expect(
+			decodePng(bytes, { maximumWorkingBytes: estimate.peakWorkingBytes }).samples.byteLength
+		).toBe(96);
+	});
+
+	it('estimates maximum-dimension 16-bit RGBA buffers from headers without allocating them', () => {
+		const width: number = MAX_PNG_DIMENSION;
+		const height: number = Math.floor(MAX_PNG_PIXELS / width);
+		const bytes: Uint8Array = encodeTestPngWithInflatedScanlines(
+			{ width, height, colorType: 6, bitDepth: 16, samples: new Uint8Array(0) },
+			Uint8Array.of(0)
 		);
-		expect(decodePng(bytes, { maximumDecodedBytes: 128 }).samples.byteLength).toBe(96);
+		const estimate: PngDecodeMemoryEstimate = estimatePngDecodeMemory(bytes);
+		const pixels: number = width * height;
+		const rowBytes: number = width * 8;
+
+		expect(estimate.inflatedBytes).toBe((rowBytes + 1) * height + 1);
+		expect(estimate.inflateScratchBytes).toBe(MAX_PNG_INFLATE_SCRATCH_BYTES);
+		expect(estimate.unfilteredBytes).toBe(rowBytes * height);
+		expect(estimate.sampleBytes).toBe(pixels * 3);
+		expect(estimate.alphaBytes).toBe(pixels);
+		expect(estimate.retainedBytes).toBe(pixels * 4);
+		expect(estimate.peakWorkingBytes).toBe(
+			estimate.compressedCopyBytes +
+				estimate.inflatedBytes +
+				estimate.inflateScratchBytes +
+				estimate.unfilteredBytes +
+				estimate.sampleBytes +
+				estimate.alphaBytes
+		);
+		expect(estimate.peakWorkingBytes).toBeGreaterThan(64 * 1024 * 1024);
 	});
 });
