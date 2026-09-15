@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { D1EnvelopeSentPdfStore } from './d1-envelope-sent-pdf-store';
 import { D1EnvelopeSentDocumentStore } from './d1-envelope-sent-document-store';
 import {
+	applyD1MigrationInTransaction,
 	applyD1Migrations,
 	applyD1MigrationsThrough,
 	d1MigrationPaths,
@@ -80,6 +81,50 @@ function insertCommand(
 		${documentCount === null ? 'NULL' : `'${SENT_PDF_SHA256}'`},
 		${documentCount === null ? 'NULL' : String(documentCount)},
 		${documentCount === null ? 'NULL' : `'[{"id":"${DOCUMENT_ID}","sha256":"${SENT_PDF_SHA256}","byteSize":4096,"pageCount":1}]'`})`);
+}
+
+type LegacyCommandOverrides = {
+	idempotencyKey?: string;
+	auditSequence?: number;
+	sentPdfObjectKey?: string | null;
+	sentPdfSha256?: string | null;
+	sentPdfBytes?: number | null;
+	sentPdfPageCount?: number | null;
+	sentPdfPageWidth?: number | null;
+	sentPdfPageHeight?: number | null;
+	sentPdfDocumentPagesJson?: string | null;
+	documentSetHash?: string | null;
+	documentCount?: number | null;
+	sentDocumentsJson?: string | null;
+};
+
+function insertLegacyCommand(sqlite: DatabaseSync, overrides: LegacyCommandOverrides = {}): void {
+	const idempotencyKey: string = overrides.idempotencyKey ?? 'legacy-send';
+	const auditSequence: number = overrides.auditSequence ?? 4;
+	const sqlValue = (value: string | number | null): string =>
+		value === null ? 'NULL' : typeof value === 'number' ? String(value) : `'${value}'`;
+	sqlite.exec(`INSERT INTO envelope_send_command (
+		organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+		expected_generation,ready_audit_event_id,commit_sha,initial_routing_order,
+		delivery_count,queued_delivery_count,delivery_manifest_hash,delivery_manifest_json,
+		initial_capability_expires_at,updated_at,audit_event_id,audit_sequence,
+		previous_audit_hash,audit_event_hash,audit_payload_json,
+		sent_pdf_object_key, sent_pdf_sha256, sent_pdf_bytes, sent_pdf_page_count,
+		sent_pdf_page_width, sent_pdf_page_height, sent_pdf_document_pages_json,
+		document_set_hash, document_count, sent_documents_json
+	) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
+		1,1,'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
+		'${SENT_AUDIT_ID}',${auditSequence},'hash-3','hash-5','{}',
+		${sqlValue(overrides.sentPdfObjectKey === undefined ? SENT_PDF_KEY : overrides.sentPdfObjectKey)},
+		${sqlValue(overrides.sentPdfSha256 === undefined ? SENT_PDF_SHA256 : overrides.sentPdfSha256)},
+		${sqlValue(overrides.sentPdfBytes === undefined ? 4096 : overrides.sentPdfBytes)},
+		${sqlValue(overrides.sentPdfPageCount === undefined ? 2 : overrides.sentPdfPageCount)},
+		${sqlValue(overrides.sentPdfPageWidth === undefined ? 595.28 : overrides.sentPdfPageWidth)},
+		${sqlValue(overrides.sentPdfPageHeight === undefined ? 841.89 : overrides.sentPdfPageHeight)},
+		${sqlValue(overrides.sentPdfDocumentPagesJson === undefined ? DOCUMENT_PAGES : overrides.sentPdfDocumentPagesJson)},
+		${sqlValue(overrides.documentSetHash === undefined ? null : overrides.documentSetHash)},
+		${sqlValue(overrides.documentCount === undefined ? null : overrides.documentCount)},
+		${sqlValue(overrides.sentDocumentsJson === undefined ? null : overrides.sentDocumentsJson)})`);
 }
 
 function reserveDelivery(sqlite: DatabaseSync): void {
@@ -347,6 +392,106 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 			});
 		} finally {
 			sqlite.close();
+		}
+	});
+
+	it('rebuilds field_value alongside envelope_field through 0045 with all rows preserved and a clean foreign_key_check', () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		try {
+			applyD1MigrationsThrough(sqlite, 'migrations/d1/0044_envelope_uploaded_document.sql');
+			seedReady(sqlite);
+			const FIELD_ID: string = '01950000-0000-7000-8000-000000000099';
+			sqlite.exec(`INSERT INTO envelope_field (
+				id, organization_id, envelope_id, recipient_id, document_path,
+				field_type, label, required, position, created_at, updated_at
+			) VALUES (
+				'${FIELD_ID}','${ORGANIZATION_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}','documents/agreement.md',
+				'signature','Signature',1,1,'2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'
+			)`);
+			sqlite.exec(`INSERT INTO field_value (
+				organization_id, field_id, envelope_id, recipient_id, field_type, value_json, value_sha256, created_at
+			) VALUES (
+				'${ORGANIZATION_ID}','${FIELD_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}','signature','{"signed":true}',
+				'${'a'.repeat(64)}','2026-09-11T00:02:05.000Z'
+			)`);
+
+			// Mimics Cloudflare D1: the whole migration file runs inside one transaction.
+			applyD1MigrationInTransaction(sqlite, 'migrations/d1/0045_envelope_sent_document_set.sql');
+
+			expect(
+				sqlite
+					.prepare(`SELECT id, document_id, document_path FROM envelope_field WHERE id = ?`)
+					.get(FIELD_ID)
+			).toEqual({ id: FIELD_ID, document_id: null, document_path: 'documents/agreement.md' });
+			expect(
+				sqlite
+					.prepare(`SELECT field_id, value_json FROM field_value WHERE field_id = ?`)
+					.get(FIELD_ID)
+			).toEqual({ field_id: FIELD_ID, value_json: '{"signed":true}' });
+			expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('publishes a legacy-only send (sent_pdf_* complete, document-set columns null) under the post-0045 trigger', () => {
+		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+		try {
+			applyD1Migrations(sqlite);
+			seedReady(sqlite);
+			sqlite.exec('BEGIN');
+			insertLegacyCommand(sqlite, { idempotencyKey: 'legacy-send' });
+			reserveDelivery(sqlite);
+			publish(sqlite, 'legacy-send');
+			sqlite.exec('COMMIT');
+			expect(
+				sqlite
+					.prepare(`SELECT status, sent_commit_sha FROM envelope WHERE id='${ENVELOPE_ID}'`)
+					.get()
+			).toEqual({ status: 'sent', sent_commit_sha: COMMIT_SHA });
+			expect(
+				(
+					sqlite.prepare('SELECT COUNT(*) AS count FROM envelope_sent_document_set').get() as {
+						count: number;
+					}
+				).count
+			).toBe(0);
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('rejects a partial legacy or mixed legacy/document-set receipt on publish', () => {
+		const cases: { label: string; overrides: LegacyCommandOverrides }[] = [
+			{
+				label: 'partial legacy (missing sent_pdf_sha256)',
+				overrides: { idempotencyKey: 'partial-legacy', sentPdfSha256: null }
+			},
+			{
+				label: 'mixed (complete legacy and complete document-set)',
+				overrides: {
+					idempotencyKey: 'mixed-shapes',
+					documentSetHash: SENT_PDF_SHA256,
+					documentCount: 1,
+					sentDocumentsJson: `[{"id":"${DOCUMENT_ID}","sha256":"${SENT_PDF_SHA256}","byteSize":4096,"pageCount":1}]`
+				}
+			}
+		];
+		for (const { overrides } of cases) {
+			const sqlite: DatabaseSync = new DatabaseSync(':memory:');
+			try {
+				applyD1Migrations(sqlite);
+				seedReady(sqlite);
+				sqlite.exec('BEGIN');
+				insertLegacyCommand(sqlite, overrides);
+				reserveDelivery(sqlite);
+				expect((): void => publish(sqlite, overrides.idempotencyKey)).toThrow(
+					/envelope send document set missing/
+				);
+				sqlite.exec('ROLLBACK');
+			} finally {
+				sqlite.close();
+			}
 		}
 	});
 });
