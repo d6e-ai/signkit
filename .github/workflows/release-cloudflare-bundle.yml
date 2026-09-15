@@ -15,6 +15,10 @@ name: Release
 # after `publish-npm` succeeds. The tag-equals-version gate runs in `release`
 # before any asset is built and is re-checked in `publish-npm` and
 # `publish-release` before anything is published.
+# `publish-release` receives the build job's exact asset hashes, then
+# re-downloads and verifies the complete remote asset set immediately before
+# the public flip. Repository immutable releases must also be enabled before
+# the tag is pushed; this workflow does not configure that repository setting.
 #
 # Perfect cross-registry atomicity is impossible: once `publish-release` runs,
 # the GitHub Release is public and the npm package is published, and no
@@ -38,21 +42,23 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      expected_assets_sha256_base64: ${{ steps.release_asset_hashes.outputs.base64 }}
     permissions:
       contents: write
       id-token: write
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
         with:
           version: 11.24.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1.88.0
         with:
           components: rustfmt, clippy
       - run: pnpm install --frozen-lockfile
@@ -101,13 +107,25 @@ jobs:
           mkdir -p .release/assets
           docker save "signkit:${tag}" | gzip > ".release/assets/signkit-docker-${tag}.tar.gz"
       - name: Regenerate and verify unified checksums
+        id: release_asset_hashes
         run: |
           set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
           cd .release/assets
           rm -f SHA256SUMS
-          sha256sum signkit-* > SHA256SUMS
+          checksum_assets=(
+            "signkit-cloudflare-manifest.json"
+            "signkit-cloudflare-${tag}.tar.gz"
+            "signkit-node-${tag}.tar.gz"
+            "signkit-${tag}-x86_64-unknown-linux-gnu.tar.gz"
+            "signkit-docker-${tag}.tar.gz"
+          )
+          sha256sum "${checksum_assets[@]}" > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
+          release_assets=(SHA256SUMS "${checksum_assets[@]}")
+          sha256sum "${release_assets[@]}" | sort -k2 > ../expected-assets.sha256
+          echo "base64=$(base64 -w0 ../expected-assets.sha256)" >> "$GITHUB_OUTPUT"
       - name: Publish release assets to a draft release (never public yet)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -194,7 +212,7 @@ jobs:
             fi
           done
       - name: Generate GitHub build-provenance attestations
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: .release/assets/*
 
@@ -205,11 +223,11 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
         with:
           version: 11.24.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: pnpm
@@ -289,12 +307,12 @@ jobs:
     # public GitHub Release behind an unpublished (or failed) npm package.
     # An npm provenance/auth failure fails publish-npm and this job never
     # starts; the draft from `release` stays private for operator recovery.
-    needs: publish-npm
+    needs: [release, publish-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-tags: true
       - name: Enforce git tag version equals every package version
@@ -313,16 +331,55 @@ jobs:
       - name: Mark the draft release public
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_ASSETS_SHA256_BASE64: ${{ needs.release.outputs.expected_assets_sha256_base64 }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          if ! release_json="$(gh release view "$tag" --json isDraft,assets)"; then
             echo "expected draft release ${tag} from the release job, but it does not exist" >&2
             exit 1
           fi
-          is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+          is_draft="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.isDraft));' "$release_json")"
           if [ "$is_draft" != "true" ]; then
             echo "release ${tag} is already public; refusing any further mutation"
             exit 0
+          fi
+
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          expected_hashes="$verify_dir/expected-assets.sha256"
+          if [ -z "$EXPECTED_ASSETS_SHA256_BASE64" ]; then
+            echo "release job did not provide trusted expected asset hashes" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$EXPECTED_ASSETS_SHA256_BASE64" | base64 --decode > "$expected_hashes"; then
+            echo "release job provided invalid expected asset hashes" >&2
+            exit 1
+          fi
+          expected_names="$verify_dir/expected-assets.txt"
+          awk '{print $2}' "$expected_hashes" | sort > "$expected_names"
+          if [ "$(wc -l < "$expected_names")" -ne 6 ]; then
+            echo "release job provided an unexpected asset set" >&2
+            exit 1
+          fi
+          remote_names="$verify_dir/remote-assets.txt"
+          node -e 'const value=JSON.parse(process.argv[1]); for (const asset of value.assets ?? []) console.log(asset.name);' "$release_json" | sort > "$remote_names"
+          if ! cmp -s "$expected_names" "$remote_names"; then
+            echo "refusing to publish draft release ${tag}: remote asset set differs from the release job" >&2
+            exit 1
+          fi
+
+          downloaded_assets="$verify_dir/assets"
+          mkdir "$downloaded_assets"
+          gh release download "$tag" --dir "$downloaded_assets"
+          downloaded_names="$verify_dir/downloaded-assets.txt"
+          find "$downloaded_assets" -maxdepth 1 -type f -printf '%f\n' | sort > "$downloaded_names"
+          if ! cmp -s "$expected_names" "$downloaded_names"; then
+            echo "refusing to publish draft release ${tag}: downloaded asset set is incomplete or unexpected" >&2
+            exit 1
+          fi
+          if ! (cd "$downloaded_assets" && sha256sum -c "$expected_hashes"); then
+            echo "refusing to publish draft release ${tag}: downloaded asset bytes differ from the release job" >&2
+            exit 1
           fi
           gh release edit "$tag" --draft=false

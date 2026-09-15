@@ -20,6 +20,10 @@ const verifyScriptPath = fileURLToPath(
 const workflowPath = fileURLToPath(
 	new URL('../../../.github/workflows/release-cloudflare-bundle.yml', import.meta.url)
 );
+const ciWorkflowPath = fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url));
+const codeqlWorkflowPath = fileURLToPath(
+	new URL('../../../.github/workflows/codeql.yml', import.meta.url)
+);
 const rootPackagePath = fileURLToPath(new URL('../../../package.json', import.meta.url));
 const lockfilePath = fileURLToPath(new URL('../../../pnpm-lock.yaml', import.meta.url));
 
@@ -62,6 +66,9 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).toMatch(/docker save/);
 		// Unified checksums regenerated over all assets and verified before upload.
 		expect(yaml).toMatch(/sha256sum -c SHA256SUMS/);
+		expect(yaml).toMatch(/expected_assets_sha256_base64/);
+		expect(yaml).toMatch(/steps\.release_asset_hashes\.outputs\.base64/);
+		expect(yaml).toMatch(/sha256sum "\$\{release_assets\[@\]\}"/);
 		// Every shippable family is attached in the single upload step.
 		expect(yaml).toMatch(/signkit-cloudflare-\$\{tag\}\.tar\.gz/);
 		expect(yaml).toMatch(/signkit-node-\$\{tag\}\.tar\.gz/);
@@ -100,12 +107,24 @@ describe('release-cloudflare-bundle workflow', () => {
 		const draftFalseMatches = yaml.match(/--draft=false/g) ?? [];
 		expect(draftFalseMatches).toHaveLength(1);
 		// Public flip happens only after the npm gate succeeds.
-		expect(yaml).toMatch(/needs:\s*publish-npm/);
+		expect(yaml).toMatch(/needs:\s*\[release, publish-npm\]/);
 		const publishReleaseSection = yaml.slice(yaml.indexOf('publish-release:'));
 		expect(publishReleaseSection).toMatch(
 			/release \$\{tag\} is already public; refusing any further mutation/
 		);
 		expect(publishReleaseSection).toMatch(/gh release edit "\$tag" --draft=false/);
+		expect(publishReleaseSection).toMatch(/needs\.release\.outputs\.expected_assets_sha256_base64/);
+		expect(publishReleaseSection).toMatch(/gh release view "\$tag" --json isDraft,assets/);
+		expect(publishReleaseSection).toMatch(/remote asset set differs from the release job/);
+		expect(publishReleaseSection).toMatch(
+			/gh release download "\$tag" --dir "\$downloaded_assets"/
+		);
+		expect(publishReleaseSection).toMatch(/downloaded asset set is incomplete or unexpected/);
+		expect(publishReleaseSection).toMatch(/sha256sum -c "\$expected_hashes"/);
+		expect(publishReleaseSection).toMatch(/downloaded asset bytes differ from the release job/);
+		expect(publishReleaseSection.indexOf('sha256sum -c "$expected_hashes"')).toBeLessThan(
+			publishReleaseSection.indexOf('gh release edit "$tag" --draft=false')
+		);
 		const releaseSection = yaml.slice(0, yaml.indexOf('publish-npm:'));
 		expect(releaseSection).not.toMatch(/--draft=false/);
 		expect(releaseSection).toMatch(/gh release upload "\$tag"/);
@@ -116,10 +135,40 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).toMatch(/id-token: write/);
 		expect(yaml).toMatch(/attestations: write/);
 		expect(yaml).toMatch(/artifact-metadata: write/);
-		expect(yaml).toMatch(/uses: actions\/attest@v4/);
+		expect(yaml).toMatch(
+			/uses: actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4\.2\.2/
+		);
 		expect(yaml).toMatch(/subject-path: \.release\/assets\/\*/);
 		expect(yaml.indexOf('Generate GitHub build-provenance attestations')).toBeGreaterThan(
 			yaml.indexOf('Publish release assets to a draft release')
+		);
+	});
+
+	it('pins privileged workflow actions to reviewed commits with version comments', async () => {
+		const workflows = await Promise.all([
+			readFile(workflowPath, 'utf8'),
+			readFile(ciWorkflowPath, 'utf8'),
+			readFile(codeqlWorkflowPath, 'utf8')
+		]);
+		const namedAction =
+			/uses:\s+(?:actions\/(?:checkout|setup-node|attest)|pnpm\/action-setup|dtolnay\/rust-toolchain)@/;
+		for (const yaml of workflows) {
+			for (const line of yaml.split('\n').filter((candidate) => namedAction.test(candidate))) {
+				expect(line).toMatch(/@[0-9a-f]{40} # (?:v?\d+\.\d+\.\d+)$/);
+			}
+		}
+		const combined = workflows.join('\n');
+		expect(combined).toMatch(
+			/actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\.4\.0/
+		);
+		expect(combined).toMatch(
+			/actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4\.4\.0/
+		);
+		expect(combined).toMatch(
+			/pnpm\/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4\.4\.0/
+		);
+		expect(combined).toMatch(
+			/dtolnay\/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1\.88\.0/
 		);
 	});
 

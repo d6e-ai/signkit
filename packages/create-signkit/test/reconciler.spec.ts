@@ -936,6 +936,25 @@ describe('bootstrap owner email', () => {
 		expect(result.stdout).not.toContain('owner@example.com');
 	});
 
+	it('rejects an adversarially long recorded address before upgrading', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const adversarialAddress = `owner@${'.'.repeat(100_000)}\ninvalid`;
+		const fs = await writeCloudflareState(new MemoryFileSystem(), {
+			bootstrapOwnerEmail: adversarialAddress
+		});
+		const denied = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+
+		expect(denied.code).toBe(6);
+		expect(denied.stdout).toMatch(/--bootstrap-owner-email is required/);
+		expect(denied.stdout).not.toContain(adversarialAddress);
+		expect(wrangler.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
+	});
+
 	it('requires the flag on upgrade when no address is recorded (pre-requirement state)', async () => {
 		const wrangler = new FakeWrangler();
 		wrangler.seedReadyWorker();

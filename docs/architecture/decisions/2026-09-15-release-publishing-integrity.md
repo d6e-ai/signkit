@@ -24,6 +24,15 @@ generated.
   before npm/public release. This avoids creating provenance for a mismatched
   rerun that the release rejects. Attestation generation has narrowly scoped
   OIDC and attestation permissions in the build job.
+- Pass the build job's exact six-name SHA-256 asset inventory to the final
+  publication job as a job output. Immediately before changing draft state,
+  `publish-release` refuses a missing or extra remote asset, downloads every
+  asset again, and verifies every byte against that inventory. npm success is
+  therefore insufficient to publish a draft whose assets changed after the
+  upload job finished.
+- Pin checkout, Node/pnpm setup, Rust toolchain, and attestation actions to full
+  reviewed commit SHAs. Keep the human-readable upstream version beside each
+  pin so upgrades remain explicit and reviewable.
 
 ## Consequences
 
@@ -34,4 +43,6 @@ attestations, but `create-signkit` has no local attestation verifier today; it
 continues to enforce the official-repository, manifest, size, and SHA-256
 boundary. If deploy-time policy is to require provenance, track a follow-up
 issue to add a fail-closed verifier instead of claiming generation alone closes
-that boundary.
+that boundary. Repository immutable releases are a required administrative
+control before pushing a release tag; the workflow's draft checks do not claim
+to replace that GitHub setting.

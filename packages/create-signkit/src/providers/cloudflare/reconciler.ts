@@ -9,6 +9,7 @@ import {
 import { resolveEffectiveConfig, type EffectiveTarget } from '../../cli/effective-config.js';
 import { conflict, generic, preflight, usage } from '../../cli/errors.js';
 import type { CommandName, ParsedCommand } from '../../cli/parse.js';
+import { isValidEmailAddress } from '../../cli/urls.js';
 import type { ReleaseResolver, ResolvedRelease } from '../../release/github.js';
 import type { BundleExtractor, ExtractedBundle } from '../../release/extract.js';
 import type { FileSystem } from '../../runtime/fs.js';
@@ -736,8 +737,7 @@ function assertUpgradeBootstrapOwnerEmail(target: EffectiveTarget): void {
 }
 
 function assertValidBootstrapOwnerEmail(value: string | undefined, hasState: boolean): void {
-	const candidate: string | undefined = value?.trim().toLowerCase();
-	if (!candidate || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate) || candidate.includes('\0')) {
+	if (value === undefined || !isValidEmailAddress(value)) {
 		throw preflight(
 			hasState
 				? '--bootstrap-owner-email is required for deploy/upgrade (SIGNKIT_BOOTSTRAP_OWNER_EMAIL): no valid address is recorded in state, so pass the flag once to record it'

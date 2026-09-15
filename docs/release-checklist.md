@@ -22,6 +22,9 @@ YYYY-MM-DD` with the real date. Keep entries in Keep a Changelog style;
    `v0.1.0` (stable) or `v0.1.0-beta.1` (beta). Build metadata (`+build`) is
    rejected by `parseReleaseTag`, and the prerelease component alone selects
    both the GitHub prerelease flag and the npm dist-tag (`beta` vs `latest`).
+4. Before pushing the tag, a repository administrator must confirm GitHub
+   immutable releases are enabled. This is an external repository setting and
+   is not changed by the local checklist or by the release workflow.
 
 ## 2. Migrations and operations docs
 
@@ -89,7 +92,11 @@ no implementation is a release blocker.
    (`beta` for prereleases, `latest` for stable), and publishes with that
    explicit `--tag`. It never runs `pnpm publish` and never prints
    `NODE_AUTH_TOKEN`.
-3. Rollback is per artifact, not atomic: Worker rollback cannot roll back
+3. The `publish-release` job receives the exact six-name SHA-256 inventory from
+   the build job. After npm succeeds and immediately before making the release
+   public, it re-reads the draft's asset list, downloads every asset, and refuses
+   any missing name, extra name, or byte mismatch.
+4. Rollback is per artifact, not atomic: Worker rollback cannot roll back
    D1 (see `docs/create-signkit.md` § Rollback), a Docker image is replaced
    by deploying the previous tag, and npm dist-tags are moved rather than
    unpublishing. Do not delete and re-push a tag to "fix" a release; cut a
