@@ -20,6 +20,10 @@ function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
 	return identityOnlyLocals(state, { emailVerified: true });
 }
 
+function identityOnlyLocalsWithEmail(email: string): App.Locals {
+	return identityOnlyLocals('authorized', { emailVerified: true, email });
+}
+
 function event(input: { locals?: App.Locals; body?: string; headers?: HeadersInit }): RequestEvent {
 	const pathname: string = '/api/v1/instance/bootstrap';
 	const url: URL = new URL(`https://signkit.example${pathname}`);
@@ -369,6 +373,121 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		expect(await res.json()).toMatchObject({
 			type: 'urn:signkit:problem:persistence-unavailable',
 			status: 503
+		});
+	});
+
+	describe('deploy-time bootstrap owner protection', () => {
+		it('refuses a caller whose verified email does not match the configured owner, without consulting the store', async () => {
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn(),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler(
+				(): InstanceApplicationPort => app,
+				(): string | undefined => 'owner@example.com'
+			);
+
+			const res = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('someone-else@example.com'),
+					headers: { 'idempotency-key': 'key-1' },
+					body: '{}'
+				})
+			);
+
+			expect(res.status).toBe(403);
+			const problem = await res.json();
+			expect(problem).toMatchObject({
+				type: 'urn:signkit:problem:bootstrap-owner-mismatch',
+				status: 403
+			});
+			// The configured owner email must never be echoed back to a mismatched caller.
+			expect(JSON.stringify(problem)).not.toContain('owner@example.com');
+			expect(app.bootstrapInstance).not.toHaveBeenCalled();
+		});
+
+		it('is case-insensitive and allows a caller whose verified email matches the configured owner', async () => {
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn().mockResolvedValue({
+					outcome: 'bootstrapped',
+					member: mockMember
+				}),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler(
+				(): InstanceApplicationPort => app,
+				(): string | undefined => 'Owner@Example.com'
+			);
+
+			const res = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('owner@example.com'),
+					headers: { 'idempotency-key': 'key-1' },
+					body: '{}'
+				})
+			);
+
+			expect(res.status).toBe(201);
+			expect(app.bootstrapInstance).toHaveBeenCalledTimes(1);
+		});
+
+		it('preserves original first-user-wins behavior when unconfigured (local-development escape hatch)', async () => {
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn().mockResolvedValue({
+					outcome: 'bootstrapped',
+					member: mockMember
+				}),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler(
+				(): InstanceApplicationPort => app,
+				(): string | undefined => undefined
+			);
+
+			const res = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('anybody@example.com'),
+					headers: { 'idempotency-key': 'key-1' },
+					body: '{}'
+				})
+			);
+
+			expect(res.status).toBe(201);
+			expect(app.bootstrapInstance).toHaveBeenCalledTimes(1);
+		});
+
+		it('lets the real owner still claim after a mismatched attempt (the gate never burns the single claim window)', async () => {
+			const app: InstanceApplicationPort = {
+				bootstrapInstance: vi.fn().mockResolvedValue({
+					outcome: 'bootstrapped',
+					member: mockMember
+				}),
+				getCurrentMember: vi.fn()
+			};
+			const handler = createInstanceBootstrapHandler(
+				(): InstanceApplicationPort => app,
+				(): string | undefined => 'owner@example.com'
+			);
+
+			const rejected = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('intruder@example.com'),
+					headers: { 'idempotency-key': 'key-1' },
+					body: '{}'
+				})
+			);
+			expect(rejected.status).toBe(403);
+			expect(app.bootstrapInstance).not.toHaveBeenCalled();
+
+			const accepted = await handler(
+				event({
+					locals: identityOnlyLocalsWithEmail('owner@example.com'),
+					headers: { 'idempotency-key': 'key-2' },
+					body: '{}'
+				})
+			);
+			expect(accepted.status).toBe(201);
+			expect(app.bootstrapInstance).toHaveBeenCalledTimes(1);
 		});
 	});
 });

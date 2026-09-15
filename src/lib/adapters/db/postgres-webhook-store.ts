@@ -351,29 +351,38 @@ export class PostgresWebhookStore implements WebhookStore {
 		command: CompleteWebhookDeliveryCommand
 	): Promise<{ outcome: 'completed' | 'stale' }> {
 		const logId: string = newUuidV7();
-		const updated: { auditEventId: string }[] = await this.#sql<{ auditEventId: string }[]>`
-			UPDATE webhook_outbox
-			SET status = 'delivered', claim_token = NULL, locked_at = NULL,
-				updated_at = ${command.deliveredAt}::timestamptz
-			WHERE organization_id = ${command.organizationId}
-				AND endpoint_id = ${command.endpointId}
-				AND audit_event_id = ${command.auditEventId}
-				AND status = 'processing'
-				AND claim_token = ${command.claimToken}
-			RETURNING audit_event_id AS "auditEventId"`;
-		if (updated.length !== 1) return { outcome: 'stale' };
-		await this.#sql`
-			INSERT INTO webhook_delivery_log (
-				id, organization_id, endpoint_id, audit_event_id, event_type, status,
-				attempt, http_status, error_code, occurred_at
-			)
-			SELECT ${logId}, organization_id, endpoint_id, audit_event_id, event_type, 'delivered',
-				attempts, ${command.httpStatus}, NULL, ${command.deliveredAt}::timestamptz
-			FROM webhook_outbox
-			WHERE organization_id = ${command.organizationId}
-				AND endpoint_id = ${command.endpointId}
-				AND audit_event_id = ${command.auditEventId}`;
-		return { outcome: 'completed' };
+		try {
+			return await this.#sql.begin(async (sql: postgres.TransactionSql) => {
+				const updated: { eventType: string; attempts: number }[] = await sql<
+					{ eventType: string; attempts: number }[]
+				>`
+					UPDATE webhook_outbox
+					SET status = 'delivered', claim_token = NULL, locked_at = NULL,
+						updated_at = ${command.deliveredAt}::timestamptz
+					WHERE organization_id = ${command.organizationId}
+						AND endpoint_id = ${command.endpointId}
+						AND audit_event_id = ${command.auditEventId}
+						AND status = 'processing'
+						AND claim_token = ${command.claimToken}
+					RETURNING event_type AS "eventType", attempts`;
+				if (updated.length !== 1) {
+					throw new WebhookRollback<{ outcome: 'completed' | 'stale' }>({ outcome: 'stale' });
+				}
+				await sql`
+					INSERT INTO webhook_delivery_log (
+						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						attempt, http_status, error_code, occurred_at
+					) VALUES (
+						${logId}, ${command.organizationId}, ${command.endpointId}, ${command.auditEventId},
+						${updated[0].eventType}, 'delivered', ${updated[0].attempts}, ${command.httpStatus},
+						NULL, ${command.deliveredAt}::timestamptz
+					)`;
+				return { outcome: 'completed' as const };
+			});
+		} catch (error: unknown) {
+			if (error instanceof WebhookRollback) return error.result;
+			throw error;
+		}
 	}
 
 	async failDelivery(
@@ -381,32 +390,41 @@ export class PostgresWebhookStore implements WebhookStore {
 	): Promise<{ outcome: 'failed' | 'stale' }> {
 		const logId: string = newUuidV7();
 		const logStatus: string = command.retryable ? 'retrying' : 'failed';
-		const updated: { auditEventId: string }[] = await this.#sql<{ auditEventId: string }[]>`
-			UPDATE webhook_outbox
-			SET status = 'failed', claim_token = NULL, locked_at = NULL,
-				available_at = ${command.nextAvailableAt}::timestamptz,
-				last_error = ${command.errorCode},
-				updated_at = ${command.failedAt}::timestamptz,
-				retryable = ${command.retryable}
-			WHERE organization_id = ${command.organizationId}
-				AND endpoint_id = ${command.endpointId}
-				AND audit_event_id = ${command.auditEventId}
-				AND status = 'processing'
-				AND claim_token = ${command.claimToken}
-			RETURNING audit_event_id AS "auditEventId"`;
-		if (updated.length !== 1) return { outcome: 'stale' };
-		await this.#sql`
-			INSERT INTO webhook_delivery_log (
-				id, organization_id, endpoint_id, audit_event_id, event_type, status,
-				attempt, http_status, error_code, occurred_at
-			)
-			SELECT ${logId}, organization_id, endpoint_id, audit_event_id, event_type, ${logStatus},
-				attempts, ${command.httpStatus}, ${command.errorCode}, ${command.failedAt}::timestamptz
-			FROM webhook_outbox
-			WHERE organization_id = ${command.organizationId}
-				AND endpoint_id = ${command.endpointId}
-				AND audit_event_id = ${command.auditEventId}`;
-		return { outcome: 'failed' };
+		try {
+			return await this.#sql.begin(async (sql: postgres.TransactionSql) => {
+				const updated: { eventType: string; attempts: number }[] = await sql<
+					{ eventType: string; attempts: number }[]
+				>`
+					UPDATE webhook_outbox
+					SET status = 'failed', claim_token = NULL, locked_at = NULL,
+						available_at = ${command.nextAvailableAt}::timestamptz,
+						last_error = ${command.errorCode},
+						updated_at = ${command.failedAt}::timestamptz,
+						retryable = ${command.retryable}
+					WHERE organization_id = ${command.organizationId}
+						AND endpoint_id = ${command.endpointId}
+						AND audit_event_id = ${command.auditEventId}
+						AND status = 'processing'
+						AND claim_token = ${command.claimToken}
+					RETURNING event_type AS "eventType", attempts`;
+				if (updated.length !== 1) {
+					throw new WebhookRollback<{ outcome: 'failed' | 'stale' }>({ outcome: 'stale' });
+				}
+				await sql`
+					INSERT INTO webhook_delivery_log (
+						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						attempt, http_status, error_code, occurred_at
+					) VALUES (
+						${logId}, ${command.organizationId}, ${command.endpointId}, ${command.auditEventId},
+						${updated[0].eventType}, ${logStatus}, ${updated[0].attempts}, ${command.httpStatus},
+						${command.errorCode}, ${command.failedAt}::timestamptz
+					)`;
+				return { outcome: 'failed' as const };
+			});
+		} catch (error: unknown) {
+			if (error instanceof WebhookRollback) return error.result;
+			throw error;
+		}
 	}
 
 	async listStaleSigningSecrets(

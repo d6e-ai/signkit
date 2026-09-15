@@ -63,6 +63,7 @@ declare global {
 				SIGNKIT_MAIL_PROVIDER?: string;
 				SESSION_ENCRYPTION_KEY?: string;
 				SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
+				SIGNKIT_BOOTSTRAP_OWNER_EMAIL?: string;
 			};
 			context?: { waitUntil(promise: Promise<unknown>): void };
 			caches?: CacheStorage;

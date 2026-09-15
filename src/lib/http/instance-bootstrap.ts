@@ -1,3 +1,4 @@
+import { env } from '$env/dynamic/private';
 import type { RequestHandler } from '@sveltejs/kit';
 import { z, type ZodIssue, type ZodType } from 'zod';
 import {
@@ -5,6 +6,7 @@ import {
 	type BootstrapInstanceResult,
 	type InstanceApplicationPort
 } from '$lib/application/instance/instance-service';
+import { resolveBootstrapOwnerGate } from '$lib/security/bootstrap-owner-gate';
 import {
 	acceptsJson,
 	readJsonBody,
@@ -122,8 +124,36 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : 'Unknown error';
 }
 
+function ownerMismatch(instance: string): Response {
+	return problemResponse({
+		type: 'urn:signkit:problem:bootstrap-owner-mismatch',
+		title: 'Bootstrap restricted to the configured owner',
+		status: 403,
+		detail:
+			'This deployment restricts instance bootstrap to a specific verified email. The instance remains unclaimed.',
+		instance
+	});
+}
+
+/**
+ * Reads the optional deploy-time owner-email allowlist. Checks `platform.env`
+ * first so Cloudflare Workers vars/secrets take precedence, matching every
+ * other Worker-vs-Node config resolver in this codebase (e.g. delivery-drain.ts).
+ * Never returns the configured value itself to a caller other than the
+ * comparison below — it must not appear in logs or responses.
+ */
+export function resolveBootstrapOwnerEmail(platform?: Readonly<App.Platform>): string | undefined {
+	const configured: string | undefined =
+		platform?.env?.SIGNKIT_BOOTSTRAP_OWNER_EMAIL ?? env.SIGNKIT_BOOTSTRAP_OWNER_EMAIL;
+	const trimmed: string | undefined = configured?.trim();
+	return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
 export function createInstanceBootstrapHandler(
-	resolveApplication: InstanceApplicationResolver
+	resolveApplication: InstanceApplicationResolver,
+	resolveOwnerEmail: (
+		platform?: Readonly<App.Platform>
+	) => string | undefined = resolveBootstrapOwnerEmail
 ): RequestHandler {
 	return async ({ locals, platform, request, url }): Promise<Response> => {
 		// Bootstrap is cookie-session-only: a `signkit_` API key is already
@@ -175,6 +205,17 @@ export function createInstanceBootstrapHandler(
 				detail: 'Claiming instance ownership requires a provider-verified email claim.',
 				instance: url.pathname
 			});
+		}
+
+		// Deploy-time bootstrap protection: checked before the store is ever
+		// consulted, so a mismatched caller never consumes the single
+		// empty-instance window that the real owner still needs.
+		const ownerGate = resolveBootstrapOwnerGate({
+			configuredEmail: resolveOwnerEmail(platform),
+			actorEmail: authorized.email
+		});
+		if (ownerGate === 'owner_mismatch') {
+			return ownerMismatch(url.pathname);
 		}
 
 		let application: InstanceApplicationPort | null;

@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import postgres from 'postgres';
+import type { RequestEvent } from '@sveltejs/kit';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+	InstanceApplication,
+	type InstanceApplicationPort
+} from '$lib/application/instance/instance-service';
+import { createInstanceBootstrapHandler } from '$lib/http/instance-bootstrap';
+import { identityOnlyLocals } from '$lib/http/http-handler-test-support';
 import type {
 	AcceptInstanceInvitationCommand,
 	AcceptInstanceInvitationStoreResult,
@@ -2306,6 +2313,41 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		} finally {
 			await concurrentSql.end({ timeout: 5 });
 		}
+	});
+
+	describe('deploy-time bootstrap owner gate over the real HTTP handler + store', () => {
+		function bootstrapEvent(email: string, idempotencyKey: string): RequestEvent {
+			const pathname: string = '/api/v1/instance/bootstrap';
+			const url: URL = new URL(`https://signkit.example${pathname}`);
+			const headers: Headers = new Headers({
+				'content-type': 'application/json',
+				'idempotency-key': idempotencyKey
+			});
+			return {
+				locals: identityOnlyLocals('authorized', { subject: ACTOR_ID, emailVerified: true, email }),
+				params: {},
+				request: new Request(url, { method: 'POST', headers, body: '{}' }),
+				url
+			} as RequestEvent;
+		}
+
+		it('refuses a mismatched verified email against the real Postgres store, then lets the configured owner claim it', async () => {
+			const application = new InstanceApplication(store(), () => new Date(CREATED_AT));
+			const handler = createInstanceBootstrapHandler(
+				(): InstanceApplicationPort => application,
+				(): string | undefined => 'owner@example.com'
+			);
+
+			const rejected = await handler(
+				bootstrapEvent('intruder@example.com', 'bootstrap-http-key-1')
+			);
+			expect(rejected.status).toBe(403);
+			expect(await memberRows()).toEqual([]);
+
+			const accepted = await handler(bootstrapEvent('owner@example.com', 'bootstrap-http-key-2'));
+			expect(accepted.status).toBe(201);
+			expect(await memberRows()).toEqual([{ userId: ACTOR_ID, role: 'owner' }]);
+		});
 	});
 });
 
