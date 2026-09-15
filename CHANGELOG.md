@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-15
+
+### Changed
+
+- Trusted npm publishing hardening (#98).
+- Authoring UI refinements (#100): continuous circular spinner, `px-4` content alignment, divider removal, envelope detail breadcrumbs, unified PDF/DOCX add-document dialog, and user-facing copy cleanup.
+
+### Fixed
+
+- Review fixes (#100): `/envelopes/new` breadcrumbs and imported Word selection.
+
 ## [0.1.0] - 2026-09-15
 
 First tagged release. Summary of major capabilities as implemented today:

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "signkit",
     author = "SignKit Authors",
-    version = "0.1.0",
+    version,
     about = "Agent-first CLI for the SignKit e-signature platform",
     long_about = "Non-interactive, agent-first CLI for SignKit. Operates within the enabled API-key surface: envelopes:read, drafts:write, and envelopes:send. Key management and instance administration require interactive operator sessions and are not exposed here."
 )]
