@@ -929,11 +929,17 @@
 	);
 
 	function draftsOnPage(page: number): readonly FieldDraft[] {
-		return fieldDrafts.filter((draftItem) => draftItem.geometry?.page === page);
+		const documentId = documentIdForPlacement();
+		return fieldDrafts.filter(
+			(draftItem) => draftItem.documentId === documentId && draftItem.geometry?.page === page
+		);
 	}
 
 	function publishedOnPage(page: number): readonly PublicEnvelopeFieldResponse[] {
-		return placedFields.filter((field) => field.geometry?.page === page);
+		const documentId = documentIdForPlacement();
+		return placedFields.filter(
+			(field) => field.documentId === documentId && field.geometry?.page === page
+		);
 	}
 
 	function recipientName(recipientId: string): string {
