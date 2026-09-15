@@ -94,7 +94,7 @@ describe('isUnsafeBootstrapOptIn', () => {
 });
 
 describe('isLocalDevelopmentBootstrapEnvironment', () => {
-	it('accepts loopback origins on Node without a platform env', () => {
+	it('accepts loopback origins on an explicit Node development runtime', () => {
 		for (const origin of [
 			'http://localhost:5173',
 			'http://127.0.0.1:5173',
@@ -103,6 +103,7 @@ describe('isLocalDevelopmentBootstrapEnvironment', () => {
 		]) {
 			expect(
 				isLocalDevelopmentBootstrapEnvironment({
+					nodeEnvironment: 'development',
 					hasPlatformEnv: false,
 					publicOrigin: origin
 				})
@@ -113,6 +114,7 @@ describe('isLocalDevelopmentBootstrapEnvironment', () => {
 	it('refuses Cloudflare Workers even with a loopback origin', () => {
 		expect(
 			isLocalDevelopmentBootstrapEnvironment({
+				nodeEnvironment: 'development',
 				hasPlatformEnv: true,
 				publicOrigin: 'http://localhost:5173'
 			})
@@ -123,8 +125,21 @@ describe('isLocalDevelopmentBootstrapEnvironment', () => {
 		for (const vercel of ['1', 'true']) {
 			expect(
 				isLocalDevelopmentBootstrapEnvironment({
+					nodeEnvironment: 'development',
 					hasPlatformEnv: false,
 					vercelIndicator: vercel,
+					publicOrigin: 'http://localhost:5173'
+				})
+			).toBe(false);
+		}
+	});
+
+	it('refuses production and other implicit runtime modes even with a loopback origin', () => {
+		for (const nodeEnvironment of [undefined, '', 'production', 'test', 'Development']) {
+			expect(
+				isLocalDevelopmentBootstrapEnvironment({
+					nodeEnvironment,
+					hasPlatformEnv: false,
 					publicOrigin: 'http://localhost:5173'
 				})
 			).toBe(false);
@@ -141,7 +156,11 @@ describe('isLocalDevelopmentBootstrapEnvironment', () => {
 			'https://signkit.example.workers.dev'
 		]) {
 			expect(
-				isLocalDevelopmentBootstrapEnvironment({ hasPlatformEnv: false, publicOrigin: origin })
+				isLocalDevelopmentBootstrapEnvironment({
+					nodeEnvironment: 'development',
+					hasPlatformEnv: false,
+					publicOrigin: origin
+				})
 			).toBe(false);
 		}
 	});
