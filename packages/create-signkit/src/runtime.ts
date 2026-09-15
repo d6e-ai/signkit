@@ -5,6 +5,7 @@ import { createNodeProcessRunner, type ProcessRunner } from './runtime/process.j
 import { createGithubReleaseResolver, type ReleaseResolver } from './release/github.js';
 import { createTarGzExtractor, type BundleExtractor } from './release/extract.js';
 import { createWranglerClient, type WranglerClient } from './providers/cloudflare/wrangler.js';
+import { createNodeStdinReader } from './recovery/bootstrap.js';
 import type { ReconcileRuntime } from './providers/cloudflare/reconciler.js';
 
 export interface RuntimeHooks {
@@ -21,6 +22,9 @@ export interface RuntimeHooks {
 	smokeBackoffMs?: number;
 	smokeTimeoutMs?: number;
 	sleep?: (ms: number) => Promise<void>;
+	readStdin?: () => Promise<Uint8Array>;
+	recoveryPath?: string;
+	randomBytes?: (size: number) => Uint8Array;
 }
 
 export function createRuntime(command: ParsedCommand, hooks: RuntimeHooks = {}): ReconcileRuntime {
@@ -47,6 +51,9 @@ export function createRuntime(command: ParsedCommand, hooks: RuntimeHooks = {}):
 		smokeAttempts: hooks.smokeAttempts,
 		smokeBackoffMs: hooks.smokeBackoffMs,
 		smokeTimeoutMs: hooks.smokeTimeoutMs,
-		sleep: hooks.sleep
+		sleep: hooks.sleep,
+		readStdin: hooks.readStdin ?? createNodeStdinReader(),
+		recoveryPath: hooks.recoveryPath,
+		randomBytes: hooks.randomBytes
 	};
 }

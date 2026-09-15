@@ -4,7 +4,7 @@ Deployment CLI for publishing a SignKit GitHub Release onto Cloudflare Workers (
 
 ```sh
 npx create-signkit --cloudflare plan --account-id <id>
-npx create-signkit --cloudflare deploy --account-id <id> --email-from ops@example.com --domain sign.example.com --yes
+npx create-signkit --cloudflare deploy --account-id <id> --email-from ops@example.com --domain sign.example.com --bootstrap-owner-email owner@example.com --yes < oauth.json
 ```
 
 The `--cloudflare` provider flag is required and must appear before the command. There is no implicit Cloudflare default.

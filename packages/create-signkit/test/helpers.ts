@@ -6,7 +6,7 @@ import {
 	SIGNKIT_REPOSITORY
 } from '../src/constants.js';
 import type { ParsedCommand } from '../src/cli/parse.js';
-import type { FileSystem, MkdirOptions } from '../src/runtime/fs.js';
+import type { FileStat, FileSystem, MkdirOptions } from '../src/runtime/fs.js';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/runtime/http.js';
 import type { CommandResult, ProcessRunner, RunCommandRequest } from '../src/runtime/process.js';
 import type { ReleaseManifest } from '../src/release/manifest.js';
@@ -59,9 +59,14 @@ export async function writeCloudflareState(
 
 export class MemoryFileSystem implements FileSystem {
 	readonly files = new Map<string, string | Uint8Array>();
+	readonly dirs = new Set<string>();
+	readonly symlinks = new Set<string>();
 	readonly writes: string[] = [];
 	readonly modes = new Map<string, number>();
 	readonly mkdirCalls: Array<{ path: string; mode?: number }> = [];
+	readonly chmodCalls: Array<{ path: string; mode: number }> = [];
+	readonly fsyncCalls: string[] = [];
+	readonly exclusiveWrites: Array<{ path: string; mode: number }> = [];
 	readonly chmodFailures = new Set<string>();
 	private temp = 0;
 
@@ -80,21 +85,90 @@ export class MemoryFileSystem implements FileSystem {
 	}
 
 	async writeFile(path: string, contents: string | Uint8Array): Promise<void> {
+		if (this.dirs.has(path)) {
+			const error = new Error(`EISDIR ${path}`) as Error & { code: string };
+			error.code = 'EISDIR';
+			throw error;
+		}
 		this.files.set(path, contents);
 		this.writes.push(path);
 	}
 
+	async stat(path: string): Promise<FileStat> {
+		if (this.symlinks.has(path)) {
+			return {
+				mode: this.modes.get(path) ?? 0o777,
+				size: 0,
+				isFile: false,
+				isDirectory: false,
+				isSymlink: true
+			};
+		}
+		if (this.dirs.has(path)) {
+			return {
+				mode: this.modes.get(path) ?? 0o755,
+				size: 0,
+				isFile: false,
+				isDirectory: true,
+				isSymlink: false
+			};
+		}
+		const value = this.files.get(path);
+		if (value === undefined) throw new Error(`ENOENT ${path}`);
+		const size = typeof value === 'string' ? Buffer.byteLength(value, 'utf8') : value.byteLength;
+		return {
+			mode: this.modes.get(path) ?? 0o644,
+			size,
+			isFile: true,
+			isDirectory: false,
+			isSymlink: false
+		};
+	}
+
+	async writeFileExclusive(
+		path: string,
+		contents: string | Uint8Array,
+		mode: number
+	): Promise<void> {
+		if (this.files.has(path) || this.dirs.has(path) || this.symlinks.has(path)) {
+			const error = new Error(`EEXIST ${path}`) as Error & { code: string };
+			error.code = 'EEXIST';
+			throw error;
+		}
+		this.files.set(path, contents);
+		this.modes.set(path, mode);
+		this.writes.push(path);
+		this.exclusiveWrites.push({ path, mode });
+	}
+
+	async fsync(path: string): Promise<void> {
+		if (this.symlinks.has(path) || (!this.files.has(path) && !this.dirs.has(path))) {
+			throw new Error(`ENOENT ${path}`);
+		}
+		this.fsyncCalls.push(path);
+	}
+
 	async mkdir(path: string, options?: MkdirOptions): Promise<void> {
 		this.mkdirCalls.push({ path, mode: options?.mode });
-		this.files.set(path, '');
+		if (this.symlinks.has(path)) {
+			const error = new Error(`EEXIST ${path}`) as Error & { code: string };
+			error.code = 'EEXIST';
+			throw error;
+		}
+		this.dirs.add(path);
 		if (options?.mode !== undefined) {
 			this.modes.set(path, options.mode);
 		}
 	}
 
 	async exists(path: string): Promise<boolean> {
-		if (this.files.has(path)) return true;
+		if (this.files.has(path) || this.dirs.has(path) || this.symlinks.has(path)) {
+			return true;
+		}
 		for (const key of this.files.keys()) {
+			if (key.startsWith(`${path}/`)) return true;
+		}
+		for (const key of this.dirs) {
 			if (key.startsWith(`${path}/`)) return true;
 		}
 		return false;
@@ -102,7 +176,10 @@ export class MemoryFileSystem implements FileSystem {
 
 	async mkdtemp(prefix: string): Promise<string> {
 		this.temp += 1;
-		return `${prefix}${this.temp}`;
+		const path = `${prefix}${this.temp}`;
+		this.dirs.add(path);
+		this.modes.set(path, 0o700);
+		return path;
 	}
 
 	async rm(path: string): Promise<void> {
@@ -112,9 +189,22 @@ export class MemoryFileSystem implements FileSystem {
 				this.modes.delete(key);
 			}
 		}
+		for (const key of [...this.dirs]) {
+			if (key === path || key.startsWith(`${path}/`)) {
+				this.dirs.delete(key);
+				this.modes.delete(key);
+			}
+		}
+		for (const key of [...this.symlinks]) {
+			if (key === path || key.startsWith(`${path}/`)) {
+				this.symlinks.delete(key);
+				this.modes.delete(key);
+			}
+		}
 	}
 
 	async chmod(path: string, mode: number): Promise<void> {
+		this.chmodCalls.push({ path, mode });
 		if (this.chmodFailures.has(path)) {
 			throw new Error(`EPERM chmod ${path}`);
 		}
@@ -198,6 +288,8 @@ export class FakeWrangler implements WranglerClient {
 	lastConfig?: string;
 	readonly migrationCalls: MigrationCommandOptions[] = [];
 	readonly recordedInvocations: WranglerInvocation[] = [];
+	readonly deployOptions: DeployOptions[] = [];
+	readonly stagedSecrets: string[] = [];
 
 	invocations(): readonly WranglerInvocation[] {
 		return this.recordedInvocations;
@@ -292,15 +384,23 @@ export class FakeWrangler implements WranglerClient {
 
 	async deploy(options: DeployOptions): Promise<DeployResult> {
 		this.calls.push(`deploy:${options.workerName}`);
+		this.deployOptions.push(options);
 		this.lastConfig = this.fs
 			? await this.fs.readFile(options.configPath).catch(() => undefined)
 			: undefined;
+		if (this.fs && options.secretsFile) {
+			this.stagedSecrets.push(await this.fs.readFile(options.secretsFile));
+		}
 		this.ensureWorker(options.workerName);
 		return this.deployResult;
 	}
 
 	async uploadVersion(options: DeployOptions): Promise<DeployResult> {
 		this.calls.push(`uploadVersion:${options.workerName}`);
+		this.deployOptions.push(options);
+		if (this.fs && options.secretsFile) {
+			this.stagedSecrets.push(await this.fs.readFile(options.secretsFile));
+		}
 		this.ensureWorker(options.workerName);
 		return this.deployResult;
 	}

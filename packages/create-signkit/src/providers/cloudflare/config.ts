@@ -62,6 +62,9 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 		],
 		send_email: [{ name: input.manifest.bindings.email || EMAIL_BINDING }],
 		vars,
+		secrets: {
+			required: [...input.manifest.requiredSecrets]
+		},
 		triggers: { crons: ['* * * * *'] },
 		observability: { enabled: true, head_sampling_rate: 1 }
 	};

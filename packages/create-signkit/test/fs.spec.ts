@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -51,4 +51,50 @@ describe('createNodeFileSystem', () => {
 		const missing = join(tmpdir(), 'create-signkit-missing-chmod', 'nope');
 		await expect(fs.chmod(missing, BACKUP_FILE_MODE)).resolves.toBeUndefined();
 	});
+
+	it.skipIf(process.platform === 'win32')(
+		'stat uses lstat semantics: symlinks are neither files nor directories',
+		async () => {
+			const fs = createNodeFileSystem();
+			const root = await mkdtemp(join(tmpdir(), 'create-signkit-fs-link-'));
+			try {
+				const target = join(root, 'target.json');
+				const link = join(root, 'link.json');
+				const dirLink = join(root, 'dir-link');
+				await writeFile(target, '{}');
+				await symlink(target, link);
+				await symlink(root, dirLink);
+				const linkStat = await fs.stat(link);
+				expect(linkStat.isSymlink).toBe(true);
+				expect(linkStat.isFile).toBe(false);
+				expect(linkStat.isDirectory).toBe(false);
+				const dirLinkStat = await fs.stat(dirLink);
+				expect(dirLinkStat.isSymlink).toBe(true);
+				expect(dirLinkStat.isDirectory).toBe(false);
+				const fileStat = await fs.stat(target);
+				expect(fileStat.isSymlink).toBe(false);
+				expect(fileStat.isFile).toBe(true);
+			} finally {
+				await rm(root, { recursive: true, force: true });
+			}
+		}
+	);
+
+	it.skipIf(process.platform === 'win32')(
+		'writeFileExclusive refuses to overwrite an existing path',
+		async () => {
+			const fs = createNodeFileSystem();
+			const root = await mkdtemp(join(tmpdir(), 'create-signkit-fs-excl-'));
+			try {
+				const file = join(root, 'recovery.json');
+				await fs.writeFileExclusive(file, '{}', 0o600);
+				expect((await stat(file)).mode & 0o777).toBe(0o600);
+				await expect(fs.writeFileExclusive(file, '{}', 0o600)).rejects.toThrow();
+				await fs.fsync(file);
+				await fs.fsync(root);
+			} finally {
+				await rm(root, { recursive: true, force: true });
+			}
+		}
+	);
 });
