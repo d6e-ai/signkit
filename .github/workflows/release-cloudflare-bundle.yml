@@ -1,4 +1,16 @@
-name: Cloudflare release bundle
+name: Release
+
+# Atomic full-tag release: one tag in, one GitHub Release out, then an
+# optionally hard-gated npm publish. Pushing a `v*` tag builds and verifies
+# every shippable artifact (Node bundle, Cloudflare bundle, Rust CLI release
+# binary, Docker image) into `.release/assets`, regenerates a unified
+# SHA256SUMS over all of them, verifies it, and attaches everything to the
+# GitHub Release in a single upload step. The `publish-npm` job only runs
+# after that job succeeds and additionally refuses to publish unless the tag
+# equals every versioned package (root, create-signkit, Rust CLI).
+#
+# Nothing here deploys anywhere: no Worker upload, no registry push, no
+# `npm publish` outside the gated job, and no secret is ever printed.
 
 on:
   push:
@@ -8,7 +20,7 @@ permissions:
   contents: write
 
 jobs:
-  bundle:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,13 +31,63 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter create-signkit test
       - run: pnpm run build:create-signkit
-      - run: pnpm run build:cloudflare
-      - run: node scripts/build-cloudflare-release-bundle.mjs
-      - run: node scripts/verify-cloudflare-release-bundle.mjs
-      - name: Publish release assets
+      - name: Enforce tag equals all package versions
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          root="$(node -p "require('./package.json').version")"
+          csk="$(node -p "require('./packages/create-signkit/package.json').version")"
+          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          for v in "$root" "$csk" "$cli"; do
+            if [ "$tag" != "$v" ]; then
+              echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
+              exit 1
+            fi
+          done
+          node --input-type=module -e 'import { parseReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; parseReleaseTag(process.argv[1]);' "$GITHUB_REF_NAME"
+      - name: Build and smoke-check the Node profile
+        run: |
+          set -euo pipefail
+          pnpm run build:node
+          pnpm run test:node-build
+          tag="${GITHUB_REF_NAME}"
+          mkdir -p .release/assets
+          tar -czf ".release/assets/signkit-node-${tag}.tar.gz" build/node package.json
+      - name: Build and verify the Cloudflare release bundle
+        run: |
+          set -euo pipefail
+          pnpm run build:cloudflare
+          node scripts/build-cloudflare-release-bundle.mjs
+          node scripts/verify-cloudflare-release-bundle.mjs
+      - name: Build the Rust CLI release binary
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          cargo build --locked --release --manifest-path cli/Cargo.toml
+          mkdir -p .release/assets
+          tar -czf ".release/assets/signkit-${tag}-x86_64-unknown-linux-gnu.tar.gz" -C cli/target/release signkit
+      - name: Build the Docker image and archive it
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          docker build -t "signkit:${tag}" .
+          mkdir -p .release/assets
+          docker save "signkit:${tag}" | gzip > ".release/assets/signkit-docker-${tag}.tar.gz"
+      - name: Regenerate and verify unified checksums
+        run: |
+          set -euo pipefail
+          cd .release/assets
+          rm -f SHA256SUMS
+          sha256sum signkit-* > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish release assets atomically
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -41,6 +103,7 @@ jobs:
             echo "release tag ${tag} classified as ${channel} but manifest channel is ${manifest_channel}" >&2
             exit 1
           fi
+          (cd .release/assets && sha256sum -c SHA256SUMS)
           prerelease_args=()
           if [ "$channel" = "beta" ]; then
             prerelease_args+=(--prerelease)
@@ -56,10 +119,13 @@ jobs:
             .release/assets/signkit-cloudflare-manifest.json \
             .release/assets/SHA256SUMS \
             .release/assets/signkit-cloudflare-"$tag".tar.gz \
+            .release/assets/signkit-node-"$tag".tar.gz \
+            .release/assets/signkit-"$tag"-x86_64-unknown-linux-gnu.tar.gz \
+            .release/assets/signkit-docker-"$tag".tar.gz \
             --clobber
 
   publish-npm:
-    needs: bundle
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -110,8 +176,18 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./packages/create-signkit/package.json').version")"
+          root="$(node -p "require('./package.json').version")"
+          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           if [ "$tag" != "$pkg" ]; then
             echo "git tag version ${GITHUB_REF_NAME} does not match packages/create-signkit/package.json version ${pkg}" >&2
+            exit 1
+          fi
+          if [ "$tag" != "$root" ]; then
+            echo "git tag version ${GITHUB_REF_NAME} does not match root package.json version ${root}" >&2
+            exit 1
+          fi
+          if [ "$tag" != "$cli" ]; then
+            echo "git tag version ${GITHUB_REF_NAME} does not match cli/Cargo.toml version ${cli}" >&2
             exit 1
           fi
           dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "$GITHUB_REF_NAME")"

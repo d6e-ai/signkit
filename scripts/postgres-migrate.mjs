@@ -9,8 +9,9 @@
  * Environment:
  *   DATABASE_URL   Connection string used when --database-url is not given.
  *                   Must belong to a role with DDL rights (CREATE/ALTER/DROP);
- *                   see docs/operations/postgres-migrations.md for why this
- *                   role must differ from the long-lived application role.
+ *                   see docs/deployment.md ("Applying PostgreSQL migrations")
+ *                   for why this role must differ from the long-lived
+ *                   application role.
  *
  * Modes:
  *   (default) apply  Applies every pending migration, in filename order, each

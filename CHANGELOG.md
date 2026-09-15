@@ -1,5 +1,3 @@
-<!-- The [0.1.0] date below is a placeholder (YYYY-MM-DD) — fill in the actual date when the v0.1.0 tag is cut. -->
-
 # Changelog
 
 All notable changes to this project are documented in this file.
@@ -8,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.1.0] - YYYY-MM-DD
+## [0.1.0] - 2026-09-15
 
 First tagged release. Summary of major capabilities as implemented today:
 

@@ -39,6 +39,34 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).toMatch(/packages\/create-signkit\/dist\/release\/semver\.js/);
 	});
 
+	it('builds every artifact and uploads them atomically behind version gates', async () => {
+		const yaml = await readFile(workflowPath, 'utf8');
+		// Full-tag coverage: Node, Cloudflare, Rust, Docker.
+		expect(yaml).toMatch(/pnpm run build:node/);
+		expect(yaml).toMatch(/pnpm run test:node-build/);
+		expect(yaml).toMatch(/node scripts\/build-cloudflare-release-bundle\.mjs/);
+		expect(yaml).toMatch(/node scripts\/verify-cloudflare-release-bundle\.mjs/);
+		expect(yaml).toMatch(/cargo build --locked --release/);
+		expect(yaml).toMatch(/docker build/);
+		expect(yaml).toMatch(/docker save/);
+		// Unified checksums regenerated over all assets and verified before upload.
+		expect(yaml).toMatch(/sha256sum -c SHA256SUMS/);
+		// Every shippable family is attached in the single upload step.
+		expect(yaml).toMatch(/signkit-cloudflare-"\$tag"\.tar\.gz/);
+		expect(yaml).toMatch(/signkit-node-"\$tag"\.tar\.gz/);
+		expect(yaml).toMatch(/x86_64-unknown-linux-gnu\.tar\.gz/);
+		expect(yaml).toMatch(/signkit-docker-"\$tag"\.tar\.gz/);
+		// Hard tag-equals-version gates cover all three versioned packages.
+		expect(yaml).toMatch(/require\('\.\/package\.json'\)\.version/);
+		expect(yaml).toMatch(/require\('\.\/packages\/create-signkit\/package\.json'\)\.version/);
+		expect(yaml).toMatch(/cli\/Cargo\.toml/);
+		// npm publish is hard-gated on the release job.
+		expect(yaml).toMatch(/needs:\s*release/);
+		// No deployment: no wrangler deploy, no registry push.
+		expect(yaml).not.toMatch(/wrangler deploy[^-\n]/);
+		expect(yaml).not.toMatch(/docker push/);
+	});
+
 	it('derives GitHub prerelease and npm dist-tag from the same semver channel', async () => {
 		const yaml = await readFile(workflowPath, 'utf8');
 		expect(yaml).toMatch(/channelFromReleaseTag\(process\.argv\[1\]\)/);

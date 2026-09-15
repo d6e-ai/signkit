@@ -185,6 +185,55 @@ The public routes accept `?format=json|markdown|pdf` and need no cookies or d6e-
 | `POST` | `/api/v1/system/webhooks/drain`                     | `Bearer DELIVERY_WORKER_SECRET`     |
 | `POST` | `/api/v1/system/objects/orphan-sweep`               | `Bearer DELIVERY_WORKER_SECRET`     |
 
+### Capabilities
+
+`GET /api/v1/system/capabilities` is the only unauthenticated system read. It
+is a static capability advertisement, not a health probe with live state: it
+reports the API version, the detected runtime, and the endpoint/shape
+contracts an agent or operator can rely on before composing any other request.
+The implementation lives in `src/lib/capabilities/` (`authoring.ts`,
+`evidence.ts`, `integration.ts`) and is served by
+`src/routes/api/v1/system/capabilities/+server.ts`.
+
+- **Runtime.** `runtime` is resolved per request from the serving environment
+  (`node` by default, `cloudflare` when the D1 `DB` binding is present,
+  `vercel` on Vercel) via `resolveSignKitRuntime`. `supportedProfiles` lists
+  the database, object store, and maturity status of every profile regardless
+  of the current runtime, so a caller can tell which profile it is talking to
+  (`runtime`) and which profiles exist at all.
+- **Authoring and delivery.** `draftHistory`, `readiness`, `sending`,
+  `voiding`, `delivery`, and `recipientAccess` name the exact endpoint paths,
+  concurrency tokens (`expected-generation`, expected status), idempotency
+  requirements, mail transports per profile (`email-binding` on Cloudflare,
+  `smtp-or-cloudflare-email-rest` on Node), and the at-least-once drain
+  semantics. Recipient access additionally names the link-exchange path
+  (`/s/{capability}`), the web surface (`/{locale}/sign/{envelopeId}`), and
+  the envelope-scoped encrypted-cookie session model.
+- **Completion evidence.** `completionArtifact` names the status and worker
+  endpoints, the `signkit-completion-manifest-v1` schema, the `json` /
+  `markdown` / `pdf` artifacts, and the bounded per-event hash re-derivation
+  proof. `completionDelivery` names the completion-drain endpoint, the
+  eligible roles, the `skca1` token format, and the 30-day grant retention.
+  `publicCompletionArtifact` names the `Bearer skca1_` / path-token routes,
+  the `json` / `markdown` / `pdf` formats, and the absence of cookies.
+- **Agent integration.** `apiKeyAuthentication` is the machine-readable
+  version of [Authority boundaries](#authority-boundaries) and
+  [Operator API](#operator-api): the `signkit_` scheme, the mandatory
+  `SignKit-Organization-Id` selector, the explicit-per-organization grant
+  model, the `enabledScopes` (`envelopes:read`, `drafts:write`,
+  `envelopes:send`) versus `mintedButUnusableScopes` (`audit:read`) split,
+  the exact `readEndpoints` / `writeEndpoints` path lists, the durable
+  120-requests-per-60-seconds rate window, `lastUsedAt` tracking, and the
+  grant create/list/revoke authorities. `webhooks` names the management
+  routes, the HMAC-SHA256 timestamp signature, the once-revealed secret, and
+  the SSRF defenses. `openapi` points at `/api/v1/openapi.json` (3.1) and
+  `automation` confirms idempotency keys and agent actor provenance.
+- **What it never contains.** No secrets, credentials, token material, object
+  keys, ciphertext, or per-tenant state — only endpoint paths, enum values,
+  and static policy strings. Agents should query it first and treat unknown
+  future fields as informational rather than as authorization to call an
+  endpoint not listed here.
+
 ### Background drains
 
 Each drain claims durable outbox rows with bounded leases and stable ordering, reclaims abandoned work after five minutes, backs off retryable failures, and re-reads the current lease-scoped projection immediately before decrypting or sending. Claim transactions also sweep rows that became ineligible, so a recipient or envelope state change cannot strand encrypted token material.
