@@ -54,12 +54,52 @@ describe('app sidebar shell', () => {
 	});
 
 	it('uses the derived display name for the account row, the dropdown label, and the trigger aria-label', () => {
-		expect(source).toMatch(/<span[^>]*font-semibold[^>]*>\{accountDisplayName\}<\/span>/);
-		expect(source).toMatch(/<p[^>]*font-semibold[^>]*>\{accountDisplayName\}<\/p>/);
 		expect(source).toMatch(/aria-label=\{accountDisplayName\}/);
 		expect(source).not.toMatch(/aria-label=\{name \?\? email/);
 		expect(source).not.toMatch(/\{name\}/);
 		expect(source).not.toMatch(/d6e-auth/i);
+	});
+
+	it('matches the d6e-auth Header account identity typography in both the trigger and the dropdown label, tolerant of Prettier class reordering', () => {
+		// Sibling ../d6e-auth Header.svelte renders the account name/email pair
+		// with `font-medium`/`leading-none`, not `font-semibold`/`leading-tight`.
+		// Prettier is free to reorder Tailwind classes and to break these
+		// elements across lines (a stray `>` on its own line), so this asserts
+		// token membership on the extracted class attribute rather than an
+		// exact class string or exact tag layout.
+		function classTokens(pattern: RegExp): string[] {
+			const match: RegExpMatchArray | null = source.match(pattern);
+			expect(match).not.toBeNull();
+			return (match as RegExpMatchArray)[1].split(/\s+/).filter(Boolean);
+		}
+
+		const triggerNameClasses = classTokens(/<span class="([^"]*)"\s*>\s*\{accountDisplayName\}/);
+		const triggerEmailClasses = classTokens(/<span class="([^"]*)"\s*>\s*\{email\}/);
+		const dropdownNameClasses = classTokens(/<p class="([^"]*)"\s*>\s*\{accountDisplayName\}/);
+		const dropdownEmailClasses = classTokens(/<p class="([^"]*)"\s*>\s*\{email\}/);
+
+		const requiredNameClasses = ['truncate', 'text-sm', 'font-medium', 'leading-none'];
+		const requiredEmailClasses = [
+			'truncate',
+			'text-muted-foreground',
+			'mt-1',
+			'text-xs',
+			'leading-none'
+		];
+
+		for (const classes of [triggerNameClasses, dropdownNameClasses]) {
+			for (const required of requiredNameClasses) {
+				expect(classes).toContain(required);
+			}
+			expect(classes).not.toContain('font-semibold');
+		}
+		for (const classes of [triggerEmailClasses, dropdownEmailClasses]) {
+			for (const required of requiredEmailClasses) {
+				expect(classes).toContain(required);
+			}
+		}
+
+		expect(source).not.toMatch(/leading-tight/);
 	});
 
 	it('gives the footer an account dropdown with only an identity label and a sign-out form', () => {
