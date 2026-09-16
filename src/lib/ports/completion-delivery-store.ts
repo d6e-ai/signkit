@@ -10,7 +10,6 @@ export type RecipientLocale = 'en' | 'ja';
 export type EligibleRecipientRole = 'signer' | 'approver' | 'viewer' | 'cc';
 
 export interface EligibleCompletionDeliveryRecipient {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientEmail: string;
@@ -22,7 +21,6 @@ export interface EligibleCompletionDeliveryRecipient {
 
 export interface EnrollCompletionDeliveryItem {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	tokenHash: string;
@@ -43,7 +41,6 @@ export interface ClaimCompletionDeliveriesCommand {
 
 export interface ClaimedCompletionDelivery {
 	deliveryId: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	status: ClaimedCompletionDeliveryStatus;
@@ -65,13 +62,11 @@ export interface ClaimedCompletionDelivery {
 }
 
 export interface ReadClaimedCompletionDeliveryCommand {
-	organizationId: string;
 	deliveryId: string;
 	claimToken: string;
 }
 
 export interface CompleteCompletionDeliveryCommand {
-	organizationId: string;
 	deliveryId: string;
 	claimToken: string;
 	deliveredAt: string;
@@ -81,7 +76,6 @@ export interface CompleteCompletionDeliveryCommand {
 export type CompleteCompletionDeliveryResult = { outcome: 'completed' } | { outcome: 'stale' };
 
 export interface FailCompletionDeliveryCommand {
-	organizationId: string;
 	deliveryId: string;
 	claimToken: string;
 	errorCode: string;
@@ -93,7 +87,6 @@ export interface FailCompletionDeliveryCommand {
 export type FailCompletionDeliveryResult = { outcome: 'failed' } | { outcome: 'stale' };
 
 export interface CompletionArtifactLocator {
-	organizationId: string;
 	envelopeId: string;
 	jsonObjectKey: string;
 	jsonSha256: string;
@@ -111,7 +104,6 @@ export const MAX_COMPLETION_DELIVERY_RESEAL_SWEEP_BATCH: number = 50;
  */
 export interface StaleSealedCompletionTokenRow {
 	deliveryId: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	sealedToken: string;
@@ -124,7 +116,6 @@ export interface FindStaleSealedCompletionTokensCommand {
 }
 
 export interface ResealCompletionTokenCommand {
-	organizationId: string;
 	deliveryId: string;
 	previousSealingKeyId: string;
 	sealedToken: string;

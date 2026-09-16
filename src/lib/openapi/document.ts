@@ -36,7 +36,7 @@ const ENVELOPE: Record<string, unknown> = {
 	type: 'object',
 	required: [
 		'id',
-		'organizationId',
+		'createdByUserId',
 		'title',
 		'status',
 		'repositoryGeneration',
@@ -46,7 +46,7 @@ const ENVELOPE: Record<string, unknown> = {
 	],
 	properties: {
 		id: UUIDV7,
-		organizationId: { type: 'string' },
+		createdByUserId: { type: 'string' },
 		title: { type: 'string' },
 		status: {
 			type: 'string',
@@ -154,7 +154,13 @@ function op(input: {
 		operationId: input.operationId,
 		tags: [...input.tags],
 		security: input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }],
-		...(input.parameters === undefined ? {} : { parameters: input.parameters }),
+		...(input.parameters === undefined
+			? {}
+			: {
+					parameters: input.parameters.filter(
+						(parameter: unknown): boolean => parameter !== undefined
+					)
+				}),
 		...(input.requestBody === undefined ? {} : { requestBody: input.requestBody }),
 		responses:
 			input.includeProblemResponses === false
@@ -239,14 +245,6 @@ const idempotencyHeader = {
 	schema: { type: 'string', minLength: 1, maxLength: 200, pattern: '^[\\x21-\\x7E]+$' }
 };
 
-const organizationHeader = {
-	name: 'SignKit-Organization-Id',
-	in: 'header',
-	required: false,
-	schema: { type: 'string', minLength: 1, maxLength: 200 },
-	description: 'Required for API-key requests. Ignored for interactive sessions.'
-};
-
 /**
  * OpenAPI 3.1 document for the live `/api/v1` surface. Paths and bodies match
  * the implemented HTTP handlers; this is discovery, not a second contract.
@@ -292,11 +290,10 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/envelopes': {
 				get: op({
-					summary: 'List envelopes in the authorized organization',
+					summary: 'List envelopes',
 					operationId: 'listEnvelopes',
 					tags: ['Envelopes'],
 					parameters: [
-						organizationHeader,
 						{
 							name: 'cursor',
 							in: 'query',
@@ -323,7 +320,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Create a draft envelope',
 					operationId: 'createEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, idempotencyHeader],
+					parameters: [idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -349,7 +346,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Get an envelope',
 					operationId: 'getEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Envelope detail', {
 						type: 'object',
 						required: ['envelope', 'recipients', 'readyAuditEventId', 'fields'],
@@ -367,7 +364,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read the current draft workspace',
 					operationId: 'getEnvelopeDraft',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Draft workspace snapshot', { type: 'object' })
 				})
 			},
@@ -376,7 +373,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Commit draft Markdown edits',
 					operationId: 'commitEnvelopeDraft',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -424,7 +421,6 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'importEnvelopeDocx',
 					tags: ['Envelopes'],
 					parameters: [
-						organizationHeader,
 						envelopeIdParam,
 						idempotencyHeader,
 						{
@@ -462,7 +458,6 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'uploadEnvelopePdf',
 					tags: ['Envelopes'],
 					parameters: [
-						organizationHeader,
 						envelopeIdParam,
 						idempotencyHeader,
 						{
@@ -505,7 +500,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Reorder or remove documents in the envelope set',
 					operationId: 'orderEnvelopeDocuments',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -535,7 +530,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Export the pinned Markdown revision as DOCX',
 					operationId: 'exportEnvelopeDocx',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: {
 						'200': {
 							description: 'DOCX package derived from the pinned Git commit',
@@ -553,7 +548,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Prepare a draft envelope for sending',
 					operationId: 'readyEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -594,7 +589,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Place fields on a ready envelope',
 					operationId: 'placeEnvelopeFields',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -659,7 +654,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Send a ready envelope',
 					operationId: 'sendEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -684,7 +679,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Void an envelope',
 					operationId: 'voidEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -712,7 +707,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read invitation delivery status',
 					operationId: 'getEnvelopeDeliveries',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Delivery status', { type: 'object' })
 				})
 			},
@@ -721,7 +716,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read completion artifact publication status',
 					operationId: 'getEnvelopeCompletionArtifact',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Completion artifact status', { type: 'object' })
 				})
 			},
@@ -730,7 +725,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download published completion evidence',
 					operationId: 'getEnvelopeEvidence',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam, evidenceFormatQuery],
+					parameters: [envelopeIdParam, evidenceFormatQuery],
 					responses: {
 						'200': {
 							description:
@@ -748,7 +743,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download published completion evidence',
 					operationId: 'getEnvelopeCompletionArtifactEvidence',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam, evidenceFormatQuery],
+					parameters: [envelopeIdParam, evidenceFormatQuery],
 					responses: {
 						'200': {
 							description: 'Alias of GET /api/v1/envelopes/{envelopeId}/evidence.',
@@ -766,7 +761,7 @@ export function openApiDocument(): Record<string, unknown> {
 						'Render one document from the pinned revision as the PDF a recipient will be shown',
 					operationId: 'getEnvelopeDocumentPdf',
 					tags: ['Envelopes', 'Documents'],
-					parameters: [organizationHeader, envelopeIdParam, documentIdQueryParam],
+					parameters: [envelopeIdParam, documentIdQueryParam],
 					responses: {
 						'200': {
 							description: 'Deterministic application/pdf rendering of the pinned revision.',
@@ -782,7 +777,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read page geometry for one document and the ordered document-set summary',
 					operationId: 'getEnvelopeDocumentPdfPages',
 					tags: ['Envelopes', 'Documents'],
-					parameters: [organizationHeader, envelopeIdParam, documentIdQueryParam],
+					parameters: [envelopeIdParam, documentIdQueryParam],
 					responses: {
 						'200': {
 							description: 'Page geometry for the pinned revision.',
@@ -843,7 +838,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopePdf',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: {
 						'200': {
 							description:
@@ -860,7 +855,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopeCompletionArtifactPdf',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: {
 						'200': {
 							description: 'Alias of GET /api/v1/envelopes/{envelopeId}/pdf.',
@@ -918,7 +913,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/webhooks': {
 				get: op({
-					summary: 'List organization webhook endpoints',
+					summary: 'List instance webhook endpoints',
 					operationId: 'listWebhooks',
 					tags: ['Webhooks'],
 					security: [{ SessionCookie: [] }],
@@ -1120,43 +1115,6 @@ export function openApiDocument(): Record<string, unknown> {
 					],
 					requestBody: JSON_BODY,
 					responses: jsonResponse('200', 'Revoked API key', { type: 'object' })
-				})
-			},
-			'/api/v1/api-keys/{apiKeyId}/organization-grants': {
-				get: op({
-					summary: 'List organization grants for an API key',
-					operationId: 'listApiKeyOrganizationGrants',
-					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
-					parameters: [{ name: 'apiKeyId', in: 'path', required: true, schema: UUIDV7 }],
-					responses: jsonResponse('200', 'Grant page', { type: 'object' })
-				}),
-				post: op({
-					summary: 'Grant an API key access to an organization',
-					operationId: 'createApiKeyOrganizationGrant',
-					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
-					parameters: [
-						{ name: 'apiKeyId', in: 'path', required: true, schema: UUIDV7 },
-						idempotencyHeader
-					],
-					requestBody: JSON_BODY,
-					responses: jsonResponse('201', 'Created grant', { type: 'object' })
-				})
-			},
-			'/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke': {
-				post: op({
-					summary: 'Revoke an API key organization grant',
-					operationId: 'revokeApiKeyOrganizationGrant',
-					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
-					parameters: [
-						{ name: 'apiKeyId', in: 'path', required: true, schema: UUIDV7 },
-						{ name: 'grantId', in: 'path', required: true, schema: UUIDV7 },
-						idempotencyHeader
-					],
-					requestBody: JSON_BODY,
-					responses: jsonResponse('200', 'Revoked grant', { type: 'object' })
 				})
 			},
 			'/api/v1/instance/bootstrap': {
@@ -1400,7 +1358,7 @@ export function openApiDocument(): Record<string, unknown> {
 					scheme: 'bearer',
 					bearerFormat: 'signkit',
 					description:
-						'Organization-scoped API key. Requires SignKit-Organization-Id. Live scopes: envelopes:read, drafts:write, envelopes:send.'
+						'Instance API key. Live scopes: envelopes:read, drafts:write, envelopes:send.'
 				},
 				SessionCookie: {
 					type: 'apiKey',

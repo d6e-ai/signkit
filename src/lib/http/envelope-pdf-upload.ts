@@ -16,10 +16,7 @@ import {
 	UploadedPdfUploadService
 } from '$lib/application/documents/uploaded-pdf-upload-service';
 import type { UploadedPdfUploadDependencies } from '$lib/application/documents/uploaded-pdf-runtime';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { readBoundedBytes } from './docx-import';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
@@ -86,7 +83,7 @@ function notFoundProblem(instance: string): Response {
 		type: 'urn:signkit:problem:envelope-not-found',
 		title: 'Envelope not found',
 		status: 404,
-		detail: 'No envelope was found in the authorized organization.',
+		detail: 'No envelope was found.',
 		instance
 	});
 }
@@ -211,7 +208,7 @@ export function createPdfUploadHandler(
 	resolveDependencies: PdfUploadDependenciesResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'drafts:write'
@@ -268,7 +265,6 @@ export function createPdfUploadHandler(
 		);
 		try {
 			const result: CommitDraftResult = await uploader.upload({
-				organizationId: authorized.organizationId,
 				envelopeId: envelopeIdResult.data,
 				expectedGeneration: parsed.expectedGeneration,
 				actor: draftActor(authorized),

@@ -11,7 +11,6 @@ import type {
 import { D1EnvelopeStore } from './d1-envelope-store';
 
 interface ReadyCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	actor_type: string;
 	actor_id: string;
@@ -27,7 +26,6 @@ interface ReadyCommandRow {
 	audit_event_hash: string;
 	audit_payload_json: string;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -57,10 +55,7 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 		const replay: ReadyPreparation | null = await this.#resolveCommand(key);
 		if (replay !== null) return replay;
 
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'draft') return { outcome: 'immutable' };
 		if (envelope.repositoryGeneration !== expectedGeneration) {
@@ -69,10 +64,7 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 		if (envelope.repositoryHead === null || envelope.repositoryGeneration < 1) {
 			return { outcome: 'empty_draft' };
 		}
-		const auditHead: ReadyAuditHead | null = await this.#readAuditHead(
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: ReadyAuditHead | null = await this.#readAuditHead(key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return { outcome: 'ready', envelope, auditHead };
 	}
@@ -85,14 +77,13 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 			this.#database
 				.prepare(
 					`INSERT INTO envelope_ready_command (
-						organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+						envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 						expected_generation, commit_sha, recipients_json, recipient_count,
 						updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 						audit_event_hash, audit_payload_json
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
-					command.organizationId,
 					command.envelopeId,
 					command.actorType,
 					command.actorId,
@@ -110,20 +101,19 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 					command.auditPayloadJson
 				),
 			this.#database
-				.prepare('DELETE FROM recipient WHERE organization_id = ? AND envelope_id = ?')
-				.bind(command.organizationId, command.envelopeId),
+				.prepare('DELETE FROM recipient WHERE envelope_id = ?')
+				.bind(command.envelopeId),
 			...command.recipients.map((recipient: Recipient): D1PreparedStatement =>
 				this.#database
 					.prepare(
 						`INSERT INTO recipient (
-							id, organization_id, envelope_id, email, name, role, locale,
+							id, envelope_id, email, name, role, locale,
 							routing_order, status, capability_hash, capability_expires_at,
 							capability_revoked_at, created_at, updated_at
 						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`
 					)
 					.bind(
 						recipient.id,
-						recipient.organizationId,
 						recipient.envelopeId,
 						recipient.email,
 						recipient.name,
@@ -154,7 +144,6 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 			.prepare(
 				`SELECT command.*,
 					evidence.id AS evidence_event_id,
-					evidence.organization_id AS evidence_organization_id,
 					evidence.envelope_id AS evidence_envelope_id,
 					evidence.sequence AS evidence_sequence,
 					evidence.event_type AS evidence_event_type,
@@ -166,13 +155,12 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 					evidence.occurred_at AS evidence_occurred_at
 				 FROM envelope_ready_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = ? AND command.actor_id = ?
+					ON evidence.id = command.audit_event_id
+				 WHERE command.actor_type = ? AND command.actor_id = ?
 					AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(key.organizationId, key.actorType, key.actorId, key.idempotencyKey)
+			.bind(key.actorType, key.actorId, key.idempotencyKey)
 			.first<ReadyCommandRow>();
 		if (row === null) return null;
 		if (row.envelope_id !== key.envelopeId || row.request_hash !== key.requestFingerprint) {
@@ -198,14 +186,14 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 		};
 	}
 
-	async #readAuditHead(organizationId: string, envelopeId: string): Promise<ReadyAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<ReadyAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
@@ -236,7 +224,6 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 function validAuditEvidence(row: ReadyCommandRow): boolean {
 	return (
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'envelope.ready' &&
@@ -256,9 +243,7 @@ async function validStoredReceipt(
 	if (
 		recipients.some(
 			(recipient: Recipient): boolean =>
-				recipient.organizationId !== row.organization_id ||
-				recipient.envelopeId !== row.envelope_id ||
-				recipient.status !== 'pending'
+				recipient.envelopeId !== row.envelope_id || recipient.status !== 'pending'
 		)
 	) {
 		return false;
@@ -309,7 +294,6 @@ function isRecipient(value: unknown): value is Recipient {
 	const candidate = value as Record<string, unknown>;
 	return (
 		typeof candidate.id === 'string' &&
-		typeof candidate.organizationId === 'string' &&
 		typeof candidate.envelopeId === 'string' &&
 		typeof candidate.email === 'string' &&
 		typeof candidate.name === 'string' &&

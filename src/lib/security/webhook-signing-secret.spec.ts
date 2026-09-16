@@ -5,7 +5,6 @@ import { AesGcmWebhookSigningSecretSealer } from './webhook-signing-secret';
 const TEST_KEY: string = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const PREVIOUS_KEY: string = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';
 const CONTEXT = {
-	organizationId: 'org-1',
 	endpointId: '01900000-0000-7000-8000-000000000401'
 };
 

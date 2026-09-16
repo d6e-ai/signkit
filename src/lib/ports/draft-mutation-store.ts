@@ -2,7 +2,6 @@ import type { Envelope } from '$lib/domain/envelope';
 import type { EnvelopeStore } from './envelope-store';
 
 export interface DraftRevisionKey {
-	organizationId: string;
 	envelopeId: string;
 	actorType: 'user' | 'agent' | 'system';
 	actorId: string;

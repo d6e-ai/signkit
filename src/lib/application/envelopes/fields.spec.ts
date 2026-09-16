@@ -27,7 +27,6 @@ import {
 	type DocumentSetManifest
 } from '$lib/domain/document-set';
 
-const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 const signerId: string = '01900000-0000-7000-8000-000000000003';
 const viewerId: string = '01900000-0000-7000-8000-000000000004';
@@ -39,8 +38,7 @@ const commitSha: string = '0123456789abcdef0123456789abcdef01234567';
 
 const actor = {
 	id: 'user-1',
-	organizationId,
-	organizationName: 'Workspace'
+	createdByUserId: 'user-1'
 } as const;
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -50,9 +48,8 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 class FixedEnvelopeStore implements DraftMutationStore {
 	constructor(private readonly envelope: Envelope) {}
 
-	async findForOrganization(organizationId: string, envelopeId: string): Promise<Envelope | null> {
-		if (this.envelope.organizationId !== organizationId || this.envelope.id !== envelopeId)
-			return null;
+	async findEnvelope(id: string): Promise<Envelope | null> {
+		if (this.envelope.id !== id) return null;
 		return { ...this.envelope };
 	}
 
@@ -146,12 +143,12 @@ async function readyEnvelope(overrides: Partial<Envelope> = {}): Promise<Envelop
 	const archiveSha256: string = await sha256Hex(new TextEncoder().encode('archive'));
 	return {
 		id: envelopeId,
-		organizationId,
+		createdByUserId: 'user-1',
 		title: 'Agreement',
 		status: 'ready',
 		repositoryGeneration: 2,
 		repositoryHead: commitSha,
-		repositoryArchiveKey: draftArchiveKey(organizationId, envelopeId, archiveSha256),
+		repositoryArchiveKey: draftArchiveKey(envelopeId, archiveSha256),
 		repositoryArchiveSha256: archiveSha256,
 		sentCommitSha: null,
 		fieldGeneration: 0,
@@ -164,7 +161,6 @@ async function readyEnvelope(overrides: Partial<Envelope> = {}): Promise<Envelop
 const recipients: readonly Recipient[] = [
 	{
 		id: signerId,
-		organizationId,
 		envelopeId,
 		email: 'signer@example.com',
 		name: 'Signer',
@@ -175,7 +171,6 @@ const recipients: readonly Recipient[] = [
 	},
 	{
 		id: viewerId,
-		organizationId,
 		envelopeId,
 		email: 'viewer@example.com',
 		name: 'Viewer',

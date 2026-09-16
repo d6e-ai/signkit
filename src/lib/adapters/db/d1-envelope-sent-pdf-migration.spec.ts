@@ -11,50 +11,49 @@ import {
 	sqliteD1Database
 } from './sqlite-d1-test-support';
 
-const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
 const RECIPIENT_ID: string = '01930000-0000-7000-8000-000000000001';
 const READY_AUDIT_ID: string = '01960000-0000-7000-8000-0000000000a0';
 const SENT_AUDIT_ID: string = '01960000-0000-7000-8000-0000000000a1';
 const COMMIT_SHA: string = 'commit-1';
 const SENT_PDF_SHA256: string = 'f'.repeat(64);
-const SENT_PDF_KEY: string = `sent-documents/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${SENT_PDF_SHA256}.pdf`;
+const SENT_PDF_KEY: string = `sent-documents/v1/envelopes/${ENVELOPE_ID}/sha256/${SENT_PDF_SHA256}.pdf`;
 const DOCUMENT_ID: string = '01900000-0000-7000-8000-000000000010';
 const DOCUMENT_PAGES: string =
 	'[{"path":"documents/agreement.md","title":"agreement","firstPage":1,"lastPage":2}]';
 
 function seedReady(sqlite: DatabaseSync): void {
 	sqlite.exec(`
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('${ORGANIZATION_ID}','${ORGANIZATION_ID}','Workspace','2026-09-11T00:00:00.000Z');
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1','owner','active','2026-09-11T00:00:00.000Z','2026-09-11T00:00:00.000Z');
 		INSERT INTO envelope (
-			id, organization_id, title, status, repository_generation, repository_head,
-			field_generation, created_at, updated_at
+			id, created_by_user_id, title, status, repository_generation, repository_head,
+			created_at, updated_at
 		) VALUES (
-			'${ENVELOPE_ID}','${ORGANIZATION_ID}','Agreement','draft',1,'${COMMIT_SHA}',0,
+			'${ENVELOPE_ID}','user-1','Agreement','draft',1,'${COMMIT_SHA}',
 			'2026-09-11T00:00:00.000Z','2026-09-11T00:00:30.000Z'
 		);
 		INSERT INTO audit_event (
-			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+			id, envelope_id, sequence, event_type, actor_type, actor_id,
 			payload_json, previous_hash, event_hash, occurred_at
 		) VALUES
-			('01960000-0000-7000-8000-00000000009e','${ORGANIZATION_ID}','${ENVELOPE_ID}',1,'envelope.created','user','user-1','{}',NULL,'hash-1','2026-09-11T00:00:00.000Z'),
-			('01960000-0000-7000-8000-00000000009f','${ORGANIZATION_ID}','${ENVELOPE_ID}',2,'draft.revision_created','user','user-1','{}','hash-1','hash-2','2026-09-11T00:00:30.000Z');
+			('01960000-0000-7000-8000-00000000009e','${ENVELOPE_ID}',1,'envelope.created','user','user-1','{}',NULL,'hash-1','2026-09-11T00:00:00.000Z'),
+			('01960000-0000-7000-8000-00000000009f','${ENVELOPE_ID}',2,'draft.revision_created','user','user-1','{}','hash-1','hash-2','2026-09-11T00:00:30.000Z');
 		INSERT INTO envelope_ready_command (
-			organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+			envelope_id,actor_type,actor_id,idempotency_key,request_hash,
 			expected_generation,commit_sha,recipients_json,recipient_count,updated_at,
 			audit_event_id,audit_sequence,previous_audit_hash,audit_event_hash,audit_payload_json
 		) VALUES (
-			'${ORGANIZATION_ID}','${ENVELOPE_ID}','user','user-1','ready-1','ready-request-hash',1,'${COMMIT_SHA}','[]',1,
+			'${ENVELOPE_ID}','user','user-1','ready-1','ready-request-hash',1,'${COMMIT_SHA}','[]',1,
 			'2026-09-11T00:01:00.000Z','${READY_AUDIT_ID}',3,'hash-2','hash-3','{}'
 		);
 	`);
 	sqlite.exec(`
 		INSERT INTO recipient (
-			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			id, envelope_id, email, name, role, locale, routing_order, status,
 			created_at, updated_at
 		) VALUES (
-			'${RECIPIENT_ID}','${ORGANIZATION_ID}','${ENVELOPE_ID}','a@example.com','A','signer','en',1,'pending',
+			'${RECIPIENT_ID}','${ENVELOPE_ID}','a@example.com','A','signer','en',1,'pending',
 			'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
 		);
 	`);
@@ -69,13 +68,13 @@ function insertCommand(
 	const auditSequence: number = overrides.auditSequence ?? 4;
 	const idempotencyKey: string = overrides.idempotencyKey ?? 'send-1';
 	sqlite.exec(`INSERT INTO envelope_send_command (
-		organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+		envelope_id,actor_type,actor_id,idempotency_key,request_hash,
 		expected_generation,ready_audit_event_id,commit_sha,initial_routing_order,
 		delivery_count,queued_delivery_count,delivery_manifest_hash,delivery_manifest_json,
 		initial_capability_expires_at,updated_at,audit_event_id,audit_sequence,
 		previous_audit_hash,audit_event_hash,audit_payload_json,
 		document_set_hash, document_count, sent_documents_json
-	) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
+	) VALUES ('${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
 		1,1,'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
 		'${SENT_AUDIT_ID}',${auditSequence},'hash-3','hash-5','{}',
 		${documentCount === null ? 'NULL' : `'${SENT_PDF_SHA256}'`},
@@ -104,7 +103,7 @@ function insertLegacyCommand(sqlite: DatabaseSync, overrides: LegacyCommandOverr
 	const sqlValue = (value: string | number | null): string =>
 		value === null ? 'NULL' : typeof value === 'number' ? String(value) : `'${value}'`;
 	sqlite.exec(`INSERT INTO envelope_send_command (
-		organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+		envelope_id,actor_type,actor_id,idempotency_key,request_hash,
 		expected_generation,ready_audit_event_id,commit_sha,initial_routing_order,
 		delivery_count,queued_delivery_count,delivery_manifest_hash,delivery_manifest_json,
 		initial_capability_expires_at,updated_at,audit_event_id,audit_sequence,
@@ -112,7 +111,7 @@ function insertLegacyCommand(sqlite: DatabaseSync, overrides: LegacyCommandOverr
 		sent_pdf_object_key, sent_pdf_sha256, sent_pdf_bytes, sent_pdf_page_count,
 		sent_pdf_page_width, sent_pdf_page_height, sent_pdf_document_pages_json,
 		document_set_hash, document_count, sent_documents_json
-	) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
+	) VALUES ('${ENVELOPE_ID}','user','user-1','${idempotencyKey}','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
 		1,1,'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
 		'${SENT_AUDIT_ID}',${auditSequence},'hash-3','hash-5','{}',
 		${sqlValue(overrides.sentPdfObjectKey === undefined ? SENT_PDF_KEY : overrides.sentPdfObjectKey)},
@@ -131,28 +130,28 @@ function reserveDelivery(sqlite: DatabaseSync): void {
 	sqlite.exec(`
 		UPDATE recipient SET capability_hash='cap-hash', capability_expires_at='2026-09-25T00:02:00.000Z',
 			updated_at='2026-09-11T00:02:00.000Z'
-		WHERE organization_id='${ORGANIZATION_ID}' AND id='${RECIPIENT_ID}';
+		WHERE id='${RECIPIENT_ID}';
 		INSERT INTO delivery_outbox (
-			id,organization_id,envelope_id,recipient_id,kind,status,capability_hash,reserved_capability_expires_at,
+			id,envelope_id,recipient_id,kind,status,capability_hash,reserved_capability_expires_at,
 			sealed_capability,sealing_key_id,sealed_capability_sha256,available_at,attempts,created_at,updated_at
 		) VALUES (
-			'01940000-0000-7000-8000-000000000001','${ORGANIZATION_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}','recipient_invitation','pending','cap-hash',
+			'01940000-0000-7000-8000-000000000001','${ENVELOPE_ID}','${RECIPIENT_ID}','recipient_invitation','pending','cap-hash',
 			'2026-09-25T00:02:00.000Z','sealed','key-1','sealed-hash','2026-09-11T00:02:00.000Z',0,'2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'
 		);
 	`);
 }
 
 function publish(sqlite: DatabaseSync, idempotencyKey: string = 'send-1'): void {
-	sqlite.exec(`INSERT INTO envelope_send_publish (organization_id, actor_type, actor_id, idempotency_key)
-		VALUES ('${ORGANIZATION_ID}','user','user-1','${idempotencyKey}')`);
+	sqlite.exec(`INSERT INTO envelope_send_publish (actor_type, actor_id, idempotency_key)
+		VALUES ('user','user-1','${idempotencyKey}')`);
 }
 
 function insertSentDocument(sqlite: DatabaseSync): void {
 	sqlite.exec(`INSERT INTO envelope_sent_document (
-		organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+		envelope_id, commit_sha, document_id, position, kind, title,
 		object_key, sha256, byte_size, page_count, page_width, page_height, created_at
 	) VALUES (
-		'${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${DOCUMENT_ID}',0,'markdown','agreement',
+		'${ENVELOPE_ID}','${COMMIT_SHA}','${DOCUMENT_ID}',0,'markdown','agreement',
 		'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,1,595.28,841.89,'2026-09-11T00:02:00.000Z'
 	)`);
 }
@@ -168,16 +167,14 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 					updated_at='2026-09-11T00:02:00.000Z'
 				WHERE id='${ENVELOPE_ID}';
 				INSERT INTO envelope_sent_pdf (
-					organization_id,envelope_id,commit_sha,object_key,sha256,byte_size,
+					envelope_id,commit_sha,object_key,sha256,byte_size,
 					page_count,page_width,page_height,document_pages_json,created_at
-				) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_KEY}','${SENT_PDF_SHA256}',
+				) VALUES ('${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_KEY}','${SENT_PDF_SHA256}',
 					4096,2,595.28,841.89,'${DOCUMENT_PAGES}','2026-09-11T00:02:00.000Z');
 			`);
 
 			const store: D1EnvelopeSentPdfStore = new D1EnvelopeSentPdfStore(sqliteD1Database(sqlite));
-			await expect(
-				store.findSentPdf(ORGANIZATION_ID, ENVELOPE_ID, COMMIT_SHA)
-			).resolves.toMatchObject({
+			await expect(store.findSentPdf(ENVELOPE_ID, COMMIT_SHA)).resolves.toMatchObject({
 				objectKey: SENT_PDF_KEY,
 				sha256: SENT_PDF_SHA256,
 				byteSize: 4096,
@@ -186,9 +183,7 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 					{ path: 'documents/agreement.md', title: 'agreement', firstPage: 1, lastPage: 2 }
 				]
 			});
-			await expect(
-				store.findSentPdf(ORGANIZATION_ID, ENVELOPE_ID, 'other-commit')
-			).resolves.toBeNull();
+			await expect(store.findSentPdf(ENVELOPE_ID, 'other-commit')).resolves.toBeNull();
 		} finally {
 			sqlite.close();
 		}
@@ -201,9 +196,9 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 			seedReady(sqlite);
 			expect((): void => {
 				sqlite.exec(`INSERT INTO envelope_sent_pdf (
-					organization_id,envelope_id,commit_sha,object_key,sha256,byte_size,
+					envelope_id,commit_sha,object_key,sha256,byte_size,
 					page_count,page_width,page_height,document_pages_json,created_at
-				) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_KEY}','not-a-digest',
+				) VALUES ('${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_KEY}','not-a-digest',
 					4096,2,595.28,841.89,'${DOCUMENT_PAGES}','2026-09-11T00:02:00.000Z')`);
 			}).toThrow(/envelope_sent_pdf_sha256_hex/);
 		} finally {
@@ -224,9 +219,9 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 			] as const) {
 				expect((): void => {
 					sqlite.exec(`INSERT INTO envelope_sent_pdf (
-						organization_id,envelope_id,commit_sha,object_key,sha256,byte_size,
+						envelope_id,commit_sha,object_key,sha256,byte_size,
 						page_count,page_width,page_height,document_pages_json,created_at
-					) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_KEY}','${SENT_PDF_SHA256}',
+					) VALUES ('${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_KEY}','${SENT_PDF_SHA256}',
 						${byteSize},${pageCount},595.28,841.89,'${DOCUMENT_PAGES}','2026-09-11T00:02:00.000Z')`);
 				}).toThrow(/CHECK constraint failed/);
 			}
@@ -288,7 +283,7 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 			const store: D1EnvelopeSentDocumentStore = new D1EnvelopeSentDocumentStore(
 				sqliteD1Database(sqlite)
 			);
-			await expect(store.findSet(ORGANIZATION_ID, ENVELOPE_ID, COMMIT_SHA)).resolves.toMatchObject({
+			await expect(store.findSet(ENVELOPE_ID, COMMIT_SHA)).resolves.toMatchObject({
 				documentSetHash: SENT_PDF_SHA256,
 				documentCount: 1,
 				documents: [{ documentId: DOCUMENT_ID, position: 0, kind: 'markdown' }]
@@ -307,10 +302,10 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 				documentId: string,
 				documentPath: string
 			): string => `INSERT INTO envelope_field (
-				id, organization_id, envelope_id, recipient_id, document_id, document_path,
+				id, envelope_id, recipient_id, document_id, document_path,
 				field_type, label, required, position, created_at, updated_at
 			) VALUES (
-				'01950000-0000-7000-8000-000000000001','${ORGANIZATION_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}',
+				'01950000-0000-7000-8000-000000000001','${ENVELOPE_ID}','${RECIPIENT_ID}',
 				${documentId}, ${documentPath}, 'signature', 'Signature', 1, 1,
 				'2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'
 			)`;
@@ -333,18 +328,18 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 			seedReady(sqlite);
 			expect((): void => {
 				sqlite.exec(`INSERT INTO envelope_sent_document (
-					organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+					envelope_id, commit_sha, document_id, position, kind, title,
 					object_key, sha256, byte_size, page_count, page_width, page_height, created_at
 				) VALUES (
-					'${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${DOCUMENT_ID}',20,'markdown','agreement',
+					'${ENVELOPE_ID}','${COMMIT_SHA}','${DOCUMENT_ID}',20,'markdown','agreement',
 					'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,1,595.28,841.89,'2026-09-11T00:02:00.000Z'
 				)`);
 			}).toThrow(/CHECK constraint failed/);
 			expect((): void => {
 				sqlite.exec(`INSERT INTO envelope_sent_document_set (
-					organization_id, envelope_id, commit_sha, document_set_hash, document_count, created_at
+					envelope_id, commit_sha, document_set_hash, document_count, created_at
 				) VALUES (
-					'${ORGANIZATION_ID}','${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_SHA256}',0,'2026-09-11T00:02:00.000Z'
+					'${ENVELOPE_ID}','${COMMIT_SHA}','${SENT_PDF_SHA256}',0,'2026-09-11T00:02:00.000Z'
 				)`);
 			}).toThrow(/CHECK constraint failed/);
 		} finally {
@@ -358,14 +353,14 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 			applyD1MigrationsThrough(sqlite, 'migrations/d1/0043_envelope_sent_pdf.sql');
 			seedReady(sqlite);
 			sqlite.exec(`INSERT INTO envelope_send_command (
-				organization_id,envelope_id,actor_type,actor_id,idempotency_key,request_hash,
+				envelope_id,actor_type,actor_id,idempotency_key,request_hash,
 				expected_generation,ready_audit_event_id,commit_sha,initial_routing_order,
 				delivery_count,queued_delivery_count,delivery_manifest_hash,delivery_manifest_json,
 				initial_capability_expires_at,updated_at,audit_event_id,audit_sequence,
 				previous_audit_hash,audit_event_hash,audit_payload_json,
 				sent_pdf_object_key, sent_pdf_sha256, sent_pdf_bytes, sent_pdf_page_count,
 				sent_pdf_page_width, sent_pdf_page_height, sent_pdf_document_pages_json
-			) VALUES ('${ORGANIZATION_ID}','${ENVELOPE_ID}','user','user-1','legacy-send','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
+			) VALUES ('${ENVELOPE_ID}','user','user-1','legacy-send','request-hash',1,'${READY_AUDIT_ID}','${COMMIT_SHA}',1,
 				1,1,'manifest-hash','[]','2026-09-25T00:02:00.000Z','2026-09-11T00:02:00.000Z',
 				'${SENT_AUDIT_ID}',4,'hash-3','hash-5','{}',
 				'${SENT_PDF_KEY}','${SENT_PDF_SHA256}',4096,2,595.28,841.89,'${DOCUMENT_PAGES}')`);
@@ -402,16 +397,16 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 			seedReady(sqlite);
 			const FIELD_ID: string = '01950000-0000-7000-8000-000000000099';
 			sqlite.exec(`INSERT INTO envelope_field (
-				id, organization_id, envelope_id, recipient_id, document_path,
+				id, envelope_id, recipient_id, document_path,
 				field_type, label, required, position, created_at, updated_at
 			) VALUES (
-				'${FIELD_ID}','${ORGANIZATION_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}','documents/agreement.md',
+				'${FIELD_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}','documents/agreement.md',
 				'signature','Signature',1,1,'2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'
 			)`);
 			sqlite.exec(`INSERT INTO field_value (
-				organization_id, field_id, envelope_id, recipient_id, field_type, value_json, value_sha256, created_at
+				field_id, envelope_id, recipient_id, field_type, value_json, value_sha256, created_at
 			) VALUES (
-				'${ORGANIZATION_ID}','${FIELD_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}','signature','{"signed":true}',
+				'${FIELD_ID}','${ENVELOPE_ID}','${RECIPIENT_ID}','signature','{"signed":true}',
 				'${'a'.repeat(64)}','2026-09-11T00:02:05.000Z'
 			)`);
 
@@ -462,7 +457,7 @@ describe('D1 envelope sent document set (0045) and frozen envelope_sent_pdf', ()
 						`SELECT object_key, sha256, byte_size, page_count, page_width, page_height,
 							document_pages_json, created_at
 						FROM envelope_sent_pdf
-						WHERE organization_id='${ORGANIZATION_ID}' AND envelope_id='${ENVELOPE_ID}' AND commit_sha='${COMMIT_SHA}'`
+						WHERE envelope_id='${ENVELOPE_ID}' AND commit_sha='${COMMIT_SHA}'`
 					)
 					.get()
 			).toEqual({

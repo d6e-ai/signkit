@@ -1,14 +1,11 @@
--- Audit hash v2: existing rows stay v1 so their historical preimages still
--- verify. New writers and command triggers stamp hash_version = 2, whose
--- preimage includes actor_type and actor_id for every event.
+-- Audit hash v3: the single hash version. Its preimage is instance-scoped
+-- (no tenant field) and includes hashVersion, actorType, and actorId for
+-- every event. Old databases must be reset; there is no upgrade path.
 ALTER TABLE audit_event
-  ADD COLUMN hash_version integer NOT NULL DEFAULT 1;
+  ADD COLUMN hash_version integer NOT NULL DEFAULT 3;
 
 ALTER TABLE audit_event
-  ADD CONSTRAINT audit_event_hash_version_known CHECK (hash_version IN (1, 2));
-
-ALTER TABLE audit_event
-  ALTER COLUMN hash_version SET DEFAULT 2;
+  ADD CONSTRAINT audit_event_hash_version_known CHECK (hash_version = 3);
 
 -- Instance invitation immutability and command-evidence guards, matching the
 -- D1 rollback-on-failed-predicate triggers in migrations/d1/0020_instance_invitations.sql.

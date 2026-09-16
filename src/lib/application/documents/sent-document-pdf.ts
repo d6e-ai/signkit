@@ -273,11 +273,7 @@ async function renderUploadedLeaf(
 	revision: ImmutableDraftRevision,
 	leaf: PdfDocumentLeaf
 ): Promise<RenderedSentDocument> {
-	const uploadedKey: string = uploadedPdfObjectKey(
-		revision.organizationId,
-		revision.envelopeId,
-		leaf.sha256
-	);
+	const uploadedKey: string = uploadedPdfObjectKey(revision.envelopeId, leaf.sha256);
 	const stream: ReadableStream<Uint8Array> | null = await objects.get(uploadedKey);
 	if (stream === null) {
 		throw new SentDocumentPdfError('Uploaded agreement PDF is missing');
@@ -302,7 +298,7 @@ async function renderUploadedLeaf(
 		position: leaf.position,
 		kind: 'pdf',
 		title: leaf.title,
-		objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
+		objectKey: sentPdfObjectKey(revision.envelopeId, digest),
 		sha256: digest,
 		byteSize: bytes.byteLength,
 		pageCount: leaf.pageCount,
@@ -335,7 +331,7 @@ async function renderMarkdownLeaf(
 		position: leaf.position,
 		kind: 'markdown',
 		title: leaf.title,
-		objectKey: sentPdfObjectKey(revision.organizationId, revision.envelopeId, digest),
+		objectKey: sentPdfObjectKey(revision.envelopeId, digest),
 		sha256: digest,
 		byteSize: bytes.byteLength,
 		pageCount: result.pageCount,
@@ -391,19 +387,14 @@ export function agreementDocumentTitle(path: string): string {
 
 const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 const SENT_PDF_KEY_PATTERN: RegExp =
-	/^sent-documents\/v1\/organizations\/([^/]+)\/envelopes\/([^/]+)\/sha256\/([a-f0-9]{64})\.pdf$/;
+	/^sent-documents\/v1\/envelopes\/([^/]+)\/sha256\/([a-f0-9]{64})\.pdf$/;
 
-export function sentPdfObjectKey(
-	organizationId: string,
-	envelopeId: string,
-	sha256: string
-): string {
+export function sentPdfObjectKey(envelopeId: string, sha256: string): string {
 	if (!SHA256_PATTERN.test(sha256)) throw new SentDocumentPdfError('Sent PDF digest is invalid');
-	return `sent-documents/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.pdf`;
+	return `sent-documents/v1/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.pdf`;
 }
 
 export interface ParsedSentPdfKey {
-	organizationId: string;
 	envelopeId: string;
 	sha256: string;
 }
@@ -413,11 +404,10 @@ export function parseSentPdfObjectKey(key: string): ParsedSentPdfKey | null {
 	if (match === null) return null;
 	try {
 		const parsed: ParsedSentPdfKey = {
-			organizationId: decodeURIComponent(match[1]),
-			envelopeId: decodeURIComponent(match[2]),
-			sha256: match[3]
+			envelopeId: decodeURIComponent(match[1]),
+			sha256: match[2]
 		};
-		if (sentPdfObjectKey(parsed.organizationId, parsed.envelopeId, parsed.sha256) !== key) {
+		if (sentPdfObjectKey(parsed.envelopeId, parsed.sha256) !== key) {
 			return null;
 		}
 		return parsed;

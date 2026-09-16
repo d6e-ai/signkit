@@ -10,7 +10,6 @@ import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import type { Envelope } from '$lib/domain/envelope';
 import { exportEnvelopeDocx, exportPinnedDocx } from './docx-export-service';
 
-const organizationId = 'org-1';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
 const commitSha = '0123456789abcdef0123456789abcdef01234567';
 
@@ -38,14 +37,13 @@ describe('exportPinnedDocx', () => {
 	it('renders the pinned revision’s documents into a DOCX package', async () => {
 		const archive = new TextEncoder().encode('archive-bytes');
 		const archiveSha256 = sha256Hex(archive);
-		const archiveKey = draftArchiveKey(organizationId, envelopeId, archiveSha256);
+		const archiveKey = draftArchiveKey(envelopeId, archiveSha256);
 		const objects = new InMemoryObjectStore();
 		objects.seed(archiveKey, archive);
 		const repository = new FixedDraftRepository([
 			{ path: 'documents/agreement.md', content: '# Agreement\n\nPinned content.\n' }
 		]);
 		const revision: ImmutableDraftRevision = {
-			organizationId,
 			envelopeId,
 			commitSha,
 			archiveKey,
@@ -67,13 +65,12 @@ describe('exportPinnedDocx', () => {
 describe('exportEnvelopeDocx', () => {
 	const envelope: Envelope = {
 		id: envelopeId,
-		organizationId,
+		createdByUserId: 'user-1',
 		title: 'Agreement',
 		status: 'ready',
 		repositoryGeneration: 1,
 		repositoryHead: commitSha,
 		repositoryArchiveKey: draftArchiveKey(
-			organizationId,
 			envelopeId,
 			sha256Hex(new TextEncoder().encode('archive-bytes'))
 		),
@@ -93,9 +90,8 @@ describe('exportEnvelopeDocx', () => {
 		]);
 
 		const result = await exportEnvelopeDocx(
-			organizationId,
 			envelopeId,
-			{ findForOrganization: async () => envelope },
+			{ findEnvelope: async () => envelope },
 			objects,
 			repository
 		);
@@ -109,10 +105,9 @@ describe('exportEnvelopeDocx', () => {
 
 	it('reports empty_draft when no Git pin exists', async () => {
 		const result = await exportEnvelopeDocx(
-			organizationId,
 			envelopeId,
 			{
-				findForOrganization: async () => ({
+				findEnvelope: async () => ({
 					...envelope,
 					repositoryHead: null,
 					repositoryArchiveKey: null,
@@ -127,9 +122,8 @@ describe('exportEnvelopeDocx', () => {
 
 	it('reports not_found for an unknown envelope', async () => {
 		const result = await exportEnvelopeDocx(
-			organizationId,
 			envelopeId,
-			{ findForOrganization: async () => null },
+			{ findEnvelope: async () => null },
 			new InMemoryObjectStore(),
 			new FixedDraftRepository([])
 		);

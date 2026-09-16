@@ -1,5 +1,4 @@
 CREATE TABLE recipient_approved_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
   recipient_role text NOT NULL CHECK (recipient_role = 'approver'),
@@ -24,12 +23,12 @@ CREATE TABLE recipient_approved_command (
   completed_audit_event_id text,
   completed_audit_event_hash text,
   completed_audit_payload_json text,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, recipient_id),
-  UNIQUE (organization_id, audit_event_id),
-  UNIQUE (organization_id, completed_audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, recipient_id) REFERENCES recipient(organization_id, id),
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (recipient_id),
+  UNIQUE (audit_event_id),
+  UNIQUE (completed_audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CHECK (
     (
       completed_audit_event_id IS NULL
@@ -60,4 +59,4 @@ CREATE TABLE recipient_approved_command (
 );
 
 CREATE INDEX recipient_approved_command_envelope
-  ON recipient_approved_command(organization_id, envelope_id, updated_at DESC);
+  ON recipient_approved_command(envelope_id, updated_at DESC);

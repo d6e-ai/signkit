@@ -4,59 +4,41 @@ import type { VerifiedPrincipal } from '$lib/server/d6e-auth';
 const ORIGIN: string = 'https://signkit.example';
 
 /**
- * Builds `App.Locals` for an organization-scoped request. `authorized` gets a
- * single owner membership in "Workspace" joined at the fixed seed timestamp;
- * every other identity state gets empty memberships and a null organization
- * and principal, matching how the real authorization middleware fails closed.
- * `organizationId` is required so a caller can never silently fall back to an
- * authorized default organization.
+ * Builds `App.Locals` for an instance-scoped request. `active` gets an active
+ * owner membership for the fixed seed user; every other identity state gets a
+ * null membership, matching how the real authorization middleware fails
+ * closed.
  */
-export function organizationScopedLocals(
-	state: App.Locals['identityState'],
-	organizationId: string
-): App.Locals {
+export function instanceScopedLocals(state: App.Locals['identityState']): App.Locals {
 	return {
 		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
-		memberships:
-			state === 'authorized'
-				? [
-						{
-							joinedAt: '2026-09-11T00:00:00.000Z',
-							role: 'owner',
-							organization: {
-								id: organizationId,
-								name: 'Workspace',
-								slug: 'workspace',
-								status: 'active'
-							}
-						}
-					]
-				: [],
-		organizationId: state === 'authorized' ? organizationId : null,
+		instanceMembership:
+			state === 'active' ? { userId: 'user-1', role: 'owner', status: 'active' } : null,
+		bootstrapped: true,
 		principal:
-			state === 'authorized' ? { subject: 'user-1', email: 'user@example.com', name: 'User' } : null
+			state === 'active' ? { subject: 'user-1', email: 'user@example.com', name: 'User' } : null
 	};
 }
 
 /**
- * Builds `App.Locals` for an instance-level request that carries no
- * organization context (instance bootstrap/membership, API-key management).
- * `unavailable` and `anonymous` are the only states with no principal; every
- * other state gets the same fixed user, since these surfaces authorize on
- * identity alone, never on organization membership or API-key state.
+ * Builds `App.Locals` for an instance-level request that carries no active
+ * membership (instance bootstrap/membership, API-key management).
+ * `unavailable`, `anonymous`, and `suspended` are the only states with no
+ * principal; every other state gets the same fixed user, since these surfaces
+ * authorize on identity alone, never on membership or API-key state.
  */
 export function identityOnlyLocals(
-	state: App.Locals['identityState'] = 'authorized',
+	state: App.Locals['identityState'] = 'active',
 	principalOverrides: Partial<VerifiedPrincipal> = {}
 ): App.Locals {
 	return {
 		apiKeyAuthentication: { state: 'absent' },
 		identityState: state,
-		memberships: [],
-		organizationId: null,
+		instanceMembership: null,
+		bootstrapped: true,
 		principal:
-			state === 'unavailable' || state === 'anonymous'
+			state === 'unavailable' || state === 'anonymous' || state === 'suspended'
 				? null
 				: { subject: 'user-1', email: 'user@example.com', name: 'User', ...principalOverrides }
 	};
@@ -64,15 +46,15 @@ export function identityOnlyLocals(
 
 /**
  * A defense-in-depth fixture: `unavailable` must fail closed even if a
- * principal is somehow present, since only `authorized` and
- * `no_active_organization` are the intended authenticated states.
+ * principal is somehow present, since only `active` and `no_membership` are
+ * the intended authenticated states.
  */
 export function unavailableIdentityLocalsWithPrincipal(): App.Locals {
 	return {
 		apiKeyAuthentication: { state: 'absent' },
 		identityState: 'unavailable',
-		memberships: [],
-		organizationId: null,
+		instanceMembership: null,
+		bootstrapped: true,
 		principal: { subject: 'user-1', email: 'user@example.com', name: 'User' }
 	};
 }

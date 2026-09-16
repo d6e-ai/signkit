@@ -5,7 +5,6 @@ import type {
 } from '$lib/ports/envelope-sent-document-store';
 
 interface SentDocumentSetRow {
-	organization_id: string;
 	envelope_id: string;
 	commit_sha: string;
 	document_set_hash: string;
@@ -14,7 +13,6 @@ interface SentDocumentSetRow {
 }
 
 interface SentDocumentRow {
-	organization_id: string;
 	envelope_id: string;
 	commit_sha: string;
 	document_id: string;
@@ -37,36 +35,31 @@ export class D1EnvelopeSentDocumentStore implements EnvelopeSentDocumentStore {
 		this.#database = database;
 	}
 
-	async findSet(
-		organizationId: string,
-		envelopeId: string,
-		commitSha: string
-	): Promise<SentDocumentSetPointer | null> {
+	async findSet(envelopeId: string, commitSha: string): Promise<SentDocumentSetPointer | null> {
 		const setRow: SentDocumentSetRow | null = await this.#database
 			.prepare(
-				`SELECT document_set.organization_id, document_set.envelope_id, document_set.commit_sha,
+				`SELECT document_set.envelope_id, document_set.commit_sha,
 					document_set.document_set_hash, document_set.document_count, document_set.created_at
 				 FROM envelope_sent_document_set document_set
 				 INNER JOIN envelope
-					ON envelope.organization_id = document_set.organization_id
-					AND envelope.id = document_set.envelope_id
+					ON envelope.id = document_set.envelope_id
 					AND envelope.sent_commit_sha = document_set.commit_sha
-				 WHERE document_set.organization_id = ? AND document_set.envelope_id = ?
+				 WHERE document_set.envelope_id = ?
 					AND document_set.commit_sha = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, envelopeId, commitSha)
+			.bind(envelopeId, commitSha)
 			.first<SentDocumentSetRow>();
 		if (setRow === null) return null;
 		const result: D1Result<SentDocumentRow> = await this.#database
 			.prepare(
-				`SELECT organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+				`SELECT envelope_id, commit_sha, document_id, position, kind, title,
 					object_key, sha256, byte_size, page_count, page_width, page_height, created_at
 				 FROM envelope_sent_document
-				 WHERE organization_id = ? AND envelope_id = ? AND commit_sha = ?
+				 WHERE envelope_id = ? AND commit_sha = ?
 				 ORDER BY position ASC, document_id ASC`
 			)
-			.bind(organizationId, envelopeId, commitSha)
+			.bind(envelopeId, commitSha)
 			.all<SentDocumentRow>();
 		const documents: SentDocumentPointer[] = [];
 		for (const row of result.results) {
@@ -79,7 +72,6 @@ export class D1EnvelopeSentDocumentStore implements EnvelopeSentDocumentStore {
 			if (documents[index].position !== index) return null;
 		}
 		return {
-			organizationId: setRow.organization_id,
 			envelopeId: setRow.envelope_id,
 			commitSha: setRow.commit_sha,
 			documentSetHash: setRow.document_set_hash,
@@ -90,16 +82,11 @@ export class D1EnvelopeSentDocumentStore implements EnvelopeSentDocumentStore {
 	}
 
 	async findDocument(
-		organizationId: string,
 		envelopeId: string,
 		commitSha: string,
 		documentId: string
 	): Promise<SentDocumentPointer | null> {
-		const set: SentDocumentSetPointer | null = await this.findSet(
-			organizationId,
-			envelopeId,
-			commitSha
-		);
+		const set: SentDocumentSetPointer | null = await this.findSet(envelopeId, commitSha);
 		if (set === null) return null;
 		return set.documents.find((document) => document.documentId === documentId) ?? null;
 	}
@@ -127,7 +114,6 @@ function toDocumentPointer(row: SentDocumentRow): SentDocumentPointer | null {
 		return null;
 	}
 	return {
-		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,
 		commitSha: row.commit_sha,
 		documentId: row.document_id,

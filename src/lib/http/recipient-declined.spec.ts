@@ -71,7 +71,6 @@ const authorizedReceipt: AuthorizedRecipientDeclinedReceipt = {
 		locale: 'ja'
 	},
 	locator: {
-		organizationId: '01910000-0000-7000-8000-000000000003',
 		envelopeId,
 		recipientId,
 		idempotencyKey: 'decline-1',

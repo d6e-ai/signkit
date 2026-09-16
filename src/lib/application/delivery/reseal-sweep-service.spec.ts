@@ -55,7 +55,6 @@ describe('DeliveryResealSweepService', () => {
 		const beforeRotation = new AesGcmRecipientCapabilitySealer(previousKey);
 		const issued = await issueRecipientCapability();
 		const context = {
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
@@ -66,7 +65,6 @@ describe('DeliveryResealSweepService', () => {
 		store.rows = [
 			{
 				deliveryId: context.deliveryId,
-				organizationId: context.organizationId,
 				envelopeId: context.envelopeId,
 				recipientId: context.recipientId,
 				sealedCapability: sealed.sealedCapability,
@@ -81,7 +79,6 @@ describe('DeliveryResealSweepService', () => {
 		expect(result).toEqual({ discovered: 1, resealed: 1, stale: 0, unrecoverable: 0 });
 		expect(store.resealCalls).toHaveLength(1);
 		expect(store.resealCalls[0]).toMatchObject({
-			organizationId: context.organizationId,
 			deliveryId: context.deliveryId,
 			previousSealingKeyId: sealed.sealingKeyId
 		});
@@ -100,7 +97,6 @@ describe('DeliveryResealSweepService', () => {
 		const retiredSealer = new AesGcmRecipientCapabilitySealer(key(200));
 		const issued = await issueRecipientCapability();
 		const context = {
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
@@ -111,7 +107,6 @@ describe('DeliveryResealSweepService', () => {
 		store.rows = [
 			{
 				deliveryId: context.deliveryId,
-				organizationId: context.organizationId,
 				envelopeId: context.envelopeId,
 				recipientId: context.recipientId,
 				sealedCapability: sealed.sealedCapability,
@@ -131,7 +126,6 @@ describe('DeliveryResealSweepService', () => {
 		const beforeRotation = new AesGcmRecipientCapabilitySealer(previousKey);
 		const issued = await issueRecipientCapability();
 		const context = {
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
@@ -142,7 +136,6 @@ describe('DeliveryResealSweepService', () => {
 		store.rows = [
 			{
 				deliveryId: context.deliveryId,
-				organizationId: context.organizationId,
 				envelopeId: context.envelopeId,
 				recipientId: context.recipientId,
 				sealedCapability: sealed.sealedCapability,

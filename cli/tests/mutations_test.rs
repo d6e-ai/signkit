@@ -12,7 +12,6 @@ fn envelope_json() -> String {
     format!(
         r#"{{
             "id": "{}",
-            "organizationId": "{}",
             "title": "Agreement",
             "status": "draft",
             "repositoryGeneration": 0,
@@ -23,8 +22,7 @@ fn envelope_json() -> String {
             "createdAt": "2026-09-13T10:00:00Z",
             "updatedAt": "2026-09-13T10:05:00Z"
         }}"#,
-        common::TEST_ENVELOPE_ID,
-        common::TEST_ORG
+        common::TEST_ENVELOPE_ID
     )
 }
 
@@ -35,7 +33,6 @@ async fn test_envelopes_create_with_title() {
 
     Mock::given(method("POST"))
         .and(path("/api/v1/envelopes"))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .and(header(
             "authorization",
             format!("Bearer {}", common::TEST_API_KEY).as_str(),
@@ -51,8 +48,6 @@ async fn test_envelopes_create_with_title() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "create",
         "--title",
@@ -95,8 +90,6 @@ async fn test_envelopes_commit_from_file() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "commit",
         common::TEST_ENVELOPE_ID,
@@ -141,8 +134,6 @@ async fn test_envelopes_void_conflict_uses_existing_exit_code() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "void",
         common::TEST_ENVELOPE_ID,
@@ -177,8 +168,6 @@ async fn test_envelopes_audit_reads_completion_artifact_status() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "audit",
         common::TEST_ENVELOPE_ID,
@@ -193,8 +182,6 @@ async fn test_envelopes_create_requires_title_or_file() {
         "signkit",
         "--base-url",
         "http://127.0.0.1:9",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "create",
     ]);

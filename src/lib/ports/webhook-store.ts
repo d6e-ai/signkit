@@ -9,7 +9,6 @@ export type WebhookStatus = (typeof WEBHOOK_STATUSES)[number];
 
 export interface WebhookEndpointMetadata {
 	id: string;
-	organizationId: string;
 	url: string;
 	description: string | null;
 	status: WebhookStatus;
@@ -23,7 +22,6 @@ export interface WebhookEndpointMetadata {
 
 export interface CreateWebhookEndpointCommand {
 	id: string;
-	organizationId: string;
 	actorId: string;
 	idempotencyKey: string;
 	requestFingerprint: string;
@@ -44,7 +42,6 @@ export type CreateWebhookEndpointResult =
 	| { outcome: 'limit_exceeded' };
 
 export interface RevokeWebhookEndpointCommand {
-	organizationId: string;
 	webhookId: string;
 	actorId: string;
 	idempotencyKey: string;
@@ -68,7 +65,6 @@ export interface WebhookListPage {
 }
 
 export interface WebhookOutboxRow {
-	organizationId: string;
 	endpointId: string;
 	auditEventId: string;
 	envelopeId: string;
@@ -92,7 +88,6 @@ export interface ClaimWebhookDeliveriesCommand {
 }
 
 export interface CompleteWebhookDeliveryCommand {
-	organizationId: string;
 	endpointId: string;
 	auditEventId: string;
 	claimToken: string;
@@ -101,7 +96,6 @@ export interface CompleteWebhookDeliveryCommand {
 }
 
 export interface FailWebhookDeliveryCommand {
-	organizationId: string;
 	endpointId: string;
 	auditEventId: string;
 	claimToken: string;
@@ -114,14 +108,12 @@ export interface FailWebhookDeliveryCommand {
 }
 
 export interface WebhookSigningSecretRow {
-	organizationId: string;
 	endpointId: string;
 	signingSecret: string;
 	sealingKeyId: string | null;
 }
 
 export interface ResealWebhookSigningSecretCommand {
-	organizationId: string;
 	endpointId: string;
 	previousSealingKeyId: string | null;
 	signingSecret: string;
@@ -143,8 +135,8 @@ export interface WebhookDeliveryLogPage {
 
 export interface WebhookStore {
 	createEndpoint(command: CreateWebhookEndpointCommand): Promise<CreateWebhookEndpointResult>;
-	listEndpoints(organizationId: string, query: WebhookListQuery): Promise<WebhookListPage>;
-	getEndpoint(organizationId: string, webhookId: string): Promise<WebhookEndpointMetadata | null>;
+	listEndpoints(query: WebhookListQuery): Promise<WebhookListPage>;
+	getEndpoint(webhookId: string): Promise<WebhookEndpointMetadata | null>;
 	revokeEndpoint(command: RevokeWebhookEndpointCommand): Promise<RevokeWebhookEndpointResult>;
 	/**
 	 * Claim due work under a unique lease. D1 and PostgreSQL must match:
@@ -156,7 +148,6 @@ export interface WebhookStore {
 		command: ClaimWebhookDeliveriesCommand
 	): Promise<readonly WebhookOutboxRow[]>;
 	readClaimedDelivery(
-		organizationId: string,
 		endpointId: string,
 		auditEventId: string,
 		claimToken: string
@@ -172,11 +163,7 @@ export interface WebhookStore {
 	resealSigningSecret(
 		command: ResealWebhookSigningSecretCommand
 	): Promise<{ outcome: 'resealed' | 'stale' }>;
-	listDeliveryLogs(
-		organizationId: string,
-		webhookId: string,
-		query: WebhookListQuery
-	): Promise<WebhookDeliveryLogPage>;
+	listDeliveryLogs(webhookId: string, query: WebhookListQuery): Promise<WebhookDeliveryLogPage>;
 }
 
 export function boundWebhookClaimLimit(limit: number): number {

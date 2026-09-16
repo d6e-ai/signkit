@@ -15,7 +15,6 @@ class StubRecipientAccessStore implements RecipientAccessStore {
 }
 
 const activeContext: RecipientSigningContext = {
-	organizationId: 'org_1',
 	envelopeId: 'env_1',
 	recipientId: 'recipient_1',
 	recipientName: 'Recipient',

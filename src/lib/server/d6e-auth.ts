@@ -33,17 +33,6 @@ export interface VerifiedPrincipal {
 	emailVerified?: boolean;
 }
 
-export interface OrganizationMembership {
-	role: 'owner' | 'admin' | 'member';
-	joinedAt: string;
-	organization: {
-		id: string;
-		slug: string;
-		name: string;
-		status: 'active' | 'suspended' | 'closed';
-	};
-}
-
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -175,28 +164,6 @@ export async function verifyAccessToken(token: string): Promise<VerifiedPrincipa
 		}
 		throw error;
 	}
-}
-
-export async function organizations(accessToken: string): Promise<OrganizationMembership[]> {
-	const { baseUrl } = configuration();
-	const response = await fetch(`${baseUrl}/api/v1/organizations`, {
-		headers: { authorization: `Bearer ${accessToken}` }
-	});
-	if (!response.ok) {
-		// A 401 here means d6e-auth no longer honors this access token --
-		// revoked or superseded out of band, after this same request already
-		// verified its signature -- which rejects the session rather than
-		// reflecting a provider outage.
-		if (response.status === 401) {
-			throw new D6eAuthRejectedError(`d6e-auth organization lookup rejected: ${response.status}`);
-		}
-		throw new Error(`d6e-auth organization lookup failed: ${response.status}`);
-	}
-	const body = (await response.json()) as { memberships?: unknown };
-	if (!Array.isArray(body.memberships)) throw new Error('d6e-auth returned no memberships');
-	return (body.memberships as OrganizationMembership[]).filter(
-		(membership) => membership.organization.status === 'active'
-	);
 }
 
 function principalFromPayload(payload: JWTPayload): VerifiedPrincipal {

@@ -11,8 +11,7 @@ WHERE status = 'failed'
   AND (
     SELECT log.status
     FROM webhook_delivery_log AS log
-    WHERE log.organization_id = webhook_outbox.organization_id
-      AND log.endpoint_id = webhook_outbox.endpoint_id
+    WHERE log.endpoint_id = webhook_outbox.endpoint_id
       AND log.audit_event_id = webhook_outbox.audit_event_id
     ORDER BY log.occurred_at DESC, log.id DESC
     LIMIT 1

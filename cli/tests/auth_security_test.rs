@@ -12,26 +12,6 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 #[tokio::test]
-async fn test_mandatory_organization_missing_fails_fast() {
-    let _env = common::EnvScope::new(&[
-        ("SIGNKIT_ORG", None),
-        ("SIGNKIT_ORGANIZATION_ID", None),
-        ("SIGNKIT_API_KEY", Some(common::TEST_API_KEY)),
-    ])
-    .await;
-
-    let cli = Cli::parse_from([
-        "signkit",
-        "--base-url",
-        "http://127.0.0.1:5173",
-        "envelopes",
-        "list",
-    ]);
-    let exit_code = run_cli(cli).await;
-    assert_eq!(exit_code, ExitCode::UsageError);
-}
-
-#[tokio::test]
 async fn test_api_key_missing_fails_fast() {
     let _env = common::EnvScope::new(&[("SIGNKIT_API_KEY", None)]).await;
 
@@ -39,8 +19,6 @@ async fn test_api_key_missing_fails_fast() {
         "signkit",
         "--base-url",
         "http://127.0.0.1:5173",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
@@ -61,8 +39,6 @@ async fn test_api_key_format_enforcement() {
             "signkit",
             "--base-url",
             "http://127.0.0.1:5173",
-            "--org",
-            common::TEST_ORG,
             "envelopes",
             "list",
         ]);
@@ -76,8 +52,6 @@ async fn test_api_key_format_enforcement() {
             "signkit",
             "--base-url",
             "http://127.0.0.1:5173",
-            "--org",
-            common::TEST_ORG,
             "envelopes",
             "list",
         ]);
@@ -95,8 +69,6 @@ async fn test_api_key_format_enforcement() {
             "signkit",
             "--base-url",
             "http://127.0.0.1:5173",
-            "--org",
-            common::TEST_ORG,
             "envelopes",
             "list",
         ]);
@@ -122,7 +94,6 @@ async fn test_api_key_from_secure_stdin() {
 
     Mock::given(method("GET"))
         .and(path("/api/v1/envelopes"))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .and(header(
             "authorization",
             format!("Bearer {stdin_key}").as_str(),
@@ -135,8 +106,6 @@ async fn test_api_key_from_secure_stdin() {
     cmd.args([
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "--api-key-stdin",
         "envelopes",
         "list",
@@ -173,49 +142,12 @@ async fn test_rfc9457_error_401_authentication_required() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
 
     let exit_code = run_cli(cli).await;
     assert_eq!(exit_code, ExitCode::AuthenticationError);
-}
-
-#[tokio::test]
-async fn test_rfc9457_error_403_grant_required() {
-    let mock_server = common::start_mock_server().await;
-
-    let problem_json = r#"{
-        "type": "urn:signkit:problem:api-key-organization-grant-required",
-        "title": "Organization grant required",
-        "status": 403,
-        "detail": "This API key has no live grant for the requested organization.",
-        "instance": "/api/v1/envelopes"
-    }"#;
-
-    Mock::given(method("GET"))
-        .and(path("/api/v1/envelopes"))
-        .respond_with(
-            ResponseTemplate::new(403).set_body_raw(problem_json, "application/problem+json"),
-        )
-        .mount(&mock_server)
-        .await;
-
-    let _env = common::EnvScope::new(&[("SIGNKIT_API_KEY", Some(common::TEST_API_KEY))]).await;
-    let cli = Cli::parse_from([
-        "signkit",
-        "--base-url",
-        &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
-        "envelopes",
-        "list",
-    ]);
-
-    let exit_code = run_cli(cli).await;
-    assert_eq!(exit_code, ExitCode::ForbiddenError);
 }
 
 #[tokio::test]
@@ -248,8 +180,6 @@ async fn test_rfc9457_error_403_insufficient_scope() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
@@ -283,8 +213,6 @@ async fn test_remaining_4xx_map_to_exit_code_7() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
@@ -306,8 +234,6 @@ async fn test_remaining_4xx_map_to_exit_code_7() {
         "signkit",
         "--base-url",
         &mock_server2.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
@@ -349,8 +275,6 @@ async fn test_stdout_stderr_and_versioned_envelope() {
         .args([
             "--base-url",
             &mock_server.uri(),
-            "--org",
-            common::TEST_ORG,
             "envelopes",
             "get",
             "not-a-valid-uuid",
@@ -380,8 +304,6 @@ async fn test_no_redirects_policy_refuses_redirect() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
@@ -409,8 +331,6 @@ async fn test_request_timeout() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "--timeout",
         "1",
         "envelopes",
@@ -439,8 +359,6 @@ async fn test_bounded_response_handling() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
@@ -472,14 +390,7 @@ async fn test_non_json_error_body_multibyte_truncation_no_panic_or_leak() {
     // 1. Binary execution regression test: verify exit code 8, no panic, no secret leakage
     let mut cmd = Command::cargo_bin("signkit").unwrap();
     let assert = cmd
-        .args([
-            "--base-url",
-            &mock_server.uri(),
-            "--org",
-            common::TEST_ORG,
-            "envelopes",
-            "list",
-        ])
+        .args(["--base-url", &mock_server.uri(), "envelopes", "list"])
         .env("SIGNKIT_API_KEY", common::TEST_API_KEY)
         .assert()
         .code(8)
@@ -510,8 +421,6 @@ async fn test_non_json_error_body_multibyte_truncation_no_panic_or_leak() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);

@@ -35,8 +35,8 @@ export interface SignatureAssetApplicationPort {
 
 /**
  * Stores a recipient's drawn signature as a bounded, content-addressed PNG
- * outside Git, scoped to the exact organization/envelope/recipient resolved
- * from their active signing capability. The returned `assetRef` is a stable
+ * outside Git, scoped to the exact envelope/recipient resolved from their
+ * active signing capability. The returned `assetRef` is a stable
  * reference short enough to travel as an ordinary "signature" field value
  * through the existing recipient-signed command, so no change to that
  * command's field-value contract is required.
@@ -81,12 +81,7 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 		}
 
 		const sha256: string = await sha256Hex(input.pngBytes);
-		const key: string = signatureAssetKey(
-			context.organizationId,
-			context.envelopeId,
-			context.recipientId,
-			sha256
-		);
+		const key: string = signatureAssetKey(context.envelopeId, context.recipientId, sha256);
 		try {
 			const stored: ObjectMetadata = await this.objects.putImmutable(key, {
 				contentType: 'image/png',
@@ -102,20 +97,14 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 }
 
 const SIGNATURE_ASSET_KEY_PATTERN: RegExp =
-	/^signature-assets\/v1\/organizations\/([^/]+)\/envelopes\/([^/]+)\/recipients\/([^/]+)\/sha256\/([a-f0-9]{64})\.png$/;
+	/^signature-assets\/v1\/envelopes\/([^/]+)\/recipients\/([^/]+)\/sha256\/([a-f0-9]{64})\.png$/;
 const SHA256_HEX_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 
-export function signatureAssetKey(
-	organizationId: string,
-	envelopeId: string,
-	recipientId: string,
-	sha256: string
-): string {
-	return `signature-assets/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/recipients/${encodeScopeSegment(recipientId)}/sha256/${sha256}.png`;
+export function signatureAssetKey(envelopeId: string, recipientId: string, sha256: string): string {
+	return `signature-assets/v1/envelopes/${encodeScopeSegment(envelopeId)}/recipients/${encodeScopeSegment(recipientId)}/sha256/${sha256}.png`;
 }
 
 export interface ParsedSignatureAssetKey {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	sha256: string;
@@ -126,19 +115,11 @@ export function parseSignatureAssetKey(key: string): ParsedSignatureAssetKey | n
 	if (match === null) return null;
 	try {
 		const parsed: ParsedSignatureAssetKey = {
-			organizationId: decodeURIComponent(match[1]),
-			envelopeId: decodeURIComponent(match[2]),
-			recipientId: decodeURIComponent(match[3]),
-			sha256: match[4]
+			envelopeId: decodeURIComponent(match[1]),
+			recipientId: decodeURIComponent(match[2]),
+			sha256: match[3]
 		};
-		if (
-			signatureAssetKey(
-				parsed.organizationId,
-				parsed.envelopeId,
-				parsed.recipientId,
-				parsed.sha256
-			) !== key
-		) {
+		if (signatureAssetKey(parsed.envelopeId, parsed.recipientId, parsed.sha256) !== key) {
 			return null;
 		}
 		return parsed;
@@ -154,7 +135,6 @@ export function signatureAssetRefValueJson(sha256: string): string {
 export function referencedSignatureAssetKeys(
 	candidates: readonly string[],
 	fieldValues: readonly {
-		organizationId: string;
 		envelopeId: string;
 		recipientId: string;
 		valueJson: string;
@@ -175,12 +155,7 @@ export function referencedSignatureAssetKeys(
 		if (typeof value !== 'string' || !value.startsWith(SIGNATURE_ASSET_REF_PREFIX)) continue;
 		const sha256: string = value.slice(SIGNATURE_ASSET_REF_PREFIX.length);
 		if (!SHA256_HEX_PATTERN.test(sha256)) continue;
-		const key: string = signatureAssetKey(
-			row.organizationId,
-			row.envelopeId,
-			row.recipientId,
-			sha256
-		);
+		const key: string = signatureAssetKey(row.envelopeId, row.recipientId, sha256);
 		if (wanted.has(key)) referenced.add(key);
 	}
 	return referenced;

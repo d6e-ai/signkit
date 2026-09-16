@@ -73,13 +73,12 @@ async function countSkippedPdfDocuments(
  * current repository head. DOCX bytes are derived, never stored in Git.
  */
 export async function exportEnvelopeDocx(
-	organizationId: string,
 	envelopeId: string,
-	envelopes: Pick<EnvelopeStore, 'findForOrganization'>,
+	envelopes: Pick<EnvelopeStore, 'findEnvelope'>,
 	objects: ObjectStore,
 	repository: DraftRepository
 ): Promise<EnvelopeDocxExportResult> {
-	const envelope = await envelopes.findForOrganization(organizationId, envelopeId);
+	const envelope = await envelopes.findEnvelope(envelopeId);
 	if (envelope === null) return { outcome: 'not_found' };
 	const commitSha: string | null = envelope.sentCommitSha ?? envelope.repositoryHead;
 	if (
@@ -91,7 +90,6 @@ export async function exportEnvelopeDocx(
 	}
 	const exported = await exportPinnedDocx(
 		{
-			organizationId,
 			envelopeId,
 			commitSha,
 			archiveKey: envelope.repositoryArchiveKey,

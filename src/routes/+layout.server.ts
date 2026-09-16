@@ -13,17 +13,16 @@ import { localizeHref } from '$lib/paraglide/runtime';
  * Central page-access gate for every non-recipient browser page.
  *
  * `locals.principal` is null for both `anonymous` and `unavailable` identity
- * states (hooks.server.ts only ever assigns it once verification *and*
- * organization lookup both succeed), so it is the single narrowing check for
+ * states (hooks.server.ts only ever assigns it after identity verification),
+ * so it is the single narrowing check for
  * TypeScript, but the two states are not equivalent: `anonymous` redirects to
  * sign-in, while `unavailable` means a session exists but identity could not
  * be verified -- redirecting that case into `/auth/login` would either loop
  * back through the same failing d6e-auth call or silently treat a verification
  * failure as an invitation to reauthenticate, so it fails closed with a 503
- * instead. `no_active_organization` carries a non-null principal like
- * `authorized` does, so it is unaffected by either branch and remains eligible
- * for instance bootstrap and membership below -- this slice's authority is the
- * local `instance_member` model, never d6e organization membership.
+ * instead. A verified identity remains eligible for instance bootstrap and
+ * membership below; authorization comes only from the local `instance_member`
+ * model.
  *
  * The recipient signing surface is exempt because its visitors are never
  * SignKit account holders -- they authenticate with a capability link, not a

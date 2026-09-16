@@ -135,17 +135,14 @@ describe('root layout access gate', () => {
 		expect(resolveInstanceApplication).not.toHaveBeenCalled();
 	});
 
-	it('lets a caller with no active organization proceed to instance bootstrap/membership', async () => {
-		// `no_active_organization` carries a non-null principal exactly like
-		// `authorized` does; this gate's authority is the local instance_member
-		// model, never d6e organization membership, so it must never be treated
-		// like `anonymous` or `unavailable`.
+	it('lets an authenticated caller without local membership reach instance authorization', async () => {
+		// `no_membership` carries a verified principal. The local
+		// instance_member model decides whether the caller may proceed, so this
+		// state must never be treated like `anonymous` or `unavailable`.
 		resolveInstanceApplication.mockResolvedValue(
 			application({ bootstrapped: true, member: activeOwner() })
 		);
-		const data = await load(
-			event({ pathname: '/envelopes', appLocals: locals('no_active_organization') })
-		);
+		const data = await load(event({ pathname: '/envelopes', appLocals: locals('no_membership') }));
 		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: 'owner' });
 	});
 

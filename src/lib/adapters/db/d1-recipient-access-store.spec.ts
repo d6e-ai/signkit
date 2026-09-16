@@ -24,7 +24,6 @@ function fakeD1(result: object | null): { database: D1Database; statement: State
 }
 
 const row = {
-	organization_id: 'org-1',
 	envelope_id: 'env-1',
 	recipient_id: 'recipient-1',
 	recipient_name: 'Recipient',
@@ -40,7 +39,7 @@ const row = {
 };
 
 describe('D1RecipientAccessStore', () => {
-	it('resolves through the global hash index with tenant-safe joins and fail-closed predicates', async () => {
+	it('resolves through the global hash index with envelope-safe joins and fail-closed predicates', async () => {
 		const fake = fakeD1(row);
 		const store = new D1RecipientAccessStore(fake.database);
 		const context: RecipientSigningContext | null = await store.findActiveByTokenHash(
@@ -49,7 +48,6 @@ describe('D1RecipientAccessStore', () => {
 		);
 
 		expect(context).toEqual({
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			recipientName: 'Recipient',
@@ -66,8 +64,7 @@ describe('D1RecipientAccessStore', () => {
 			}
 		});
 		expect(fake.statement.bindings).toEqual(['hash-1', '2026-09-11T00:00:00.000Z']);
-		expect(fake.statement.sql).toContain('ON envelope.organization_id = recipient.organization_id');
-		expect(fake.statement.sql).toContain('AND envelope.id = recipient.envelope_id');
+		expect(fake.statement.sql).toContain('ON envelope.id = recipient.envelope_id');
 		expect(fake.statement.sql).toContain('recipient.capability_revoked_at IS NULL');
 		expect(fake.statement.sql).toContain('recipient.capability_expires_at IS NOT NULL');
 		expect(fake.statement.sql).toContain(

@@ -7,7 +7,6 @@ const DOMAIN_SEPARATOR: string = 'signkit-webhook-signing-secret-v1';
 const ENV_VAR_NAME: string = 'DELIVERY_ENCRYPTION_KEY';
 
 export interface WebhookSecretSealContext {
-	organizationId: string;
 	endpointId: string;
 }
 
@@ -32,7 +31,7 @@ export interface WebhookSigningSecretSealer {
  * Active+previous keyring for webhook HMAC signing secrets at rest. Shares
  * `DELIVERY_ENCRYPTION_KEY` / `DELIVERY_ENCRYPTION_KEY_PREVIOUS` with delivery
  * and completion sealers; purpose isolation is the `skwhs1_` prefix and AAD
- * (`signkit-webhook-signing-secret-v1` + organization + endpoint). Opening is
+ * (`signkit-webhook-signing-secret-v1` + endpoint). Opening is
  * fail-closed by explicit key ID. Legacy rows with a null key ID are treated
  * as plaintext `skwh1_` secrets so existing databases can reseal in place.
  */
@@ -123,9 +122,7 @@ export class AesGcmWebhookSigningSecretSealer implements WebhookSigningSecretSea
 }
 
 function additionalData(context: WebhookSecretSealContext): Uint8Array<ArrayBuffer> {
-	return new TextEncoder().encode(
-		[DOMAIN_SEPARATOR, context.organizationId, context.endpointId].join('\0')
-	);
+	return new TextEncoder().encode([DOMAIN_SEPARATOR, context.endpointId].join('\0'));
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {

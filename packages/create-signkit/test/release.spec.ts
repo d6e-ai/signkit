@@ -269,6 +269,28 @@ describe('manifest and bundle validation', () => {
 		expect(() =>
 			parseReleaseManifest(JSON.stringify({ ...sampleManifest(), channel: 'beta' }))
 		).toThrow(/does not match semver prerelease/);
+		expect(() =>
+			parseReleaseManifest(
+				JSON.stringify({
+					...sampleManifest(),
+					migrationPolicy: {
+						compatibility: sampleManifest().migrationPolicy.compatibility,
+						notes: sampleManifest().migrationPolicy.notes
+					}
+				})
+			)
+		).toThrow(/schemaEpoch/);
+		expect(() =>
+			parseReleaseManifest(
+				JSON.stringify({
+					...sampleManifest(),
+					migrationPolicy: {
+						...sampleManifest().migrationPolicy,
+						schemaEpoch: 'legacy-v0'
+					}
+				})
+			)
+		).toThrow(/schemaEpoch/);
 	});
 
 	it('refuses an asset URL that is not a GitHub release origin', async () => {

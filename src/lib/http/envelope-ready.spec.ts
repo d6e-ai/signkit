@@ -8,13 +8,12 @@ import {
 	createEnvelopeReadyHandler,
 	type EnvelopeReadyApplicationResolver
 } from './envelope-ready';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function event(input: { body?: string; headers?: HeadersInit; locals?: App.Locals }): RequestEvent {
@@ -175,7 +174,7 @@ describe('envelope ready HTTP handler', () => {
 		);
 		expect(response.status).toBe(200);
 		expect(app.ready).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
+			{ id: 'user-1', createdByUserId: 'user-1', actorType: 'user' },
 			envelopeId,
 			{
 				idempotencyKey: 'ready-1',

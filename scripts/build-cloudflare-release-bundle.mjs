@@ -17,9 +17,10 @@ const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const REPOSITORY = 'd6e-ai/signkit';
 const MANIFEST_NAME = 'signkit-cloudflare-manifest.json';
 const MIGRATION_POLICY = {
-	compatibility: 'forward-and-backward-compatible-within-released-versions',
+	schemaEpoch: 'single-instance-v1',
+	compatibility: 'additive-within-schema-epoch',
 	notes:
-		'Released D1 migrations are additive and must remain backward-compatible with the previous released Worker. create-signkit applies pending migrations before uploading a new Worker version so the still-serving previous Worker can run on the new schema. Worker rollback cannot roll back D1. Do not restore SQL by rolling back a Worker.'
+		'D1 migrations are additive within one schema epoch. create-signkit refuses an in-place upgrade across schema epochs unless the selected D1 is fresh. It applies pending migrations before uploading the Worker; Worker rollback cannot roll back D1.'
 };
 
 const { resolveReleaseTag, channelFromReleaseTag } = await import(

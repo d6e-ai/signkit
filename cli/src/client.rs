@@ -3,7 +3,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION,
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
-use crate::config::{ResolvedConfig, SIGNKIT_ORGANIZATION_HEADER};
+use crate::config::ResolvedConfig;
 use crate::error::CliError;
 use crate::types::ProblemDetail;
 
@@ -73,8 +73,7 @@ impl SignKitClient {
     /// Performs a safe, bounded GET request to the specified API path.
     ///
     /// URLs are constructed via `Url::join`. If `authenticated` is true,
-    /// explicit organization selection and API key are verified before
-    /// dispatching the request.
+    /// the API key is verified before dispatching the request.
     pub async fn get<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -94,24 +93,7 @@ impl SignKitClient {
             HeaderValue::from_static("application/json, application/problem+json"),
         );
 
-        if authenticated {
-            let org_id = self.config.require_organization()?;
-            let api_key = self.config.require_api_key()?;
-
-            let org_header_name = HeaderName::from_static(SIGNKIT_ORGANIZATION_HEADER);
-            let org_header_val = HeaderValue::from_str(org_id).map_err(|_| {
-                CliError::usage("Organization ID contains invalid characters for HTTP header")
-            })?;
-            headers.insert(org_header_name, org_header_val);
-
-            let auth_str = format!("Bearer {api_key}");
-            let mut auth_val = HeaderValue::from_str(&auth_str).map_err(|_| {
-                CliError::usage("API key contains invalid characters for HTTP header")
-            })?;
-            // Mark header value as sensitive to prevent leakage in debug formatters
-            auth_val.set_sensitive(true);
-            headers.insert(AUTHORIZATION, auth_val);
-        }
+        self.apply_auth(&mut headers, authenticated)?;
 
         let mut request_builder = self.http.get(url).headers(headers);
         if !query.is_empty() {
@@ -236,23 +218,7 @@ impl SignKitClient {
         })?;
         headers.insert(HeaderName::from_static("idempotency-key"), idempotency_val);
 
-        if authenticated {
-            let org_id = self.config.require_organization()?;
-            let api_key = self.config.require_api_key()?;
-
-            let org_header_name = HeaderName::from_static(SIGNKIT_ORGANIZATION_HEADER);
-            let org_header_val = HeaderValue::from_str(org_id).map_err(|_| {
-                CliError::usage("Organization ID contains invalid characters for HTTP header")
-            })?;
-            headers.insert(org_header_name, org_header_val);
-
-            let auth_str = format!("Bearer {api_key}");
-            let mut auth_val = HeaderValue::from_str(&auth_str).map_err(|_| {
-                CliError::usage("API key contains invalid characters for HTTP header")
-            })?;
-            auth_val.set_sensitive(true);
-            headers.insert(AUTHORIZATION, auth_val);
-        }
+        self.apply_auth(&mut headers, authenticated)?;
 
         let response = self
             .http
@@ -482,13 +448,7 @@ impl SignKitClient {
         if !authenticated {
             return Ok(());
         }
-        let org_id = self.config.require_organization()?;
         let api_key = self.config.require_api_key()?;
-        let org_header_name = HeaderName::from_static(SIGNKIT_ORGANIZATION_HEADER);
-        let org_header_val = HeaderValue::from_str(org_id).map_err(|_| {
-            CliError::usage("Organization ID contains invalid characters for HTTP header")
-        })?;
-        headers.insert(org_header_name, org_header_val);
         let auth_str = format!("Bearer {api_key}");
         let mut auth_val = HeaderValue::from_str(&auth_str)
             .map_err(|_| CliError::usage("API key contains invalid characters for HTTP header"))?;

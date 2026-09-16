@@ -1,4 +1,5 @@
 import type { FieldType, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
+import type { AuditHashVersion } from '$lib/domain/audit';
 
 export const MAX_COMPLETION_ARTIFACT_CLAIM_BATCH: number = 10;
 export const MAX_COMPLETION_ARTIFACT_DISCOVERY_BATCH: number = 25;
@@ -69,7 +70,6 @@ export interface ClaimCompletionArtifactsCommand {
 }
 
 export interface ClaimedCompletionArtifactJob {
-	organizationId: string;
 	envelopeId: string;
 	attempts: number;
 	lockedAt: string;
@@ -89,7 +89,6 @@ export interface ClaimedCompletionArtifactJob {
 }
 
 export interface ReadClaimedCompletionArtifactCommand {
-	organizationId: string;
 	envelopeId: string;
 	claimToken: string;
 }
@@ -133,8 +132,8 @@ export interface CompletionEvidenceAuditEvent {
 	eventHash: string;
 	/** Canonical ISO-8601 millisecond UTC; the adapter fails closed rather than silently truncate stray precision. */
 	occurredAt: string;
-	/** 1 = legacy preimage; 2 = actor fields included for every event. Absent rows are v1. */
-	hashVersion: 1 | 2;
+	/** 3 = current audit hash version for all events. */
+	hashVersion: AuditHashVersion;
 }
 
 export interface CompletionEvidence {
@@ -144,7 +143,6 @@ export interface CompletionEvidence {
 }
 
 export interface PublishCompletionArtifactCommand {
-	organizationId: string;
 	envelopeId: string;
 	claimToken: string;
 	sentCommitSha: string;
@@ -179,7 +177,6 @@ export type PublishCompletionArtifactResult =
 	| { outcome: 'integrity_error' };
 
 export interface FailCompletionArtifactCommand {
-	organizationId: string;
 	envelopeId: string;
 	claimToken: string;
 	errorCode: string;
@@ -210,17 +207,14 @@ export interface CompletionArtifactStore {
 	readClaimedCompletionArtifact(
 		command: ReadClaimedCompletionArtifactCommand
 	): Promise<ClaimedCompletionArtifactJob | null>;
-	readCompletionEvidence(organizationId: string, envelopeId: string): Promise<CompletionEvidence>;
+	readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence>;
 	publishCompletionArtifact(
 		command: PublishCompletionArtifactCommand
 	): Promise<PublishCompletionArtifactResult>;
 	failCompletionArtifact(
 		command: FailCompletionArtifactCommand
 	): Promise<FailCompletionArtifactResult>;
-	findCompletionArtifactStatus(
-		organizationId: string,
-		envelopeId: string
-	): Promise<CompletionArtifactStatusRow | null>;
+	findCompletionArtifactStatus(envelopeId: string): Promise<CompletionArtifactStatusRow | null>;
 }
 
 export function sanitizeCompletionArtifactErrorCode(code: string): string {

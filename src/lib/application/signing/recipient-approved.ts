@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	ApproveCommandKey,
@@ -75,7 +75,7 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 				sentCommitSha: preparation.sentCommitSha,
 				approvedAt
 			});
-			const auditEventHash: string = await hashAuditEventV2(
+			const auditEventHash: string = await hashAuditEventV3(
 				{
 					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'recipient.approved',
@@ -85,7 +85,7 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
 				},
-				{ organizationId: preparation.organizationId, envelopeId: preparation.envelopeId }
+				{ envelopeId: preparation.envelopeId }
 			);
 
 			const routing: ApproveRoutingSnapshot = preparation.routing;
@@ -109,7 +109,7 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 					completedAt: approvedAt
 				};
 				completedAuditPayloadJson = JSON.stringify(completedPayloadValue);
-				completedAuditEventHash = await hashAuditEventV2(
+				completedAuditEventHash = await hashAuditEventV3(
 					{
 						sequence: preparation.auditHead.sequence + 2,
 						eventType: 'envelope.completed',
@@ -119,7 +119,7 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 						payload: completedPayloadValue,
 						previousHash: auditEventHash
 					},
-					{ organizationId: preparation.organizationId, envelopeId: preparation.envelopeId }
+					{ envelopeId: preparation.envelopeId }
 				);
 			} else if (shouldRelease) {
 				nextRoutingOrder = routing.nextRoutingOrder;

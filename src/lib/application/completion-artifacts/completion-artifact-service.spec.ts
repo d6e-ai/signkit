@@ -55,7 +55,6 @@ import { COMPLETION_PDF_MANIFEST_SCHEMA, type CompletionPdfManifestV2 } from './
 
 const NOW: Date = new Date('2026-09-12T00:00:00.000Z');
 const SENT_COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
-const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = 'envelope-1';
 
 /** Simulates a transient object-store outage: every read fails with a plain Error, never DraftIntegrityError. */
@@ -181,10 +180,7 @@ class FakeCompletionArtifactStore implements CompletionArtifactStore {
 		return this.claims.find((claim) => claim.envelopeId === command.envelopeId) ?? null;
 	}
 
-	async readCompletionEvidence(
-		_organizationId: string,
-		envelopeId: string
-	): Promise<CompletionEvidence> {
+	async readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence> {
 		const evidence = this.evidenceByEnvelope.get(envelopeId);
 		if (evidence === undefined) throw new Error('Missing evidence fixture');
 		return evidence;
@@ -273,13 +269,12 @@ function claim(
 ): ClaimedCompletionArtifactJob {
 	const archiveSha256: string = overrides.repositoryArchiveSha256 ?? DEFAULT_ARCHIVE_SHA256;
 	return {
-		organizationId: ORGANIZATION_ID,
 		envelopeId: ENVELOPE_ID,
 		attempts: 1,
 		lockedAt: NOW.toISOString(),
 		envelopeTitle: 'Agreement',
 		sentCommitSha: SENT_COMMIT_SHA,
-		repositoryArchiveKey: draftArchiveKey(ORGANIZATION_ID, ENVELOPE_ID, archiveSha256),
+		repositoryArchiveKey: draftArchiveKey(ENVELOPE_ID, archiveSha256),
 		repositoryArchiveSha256: archiveSha256,
 		fieldGeneration: 1,
 		...overrides
@@ -295,54 +290,51 @@ const COMPLETED_AT: string = '2026-09-11T00:01:00.000Z';
 
 async function baseEvidence(valueJson: string = FIELD_VALUE_JSON): Promise<CompletionEvidence> {
 	const valueSha256: string = sha256Hex(new TextEncoder().encode(valueJson));
-	const auditEvents = await buildVerifiedAuditChain(
-		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
-		[
-			{
-				id: 'event-1',
-				eventType: 'envelope.created',
-				actorType: 'user',
-				actorId: 'user-1',
-				occurredAt: '2026-09-10T00:00:00.000Z',
-				payload: { title: 'Agreement' }
-			},
-			{
-				id: 'event-ready',
-				eventType: 'envelope.ready',
-				actorType: 'user',
-				actorId: 'user-1',
-				occurredAt: '2026-09-10T00:00:30.000Z',
-				payload: {
-					commitSha: SENT_COMMIT_SHA,
-					generation: 1,
-					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
-				}
-			},
-			{
-				id: 'event-2',
-				eventType: 'recipient.signed',
-				actorType: 'recipient',
-				actorId: 'recipient-1',
-				occurredAt: SIGNED_AT,
-				payload: {
-					recipientId: 'recipient-1',
-					role: 'signer',
-					routingOrder: 1,
-					sentCommitSha: SENT_COMMIT_SHA,
-					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: valueSha256 }],
-					signedAt: SIGNED_AT
-				}
-			},
-			{
-				id: 'event-3',
-				eventType: 'envelope.completed',
-				actorType: 'recipient',
-				actorId: 'recipient-1',
-				occurredAt: COMPLETED_AT,
-				payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+	const auditEvents = await buildVerifiedAuditChain({ envelopeId: ENVELOPE_ID }, [
+		{
+			id: 'event-1',
+			eventType: 'envelope.created',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:00.000Z',
+			payload: { title: 'Agreement' }
+		},
+		{
+			id: 'event-ready',
+			eventType: 'envelope.ready',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:30.000Z',
+			payload: {
+				commitSha: SENT_COMMIT_SHA,
+				generation: 1,
+				recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
 			}
-		]
-	);
+		},
+		{
+			id: 'event-2',
+			eventType: 'recipient.signed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: SIGNED_AT,
+			payload: {
+				recipientId: 'recipient-1',
+				role: 'signer',
+				routingOrder: 1,
+				sentCommitSha: SENT_COMMIT_SHA,
+				fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: valueSha256 }],
+				signedAt: SIGNED_AT
+			}
+		},
+		{
+			id: 'event-3',
+			eventType: 'envelope.completed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: COMPLETED_AT,
+			payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+		}
+	]);
 	return {
 		recipients: [
 			{
@@ -366,151 +358,145 @@ async function evidenceWithSent(
 ): Promise<CompletionEvidence> {
 	const evidence = await baseEvidence(valueJson);
 	const valueSha256: string = sha256Hex(new TextEncoder().encode(valueJson));
-	const auditEvents = await buildVerifiedAuditChain(
-		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
-		[
-			{
-				id: 'event-1',
-				eventType: 'envelope.created',
-				actorType: 'user',
-				actorId: 'user-1',
-				occurredAt: '2026-09-10T00:00:00.000Z',
-				payload: { title: 'Agreement' }
-			},
-			{
-				id: 'event-ready',
-				eventType: 'envelope.ready',
-				actorType: 'user',
-				actorId: 'user-1',
-				occurredAt: '2026-09-10T00:00:30.000Z',
-				payload: {
-					commitSha: SENT_COMMIT_SHA,
-					generation: 1,
-					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
-				}
-			},
-			...(fieldPlacementPayload === undefined
-				? []
-				: [
-						{
-							id: 'event-fields',
-							eventType: 'envelope.fields_placed',
-							actorType: 'user',
-							actorId: 'user-1',
-							occurredAt: '2026-09-10T00:00:35.000Z',
-							payload: fieldPlacementPayload
-						}
-					]),
-			{
-				id: 'event-sent',
-				eventType: 'envelope.sent',
-				actorType: 'user',
-				actorId: 'user-1',
-				occurredAt: '2026-09-10T00:00:40.000Z',
-				payload: sentPayload
-			},
-			{
-				id: 'event-2',
-				eventType: 'recipient.signed',
-				actorType: 'recipient',
-				actorId: 'recipient-1',
-				occurredAt: SIGNED_AT,
-				payload: {
-					recipientId: 'recipient-1',
-					role: 'signer',
-					routingOrder: 1,
-					sentCommitSha: SENT_COMMIT_SHA,
-					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256 }],
-					signedAt: SIGNED_AT
-				}
-			},
-			{
-				id: 'event-3',
-				eventType: 'envelope.completed',
-				actorType: 'recipient',
-				actorId: 'recipient-1',
-				occurredAt: COMPLETED_AT,
-				payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+	const auditEvents = await buildVerifiedAuditChain({ envelopeId: ENVELOPE_ID }, [
+		{
+			id: 'event-1',
+			eventType: 'envelope.created',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:00.000Z',
+			payload: { title: 'Agreement' }
+		},
+		{
+			id: 'event-ready',
+			eventType: 'envelope.ready',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:30.000Z',
+			payload: {
+				commitSha: SENT_COMMIT_SHA,
+				generation: 1,
+				recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
 			}
-		]
-	);
+		},
+		...(fieldPlacementPayload === undefined
+			? []
+			: [
+					{
+						id: 'event-fields',
+						eventType: 'envelope.fields_placed',
+						actorType: 'user',
+						actorId: 'user-1',
+						occurredAt: '2026-09-10T00:00:35.000Z',
+						payload: fieldPlacementPayload
+					}
+				]),
+		{
+			id: 'event-sent',
+			eventType: 'envelope.sent',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:40.000Z',
+			payload: sentPayload
+		},
+		{
+			id: 'event-2',
+			eventType: 'recipient.signed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: SIGNED_AT,
+			payload: {
+				recipientId: 'recipient-1',
+				role: 'signer',
+				routingOrder: 1,
+				sentCommitSha: SENT_COMMIT_SHA,
+				fields: [{ id: 'field-1', fieldType: 'signature', valueSha256 }],
+				signedAt: SIGNED_AT
+			}
+		},
+		{
+			id: 'event-3',
+			eventType: 'envelope.completed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: COMPLETED_AT,
+			payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+		}
+	]);
 	return { ...evidence, auditEvents };
 }
 
 async function agentAuthoredEvidence(): Promise<CompletionEvidence> {
 	const evidence = await baseEvidence();
-	const auditEvents = await buildVerifiedAuditChain(
-		{ organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID },
-		[
-			{
-				id: 'event-1',
-				eventType: 'envelope.created',
-				actorType: 'agent',
-				actorId: 'api-key-1',
-				occurredAt: '2026-09-10T00:00:00.000Z',
-				payload: { title: 'Agreement' }
-			},
-			{
-				id: 'event-commit',
-				eventType: 'draft.revision_created',
-				actorType: 'agent',
-				actorId: 'api-key-1',
-				occurredAt: '2026-09-10T00:00:10.000Z',
-				payload: { generation: 1, commitSha: SENT_COMMIT_SHA }
-			},
-			{
-				id: 'event-ready',
-				eventType: 'envelope.ready',
-				actorType: 'agent',
-				actorId: 'api-key-1',
-				occurredAt: '2026-09-10T00:00:30.000Z',
-				payload: {
-					commitSha: SENT_COMMIT_SHA,
-					generation: 1,
-					recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
-				}
-			},
-			{
-				id: 'event-fields',
-				eventType: 'envelope.fields_placed',
-				actorType: 'agent',
-				actorId: 'api-key-1',
-				occurredAt: '2026-09-10T00:00:40.000Z',
-				payload: { fieldGeneration: 1, fieldCount: 1 }
-			},
-			{
-				id: 'event-sent',
-				eventType: 'envelope.sent',
-				actorType: 'agent',
-				actorId: 'api-key-1',
-				occurredAt: '2026-09-10T00:00:50.000Z',
-				payload: { commitSha: SENT_COMMIT_SHA, generation: 1 }
-			},
-			{
-				id: 'event-2',
-				eventType: 'recipient.signed',
-				actorType: 'recipient',
-				actorId: 'recipient-1',
-				occurredAt: SIGNED_AT,
-				payload: {
-					recipientId: 'recipient-1',
-					role: 'signer',
-					routingOrder: 1,
-					sentCommitSha: SENT_COMMIT_SHA,
-					fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: FIELD_VALUE_SHA256 }],
-					signedAt: SIGNED_AT
-				}
-			},
-			{
-				id: 'event-3',
-				eventType: 'envelope.completed',
-				actorType: 'recipient',
-				actorId: 'recipient-1',
-				occurredAt: COMPLETED_AT,
-				payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+	const auditEvents = await buildVerifiedAuditChain({ envelopeId: ENVELOPE_ID }, [
+		{
+			id: 'event-1',
+			eventType: 'envelope.created',
+			actorType: 'agent',
+			actorId: 'api-key-1',
+			occurredAt: '2026-09-10T00:00:00.000Z',
+			payload: { title: 'Agreement' }
+		},
+		{
+			id: 'event-commit',
+			eventType: 'draft.revision_created',
+			actorType: 'agent',
+			actorId: 'api-key-1',
+			occurredAt: '2026-09-10T00:00:10.000Z',
+			payload: { generation: 1, commitSha: SENT_COMMIT_SHA }
+		},
+		{
+			id: 'event-ready',
+			eventType: 'envelope.ready',
+			actorType: 'agent',
+			actorId: 'api-key-1',
+			occurredAt: '2026-09-10T00:00:30.000Z',
+			payload: {
+				commitSha: SENT_COMMIT_SHA,
+				generation: 1,
+				recipients: [{ id: 'recipient-1', role: 'signer', routingOrder: 1 }]
 			}
-		]
-	);
+		},
+		{
+			id: 'event-fields',
+			eventType: 'envelope.fields_placed',
+			actorType: 'agent',
+			actorId: 'api-key-1',
+			occurredAt: '2026-09-10T00:00:40.000Z',
+			payload: { fieldGeneration: 1, fieldCount: 1 }
+		},
+		{
+			id: 'event-sent',
+			eventType: 'envelope.sent',
+			actorType: 'agent',
+			actorId: 'api-key-1',
+			occurredAt: '2026-09-10T00:00:50.000Z',
+			payload: { commitSha: SENT_COMMIT_SHA, generation: 1 }
+		},
+		{
+			id: 'event-2',
+			eventType: 'recipient.signed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: SIGNED_AT,
+			payload: {
+				recipientId: 'recipient-1',
+				role: 'signer',
+				routingOrder: 1,
+				sentCommitSha: SENT_COMMIT_SHA,
+				fields: [{ id: 'field-1', fieldType: 'signature', valueSha256: FIELD_VALUE_SHA256 }],
+				signedAt: SIGNED_AT
+			}
+		},
+		{
+			id: 'event-3',
+			eventType: 'envelope.completed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: COMPLETED_AT,
+			payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+		}
+	]);
 	return { ...evidence, auditEvents };
 }
 
@@ -576,18 +562,16 @@ async function executedScenario(options: ExecutedScenarioOptions = {}): Promise<
 		}
 	]);
 	const sentPdfSha256: string = sha256Hex(renderedSentPdf.bytes);
-	const sentPdfKey: string = sentPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, sentPdfSha256);
+	const sentPdfKey: string = sentPdfObjectKey(ENVELOPE_ID, sentPdfSha256);
 	objects.seed(sentPdfKey, renderedSentPdf.bytes, sentPdfSha256);
 	const leaf = manifest.documents[0];
 	const sentDocumentSet: SentDocumentSetPointer = {
-		organizationId: ORGANIZATION_ID,
 		envelopeId: ENVELOPE_ID,
 		commitSha: SENT_COMMIT_SHA,
 		documentSetHash: await documentSetHash(manifest),
 		documentCount: 1,
 		documents: [
 			{
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				commitSha: SENT_COMMIT_SHA,
 				documentId: leaf.id,
@@ -650,12 +634,7 @@ async function executedScenario(options: ExecutedScenarioOptions = {}): Promise<
 	const seeded: Uint8Array | undefined = options.seedSignature;
 	if (seeded !== undefined) {
 		const digestSource: Uint8Array = options.seedSignatureUnderDigestOf ?? seeded;
-		const key: string = signatureAssetKey(
-			ORGANIZATION_ID,
-			ENVELOPE_ID,
-			'recipient-1',
-			sha256Hex(digestSource)
-		);
+		const key: string = signatureAssetKey(ENVELOPE_ID, 'recipient-1', sha256Hex(digestSource));
 		objects.seed(key, seeded, sha256Hex(seeded));
 	}
 
@@ -775,19 +754,14 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(published.expectedAuditSequence).toBe(4);
 		expect(objects.getCallsByKey.get(requireString(store.claims[0].repositoryArchiveKey))).toBe(1);
 		expect(published.jsonObjectKey).toBe(
-			completionArtifactObjectKey(ORGANIZATION_ID, ENVELOPE_ID, 'json', published.jsonSha256)
+			completionArtifactObjectKey(ENVELOPE_ID, 'json', published.jsonSha256)
 		);
 		expect(published.markdownObjectKey).toBe(
-			completionArtifactObjectKey(
-				ORGANIZATION_ID,
-				ENVELOPE_ID,
-				'markdown',
-				published.markdownSha256
-			)
+			completionArtifactObjectKey(ENVELOPE_ID, 'markdown', published.markdownSha256)
 		);
 	});
 
-	it('publishes an envelope whose create/commit/ready/fields/sent events were authored by an API-key agent under audit hash v2', async () => {
+	it('publishes an envelope whose create/commit/ready/fields/sent events were authored by an API-key agent under audit hash v3', async () => {
 		const store = new FakeCompletionArtifactStore();
 		const objects = new InMemoryObjectStore();
 		store.claims = [claimWithSeededArchive(objects)];
@@ -817,7 +791,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(
 			store.evidenceByEnvelope
 				.get(ENVELOPE_ID)
-				?.auditEvents.every((event) => event.hashVersion === 2)
+				?.auditEvents.every((event) => event.hashVersion === 3)
 		).toBe(true);
 	});
 
@@ -1122,7 +1096,6 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(store.publishCalls).toHaveLength(1);
 		expect(pdfStore.calls).toHaveLength(1);
 		expect(pdfStore.calls[0]).toMatchObject({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID
 		});
 		expect(pdfStore.calls[0].pdfSha256).toMatch(/^[a-f0-9]{64}$/);

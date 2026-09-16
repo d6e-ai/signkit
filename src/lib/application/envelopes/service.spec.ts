@@ -6,7 +6,7 @@ import { EnvelopeApplication } from './service';
 
 const envelope: Envelope = {
 	id: '01900000-0000-7000-8000-000000000001',
-	organizationId: '01900000-0000-7000-8000-000000000002',
+	createdByUserId: 'user-1',
 	title: 'Agreement',
 	status: 'draft',
 	repositoryGeneration: 0,
@@ -26,14 +26,14 @@ function createStore(): EnvelopeApplicationStore {
 			outcome: 'created',
 			envelope
 		})),
-		findForOrganization: vi.fn(async (): Promise<Envelope | null> => envelope),
+		findEnvelope: vi.fn(async (): Promise<Envelope | null> => envelope),
 		readDetail: vi.fn(async () => ({
 			envelope,
 			recipients: [],
 			readyAuditEventId: null,
 			fields: []
 		})),
-		listForOrganization: vi.fn(async () => ({
+		listEnvelopes: vi.fn(async () => ({
 			items: [envelope],
 			nextCursor: null
 		})),
@@ -42,12 +42,12 @@ function createStore(): EnvelopeApplicationStore {
 }
 
 describe('EnvelopeApplication', () => {
-	it('derives tenant scope exclusively from the authenticated actor', async () => {
+	it('attributes creation to the authenticated actor', async () => {
 		const store: EnvelopeApplicationStore = createStore();
 		const application: EnvelopeApplication = new EnvelopeApplication(store);
 
 		await application.create(
-			{ id: 'user-1', organizationId: envelope.organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', createdByUserId: 'user-1' },
 			{ idempotencyKey: 'request-1', title: 'Agreement' }
 		);
 
@@ -56,10 +56,9 @@ describe('EnvelopeApplication', () => {
 			auditEventHash: expect.stringMatching(/^[0-9a-f]{64}$/),
 			auditEventId: expect.stringMatching(UUID_V7_PATTERN),
 			createdAt: expect.any(String),
+			createdByUserId: 'user-1',
 			envelopeId: expect.stringMatching(UUID_V7_PATTERN),
 			idempotencyKey: 'request-1',
-			organizationId: envelope.organizationId,
-			organizationName: 'Workspace',
 			requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
 			title: 'Agreement'
 		});
@@ -77,7 +76,7 @@ describe('EnvelopeApplication', () => {
 		);
 
 		await application.create(
-			{ id: 'user-1', organizationId: envelope.organizationId, organizationName: 'Workspace' },
+			{ id: 'user-1', createdByUserId: 'user-1' },
 			{ idempotencyKey: 'request-1', title: 'Agreement' }
 		);
 
@@ -93,8 +92,7 @@ describe('EnvelopeApplication', () => {
 		const store: EnvelopeApplicationStore = createStore();
 		const actor = {
 			id: 'user-1',
-			organizationId: envelope.organizationId,
-			organizationName: 'Workspace'
+			createdByUserId: 'user-1'
 		} as const;
 		const application: EnvelopeApplication = new EnvelopeApplication(store);
 
@@ -107,24 +105,23 @@ describe('EnvelopeApplication', () => {
 		expect(calls[1][0].envelopeId > calls[0][0].envelopeId).toBe(true);
 	});
 
-	it('uses the organization scope for list and get operations', async () => {
+	it('reads instance-wide for list and get operations', async () => {
 		const store: EnvelopeApplicationStore = createStore();
 		const application: EnvelopeApplication = new EnvelopeApplication(store);
 		const actor = {
 			id: 'user-1',
-			organizationId: envelope.organizationId,
-			organizationName: 'Workspace'
+			createdByUserId: 'user-1'
 		} as const;
 
 		await application.list(actor, { cursor: null, limit: 25 });
 		await application.get(actor, envelope.id);
 		await application.getDetail(actor, envelope.id);
 
-		expect(store.listForOrganization).toHaveBeenCalledWith(envelope.organizationId, {
+		expect(store.listEnvelopes).toHaveBeenCalledWith({
 			cursor: null,
 			limit: 25
 		});
-		expect(store.findForOrganization).toHaveBeenCalledWith(envelope.organizationId, envelope.id);
-		expect(store.readDetail).toHaveBeenCalledWith(envelope.organizationId, envelope.id);
+		expect(store.findEnvelope).toHaveBeenCalledWith(envelope.id);
+		expect(store.readDetail).toHaveBeenCalledWith(envelope.id);
 	});
 });

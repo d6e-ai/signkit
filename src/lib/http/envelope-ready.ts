@@ -7,10 +7,7 @@ import type {
 } from '$lib/application/envelopes/ready';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import { isActionableRecipientRole, recipientRoles } from '$lib/domain/envelope';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -95,7 +92,7 @@ export function createEnvelopeReadyHandler(
 	resolveApplication: EnvelopeReadyApplicationResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'drafts:write'
@@ -180,8 +177,7 @@ export function createEnvelopeReadyHandler(
 
 		const actor: EnvelopeRequestActor = {
 			id: authorized.id,
-			organizationId: authorized.organizationId,
-			organizationName: authorized.organizationName,
+			createdByUserId: authorized.createdByUserId,
 			actorType: authorized.authority === 'api_key' ? 'agent' : 'user'
 		};
 		const input: ReadyEnvelopeInput = {
@@ -235,7 +231,7 @@ function readyResponse(result: ReadyEnvelopeResult, instance: string): Response 
 			type: 'urn:signkit:problem:envelope-not-found',
 			title: 'Envelope not found',
 			status: 404,
-			detail: 'No envelope was found in the authorized organization.'
+			detail: 'No envelope was found.'
 		},
 		immutable: {
 			type: 'urn:signkit:problem:envelope-not-draft',

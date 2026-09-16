@@ -35,7 +35,7 @@ import { documentSetHash } from '$lib/domain/document-set';
 const actor = { id: 'user_1', name: 'Yu Kimura', email: 'yu@example.test', type: 'user' as const };
 
 describe('DraftPersistenceService', () => {
-	it('persists and reads an organization-scoped, content-addressed Git archive', async () => {
+	it('persists and reads an instance-scoped, content-addressed Git archive', async () => {
 		const envelopes = new MemoryEnvelopeStore(emptyEnvelope());
 		const objects = new InMemoryObjectStore();
 		const service = new DraftPersistenceService(
@@ -45,7 +45,6 @@ describe('DraftPersistenceService', () => {
 		);
 
 		const result = await service.commit({
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [{ path: 'documents/agreement.md', content: '# Agreement' }],
@@ -57,8 +56,8 @@ describe('DraftPersistenceService', () => {
 
 		const committed = result.revision;
 		expect(result.outcome).toBe('committed');
-		expect(committed.archiveKey).toBe(draftArchiveKey('org_1', 'env_1', committed.archiveSha256));
-		expect(committed.archiveKey).toContain('/organizations/org_1/envelopes/env_1/sha256/');
+		expect(committed.archiveKey).toBe(draftArchiveKey('env_1', committed.archiveSha256));
+		expect(committed.archiveKey).toContain('/envelopes/env_1/sha256/');
 		expect(committed.generation).toBe(1);
 		expect(envelopes.lastPublication).toMatchObject({
 			expectedGeneration: 0,
@@ -74,17 +73,13 @@ describe('DraftPersistenceService', () => {
 			provenance: { automationRunId: null, externalId: null },
 			documentSetHash: expect.stringMatching(/^[a-f0-9]{64}$/)
 		});
-		expect(
-			await service.readCurrent({ organizationId: 'org_1', envelopeId: 'env_1' })
-		).toMatchObject({
+		expect(await service.readCurrent({ envelopeId: 'env_1' })).toMatchObject({
 			generation: committed.generation,
 			commitSha: committed.commitSha,
 			archiveKey: committed.archiveKey,
 			archiveSha256: committed.archiveSha256
 		});
-		await expect(
-			service.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
-		).resolves.toMatchObject({
+		await expect(service.readWorkspace({ envelopeId: 'env_1' })).resolves.toMatchObject({
 			generation: 1,
 			documents: [{ path: 'documents/agreement.md', content: '# Agreement\n' }],
 			documentSet: {
@@ -112,7 +107,6 @@ describe('DraftPersistenceService', () => {
 
 		await expect(
 			service.commit({
-				organizationId: 'org_1',
 				envelopeId: 'env_1',
 				expectedGeneration: 1,
 				edits: [{ path: 'documents/agreement.md', content: 'stale' }],
@@ -134,7 +128,6 @@ describe('DraftPersistenceService', () => {
 			new IsomorphicGitDraftRepository()
 		);
 		const input = {
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [{ path: 'documents/agreement.md' as const, content: '# Agreement\r\n' }],
@@ -164,7 +157,6 @@ describe('DraftPersistenceService', () => {
 			new IsomorphicGitDraftRepository()
 		);
 		const input = {
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			message: 'Create agreement',
@@ -198,7 +190,6 @@ describe('DraftPersistenceService', () => {
 
 		await expect(
 			service.commit({
-				organizationId: 'org_1',
 				envelopeId: 'env_1',
 				expectedGeneration: 0,
 				edits: [{ path: 'documents/agreement.md', content: '# Losing write' }],
@@ -215,7 +206,7 @@ describe('DraftPersistenceService', () => {
 		const objects = new InMemoryObjectStore();
 		const goodBytes = new TextEncoder().encode('good');
 		const goodSha = await sha256Hex(goodBytes);
-		const key = draftArchiveKey('org_1', 'env_1', goodSha);
+		const key = draftArchiveKey('env_1', goodSha);
 		objects.seed(key, new TextEncoder().encode('tampered'), goodSha);
 		const envelope = emptyEnvelope({
 			repositoryGeneration: 1,
@@ -229,9 +220,9 @@ describe('DraftPersistenceService', () => {
 			new CountingDraftRepository()
 		);
 
-		await expect(
-			service.readCurrent({ organizationId: 'org_1', envelopeId: 'env_1' })
-		).rejects.toBeInstanceOf(DraftIntegrityError);
+		await expect(service.readCurrent({ envelopeId: 'env_1' })).rejects.toBeInstanceOf(
+			DraftIntegrityError
+		);
 	});
 
 	it('retries a read-only race and returns the newest stable pointer', async () => {
@@ -241,7 +232,7 @@ describe('DraftPersistenceService', () => {
 		const envelopes = new SequencedEnvelopeStore([first, second, second, second]);
 		const service = new DraftPersistenceService(envelopes, objects, new CountingDraftRepository());
 
-		const current = await service.readCurrent({ organizationId: 'org_1', envelopeId: 'env_1' });
+		const current = await service.readCurrent({ envelopeId: 'env_1' });
 
 		expect(current.generation).toBe(2);
 		if (current.archive !== null) {
@@ -260,7 +251,6 @@ describe('DraftPersistenceService', () => {
 		);
 
 		const result = await service.commit({
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [{ path: 'documents/agreement.md', content: '# Durable' }],
@@ -282,7 +272,6 @@ describe('DraftPersistenceService', () => {
 
 		await expect(
 			service.commit({
-				organizationId: 'org_1',
 				envelopeId: 'env_1',
 				expectedGeneration: 0,
 				edits: [{ path: 'documents/agreement.md', content: '# Invalid digest' }],
@@ -301,7 +290,6 @@ describe('DraftPersistenceService', () => {
 			new IsomorphicGitDraftRepository()
 		);
 		await service.commit({
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [{ path: 'documents/agreement.md', content: '# Agreement' }],
@@ -310,7 +298,7 @@ describe('DraftPersistenceService', () => {
 			idempotencyKey: 'hash-1',
 			updatedAt: '2026-09-11T00:00:00.000Z'
 		});
-		const workspace = await service.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' });
+		const workspace = await service.readWorkspace({ envelopeId: 'env_1' });
 		expect(workspace.documentSet).not.toBeNull();
 		const payload = JSON.parse(envelopes.lastPublication?.auditPayloadJson ?? '{}') as {
 			documentSetHash: string;
@@ -326,7 +314,6 @@ describe('DraftPersistenceService', () => {
 		);
 		await expect(
 			service.commit({
-				organizationId: 'org_1',
 				envelopeId: 'env_1',
 				expectedGeneration: 0,
 				edits: [{ path: 'documents/agreement.md', content: '# Agreement' }],
@@ -343,7 +330,6 @@ describe('DraftPersistenceService', () => {
 		const uploaded = (): MemoryUploadedDocuments => {
 			const store = new MemoryUploadedDocuments();
 			store.add({
-				organizationId: 'org_1',
 				envelopeId: 'env_1',
 				sha256: firstDigest,
 				objectKey: `uploaded/${firstDigest}.pdf`,
@@ -354,7 +340,6 @@ describe('DraftPersistenceService', () => {
 				createdAt: '2026-09-11T00:00:00.000Z'
 			});
 			store.add({
-				organizationId: 'org_1',
 				envelopeId: 'env_1',
 				sha256: secondDigest,
 				objectKey: `uploaded/${secondDigest}.pdf`,
@@ -383,7 +368,6 @@ describe('DraftPersistenceService', () => {
 			uploaded()
 		);
 		await emptyService.commit({
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [],
@@ -394,8 +378,7 @@ describe('DraftPersistenceService', () => {
 			updatedAt: '2026-09-11T00:00:00.000Z'
 		});
 		expect(
-			(await emptyService.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' }))
-				.documentSet?.documents
+			(await emptyService.readWorkspace({ envelopeId: 'env_1' })).documentSet?.documents
 		).toEqual([
 			expect.objectContaining({ kind: 'pdf', title: 'Schedule', sha256: firstDigest, position: 0 })
 		]);
@@ -407,7 +390,6 @@ describe('DraftPersistenceService', () => {
 			uploaded()
 		);
 		await mixedService.commit({
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 0,
 			edits: [{ path: 'documents/nda.md', content: '# NDA' }],
@@ -417,7 +399,6 @@ describe('DraftPersistenceService', () => {
 			updatedAt: '2026-09-11T00:01:00.000Z'
 		});
 		await mixedService.commit({
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 1,
 			edits: [],
@@ -428,13 +409,12 @@ describe('DraftPersistenceService', () => {
 			updatedAt: '2026-09-11T00:02:00.000Z'
 		});
 		expect(
-			(
-				await mixedService.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
-			).documentSet?.documents.map((leaf) => leaf.kind)
+			(await mixedService.readWorkspace({ envelopeId: 'env_1' })).documentSet?.documents.map(
+				(leaf) => leaf.kind
+			)
 		).toEqual(['markdown', 'pdf']);
 
 		await mixedService.commit({
-			organizationId: 'org_1',
 			envelopeId: 'env_1',
 			expectedGeneration: 2,
 			edits: [],
@@ -451,9 +431,9 @@ describe('DraftPersistenceService', () => {
 			updatedAt: '2026-09-11T00:03:00.000Z'
 		});
 		expect(
-			(
-				await mixedService.readWorkspace({ organizationId: 'org_1', envelopeId: 'env_1' })
-			).documentSet?.documents.map((leaf) => leaf.kind)
+			(await mixedService.readWorkspace({ envelopeId: 'env_1' })).documentSet?.documents.map(
+				(leaf) => leaf.kind
+			)
 		).toEqual(['markdown', 'pdf', 'pdf']);
 	});
 });
@@ -468,20 +448,17 @@ class MemoryEnvelopeStore implements DraftMutationStore {
 
 	constructor(private envelope: Envelope) {}
 
-	async findForOrganization(organizationId: string, envelopeId: string): Promise<Envelope | null> {
-		if (this.envelope.organizationId !== organizationId || this.envelope.id !== envelopeId)
-			return null;
+	async findEnvelope(envelopeId: string): Promise<Envelope | null> {
+		if (this.envelope.id !== envelopeId) return null;
 		return { ...this.envelope };
 	}
 
 	async compareAndSetDraftPointer(
-		organizationId: string,
 		envelopeId: string,
 		update: DraftPointerUpdate
 	): Promise<boolean> {
 		if (
 			this.rejectCompareAndSet ||
-			this.envelope.organizationId !== organizationId ||
 			this.envelope.id !== envelopeId ||
 			this.envelope.status !== 'draft' ||
 			this.envelope.repositoryGeneration !== update.expectedGeneration
@@ -511,10 +488,7 @@ class MemoryEnvelopeStore implements DraftMutationStore {
 				? { outcome: 'replayed', revision: existing.revision }
 				: { outcome: 'idempotency_conflict' };
 		}
-		if (
-			this.envelope.organizationId !== key.organizationId ||
-			this.envelope.id !== key.envelopeId
-		) {
+		if (this.envelope.id !== key.envelopeId) {
 			return { outcome: 'not_found' };
 		}
 		if (this.envelope.status !== 'draft') return { outcome: 'immutable' };
@@ -542,10 +516,7 @@ class MemoryEnvelopeStore implements DraftMutationStore {
 				? { outcome: 'replayed', revision: existing.revision }
 				: { outcome: 'idempotency_conflict' };
 		}
-		if (
-			this.envelope.organizationId !== command.organizationId ||
-			this.envelope.id !== command.envelopeId
-		) {
+		if (this.envelope.id !== command.envelopeId) {
 			return { outcome: 'not_found' };
 		}
 		if (this.envelope.status !== 'draft') return { outcome: 'immutable' };
@@ -590,10 +561,10 @@ class SequencedEnvelopeStore implements DraftMutationStore {
 
 	constructor(private readonly envelopes: readonly Envelope[]) {}
 
-	async findForOrganization(organizationId: string, envelopeId: string): Promise<Envelope | null> {
+	async findEnvelope(envelopeId: string): Promise<Envelope | null> {
 		const envelope = this.envelopes[Math.min(this.index, this.envelopes.length - 1)];
 		this.index += 1;
-		if (envelope.organizationId !== organizationId || envelope.id !== envelopeId) return null;
+		if (envelope.id !== envelopeId) return null;
 		return { ...envelope };
 	}
 
@@ -615,7 +586,7 @@ class SequencedEnvelopeStore implements DraftMutationStore {
 }
 
 function commandKey(key: DraftRevisionKey): string {
-	return [key.organizationId, key.actorType, key.actorId, key.idempotencyKey].join('\u0000');
+	return [key.actorType, key.actorId, key.idempotencyKey].join('\u0000');
 }
 
 class CountingDraftRepository implements DraftRepository {
@@ -669,7 +640,7 @@ class InvalidDigestDraftRepository implements DraftRepository {
 function emptyEnvelope(overrides: Partial<Envelope> = {}): Envelope {
 	return {
 		id: 'env_1',
-		organizationId: 'org_1',
+		createdByUserId: 'user_1',
 		title: 'Agreement',
 		status: 'draft',
 		repositoryGeneration: 0,
@@ -691,7 +662,7 @@ async function persistedEnvelope(
 ): Promise<Envelope> {
 	const archive = new TextEncoder().encode(content);
 	const sha256 = await sha256Hex(archive);
-	const key = draftArchiveKey('org_1', 'env_1', sha256);
+	const key = draftArchiveKey('env_1', sha256);
 	objects.seed(key, archive, sha256);
 	return emptyEnvelope({
 		repositoryGeneration: generation,
@@ -721,11 +692,7 @@ class MemoryUploadedDocuments implements EnvelopeUploadedDocumentStore {
 		return 'inserted';
 	}
 
-	async find(
-		_organizationId: string,
-		_envelopeId: string,
-		sha256: string
-	): Promise<EnvelopeUploadedDocumentRecord | null> {
+	async find(__envelopeId: string, sha256: string): Promise<EnvelopeUploadedDocumentRecord | null> {
 		return this.records.get(sha256) ?? null;
 	}
 }

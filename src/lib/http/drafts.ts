@@ -15,10 +15,7 @@ import {
 } from '$lib/application/drafts/draft-persistence';
 import { MAX_DRAFT_GENERATION, normalizeMarkdownContent } from '$lib/domain/draft';
 import type { DraftEdit } from '$lib/ports/draft-repository';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -229,7 +226,7 @@ function notFoundProblem(instance: string): Response {
 		type: 'urn:signkit:problem:envelope-not-found',
 		title: 'Envelope not found',
 		status: 404,
-		detail: 'No envelope was found in the authorized organization.',
+		detail: 'No envelope was found.',
 		instance
 	});
 }
@@ -238,7 +235,7 @@ export function createDraftHttpHandlers(
 	resolvePersistence: DraftPersistenceResolver
 ): DraftHttpHandlers {
 	const get: RequestHandler = async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -273,7 +270,6 @@ export function createDraftHttpHandlers(
 
 		try {
 			const workspace: DraftWorkspaceSnapshot = await persistence.readWorkspace({
-				organizationId: authorized.organizationId,
 				envelopeId: envelopeIdResult.data
 			});
 			const body = {
@@ -312,7 +308,7 @@ export function createDraftHttpHandlers(
 		request,
 		url
 	}): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'drafts:write'
@@ -409,7 +405,6 @@ export function createDraftHttpHandlers(
 		const provenance: DraftCommitProvenance | undefined = input.provenance;
 		try {
 			const result: CommitDraftResult = await persistence.commit({
-				organizationId: authorized.organizationId,
 				envelopeId: envelopeIdResult.data,
 				actor:
 					authorized.authority === 'api_key'

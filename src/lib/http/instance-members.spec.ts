@@ -230,7 +230,7 @@ describe('instance member administration HTTP handlers', () => {
 			const app: InstanceMemberApplicationPort = memberApplication();
 			const response: Response = await createInstanceMemberHttpHandlers(
 				(): InstanceMemberApplicationPort => app
-			).list(memberEvent({ pathname: LIST_PATH, locals: locals('no_active_organization') }));
+			).list(memberEvent({ pathname: LIST_PATH, locals: locals('no_membership') }));
 			expect(response.status).toBe(200);
 		});
 

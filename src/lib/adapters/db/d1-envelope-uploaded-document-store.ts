@@ -16,19 +16,18 @@ export class D1EnvelopeUploadedDocumentStore implements EnvelopeUploadedDocument
 		const result = await this.#database
 			.prepare(
 				`INSERT INTO envelope_uploaded_document (
-					organization_id, envelope_id, sha256, object_key, byte_size,
+					envelope_id, sha256, object_key, byte_size,
 					page_count, page_width, page_height, created_at
 				)
-				SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?
 				WHERE (SELECT count(*) FROM envelope_uploaded_document
-					WHERE organization_id = ? AND envelope_id = ?) < ?
+					WHERE envelope_id = ?) < ?
 				  AND EXISTS (
-					SELECT 1 FROM envelope WHERE organization_id = ? AND id = ?
+					SELECT 1 FROM envelope WHERE id = ?
 				  )
-				ON CONFLICT (organization_id, envelope_id, sha256) DO NOTHING`
+				ON CONFLICT (envelope_id, sha256) DO NOTHING`
 			)
 			.bind(
-				record.organizationId,
 				record.envelopeId,
 				record.sha256,
 				record.objectKey,
@@ -37,10 +36,8 @@ export class D1EnvelopeUploadedDocumentStore implements EnvelopeUploadedDocument
 				record.pageWidth,
 				record.pageHeight,
 				record.createdAt,
-				record.organizationId,
 				record.envelopeId,
 				MAX_UPLOADED_DOCUMENTS_PER_ENVELOPE,
-				record.organizationId,
 				record.envelopeId
 			)
 			.run();
@@ -49,37 +46,32 @@ export class D1EnvelopeUploadedDocumentStore implements EnvelopeUploadedDocument
 		const existing = await this.#database
 			.prepare(
 				`SELECT sha256 FROM envelope_uploaded_document
-				 WHERE organization_id = ? AND envelope_id = ? AND sha256 = ?
+				 WHERE envelope_id = ? AND sha256 = ?
 				 LIMIT 1`
 			)
-			.bind(record.organizationId, record.envelopeId, record.sha256)
+			.bind(record.envelopeId, record.sha256)
 			.first<{ sha256: string }>();
 		if (existing !== null) return 'duplicate';
 
 		const envelope = await this.#database
-			.prepare(`SELECT id FROM envelope WHERE organization_id = ? AND id = ? LIMIT 1`)
-			.bind(record.organizationId, record.envelopeId)
+			.prepare(`SELECT id FROM envelope WHERE id = ? LIMIT 1`)
+			.bind(record.envelopeId)
 			.first<{ id: string }>();
 		if (envelope === null) return 'not_found';
 		return 'cap_exceeded';
 	}
 
-	async find(
-		organizationId: string,
-		envelopeId: string,
-		sha256: string
-	): Promise<EnvelopeUploadedDocumentRecord | null> {
+	async find(envelopeId: string, sha256: string): Promise<EnvelopeUploadedDocumentRecord | null> {
 		const row = await this.#database
 			.prepare(
-				`SELECT organization_id, envelope_id, sha256, object_key, byte_size,
+				`SELECT envelope_id, sha256, object_key, byte_size,
 					page_count, page_width, page_height, created_at
 				 FROM envelope_uploaded_document
-				 WHERE organization_id = ? AND envelope_id = ? AND sha256 = ?
+				 WHERE envelope_id = ? AND sha256 = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, envelopeId, sha256)
+			.bind(envelopeId, sha256)
 			.first<{
-				organization_id: string;
 				envelope_id: string;
 				sha256: string;
 				object_key: string;
@@ -91,7 +83,6 @@ export class D1EnvelopeUploadedDocumentStore implements EnvelopeUploadedDocument
 			}>();
 		if (row === null) return null;
 		return {
-			organizationId: row.organization_id,
 			envelopeId: row.envelope_id,
 			sha256: row.sha256,
 			objectKey: row.object_key,

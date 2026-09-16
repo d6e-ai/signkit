@@ -23,7 +23,7 @@ const API_KEY_PATH_PREFIXES: readonly string[] = ['/api/v1/envelopes'];
  * Not resolving a key here would not be enough. If the header were merely
  * ignored, a request carrying both an API key and a browser cookie would be
  * authorized by the cookie, which is exactly the escalation path an API key must
- * never have: minting another key, granting itself an organization, or
+ * never have: minting another key or
  * administering instance members. Treating the key as a hard rejection also
  * suppresses the cookie for that request, so the two authorities can never
  * compose on the surfaces where composing them would matter most.

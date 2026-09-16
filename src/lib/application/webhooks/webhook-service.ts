@@ -47,7 +47,6 @@ export class InvalidWebhookRequestError extends Error {
 
 export interface WebhookRequestActor {
 	id: string;
-	organizationId: string;
 }
 
 export interface CreateWebhookInput {
@@ -165,12 +164,10 @@ export class WebhookApplication implements WebhookApplicationPort {
 			const issued = await issueWebhookSecret();
 			const endpointId: string = this.#newId();
 			const sealed = await this.#sealer.seal(issued.secret, {
-				organizationId: actor.organizationId,
 				endpointId
 			});
 			const result: CreateWebhookEndpointResult = await this.#store.createEndpoint({
 				id: endpointId,
-				organizationId: actor.organizationId,
 				actorId: actor.id,
 				idempotencyKey: input.idempotencyKey,
 				requestFingerprint,
@@ -200,7 +197,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 		actor: WebhookRequestActor,
 		query: { cursor: string | null; limit: number }
 	): Promise<WebhookListPage> {
-		return this.#store.listEndpoints(actor.organizationId, {
+		return this.#store.listEndpoints({
 			cursor: query.cursor,
 			limit: boundListLimit(query.limit)
 		});
@@ -210,7 +207,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 		actor: WebhookRequestActor,
 		webhookId: string
 	): Promise<WebhookEndpointMetadata | null> {
-		return this.#store.getEndpoint(actor.organizationId, webhookId);
+		return this.#store.getEndpoint(webhookId);
 	}
 
 	revokeEndpoint(
@@ -221,7 +218,6 @@ export class WebhookApplication implements WebhookApplicationPort {
 		return sha256(JSON.stringify({ webhookId })).then(
 			(requestFingerprint: string): Promise<RevokeWebhookResult> =>
 				this.#store.revokeEndpoint({
-					organizationId: actor.organizationId,
 					webhookId,
 					actorId: actor.id,
 					idempotencyKey,
@@ -236,12 +232,9 @@ export class WebhookApplication implements WebhookApplicationPort {
 		webhookId: string,
 		query: { cursor: string | null; limit: number }
 	): Promise<WebhookDeliveryLogPage | null> {
-		const endpoint: WebhookEndpointMetadata | null = await this.#store.getEndpoint(
-			actor.organizationId,
-			webhookId
-		);
+		const endpoint: WebhookEndpointMetadata | null = await this.#store.getEndpoint(webhookId);
 		if (endpoint === null) return null;
-		return this.#store.listDeliveryLogs(actor.organizationId, webhookId, {
+		return this.#store.listDeliveryLogs(webhookId, {
 			cursor: query.cursor,
 			limit: boundListLimit(query.limit)
 		});
@@ -287,15 +280,13 @@ export class WebhookApplication implements WebhookApplicationPort {
 			try {
 				const plaintext: string = await this.#sealer.open(
 					row.signingSecret,
-					{ organizationId: row.organizationId, endpointId: row.endpointId },
+					{ endpointId: row.endpointId },
 					row.sealingKeyId
 				);
 				const sealed = await this.#sealer.reseal(plaintext, {
-					organizationId: row.organizationId,
 					endpointId: row.endpointId
 				});
 				await this.#store.resealSigningSecret({
-					organizationId: row.organizationId,
 					endpointId: row.endpointId,
 					previousSealingKeyId: row.sealingKeyId,
 					signingSecret: sealed.sealedSigningSecret,
@@ -322,7 +313,6 @@ export class WebhookApplication implements WebhookApplicationPort {
 			assertWebhookHostAllowed(hostnameOf(row.endpointUrl), allowedHosts);
 			if (new TextEncoder().encode(row.payloadJson).byteLength > WEBHOOK_MAX_PAYLOAD_BYTES) {
 				await this.#store.failDelivery({
-					organizationId: row.organizationId,
 					endpointId: row.endpointId,
 					auditEventId: row.auditEventId,
 					claimToken: row.claimToken,
@@ -336,7 +326,7 @@ export class WebhookApplication implements WebhookApplicationPort {
 			}
 			const secret: string = await this.#sealer.open(
 				row.signingSecret,
-				{ organizationId: row.organizationId, endpointId: row.endpointId },
+				{ endpointId: row.endpointId },
 				row.sealingKeyId
 			);
 			const result = await this.#dispatch(
@@ -353,7 +343,6 @@ export class WebhookApplication implements WebhookApplicationPort {
 			);
 			if (result.ok) {
 				await this.#store.completeDelivery({
-					organizationId: row.organizationId,
 					endpointId: row.endpointId,
 					auditEventId: row.auditEventId,
 					claimToken: row.claimToken,
@@ -366,7 +355,6 @@ export class WebhookApplication implements WebhookApplicationPort {
 			const delayMs: number =
 				WEBHOOK_RETRY_BASE_DELAY_MS * Math.min(2 ** Math.max(row.attempts - 1, 0), 32);
 			await this.#store.failDelivery({
-				organizationId: row.organizationId,
 				endpointId: row.endpointId,
 				auditEventId: row.auditEventId,
 				claimToken: row.claimToken,
@@ -381,7 +369,6 @@ export class WebhookApplication implements WebhookApplicationPort {
 			const notAllowed: boolean = error instanceof WebhookHostNotAllowedError;
 			const rejected: boolean = error instanceof WebhookTargetRejectedError;
 			await this.#store.failDelivery({
-				organizationId: row.organizationId,
 				endpointId: row.endpointId,
 				auditEventId: row.auditEventId,
 				claimToken: row.claimToken,

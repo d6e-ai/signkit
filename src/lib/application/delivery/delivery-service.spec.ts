@@ -75,8 +75,7 @@ class FakeStore implements DeliveryOutboxStore {
 		if (this.readResult !== undefined) return this.readResult;
 		return (
 			this.rows.find(
-				(row: ClaimedInvitationDelivery): boolean =>
-					row.organizationId === command.organizationId && row.deliveryId === command.deliveryId
+				(row: ClaimedInvitationDelivery): boolean => row.deliveryId === command.deliveryId
 			) ?? null
 		);
 	}
@@ -208,7 +207,6 @@ async function eligibleClaim(
 		token,
 		claim: {
 			deliveryId: 'delivery-1',
-			organizationId: 'org-1',
 			envelopeId: 'envelope-1',
 			recipientId: 'recipient-1',
 			kind: 'recipient_invitation',
@@ -286,7 +284,6 @@ describe('InvitationDeliveryService', () => {
 		expect(result.outcomes).toEqual([{ deliveryId: 'delivery-1', outcome: 'stale' }]);
 		expect(store.reads).toEqual([
 			{
-				organizationId: 'org-1',
 				deliveryId: 'delivery-1',
 				claimToken: CLAIM_TOKEN
 			}
@@ -331,7 +328,6 @@ describe('InvitationDeliveryService', () => {
 			SEALING_KEY
 		);
 		const context: CapabilitySealContext = {
-			organizationId: 'org-1',
 			envelopeId: 'envelope-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
@@ -377,7 +373,6 @@ describe('InvitationDeliveryService', () => {
 		});
 		expect(store.completions).toEqual([
 			{
-				organizationId: 'org-1',
 				deliveryId: 'delivery-1',
 				claimToken: CLAIM_TOKEN,
 				deliveredAt: NOW.toISOString(),
@@ -395,7 +390,7 @@ describe('InvitationDeliveryService', () => {
 		expect(mail.messages[0].text).toContain(`https://signkit.example/s/${issued.token}`);
 		expect(mail.messages[0].html).toContain('lang="en"');
 		expect(mail.messages[0].html).toContain(`href="https://signkit.example/s/${issued.token}"`);
-		expect(mail.messages[0].deliveryKey).toBe('signkit-invitation-v1:org-1:delivery-1');
+		expect(mail.messages[0].deliveryKey).toBe('signkit-invitation-v1:delivery-1');
 		assertNoSecrets(result, secretNeedles(issued.token, claim));
 		assertNoSecrets(store.completions, secretNeedles(issued.token, claim));
 	});
@@ -420,7 +415,6 @@ describe('InvitationDeliveryService', () => {
 		expect(mail.messages[0].html).toContain('#ca3500');
 		expect(mail.messages[0].html).toContain('role="presentation"');
 		expect(opener.openCalls[0]?.context).toEqual({
-			organizationId: 'org-1',
 			envelopeId: 'envelope-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
@@ -559,7 +553,6 @@ describe('InvitationDeliveryService', () => {
 		expect(opener.openCalls).toHaveLength(0);
 		expect(opener.keyLookups).toBe(0);
 		expect(store.failures[0]).toMatchObject({
-			organizationId: 'org-1',
 			deliveryId: 'delivery-1',
 			claimToken: CLAIM_TOKEN,
 			errorCode: 'ciphertext_digest_mismatch',

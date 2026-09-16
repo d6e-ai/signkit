@@ -4,7 +4,6 @@ import type { ApiKeyPrincipal } from '$lib/ports/api-key-authentication-store';
 import type { ApiKeyScope } from '$lib/security/api-key';
 import { createApiKeyHttpHandlers } from './api-keys';
 import { createApiKeyRevokeHandler } from './api-key-revoke';
-import { createApiKeyOrganizationGrantHandlers } from './api-key-organization-grants';
 import { createCompletionArtifactStatusHandler } from './completion-artifact-status';
 import { createCompletionEvidenceHandler } from './completion-evidence';
 import { createCompletionPdfHandler } from './completion-pdf';
@@ -23,20 +22,16 @@ import {
 	createInstanceMemberHttpHandlers,
 	createInstanceMemberMeHandler
 } from './instance-members';
+import { instanceScopedLocals } from './http-handler-test-support';
 
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 const KEY_ID: string = '01900000-0000-7000-8000-000000000201';
-const GRANT_ID: string = '01900000-0000-7000-8000-000000000301';
-const GRANTED_ORG: string = 'org-granted';
-const SESSION_ORG: string = 'org-session';
 
 function principal(overrides: Partial<ApiKeyPrincipal> = {}): ApiKeyPrincipal {
 	return {
 		apiKeyId: KEY_ID,
 		keyPrefix: 'signkit_abcdefgh',
 		ownerUserId: 'user-1',
-		organizationId: GRANTED_ORG,
-		organizationName: 'Granted',
 		scopes: ['envelopes:read'],
 		expiresAt: '2026-12-11T00:00:00.000Z',
 		...overrides
@@ -44,32 +39,15 @@ function principal(overrides: Partial<ApiKeyPrincipal> = {}): ApiKeyPrincipal {
 }
 
 /**
- * A session that is fully authorized for a *different* organization than the key
- * was granted. Every read below must scope to the granted organization, never to
- * this one, and every rejection below must happen despite this session being
- * present and valid.
+ * An active instance session is present on every request below, exactly as a
+ * browser cookie would accompany a bearer. Key requests must still resolve to
+ * the key's own authority, and failing keys must never fall back to this
+ * session.
  */
 function locals(
 	apiKeyAuthentication: App.Locals['apiKeyAuthentication'] = { state: 'absent' }
 ): App.Locals {
-	return {
-		apiKeyAuthentication,
-		identityState: 'authorized',
-		memberships: [
-			{
-				joinedAt: '2026-09-11T00:00:00.000Z',
-				role: 'owner',
-				organization: {
-					id: SESSION_ORG,
-					name: 'Session',
-					slug: 'session',
-					status: 'active'
-				}
-			}
-		],
-		organizationId: SESSION_ORG,
-		principal: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-	};
+	return { ...instanceScopedLocals('active'), apiKeyAuthentication };
 }
 
 function event(input: {
@@ -105,9 +83,9 @@ async function problemType(response: Response): Promise<string> {
 }
 
 /**
- * Each read endpoint, paired with the organization-scoped call it must make. The
- * assertion is always the same: the organization handed to the durable layer is
- * the one the key's grant proved, never the session's.
+ * Each read endpoint, paired with the service call it must make. The assertion
+ * is always the same: an authorized caller reaches the service, and anything
+ * the key authority refuses never does.
  */
 interface ReadCase {
 	name: string;
@@ -115,7 +93,7 @@ interface ReadCase {
 	params?: Record<string, string>;
 	invoke: (apiKeyAuthentication: App.Locals['apiKeyAuthentication']) => Promise<{
 		response: Response;
-		organizationIds: string[];
+		reachedService: boolean;
 	}>;
 }
 
@@ -124,20 +102,20 @@ function envelopeListCase(): ReadCase {
 		name: 'GET /api/v1/envelopes',
 		pathname: '/api/v1/envelopes',
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
+			const actors: unknown[] = [];
 			const handlers = createEnvelopeHttpHandlers(() => ({
 				create: vi.fn(),
 				get: vi.fn(),
 				getDetail: vi.fn(),
-				list: vi.fn(async (actor: { organizationId: string }) => {
-					organizationIds.push(actor.organizationId);
+				list: vi.fn(async (actor: unknown) => {
+					actors.push(actor);
 					return { items: [], nextCursor: null };
 				})
 			}));
 			const response: Response = await handlers.list(
 				event({ pathname: '/api/v1/envelopes', apiKeyAuthentication })
 			);
-			return { response, organizationIds };
+			return { response, reachedService: actors.length === 1 };
 		}
 	};
 }
@@ -148,14 +126,11 @@ function envelopeGetCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
+			const getDetail = vi.fn(async () => null);
 			const handlers = createEnvelopeHttpHandlers(() => ({
 				create: vi.fn(),
 				get: vi.fn(),
-				getDetail: vi.fn(async (actor: { organizationId: string }) => {
-					organizationIds.push(actor.organizationId);
-					return null;
-				}),
+				getDetail,
 				list: vi.fn()
 			}));
 			const response: Response = await handlers.get(
@@ -165,7 +140,7 @@ function envelopeGetCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, organizationIds };
+			return { response, reachedService: getDetail.mock.calls.length === 1 };
 		}
 	};
 }
@@ -176,20 +151,17 @@ function draftGetCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/draft`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
+			const readWorkspace = vi.fn(async () => ({
+				generation: 1,
+				commitSha: 'commit-1',
+				archiveKey: 'draft-repositories/v1/envelopes/e/sha256/a.git.gz',
+				archiveSha256: 'a'.repeat(64),
+				documents: [],
+				documentSet: null
+			}));
 			const handlers = createDraftHttpHandlers(() => ({
 				commit: vi.fn(),
-				readWorkspace: vi.fn(async (input: { organizationId: string }) => {
-					organizationIds.push(input.organizationId);
-					return {
-						generation: 1,
-						commitSha: 'commit-1',
-						archiveKey: 'draft-repositories/v1/organizations/o/envelopes/e/sha256/a.git.gz',
-						archiveSha256: 'a'.repeat(64),
-						documents: [],
-						documentSet: null
-					};
-				})
+				readWorkspace
 			}));
 			const response: Response = await handlers.get(
 				event({
@@ -198,7 +170,7 @@ function draftGetCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, organizationIds };
+			return { response, reachedService: readWorkspace.mock.calls.length === 1 };
 		}
 	};
 }
@@ -209,17 +181,15 @@ function docxGetCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/docx`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
-			const handler: RequestHandler = createDocxExportHandler(() => ({
-				envelopes: {
-					findForOrganization: async (organizationId: string) => {
-						organizationIds.push(organizationId);
-						return null;
-					}
-				},
-				objects: {} as never,
-				repository: {} as never
-			}));
+			const findEnvelope = vi.fn(async () => null);
+			const handler: RequestHandler = createDocxExportHandler(
+				(() =>
+					({
+						envelopes: { findEnvelope },
+						objects: {},
+						repository: {}
+					}) as never) as Parameters<typeof createDocxExportHandler>[0]
+			);
 			const response: Response = await handler(
 				event({
 					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/docx`,
@@ -227,7 +197,7 @@ function docxGetCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, organizationIds };
+			return { response, reachedService: findEnvelope.mock.calls.length === 1 };
 		}
 	};
 }
@@ -238,15 +208,9 @@ function deliveriesCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/deliveries`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
+			const find = vi.fn(async () => null);
 			const handler: RequestHandler = createDeliveryStatusHandler(
-				() =>
-					({
-						find: vi.fn(async (organizationId: string) => {
-							organizationIds.push(organizationId);
-							return null;
-						})
-					}) as never
+				(() => ({ find }) as never) as Parameters<typeof createDeliveryStatusHandler>[0]
 			);
 			const response: Response = await handler(
 				event({
@@ -255,7 +219,7 @@ function deliveriesCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, organizationIds };
+			return { response, reachedService: find.mock.calls.length === 1 };
 		}
 	};
 }
@@ -266,15 +230,9 @@ function completionArtifactCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
+			const find = vi.fn(async () => null);
 			const handler: RequestHandler = createCompletionArtifactStatusHandler(
-				() =>
-					({
-						find: vi.fn(async (organizationId: string) => {
-							organizationIds.push(organizationId);
-							return null;
-						})
-					}) as never
+				(() => ({ find }) as never) as Parameters<typeof createCompletionArtifactStatusHandler>[0]
 			);
 			const response: Response = await handler(
 				event({
@@ -283,7 +241,7 @@ function completionArtifactCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, organizationIds };
+			return { response, reachedService: find.mock.calls.length === 1 };
 		}
 	};
 }
@@ -294,12 +252,9 @@ function completionEvidenceCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/evidence`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
+			const readEvidence = vi.fn(async () => null);
 			const handler: RequestHandler = createCompletionEvidenceHandler(() => ({
-				readEvidence: vi.fn(async (organizationId: string) => {
-					organizationIds.push(organizationId);
-					return null;
-				}),
+				readEvidence,
 				readPdf: vi.fn(),
 				envelopeExists: vi.fn(async () => false)
 			}));
@@ -310,7 +265,7 @@ function completionEvidenceCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, organizationIds };
+			return { response, reachedService: readEvidence.mock.calls.length === 1 };
 		}
 	};
 }
@@ -321,13 +276,10 @@ function completionPdfCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const organizationIds: string[] = [];
+			const readPdf = vi.fn(async () => null);
 			const handler: RequestHandler = createCompletionPdfHandler(() => ({
 				readEvidence: vi.fn(),
-				readPdf: vi.fn(async (organizationId: string) => {
-					organizationIds.push(organizationId);
-					return null;
-				}),
+				readPdf,
 				envelopeExists: vi.fn(async () => false)
 			}));
 			const response: Response = await handler(
@@ -337,7 +289,7 @@ function completionPdfCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, organizationIds };
+			return { response, reachedService: readPdf.mock.calls.length === 1 };
 		}
 	};
 }
@@ -356,62 +308,48 @@ const READ_CASES: readonly ReadCase[] = [
 describe('API key read surface', () => {
 	for (const readCase of READ_CASES) {
 		describe(readCase.name, () => {
-			it('scopes to the granted organization and never to the session organization', async () => {
-				const { organizationIds } = await readCase.invoke({
+			it('serves a key holding envelopes:read without touching the session', async () => {
+				const { response, reachedService } = await readCase.invoke({
 					state: 'authenticated',
 					principal: principal()
 				});
 
-				expect(organizationIds).toEqual([GRANTED_ORG]);
-				expect(organizationIds).not.toContain(SESSION_ORG);
+				expect(reachedService).toBe(true);
+				// A null lookup is a 404, which still proves the request passed
+				// authorization and reached the service.
+				expect([200, 404].includes(response.status)).toBe(true);
 			});
 
 			it('refuses a key without the envelopes:read scope', async () => {
-				const { response, organizationIds } = await readCase.invoke({
+				const { response, reachedService } = await readCase.invoke({
 					state: 'authenticated',
 					principal: principal({ scopes: ['audit:read', 'drafts:write', 'envelopes:send'] })
 				});
 
 				expect(response.status).toBe(403);
 				expect(await problemType(response)).toBe('urn:signkit:problem:api-key-insufficient-scope');
-				expect(organizationIds).toEqual([]);
+				expect(reachedService).toBe(false);
 			});
 
 			it('refuses an unresolvable token opaquely before any durable read', async () => {
-				const { response, organizationIds } = await readCase.invoke({ state: 'invalid_token' });
+				const { response, reachedService } = await readCase.invoke({ state: 'invalid_token' });
 
 				expect(response.status).toBe(401);
 				expect(response.headers.get('www-authenticate')).toBe('Bearer');
-				expect(organizationIds).toEqual([]);
+				expect(reachedService).toBe(false);
 			});
 
-			it('refuses a missing organization selector', async () => {
-				const { response, organizationIds } = await readCase.invoke({
-					state: 'organization_selector_invalid'
-				});
+			it('refuses an exhausted key with a 429 before any durable read', async () => {
+				const { response, reachedService } = await readCase.invoke({ state: 'rate_limited' });
 
-				expect(response.status).toBe(400);
-				expect(await problemType(response)).toBe(
-					'urn:signkit:problem:api-key-organization-selector-required'
-				);
-				expect(organizationIds).toEqual([]);
-			});
-
-			it('refuses a key with no grant for the requested organization', async () => {
-				const { response, organizationIds } = await readCase.invoke({
-					state: 'organization_grant_required'
-				});
-
-				expect(response.status).toBe(403);
-				expect(await problemType(response)).toBe(
-					'urn:signkit:problem:api-key-organization-grant-required'
-				);
-				expect(organizationIds).toEqual([]);
+				expect(response.status).toBe(429);
+				expect(await problemType(response)).toBe('urn:signkit:problem:api-key-rate-limited');
+				expect(reachedService).toBe(false);
 			});
 
 			it('still serves a plain session with no bearer presented', async () => {
-				const { organizationIds } = await readCase.invoke({ state: 'absent' });
-				expect(organizationIds).toEqual([SESSION_ORG]);
+				const { reachedService } = await readCase.invoke({ state: 'absent' });
+				expect(reachedService).toBe(true);
 			});
 		});
 	}
@@ -423,11 +361,35 @@ describe('API key read surface', () => {
 			'envelopes:read',
 			'envelopes:send'
 		];
-		const { organizationIds } = await envelopeListCase().invoke({
+		const { reachedService } = await envelopeListCase().invoke({
 			state: 'authenticated',
 			principal: principal({ scopes })
 		});
-		expect(organizationIds).toEqual([GRANTED_ORG]);
+		expect(reachedService).toBe(true);
+	});
+
+	it('acts as the key agent, never as the session user', async () => {
+		const actors: unknown[] = [];
+		const handlers = createEnvelopeHttpHandlers(() => ({
+			create: vi.fn(),
+			get: vi.fn(),
+			getDetail: vi.fn(),
+			list: vi.fn(async (actor: unknown) => {
+				actors.push(actor);
+				return { items: [], nextCursor: null };
+			})
+		}));
+
+		await handlers.list(
+			event({
+				pathname: '/api/v1/envelopes',
+				apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+			})
+		);
+		expect(actors).toEqual([{ id: KEY_ID, createdByUserId: 'user-1', actorType: 'agent' }]);
+
+		await handlers.list(event({ pathname: '/api/v1/envelopes' }));
+		expect(actors[1]).toEqual([{ id: 'user-1', createdByUserId: 'user-1', actorType: 'user' }][0]);
 	});
 });
 
@@ -450,7 +412,7 @@ describe('API key mutation surface', () => {
 					outcome: 'created' as const,
 					envelope: {
 						id: ENVELOPE_ID,
-						organizationId: GRANTED_ORG,
+						createdByUserId: '01900000-0000-7000-8000-000000000001',
 						title: 'Agreement',
 						status: 'draft' as const,
 						repositoryGeneration: 0,
@@ -649,8 +611,8 @@ describe('API key mutation surface', () => {
 
 describe('API key rejected surface', () => {
 	/**
-	 * Privilege escalation: a key must never mint another key, grant itself an
-	 * organization, revoke a grant, bootstrap the instance, or administer members.
+	 * Privilege escalation: a key must never mint another key, bootstrap the
+	 * instance, or administer members.
 	 */
 	const MANAGEMENT: readonly [string, () => Promise<Response>][] = [
 		[
@@ -693,41 +655,6 @@ describe('API key rejected surface', () => {
 						pathname: `/api/v1/api-keys/${KEY_ID}/revoke`,
 						method: 'POST',
 						params: { apiKeyId: KEY_ID },
-						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
-					})
-				)
-		],
-		[
-			'POST /api/v1/api-keys/{apiKeyId}/organization-grants',
-			async (): Promise<Response> =>
-				createApiKeyOrganizationGrantHandlers(() => null).create(
-					event({
-						pathname: `/api/v1/api-keys/${KEY_ID}/organization-grants`,
-						method: 'POST',
-						params: { apiKeyId: KEY_ID },
-						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
-					})
-				)
-		],
-		[
-			'GET /api/v1/api-keys/{apiKeyId}/organization-grants',
-			async (): Promise<Response> =>
-				createApiKeyOrganizationGrantHandlers(() => null).list(
-					event({
-						pathname: `/api/v1/api-keys/${KEY_ID}/organization-grants`,
-						params: { apiKeyId: KEY_ID },
-						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
-					})
-				)
-		],
-		[
-			'POST /api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke',
-			async (): Promise<Response> =>
-				createApiKeyOrganizationGrantHandlers(() => null).revoke(
-					event({
-						pathname: `/api/v1/api-keys/${KEY_ID}/organization-grants/${GRANT_ID}/revoke`,
-						method: 'POST',
-						params: { apiKeyId: KEY_ID, grantId: GRANT_ID },
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
 					})
 				)
@@ -793,6 +720,7 @@ describe('API key rejected surface', () => {
 				createInstanceInvitationHttpHandlers(() => null).list(
 					event({
 						pathname: '/api/v1/instance/invitations',
+						method: 'POST',
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
 					})
 				)
@@ -813,9 +741,9 @@ describe('API key rejected surface', () => {
 			async (): Promise<Response> =>
 				createInstanceInvitationHttpHandlers(() => null).revoke(
 					event({
-						pathname: `/api/v1/instance/invitations/${GRANT_ID}/revoke`,
+						pathname: `/api/v1/instance/invitations/${KEY_ID}/revoke`,
 						method: 'POST',
-						params: { invitationId: GRANT_ID },
+						params: { invitationId: KEY_ID },
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
 					})
 				)

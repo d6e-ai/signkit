@@ -27,16 +27,13 @@ export class PostgresCompletionPdfEvidenceStore implements CompletionPdfEvidence
 		this.#sql = sql;
 	}
 
-	async readFieldGeometry(
-		organizationId: string,
-		envelopeId: string
-	): Promise<readonly CompletionPdfFieldGeometry[]> {
+	async readFieldGeometry(envelopeId: string): Promise<readonly CompletionPdfFieldGeometry[]> {
 		const rows = await this.#sql<GeometryRow[]>`
 			SELECT id, document_id AS "documentId", document_path AS "documentPath", position,
 			       recipient_id AS "recipientId", field_type AS "fieldType", required,
 			       page, x, y, width, height
 			FROM envelope_field
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY document_id ASC, document_path ASC, position ASC, id ASC`;
 		return rows.map((row: GeometryRow): CompletionPdfFieldGeometry => ({
 			id: row.id,

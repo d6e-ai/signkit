@@ -241,7 +241,6 @@ export class CompletionDeliveryService {
 					const id: string = this.#newId();
 					const issued = await issueCompletionToken();
 					const context: CompletionTokenSealContext = {
-						organizationId: recipient.organizationId,
 						envelopeId: recipient.envelopeId,
 						recipientId: recipient.recipientId,
 						deliveryId: id
@@ -249,7 +248,6 @@ export class CompletionDeliveryService {
 					const sealed: SealedCompletionToken = await this.#cryptor.seal(issued.token, context);
 					return {
 						id,
-						organizationId: recipient.organizationId,
 						envelopeId: recipient.envelopeId,
 						recipientId: recipient.recipientId,
 						tokenHash: issued.tokenHash,
@@ -274,7 +272,6 @@ export class CompletionDeliveryService {
 		now: Date
 	): Promise<CompletionDeliveryItemOutcome> {
 		const refreshed: ClaimedCompletionDelivery | null = await this.#store.readClaimedDelivery({
-			organizationId: claim.organizationId,
 			deliveryId: claim.deliveryId,
 			claimToken
 		});
@@ -379,7 +376,6 @@ export class CompletionDeliveryService {
 		}
 
 		const completion: CompleteCompletionDeliveryResult = await this.#store.completeDelivery({
-			organizationId: claim.organizationId,
 			deliveryId: claim.deliveryId,
 			claimToken,
 			deliveredAt: now.toISOString(),
@@ -436,7 +432,6 @@ export class CompletionDeliveryService {
 			attemptsExhausted ? 'delivery_attempts_exhausted' : errorCode
 		);
 		const failure: FailCompletionDeliveryResult = await this.#store.failDelivery({
-			organizationId: claim.organizationId,
 			deliveryId: claim.deliveryId,
 			claimToken,
 			errorCode: safeCode,
@@ -517,13 +512,12 @@ function completionMessage(
 		subject: copy.subject,
 		text: copy.text,
 		html: copy.html,
-		deliveryKey: `signkit-completion-delivery-v1:${claim.organizationId}:${claim.deliveryId}`
+		deliveryKey: `signkit-completion-delivery-v1:${claim.deliveryId}`
 	};
 }
 
 function sealContext(claim: ClaimedCompletionDelivery): CompletionTokenSealContext {
 	return {
-		organizationId: claim.organizationId,
 		envelopeId: claim.envelopeId,
 		recipientId: claim.recipientId,
 		deliveryId: claim.deliveryId

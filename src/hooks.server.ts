@@ -6,19 +6,13 @@ import {
 	resolveApiKeyAuthentication,
 	type ApiKeyAuthenticationRuntimeContext
 } from '$lib/application/api-keys/api-key-authentication-runtime';
+import { resolveInstanceApplication } from '$lib/application/instance/instance-runtime';
 import { isApiKeyAuthenticatedPath, isApiKeyRejectedPath } from '$lib/navigation/api-key-surface';
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
-import { SIGNKIT_ORGANIZATION_HEADER } from '$lib/ports/api-key-authentication-store';
 import { hasAuthorizationHeader, parseBearerApiKey } from '$lib/security/api-key';
-import {
-	D6eAuthRejectedError,
-	organizations,
-	refresh,
-	verifyAccessToken
-} from '$lib/server/d6e-auth';
+import { D6eAuthRejectedError, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
 import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key-authentication';
 import {
-	ORGANIZATION_COOKIE,
 	SESSION_COOKIE,
 	SESSION_COOKIE_OPTIONS,
 	isExpiring,
@@ -97,8 +91,8 @@ export function isCookieSessionSuppressed(
 }
 
 /**
- * Resolves a `signkit_` bearer token into an organization-scoped authority,
- * before any cookie session is considered.
+ * Resolves a `signkit_` bearer token into an instance authority, before any
+ * cookie session is considered.
  *
  * Three properties matter here and all of them are load-bearing:
  *
@@ -111,9 +105,8 @@ export function isCookieSessionSuppressed(
  *    skip the cookie entirely, so a malformed bearer, a foreign credential
  *    family, or an unauthorized key can never fall back to a browser session
  *    that happened to ride along on the same request.
- * 3. The organization selector is validated before the store is even resolved,
- *    so a request that omitted it costs no durable read and learns nothing about
- *    whether its token would have worked.
+ * 3. Authentication is live key plus active owner plus scopes only, answered
+ *    from one durable snapshot. No tenant selector participates.
  *
  * A store that cannot be resolved is `unavailable`, never `absent`: a deployment
  * without a configured database must fail closed rather than silently demote
@@ -145,8 +138,6 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 		return resolve(event);
 	}
 
-	const organizationId: string | null = event.request.headers.get(SIGNKIT_ORGANIZATION_HEADER);
-
 	const context: ApiKeyAuthenticationRuntimeContext = { platform: event.platform };
 	let authentication: ApiKeyAuthenticationPort | null;
 	try {
@@ -167,7 +158,7 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 	}
 
 	try {
-		const result = await authentication.authenticate({ token, organizationId });
+		const result = await authentication.authenticate({ token });
 		event.locals.apiKeyAuthentication =
 			result.outcome === 'authenticated'
 				? { state: 'authenticated', principal: result.principal }
@@ -187,8 +178,8 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 
 export const handleSession: Handle = async ({ event, resolve }) => {
 	event.locals.principal = null;
-	event.locals.memberships = [];
-	event.locals.organizationId = null;
+	event.locals.instanceMembership = null;
+	event.locals.bootstrapped = false;
 	event.locals.identityState = 'anonymous';
 	if (isSessionExcludedPath(event.url.pathname)) return resolve(event);
 	// Bearer mode is exclusive: once an `Authorization` header has been presented
@@ -230,16 +221,37 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 			session.principal = await verifyAccessToken(session.accessToken);
 		}
 
-		const activeMemberships = await organizations(session.accessToken);
-		const remembered = event.cookies.get(ORGANIZATION_COOKIE);
-		const selected =
-			activeMemberships.find((membership) => membership.organization.id === remembered) ??
-			activeMemberships[0] ??
-			null;
+		// d6e-auth proves identity only. The active local instance member is
+		// the sole operator authority, resolved here through the same
+		// instance application resolver the handlers use, on both D1 and
+		// PostgreSQL. A verified identity with no membership stays
+		// authorized for bootstrap and self-profile surfaces only.
+		const application = await resolveInstanceApplication({ platform: event.platform });
+		if (application === null) {
+			event.locals.principal = session.principal;
+			event.locals.identityState = 'unavailable';
+			return resolve(event);
+		}
+		const caller = await application.getCurrentMember({ id: session.principal.subject });
 		event.locals.principal = session.principal;
-		event.locals.memberships = activeMemberships;
-		event.locals.organizationId = selected?.organization.id ?? null;
-		event.locals.identityState = selected ? 'authorized' : 'no_active_organization';
+		event.locals.bootstrapped = caller.bootstrapped;
+		if (caller.member === null) {
+			event.locals.identityState = 'no_membership';
+		} else if (caller.member.status !== 'active') {
+			event.locals.instanceMembership = {
+				userId: caller.member.userId,
+				role: caller.member.role,
+				status: caller.member.status
+			};
+			event.locals.identityState = 'suspended';
+		} else {
+			event.locals.instanceMembership = {
+				userId: caller.member.userId,
+				role: caller.member.role,
+				status: caller.member.status
+			};
+			event.locals.identityState = 'active';
+		}
 	} catch (error) {
 		console.error(
 			JSON.stringify({

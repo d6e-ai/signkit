@@ -46,7 +46,6 @@ class ScriptedPostgres {
 }
 
 const command: PublishReadyEnvelopeCommand = {
-	organizationId: 'org-1',
 	envelopeId: '01910000-0000-7000-8000-000000000001',
 	actorType: 'user',
 	actorId: 'user-1',
@@ -57,7 +56,6 @@ const command: PublishReadyEnvelopeCommand = {
 	recipients: [
 		{
 			id: '01910000-0000-7000-8000-000000000002',
-			organizationId: 'org-1',
 			envelopeId: '01910000-0000-7000-8000-000000000001',
 			email: 'a@example.com',
 			name: 'Alice',
@@ -128,7 +126,6 @@ describe('PostgresEnvelopeReadyStore', () => {
 
 	it('rechecks idempotency after taking the envelope lock', async () => {
 		const replayRow = {
-			organizationId: command.organizationId,
 			envelopeId: command.envelopeId,
 			actorType: command.actorType,
 			actorId: command.actorId,
@@ -144,7 +141,6 @@ describe('PostgresEnvelopeReadyStore', () => {
 			auditEventHash: command.auditEventHash,
 			auditPayloadJson: command.auditPayloadJson,
 			evidenceEventId: command.auditEventId,
-			evidenceOrganizationId: command.organizationId,
 			evidenceEnvelopeId: command.envelopeId,
 			evidenceSequence: 3,
 			evidenceEventType: 'envelope.ready',

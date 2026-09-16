@@ -8,17 +8,16 @@ import {
 } from '$lib/application/completion-artifacts/completion-evidence-service';
 import { createCompletionEvidenceHandler } from './completion-evidence';
 import { createCompletionPdfHandler } from './completion-pdf';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const organizationId = '01900000-0000-7000-8000-000000000010';
 const envelopeId = '01900000-0000-7000-8000-000000000020';
 
 function authorizedLocals(): App.Locals {
-	return organizationScopedLocals('authorized', organizationId);
+	return instanceScopedLocals('active');
 }
 
 function unauthorizedLocals(): App.Locals {
-	return organizationScopedLocals('anonymous', organizationId);
+	return instanceScopedLocals('anonymous');
 }
 
 function event(input: {
@@ -49,7 +48,6 @@ function mockService(
 	return {
 		readEvidence: vi.fn(
 			async (
-				_orgId: string,
 				_envId: string,
 				format: 'json' | 'markdown' = 'json'
 			): Promise<CompletionEvidenceResult | null> => ({
@@ -104,7 +102,7 @@ describe('Completion Evidence HTTP Handler', () => {
 		expect(response.headers.get('cache-control')).toBe('private, no-cache');
 		expect(response.headers.get('etag')).toBe(`"${'d'.repeat(64)}"`);
 		expect(await response.text()).toBe('{"schema":"completion-manifest-v1"}');
-		expect(service.readEvidence).toHaveBeenCalledWith(organizationId, envelopeId, 'json');
+		expect(service.readEvidence).toHaveBeenCalledWith(envelopeId, 'json');
 	});
 
 	it('returns 200 with Markdown evidence when format=markdown is requested', async () => {
@@ -120,7 +118,7 @@ describe('Completion Evidence HTTP Handler', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
 		expect(await response.text()).toBe('# Evidence');
-		expect(service.readEvidence).toHaveBeenCalledWith(organizationId, envelopeId, 'markdown');
+		expect(service.readEvidence).toHaveBeenCalledWith(envelopeId, 'markdown');
 	});
 
 	it('returns 404 when evidence is not published or envelope does not exist', async () => {
@@ -151,8 +149,7 @@ describe('Completion Evidence HTTP Handler', () => {
 
 	it('logs a stable error name and code without object keys when evidence read fails', async () => {
 		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-		const leakedKey =
-			'completion-artifacts/v1/organizations/org-1/envelopes/env-1/sha256/abc.json.gz';
+		const leakedKey = 'completion-artifacts/v1/envelopes/env-1/sha256/abc.json.gz';
 		const handler = createCompletionEvidenceHandler(() =>
 			mockService({
 				readEvidence: async () => {
@@ -212,7 +209,7 @@ describe('Completion PDF HTTP Handler', () => {
 		expect(response.headers.get('content-disposition')).toBe(
 			`inline; filename="completion-${envelopeId}.pdf"`
 		);
-		expect(service.readPdf).toHaveBeenCalledWith(organizationId, envelopeId);
+		expect(service.readPdf).toHaveBeenCalledWith(envelopeId);
 	});
 
 	it('returns 404 when PDF is not published or envelope does not exist', async () => {

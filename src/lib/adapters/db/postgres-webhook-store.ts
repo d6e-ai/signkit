@@ -1,9 +1,6 @@
 import postgres from 'postgres';
 import { newUuidV7 } from '$lib/ids/uuid-v7';
-import {
-	WEBHOOK_MAX_ATTEMPTS,
-	WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION
-} from '$lib/security/webhook';
+import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_ENDPOINTS } from '$lib/security/webhook';
 import {
 	MAX_WEBHOOK_LIST_LIMIT,
 	type ClaimWebhookDeliveriesCommand,
@@ -35,7 +32,6 @@ class WebhookRollback<T> extends Error {
 
 interface EndpointRow {
 	id: string;
-	organizationId: string;
 	url: string;
 	description: string | null;
 	status: string;
@@ -53,7 +49,6 @@ interface CommandRow {
 }
 
 interface OutboxRow {
-	organizationId: string;
 	endpointId: string;
 	auditEventId: string;
 	envelopeId: string;
@@ -79,7 +74,7 @@ interface LogRow {
 	occurredAt: Date | string;
 }
 
-const ENDPOINT_COLUMNS: string = `id, organization_id AS "organizationId", url, description, status,
+const ENDPOINT_COLUMNS: string = `id, url, description, status,
 	events_json AS "eventsJson", secret_prefix AS "secretPrefix", created_at AS "createdAt",
 	created_by_user_id AS "createdByUserId", revoked_at AS "revokedAt",
 	revoked_by_user_id AS "revokedByUserId"`;
@@ -96,10 +91,9 @@ export class PostgresWebhookStore implements WebhookStore {
 	): Promise<CreateWebhookEndpointResult> {
 		try {
 			return await this.#sql.begin(async (sql: postgres.TransactionSql) => {
-				await this.#lockOrganization(sql, command.organizationId);
+				await this.#lockEndpointCreation(sql);
 				const existing: CommandRow | null = await this.#findCommand(
 					sql,
-					command.organizationId,
 					command.actorId,
 					command.idempotencyKey
 				);
@@ -108,16 +102,16 @@ export class PostgresWebhookStore implements WebhookStore {
 				}
 				const [{ n }]: { n: string }[] = await sql<{ n: string }[]>`
 					SELECT COUNT(*)::text AS n FROM webhook_endpoint
-					WHERE organization_id = ${command.organizationId} AND status = 'active'`;
-				if (Number(n) >= WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION) {
+					WHERE status = 'active'`;
+				if (Number(n) >= WEBHOOK_MAX_ENDPOINTS) {
 					throw new WebhookRollback<CreateWebhookEndpointResult>({ outcome: 'limit_exceeded' });
 				}
 				const insertedEndpoint: { id: string }[] = await sql<{ id: string }[]>`
 					INSERT INTO webhook_endpoint (
-						id, organization_id, url, description, status, events_json,
+						id, url, description, status, events_json,
 						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
 					) VALUES (
-						${command.id}, ${command.organizationId}, ${command.url}, ${command.description},
+						${command.id}, ${command.url}, ${command.description},
 						'active', ${command.eventsJson}, ${command.secretHash}, ${command.signingSecret},
 						${command.sealingKeyId}, ${command.secretPrefix}, ${command.createdAt}::timestamptz, ${command.actorId}
 					)
@@ -128,10 +122,10 @@ export class PostgresWebhookStore implements WebhookStore {
 				}
 				const insertedCommand: { webhookId: string }[] = await sql<{ webhookId: string }[]>`
 					INSERT INTO webhook_endpoint_command (
-						organization_id, actor_id, idempotency_key, command_type, request_hash,
+						actor_id, idempotency_key, command_type, request_hash,
 						webhook_id, occurred_at
 					) VALUES (
-						${command.organizationId}, ${command.actorId}, ${command.idempotencyKey}, 'create',
+						${command.actorId}, ${command.idempotencyKey}, 'create',
 						${command.requestFingerprint}, ${command.id}, ${command.createdAt}::timestamptz
 					)
 					ON CONFLICT DO NOTHING
@@ -139,11 +133,7 @@ export class PostgresWebhookStore implements WebhookStore {
 				if (insertedCommand.length !== 1) {
 					throw new WebhookRollback(await this.#classifyCreateCollision(sql, command));
 				}
-				const endpoint: WebhookEndpointMetadata | null = await this.#get(
-					sql,
-					command.organizationId,
-					command.id
-				);
+				const endpoint: WebhookEndpointMetadata | null = await this.#get(sql, command.id);
 				if (endpoint === null) {
 					throw new WebhookRollback<CreateWebhookEndpointResult>({ outcome: 'conflict' });
 				}
@@ -155,22 +145,20 @@ export class PostgresWebhookStore implements WebhookStore {
 		}
 	}
 
-	async listEndpoints(organizationId: string, query: WebhookListQuery): Promise<WebhookListPage> {
+	async listEndpoints(query: WebhookListQuery): Promise<WebhookListPage> {
 		assertListLimit(query.limit);
 		const fetchLimit: number = query.limit + 1;
 		const rows: EndpointRow[] =
 			query.cursor === null
 				? await this.#sql<EndpointRow[]>`
 					SELECT ${this.#sql.unsafe(ENDPOINT_COLUMNS)} FROM webhook_endpoint
-					WHERE organization_id = ${organizationId}
 					ORDER BY created_at DESC, id DESC
 					LIMIT ${fetchLimit}`
 				: await this.#sql<EndpointRow[]>`
 					SELECT ${this.#sql.unsafe(ENDPOINT_COLUMNS)} FROM webhook_endpoint
-					WHERE organization_id = ${organizationId}
-						AND (created_at, id) < (
+					WHERE (created_at, id) < (
 							SELECT created_at, id FROM webhook_endpoint
-							WHERE organization_id = ${organizationId} AND id = ${query.cursor}
+							WHERE id = ${query.cursor}
 							LIMIT 1
 						)
 					ORDER BY created_at DESC, id DESC
@@ -183,11 +171,8 @@ export class PostgresWebhookStore implements WebhookStore {
 		};
 	}
 
-	async getEndpoint(
-		organizationId: string,
-		webhookId: string
-	): Promise<WebhookEndpointMetadata | null> {
-		return this.#get(this.#sql, organizationId, webhookId);
+	async getEndpoint(webhookId: string): Promise<WebhookEndpointMetadata | null> {
+		return this.#get(this.#sql, webhookId);
 	}
 
 	async revokeEndpoint(
@@ -197,7 +182,6 @@ export class PostgresWebhookStore implements WebhookStore {
 			return await this.#sql.begin(async (sql: postgres.TransactionSql) => {
 				const existing: CommandRow | null = await this.#findCommand(
 					sql,
-					command.organizationId,
 					command.actorId,
 					command.idempotencyKey
 				);
@@ -208,25 +192,19 @@ export class PostgresWebhookStore implements WebhookStore {
 					UPDATE webhook_endpoint
 					SET status = 'revoked', revoked_at = ${command.revokedAt}::timestamptz,
 						revoked_by_user_id = ${command.actorId}
-					WHERE organization_id = ${command.organizationId}
-						AND id = ${command.webhookId}
+					WHERE id = ${command.webhookId}
 						AND status = 'active'
 					RETURNING id`;
 				if (updated.length !== 1) {
 					const raced: CommandRow | null = await this.#findCommand(
 						sql,
-						command.organizationId,
 						command.actorId,
 						command.idempotencyKey
 					);
 					if (raced !== null) {
 						throw new WebhookRollback(await this.#replayOrConflictRevoke(sql, command, raced));
 					}
-					const current: WebhookEndpointMetadata | null = await this.#get(
-						sql,
-						command.organizationId,
-						command.webhookId
-					);
+					const current: WebhookEndpointMetadata | null = await this.#get(sql, command.webhookId);
 					if (current === null) {
 						throw new WebhookRollback<RevokeWebhookEndpointResult>({ outcome: 'not_found' });
 					}
@@ -237,10 +215,10 @@ export class PostgresWebhookStore implements WebhookStore {
 				}
 				const insertedCommand: { webhookId: string }[] = await sql<{ webhookId: string }[]>`
 					INSERT INTO webhook_endpoint_command (
-						organization_id, actor_id, idempotency_key, command_type, request_hash,
+						actor_id, idempotency_key, command_type, request_hash,
 						webhook_id, occurred_at
 					) VALUES (
-						${command.organizationId}, ${command.actorId}, ${command.idempotencyKey}, 'revoke',
+						${command.actorId}, ${command.idempotencyKey}, 'revoke',
 						${command.requestFingerprint}, ${command.webhookId}, ${command.revokedAt}::timestamptz
 					)
 					ON CONFLICT DO NOTHING
@@ -248,11 +226,7 @@ export class PostgresWebhookStore implements WebhookStore {
 				if (insertedCommand.length !== 1) {
 					throw new WebhookRollback(await this.#classifyRevokeCollision(sql, command));
 				}
-				const endpoint: WebhookEndpointMetadata | null = await this.#get(
-					sql,
-					command.organizationId,
-					command.webhookId
-				);
+				const endpoint: WebhookEndpointMetadata | null = await this.#get(sql, command.webhookId);
 				if (endpoint === null) {
 					throw new WebhookRollback<RevokeWebhookEndpointResult>({ outcome: 'not_found' });
 				}
@@ -269,7 +243,7 @@ export class PostgresWebhookStore implements WebhookStore {
 	): Promise<readonly WebhookOutboxRow[]> {
 		const rows: OutboxRow[] = await this.#sql<OutboxRow[]>`
 			WITH candidates AS (
-				SELECT organization_id, endpoint_id, audit_event_id
+				SELECT endpoint_id, audit_event_id
 				FROM webhook_outbox
 				WHERE (
 					(status IN ('pending', 'failed')
@@ -289,14 +263,11 @@ export class PostgresWebhookStore implements WebhookStore {
 				attempts = outbox.attempts + 1,
 				updated_at = ${command.claimedAt}::timestamptz
 			FROM candidates, webhook_endpoint endpoint
-			WHERE outbox.organization_id = candidates.organization_id
-				AND outbox.endpoint_id = candidates.endpoint_id
+			WHERE outbox.endpoint_id = candidates.endpoint_id
 				AND outbox.audit_event_id = candidates.audit_event_id
-				AND endpoint.organization_id = outbox.organization_id
 				AND endpoint.id = outbox.endpoint_id
 				AND endpoint.status = 'active'
 			RETURNING
-				outbox.organization_id AS "organizationId",
 				outbox.endpoint_id AS "endpointId",
 				outbox.audit_event_id AS "auditEventId",
 				outbox.envelope_id AS "envelopeId",
@@ -314,14 +285,12 @@ export class PostgresWebhookStore implements WebhookStore {
 	}
 
 	async readClaimedDelivery(
-		organizationId: string,
 		endpointId: string,
 		auditEventId: string,
 		claimToken: string
 	): Promise<WebhookOutboxRow | null> {
 		const rows: OutboxRow[] = await this.#sql<OutboxRow[]>`
 			SELECT
-				outbox.organization_id AS "organizationId",
 				outbox.endpoint_id AS "endpointId",
 				outbox.audit_event_id AS "auditEventId",
 				outbox.envelope_id AS "envelopeId",
@@ -337,10 +306,8 @@ export class PostgresWebhookStore implements WebhookStore {
 				endpoint.sealing_key_id AS "sealingKeyId"
 			FROM webhook_outbox outbox
 			INNER JOIN webhook_endpoint endpoint
-				ON endpoint.organization_id = outbox.organization_id
-				AND endpoint.id = outbox.endpoint_id
-			WHERE outbox.organization_id = ${organizationId}
-				AND outbox.endpoint_id = ${endpointId}
+				ON endpoint.id = outbox.endpoint_id
+			WHERE outbox.endpoint_id = ${endpointId}
 				AND outbox.audit_event_id = ${auditEventId}
 				AND outbox.claim_token = ${claimToken}
 				AND outbox.status = 'processing'`;
@@ -359,8 +326,7 @@ export class PostgresWebhookStore implements WebhookStore {
 					UPDATE webhook_outbox
 					SET status = 'delivered', claim_token = NULL, locked_at = NULL,
 						updated_at = ${command.deliveredAt}::timestamptz
-					WHERE organization_id = ${command.organizationId}
-						AND endpoint_id = ${command.endpointId}
+					WHERE endpoint_id = ${command.endpointId}
 						AND audit_event_id = ${command.auditEventId}
 						AND status = 'processing'
 						AND claim_token = ${command.claimToken}
@@ -370,10 +336,10 @@ export class PostgresWebhookStore implements WebhookStore {
 				}
 				await sql`
 					INSERT INTO webhook_delivery_log (
-						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						id, endpoint_id, audit_event_id, event_type, status,
 						attempt, http_status, error_code, occurred_at
 					) VALUES (
-						${logId}, ${command.organizationId}, ${command.endpointId}, ${command.auditEventId},
+						${logId}, ${command.endpointId}, ${command.auditEventId},
 						${updated[0].eventType}, 'delivered', ${updated[0].attempts}, ${command.httpStatus},
 						NULL, ${command.deliveredAt}::timestamptz
 					)`;
@@ -401,8 +367,7 @@ export class PostgresWebhookStore implements WebhookStore {
 						last_error = ${command.errorCode},
 						updated_at = ${command.failedAt}::timestamptz,
 						retryable = ${command.retryable}
-					WHERE organization_id = ${command.organizationId}
-						AND endpoint_id = ${command.endpointId}
+					WHERE endpoint_id = ${command.endpointId}
 						AND audit_event_id = ${command.auditEventId}
 						AND status = 'processing'
 						AND claim_token = ${command.claimToken}
@@ -412,10 +377,10 @@ export class PostgresWebhookStore implements WebhookStore {
 				}
 				await sql`
 					INSERT INTO webhook_delivery_log (
-						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						id, endpoint_id, audit_event_id, event_type, status,
 						attempt, http_status, error_code, occurred_at
 					) VALUES (
-						${logId}, ${command.organizationId}, ${command.endpointId}, ${command.auditEventId},
+						${logId}, ${command.endpointId}, ${command.auditEventId},
 						${updated[0].eventType}, ${logStatus}, ${updated[0].attempts}, ${command.httpStatus},
 						${command.errorCode}, ${command.failedAt}::timestamptz
 					)`;
@@ -432,7 +397,7 @@ export class PostgresWebhookStore implements WebhookStore {
 		limit: number
 	): Promise<readonly WebhookSigningSecretRow[]> {
 		const rows: WebhookSigningSecretRow[] = await this.#sql<WebhookSigningSecretRow[]>`
-			SELECT organization_id AS "organizationId", id AS "endpointId",
+			SELECT id AS "endpointId",
 				signing_secret AS "signingSecret", sealing_key_id AS "sealingKeyId"
 			FROM webhook_endpoint
 			WHERE sealing_key_id IS NULL OR sealing_key_id <> ${activeSealingKeyId}
@@ -449,22 +414,19 @@ export class PostgresWebhookStore implements WebhookStore {
 				? await this.#sql<{ endpointId: string }[]>`
 					UPDATE webhook_endpoint
 					SET signing_secret = ${command.signingSecret}, sealing_key_id = ${command.sealingKeyId}
-					WHERE organization_id = ${command.organizationId}
-						AND id = ${command.endpointId}
+					WHERE id = ${command.endpointId}
 						AND sealing_key_id IS NULL
 					RETURNING id AS "endpointId"`
 				: await this.#sql<{ endpointId: string }[]>`
 					UPDATE webhook_endpoint
 					SET signing_secret = ${command.signingSecret}, sealing_key_id = ${command.sealingKeyId}
-					WHERE organization_id = ${command.organizationId}
-						AND id = ${command.endpointId}
+					WHERE id = ${command.endpointId}
 						AND sealing_key_id = ${command.previousSealingKeyId}
 					RETURNING id AS "endpointId"`;
 		return rows.length === 1 ? { outcome: 'resealed' } : { outcome: 'stale' };
 	}
 
 	async listDeliveryLogs(
-		organizationId: string,
 		webhookId: string,
 		query: WebhookListQuery
 	): Promise<WebhookDeliveryLogPage> {
@@ -477,7 +439,7 @@ export class PostgresWebhookStore implements WebhookStore {
 						http_status AS "httpStatus", error_code AS "errorCode",
 						occurred_at AS "occurredAt"
 					FROM webhook_delivery_log
-					WHERE organization_id = ${organizationId} AND endpoint_id = ${webhookId}
+					WHERE endpoint_id = ${webhookId}
 					ORDER BY occurred_at DESC, id DESC
 					LIMIT ${fetchLimit}`
 				: await this.#sql<LogRow[]>`
@@ -485,10 +447,10 @@ export class PostgresWebhookStore implements WebhookStore {
 						http_status AS "httpStatus", error_code AS "errorCode",
 						occurred_at AS "occurredAt"
 					FROM webhook_delivery_log
-					WHERE organization_id = ${organizationId} AND endpoint_id = ${webhookId}
+					WHERE endpoint_id = ${webhookId}
 						AND (occurred_at, id) < (
 							SELECT occurred_at, id FROM webhook_delivery_log
-							WHERE organization_id = ${organizationId} AND id = ${query.cursor}
+							WHERE id = ${query.cursor}
 							LIMIT 1
 						)
 					ORDER BY occurred_at DESC, id DESC
@@ -509,33 +471,33 @@ export class PostgresWebhookStore implements WebhookStore {
 		};
 	}
 
-	async #get(
-		sql: Sql,
-		organizationId: string,
-		webhookId: string
-	): Promise<WebhookEndpointMetadata | null> {
+	async #get(sql: Sql, webhookId: string): Promise<WebhookEndpointMetadata | null> {
 		const rows: EndpointRow[] = await sql<EndpointRow[]>`
 			SELECT ${sql.unsafe(ENDPOINT_COLUMNS)} FROM webhook_endpoint
-			WHERE organization_id = ${organizationId} AND id = ${webhookId}`;
+			WHERE id = ${webhookId}`;
 		return rows[0] === undefined ? null : metadataFromRow(rows[0]);
 	}
 
-	async #lockOrganization(sql: Sql, organizationId: string): Promise<void> {
-		await sql`
-			SELECT id FROM organization WHERE id = ${organizationId} FOR NO KEY UPDATE`;
+	/**
+	 * Serializes endpoint creation for this database-backed SignKit instance.
+	 * The former organization row lock also protected the active-endpoint cap
+	 * and same-key replay classification. With one instance per database there
+	 * is no row to lock, so a transaction-scoped two-key advisory lock preserves
+	 * that invariant without reintroducing a synthetic tenant record.
+	 */
+	async #lockEndpointCreation(sql: Sql): Promise<void> {
+		await sql`SELECT pg_advisory_xact_lock(1397311310, 1464158547)`;
 	}
 
 	async #findCommand(
 		sql: Sql,
-		organizationId: string,
 		actorId: string,
 		idempotencyKey: string
 	): Promise<CommandRow | null> {
 		const existing: CommandRow[] = await sql<CommandRow[]>`
 			SELECT request_hash AS "requestHash", webhook_id AS "webhookId"
 			FROM webhook_endpoint_command
-			WHERE organization_id = ${organizationId}
-				AND actor_id = ${actorId}
+			WHERE actor_id = ${actorId}
 				AND idempotency_key = ${idempotencyKey}
 			FOR UPDATE`;
 		return existing[0] ?? null;
@@ -547,7 +509,6 @@ export class PostgresWebhookStore implements WebhookStore {
 	): Promise<CreateWebhookEndpointResult> {
 		const existing: CommandRow | null = await this.#findCommand(
 			sql,
-			command.organizationId,
 			command.actorId,
 			command.idempotencyKey
 		);
@@ -561,7 +522,6 @@ export class PostgresWebhookStore implements WebhookStore {
 	): Promise<RevokeWebhookEndpointResult> {
 		const existing: CommandRow | null = await this.#findCommand(
 			sql,
-			command.organizationId,
 			command.actorId,
 			command.idempotencyKey
 		);
@@ -575,11 +535,7 @@ export class PostgresWebhookStore implements WebhookStore {
 		row: CommandRow
 	): Promise<CreateWebhookEndpointResult> {
 		if (row.requestHash !== command.requestFingerprint) return { outcome: 'conflict' };
-		const endpoint: WebhookEndpointMetadata | null = await this.#get(
-			sql,
-			command.organizationId,
-			row.webhookId
-		);
+		const endpoint: WebhookEndpointMetadata | null = await this.#get(sql, row.webhookId);
 		return endpoint === null ? { outcome: 'conflict' } : { outcome: 'replayed', endpoint };
 	}
 
@@ -589,11 +545,7 @@ export class PostgresWebhookStore implements WebhookStore {
 		row: CommandRow
 	): Promise<RevokeWebhookEndpointResult> {
 		if (row.requestHash !== command.requestFingerprint) return { outcome: 'conflict' };
-		const endpoint: WebhookEndpointMetadata | null = await this.#get(
-			sql,
-			command.organizationId,
-			row.webhookId
-		);
+		const endpoint: WebhookEndpointMetadata | null = await this.#get(sql, row.webhookId);
 		return endpoint === null ? { outcome: 'not_found' } : { outcome: 'replayed', endpoint };
 	}
 }
@@ -619,7 +571,6 @@ function metadataFromRow(row: EndpointRow): WebhookEndpointMetadata {
 	if (createdAt === null) throw new Error('Stored webhook createdAt is not canonical');
 	return {
 		id: row.id,
-		organizationId: row.organizationId,
 		url: row.url,
 		description: row.description,
 		status: row.status as WebhookStatus,
@@ -635,7 +586,6 @@ function metadataFromRow(row: EndpointRow): WebhookEndpointMetadata {
 function outboxFromRow(row: OutboxRow): WebhookOutboxRow {
 	if (row.claimToken === null) throw new Error('Claimed webhook row is missing a claim token');
 	return {
-		organizationId: row.organizationId,
 		endpointId: row.endpointId,
 		auditEventId: row.auditEventId,
 		envelopeId: row.envelopeId,

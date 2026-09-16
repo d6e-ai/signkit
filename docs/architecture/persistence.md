@@ -1,17 +1,27 @@
 # Persistence
 
-Status: implemented
+SignKit supports PostgreSQL 18 for Node deployments and D1 for Cloudflare Workers. Each deployment database is one complete SignKit instance.
 
-The initial profiles are:
+## Identity and ownership
 
-| Runtime     | Database   | Objects               | Background work                         |
-| ----------- | ---------- | --------------------- | --------------------------------------- |
-| Node/Docker | PostgreSQL | S3-compatible         | protected outbox drain + SMTP/REST mail |
-| Cloudflare  | D1 binding | native R2 binding     | scheduled D1 outbox + email binding     |
-| Vercel      | PostgreSQL | external S3 initially | platform-specific                       |
+`instance_member` is keyed by the d6e-auth subject and stores only local role, status, and timestamps. `instance_bootstrap` records the first owner claim. Invitations bind a verified email to a future local member.
 
-D1 and PostgreSQL keep distinct migrations behind the same domain-shaped ports. The shared model avoids database enums, arrays, and mandatory JSON-specific column types. Every tenant-owned table carries `organization_id`; composite keys and foreign keys include it so rows cannot be linked across tenants accidentally. Instance-scoped tables (`instance_member`, `instance_bootstrap`, `instance_bootstrap_command`, `api_key`, and the API-key command receipts) do not carry `organization_id` or `instance_id`: one deployment database is the instance boundary, and API keys are owned by a local member rather than a d6e organization. `api_key_organization_grant` and its two command receipts are the single deliberate exception and are neither instance-scoped nor tenant-owned: they are the bridge table that names an organization precisely because their whole purpose is to record that a local instance-scoped key has been explicitly granted access to one external d6e organization. They therefore carry `organization_id` without being part of any tenant's own data, and they are keyed by their own UUIDv7 rather than by a composite tenant key.
+Every envelope has a required `created_by_user_id` foreign key to `instance_member`. Every API key has a required `owner_user_id` foreign key to the member that created it. There is no separate tenant table, instance id column, selector, or API-key grant table.
 
-SQL and object storage do not share a transaction. Objects are immutable; a successful SQL CAS publishes the new pointer. Failed uploads remain invisible and are reclaimed by the bounded orphan sweep (`POST /api/v1/system/objects/orphan-sweep`) only after a 24-hour grace period and a SQL reference check. Each run scans at most 1,000 objects and persists a server-owned resume key so later scheduled runs walk past a first page of still-live objects rather than starving later orphans. Callers cannot supply that cursor, shorten the grace period, or name a destructive prefix.
+## Envelope data
 
-R2 is used through its in-process Worker binding, not the S3/REST endpoint. Node uses the S3 adapter. Native Vercel Blob is not S3-compatible and remains a separate future adapter.
+SQL stores envelope state, recipient routing, field placement and values, immutable command receipts, delivery outboxes, webhook state, and the audit chain. Large immutable bytes live behind `ObjectStore` in S3-compatible storage or R2.
+
+Draft revisions are gzip-compressed Git archives. Uploaded PDFs and derived PDFs are stored as objects; Git tracks the ordered document manifest and content digests rather than embedding uploaded binary documents.
+
+Object keys are namespaced by envelope and content digest. Rows retain SHA-256 digests and sizes so restored bytes can be checked before use.
+
+## Concurrency and evidence
+
+Mutations use expected generations or expected states plus `Idempotency-Key` receipts. PostgreSQL uses explicit transactions and row locks. D1 uses command tables and rollback triggers to publish related state atomically.
+
+Audit events are append-only and use hash version 3. The preimage includes the hash version, envelope id, sequence, event type, actor type and id, timestamp, payload, and previous hash.
+
+## Migration policy
+
+The D1 and PostgreSQL migration sets describe a fresh database. The 2026-09-16 single-instance change deliberately rewrote the pre-release histories; databases created from older releases must be recreated rather than upgraded in place. See [the ADR](decisions/2026-09-16-single-instance-authorization.md).

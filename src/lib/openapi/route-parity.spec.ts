@@ -160,7 +160,6 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 			expect(get.security).toEqual([{ SignKitApiKey: [] }, { SessionCookie: [] }]);
 			expect(get.parameters).toEqual(
 				expect.arrayContaining([
-					expect.objectContaining({ name: 'SignKit-Organization-Id', in: 'header' }),
 					expect.objectContaining({ name: 'envelopeId', in: 'path', required: true }),
 					expect.objectContaining(evidenceFormat)
 				])

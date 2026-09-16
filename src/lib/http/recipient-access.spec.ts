@@ -9,7 +9,6 @@ import {
 
 const token: string = `skr1_${'A'.repeat(43)}`;
 const context: RecipientSigningContext = {
-	organizationId: 'org-secret',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	recipientName: 'Private Recipient',
@@ -35,7 +34,6 @@ function event(authorization?: string): RequestEvent {
 			apiKeyAuthentication: { state: 'absent' },
 			identityState: 'unavailable',
 			memberships: [],
-			organizationId: null,
 			principal: null
 		},
 		params: {},

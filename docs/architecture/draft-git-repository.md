@@ -25,7 +25,7 @@ Each edit performs these steps:
 Recommended key:
 
 ```text
-draft-repositories/v1/organizations/{organization}/envelopes/{envelope}/sha256/{sha256}.git.gz
+draft-repositories/v1/envelopes/{envelope}/sha256/{sha256}.git.gz
 ```
 
 Git SHA-1 identifies revisions but is not the storage integrity boundary. Every archive and final artifact also has a SHA-256 digest. The current application service implements bounded archive reads, external SHA-256 verification, immutable object writes, and generation-based publication. `GET /api/v1/envelopes/{envelopeId}/draft` exposes normalized Markdown without leaking the internal object key or archive bytes. `POST /api/v1/envelopes/{envelopeId}/draft/commits` accepts one to fifty direct `documents/*.md` edits, requires an expected generation and idempotency key, and optionally records automation provenance. `POST /api/v1/envelopes/{envelopeId}/draft/docx` converts a bounded DOCX upload into one Markdown edit and commits it through that same path — the DOCX bytes are discarded after conversion and are never written to the Git archive. D1 uses a trigger-backed command table and PostgreSQL uses a row lock plus transaction so the pointer, replay result, and audit event become visible together. Unreferenced uploads are collected later by `POST /api/v1/system/objects/orphan-sweep` after the 24-hour grace period; they are never deleted on the request path.

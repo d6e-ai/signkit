@@ -8,7 +8,6 @@ import type {
 
 interface DocumentRow {
 	id: string;
-	organization_id: string;
 	envelope_id: string;
 	markdown_path: string;
 	title: string;
@@ -18,7 +17,6 @@ interface DocumentRow {
 function toDomain(row: DocumentRow): EnvelopeDocument {
 	return {
 		id: row.id,
-		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,
 		markdownPath: row.markdown_path as `documents/${string}.md`,
 		title: row.title,
@@ -35,31 +33,24 @@ export class D1EnvelopeDocumentStore implements EnvelopeDocumentStore {
 		this.#newId = newId;
 	}
 
-	async listForEnvelope(
-		organizationId: string,
-		envelopeId: string
-	): Promise<readonly EnvelopeDocument[]> {
+	async listForEnvelope(envelopeId: string): Promise<readonly EnvelopeDocument[]> {
 		const result = await this.#database
 			.prepare(
-				`SELECT id, organization_id, envelope_id, markdown_path, title, position
+				`SELECT id, envelope_id, markdown_path, title, position
 				 FROM envelope_document
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY position`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<DocumentRow>();
 		return result.results.map(toDomain);
 	}
 
 	async sync(
-		organizationId: string,
 		envelopeId: string,
 		documents: readonly EnvelopeDocumentInput[]
 	): Promise<readonly EnvelopeDocument[]> {
-		const existing: readonly EnvelopeDocument[] = await this.listForEnvelope(
-			organizationId,
-			envelopeId
-		);
+		const existing: readonly EnvelopeDocument[] = await this.listForEnvelope(envelopeId);
 		const existingByPath: Map<string, EnvelopeDocument> = new Map(
 			existing.map((document: EnvelopeDocument): [string, EnvelopeDocument] => [
 				document.markdownPath,
@@ -72,7 +63,6 @@ export class D1EnvelopeDocumentStore implements EnvelopeDocumentStore {
 				const current: EnvelopeDocument | undefined = existingByPath.get(input.markdownPath);
 				return {
 					id: current?.id ?? this.#newId(),
-					organizationId,
 					envelopeId,
 					markdownPath: input.markdownPath,
 					title: current?.title ?? input.title ?? titleFromMarkdownPath(input.markdownPath),
@@ -83,18 +73,17 @@ export class D1EnvelopeDocumentStore implements EnvelopeDocumentStore {
 
 		const statements: D1PreparedStatement[] = [
 			this.#database
-				.prepare('DELETE FROM envelope_document WHERE organization_id = ? AND envelope_id = ?')
-				.bind(organizationId, envelopeId),
+				.prepare('DELETE FROM envelope_document WHERE envelope_id = ?')
+				.bind(envelopeId),
 			...next.map((document: EnvelopeDocument): D1PreparedStatement =>
 				this.#database
 					.prepare(
 						`INSERT INTO envelope_document (
-							id, organization_id, envelope_id, markdown_path, title, position, created_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+							id, envelope_id, markdown_path, title, position, created_at, updated_at
+						) VALUES (?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
 						document.id,
-						organizationId,
 						envelopeId,
 						document.markdownPath,
 						document.title,
@@ -110,7 +99,6 @@ export class D1EnvelopeDocumentStore implements EnvelopeDocumentStore {
 	}
 
 	async renameDocument(
-		organizationId: string,
 		envelopeId: string,
 		markdownPath: `documents/${string}.md`,
 		title: string
@@ -119,18 +107,18 @@ export class D1EnvelopeDocumentStore implements EnvelopeDocumentStore {
 		const result = await this.#database
 			.prepare(
 				`UPDATE envelope_document SET title = ?, updated_at = ?
-				 WHERE organization_id = ? AND envelope_id = ? AND markdown_path = ?`
+				 WHERE envelope_id = ? AND markdown_path = ?`
 			)
-			.bind(title, now, organizationId, envelopeId, markdownPath)
+			.bind(title, now, envelopeId, markdownPath)
 			.run();
 		if (result.meta.changes !== 1) return null;
 		const row: DocumentRow | null = await this.#database
 			.prepare(
-				`SELECT id, organization_id, envelope_id, markdown_path, title, position
+				`SELECT id, envelope_id, markdown_path, title, position
 				 FROM envelope_document
-				 WHERE organization_id = ? AND envelope_id = ? AND markdown_path = ?`
+				 WHERE envelope_id = ? AND markdown_path = ?`
 			)
-			.bind(organizationId, envelopeId, markdownPath)
+			.bind(envelopeId, markdownPath)
 			.first<DocumentRow>();
 		return row === null ? null : toDomain(row);
 	}

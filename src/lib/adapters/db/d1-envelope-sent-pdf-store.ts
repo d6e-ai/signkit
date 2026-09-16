@@ -5,7 +5,6 @@ import type {
 } from '$lib/ports/envelope-sent-pdf-store';
 
 interface SentPdfRow {
-	organization_id: string;
 	envelope_id: string;
 	commit_sha: string;
 	object_key: string;
@@ -25,28 +24,23 @@ export class D1EnvelopeSentPdfStore implements EnvelopeSentPdfStore {
 		this.#database = database;
 	}
 
-	async findSentPdf(
-		organizationId: string,
-		envelopeId: string,
-		commitSha: string
-	): Promise<SentPdfPointer | null> {
+	async findSentPdf(envelopeId: string, commitSha: string): Promise<SentPdfPointer | null> {
 		// The join back to `envelope` is what keeps a pointer from outliving the
 		// revision it describes: a row for a commit the envelope is no longer
 		// sent at is simply not visible here.
 		const row: SentPdfRow | null = await this.#database
 			.prepare(
-				`SELECT pdf.organization_id, pdf.envelope_id, pdf.commit_sha, pdf.object_key,
+				`SELECT pdf.envelope_id, pdf.commit_sha, pdf.object_key,
 					pdf.sha256, pdf.byte_size, pdf.page_count, pdf.page_width, pdf.page_height,
 					pdf.document_pages_json, pdf.created_at
 				 FROM envelope_sent_pdf pdf
 				 INNER JOIN envelope
-					ON envelope.organization_id = pdf.organization_id
-					AND envelope.id = pdf.envelope_id
+					ON envelope.id = pdf.envelope_id
 					AND envelope.sent_commit_sha = pdf.commit_sha
-				 WHERE pdf.organization_id = ? AND pdf.envelope_id = ? AND pdf.commit_sha = ?
+				 WHERE pdf.envelope_id = ? AND pdf.commit_sha = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, envelopeId, commitSha)
+			.bind(envelopeId, commitSha)
 			.first<SentPdfRow>();
 		return row === null ? null : toPointer(row);
 	}
@@ -59,7 +53,6 @@ export function toPointer(row: SentPdfRow): SentPdfPointer | null {
 	);
 	if (documents === null) return null;
 	return {
-		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,
 		commitSha: row.commit_sha,
 		objectKey: row.object_key,

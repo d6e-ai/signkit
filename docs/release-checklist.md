@@ -10,10 +10,11 @@ asset.
 
 ## 1. Version and changelog
 
-1. Set the same version in all three versioned packages: root `package.json`,
-   `packages/create-signkit/package.json`, and `cli/Cargo.toml` (`[package]
-version`). The tag workflow refuses to release when `v<tag>` differs from
-   any of them, and `publish-npm` re-checks all three before publishing.
+1. Set the same product version in root `package.json` and `cli/Cargo.toml`
+   (`[package] version`). The deployment CLI in
+   `packages/create-signkit/package.json` is versioned independently because
+   npm versions are immutable. The tag workflow validates both semver lines
+   and publishes the npm package only when that exact CLI version is absent.
 2. Move the `CHANGELOG.md` entry out of `[Unreleased]` into `[<version>] -
 YYYY-MM-DD` with the real date. Keep entries in Keep a Changelog style;
    the `Security` section must name the current residual risks, not imply

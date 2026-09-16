@@ -396,45 +396,18 @@ describe('D1OrphanReferenceStore', () => {
 		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
 		applyD1Migrations(sqlite);
 		const sha256: string = 'ab'.repeat(32);
-		const organizationId: string = 'org-1';
 		const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 		const recipientId: string = '01900000-0000-7000-8000-000000000002';
 		const fieldId: string = '01900000-0000-7000-8000-000000000003';
-		const assetKey = `signature-assets/v1/organizations/${organizationId}/envelopes/${envelopeId}/recipients/${recipientId}/sha256/${sha256}.png`;
-		const foreignAssetKey = `signature-assets/v1/organizations/org-other/envelopes/${envelopeId}/recipients/${recipientId}/sha256/${sha256}.png`;
+		const assetKey = `signature-assets/v1/envelopes/${envelopeId}/recipients/${recipientId}/sha256/${sha256}.png`;
+		const foreignAssetKey = `signature-assets/v1/envelopes/${envelopeId}/recipients/${recipientId}/sha256/${'cd'.repeat(32)}.png`;
 		sqlite.exec(`
-			INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			VALUES ('${organizationId}', '${organizationId}', 'Workspace', '2026-09-11T00:00:00.000Z');
-			INSERT INTO envelope (
-				id, organization_id, title, status, repository_generation, created_at, updated_at
-			) VALUES (
-				'${envelopeId}', '${organizationId}', 'Agreement', 'completed', 1,
-				'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
-			);
-			INSERT INTO recipient (
-				id, organization_id, envelope_id, role, routing_order, name, email, locale,
-				status, created_at, updated_at
-			) VALUES (
-				'${recipientId}', '${organizationId}', '${envelopeId}', 'signer', 1, 'Signer',
-				'signer@example.test', 'en', 'completed', '2026-09-11T00:00:00.000Z',
-				'2026-09-11T00:00:00.000Z'
-			);
-			INSERT INTO envelope_field (
-				id, organization_id, envelope_id, recipient_id, document_path, field_type, label,
-				required, position, created_at, updated_at
-			) VALUES (
-				'${fieldId}', '${organizationId}', '${envelopeId}', '${recipientId}',
-				'documents/agreement.md', 'signature', 'Signature', 1, 0,
-				'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
-			);
-			INSERT INTO field_value (
-				organization_id, field_id, envelope_id, recipient_id, field_type,
-				value_json, value_sha256, created_at
-			) VALUES (
-				'${organizationId}', '${fieldId}', '${envelopeId}', '${recipientId}', 'signature',
-				'${JSON.stringify(`sig:sha256:${sha256}`)}', '${'c'.repeat(64)}',
-				'2026-09-11T00:00:00.000Z'
-			);
+			INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
+			INSERT INTO envelope (id, created_by_user_id, title, status, repository_generation, created_at, updated_at) VALUES ('${envelopeId}', 'user-1', 'Agreement', 'completed', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
+			INSERT INTO recipient (id, envelope_id, role, routing_order, name, email, locale, status, created_at, updated_at) VALUES ('${recipientId}', '${envelopeId}', 'signer', 1, 'Signer', 'signer@example.test', 'en', 'completed', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
+			INSERT INTO envelope_field (id, envelope_id, recipient_id, document_path, field_type, label, required, position, created_at, updated_at) VALUES ('${fieldId}', '${envelopeId}', '${recipientId}', 'documents/agreement.md', 'signature', 'Signature', 1, 0, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
+			INSERT INTO field_value (field_id, envelope_id, recipient_id, field_type, value_json, value_sha256, created_at) VALUES ('${fieldId}', '${envelopeId}', '${recipientId}', 'signature', '${JSON.stringify(`sig:sha256:${sha256}`)}', '${'c'.repeat(64)}', '2026-09-11T00:00:00.000Z');
 		`);
 		try {
 			const store = new D1OrphanReferenceStore(sqliteD1Database(sqlite));

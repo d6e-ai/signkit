@@ -6,7 +6,6 @@
 -- delivery progress.
 CREATE TABLE completion_delivery_outbox (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   recipient_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'delivered', 'failed')),
@@ -28,10 +27,10 @@ CREATE TABLE completion_delivery_outbox (
   retryable INTEGER NOT NULL DEFAULT 1 CHECK (retryable IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  UNIQUE (organization_id, envelope_id, recipient_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES completion_artifact(organization_id, envelope_id),
-  FOREIGN KEY (organization_id, recipient_id) REFERENCES recipient(organization_id, id),
+  PRIMARY KEY (id),
+  UNIQUE (envelope_id, recipient_id),
+  FOREIGN KEY (envelope_id) REFERENCES completion_artifact(envelope_id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   -- The grant token and claim token above stay opaque; only this row
   -- identifier is a SignKit-minted UUIDv7.
   CONSTRAINT completion_delivery_id_uuidv7 CHECK (
@@ -136,8 +135,7 @@ CREATE TRIGGER completion_delivery_outbox_recipient_scope_insert_guard
 BEFORE INSERT ON completion_delivery_outbox
 WHEN NOT EXISTS (
   SELECT 1 FROM recipient target
-  WHERE target.organization_id = NEW.organization_id
-    AND target.envelope_id = NEW.envelope_id
+  WHERE target.envelope_id = NEW.envelope_id
     AND target.id = NEW.recipient_id
     AND target.role IN ('signer', 'approver', 'viewer', 'cc')
 )
@@ -146,11 +144,10 @@ BEGIN
 END;
 
 CREATE TRIGGER completion_delivery_outbox_recipient_scope_update_guard
-BEFORE UPDATE OF organization_id, envelope_id, recipient_id ON completion_delivery_outbox
+BEFORE UPDATE OF envelope_id, recipient_id ON completion_delivery_outbox
 WHEN NOT EXISTS (
   SELECT 1 FROM recipient target
-  WHERE target.organization_id = NEW.organization_id
-    AND target.envelope_id = NEW.envelope_id
+  WHERE target.envelope_id = NEW.envelope_id
     AND target.id = NEW.recipient_id
     AND target.role IN ('signer', 'approver', 'viewer', 'cc')
 )

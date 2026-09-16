@@ -6,32 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-09-16
-
-### Added
-
-- Safe Cloudflare secret bootstrap for `create-signkit` (#102): pristine deployments accept the d6e-auth OAuth pair through bounded exact-key stdin and generate the three independent internal secrets before any Cloudflare mutation.
-
-### Changed
-
-- Recovery material is stored as an exclusive target-bound `0600` pair, revalidated by fingerprint, and copied to a private temporary `--secrets-file`; existing deployments restore only missing secret names without resetting present values.
-
-### Security
-
-- Unknown secret taxonomies, unsafe paths, target drift, post-validation recovery changes, and Windows hosts without enforceable POSIX owner/mode guarantees now fail closed.
-
-## [0.1.1] - 2026-09-15
-
-### Changed
-
-- Trusted npm publishing hardening (#98).
-- Authoring UI refinements (#100): continuous circular spinner, `px-4` content alignment, divider removal, envelope detail breadcrumbs, unified PDF/DOCX add-document dialog, and user-facing copy cleanup.
-
-### Fixed
-
-- Review fixes (#100): `/envelopes/new` breadcrumbs and imported Word selection.
-
-## [0.1.0] - 2026-09-15
+## [0.1.0] - 2026-09-16
 
 First tagged release. Summary of major capabilities as implemented today:
 
@@ -40,17 +15,17 @@ First tagged release. Summary of major capabilities as implemented today:
 - Envelope drafting and sending workflow: Markdown drafts tracked in a per-envelope Git repository, DOCX import/export, recipient graphs (signer/approver/viewer/cc/prefill) with routing order, signing-field placement with normalized page geometry, send/void/reissue commands, and one-shot recipient signing, approval, and decline.
 - Two persistence adapters behind the same ports: Cloudflare D1 (Workers profile) and PostgreSQL 18 (Node/Docker and Vercel profiles), with dialect-specific migrations kept in parity by shared test suites.
 - Object storage over R2 (Cloudflare binding) or any S3-compatible service (Node/Docker, Vercel).
-- Webhook delivery: organization-scoped endpoints, HMAC-SHA256 signed payloads, subscribed audit-event catalog, delivery history, and a drain with fail-closed SSRF protections (public-address checks, DNS rebinding mitigation).
+- Webhook delivery: instance-owner/admin-managed endpoints, HMAC-SHA256 signed payloads, subscribed audit-event catalog, delivery history, and a drain with fail-closed SSRF protections (public-address checks, DNS rebinding mitigation).
 - Completion artifacts: a canonical completion manifest re-derived from Git and SQL evidence, published once per envelope, with JSON, Markdown, and rendered PDF access for operators, API keys, and a read-only public access-grant token.
-- API key (Bearer) authentication for agents: instance-scoped keys with per-organization grants, explicit scopes (`envelopes:read`, `drafts:write`, `envelopes:send`), rate limiting, and exclusion from all instance/API-key/webhook management surfaces.
+- API key (Bearer) authentication for agents: keys bound to an active local owner, explicit scopes (`envelopes:read`, `drafts:write`, `envelopes:send`), rate limiting, and exclusion from all instance/API-key/webhook management surfaces.
 - Instance bootstrap and membership: fail-closed owner claim requiring `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` (or the local-development-only unsafe opt-in), owner/admin/member roles, zero-PII instance invitations, and member role/status administration.
 - First-party Rust CLI (`cli/`, binary `signkit`) for system capabilities, envelope inspection, completion evidence/PDF download, and API-key-authenticated authoring/send mutations.
-- `create-signkit` npm package for deploying and upgrading the Cloudflare Workers profile from a GitHub Release.
+- Independently versioned `create-signkit` npm package for deploying and upgrading the Cloudflare Workers profile from a GitHub Release, including schema-epoch refusal for incompatible populated D1 databases.
 - Background job endpoints (delivery drains, reseal sweeps, envelope expiry, webhook drain, object-store orphan sweep), driven by Cloudflare's own cron trigger or an external scheduler on Node/Docker and Vercel.
 
 ### Changed
 
-- N/A (first release).
+- One deployment and database now form one SignKit instance. d6e-auth supplies identity only; local active membership supplies operator authority. This intentionally replaces the unreleased organization-scoped schema.
 
 ### Security
 
@@ -58,4 +33,4 @@ First tagged release. Summary of major capabilities as implemented today:
 - Delivery and session material is sealed at rest with an active/previous encryption keyring supporting rotation.
 - Webhook signing secrets are sealed at rest; drain resolves hostnames with fail-closed public-address checks; destination allowlist wildcards require at least three labels.
 - Uploaded PDFs reject external `/URI` actions recursively (internal `/GoTo` only).
-- Known residual risks (cross-tenant isolation, webhook SSRF edge cases, jurisdiction-dependent e-signature requirements) are tracked in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md).
+- Known residual risks (deployment isolation, webhook SSRF edge cases, jurisdiction-dependent e-signature requirements) are tracked in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md).

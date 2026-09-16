@@ -24,7 +24,6 @@ describe('API key surface allowlist', () => {
 	it.each([
 		'/api/v1/api-keys',
 		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/revoke',
-		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/organization-grants',
 		'/api/v1/instance/bootstrap',
 		'/api/v1/instance/members',
 		'/api/v1/instance/members/me',
@@ -55,8 +54,8 @@ describe('API key surface allowlist', () => {
 
 describe('API key rejected surface', () => {
 	/**
-	 * These are the privilege-escalation targets: minting another key, granting an
-	 * organization, revoking a grant, and administering instance members. On each,
+	 * These are the privilege-escalation targets: minting another key and
+	 * administering instance members. On each,
 	 * presenting a well-formed API key must be an error rather than something to
 	 * ignore, because ignoring it would let an accompanying cookie authorize the
 	 * request instead.
@@ -64,8 +63,6 @@ describe('API key rejected surface', () => {
 	it.each([
 		'/api/v1/api-keys',
 		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/revoke',
-		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/organization-grants',
-		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/organization-grants/01900000-0000-7000-8000-000000000301/revoke',
 		'/api/v1/instance',
 		'/api/v1/instance/bootstrap',
 		'/api/v1/instance/members',

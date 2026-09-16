@@ -96,10 +96,11 @@
 		"migrationPolicy": {
 			"type": "object",
 			"additionalProperties": false,
-			"required": ["compatibility", "notes"],
+			"required": ["schemaEpoch", "compatibility", "notes"],
 			"properties": {
+				"schemaEpoch": { "const": "single-instance-v1" },
 				"compatibility": {
-					"const": "forward-and-backward-compatible-within-released-versions"
+					"const": "additive-within-schema-epoch"
 				},
 				"notes": { "type": "string" }
 			}
