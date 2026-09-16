@@ -316,7 +316,8 @@ export class DocxConversionService {
 				const errorCode: string = existing.lastError ?? 'permanently_failed';
 				return {
 					jobId,
-					outcome: errorCode === 'docx_integrity_failed' ? 'integrity_failed' : 'permanently_failed',
+					outcome:
+						errorCode === 'docx_integrity_failed' ? 'integrity_failed' : 'permanently_failed',
 					errorCode
 				};
 			}

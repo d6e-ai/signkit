@@ -158,8 +158,7 @@ describe('DOCX import HTTP handler', () => {
 				params: { envelopeId },
 				headers: {
 					'idempotency-key': 'reused-key',
-					'content-type':
-						'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+					'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 				},
 				body: requestBody(sampleDocx())
 			})
