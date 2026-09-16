@@ -76,7 +76,7 @@
 		"wrangler": "^4.131.2"
 	},
 	"dependencies": {
-		"@aws-sdk/client-s3": "^3.1129.0",
+		"@aws-sdk/client-s3": "^3.1131.0",
 		"fflate": "^0.8.3",
 		"isomorphic-git": "^1.41.9",
 		"jose": "^6.2.12",
