@@ -211,6 +211,11 @@ function isBlockedIpv6(address: string): boolean {
 		words.slice(0, 5).every((word: number): boolean => word === 0) &&
 		(words[5] === 0 || words[5] === 0xffff);
 	if (mappedOrCompatible && embeddedIpv4 !== null) return isBlockedIpv4(embeddedIpv4);
+	const ipv4Translated: boolean =
+		words.slice(0, 4).every((word: number): boolean => word === 0) &&
+		words[4] === 0xffff &&
+		words[5] === 0;
+	if (ipv4Translated && embeddedIpv4 !== null) return isBlockedIpv4(embeddedIpv4);
 
 	if (words[0] === 0x2002) {
 		const sixToFourIpv4: string | null = ipv4FromWords(words[1], words[2]);

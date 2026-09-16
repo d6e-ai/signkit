@@ -53,6 +53,7 @@ describe('isBlockedIpAddress', () => {
 		'::ffff:127.0.0.1',
 		'0:0:0:0:0:ffff:7f00:1',
 		'::ffff:7f00:1',
+		'::ffff:0:7f00:1',
 		'2002:7f00:1::',
 		'64:ff9b::7f00:1',
 		'64:ff9b:1::1',
@@ -66,6 +67,7 @@ describe('isBlockedIpAddress', () => {
 		expect(isBlockedIpAddress('1.1.1.1')).toBe(false);
 		expect(isBlockedIpAddress('223.255.255.255')).toBe(false);
 		expect(isBlockedIpAddress('2606:4700:4700::1111')).toBe(false);
+		expect(isBlockedIpAddress('::ffff:0:101:101')).toBe(false);
 		expect(isBlockedIpAddress('2002:0101:0101::')).toBe(false);
 		expect(isBlockedIpAddress('64:ff9b::101:101')).toBe(false);
 	});
