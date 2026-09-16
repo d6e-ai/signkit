@@ -74,6 +74,15 @@ interface LogRow {
 	occurredAt: Date | string;
 }
 
+interface StaleOutboxRow {
+	endpointId: string;
+	auditEventId: string;
+	eventType: string;
+	attempts: number;
+	claimToken: string;
+	lockedAt: Date | string;
+}
+
 const ENDPOINT_COLUMNS: string = `id, url, description, status,
 	events_json AS "eventsJson", secret_prefix AS "secretPrefix", created_at AS "createdAt",
 	created_by_user_id AS "createdByUserId", revoked_at AS "revokedAt",
@@ -241,47 +250,50 @@ export class PostgresWebhookStore implements WebhookStore {
 	async claimPendingDeliveries(
 		command: ClaimWebhookDeliveriesCommand
 	): Promise<readonly WebhookOutboxRow[]> {
-		const rows: OutboxRow[] = await this.#sql<OutboxRow[]>`
-			WITH candidates AS (
-				SELECT endpoint_id, audit_event_id
-				FROM webhook_outbox
-				WHERE (
-					(status IN ('pending', 'failed')
-						AND retryable
-						AND available_at <= ${command.claimedAt}::timestamptz)
-					OR (status = 'processing' AND locked_at < ${command.staleBefore}::timestamptz)
+		return this.#sql.begin(async (sql: postgres.TransactionSql) => {
+			await this.#terminalizeExhaustedStaleDeliveries(sql, command);
+			const rows: OutboxRow[] = await sql<OutboxRow[]>`
+				WITH candidates AS (
+					SELECT endpoint_id, audit_event_id
+					FROM webhook_outbox
+					WHERE (
+						(status IN ('pending', 'failed')
+							AND retryable
+							AND available_at <= ${command.claimedAt}::timestamptz)
+						OR (status = 'processing' AND locked_at < ${command.staleBefore}::timestamptz)
+					)
+					AND attempts < ${WEBHOOK_MAX_ATTEMPTS}
+					ORDER BY available_at ASC, endpoint_id ASC, audit_event_id ASC
+					FOR UPDATE SKIP LOCKED
+					LIMIT ${command.limit}
 				)
-				AND attempts < ${WEBHOOK_MAX_ATTEMPTS}
-				ORDER BY available_at ASC, endpoint_id ASC, audit_event_id ASC
-				FOR UPDATE SKIP LOCKED
-				LIMIT ${command.limit}
-			)
-			UPDATE webhook_outbox AS outbox
-			SET status = 'processing',
-				claim_token = ${command.claimToken},
-				locked_at = ${command.claimedAt}::timestamptz,
-				attempts = outbox.attempts + 1,
-				updated_at = ${command.claimedAt}::timestamptz
-			FROM candidates, webhook_endpoint endpoint
-			WHERE outbox.endpoint_id = candidates.endpoint_id
-				AND outbox.audit_event_id = candidates.audit_event_id
-				AND endpoint.id = outbox.endpoint_id
-				AND endpoint.status = 'active'
-			RETURNING
-				outbox.endpoint_id AS "endpointId",
-				outbox.audit_event_id AS "auditEventId",
-				outbox.envelope_id AS "envelopeId",
-				outbox.event_type AS "eventType",
-				outbox.payload_json AS "payloadJson",
-				outbox.status,
-				outbox.attempts,
-				outbox.available_at AS "availableAt",
-				outbox.claim_token AS "claimToken",
-				outbox.locked_at AS "lockedAt",
-				endpoint.url AS "endpointUrl",
-				endpoint.signing_secret AS "signingSecret",
-				endpoint.sealing_key_id AS "sealingKeyId"`;
-		return rows.map(outboxFromRow);
+				UPDATE webhook_outbox AS outbox
+				SET status = 'processing',
+					claim_token = ${command.claimToken},
+					locked_at = ${command.claimedAt}::timestamptz,
+					attempts = outbox.attempts + 1,
+					updated_at = ${command.claimedAt}::timestamptz
+				FROM candidates, webhook_endpoint endpoint
+				WHERE outbox.endpoint_id = candidates.endpoint_id
+					AND outbox.audit_event_id = candidates.audit_event_id
+					AND endpoint.id = outbox.endpoint_id
+					AND endpoint.status = 'active'
+				RETURNING
+					outbox.endpoint_id AS "endpointId",
+					outbox.audit_event_id AS "auditEventId",
+					outbox.envelope_id AS "envelopeId",
+					outbox.event_type AS "eventType",
+					outbox.payload_json AS "payloadJson",
+					outbox.status,
+					outbox.attempts,
+					outbox.available_at AS "availableAt",
+					outbox.claim_token AS "claimToken",
+					outbox.locked_at AS "lockedAt",
+					endpoint.url AS "endpointUrl",
+					endpoint.signing_secret AS "signingSecret",
+					endpoint.sealing_key_id AS "sealingKeyId"`;
+			return rows.map(outboxFromRow);
+		});
 	}
 
 	async readClaimedDelivery(
@@ -547,6 +559,50 @@ export class PostgresWebhookStore implements WebhookStore {
 		if (row.requestHash !== command.requestFingerprint) return { outcome: 'conflict' };
 		const endpoint: WebhookEndpointMetadata | null = await this.#get(sql, row.webhookId);
 		return endpoint === null ? { outcome: 'not_found' } : { outcome: 'replayed', endpoint };
+	}
+
+	async #terminalizeExhaustedStaleDeliveries(
+		sql: postgres.TransactionSql,
+		command: ClaimWebhookDeliveriesCommand
+	): Promise<void> {
+		const rows: StaleOutboxRow[] = await sql<StaleOutboxRow[]>`
+			SELECT endpoint_id AS "endpointId", audit_event_id AS "auditEventId",
+				event_type AS "eventType", attempts, claim_token AS "claimToken",
+				locked_at AS "lockedAt"
+			FROM webhook_outbox
+			WHERE status = 'processing'
+				AND attempts >= ${WEBHOOK_MAX_ATTEMPTS}
+				AND locked_at < ${command.staleBefore}::timestamptz
+			ORDER BY locked_at ASC, endpoint_id ASC, audit_event_id ASC
+			FOR UPDATE SKIP LOCKED
+			LIMIT ${command.limit}`;
+		for (const row of rows) {
+			const updated: { attempts: number; eventType: string }[] = await sql<
+				{ attempts: number; eventType: string }[]
+			>`
+				UPDATE webhook_outbox
+				SET status = 'failed', retryable = false, claim_token = NULL,
+					locked_at = NULL, last_error = 'attempts_exhausted',
+					updated_at = ${command.claimedAt}::timestamptz
+				WHERE endpoint_id = ${row.endpointId}
+					AND audit_event_id = ${row.auditEventId}
+					AND status = 'processing'
+					AND attempts >= ${WEBHOOK_MAX_ATTEMPTS}
+					AND claim_token = ${row.claimToken}
+					AND locked_at = ${row.lockedAt}::timestamptz
+					AND locked_at < ${command.staleBefore}::timestamptz
+				RETURNING attempts, event_type AS "eventType"`;
+			if (updated.length !== 1) continue;
+			await sql`
+				INSERT INTO webhook_delivery_log (
+					id, endpoint_id, audit_event_id, event_type, status,
+					attempt, http_status, error_code, occurred_at
+				) VALUES (
+					${newUuidV7()}, ${row.endpointId}, ${row.auditEventId},
+					${updated[0].eventType}, 'failed', ${updated[0].attempts},
+					NULL, 'attempts_exhausted', ${command.claimedAt}::timestamptz
+				)`;
+		}
 	}
 }
 

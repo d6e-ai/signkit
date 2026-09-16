@@ -105,11 +105,21 @@ const failCommand: FailWebhookDeliveryCommand = {
 
 describe('PostgresWebhookStore.claimPendingDeliveries', () => {
 	it('requires retryable due work and bounds stale processing by the shared attempt ceiling', async () => {
-		const scripted = new ScriptedPostgres([[]]);
+		const scripted = new ScriptedPostgres([[], []]);
 		const store = new PostgresWebhookStore(scripted.client());
 		await expect(store.claimPendingDeliveries(claimCommand)).resolves.toEqual([]);
-		expect(scripted.directQueries).toHaveLength(1);
-		const query = scripted.directQueries[0];
+		expect(scripted.beginCalls).toBe(1);
+		expect(scripted.directQueries).toHaveLength(2);
+		const terminalizationQuery = scripted.directQueries[0];
+		expect(terminalizationQuery.text).toContain("status = 'processing'");
+		expect(terminalizationQuery.text).toContain('attempts >= ?');
+		expect(terminalizationQuery.text).toContain('FOR UPDATE SKIP LOCKED');
+		expect(terminalizationQuery.values).toEqual([
+			WEBHOOK_MAX_ATTEMPTS,
+			claimCommand.staleBefore,
+			claimCommand.limit
+		]);
+		const query = scripted.directQueries[1];
 		expect(query.text).toContain("status IN ('pending', 'failed')");
 		expect(query.text).toContain('AND retryable');
 		expect(query.text).toContain("status = 'processing'");

@@ -139,7 +139,9 @@ export interface WebhookStore {
 	getEndpoint(webhookId: string): Promise<WebhookEndpointMetadata | null>;
 	revokeEndpoint(command: RevokeWebhookEndpointCommand): Promise<RevokeWebhookEndpointResult>;
 	/**
-	 * Claim due work under a unique lease. D1 and PostgreSQL must match:
+	 * First terminalize a bounded set of stale processing rows already at the
+	 * attempt ceiling with their delivery logs, then claim due work under a
+	 * unique lease. D1 and PostgreSQL must match:
 	 * `attempts < WEBHOOK_MAX_ATTEMPTS`, and either a retryable
 	 * `pending`/`failed` row that is due, or a stale `processing` lease.
 	 * Non-retryable failures stay failed and are never reclaimed.

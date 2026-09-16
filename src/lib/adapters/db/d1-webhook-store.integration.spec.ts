@@ -4,7 +4,8 @@ import { WebhookApplication } from '$lib/application/webhooks/webhook-service';
 import type {
 	CompleteWebhookDeliveryCommand,
 	CreateWebhookEndpointCommand,
-	FailWebhookDeliveryCommand
+	FailWebhookDeliveryCommand,
+	RevokeWebhookEndpointCommand
 } from '$lib/ports/webhook-store';
 import {
 	WEBHOOK_MAX_ATTEMPTS,
@@ -284,6 +285,12 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 		expect(claimed).toHaveLength(1);
 		expect(claimed[0]?.auditEventId).toBe(auditEventId);
 		expect(claimed[0]?.attempts).toBe(2);
+		await expect(
+			store.readClaimedDelivery(ENDPOINT_ID, auditEventId, claimCommand.claimToken)
+		).resolves.toMatchObject({ auditEventId, claimToken: claimCommand.claimToken, attempts: 2 });
+		await expect(
+			store.readClaimedDelivery(ENDPOINT_ID, auditEventId, 'different-claim-token')
+		).resolves.toBeNull();
 		expect(outboxState(sqlite, auditEventId)).toEqual({
 			status: 'processing',
 			attempts: 2,
@@ -291,7 +298,7 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 		});
 	});
 
-	it('does not reclaim a stale processing lease at the attempt ceiling', async () => {
+	it('terminalizes a stale processing lease at the attempt ceiling with a delivery log', async () => {
 		const { store, sqlite } = await createFixture();
 		const auditEventId: string = '01900000-0000-7000-8000-000000000521';
 		insertOutbox(sqlite, auditEventId, {
@@ -302,10 +309,18 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 		});
 		await expect(store.claimPendingDeliveries(claimCommand)).resolves.toEqual([]);
 		expect(outboxState(sqlite, auditEventId)).toEqual({
-			status: 'processing',
+			status: 'failed',
 			attempts: WEBHOOK_MAX_ATTEMPTS,
-			retryable: 1
+			retryable: 0
 		});
+		expect(deliveryLogRows(sqlite, auditEventId)).toEqual([
+			{
+				status: 'failed',
+				attempt: WEBHOOK_MAX_ATTEMPTS,
+				http_status: null,
+				error_code: 'attempts_exhausted'
+			}
+		]);
 	});
 
 	it('reclaims a stale processing lease only while it is below the attempt ceiling', async () => {
@@ -734,5 +749,56 @@ describe('D1WebhookStore.createEndpoint', () => {
 			.prepare('SELECT COUNT(*) AS n FROM webhook_endpoint WHERE status = ?')
 			.get('active') as { n: number };
 		expect(countAfter.n).toBe(20);
+	});
+});
+
+describe('D1WebhookStore.revokeEndpoint', () => {
+	function revokeCommand(
+		overrides: Partial<RevokeWebhookEndpointCommand> = {}
+	): RevokeWebhookEndpointCommand {
+		return {
+			webhookId: ENDPOINT_ID,
+			actorId: ACTOR_ID,
+			idempotencyKey: 'idemp-revoke-001',
+			requestFingerprint: 'c'.repeat(64),
+			revokedAt: CLAIMED_AT,
+			...overrides
+		};
+	}
+
+	it('resolves a concurrent same-key revoke race to revoked and replayed', async () => {
+		const { store } = await createFixture();
+		const command: RevokeWebhookEndpointCommand = revokeCommand();
+		const [first, second] = await Promise.all([
+			store.revokeEndpoint(command),
+			store.revokeEndpoint(command)
+		]);
+		expect([first.outcome, second.outcome].sort()).toEqual(['replayed', 'revoked']);
+	});
+
+	it('classifies a concurrent same-key revoke of different endpoints as conflict', async () => {
+		const { store, sqlite } = await createFixture();
+		const otherEndpointId: string = '01900000-0000-7000-8000-000000000402';
+		sqlite
+			.prepare(
+				`INSERT INTO webhook_endpoint (
+					id, url, description, status, events_json, secret_hash, signing_secret,
+					sealing_key_id, secret_prefix, created_at, created_by_user_id
+				 ) SELECT ?, url, description, status, events_json, secret_hash, signing_secret,
+					sealing_key_id, secret_prefix, created_at, created_by_user_id
+				 FROM webhook_endpoint WHERE id = ?`
+			)
+			.run(otherEndpointId, ENDPOINT_ID);
+
+		const [first, second] = await Promise.all([
+			store.revokeEndpoint(revokeCommand()),
+			store.revokeEndpoint(
+				revokeCommand({
+					webhookId: otherEndpointId,
+					requestFingerprint: 'd'.repeat(64)
+				})
+			)
+		]);
+		expect([first.outcome, second.outcome].sort()).toEqual(['conflict', 'revoked']);
 	});
 });

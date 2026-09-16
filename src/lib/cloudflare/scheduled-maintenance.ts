@@ -44,7 +44,11 @@ export function runScheduledMaintenance(
 	context: ScheduledMaintenanceContext
 ): void {
 	for (const job of SCHEDULED_MAINTENANCE_JOBS) {
-		context.waitUntil(runScheduledJob(fetchHandler, environment, context, job));
+		context.waitUntil(
+			runScheduledJob(fetchHandler, environment, context, job).catch((error: unknown): void => {
+				logScheduledMaintenanceFailure(job, error);
+			})
+		);
 	}
 }
 
@@ -66,4 +70,14 @@ async function runScheduledJob(
 		context
 	);
 	if (!response.ok) throw new Error(`${job.name} failed with status ${response.status}`);
+}
+
+function logScheduledMaintenanceFailure(job: ScheduledMaintenanceJob, error: unknown): void {
+	console.error(
+		JSON.stringify({
+			event: 'scheduled_maintenance_failed',
+			job: job.name,
+			message: error instanceof Error ? error.name : 'UnknownError'
+		})
+	);
 }

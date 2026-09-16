@@ -38,6 +38,7 @@ describe('Cloudflare scheduled maintenance', () => {
 	});
 
 	it('isolates a failing job so sibling drains still run', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 		const fetchHandler: ScheduledWorkerFetch = vi.fn(async (request) => {
 			const path: string = new URL(request.url).pathname;
 			if (path === '/api/v1/system/deliveries/drain') {
@@ -57,13 +58,20 @@ describe('Cloudflare scheduled maintenance', () => {
 
 		expect(pending).toHaveLength(SCHEDULED_MAINTENANCE_JOBS.length);
 		expect(fetchHandler).toHaveBeenCalledTimes(SCHEDULED_MAINTENANCE_JOBS.length);
-		expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
-		expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(
-			SCHEDULED_MAINTENANCE_JOBS.length - 1
+		expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_failed',
+				job: 'delivery drain',
+				message: 'Error'
+			})
 		);
+		errorSpy.mockRestore();
 	});
 
 	it('does not fetch when the worker secret is missing and still isolates each job', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 		const fetchHandler: ScheduledWorkerFetch = vi.fn(
 			async () => new Response(null, { status: 200 })
 		);
@@ -79,7 +87,15 @@ describe('Cloudflare scheduled maintenance', () => {
 
 		expect(fetchHandler).not.toHaveBeenCalled();
 		expect(results).toHaveLength(SCHEDULED_MAINTENANCE_JOBS.length);
-		expect(results.every((result) => result.status === 'rejected')).toBe(true);
+		expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+		expect(errorSpy).toHaveBeenCalledTimes(SCHEDULED_MAINTENANCE_JOBS.length);
+		const loggedJobs: string[] = errorSpy.mock.calls
+			.map((call): unknown => call[0])
+			.map((entry: unknown): { job?: unknown } => JSON.parse(String(entry)))
+			.map((entry: { job?: unknown }): string => String(entry.job))
+			.sort();
+		expect(loggedJobs).toEqual([...SCHEDULED_MAINTENANCE_JOBS.map((job) => job.name)].sort());
+		errorSpy.mockRestore();
 	});
 
 	it('passes the execution context through rather than destructuring waitUntil', async () => {
