@@ -175,7 +175,7 @@ describe('recipient sent PDF HTTP handler', () => {
 	it('never leaks a provider error, an identifier, or an object key', async () => {
 		const exploding: RecipientSentPdfApplicationPort = {
 			read: async (): Promise<RecipientSentPdfResult> => {
-				throw new Error('r2: NoSuchKey sent-documents/v1/organizations/org-1/...');
+				throw new Error('r2: NoSuchKey sent-documents/v1/envelopes/env-1/...');
 			}
 		};
 		const response: Response = await createRecipientSentPdfHandler(

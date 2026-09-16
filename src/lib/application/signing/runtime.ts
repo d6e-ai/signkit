@@ -74,8 +74,7 @@ export async function resolveRecipientWorkspaceApplication(
 			new RecipientAccessService(new D1RecipientAccessStore(database)),
 			new D1EnvelopeSentDocumentStore(database),
 			new D1EnvelopeSentPdfStore(database),
-			(context) =>
-				fields.listOwnFields(context.organizationId, context.envelopeId, context.recipientId)
+			(context) => fields.listOwnFields(context.envelopeId, context.recipientId)
 		);
 	}
 

@@ -1,6 +1,5 @@
 CREATE TABLE delivery_outbox (
   id text NOT NULL,
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
   kind text NOT NULL CHECK (kind = 'recipient_invitation'),
@@ -18,10 +17,10 @@ CREATE TABLE delivery_outbox (
   last_error text,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  UNIQUE (organization_id, envelope_id, recipient_id, kind),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, recipient_id) REFERENCES recipient(organization_id, id),
+  PRIMARY KEY (id),
+  UNIQUE (envelope_id, recipient_id, kind),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CHECK (
     (status = 'blocked' AND available_at IS NULL) OR
     (status <> 'blocked' AND available_at IS NOT NULL)
@@ -36,7 +35,6 @@ CREATE INDEX delivery_outbox_claim
   WHERE status IN ('pending','failed');
 
 CREATE TABLE envelope_send_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   actor_type text NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
   actor_id text NOT NULL,
@@ -57,11 +55,11 @@ CREATE TABLE envelope_send_command (
   previous_audit_hash text NOT NULL,
   audit_event_hash text NOT NULL,
   audit_payload_json text NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, ready_audit_event_id) REFERENCES audit_event(organization_id, id)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (ready_audit_event_id) REFERENCES audit_event(id)
 );
 
 CREATE INDEX envelope_send_command_envelope
-  ON envelope_send_command(organization_id, envelope_id, updated_at DESC);
+  ON envelope_send_command(envelope_id, updated_at DESC);

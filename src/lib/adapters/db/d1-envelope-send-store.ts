@@ -14,7 +14,6 @@ import { D1EnvelopeStore } from './d1-envelope-store';
 
 interface RecipientRow {
 	id: string;
-	organization_id: string;
 	envelope_id: string;
 	email: string;
 	name: string;
@@ -39,7 +38,6 @@ interface ReadyAuditAnchorRow {
 }
 
 interface SendCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	actor_type: string;
 	actor_id: string;
@@ -70,7 +68,6 @@ interface SendCommandRow {
 	document_count: number | null;
 	sent_documents_json: string | null;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -112,10 +109,7 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 	): Promise<SendPreparation> {
 		const replay: SendPreparation | null = await this.#resolveCommand(key);
 		if (replay !== null) return replay;
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'ready') return { outcome: 'not_ready' };
 		if (envelope.repositoryGeneration !== expectedGeneration) {
@@ -124,13 +118,9 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 		if (envelope.repositoryHead === null || envelope.sentCommitSha !== null) {
 			return { outcome: 'integrity_error' };
 		}
-		const auditHead: SendAuditHead | null = await this.#readAuditHead(
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: SendAuditHead | null = await this.#readAuditHead(key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		const readyAuditSequence: number | null = await this.#readReadyAuditSequence(
-			key.organizationId,
 			key.envelopeId,
 			expectedGeneration,
 			envelope.repositoryHead,
@@ -138,10 +128,7 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 		);
 		if (readyAuditSequence === null || readyAuditSequence > auditHead.sequence)
 			return { outcome: 'audit_conflict' };
-		const recipients: readonly Recipient[] | null = await this.#readRecipients(
-			key.organizationId,
-			key.envelopeId
-		);
+		const recipients: readonly Recipient[] | null = await this.#readRecipients(key.envelopeId);
 		if (recipients === null) return { outcome: 'integrity_error' };
 		return { outcome: 'ready', envelope, recipients, auditHead };
 	}
@@ -156,16 +143,15 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 			this.#database
 				.prepare(
 					`INSERT INTO envelope_send_command (
-					organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+					envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 					expected_generation, ready_audit_event_id, commit_sha, initial_routing_order,
 					delivery_count, queued_delivery_count, delivery_manifest_hash, delivery_manifest_json,
 					initial_capability_expires_at, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json,
 					document_set_hash, document_count, sent_documents_json
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
-					command.organizationId,
 					command.envelopeId,
 					command.actorType,
 					command.actorId,
@@ -195,7 +181,7 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 					.prepare(
 						`UPDATE recipient SET capability_hash = ?, capability_expires_at = ?,
 						capability_revoked_at = NULL, updated_at = ?
-					 WHERE organization_id = ? AND envelope_id = ? AND id = ?
+					 WHERE envelope_id = ? AND id = ?
 						AND status = 'pending' AND capability_hash IS NULL
 						AND capability_expires_at IS NULL AND capability_revoked_at IS NULL`
 					)
@@ -203,21 +189,19 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 						delivery.capabilityHash,
 						delivery.capabilityExpiresAt,
 						command.updatedAt,
-						command.organizationId,
 						command.envelopeId,
 						delivery.recipientId
 					),
 				this.#database
 					.prepare(
 						`INSERT INTO delivery_outbox (
-						id, organization_id, envelope_id, recipient_id, kind, status,
+						id, envelope_id, recipient_id, kind, status,
 						capability_hash, reserved_capability_expires_at, sealed_capability, sealing_key_id,
 						sealed_capability_sha256, available_at, attempts, created_at, updated_at
-					) VALUES (?, ?, ?, ?, 'recipient_invitation', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+					) VALUES (?, ?, ?, 'recipient_invitation', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
 					)
 					.bind(
 						delivery.id,
-						command.organizationId,
 						command.envelopeId,
 						delivery.recipientId,
 						delivery.status,
@@ -235,13 +219,12 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 				this.#database
 					.prepare(
 						`INSERT INTO envelope_sent_document (
-						organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+						envelope_id, commit_sha, document_id, position, kind, title,
 						object_key, sha256, byte_size, page_count, page_width, page_height, created_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-					ON CONFLICT (organization_id, envelope_id, commit_sha, document_id) DO NOTHING`
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT (envelope_id, commit_sha, document_id) DO NOTHING`
 					)
 					.bind(
-						command.organizationId,
 						command.envelopeId,
 						command.commitSha,
 						document.documentId,
@@ -260,10 +243,10 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 			this.#database
 				.prepare(
 					`INSERT INTO envelope_send_publish (
-					organization_id, actor_type, actor_id, idempotency_key
-				) VALUES (?, ?, ?, ?)`
+					actor_type, actor_id, idempotency_key
+				) VALUES (?, ?, ?)`
 				)
-				.bind(command.organizationId, command.actorType, command.actorId, command.idempotencyKey)
+				.bind(command.actorType, command.actorId, command.idempotencyKey)
 		];
 		try {
 			await this.#database.batch(statements);
@@ -286,18 +269,15 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 		}
 	}
 
-	async #readRecipients(
-		organizationId: string,
-		envelopeId: string
-	): Promise<readonly Recipient[] | null> {
+	async #readRecipients(envelopeId: string): Promise<readonly Recipient[] | null> {
 		const result = await this.#database
 			.prepare(
-				`SELECT id, organization_id, envelope_id, email, name, role, locale,
+				`SELECT id, envelope_id, email, name, role, locale,
 				routing_order, status, capability_hash, capability_expires_at, capability_revoked_at
-			 FROM recipient WHERE organization_id = ? AND envelope_id = ?
+			 FROM recipient WHERE envelope_id = ?
 			 ORDER BY routing_order, id`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<RecipientRow>();
 		const rows: RecipientRow[] = result.results;
 		if (rows.length < 1 || rows.length > 50) return null;
@@ -314,13 +294,13 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 		return rows.map(fromRecipientRow);
 	}
 
-	async #readAuditHead(organizationId: string, envelopeId: string): Promise<SendAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<SendAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT id, sequence, event_hash, event_type FROM audit_event
-			 WHERE organization_id = ? AND envelope_id = ? ORDER BY sequence DESC LIMIT 1`
+			 WHERE envelope_id = ? ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (
 			row === null ||
@@ -338,7 +318,6 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 	}
 
 	async #readReadyAuditSequence(
-		organizationId: string,
 		envelopeId: string,
 		expectedGeneration: number,
 		expectedCommitSha: string,
@@ -349,23 +328,16 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 				`SELECT ready.audit_sequence AS sequence
 				 FROM envelope_ready_command ready
 				 JOIN audit_event evidence
-					ON evidence.organization_id = ready.organization_id
-					AND evidence.envelope_id = ready.envelope_id
+					ON evidence.envelope_id = ready.envelope_id
 					AND evidence.id = ready.audit_event_id
 					AND evidence.sequence = ready.audit_sequence
 					AND evidence.event_type = 'envelope.ready'
-				 WHERE ready.organization_id = ? AND ready.envelope_id = ?
+				 WHERE ready.envelope_id = ?
 					AND ready.expected_generation = ? AND ready.commit_sha = ?
 					AND ready.audit_event_id = ?
 				 LIMIT 1`
 			)
-			.bind(
-				organizationId,
-				envelopeId,
-				expectedGeneration,
-				expectedCommitSha,
-				expectedReadyAuditEventId
-			)
+			.bind(envelopeId, expectedGeneration, expectedCommitSha, expectedReadyAuditEventId)
 			.first<ReadyAuditAnchorRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		return row.sequence;
@@ -375,18 +347,17 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 		const row: SendCommandRow | null = await this.#database
 			.prepare(
 				`SELECT command.*, evidence.id AS evidence_event_id,
-				evidence.organization_id AS evidence_organization_id,
 				evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
 				evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 				evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 				evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
 				evidence.occurred_at AS evidence_occurred_at
 			 FROM envelope_send_command command LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
-			 WHERE command.organization_id = ? AND command.actor_type = ? AND command.actor_id = ?
+				ON evidence.id = command.audit_event_id
+			 WHERE command.actor_type = ? AND command.actor_id = ?
 				AND command.idempotency_key = ? LIMIT 1`
 			)
-			.bind(key.organizationId, key.actorType, key.actorId, key.idempotencyKey)
+			.bind(key.actorType, key.actorId, key.idempotencyKey)
 			.first<SendCommandRow>();
 		if (row === null) return null;
 		if (row.envelope_id !== key.envelopeId || row.request_hash !== key.requestFingerprint) {
@@ -419,13 +390,12 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 					recipient.capability_hash AS recipient_capability_hash,
 					recipient.capability_expires_at AS recipient_capability_expires_at
 				 FROM delivery_outbox delivery JOIN recipient
-					ON recipient.organization_id = delivery.organization_id
-					AND recipient.id = delivery.recipient_id
+					ON recipient.id = delivery.recipient_id
 					AND recipient.envelope_id = delivery.envelope_id
-				 WHERE delivery.organization_id = ? AND delivery.envelope_id = ?
+				 WHERE delivery.envelope_id = ?
 				 ORDER BY delivery.id`
 			)
-			.bind(row.organization_id, row.envelope_id)
+			.bind(row.envelope_id)
 			.all<DeliveryEvidenceRow>();
 		if (result.results.length !== manifest.length) return false;
 		for (let index: number = 0; index < manifest.length; index += 1) {
@@ -471,7 +441,6 @@ export class D1EnvelopeSendStore implements EnvelopeSendStore {
 function fromRecipientRow(row: RecipientRow): Recipient {
 	return {
 		id: row.id,
-		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,
 		email: row.email,
 		name: row.name,
@@ -485,7 +454,6 @@ function fromRecipientRow(row: RecipientRow): Recipient {
 function validAuditEvidence(row: SendCommandRow): boolean {
 	return (
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'envelope.sent' &&

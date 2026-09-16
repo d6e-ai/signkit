@@ -8,10 +8,7 @@ import type {
 } from '$lib/application/envelopes/fields';
 import { InvalidFieldPlacementError } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -102,7 +99,7 @@ export function createEnvelopeFieldsHandler(
 	resolveApplication: EnvelopeFieldApplicationResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'drafts:write'
@@ -192,8 +189,7 @@ export function createEnvelopeFieldsHandler(
 
 		const actor: EnvelopeRequestActor = {
 			id: authorized.id,
-			organizationId: authorized.organizationId,
-			organizationName: authorized.organizationName,
+			createdByUserId: authorized.createdByUserId,
 			actorType: authorized.authority === 'api_key' ? 'agent' : 'user'
 		};
 		const input: PlaceFieldsInput = {
@@ -261,7 +257,7 @@ function fieldsResponse(result: PlaceFieldsResult, instance: string): Response {
 			type: 'urn:signkit:problem:envelope-not-found',
 			title: 'Envelope not found',
 			status: 404,
-			detail: 'No envelope was found in the authorized organization.'
+			detail: 'No envelope was found.'
 		},
 		not_ready: {
 			type: 'urn:signkit:problem:envelope-not-ready',

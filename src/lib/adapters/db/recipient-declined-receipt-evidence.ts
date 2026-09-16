@@ -5,7 +5,6 @@ import type {
 import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 export interface RecipientDeclinedReceiptEvidenceRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientRole: string;
@@ -36,7 +35,6 @@ export interface RecipientDeclinedReceiptEvidenceRow {
 	envelopeSentCommitSha: string | null;
 	envelopeRepositoryHead: string | null;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -47,7 +45,6 @@ export interface RecipientDeclinedReceiptEvidenceRow {
 	evidenceEventHash: string | null;
 	evidenceOccurredAt: Date | string | null;
 	evidenceHashVersion: number | string | null;
-	previousOrganizationId: string | null;
 	previousEnvelopeId: string | null;
 	previousSequence: number | string | null;
 	previousEventHash: string | null;
@@ -101,7 +98,7 @@ export async function proveRecipientDeclinedReceipt(
 			payload: auditPayloadValue,
 			previousHash: row.previousAuditHash
 		},
-		{ organizationId: row.organizationId, envelopeId: row.envelopeId }
+		{ envelopeId: row.envelopeId }
 	);
 	if (
 		requestHash !== row.requestHash ||
@@ -112,7 +109,6 @@ export async function proveRecipientDeclinedReceipt(
 	}
 
 	return {
-		organizationId: row.organizationId,
 		envelopeId: row.envelopeId,
 		recipientId: row.recipientId,
 		idempotencyKey: row.idempotencyKey,
@@ -171,7 +167,6 @@ function validAuditChain(
 ): boolean {
 	return (
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === auditSequence &&
 		row.evidenceEventType === 'recipient.declined' &&
@@ -181,7 +176,6 @@ function validAuditChain(
 		row.evidencePreviousHash === row.previousAuditHash &&
 		row.evidenceEventHash === row.auditEventHash &&
 		sameTimestamp(row.evidenceOccurredAt, declinedAt) &&
-		row.previousOrganizationId === row.organizationId &&
 		row.previousEnvelopeId === row.envelopeId &&
 		Number(row.previousSequence) === auditSequence - 1 &&
 		row.previousEventHash === row.previousAuditHash

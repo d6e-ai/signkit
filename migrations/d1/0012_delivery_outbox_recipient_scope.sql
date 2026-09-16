@@ -1,11 +1,10 @@
 -- SQLite cannot add a composite foreign key to an existing table. Equivalent
--- guards preserve the exact organization/envelope/recipient relationship.
+-- guards preserve the exact instance/envelope/recipient relationship.
 CREATE TRIGGER IF NOT EXISTS delivery_outbox_recipient_scope_insert_guard
 BEFORE INSERT ON delivery_outbox
 WHEN NOT EXISTS (
   SELECT 1 FROM recipient target
-  WHERE target.organization_id = NEW.organization_id
-    AND target.envelope_id = NEW.envelope_id
+  WHERE target.envelope_id = NEW.envelope_id
     AND target.id = NEW.recipient_id
 )
 BEGIN
@@ -13,11 +12,10 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS delivery_outbox_recipient_scope_update_guard
-BEFORE UPDATE OF organization_id, envelope_id, recipient_id ON delivery_outbox
+BEFORE UPDATE OF envelope_id, recipient_id ON delivery_outbox
 WHEN NOT EXISTS (
   SELECT 1 FROM recipient target
-  WHERE target.organization_id = NEW.organization_id
-    AND target.envelope_id = NEW.envelope_id
+  WHERE target.envelope_id = NEW.envelope_id
     AND target.id = NEW.recipient_id
 )
 BEGIN

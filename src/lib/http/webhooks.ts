@@ -19,9 +19,9 @@ import {
 } from './bounded-json-body';
 import { signkitIdentifierSchema } from './identifier-schema';
 import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
+	authorizeInstanceAdminRequest,
+	type AuthorizedInstanceActor
+} from './instance-authorization';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const MAX_CREATE_BODY_BYTES: number = 8 * 1024;
@@ -82,7 +82,7 @@ export function createWebhookHttpHandlers(
 	resolveApplication: WebhookApplicationResolver
 ): WebhookHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOperator(locals, url.pathname);
+		const authorized: AuthorizedInstanceActor | Response = authorizeOperator(locals, url.pathname);
 		if (authorized instanceof Response) return authorized;
 		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
 		if (!idempotencyKey.success)
@@ -135,7 +135,7 @@ export function createWebhookHttpHandlers(
 	};
 
 	const list: RequestHandler = async ({ locals, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOperator(locals, url.pathname);
+		const authorized: AuthorizedInstanceActor | Response = authorizeOperator(locals, url.pathname);
 		if (authorized instanceof Response) return authorized;
 		const parsed = listSchema.safeParse(Object.fromEntries(url.searchParams));
 		if (!parsed.success) {
@@ -165,7 +165,7 @@ export function createWebhookHttpHandlers(
 	};
 
 	const get: RequestHandler = async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOperator(locals, url.pathname);
+		const authorized: AuthorizedInstanceActor | Response = authorizeOperator(locals, url.pathname);
 		if (authorized instanceof Response) return authorized;
 		const webhookId = signkitIdentifierSchema.safeParse(params.webhookId);
 		if (!webhookId.success) return notFound(url.pathname);
@@ -196,7 +196,7 @@ export function createWebhookHttpHandlers(
 		request,
 		url
 	}): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOperator(locals, url.pathname);
+		const authorized: AuthorizedInstanceActor | Response = authorizeOperator(locals, url.pathname);
 		if (authorized instanceof Response) return authorized;
 		const webhookId = signkitIdentifierSchema.safeParse(params.webhookId);
 		if (!webhookId.success) return notFound(url.pathname);
@@ -243,7 +243,7 @@ export function createWebhookHttpHandlers(
 		platform,
 		url
 	}): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOperator(locals, url.pathname);
+		const authorized: AuthorizedInstanceActor | Response = authorizeOperator(locals, url.pathname);
 		if (authorized instanceof Response) return authorized;
 		const webhookId = signkitIdentifierSchema.safeParse(params.webhookId);
 		if (!webhookId.success) return notFound(url.pathname);
@@ -283,31 +283,16 @@ export function createWebhookHttpHandlers(
 function authorizeOperator(
 	locals: App.Locals,
 	instance: string
-): AuthorizedRequestActor | Response {
-	const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
-		locals,
-		instance
-	);
-	if (authorized instanceof Response) return authorized;
-	if (authorized.organizationRole !== 'owner' && authorized.organizationRole !== 'admin') {
-		return problemResponse({
-			type: 'urn:signkit:problem:webhook-forbidden',
-			title: 'Webhook management forbidden',
-			status: 403,
-			detail: 'Webhook endpoints can be managed only by organization owners and admins.',
-			instance
-		});
-	}
-	return authorized;
+): AuthorizedInstanceActor | Response {
+	return authorizeInstanceAdminRequest(locals, instance);
 }
 
-function actorOf(authorized: AuthorizedRequestActor): WebhookRequestActor {
-	return { id: authorized.id, organizationId: authorized.organizationId };
+function actorOf(authorized: AuthorizedInstanceActor): WebhookRequestActor {
+	return { id: authorized.id };
 }
 
 function publicWebhook(endpoint: {
 	id: string;
-	organizationId: string;
 	url: string;
 	description: string | null;
 	status: string;
@@ -320,7 +305,6 @@ function publicWebhook(endpoint: {
 }): Record<string, unknown> {
 	return {
 		id: endpoint.id,
-		organizationId: endpoint.organizationId,
 		url: endpoint.url,
 		description: endpoint.description,
 		status: endpoint.status,
@@ -351,7 +335,7 @@ function createResponse(result: CreateWebhookResult, instance: string): Response
 			type: 'urn:signkit:problem:webhook-limit-exceeded',
 			title: 'Webhook endpoint limit exceeded',
 			status: 409,
-			detail: 'This organization already has the maximum number of webhook endpoints.',
+			detail: 'This instance already has the maximum number of webhook endpoints.',
 			instance
 		});
 	}
@@ -482,7 +466,7 @@ function notFound(instance: string): Response {
 		type: 'urn:signkit:problem:webhook-not-found',
 		title: 'Webhook not found',
 		status: 404,
-		detail: 'No webhook endpoint was found in the authorized organization.',
+		detail: 'No webhook endpoint was found.',
 		instance
 	});
 }

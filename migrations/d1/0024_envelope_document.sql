@@ -5,15 +5,14 @@
 -- SQL-only metadata alongside the same repository.
 CREATE TABLE envelope_document (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   markdown_path TEXT NOT NULL,
   title TEXT NOT NULL,
   position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 100000),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT envelope_document_id_uuidv7 CHECK (
     length(id) = 36
     AND substr(id, 9, 1) = '-'
@@ -31,7 +30,7 @@ CREATE TABLE envelope_document (
 );
 
 CREATE UNIQUE INDEX envelope_document_path
-  ON envelope_document(organization_id, envelope_id, markdown_path);
+  ON envelope_document(envelope_id, markdown_path);
 
 CREATE UNIQUE INDEX envelope_document_position
-  ON envelope_document(organization_id, envelope_id, position);
+  ON envelope_document(envelope_id, position);

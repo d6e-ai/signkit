@@ -14,10 +14,6 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "URL")]
     pub base_url: Option<String>,
 
-    /// Target organization identifier (mandatory for all envelope endpoints).
-    #[arg(long, global = true, value_name = "ORG_ID")]
-    pub org: Option<String>,
-
     /// Read API key from standard input rather than the SIGNKIT_API_KEY environment variable.
     #[arg(long, global = true)]
     pub api_key_stdin: bool,
@@ -59,7 +55,7 @@ pub struct EnvelopesArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum EnvelopesSubcommand {
-    /// List envelopes in the authorized organization.
+    /// List envelopes in the instance.
     List(EnvelopeListArgs),
 
     /// Read details of a specific envelope.

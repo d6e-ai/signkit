@@ -31,7 +31,7 @@ export interface EnvelopeListPage {
  */
 export interface PublicEnvelope {
 	id: string;
-	organizationId: string;
+	createdByUserId: string;
 	title: string;
 	status: Envelope['status'];
 	repositoryGeneration: number;
@@ -51,7 +51,7 @@ export interface PublicEnvelopeListPage {
 export function toPublicEnvelope(envelope: Envelope): PublicEnvelope {
 	return {
 		id: envelope.id,
-		organizationId: envelope.organizationId,
+		createdByUserId: envelope.createdByUserId,
 		title: envelope.title,
 		status: envelope.status,
 		repositoryGeneration: envelope.repositoryGeneration,
@@ -82,10 +82,9 @@ export interface CreateEnvelopeCommand {
 	auditEventHash: string;
 	auditEventId: string;
 	createdAt: string;
+	createdByUserId: string;
 	envelopeId: string;
 	idempotencyKey: string;
-	organizationId: string;
-	organizationName: string;
 	requestFingerprint: string;
 	title: string;
 }
@@ -97,12 +96,12 @@ export type CreateEnvelopeStoreResult =
 
 /**
  * Collection operations needed by the application layer in addition to the
- * existing per-envelope port. Implementations must scope every statement by
- * organizationId and make idempotent creation atomic.
+ * existing per-envelope port. One deployment database is the instance
+ * boundary, so reads need no tenant scope; idempotent creation stays atomic.
  */
 /**
  * Operator-safe recipient projection. Omits capability hashes, ciphertext,
- * expiry, revocation, and organization identifiers.
+ * expiry and revocation metadata.
  */
 export interface PublicEnvelopeRecipient {
 	id: string;
@@ -143,14 +142,14 @@ export interface EnvelopeDetail {
 
 export interface EnvelopeApplicationStore extends EnvelopeStore {
 	createIdempotently(command: CreateEnvelopeCommand): Promise<CreateEnvelopeStoreResult>;
-	listForOrganization(organizationId: string, query: EnvelopeListQuery): Promise<EnvelopeListPage>;
-	readDetail(organizationId: string, envelopeId: string): Promise<EnvelopeDetail | null>;
+	listEnvelopes(query: EnvelopeListQuery): Promise<EnvelopeListPage>;
+	readDetail(envelopeId: string): Promise<EnvelopeDetail | null>;
 }
 
 export interface EnvelopeRequestActor {
 	id: string;
-	organizationId: string;
-	organizationName: string;
+	/** Instance member envelopes are attributed to: subject or key owner. */
+	createdByUserId: string;
 	/** Session operators are `user`; API keys are `agent`. Defaults to `user`. */
 	actorType?: 'user' | 'agent';
 }

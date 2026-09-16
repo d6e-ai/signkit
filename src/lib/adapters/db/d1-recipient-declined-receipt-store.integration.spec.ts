@@ -28,34 +28,22 @@ async function fixture(): Promise<{
 	const capability = await issueRecipientCapability();
 	sqlite
 		.prepare(
-			`INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			 VALUES ('org-1', 'org-1', 'Workspace', ?)`
+			`INSERT INTO instance_member (user_id, role, status, created_at, updated_at) VALUES ('user-1', 'owner', 'active', ?, ?)`
 		)
-		.run(DECLINED_AT);
+		.run(DECLINED_AT, DECLINED_AT);
 	sqlite
 		.prepare(
-			`INSERT INTO envelope (
-				id, organization_id, title, status, repository_generation, repository_head,
-				sent_commit_sha, created_at, updated_at
-			 ) VALUES (?, 'org-1', 'Agreement', 'sent', 1, ?, ?, ?, ?)`
+			`INSERT INTO envelope (id, created_by_user_id, title, status, repository_generation, repository_head, sent_commit_sha, created_at, updated_at) VALUES (?, 'user-1', 'Agreement', 'sent', 1, ?, ?, ?, ?)`
 		)
 		.run(ENVELOPE_ID, COMMIT_SHA, COMMIT_SHA, DECLINED_AT, DECLINED_AT);
 	sqlite
 		.prepare(
-			`INSERT INTO recipient (
-				id, organization_id, envelope_id, email, name, role, locale, routing_order,
-				status, capability_hash, capability_expires_at, created_at, updated_at
-			 ) VALUES (?, 'org-1', ?, 'recipient@example.com', 'Recipient', 'signer', 'ja', 1,
-				'pending', ?, '2026-09-20T00:00:00.000Z', ?, ?)`
+			`INSERT INTO recipient (id, envelope_id, email, name, role, locale, routing_order, status, capability_hash, capability_expires_at, created_at, updated_at) VALUES (?, ?, 'recipient@example.com', 'Recipient', 'signer', 'ja', 1, 'pending', ?, '2026-09-20T00:00:00.000Z', ?, ?)`
 		)
 		.run(RECIPIENT_ID, ENVELOPE_ID, capability.tokenHash, DECLINED_AT, DECLINED_AT);
 	sqlite
 		.prepare(
-			`INSERT INTO audit_event (
-				id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
-				payload_json, previous_hash, event_hash, occurred_at
-			 ) VALUES ('01960000-0000-7000-8000-0000000000a1', 'org-1', ?, 1, 'envelope.sent', 'user', 'user-1',
-				'{}', NULL, 'sent-hash', ?)`
+			`INSERT INTO audit_event (id, envelope_id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash, event_hash, occurred_at) VALUES ('01960000-0000-7000-8000-0000000000a1', ?, 1, 'envelope.sent', 'user', 'user-1', '{}', NULL, 'sent-hash', ?)`
 		)
 		.run(ENVELOPE_ID, DECLINED_AT);
 	const database: D1Database = sqliteD1Database(sqlite);
@@ -94,7 +82,6 @@ describe('D1 declined receipt evidence integration', () => {
 					locale: 'ja'
 				},
 				locator: expect.objectContaining({
-					organizationId: 'org-1',
 					idempotencyKey: 'decline-1',
 					expiresAt: '2026-10-12T00:00:00.000Z'
 				})
@@ -135,14 +122,7 @@ describe('D1 declined receipt evidence integration', () => {
 		const { sqlite, database, token } = await fixture();
 		try {
 			sqlite.exec(`
-				INSERT INTO recipient (
-					id, organization_id, envelope_id, email, name, role, locale, routing_order,
-					status, capability_hash, capability_expires_at, created_at, updated_at
-				) VALUES (
-					'01930000-0000-7000-8000-0000000000f5', 'org-1', '${ENVELOPE_ID}', 'sibling@example.com', 'Sibling',
-					'viewer', 'en', 1, 'pending', '${'b'.repeat(64)}', '2026-10-01',
-					'${DECLINED_AT}', '${DECLINED_AT}'
-				);
+				INSERT INTO recipient (id, envelope_id, email, name, role, locale, routing_order, status, capability_hash, capability_expires_at, created_at, updated_at) VALUES ('01930000-0000-7000-8000-0000000000f5', '${ENVELOPE_ID}', 'sibling@example.com', 'Sibling', 'viewer', 'en', 1, 'pending', '${'b'.repeat(64)}', '2026-10-01', '${DECLINED_AT}', '${DECLINED_AT}');
 			`);
 			const application = new RecipientDeclinedReceiptApplication(
 				new D1RecipientDeclinedReceiptStore(database)
@@ -156,16 +136,7 @@ describe('D1 declined receipt evidence integration', () => {
 				application.recoverByToken(token, new Date('2026-09-13T00:00:00.000Z'))
 			).resolves.not.toBeNull();
 			sqlite.exec(`
-				INSERT INTO delivery_outbox (
-					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
-					reserved_capability_expires_at, sealed_capability, sealing_key_id,
-					sealed_capability_sha256, available_at, attempts, created_at, updated_at, retryable
-				) VALUES (
-					'01940000-0000-7000-8000-000000000001', 'org-1', '${ENVELOPE_ID}', '${RECIPIENT_ID}', 'recipient_invitation',
-					'pending', '${'b'.repeat(64)}', '2026-10-01', 'sealed', 'key-1',
-					'${'c'.repeat(64)}', '2026-09-13', 0, '2026-09-13', '2026-09-13', 1
-				)
-			`);
+				INSERT INTO delivery_outbox (id, envelope_id, recipient_id, kind, status, capability_hash, reserved_capability_expires_at, sealed_capability, sealing_key_id, sealed_capability_sha256, available_at, attempts, created_at, updated_at, retryable) VALUES ('01940000-0000-7000-8000-000000000001', '${ENVELOPE_ID}', '${RECIPIENT_ID}', 'recipient_invitation', 'pending', '${'b'.repeat(64)}', '2026-10-01', 'sealed', 'key-1', '${'c'.repeat(64)}', '2026-09-13', 0, '2026-09-13', '2026-09-13', 1)`);
 			await expect(
 				application.recoverByToken(token, new Date('2026-09-13T00:00:00.000Z'))
 			).resolves.toBeNull();
@@ -179,14 +150,12 @@ describe('D1 declined receipt evidence integration', () => {
 		try {
 			const store = new D1RecipientDeclinedReceiptStore(database);
 			const identity = {
-				organizationId: 'org-1',
 				envelopeId: ENVELOPE_ID,
 				recipientId: RECIPIENT_ID,
 				idempotencyKey: 'decline-1',
 				capabilityHash
 			};
 			for (const changed of [
-				{ ...identity, organizationId: 'org-2' },
 				{ ...identity, envelopeId: 'other' },
 				{ ...identity, recipientId: 'other' },
 				{ ...identity, idempotencyKey: 'other' },

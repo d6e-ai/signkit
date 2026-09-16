@@ -58,7 +58,6 @@ function fakeD1(options: FakeD1Options = {}) {
 function candidateRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		delivery_id: 'delivery-1',
-		organization_id: 'org-1',
 		envelope_id: 'env-1',
 		recipient_id: 'recipient-1',
 		capability_hash: 'capability-hash-1',
@@ -156,7 +155,6 @@ describe('D1DeliveryOutboxStore.claimPendingInvitations', () => {
 		expect(claimed).toHaveLength(2);
 		expect(claimed[0]).toEqual({
 			deliveryId: 'delivery-1',
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			kind: 'recipient_invitation',
@@ -205,7 +203,6 @@ describe('D1DeliveryOutboxStore.claimPendingInvitations', () => {
 
 describe('D1DeliveryOutboxStore.completeInvitationDelivery', () => {
 	const completeCommand: CompleteInvitationDeliveryCommand = {
-		organizationId: 'org-1',
 		deliveryId: 'delivery-1',
 		claimToken: 'claim-token-0001',
 		deliveredAt: '2026-09-12T00:01:00.000Z',
@@ -228,13 +225,12 @@ describe('D1DeliveryOutboxStore.completeInvitationDelivery', () => {
 			completeCommand.deliveredAt,
 			completeCommand.providerMessageId,
 			completeCommand.deliveredAt,
-			completeCommand.organizationId,
 			completeCommand.deliveryId,
 			completeCommand.claimToken
 		]);
 	});
 
-	it('reports a stale outcome when the organization, delivery, status, or claim no longer match', async () => {
+	it('reports a stale outcome when the delivery, status, or claim no longer match', async () => {
 		const { database } = fakeD1({ runMeta: { changes: 0 } });
 		const store = new D1DeliveryOutboxStore(database);
 		const result = await store.completeInvitationDelivery(completeCommand);
@@ -243,16 +239,15 @@ describe('D1DeliveryOutboxStore.completeInvitationDelivery', () => {
 });
 
 describe('D1DeliveryOutboxStore.readClaimedInvitation', () => {
-	it('re-reads the current tenant-scoped lease projection immediately before delivery', async () => {
+	it('re-reads the current lease projection immediately before delivery', async () => {
 		const { database, prepared } = fakeD1({ firstResult: candidateRow() });
 		const result = await new D1DeliveryOutboxStore(database).readClaimedInvitation({
-			organizationId: 'org-1',
 			deliveryId: 'delivery-1',
 			claimToken: claimCommand.claimToken
 		});
 
 		expect(result).toMatchObject({ deliveryId: 'delivery-1', lockedAt: claimCommand.claimedAt });
-		expect(prepared[0].bindings).toEqual(['org-1', 'delivery-1', claimCommand.claimToken]);
+		expect(prepared[0].bindings).toEqual(['delivery-1', claimCommand.claimToken]);
 		expect(prepared[0].sql).toContain("delivery.status = 'processing'");
 		expect(prepared[0].sql).toContain('delivery.claim_token = ?');
 	});
@@ -260,7 +255,6 @@ describe('D1DeliveryOutboxStore.readClaimedInvitation', () => {
 	it('returns null after a lease is reclaimed or terminal', async () => {
 		await expect(
 			new D1DeliveryOutboxStore(fakeD1({ firstResult: null }).database).readClaimedInvitation({
-				organizationId: 'org-1',
 				deliveryId: 'delivery-1',
 				claimToken: 'stale-claim-token'
 			})
@@ -270,7 +264,6 @@ describe('D1DeliveryOutboxStore.readClaimedInvitation', () => {
 
 describe('D1DeliveryOutboxStore.failInvitationDelivery', () => {
 	const baseFailCommand: FailInvitationDeliveryCommand = {
-		organizationId: 'org-1',
 		deliveryId: 'delivery-1',
 		claimToken: 'claim-token-0001',
 		errorCode: 'mail_delivery_failed',
@@ -291,7 +284,6 @@ describe('D1DeliveryOutboxStore.failInvitationDelivery', () => {
 			baseFailCommand.nextAvailableAt,
 			baseFailCommand.errorCode,
 			baseFailCommand.failedAt,
-			baseFailCommand.organizationId,
 			baseFailCommand.deliveryId,
 			baseFailCommand.claimToken
 		]);
@@ -310,7 +302,6 @@ describe('D1DeliveryOutboxStore.failInvitationDelivery', () => {
 			command.nextAvailableAt,
 			command.errorCode,
 			command.failedAt,
-			command.organizationId,
 			command.deliveryId,
 			command.claimToken
 		]);

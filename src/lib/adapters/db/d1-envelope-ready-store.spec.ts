@@ -36,7 +36,6 @@ function fakeD1(firstResults: readonly unknown[]) {
 }
 
 const command: PublishReadyEnvelopeCommand = {
-	organizationId: 'org-1',
 	envelopeId: '01910000-0000-7000-8000-000000000001',
 	actorType: 'user',
 	actorId: 'user-1',
@@ -47,7 +46,6 @@ const command: PublishReadyEnvelopeCommand = {
 	recipients: [
 		{
 			id: '01910000-0000-7000-8000-000000000002',
-			organizationId: 'org-1',
 			envelopeId: '01910000-0000-7000-8000-000000000001',
 			email: 'a@example.com',
 			name: 'Alice',
@@ -90,7 +88,6 @@ command.auditPayloadJson = JSON.stringify({
 
 function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organization_id: command.organizationId,
 		envelope_id: command.envelopeId,
 		actor_type: command.actorType,
 		actor_id: command.actorId,
@@ -106,7 +103,6 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		audit_event_hash: command.auditEventHash,
 		audit_payload_json: command.auditPayloadJson,
 		evidence_event_id: command.auditEventId,
-		evidence_organization_id: command.organizationId,
 		evidence_envelope_id: command.envelopeId,
 		evidence_sequence: 3,
 		evidence_event_type: 'envelope.ready',
@@ -126,7 +122,6 @@ describe('D1EnvelopeReadyStore', () => {
 			null,
 			{
 				id: command.envelopeId,
-				organization_id: command.organizationId,
 				title: 'Agreement',
 				status: 'draft',
 				repository_generation: 1,
@@ -146,7 +141,6 @@ describe('D1EnvelopeReadyStore', () => {
 			auditHead: { sequence: 2, eventHash: command.previousAuditHash }
 		});
 		expect(fake.prepared[0].bindings).toEqual([
-			command.organizationId,
 			command.actorType,
 			command.actorId,
 			command.idempotencyKey

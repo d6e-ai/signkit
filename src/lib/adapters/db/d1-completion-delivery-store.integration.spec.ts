@@ -5,7 +5,6 @@ import { issueCompletionToken } from '$lib/security/completion-token';
 import { D1CompletionDeliveryStore } from './d1-completion-delivery-store';
 import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
 
-const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
 const ENCRYPTION_KEY: string = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
 const CLAIMED_AT: string = '2026-09-12T00:00:00.000Z';
@@ -31,42 +30,42 @@ function seedCompletedEnvelopeWithArtifact(sqlite: DatabaseSync): {
 	const prefillId = '01930000-0000-7000-8000-000000000005';
 
 	sqlite.exec(`
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('${ORGANIZATION_ID}', '${ORGANIZATION_ID}', 'Workspace', '2026-09-11T00:00:00.000Z');
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
 
 		INSERT INTO envelope (
-			id, organization_id, title, status, repository_generation, repository_head,
+			id, created_by_user_id, title, status, repository_generation, repository_head,
 			sent_commit_sha, repository_archive_key, repository_archive_sha256, created_at, updated_at
 		) VALUES (
-			'${ENVELOPE_ID}', '${ORGANIZATION_ID}', 'Completed Agreement', 'completed', 1, 'commit-1',
+			'${ENVELOPE_ID}', 'user-1', 'Completed Agreement', 'completed', 1, 'commit-1',
 			'commit-1', 'archive-key', '${'a'.repeat(64)}', '2026-09-11T00:00:00.000Z', '2026-09-11T00:02:00.000Z'
 		);
 
 		INSERT INTO recipient (
-			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			id, envelope_id, email, name, role, locale, routing_order, status,
 			created_at, updated_at
 		) VALUES
-			('${signerId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'signer@example.com', 'Signer', 'signer', 'en', 1, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
-			('${approverId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'approver@example.com', 'Approver', 'approver', 'en', 2, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
-			('${viewerId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'viewer@example.com', 'Viewer', 'viewer', 'en', 1, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
-			('${ccId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'cc@example.com', 'CC', 'cc', 'en', 3, 'pending', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
-			('${prefillId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 'prefill@example.com', 'Prefill', 'prefill', 'en', 4, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z');
+			('${signerId}', '${ENVELOPE_ID}', 'signer@example.com', 'Signer', 'signer', 'en', 1, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
+			('${approverId}', '${ENVELOPE_ID}', 'approver@example.com', 'Approver', 'approver', 'en', 2, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
+			('${viewerId}', '${ENVELOPE_ID}', 'viewer@example.com', 'Viewer', 'viewer', 'en', 1, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
+			('${ccId}', '${ENVELOPE_ID}', 'cc@example.com', 'CC', 'cc', 'en', 3, 'pending', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z'),
+			('${prefillId}', '${ENVELOPE_ID}', 'prefill@example.com', 'Prefill', 'prefill', 'en', 4, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z');
 
 		INSERT INTO audit_event (
-			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+			id, envelope_id, sequence, event_type, actor_type, actor_id,
 			payload_json, previous_hash, event_hash, occurred_at
 		) VALUES (
-			'01960000-0000-7000-8000-000000000001', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', 1, 'envelope.completed', 'system', 'system',
+			'01960000-0000-7000-8000-000000000001', '${ENVELOPE_ID}', 1, 'envelope.completed', 'system', 'system',
 			'{}', '${'0'.repeat(64)}', '${'e'.repeat(64)}', '2026-09-11T00:02:00.000Z'
 		);
 
 		INSERT INTO completion_artifact (
-			organization_id, envelope_id, schema_version, manifest_sha256,
+			envelope_id, schema_version, manifest_sha256,
 			json_object_key, json_sha256, markdown_object_key, markdown_sha256,
 			sent_commit_sha, field_generation, anchor_audit_event_id,
 			audit_head_sequence, audit_head_event_hash, published_at, audit_event_id
 		) VALUES (
-			'${ORGANIZATION_ID}', '${ENVELOPE_ID}', 1, '${'m'.repeat(64)}',
+			'${ENVELOPE_ID}', 1, '${'m'.repeat(64)}',
 			'completion-artifacts/v1/org-1/env-1/sha256/${'j'.repeat(64)}.json.gz', '${'j'.repeat(64)}',
 			'completion-artifacts/v1/org-1/env-1/sha256/${'d'.repeat(64)}.md.gz', '${'d'.repeat(64)}',
 			'commit-1', 0, '01960000-0000-7000-8000-000000000001', 1, '${'e'.repeat(64)}', '2026-09-11T00:03:00.000Z', '01960000-0000-7000-8000-000000000003'
@@ -104,7 +103,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 		const sealer = new AesGcmCompletionTokenSealer(ENCRYPTION_KEY);
 		const token = await issueCompletionToken();
 		const sealed = await sealer.seal(token.token, {
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
 			deliveryId: '01940000-0000-7000-8000-000000000001'
@@ -112,7 +110,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 
 		const item = {
 			id: '01940000-0000-7000-8000-000000000001',
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
 			tokenHash: token.tokenHash,
@@ -164,7 +161,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 		const sealer = new AesGcmCompletionTokenSealer(ENCRYPTION_KEY);
 		const token = await issueCompletionToken();
 		const sealed = await sealer.seal(token.token, {
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
 			deliveryId: '01940000-0000-7000-8000-000000000001'
@@ -173,7 +169,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 		await store.enrollDeliveries([
 			{
 				id: '01940000-0000-7000-8000-000000000001',
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				recipientId: signerId,
 				tokenHash: token.tokenHash,
@@ -199,7 +194,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 
 		// Read claimed delivery
 		const readClaimed = await store.readClaimedDelivery({
-			organizationId: ORGANIZATION_ID,
 			deliveryId: '01940000-0000-7000-8000-000000000001',
 			claimToken
 		});
@@ -208,7 +202,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 
 		// Complete delivery (success): scrubs sealed_token, keeps access_revoked_at NULL
 		const completeRes = await store.completeDelivery({
-			organizationId: ORGANIZATION_ID,
 			deliveryId: '01940000-0000-7000-8000-000000000001',
 			claimToken,
 			deliveredAt: '2026-09-12T00:01:00.000Z',
@@ -240,7 +233,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 			'2026-09-12T00:02:00.000Z'
 		);
 		expect(locator).toEqual({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			jsonObjectKey: `completion-artifacts/v1/org-1/env-1/sha256/${'j'.repeat(64)}.json.gz`,
 			jsonSha256: 'j'.repeat(64),
@@ -264,13 +256,11 @@ describe('D1CompletionDeliveryStore integration', () => {
 		const token2 = await issueCompletionToken();
 
 		const sealed1 = await sealer.seal(token1.token, {
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
 			deliveryId: '01940000-0000-7000-8000-0000000000a3'
 		});
 		const sealed2 = await sealer.seal(token2.token, {
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: approverId,
 			deliveryId: '01940000-0000-7000-8000-0000000000a4'
@@ -279,7 +269,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 		await store.enrollDeliveries([
 			{
 				id: '01940000-0000-7000-8000-0000000000a3',
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				recipientId: signerId,
 				tokenHash: token1.tokenHash,
@@ -292,7 +281,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 			},
 			{
 				id: '01940000-0000-7000-8000-0000000000a4',
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				recipientId: approverId,
 				tokenHash: token2.tokenHash,
@@ -315,7 +303,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 
 		// 1. Retryable failure: keeps sealed_token and keeps access_revoked_at NULL
 		const retryFailRes = await store.failDelivery({
-			organizationId: ORGANIZATION_ID,
 			deliveryId: '01940000-0000-7000-8000-0000000000a3',
 			claimToken,
 			errorCode: 'rate_limited',
@@ -342,7 +329,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 
 		// 2. Terminal failure: scrubs sealed_token to NULL and sets access_revoked_at
 		const termFailRes = await store.failDelivery({
-			organizationId: ORGANIZATION_ID,
 			deliveryId: '01940000-0000-7000-8000-0000000000a4',
 			claimToken,
 			errorCode: 'recipient_rejected',
@@ -381,11 +367,11 @@ describe('D1CompletionDeliveryStore integration', () => {
 		expect(() =>
 			sqlite.exec(`
 				INSERT INTO completion_delivery_outbox (
-					id, organization_id, envelope_id, recipient_id, status, token_hash,
+					id, envelope_id, recipient_id, status, token_hash,
 					access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 					sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 				) VALUES (
-					'bad-1', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '01930000-0000-7000-8000-000000000001', 'delivered',
+					'bad-1', '${ENVELOPE_ID}', '01930000-0000-7000-8000-000000000001', 'delivered',
 					'${'1'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, 'unscrubbed-token', 'key-1',
 					'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 0
 				)
@@ -396,11 +382,11 @@ describe('D1CompletionDeliveryStore integration', () => {
 		expect(() =>
 			sqlite.exec(`
 				INSERT INTO completion_delivery_outbox (
-					id, organization_id, envelope_id, recipient_id, status, token_hash,
+					id, envelope_id, recipient_id, status, token_hash,
 					access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 					sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 				) VALUES (
-					'bad-2', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '01930000-0000-7000-8000-000000000001', 'failed',
+					'bad-2', '${ENVELOPE_ID}', '01930000-0000-7000-8000-000000000001', 'failed',
 					'${'2'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, NULL, 'key-1',
 					'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 0
 				)
@@ -418,13 +404,11 @@ describe('D1CompletionDeliveryStore integration', () => {
 		const token2 = await issueCompletionToken();
 
 		const sealed1 = await sealer.seal(token1.token, {
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: signerId,
 			deliveryId: '01940000-0000-7000-8000-0000000000a1'
 		});
 		const sealed2 = await sealer.seal(token2.token, {
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			recipientId: approverId,
 			deliveryId: '01940000-0000-7000-8000-0000000000a5'
@@ -433,23 +417,23 @@ describe('D1CompletionDeliveryStore integration', () => {
 		// Insert del-abandoned directly as processing with old locked_at
 		sqlite.exec(`
 			INSERT INTO completion_delivery_outbox (
-				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				id, envelope_id, recipient_id, status, token_hash,
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, locked_at, claim_token,
 				created_at, updated_at, retryable
 			) VALUES (
-				'01940000-0000-7000-8000-0000000000a1', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${signerId}', 'processing',
+				'01940000-0000-7000-8000-0000000000a1', '${ENVELOPE_ID}', '${signerId}', 'processing',
 				'${token1.tokenHash}', '2026-10-12T00:00:00.000Z', NULL, '${sealed1.sealedToken}', '${sealed1.sealingKeyId}',
 				'${sealed1.sealedTokenSha256}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T23:50:00.000Z', 'old-claim-token-1234',
 				'2026-09-11T00:00:00.000Z', '2026-09-11T23:50:00.000Z', 1
 			);
 			INSERT INTO completion_delivery_outbox (
-				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				id, envelope_id, recipient_id, status, token_hash,
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, locked_at, claim_token,
 				created_at, updated_at, retryable
 			) VALUES (
-				'01940000-0000-7000-8000-0000000000a5', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${approverId}', 'processing',
+				'01940000-0000-7000-8000-0000000000a5', '${ENVELOPE_ID}', '${approverId}', 'processing',
 				'${token2.tokenHash}', '2026-10-12T00:00:00.000Z', NULL, '${sealed2.sealedToken}', '${sealed2.sealingKeyId}',
 				'${sealed2.sealedTokenSha256}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T23:50:00.000Z', 'old-claim-token-1234',
 				'2026-09-11T00:00:00.000Z', '2026-09-11T23:50:00.000Z', 1
@@ -492,68 +476,63 @@ describe('D1CompletionDeliveryStore integration', () => {
 		expect(voidedRow.last_error).toBe('delivery_not_eligible');
 	});
 
-	it('isolates cross-tenant artifact resolution', async () => {
+	it('resolves artifact locator for another envelope by token hash', async () => {
 		const { database, sqlite } = createFixture();
 		const store = new D1CompletionDeliveryStore(database);
 		seedCompletedEnvelopeWithArtifact(sqlite);
 
-		const otherOrgId = 'org-other';
 		const otherEnvId = '01920000-0000-7000-8000-0000000000f2';
 		const otherRecId = '01930000-0000-7000-8000-0000000000f2';
 		const otherTokenHash = '7'.repeat(64);
 		const baseTime = '2026-09-12T00:00:00.000Z';
 
 		sqlite.exec(`
-			INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			VALUES ('${otherOrgId}', '${otherOrgId}', 'Other Org', '2026-09-11T00:00:00.000Z');
-
 			INSERT INTO envelope (
-				id, organization_id, title, status, repository_generation, repository_head,
+				id, created_by_user_id, title, status, repository_generation, repository_head,
 				sent_commit_sha, repository_archive_key, repository_archive_sha256, created_at, updated_at
 			) VALUES (
-				'${otherEnvId}', '${otherOrgId}', 'Other Agreement', 'completed', 1, 'commit-2',
+				'${otherEnvId}', 'user-1', 'Other Agreement', 'completed', 1, 'commit-2',
 				'commit-2', 'archive-key-2', '${'2'.repeat(64)}', '2026-09-11T00:00:00.000Z', '2026-09-11T00:02:00.000Z'
 			);
 
 			INSERT INTO recipient (
-				id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+				id, envelope_id, email, name, role, locale, routing_order, status,
 				created_at, updated_at
 			) VALUES
-				('${otherRecId}', '${otherOrgId}', '${otherEnvId}', 'other@example.com', 'Other', 'signer', 'en', 1, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z');
+				('${otherRecId}', '${otherEnvId}', 'other@example.com', 'Other', 'signer', 'en', 1, 'completed', '2026-09-11T00:01:00.000Z', '2026-09-11T00:02:00.000Z');
 
 			INSERT INTO audit_event (
-				id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+				id, envelope_id, sequence, event_type, actor_type, actor_id,
 				payload_json, previous_hash, event_hash, occurred_at
 			) VALUES (
-				'01960000-0000-7000-8000-000000000002', '${otherOrgId}', '${otherEnvId}', 1, 'envelope.completed', 'system', 'system',
+				'01960000-0000-7000-8000-000000000002', '${otherEnvId}', 1, 'envelope.completed', 'system', 'system',
 				'{}', '${'0'.repeat(64)}', '${'f'.repeat(64)}', '2026-09-11T00:02:00.000Z'
 			);
 
 			INSERT INTO completion_artifact (
-				organization_id, envelope_id, schema_version, manifest_sha256,
+				envelope_id, schema_version, manifest_sha256,
 				json_object_key, json_sha256, markdown_object_key, markdown_sha256,
 				sent_commit_sha, field_generation, anchor_audit_event_id,
 				audit_head_sequence, audit_head_event_hash, published_at, audit_event_id
 			) VALUES (
-				'${otherOrgId}', '${otherEnvId}', 1, '${'n'.repeat(64)}',
-				'completion-artifacts/v1/${otherOrgId}/${otherEnvId}/sha256/${'8'.repeat(64)}.json.gz', '${'8'.repeat(64)}',
-				'completion-artifacts/v1/${otherOrgId}/${otherEnvId}/sha256/${'9'.repeat(64)}.md.gz', '${'9'.repeat(64)}',
+				'${otherEnvId}', 1, '${'n'.repeat(64)}',
+				'completion-artifacts/v1/env-other/sha256/${'8'.repeat(64)}.json.gz', '${'8'.repeat(64)}',
+				'completion-artifacts/v1/env-other/sha256/${'9'.repeat(64)}.md.gz', '${'9'.repeat(64)}',
 				'commit-2', 0, '01960000-0000-7000-8000-000000000002', 1, '${'f'.repeat(64)}', '2026-09-11T00:03:00.000Z', '01960000-0000-7000-8000-000000000004'
 			);
 
 			INSERT INTO completion_delivery_outbox (
-				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				id, envelope_id, recipient_id, status, token_hash,
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 			) VALUES (
-				'01940000-0000-7000-8000-0000000000f2', '${otherOrgId}', '${otherEnvId}', '${otherRecId}', 'delivered',
+				'01940000-0000-7000-8000-0000000000f2', '${otherEnvId}', '${otherRecId}', 'delivered',
 				'${otherTokenHash}', '2026-10-12T00:00:00.000Z', NULL, NULL, 'key-1',
 				'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 0
 			);
 		`);
 
 		const otherLocator = await store.resolveArtifactLocatorByTokenHash(otherTokenHash, baseTime);
-		expect(otherLocator?.organizationId).toBe(otherOrgId);
 		expect(otherLocator?.envelopeId).toBe(otherEnvId);
 
 		// Unknown token returns null
@@ -567,11 +546,11 @@ describe('D1CompletionDeliveryStore integration', () => {
 		const deliveryId = '01940000-0000-7000-8000-0000000000f9';
 		sqlite.exec(`
 			INSERT INTO completion_delivery_outbox (
-				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				id, envelope_id, recipient_id, status, token_hash,
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable
 			) VALUES (
-				'${deliveryId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${signerId}', 'pending',
+				'${deliveryId}', '${ENVELOPE_ID}', '${signerId}', 'pending',
 				'${'t'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, 'skcd1_ciphertext', 'key-1',
 				'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 0, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 1
 			);
@@ -584,7 +563,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 		expect(stale).toEqual([
 			{
 				deliveryId,
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				recipientId: signerId,
 				sealedToken: 'skcd1_ciphertext',
@@ -594,7 +572,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 
 		await expect(
 			store.resealCompletionToken({
-				organizationId: ORGANIZATION_ID,
 				deliveryId,
 				previousSealingKeyId: 'key-1',
 				sealedToken: 'skcd1_resealed',
@@ -621,12 +598,12 @@ describe('D1CompletionDeliveryStore integration', () => {
 		const deliveryId = '01940000-0000-7000-8000-0000000000fa';
 		sqlite.exec(`
 			INSERT INTO completion_delivery_outbox (
-				id, organization_id, envelope_id, recipient_id, status, token_hash,
+				id, envelope_id, recipient_id, status, token_hash,
 				access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 				sealed_token_sha256, available_at, attempts, created_at, updated_at, retryable,
 				claim_token, locked_at
 			) VALUES (
-				'${deliveryId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}', '${signerId}', 'processing',
+				'${deliveryId}', '${ENVELOPE_ID}', '${signerId}', 'processing',
 				'${'t'.repeat(64)}', '2026-10-12T00:00:00.000Z', NULL, 'skcd1_ciphertext', 'key-1',
 				'${'s'.repeat(64)}', '2026-09-11T00:00:00.000Z', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 1,
 				'lease-token-0001', '2026-09-12T00:00:00.000Z'
@@ -638,7 +615,6 @@ describe('D1CompletionDeliveryStore integration', () => {
 		).resolves.toEqual([]);
 		await expect(
 			store.resealCompletionToken({
-				organizationId: ORGANIZATION_ID,
 				deliveryId,
 				previousSealingKeyId: 'key-1',
 				sealedToken: 'skcd1_resealed',

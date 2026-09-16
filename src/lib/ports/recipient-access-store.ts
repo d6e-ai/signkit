@@ -1,7 +1,6 @@
 import type { EnvelopeStatus, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
 
 export interface RecipientSigningContext {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientName: string;

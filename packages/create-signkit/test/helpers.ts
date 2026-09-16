@@ -1,6 +1,9 @@
 import { Buffer } from 'node:buffer';
 import { join } from 'node:path';
 import {
+	D1_SCHEMA_EPOCH,
+	MIGRATION_POLICY_COMPATIBILITY,
+	MIGRATION_POLICY_NOTES,
 	REQUIRED_WORKER_SECRETS,
 	REQUIRED_WORKER_VARS,
 	SIGNKIT_REPOSITORY
@@ -24,7 +27,6 @@ import type {
 	WranglerInvocation
 } from '../src/providers/cloudflare/wrangler.js';
 import { sha256Hex } from '../src/release/github.js';
-import { MIGRATION_POLICY_COMPATIBILITY, MIGRATION_POLICY_NOTES } from '../src/constants.js';
 
 export const ACCOUNT_ID = '0123456789abcdef0123456789abcdef';
 export const COMMIT = '0123456789abcdef0123456789abcdef01234567';
@@ -49,6 +51,7 @@ export async function writeCloudflareState(
 			publicOrigin: 'https://signkit.example.workers.dev',
 			bootstrapOwnerEmail: BOOTSTRAP_OWNER_EMAIL,
 			channel: 'stable',
+			schemaEpoch: D1_SCHEMA_EPOCH,
 			updatedAt: '2026-09-15T00:00:00.000Z',
 			lastWorkerVersionId: PREVIOUS_VERSION,
 			...overrides
@@ -500,6 +503,7 @@ export function sampleManifest(overrides: Partial<ReleaseManifest> = {}): Releas
 		requiredSecrets: [...REQUIRED_WORKER_SECRETS],
 		requiredVars: [...REQUIRED_WORKER_VARS],
 		migrationPolicy: {
+			schemaEpoch: D1_SCHEMA_EPOCH,
 			compatibility: MIGRATION_POLICY_COMPATIBILITY,
 			notes: MIGRATION_POLICY_NOTES
 		},

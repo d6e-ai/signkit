@@ -311,6 +311,7 @@ async function deployOrUpgrade(
 			database: current.d1.name
 		};
 		const migrations = await runtime.wrangler.listMigrations(migrationOptions);
+		assertCompatibleSchemaEpoch(existing, release, migrations.applied);
 		const pending = [...migrations.pending];
 		if (pending.length > 0) {
 			await runtime.wrangler.applyMigrations(migrationOptions);
@@ -703,6 +704,7 @@ function nextState(
 		channel: input.channel,
 		version: release.tag,
 		commit: release.commit,
+		schemaEpoch: release.manifest.migrationPolicy.schemaEpoch,
 		lastCommand: input.command,
 		updatedAt: now.toISOString(),
 		lastWorkerVersionId: extra.lastWorkerVersionId ?? existing?.lastWorkerVersionId,
@@ -838,6 +840,7 @@ function adoptState(
 		channel: input.channel,
 		version: retarget ? undefined : existing?.version,
 		commit: retarget ? undefined : existing?.commit,
+		schemaEpoch: retarget ? undefined : existing?.schemaEpoch,
 		lastCommand: 'adopt',
 		updatedAt: now.toISOString(),
 		lastWorkerVersionId: retarget ? undefined : existing?.lastWorkerVersionId,
@@ -845,6 +848,21 @@ function adoptState(
 		appliedMigrations: retarget ? undefined : existing?.appliedMigrations,
 		adopted: true
 	};
+}
+
+function assertCompatibleSchemaEpoch(
+	existing: DeploymentState | undefined,
+	release: ResolvedRelease,
+	appliedMigrations: readonly string[]
+): void {
+	const releaseEpoch = release.manifest.migrationPolicy.schemaEpoch;
+	if (!existing || existing.schemaEpoch === releaseEpoch || appliedMigrations.length === 0) {
+		return;
+	}
+	const recorded = existing.schemaEpoch ?? 'unrecorded legacy schema';
+	throw conflict(
+		`D1 schema epoch ${recorded} cannot be upgraded in place to ${releaseEpoch}. Recreate the selected D1, adopt the fresh database, and run deploy again.`
+	);
 }
 
 function assertNoTakeover(

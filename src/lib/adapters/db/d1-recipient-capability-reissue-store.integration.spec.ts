@@ -7,7 +7,6 @@ import type {
 	ReissueCommandKey
 } from '$lib/ports/recipient-capability-reissue-store';
 
-const ORG_ID = 'org-1';
 const ENV_ID = '01900000-0000-7000-8000-000000000001';
 const REC_ID = '01900000-0000-7000-8000-000000000002';
 const USER_ID = '01900000-0000-7000-8000-000000000003';
@@ -34,52 +33,18 @@ function seedBaseline(sqlite: DatabaseSync, outboxStatus: string = 'pending'): v
 	const deliveredAt: string = isDelivered ? "'2026-09-11T00:01:00.000Z'" : 'NULL';
 	const attempts: number = isProcessing ? 1 : isDelivered ? 1 : 0;
 	sqlite.exec(`
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('${ORG_ID}', '${ORG_ID}', 'Workspace', '2026-09-11T00:00:00.000Z');
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
 
-		INSERT INTO envelope (
-			id, organization_id, title, status, repository_generation,
-			created_at, updated_at
-		) VALUES (
-			'${ENV_ID}', '${ORG_ID}', 'Agreement', 'sent', 1,
-			'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
-		);
+		INSERT INTO envelope (id, created_by_user_id, title, status, repository_generation, created_at, updated_at) VALUES ('${ENV_ID}', 'user-1', 'Agreement', 'sent', 1, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
 
-		INSERT INTO recipient (
-			id, organization_id, envelope_id, role, routing_order, name, email, locale,
-			status, capability_hash, capability_expires_at, created_at, updated_at
-		) VALUES (
-			'${REC_ID}', '${ORG_ID}', '${ENV_ID}', 'signer', 1, 'Signer Person', 'signer@example.test', 'en',
-			'pending', '${CAP_HASH_1}', '2026-09-25T00:00:00.000Z', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
-		);
+		INSERT INTO recipient (id, envelope_id, role, routing_order, name, email, locale, status, capability_hash, capability_expires_at, created_at, updated_at) VALUES ('${REC_ID}', '${ENV_ID}', 'signer', 1, 'Signer Person', 'signer@example.test', 'en', 'pending', '${CAP_HASH_1}', '2026-09-25T00:00:00.000Z', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
 
-		INSERT INTO delivery_outbox (
-			id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
-			reserved_capability_expires_at, sealed_capability, sealing_key_id,
-			sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
-			created_at, updated_at, claim_token, retryable
-		) VALUES (
-			'01900000-0000-7000-8000-000000000010', '${ORG_ID}', '${ENV_ID}', '${REC_ID}',
-			'recipient_invitation', '${outboxStatus}', '${CAP_HASH_1}', '2026-09-25T00:00:00.000Z',
-			${sealedCapability}, 'key-1', '${'c'.repeat(64)}', '2026-09-11T00:00:00.000Z', ${attempts},
-			${lockedAt}, ${deliveredAt}, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z',
-			${claimToken}, ${retryable}
-		);
+		INSERT INTO delivery_outbox (id, envelope_id, recipient_id, kind, status, capability_hash, reserved_capability_expires_at, sealed_capability, sealing_key_id, sealed_capability_sha256, available_at, attempts, locked_at, delivered_at, created_at, updated_at, claim_token, retryable) VALUES ('01900000-0000-7000-8000-000000000010', '${ENV_ID}', '${REC_ID}', 'recipient_invitation', '${outboxStatus}', '${CAP_HASH_1}', '2026-09-25T00:00:00.000Z', ${sealedCapability}, 'key-1', '${'c'.repeat(64)}', '2026-09-11T00:00:00.000Z', ${attempts}, ${lockedAt}, ${deliveredAt}, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', ${claimToken}, ${retryable});
 
-		INSERT INTO recipient_capability_issuance (
-			organization_id, envelope_id, recipient_id, capability_hash, predecessor_capability_hash, issued_at
-		) VALUES (
-			'${ORG_ID}', '${ENV_ID}', '${REC_ID}', '${CAP_HASH_1}', NULL, '2026-09-11T00:00:00.000Z'
-		);
+		INSERT INTO recipient_capability_issuance (envelope_id, recipient_id, capability_hash, predecessor_capability_hash, issued_at) VALUES ('${ENV_ID}', '${REC_ID}', '${CAP_HASH_1}', NULL, '2026-09-11T00:00:00.000Z');
 
-		INSERT INTO audit_event (
-			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
-			payload_json, previous_hash, event_hash, occurred_at
-		) VALUES (
-			'01900000-0000-7000-8000-000000000020', '${ORG_ID}', '${ENV_ID}', 1,
-			'envelope.sent', 'user', '${USER_ID}', '{}', '${'0'.repeat(64)}', '${AUDIT_HASH_1}',
-			'2026-09-11T00:00:00.000Z'
-		);
+		INSERT INTO audit_event (id, envelope_id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash, event_hash, occurred_at) VALUES ('01900000-0000-7000-8000-000000000020', '${ENV_ID}', 1, 'envelope.sent', 'user', '${USER_ID}', '{}', '${'0'.repeat(64)}', '${AUDIT_HASH_1}', '2026-09-11T00:00:00.000Z');
 	`);
 }
 
@@ -89,7 +54,6 @@ describe('D1RecipientCapabilityReissueStore Integration', () => {
 		seedBaseline(sqlite);
 
 		const key: ReissueCommandKey = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			recipientId: REC_ID,
 			actorType: 'user',
@@ -205,7 +169,6 @@ describe('D1RecipientCapabilityReissueStore Integration', () => {
 		seedBaseline(sqlite, 'processing');
 
 		const key: ReissueCommandKey = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			recipientId: REC_ID,
 			actorType: 'user',
@@ -224,7 +187,6 @@ describe('D1RecipientCapabilityReissueStore Integration', () => {
 		sqlite.exec(`UPDATE envelope SET status = 'voided' WHERE id = '${ENV_ID}'`);
 
 		const key: ReissueCommandKey = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			recipientId: REC_ID,
 			actorType: 'user',
@@ -243,7 +205,6 @@ describe('D1RecipientCapabilityReissueStore Integration', () => {
 		sqlite.exec(`UPDATE recipient SET status = 'completed' WHERE id = '${REC_ID}'`);
 
 		const key: ReissueCommandKey = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			recipientId: REC_ID,
 			actorType: 'user',

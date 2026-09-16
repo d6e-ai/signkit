@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import { MAX_DRAFT_GENERATION, normalizeMarkdownContent } from '$lib/domain/draft';
 import {
 	appendPdfDocument,
@@ -52,7 +52,6 @@ const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{1,200}$/;
 const NUL_CHARACTER = '\x00';
 
 export interface ReadCurrentDraftInput {
-	organizationId: string;
 	envelopeId: string;
 }
 
@@ -117,7 +116,6 @@ export interface DraftWorkspaceSnapshot {
 }
 
 export interface ImmutableDraftRevision {
-	organizationId: string;
 	envelopeId: string;
 	commitSha: string;
 	archiveKey: string;
@@ -134,7 +132,7 @@ export class DraftEnvelopeNotFoundError extends Error {
 	readonly code = 'DRAFT_ENVELOPE_NOT_FOUND';
 
 	constructor() {
-		super('Draft envelope was not found in the organization');
+		super('Draft envelope was not found');
 		this.name = 'DraftEnvelopeNotFoundError';
 	}
 }
@@ -210,13 +208,12 @@ export class DraftPersistenceService {
 	) {}
 
 	async readCurrent(input: ReadCurrentDraftInput): Promise<DraftSnapshot> {
-		assertScopedIdentifier(input.organizationId, 'organization');
 		assertScopedIdentifier(input.envelopeId, 'envelope');
 
 		for (let attempt = 0; attempt < MAX_CURRENT_READ_ATTEMPTS; attempt += 1) {
-			const before = await this.findEnvelope(input.organizationId, input.envelopeId);
+			const before = await this.findEnvelope(input.envelopeId);
 			const snapshot = await this.loadSnapshot(before);
-			const after = await this.findEnvelope(input.organizationId, input.envelopeId);
+			const after = await this.findEnvelope(input.envelopeId);
 
 			if (sameDraftPointer(before, after)) return snapshot;
 		}
@@ -245,7 +242,6 @@ export class DraftPersistenceService {
 	}
 
 	async commit(input: CommitDraftInput): Promise<CommitDraftResult> {
-		assertScopedIdentifier(input.organizationId, 'organization');
 		assertScopedIdentifier(input.envelopeId, 'envelope');
 		assertScopedIdentifier(input.actor.id, 'actor');
 		assertGeneration(input.expectedGeneration);
@@ -264,7 +260,6 @@ export class DraftPersistenceService {
 			})
 		);
 		const key: DraftRevisionKey = {
-			organizationId: input.organizationId,
 			envelopeId: input.envelopeId,
 			actorType: input.actor.type,
 			actorId: input.actor.id,
@@ -283,10 +278,7 @@ export class DraftPersistenceService {
 		if (preparation.outcome !== 'ready') {
 			throw new DraftIntegrityError('Draft preparation returned an unsupported outcome');
 		}
-		if (
-			preparation.envelope.organizationId !== input.organizationId ||
-			preparation.envelope.id !== input.envelopeId
-		) {
+		if (preparation.envelope.id !== input.envelopeId) {
 			throw new DraftIntegrityError('Draft preparation crossed its envelope scope');
 		}
 		if (preparation.envelope.status !== 'draft') throw new DraftEnvelopeImmutableError();
@@ -312,18 +304,13 @@ export class DraftPersistenceService {
 			commitOptions
 		);
 		await this.assertResultingDocumentSet(
-			input.organizationId,
 			input.envelopeId,
 			version.paths,
 			next.manifest,
 			next.markdownByPath
 		);
 		const archiveSha256: string = await verifyRepositoryVersion(version);
-		const archiveKey: string = draftArchiveKey(
-			input.organizationId,
-			input.envelopeId,
-			archiveSha256
-		);
+		const archiveKey: string = draftArchiveKey(input.envelopeId, archiveSha256);
 
 		await this.persistImmutableArchive(archiveKey, version.archive, archiveSha256);
 
@@ -348,7 +335,7 @@ export class DraftPersistenceService {
 		// request fingerprint, so the identifier itself is minted rather than
 		// derived from the key.
 		const auditEventId: string = this.newId();
-		const auditEventHash: string = await hashAuditEventV2(
+		const auditEventHash: string = await hashAuditEventV3(
 			{
 				sequence: auditSequence,
 				eventType: 'draft.revision_created',
@@ -358,7 +345,7 @@ export class DraftPersistenceService {
 				payload: auditPayload,
 				previousHash: preparation.auditHead.eventHash
 			},
-			{ organizationId: input.organizationId, envelopeId: input.envelopeId }
+			{ envelopeId: input.envelopeId }
 		);
 		const publication: PublishDraftRevisionResult = await this.store.publishDraftRevision({
 			...key,
@@ -521,7 +508,6 @@ export class DraftPersistenceService {
 	}
 
 	private async assertResultingDocumentSet(
-		organizationId: string,
 		envelopeId: string,
 		paths: readonly string[],
 		manifest: DocumentSetManifest,
@@ -555,7 +541,7 @@ export class DraftPersistenceService {
 			if (this.uploadedDocuments === null) {
 				throw new DraftDocumentSetError('Uploaded PDF bytes are not bound to this envelope');
 			}
-			const record = await this.uploadedDocuments.find(organizationId, envelopeId, leaf.sha256);
+			const record = await this.uploadedDocuments.find(envelopeId, leaf.sha256);
 			if (record === null) {
 				throw new DraftDocumentSetError('Uploaded PDF digest is missing from the envelope ledger');
 			}
@@ -563,8 +549,8 @@ export class DraftPersistenceService {
 		void markdownByPath;
 	}
 
-	private async findEnvelope(organizationId: string, envelopeId: string): Promise<Envelope> {
-		const envelope = await this.store.findForOrganization(organizationId, envelopeId);
+	private async findEnvelope(envelopeId: string): Promise<Envelope> {
+		const envelope = await this.store.findEnvelope(envelopeId);
 		if (!envelope) throw new DraftEnvelopeNotFoundError();
 		return envelope;
 	}
@@ -587,17 +573,12 @@ export class DraftPersistenceService {
 			throw new DraftIntegrityError('Stored draft command has an invalid audit event ID');
 		}
 		assertSha256(revision.archiveSha256);
-		const expectedKey: string = draftArchiveKey(
-			input.organizationId,
-			input.envelopeId,
-			revision.archiveSha256
-		);
+		const expectedKey: string = draftArchiveKey(input.envelopeId, revision.archiveSha256);
 		if (revision.archiveKey !== expectedKey) {
 			throw new DraftIntegrityError('Stored draft command has an invalid archive key');
 		}
 		await readImmutableDraftRevision(
 			{
-				organizationId: input.organizationId,
 				envelopeId: input.envelopeId,
 				commitSha: revision.commitSha,
 				archiveKey: revision.archiveKey,
@@ -640,9 +621,9 @@ export class DraftPersistenceService {
 		}
 		assertSha256(archiveSha256);
 
-		const expectedKey = draftArchiveKey(envelope.organizationId, envelope.id, archiveSha256);
+		const expectedKey = draftArchiveKey(envelope.id, archiveSha256);
 		if (archiveKey !== expectedKey) {
-			throw new DraftIntegrityError('Draft archive key does not match its organization scope');
+			throw new DraftIntegrityError('Draft archive key does not match its envelope scope');
 		}
 
 		const archive = await this.readVerifiedArchive(archiveKey, archiveSha256);
@@ -711,13 +692,9 @@ export async function readImmutableDraftRevision(
 		throw new DraftIntegrityError('Pinned draft revision has an invalid Git commit SHA');
 	}
 	assertSha256(revision.archiveSha256);
-	const expectedKey: string = draftArchiveKey(
-		revision.organizationId,
-		revision.envelopeId,
-		revision.archiveSha256
-	);
+	const expectedKey: string = draftArchiveKey(revision.envelopeId, revision.archiveSha256);
 	if (revision.archiveKey !== expectedKey) {
-		throw new DraftIntegrityError('Pinned draft archive key does not match its organization scope');
+		throw new DraftIntegrityError('Pinned draft archive key does not match its envelope scope');
 	}
 	const stream: ReadableStream<Uint8Array> | null = await objects.get(revision.archiveKey);
 	if (stream === null) throw new DraftIntegrityError('Pinned draft repository archive is missing');
@@ -903,20 +880,14 @@ function assertIsoTimestamp(value: string): void {
 	}
 }
 
-export function draftArchiveKey(
-	organizationId: string,
-	envelopeId: string,
-	archiveSha256: string
-): string {
-	assertScopedIdentifier(organizationId, 'organization');
+export function draftArchiveKey(envelopeId: string, archiveSha256: string): string {
 	assertScopedIdentifier(envelopeId, 'envelope');
 	assertSha256(archiveSha256);
-	return `draft-repositories/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${archiveSha256}.git.gz`;
+	return `draft-repositories/v1/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${archiveSha256}.git.gz`;
 }
 
 function sameDraftPointer(left: Envelope, right: Envelope): boolean {
 	return (
-		left.organizationId === right.organizationId &&
 		left.id === right.id &&
 		left.repositoryGeneration === right.repositoryGeneration &&
 		left.repositoryHead === right.repositoryHead &&
@@ -1003,7 +974,7 @@ function assertSha256(value: string): void {
 	}
 }
 
-function assertScopedIdentifier(value: string, kind: 'organization' | 'envelope' | 'actor'): void {
+function assertScopedIdentifier(value: string, kind: 'envelope' | 'actor'): void {
 	const byteLength = new TextEncoder().encode(value).byteLength;
 	if (value.length === 0 || byteLength > 256 || hasControlCharacter(value)) {
 		throw new Error(`Invalid ${kind} identifier`);

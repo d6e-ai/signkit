@@ -33,7 +33,7 @@ const MAX_LIST_LIMIT: number = 100;
 
 interface EnvelopeRow {
 	id: string;
-	organization_id: string;
+	created_by_user_id: string;
 	title: string;
 	status: EnvelopeStatus;
 	repository_generation: number;
@@ -57,7 +57,6 @@ interface CursorRow {
 }
 
 interface DraftRevisionCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	actor_type: string;
 	actor_id: string;
@@ -73,7 +72,6 @@ interface DraftRevisionCommandRow {
 	audit_event_hash: string;
 	audit_payload_json: string;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -92,8 +90,8 @@ interface AuditHeadRow {
 
 /**
  * D1 implementation of the application-level envelope store. Creation uses
- * D1's native batch transaction so the projection, envelope, audit event, and
- * idempotency record either all become visible or none of them do.
+ * D1's native batch transaction so the envelope, audit event, and idempotency
+ * record either all become visible or none of them do.
  */
 export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, DraftMutationStore {
 	readonly #database: D1Database;
@@ -108,34 +106,17 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		const existing: CreateEnvelopeStoreResult | null = await this.#resolveIdempotency(command);
 		if (existing !== null) return existing;
 
-		const organization: D1PreparedStatement = this.#database
-			.prepare(
-				`INSERT INTO organization (id, d6e_organization_id, name, created_at)
-				 VALUES (?, ?, ?, ?)
-				 ON CONFLICT(id) DO UPDATE SET name = excluded.name`
-			)
-			.bind(
-				command.organizationId,
-				command.organizationId,
-				command.organizationName,
-				command.createdAt
-			);
 		const envelope: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO envelope (
-					id, organization_id, title, status, repository_generation,
+					id, created_by_user_id, title, status, repository_generation,
 					repository_head, repository_archive_key, repository_archive_sha256,
 					sent_commit_sha, created_at, updated_at
-				) VALUES (
-					?,
-					(SELECT id FROM organization WHERE id = ? AND d6e_organization_id = ?),
-					?, 'draft', 0, NULL, NULL, NULL, NULL, ?, ?
-				)`
+				) VALUES (?, ?, ?, 'draft', 0, NULL, NULL, NULL, NULL, ?, ?)`
 			)
 			.bind(
 				command.envelopeId,
-				command.organizationId,
-				command.organizationId,
+				command.createdByUserId,
 				command.title,
 				command.createdAt,
 				command.createdAt
@@ -143,13 +124,12 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		const auditEvent: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO audit_event (
-					id, organization_id, envelope_id, sequence, event_type, actor_type,
+					id, envelope_id, sequence, event_type, actor_type,
 					actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
-				) VALUES (?, ?, ?, 1, 'envelope.created', ?, ?, ?, NULL, ?, ?, 2)`
+				) VALUES (?, ?, 1, 'envelope.created', ?, ?, ?, NULL, ?, ?, 3)`
 			)
 			.bind(
 				command.auditEventId,
-				command.organizationId,
 				command.envelopeId,
 				command.actor.type,
 				command.actor.id,
@@ -160,11 +140,10 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		const idempotency: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO idempotency_key (
-					organization_id, caller_id, idempotency_key, request_hash, envelope_id, created_at
-				) VALUES (?, ?, ?, ?, ?, ?)`
+					caller_id, idempotency_key, request_hash, envelope_id, created_at
+				) VALUES (?, ?, ?, ?, ?)`
 			)
 			.bind(
-				command.organizationId,
 				command.actor.id,
 				command.idempotencyKey,
 				command.requestFingerprint,
@@ -173,7 +152,7 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 			);
 
 		try {
-			await this.#database.batch([organization, envelope, auditEvent, idempotency]);
+			await this.#database.batch([envelope, auditEvent, idempotency]);
 		} catch (error: unknown) {
 			// A concurrent request can win after the initial lookup. Only suppress
 			// the batch error when the durable idempotency record proves that race.
@@ -189,10 +168,7 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		return { outcome: 'created', envelope: envelopeFromCommand(command) };
 	}
 
-	async listForOrganization(
-		organizationId: string,
-		query: EnvelopeListQuery
-	): Promise<EnvelopeListPage> {
+	async listEnvelopes(query: EnvelopeListQuery): Promise<EnvelopeListPage> {
 		if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > MAX_LIST_LIMIT) {
 			throw new RangeError(`Envelope list limit must be between 1 and ${MAX_LIST_LIMIT}.`);
 		}
@@ -200,8 +176,8 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		let cursor: CursorRow | null = null;
 		if (query.cursor !== null) {
 			cursor = await this.#database
-				.prepare('SELECT id, created_at FROM envelope WHERE organization_id = ? AND id = ? LIMIT 1')
-				.bind(organizationId, query.cursor)
+				.prepare('SELECT id, created_at FROM envelope WHERE id = ? LIMIT 1')
+				.bind(query.cursor)
 				.first<CursorRow>();
 			if (cursor === null) return { items: [], nextCursor: null };
 		}
@@ -212,20 +188,18 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 				? this.#database
 						.prepare(
 							`SELECT * FROM envelope
-							 WHERE organization_id = ?
 							 ORDER BY created_at DESC, id DESC
 							 LIMIT ?`
 						)
-						.bind(organizationId, fetchLimit)
+						.bind(fetchLimit)
 				: this.#database
 						.prepare(
 							`SELECT * FROM envelope
-							 WHERE organization_id = ?
-							   AND (created_at < ? OR (created_at = ? AND id < ?))
+							 WHERE (created_at < ? OR (created_at = ? AND id < ?))
 							 ORDER BY created_at DESC, id DESC
 							 LIMIT ?`
 						)
-						.bind(organizationId, cursor.created_at, cursor.created_at, cursor.id, fetchLimit);
+						.bind(cursor.created_at, cursor.created_at, cursor.id, fetchLimit);
 		const result: D1Result<EnvelopeRow> = await statement.all<EnvelopeRow>();
 		const hasNextPage: boolean = result.results.length > query.limit;
 		const rows: EnvelopeRow[] = hasNextPage ? result.results.slice(0, query.limit) : result.results;
@@ -245,20 +219,14 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		const existing: DraftRevisionPreparation | null = await this.#resolveDraftRevision(key);
 		if (existing !== null) return existing;
 
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'draft') return { outcome: 'immutable' };
 		if (envelope.repositoryGeneration !== expectedGeneration) {
 			return { outcome: 'generation_conflict' };
 		}
 
-		const auditHead: DraftAuditHead | null = await this.#readAuditHead(
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: DraftAuditHead | null = await this.#readAuditHead(key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return { outcome: 'ready', envelope, auditHead };
 	}
@@ -277,14 +245,13 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 			await this.#database
 				.prepare(
 					`INSERT INTO draft_revision_command (
-						organization_id, envelope_id, actor_type, actor_id, idempotency_key,
+						envelope_id, actor_type, actor_id, idempotency_key,
 						request_hash, expected_generation, resulting_generation, commit_sha,
 						archive_key, archive_sha256, updated_at, audit_event_id, audit_sequence,
 						previous_audit_hash, audit_event_hash, audit_payload_json
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
-					command.organizationId,
 					command.envelopeId,
 					command.actorType,
 					command.actorId,
@@ -315,22 +282,22 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		}
 	}
 
-	findForOrganization(organizationId: string, envelopeId: string): Promise<Envelope | null> {
-		return this.#envelopes.findForOrganization(organizationId, envelopeId);
+	findEnvelope(envelopeId: string): Promise<Envelope | null> {
+		return this.#envelopes.findEnvelope(envelopeId);
 	}
 
-	async readDetail(organizationId: string, envelopeId: string): Promise<EnvelopeDetail | null> {
-		const envelope: Envelope | null = await this.findForOrganization(organizationId, envelopeId);
+	async readDetail(envelopeId: string): Promise<EnvelopeDetail | null> {
+		const envelope: Envelope | null = await this.findEnvelope(envelopeId);
 		if (envelope === null) return null;
 
 		const recipientResult = await this.#database
 			.prepare(
 				`SELECT id, email, name, role, locale, routing_order, status
 				 FROM recipient
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY routing_order ASC, id ASC`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<DetailRecipientRow>();
 
 		let readyAuditEventId: string | null = null;
@@ -339,11 +306,11 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 				.prepare(
 					`SELECT id
 					 FROM audit_event
-					 WHERE organization_id = ? AND envelope_id = ? AND event_type = 'envelope.ready'
+					 WHERE envelope_id = ? AND event_type = 'envelope.ready'
 					 ORDER BY sequence DESC
 					 LIMIT 1`
 				)
-				.bind(organizationId, envelopeId)
+				.bind(envelopeId)
 				.first<{ id: string }>();
 			readyAuditEventId = ready?.id ?? null;
 		}
@@ -353,10 +320,10 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 				`SELECT id, recipient_id, document_id, document_path, field_type, required, position,
 				        page, x, y, width, height
 				 FROM envelope_field
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<DetailFieldRow>();
 
 		return {
@@ -367,22 +334,17 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		};
 	}
 
-	compareAndSetDraftPointer(
-		organizationId: string,
-		envelopeId: string,
-		update: DraftPointerUpdate
-	): Promise<boolean> {
-		return this.#envelopes.compareAndSetDraftPointer(organizationId, envelopeId, update);
+	compareAndSetDraftPointer(envelopeId: string, update: DraftPointerUpdate): Promise<boolean> {
+		return this.#envelopes.compareAndSetDraftPointer(envelopeId, update);
 	}
 
 	transition(
-		organizationId: string,
 		envelopeId: string,
 		expected: EnvelopeStatus,
 		next: EnvelopeStatus,
 		at: string
 	): Promise<boolean> {
-		return this.#envelopes.transition(organizationId, envelopeId, expected, next, at);
+		return this.#envelopes.transition(envelopeId, expected, next, at);
 	}
 
 	async #resolveIdempotency(
@@ -391,10 +353,10 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		const row: IdempotencyRow | null = await this.#database
 			.prepare(
 				`SELECT request_hash, envelope_id FROM idempotency_key
-				 WHERE organization_id = ? AND caller_id = ? AND idempotency_key = ?
+				 WHERE caller_id = ? AND idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(command.organizationId, command.actor.id, command.idempotencyKey)
+			.bind(command.actor.id, command.idempotencyKey)
 			.first<IdempotencyRow>();
 		if (row === null) return null;
 		// The stored envelope, not the caller's freshly minted candidate ID,
@@ -403,12 +365,9 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 			return { outcome: 'conflict' };
 		}
 
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			command.organizationId,
-			row.envelope_id
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(row.envelope_id);
 		if (envelope === null) {
-			throw new Error('Idempotency record references a missing organization-scoped envelope.');
+			throw new Error('Idempotency record references a missing envelope.');
 		}
 		return { outcome: 'replayed', envelope };
 	}
@@ -417,14 +376,13 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		const row: DraftRevisionCommandRow | null = await this.#database
 			.prepare(
 				`SELECT
-					command.organization_id, command.envelope_id, command.actor_type,
+					command.envelope_id, command.actor_type,
 					command.actor_id, command.request_hash, command.resulting_generation,
 					command.commit_sha, command.archive_key, command.archive_sha256,
 					command.updated_at, command.audit_event_id, command.audit_sequence,
 					command.previous_audit_hash, command.audit_event_hash,
 					command.audit_payload_json,
 					evidence.id AS evidence_event_id,
-					evidence.organization_id AS evidence_organization_id,
 					evidence.envelope_id AS evidence_envelope_id,
 					evidence.sequence AS evidence_sequence,
 					evidence.event_type AS evidence_event_type,
@@ -436,13 +394,12 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 					evidence.occurred_at AS evidence_occurred_at
 				 FROM draft_revision_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = ?
+					ON evidence.id = command.audit_event_id
+				 WHERE command.actor_type = ?
 					AND command.actor_id = ? AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(key.organizationId, key.actorType, key.actorId, key.idempotencyKey)
+			.bind(key.actorType, key.actorId, key.idempotencyKey)
 			.first<DraftRevisionCommandRow>();
 		if (row === null) return null;
 		if (row.envelope_id !== key.envelopeId || row.request_hash !== key.requestFingerprint) {
@@ -452,16 +409,16 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		return { outcome: 'replayed', revision: revisionFromD1Row(row) };
 	}
 
-	async #readAuditHead(organizationId: string, envelopeId: string): Promise<DraftAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<DraftAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash
 				 FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY sequence DESC
 				 LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
@@ -471,20 +428,14 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 	async #classifyPublishFailure(
 		command: PublishDraftRevisionCommand
 	): Promise<PublishDraftRevisionResult | null> {
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			command.organizationId,
-			command.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(command.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'draft') return { outcome: 'immutable' };
 		if (envelope.repositoryGeneration !== command.expectedGeneration) {
 			return { outcome: 'generation_conflict' };
 		}
 
-		const auditHead: DraftAuditHead | null = await this.#readAuditHead(
-			command.organizationId,
-			command.envelopeId
-		);
+		const auditHead: DraftAuditHead | null = await this.#readAuditHead(command.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		if (
 			auditHead.sequence !== command.expectedAuditSequence ||
@@ -497,20 +448,14 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 			.prepare(
 				`SELECT 1 AS value
 				 FROM audit_event
-				 WHERE organization_id = ? AND id = ?
+				 WHERE id = ?
 				 UNION ALL
 				 SELECT 1 AS value
 				 FROM draft_revision_command
-				 WHERE organization_id = ? AND envelope_id = ? AND resulting_generation = ?
+				 WHERE envelope_id = ? AND resulting_generation = ?
 				 LIMIT 1`
 			)
-			.bind(
-				command.organizationId,
-				command.auditEventId,
-				command.organizationId,
-				command.envelopeId,
-				command.resultingGeneration
-			)
+			.bind(command.auditEventId, command.envelopeId, command.resultingGeneration)
 			.first<{ value: number }>();
 		return collision === null ? null : { outcome: 'integrity_error' };
 	}
@@ -519,7 +464,6 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 function hasValidD1AuditEvidence(row: DraftRevisionCommandRow): boolean {
 	return (
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'draft.revision_created' &&
@@ -568,7 +512,7 @@ function publishResultFromPreparation(
 function envelopeFromCommand(command: CreateEnvelopeCommand): Envelope {
 	return {
 		id: command.envelopeId,
-		organizationId: command.organizationId,
+		createdByUserId: command.createdByUserId,
 		title: command.title,
 		status: 'draft',
 		repositoryGeneration: 0,
@@ -585,7 +529,7 @@ function envelopeFromCommand(command: CreateEnvelopeCommand): Envelope {
 function envelopeFromRow(row: EnvelopeRow): Envelope {
 	return {
 		id: row.id,
-		organizationId: row.organization_id,
+		createdByUserId: row.created_by_user_id,
 		title: row.title,
 		status: row.status,
 		repositoryGeneration: row.repository_generation,

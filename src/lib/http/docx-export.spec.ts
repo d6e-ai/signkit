@@ -6,25 +6,24 @@ import { draftArchiveKey } from '$lib/application/drafts/draft-persistence';
 import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import { createDocxExportHandler } from './docx-export';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
 
-const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
 const pathname = `/api/v1/envelopes/${envelopeId}/docx`;
 const commitSha = '0123456789abcdef0123456789abcdef01234567';
 const archiveBytes = new TextEncoder().encode('archive-bytes');
 const archiveSha256 = createHash('sha256').update(archiveBytes).digest('hex');
-const archiveKey = draftArchiveKey(organizationId, envelopeId, archiveSha256);
+const archiveKey = draftArchiveKey(envelopeId, archiveSha256);
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function envelope(overrides: Partial<Envelope> = {}): Envelope {
 	return {
 		id: envelopeId,
-		organizationId,
+		createdByUserId: '01900000-0000-7000-8000-000000000002',
 		title: 'Agreement',
 		status: 'ready',
 		repositoryGeneration: 1,
@@ -63,7 +62,7 @@ describe('DOCX export HTTP handler', () => {
 		const objects = objectStoreSeededWithArchive();
 		const handler: RequestHandler = createDocxExportHandler(() => ({
 			envelopes: {
-				findForOrganization: async () => envelope()
+				findEnvelope: async () => envelope()
 			},
 			objects,
 			repository: {
@@ -99,9 +98,9 @@ describe('DOCX export HTTP handler', () => {
 		expect(bytes.byteLength).toBe(expected.byteLength);
 	});
 
-	it('returns 404 when the envelope is outside the authorized organization', async () => {
+	it('returns 404 when the envelope is not found', async () => {
 		const handler: RequestHandler = createDocxExportHandler(() => ({
-			envelopes: { findForOrganization: async () => null },
+			envelopes: { findEnvelope: async () => null },
 			objects: new InMemoryObjectStore(),
 			repository: {
 				read: async () => [],
@@ -123,7 +122,7 @@ describe('DOCX export HTTP handler', () => {
 	it('returns 409 when the envelope has no pinned revision', async () => {
 		const handler: RequestHandler = createDocxExportHandler(() => ({
 			envelopes: {
-				findForOrganization: async () =>
+				findEnvelope: async () =>
 					envelope({
 						repositoryHead: null,
 						repositoryArchiveKey: null,

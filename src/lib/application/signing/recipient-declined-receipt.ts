@@ -84,7 +84,6 @@ function authorizeEvidence(
 			locale: evidence.locale
 		},
 		locator: {
-			organizationId: evidence.organizationId,
 			envelopeId: evidence.envelopeId,
 			recipientId: evidence.recipientId,
 			idempotencyKey: evidence.idempotencyKey,
@@ -97,7 +96,6 @@ function authorizeEvidence(
 
 function validLocator(locator: RecipientDeclinedReceiptLocator): boolean {
 	return (
-		nonEmpty(locator.organizationId) &&
 		nonEmpty(locator.envelopeId) &&
 		nonEmpty(locator.recipientId) &&
 		nonEmpty(locator.idempotencyKey) &&
@@ -116,7 +114,6 @@ function sameLocator(
 	right: RecipientDeclinedReceiptLocator
 ): boolean {
 	return (
-		left.organizationId === right.organizationId &&
 		left.envelopeId === right.envelopeId &&
 		left.recipientId === right.recipientId &&
 		left.idempotencyKey === right.idempotencyKey &&

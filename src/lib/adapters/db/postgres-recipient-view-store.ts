@@ -37,7 +37,6 @@ interface AuditHeadRow {
 }
 
 interface ViewedCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientRole: RecipientRole;
@@ -55,7 +54,6 @@ interface ViewedCommandRow {
 	auditEventHash: string;
 	auditPayloadJson: string;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -77,7 +75,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 	async prepareViewed(key: ViewedCommandKey, at: string): Promise<ViewedPreparation> {
 		const row: RecipientEnvelopeRow | null = await this.#readRecipientEnvelope(
 			this.#sql,
-			key.organizationId,
 			key.envelopeId,
 			key.recipientId,
 			false
@@ -88,7 +85,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 			if (replay.outcome !== 'replayed') return replay;
 			const current: RecipientEnvelopeRow | null = await this.#readRecipientEnvelope(
 				this.#sql,
-				key.organizationId,
 				key.envelopeId,
 				key.recipientId,
 				false
@@ -104,7 +100,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 		if (row.recipientStatus === 'viewed') {
 			const viewedCommand: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
 				this.#sql,
-				key.organizationId,
 				key.recipientId
 			);
 			if (
@@ -119,7 +114,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 			}
 			const lineageProven = await this.#verifyLineage(
 				this.#sql,
-				key.organizationId,
 				key.recipientId,
 				viewedCommand.capabilityHash,
 				key.capabilityHash
@@ -130,11 +124,7 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				result: resultFromRow(viewedCommand)
 			};
 		}
-		const auditHead: ViewedAuditHead | null = await this.#readAuditHead(
-			this.#sql,
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: ViewedAuditHead | null = await this.#readAuditHead(this.#sql, key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
@@ -156,7 +146,7 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				>`
 						SELECT status, sent_commit_sha AS "sentCommitSha", repository_head AS "repositoryHead"
 						FROM envelope
-						WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+						WHERE id = ${command.envelopeId}
 						FOR UPDATE`;
 				if (envelopeRows.length === 0) return { outcome: 'not_found' };
 
@@ -172,7 +162,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 
 				const recipientRow: RecipientEnvelopeRow | null = await this.#readRecipientEnvelope(
 					transaction,
-					command.organizationId,
 					command.envelopeId,
 					command.recipientId,
 					true
@@ -197,7 +186,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				if (recipientRow.recipientStatus === 'viewed') {
 					const viewedCommand: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
 						transaction,
-						command.organizationId,
 						command.recipientId
 					);
 					if (
@@ -212,7 +200,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 					}
 					const lineageProven = await this.#verifyLineage(
 						transaction,
-						command.organizationId,
 						command.recipientId,
 						viewedCommand.capabilityHash,
 						command.capabilityHash
@@ -232,7 +219,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 
 				const auditHead: ViewedAuditHead | null = await this.#readAuditHead(
 					transaction,
-					command.organizationId,
 					command.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
@@ -245,7 +231,7 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 
 				const viewedRows = await transaction<{ id: string }[]>`
 						UPDATE recipient SET status = 'viewed', updated_at = ${command.updatedAt}
-						WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 							AND id = ${command.recipientId} AND status = 'pending'
 							AND role IN ('signer', 'approver', 'viewer')
 							AND role = ${command.recipientRole} AND routing_order = ${command.routingOrder}
@@ -258,7 +244,7 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 						UPDATE envelope
 						SET status = CASE WHEN status = 'sent' THEN 'in_progress' ELSE status END,
 							updated_at = ${command.updatedAt}
-						WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+						WHERE id = ${command.envelopeId}
 							AND status IN ('sent', 'in_progress')
 							AND sent_commit_sha = ${command.expectedSentCommitSha}
 							AND sent_commit_sha = repository_head
@@ -266,11 +252,11 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				if (envelopeUpdateRows.length !== 1) throw new ViewedPublicationIntegrityError();
 
 				await transaction`INSERT INTO recipient_viewed_command (
-						organization_id, envelope_id, recipient_id, recipient_role, routing_order,
+						envelope_id, recipient_id, recipient_role, routing_order,
 						actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 						sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 						previous_audit_hash, audit_event_hash, audit_payload_json
-					) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.recipientId},
+					) VALUES (${command.envelopeId}, ${command.recipientId},
 						${command.recipientRole}, ${command.routingOrder}, 'recipient', ${command.recipientId},
 						${command.idempotencyKey}, ${command.requestFingerprint}, ${command.capabilityHash},
 						${command.expectedSentCommitSha}, ${command.updatedAt}, ${command.auditEventId},
@@ -278,9 +264,9 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 						${command.auditPayloadJson})`;
 
 				await transaction`INSERT INTO audit_event (
-						id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+						id, envelope_id, sequence, event_type, actor_type, actor_id,
 						payload_json, previous_hash, event_hash, occurred_at
-					) VALUES (${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+					) VALUES (${command.auditEventId}, ${command.envelopeId},
 						${command.expectedAuditSequence + 1}, 'recipient.viewed', 'recipient', ${command.recipientId},
 						${command.auditPayloadJson}, ${command.previousAuditHash}, ${command.auditEventHash},
 						${command.updatedAt})`;
@@ -297,7 +283,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 
 	async #readRecipientEnvelope(
 		sql: Sql,
-		organizationId: string,
 		envelopeId: string,
 		recipientId: string,
 		lock: boolean
@@ -314,9 +299,8 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 					envelope.repository_head AS "envelopeRepositoryHead"
 				FROM recipient
 				INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
-				WHERE recipient.organization_id = ${organizationId} AND recipient.envelope_id = ${envelopeId}
+					ON envelope.id = recipient.envelope_id
+				WHERE recipient.envelope_id = ${envelopeId}
 					AND recipient.id = ${recipientId}
 				FOR UPDATE OF recipient
 				LIMIT 1`
@@ -331,22 +315,17 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 					envelope.repository_head AS "envelopeRepositoryHead"
 				FROM recipient
 				INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
-				WHERE recipient.organization_id = ${organizationId} AND recipient.envelope_id = ${envelopeId}
+					ON envelope.id = recipient.envelope_id
+				WHERE recipient.envelope_id = ${envelopeId}
 					AND recipient.id = ${recipientId}
 				LIMIT 1`;
 		return rows[0] ?? null;
 	}
 
-	async #readAuditHead(
-		sql: Sql,
-		organizationId: string,
-		envelopeId: string
-	): Promise<ViewedAuditHead | null> {
+	async #readAuditHead(sql: Sql, envelopeId: string): Promise<ViewedAuditHead | null> {
 		const rows = await sql<AuditHeadRow[]>`
 			SELECT sequence, event_hash AS "eventHash" FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence DESC LIMIT 1`;
 		const row: AuditHeadRow | undefined = rows[0];
 		if (row === undefined) return null;
@@ -358,7 +337,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 	async #resolveCommand(sql: Sql, key: ViewedCommandKey): Promise<ViewedPreparation | null> {
 		const exact: ViewedCommandRow | null = await this.#readCommandRow(
 			sql,
-			key.organizationId,
 			key.recipientId,
 			key.idempotencyKey
 		);
@@ -374,7 +352,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 		}
 		const byRecipient: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
 			sql,
-			key.organizationId,
 			key.recipientId
 		);
 		if (byRecipient === null) return null;
@@ -389,7 +366,6 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 
 	async #verifyLineage(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string,
 		initialHash: string,
 		currentHash: string
@@ -399,15 +375,13 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 			WITH RECURSIVE lineage AS (
 				SELECT capability_hash, predecessor_capability_hash
 				FROM recipient_capability_issuance
-				WHERE organization_id = ${organizationId}
-					AND recipient_id = ${recipientId}
+				WHERE recipient_id = ${recipientId}
 					AND capability_hash = ${currentHash}
 				UNION ALL
 				SELECT prev.capability_hash, prev.predecessor_capability_hash
 				FROM recipient_capability_issuance prev
 				INNER JOIN lineage curr ON curr.predecessor_capability_hash = prev.capability_hash
-				WHERE prev.organization_id = ${organizationId}
-					AND prev.recipient_id = ${recipientId}
+				WHERE prev.recipient_id = ${recipientId}
 			)
 			SELECT count(*) AS count
 			FROM lineage
@@ -417,12 +391,11 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 
 	async #readCommandRow(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string,
 		idempotencyKey: string
 	): Promise<ViewedCommandRow | null> {
 		const rows = await sql<ViewedCommandRow[]>`
-			SELECT command.organization_id AS "organizationId", command.envelope_id AS "envelopeId",
+			SELECT command.envelope_id AS "envelopeId",
 				command.recipient_id AS "recipientId", command.recipient_role AS "recipientRole",
 				command.routing_order AS "routingOrder", command.actor_type AS "actorType",
 				command.actor_id AS "actorId", command.idempotency_key AS "idempotencyKey",
@@ -431,15 +404,15 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				command.audit_event_id AS "auditEventId", command.audit_sequence AS "auditSequence",
 				command.previous_audit_hash AS "previousAuditHash", command.audit_event_hash AS "auditEventHash",
 				command.audit_payload_json AS "auditPayloadJson", evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
+				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
 				evidence.event_hash AS "evidenceEventHash", evidence.occurred_at AS "evidenceOccurredAt"
 			FROM recipient_viewed_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${organizationId} AND command.actor_type = 'recipient'
+				ON evidence.id = command.audit_event_id
+			WHERE command.actor_type = 'recipient'
 				AND command.actor_id = ${recipientId} AND command.idempotency_key = ${idempotencyKey}
 			LIMIT 1`;
 		return rows[0] ?? null;
@@ -447,11 +420,10 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 
 	async #readCommandRowByRecipient(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string
 	): Promise<ViewedCommandRow | null> {
 		const rows = await sql<ViewedCommandRow[]>`
-			SELECT command.organization_id AS "organizationId", command.envelope_id AS "envelopeId",
+			SELECT command.envelope_id AS "envelopeId",
 				command.recipient_id AS "recipientId", command.recipient_role AS "recipientRole",
 				command.routing_order AS "routingOrder", command.actor_type AS "actorType",
 				command.actor_id AS "actorId", command.idempotency_key AS "idempotencyKey",
@@ -460,15 +432,15 @@ export class PostgresRecipientViewStore implements RecipientViewStore {
 				command.audit_event_id AS "auditEventId", command.audit_sequence AS "auditSequence",
 				command.previous_audit_hash AS "previousAuditHash", command.audit_event_hash AS "auditEventHash",
 				command.audit_payload_json AS "auditPayloadJson", evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
+				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
 				evidence.event_hash AS "evidenceEventHash", evidence.occurred_at AS "evidenceOccurredAt"
 			FROM recipient_viewed_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${organizationId} AND command.recipient_id = ${recipientId}
+				ON evidence.id = command.audit_event_id
+			WHERE command.recipient_id = ${recipientId}
 			LIMIT 1`;
 		return rows[0] ?? null;
 	}
@@ -515,7 +487,6 @@ function authorized(row: RecipientEnvelopeRow, capabilityHash: string, at: strin
 function validAuditEvidence(row: ViewedCommandRow): boolean {
 	return (
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'recipient.viewed' &&

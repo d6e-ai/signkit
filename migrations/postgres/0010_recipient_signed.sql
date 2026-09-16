@@ -3,13 +3,12 @@
 -- the field it claims to answer.
 ALTER TABLE envelope_field
   ADD CONSTRAINT envelope_field_identity
-  UNIQUE (organization_id, id, recipient_id, envelope_id, field_type);
+  UNIQUE (id, recipient_id, envelope_id, field_type);
 
 -- Field values are declared only in SQL. Each field gets exactly one
 -- immutable row for its lifetime (the primary key forbids re-signing), and
 -- only a SHA-256 digest of the value ever leaves this table.
 CREATE TABLE field_value (
-  organization_id text NOT NULL,
   field_id text NOT NULL,
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
@@ -17,17 +16,15 @@ CREATE TABLE field_value (
   value_json text NOT NULL,
   value_sha256 text NOT NULL,
   created_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, field_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, field_id, recipient_id, envelope_id, field_type)
-    REFERENCES envelope_field(organization_id, id, recipient_id, envelope_id, field_type)
+  PRIMARY KEY (field_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (field_id) REFERENCES envelope_field(id)
 );
 
 CREATE INDEX field_value_recipient
-  ON field_value(organization_id, recipient_id);
+  ON field_value(recipient_id);
 
 CREATE TABLE recipient_signed_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
   recipient_role text NOT NULL CHECK (recipient_role = 'signer'),
@@ -57,12 +54,12 @@ CREATE TABLE recipient_signed_command (
   completed_audit_event_id text,
   completed_audit_event_hash text,
   completed_audit_payload_json text,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, recipient_id),
-  UNIQUE (organization_id, audit_event_id),
-  UNIQUE (organization_id, completed_audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, recipient_id) REFERENCES recipient(organization_id, id),
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (recipient_id),
+  UNIQUE (audit_event_id),
+  UNIQUE (completed_audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CHECK (
     (
       completed_audit_event_id IS NULL
@@ -93,4 +90,4 @@ CREATE TABLE recipient_signed_command (
 );
 
 CREATE INDEX recipient_signed_command_envelope
-  ON recipient_signed_command(organization_id, envelope_id, updated_at DESC);
+  ON recipient_signed_command(envelope_id, updated_at DESC);

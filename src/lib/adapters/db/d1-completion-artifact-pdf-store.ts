@@ -18,9 +18,9 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 		const artifact = await this.#database
 			.prepare(
 				`SELECT envelope_id FROM completion_artifact
-				 WHERE organization_id = ? AND envelope_id = ?`
+				 WHERE envelope_id = ?`
 			)
-			.bind(command.organizationId, command.envelopeId)
+			.bind(command.envelopeId)
 			.first<{ envelope_id: string }>();
 		if (artifact === null) return { outcome: 'artifact_not_found' };
 
@@ -28,12 +28,11 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 			await this.#database
 				.prepare(
 					`INSERT INTO completion_artifact_pdf (
-						organization_id, envelope_id, pdf_object_key, pdf_sha256,
+						envelope_id, pdf_object_key, pdf_sha256,
 						pdf_manifest_object_key, pdf_manifest_sha256, published_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?)`
+					) VALUES (?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
-					command.organizationId,
 					command.envelopeId,
 					command.pdfObjectKey,
 					command.pdfSha256,
@@ -45,7 +44,6 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 			return { outcome: 'published' };
 		} catch {
 			const existing: CompletionArtifactPdfRecord | null = await this.readCompletionArtifactPdf(
-				command.organizationId,
 				command.envelopeId
 			);
 			if (existing === null) return { outcome: 'artifact_not_found' };
@@ -58,10 +56,7 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 		}
 	}
 
-	async readCompletionArtifactPdf(
-		organizationId: string,
-		envelopeId: string
-	): Promise<CompletionArtifactPdfRecord | null> {
+	async readCompletionArtifactPdf(envelopeId: string): Promise<CompletionArtifactPdfRecord | null> {
 		interface Row {
 			pdf_object_key: string;
 			pdf_sha256: string;
@@ -73,9 +68,9 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 			.prepare(
 				`SELECT pdf_object_key, pdf_sha256, pdf_manifest_object_key, pdf_manifest_sha256, published_at
 				 FROM completion_artifact_pdf
-				 WHERE organization_id = ? AND envelope_id = ?`
+				 WHERE envelope_id = ?`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<Row>();
 		if (row === null) return null;
 		return {

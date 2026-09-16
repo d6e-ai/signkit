@@ -375,7 +375,6 @@ function uploadAgeMs(uploadedAt: string | undefined, nowTime: number): number | 
 }
 
 interface SignatureFieldValueRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	valueJson: string;
@@ -406,24 +405,22 @@ function loadD1SignatureFieldValues(database: D1Database): SignatureFieldValueLo
 		const clauses: string[] = [];
 		const bindings: string[] = [];
 		for (const scope of scopes) {
-			clauses.push('(organization_id = ? AND envelope_id = ? AND recipient_id = ?)');
-			bindings.push(scope.organizationId, scope.envelopeId, scope.recipientId);
+			clauses.push('(envelope_id = ? AND recipient_id = ?)');
+			bindings.push(scope.envelopeId, scope.recipientId);
 		}
 		const rows = await database
 			.prepare(
-				`SELECT organization_id, envelope_id, recipient_id, value_json
+				`SELECT envelope_id, recipient_id, value_json
 				 FROM field_value
 				 WHERE field_type = 'signature' AND (${clauses.join(' OR ')})`
 			)
 			.bind(...bindings)
 			.all<{
-				organization_id: string;
 				envelope_id: string;
 				recipient_id: string;
 				value_json: string;
 			}>();
 		return (rows.results ?? []).map((row): SignatureFieldValueRow => ({
-			organizationId: row.organization_id,
 			envelopeId: row.envelope_id,
 			recipientId: row.recipient_id,
 			valueJson: row.value_json
@@ -437,30 +434,26 @@ function loadPostgresSignatureFieldValues(
 	return async (
 		scopes: readonly ParsedSignatureAssetKey[]
 	): Promise<readonly SignatureFieldValueRow[]> => {
-		// Row-aligned unnest so each candidate's (org, envelope, recipient) is
-		// matched as one tuple, not cross-matched from three independent sets.
-		const organizationIds: string[] = scopes.map((scope) => scope.organizationId);
+		// Row-aligned unnest so each candidate's (envelope, recipient) is
+		// matched as one tuple, not cross-matched from two independent sets.
 		const envelopeIds: string[] = scopes.map((scope) => scope.envelopeId);
 		const recipientIds: string[] = scopes.map((scope) => scope.recipientId);
 		const rows = await sql<
 			{
-				organizationId: string;
 				envelopeId: string;
 				recipientId: string;
 				valueJson: string;
 			}[]
 		>`
-			SELECT fv.organization_id AS "organizationId", fv.envelope_id AS "envelopeId",
+			SELECT fv.envelope_id AS "envelopeId",
 				fv.recipient_id AS "recipientId", fv.value_json AS "valueJson"
 			FROM field_value fv
 			INNER JOIN (
 				SELECT
-					unnest(${organizationIds}::text[]) AS organization_id,
 					unnest(${envelopeIds}::text[]) AS envelope_id,
 					unnest(${recipientIds}::text[]) AS recipient_id
 			) scope
-				ON fv.organization_id = scope.organization_id
-				AND fv.envelope_id = scope.envelope_id
+				ON fv.envelope_id = scope.envelope_id
 				AND fv.recipient_id = scope.recipient_id
 			WHERE fv.field_type = 'signature'
 		`;

@@ -29,10 +29,9 @@ const command: CreateEnvelopeCommand = {
 	auditEventHash: 'audit-hash',
 	auditEventId: '01900000-0000-7000-8000-000000000003',
 	createdAt: '2026-09-11T00:00:00.000Z',
+	createdByUserId: 'user-1',
 	envelopeId: '01900000-0000-7000-8000-000000000001',
 	idempotencyKey: 'request-1',
-	organizationId: '01900000-0000-7000-8000-000000000002',
-	organizationName: 'Workspace',
 	requestFingerprint: 'request-hash',
 	title: 'Agreement'
 };
@@ -44,7 +43,7 @@ function envelopeRow(
 ): Record<string, unknown> {
 	return {
 		id,
-		organization_id: command.organizationId,
+		created_by_user_id: command.createdByUserId,
 		title,
 		status: 'draft',
 		repository_generation: 0,
@@ -52,6 +51,7 @@ function envelopeRow(
 		repository_archive_key: null,
 		repository_archive_sha256: null,
 		sent_commit_sha: null,
+		field_generation: 0,
 		created_at: command.createdAt,
 		updated_at: updatedAt
 	};
@@ -105,7 +105,7 @@ function createFakeD1(options: FakeD1Options = {}): FakeD1 {
 }
 
 describe('D1EnvelopeApplicationStore', () => {
-	it('atomically creates the organization projection, envelope, audit event, and idempotency row', async () => {
+	it('atomically creates the envelope, audit event, and idempotency row', async () => {
 		const fake: FakeD1 = createFakeD1({ firstResults: [null] });
 		const store: D1EnvelopeApplicationStore = new D1EnvelopeApplicationStore(fake.database);
 
@@ -115,7 +115,7 @@ describe('D1EnvelopeApplicationStore', () => {
 			outcome: 'created',
 			envelope: {
 				id: command.envelopeId,
-				organizationId: command.organizationId,
+				createdByUserId: command.createdByUserId,
 				title: command.title,
 				status: 'draft',
 				repositoryGeneration: 0,
@@ -130,30 +130,21 @@ describe('D1EnvelopeApplicationStore', () => {
 		});
 		expect(fake.batch).toHaveBeenCalledOnce();
 		expect(fake.batches).toHaveLength(1);
-		expect(fake.batches[0]).toHaveLength(4);
+		expect(fake.batches[0]).toHaveLength(3);
 		expect(fake.batches[0].map((record: StatementRecord): string => record.sql)).toEqual([
-			expect.stringContaining('INSERT INTO organization'),
 			expect.stringContaining('INSERT INTO envelope'),
 			expect.stringContaining('INSERT INTO audit_event'),
 			expect.stringContaining('INSERT INTO idempotency_key')
 		]);
 		expect(fake.batches[0][0].bindings).toEqual([
-			command.organizationId,
-			command.organizationId,
-			command.organizationName,
-			command.createdAt
-		]);
-		expect(fake.batches[0][1].bindings).toEqual([
 			command.envelopeId,
-			command.organizationId,
-			command.organizationId,
+			command.createdByUserId,
 			command.title,
 			command.createdAt,
 			command.createdAt
 		]);
-		expect(fake.batches[0][2].bindings).toEqual([
+		expect(fake.batches[0][1].bindings).toEqual([
 			command.auditEventId,
-			command.organizationId,
 			command.envelopeId,
 			'user',
 			command.actor.id,
@@ -161,8 +152,7 @@ describe('D1EnvelopeApplicationStore', () => {
 			command.auditEventHash,
 			command.createdAt
 		]);
-		expect(fake.batches[0][3].bindings).toEqual([
-			command.organizationId,
+		expect(fake.batches[0][2].bindings).toEqual([
 			command.actor.id,
 			command.idempotencyKey,
 			command.requestFingerprint,
@@ -190,12 +180,8 @@ describe('D1EnvelopeApplicationStore', () => {
 		expect(result.outcome).toBe('replayed');
 		expect(result).toMatchObject({ envelope: { id: storedEnvelopeId } });
 		expect(fake.batch).not.toHaveBeenCalled();
-		expect(fake.prepared[0].bindings).toEqual([
-			command.organizationId,
-			command.actor.id,
-			command.idempotencyKey
-		]);
-		expect(fake.prepared[1].bindings).toEqual([command.organizationId, storedEnvelopeId]);
+		expect(fake.prepared[0].bindings).toEqual([command.actor.id, command.idempotencyKey]);
+		expect(fake.prepared[1].bindings).toEqual([storedEnvelopeId]);
 	});
 
 	it('reports a conflict when a scoped key was used for another request', async () => {
@@ -234,7 +220,7 @@ describe('D1EnvelopeApplicationStore', () => {
 		await expect(store.createIdempotently(command)).rejects.toBe(batchError);
 	});
 
-	it('uses limit plus one and returns an organization-scoped next cursor', async () => {
+	it('uses limit plus one and returns a next cursor', async () => {
 		const firstId: string = '01900000-0000-7000-8000-000000000011';
 		const secondId: string = '01900000-0000-7000-8000-000000000010';
 		const extraId: string = '01900000-0000-7000-8000-000000000009';
@@ -249,19 +235,18 @@ describe('D1EnvelopeApplicationStore', () => {
 		});
 		const store: D1EnvelopeApplicationStore = new D1EnvelopeApplicationStore(fake.database);
 
-		const page = await store.listForOrganization(command.organizationId, {
+		const page = await store.listEnvelopes({
 			cursor: null,
 			limit: 2
 		});
 
 		expect(page.items.map((item: Envelope): string => item.id)).toEqual([firstId, secondId]);
 		expect(page.nextCursor).toBe(secondId);
-		expect(fake.prepared[0].sql).toContain('WHERE organization_id = ?');
 		expect(fake.prepared[0].sql).toContain('ORDER BY created_at DESC, id DESC');
-		expect(fake.prepared[0].bindings).toEqual([command.organizationId, 3]);
+		expect(fake.prepared[0].bindings).toEqual([3]);
 	});
 
-	it('scopes cursor resolution and the following page to the organization', async () => {
+	it('scopes cursor resolution and the following page', async () => {
 		const cursorId: string = '01900000-0000-7000-8000-000000000010';
 		const cursorUpdatedAt: string = '2026-09-11T02:00:00.000Z';
 		const fake: FakeD1 = createFakeD1({
@@ -270,24 +255,18 @@ describe('D1EnvelopeApplicationStore', () => {
 		});
 		const store: D1EnvelopeApplicationStore = new D1EnvelopeApplicationStore(fake.database);
 
-		await store.listForOrganization(command.organizationId, { cursor: cursorId, limit: 2 });
+		await store.listEnvelopes({ cursor: cursorId, limit: 2 });
 
-		expect(fake.prepared[0].bindings).toEqual([command.organizationId, cursorId]);
-		expect(fake.prepared[1].bindings).toEqual([
-			command.organizationId,
-			cursorUpdatedAt,
-			cursorUpdatedAt,
-			cursorId,
-			3
-		]);
+		expect(fake.prepared[0].bindings).toEqual([cursorId]);
+		expect(fake.prepared[1].bindings).toEqual([cursorUpdatedAt, cursorUpdatedAt, cursorId, 3]);
 	});
 
-	it('returns no results for a cursor outside the organization', async () => {
+	it('returns no results for a missing cursor', async () => {
 		const fake: FakeD1 = createFakeD1({ firstResults: [null] });
 		const store: D1EnvelopeApplicationStore = new D1EnvelopeApplicationStore(fake.database);
 
 		await expect(
-			store.listForOrganization(command.organizationId, {
+			store.listEnvelopes({
 				cursor: '01900000-0000-7000-8000-000000000099',
 				limit: 25
 			})
@@ -299,13 +278,13 @@ describe('D1EnvelopeApplicationStore', () => {
 		const fake: FakeD1 = createFakeD1();
 		const store: D1EnvelopeApplicationStore = new D1EnvelopeApplicationStore(fake.database);
 
-		await expect(
-			store.listForOrganization(command.organizationId, { cursor: null, limit: 101 })
-		).rejects.toThrow(/between 1 and 100/);
+		await expect(store.listEnvelopes({ cursor: null, limit: 101 })).rejects.toThrow(
+			/between 1 and 100/
+		);
 		expect(fake.prepared).toHaveLength(0);
 	});
 
-	it('prepares a draft revision from the organization-scoped envelope and audit head', async () => {
+	it('prepares a draft revision from the envelope and audit head', async () => {
 		const fake: FakeD1 = createFakeD1({
 			firstResults: [null, envelopeRow(command.envelopeId), { sequence: 1, event_hash: 'head-1' }]
 		});
@@ -317,7 +296,6 @@ describe('D1EnvelopeApplicationStore', () => {
 			auditHead: { sequence: 1, eventHash: 'head-1' }
 		});
 		expect(fake.prepared[0].bindings).toEqual([
-			draftCommand.organizationId,
 			draftCommand.actorType,
 			draftCommand.actorId,
 			draftCommand.idempotencyKey
@@ -373,7 +351,6 @@ describe('D1EnvelopeApplicationStore', () => {
 		const insert = fake.prepared.at(-1);
 		expect(insert?.sql).toContain('INSERT INTO draft_revision_command');
 		expect(insert?.bindings).toEqual([
-			draftCommand.organizationId,
 			draftCommand.envelopeId,
 			draftCommand.actorType,
 			draftCommand.actorId,
@@ -482,7 +459,7 @@ describe('D1EnvelopeApplicationStore', () => {
 		});
 		const store = new D1EnvelopeApplicationStore(fake.database);
 
-		const detail = await store.readDetail(command.organizationId, command.envelopeId);
+		const detail = await store.readDetail(command.envelopeId);
 
 		expect(detail?.readyAuditEventId).toBe('01900000-0000-7000-8000-000000000033');
 		expect(detail?.recipients).toEqual([
@@ -511,7 +488,6 @@ describe('D1EnvelopeApplicationStore', () => {
 });
 
 const draftCommand: PublishDraftRevisionCommand = {
-	organizationId: command.organizationId,
 	envelopeId: command.envelopeId,
 	actorType: 'user',
 	actorId: command.actor.id,
@@ -541,7 +517,6 @@ const publishedDraftRevision = {
 
 function draftCommandRow(): Record<string, unknown> {
 	return {
-		organization_id: draftCommand.organizationId,
 		envelope_id: draftCommand.envelopeId,
 		actor_type: draftCommand.actorType,
 		actor_id: draftCommand.actorId,
@@ -557,7 +532,6 @@ function draftCommandRow(): Record<string, unknown> {
 		audit_event_hash: draftCommand.auditEventHash,
 		audit_payload_json: draftCommand.auditPayloadJson,
 		evidence_event_id: draftCommand.auditEventId,
-		evidence_organization_id: draftCommand.organizationId,
 		evidence_envelope_id: draftCommand.envelopeId,
 		evidence_sequence: draftCommand.expectedAuditSequence + 1,
 		evidence_event_type: 'draft.revision_created',

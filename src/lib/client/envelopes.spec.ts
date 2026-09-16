@@ -28,7 +28,7 @@ function mockProblemResponse(
 
 const envelope = {
 	id: '01900000-0000-7000-8000-000000000001',
-	organizationId: 'org-1',
+	createdByUserId: '01900000-0000-7000-8000-000000000099',
 	title: 'Agreement',
 	status: 'draft' as const,
 	repositoryGeneration: 0,

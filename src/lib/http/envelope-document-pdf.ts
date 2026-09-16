@@ -4,10 +4,7 @@ import type {
 	EnvelopeDocumentPdfApplicationPort,
 	EnvelopeDocumentPdfResult
 } from '$lib/application/documents/envelope-document-pdf';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -28,7 +25,7 @@ export type EnvelopeDocumentPdfResolver = (
  * `mode: 'pdf'` streams the bytes for the placement canvas; `mode: 'pages'`
  * returns only the page geometry, which is what the editor needs to know
  * which pages belong to which document before it will let a field be dropped
- * there. Both are organization-scoped through the normal API authority: this
+ * there. Both are instance-scoped through the normal API authority: this
  * is the sender's own document, not a recipient surface.
  */
 export function createEnvelopeDocumentPdfHandler(
@@ -36,7 +33,7 @@ export function createEnvelopeDocumentPdfHandler(
 	mode: 'pdf' | 'pages'
 ): RequestHandler {
 	return async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -75,7 +72,7 @@ export function createEnvelopeDocumentPdfHandler(
 
 		let result: EnvelopeDocumentPdfResult;
 		try {
-			result = await application.read(authorized.organizationId, envelopeId.data, documentId.data);
+			result = await application.read(envelopeId.data, documentId.data);
 		} catch {
 			console.error(JSON.stringify({ event: 'envelope_document_pdf_failed' }));
 			return unavailable(url.pathname);
@@ -86,7 +83,7 @@ export function createEnvelopeDocumentPdfHandler(
 				type: 'urn:signkit:problem:envelope-not-found',
 				title: 'Envelope not found',
 				status: 404,
-				detail: 'No envelope was found in the authorized organization.',
+				detail: 'No envelope was found.',
 				instance: url.pathname
 			});
 		}

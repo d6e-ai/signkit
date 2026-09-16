@@ -30,7 +30,6 @@ async fn test_completion_artifact_published() {
             "/api/v1/envelopes/{}/completion-artifact",
             common::TEST_ENVELOPE_ID
         )))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .and(header(
             "authorization",
             format!("Bearer {}", common::TEST_API_KEY).as_str(),
@@ -44,8 +43,6 @@ async fn test_completion_artifact_published() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "completion-artifact",
         common::TEST_ENVELOPE_ID,
@@ -84,8 +81,6 @@ async fn test_completion_artifact_pending() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "completion-artifact",
         common::TEST_ENVELOPE_ID,
@@ -126,8 +121,6 @@ async fn test_completion_artifact_failed() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "completion-artifact",
         common::TEST_ENVELOPE_ID,

@@ -1,5 +1,4 @@
 CREATE TABLE envelope_expiry_command (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   previous_status TEXT NOT NULL CHECK (previous_status IN ('sent','in_progress')),
   expected_generation INTEGER NOT NULL CHECK (expected_generation BETWEEN 0 AND 2147483647),
@@ -14,9 +13,9 @@ CREATE TABLE envelope_expiry_command (
   revoked_recipient_ids_json TEXT NOT NULL
     CHECK (json_valid(revoked_recipient_ids_json) AND json_type(revoked_recipient_ids_json) = 'array'),
   revoked_recipient_count INTEGER NOT NULL CHECK (revoked_recipient_count >= 0),
-  PRIMARY KEY (organization_id, envelope_id),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
+  PRIMARY KEY (envelope_id),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id)
 );
 
 -- The durable expiry drain makes the `expired` terminal state reachable: a
@@ -33,8 +32,7 @@ BEGIN
   SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND role IN ('signer', 'approver')
         AND status IN ('pending', 'viewed')
         AND capability_expires_at IS NOT NULL
@@ -42,8 +40,7 @@ BEGIN
     )
     OR EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND role IN ('signer', 'approver')
         AND status IN ('pending', 'viewed')
         AND capability_expires_at IS NOT NULL
@@ -59,8 +56,7 @@ BEGIN
         FROM (
           SELECT id
           FROM recipient
-          WHERE organization_id = NEW.organization_id
-            AND envelope_id = NEW.envelope_id
+          WHERE envelope_id = NEW.envelope_id
             AND status <> 'completed'
             AND capability_hash IS NOT NULL
             AND capability_revoked_at IS NULL
@@ -92,8 +88,7 @@ BEGIN
       available_at = COALESCE(available_at, NEW.updated_at),
       last_error = 'envelope_terminal',
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND envelope_id = NEW.envelope_id
+  WHERE envelope_id = NEW.envelope_id
     AND (
       status IN ('blocked', 'pending')
       OR (status = 'failed' AND retryable = 1)
@@ -102,8 +97,7 @@ BEGIN
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND envelope_id = NEW.envelope_id
+  WHERE envelope_id = NEW.envelope_id
     AND status <> 'completed'
     AND capability_hash IS NOT NULL
     AND capability_revoked_at IS NULL;
@@ -116,8 +110,7 @@ BEGIN
   UPDATE envelope
   SET status = 'expired',
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.envelope_id
+  WHERE id = NEW.envelope_id
     AND status = NEW.previous_status
     AND status IN ('sent','in_progress')
     AND repository_generation = NEW.expected_generation
@@ -126,16 +119,14 @@ BEGIN
     AND EXISTS (
       SELECT 1
       FROM audit_event previous
-      WHERE previous.organization_id = NEW.organization_id
-        AND previous.envelope_id = NEW.envelope_id
+      WHERE previous.envelope_id = NEW.envelope_id
         AND previous.sequence = NEW.audit_sequence - 1
         AND previous.event_hash = NEW.previous_audit_hash
     )
     AND NOT EXISTS (
       SELECT 1
       FROM audit_event newer
-      WHERE newer.organization_id = NEW.organization_id
-        AND newer.envelope_id = NEW.envelope_id
+      WHERE newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     );
 
@@ -144,12 +135,12 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
-    NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
+    NEW.audit_event_id, NEW.envelope_id,
     NEW.audit_sequence, 'envelope.expired', 'system',
     'envelope-expiry-drain', NEW.audit_payload_json, NEW.previous_audit_hash,
-    NEW.audit_event_hash, NEW.updated_at, 2
+    NEW.audit_event_hash, NEW.updated_at, 3
   );
 END;

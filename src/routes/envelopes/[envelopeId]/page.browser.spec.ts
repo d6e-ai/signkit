@@ -32,7 +32,6 @@ const DOCUMENT_ID = '01900000-0000-7000-8000-000000000010';
 
 const readyEnvelope = {
 	id: ENVELOPE_ID,
-	organizationId: 'org-1',
 	title: 'Agreement',
 	status: 'ready' as const,
 	repositoryGeneration: 1,

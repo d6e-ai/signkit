@@ -14,7 +14,6 @@ import { hashStoredAuditEvent } from '$lib/domain/audit';
 const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
 
 interface RecipientEnvelopeRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_role: RecipientRole;
@@ -41,7 +40,6 @@ interface AuditHeadRow {
 }
 
 interface ApprovedCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_role: RecipientRole;
@@ -65,7 +63,6 @@ interface ApprovedCommandRow {
 	completed_audit_event_hash: string | null;
 	completed_audit_payload_json: string | null;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -77,7 +74,6 @@ interface ApprovedCommandRow {
 	evidence_occurred_at: string | null;
 	evidence_hash_version: number | string | null;
 	completed_evidence_event_id: string | null;
-	completed_evidence_organization_id: string | null;
 	completed_evidence_envelope_id: string | null;
 	completed_evidence_sequence: number | null;
 	completed_evidence_event_type: string | null;
@@ -90,21 +86,19 @@ interface ApprovedCommandRow {
 	completed_evidence_hash_version: number | string | null;
 }
 
-const APPROVED_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_id, command.recipient_id,
+const APPROVED_COMMAND_COLUMNS: string = `command.envelope_id, command.recipient_id,
 	command.recipient_role, command.routing_order, command.actor_type, command.actor_id,
 	command.idempotency_key, command.request_hash, command.capability_hash, command.sent_commit_sha,
 	command.updated_at, command.next_routing_order, command.next_capability_expires_at,
 	command.released_delivery_count, command.audit_event_id, command.audit_sequence,
 	command.previous_audit_hash, command.audit_event_hash, command.audit_payload_json,
 	command.completed_audit_event_id, command.completed_audit_event_hash, command.completed_audit_payload_json,
-	evidence.id AS evidence_event_id, evidence.organization_id AS evidence_organization_id,
-	evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
+	evidence.id AS evidence_event_id, evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
 	evidence.occurred_at AS evidence_occurred_at, evidence.hash_version AS evidence_hash_version,
 	completed_evidence.id AS completed_evidence_event_id,
-	completed_evidence.organization_id AS completed_evidence_organization_id,
 	completed_evidence.envelope_id AS completed_evidence_envelope_id,
 	completed_evidence.sequence AS completed_evidence_sequence,
 	completed_evidence.event_type AS completed_evidence_event_type,
@@ -128,7 +122,6 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 		const identity: ApprovePreparation | RecipientEnvelopeRow = classifyIdentity(row, key);
 		if (!isFoundRow(identity)) return identity;
 		const replay: ApprovePreparation | null = await this.#resolveCommand(
-			identity.organization_id,
 			identity.recipient_id,
 			key
 		);
@@ -147,10 +140,7 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 			}
 			if (
 				replay.result.envelopeStatus === 'completed' &&
-				!(await this.#validCompletedProjection(
-					currentIdentity.organization_id,
-					currentIdentity.envelope_id
-				))
+				!(await this.#validCompletedProjection(currentIdentity.envelope_id))
 			) {
 				return { outcome: 'integrity_error' };
 			}
@@ -159,20 +149,15 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 		if (identity.recipient_status === 'completed') return { outcome: 'integrity_error' };
 		if (!liveEligible(identity, key.capabilityHash, at)) return { outcome: 'not_found' };
 		const routing: ApproveRoutingSnapshot | null = await this.#readRouting(
-			identity.organization_id,
 			identity.envelope_id,
 			identity.recipient_id,
 			identity.routing_order
 		);
 		if (routing === null) return { outcome: 'integrity_error' };
-		const auditHead: ApproveAuditHead | null = await this.#readAuditHead(
-			identity.organization_id,
-			identity.envelope_id
-		);
+		const auditHead: ApproveAuditHead | null = await this.#readAuditHead(identity.envelope_id);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
-			organizationId: identity.organization_id,
 			envelopeId: identity.envelope_id,
 			recipientId: identity.recipient_id,
 			recipientRole: 'approver',
@@ -195,7 +180,7 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 		const statement: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO recipient_approved_command (
-					organization_id, envelope_id, recipient_id, recipient_role, routing_order,
+					envelope_id, recipient_id, recipient_role, routing_order,
 					actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 					sent_commit_sha, updated_at, next_routing_order, next_capability_expires_at,
 					released_delivery_count, audit_event_id, audit_sequence, previous_audit_hash,
@@ -204,7 +189,6 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 				) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
-				identity.organization_id,
 				identity.envelope_id,
 				identity.recipient_id,
 				command.recipientRole,
@@ -242,8 +226,7 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 	async #readByCapabilityHash(capabilityHash: string): Promise<RecipientEnvelopeRow | null> {
 		return await this.#database
 			.prepare(
-				`SELECT recipient.organization_id AS organization_id,
-					recipient.envelope_id AS envelope_id,
+				`SELECT recipient.envelope_id AS envelope_id,
 					recipient.id AS recipient_id,
 					recipient.role AS recipient_role,
 					recipient.status AS recipient_status,
@@ -256,8 +239,7 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 					envelope.repository_head AS envelope_repository_head
 				 FROM recipient
 				 INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
+					ON envelope.id = recipient.envelope_id
 				 WHERE recipient.capability_hash = ?
 				 LIMIT 1`
 			)
@@ -266,7 +248,6 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 	}
 
 	async #readRouting(
-		organizationId: string,
 		envelopeId: string,
 		actorId: string,
 		actorRoutingOrder: number
@@ -274,24 +255,21 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 		const result: D1Result<RoutingRecipientRow> = await this.#database
 			.prepare(
 				`SELECT id, role, routing_order, status FROM recipient
-				 WHERE organization_id = ? AND envelope_id = ?`
+				 WHERE envelope_id = ?`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<RoutingRecipientRow>();
 		if (result.results.length < 1 || result.results.length > 50) return null;
 		return routingAfterActor(actorId, actorRoutingOrder, result.results);
 	}
 
-	async #readAuditHead(
-		organizationId: string,
-		envelopeId: string
-	): Promise<ApproveAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<ApproveAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ? ORDER BY sequence DESC LIMIT 1`
+				 WHERE envelope_id = ? ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
@@ -299,12 +277,10 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 	}
 
 	async #resolveCommand(
-		organizationId: string,
 		recipientId: string,
 		key: ApproveCommandKey
 	): Promise<ApprovePreparation | null> {
 		const exact: ApprovedCommandRow | null = await this.#readCommandRow(
-			organizationId,
 			recipientId,
 			key.idempotencyKey
 		);
@@ -318,10 +294,8 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 			}
 			return await this.#evidenceResult(exact);
 		}
-		const byRecipient: ApprovedCommandRow | null = await this.#readCommandRowByRecipient(
-			organizationId,
-			recipientId
-		);
+		const byRecipient: ApprovedCommandRow | null =
+			await this.#readCommandRowByRecipient(recipientId);
 		if (byRecipient === null) return null;
 		if (
 			byRecipient.envelope_id !== key.expectedEnvelopeId ||
@@ -333,7 +307,6 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 	}
 
 	async #readCommandRow(
-		organizationId: string,
 		recipientId: string,
 		idempotencyKey: string
 	): Promise<ApprovedCommandRow | null> {
@@ -342,37 +315,30 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 				`SELECT ${APPROVED_COMMAND_COLUMNS}
 				 FROM recipient_approved_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
+					ON evidence.id = command.audit_event_id
 				 LEFT JOIN audit_event completed_evidence
-					ON completed_evidence.organization_id = command.organization_id
-					AND completed_evidence.id = command.completed_audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = 'recipient'
+					ON completed_evidence.id = command.completed_audit_event_id
+				 WHERE command.actor_type = 'recipient'
 					AND command.actor_id = ? AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId, idempotencyKey)
+			.bind(recipientId, idempotencyKey)
 			.first<ApprovedCommandRow>();
 	}
 
-	async #readCommandRowByRecipient(
-		organizationId: string,
-		recipientId: string
-	): Promise<ApprovedCommandRow | null> {
+	async #readCommandRowByRecipient(recipientId: string): Promise<ApprovedCommandRow | null> {
 		return await this.#database
 			.prepare(
 				`SELECT ${APPROVED_COMMAND_COLUMNS}
 				 FROM recipient_approved_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
+					ON evidence.id = command.audit_event_id
 				 LEFT JOIN audit_event completed_evidence
-					ON completed_evidence.organization_id = command.organization_id
-					AND completed_evidence.id = command.completed_audit_event_id
-				 WHERE command.organization_id = ? AND command.recipient_id = ?
+					ON completed_evidence.id = command.completed_audit_event_id
+				 WHERE command.recipient_id = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId)
+			.bind(recipientId)
 			.first<ApprovedCommandRow>();
 	}
 
@@ -413,32 +379,30 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 		const row: { present: number } | null = await this.#database
 			.prepare(
 				`SELECT 1 AS present FROM delivery_outbox
-				 WHERE organization_id = (
-					SELECT organization_id FROM recipient WHERE capability_hash = ? LIMIT 1
-				 ) AND envelope_id = ? AND status = 'processing' LIMIT 1`
+				 WHERE envelope_id = ? AND status = 'processing' LIMIT 1`
 			)
-			.bind(capabilityHash, envelopeId)
+			.bind(envelopeId)
 			.first<{ present: number }>();
 		return row !== null;
 	}
 
-	async #validCompletedProjection(organizationId: string, envelopeId: string): Promise<boolean> {
+	async #validCompletedProjection(envelopeId: string): Promise<boolean> {
 		const row: { valid: number } | null = await this.#database
 			.prepare(
 				`SELECT CASE WHEN NOT EXISTS (
 					SELECT 1 FROM recipient
-					WHERE organization_id = ? AND envelope_id = ?
+					WHERE envelope_id = ?
 						AND status <> 'completed'
 						AND capability_hash IS NOT NULL
 						AND capability_revoked_at IS NULL
 				) AND NOT EXISTS (
 					SELECT 1 FROM delivery_outbox
-					WHERE organization_id = ? AND envelope_id = ?
+					WHERE envelope_id = ?
 						AND (status IN ('blocked', 'pending', 'processing')
 							OR retryable = 1 OR sealed_capability IS NOT NULL)
 				) THEN 1 ELSE 0 END AS valid`
 			)
-			.bind(organizationId, envelopeId, organizationId, envelopeId)
+			.bind(envelopeId, envelopeId)
 			.first<{ valid: number }>();
 		return row?.valid === 1;
 	}
@@ -570,7 +534,6 @@ function commandMatchesRouting(
 function validAuditEvidence(row: ApprovedCommandRow): boolean {
 	const approvedMatches: boolean =
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'recipient.approved' &&
@@ -590,7 +553,6 @@ function validAuditEvidence(row: ApprovedCommandRow): boolean {
 	}
 	return (
 		row.completed_evidence_event_id === row.completed_audit_event_id &&
-		row.completed_evidence_organization_id === row.organization_id &&
 		row.completed_evidence_envelope_id === row.envelope_id &&
 		row.completed_evidence_sequence === row.audit_sequence + 1 &&
 		row.completed_evidence_event_type === 'envelope.completed' &&
@@ -630,7 +592,7 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 			payload: auditPayloadValue,
 			previousHash: row.previous_audit_hash
 		},
-		{ organizationId: row.organization_id, envelopeId: row.envelope_id }
+		{ envelopeId: row.envelope_id }
 	);
 	if (
 		requestHash !== row.request_hash ||
@@ -665,7 +627,7 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 				payload: completedPayloadValue,
 				previousHash: row.audit_event_hash
 			},
-			{ organizationId: row.organization_id, envelopeId: row.envelope_id }
+			{ envelopeId: row.envelope_id }
 		);
 		return (
 			completedPayload === row.completed_audit_payload_json &&

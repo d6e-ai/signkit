@@ -29,51 +29,41 @@ function store(result: AuthenticateApiKeyResult = { outcome: 'invalid_token' }):
 }
 
 describe('ApiKeyAuthenticationApplication', () => {
-	it('hashes the token and forwards the requested organization and instant', async () => {
+	it('hashes the token and forwards only the hash and the instant', async () => {
 		const fake = store({
 			outcome: 'authenticated',
 			principal: {
 				apiKeyId: '01900000-0000-7000-8000-000000000201',
 				keyPrefix: 'signkit_abcdefgh',
 				ownerUserId: 'user-1',
-				organizationId: 'org-alpha',
-				organizationName: 'Alpha',
 				scopes: ['envelopes:read'],
 				expiresAt: '2026-12-11T00:00:00.000Z'
 			}
 		});
 		const application = new ApiKeyAuthenticationApplication(fake.store, (): Date => NOW);
 
-		const result = await application.authenticate({ token: TOKEN, organizationId: 'org-alpha' });
+		const result = await application.authenticate({ token: TOKEN });
 
 		expect(result.outcome).toBe('authenticated');
+		expect(result).toEqual({
+			outcome: 'authenticated',
+			principal: {
+				apiKeyId: '01900000-0000-7000-8000-000000000201',
+				keyPrefix: 'signkit_abcdefgh',
+				ownerUserId: 'user-1',
+				scopes: ['envelopes:read'],
+				expiresAt: '2026-12-11T00:00:00.000Z'
+			}
+		});
 		expect(fake.queries).toEqual([
 			{
 				tokenHash: await hashApiKey(TOKEN),
-				organizationId: 'org-alpha',
 				at: NOW.toISOString()
 			}
 		]);
-	});
-
-	/**
-	 * The selector is validated before the token is hashed or read, so a request
-	 * that omitted it cannot be used to probe whether the token would otherwise
-	 * have worked. Proving the store was never called is the point.
-	 */
-	it.each([
-		['a missing selector', null],
-		['an empty selector', ''],
-		['an overlong selector', 'o'.repeat(201)],
-		['a selector with whitespace', 'org alpha']
-	])('refuses %s before any durable read', async (_name, organizationId) => {
-		const fake = store();
-		const application = new ApiKeyAuthenticationApplication(fake.store, (): Date => NOW);
-
-		const result = await application.authenticate({ token: TOKEN, organizationId });
-
-		expect(result).toEqual({ outcome: 'organization_selector_invalid' });
-		expect(fake.store.authenticateApiKey).not.toHaveBeenCalled();
+		// The query carries no tenant selector: one deployment database is the
+		// sole instance boundary, so instance authority follows from the key alone.
+		expect(Object.keys(fake.queries[0]).sort()).toEqual(['at', 'tokenHash']);
 	});
 
 	/**
@@ -90,28 +80,26 @@ describe('ApiKeyAuthenticationApplication', () => {
 		const fake = store();
 		const application = new ApiKeyAuthenticationApplication(fake.store, (): Date => NOW);
 
-		const result = await application.authenticate({ token, organizationId: 'org-alpha' });
+		const result = await application.authenticate({ token });
 
 		expect(result).toEqual({ outcome: 'invalid_token' });
 		expect(fake.store.authenticateApiKey).not.toHaveBeenCalled();
 	});
 
-	it.each(['invalid_token', 'organization_grant_required', 'integrity_error'] as const)(
+	it.each(['invalid_token', 'rate_limited', 'integrity_error'] as const)(
 		'passes the store outcome %s through unchanged',
 		async (outcome) => {
 			const fake = store({ outcome });
 			const application = new ApiKeyAuthenticationApplication(fake.store, (): Date => NOW);
 
-			expect(await application.authenticate({ token: TOKEN, organizationId: 'org-alpha' })).toEqual(
-				{ outcome }
-			);
+			expect(await application.authenticate({ token: TOKEN })).toEqual({ outcome });
 		}
 	);
 
 	it('never retains the token or its hash after answering', async () => {
 		const fake = store();
 		const application = new ApiKeyAuthenticationApplication(fake.store, (): Date => NOW);
-		await application.authenticate({ token: TOKEN, organizationId: 'org-alpha' });
+		await application.authenticate({ token: TOKEN });
 
 		// The service is stateless: nothing enumerable on it may carry credential
 		// material, so a later error report or log of the instance cannot leak it.

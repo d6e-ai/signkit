@@ -10,10 +10,7 @@ import {
 } from '$lib/application/documents/docx-export-service';
 import { DocxExportError } from '$lib/adapters/documents/docx-export';
 import type { EnvelopeDocxExportDependencies } from '$lib/application/documents/docx-export-runtime';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -40,7 +37,7 @@ function unavailable(instance: string): Response {
 
 export function createDocxExportHandler(resolveExport: DocxExportResolver): RequestHandler {
 	return async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -74,7 +71,6 @@ export function createDocxExportHandler(resolveExport: DocxExportResolver): Requ
 
 		try {
 			const result: EnvelopeDocxExportResult = await exportEnvelopeDocx(
-				authorized.organizationId,
 				envelopeId.data,
 				dependencies.envelopes,
 				dependencies.objects,
@@ -85,7 +81,7 @@ export function createDocxExportHandler(resolveExport: DocxExportResolver): Requ
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
 					status: 404,
-					detail: 'No envelope was found in the authorized organization.',
+					detail: 'No envelope was found.',
 					instance: url.pathname
 				});
 			}

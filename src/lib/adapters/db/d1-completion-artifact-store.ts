@@ -1,4 +1,5 @@
 import type { FieldType, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
+import { parseAuditHashVersion } from '$lib/domain/audit/hash';
 import {
 	MAX_COMPLETION_AUDIT_VERIFY_EVENTS,
 	requireCanonicalIsoMillisecondTimestamp,
@@ -18,8 +19,7 @@ import {
 	type ReadClaimedCompletionArtifactCommand
 } from '$lib/ports/completion-artifact-store';
 
-const CLAIM_CANDIDATE_COLUMNS: string = `job.organization_id AS organization_id,
-	job.envelope_id AS envelope_id,
+const CLAIM_CANDIDATE_COLUMNS: string = `job.envelope_id AS envelope_id,
 	job.attempts AS attempts,
 	job.locked_at AS locked_at,
 	envelope.title AS envelope_title,
@@ -30,8 +30,7 @@ const CLAIM_CANDIDATE_COLUMNS: string = `job.organization_id AS organization_id,
 
 const CLAIM_CANDIDATE_JOIN: string = `FROM completion_artifact_job job
 	INNER JOIN envelope
-		ON envelope.organization_id = job.organization_id
-		AND envelope.id = job.envelope_id
+		ON envelope.id = job.envelope_id
 	WHERE (
 			(job.status IN ('pending', 'failed') AND job.retryable = 1 AND job.available_at <= ?)
 			OR (job.status = 'processing' AND job.locked_at < ?)
@@ -39,7 +38,6 @@ const CLAIM_CANDIDATE_JOIN: string = `FROM completion_artifact_job job
 		AND envelope.status = 'completed'`;
 
 interface ClaimCandidateRow {
-	organization_id: string;
 	envelope_id: string;
 	attempts: number;
 	locked_at: string | null;
@@ -124,25 +122,23 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		const discover: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO completion_artifact_job (
-					organization_id, envelope_id, status, attempts, available_at, retryable,
+					envelope_id, status, attempts, available_at, retryable,
 					created_at, updated_at
 				)
-				SELECT envelope.organization_id, envelope.id, 'pending', 0, ?, 1, ?, ?
+				SELECT envelope.id, 'pending', 0, ?, 1, ?, ?
 				FROM envelope
 				WHERE envelope.status = 'completed'
 					AND NOT EXISTS (
 						SELECT 1 FROM completion_artifact artifact
-						WHERE artifact.organization_id = envelope.organization_id
-							AND artifact.envelope_id = envelope.id
+						WHERE artifact.envelope_id = envelope.id
 					)
 					AND NOT EXISTS (
 						SELECT 1 FROM completion_artifact_job job
-						WHERE job.organization_id = envelope.organization_id
-							AND job.envelope_id = envelope.id
+						WHERE job.envelope_id = envelope.id
 					)
 				ORDER BY envelope.updated_at ASC, envelope.id ASC
 				LIMIT ?
-				ON CONFLICT (organization_id, envelope_id) DO NOTHING`
+				ON CONFLICT (envelope_id) DO NOTHING`
 			)
 			.bind(command.claimedAt, command.claimedAt, command.claimedAt, command.discoveryLimit);
 		const claim: D1PreparedStatement = this.#database
@@ -171,8 +167,7 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 				`SELECT ${CLAIM_CANDIDATE_COLUMNS}
 				 FROM completion_artifact_job job
 				 INNER JOIN envelope
-					ON envelope.organization_id = job.organization_id
-					AND envelope.id = job.envelope_id
+					ON envelope.id = job.envelope_id
 				 WHERE job.status = 'processing' AND job.claim_token = ?
 				 ORDER BY job.available_at ASC, job.envelope_id ASC`
 			)
@@ -190,61 +185,55 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 				`SELECT ${CLAIM_CANDIDATE_COLUMNS}
 				 FROM completion_artifact_job job
 				 INNER JOIN envelope
-					ON envelope.organization_id = job.organization_id
-					AND envelope.id = job.envelope_id
-				 WHERE job.organization_id = ? AND job.envelope_id = ?
+					ON envelope.id = job.envelope_id
+				 WHERE job.envelope_id = ?
 					AND job.status = 'processing' AND job.claim_token = ?`
 			)
-			.bind(command.organizationId, command.envelopeId, command.claimToken)
+			.bind(command.envelopeId, command.claimToken)
 			.first<ClaimCandidateRow>();
 		return row === null ? null : toClaimedJob(row);
 	}
 
-	async readCompletionEvidence(
-		organizationId: string,
-		envelopeId: string
-	): Promise<CompletionEvidence> {
+	async readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence> {
 		const recipients: D1Result<RecipientEvidenceRow> = await this.#database
 			.prepare(
 				`SELECT recipient.id AS id, recipient.role AS role,
 					recipient.routing_order AS routing_order, recipient.status AS status,
 					(SELECT decision.id FROM audit_event decision
-						WHERE decision.organization_id = recipient.organization_id
-							AND decision.envelope_id = recipient.envelope_id
+						WHERE decision.envelope_id = recipient.envelope_id
 							AND decision.actor_id = recipient.id
 							AND decision.event_type IN ('recipient.signed', 'recipient.approved')
 						ORDER BY decision.sequence ASC LIMIT 1) AS decision_event_id,
 					(SELECT decision.occurred_at FROM audit_event decision
-						WHERE decision.organization_id = recipient.organization_id
-							AND decision.envelope_id = recipient.envelope_id
+						WHERE decision.envelope_id = recipient.envelope_id
 							AND decision.actor_id = recipient.id
 							AND decision.event_type IN ('recipient.signed', 'recipient.approved')
 						ORDER BY decision.sequence ASC LIMIT 1) AS decision_occurred_at
 				 FROM recipient
-				 WHERE recipient.organization_id = ? AND recipient.envelope_id = ?
+				 WHERE recipient.envelope_id = ?
 				 ORDER BY recipient.id`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<RecipientEvidenceRow>();
 		const fields: D1Result<FieldEvidenceRow> = await this.#database
 			.prepare(
 				`SELECT field_id, field_type, value_json, value_sha256
 				 FROM field_value
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY field_id`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<FieldEvidenceRow>();
 		const auditEvents: D1Result<AuditEvidenceRow> = await this.#database
 			.prepare(
 				`SELECT id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash,
 					event_hash, occurred_at, hash_version
 				 FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY sequence ASC
 				 LIMIT ?`
 			)
-			.bind(organizationId, envelopeId, MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1)
+			.bind(envelopeId, MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1)
 			.all<AuditEvidenceRow>();
 
 		return {
@@ -275,7 +264,7 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 					previousHash: row.previous_hash,
 					eventHash: row.event_hash,
 					occurredAt: requireCanonicalIsoMillisecondTimestamp(row.occurred_at),
-					hashVersion: row.hash_version === 2 ? 2 : 1
+					hashVersion: parseAuditHashVersion(row.hash_version)
 				})
 			)
 		};
@@ -289,14 +278,13 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		const statement: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO completion_artifact_publish_command (
-					organization_id, envelope_id, claim_token, sent_commit_sha, field_generation,
+					envelope_id, claim_token, sent_commit_sha, field_generation,
 					anchor_audit_event_id, manifest_sha256, json_object_key, json_sha256,
 					markdown_object_key, markdown_sha256, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
-				command.organizationId,
 				command.envelopeId,
 				command.claimToken,
 				command.sentCommitSha,
@@ -339,10 +327,10 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		const job: { ok: number } | null = await this.#database
 			.prepare(
 				`SELECT 1 AS ok FROM completion_artifact_job
-				 WHERE organization_id = ? AND envelope_id = ? AND status = 'processing'
+				 WHERE envelope_id = ? AND status = 'processing'
 					AND claim_token = ?`
 			)
-			.bind(command.organizationId, command.envelopeId, command.claimToken)
+			.bind(command.envelopeId, command.claimToken)
 			.first<{ ok: number }>();
 		return job !== null;
 	}
@@ -352,26 +340,20 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		const envelope: { ok: number } | null = await this.#database
 			.prepare(
 				`SELECT 1 AS ok FROM envelope
-				 WHERE organization_id = ? AND id = ? AND status = 'completed'
+				 WHERE id = ? AND status = 'completed'
 					AND sent_commit_sha = ? AND sent_commit_sha = repository_head AND field_generation = ?`
 			)
-			.bind(
-				command.organizationId,
-				command.envelopeId,
-				command.sentCommitSha,
-				command.fieldGeneration
-			)
+			.bind(command.envelopeId, command.sentCommitSha, command.fieldGeneration)
 			.first<{ ok: number }>();
 		if (envelope === null) return false;
 
 		const anchor: { ok: number } | null = await this.#database
 			.prepare(
 				`SELECT 1 AS ok FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ? AND id = ? AND sequence = ?
+				 WHERE envelope_id = ? AND id = ? AND sequence = ?
 					AND event_hash = ? AND event_type = 'envelope.completed'`
 			)
 			.bind(
-				command.organizationId,
 				command.envelopeId,
 				command.anchorAuditEventId,
 				command.expectedAuditSequence,
@@ -383,9 +365,9 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		const newer: { ok: number } | null = await this.#database
 			.prepare(
 				`SELECT 1 AS ok FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ? AND sequence >= ?`
+				 WHERE envelope_id = ? AND sequence >= ?`
 			)
-			.bind(command.organizationId, command.envelopeId, command.expectedAuditSequence + 1)
+			.bind(command.envelopeId, command.expectedAuditSequence + 1)
 			.first<{ ok: number }>();
 		return newer === null;
 	}
@@ -399,14 +381,13 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 						`UPDATE completion_artifact_job
 						 SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = 1,
 							available_at = ?, last_error = ?, updated_at = ?
-						 WHERE organization_id = ? AND envelope_id = ? AND status = 'processing'
+						 WHERE envelope_id = ? AND status = 'processing'
 							AND claim_token = ?`
 					)
 					.bind(
 						command.nextAvailableAt,
 						command.errorCode,
 						command.failedAt,
-						command.organizationId,
 						command.envelopeId,
 						command.claimToken
 					)
@@ -416,14 +397,13 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 						`UPDATE completion_artifact_job
 						 SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = 0,
 							available_at = ?, last_error = ?, updated_at = ?
-						 WHERE organization_id = ? AND envelope_id = ? AND status = 'processing'
+						 WHERE envelope_id = ? AND status = 'processing'
 							AND claim_token = ?`
 					)
 					.bind(
 						command.nextAvailableAt,
 						command.errorCode,
 						command.failedAt,
-						command.organizationId,
 						command.envelopeId,
 						command.claimToken
 					)
@@ -432,7 +412,6 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 	}
 
 	async findCompletionArtifactStatus(
-		organizationId: string,
 		envelopeId: string
 	): Promise<CompletionArtifactStatusRow | null> {
 		const row: StatusRow | null = await this.#database
@@ -447,13 +426,12 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 					artifact.audit_event_id AS artifact_audit_event_id
 				 FROM envelope
 				 LEFT JOIN completion_artifact_job job
-					ON job.organization_id = envelope.organization_id AND job.envelope_id = envelope.id
+					ON job.envelope_id = envelope.id
 				 LEFT JOIN completion_artifact artifact
-					ON artifact.organization_id = envelope.organization_id
-					AND artifact.envelope_id = envelope.id
-				 WHERE envelope.organization_id = ? AND envelope.id = ?`
+					ON artifact.envelope_id = envelope.id
+				 WHERE envelope.id = ?`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<StatusRow>();
 		if (row === null) return null;
 		return {
@@ -477,9 +455,9 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 					markdown_object_key, markdown_sha256, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json
 				 FROM completion_artifact_publish_command
-				 WHERE organization_id = ? AND envelope_id = ?`
+				 WHERE envelope_id = ?`
 			)
-			.bind(key.organizationId, key.envelopeId)
+			.bind(key.envelopeId)
 			.first<PublishCommandRow>();
 		if (row === null) return null;
 		if (!sameEvidence(row, key)) return { outcome: 'integrity_error' };
@@ -496,7 +474,6 @@ function toClaimedJob(row: ClaimCandidateRow): ClaimedCompletionArtifactJob {
 	// stuck until stale-reclaim. The publication service validates these
 	// fields together, per envelope, and fails only that one job closed.
 	return {
-		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,
 		attempts: row.attempts,
 		lockedAt: row.locked_at,

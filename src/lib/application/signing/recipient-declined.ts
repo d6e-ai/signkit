@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	DeclineCommandKey,
@@ -77,7 +77,7 @@ export class RecipientDeclinedApplication implements RecipientDeclinedApplicatio
 					recipientIds: preparation.revokedRecipientIds
 				}
 			});
-			const auditEventHash: string = await hashAuditEventV2(
+			const auditEventHash: string = await hashAuditEventV3(
 				{
 					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'recipient.declined',
@@ -87,7 +87,7 @@ export class RecipientDeclinedApplication implements RecipientDeclinedApplicatio
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
 				},
-				{ organizationId: preparation.organizationId, envelopeId: preparation.envelopeId }
+				{ envelopeId: preparation.envelopeId }
 			);
 			const command: PublishRecipientDeclinedCommand = {
 				...key,

@@ -11,10 +11,7 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 		this.#database = database;
 	}
 
-	async readFieldGeometry(
-		organizationId: string,
-		envelopeId: string
-	): Promise<readonly CompletionPdfFieldGeometry[]> {
+	async readFieldGeometry(envelopeId: string): Promise<readonly CompletionPdfFieldGeometry[]> {
 		interface Row {
 			id: string;
 			document_id: string | null;
@@ -34,10 +31,10 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 				`SELECT id, document_id, document_path, position, recipient_id, field_type, required,
 				        page, x, y, width, height
 				 FROM envelope_field
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY document_id ASC, document_path ASC, position ASC, id ASC`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<Row>();
 		return result.results.map((row: Row): CompletionPdfFieldGeometry => ({
 			id: row.id,

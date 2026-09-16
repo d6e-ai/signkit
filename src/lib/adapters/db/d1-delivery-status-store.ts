@@ -25,12 +25,11 @@ export class D1DeliveryStatusStore implements DeliveryStatusStore {
 	constructor(private readonly database: D1Database) {}
 
 	async findEnvelopeDeliveryStatus(
-		organizationId: string,
 		envelopeId: string
 	): Promise<StoredEnvelopeDeliveryStatus | null> {
 		const result: D1Result<D1DeliveryStatusRow> = await this.database
 			.prepare(D1_DELIVERY_STATUS_QUERY)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<D1DeliveryStatusRow>();
 		const first: D1DeliveryStatusRow | undefined = result.results[0];
 		if (first === undefined) return null;
@@ -82,12 +81,9 @@ export const D1_DELIVERY_STATUS_QUERY: string = `SELECT envelope.id AS envelope_
 		delivery.last_error
 	FROM envelope
 	LEFT JOIN delivery_outbox delivery
-		ON delivery.organization_id = envelope.organization_id
-		AND delivery.envelope_id = envelope.id
+		ON delivery.envelope_id = envelope.id
 	LEFT JOIN recipient
-		ON recipient.organization_id = delivery.organization_id
-		AND recipient.envelope_id = delivery.envelope_id
+		ON recipient.envelope_id = delivery.envelope_id
 		AND recipient.id = delivery.recipient_id
-	WHERE envelope.organization_id = ?
-		AND envelope.id = ?
+	WHERE envelope.id = ?
 	ORDER BY recipient.routing_order, delivery.created_at, delivery.id`;

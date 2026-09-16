@@ -102,11 +102,13 @@ command.auditPayloadJson = JSON.stringify({
 command.auditEventHash = createHash('sha256')
 	.update(
 		JSON.stringify({
-			actorId: command.expectedRecipientId,
+			hashVersion: 3,
 			envelopeId: command.expectedEnvelopeId,
+			sequence: command.expectedAuditSequence + 1,
 			eventType: 'recipient.signed',
+			actorType: 'recipient',
+			actorId: command.expectedRecipientId,
 			occurredAt: command.updatedAt,
-			organizationId: 'org-1',
 			payload: JSON.parse(command.auditPayloadJson) as unknown,
 			previousHash: command.previousAuditHash
 		})
@@ -114,7 +116,6 @@ command.auditEventHash = createHash('sha256')
 	.digest('hex');
 
 const eligibleRecipientRow = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	recipientRole: 'signer' as const,
@@ -138,7 +139,6 @@ const completedRecipientRow = {
 
 const actorLockRow = {
 	id: 'recipient-1',
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientRole: 'signer' as const,
 	recipientStatus: 'viewed',
@@ -150,7 +150,6 @@ const actorLockRow = {
 
 const siblingLockRow = {
 	id: 'recipient-2',
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientRole: 'signer' as const,
 	recipientStatus: 'viewed',
@@ -191,11 +190,13 @@ function completedCommand(): PublishRecipientSignedCommand {
 	const completedAuditEventHash: string = createHash('sha256')
 		.update(
 			JSON.stringify({
-				actorId: command.expectedRecipientId,
+				hashVersion: 3,
 				envelopeId: command.expectedEnvelopeId,
+				sequence: command.expectedAuditSequence + 2,
 				eventType: 'envelope.completed',
+				actorType: 'recipient',
+				actorId: command.expectedRecipientId,
 				occurredAt: command.updatedAt,
-				organizationId: 'org-1',
 				payload: JSON.parse(completedAuditPayloadJson) as unknown,
 				previousHash: command.auditEventHash
 			})
@@ -219,7 +220,6 @@ function completedReplayRow(overrides: Record<string, unknown> = {}): Record<str
 		}))
 	);
 	return {
-		organizationId: 'org-1',
 		envelopeId: completed.expectedEnvelopeId,
 		recipientId: completed.expectedRecipientId,
 		recipientRole: completed.recipientRole,
@@ -246,7 +246,6 @@ function completedReplayRow(overrides: Record<string, unknown> = {}): Record<str
 		completedAuditEventHash: completed.completedAuditEventHash,
 		completedAuditPayloadJson: completed.completedAuditPayloadJson,
 		evidenceEventId: completed.auditEventId,
-		evidenceOrganizationId: 'org-1',
 		evidenceEnvelopeId: completed.expectedEnvelopeId,
 		evidenceSequence: completed.expectedAuditSequence + 1,
 		evidenceEventType: 'recipient.signed',
@@ -256,8 +255,8 @@ function completedReplayRow(overrides: Record<string, unknown> = {}): Record<str
 		evidencePreviousHash: completed.previousAuditHash,
 		evidenceEventHash: completed.auditEventHash,
 		evidenceOccurredAt: completed.updatedAt,
+		evidenceHashVersion: 3,
 		completedEvidenceEventId: completed.completedAuditEventId,
-		completedEvidenceOrganizationId: 'org-1',
 		completedEvidenceEnvelopeId: completed.expectedEnvelopeId,
 		completedEvidenceSequence: completed.expectedAuditSequence + 2,
 		completedEvidenceEventType: 'envelope.completed',
@@ -267,6 +266,7 @@ function completedReplayRow(overrides: Record<string, unknown> = {}): Record<str
 		completedEvidencePreviousHash: completed.auditEventHash,
 		completedEvidenceEventHash: completed.completedAuditEventHash,
 		completedEvidenceOccurredAt: completed.updatedAt,
+		completedEvidenceHashVersion: 3,
 		...overrides
 	};
 }

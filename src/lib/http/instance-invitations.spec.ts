@@ -44,7 +44,7 @@ const member: InstanceMemberMetadata = {
 };
 
 /** This surface additionally requires a verified email, unlike other identity-only surfaces. */
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
 	return identityOnlyLocals(state, { emailVerified: true });
 }
 
@@ -202,7 +202,7 @@ describe('instance invitation HTTP handlers', () => {
 				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).create,
 				event({
 					pathname: CREATE_PATH,
-					locals: locals('no_active_organization'),
+					locals: locals('no_membership'),
 					method: 'POST',
 					body: validCreateBody(),
 					headers: { 'idempotency-key': 'create-1' }
@@ -506,7 +506,7 @@ describe('instance invitation HTTP handlers', () => {
 			const app: InstanceInvitationApplicationPort = application();
 			const response: Response = await invoke(
 				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).list,
-				event({ pathname: CREATE_PATH, locals: locals('no_active_organization') })
+				event({ pathname: CREATE_PATH, locals: locals('no_membership') })
 			);
 			expect(response.status).toBe(200);
 		});
@@ -707,7 +707,7 @@ describe('instance invitation HTTP handlers', () => {
 				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
 				event({
 					pathname: ACCEPT_PATH,
-					locals: locals('no_active_organization'),
+					locals: locals('no_membership'),
 					method: 'POST',
 					body: validAcceptBody(),
 					headers: { 'idempotency-key': 'accept-1' }
@@ -825,9 +825,13 @@ describe('instance invitation HTTP handlers', () => {
 						pathname: ACCEPT_PATH,
 						locals: {
 							apiKeyAuthentication: { state: 'absent' },
-							identityState: 'authorized',
-							memberships: [],
-							organizationId: null,
+							bootstrapped: true,
+							identityState: 'active',
+							instanceMembership: {
+								userId: principal.subject,
+								role: 'member',
+								status: 'active'
+							},
 							principal
 						},
 						method: 'POST',
@@ -1154,7 +1158,7 @@ describe('instance invitation HTTP handlers', () => {
 			const response: Response = await invoke(
 				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).revoke,
 				revokeEvent({
-					locals: locals('no_active_organization'),
+					locals: locals('no_membership'),
 					headers: { 'idempotency-key': 'revoke-1' }
 				})
 			);

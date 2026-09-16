@@ -17,10 +17,7 @@ import {
 	resolveDocxImportLimits,
 	type DocxImportLimits
 } from '$lib/adapters/documents/docx-import';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -91,7 +88,7 @@ function notFoundProblem(instance: string): Response {
 		type: 'urn:signkit:problem:envelope-not-found',
 		title: 'Envelope not found',
 		status: 404,
-		detail: 'No envelope was found in the authorized organization.',
+		detail: 'No envelope was found.',
 		instance
 	});
 }
@@ -242,7 +239,7 @@ export function createDocxImportHandler(
 	resolvePersistence: DocxImportPersistenceResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'drafts:write'
@@ -296,7 +293,6 @@ export function createDocxImportHandler(
 		const importer: DocxImportService = new DocxImportService(persistence);
 		try {
 			const result: CommitDraftResult = await importer.importAndCommit({
-				organizationId: authorized.organizationId,
 				envelopeId: envelopeIdResult.data,
 				targetPath: parsed.targetPath,
 				expectedGeneration: parsed.expectedGeneration,

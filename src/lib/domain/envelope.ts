@@ -22,7 +22,7 @@ export type FieldType = (typeof fieldTypes)[number];
 
 export interface Envelope {
 	id: string;
-	organizationId: string;
+	createdByUserId: string;
 	title: string;
 	status: EnvelopeStatus;
 	repositoryGeneration: number;
@@ -37,7 +37,6 @@ export interface Envelope {
 
 export interface EnvelopeDocument {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	markdownPath: `documents/${string}.md`;
 	title: string;
@@ -46,7 +45,6 @@ export interface EnvelopeDocument {
 
 export interface Recipient {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	email: string;
 	name: string;
@@ -78,7 +76,6 @@ export interface FieldGeometry {
  */
 export interface EnvelopeField {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	documentId: string | null;

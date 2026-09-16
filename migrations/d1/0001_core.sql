@@ -1,8 +1,6 @@
 PRAGMA foreign_keys = ON;
 
--- Organization identity is the external d6e-auth identifier projected into
--- SignKit. It is deliberately unconstrained text: only SignKit-minted row
--- identifiers are required to be canonical lowercase UUIDv7 (RFC 9562).
+-- SignKit identifiers are required to be canonical lowercase UUIDv7 (RFC 9562).
 -- SQLite has no regular expressions, so every UUIDv7 check below uses the same
 -- portable length/separator/GLOB shape, including the version nibble (`7`) and
 -- the RFC 9562 variant nibble (`8`, `9`, `a`, or `b`).
@@ -14,13 +12,6 @@ PRAGMA foreign_keys = ON;
 -- by round-tripping through strftime: the round trip accepts only the exact
 -- canonical rendering of a real instant, and the comparison uses `IS` so that
 -- a NULL from an unparsable value fails the CHECK instead of passing it.
-CREATE TABLE organization (
-  id TEXT PRIMARY KEY,
-  d6e_organization_id TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
 -- SignKit-local instance membership. One deployment database is the instance
 -- boundary, so there is no instance_id. user_id is the external d6e-auth
 -- subject: d6e-auth proves identity only, and this row is membership
@@ -57,7 +48,10 @@ CREATE TABLE instance_member (
 
 CREATE TABLE envelope (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
+  -- The instance member that created this envelope. Session creation stamps
+  -- the actor subject; API-key creation stamps the key owner's user id while
+  -- the audit actor remains the API key id with agent type.
+  created_by_user_id TEXT NOT NULL REFERENCES instance_member(user_id),
   title TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('draft','ready','sent','in_progress','completed','declined','expired','voided')),
   repository_generation INTEGER NOT NULL DEFAULT 0,
@@ -67,8 +61,7 @@ CREATE TABLE envelope (
   sent_commit_sha TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  FOREIGN KEY (organization_id) REFERENCES organization(id),
+  PRIMARY KEY (id),
   CONSTRAINT envelope_id_uuidv7 CHECK (
     length(id) = 36
     AND substr(id, 9, 1) = '-'
@@ -82,11 +75,10 @@ CREATE TABLE envelope (
   )
 );
 
-CREATE INDEX envelope_org_status_updated ON envelope(organization_id, status, updated_at DESC);
+CREATE INDEX envelope_status_updated ON envelope(status, updated_at DESC);
 
 CREATE TABLE audit_event (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   sequence INTEGER NOT NULL,
   event_type TEXT NOT NULL,
@@ -96,9 +88,9 @@ CREATE TABLE audit_event (
   previous_hash TEXT,
   event_hash TEXT NOT NULL,
   occurred_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  UNIQUE (organization_id, envelope_id, sequence),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (id),
+  UNIQUE (envelope_id, sequence),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   -- `actor_id` stays unconstrained: it carries an external d6e-auth user ID, a
   -- recipient ID, or a worker name depending on the event type.
   CONSTRAINT audit_event_id_uuidv7 CHECK (

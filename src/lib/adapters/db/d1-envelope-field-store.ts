@@ -18,7 +18,6 @@ import type {
 import { D1EnvelopeStore } from './d1-envelope-store';
 
 interface FieldCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	actor_type: string;
 	actor_id: string;
@@ -35,7 +34,6 @@ interface FieldCommandRow {
 	audit_event_hash: string;
 	audit_payload_json: string;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -69,10 +67,7 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 		const replay: FieldPlacementPreparation | null = await this.#resolveCommand(key);
 		if (replay !== null) return replay;
 
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'ready') return { outcome: 'not_ready' };
 		if (envelope.repositoryGeneration !== expectedGeneration) {
@@ -82,15 +77,9 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 			return { outcome: 'field_generation_conflict' };
 		}
 		if (envelope.repositoryHead === null) return { outcome: 'integrity_error' };
-		const auditHead: FieldAuditHead | null = await this.#readAuditHead(
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: FieldAuditHead | null = await this.#readAuditHead(key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
-		const recipients: readonly Recipient[] = await this.#readRecipients(
-			key.organizationId,
-			key.envelopeId
-		);
+		const recipients: readonly Recipient[] = await this.#readRecipients(key.envelopeId);
 		return { outcome: 'ready', envelope, recipients, auditHead };
 	}
 
@@ -104,14 +93,13 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 			this.#database
 				.prepare(
 					`INSERT INTO envelope_field_placement_command (
-						organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+						envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 						expected_generation, expected_field_generation, commit_sha, fields_json, field_count,
 						updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 						audit_event_hash, audit_payload_json
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
-					command.organizationId,
 					command.envelopeId,
 					command.actorType,
 					command.actorId,
@@ -130,19 +118,18 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 					command.auditPayloadJson
 				),
 			this.#database
-				.prepare('DELETE FROM envelope_field WHERE organization_id = ? AND envelope_id = ?')
-				.bind(command.organizationId, command.envelopeId),
+				.prepare('DELETE FROM envelope_field WHERE envelope_id = ?')
+				.bind(command.envelopeId),
 			...command.fields.map((field: EnvelopeField): D1PreparedStatement =>
 				this.#database
 					.prepare(
 						`INSERT INTO envelope_field (
-							id, organization_id, envelope_id, recipient_id, document_id, document_path, field_type,
+							id, envelope_id, recipient_id, document_id, document_path, field_type,
 							label, required, position, page, x, y, width, height, created_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
 						field.id,
-						field.organizationId,
 						field.envelopeId,
 						field.recipientId,
 						field.documentId,
@@ -179,7 +166,6 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 			.prepare(
 				`SELECT command.*,
 					evidence.id AS evidence_event_id,
-					evidence.organization_id AS evidence_organization_id,
 					evidence.envelope_id AS evidence_envelope_id,
 					evidence.sequence AS evidence_sequence,
 					evidence.event_type AS evidence_event_type,
@@ -191,13 +177,12 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 					evidence.occurred_at AS evidence_occurred_at
 				 FROM envelope_field_placement_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = ? AND command.actor_id = ?
+					ON evidence.id = command.audit_event_id
+				 WHERE command.actor_type = ? AND command.actor_id = ?
 					AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(key.organizationId, key.actorType, key.actorId, key.idempotencyKey)
+			.bind(key.actorType, key.actorId, key.idempotencyKey)
 			.first<FieldCommandRow>();
 		if (row === null) return null;
 		if (row.envelope_id !== key.envelopeId || row.request_hash !== key.requestFingerprint) {
@@ -223,32 +208,31 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 		};
 	}
 
-	async #readAuditHead(organizationId: string, envelopeId: string): Promise<FieldAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<FieldAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
 		return { sequence: row.sequence, eventHash: row.event_hash };
 	}
 
-	async #readRecipients(organizationId: string, envelopeId: string): Promise<readonly Recipient[]> {
+	async #readRecipients(envelopeId: string): Promise<readonly Recipient[]> {
 		const result = await this.#database
 			.prepare(
-				`SELECT id, organization_id, envelope_id, email, name, role, locale,
+				`SELECT id, envelope_id, email, name, role, locale,
 					routing_order, status
-				 FROM recipient WHERE organization_id = ? AND envelope_id = ?
+				 FROM recipient WHERE envelope_id = ?
 				 ORDER BY routing_order, id`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<{
 				id: string;
-				organization_id: string;
 				envelope_id: string;
 				email: string;
 				name: string;
@@ -259,7 +243,6 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 			}>();
 		return result.results.map((row): Recipient => ({
 			id: row.id,
-			organizationId: row.organization_id,
 			envelopeId: row.envelope_id,
 			email: row.email,
 			name: row.name,
@@ -303,7 +286,6 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 function validAuditEvidence(row: FieldCommandRow): boolean {
 	return (
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'envelope.fields_placed' &&
@@ -320,12 +302,7 @@ async function validStoredReceipt(
 	row: FieldCommandRow,
 	fields: readonly EnvelopeField[]
 ): Promise<boolean> {
-	if (
-		fields.some(
-			(field: EnvelopeField): boolean =>
-				field.organizationId !== row.organization_id || field.envelopeId !== row.envelope_id
-		)
-	) {
+	if (fields.some((field: EnvelopeField): boolean => field.envelopeId !== row.envelope_id)) {
 		return false;
 	}
 	const canonicalRequest: string = JSON.stringify({
@@ -383,7 +360,6 @@ function isEnvelopeField(value: unknown): value is EnvelopeField {
 	const candidate = value as Record<string, unknown>;
 	return (
 		typeof candidate.id === 'string' &&
-		typeof candidate.organizationId === 'string' &&
 		typeof candidate.envelopeId === 'string' &&
 		typeof candidate.recipientId === 'string' &&
 		isDocumentScope(candidate) &&

@@ -22,25 +22,18 @@ function seedEnvelope(
 ): void {
 	sqlite
 		.prepare(
-			`INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			 VALUES ('org-1', 'org-1', 'Workspace', '2026-09-11T00:00:00.000Z')`
+			`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');`
 		)
 		.run();
 	sqlite
 		.prepare(
-			`INSERT INTO envelope (
-				id, organization_id, title, status, repository_generation, repository_head,
-				sent_commit_sha, created_at, updated_at
-			 ) VALUES (?, 'org-1', 'Agreement', ?, ?, ?, ?, '2026-09-11T00:00:00.000Z', '2026-09-11T01:00:00.000Z')`
+			`INSERT INTO envelope (id, created_by_user_id, title, status, repository_generation, repository_head, sent_commit_sha, created_at, updated_at) VALUES (?, 'user-1', 'Agreement', ?, ?, ?, ?, '2026-09-11T00:00:00.000Z', '2026-09-11T01:00:00.000Z')`
 		)
 		.run(ENVELOPE_ID, status, generation, repositoryHead, sentCommitSha);
 	sqlite
 		.prepare(
-			`INSERT INTO audit_event (
-				id, organization_id, envelope_id, sequence, event_type, actor_type,
-				actor_id, payload_json, previous_hash, event_hash, occurred_at
-			 ) VALUES ('01960000-0000-7000-8000-0000000000a0', 'org-1', ?, 1, 'envelope.created', 'user',
-				'user-1', '{}', 'genesis', 'head-hash', '2026-09-11T01:00:00.000Z')`
+			`INSERT INTO audit_event (id, envelope_id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash, event_hash, occurred_at) VALUES ('01960000-0000-7000-8000-0000000000a0', ?, 1, 'envelope.created', 'user', 'user-1', '{}', 'genesis', 'head-hash', '2026-09-11T01:00:00.000Z')`
 		)
 		.run(ENVELOPE_ID);
 }
@@ -55,10 +48,7 @@ function insertRecipient(
 ): void {
 	sqlite
 		.prepare(
-			`INSERT INTO recipient (
-				id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
-				capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
-			) VALUES (?, 'org-1', ?, ?, 'R', ?, 'en', 1, ?, ?, ?, NULL, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z')`
+			`INSERT INTO recipient (id, envelope_id, email, name, role, locale, routing_order, status, capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at) VALUES (?, ?, ?, 'R', ?, 'en', 1, ?, ?, ?, NULL, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z')`
 		)
 		.run(id, ENVELOPE_ID, `${id}@example.com`, role, status, capabilityHash, capabilityExpiresAt);
 }
@@ -74,12 +64,7 @@ function insertDelivery(
 ): void {
 	sqlite
 		.prepare(
-			`INSERT INTO delivery_outbox (
-				id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
-				reserved_capability_expires_at, sealed_capability, sealing_key_id,
-				sealed_capability_sha256, available_at, attempts, created_at, updated_at, retryable
-			) VALUES (?, 'org-1', ?, ?, 'recipient_invitation', ?, ?, ?, ?, 'key', 'sha', '2026-09-11T00:00:00.000Z', 0,
-				'2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 1)`
+			`INSERT INTO delivery_outbox (id, envelope_id, recipient_id, kind, status, capability_hash, reserved_capability_expires_at, sealed_capability, sealing_key_id, sealed_capability_sha256, available_at, attempts, created_at, updated_at, retryable) VALUES (?, ?, ?, 'recipient_invitation', ?, ?, ?, ?, 'key', 'sha', '2026-09-11T00:00:00.000Z', 0, '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z', 1)`
 		)
 		.run(id, ENVELOPE_ID, recipientId, status, capabilityHash, reservedExpiresAt, sealedCapability);
 }

@@ -75,8 +75,8 @@ export function resolvePostgresEnvelopeApplication(databaseUrl: string): Envelop
 
 /**
  * Share the same process-local PostgreSQL pool with draft persistence. The
- * store contains no request, organization, or actor state; every operation
- * still receives its organization scope explicitly.
+ * store contains no request or actor state; every operation receives its
+ * explicit instance actor context.
  */
 export function resolvePostgresEnvelopeStore(
 	databaseUrl: string

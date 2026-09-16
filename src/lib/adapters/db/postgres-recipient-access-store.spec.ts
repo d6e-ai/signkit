@@ -24,10 +24,9 @@ class ScriptedPostgres {
 }
 
 describe('PostgresRecipientAccessStore', () => {
-	it('uses a tenant-safe join and rejects revoked, blocked, CC, and inactive state in SQL', async () => {
+	it('uses an envelope-safe join and rejects revoked, blocked, CC, and inactive state in SQL', async () => {
 		const database = new ScriptedPostgres([
 			{
-				organizationId: 'org-1',
 				envelopeId: 'env-1',
 				recipientId: 'recipient-1',
 				recipientName: 'Recipient',
@@ -47,7 +46,6 @@ describe('PostgresRecipientAccessStore', () => {
 		await expect(
 			store.findActiveByTokenHash('hash-1', '2026-09-11T00:00:00.000Z')
 		).resolves.toMatchObject({
-			organizationId: 'org-1',
 			recipientRole: 'approver',
 			expiresAt: '2026-09-12T00:00:00.000Z',
 			sentRevision: {
@@ -58,7 +56,6 @@ describe('PostgresRecipientAccessStore', () => {
 		});
 		const query: RecordedQuery = database.queries[0];
 		expect(query.values).toEqual(['hash-1', '2026-09-11T00:00:00.000Z']);
-		expect(query.text).toContain('envelope.organization_id = recipient.organization_id');
 		expect(query.text).toContain('envelope.id = recipient.envelope_id');
 		expect(query.text).toContain('recipient.capability_revoked_at IS NULL');
 		expect(query.text).toContain('recipient.capability_expires_at IS NOT NULL');

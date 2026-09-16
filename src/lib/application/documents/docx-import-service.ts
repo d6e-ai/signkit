@@ -10,7 +10,6 @@ import {
 } from '$lib/adapters/documents/docx-import';
 
 export interface DocxImportCommitInput {
-	organizationId: string;
 	envelopeId: string;
 	targetPath: `documents/${string}.md`;
 	expectedGeneration: number;
@@ -36,7 +35,6 @@ export class DocxImportService {
 			input.limits ?? NODE_DOCX_IMPORT_LIMITS
 		);
 		return this.drafts.commit({
-			organizationId: input.organizationId,
 			envelopeId: input.envelopeId,
 			expectedGeneration: input.expectedGeneration,
 			edits: [{ path: input.targetPath, content: markdown }],

@@ -39,7 +39,6 @@ function fakeD1(firstResults: readonly unknown[]) {
 }
 
 const command: PublishFieldPlacementCommand = {
-	organizationId: 'org-1',
 	envelopeId: '01910000-0000-7000-8000-000000000001',
 	actorType: 'user',
 	actorId: 'user-1',
@@ -51,7 +50,6 @@ const command: PublishFieldPlacementCommand = {
 	fields: [
 		{
 			id: '01910000-0000-7000-8000-000000000010',
-			organizationId: 'org-1',
 			envelopeId: '01910000-0000-7000-8000-000000000001',
 			recipientId: '01910000-0000-7000-8000-000000000002',
 			documentId: '01900000-0000-7000-8000-000000000021',
@@ -105,7 +103,6 @@ command.auditPayloadJson = JSON.stringify({
 
 function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organization_id: command.organizationId,
 		envelope_id: command.envelopeId,
 		actor_type: command.actorType,
 		actor_id: command.actorId,
@@ -122,7 +119,6 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		audit_event_hash: command.auditEventHash,
 		audit_payload_json: command.auditPayloadJson,
 		evidence_event_id: command.auditEventId,
-		evidence_organization_id: command.organizationId,
 		evidence_envelope_id: command.envelopeId,
 		evidence_sequence: 3,
 		evidence_event_type: 'envelope.fields_placed',
@@ -142,7 +138,7 @@ describe('D1EnvelopeFieldStore', () => {
 			null,
 			{
 				id: command.envelopeId,
-				organization_id: command.organizationId,
+				created_by_user_id: 'user-1',
 				title: 'Agreement',
 				status: 'ready',
 				repository_generation: 1,

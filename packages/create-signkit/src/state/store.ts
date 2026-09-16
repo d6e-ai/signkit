@@ -30,6 +30,8 @@ export interface DeploymentState {
 	channel: ReleaseChannel;
 	version?: string;
 	commit?: string;
+	/** D1 schema compatibility epoch recorded from the deployed release manifest. */
+	schemaEpoch?: string;
 	lastCommand?: CommandName;
 	updatedAt: string;
 	lastWorkerVersionId?: string;
@@ -129,6 +131,9 @@ export function parseState(raw: string): DeploymentState {
 	}
 	if (typeof parsed.updatedAt !== 'string') {
 		throw generic('deployment state updatedAt is invalid');
+	}
+	if (parsed.schemaEpoch !== undefined && typeof parsed.schemaEpoch !== 'string') {
+		throw generic('deployment state schemaEpoch is invalid');
 	}
 	return parsed as unknown as DeploymentState;
 }

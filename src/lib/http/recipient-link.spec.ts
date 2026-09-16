@@ -27,7 +27,6 @@ const activeCookieName: string = recipientSessionCookieName(envelopeId) as strin
 const declinedCookieName: string = declinedReceiptCookieName(envelopeId) as string;
 const otherActiveCookieName: string = recipientSessionCookieName(otherEnvelopeId) as string;
 const context: RecipientSigningContext = {
-	organizationId: 'org-secret',
 	envelopeId,
 	recipientId: '01910000-0000-7000-8000-000000000002',
 	recipientName: 'Private Recipient',
@@ -54,7 +53,6 @@ const declinedReceipt: AuthorizedRecipientDeclinedReceipt = {
 		locale: 'ja'
 	},
 	locator: {
-		organizationId: '01910000-0000-7000-8000-000000000003',
 		envelopeId,
 		recipientId: '01910000-0000-7000-8000-000000000002',
 		idempotencyKey: 'decline-1',

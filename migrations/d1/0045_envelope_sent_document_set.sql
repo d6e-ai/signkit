@@ -29,7 +29,6 @@
 PRAGMA defer_foreign_keys = ON;
 
 CREATE TABLE envelope_sent_document (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   commit_sha TEXT NOT NULL,
   document_id TEXT NOT NULL,
@@ -43,8 +42,8 @@ CREATE TABLE envelope_sent_document (
   page_width REAL NOT NULL CHECK (page_width > 0 AND page_width <= 20000),
   page_height REAL NOT NULL CHECK (page_height > 0 AND page_height <= 20000),
   created_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id, commit_sha, document_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id, commit_sha, document_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT envelope_sent_document_id_uuidv7 CHECK (
     length(document_id) = 36
     AND substr(document_id, 9, 1) = '-'
@@ -60,21 +59,20 @@ CREATE TABLE envelope_sent_document (
     length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'
   ),
   CONSTRAINT envelope_sent_document_position_unique UNIQUE (
-    organization_id, envelope_id, commit_sha, position
+    envelope_id, commit_sha, position
   )
 );
 
 CREATE INDEX envelope_sent_document_object_key ON envelope_sent_document(object_key);
 
 CREATE TABLE envelope_sent_document_set (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   commit_sha TEXT NOT NULL,
   document_set_hash TEXT NOT NULL,
   document_count INTEGER NOT NULL CHECK (document_count BETWEEN 1 AND 20),
   created_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id, commit_sha),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id, commit_sha),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT envelope_sent_document_set_hash_hex CHECK (
     length(document_set_hash) = 64 AND document_set_hash NOT GLOB '*[^0-9a-f]*'
   )
@@ -82,7 +80,6 @@ CREATE TABLE envelope_sent_document_set (
 
 CREATE TABLE envelope_field_new (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   recipient_id TEXT NOT NULL,
   document_id TEXT NULL,
@@ -98,10 +95,9 @@ CREATE TABLE envelope_field_new (
   y REAL NULL CHECK (y IS NULL OR (y >= 0 AND y <= 1)),
   width REAL NULL CHECK (width IS NULL OR (width > 0 AND width <= 1)),
   height REAL NULL CHECK (height IS NULL OR (height > 0 AND height <= 1)),
-  PRIMARY KEY (organization_id, id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, envelope_id, recipient_id)
-    REFERENCES recipient(organization_id, envelope_id, id),
+  PRIMARY KEY (id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CONSTRAINT envelope_field_id_uuidv7 CHECK (
     length(id) = 36
     AND substr(id, 9, 1) = '-'
@@ -133,12 +129,12 @@ CREATE TABLE envelope_field_new (
 );
 
 INSERT INTO envelope_field_new (
-  id, organization_id, envelope_id, recipient_id, document_id, document_path,
+  id, envelope_id, recipient_id, document_id, document_path,
   field_type, label, required, position, created_at, updated_at,
   page, x, y, width, height
 )
 SELECT
-  id, organization_id, envelope_id, recipient_id, NULL, document_path,
+  id, envelope_id, recipient_id, NULL, document_path,
   field_type, label, required, position, created_at, updated_at,
   page, x, y, width, height
 FROM envelope_field;
@@ -158,10 +154,9 @@ FROM envelope_field;
 -- so renaming envelope_field_new to envelope_field carries field_value_new's
 -- FK along with it.
 CREATE UNIQUE INDEX envelope_field_new_identity
-  ON envelope_field_new(organization_id, id, recipient_id, envelope_id, field_type);
+  ON envelope_field_new(id, recipient_id, envelope_id, field_type);
 
 CREATE TABLE field_value_new (
-  organization_id TEXT NOT NULL,
   field_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   recipient_id TEXT NOT NULL,
@@ -169,18 +164,17 @@ CREATE TABLE field_value_new (
   value_json TEXT NOT NULL,
   value_sha256 TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, field_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, field_id, recipient_id, envelope_id, field_type)
-    REFERENCES envelope_field_new(organization_id, id, recipient_id, envelope_id, field_type)
+  PRIMARY KEY (field_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (field_id) REFERENCES envelope_field_new(id)
 );
 
 INSERT INTO field_value_new (
-  organization_id, field_id, envelope_id, recipient_id, field_type,
+  field_id, envelope_id, recipient_id, field_type,
   value_json, value_sha256, created_at
 )
 SELECT
-  organization_id, field_id, envelope_id, recipient_id, field_type,
+  field_id, envelope_id, recipient_id, field_type,
   value_json, value_sha256, created_at
 FROM field_value;
 
@@ -195,32 +189,32 @@ ALTER TABLE field_value_new RENAME TO field_value;
 DROP INDEX envelope_field_new_identity;
 
 CREATE INDEX envelope_field_document_order
-  ON envelope_field(organization_id, envelope_id, document_id, position, id)
+  ON envelope_field(envelope_id, document_id, position, id)
   WHERE document_id IS NOT NULL;
 
 CREATE INDEX envelope_field_document_path_order
-  ON envelope_field(organization_id, envelope_id, document_path, position, id)
+  ON envelope_field(envelope_id, document_path, position, id)
   WHERE document_path IS NOT NULL;
 
 CREATE INDEX envelope_field_recipient
-  ON envelope_field(organization_id, recipient_id);
+  ON envelope_field(recipient_id);
 
 CREATE UNIQUE INDEX envelope_field_recipient_document_id_position
-  ON envelope_field(organization_id, envelope_id, recipient_id, document_id, position)
+  ON envelope_field(envelope_id, recipient_id, document_id, position)
   WHERE document_id IS NOT NULL;
 
 CREATE UNIQUE INDEX envelope_field_recipient_document_path_position
-  ON envelope_field(organization_id, envelope_id, recipient_id, document_path, position)
+  ON envelope_field(envelope_id, recipient_id, document_path, position)
   WHERE document_path IS NOT NULL;
 
 CREATE UNIQUE INDEX envelope_field_identity
-  ON envelope_field(organization_id, id, recipient_id, envelope_id, field_type);
+  ON envelope_field(id, recipient_id, envelope_id, field_type);
 
 CREATE INDEX field_value_recipient
-  ON field_value(organization_id, recipient_id);
+  ON field_value(recipient_id);
 
 -- Restored from 0036_capability_reissue.sql. Recreated command triggers must
--- stamp audit_event.hash_version = 2 explicitly.
+-- stamp audit_event.hash_version = 3 explicitly.
 CREATE TRIGGER recipient_signed_command_publish
 AFTER INSERT ON recipient_signed_command
 BEGIN
@@ -228,8 +222,7 @@ BEGIN
   SET status = 'completed',
       capability_revoked_at = NEW.updated_at,
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.recipient_id
+  WHERE id = NEW.recipient_id
     AND envelope_id = NEW.envelope_id
     AND status = 'viewed'
     AND role = 'signer'
@@ -247,8 +240,7 @@ BEGIN
   SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM envelope
-      WHERE organization_id = NEW.organization_id
-        AND id = NEW.envelope_id
+      WHERE id = NEW.envelope_id
         AND field_generation = NEW.expected_field_generation
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
   END);
@@ -261,8 +253,7 @@ BEGIN
   SELECT (CASE
     WHEN (
       SELECT COUNT(*) FROM envelope_field
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND recipient_id = NEW.recipient_id
     ) <> NEW.field_count
     THEN RAISE(ABORT, 'recipient signed publish conflict')
@@ -273,8 +264,7 @@ BEGIN
       SELECT 1 FROM json_each(NEW.field_values_json) declared
       WHERE NOT EXISTS (
         SELECT 1 FROM envelope_field field
-        WHERE field.organization_id = NEW.organization_id
-          AND field.envelope_id = NEW.envelope_id
+        WHERE field.envelope_id = NEW.envelope_id
           AND field.recipient_id = NEW.recipient_id
           AND field.id = json_extract(declared.value, '$.id')
           AND field.field_type = json_extract(declared.value, '$.fieldType')
@@ -294,8 +284,7 @@ BEGIN
   SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
@@ -304,8 +293,7 @@ BEGIN
   SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NULL AND NOT EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
@@ -314,8 +302,7 @@ BEGIN
   SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND routing_order = NEW.routing_order
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
@@ -327,8 +314,7 @@ BEGIN
      AND NEW.completed_audit_event_id IS NULL
      AND NOT EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND routing_order = NEW.routing_order
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
@@ -339,8 +325,7 @@ BEGIN
     WHEN NEW.next_routing_order IS NOT NULL
      AND (
        SELECT MIN(routing_order) FROM recipient
-       WHERE organization_id = NEW.organization_id
-         AND envelope_id = NEW.envelope_id
+       WHERE envelope_id = NEW.envelope_id
          AND role IN ('signer', 'approver')
          AND status <> 'completed'
          AND routing_order > NEW.routing_order
@@ -352,7 +337,6 @@ BEGIN
   SET capability_expires_at = NEW.next_capability_expires_at,
       updated_at = NEW.updated_at
   WHERE NEW.next_routing_order IS NOT NULL
-    AND organization_id = NEW.organization_id
     AND envelope_id = NEW.envelope_id
     AND routing_order = NEW.next_routing_order
     AND role IN ('signer', 'approver', 'viewer')
@@ -372,15 +356,13 @@ BEGIN
       available_at = NEW.updated_at,
       updated_at = NEW.updated_at
   WHERE NEW.next_routing_order IS NOT NULL
-    AND organization_id = NEW.organization_id
     AND envelope_id = NEW.envelope_id
     AND status = 'blocked'
     AND available_at IS NULL
     AND sealed_capability IS NOT NULL
     AND EXISTS (
       SELECT 1 FROM recipient target
-      WHERE target.organization_id = delivery_outbox.organization_id
-        AND target.id = delivery_outbox.recipient_id
+      WHERE target.id = delivery_outbox.recipient_id
         AND target.envelope_id = delivery_outbox.envelope_id
         AND target.routing_order = NEW.next_routing_order
         AND target.role IN ('signer', 'approver', 'viewer')
@@ -402,24 +384,21 @@ BEGIN
         ELSE status
       END),
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.envelope_id
+  WHERE id = NEW.envelope_id
     AND status IN ('sent', 'in_progress')
     AND sent_commit_sha = NEW.sent_commit_sha
     AND sent_commit_sha = repository_head
     AND EXISTS (
       SELECT 1
       FROM audit_event previous
-      WHERE previous.organization_id = NEW.organization_id
-        AND previous.envelope_id = NEW.envelope_id
+      WHERE previous.envelope_id = NEW.envelope_id
         AND previous.sequence = NEW.audit_sequence - 1
         AND previous.event_hash = NEW.previous_audit_hash
     )
     AND NOT EXISTS (
       SELECT 1
       FROM audit_event newer
-      WHERE newer.organization_id = NEW.organization_id
-        AND newer.envelope_id = NEW.envelope_id
+      WHERE newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     );
 
@@ -428,30 +407,29 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   ) VALUES (
-    NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
+    NEW.audit_event_id, NEW.envelope_id,
     NEW.audit_sequence, 'recipient.signed', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
-    NEW.updated_at, 2
+    NEW.updated_at, 3
   );
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
   )
-  SELECT NEW.completed_audit_event_id, NEW.organization_id, NEW.envelope_id,
+  SELECT NEW.completed_audit_event_id, NEW.envelope_id,
     NEW.audit_sequence + 1, 'envelope.completed', NEW.actor_type, NEW.actor_id,
     NEW.completed_audit_payload_json, NEW.audit_event_hash, NEW.completed_audit_event_hash,
-    NEW.updated_at, 2
+    NEW.updated_at, 3
   WHERE NEW.completed_audit_event_id IS NOT NULL;
 
   SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND (
       SELECT COUNT(*) FROM audit_event
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND id = NEW.completed_audit_event_id
         AND sequence = NEW.audit_sequence + 1
         AND event_type = 'envelope.completed'
@@ -489,8 +467,7 @@ BEGIN
             AND command.sent_pdf_document_pages_json IS NULL
             AND (
               SELECT COUNT(*) FROM envelope_sent_document docs
-              WHERE docs.organization_id = command.organization_id
-                AND docs.envelope_id = command.envelope_id
+              WHERE docs.envelope_id = command.envelope_id
                 AND docs.commit_sha = command.commit_sha
             ) = command.document_count
         )
@@ -504,94 +481,84 @@ BEGIN
         )
       )
       FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
     ) THEN RAISE(ABORT, 'envelope send document set missing') END);
 
   UPDATE envelope
   SET status = 'sent', sent_commit_sha = (
         SELECT command.commit_sha FROM envelope_send_command command
-        WHERE command.organization_id = NEW.organization_id
-          AND command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
+        WHERE command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
           AND command.idempotency_key = NEW.idempotency_key
       ), updated_at = (
         SELECT command.updated_at FROM envelope_send_command command
-        WHERE command.organization_id = NEW.organization_id
-          AND command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
+        WHERE command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
           AND command.idempotency_key = NEW.idempotency_key
       )
-  WHERE organization_id = NEW.organization_id
-    AND id = (SELECT command.envelope_id FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+  WHERE id = (SELECT command.envelope_id FROM envelope_send_command command
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND status = 'ready'
     AND repository_generation = (SELECT command.expected_generation FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND repository_head = (SELECT command.commit_sha FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND sent_commit_sha IS NULL
     AND EXISTS (
       SELECT 1 FROM envelope_send_command command
-      JOIN audit_event previous ON previous.organization_id = command.organization_id
-        AND previous.envelope_id = command.envelope_id
+      JOIN audit_event previous ON previous.envelope_id = command.envelope_id
         AND previous.sequence = command.audit_sequence - 1
         AND previous.event_hash = command.previous_audit_hash
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
     )
     AND EXISTS (
       SELECT 1 FROM envelope_send_command command
-      JOIN envelope_ready_command ready ON ready.organization_id = command.organization_id
-        AND ready.envelope_id = command.envelope_id
+      JOIN envelope_ready_command ready ON ready.envelope_id = command.envelope_id
         AND ready.audit_event_id = command.ready_audit_event_id
         AND ready.expected_generation = command.expected_generation
         AND ready.commit_sha = command.commit_sha
         AND ready.audit_sequence < command.audit_sequence
-      JOIN audit_event ready_event ON ready_event.organization_id = ready.organization_id
-        AND ready_event.envelope_id = ready.envelope_id
+      JOIN audit_event ready_event ON ready_event.envelope_id = ready.envelope_id
         AND ready_event.id = ready.audit_event_id
         AND ready_event.sequence = ready.audit_sequence
         AND ready_event.event_type = 'envelope.ready'
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
     )
     AND NOT EXISTS (
       SELECT 1 FROM envelope_send_command command
-      JOIN audit_event newer ON newer.organization_id = command.organization_id
-        AND newer.envelope_id = command.envelope_id AND newer.sequence >= command.audit_sequence
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      JOIN audit_event newer ON newer.envelope_id = command.envelope_id AND newer.sequence >= command.audit_sequence
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
     )
     AND (SELECT COUNT(*) FROM delivery_outbox delivery, envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
-        AND delivery.organization_id = command.organization_id
         AND delivery.envelope_id = command.envelope_id) = (SELECT delivery_count FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND (SELECT COUNT(*) FROM delivery_outbox delivery, envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
-        AND delivery.organization_id = command.organization_id AND delivery.envelope_id = command.envelope_id
+        AND delivery.envelope_id = command.envelope_id
         AND delivery.status = 'pending') = (SELECT queued_delivery_count FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND (SELECT COUNT(*) FROM recipient target, envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
-        AND target.organization_id = command.organization_id AND target.envelope_id = command.envelope_id
+        AND target.envelope_id = command.envelope_id
         AND target.role IN ('signer', 'approver', 'viewer')) = (SELECT delivery_count FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND NOT EXISTS (
       SELECT 1 FROM delivery_outbox delivery
-      JOIN recipient target ON target.organization_id = delivery.organization_id
-        AND target.id = delivery.recipient_id AND target.envelope_id = delivery.envelope_id
-      JOIN envelope_send_command command ON command.organization_id = delivery.organization_id
-        AND command.envelope_id = delivery.envelope_id
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      JOIN recipient target ON target.id = delivery.recipient_id AND target.envelope_id = delivery.envelope_id
+      JOIN envelope_send_command command ON command.envelope_id = delivery.envelope_id
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
         AND (target.role NOT IN ('signer', 'approver', 'viewer')
           OR target.status <> 'pending'
@@ -611,14 +578,14 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at, hash_version
-  ) SELECT command.audit_event_id, command.organization_id, command.envelope_id,
+  ) SELECT command.audit_event_id, command.envelope_id,
       command.audit_sequence, 'envelope.sent', command.actor_type, command.actor_id,
       command.audit_payload_json, command.previous_audit_hash, command.audit_event_hash,
-      command.updated_at, 2
+      command.updated_at, 3
     FROM envelope_send_command command
-    WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+    WHERE command.actor_type = NEW.actor_type
       AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key;
 
   -- Published in the same trigger body, and therefore the same D1 batch, as
@@ -630,11 +597,11 @@ BEGIN
   -- columns are NOT NULL, and a legacy send's evidence lives in
   -- envelope_sent_pdf / envelope_send_command.sent_pdf_* instead.
   INSERT INTO envelope_sent_document_set (
-    organization_id, envelope_id, commit_sha, document_set_hash, document_count, created_at
-  ) SELECT command.organization_id, command.envelope_id, command.commit_sha,
+    envelope_id, commit_sha, document_set_hash, document_count, created_at
+  ) SELECT command.envelope_id, command.commit_sha,
       command.document_set_hash, command.document_count, command.updated_at
     FROM envelope_send_command command
-    WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+    WHERE command.actor_type = NEW.actor_type
       AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
       AND command.document_set_hash IS NOT NULL;
 
@@ -646,14 +613,14 @@ BEGIN
   -- send, whose sent_pdf_* columns are all NULL, does not insert a row that
   -- would fail envelope_sent_pdf's NOT NULL columns.
   INSERT INTO envelope_sent_pdf (
-    organization_id, envelope_id, commit_sha, object_key, sha256, byte_size,
+    envelope_id, commit_sha, object_key, sha256, byte_size,
     page_count, page_width, page_height, document_pages_json, created_at
-  ) SELECT command.organization_id, command.envelope_id, command.commit_sha,
+  ) SELECT command.envelope_id, command.commit_sha,
       command.sent_pdf_object_key, command.sent_pdf_sha256, command.sent_pdf_bytes,
       command.sent_pdf_page_count, command.sent_pdf_page_width, command.sent_pdf_page_height,
       command.sent_pdf_document_pages_json, command.updated_at
     FROM envelope_send_command command
-    WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+    WHERE command.actor_type = NEW.actor_type
       AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
       AND command.sent_pdf_object_key IS NOT NULL;
 END;

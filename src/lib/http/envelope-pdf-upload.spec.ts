@@ -11,15 +11,14 @@ import type {
 } from '$lib/ports/envelope-uploaded-document-store';
 import type { UploadedPdfUploadDependencies } from '$lib/application/documents/uploaded-pdf-runtime';
 import { createPdfUploadHandler, type PdfUploadDependenciesResolver } from './envelope-pdf-upload';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
 
-const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
 const pathname = `/api/v1/envelopes/${envelopeId}/documents/pdf`;
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function committed(): CommitDraftResult {

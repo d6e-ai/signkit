@@ -23,7 +23,6 @@ export interface SentPdfDocumentPages {
  * rather than reaching a recipient.
  */
 export interface SentPdfPointer {
-	organizationId: string;
 	envelopeId: string;
 	commitSha: string;
 	objectKey: string;
@@ -42,9 +41,5 @@ export interface EnvelopeSentPdfStore {
 	 * what makes the read replay-safe: a pointer published for a different
 	 * revision can never satisfy a request pinned to this one.
 	 */
-	findSentPdf(
-		organizationId: string,
-		envelopeId: string,
-		commitSha: string
-	): Promise<SentPdfPointer | null>;
+	findSentPdf(envelopeId: string, commitSha: string): Promise<SentPdfPointer | null>;
 }

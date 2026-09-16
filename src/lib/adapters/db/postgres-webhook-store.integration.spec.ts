@@ -13,7 +13,7 @@ import type {
 } from '$lib/ports/webhook-store';
 import {
 	WEBHOOK_MAX_ATTEMPTS,
-	WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION,
+	WEBHOOK_MAX_ENDPOINTS,
 	WEBHOOK_MAX_PAYLOAD_BYTES
 } from '$lib/security/webhook';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
@@ -33,7 +33,6 @@ if (CI_ENABLED && TEST_DATABASE_URL === undefined) {
 	throw new Error('POSTGRES_TEST_URL is required when PostgreSQL integration tests run in CI');
 }
 const postgresDescribe = TEST_DATABASE_URL === undefined ? describe.skip : describe;
-const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
 const ENDPOINT_ID: string = '01900000-0000-7000-8000-000000000401';
 const ACTOR_ID: string = 'user-1';
@@ -75,26 +74,13 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 		for (const path of MIGRATION_PATHS) await sql.unsafe(readFileSync(path, 'utf8'));
 		const sealer = new AesGcmWebhookSigningSecretSealer(TEST_KEY);
 		const sealed = await sealer.seal(PLAINTEXT_SECRET, {
-			organizationId: ORGANIZATION_ID,
 			endpointId: ENDPOINT_ID
 		});
 		await sql.unsafe(`
-			INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			VALUES ('${ORGANIZATION_ID}', '${ORGANIZATION_ID}', 'Workspace', '${AVAILABLE_AT}');
-			INSERT INTO envelope (
-				id, organization_id, title, status, repository_generation, created_at, updated_at
-			) VALUES (
-				'${ENVELOPE_ID}', '${ORGANIZATION_ID}', 'Agreement', 'completed', 1,
-				'${AVAILABLE_AT}', '${AVAILABLE_AT}'
-			);
-			INSERT INTO webhook_endpoint (
-				id, organization_id, url, description, status, events_json, secret_hash,
-				signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
-			) VALUES (
-				'${ENDPOINT_ID}', '${ORGANIZATION_ID}', 'https://hooks.example.com/signkit', NULL, 'active',
-				'["envelope.voided"]', '${'a'.repeat(64)}', '${sealed.sealedSigningSecret}',
-				'${sealed.sealingKeyId}', 'skwh1_abcdefgh', '${AVAILABLE_AT}', '${ACTOR_ID}'
-			);
+			INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '${AVAILABLE_AT}', '${AVAILABLE_AT}');
+			INSERT INTO envelope (id, created_by_user_id, title, status, repository_generation, created_at, updated_at) VALUES ('${ENVELOPE_ID}', 'user-1', 'Agreement', 'completed', 1, '${AVAILABLE_AT}', '${AVAILABLE_AT}');
+			INSERT INTO webhook_endpoint (id, url, description, status, events_json, secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id) VALUES ('${ENDPOINT_ID}', 'https://hooks.example.com/signkit', NULL, 'active', '["envelope.voided"]', '${'a'.repeat(64)}', '${sealed.sealedSigningSecret}', '${sealed.sealingKeyId}', 'skwh1_abcdefgh', '${AVAILABLE_AT}', '${ACTOR_ID}');
 		`);
 		// Forces the delivery-log INSERT half of completeDelivery/failDelivery to fail so
 		// tests can prove the paired webhook_outbox UPDATE rolls back with it, rather than
@@ -201,7 +187,6 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 			lockedAt: CLAIMED_AT
 		});
 		const command: FailWebhookDeliveryCommand = {
-			organizationId: ORGANIZATION_ID,
 			endpointId: ENDPOINT_ID,
 			auditEventId,
 			claimToken: 'claim-old-token-0001',
@@ -269,7 +254,6 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 			lockedAt: CLAIMED_AT
 		});
 		const poisoned: CompleteWebhookDeliveryCommand = {
-			organizationId: ORGANIZATION_ID,
 			endpointId: ENDPOINT_ID,
 			auditEventId,
 			claimToken,
@@ -300,7 +284,6 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 			lockedAt: CLAIMED_AT
 		});
 		const poisoned: FailWebhookDeliveryCommand = {
-			organizationId: ORGANIZATION_ID,
 			endpointId: ENDPOINT_ID,
 			auditEventId,
 			claimToken,
@@ -334,7 +317,6 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 		});
 		await expect(
 			store.completeDelivery({
-				organizationId: ORGANIZATION_ID,
 				endpointId: ENDPOINT_ID,
 				auditEventId,
 				claimToken: 'claim-stale-superseded-token',
@@ -347,7 +329,6 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 
 		await expect(
 			store.failDelivery({
-				organizationId: ORGANIZATION_ID,
 				endpointId: ENDPOINT_ID,
 				auditEventId,
 				claimToken: 'claim-stale-superseded-token',
@@ -386,29 +367,11 @@ async function insertOutbox(
 ): Promise<void> {
 	const [{ n }]: { n: string }[] = await database()`
 		SELECT COALESCE(MAX(sequence), 0)::text AS n FROM audit_event
-		WHERE organization_id = ${ORGANIZATION_ID} AND envelope_id = ${ENVELOPE_ID}`;
+		WHERE envelope_id = ${ENVELOPE_ID}`;
 	await database()`
-		INSERT INTO audit_event (
-			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
-			payload_json, previous_hash, event_hash, occurred_at
-		) VALUES (
-			${auditEventId}, ${ORGANIZATION_ID}, ${ENVELOPE_ID}, ${Number(n) + 1},
-			'envelope.completed', 'system', 'system', '{}', ${'0'.repeat(64)}, ${'e'.repeat(64)},
-			${AVAILABLE_AT}::timestamptz
-		)`;
+		INSERT INTO audit_event (id, envelope_id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash, event_hash, occurred_at) VALUES (${auditEventId}, ${ENVELOPE_ID}, ${Number(n) + 1}, 'envelope.completed', 'system', 'system', '{}', ${'0'.repeat(64)}, ${'e'.repeat(64)}, ${AVAILABLE_AT}::timestamptz)`;
 	await database()`
-		INSERT INTO webhook_outbox (
-			organization_id, endpoint_id, audit_event_id, envelope_id, event_type, payload_json,
-			status, attempts, available_at, claim_token, locked_at, last_error, updated_at, retryable
-		) VALUES (
-			${ORGANIZATION_ID}, ${ENDPOINT_ID}, ${auditEventId}, ${ENVELOPE_ID}, 'envelope.completed',
-			${overrides.payloadJson ?? '{"eventType":"envelope.completed"}'},
-			${overrides.status ?? 'pending'}, ${overrides.attempts ?? 0},
-			${overrides.availableAt ?? AVAILABLE_AT}::timestamptz,
-			${overrides.claimToken ?? null},
-			${overrides.lockedAt === undefined || overrides.lockedAt === null ? null : overrides.lockedAt}::timestamptz,
-			NULL, ${AVAILABLE_AT}::timestamptz, ${overrides.retryable ?? true}
-		)`;
+		INSERT INTO webhook_outbox (endpoint_id, audit_event_id, envelope_id, event_type, payload_json, status, attempts, available_at, claim_token, locked_at, last_error, updated_at, retryable) VALUES (${ENDPOINT_ID}, ${auditEventId}, ${ENVELOPE_ID}, 'envelope.completed', ${overrides.payloadJson ?? '{"eventType":"envelope.completed"}'}, ${overrides.status ?? 'pending'}, ${overrides.attempts ?? 0}, ${overrides.availableAt ?? AVAILABLE_AT}::timestamptz, ${overrides.claimToken ?? null}, ${overrides.lockedAt === undefined || overrides.lockedAt === null ? null : overrides.lockedAt}::timestamptz, NULL, ${AVAILABLE_AT}::timestamptz, ${overrides.retryable ?? true})`;
 }
 
 async function outboxState(
@@ -416,8 +379,7 @@ async function outboxState(
 ): Promise<{ status: string; attempts: number; retryable: boolean }> {
 	const rows: { status: string; attempts: number; retryable: boolean }[] = await database()`
 		SELECT status, attempts, retryable FROM webhook_outbox
-		WHERE organization_id = ${ORGANIZATION_ID}
-			AND endpoint_id = ${ENDPOINT_ID}
+		WHERE endpoint_id = ${ENDPOINT_ID}
 			AND audit_event_id = ${auditEventId}`;
 	const row = rows[0];
 	if (row === undefined) throw new Error(`missing webhook outbox row ${auditEventId}`);
@@ -427,8 +389,7 @@ async function outboxState(
 async function outboxClaimToken(auditEventId: string): Promise<string | null> {
 	const rows: { claimToken: string | null }[] = await database()`
 		SELECT claim_token AS "claimToken" FROM webhook_outbox
-		WHERE organization_id = ${ORGANIZATION_ID}
-			AND endpoint_id = ${ENDPOINT_ID}
+		WHERE endpoint_id = ${ENDPOINT_ID}
 			AND audit_event_id = ${auditEventId}`;
 	const row = rows[0];
 	if (row === undefined) throw new Error(`missing webhook outbox row ${auditEventId}`);
@@ -438,8 +399,7 @@ async function outboxClaimToken(auditEventId: string): Promise<string | null> {
 async function deliveryLogCount(auditEventId: string): Promise<number> {
 	const [{ n }]: { n: string }[] = await database()`
 		SELECT COUNT(*)::text AS n FROM webhook_delivery_log
-		WHERE organization_id = ${ORGANIZATION_ID}
-			AND endpoint_id = ${ENDPOINT_ID}
+		WHERE endpoint_id = ${ENDPOINT_ID}
 			AND audit_event_id = ${auditEventId}`;
 	return Number(n);
 }
@@ -464,7 +424,6 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 	): CreateWebhookEndpointCommand {
 		return {
 			id: CREATE_ID_A,
-			organizationId: ORGANIZATION_ID,
 			actorId: ACTOR_ID,
 			idempotencyKey: 'idemp-create-001',
 			requestFingerprint: REQUEST_HASH,
@@ -484,7 +443,6 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 		overrides: Partial<RevokeWebhookEndpointCommand> = {}
 	): RevokeWebhookEndpointCommand {
 		return {
-			organizationId: ORGANIZATION_ID,
 			webhookId: REVOKE_ID_A,
 			actorId: ACTOR_ID,
 			idempotencyKey: 'idemp-revoke-001',
@@ -497,12 +455,11 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 	async function seedActiveEndpoints(count: number): Promise<void> {
 		await endpointDatabase()`
 			INSERT INTO webhook_endpoint (
-				id, organization_id, url, description, status, events_json, secret_hash,
+				id, url, description, status, events_json, secret_hash,
 				signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
 			)
 			SELECT
 				'01900000-0000-7000-8000-' || lpad(i::text, 12, '0'),
-				${ORGANIZATION_ID},
 				'https://hooks.example.com/t' || i::text,
 				NULL,
 				'active',
@@ -518,21 +475,13 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 
 	async function insertActiveEndpoint(id: string): Promise<void> {
 		await endpointDatabase()`
-			INSERT INTO webhook_endpoint (
-				id, organization_id, url, description, status, events_json, secret_hash,
-				signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
-			) VALUES (
-				${id}, ${ORGANIZATION_ID}, ${'https://hooks.example.com/' + id}, NULL, 'active',
-				'["envelope.completed"]', ${'a'.repeat(64)},
-				${'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG'}, NULL, 'skwh1_abcd',
-				${AVAILABLE_AT}::timestamptz, ${ACTOR_ID}
-			)`;
+			INSERT INTO webhook_endpoint (id, url, description, status, events_json, secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id) VALUES (${id}, ${'https://hooks.example.com/' + id}, NULL, 'active', '["envelope.completed"]', ${'a'.repeat(64)}, ${'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG'}, NULL, 'skwh1_abcd', ${AVAILABLE_AT}::timestamptz, ${ACTOR_ID})`;
 	}
 
 	async function activeCount(): Promise<number> {
 		const rows: { n: string }[] = await endpointDatabase()`
 			SELECT COUNT(*)::text AS n FROM webhook_endpoint
-			WHERE organization_id = ${ORGANIZATION_ID} AND status = 'active'`;
+			WHERE status = 'active'`;
 		return Number(rows[0]?.n ?? '0');
 	}
 
@@ -554,8 +503,8 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 		await endpointSql.unsafe(`SET TIME ZONE 'UTC'`);
 		for (const path of MIGRATION_PATHS) await endpointSql.unsafe(readFileSync(path, 'utf8'));
 		await endpointSql.unsafe(`
-			INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			VALUES ('${ORGANIZATION_ID}', '${ORGANIZATION_ID}', 'Workspace', '${AVAILABLE_AT}');
+			INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '${AVAILABLE_AT}', '${AVAILABLE_AT}');
 		`);
 	});
 
@@ -592,16 +541,16 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 	});
 
 	it('enforces the active endpoint cap when already at capacity', async () => {
-		await seedActiveEndpoints(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION);
+		await seedActiveEndpoints(WEBHOOK_MAX_ENDPOINTS);
 		const store = new PostgresWebhookStore(endpointDatabase());
 		await expect(store.createEndpoint(createCommand())).resolves.toEqual({
 			outcome: 'limit_exceeded'
 		});
-		expect(await activeCount()).toBe(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION);
+		expect(await activeCount()).toBe(WEBHOOK_MAX_ENDPOINTS);
 	});
 
 	it('lets exactly one of two synchronized creates succeed from 19 active endpoints', async () => {
-		await seedActiveEndpoints(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION - 1);
+		await seedActiveEndpoints(WEBHOOK_MAX_ENDPOINTS - 1);
 		expect(await activeCount()).toBe(19);
 
 		const concurrentSql = openConcurrentSql();
@@ -615,7 +564,7 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 				storeB.createEndpoint(createCommand({ id: CREATE_ID_B, idempotencyKey: 'idemp-race-b' }))
 			]);
 			expect([first.outcome, second.outcome].sort()).toEqual(['created', 'limit_exceeded']);
-			expect(await activeCount()).toBe(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION);
+			expect(await activeCount()).toBe(WEBHOOK_MAX_ENDPOINTS);
 		} finally {
 			await concurrentSql.end({ timeout: 5 });
 		}
@@ -640,7 +589,7 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 				expect(replayed.endpoint).toEqual(created.endpoint);
 			}
 			const rows: { id: string }[] = await endpointDatabase()`
-				SELECT id FROM webhook_endpoint WHERE organization_id = ${ORGANIZATION_ID}`;
+				SELECT id FROM webhook_endpoint`;
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.id).toBe(command.id);
 		} finally {
@@ -661,7 +610,7 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 			]);
 			expect([first.outcome, second.outcome].sort()).toEqual(['conflict', 'created']);
 			const rows: { id: string }[] = await endpointDatabase()`
-				SELECT id FROM webhook_endpoint WHERE organization_id = ${ORGANIZATION_ID}`;
+				SELECT id FROM webhook_endpoint`;
 			expect(rows).toHaveLength(1);
 		} finally {
 			await concurrentSql.end({ timeout: 5 });
@@ -685,7 +634,7 @@ postgresDescribe('PostgresWebhookStore endpoint create and revoke', () => {
 			expect(await activeCount()).toBe(0);
 			const commandRows: { n: string }[] = await endpointDatabase()`
 				SELECT COUNT(*)::text AS n FROM webhook_endpoint_command
-				WHERE organization_id = ${ORGANIZATION_ID} AND idempotency_key = ${command.idempotencyKey}`;
+				WHERE idempotency_key = ${command.idempotencyKey}`;
 			expect(Number(commandRows[0]?.n)).toBe(1);
 		} finally {
 			await concurrentSql.end({ timeout: 5 });

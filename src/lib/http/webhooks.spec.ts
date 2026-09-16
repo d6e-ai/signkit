@@ -8,15 +8,13 @@ import type {
 import type { WebhookEndpointMetadata } from '$lib/ports/webhook-store';
 import { WebhookHostNotAllowedError } from '$lib/security/webhook-allowed-hosts';
 import { createWebhookHttpHandlers, type WebhookApplicationResolver } from './webhooks';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
 
-const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const webhookId: string = '01900000-0000-7000-8000-000000000401';
 
 const endpoint: WebhookEndpointMetadata = {
 	id: webhookId,
-	organizationId,
 	url: 'https://hooks.example.com/signkit',
 	description: 'Completions',
 	status: 'active',
@@ -28,8 +26,8 @@ const endpoint: WebhookEndpointMetadata = {
 	revokedByUserId: null
 };
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function event(input: {
@@ -101,8 +99,6 @@ describe('webhook HTTP handlers', () => {
 							apiKeyId: webhookId,
 							keyPrefix: 'signkit_abcdefgh',
 							ownerUserId: 'user-1',
-							organizationId,
-							organizationName: 'Workspace',
 							scopes: ['envelopes:read'],
 							expiresAt: '2026-12-11T00:00:00.000Z'
 						}
@@ -122,22 +118,20 @@ describe('webhook HTTP handlers', () => {
 		expect(resolver).not.toHaveBeenCalled();
 	});
 
-	it('forbids organization members from managing webhooks', async () => {
+	it('forbids instance members from managing webhooks', async () => {
 		const resolver: WebhookApplicationResolver = vi.fn(() => null);
-		const authorized = organizationScopedLocals('authorized', organizationId);
+		const authorized = instanceScopedLocals('active');
+		if (authorized.instanceMembership === null) throw new Error('expected an active membership');
 		const memberLocals: App.Locals = {
 			...authorized,
-			memberships: authorized.memberships.map((membership) => ({
-				...membership,
-				role: 'member'
-			}))
+			instanceMembership: { ...authorized.instanceMembership, role: 'member' }
 		};
 		const response = await createWebhookHttpHandlers(resolver).list(
 			event({ locals: memberLocals })
 		);
 		await expectProblemResponse(response, {
 			status: 403,
-			type: 'urn:signkit:problem:webhook-forbidden'
+			type: 'urn:signkit:problem:instance-admin-required'
 		});
 		expect(resolver).not.toHaveBeenCalled();
 	});
@@ -159,7 +153,7 @@ describe('webhook HTTP handlers', () => {
 		expect(body.webhook.id).toBe(webhookId);
 		expect(body.secret.startsWith('skwh1_')).toBe(true);
 		expect(app.createEndpoint).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId } satisfies WebhookRequestActor,
+			{ id: 'user-1' } satisfies WebhookRequestActor,
 			expect.objectContaining({
 				idempotencyKey: 'wh-1',
 				url: 'https://hooks.example.com/signkit'
@@ -176,7 +170,7 @@ describe('webhook HTTP handlers', () => {
 		expect(JSON.parse(serialized)).toEqual({ items: [endpoint], nextCursor: null });
 	});
 
-	it('returns 404 for an unknown webhook in the authorized organization', async () => {
+	it('returns 404 for an unknown webhook', async () => {
 		const app = application();
 		(app.getEndpoint as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null);
 		const response = await createWebhookHttpHandlers(() => app).get(

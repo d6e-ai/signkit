@@ -8,17 +8,18 @@ export interface AuthorizedIdentityActor {
 }
 
 /**
- * Owner-scoped identity authorization for endpoints that never accept or
- * require an organization. The verified d6e-auth principal is the only
- * identity this slice needs; `no_active_organization` is authorized here
- * because durable active-instance-member authorization is enforced by the
- * store, not by organization membership. Anonymous callers are rejected.
+ * Identity authorization for endpoints that never require an active local
+ * membership: bootstrap, self profile, API key management, invitations, and
+ * member administration (whose durable store enforces the caller's membership
+ * itself). The verified d6e-auth principal is the only identity this slice
+ * needs; `no_membership` is authorized here so a verified identity with no
+ * membership can still bootstrap the instance or read its own profile.
+ * Anonymous callers are rejected.
  *
- * Authorization is gated on an explicit allow-list of the two intended
- * authenticated states (`authorized`, `no_active_organization`) rather than
- * inferred from `principal !== null`. `unavailable` must fail closed even if
- * a principal happens to be present, since a non-null principal there would
- * otherwise reflect resolution having partially succeeded before failing.
+ * Authorization is gated on an explicit allow-list of the intended
+ * authenticated states (`active`, `no_membership`) rather than inferred from
+ * `principal !== null`. `suspended` and `unavailable` fail closed even if a
+ * principal happens to be present.
  */
 export function authorizeIdentityRequest(
 	locals: App.Locals,
@@ -31,7 +32,7 @@ export function authorizeIdentityRequest(
 	// `rejected_surface` for exactly these endpoints and suppresses the cookie with
 	// it. Refusing again here keeps the guarantee local to the handler, so it holds
 	// even if the surface lists change -- an API key must never be able to mint
-	// another key, grant itself an organization, or administer instance members.
+	// another key or administer instance members.
 	if (locals.apiKeyAuthentication.state !== 'absent') {
 		return problemResponse({
 			type: 'urn:signkit:problem:api-key-not-permitted',
@@ -51,7 +52,7 @@ export function authorizeIdentityRequest(
 		});
 	}
 	if (
-		(locals.identityState === 'authorized' || locals.identityState === 'no_active_organization') &&
+		(locals.identityState === 'active' || locals.identityState === 'no_membership') &&
 		locals.principal !== null
 	) {
 		return {

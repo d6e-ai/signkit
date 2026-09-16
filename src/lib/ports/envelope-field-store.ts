@@ -8,7 +8,6 @@ import type {
 } from '$lib/domain/envelope';
 
 export interface FieldCommandKey {
-	organizationId: string;
 	envelopeId: string;
 	actorType: 'user' | 'agent' | 'system';
 	actorId: string;

@@ -8,7 +8,7 @@ import type {
 } from '$lib/ports/webhook-store';
 import {
 	WEBHOOK_MAX_ATTEMPTS,
-	WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION,
+	WEBHOOK_MAX_ENDPOINTS,
 	WEBHOOK_MAX_PAYLOAD_BYTES
 } from '$lib/security/webhook';
 import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
@@ -20,7 +20,6 @@ import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 import { D1WebhookStore } from './d1-webhook-store';
 import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
 
-const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
 const ENDPOINT_ID: string = '01900000-0000-7000-8000-000000000401';
 const ACTOR_ID: string = 'user-1';
@@ -53,26 +52,13 @@ async function createFixture(): Promise<Fixture> {
 	applyD1Migrations(sqlite);
 	const sealer: AesGcmWebhookSigningSecretSealer = new AesGcmWebhookSigningSecretSealer(TEST_KEY);
 	const sealed = await sealer.seal(PLAINTEXT_SECRET, {
-		organizationId: ORGANIZATION_ID,
 		endpointId: ENDPOINT_ID
 	});
 	sqlite.exec(`
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('${ORGANIZATION_ID}', '${ORGANIZATION_ID}', 'Workspace', '${AVAILABLE_AT}');
-		INSERT INTO envelope (
-			id, organization_id, title, status, repository_generation, created_at, updated_at
-		) VALUES (
-			'${ENVELOPE_ID}', '${ORGANIZATION_ID}', 'Agreement', 'completed', 1,
-			'${AVAILABLE_AT}', '${AVAILABLE_AT}'
-		);
-		INSERT INTO webhook_endpoint (
-			id, organization_id, url, description, status, events_json, secret_hash,
-			signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
-		) VALUES (
-			'${ENDPOINT_ID}', '${ORGANIZATION_ID}', 'https://hooks.example.com/signkit', NULL, 'active',
-			'["envelope.voided"]', '${'a'.repeat(64)}', '${sealed.sealedSigningSecret}',
-			'${sealed.sealingKeyId}', 'skwh1_abcdefgh', '${AVAILABLE_AT}', '${ACTOR_ID}'
-		);
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '${AVAILABLE_AT}', '${AVAILABLE_AT}');
+		INSERT INTO envelope (id, created_by_user_id, title, status, repository_generation, created_at, updated_at) VALUES ('${ENVELOPE_ID}', 'user-1', 'Agreement', 'completed', 1, '${AVAILABLE_AT}', '${AVAILABLE_AT}');
+		INSERT INTO webhook_endpoint (id, url, description, status, events_json, secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id) VALUES ('${ENDPOINT_ID}', 'https://hooks.example.com/signkit', NULL, 'active', '["envelope.voided"]', '${'a'.repeat(64)}', '${sealed.sealedSigningSecret}', '${sealed.sealingKeyId}', 'skwh1_abcdefgh', '${AVAILABLE_AT}', '${ACTOR_ID}');
 	`);
 	const database: D1Database = sqliteD1Database(sqlite);
 	return { database, sqlite, store: new D1WebhookStore(database), sealer };
@@ -80,16 +66,8 @@ async function createFixture(): Promise<Fixture> {
 
 function insertAuditEvent(sqlite: DatabaseSync, auditEventId: string): void {
 	sqlite.exec(`
-		INSERT INTO audit_event (
-			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
-			payload_json, previous_hash, event_hash, occurred_at
-		) VALUES (
-			'${auditEventId}', '${ORGANIZATION_ID}', '${ENVELOPE_ID}',
-			(SELECT COALESCE(MAX(sequence), 0) + 1 FROM audit_event
-				WHERE organization_id = '${ORGANIZATION_ID}' AND envelope_id = '${ENVELOPE_ID}'),
-			'envelope.completed', 'system', 'system', '{}', '${'0'.repeat(64)}', '${'e'.repeat(64)}',
-			'${AVAILABLE_AT}'
-		);
+		INSERT INTO audit_event (id, envelope_id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash, event_hash, occurred_at) VALUES ('${auditEventId}', '${ENVELOPE_ID}', (SELECT COALESCE(MAX(sequence), 0) + 1 FROM audit_event
+				WHERE envelope_id = '${ENVELOPE_ID}'), 'envelope.completed', 'system', 'system', '{}', '${'0'.repeat(64)}', '${'e'.repeat(64)}', '${AVAILABLE_AT}');
 	`);
 }
 
@@ -116,13 +94,9 @@ function insertOutbox(
 	const payloadJson: string = overrides.payloadJson ?? '{"eventType":"envelope.completed"}';
 	sqlite
 		.prepare(
-			`INSERT INTO webhook_outbox (
-				organization_id, endpoint_id, audit_event_id, envelope_id, event_type, payload_json,
-				status, attempts, available_at, claim_token, locked_at, last_error, updated_at, retryable
-			) VALUES (?, ?, ?, ?, 'envelope.completed', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+			`INSERT INTO webhook_outbox (endpoint_id, audit_event_id, envelope_id, event_type, payload_json, status, attempts, available_at, claim_token, locked_at, last_error, updated_at, retryable) VALUES (?, ?, ?, 'envelope.completed', ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
 		)
 		.run(
-			ORGANIZATION_ID,
 			ENDPOINT_ID,
 			auditEventId,
 			ENVELOPE_ID,
@@ -144,9 +118,9 @@ function outboxState(
 	return sqlite
 		.prepare(
 			`SELECT status, attempts, retryable FROM webhook_outbox
-			 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?`
+			 WHERE endpoint_id = ? AND audit_event_id = ?`
 		)
-		.get(ORGANIZATION_ID, ENDPOINT_ID, auditEventId) as {
+		.get(ENDPOINT_ID, auditEventId) as {
 		status: string;
 		attempts: number;
 		retryable: number;
@@ -160,10 +134,10 @@ function deliveryLogRows(
 	return sqlite
 		.prepare(
 			`SELECT status, attempt, http_status, error_code FROM webhook_delivery_log
-			 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+			 WHERE endpoint_id = ? AND audit_event_id = ?
 			 ORDER BY occurred_at ASC`
 		)
-		.all(ORGANIZATION_ID, ENDPOINT_ID, auditEventId) as {
+		.all(ENDPOINT_ID, auditEventId) as {
 		status: string;
 		attempt: number;
 		http_status: number | null;
@@ -270,9 +244,9 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 			const log = sqlite
 				.prepare(
 					`SELECT status, error_code FROM webhook_delivery_log
-					 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?`
+					 WHERE endpoint_id = ? AND audit_event_id = ?`
 				)
-				.get(ORGANIZATION_ID, ENDPOINT_ID, testCase.auditEventId) as {
+				.get(ENDPOINT_ID, testCase.auditEventId) as {
 				status: string;
 				error_code: string;
 			};
@@ -290,7 +264,6 @@ describe('D1WebhookStore webhook retry terminalization', () => {
 			lockedAt: CLAIMED_AT
 		});
 		const command: FailWebhookDeliveryCommand = {
-			organizationId: ORGANIZATION_ID,
 			endpointId: ENDPOINT_ID,
 			auditEventId,
 			claimToken: 'claim-old',
@@ -365,7 +338,6 @@ describe('D1WebhookStore.failDelivery', () => {
 		overrides: Partial<FailWebhookDeliveryCommand> = {}
 	): FailWebhookDeliveryCommand {
 		return {
-			organizationId: ORGANIZATION_ID,
 			endpointId: ENDPOINT_ID,
 			auditEventId,
 			claimToken: 'claim-current',
@@ -486,7 +458,6 @@ describe('D1WebhookStore.completeDelivery', () => {
 		overrides: Partial<CompleteWebhookDeliveryCommand> = {}
 	): CompleteWebhookDeliveryCommand {
 		return {
-			organizationId: ORGANIZATION_ID,
 			endpointId: ENDPOINT_ID,
 			auditEventId,
 			claimToken: 'claim-current',
@@ -598,7 +569,6 @@ describe('D1WebhookStore.createEndpoint', () => {
 	): CreateWebhookEndpointCommand {
 		return {
 			id: '01900000-0000-7000-8000-000000000701',
-			organizationId: ORGANIZATION_ID,
 			actorId: ACTOR_ID,
 			idempotencyKey: 'idemp-create-001',
 			requestFingerprint: 'f'.repeat(64),
@@ -622,7 +592,6 @@ describe('D1WebhookStore.createEndpoint', () => {
 			outcome: 'created',
 			endpoint: {
 				id: command.id,
-				organizationId: ORGANIZATION_ID,
 				url: command.url,
 				description: command.description,
 				status: 'active'
@@ -643,9 +612,9 @@ describe('D1WebhookStore.createEndpoint', () => {
 
 		const commandRow = sqlite
 			.prepare(
-				'SELECT command_type, request_hash FROM webhook_endpoint_command WHERE organization_id = ? AND actor_id = ? AND idempotency_key = ?'
+				'SELECT command_type, request_hash FROM webhook_endpoint_command WHERE actor_id = ? AND idempotency_key = ?'
 			)
-			.get(ORGANIZATION_ID, command.actorId, command.idempotencyKey) as {
+			.get(command.actorId, command.idempotencyKey) as {
 			command_type: string;
 			request_hash: string;
 		};
@@ -681,18 +650,14 @@ describe('D1WebhookStore.createEndpoint', () => {
 	it('enforces active endpoint limit when already at capacity', async () => {
 		const { store, sqlite } = await createFixture();
 		// Fixture already inserted 1 active endpoint (ENDPOINT_ID). Insert 19 more to reach 20.
-		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION; i++) {
+		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS; i++) {
 			const hex = i.toString(16).padStart(4, '0');
 			const id = `01900000-0000-7000-8000-00000000${hex}`;
 			sqlite
 				.prepare(
-					`INSERT INTO webhook_endpoint (
-						id, organization_id, url, description, status, events_json,
-						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
-					) VALUES (?, ?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]',
-						?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
+					`INSERT INTO webhook_endpoint (id, url, description, status, events_json, secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id) VALUES (?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]', ?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
 				)
-				.run(id, ORGANIZATION_ID, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
+				.run(id, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
 		}
 
 		const result = await store.createEndpoint(
@@ -707,18 +672,14 @@ describe('D1WebhookStore.createEndpoint', () => {
 	it('classifies database trigger abort as limit_exceeded with PostgreSQL parity', async () => {
 		const { store, sqlite } = await createFixture();
 		// Insert up to 20 endpoints
-		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION; i++) {
+		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS; i++) {
 			const hex = i.toString(16).padStart(4, '0');
 			const id = `01900000-0000-7000-8000-00000000${hex}`;
 			sqlite
 				.prepare(
-					`INSERT INTO webhook_endpoint (
-						id, organization_id, url, description, status, events_json,
-						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
-					) VALUES (?, ?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]',
-						?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
+					`INSERT INTO webhook_endpoint (id, url, description, status, events_json, secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id) VALUES (?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]', ?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
 				)
-				.run(id, ORGANIZATION_ID, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
+				.run(id, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
 		}
 
 		// When creating endpoint 21, the database trigger webhook_endpoint_active_cap_guard fires
@@ -735,26 +696,20 @@ describe('D1WebhookStore.createEndpoint', () => {
 	it('resolves concurrent creation race atomically without exceeding cap', async () => {
 		const { store, sqlite } = await createFixture();
 		// Fixture has 1 active endpoint. Insert 18 more so there are 19 active (1 below cap).
-		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION - 1; i++) {
+		for (let i = 1; i < WEBHOOK_MAX_ENDPOINTS - 1; i++) {
 			const hex = i.toString(16).padStart(4, '0');
 			const id = `01900000-0000-7000-8000-00000000${hex}`;
 			sqlite
 				.prepare(
-					`INSERT INTO webhook_endpoint (
-						id, organization_id, url, description, status, events_json,
-						secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
-					) VALUES (?, ?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]',
-						?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
+					`INSERT INTO webhook_endpoint (id, url, description, status, events_json, secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id) VALUES (?, 'https://hooks.example.com/test', NULL, 'active', '["envelope.completed"]', ?, 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG', NULL, 'skwh1_abcd', ?, ?)`
 				)
-				.run(id, ORGANIZATION_ID, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
+				.run(id, 'a'.repeat(64), AVAILABLE_AT, ACTOR_ID);
 		}
 
 		// Exactly 1 spot remaining before reaching cap of 20
 		const countBefore = sqlite
-			.prepare(
-				'SELECT COUNT(*) AS n FROM webhook_endpoint WHERE organization_id = ? AND status = ?'
-			)
-			.get(ORGANIZATION_ID, 'active') as { n: number };
+			.prepare('SELECT COUNT(*) AS n FROM webhook_endpoint WHERE status = ?')
+			.get('active') as { n: number };
 		expect(countBefore.n).toBe(19);
 
 		// Two concurrent requests to create endpoint 20
@@ -776,10 +731,8 @@ describe('D1WebhookStore.createEndpoint', () => {
 
 		// Final active endpoint count must be exactly 20, never 21
 		const countAfter = sqlite
-			.prepare(
-				'SELECT COUNT(*) AS n FROM webhook_endpoint WHERE organization_id = ? AND status = ?'
-			)
-			.get(ORGANIZATION_ID, 'active') as { n: number };
+			.prepare('SELECT COUNT(*) AS n FROM webhook_endpoint WHERE status = ?')
+			.get('active') as { n: number };
 		expect(countAfter.n).toBe(20);
 	});
 });

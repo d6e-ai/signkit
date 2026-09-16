@@ -8,15 +8,14 @@ import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
 import { CLOUDFLARE_DOCX_IMPORT_LIMITS } from '$lib/adapters/documents/docx-import';
 import { DocxImportService } from '$lib/application/documents/docx-import-service';
 import { createDocxImportHandler } from './docx-import';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
 
-const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
 const pathname = `/api/v1/envelopes/${envelopeId}/draft/docx`;
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function committed(): CommitDraftResult {
@@ -107,7 +106,6 @@ describe('DOCX import HTTP handler', () => {
 		expect(input?.edits[0]?.path).toBe('documents/agreement.md');
 		expect(input?.edits[0]?.content).toContain('# Agreement');
 		expect(JSON.stringify(input?.edits)).not.toContain('PK');
-		expect(input?.organizationId).toBe(organizationId);
 	});
 
 	it('never forwards raw DOCX bytes into the draft commit', async () => {
@@ -116,7 +114,6 @@ describe('DOCX import HTTP handler', () => {
 		);
 		const service = new DocxImportService({ commit });
 		const result = await service.importAndCommit({
-			organizationId,
 			envelopeId,
 			targetPath: 'documents/agreement.md',
 			expectedGeneration: 0,

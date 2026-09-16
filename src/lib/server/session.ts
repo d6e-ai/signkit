@@ -10,7 +10,6 @@ export interface Session {
 }
 
 export const SESSION_COOKIE = 'signkit_session';
-export const ORGANIZATION_COOKIE = 'signkit_organization';
 export const SESSION_COOKIE_OPTIONS = {
 	path: '/',
 	httpOnly: true,

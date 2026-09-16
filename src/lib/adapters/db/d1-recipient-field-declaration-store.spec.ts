@@ -38,12 +38,12 @@ describe('D1RecipientFieldDeclarationStore', () => {
 		}));
 		const prepare = vi.fn((sql: string) => ({
 			bind: (...bindings: unknown[]) => {
-				expect(bindings[0]).toBe('org-1');
+				expect(bindings[0]).toBe('env-1');
 				return { first, all, sql };
 			}
 		}));
 		const store = new D1RecipientFieldDeclarationStore({ prepare } as unknown as D1Database);
-		await expect(store.listOwnFields('org-1', 'env-1', 'recipient-1')).resolves.toEqual({
+		await expect(store.listOwnFields('env-1', 'recipient-1')).resolves.toEqual({
 			fieldGeneration: 3,
 			fields: [
 				{
@@ -82,6 +82,6 @@ describe('D1RecipientFieldDeclarationStore', () => {
 			})
 		}));
 		const store = new D1RecipientFieldDeclarationStore({ prepare } as unknown as D1Database);
-		await expect(store.listOwnFields('org-1', 'env-1', 'recipient-1')).resolves.toBeNull();
+		await expect(store.listOwnFields('env-1', 'recipient-1')).resolves.toBeNull();
 	});
 });

@@ -12,7 +12,7 @@ A Time Travel restore is a **whole-database, in-place rollback**: it replaces th
 
 ## Before you restore
 
-1. **Confirm you actually need a whole-database rollback.** SignKit's D1 tables are all scoped by `organization_id`, and every mutating command is designed to fail closed rather than silently corrupt data. Before reaching for Time Travel, rule out:
+1. **Confirm you actually need a whole-instance rollback.** One D1 database is one SignKit instance, and every mutating command is designed to fail closed rather than silently corrupt data. Before reaching for Time Travel, rule out:
    - A single bad write that a targeted, hand-written `UPDATE`/`DELETE` against the current database can correct without discarding every other write since the incident.
    - An application bug that has since been fixed and only needs its bad rows cleaned up, not a time rollback.
 2. **Capture the current bookmark first, even if you intend to restore.** This gives you a way back if the restore target turns out to be wrong:

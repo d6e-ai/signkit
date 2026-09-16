@@ -9,10 +9,7 @@ import type {
 	RevokeWebhookEndpointResult,
 	WebhookEndpointMetadata
 } from '$lib/ports/webhook-store';
-import {
-	WEBHOOK_MAX_ATTEMPTS,
-	WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION
-} from '$lib/security/webhook';
+import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_ENDPOINTS } from '$lib/security/webhook';
 import { PostgresWebhookStore } from './postgres-webhook-store';
 
 interface RecordedQuery {
@@ -96,7 +93,6 @@ const claimCommand: ClaimWebhookDeliveriesCommand = {
 };
 
 const failCommand: FailWebhookDeliveryCommand = {
-	organizationId: 'org-1',
 	endpointId: '01900000-0000-7000-8000-000000000401',
 	auditEventId: '01900000-0000-7000-8000-000000000501',
 	claimToken: 'claim-token-0001',
@@ -144,7 +140,6 @@ describe('PostgresWebhookStore.failDelivery', () => {
 			failCommand.errorCode,
 			failCommand.failedAt,
 			true,
-			failCommand.organizationId,
 			failCommand.endpointId,
 			failCommand.auditEventId,
 			failCommand.claimToken
@@ -171,7 +166,6 @@ describe('PostgresWebhookStore.failDelivery', () => {
 	});
 });
 
-const ORGANIZATION_ID: string = 'org-1';
 const ACTOR_ID: string = 'user-1';
 const ENDPOINT_ID: string = '01900000-0000-7000-8000-000000000701';
 const CREATED_AT: string = '2026-09-13T00:00:00.000Z';
@@ -183,7 +177,6 @@ function createCommand(
 ): CreateWebhookEndpointCommand {
 	return {
 		id: ENDPOINT_ID,
-		organizationId: ORGANIZATION_ID,
 		actorId: ACTOR_ID,
 		idempotencyKey: 'idemp-create-001',
 		requestFingerprint: REQUEST_HASH,
@@ -203,7 +196,6 @@ function revokeCommand(
 	overrides: Partial<RevokeWebhookEndpointCommand> = {}
 ): RevokeWebhookEndpointCommand {
 	return {
-		organizationId: ORGANIZATION_ID,
 		webhookId: ENDPOINT_ID,
 		actorId: ACTOR_ID,
 		idempotencyKey: 'idemp-revoke-001',
@@ -216,7 +208,6 @@ function revokeCommand(
 function endpointRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		id: ENDPOINT_ID,
-		organizationId: ORGANIZATION_ID,
 		url: 'https://hooks.example.com/target',
 		description: 'Webhook Endpoint',
 		status: 'active',
@@ -232,7 +223,6 @@ function endpointRow(overrides: Record<string, unknown> = {}): Record<string, un
 
 const EXPECTED_ENDPOINT: WebhookEndpointMetadata = {
 	id: ENDPOINT_ID,
-	organizationId: ORGANIZATION_ID,
 	url: 'https://hooks.example.com/target',
 	description: 'Webhook Endpoint',
 	status: 'active',
@@ -245,10 +235,10 @@ const EXPECTED_ENDPOINT: WebhookEndpointMetadata = {
 };
 
 describe('PostgresWebhookStore.createEndpoint', () => {
-	it('locks the organization row before counting and inserts with ON CONFLICT absorption', async () => {
+	it('checks count and inserts with ON CONFLICT absorption', async () => {
 		const command: CreateWebhookEndpointCommand = createCommand();
 		const scripted = new ScriptedPostgres([
-			[{ id: ORGANIZATION_ID }],
+			[],
 			[],
 			[{ n: '0' }],
 			[{ id: command.id }],
@@ -262,7 +252,7 @@ describe('PostgresWebhookStore.createEndpoint', () => {
 		expect(result).toEqual({ outcome: 'created', endpoint: EXPECTED_ENDPOINT });
 		expect(scripted.beginCalls).toBe(1);
 		expect(scripted.rollbacks).toBe(0);
-		expect(scripted.texts()[0]).toContain('FROM organization WHERE id = ? FOR NO KEY UPDATE');
+		expect(scripted.texts()[0]).toContain('pg_advisory_xact_lock');
 		expect(scripted.texts()[1]).toContain('FROM webhook_endpoint_command');
 		expect(scripted.texts()[1]).toContain('FOR UPDATE');
 		expect(scripted.texts()[2]).toContain("status = 'active'");
@@ -275,7 +265,7 @@ describe('PostgresWebhookStore.createEndpoint', () => {
 	it('classifies a concurrent command-row collision as replay when the fingerprint matches', async () => {
 		const command: CreateWebhookEndpointCommand = createCommand();
 		const scripted = new ScriptedPostgres([
-			[{ id: ORGANIZATION_ID }],
+			[],
 			[],
 			[{ n: '0' }],
 			[{ id: command.id }],
@@ -295,7 +285,7 @@ describe('PostgresWebhookStore.createEndpoint', () => {
 	it('classifies a concurrent command-row collision as conflict when the fingerprint differs', async () => {
 		const command: CreateWebhookEndpointCommand = createCommand();
 		const scripted = new ScriptedPostgres([
-			[{ id: ORGANIZATION_ID }],
+			[],
 			[],
 			[{ n: '0' }],
 			[{ id: command.id }],
@@ -310,19 +300,16 @@ describe('PostgresWebhookStore.createEndpoint', () => {
 		expect(scripted.rollbacks).toBe(1);
 	});
 
-	it('rejects creation when the active count is already at the organization cap', async () => {
-		const scripted = new ScriptedPostgres([
-			[{ id: ORGANIZATION_ID }],
-			[],
-			[{ n: String(WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION) }]
-		]);
+	it('rejects creation when the active count is already at the cap', async () => {
+		const scripted = new ScriptedPostgres([[], [], [{ n: String(WEBHOOK_MAX_ENDPOINTS) }]]);
 		const result: CreateWebhookEndpointResult = await new PostgresWebhookStore(
 			scripted.client()
 		).createEndpoint(createCommand());
 
 		expect(result).toEqual({ outcome: 'limit_exceeded' });
 		expect(scripted.rollbacks).toBe(1);
-		expect(scripted.texts()[0]).toContain('FOR NO KEY UPDATE');
+		expect(scripted.texts()[0]).toContain('pg_advisory_xact_lock');
+		expect(scripted.texts()[1]).toContain('FROM webhook_endpoint_command');
 		expect(scripted.texts()[2]).toContain('COUNT(*)');
 	});
 });

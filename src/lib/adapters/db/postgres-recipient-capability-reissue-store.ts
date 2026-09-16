@@ -39,7 +39,6 @@ interface AuditHeadRow {
 }
 
 interface CommandRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	actorType: string;
@@ -64,12 +63,7 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 		const replay: ReissuePreparation | null = await this.#resolveCommand(this.#sql, key);
 		if (replay !== null) return replay;
 
-		const envelope: EnvelopeRow | null = await this.#readEnvelope(
-			this.#sql,
-			key.organizationId,
-			key.envelopeId,
-			false
-		);
+		const envelope: EnvelopeRow | null = await this.#readEnvelope(this.#sql, key.envelopeId, false);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (
 			envelope.status === 'voided' ||
@@ -84,7 +78,6 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 
 		const recipient: RecipientRow | null = await this.#readRecipient(
 			this.#sql,
-			key.organizationId,
 			key.envelopeId,
 			key.recipientId,
 			false
@@ -106,7 +99,6 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 
 		const outbox: OutboxRow[] = await this.#readOutbox(
 			this.#sql,
-			key.organizationId,
 			key.envelopeId,
 			key.recipientId,
 			false
@@ -118,11 +110,7 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 			return { outcome: 'not_eligible', reason: 'not_released' };
 		}
 
-		const auditHead: ReissueAuditHead | null = await this.#readAuditHead(
-			this.#sql,
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: ReissueAuditHead | null = await this.#readAuditHead(this.#sql, key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 
 		return {
@@ -140,7 +128,6 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 				// Lock envelope, recipient, and outbox in stable order
 				const envelope: EnvelopeRow | null = await this.#readEnvelope(
 					transaction,
-					command.organizationId,
 					command.envelopeId,
 					true
 				);
@@ -158,7 +145,6 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 
 				const recipient: RecipientRow | null = await this.#readRecipient(
 					transaction,
-					command.organizationId,
 					command.envelopeId,
 					command.recipientId,
 					true
@@ -181,7 +167,6 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 
 				const outbox: OutboxRow[] = await this.#readOutbox(
 					transaction,
-					command.organizationId,
 					command.envelopeId,
 					command.recipientId,
 					true
@@ -198,7 +183,6 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 
 				const auditHead: ReissueAuditHead | null = await this.#readAuditHead(
 					transaction,
-					command.organizationId,
 					command.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
@@ -213,16 +197,15 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 				await transaction`
 					UPDATE recipient_capability_issuance
 					SET superseded_at = ${command.updatedAt}
-					WHERE organization_id = ${command.organizationId}
-						AND recipient_id = ${command.recipientId}
+					WHERE recipient_id = ${command.recipientId}
 						AND capability_hash = ${command.previousCapabilityHash}`;
 
 				// 2. Insert new capability into issuance ledger
 				await transaction`
 					INSERT INTO recipient_capability_issuance (
-						organization_id, envelope_id, recipient_id, capability_hash, predecessor_capability_hash, issued_at
+						envelope_id, recipient_id, capability_hash, predecessor_capability_hash, issued_at
 					) VALUES (
-						${command.organizationId}, ${command.envelopeId}, ${command.recipientId},
+						${command.envelopeId}, ${command.recipientId},
 						${command.newCapabilityHash}, ${command.previousCapabilityHash}, ${command.updatedAt}
 					)`;
 
@@ -233,8 +216,7 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 						capability_expires_at = ${command.reservedCapabilityExpiresAt},
 						capability_revoked_at = NULL,
 						updated_at = ${command.updatedAt}
-					WHERE organization_id = ${command.organizationId}
-						AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 						AND id = ${command.recipientId}
 					RETURNING id`;
 				if (updatedRecipient.length !== 1) throw new ReissuePublicationIntegrityError();
@@ -249,20 +231,19 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 						sealed_capability = NULL,
 						last_error = 'capability_superseded',
 						updated_at = ${command.updatedAt}
-					WHERE organization_id = ${command.organizationId}
-						AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 						AND recipient_id = ${command.recipientId}
 						AND (status = 'pending' OR (status = 'failed' AND retryable = true))`;
 
 				// 5. Insert new outbox row
 				await transaction`
 					INSERT INTO delivery_outbox (
-						id, organization_id, envelope_id, recipient_id, kind, status,
+						id, envelope_id, recipient_id, kind, status,
 						capability_hash, reserved_capability_expires_at, sealed_capability,
 						sealing_key_id, sealed_capability_sha256, available_at, attempts,
 						created_at, updated_at, retryable
 					) VALUES (
-						${command.outboxId}, ${command.organizationId}, ${command.envelopeId}, ${command.recipientId},
+						${command.outboxId}, ${command.envelopeId}, ${command.recipientId},
 						'recipient_invitation', 'pending', ${command.newCapabilityHash},
 						${command.reservedCapabilityExpiresAt}, ${command.sealedCapability},
 						${command.sealingKeyId}, ${command.sealedCapabilitySha256}, ${command.updatedAt}, 0,
@@ -272,14 +253,14 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 				// 6. Insert reissue command record
 				await transaction`
 					INSERT INTO recipient_capability_reissue_command (
-						organization_id, envelope_id, recipient_id, actor_type, actor_id,
+						envelope_id, recipient_id, actor_type, actor_id,
 						idempotency_key, request_hash, previous_capability_hash, new_capability_hash,
 						reserved_capability_expires_at, sealed_capability, sealing_key_id,
 						sealed_capability_sha256, outbox_id, reason, updated_at,
 						audit_event_id, audit_sequence, previous_audit_hash, audit_event_hash,
 						audit_payload_json
 					) VALUES (
-						${command.organizationId}, ${command.envelopeId}, ${command.recipientId},
+						${command.envelopeId}, ${command.recipientId},
 						${command.actorType}, ${command.actorId}, ${command.idempotencyKey},
 						${command.requestHash}, ${command.previousCapabilityHash}, ${command.newCapabilityHash},
 						${command.reservedCapabilityExpiresAt}, ${command.sealedCapability},
@@ -292,10 +273,10 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 				// 7. Insert audit event
 				await transaction`
 					INSERT INTO audit_event (
-						id, organization_id, envelope_id, sequence, event_type, actor_type,
+						id, envelope_id, sequence, event_type, actor_type,
 						actor_id, payload_json, previous_hash, event_hash, occurred_at
 					) VALUES (
-						${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+						${command.auditEventId}, ${command.envelopeId},
 						${command.expectedAuditSequence + 1}, 'recipient.capability_reissued',
 						${command.actorType}, ${command.actorId}, ${command.auditPayloadJson},
 						${command.previousAuditHash}, ${command.auditEventHash}, ${command.updatedAt}
@@ -305,7 +286,7 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 				await transaction`
 					UPDATE envelope
 					SET updated_at = ${command.updatedAt}
-					WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}`;
+					WHERE id = ${command.envelopeId}`;
 
 				return {
 					outcome: 'published',
@@ -327,27 +308,21 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 		}
 	}
 
-	async #readEnvelope(
-		sql: Sql,
-		organizationId: string,
-		envelopeId: string,
-		lock: boolean
-	): Promise<EnvelopeRow | null> {
+	async #readEnvelope(sql: Sql, envelopeId: string, lock: boolean): Promise<EnvelopeRow | null> {
 		const rows = lock
 			? await sql<EnvelopeRow[]>`
 				SELECT status FROM envelope
-				WHERE organization_id = ${organizationId} AND id = ${envelopeId}
+				WHERE id = ${envelopeId}
 				FOR UPDATE`
 			: await sql<EnvelopeRow[]>`
 				SELECT status FROM envelope
-				WHERE organization_id = ${organizationId} AND id = ${envelopeId}
+				WHERE id = ${envelopeId}
 				LIMIT 1`;
 		return rows[0] ?? null;
 	}
 
 	async #readRecipient(
 		sql: Sql,
-		organizationId: string,
 		envelopeId: string,
 		recipientId: string,
 		lock: boolean
@@ -358,21 +333,20 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 					capability_expires_at AS "capabilityExpiresAt",
 					capability_revoked_at AS "capabilityRevokedAt"
 				FROM recipient
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId} AND id = ${recipientId}
+				WHERE envelope_id = ${envelopeId} AND id = ${recipientId}
 				FOR UPDATE`
 			: await sql<RecipientRow[]>`
 				SELECT status, capability_hash AS "capabilityHash",
 					capability_expires_at AS "capabilityExpiresAt",
 					capability_revoked_at AS "capabilityRevokedAt"
 				FROM recipient
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId} AND id = ${recipientId}
+				WHERE envelope_id = ${envelopeId} AND id = ${recipientId}
 				LIMIT 1`;
 		return rows[0] ?? null;
 	}
 
 	async #readOutbox(
 		sql: Sql,
-		organizationId: string,
 		envelopeId: string,
 		recipientId: string,
 		lock: boolean
@@ -380,22 +354,18 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 		return lock
 			? await sql<OutboxRow[]>`
 				SELECT id, status FROM delivery_outbox
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId} AND recipient_id = ${recipientId}
+				WHERE envelope_id = ${envelopeId} AND recipient_id = ${recipientId}
 				FOR UPDATE`
 			: await sql<OutboxRow[]>`
 				SELECT id, status FROM delivery_outbox
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId} AND recipient_id = ${recipientId}`;
+				WHERE envelope_id = ${envelopeId} AND recipient_id = ${recipientId}`;
 	}
 
-	async #readAuditHead(
-		sql: Sql,
-		organizationId: string,
-		envelopeId: string
-	): Promise<ReissueAuditHead | null> {
+	async #readAuditHead(sql: Sql, envelopeId: string): Promise<ReissueAuditHead | null> {
 		const rows = await sql<AuditHeadRow[]>`
 			SELECT sequence, event_hash AS "eventHash"
 			FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence DESC
 			LIMIT 1`;
 		const row = rows[0];
@@ -407,14 +377,13 @@ export class PostgresRecipientCapabilityReissueStore implements RecipientCapabil
 
 	async #resolveCommand(sql: Sql, key: ReissueCommandKey): Promise<ReissuePreparation | null> {
 		const rows = await sql<CommandRow[]>`
-			SELECT organization_id AS "organizationId", envelope_id AS "envelopeId",
+			SELECT envelope_id AS "envelopeId",
 				recipient_id AS "recipientId", actor_type AS "actorType", actor_id AS "actorId",
 				idempotency_key AS "idempotencyKey", request_hash AS "requestHash",
 				new_capability_hash AS "newCapabilityHash", outbox_id AS "outboxId",
 				updated_at AS "updatedAt", audit_event_id AS "auditEventId"
 			FROM recipient_capability_reissue_command
-			WHERE organization_id = ${key.organizationId}
-				AND actor_type = ${key.actorType}
+			WHERE actor_type = ${key.actorType}
 				AND actor_id = ${key.actorId}
 				AND idempotency_key = ${key.idempotencyKey}
 			LIMIT 1`;

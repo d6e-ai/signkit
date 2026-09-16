@@ -85,11 +85,13 @@ command.auditPayloadJson = JSON.stringify({
 command.auditEventHash = createHash('sha256')
 	.update(
 		JSON.stringify({
-			actorId: command.expectedRecipientId,
+			hashVersion: 3,
 			envelopeId: command.expectedEnvelopeId,
+			sequence: command.expectedAuditSequence + 1,
 			eventType: 'recipient.approved',
+			actorType: 'recipient',
+			actorId: command.expectedRecipientId,
 			occurredAt: command.updatedAt,
-			organizationId: 'org-1',
 			payload: JSON.parse(command.auditPayloadJson) as unknown,
 			previousHash: command.previousAuditHash
 		})
@@ -98,7 +100,6 @@ command.auditEventHash = createHash('sha256')
 
 function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organization_id: 'org-1',
 		envelope_id: command.expectedEnvelopeId,
 		recipient_id: command.expectedRecipientId,
 		recipient_role: command.recipientRole,
@@ -122,7 +123,6 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		completed_audit_event_hash: command.completedAuditEventHash,
 		completed_audit_payload_json: command.completedAuditPayloadJson,
 		evidence_event_id: command.auditEventId,
-		evidence_organization_id: 'org-1',
 		evidence_envelope_id: command.expectedEnvelopeId,
 		evidence_sequence: command.expectedAuditSequence + 1,
 		evidence_event_type: 'recipient.approved',
@@ -132,8 +132,8 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		evidence_previous_hash: command.previousAuditHash,
 		evidence_event_hash: command.auditEventHash,
 		evidence_occurred_at: command.updatedAt,
+		evidence_hash_version: 3,
 		completed_evidence_event_id: null,
-		completed_evidence_organization_id: null,
 		completed_evidence_envelope_id: null,
 		completed_evidence_sequence: null,
 		completed_evidence_event_type: null,
@@ -143,12 +143,12 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		completed_evidence_previous_hash: null,
 		completed_evidence_event_hash: null,
 		completed_evidence_occurred_at: null,
+		completed_evidence_hash_version: null,
 		...overrides
 	};
 }
 
 const eligibleRow = {
-	organization_id: 'org-1',
 	envelope_id: 'env-1',
 	recipient_id: 'recipient-1',
 	recipient_role: 'approver',
@@ -208,7 +208,6 @@ describe('D1RecipientApproveStore', () => {
 		);
 		expect(result).toEqual({
 			outcome: 'ready',
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			recipientRole: 'approver',

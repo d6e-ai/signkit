@@ -17,7 +17,6 @@ const activeKey: string = key(1);
 const previousKey: string = key(100);
 
 const context: CompletionTokenSealContext = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	deliveryId: 'delivery-1'

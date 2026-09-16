@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { runCreateSignkit } from '../src/cli/run.js';
 import { reconcileCloudflare } from '../src/providers/cloudflare/reconciler.js';
+import { D1_SCHEMA_EPOCH } from '../src/constants.js';
 import {
 	ACCOUNT_ID,
 	D1_ID,
@@ -132,6 +133,7 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 			d1: { name: 'signkit', id: D1_ID },
 			r2: { name: 'signkit-objects' },
 			version: 'v1.2.3',
+			schemaEpoch: D1_SCHEMA_EPOCH,
 			lastCommand: 'deploy'
 		});
 		expect(JSON.stringify(state)).not.toMatch(/DELIVERY_ENCRYPTION_KEY|cf-|token/i);
@@ -195,6 +197,37 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 			JSON.parse(result.stdout).lastCommand ??
 				JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json')).lastCommand
 		).toBe('upgrade');
+	});
+
+	it('refuses a populated legacy D1 without the release schema epoch', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.appliedMigrations = ['0001_core.sql'];
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { schemaEpoch: undefined });
+		const result = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(4);
+		expect(result.stdout).toMatch(/cannot be upgraded in place/);
+		expect(result.stdout).toMatch(/Recreate the selected D1/);
+		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
+	});
+
+	it('accepts a recreated empty D1 and records the current schema epoch', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.pendingMigrations = ['0001_core.sql'];
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { schemaEpoch: undefined });
+		const result = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(0);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.schemaEpoch).toBe(D1_SCHEMA_EPOCH);
 	});
 
 	it('refuses upgrade resource overrides until adopt records the intended identity', async () => {
