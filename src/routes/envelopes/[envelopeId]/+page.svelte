@@ -53,6 +53,7 @@
 	} from '$lib/client/envelopes';
 	import type { DocumentSetLeaf, DocumentSetManifest } from '$lib/domain/document-set';
 	import { isMarkdownPath, type MarkdownPath, type RecipientStatus } from '$lib/domain/envelope';
+	import { normalizeRecipientEmail } from '$lib/domain/recipient-identity';
 	import { envelopeBreadcrumbTitle } from '$lib/navigation/envelope-breadcrumb-title';
 	import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
@@ -472,10 +473,18 @@
 	}
 
 	function markRecipientContactChanged(draftItem: RecipientDraft): void {
-		// Editing after a contact was selected or saved breaks the link: the
-		// draft no longer represents that contact, so the next save must create
-		// a new contact instead of overwriting the previously linked one.
-		draftItem.savedContact = null;
+		// Only an email edit that actually diverges from the linked contact's
+		// address breaks the link: email is the owner-scoped unique key, so
+		// changing it to a different address means the next save must create a
+		// separate contact. Name and locale edits (and an email edit that ends
+		// up unchanged) still describe the same contact, so the next save stays
+		// an update instead of colliding with the contact's own email.
+		if (
+			draftItem.savedContact !== null &&
+			normalizeRecipientEmail(draftItem.email) !== draftItem.savedContact.email
+		) {
+			draftItem.savedContact = null;
+		}
 		draftItem.contactSaveAttempt.invalidate();
 		contactSaveError[draftItem.key] = null;
 		contactSaveSucceeded[draftItem.key] = false;
