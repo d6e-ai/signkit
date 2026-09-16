@@ -19,7 +19,7 @@ CREATE TABLE contact (
     AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*'
   ),
   CONSTRAINT contact_name_bound CHECK (length(name) BETWEEN 1 AND 200 AND name = trim(name)),
-  CONSTRAINT contact_name_search_bound CHECK (length(name_search) BETWEEN 1 AND 200),
+  CONSTRAINT contact_name_search_bound CHECK (length(name_search) BETWEEN 1 AND 400),
   CONSTRAINT contact_email_bound CHECK (
     length(email) BETWEEN 1 AND 320 AND email = trim(email) AND email = lower(email)
   ),

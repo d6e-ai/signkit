@@ -38,6 +38,7 @@
 	let deletePending = $state(false);
 	let deleteError = $state<string | null>(null);
 	let loadedForOpen = false;
+	let listRequestSequence = 0;
 
 	function resetForm(): void {
 		saveAttempt.invalidate();
@@ -76,16 +77,19 @@
 	}
 
 	async function loadContacts(cursor?: string): Promise<void> {
+		const sequence: number = ++listRequestSequence;
 		loading = true;
 		loadError = null;
 		try {
 			const page = await client.list({ ...(cursor ? { cursor } : {}), limit: 25 });
+			if (sequence !== listRequestSequence) return;
 			contacts = cursor ? [...contacts, ...page.items] : page.items;
 			nextCursor = page.nextCursor;
 		} catch (cause) {
+			if (sequence !== listRequestSequence) return;
 			loadError = cause instanceof Error ? cause.message : m.contacts_load_unavailable();
 		} finally {
-			loading = false;
+			if (sequence === listRequestSequence) loading = false;
 		}
 	}
 

@@ -4,6 +4,11 @@ export const DEFAULT_CONTACT_LIST_LIMIT: number = 25;
 export const MAX_CONTACT_LIST_LIMIT: number = 100;
 export const MAX_CONTACT_VERSION: number = 2_147_483_647;
 export const MAX_CONTACT_UPDATE_EXPECTED_VERSION: number = MAX_CONTACT_VERSION - 1;
+// ECMAScript lowercasing can expand one UTF-16 code unit into two Unicode
+// code points (for example, U+0130 becomes `i` plus a combining dot). Contact
+// display names remain capped at 200 UTF-16 code units, so 400 safely bounds
+// the derived, non-user-visible search key.
+export const MAX_CONTACT_NAME_SEARCH_LENGTH: number = 400;
 export const CONTACT_IDEMPOTENCY_KEY_PATTERN: RegExp = /^[!-~]{1,200}$/;
 
 export interface ContactActor {

@@ -14,7 +14,7 @@ CREATE TABLE contact (
     id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
   CONSTRAINT contact_name_bound CHECK (char_length(name) BETWEEN 1 AND 200 AND name = btrim(name)),
-  CONSTRAINT contact_name_search_bound CHECK (char_length(name_search) BETWEEN 1 AND 200),
+  CONSTRAINT contact_name_search_bound CHECK (char_length(name_search) BETWEEN 1 AND 400),
   CONSTRAINT contact_email_bound CHECK (
     char_length(email) BETWEEN 1 AND 320 AND email = btrim(email) AND email = lower(email)
   ),

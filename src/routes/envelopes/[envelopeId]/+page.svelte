@@ -472,6 +472,10 @@
 	}
 
 	function markRecipientContactChanged(draftItem: RecipientDraft): void {
+		// Once identity fields diverge from a selected/saved contact, the row is a
+		// new contact candidate. A later explicit save must not silently mutate
+		// the original address-book entry.
+		draftItem.savedContact = null;
 		draftItem.contactSaveAttempt.invalidate();
 		contactSaveError[draftItem.key] = null;
 		contactSaveSucceeded[draftItem.key] = false;

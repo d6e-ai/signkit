@@ -10,6 +10,7 @@ import {
 	isContactId,
 	isContactIdempotencyKey,
 	MAX_CONTACT_UPDATE_EXPECTED_VERSION,
+	MAX_CONTACT_NAME_SEARCH_LENGTH,
 	MAX_CONTACT_VERSION,
 	type ContactListPage,
 	type ContactStore,
@@ -89,6 +90,7 @@ export class ContactApplication implements ContactApplicationPort {
 		input: CreateContactInput
 	): Promise<CreateContactResult> {
 		const canonical: ContactInput = canonicalContact(input);
+		const nameSearch: string = contactNameSearch(canonical.name);
 		const idempotencyKey: string = requireIdempotencyKey(input.idempotencyKey);
 		const requestFingerprint: string = await fingerprint(canonical);
 		const commandMarker: string = await fingerprint({
@@ -107,7 +109,7 @@ export class ContactApplication implements ContactApplicationPort {
 				commandMarker,
 				contactId,
 				...canonical,
-				nameSearch: canonical.name.toLowerCase(),
+				nameSearch,
 				occurredAt
 			});
 			if (result.outcome !== 'id_conflict') return result;
@@ -135,6 +137,7 @@ export class ContactApplication implements ContactApplicationPort {
 			MAX_CONTACT_UPDATE_EXPECTED_VERSION
 		);
 		const canonical: ContactInput = canonicalContact(input);
+		const nameSearch: string = contactNameSearch(canonical.name);
 		const idempotencyKey: string = requireIdempotencyKey(input.idempotencyKey);
 		const requestFingerprint: string = await fingerprint({
 			contactId,
@@ -153,7 +156,7 @@ export class ContactApplication implements ContactApplicationPort {
 			contactId,
 			expectedVersion,
 			...canonical,
-			nameSearch: canonical.name.toLowerCase(),
+			nameSearch,
 			occurredAt: this.now().toISOString()
 		});
 	}
@@ -195,10 +198,22 @@ function canonicalContact(input: ContactInput): ContactInput {
 	return { email, name, locale: input.locale };
 }
 
+function contactNameSearch(name: string): string {
+	const nameSearch: string = name.toLowerCase();
+	if (nameSearch.length < 1 || nameSearch.length > MAX_CONTACT_NAME_SEARCH_LENGTH) {
+		throw new InvalidContactRequestError('Contact name search key is invalid');
+	}
+	return nameSearch;
+}
+
 function normalizeQuery(value: string | null): string | null {
 	if (value === null) return null;
-	const query: string = value.trim().toLowerCase();
-	if (query.length < 1 || query.length > 200) {
+	const trimmedQuery: string = value.trim();
+	if (trimmedQuery.length < 1 || trimmedQuery.length > 200) {
+		throw new InvalidContactRequestError('Contact search query is invalid');
+	}
+	const query: string = trimmedQuery.toLowerCase();
+	if (query.length > MAX_CONTACT_NAME_SEARCH_LENGTH) {
 		throw new InvalidContactRequestError('Contact search query is invalid');
 	}
 	return query;

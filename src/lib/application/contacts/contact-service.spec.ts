@@ -4,6 +4,8 @@ import {
 	InvalidContactRequestError
 } from '$lib/application/contacts/contact-service';
 import type {
+	CreateContactCommand,
+	CreateContactStoreResult,
 	ContactStore,
 	DeleteContactStoreResult,
 	UpdateContactStoreResult
@@ -12,6 +14,57 @@ import type {
 const CONTACT_ID = '01900000-0000-7000-8000-000000000701';
 
 describe('ContactApplication version bounds', () => {
+	it('accepts a 200-character name whose lowercase search key expands to 400 code points', async () => {
+		const createContact = vi.fn(
+			async (command: CreateContactCommand): Promise<CreateContactStoreResult> => {
+				void command;
+				return { outcome: 'integrity_error' };
+			}
+		);
+		const listContacts = vi.fn(async () => ({
+			outcome: 'listed' as const,
+			page: { items: [], nextCursor: null }
+		}));
+		const store: ContactStore = {
+			createContact,
+			listContacts,
+			updateContact: async () => ({ outcome: 'integrity_error' }),
+			deleteContact: async () => ({ outcome: 'integrity_error' })
+		};
+		const application = new ContactApplication(
+			store,
+			(): Date => new Date('2026-09-17T00:00:00.000Z'),
+			(): string => CONTACT_ID
+		);
+		const expandingName: string = '\u0130'.repeat(200);
+
+		await expect(
+			application.create(
+				{ id: 'owner-1' },
+				{
+					idempotencyKey: 'expanding-name',
+					name: expandingName,
+					email: 'unicode@example.com',
+					locale: 'en'
+				}
+			)
+		).resolves.toEqual({ outcome: 'integrity_error' });
+		expect(createContact).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: expandingName,
+				nameSearch: expandingName.toLowerCase()
+			})
+		);
+		expect(expandingName.toLowerCase()).toHaveLength(400);
+		await expect(
+			application.list({ id: 'owner-1' }, { cursor: null, limit: 25, query: expandingName })
+		).resolves.toMatchObject({ outcome: 'listed' });
+		expect(listContacts).toHaveBeenCalledWith(
+			{ id: 'owner-1' },
+			expect.objectContaining({ query: expandingName.toLowerCase() })
+		);
+	});
+
 	it('rejects an update that would overflow while allowing the maximum delete version', async () => {
 		const updateContact = vi.fn(async (): Promise<UpdateContactStoreResult> => ({
 			outcome: 'integrity_error'

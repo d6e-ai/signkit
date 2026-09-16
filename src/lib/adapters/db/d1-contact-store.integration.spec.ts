@@ -30,6 +30,34 @@ function fixture(fixedNow?: () => Date) {
 }
 
 describe('D1ContactStore', () => {
+	it('persists a lowercase search key that expands beyond the display-name limit', async () => {
+		const { sqlite, application } = fixture();
+		try {
+			const expandingName: string = '\u0130'.repeat(200);
+			await expect(
+				application.create(
+					{ id: OWNER },
+					{
+						idempotencyKey: 'unicode-expansion',
+						name: expandingName,
+						email: 'unicode@example.com',
+						locale: 'en'
+					}
+				)
+			).resolves.toMatchObject({ outcome: 'created', contact: { name: expandingName } });
+			expect(sqlite.prepare('SELECT length(name_search) AS length FROM contact').get()).toEqual({
+				length: 400
+			});
+			const searched = await application.list(
+				{ id: OWNER },
+				{ cursor: null, limit: 25, query: expandingName }
+			);
+			expect(searched.outcome === 'listed' ? searched.page.items : []).toHaveLength(1);
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('normalizes, isolates owners, paginates, and searches without putting PII in a cursor', async () => {
 		const { sqlite, application } = fixture();
 		try {

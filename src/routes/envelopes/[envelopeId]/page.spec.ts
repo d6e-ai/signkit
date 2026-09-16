@@ -133,6 +133,11 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('draftItem.contactSaveAttempt.failed(cause)');
 		expect(source).toContain('oninput={() => markRecipientContactChanged(draftItem)}');
 		expect(source).toContain('onValueChange={() => markRecipientContactChanged(draftItem)}');
+		const markChanged = source.slice(
+			source.indexOf('function markRecipientContactChanged'),
+			source.indexOf('async function saveRecipientToContacts')
+		);
+		expect(markChanged).toContain('draftItem.savedContact = null');
 		expect(source).toContain('contactSaveSucceeded[draftItem.key] = false');
 		const markReady = source.slice(
 			source.indexOf('async function markReady'),

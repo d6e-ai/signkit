@@ -45,6 +45,36 @@ postgresDescribe('PostgresContactStore', () => {
 		await sql.end({ timeout: 5 });
 	});
 
+	it('persists a lowercase search key that expands beyond the display-name limit', async () => {
+		if (sql === null) throw new Error('PostgreSQL unavailable');
+		const application = new ContactApplication(
+			new PostgresContactStore(sql),
+			(): Date => new Date('2026-09-17T00:00:00.000Z'),
+			(): string => ID1
+		);
+		const expandingName: string = '\u0130'.repeat(200);
+
+		await expect(
+			application.create(
+				{ id: OWNER },
+				{
+					idempotencyKey: 'unicode-expansion',
+					name: expandingName,
+					email: 'unicode@example.com',
+					locale: 'en'
+				}
+			)
+		).resolves.toMatchObject({ outcome: 'created', contact: { name: expandingName } });
+		expect(
+			await sql<{ length: number }[]>`SELECT char_length(name_search)::int AS length FROM contact`
+		).toEqual([{ length: 400 }]);
+		const searched = await application.list(
+			{ id: OWNER },
+			{ cursor: null, limit: 25, query: expandingName }
+		);
+		expect(searched.outcome === 'listed' ? searched.page.items : []).toHaveLength(1);
+	});
+
 	it('matches D1 normalization, isolation, replay, stale update, hard delete, and receipt privacy', async () => {
 		if (sql === null) throw new Error('PostgreSQL unavailable');
 		const ids: string[] = [ID1, ID2];
