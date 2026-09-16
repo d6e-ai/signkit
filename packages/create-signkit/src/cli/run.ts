@@ -67,6 +67,11 @@ function emit(io: RunIo, parsed: ParsedCommand, result: ReconcileResult): void {
 	if (result.d1BackupPath) {
 		io.stdout.write(`D1 backup: ${result.d1BackupPath}\n`);
 	}
+	if (result.provenance) {
+		io.stdout.write(
+			`Provenance: verified ${result.provenance.repository}/${result.provenance.workflow} ${result.provenance.sourceRef}\n`
+		);
+	}
 	if (result.recoveryPath) {
 		io.stdout.write(`Recovery file: ${result.recoveryPath}\n`);
 	}

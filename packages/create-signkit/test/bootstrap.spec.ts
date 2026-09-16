@@ -184,51 +184,45 @@ describe('pristine initial deploy recovery lifecycle', () => {
 		expect(result.wrangler.calls).not.toContain('createD1:signkit');
 	});
 
-	it('reuses the same recovery file on a failed-initial retry with D1/R2 but no Worker/state', async () => {
+	it('fails bundle verification before recovery or Cloudflare mutation, then retries cleanly', async () => {
 		const fs = new MemoryFileSystem();
 		const wrangler = new FakeWrangler();
 		const failingReleases = fakeReleases();
-		const failingDownload = failingReleases.downloadBundle.bind(failingReleases);
+		const prepareBundle = failingReleases.prepareBundle.bind(failingReleases);
 		let downloads = 0;
-		failingReleases.downloadBundle = async (): Promise<Uint8Array> => {
+		failingReleases.prepareBundle = async () => {
 			downloads += 1;
 			if (downloads === 1) {
-				throw new Error('simulated bundle download failure');
+				throw new Error('simulated provenance verification failure');
 			}
-			return failingDownload();
+			return prepareBundle();
 		};
 		const first = await runDeploy({
 			wrangler,
 			fs,
-			stdinText: OAUTH_JSON,
 			releases: failingReleases
 		});
 		expect(first.code).toBe(1);
-		expect(first.stdout).toMatch(/simulated bundle download failure/);
-		expect(first.wrangler.calls).toContain('createD1:signkit');
+		expect(first.stdout).toMatch(/simulated provenance verification failure/);
+		expect(first.wrangler.calls).not.toContain('createD1:signkit');
 		expect(first.wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-		const firstText: string = await fs.readFile(RECOVERY_PATH);
-		const firstFingerprint = sha256Hex(firstText);
-		const second = await runDeploy({ wrangler, fs });
+		expect(await fs.exists(RECOVERY_PATH)).toBe(false);
+		const second = await runDeploy({ wrangler, fs, stdinText: OAUTH_JSON });
 		expect(second.code).toBe(0);
-		expect(await fs.readFile(RECOVERY_PATH)).toBe(firstText);
 		const secondParsed = JSON.parse(second.stdout);
-		expect(secondParsed.recoveryFingerprint).toBe(firstFingerprint);
-		expect(secondParsed.mutations).not.toContain('recovery');
-		expect(secondParsed.mutations).not.toContain('create-d1');
-		expect(secondParsed.mutations).not.toContain('create-r2');
+		expect(secondParsed.mutations).toContain('recovery');
+		expect(secondParsed.mutations).toContain('create-d1');
+		expect(secondParsed.mutations).toContain('create-r2');
 		expect(second.wrangler.deployOptions[0]?.secretsFile).not.toBe(RECOVERY_PATH);
-		expect(JSON.parse(second.wrangler.stagedSecrets[0] as string)).toEqual(JSON.parse(firstText));
 	});
 
 	it('refuses to reuse a failed bootstrap recovery file for another Worker', async () => {
 		const fs = new MemoryFileSystem();
 		const wrangler = new FakeWrangler();
-		const releases = fakeReleases();
-		releases.downloadBundle = async (): Promise<Uint8Array> => {
-			throw new Error('leave recovery before deploy');
+		wrangler.createD1 = async (): Promise<never> => {
+			throw new Error('leave recovery before resource creation');
 		};
-		const first = await runDeploy({ wrangler, fs, stdinText: OAUTH_JSON, releases });
+		const first = await runDeploy({ wrangler, fs, stdinText: OAUTH_JSON });
 		expect(first.code).toBe(1);
 		expect(await fs.exists(RECOVERY_PATH)).toBe(true);
 		const second = await runDeploy({

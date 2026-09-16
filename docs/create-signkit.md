@@ -50,7 +50,7 @@ Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state **befor
 
 ## First deploy
 
-1. `create-signkit --cloudflare plan --account-id <id>` (resolves a release; read-only, never reads stdin, never creates files)
+1. `create-signkit --cloudflare plan --account-id <id>` (resolves and downloads the selected release, verifies its GitHub/Sigstore provenance, and inspects Cloudflare; it never reads stdin, creates deployment/state/recovery files, or mutates Cloudflare. Sigstore may create or refresh its standard per-user TUF trust-metadata cache.)
 2. Write the two OAuth credentials to a secure two-key JSON file (mode `0600`, never committed), then redirect it on stdin for the initial deploy. The CLI reads at most 16 KiB, requires exactly `D6E_AUTH_CLIENT_ID` and `D6E_AUTH_CLIENT_SECRET`, and never accepts secret values on argv, prints them, or stores them in state/logs:
 
    ```sh
@@ -101,7 +101,7 @@ The HTTPS smoke check uses escalating backoff (1s, 2s by default) and a bounded 
 
 ## npm package
 
-The CLI version and HTTP User-Agent come from `packages/create-signkit/package.json`. The published tarball includes `LICENSE` (AGPL). SHA-256 in the release manifest is integrity against GitHub, not a signature. The release workflow also generates GitHub build-provenance attestations for its assets. These are available to compatible GitHub CLI verification, but `create-signkit` does not currently fetch or verify them; deploy-time enforcement still trusts the official GitHub repository and manifest digest.
+The CLI version and HTTP User-Agent come from `packages/create-signkit/package.json`. The published tarball includes `LICENSE` (AGPL). SHA-256 in the release manifest is an integrity check, while GitHub/Sigstore provenance is the independent publisher identity check. `plan`, `deploy`, and `upgrade` all download the exact bundle once and require online verification of its official repository, workflow, release tag/ref, source commit, subject name/digest, and SLSA workflow provenance before any recovery-file or Cloudflare mutation. Stable and beta use the same policy. Missing, invalid, ambiguous, unavailable, malformed, or oversized provenance fails closed. JSON output includes a `provenance` object; human output prints one verified provenance line. `adopt` does not resolve a release and omits it.
 
 The first publication of the unscoped `create-signkit` package must use a short-lived npm token or a manual `npm publish` because Trusted Publishing cannot be configured until the package exists. After that one-time initial manual publish, the workflow publishes via OIDC Trusted Publishing only, with no token fallback. The workflow keeps pnpm for workspace installation, installs the exact npm CLI version committed in root `package.json` and `pnpm-lock.yaml`, verifies the selected binary reports that exact version, and publishes through it (`npm publish`, not `pnpm publish`). The frozen pnpm lock supplies registry integrity; the privileged job never dynamically resolves an npm range. The product tag must equal the root package and Rust CLI versions. `create-signkit` has an independent npm version; the release workflow validates it as semver and publishes it only when that exact version is not already present. Do not publish from a working tree without those checks. The package version's prerelease component selects the npm dist-tag (`beta` or `latest`) independently of the product release tag.
 
