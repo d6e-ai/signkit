@@ -12,7 +12,8 @@ import {
 	FakeHttp,
 	githubReleaseJson,
 	sampleBundleBytes,
-	sampleManifest
+	sampleManifest,
+	sampleProvenance
 } from './helpers.js';
 
 const API = 'https://api.github.com/repos/d6e-ai/signkit';
@@ -323,15 +324,17 @@ describe('manifest and bundle validation', () => {
 		);
 		http.on(`${DL}/v1.2.3/signkit-cloudflare-manifest.json`, JSON.stringify(manifest));
 		http.on(`${DL}/v1.2.3/signkit-cloudflare-v1.2.3.tar.gz`, bundle);
-		const resolver = createGithubReleaseResolver(http);
+		const resolver = createGithubReleaseResolver(http, {
+			verify: async () => sampleProvenance(manifest)
+		});
 		const release = await resolver.resolve({ version: 'latest', channel: 'stable' });
-		await expect(resolver.downloadBundle(release)).resolves.toEqual(bundle);
+		await expect(resolver.prepareBundle(release)).resolves.toMatchObject({ bytes: bundle });
 
 		http.replace(
 			`${DL}/v1.2.3/signkit-cloudflare-v1.2.3.tar.gz`,
 			new TextEncoder().encode('tamperedxxxx')
 		);
-		await expect(resolver.downloadBundle(release)).rejects.toThrow(/SHA-256/);
+		await expect(resolver.prepareBundle(release)).rejects.toThrow(/SHA-256/);
 	});
 
 	it('bounds GitHub response sizes', async () => {

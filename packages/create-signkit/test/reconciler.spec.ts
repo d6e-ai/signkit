@@ -85,14 +85,21 @@ describe('plan is read-only', () => {
 		);
 		expect(result.code).toBe(0);
 		expect(releases.resolveCalls).toBe(1);
-		expect(releases.downloads).toBe(0);
+		expect(releases.downloads).toBe(1);
 		expect(wrangler.calls.some((call) => call.startsWith('create'))).toBe(false);
 		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
 		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
 		expect(fs.writes).toEqual([]);
-		expect(JSON.parse(result.stdout).mutations).toEqual([]);
-		const plan = JSON.parse(result.stdout).plan as Array<{ id: string; mutating: boolean }>;
+		const parsed = JSON.parse(result.stdout);
+		expect(parsed.mutations).toEqual([]);
+		expect(parsed.provenance).toMatchObject({
+			status: 'verified',
+			repository: 'd6e-ai/signkit',
+			sourceRef: 'refs/tags/v1.2.3'
+		});
+		const plan = parsed.plan as Array<{ id: string; mutating: boolean }>;
+		expect(plan.find((step) => step.id === 'verify-provenance')?.mutating).toBe(false);
 		expect(plan.find((step) => step.id === 'd1-export')?.mutating).toBe(true);
 		expect(plan.find((step) => step.id === 'deploy')?.mutating).toBe(true);
 		expect(plan.find((step) => step.id === 'd1-migrations')?.mutating).toBe(true);
@@ -160,6 +167,7 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 		const state = JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state.adopted).toBe(true);
 		expect(state.lastCommand).toBe('adopt');
+		expect(parsed.provenance).toBeUndefined();
 		expect(state.version).toBeUndefined();
 		expect(state.commit).toBeUndefined();
 		expect(parsed.plan.find((step: { id: string }) => step.id === 'adopt').mutating).toBe(true);
@@ -1089,6 +1097,9 @@ describe('human plan output', () => {
 		expect(result.code).toBe(0);
 		expect(result.stdout).toMatch(/Plan:/);
 		expect(result.stdout).toMatch(/plan only/);
+		expect(result.stdout).toMatch(
+			/Provenance: verified d6e-ai\/signkit\/\.github\/workflows\/release-cloudflare-bundle\.yml refs\/tags\/v1\.2\.3/
+		);
 		expect(result.stderr).toBe('');
 	});
 

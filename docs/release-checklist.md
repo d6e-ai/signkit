@@ -105,8 +105,9 @@ no implementation is a release blocker.
    new prerelease or patch version instead.
 
 GitHub stores the provenance attestations separately from the release assets.
-They can be verified with a compatible GitHub CLI, but the local release
-checks and `create-signkit` do not currently verify them. A policy that makes
-attestation verification mandatory at deploy time needs a follow-up issue and
-a fail-closed verifier in `create-signkit`; do not describe generation alone as
-end-to-end enforcement.
+`create-signkit plan`, `deploy`, and `upgrade` query them by the downloaded
+Cloudflare bundle digest and require online GitHub/Sigstore verification before
+any local recovery-file or Cloudflare mutation. A release is not deployable if
+its attestation is missing, invalid, ambiguous, unavailable, malformed, or too
+large. Confirm both human and `--json` plan output report verified provenance;
+`adopt` intentionally omits it because it does not select a release.

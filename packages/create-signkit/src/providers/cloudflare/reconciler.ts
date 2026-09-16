@@ -10,7 +10,12 @@ import { resolveEffectiveConfig, type EffectiveTarget } from '../../cli/effectiv
 import { conflict, generic, preflight, usage } from '../../cli/errors.js';
 import type { CommandName, ParsedCommand } from '../../cli/parse.js';
 import { isValidEmailAddress } from '../../cli/urls.js';
-import type { ReleaseResolver, ResolvedRelease } from '../../release/github.js';
+import type {
+	PreparedReleaseBundle,
+	ReleaseResolver,
+	ResolvedRelease
+} from '../../release/github.js';
+import type { ReleaseProvenance } from '../../release/provenance.js';
 import type { BundleExtractor, ExtractedBundle } from '../../release/extract.js';
 import type { FileSystem } from '../../runtime/fs.js';
 import type { HttpClient } from '../../runtime/http.js';
@@ -96,6 +101,7 @@ export interface ReconcileResult {
 	migrationPolicy: string;
 	recoveryPath?: string;
 	recoveryFingerprint?: string;
+	provenance?: ReleaseProvenance;
 }
 
 const BOOTSTRAP_WARNING_CONFIGURED =
@@ -149,6 +155,7 @@ export async function reconcileCloudflare(
 		channel: input.channel
 	});
 	assertSupportedSecretTaxonomy(release, runtime, stateStore.path);
+	const preparedBundle = await runtime.releases.prepareBundle(release);
 	const plan = buildPlan(input, existing, target, remote, release);
 	if (input.command === 'plan') {
 		return {
@@ -157,6 +164,7 @@ export async function reconcileCloudflare(
 			provider: 'cloudflare',
 			version: release.tag,
 			commit: release.commit,
+			provenance: preparedBundle.provenance,
 			plan,
 			mutations: [],
 			statePath: stateStore.path,
@@ -171,7 +179,17 @@ export async function reconcileCloudflare(
 		};
 	}
 
-	return deployOrUpgrade(input, target, runtime, stateStore, existing, remote, release, plan);
+	return deployOrUpgrade(
+		input,
+		target,
+		runtime,
+		stateStore,
+		existing,
+		remote,
+		release,
+		preparedBundle,
+		plan
+	);
 }
 
 async function adopt(
@@ -223,6 +241,7 @@ async function deployOrUpgrade(
 	existing: DeploymentState | undefined,
 	remote: RemoteSnapshot,
 	release: ResolvedRelease,
+	preparedBundle: PreparedReleaseBundle,
 	plan: PlanStep[]
 ): Promise<ReconcileResult> {
 	const mutations: string[] = [];
@@ -293,8 +312,11 @@ async function deployOrUpgrade(
 	}
 	let backupPath: string | undefined;
 	try {
-		const bundleBytes = await runtime.releases.downloadBundle(release);
-		const extracted = await runtime.extractor.extract(bundleBytes, workDir, release.manifest);
+		const extracted = await runtime.extractor.extract(
+			preparedBundle.bytes,
+			workDir,
+			release.manifest
+		);
 		const generatedVars = generatedWorkerVars(target, initialManagedDeploy);
 		assertRequiredVarsPresent(release.manifest.requiredVars, generatedVars, initialManagedDeploy);
 		await writeGeneratedConfig(runtime.fs, extracted, target, current, release, generatedVars);
@@ -373,6 +395,7 @@ async function deployOrUpgrade(
 				provider: 'cloudflare',
 				version: release.tag,
 				commit: release.commit,
+				provenance: preparedBundle.provenance,
 				plan,
 				mutations,
 				statePath: stateStore.path,
@@ -416,6 +439,7 @@ async function deployOrUpgrade(
 				provider: 'cloudflare',
 				version: release.tag,
 				commit: release.commit,
+				provenance: preparedBundle.provenance,
 				plan,
 				mutations,
 				statePath: stateStore.path,
@@ -444,6 +468,7 @@ async function deployOrUpgrade(
 			provider: 'cloudflare',
 			version: release.tag,
 			commit: release.commit,
+			provenance: preparedBundle.provenance,
 			plan,
 			mutations,
 			statePath: stateStore.path,
@@ -622,6 +647,11 @@ function buildPlan(
 		{
 			id: 'validate-manifest',
 			summary: `validate ${release.manifest.bundle.assetName} size ${release.manifest.bundle.size} sha256 ${release.manifest.bundle.sha256}`,
+			mutating: false
+		},
+		{
+			id: 'verify-provenance',
+			summary: `verify GitHub/Sigstore provenance for ${release.manifest.bundle.assetName}`,
 			mutating: false
 		}
 	];
