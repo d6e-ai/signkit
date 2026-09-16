@@ -124,13 +124,8 @@ function authenticationUnavailable(instance: string): Response {
  * than falling through to the cookie session, because an unclassifiable bearer
  * must fail closed, not be treated as absent.
  */
-function unhandledBearerState(state: never, instance: string): Response {
-	console.error(
-		JSON.stringify({
-			event: 'api_key_authorization_unhandled_state',
-			state: (state as { state?: unknown }).state
-		})
-	);
+function unhandledBearerState(_state: never, instance: string): Response {
+	console.error(JSON.stringify({ event: 'api_key_authorization_unhandled_state' }));
 	return authenticationUnavailable(instance);
 }
 
