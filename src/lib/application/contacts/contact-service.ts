@@ -19,6 +19,10 @@ import {
 } from '$lib/ports/contact-store';
 
 const MAX_ID_ATTEMPTS: number = 3;
+// Matches the contact_name_search_bound CHECK constraint. Lower-casing can
+// grow a name's character count (e.g. U+0130 -> "i" + combining dot above),
+// so a 200-character name is truncated after folding rather than before.
+const MAX_CONTACT_NAME_SEARCH_LENGTH: number = 200;
 
 export interface ContactRequestActor {
 	id: string;
@@ -107,7 +111,7 @@ export class ContactApplication implements ContactApplicationPort {
 				commandMarker,
 				contactId,
 				...canonical,
-				nameSearch: canonical.name.toLowerCase(),
+				nameSearch: boundedNameSearch(canonical.name),
 				occurredAt
 			});
 			if (result.outcome !== 'id_conflict') return result;
@@ -153,7 +157,7 @@ export class ContactApplication implements ContactApplicationPort {
 			contactId,
 			expectedVersion,
 			...canonical,
-			nameSearch: canonical.name.toLowerCase(),
+			nameSearch: boundedNameSearch(canonical.name),
 			occurredAt: this.now().toISOString()
 		});
 	}
@@ -193,6 +197,10 @@ function canonicalContact(input: ContactInput): ContactInput {
 		throw new InvalidContactRequestError('Contact locale is invalid');
 	}
 	return { email, name, locale: input.locale };
+}
+
+function boundedNameSearch(name: string): string {
+	return name.toLowerCase().slice(0, MAX_CONTACT_NAME_SEARCH_LENGTH);
 }
 
 function normalizeQuery(value: string | null): string | null {

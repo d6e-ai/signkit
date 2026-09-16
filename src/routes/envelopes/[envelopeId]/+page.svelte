@@ -472,6 +472,10 @@
 	}
 
 	function markRecipientContactChanged(draftItem: RecipientDraft): void {
+		// Editing after a contact was selected or saved breaks the link: the
+		// draft no longer represents that contact, so the next save must create
+		// a new contact instead of overwriting the previously linked one.
+		draftItem.savedContact = null;
 		draftItem.contactSaveAttempt.invalidate();
 		contactSaveError[draftItem.key] = null;
 		contactSaveSucceeded[draftItem.key] = false;
