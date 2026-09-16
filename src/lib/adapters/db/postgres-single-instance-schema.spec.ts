@@ -22,4 +22,10 @@ describe('PostgreSQL single-instance schema', () => {
 	it('uses the organization-free audit hash version', () => {
 		expect(migrationSql).toMatch(/hash_version\s+INTEGER\s+NOT NULL\s+DEFAULT\s+3/i);
 	});
+
+	it('indexes the committed accepted-invitation concurrency lookup', () => {
+		expect(migrationSql).toMatch(
+			/CREATE UNIQUE INDEX instance_invitation_accepted_by_user\s+ON instance_invitation\(accepted_by_user_id\)\s+WHERE status = 'accepted'/i
+		);
+	});
 });

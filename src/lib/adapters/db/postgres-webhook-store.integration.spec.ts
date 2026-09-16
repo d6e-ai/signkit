@@ -208,7 +208,7 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 		expect(claimed[0]?.attempts).toBe(2);
 	});
 
-	it('does not reclaim a stale processing lease at the attempt ceiling', async () => {
+	it('terminalizes a stale processing lease at the attempt ceiling with a delivery log', async () => {
 		const store = new PostgresWebhookStore(database());
 		const auditEventId: string = '01900000-0000-7000-8000-000000000521';
 		await insertOutbox(auditEventId, {
@@ -219,10 +219,19 @@ postgresDescribe('PostgresWebhookStore webhook retry terminalization', () => {
 		});
 		await expect(store.claimPendingDeliveries(claimCommand())).resolves.toEqual([]);
 		expect(await outboxState(auditEventId)).toEqual({
-			status: 'processing',
+			status: 'failed',
 			attempts: WEBHOOK_MAX_ATTEMPTS,
-			retryable: true
+			retryable: false
 		});
+		expect(await deliveryLogCount(auditEventId)).toBe(1);
+		const rows: { status: string; attempt: number; errorCode: string | null }[] = await database()<
+			{ status: string; attempt: number; errorCode: string | null }[]
+		>`SELECT status, attempt, error_code AS "errorCode"
+		  FROM webhook_delivery_log
+		  WHERE endpoint_id = ${ENDPOINT_ID} AND audit_event_id = ${auditEventId}`;
+		expect(rows).toEqual([
+			{ status: 'failed', attempt: WEBHOOK_MAX_ATTEMPTS, errorCode: 'attempts_exhausted' }
+		]);
 	});
 
 	it('reclaims a stale processing lease only while it is below the attempt ceiling', async () => {

@@ -114,6 +114,7 @@ function insertCommand(
 describe('D1 instance invitation migration', () => {
 	it('applies every migration and establishes zero-PII invitation and receipt tables', () => {
 		expect(d1MigrationPaths()).toContain('migrations/d1/0020_instance_invitations.sql');
+		expect(d1MigrationPaths()).toContain('migrations/d1/0046_accepted_invitation_lookup.sql');
 		const sqlite: DatabaseSync = database();
 		try {
 			const tables = sqlite
@@ -162,6 +163,26 @@ describe('D1 instance invitation migration', () => {
 					expect(columnNames(sqlite, table)).not.toContain(column);
 				}
 			}
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('uses the accepted invitation index for the committed concurrency query', () => {
+		const sqlite: DatabaseSync = database();
+		try {
+			const plan = sqlite
+				.prepare(
+					`EXPLAIN QUERY PLAN
+					 SELECT 1
+					 FROM instance_invitation AS consumed
+					 WHERE consumed.accepted_by_user_id = ?
+					   AND consumed.status = 'accepted'`
+				)
+				.all(OTHER_MEMBER_ID) as { detail: string }[];
+			expect(plan.map(({ detail }: { detail: string }): string => detail).join('\n')).toContain(
+				'instance_invitation_accepted_by_user'
+			);
 		} finally {
 			sqlite.close();
 		}

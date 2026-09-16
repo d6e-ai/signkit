@@ -62,4 +62,29 @@ describe('fresh D1 single-instance schema', () => {
 		).find(({ name }: { name: string }): boolean => name === 'hash_version');
 		expect(hashVersionColumn?.dflt_value).toBe('3');
 	});
+
+	it('stamps hash version 3 in every final-schema audit trigger, including INSERT SELECT', () => {
+		const database: DatabaseSync = migratedDatabase();
+		const triggers = database
+			.prepare(
+				"SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%INSERT INTO audit_event%'"
+			)
+			.all() as { name: string; sql: string }[];
+		let insertSelectCount: number = 0;
+		for (const trigger of triggers) {
+			const insertions: RegExpMatchArray[] = [
+				...trigger.sql.matchAll(/INSERT INTO audit_event\s*\(([^)]*)\)\s*(VALUES|SELECT)/gi)
+			];
+			expect(insertions.length, trigger.name).toBeGreaterThan(0);
+			for (const insertion of insertions) {
+				expect(insertion[1], trigger.name).toMatch(/\bhash_version\b/i);
+				const start: number = insertion.index ?? 0;
+				const end: number = trigger.sql.indexOf(';', start);
+				const statement: string = trigger.sql.slice(start, end === -1 ? undefined : end);
+				expect(statement, trigger.name).toMatch(/,\s*3\s*(?:\)|FROM|WHERE)/i);
+				if (insertion[2]?.toUpperCase() === 'SELECT') insertSelectCount += 1;
+			}
+		}
+		expect(insertSelectCount).toBeGreaterThan(0);
+	});
 });
