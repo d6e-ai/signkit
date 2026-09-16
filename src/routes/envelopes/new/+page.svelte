@@ -37,7 +37,7 @@
 	<title>{m.envelope_new_title()} — {m.app_name()}</title>
 </svelte:head>
 
-<div class="mx-auto w-full max-w-xl">
+<div class="w-full">
 	<Card.Root>
 		<Card.Header>
 			<div

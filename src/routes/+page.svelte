@@ -216,9 +216,9 @@
 	});
 </script>
 
-<div class="mx-auto flex w-full max-w-7xl flex-col gap-6">
+<div class="flex w-full flex-col gap-6">
 	<section class="flex flex-col justify-between gap-4 md:flex-row md:items-end">
-		<div class="max-w-2xl">
+		<div>
 			<h1 class="text-3xl font-semibold tracking-tight md:text-4xl">{m.dashboard_title()}</h1>
 			<p class="mt-2 text-sm leading-6 text-muted-foreground md:text-base">
 				{m.dashboard_description()}

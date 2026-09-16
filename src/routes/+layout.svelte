@@ -76,7 +76,7 @@
 						<LanguageSwitch />
 					</div>
 				</header>
-				<main class="flex-1 px-4 py-6">{@render children()}</main>
+				<div class="container mx-auto w-full flex-1 px-4 py-6">{@render children()}</div>
 			</Sidebar.Inset>
 		</Sidebar.Provider>
 	{/if}
