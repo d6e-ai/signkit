@@ -72,6 +72,41 @@ const ENVELOPE: Record<string, unknown> = {
 	additionalProperties: false
 };
 
+const CONTACT: Record<string, unknown> = {
+	type: 'object',
+	required: ['id', 'email', 'name', 'locale', 'version', 'createdAt', 'updatedAt'],
+	properties: {
+		id: UUIDV7,
+		email: {
+			type: 'string',
+			format: 'email',
+			maxLength: 320,
+			description:
+				'Trimmed, lower-case mailbox used for owner-scoped uniqueness and recipient prefilling.'
+		},
+		name: {
+			type: 'string',
+			minLength: 1,
+			maxLength: 200,
+			description: 'Display name copied into a recipient draft when this contact is selected.'
+		},
+		locale: {
+			type: 'string',
+			enum: ['en', 'ja'],
+			description: 'Preferred recipient locale copied into a recipient draft.'
+		},
+		version: {
+			type: 'integer',
+			minimum: 1,
+			maximum: 2_147_483_647,
+			description: 'Optimistic-concurrency version required by replacement and deletion.'
+		},
+		createdAt: { type: 'string', format: 'date-time' },
+		updatedAt: { type: 'string', format: 'date-time' }
+	},
+	additionalProperties: false
+};
+
 const JSON_BODY: Record<string, unknown> = {
 	required: true,
 	content: { 'application/json': { schema: { type: 'object' } } }
@@ -197,6 +232,62 @@ const webhookIdParam = {
 	schema: UUIDV7
 };
 
+const contactIdParam = {
+	name: 'contactId',
+	in: 'path',
+	required: true,
+	schema: UUIDV7
+};
+
+const contactCursorParam = {
+	name: 'cursor',
+	in: 'query',
+	required: false,
+	description:
+		'Owner-scoped contact UUID cursor. It contains no name, email address, or search text.',
+	schema: UUIDV7
+};
+
+const contactLimitParam = {
+	name: 'limit',
+	in: 'query',
+	required: false,
+	schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 }
+};
+
+const contactMutationProperties: Record<string, unknown> = {
+	email: { type: 'string', format: 'email', maxLength: 320 },
+	name: { type: 'string', minLength: 1, maxLength: 200 },
+	locale: { type: 'string', enum: ['en', 'ja'] }
+};
+
+const contactResponse = (status: string, description: string): Record<string, unknown> =>
+	jsonResponse(status, description, {
+		type: 'object',
+		required: ['contact'],
+		additionalProperties: false,
+		properties: { contact: { $ref: '#/components/schemas/Contact' } }
+	});
+
+const contactPageResponse = jsonResponse('200', 'Owner-scoped contact page', {
+	type: 'object',
+	required: ['items', 'nextCursor'],
+	additionalProperties: false,
+	properties: {
+		items: { type: 'array', items: { $ref: '#/components/schemas/Contact' } },
+		nextCursor: {
+			type: ['string', 'null'],
+			pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+			description: 'A contact UUID only; never a name, email address, or search term.'
+		}
+	}
+});
+
+const idempotencyReplayedHeader = {
+	description: 'True only when this response safely replays an earlier mutation result.',
+	schema: { type: 'string', enum: ['true'] }
+};
+
 const evidenceFormatQuery = {
 	name: 'format',
 	in: 'query',
@@ -263,6 +354,7 @@ export function openApiDocument(): Record<string, unknown> {
 		tags: [
 			{ name: 'System' },
 			{ name: 'Envelopes' },
+			{ name: 'Contacts' },
 			{ name: 'Webhooks' },
 			{ name: 'API keys' },
 			{ name: 'Instance' },
@@ -286,6 +378,183 @@ export function openApiDocument(): Record<string, unknown> {
 					tags: ['System'],
 					security: [],
 					responses: jsonResponse('200', 'OpenAPI 3.1 document', { type: 'object' })
+				})
+			},
+			'/api/v1/contacts': {
+				get: op({
+					summary: 'List contacts owned by the caller',
+					operationId: 'listContacts',
+					description:
+						'Human-session-only. The owner is always the verified d6e-auth subject with a currently active local instance membership. The request cannot select another owner or an organization.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [contactCursorParam, contactLimitParam],
+					responses: contactPageResponse
+				}),
+				post: op({
+					summary: 'Create a contact owned by the caller',
+					operationId: 'createContact',
+					description:
+						'Creates a contact only after the sender explicitly asks to save it. Preparing or sending an envelope never creates contacts. Email uniqueness is scoped to the verified owner after the same trim/lower-case normalization used for envelope recipients.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['email', 'name', 'locale'],
+									additionalProperties: false,
+									properties: contactMutationProperties
+								}
+							}
+						}
+					},
+					responses: {
+						...contactResponse('201', 'Created contact'),
+						'200': {
+							description: 'Safely replayed contact creation',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['contact'],
+										additionalProperties: false,
+										properties: { contact: { $ref: '#/components/schemas/Contact' } }
+									}
+								}
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/contacts/search': {
+				post: op({
+					summary: 'Search contacts owned by the caller',
+					operationId: 'searchContacts',
+					description:
+						'Human-session-only bounded search. The query is carried in a JSON body rather than the URL so contact PII does not enter request URLs, routine access logs, or cursors.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['query'],
+									additionalProperties: false,
+									properties: {
+										query: { type: 'string', minLength: 1, maxLength: 200 },
+										cursor: UUIDV7,
+										limit: {
+											type: 'integer',
+											minimum: 1,
+											maximum: 100,
+											default: 25
+										}
+									}
+								}
+							}
+						}
+					},
+					responses: contactPageResponse
+				})
+			},
+			'/api/v1/contacts/{contactId}': {
+				put: op({
+					summary: 'Replace a contact owned by the caller',
+					operationId: 'replaceContact',
+					description:
+						'Full owner-scoped replacement with optimistic concurrency. Unknown and cross-owner identifiers have the same opaque not-found response.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [contactIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['email', 'name', 'locale', 'expectedVersion'],
+									additionalProperties: false,
+									properties: {
+										...contactMutationProperties,
+										expectedVersion: { type: 'integer', minimum: 1, maximum: 2_147_483_646 }
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Updated or safely replayed contact',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['contact'],
+										additionalProperties: false,
+										properties: { contact: { $ref: '#/components/schemas/Contact' } }
+									}
+								}
+							}
+						}
+					}
+				}),
+				delete: op({
+					summary: 'Delete a contact owned by the caller',
+					operationId: 'deleteContact',
+					description:
+						'Deletes only the owner-scoped contact projection. Existing envelope recipients and immutable evidence are unchanged. Unknown and cross-owner identifiers have the same opaque not-found response.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [contactIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['expectedVersion'],
+									additionalProperties: false,
+									properties: {
+										expectedVersion: { type: 'integer', minimum: 1, maximum: 2_147_483_647 }
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Contact deletion receipt, including safe replay',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['deleted'],
+										additionalProperties: false,
+										properties: {
+											deleted: {
+												type: 'object',
+												required: ['id', 'deletedAt'],
+												additionalProperties: false,
+												properties: {
+													id: UUIDV7,
+													deletedAt: { type: 'string', format: 'date-time' }
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
 				})
 			},
 			'/api/v1/envelopes': {
@@ -1399,7 +1668,8 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			schemas: {
 				ProblemDetail: PROBLEM,
-				Envelope: ENVELOPE
+				Envelope: ENVELOPE,
+				Contact: CONTACT
 			}
 		}
 	};

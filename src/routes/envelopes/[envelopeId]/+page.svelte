@@ -12,6 +12,16 @@
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconFileTypeDocx from '@tabler/icons-svelte/icons/file-type-docx';
 	import IconFileTypePdf from '@tabler/icons-svelte/icons/file-type-pdf';
+	import IconAddressBook from '@tabler/icons-svelte/icons/address-book';
+	import ContactCombobox from '$lib/components/contacts/contact-combobox.svelte';
+	import ContactManagementDialog from '$lib/components/contacts/contact-management-dialog.svelte';
+	import {
+		ContactsApiError,
+		createContactMutationAttempt,
+		createContactsClient,
+		type Contact,
+		type ContactMutationAttempt
+	} from '$lib/client/contacts';
 	import PdfDocumentView, { type PdfRenderedPage } from '$lib/components/pdf-document-view.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -58,6 +68,7 @@
 	} from './document-page-map';
 
 	const client = createEnvelopesClient();
+	const contactsClient = createContactsClient();
 	const envelopeId = $derived(page.params.envelopeId as string);
 
 	let loading = $state(true);
@@ -86,8 +97,14 @@
 		role: RecipientRole;
 		locale: 'en' | 'ja';
 		routingOrder: number;
+		savedContact: Contact | null;
+		contactSaveAttempt: ContactMutationAttempt;
 	}
 	let recipientDrafts = $state<RecipientDraft[]>([]);
+	let contactManagementOpen = $state(false);
+	let contactSavePending = $state<Record<string, boolean>>({});
+	let contactSaveError = $state<Record<string, string | null>>({});
+	let contactSaveSucceeded = $state<Record<string, boolean>>({});
 	let readyPending = $state(false);
 	let readyError = $state<string | null>(null);
 	let readyRecipients = $state<readonly ReadyRecipientPublic[]>([]);
@@ -429,13 +446,70 @@
 				name: '',
 				role: 'signer',
 				locale: getLocale() === 'ja' ? 'ja' : 'en',
-				routingOrder: recipientDrafts.length + 1
+				routingOrder: recipientDrafts.length + 1,
+				savedContact: null,
+				contactSaveAttempt: createContactMutationAttempt()
 			}
 		];
 	}
 
 	function removeRecipientDraft(key: string): void {
 		recipientDrafts = recipientDrafts.filter((draftItem) => draftItem.key !== key);
+	}
+
+	function applyContactToRecipient(key: string, contact: Contact): void {
+		const draftItem: RecipientDraft | undefined = recipientDrafts.find((item) => item.key === key);
+		if (draftItem === undefined) return;
+		// Contact reuse is identity-only. Workflow authority remains an explicit
+		// choice on this envelope and is never copied from the address book.
+		draftItem.email = contact.email;
+		draftItem.name = contact.name;
+		draftItem.locale = contact.locale;
+		draftItem.savedContact = contact;
+		draftItem.contactSaveAttempt.invalidate();
+		contactSaveError[key] = null;
+		contactSaveSucceeded[key] = false;
+	}
+
+	function markRecipientContactChanged(draftItem: RecipientDraft): void {
+		draftItem.contactSaveAttempt.invalidate();
+		contactSaveError[draftItem.key] = null;
+		contactSaveSucceeded[draftItem.key] = false;
+	}
+
+	async function saveRecipientToContacts(draftItem: RecipientDraft): Promise<void> {
+		if (contactSavePending[draftItem.key]) return;
+		contactSavePending[draftItem.key] = true;
+		contactSaveError[draftItem.key] = null;
+		contactSaveSucceeded[draftItem.key] = false;
+		const idempotencyKey: string = draftItem.contactSaveAttempt.key();
+		try {
+			const input = {
+				name: draftItem.name.trim(),
+				email: draftItem.email.trim(),
+				locale: draftItem.locale
+			};
+			const result =
+				draftItem.savedContact === null
+					? await contactsClient.create(input, { idempotencyKey })
+					: await contactsClient.update(
+							draftItem.savedContact.id,
+							{
+								...input,
+								expectedVersion: draftItem.savedContact.version
+							},
+							{ idempotencyKey }
+						);
+			draftItem.contactSaveAttempt.succeeded();
+			draftItem.savedContact = result.contact;
+			contactSaveSucceeded[draftItem.key] = true;
+		} catch (cause) {
+			draftItem.contactSaveAttempt.failed(cause);
+			contactSaveError[draftItem.key] =
+				cause instanceof ContactsApiError ? cause.detail : m.contacts_save_unavailable();
+		} finally {
+			contactSavePending[draftItem.key] = false;
+		}
 	}
 
 	async function markReady(): Promise<void> {
@@ -1353,152 +1427,202 @@
 
 			<Tabs.Content value="recipients" class="flex flex-col gap-4">
 				<Card.Root>
-					<Card.Header>
-						<Card.Title>{m.envelope_recipients_title()}</Card.Title>
-						<Card.Description>{m.envelope_recipients_description()}</Card.Description>
+					<Card.Header class="flex-row items-center justify-between gap-3">
+						<div class="min-w-0">
+							<Card.Title>{m.envelope_recipients_title()}</Card.Title>
+							<Card.Description>{m.envelope_recipients_description()}</Card.Description>
+						</div>
+						<Button variant="outline" onclick={() => (contactManagementOpen = true)}>
+							<IconAddressBook data-icon="inline-start" />{m.contacts_manage_action()}
+						</Button>
 					</Card.Header>
 					<Card.Content class="flex flex-col gap-4">
 						{#if envelope.status === 'draft'}
 							<Field.FieldGroup>
-								<Table.Root>
-									<Table.Header>
-										<Table.Row>
-											<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
-											<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
-										</Table.Row>
-									</Table.Header>
-									<Table.Body>
-										{#each recipientDrafts as draftItem (draftItem.key)}
+								<div class="overflow-x-auto">
+									<Table.Root>
+										<Table.Header>
 											<Table.Row>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-email-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_email()}</span>
-														</Field.FieldLabel>
-														<Input
-															id={`recipient-email-${draftItem.key}`}
-															type="email"
-															bind:value={draftItem.email}
-														/>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-name-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_name()}</span>
-														</Field.FieldLabel>
-														<Input
-															id={`recipient-name-${draftItem.key}`}
-															bind:value={draftItem.name}
-														/>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-role-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_role()}</span>
-														</Field.FieldLabel>
-														<Select.Root type="single" bind:value={draftItem.role}>
-															<Select.Trigger
-																id={`recipient-role-${draftItem.key}`}
-																class="w-full"
-																aria-label={m.envelope_recipient_col_role()}
-															>
-																{recipientRoleLabel(draftItem.role)}
-															</Select.Trigger>
-															<Select.Content>
-																<Select.Group>
-																	<Select.Item value="signer" label={m.signing_role_signer()}>
-																		{m.signing_role_signer()}
-																	</Select.Item>
-																	<Select.Item value="approver" label={m.signing_role_approver()}>
-																		{m.signing_role_approver()}
-																	</Select.Item>
-																	<Select.Item value="viewer" label={m.signing_role_viewer()}>
-																		{m.signing_role_viewer()}
-																	</Select.Item>
-																	<Select.Item value="cc" label={m.envelope_role_cc()}>
-																		{m.envelope_role_cc()}
-																	</Select.Item>
-																</Select.Group>
-															</Select.Content>
-														</Select.Root>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-locale-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_locale()}</span>
-														</Field.FieldLabel>
-														<Select.Root type="single" bind:value={draftItem.locale}>
-															<Select.Trigger
-																id={`recipient-locale-${draftItem.key}`}
-																class="w-full"
-																aria-label={m.envelope_recipient_col_locale()}
-															>
-																{recipientLocaleLabel(draftItem.locale)}
-															</Select.Trigger>
-															<Select.Content>
-																<Select.Group>
-																	<Select.Item value="en" label="English">English</Select.Item>
-																	<Select.Item value="ja" label="日本語">日本語</Select.Item>
-																</Select.Group>
-															</Select.Content>
-														</Select.Root>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-order-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_order()}</span>
-														</Field.FieldLabel>
-														<Input
-															id={`recipient-order-${draftItem.key}`}
-															type="number"
-															min="1"
-															max="1000"
-															value={draftItem.routingOrder}
-															oninput={(event) => {
-																const parsed = Number(event.currentTarget.value);
-																if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
-															}}
-															class="w-20"
-														/>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Button
-														size="icon"
-														variant="ghost"
-														aria-label={m.common_remove()}
-														onclick={() => removeRecipientDraft(draftItem.key)}
-													>
-														<IconTrash />
-													</Button>
-												</Table.Cell>
+												<Table.Head>{m.contacts_search_results()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
+												<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
 											</Table.Row>
-										{/each}
-									</Table.Body>
-								</Table.Root>
+										</Table.Header>
+										<Table.Body>
+											{#each recipientDrafts as draftItem (draftItem.key)}
+												<Table.Row>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldTitle class="sr-only">
+																{m.contacts_choose_action()}
+															</Field.FieldTitle>
+															<ContactCombobox
+																label={m.contacts_choose_action()}
+																onSelect={(contact) =>
+																	applyContactToRecipient(draftItem.key, contact)}
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-email-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_email()}</span>
+															</Field.FieldLabel>
+															<Input
+																id={`recipient-email-${draftItem.key}`}
+																type="email"
+																bind:value={draftItem.email}
+																oninput={() => markRecipientContactChanged(draftItem)}
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-name-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_name()}</span>
+															</Field.FieldLabel>
+															<Input
+																id={`recipient-name-${draftItem.key}`}
+																bind:value={draftItem.name}
+																oninput={() => markRecipientContactChanged(draftItem)}
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-role-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_role()}</span>
+															</Field.FieldLabel>
+															<Select.Root type="single" bind:value={draftItem.role}>
+																<Select.Trigger
+																	id={`recipient-role-${draftItem.key}`}
+																	class="w-full"
+																	aria-label={m.envelope_recipient_col_role()}
+																>
+																	{recipientRoleLabel(draftItem.role)}
+																</Select.Trigger>
+																<Select.Content>
+																	<Select.Group>
+																		<Select.Item value="signer" label={m.signing_role_signer()}>
+																			{m.signing_role_signer()}
+																		</Select.Item>
+																		<Select.Item value="approver" label={m.signing_role_approver()}>
+																			{m.signing_role_approver()}
+																		</Select.Item>
+																		<Select.Item value="viewer" label={m.signing_role_viewer()}>
+																			{m.signing_role_viewer()}
+																		</Select.Item>
+																		<Select.Item value="cc" label={m.envelope_role_cc()}>
+																			{m.envelope_role_cc()}
+																		</Select.Item>
+																	</Select.Group>
+																</Select.Content>
+															</Select.Root>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-locale-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_locale()}</span>
+															</Field.FieldLabel>
+															<Select.Root
+																type="single"
+																bind:value={draftItem.locale}
+																onValueChange={() => markRecipientContactChanged(draftItem)}
+															>
+																<Select.Trigger
+																	id={`recipient-locale-${draftItem.key}`}
+																	class="w-full"
+																	aria-label={m.envelope_recipient_col_locale()}
+																>
+																	{recipientLocaleLabel(draftItem.locale)}
+																</Select.Trigger>
+																<Select.Content>
+																	<Select.Group>
+																		<Select.Item value="en" label="English">English</Select.Item>
+																		<Select.Item value="ja" label="日本語">日本語</Select.Item>
+																	</Select.Group>
+																</Select.Content>
+															</Select.Root>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-order-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_order()}</span>
+															</Field.FieldLabel>
+															<Input
+																id={`recipient-order-${draftItem.key}`}
+																type="number"
+																min="1"
+																max="1000"
+																value={draftItem.routingOrder}
+																oninput={(event) => {
+																	const parsed = Number(event.currentTarget.value);
+																	if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
+																}}
+																class="w-20"
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<div class="flex items-center justify-end gap-1">
+															<Button
+																size="sm"
+																variant="outline"
+																disabled={contactSavePending[draftItem.key] ||
+																	!draftItem.email.trim() ||
+																	!draftItem.name.trim()}
+																onclick={() => void saveRecipientToContacts(draftItem)}
+															>
+																{#if contactSavePending[draftItem.key]}
+																	<Spinner data-icon="inline-start" />
+																{:else}
+																	<IconAddressBook data-icon="inline-start" />
+																{/if}
+																{contactSaveSucceeded[draftItem.key]
+																	? m.contacts_saved()
+																	: m.contacts_save_recipient_action()}
+															</Button>
+															<Button
+																size="icon"
+																variant="ghost"
+																aria-label={m.common_remove()}
+																onclick={() => removeRecipientDraft(draftItem.key)}
+															>
+																<IconTrash />
+															</Button>
+														</div>
+														{#if contactSaveError[draftItem.key]}
+															<p class="mt-1 text-xs text-destructive" role="alert">
+																{contactSaveError[draftItem.key]}
+															</p>
+														{/if}
+													</Table.Cell>
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</div>
 								<Button variant="outline" onclick={addRecipientDraft} class="w-fit">
 									<IconPlus data-icon="inline-start" />{m.envelope_add_recipient()}
 								</Button>
@@ -1545,6 +1669,7 @@
 						</Card.Footer>
 					{/if}
 				</Card.Root>
+				<ContactManagementDialog bind:open={contactManagementOpen} />
 			</Tabs.Content>
 
 			<Tabs.Content value="fields" class="flex flex-col gap-4">
