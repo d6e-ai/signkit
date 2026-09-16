@@ -144,4 +144,57 @@ describe('DOCX export HTTP handler', () => {
 			type: 'urn:signkit:problem:docx-export-empty'
 		});
 	});
+
+	it('returns unavailable rather than empty when a stored export fails integrity checks', async () => {
+		const service: Pick<
+			DocxConversionService,
+			'enqueueExport' | 'processInline' | 'readExportResult'
+		> = {
+			enqueueExport: vi.fn(async () => ({
+				outcome: 'existing',
+				job: { id: 'job-integrity-failed' }
+			})) as never,
+			processInline: vi.fn(async () => ({
+				jobId: 'job-integrity-failed',
+				outcome: 'integrity_failed' as const,
+				errorCode: 'docx_integrity_failed'
+			})),
+			readExportResult: vi.fn()
+		};
+		const response: Response = await createDocxExportHandler(() => service)(
+			createHttpRequestEvent({ pathname, locals: locals(), params: { envelopeId } })
+		);
+
+		await expectProblemResponse(response, {
+			status: 503,
+			type: 'urn:signkit:problem:docx-export-unavailable'
+		});
+		expect(service.readExportResult).not.toHaveBeenCalled();
+	});
+
+	it('returns 409 only for the stored empty-draft export failure', async () => {
+		const service: Pick<
+			DocxConversionService,
+			'enqueueExport' | 'processInline' | 'readExportResult'
+		> = {
+			enqueueExport: vi.fn(async () => ({
+				outcome: 'existing',
+				job: { id: 'job-empty-draft' }
+			})) as never,
+			processInline: vi.fn(async () => ({
+				jobId: 'job-empty-draft',
+				outcome: 'permanently_failed' as const,
+				errorCode: 'empty_draft'
+			})),
+			readExportResult: vi.fn()
+		};
+		const response: Response = await createDocxExportHandler(() => service)(
+			createHttpRequestEvent({ pathname, locals: locals(), params: { envelopeId } })
+		);
+
+		await expectProblemResponse(response, {
+			status: 409,
+			type: 'urn:signkit:problem:docx-export-empty'
+		});
+	});
 });

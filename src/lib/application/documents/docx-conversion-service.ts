@@ -313,10 +313,11 @@ export class DocxConversionService {
 				return { jobId, outcome: 'succeeded', job: existing };
 			}
 			if (existing.status === 'failed' && !existing.retryable) {
+				const errorCode: string = existing.lastError ?? 'permanently_failed';
 				return {
 					jobId,
-					outcome: 'permanently_failed',
-					errorCode: existing.lastError ?? 'permanently_failed'
+					outcome: errorCode === 'docx_integrity_failed' ? 'integrity_failed' : 'permanently_failed',
+					errorCode
 				};
 			}
 			return { jobId, outcome: 'stale' };
@@ -426,17 +427,26 @@ export class DocxConversionService {
 			});
 
 			const completedAt: string = (this.#now ? this.#now() : new Date()).toISOString();
-			const completed: boolean = await this.#store.completeImport({
-				jobId: claim.job.id,
-				claimToken: claim.claimToken,
-				attemptId: this.#newId(),
-				attemptNumber: claim.job.attempts,
-				startedAt: claim.startedAt,
-				completedAt,
-				resultGeneration: commitResult.revision.generation,
-				resultCommitSha: commitResult.revision.commitSha,
-				resultArchiveSha256: commitResult.revision.archiveSha256
-			});
+			let completed: boolean;
+			try {
+				completed = await this.#store.completeImport({
+					jobId: claim.job.id,
+					claimToken: claim.claimToken,
+					attemptId: this.#newId(),
+					attemptNumber: claim.job.attempts,
+					startedAt: claim.startedAt,
+					completedAt,
+					resultGeneration: commitResult.revision.generation,
+					resultCommitSha: commitResult.revision.commitSha,
+					resultArchiveSha256: commitResult.revision.archiveSha256
+				});
+			} catch {
+				return {
+					jobId: claim.job.id,
+					outcome: 'retryable_failed',
+					errorCode: 'job_completion_unknown'
+				};
+			}
 
 			if (!completed) return { jobId: claim.job.id, outcome: 'stale' };
 
@@ -469,18 +479,27 @@ export class DocxConversionService {
 			await this.#persistImmutableDocx(resultObjectKey, exported.bytes, resultSha256);
 
 			const completedAt: string = (this.#now ? this.#now() : new Date()).toISOString();
-			const completed: boolean = await this.#store.completeExport({
-				jobId: claim.job.id,
-				claimToken: claim.claimToken,
-				attemptId: this.#newId(),
-				attemptNumber: claim.job.attempts,
-				startedAt: claim.startedAt,
-				completedAt,
-				resultObjectKey,
-				resultSha256,
-				resultByteSize: exported.bytes.byteLength,
-				resultSkippedPdfCount: exported.skippedPdfCount
-			});
+			let completed: boolean;
+			try {
+				completed = await this.#store.completeExport({
+					jobId: claim.job.id,
+					claimToken: claim.claimToken,
+					attemptId: this.#newId(),
+					attemptNumber: claim.job.attempts,
+					startedAt: claim.startedAt,
+					completedAt,
+					resultObjectKey,
+					resultSha256,
+					resultByteSize: exported.bytes.byteLength,
+					resultSkippedPdfCount: exported.skippedPdfCount
+				});
+			} catch {
+				return {
+					jobId: claim.job.id,
+					outcome: 'retryable_failed',
+					errorCode: 'job_completion_unknown'
+				};
+			}
 
 			if (!completed) return { jobId: claim.job.id, outcome: 'stale' };
 
@@ -556,9 +575,16 @@ export class DocxConversionService {
 			};
 		}
 
+		if (error instanceof DraftIdempotencyConflictError) {
+			return {
+				outcome: 'permanently_failed',
+				retryable: false,
+				errorCode: 'idempotency_conflict'
+			};
+		}
+
 		if (
 			error instanceof DraftGenerationConflictError ||
-			error instanceof DraftIdempotencyConflictError ||
 			error instanceof DraftEnvelopeImmutableError ||
 			error instanceof DraftEnvelopeNotFoundError
 		) {

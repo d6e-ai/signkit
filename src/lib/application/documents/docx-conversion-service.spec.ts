@@ -26,6 +26,7 @@ import type { EnvelopeStore } from '$lib/ports/envelope-store';
 import type { Envelope } from '$lib/domain/envelope';
 import {
 	DraftGenerationConflictError,
+	DraftIdempotencyConflictError,
 	draftArchiveKey
 } from '$lib/application/drafts/draft-persistence';
 import { DocxImportError } from '$lib/adapters/documents/docx-import';
@@ -398,6 +399,43 @@ describe('DocxConversionService', () => {
 		expect(storedDocx?.sha256).toBe(completeCmd.resultSha256);
 	});
 
+	it('leaves an export claim recoverable when completion persistence is uncertain', async () => {
+		const store = new FakeDocxConversionStore();
+		const objects = new InMemoryObjectStore();
+		const archiveBytes = new TextEncoder().encode('fake-archive-bytes');
+		const archiveSha: string = await sha256Hex(archiveBytes);
+		const archiveKey: string = draftArchiveKey(ENVELOPE_ID, archiveSha);
+		objects.seed(archiveKey, archiveBytes, archiveSha);
+		const service = new DocxConversionService({
+			store,
+			objects,
+			importService: { importAndCommit: vi.fn() },
+			draftRepository: new FixedDraftRepository([
+				{ path: 'documents/agreement.md', content: '# Agreement\n' }
+			]),
+			now: () => NOW,
+			maxAttempts: 1
+		});
+
+		await service.enqueueExport({
+			envelopeId: ENVELOPE_ID,
+			sourceCommitSha: COMMIT_SHA,
+			sourceArchiveKey: archiveKey,
+			sourceArchiveSha256: archiveSha
+		});
+		const jobId: string = store.enqueueExportCommands[0].id;
+		vi.spyOn(store, 'completeExport').mockRejectedValueOnce(new Error('commit outcome unknown'));
+
+		const outcome = await service.processJob(jobId);
+		expect(outcome).toEqual({
+			jobId,
+			outcome: 'retryable_failed',
+			errorCode: 'job_completion_unknown'
+		});
+		expect(store.failCommands).toHaveLength(0);
+		expect((await store.find(jobId))?.status).toBe('processing');
+	});
+
 	it('fails with integrity error and non-retryable status when downloaded source bytes SHA256 mismatches', async () => {
 		const store = new FakeDocxConversionStore();
 		const objects = new InMemoryObjectStore();
@@ -521,6 +559,129 @@ describe('DocxConversionService', () => {
 		expect(store.failCommands).toHaveLength(1);
 		expect(store.failCommands[0].retryable).toBe(false);
 		expect(store.failCommands[0].errorCode).toBe('concurrency_conflict');
+	});
+
+	it('preserves idempotency conflicts as a distinct terminal outcome', async () => {
+		const store = new FakeDocxConversionStore();
+		const objects = new InMemoryObjectStore();
+		const rawDocxBytes = new TextEncoder().encode('docx-content');
+		const importService = {
+			importAndCommit: vi.fn(async () => {
+				throw new DraftIdempotencyConflictError();
+			})
+		};
+		const service = new DocxConversionService({
+			store,
+			objects,
+			importService,
+			draftRepository: new FixedDraftRepository(),
+			now: () => NOW
+		});
+
+		await service.enqueueImport({
+			envelopeId: ENVELOPE_ID,
+			bytes: rawDocxBytes,
+			targetPath: 'documents/agreement.md',
+			expectedGeneration: 0,
+			actor: { id: USER_ID, name: 'User', email: 'user@example.com', type: 'user' },
+			idempotencyKey: 'idem-conflict'
+		});
+
+		const outcome = await service.processJob(store.enqueueImportCommands[0].id);
+		expect(outcome).toEqual({
+			jobId: store.enqueueImportCommands[0].id,
+			outcome: 'permanently_failed',
+			errorCode: 'idempotency_conflict'
+		});
+		expect(store.failCommands[0].errorCode).toBe('idempotency_conflict');
+	});
+
+	it('leaves an import claim recoverable when completion persistence is uncertain', async () => {
+		const store = new FakeDocxConversionStore();
+		const objects = new InMemoryObjectStore();
+		const rawDocxBytes = new TextEncoder().encode('docx-content');
+		const importService = {
+			importAndCommit: vi.fn(async () => ({
+				outcome: 'committed' as const,
+				revision: {
+					generation: 1,
+					commitSha: 'commit-imported-1',
+					archiveKey: 'archives/archive-1.git.gz',
+					archiveSha256: 'sha-archive-1',
+					updatedAt: NOW.toISOString(),
+					auditEventId: 'audit-event-1'
+				}
+			}))
+		};
+		const service = new DocxConversionService({
+			store,
+			objects,
+			importService,
+			draftRepository: new FixedDraftRepository(),
+			now: () => NOW,
+			maxAttempts: 1
+		});
+
+		await service.enqueueImport({
+			envelopeId: ENVELOPE_ID,
+			bytes: rawDocxBytes,
+			targetPath: 'documents/agreement.md',
+			expectedGeneration: 0,
+			actor: { id: USER_ID, name: 'User', email: 'user@example.com', type: 'user' },
+			idempotencyKey: 'idem-completion-unknown'
+		});
+		const jobId: string = store.enqueueImportCommands[0].id;
+		vi.spyOn(store, 'completeImport').mockRejectedValueOnce(new Error('commit outcome unknown'));
+
+		const outcome = await service.processJob(jobId);
+		expect(outcome).toEqual({
+			jobId,
+			outcome: 'retryable_failed',
+			errorCode: 'job_completion_unknown'
+		});
+		expect(store.failCommands).toHaveLength(0);
+		expect((await store.find(jobId))?.status).toBe('processing');
+	});
+
+	it('replays a stored integrity failure with its original outcome class', async () => {
+		const store = new FakeDocxConversionStore();
+		const job: DocxImportJob = {
+			id: 'job-integrity-replay',
+			envelopeId: ENVELOPE_ID,
+			direction: 'import',
+			requestKey: 'integrity-replay',
+			requestFingerprint: 'fingerprint',
+			status: 'failed',
+			attempts: 1,
+			availableAt: NOW.toISOString(),
+			retryable: false,
+			lastError: 'docx_integrity_failed',
+			createdAt: NOW.toISOString(),
+			updatedAt: NOW.toISOString(),
+			completedAt: NOW.toISOString(),
+			sourceObjectKey: 'docx-conversions/source.docx',
+			sourceSha256: 'a'.repeat(64),
+			sourceByteSize: 4,
+			targetPath: 'documents/agreement.md',
+			expectedGeneration: 0,
+			actor: { id: USER_ID, name: 'User', email: 'user@example.com', type: 'user' },
+			idempotencyKey: 'integrity-replay',
+			result: null
+		};
+		store.jobs.set(job.id, job);
+		const service = new DocxConversionService({
+			store,
+			objects: new InMemoryObjectStore(),
+			importService: { importAndCommit: vi.fn() },
+			draftRepository: new FixedDraftRepository(),
+			now: () => NOW
+		});
+
+		expect(await service.processJob(job.id)).toEqual({
+			jobId: job.id,
+			outcome: 'integrity_failed',
+			errorCode: 'docx_integrity_failed'
+		});
 	});
 
 	it('applies exponential backoff on transient failure, and permanently fails when max attempts reached', async () => {

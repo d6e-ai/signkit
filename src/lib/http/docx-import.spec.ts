@@ -138,6 +138,39 @@ describe('DOCX import HTTP handler', () => {
 		expect(JSON.stringify(input?.edits)).not.toContain('PK');
 	});
 
+	it('returns the idempotency conflict problem when durable processing finds key reuse', async () => {
+		const service: Pick<DocxConversionService, 'enqueueImport' | 'processInline'> = {
+			enqueueImport: vi.fn(async () => ({
+				outcome: 'enqueued',
+				job: { id: 'job-idempotency-conflict' }
+			})) as never,
+			processInline: vi.fn(async () => ({
+				jobId: 'job-idempotency-conflict',
+				outcome: 'permanently_failed' as const,
+				errorCode: 'idempotency_conflict'
+			}))
+		};
+		const response: Response = await createDocxImportHandler(() => service)(
+			createHttpRequestEvent({
+				pathname: `${pathname}?targetPath=documents/agreement.md&expectedGeneration=0`,
+				method: 'POST',
+				locals: locals(),
+				params: { envelopeId },
+				headers: {
+					'idempotency-key': 'reused-key',
+					'content-type':
+						'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+				},
+				body: requestBody(sampleDocx())
+			})
+		);
+
+		await expectProblemResponse(response, {
+			status: 409,
+			type: 'urn:signkit:problem:draft-idempotency-conflict'
+		});
+	});
+
 	it('never forwards raw DOCX bytes into the draft commit', async () => {
 		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
 			committed()

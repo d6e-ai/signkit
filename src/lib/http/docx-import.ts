@@ -127,6 +127,9 @@ function conversionOutcomeProblem(
 			instance
 		});
 	}
+	if (outcome.errorCode === 'idempotency_conflict') {
+		return idempotencyConflict(instance);
+	}
 	if (outcome.outcome === 'integrity_failed' || outcome.errorCode === 'attempts_exhausted') {
 		return unavailableProblem(instance);
 	}

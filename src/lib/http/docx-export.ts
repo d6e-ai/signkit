@@ -51,7 +51,7 @@ function conversionOutcomeProblem(
 		response.headers.set('retry-after', '30');
 		return response;
 	}
-	if (outcome.outcome === 'permanently_failed' && outcome.errorCode !== 'attempts_exhausted') {
+	if (outcome.outcome === 'permanently_failed' && outcome.errorCode === 'empty_draft') {
 		return problemResponse({
 			type: 'urn:signkit:problem:docx-export-empty',
 			title: 'No pinned revision to export',
