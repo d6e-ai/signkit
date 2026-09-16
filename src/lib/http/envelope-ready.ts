@@ -7,6 +7,7 @@ import type {
 } from '$lib/application/envelopes/ready';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import { isActionableRecipientRole, recipientRoles } from '$lib/domain/envelope';
+import { normalizeRecipientEmail } from '$lib/domain/recipient-identity';
 import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
@@ -37,7 +38,7 @@ const readySchema = z
 	.superRefine((value, context): void => {
 		const emails: Set<string> = new Set<string>();
 		for (const [index, recipient] of value.recipients.entries()) {
-			const email: string = recipient.email.toLowerCase();
+			const email: string = normalizeRecipientEmail(recipient.email);
 			if (emails.has(email)) {
 				context.addIssue({
 					code: 'custom',

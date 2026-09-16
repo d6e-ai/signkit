@@ -67,4 +67,22 @@ describe('envelope list product copy', () => {
 		expect(en.envelope_recipient_status_pending).toBe('Waiting');
 		expect(en.envelope_recipient_status_pending).not.toBe('pending');
 	});
+
+	it('localizes explicit contact reuse without implying automatic retention', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		expect(en.contacts_save_recipient_action).toBe('Save to contacts');
+		expect(ja.contacts_save_recipient_action).toBe('連絡先に保存');
+		expect(en.contacts_manage_action).toBe('Manage contacts');
+		expect(ja.contacts_manage_action).toBe('連絡先を管理');
+		for (const copy of [
+			en.contacts_manage_description,
+			en.contacts_empty_description,
+			ja.contacts_manage_description,
+			ja.contacts_empty_description
+		]) {
+			expect(copy).not.toMatch(/automatic|automatically|自動/);
+		}
+	});
 });

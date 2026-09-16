@@ -16,6 +16,8 @@ No tenant selector is accepted. A key belongs to the local member that created i
 
 Recipient endpoints use `skr1_` capability links and the encrypted browser session created from them. Background drains use their dedicated deployment secrets.
 
+The contact API is human-session-only. API keys, recipient capabilities, and recipient browser sessions do not authorize contact reads or mutations.
+
 ## Common rules
 
 - Operator identifiers are UUIDv7.
@@ -50,6 +52,26 @@ One envelope owns one ordered document set and one Git history. Markdown is comm
 
 DOCX import and export keep their synchronous success responses for browser and CLI compatibility, but conversion begins only after a durable SQL job exists. A transient inline failure remains retryable by the protected DOCX drain; repeating the same import `Idempotency-Key` or exporting the same pinned revision resolves the durable result instead of starting unrelated work. DOCX source and result bytes stay outside Git.
 
+## Contact endpoints
+
+Contacts are private to the verified d6e-auth subject that owns them and require that subject to remain an active local `instance_member`. A request never supplies an owner or organization selector. API keys and recipient capabilities are rejected.
+
+For a concise Japanese description of this surface, see [Contact API (日本語)](api/contacts.ja.md).
+
+| Method   | Path                           | Purpose                               | Idempotency-Key |
+| -------- | ------------------------------ | ------------------------------------- | --------------- |
+| `GET`    | `/api/v1/contacts`             | List the caller's contacts            | no              |
+| `POST`   | `/api/v1/contacts/search`      | Search the caller's contacts          | no              |
+| `POST`   | `/api/v1/contacts`             | Explicitly save a contact             | required        |
+| `PUT`    | `/api/v1/contacts/{contactId}` | Replace a contact at an exact version | required        |
+| `DELETE` | `/api/v1/contacts/{contactId}` | Delete a contact at an exact version  | required        |
+
+List accepts only `cursor` and `limit`. Search accepts a bounded strict JSON body `{ query, cursor?, limit? }`; the query is deliberately absent from URLs, access logs, and cursors. List and search return `{ items, nextCursor }`, and a cursor contains only an owner-scoped contact UUID.
+
+The public contact model is `{ id, email, name, locale, version, createdAt, updatedAt }`. `name` is the display name and `locale` is the preferred recipient language (`en` or `ja`). Create and replacement accept only `email`, `name`, and `locale`; replacement and deletion also require `expectedVersion`. Unknown and cross-owner IDs return the same opaque not-found response. Successful safe replays return `Idempotency-Replayed: true`; deletion returns `{ deleted: { id, deletedAt } }`.
+
+Contacts are created only by the explicit save operation. Selecting one copies email, name, and locale into a recipient draft while leaving role and routing order unchanged. Preparing or sending an envelope never saves a contact, and changing or deleting a contact never rewrites an existing envelope recipient or its evidence.
+
 ## Recipient endpoints
 
 The `/api/v1/signing/**` family exchanges a capability for an envelope-scoped browser session, returns the pinned recipient workspace, records viewing, and accepts decline, approve, or sign decisions. Field submissions are validated against the pinned generation and the fields assigned to that recipient.
@@ -79,3 +101,5 @@ These endpoints require a human session and reject API-key credentials:
 | `POST` | `/api/v1/webhooks/{webhookId}/revoke` | Revoke a webhook              |
 
 See [authorization and instance administration](architecture/authorization-and-instance-administration.md) for role and fail-closed details.
+
+The contact endpoints above are also human-session-only, but they are ordinary per-member product data rather than instance administration.

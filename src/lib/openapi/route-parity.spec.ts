@@ -145,6 +145,100 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 		}
 	});
 
+	it('documents owner-scoped contacts without putting search PII in URLs or cursors', () => {
+		const document = openApiDocument();
+		const collection = pathItem(document, '/api/v1/contacts');
+		const search = pathItem(document, '/api/v1/contacts/search').post;
+		const item = pathItem(document, '/api/v1/contacts/{contactId}');
+
+		for (const operation of [collection.get, collection.post, search, item.put, item.delete]) {
+			expect(operation.security).toEqual([{ SessionCookie: [] }]);
+			expect(operation.security).not.toEqual(expect.arrayContaining([{ SignKitApiKey: [] }]));
+		}
+
+		const listParameters = collection.get.parameters as Array<{
+			name: string;
+			in: string;
+			description?: string;
+		}>;
+		expect(listParameters.map((parameter) => parameter.name)).toEqual(['cursor', 'limit']);
+		expect(listParameters.find((parameter) => parameter.name === 'cursor')?.description).toContain(
+			'no name, email address, or search text'
+		);
+		expect(search.parameters).toBeUndefined();
+
+		const searchSchema = (
+			search.requestBody as {
+				content: {
+					'application/json': {
+						schema: {
+							required: string[];
+							additionalProperties: boolean;
+							properties: Record<string, unknown>;
+						};
+					};
+				};
+			}
+		).content['application/json'].schema;
+		expect(searchSchema.required).toEqual(['query']);
+		expect(searchSchema.additionalProperties).toBe(false);
+		expect(Object.keys(searchSchema.properties).sort()).toEqual(['cursor', 'limit', 'query']);
+
+		for (const operation of [collection.post, item.put, item.delete]) {
+			expect(operation.parameters).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: 'Idempotency-Key', in: 'header', required: true })
+				])
+			);
+		}
+		expect(collection.get.parameters).not.toEqual(
+			expect.arrayContaining([expect.objectContaining({ name: 'Idempotency-Key' })])
+		);
+		expect(search.parameters).toBeUndefined();
+
+		for (const operation of [collection.post, search, item.put, item.delete]) {
+			const schema = (
+				operation.requestBody as {
+					content: {
+						'application/json': {
+							schema: {
+								additionalProperties: boolean;
+								properties: Record<string, { maximum?: number }>;
+							};
+						};
+					};
+				}
+			).content['application/json'].schema;
+			expect(schema.additionalProperties).toBe(false);
+		}
+
+		const updateSchema = (
+			item.put.requestBody as {
+				content: {
+					'application/json': { schema: { properties: { expectedVersion: { maximum: number } } } };
+				};
+			}
+		).content['application/json'].schema;
+		const deleteSchema = (
+			item.delete.requestBody as {
+				content: {
+					'application/json': {
+						schema: { properties: { expectedVersion: { maximum: number } } };
+					};
+				};
+			}
+		).content['application/json'].schema;
+		expect(updateSchema.properties.expectedVersion.maximum).toBe(2_147_483_646);
+		expect(deleteSchema.properties.expectedVersion.maximum).toBe(2_147_483_647);
+
+		const contactSchema = (
+			document.components as {
+				schemas: { Contact: { properties: { version: { maximum: number } } } };
+			}
+		).schemas.Contact;
+		expect(contactSchema.properties.version.maximum).toBe(2_147_483_647);
+	});
+
 	it('documents operator evidence and PDF aliases with envelopes:read auth and no internal keys', () => {
 		const document = openApiDocument();
 		const evidenceFormat = {
