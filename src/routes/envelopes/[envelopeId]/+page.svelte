@@ -982,7 +982,7 @@
 	<title>{envelope?.title ?? m.envelope_detail_title()} — {m.app_name()}</title>
 </svelte:head>
 
-<div class="mx-auto flex w-full max-w-6xl flex-col gap-6">
+<div class="flex w-full flex-col gap-6">
 	{#if authRequired}
 		<Card.Root>
 			<Card.Content class="flex flex-col items-center gap-4 py-10 text-center">

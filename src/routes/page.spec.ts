@@ -18,7 +18,9 @@ const PAGE_DATA = { email: 'user@example.com', name: 'User', instanceMemberRole:
 describe('dashboard page', () => {
 	it('renders the SSR initial loading shell without crashing', () => {
 		const { body } = render(DashboardPage, { props: { data: PAGE_DATA } });
-		expect(body).toContain('mx-auto flex w-full max-w-7xl flex-col gap-6');
+		expect(body).toContain('flex w-full flex-col gap-6');
+		expect(body).not.toContain('max-w-7xl');
+		expect(body).not.toContain('mx-auto');
 	});
 
 	it('titles the page Dashboard, not Agreements', () => {
