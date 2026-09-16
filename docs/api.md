@@ -48,6 +48,8 @@ Recipient endpoints use `skr1_` capability links and the encrypted browser sessi
 
 One envelope owns one ordered document set and one Git history. Markdown is committed directly. Uploaded PDFs remain immutable object bytes while Git records their manifest entries and digests. Sending pins the exact revision and renders the recipient document set.
 
+DOCX import and export keep their synchronous success responses for browser and CLI compatibility, but conversion begins only after a durable SQL job exists. A transient inline failure remains retryable by the protected DOCX drain; repeating the same import `Idempotency-Key` or exporting the same pinned revision resolves the durable result instead of starting unrelated work. DOCX source and result bytes stay outside Git.
+
 ## Recipient endpoints
 
 The `/api/v1/signing/**` family exchanges a capability for an envelope-scoped browser session, returns the pinned recipient workspace, records viewing, and accepts decline, approve, or sign decisions. Field submissions are validated against the pinned generation and the fields assigned to that recipient.

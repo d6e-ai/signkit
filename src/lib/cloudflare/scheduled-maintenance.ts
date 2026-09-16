@@ -26,6 +26,7 @@ const INTERNAL_ORIGIN: string = 'https://signkit.internal';
  */
 export const SCHEDULED_MAINTENANCE_JOBS: readonly ScheduledMaintenanceJob[] = [
 	{ name: 'delivery drain', path: '/api/v1/system/deliveries/drain' },
+	{ name: 'DOCX conversion drain', path: '/api/v1/system/docx-conversions/drain' },
 	{ name: 'completion artifact drain', path: '/api/v1/system/completion-artifacts/drain' },
 	{ name: 'completion delivery drain', path: '/api/v1/system/completion-deliveries/drain' },
 	{ name: 'envelope expiry drain', path: '/api/v1/system/envelopes/expiry-drain' },

@@ -7,6 +7,7 @@ import type {
 import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
 import { CLOUDFLARE_DOCX_IMPORT_LIMITS } from '$lib/adapters/documents/docx-import';
 import { DocxImportService } from '$lib/application/documents/docx-import-service';
+import type { DocxConversionService } from '$lib/application/documents/docx-conversion-service';
 import { createDocxImportHandler } from './docx-import';
 import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
@@ -43,6 +44,35 @@ function sampleDocx(): Uint8Array {
 		commitSha: 'a'.repeat(40),
 		documents: [{ path: 'documents/agreement.md', content: '# Agreement\n\nHello.\n' }]
 	});
+}
+
+function durableImportService(
+	commit: (input: CommitDraftInput) => Promise<CommitDraftResult>
+): Pick<DocxConversionService, 'enqueueImport' | 'processInline'> {
+	const importer = new DocxImportService({ commit });
+	let revision: CommitDraftResult['revision'] | null = null;
+	return {
+		enqueueImport: vi.fn(async (input) => {
+			const committedResult: CommitDraftResult = await importer.importAndCommit({
+				envelopeId: input.envelopeId,
+				targetPath: input.targetPath,
+				expectedGeneration: input.expectedGeneration,
+				actor: input.actor,
+				idempotencyKey: input.idempotencyKey,
+				docxBytes: input.bytes
+			});
+			revision = committedResult.revision;
+			return { outcome: 'enqueued', job: { id: 'job-1' } } as never;
+		}),
+		processInline: vi.fn(async () => {
+			if (revision === null) throw new Error('DOCX import was not enqueued');
+			return {
+				jobId: 'job-1',
+				outcome: 'succeeded',
+				job: { direction: 'import', result: revision }
+			} as never;
+		})
+	};
 }
 
 describe('DOCX import HTTP handler', () => {
@@ -83,7 +113,7 @@ describe('DOCX import HTTP handler', () => {
 		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
 			committed()
 		);
-		const handler: RequestHandler = createDocxImportHandler(() => ({ commit }));
+		const handler: RequestHandler = createDocxImportHandler(() => durableImportService(commit));
 		const docx = sampleDocx();
 		const response: Response = await handler(
 			createHttpRequestEvent({
@@ -130,7 +160,7 @@ describe('DOCX import HTTP handler', () => {
 		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
 			committed()
 		);
-		const handler: RequestHandler = createDocxImportHandler(() => ({ commit }));
+		const handler: RequestHandler = createDocxImportHandler(() => durableImportService(commit));
 		const response: Response = await handler(
 			createHttpRequestEvent({
 				pathname: `${pathname}?targetPath=documents/agreement.md&expectedGeneration=0`,
@@ -152,7 +182,7 @@ describe('DOCX import HTTP handler', () => {
 		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
 			committed()
 		);
-		const resolver = vi.fn(() => ({ commit }));
+		const resolver = vi.fn(() => durableImportService(commit));
 		const handler: RequestHandler = createDocxImportHandler(resolver);
 		const form = new FormData();
 		form.set('expectedGeneration', '0');
@@ -185,7 +215,7 @@ describe('DOCX import HTTP handler', () => {
 		const commit = vi.fn<(input: CommitDraftInput) => Promise<CommitDraftResult>>(async () =>
 			committed()
 		);
-		const handler: RequestHandler = createDocxImportHandler(() => ({ commit }));
+		const handler: RequestHandler = createDocxImportHandler(() => durableImportService(commit));
 		let cancelReason: unknown;
 		const chunkBytes = 64 * 1024;
 		const body = new ReadableStream<Uint8Array>({
@@ -231,7 +261,7 @@ describe('DOCX import HTTP handler', () => {
 		const oversized = new Uint8Array(CLOUDFLARE_DOCX_IMPORT_LIMITS.maxInputBytes + 1);
 		oversized[0] = 0x50;
 		oversized[1] = 0x4b;
-		const response: Response = await createDocxImportHandler(() => ({ commit }))(
+		const response: Response = await createDocxImportHandler(() => durableImportService(commit))(
 			createHttpRequestEvent({
 				pathname: `${pathname}?targetPath=documents/agreement.md&expectedGeneration=0`,
 				method: 'POST',

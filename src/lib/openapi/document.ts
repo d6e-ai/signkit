@@ -1040,6 +1040,15 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Sweep batch result', { type: 'object' })
 				})
 			},
+			'/api/v1/system/docx-conversions/drain': {
+				post: op({
+					summary: 'Drain pending DOCX conversion jobs',
+					operationId: 'drainDocxConversions',
+					tags: ['System'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
+				})
+			},
 			'/api/v1/system/completion-artifacts/drain': {
 				post: op({
 					summary: 'Drain pending completion artifact publication',

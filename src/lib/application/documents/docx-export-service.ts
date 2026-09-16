@@ -5,7 +5,7 @@ import {
 import type { EnvelopeStore } from '$lib/ports/envelope-store';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectStore } from '$lib/ports/object-store';
-import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
+import { DocxExportError, exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
 import { parseDocumentSet, type DocumentSetLeaf } from '$lib/domain/document-set';
 import { isMarkdownPath } from '$lib/domain/envelope';
 
@@ -32,7 +32,10 @@ export async function exportPinnedDocx(
 		isMarkdownPath(document.path)
 	);
 	if (markdownDocuments.length === 0) {
-		throw new Error('The pinned revision contains no Markdown documents to export');
+		throw new DocxExportError(
+			'empty_draft',
+			'The pinned revision contains no Markdown documents to export'
+		);
 	}
 	const skippedPdfCount: number = await countSkippedPdfDocuments(
 		verified.archive,
