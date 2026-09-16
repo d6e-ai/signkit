@@ -6,11 +6,13 @@ import {
 	DraftEnvelopeNotFoundError,
 	DraftGenerationConflictError,
 	DraftIdempotencyConflictError,
-	DraftIntegrityError,
-	type CommitDraftResult,
-	type DraftPersistenceService
+	DraftIntegrityError
 } from '$lib/application/drafts/draft-persistence';
-import { DocxImportService } from '$lib/application/documents/docx-import-service';
+import {
+	type DocxConversionItemOutcome,
+	DocxConversionService
+} from '$lib/application/documents/docx-conversion-service';
+import type { EnqueueDocxConversionResult } from '$lib/ports/docx-conversion-store';
 import { MAX_DRAFT_GENERATION } from '$lib/domain/draft';
 import {
 	DocxImportError,
@@ -53,9 +55,9 @@ interface ResolverContext {
 export type DocxImportPersistenceResolver = (
 	context: ResolverContext
 ) =>
-	| Pick<DraftPersistenceService, 'commit'>
+	| Pick<DocxConversionService, 'enqueueImport' | 'processInline'>
 	| null
-	| Promise<Pick<DraftPersistenceService, 'commit'> | null>;
+	| Promise<Pick<DocxConversionService, 'enqueueImport' | 'processInline'> | null>;
 
 type ParsedImport =
 	| {
@@ -90,6 +92,54 @@ function notFoundProblem(instance: string): Response {
 		status: 404,
 		detail: 'No envelope was found.',
 		instance
+	});
+}
+
+function idempotencyConflict(instance: string): Response {
+	return problemResponse({
+		type: 'urn:signkit:problem:draft-idempotency-conflict',
+		title: 'Idempotency key conflict',
+		status: 409,
+		detail: 'The Idempotency-Key was already used for a different draft command.',
+		instance
+	});
+}
+
+function conversionOutcomeProblem(
+	outcome: Exclude<DocxConversionItemOutcome, { outcome: 'succeeded' }>,
+	instance: string,
+	limits: DocxImportLimits
+): Response {
+	if (outcome.outcome === 'stale' || outcome.outcome === 'retryable_failed') {
+		const response: Response = unavailableProblem(instance);
+		response.headers.set('retry-after', '30');
+		return response;
+	}
+	if (outcome.errorCode === 'too_large' || outcome.errorCode === 'entry_too_large') {
+		return tooLarge(instance, limits.maxInputBytes);
+	}
+	if (outcome.errorCode === 'concurrency_conflict') {
+		return problemResponse({
+			type: 'urn:signkit:problem:draft-generation-conflict',
+			title: 'Draft state conflict',
+			status: 409,
+			detail: 'The draft changed or became immutable before DOCX conversion completed.',
+			instance
+		});
+	}
+	if (outcome.errorCode === 'idempotency_conflict') {
+		return idempotencyConflict(instance);
+	}
+	if (outcome.outcome === 'integrity_failed' || outcome.errorCode === 'attempts_exhausted') {
+		return unavailableProblem(instance);
+	}
+	return problemResponse({
+		type: 'urn:signkit:problem:validation-failed',
+		title: 'DOCX import rejected',
+		status: 400,
+		detail: 'The DOCX could not be converted safely.',
+		instance,
+		errors: [{ path: 'file', message: outcome.errorCode }]
 	});
 }
 
@@ -276,9 +326,9 @@ export function createDocxImportHandler(
 		const parsed: ParsedImport = await parseImport(request, url, limits);
 		if (!parsed.ok) return parsed.response;
 
-		let persistence: Pick<DraftPersistenceService, 'commit'> | null;
+		let service: Pick<DocxConversionService, 'enqueueImport' | 'processInline'> | null;
 		try {
-			persistence = await resolvePersistence({ locals, platform });
+			service = await resolvePersistence({ locals, platform });
 		} catch (error: unknown) {
 			console.error(
 				JSON.stringify({
@@ -288,30 +338,38 @@ export function createDocxImportHandler(
 			);
 			return unavailableProblem(url.pathname);
 		}
-		if (persistence === null) return unavailableProblem(url.pathname);
+		if (service === null) return unavailableProblem(url.pathname);
 
-		const importer: DocxImportService = new DocxImportService(persistence);
 		try {
-			const result: CommitDraftResult = await importer.importAndCommit({
+			const enqueued: EnqueueDocxConversionResult = await service.enqueueImport({
 				envelopeId: envelopeIdResult.data,
+				bytes: parsed.docxBytes,
 				targetPath: parsed.targetPath,
 				expectedGeneration: parsed.expectedGeneration,
 				actor: draftActor(authorized),
-				idempotencyKey: idempotencyResult.data,
-				docxBytes: parsed.docxBytes,
-				limits
+				idempotencyKey: idempotencyResult.data
 			});
+			if (enqueued.outcome === 'conflict') {
+				return idempotencyConflict(url.pathname);
+			}
+			const processed: DocxConversionItemOutcome = await service.processInline(enqueued.job.id);
+			if (processed.outcome !== 'succeeded') {
+				return conversionOutcomeProblem(processed, url.pathname, limits);
+			}
+			if (processed.job.direction !== 'import' || processed.job.result === null) {
+				return unavailableProblem(url.pathname);
+			}
 			const revision = {
-				generation: result.revision.generation,
-				commitSha: result.revision.commitSha,
-				archiveSha256: result.revision.archiveSha256
+				generation: processed.job.result.generation,
+				commitSha: processed.job.result.commitSha,
+				archiveSha256: processed.job.result.archiveSha256
 			};
 			const headers: Headers = new Headers({
 				'cache-control': 'no-store',
 				'content-type': 'application/json',
 				location: `/api/v1/envelopes/${envelopeIdResult.data}/draft/commits/${revision.commitSha}`
 			});
-			if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
+			if (enqueued.outcome === 'existing') headers.set('idempotency-replayed', 'true');
 			return new Response(JSON.stringify({ revision }), { status: 201, headers });
 		} catch (error: unknown) {
 			if (error instanceof DocxImportError) {
@@ -329,13 +387,7 @@ export function createDocxImportHandler(
 			}
 			if (error instanceof DraftEnvelopeNotFoundError) return notFoundProblem(url.pathname);
 			if (error instanceof DraftIdempotencyConflictError) {
-				return problemResponse({
-					type: 'urn:signkit:problem:draft-idempotency-conflict',
-					title: 'Idempotency key conflict',
-					status: 409,
-					detail: 'The Idempotency-Key was already used for a different draft command.',
-					instance: url.pathname
-				});
+				return idempotencyConflict(url.pathname);
 			}
 			if (error instanceof DraftGenerationConflictError) {
 				return problemResponse({

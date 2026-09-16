@@ -210,9 +210,18 @@ export class D1OrphanReferenceStore implements OrphanReferenceStore {
 				SELECT object_key AS key FROM envelope_uploaded_document WHERE object_key IN (${placeholders})
 				UNION
 				SELECT object_key AS key FROM envelope_sent_document WHERE object_key IN (${placeholders})
+				UNION
+				SELECT source_object_key AS key FROM docx_conversion_job
+				WHERE source_object_key IN (${placeholders})
+					AND (status IN ('pending','processing') OR (status = 'failed' AND retryable = 1))
+				UNION
+				SELECT result_object_key AS key FROM docx_conversion_job
+				WHERE result_object_key IN (${placeholders}) AND status = 'succeeded'
 			`;
 
 			const bindings = [
+				...chunk,
+				...chunk,
 				...chunk,
 				...chunk,
 				...chunk,
@@ -277,6 +286,13 @@ export class PostgresOrphanReferenceStore implements OrphanReferenceStore {
 				SELECT object_key AS key FROM envelope_uploaded_document WHERE object_key = ANY(${chunk})
 				UNION
 				SELECT object_key AS key FROM envelope_sent_document WHERE object_key = ANY(${chunk})
+				UNION
+				SELECT source_object_key AS key FROM docx_conversion_job
+				WHERE source_object_key = ANY(${chunk})
+					AND (status IN ('pending','processing') OR (status = 'failed' AND retryable))
+				UNION
+				SELECT result_object_key AS key FROM docx_conversion_job
+				WHERE result_object_key = ANY(${chunk}) AND status = 'succeeded'
 			`;
 
 			for (const row of rows) {

@@ -31,6 +31,7 @@ describe('Cloudflare scheduled maintenance', () => {
 			.sort();
 		expect(paths).toEqual([...SCHEDULED_MAINTENANCE_JOBS.map((job) => job.path)].sort());
 		expect(paths).toContain('/api/v1/system/webhooks/drain');
+		expect(paths).toContain('/api/v1/system/docx-conversions/drain');
 		expect(paths).toContain('/api/v1/system/objects/orphan-sweep');
 		expect(paths).toContain('/api/v1/system/envelopes/expiry-drain');
 		expect(paths).toContain('/api/v1/system/deliveries/reseal-sweep');

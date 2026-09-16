@@ -2,14 +2,15 @@ import type { RequestHandler } from '@sveltejs/kit';
 import type { ZodType } from 'zod';
 import {
 	DraftIntegrityError,
-	DraftReadConflictError
+	DraftReadConflictError,
+	DraftEnvelopeNotFoundError
 } from '$lib/application/drafts/draft-persistence';
 import {
-	exportEnvelopeDocx,
-	type EnvelopeDocxExportResult
-} from '$lib/application/documents/docx-export-service';
+	DocxConversionService,
+	type DocxConversionItemOutcome
+} from '$lib/application/documents/docx-conversion-service';
 import { DocxExportError } from '$lib/adapters/documents/docx-export';
-import type { EnvelopeDocxExportDependencies } from '$lib/application/documents/docx-export-runtime';
+import type { EnqueueDocxConversionResult } from '$lib/ports/docx-conversion-store';
 import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
@@ -23,7 +24,13 @@ interface ResolverContext {
 
 export type DocxExportResolver = (
 	context: ResolverContext
-) => EnvelopeDocxExportDependencies | null | Promise<EnvelopeDocxExportDependencies | null>;
+) =>
+	| Pick<DocxConversionService, 'enqueueExport' | 'processInline' | 'readExportResult'>
+	| null
+	| Promise<Pick<
+			DocxConversionService,
+			'enqueueExport' | 'processInline' | 'readExportResult'
+	  > | null>;
 
 function unavailable(instance: string): Response {
 	return problemResponse({
@@ -33,6 +40,27 @@ function unavailable(instance: string): Response {
 		detail: 'The pinned revision could not be exported as DOCX.',
 		instance
 	});
+}
+
+function conversionOutcomeProblem(
+	outcome: Exclude<DocxConversionItemOutcome, { outcome: 'succeeded' }>,
+	instance: string
+): Response {
+	if (outcome.outcome === 'stale' || outcome.outcome === 'retryable_failed') {
+		const response: Response = unavailable(instance);
+		response.headers.set('retry-after', '30');
+		return response;
+	}
+	if (outcome.outcome === 'permanently_failed' && outcome.errorCode === 'empty_draft') {
+		return problemResponse({
+			type: 'urn:signkit:problem:docx-export-empty',
+			title: 'No pinned revision to export',
+			status: 409,
+			detail: 'The pinned revision cannot be exported as DOCX.',
+			instance
+		});
+	}
+	return unavailable(instance);
 }
 
 export function createDocxExportHandler(resolveExport: DocxExportResolver): RequestHandler {
@@ -55,9 +83,12 @@ export function createDocxExportHandler(resolveExport: DocxExportResolver): Requ
 			});
 		}
 
-		let dependencies: EnvelopeDocxExportDependencies | null;
+		let service: Pick<
+			DocxConversionService,
+			'enqueueExport' | 'processInline' | 'readExportResult'
+		> | null;
 		try {
-			dependencies = await resolveExport({ platform });
+			service = await resolveExport({ platform });
 		} catch (error: unknown) {
 			console.error(
 				JSON.stringify({
@@ -67,16 +98,33 @@ export function createDocxExportHandler(resolveExport: DocxExportResolver): Requ
 			);
 			return unavailable(url.pathname);
 		}
-		if (dependencies === null) return unavailable(url.pathname);
+		if (service === null) return unavailable(url.pathname);
 
 		try {
-			const result: EnvelopeDocxExportResult = await exportEnvelopeDocx(
-				envelopeId.data,
-				dependencies.envelopes,
-				dependencies.objects,
-				dependencies.repository
-			);
-			if (result.outcome === 'not_found') {
+			const enqueued: EnqueueDocxConversionResult = await service.enqueueExport({
+				envelopeId: envelopeId.data
+			});
+			if (enqueued.outcome === 'conflict') return unavailable(url.pathname);
+			const processed: DocxConversionItemOutcome = await service.processInline(enqueued.job.id);
+			if (processed.outcome !== 'succeeded') {
+				return conversionOutcomeProblem(processed, url.pathname);
+			}
+			if (processed.job.direction !== 'export') return unavailable(url.pathname);
+			const exported: Uint8Array = await service.readExportResult(processed.job);
+			const body = new Uint8Array(exported.byteLength);
+			body.set(exported);
+			return new Response(body, {
+				status: 200,
+				headers: {
+					'content-type': DOCX_CONTENT_TYPE,
+					'cache-control': 'no-store',
+					'content-disposition': `attachment; filename="envelope-${envelopeId.data}.docx"`,
+					'x-content-type-options': 'nosniff',
+					'x-signkit-commit-sha': processed.job.sourceCommitSha
+				}
+			});
+		} catch (error: unknown) {
+			if (error instanceof DraftEnvelopeNotFoundError) {
 				return problemResponse({
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
@@ -85,29 +133,6 @@ export function createDocxExportHandler(resolveExport: DocxExportResolver): Requ
 					instance: url.pathname
 				});
 			}
-			if (result.outcome === 'empty_draft') {
-				return problemResponse({
-					type: 'urn:signkit:problem:docx-export-empty',
-					title: 'No pinned revision to export',
-					status: 409,
-					detail: 'The envelope has no pinned Markdown revision to export as DOCX.',
-					instance: url.pathname
-				});
-			}
-
-			const body = new Uint8Array(result.bytes.byteLength);
-			body.set(result.bytes);
-			return new Response(body, {
-				status: 200,
-				headers: {
-					'content-type': DOCX_CONTENT_TYPE,
-					'cache-control': 'no-store',
-					'content-disposition': `attachment; filename="envelope-${envelopeId.data}.docx"`,
-					'x-content-type-options': 'nosniff',
-					'x-signkit-commit-sha': result.commitSha
-				}
-			});
-		} catch (error: unknown) {
 			if (error instanceof DocxExportError) {
 				return problemResponse({
 					type: 'urn:signkit:problem:docx-export-empty',
