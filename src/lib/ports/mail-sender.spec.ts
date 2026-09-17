@@ -31,6 +31,8 @@ describe('sanitizeMailErrorCode', () => {
 	it('accepts only stable machine codes', () => {
 		expect(sanitizeMailErrorCode('mailbox_unavailable')).toBe('mailbox_unavailable');
 		expect(sanitizeMailErrorCode('skdc1_sealed')).toBe(FALLBACK_MAIL_ERROR_CODE);
+		expect(sanitizeMailErrorCode('ski1_invitation')).toBe(FALLBACK_MAIL_ERROR_CODE);
+		expect(sanitizeMailErrorCode('skiod1_ciphertext')).toBe(FALLBACK_MAIL_ERROR_CODE);
 	});
 });
 

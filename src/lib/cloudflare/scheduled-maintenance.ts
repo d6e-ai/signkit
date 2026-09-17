@@ -25,6 +25,7 @@ const INTERNAL_ORIGIN: string = 'https://signkit.internal';
  * starting. Order is documentation only; `waitUntil` runs them concurrently.
  */
 export const SCHEDULED_MAINTENANCE_JOBS: readonly ScheduledMaintenanceJob[] = [
+	{ name: 'instance invitation delivery drain', path: '/api/v1/system/instance-invitations/drain' },
 	{ name: 'delivery drain', path: '/api/v1/system/deliveries/drain' },
 	{ name: 'DOCX conversion drain', path: '/api/v1/system/docx-conversions/drain' },
 	{ name: 'completion artifact drain', path: '/api/v1/system/completion-artifacts/drain' },

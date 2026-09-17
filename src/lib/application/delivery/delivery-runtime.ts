@@ -22,7 +22,7 @@ export async function resolveInvitationDeliveryService(
 
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
-		const mailSender: MailSender | null = resolveWorkerMailSender(
+		const mailSender: MailSender | null = await resolveWorkerMailSender(
 			context.platform.env,
 			context.platform.env.EMAIL
 		);

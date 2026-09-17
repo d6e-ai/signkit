@@ -170,7 +170,9 @@ function isSensitiveCode(code: string): boolean {
 		code.startsWith('skca1_') ||
 		code.startsWith('skcd1_') ||
 		code.startsWith('skr1_') ||
-		code.startsWith('skdc1_')
+		code.startsWith('skdc1_') ||
+		code.startsWith('ski1_') ||
+		code.startsWith('skiod1_')
 	);
 }
 

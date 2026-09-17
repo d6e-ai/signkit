@@ -9,6 +9,7 @@ import {
 	type InstanceMemberApplicationPort
 } from '$lib/application/instance-members/instance-member-service';
 import { InstanceApplication, type InstanceApplicationPort } from './instance-service';
+import type { InstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
 
 /**
  * Share the process-local PostgreSQL pool used by the rest of the Node and
@@ -23,11 +24,13 @@ export function resolvePostgresInstanceApplication(databaseUrl: string): Instanc
  * Vercel runtimes.
  */
 export function resolvePostgresInstanceInvitationApplication(
-	databaseUrl: string
+	databaseUrl: string,
+	payloadSealer: InstanceInvitationDeliveryPayloadSealer
 ): InstanceInvitationApplicationPort {
-	return new InstanceInvitationApplication(
-		new PostgresInstanceStore(resolvePostgresSql(databaseUrl))
-	);
+	return new InstanceInvitationApplication({
+		store: new PostgresInstanceStore(resolvePostgresSql(databaseUrl)),
+		payloadSealer
+	});
 }
 
 /**

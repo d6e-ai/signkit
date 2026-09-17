@@ -53,17 +53,23 @@ function bootstrapCommand(
 function createInvitationCommand(
 	overrides: Partial<CreateInstanceInvitationCommand> = {}
 ): CreateInstanceInvitationCommand {
+	const invitationId: string = overrides.invitationId ?? INVITATION_ID;
 	return {
 		actor: { type: 'user', id: ACTOR_ID },
 		idempotencyKey: 'invite-create-key-1',
 		requestFingerprint: REQUEST_FINGERPRINT,
-		invitationId: INVITATION_ID,
+		deliveryLocale: 'ja',
+		sealedDeliveryPayload: 'skiod1_test',
+		deliverySealingKeyId: 'test-key',
+		sealedDeliveryPayloadSha256: 'd'.repeat(64),
 		role: 'member',
 		tokenHash: TOKEN_HASH,
 		emailBinding: EMAIL_BINDING,
 		createdAt: CREATED_AT,
 		expiresAt: EXPIRES_AT,
-		...overrides
+		...overrides,
+		invitationId,
+		deliveryId: overrides.deliveryId ?? invitationId
 	};
 }
 
@@ -280,6 +286,39 @@ describe('D1InstanceStore', () => {
 			}
 		});
 
+		it('replays against the previous-key fingerprint during key rotation', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand());
+
+				const replay = await store.createInstanceInvitation(
+					createInvitationCommand({
+						requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+						previousRequestFingerprint: REQUEST_FINGERPRINT
+					})
+				);
+				expect(replay.outcome).toBe('replayed');
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('rejects historical replay after the fixed invitation window expires', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand());
+
+				const expiredReplay = await store.createInstanceInvitation(
+					createInvitationCommand({ createdAt: EXPIRES_AT })
+				);
+				expect(expiredReplay).toEqual({ outcome: 'idempotency_conflict' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
 		it('classifies cross-subject attempt as already_bootstrapped without replay', async () => {
 			const { store, sqlite } = createFixture();
 			try {
@@ -431,7 +470,7 @@ describe('D1InstanceStore', () => {
 	});
 
 	describe('createInstanceInvitation', () => {
-		it('atomically creates an invitation and command receipt for active owner', async () => {
+		it('atomically creates invitation, encrypted mail delivery, and receipt for active owner', async () => {
 			const { store, sqlite } = createFixture();
 			try {
 				await store.bootstrapInstance(bootstrapCommand());
@@ -473,6 +512,21 @@ describe('D1InstanceStore', () => {
 					token_hash: TOKEN_HASH,
 					email_binding: EMAIL_BINDING,
 					invited_by_user_id: ACTOR_ID
+				});
+
+				const delivery = sqlite
+					.prepare(
+						'SELECT id, invitation_id, locale, status, sealed_payload, attempts, retryable FROM instance_invitation_delivery_outbox WHERE invitation_id = ?'
+					)
+					.get(INVITATION_ID);
+				expect(delivery).toEqual({
+					id: INVITATION_ID,
+					invitation_id: INVITATION_ID,
+					locale: 'ja',
+					status: 'pending',
+					sealed_payload: 'skiod1_test',
+					attempts: 0,
+					retryable: 1
 				});
 
 				const receipt = sqlite
@@ -704,6 +758,7 @@ describe('D1InstanceStore', () => {
 
 				// Now clean up invitations/commands and seed 200 live pending invitations
 				sqlite.exec('DELETE FROM instance_invitation_command');
+				sqlite.exec('DELETE FROM instance_invitation_delivery_outbox');
 				sqlite.exec('DELETE FROM instance_invitation');
 
 				for (let i = 1; i <= 200; i++) {

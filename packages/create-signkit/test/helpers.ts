@@ -457,6 +457,7 @@ export function command(overrides: Partial<ParsedCommand> = {}): ParsedCommand {
 		workerName: 'signkit',
 		d1: 'signkit',
 		r2: 'signkit-objects',
+		mailProvider: 'cloudflare',
 		version: 'latest',
 		channel: 'stable',
 		yes: true,
@@ -472,6 +473,11 @@ export function command(overrides: Partial<ParsedCommand> = {}): ParsedCommand {
 			d6eAuthBaseUrl: false,
 			emailFrom: false,
 			emailFromName: false,
+			mailProvider: false,
+			smtpHost: false,
+			smtpPort: false,
+			smtpSecure: false,
+			smtpUsername: false,
 			bootstrapOwnerEmail: false,
 			...overrides.overrides
 		}

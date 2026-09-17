@@ -99,6 +99,11 @@ const createCommand: CreateInstanceInvitationCommand = {
 	role: 'member',
 	tokenHash: TOKEN_HASH,
 	emailBinding: EMAIL_BINDING,
+	deliveryId: '01900000-0000-7000-8000-000000000002',
+	deliveryLocale: 'ja',
+	sealedDeliveryPayload: 'skiod1_test',
+	deliverySealingKeyId: 'test-key',
+	sealedDeliveryPayloadSha256: 'd'.repeat(64),
 	createdAt: CREATED_AT,
 	expiresAt: EXPIRES_AT
 };
@@ -122,7 +127,7 @@ const revokeCommand: RevokeInstanceInvitationCommand = {
 
 describe('D1InstanceStore unit tests', () => {
 	describe('createInstanceInvitation', () => {
-		it('prepares single batch of invitation insert and command receipt when gate passes', async () => {
+		it('prepares one atomic batch for invitation, encrypted delivery, and receipt', async () => {
 			const fake = fakeD1({
 				batchResults: [
 					[{ role: 'owner', status: 'active' }], // member
@@ -137,7 +142,7 @@ describe('D1InstanceStore unit tests', () => {
 			expect(fake.batches).toHaveLength(2); // batch 0: gate, batch 1: mutations
 
 			const mutationBatch = fake.batches[1];
-			expect(mutationBatch).toHaveLength(2);
+			expect(mutationBatch).toHaveLength(3);
 			expect(mutationBatch[0].sql).toContain('INSERT INTO instance_invitation');
 			expect(mutationBatch[0].bindings).toEqual([
 				INVITATION_ID,
@@ -148,8 +153,20 @@ describe('D1InstanceStore unit tests', () => {
 				CREATED_AT,
 				EXPIRES_AT
 			]);
-			expect(mutationBatch[1].sql).toContain('INSERT INTO instance_invitation_command');
+			expect(mutationBatch[1].sql).toContain('INSERT INTO instance_invitation_delivery_outbox');
 			expect(mutationBatch[1].bindings).toEqual([
+				createCommand.deliveryId,
+				INVITATION_ID,
+				'ja',
+				'skiod1_test',
+				'test-key',
+				'd'.repeat(64),
+				CREATED_AT,
+				CREATED_AT,
+				CREATED_AT
+			]);
+			expect(mutationBatch[2].sql).toContain('INSERT INTO instance_invitation_command');
+			expect(mutationBatch[2].bindings).toEqual([
 				OWNER_ID,
 				'create-idem-1',
 				REQUEST_FINGERPRINT,

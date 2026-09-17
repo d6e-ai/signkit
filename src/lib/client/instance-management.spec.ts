@@ -323,7 +323,7 @@ describe('InstanceManagementClient', () => {
 					revokedAt: null,
 					revokedByUserId: null
 				},
-				token: 'ski1_fresh_invitation_token_123'
+				delivery: { status: 'scheduled' as const }
 			};
 			const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(mockData, 201));
 			const client = createInstanceManagementClient({
@@ -333,7 +333,8 @@ describe('InstanceManagementClient', () => {
 
 			const res: CreateInstanceInvitationResponse = await client.createInvitation({
 				email: 'alice@example.com',
-				role: 'admin'
+				role: 'admin',
+				locale: 'en'
 			});
 
 			expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/instance/invitations', {
@@ -344,11 +345,11 @@ describe('InstanceManagementClient', () => {
 					accept: 'application/json, application/problem+json',
 					'idempotency-key': 'inv-key'
 				},
-				body: JSON.stringify({ email: 'alice@example.com', role: 'admin' })
+				body: JSON.stringify({ email: 'alice@example.com', role: 'admin', locale: 'en' })
 			});
 			expect(res).toEqual({
 				invitation: mockData.invitation,
-				token: 'ski1_fresh_invitation_token_123',
+				delivery: { status: 'scheduled' },
 				replayed: false
 			});
 		});
@@ -581,8 +582,8 @@ describe('InstanceManagementClient', () => {
 		});
 	});
 
-	describe('Replay header and optional one-time token / secret modeling', () => {
-		it('models invitation token as absent on replayed creation (HTTP 200 + idempotency-replayed)', async () => {
+	describe('Replay header and optional one-time secret modeling', () => {
+		it('models scheduled invitation delivery on replayed creation (HTTP 200 + idempotency-replayed)', async () => {
 			const mockData = {
 				invitation: {
 					id: 'inv-001',
@@ -595,7 +596,8 @@ describe('InstanceManagementClient', () => {
 					acceptedByUserId: null,
 					revokedAt: null,
 					revokedByUserId: null
-				}
+				},
+				delivery: { status: 'scheduled' as const }
 			};
 			const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
 				mockJsonResponse(mockData, 200, { 'idempotency-replayed': 'true' })
@@ -605,7 +607,7 @@ describe('InstanceManagementClient', () => {
 			const res = await client.createInvitation({ email: 'bob@example.com', role: 'admin' });
 
 			expect(res.replayed).toBe(true);
-			expect(res.token).toBeUndefined();
+			expect(res.delivery).toEqual({ status: 'scheduled' });
 			expect(res.invitation).toEqual(mockData.invitation);
 		});
 
@@ -823,7 +825,7 @@ describe('InstanceManagementClient', () => {
 	});
 
 	describe('No accidental token retention in client', () => {
-		it('does not retain invitation token in the client instance after createInvitation', async () => {
+		it('does not expose or retain a legacy invitation token returned by an older server', async () => {
 			const sensitiveInvitationToken = 'ski1_very_secret_one_time_token_xyz987';
 			const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
 				mockJsonResponse(
@@ -840,7 +842,8 @@ describe('InstanceManagementClient', () => {
 							revokedAt: null,
 							revokedByUserId: null
 						},
-						token: sensitiveInvitationToken
+						token: sensitiveInvitationToken,
+						delivery: { status: 'scheduled' }
 					},
 					201
 				)
@@ -851,7 +854,12 @@ describe('InstanceManagementClient', () => {
 				email: 'carol@example.com',
 				role: 'member'
 			});
-			expect(response.token).toBe(sensitiveInvitationToken);
+			expect(response).toEqual({
+				invitation: expect.objectContaining({ id: 'inv-123' }),
+				delivery: { status: 'scheduled' },
+				replayed: false
+			});
+			expect(response).not.toHaveProperty('token');
 
 			// Assert client object does not retain the token in any property
 			const clientProperties = Object.getOwnPropertyNames(client);

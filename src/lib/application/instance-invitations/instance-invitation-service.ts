@@ -29,6 +29,11 @@ import {
 	type IssuedInstanceInvitationToken
 } from '$lib/security/instance-invitation';
 import { canonicalJson, sha256Hex } from '$lib/application/instance/instance-command-fingerprint';
+import type {
+	InstanceInvitationDeliveryLocale,
+	InstanceInvitationDeliveryPayloadSealer,
+	InstanceInvitationRequestFingerprints
+} from '$lib/security/instance-invitation-delivery-payload';
 
 export { canonicalJson, sha256Hex };
 
@@ -48,6 +53,7 @@ export interface CreateInstanceInvitationInput {
 	idempotencyKey: string;
 	email: string;
 	role: InstanceMemberRole | string;
+	locale?: InstanceInvitationDeliveryLocale;
 	/**
 	 * Omit for the fixed 7-day default. Null is rejected: instance invitations
 	 * must expire and cannot exceed the fixed 7-day lifetime.
@@ -64,12 +70,7 @@ export interface CreateInstanceInvitationInput {
  * never minted. All other store outcomes stay discriminated for HTTP mapping.
  */
 export type CreateInstanceInvitationResult =
-	| {
-			outcome: 'created';
-			invitation: InstanceInvitationMetadata;
-			token: string;
-			replayed?: false;
-	  }
+	| { outcome: 'created'; invitation: InstanceInvitationMetadata; replayed?: false }
 	| {
 			outcome: 'replayed';
 			invitation: InstanceInvitationMetadata;
@@ -208,8 +209,10 @@ export class InstanceInvitationCollisionExhaustedError extends Error {
 
 export interface InstanceInvitationApplicationDependencies {
 	readonly store: InstanceStore;
+	readonly payloadSealer: InstanceInvitationDeliveryPayloadSealer;
 	readonly now?: () => Date;
 	readonly newId?: UuidV7Generator;
+	readonly newDeliveryId?: UuidV7Generator;
 	readonly issueToken?: () => Promise<IssuedInstanceInvitationToken>;
 }
 
@@ -217,7 +220,7 @@ export interface InstanceInvitationApplicationDependencies {
  * Pure application service coordinating zero-PII instance invitation workflows:
  *
  * - `create`: validates/normalizes email and role, computes fixed 7-day expiry,
- *   hashes canonical `{ role }` only for a zero-PII request fingerprint, mints
+ *   computes a keyed, zero-PII request fingerprint over email, role, and locale, mints
  *   UUIDv7/token/binding, retries up to 3 times strictly on `credential_collision`,
  *   and returns token on fresh creation or `replayed: true` on replay.
  * - `list`: validates/clamps limits and passes pagination cursor to store.
@@ -231,14 +234,11 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 	private readonly store: InstanceStore;
 	private readonly now: () => Date;
 	private readonly newId: UuidV7Generator;
+	private readonly newDeliveryId: UuidV7Generator;
 	private readonly issueToken: () => Promise<IssuedInstanceInvitationToken>;
+	private readonly payloadSealer: InstanceInvitationDeliveryPayloadSealer;
 
-	constructor(
-		storeOrDependencies: InstanceStore | InstanceInvitationApplicationDependencies,
-		now: () => Date = (): Date => new Date(),
-		newId: UuidV7Generator = newUuidV7,
-		issueToken: () => Promise<IssuedInstanceInvitationToken> = issueInstanceInvitationToken
-	) {
+	constructor(storeOrDependencies: InstanceStore | InstanceInvitationApplicationDependencies) {
 		if (
 			'store' in storeOrDependencies &&
 			typeof (storeOrDependencies as InstanceInvitationApplicationDependencies).store ===
@@ -248,14 +248,13 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 			const deps: InstanceInvitationApplicationDependencies =
 				storeOrDependencies as InstanceInvitationApplicationDependencies;
 			this.store = deps.store;
+			this.payloadSealer = deps.payloadSealer;
 			this.now = deps.now ?? ((): Date => new Date());
 			this.newId = deps.newId ?? newUuidV7;
+			this.newDeliveryId = deps.newDeliveryId ?? newUuidV7;
 			this.issueToken = deps.issueToken ?? issueInstanceInvitationToken;
 		} else {
-			this.store = storeOrDependencies as InstanceStore;
-			this.now = now;
-			this.newId = newId;
-			this.issueToken = issueToken;
+			throw new Error('Instance invitation delivery encryption is required');
 		}
 	}
 
@@ -267,13 +266,21 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 		const idempotencyKey: string = assertIdempotencyKey(input.idempotencyKey);
 		const normalizedEmail: string = normalizeEmail(input.email);
 		const normalizedRole: InstanceMemberRole = normalizeRole(input.role);
+		const locale: InstanceInvitationDeliveryLocale = input.locale ?? 'ja';
 
 		const now: Date = this.now();
 		const createdAt: string = now.toISOString();
 		const expiresAt: string = computeExpiresAt(now, input.expiresAt);
 
-		// Zero-PII request fingerprint: canonical { role } only, without email or secret
-		const requestFingerprint: string = await sha256Hex(canonicalJson({ role: normalizedRole }));
+		// Keyed fingerprint binds every delivery-affecting field without making the
+		// invited mailbox guessable from a stored unsalted hash. The previous-key
+		// candidate preserves exact replays during the documented rotation window.
+		const requestFingerprints: InstanceInvitationRequestFingerprints =
+			await this.payloadSealer.fingerprintRequest({
+				email: normalizedEmail,
+				role: normalizedRole,
+				locale
+			});
 
 		for (let attempt: number = 0; attempt < MAX_CREDENTIAL_ATTEMPTS; attempt += 1) {
 			const invitationId: string = this.newId();
@@ -282,19 +289,33 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 			}
 
 			const issued: IssuedInstanceInvitationToken = await this.issueToken();
+			const deliveryId: string = this.newDeliveryId();
+			if (!isInstanceInvitationId(deliveryId)) {
+				throw new Error('Generated invitation delivery id is not a canonical UUIDv7');
+			}
 			const emailBinding: string = await computeInstanceInvitationEmailBinding(
 				issued.token,
 				normalizedEmail
+			);
+			const sealed = await this.payloadSealer.seal(
+				{ email: normalizedEmail, token: issued.token },
+				{ invitationId, deliveryId }
 			);
 
 			const command: CreateInstanceInvitationCommand = {
 				actor: commandActor,
 				idempotencyKey,
-				requestFingerprint,
+				requestFingerprint: requestFingerprints.active,
+				previousRequestFingerprint: requestFingerprints.previous,
 				invitationId,
 				role: normalizedRole,
 				tokenHash: issued.tokenHash,
 				emailBinding,
+				deliveryId,
+				deliveryLocale: locale,
+				sealedDeliveryPayload: sealed.sealedPayload,
+				deliverySealingKeyId: sealed.sealingKeyId,
+				sealedDeliveryPayloadSha256: sealed.sealedPayloadSha256,
 				createdAt,
 				expiresAt
 			};
@@ -307,7 +328,6 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 					return {
 						outcome: 'created',
 						invitation: result.invitation,
-						token: issued.token,
 						replayed: false
 					};
 				case 'replayed':

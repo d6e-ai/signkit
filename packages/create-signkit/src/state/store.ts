@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
 import { SECRET_ENV_NAME } from '../constants.js';
 import { generic, usage } from '../cli/errors.js';
-import type { CommandName, ProviderId, ReleaseChannel } from '../cli/parse.js';
+import type { CommandName, MailProviderId, ProviderId, ReleaseChannel } from '../cli/parse.js';
 import type { FileSystem } from '../runtime/fs.js';
 
 export const STATE_SCHEMA_VERSION = 1 as const;
@@ -18,6 +18,11 @@ export interface DeploymentState {
 	d6eAuthBaseUrl?: string;
 	emailFrom?: string;
 	emailFromName?: string;
+	mailProvider?: MailProviderId;
+	smtpHost?: string;
+	smtpPort?: number;
+	smtpSecure?: boolean;
+	smtpUsername?: string;
 	/**
 	 * Canonicalized (trimmed, lowercased) bootstrap owner email recorded from
 	 * `--bootstrap-owner-email`. Non-secret deployment configuration like
@@ -134,6 +139,44 @@ export function parseState(raw: string): DeploymentState {
 	}
 	if (parsed.schemaEpoch !== undefined && typeof parsed.schemaEpoch !== 'string') {
 		throw generic('deployment state schemaEpoch is invalid');
+	}
+	if (
+		parsed.mailProvider !== undefined &&
+		parsed.mailProvider !== 'cloudflare' &&
+		parsed.mailProvider !== 'smtp'
+	) {
+		throw generic('deployment state mailProvider is invalid');
+	}
+	if (
+		parsed.smtpHost !== undefined &&
+		(typeof parsed.smtpHost !== 'string' ||
+			parsed.smtpHost.length < 1 ||
+			parsed.smtpHost.length > 253 ||
+			/\s|\0/.test(parsed.smtpHost))
+	) {
+		throw generic('deployment state smtpHost is invalid');
+	}
+	if (
+		parsed.smtpPort !== undefined &&
+		(typeof parsed.smtpPort !== 'number' ||
+			!Number.isInteger(parsed.smtpPort) ||
+			parsed.smtpPort < 1 ||
+			parsed.smtpPort > 65_535 ||
+			parsed.smtpPort === 25)
+	) {
+		throw generic('deployment state smtpPort is invalid');
+	}
+	if (parsed.smtpSecure !== undefined && typeof parsed.smtpSecure !== 'boolean') {
+		throw generic('deployment state smtpSecure is invalid');
+	}
+	if (
+		parsed.smtpUsername !== undefined &&
+		(typeof parsed.smtpUsername !== 'string' ||
+			parsed.smtpUsername.length < 1 ||
+			parsed.smtpUsername.length > 256 ||
+			parsed.smtpUsername.includes('\0'))
+	) {
+		throw generic('deployment state smtpUsername is invalid');
 	}
 	return parsed as unknown as DeploymentState;
 }

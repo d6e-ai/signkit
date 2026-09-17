@@ -49,10 +49,15 @@ const idempotencyKeySchema: ZodType<string> = z
  * accepts a caller-supplied expiry, so every created invitation gets the
  * service's fixed default lifetime.
  */
-const createInstanceInvitationSchema: ZodType<{ email: string; role: InstanceMemberRole }> = z
+const createInstanceInvitationSchema: ZodType<{
+	email: string;
+	role: InstanceMemberRole;
+	locale?: 'en' | 'ja';
+}> = z
 	.object({
 		email: z.string().min(1).max(INSTANCE_INVITATION_EMAIL_MAX_LENGTH),
-		role: z.enum(['owner', 'admin', 'member'])
+		role: z.enum(['owner', 'admin', 'member']),
+		locale: z.enum(['en', 'ja']).optional()
 	})
 	.strict();
 
@@ -362,7 +367,8 @@ export function createInstanceInvitationHttpHandlers(
 			const result: CreateInstanceInvitationResult = await application.create(actorOf(authorized), {
 				idempotencyKey: idempotencyKey.data,
 				email: parsed.data.email,
-				role: parsed.data.role
+				role: parsed.data.role,
+				locale: parsed.data.locale
 			});
 			return createResponse(result, url.pathname);
 		} catch (error: unknown) {
@@ -589,20 +595,26 @@ export function createInstanceInvitationHttpHandlers(
 
 function createResponse(result: CreateInstanceInvitationResult, instance: string): Response {
 	if (result.outcome === 'created') {
-		return new Response(JSON.stringify({ invitation: result.invitation, token: result.token }), {
-			status: 201,
-			headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
-		});
+		return new Response(
+			JSON.stringify({ invitation: result.invitation, delivery: { status: 'scheduled' } }),
+			{
+				status: 201,
+				headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
+			}
+		);
 	}
 	if (result.outcome === 'replayed') {
-		return new Response(JSON.stringify({ invitation: result.invitation }), {
-			status: 200,
-			headers: {
-				'cache-control': 'no-store',
-				'content-type': 'application/json',
-				'idempotency-replayed': 'true'
+		return new Response(
+			JSON.stringify({ invitation: result.invitation, delivery: { status: 'scheduled' } }),
+			{
+				status: 200,
+				headers: {
+					'cache-control': 'no-store',
+					'content-type': 'application/json',
+					'idempotency-replayed': 'true'
+				}
 			}
-		});
+		);
 	}
 	if (result.outcome === 'forbidden') return forbidden(instance);
 	if (result.outcome === 'role_not_permitted') return roleNotPermitted(instance);

@@ -114,6 +114,7 @@ interface CreateInvitationReceiptRow {
 	invAcceptedByUserId: string | null;
 	invRevokedAt: Date | string | null;
 	invRevokedByUserId: string | null;
+	deliveryId: string | null;
 }
 
 interface AcceptInvitationReceiptRow {
@@ -414,7 +415,27 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback(await this.#classifyCreateFailure(transaction, command));
 					}
 
-					// 6. Insert receipt
+					// 6. Insert the encrypted delivery row in the same transaction.
+					const insertedDelivery = await transaction<{ id: string }[]>`
+						INSERT INTO instance_invitation_delivery_outbox (
+							id, invitation_id, locale, status, sealed_payload, sealing_key_id,
+							sealed_payload_sha256, available_at, attempts, retryable,
+							claim_token, locked_at, delivered_at, provider_message_id, last_error,
+							created_at, updated_at
+						) VALUES (
+							${command.deliveryId}, ${command.invitationId}, ${command.deliveryLocale},
+							'pending', ${command.sealedDeliveryPayload}, ${command.deliverySealingKeyId},
+							${command.sealedDeliveryPayloadSha256}, ${command.createdAt}::timestamptz,
+							0, true, NULL, NULL, NULL, NULL, NULL,
+							${command.createdAt}::timestamptz, ${command.createdAt}::timestamptz
+						)
+						ON CONFLICT DO NOTHING
+						RETURNING id`;
+					if (insertedDelivery.length !== 1) {
+						throw new InstanceRollback(await this.#classifyCreateFailure(transaction, command));
+					}
+
+					// 7. Insert receipt
 					const insertedReceipt = await transaction<{ actorId: string }[]>`
 						INSERT INTO instance_invitation_command (
 							actor_type, actor_id, idempotency_key, command_type, request_hash,
@@ -1448,9 +1469,12 @@ export class PostgresInstanceStore implements InstanceStore {
 				invitation.accepted_at AS "invAcceptedAt",
 				invitation.accepted_by_user_id AS "invAcceptedByUserId",
 				invitation.revoked_at AS "invRevokedAt",
-				invitation.revoked_by_user_id AS "invRevokedByUserId"
+				invitation.revoked_by_user_id AS "invRevokedByUserId",
+				delivery.id AS "deliveryId"
 			FROM instance_invitation_command command
 			LEFT JOIN instance_invitation invitation ON invitation.id = command.invitation_id
+			LEFT JOIN instance_invitation_delivery_outbox delivery
+			  ON delivery.invitation_id = command.invitation_id
 			WHERE command.actor_type = ${actorType}
 			  AND command.actor_id = ${actorId}
 			  AND command.idempotency_key = ${idempotencyKey}
@@ -1574,6 +1598,13 @@ export class PostgresInstanceStore implements InstanceStore {
 			SELECT id FROM instance_invitation WHERE token_hash = ${command.tokenHash} LIMIT 1
 		`;
 		if (existingHash.length > 0) {
+			return { outcome: 'credential_collision' };
+		}
+
+		const existingDelivery = await sql<{ id: string }[]>`
+			SELECT id FROM instance_invitation_delivery_outbox WHERE id = ${command.deliveryId} LIMIT 1
+		`;
+		if (existingDelivery.length > 0) {
 			return { outcome: 'credential_collision' };
 		}
 
@@ -1963,9 +1994,6 @@ function evaluateCreateReceipt(
 	row: CreateInvitationReceiptRow,
 	command: CreateInstanceInvitationCommand
 ): CreateInstanceInvitationStoreResult {
-	if (row.requestHash !== command.requestFingerprint) {
-		return { outcome: 'idempotency_conflict' };
-	}
 	if (row.commandType !== 'create' || row.role !== command.role || row.resultStatus !== 'pending') {
 		return { outcome: 'idempotency_conflict' };
 	}
@@ -1974,16 +2002,37 @@ function evaluateCreateReceipt(
 		row.invId !== row.invitationId ||
 		row.invRole !== row.role ||
 		row.invCreatedAt === null ||
+		row.invExpiresAt === null ||
 		toIso(row.invCreatedAt) !== toIso(row.occurredAt) ||
 		row.invInvitedByUserId !== command.actor.id ||
+		row.deliveryId === null ||
 		!isValidTerminalShape(row)
 	) {
 		return { outcome: 'integrity_error' };
+	}
+	const replayedAt: number = Date.parse(command.createdAt);
+	const replayExpiresAt: number = Date.parse(toIso(row.invExpiresAt));
+	if (!Number.isFinite(replayedAt) || !Number.isFinite(replayExpiresAt)) {
+		return { outcome: 'integrity_error' };
+	}
+	if (replayedAt >= replayExpiresAt || !matchesCreateRequestFingerprint(row.requestHash, command)) {
+		return { outcome: 'idempotency_conflict' };
 	}
 	return {
 		outcome: 'replayed',
 		invitation: metadataFromJoinedInvitation(row)
 	};
+}
+
+function matchesCreateRequestFingerprint(
+	stored: string,
+	command: CreateInstanceInvitationCommand
+): boolean {
+	return (
+		stored === command.requestFingerprint ||
+		(command.previousRequestFingerprint !== undefined &&
+			stored === command.previousRequestFingerprint)
+	);
 }
 
 function evaluateAcceptReceipt(

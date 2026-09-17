@@ -17,6 +17,7 @@ import { usage } from './errors.js';
 import { parseEmailAddress, parseHttpsOrigin } from './urls.js';
 
 export type ProviderId = 'cloudflare' | 'node' | 'vercel';
+export type MailProviderId = 'cloudflare' | 'smtp';
 export type CommandName = (typeof COMMANDS)[number];
 export type ReleaseChannel = 'stable' | 'beta';
 
@@ -33,6 +34,11 @@ export interface ParsedCommand {
 	d6eAuthBaseUrl?: string;
 	emailFrom?: string;
 	emailFromName?: string;
+	mailProvider: MailProviderId;
+	smtpHost?: string;
+	smtpPort?: number;
+	smtpSecure?: boolean;
+	smtpUsername?: string;
 	bootstrapOwnerEmail?: string;
 	version: string;
 	channel: ReleaseChannel;
@@ -48,6 +54,11 @@ export interface ParsedCommand {
 		d6eAuthBaseUrl: boolean;
 		emailFrom: boolean;
 		emailFromName: boolean;
+		mailProvider: boolean;
+		smtpHost: boolean;
+		smtpPort: boolean;
+		smtpSecure: boolean;
+		smtpUsername: boolean;
 		bootstrapOwnerEmail: boolean;
 	};
 }
@@ -75,6 +86,11 @@ const VALUE_OPTION_FLAGS = new Set([
 	'd6e-auth-base-url',
 	'email-from',
 	'email-from-name',
+	'mail-provider',
+	'smtp-host',
+	'smtp-port',
+	'smtp-secure',
+	'smtp-username',
 	'bootstrap-owner-email',
 	'version',
 	'channel',
@@ -119,7 +135,12 @@ export function parseArgv(argv: string[]): ParsedArgv {
 			const eq = arg.indexOf('=');
 			const rawName = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
 			const name = rawName.toLowerCase();
-			if (SECRET_FLAG_NAMES.has(name) || name.includes('secret') || name.includes('token')) {
+			if (
+				SECRET_FLAG_NAMES.has(name) ||
+				name.includes('secret') ||
+				name.includes('token') ||
+				name.includes('password')
+			) {
 				throw usage(
 					`refusing secret-bearing flag --${rawName}; secrets are never accepted on argv (use Wrangler secret storage, interactive stdin, or documented environment channels)`
 				);
@@ -255,6 +276,21 @@ export function parseArgv(argv: string[]): ParsedArgv {
 	if (emailFromName !== undefined && (emailFromName.length === 0 || emailFromName.includes('\0'))) {
 		throw usage('--email-from-name must be nonempty text');
 	}
+	const mailProviderRaw = values.get('mail-provider') ?? 'cloudflare';
+	if (mailProviderRaw !== 'cloudflare' && mailProviderRaw !== 'smtp') {
+		throw usage('--mail-provider must be cloudflare or smtp');
+	}
+	const mailProvider: MailProviderId = mailProviderRaw;
+	const smtpHost = parseOptionalSmtpHost(values.get('smtp-host'));
+	const smtpPort = parseOptionalSmtpPort(values.get('smtp-port'));
+	const smtpSecure = parseOptionalSmtpSecure(values.get('smtp-secure'));
+	const smtpUsername = parseOptionalSmtpUsername(values.get('smtp-username'));
+	const hasSmtpFlag = ['smtp-host', 'smtp-port', 'smtp-secure', 'smtp-username'].some((name) =>
+		values.has(name)
+	);
+	if (values.has('mail-provider') && mailProvider === 'cloudflare' && hasSmtpFlag) {
+		throw usage('SMTP flags require --mail-provider smtp');
+	}
 	const bootstrapOwnerEmailRaw = values.get('bootstrap-owner-email');
 	// Non-secret deployment configuration (like --email-from): validated and
 	// canonicalized to trimmed lowercase so the Worker var exactly matches the
@@ -284,6 +320,11 @@ export function parseArgv(argv: string[]): ParsedArgv {
 		d6eAuthBaseUrl,
 		emailFrom,
 		emailFromName,
+		mailProvider,
+		smtpHost,
+		smtpPort,
+		smtpSecure,
+		smtpUsername,
 		bootstrapOwnerEmail,
 		version,
 		channel: channelRaw,
@@ -299,9 +340,51 @@ export function parseArgv(argv: string[]): ParsedArgv {
 			d6eAuthBaseUrl: values.has('d6e-auth-base-url'),
 			emailFrom: values.has('email-from'),
 			emailFromName: values.has('email-from-name'),
+			mailProvider: values.has('mail-provider'),
+			smtpHost: values.has('smtp-host'),
+			smtpPort: values.has('smtp-port'),
+			smtpSecure: values.has('smtp-secure'),
+			smtpUsername: values.has('smtp-username'),
 			bootstrapOwnerEmail: values.has('bootstrap-owner-email')
 		}
 	};
+}
+
+function parseOptionalSmtpHost(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const host: string = value.trim();
+	if (host.length < 1 || host.length > 253 || /\s|\0/.test(host)) {
+		throw usage('--smtp-host must be 1-253 non-whitespace characters');
+	}
+	return host;
+}
+
+function parseOptionalSmtpPort(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!/^[0-9]{1,5}$/.test(value)) {
+		throw usage('--smtp-port must be an integer from 1 to 65535 other than 25');
+	}
+	const port: number = Number(value);
+	if (port < 1 || port > 65_535 || port === 25) {
+		throw usage('--smtp-port must be an integer from 1 to 65535 other than 25');
+	}
+	return port;
+}
+
+function parseOptionalSmtpSecure(value: string | undefined): boolean | undefined {
+	if (value === undefined) return undefined;
+	if (value === 'true') return true;
+	if (value === 'false') return false;
+	throw usage('--smtp-secure must be exactly true or false');
+}
+
+function parseOptionalSmtpUsername(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const username: string = value.trim();
+	if (username.length < 1 || username.length > 256 || username.includes('\0')) {
+		throw usage('--smtp-username must be 1-256 characters without NUL');
+	}
+	return username;
 }
 
 function parseBooleanFlag(name: string, value: string): boolean {
@@ -372,6 +455,11 @@ Options:
   --d6e-auth-base-url <url>  d6e-auth origin (default: ${DEFAULT_D6E_AUTH_BASE_URL})
   --email-from <email>    SIGNKIT_EMAIL_FROM (required for the initial managed deploy)
   --email-from-name <text>   SIGNKIT_EMAIL_FROM_NAME (default: ${DEFAULT_EMAIL_FROM_NAME})
+  --mail-provider <name>  Mail transport: cloudflare (default) or smtp
+  --smtp-host <host>      SMTP host (required when --mail-provider smtp)
+  --smtp-port <port>      SMTP port 1-65535 except 25 (required for smtp)
+  --smtp-secure <bool>    Exactly true (implicit TLS) or false (required STARTTLS)
+  --smtp-username <name>  Optional SMTP username; password is accepted only in secret stdin JSON
   --bootstrap-owner-email <email>  SIGNKIT_BOOTSTRAP_OWNER_EMAIL as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it)
   --version <tag|latest>  Release tag or "latest" (default: latest)
   --channel <stable|beta> Release channel (enforced against the selected tag; used to pick latest)
@@ -383,11 +471,14 @@ Options:
   --cli-version           Print ${PACKAGE_NAME} version
 
 Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state before
-any Cloudflare inspection. Identity drift requires --cloudflare adopt.
-SIGNKIT_MAIL_PROVIDER is always cloudflare. Secrets are never accepted on argv.
+any Cloudflare inspection. Identity drift requires --cloudflare adopt. The
+cloudflare mail provider uses the native EMAIL binding. The smtp provider omits
+that binding and writes only bounded non-secret SMTP settings to Worker vars.
+Secrets are never accepted on argv.
 A pristine initial deploy (no local state, no remote Worker versions/secrets)
-reads OAuth JSON once from stdin: redirect a secure two-key file with exactly
-D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET
+reads secret JSON once from stdin: redirect a secure file with exactly
+D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET, plus SIGNKIT_SMTP_PASSWORD when
+--smtp-username is configured
 (create-signkit --cloudflare deploy ... --yes < oauth.json). Back up the recovery
 file and its adjacent target-binding file together. Only the recovery file path
 and SHA-256 fingerprint are reported. See docs/create-signkit.md.

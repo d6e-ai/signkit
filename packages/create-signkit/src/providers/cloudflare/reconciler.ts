@@ -4,7 +4,8 @@ import {
 	BACKUP_FILE_MODE,
 	MIGRATION_POLICY_NOTES,
 	PACKAGE_NAME,
-	REQUIRED_WORKER_SECRETS
+	REQUIRED_WORKER_SECRETS,
+	SMTP_PASSWORD_SECRET
 } from '../../constants.js';
 import { resolveEffectiveConfig, type EffectiveTarget } from '../../cli/effective-config.js';
 import { conflict, generic, preflight, usage } from '../../cli/errors.js';
@@ -23,12 +24,12 @@ import {
 	assertExactRequiredSecrets,
 	ensureRecoveryBinding,
 	ensureRecoverySecrets,
-	readOAuthSecrets,
+	readInitialSecrets,
 	RECOVERY_DIR_MODE,
 	resolveRecoveryPath,
 	stageRecoverySecrets,
 	tryReuseRecoverySecrets,
-	type OAuthSecretInput
+	type InitialSecretInput
 } from '../../recovery/bootstrap.js';
 import {
 	createStateStore,
@@ -170,7 +171,7 @@ export async function reconcileCloudflare(
 			statePath: stateStore.path,
 			missingSecrets: missingSecrets(
 				remote.secretNames,
-				uniqueSecrets(release.manifest.requiredSecrets)
+				requiredSecretsFor(target, release.manifest.requiredSecrets)
 			),
 			drift,
 			message: 'plan only; no Cloudflare resources were created or changed',
@@ -224,7 +225,10 @@ async function adopt(
 		],
 		mutations: ['state'],
 		statePath: stateStore.path,
-		missingSecrets: missingSecrets(remote.secretNames, [...REQUIRED_WORKER_SECRETS]),
+		missingSecrets: missingSecrets(
+			remote.secretNames,
+			requiredSecretsFor(target, REQUIRED_WORKER_SECRETS)
+		),
 		drift: [],
 		message:
 			'recorded existing Cloudflare resources in local state; no resources were created or deleted',
@@ -264,7 +268,7 @@ async function deployOrUpgrade(
 		}
 	}
 
-	const requiredSecrets = uniqueSecrets(release.manifest.requiredSecrets);
+	const requiredSecrets = requiredSecretsFor(target, release.manifest.requiredSecrets);
 	const missing = missingSecrets(current.secretNames, requiredSecrets);
 	const deploymentRecovery = await prepareDeploymentRecovery(
 		input,
@@ -729,6 +733,15 @@ function nextState(
 		d6eAuthBaseUrl: target.d6eAuthBaseUrl,
 		emailFrom: target.emailFrom ?? existing?.emailFrom,
 		emailFromName: target.emailFromName,
+		mailProvider: target.mailProvider,
+		...(target.mailProvider === 'smtp'
+			? {
+					smtpHost: target.smtpHost,
+					smtpPort: target.smtpPort,
+					smtpSecure: target.smtpSecure,
+					smtpUsername: target.smtpUsername
+				}
+			: {}),
 		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
 		lastD1BackupPath: extra.lastD1BackupPath ?? existing?.lastD1BackupPath,
 		channel: input.channel,
@@ -749,8 +762,14 @@ function generatedWorkerVars(
 	initialManagedDeploy: boolean
 ): Record<string, string> {
 	const vars: Record<string, string> = {
-		SIGNKIT_MAIL_PROVIDER: 'cloudflare'
+		SIGNKIT_MAIL_PROVIDER: target.mailProvider
 	};
+	if (target.mailProvider === 'smtp') {
+		if (target.smtpHost) vars.SIGNKIT_SMTP_HOST = target.smtpHost;
+		if (target.smtpPort !== undefined) vars.SIGNKIT_SMTP_PORT = String(target.smtpPort);
+		if (target.smtpSecure !== undefined) vars.SIGNKIT_SMTP_SECURE = String(target.smtpSecure);
+		if (target.smtpUsername) vars.SIGNKIT_SMTP_USERNAME = target.smtpUsername;
+	}
 	if (target.publicOrigin) {
 		vars.SIGNKIT_PUBLIC_ORIGIN = target.publicOrigin;
 	}
@@ -865,6 +884,15 @@ function adoptState(
 		d6eAuthBaseUrl: target.d6eAuthBaseUrl,
 		emailFrom: target.emailFrom ?? existing?.emailFrom,
 		emailFromName: target.emailFromName,
+		mailProvider: target.mailProvider,
+		...(target.mailProvider === 'smtp'
+			? {
+					smtpHost: target.smtpHost,
+					smtpPort: target.smtpPort,
+					smtpSecure: target.smtpSecure,
+					smtpUsername: target.smtpUsername
+				}
+			: {}),
 		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
 		lastD1BackupPath: retarget ? undefined : existing?.lastD1BackupPath,
 		channel: input.channel,
@@ -993,15 +1021,18 @@ async function prepareDeploymentRecovery(
 				workerName: target.workerName,
 				allowCreate: false
 			});
-			const reused = await tryReuseRecoverySecrets({ fs: runtime.fs, recoveryPath });
+			const requiredSecrets = pristine
+				? requiredSecretsFor(target, release.manifest.requiredSecrets)
+				: missingSecrets;
+			const reused = await tryReuseRecoverySecrets({
+				fs: runtime.fs,
+				recoveryPath,
+				requiredSecrets
+			});
 			if (!reused) {
 				throw new Error(`recovery file at ${recoveryPath} disappeared during validation`);
 			}
-			return stageDeploymentRecovery(
-				runtime,
-				reused,
-				pristine ? release.manifest.requiredSecrets : missingSecrets
-			);
+			return stageDeploymentRecovery(runtime, reused, requiredSecrets);
 		} catch (error) {
 			throw preflight(
 				`${error instanceof Error ? error.message : String(error)}. Restore the recovery file and its binding metadata at ${recoveryPath} from a secure backup; the CLI never overwrites them and identifies the secret map by path and SHA-256 fingerprint only.`
@@ -1010,15 +1041,17 @@ async function prepareDeploymentRecovery(
 	}
 	if (!runtime.readStdin) {
 		throw preflight(
-			`OAuth stdin is unavailable for the initial deploy at ${recoveryPath}. Provide the initial OAuth secrets once via stdin redirection from a secure two-key JSON file containing exactly D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET. Secrets are never accepted on argv and are never printed.`
+			`Secret stdin is unavailable for the initial deploy at ${recoveryPath}. Provide the required secrets once via stdin redirection from a secure JSON file. Secrets are never accepted on argv and are never printed.`
 		);
 	}
-	let oauth: OAuthSecretInput;
+	const requiresSmtpPassword: boolean =
+		target.mailProvider === 'smtp' && target.smtpUsername !== undefined;
+	let initialSecrets: InitialSecretInput;
 	try {
-		oauth = await readOAuthSecrets(runtime.readStdin);
+		initialSecrets = await readInitialSecrets(runtime.readStdin, requiresSmtpPassword);
 	} catch (error) {
 		throw preflight(
-			`${error instanceof Error ? error.message : String(error)}. Provide the initial OAuth secrets once via stdin redirection from a secure two-key JSON file containing exactly D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET. Secrets are never accepted on argv and are never printed.`
+			`${error instanceof Error ? error.message : String(error)}. Provide the initial secrets once via stdin redirection from a secure JSON file containing D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET${requiresSmtpPassword ? ` plus ${SMTP_PASSWORD_SECRET}` : ''}. Secrets are never accepted on argv and are never printed.`
 		);
 	}
 	try {
@@ -1029,14 +1062,21 @@ async function prepareDeploymentRecovery(
 			workerName: target.workerName,
 			allowCreate: true
 		});
+		const requiredSecrets = requiredSecretsFor(target, release.manifest.requiredSecrets);
 		const ensured = await ensureRecoverySecrets({
 			fs: runtime.fs,
 			recoveryPath,
-			requiredSecrets: release.manifest.requiredSecrets,
-			oauth,
+			requiredSecrets,
+			oauth: {
+				D6E_AUTH_CLIENT_ID: initialSecrets.D6E_AUTH_CLIENT_ID,
+				D6E_AUTH_CLIENT_SECRET: initialSecrets.D6E_AUTH_CLIENT_SECRET
+			},
+			...(initialSecrets.SIGNKIT_SMTP_PASSWORD
+				? { smtpPassword: initialSecrets.SIGNKIT_SMTP_PASSWORD }
+				: {}),
 			...(runtime.randomBytes ? { randomBytes: runtime.randomBytes } : {})
 		});
-		return stageDeploymentRecovery(runtime, ensured, release.manifest.requiredSecrets);
+		return stageDeploymentRecovery(runtime, ensured, requiredSecrets);
 	} catch (error) {
 		throw preflight(
 			`${error instanceof Error ? error.message : String(error)}. Restore the recovery file at ${recoveryPath} from a secure backup; the CLI never overwrites it and identifies it by path and SHA-256 fingerprint only.`
@@ -1144,8 +1184,14 @@ function missingSecrets(present: string[], required: readonly string[]): string[
 	return required.filter((name) => !have.has(name));
 }
 
-function uniqueSecrets(names: readonly string[]): string[] {
-	return [...new Set([...REQUIRED_WORKER_SECRETS, ...names])];
+function requiredSecretsFor(target: EffectiveTarget, names: readonly string[]): string[] {
+	return [
+		...new Set([
+			...REQUIRED_WORKER_SECRETS,
+			...names,
+			...(target.mailProvider === 'smtp' && target.smtpUsername ? [SMTP_PASSWORD_SECRET] : [])
+		])
+	];
 }
 
 function d1Name(target: EffectiveTarget, remote: RemoteSnapshot): string {
@@ -1189,6 +1235,12 @@ async function writeGeneratedConfig(
 		d6eAuthBaseUrl: vars.D6E_AUTH_BASE_URL,
 		emailFrom: vars.SIGNKIT_EMAIL_FROM,
 		emailFromName: vars.SIGNKIT_EMAIL_FROM_NAME,
+		mailProvider: target.mailProvider,
+		smtpHost: vars.SIGNKIT_SMTP_HOST,
+		smtpPort: vars.SIGNKIT_SMTP_PORT ? Number(vars.SIGNKIT_SMTP_PORT) : undefined,
+		smtpSecure:
+			vars.SIGNKIT_SMTP_SECURE === undefined ? undefined : vars.SIGNKIT_SMTP_SECURE === 'true',
+		smtpUsername: vars.SIGNKIT_SMTP_USERNAME,
 		bootstrapOwnerEmail: vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL,
 		manifest: release.manifest,
 		main: posixPath(extracted.root, extracted.main, 'generated Worker main'),

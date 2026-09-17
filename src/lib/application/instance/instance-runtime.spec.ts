@@ -14,6 +14,7 @@ import {
 } from './instance-runtime';
 
 const TEST_DATABASE_URL: string = 'postgres://signkit:secret@localhost:5432/signkit';
+const TEST_ENCRYPTION_KEY: string = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 
 afterEach((): void => {
 	for (const key of Object.keys(privateEnv)) delete privateEnv[key];
@@ -25,7 +26,9 @@ describe('resolveInstanceInvitationApplication', () => {
 	});
 
 	it('uses the D1 binding when the Cloudflare platform provides one', async () => {
-		const platform = { env: { DB: {} as D1Database } } as App.Platform;
+		const platform = {
+			env: { DB: {} as D1Database, DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY }
+		} as App.Platform;
 		const application: InstanceInvitationApplicationPort | null =
 			await resolveInstanceInvitationApplication({ platform });
 		expect(application).toBeInstanceOf(InstanceInvitationApplication);
@@ -33,12 +36,14 @@ describe('resolveInstanceInvitationApplication', () => {
 
 	it('fails closed on a Cloudflare platform without a D1 binding instead of using DATABASE_URL', async () => {
 		privateEnv.DATABASE_URL = TEST_DATABASE_URL;
+		privateEnv.DELIVERY_ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
 		const platform = { env: {} } as App.Platform;
 		await expect(resolveInstanceInvitationApplication({ platform })).resolves.toBeNull();
 	});
 
 	it('constructs the PostgreSQL application from DATABASE_URL on Node runtimes', async () => {
 		privateEnv.DATABASE_URL = TEST_DATABASE_URL;
+		privateEnv.DELIVERY_ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
 		const application: InstanceInvitationApplicationPort | null =
 			await resolveInstanceInvitationApplication({});
 		expect(application).toBeInstanceOf(InstanceInvitationApplication);

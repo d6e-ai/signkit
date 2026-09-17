@@ -22,6 +22,12 @@ describe('completion-delivery-store port helpers', () => {
 		expect(sanitizeCompletionDeliveryErrorCode('skdc1_delivery_capability_12345')).toBe(
 			FALLBACK_COMPLETION_DELIVERY_ERROR_CODE
 		);
+		expect(sanitizeCompletionDeliveryErrorCode('ski1_invitation_token_12345')).toBe(
+			FALLBACK_COMPLETION_DELIVERY_ERROR_CODE
+		);
+		expect(sanitizeCompletionDeliveryErrorCode('skiod1_invitation_ciphertext')).toBe(
+			FALLBACK_COMPLETION_DELIVERY_ERROR_CODE
+		);
 		expect(sanitizeCompletionDeliveryErrorCode('INVALID-CODE')).toBe(
 			FALLBACK_COMPLETION_DELIVERY_ERROR_CODE
 		);

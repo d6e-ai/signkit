@@ -1,4 +1,5 @@
 import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
+import type { InstanceInvitationDeliveryLocale } from '$lib/security/instance-invitation-delivery-payload';
 
 export const INSTANCE_IDEMPOTENCY_KEY_PATTERN: RegExp = /^[!-~]{1,200}$/;
 /** Instance invitations are SignKit-owned, so their IDs are UUIDv7. */
@@ -99,10 +100,16 @@ export interface CreateInstanceInvitationCommand {
 	actor: InstanceActor;
 	idempotencyKey: string;
 	requestFingerprint: string;
+	previousRequestFingerprint?: string;
 	invitationId: string;
 	role: InstanceMemberRole;
 	tokenHash: string;
 	emailBinding: string;
+	deliveryId: string;
+	deliveryLocale: InstanceInvitationDeliveryLocale;
+	sealedDeliveryPayload: string;
+	deliverySealingKeyId: string;
+	sealedDeliveryPayloadSha256: string;
 	createdAt: string;
 	expiresAt: string;
 }

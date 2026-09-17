@@ -126,6 +126,11 @@ function createCommand(
 		idempotencyKey: 'create-idem-1',
 		requestFingerprint: REQUEST_FINGERPRINT,
 		invitationId: INVITATION_ID,
+		deliveryId: '01900000-0000-7000-8000-000000000002',
+		deliveryLocale: 'ja',
+		sealedDeliveryPayload: 'skiod1_test',
+		deliverySealingKeyId: 'test-key',
+		sealedDeliveryPayloadSha256: 'd'.repeat(64),
 		role: 'member',
 		tokenHash: TOKEN_HASH,
 		emailBinding: EMAIL_BINDING,
@@ -283,6 +288,40 @@ describe('PostgresInstanceStore', () => {
 			const result: BootstrapInstanceStoreResult =
 				await store(scripted).bootstrapInstance(command());
 
+			expect(result).toEqual({ outcome: 'idempotency_conflict' });
+			expect(scripted.rollbacks).toBe(1);
+		});
+
+		it('returns idempotency_conflict after the fixed invitation replay window', async () => {
+			const scripted = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }],
+				[],
+				[
+					{
+						requestHash: REQUEST_FINGERPRINT,
+						commandType: 'create',
+						invitationId: INVITATION_ID,
+						role: 'member',
+						resultStatus: 'pending',
+						occurredAt: CREATED_AT,
+						invId: INVITATION_ID,
+						invRole: 'member',
+						invStatus: 'pending',
+						invInvitedByUserId: OWNER_ID,
+						invCreatedAt: CREATED_AT,
+						invExpiresAt: EXPIRES_AT,
+						invAcceptedAt: null,
+						invAcceptedByUserId: null,
+						invRevokedAt: null,
+						invRevokedByUserId: null,
+						deliveryId: '01900000-0000-7000-8000-000000000002'
+					}
+				]
+			]);
+
+			const result = await store(scripted).createInstanceInvitation(
+				createCommand({ createdAt: EXPIRES_AT.toISOString() })
+			);
 			expect(result).toEqual({ outcome: 'idempotency_conflict' });
 			expect(scripted.rollbacks).toBe(1);
 		});
@@ -450,6 +489,7 @@ describe('PostgresInstanceStore', () => {
 				[], // receipt check
 				[{ count: '0' }], // count check
 				[{ id: INVITATION_ID }], // invitation insert
+				[{ id: '01900000-0000-7000-8000-000000000002' }], // delivery insert
 				[{ actorId: OWNER_ID }] // receipt insert
 			]);
 
@@ -475,7 +515,8 @@ describe('PostgresInstanceStore', () => {
 			expect(scripted.rollbacks).toBe(0);
 			expect(scripted.texts()[1]).toContain('pg_advisory_xact_lock');
 			expect(scripted.texts()[4]).toContain('INSERT INTO instance_invitation');
-			expect(scripted.texts()[5]).toContain('INSERT INTO instance_invitation_command');
+			expect(scripted.texts()[5]).toContain('INSERT INTO instance_invitation_delivery_outbox');
+			expect(scripted.texts()[6]).toContain('INSERT INTO instance_invitation_command');
 		});
 
 		it('refuses create immediately when actor is suspended', async () => {
@@ -546,6 +587,7 @@ describe('PostgresInstanceStore', () => {
 				[], // receipt check
 				[{ count: '0' }], // count check (0 live pending, 200 expired filtered out)
 				[{ id: INVITATION_ID }], // invitation insert RETURNING id
+				[{ id: '01900000-0000-7000-8000-000000000002' }], // delivery insert
 				[{ actorId: OWNER_ID }] // receipt insert RETURNING actor_id
 			]);
 
@@ -578,7 +620,7 @@ describe('PostgresInstanceStore', () => {
 			expect(scriptedLive.queries[3].values).toEqual([CREATED_AT.toISOString()]);
 		});
 
-		it('replays safely under matching receipt ignoring newly minted candidate invitationId and tokens', async () => {
+		it('replays safely against the previous-key fingerprint during key rotation', async () => {
 			const STORED_ID: string = '01900000-0000-7000-8000-000000000999';
 			const scripted = new ScriptedPostgres([
 				[{ role: 'owner', status: 'active' }], // member check
@@ -609,6 +651,8 @@ describe('PostgresInstanceStore', () => {
 				scripted
 			).createInstanceInvitation(
 				createCommand({
+					requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+					previousRequestFingerprint: REQUEST_FINGERPRINT,
 					invitationId: '01900000-0000-7000-8000-000000000123',
 					tokenHash: 'f'.repeat(64),
 					emailBinding: 'e'.repeat(64)

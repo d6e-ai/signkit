@@ -56,6 +56,109 @@ async function run(
 	return { code, stdout: stdout.join(''), stderr: stderr.join(''), fs, wrangler, releases };
 }
 
+describe('SMTP managed deployment', () => {
+	it('provisions the password only through staged secrets and omits the EMAIL binding', async () => {
+		const wrangler = new FakeWrangler();
+		const smtpPassword = 'smtp-password-never-print';
+		const result = await run(
+			[
+				'--cloudflare',
+				'deploy',
+				'--account-id',
+				ACCOUNT_ID,
+				...INITIAL_DEPLOY_FLAGS,
+				'--mail-provider',
+				'smtp',
+				'--smtp-host',
+				'smtp.example.com',
+				'--smtp-port',
+				'587',
+				'--smtp-secure',
+				'false',
+				'--smtp-username',
+				'relay-user',
+				'--yes',
+				'--json'
+			],
+			wrangler,
+			new MemoryFileSystem(),
+			fakeReleases(),
+			JSON.stringify({
+				D6E_AUTH_CLIENT_ID: 'test-oauth-client-id',
+				D6E_AUTH_CLIENT_SECRET: 'test-oauth-client-secret',
+				SIGNKIT_SMTP_PASSWORD: smtpPassword
+			})
+		);
+		expect(result.code).toBe(0);
+		const config = JSON.parse(wrangler.lastConfig ?? '{}') as Record<string, unknown>;
+		expect(config).not.toHaveProperty('send_email');
+		expect(config.vars).toMatchObject({
+			SIGNKIT_MAIL_PROVIDER: 'smtp',
+			SIGNKIT_SMTP_HOST: 'smtp.example.com',
+			SIGNKIT_SMTP_PORT: '587',
+			SIGNKIT_SMTP_SECURE: 'false',
+			SIGNKIT_SMTP_USERNAME: 'relay-user'
+		});
+		expect(wrangler.stagedSecrets).toHaveLength(1);
+		expect(JSON.parse(wrangler.stagedSecrets[0] ?? '{}')).toMatchObject({
+			SIGNKIT_SMTP_PASSWORD: smtpPassword
+		});
+		const state = await result.fs.readFile('/xdg/state/create-signkit/state.json');
+		expect(state).not.toContain(smtpPassword);
+		expect(result.stdout).not.toContain(smtpPassword);
+		expect(result.stderr).not.toContain(smtpPassword);
+	});
+
+	it('can switch an existing deployment to SMTP when its password secret is already provisioned', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.secrets.set('signkit', [
+			'DELIVERY_ENCRYPTION_KEY',
+			'SESSION_ENCRYPTION_KEY',
+			'DELIVERY_WORKER_SECRET',
+			'D6E_AUTH_CLIENT_ID',
+			'D6E_AUTH_CLIENT_SECRET',
+			'SIGNKIT_SMTP_PASSWORD'
+		]);
+		const fs = await writeCloudflareState(new MemoryFileSystem(), {
+			mailProvider: 'cloudflare'
+		});
+		const result = await run(
+			[
+				'--cloudflare',
+				'upgrade',
+				'--account-id',
+				ACCOUNT_ID,
+				'--mail-provider',
+				'smtp',
+				'--smtp-host',
+				'smtp.example.com',
+				'--smtp-port',
+				'465',
+				'--smtp-secure',
+				'true',
+				'--smtp-username',
+				'relay-user',
+				'--yes',
+				'--json'
+			],
+			wrangler,
+			fs
+		);
+
+		expect(result.code).toBe(0);
+		expect(wrangler.stagedSecrets).toEqual([]);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state).toMatchObject({
+			mailProvider: 'smtp',
+			smtpHost: 'smtp.example.com',
+			smtpPort: 465,
+			smtpSecure: true,
+			smtpUsername: 'relay-user'
+		});
+	});
+});
+
 const INITIAL_DEPLOY_FLAGS = [
 	'--email-from',
 	'sign@example.com',

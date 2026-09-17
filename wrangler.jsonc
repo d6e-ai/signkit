@@ -23,6 +23,8 @@
 	],
 	"send_email": [{ "name": "EMAIL" }],
 	"vars": {
+		// The checked-in profile defaults to the secretless native binding. A
+		// self-hosted Worker may select "smtp" and provide SIGNKIT_SMTP_* instead.
 		"SIGNKIT_MAIL_PROVIDER": "cloudflare"
 	},
 	"triggers": {

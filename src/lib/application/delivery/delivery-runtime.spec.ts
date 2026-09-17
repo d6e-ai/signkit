@@ -33,12 +33,30 @@ describe('resolveInvitationDeliveryService', () => {
 		await expect(resolveInvitationDeliveryService({ platform })).resolves.toBeNull();
 	});
 
-	it('fails closed on Workers when the mail provider is smtp instead of cloudflare', async () => {
+	it('uses SMTP on Workers when the configuration is complete', async () => {
 		const platform = {
 			env: {
 				DB: {} as D1Database,
-				EMAIL: {} as SendEmail,
 				SIGNKIT_MAIL_PROVIDER: 'smtp',
+				SIGNKIT_SMTP_HOST: 'smtp.example.com',
+				SIGNKIT_SMTP_PORT: '587',
+				SIGNKIT_SMTP_SECURE: 'false',
+				...deliveryEnv()
+			}
+		} as unknown as App.Platform;
+
+		const service = await resolveInvitationDeliveryService({ platform });
+		expect(service).toBeInstanceOf(InvitationDeliveryService);
+	});
+
+	it('fails closed on Workers when SMTP uses prohibited port 25', async () => {
+		const platform = {
+			env: {
+				DB: {} as D1Database,
+				SIGNKIT_MAIL_PROVIDER: 'smtp',
+				SIGNKIT_SMTP_HOST: 'smtp.example.com',
+				SIGNKIT_SMTP_PORT: '25',
+				SIGNKIT_SMTP_SECURE: 'false',
 				...deliveryEnv()
 			}
 		} as unknown as App.Platform;

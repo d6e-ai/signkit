@@ -1300,6 +1300,15 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
 				})
 			},
+			'/api/v1/system/instance-invitations/drain': {
+				post: op({
+					summary: 'Drain pending instance invitation deliveries',
+					operationId: 'drainInstanceInvitationDeliveries',
+					tags: ['System', 'Instance'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
+				})
+			},
 			'/api/v1/system/deliveries/reseal-sweep': {
 				post: op({
 					summary: 'Reseal outstanding delivery capabilities',
@@ -1466,9 +1475,15 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'createInstanceInvitation',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
-					parameters: [idempotencyHeader],
+					parameters: [
+						{
+							...idempotencyHeader,
+							description:
+								'Exact retries are supported until the fixed seven-day invitation expiry; reuse after expiry conflicts.'
+						}
+					],
 					requestBody: JSON_BODY,
-					responses: jsonResponse('201', 'Created invitation and one-time token', {
+					responses: jsonResponse('201', 'Created invitation with scheduled email delivery', {
 						type: 'object'
 					})
 				})
