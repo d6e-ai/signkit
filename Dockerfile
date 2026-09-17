@@ -5,7 +5,9 @@ ENV PATH=$PNPM_HOME:$PATH
 # CI is set (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY) - not a CI system, just
 # the same non-interactive signal pnpm already documents for this case.
 ENV CI=true
-RUN corepack enable
+# Corepack is no longer bundled with Node 26. Install the exact package-manager
+# version pinned by package.json before resolving the workspace lockfile.
+RUN npm install --global pnpm@11.24.0
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
