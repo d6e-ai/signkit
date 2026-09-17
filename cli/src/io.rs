@@ -251,8 +251,8 @@ fn read_bounded_stdin(max_bytes: usize, kind: &str) -> Result<Vec<u8>, CliError>
 }
 
 fn new_uuid_v4() -> Result<String, CliError> {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes)
+    let mut bytes: [u8; 16] = [0u8; 16];
+    getrandom::fill(&mut bytes)
         .map_err(|err| CliError::usage(format!("Failed to generate an Idempotency-Key: {err}")))?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
