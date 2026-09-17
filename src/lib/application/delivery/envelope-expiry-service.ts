@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	boundEnvelopeExpiryDiscoveryLimit,
@@ -63,7 +63,6 @@ export class EnvelopeExpiryDrainService {
 	async #expireOne(candidate: ExpirableEnvelopeId, now: Date): Promise<EnvelopeExpiryItemOutcome> {
 		for (let attempt: number = 0; attempt < MAX_AUDIT_ATTEMPTS; attempt += 1) {
 			const preparation: EnvelopeExpiryPreparation = await this.#store.prepareEnvelopeExpiry(
-				candidate.organizationId,
 				candidate.envelopeId,
 				now.toISOString()
 			);
@@ -87,7 +86,7 @@ export class EnvelopeExpiryDrainService {
 					recipientIds: revokedRecipientIds
 				}
 			});
-			const auditEventHash: string = await hashAuditEventV2(
+			const auditEventHash: string = await hashAuditEventV3(
 				{
 					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'envelope.expired',
@@ -97,10 +96,9 @@ export class EnvelopeExpiryDrainService {
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
 				},
-				{ organizationId: candidate.organizationId, envelopeId: candidate.envelopeId }
+				{ envelopeId: candidate.envelopeId }
 			);
 			const command: PublishEnvelopeExpiryCommand = {
-				organizationId: candidate.organizationId,
 				envelopeId: candidate.envelopeId,
 				expectedStatus: preparation.previousStatus,
 				expectedGeneration: preparation.generation,

@@ -10,14 +10,9 @@ export interface DraftPointerUpdate {
 }
 
 export interface EnvelopeStore {
-	findForOrganization(organizationId: string, envelopeId: string): Promise<Envelope | null>;
-	compareAndSetDraftPointer(
-		organizationId: string,
-		envelopeId: string,
-		update: DraftPointerUpdate
-	): Promise<boolean>;
+	findEnvelope(envelopeId: string): Promise<Envelope | null>;
+	compareAndSetDraftPointer(envelopeId: string, update: DraftPointerUpdate): Promise<boolean>;
 	transition(
-		organizationId: string,
 		envelopeId: string,
 		expected: EnvelopeStatus,
 		next: EnvelopeStatus,

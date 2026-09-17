@@ -43,16 +43,16 @@ function baseRow(
 }
 
 describe('CompletionArtifactStatusService.find', () => {
-	it('returns null for an envelope outside the authorized organization', async () => {
+	it('returns null when no status row exists for the envelope', async () => {
 		const service = new CompletionArtifactStatusService(store(null));
-		await expect(service.find('org-1', ENVELOPE_ID)).resolves.toBeNull();
+		await expect(service.find(ENVELOPE_ID)).resolves.toBeNull();
 	});
 
 	it('reports not_completed for an envelope that has not completed and has no job', async () => {
 		const service = new CompletionArtifactStatusService(
 			store(baseRow({ envelopeCompleted: false }))
 		);
-		const status: PublicCompletionArtifactStatus | null = await service.find('org-1', ENVELOPE_ID);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
 		expect(status).toEqual({ envelopeId: ENVELOPE_ID, status: 'not_completed' });
 	});
 
@@ -63,7 +63,7 @@ describe('CompletionArtifactStatusService.find', () => {
 		const service = new CompletionArtifactStatusService(
 			store(baseRow({ envelopeCompleted: true, jobStatus: null }))
 		);
-		const status: PublicCompletionArtifactStatus | null = await service.find('org-1', ENVELOPE_ID);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
 		expect(status).toEqual({ envelopeId: ENVELOPE_ID, status: 'pending', attempts: 0 });
 	});
 
@@ -71,7 +71,7 @@ describe('CompletionArtifactStatusService.find', () => {
 		const service = new CompletionArtifactStatusService(
 			store(baseRow({ envelopeCompleted: true, jobStatus: 'pending', attempts: 2 }))
 		);
-		const status: PublicCompletionArtifactStatus | null = await service.find('org-1', ENVELOPE_ID);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
 		expect(status).toEqual({ envelopeId: ENVELOPE_ID, status: 'pending', attempts: 2 });
 	});
 
@@ -79,7 +79,7 @@ describe('CompletionArtifactStatusService.find', () => {
 		const service = new CompletionArtifactStatusService(
 			store(baseRow({ envelopeCompleted: true, jobStatus: 'processing', attempts: 1 }))
 		);
-		const status: PublicCompletionArtifactStatus | null = await service.find('org-1', ENVELOPE_ID);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
 		expect(status).toEqual({ envelopeId: ENVELOPE_ID, status: 'processing', attempts: 1 });
 	});
 
@@ -95,7 +95,7 @@ describe('CompletionArtifactStatusService.find', () => {
 				})
 			)
 		);
-		const status: PublicCompletionArtifactStatus | null = await service.find('org-1', ENVELOPE_ID);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
 		expect(status).toEqual({
 			envelopeId: ENVELOPE_ID,
 			status: 'failed',
@@ -122,7 +122,7 @@ describe('CompletionArtifactStatusService.find', () => {
 				})
 			)
 		);
-		const status: PublicCompletionArtifactStatus | null = await service.find('org-1', ENVELOPE_ID);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
 		expect(status).toEqual({
 			envelopeId: ENVELOPE_ID,
 			status: 'published',

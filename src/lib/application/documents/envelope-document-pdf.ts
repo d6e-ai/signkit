@@ -44,28 +44,17 @@ export type EnvelopeDocumentPdfResult =
 	| { outcome: 'unavailable' };
 
 export interface EnvelopeDocumentPdfApplicationPort {
-	read(
-		organizationId: string,
-		envelopeId: string,
-		documentId: string
-	): Promise<EnvelopeDocumentPdfResult>;
+	read(envelopeId: string, documentId: string): Promise<EnvelopeDocumentPdfResult>;
 }
 
 export class EnvelopeDocumentPdfService implements EnvelopeDocumentPdfApplicationPort {
 	constructor(
-		private readonly envelopes: EnvelopeStore,
+		private readonly envelopes: Pick<EnvelopeStore, 'findEnvelope'>,
 		private readonly documentPdf: SentDocumentPdfPort
 	) {}
 
-	async read(
-		organizationId: string,
-		envelopeId: string,
-		documentId: string
-	): Promise<EnvelopeDocumentPdfResult> {
-		const envelope: Envelope | null = await this.envelopes.findForOrganization(
-			organizationId,
-			envelopeId
-		);
+	async read(envelopeId: string, documentId: string): Promise<EnvelopeDocumentPdfResult> {
+		const envelope: Envelope | null = await this.envelopes.findEnvelope(envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (
 			envelope.repositoryHead === null ||
@@ -75,7 +64,6 @@ export class EnvelopeDocumentPdfService implements EnvelopeDocumentPdfApplicatio
 			return { outcome: 'no_documents' };
 		}
 		const revision: ImmutableDraftRevision = {
-			organizationId,
 			envelopeId,
 			commitSha: envelope.repositoryHead,
 			archiveKey: envelope.repositoryArchiveKey,

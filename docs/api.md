@@ -1,256 +1,105 @@
 # HTTP API
 
-The current `/api/v1` surface, plus the operational and security semantics that callers need. The normative contracts live in [architecture/](architecture/README.md) and win on any disagreement; this document summarizes what is implemented today and links into those sections.
+SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature set at `GET /api/v1/system/capabilities` and the OpenAPI 3.1 document at `GET /api/v1/openapi.json`.
 
-OpenAPI 3.1 is served at `GET /api/v1/openapi.json`.
+## Authentication
 
-## Authority boundaries
+Operator browser requests use the d6e-auth session cookie plus an active local `instance_member` row.
 
-Five separate authorities exist, and they never substitute for one another:
+Automation uses a bearer key:
 
-- **Operator session** — d6e-auth authorization-code OAuth, RS256-verified, held in an AES-GCM `HttpOnly`, `SameSite=Lax` cookie. Every operator query and mutation must match the authorized organization and the object ID. See [architecture/authorization-and-instance-administration.md § Authentication and authorization](architecture/authorization-and-instance-administration.md#authentication-and-authorization).
-- **Verified identity (no organization)** — the same d6e-auth cookie session, but for endpoints scoped to the local instance rather than a d6e organization: instance bootstrap, the current-member lookup, and API key management. `no_active_organization` is authorized here; only anonymous or unresolvable identity is rejected.
-- **API key (Bearer)** — a revocable instance-scoped `signkit_` key presented as `Authorization: Bearer`, authorized against exactly one d6e organization named by a mandatory `SignKit-Organization-Id` header and proven by an explicit live grant. Key ownership alone authorizes nothing. It is accepted on the envelope reads and mutations marked below when the live grant includes the required scope, and never on instance or API key management. See [architecture/authorization-and-instance-administration.md § API key Bearer authentication and organization grants](architecture/authorization-and-instance-administration.md#api-key-bearer-authentication-and-organization-grants).
-- **Recipient capability** — a high-entropy, per-recipient, expiring, revocable token stored as a hash. It cannot call operator APIs, and operator OAuth state is never part of resolving it. Recipients do not need a d6e account.
-- **Completion access grant** — a purpose-separated, read-only `skca1_` token issued after completion. It conveys no signing authority and sets no cookies.
+```http
+Authorization: Bearer signkit_<43 base64url characters>
+```
 
-## Conventions
+No tenant selector is accepted. A key belongs to the local member that created it and works only while that owner remains active. Its scopes are intersected with the route's required scope on every request.
 
-- **Idempotency.** Every mutation requires an `Idempotency-Key` header. Replaying the same key with the same normalized request returns the original receipt; reusing a key with a different request, or against state that has since moved, returns an RFC 9457 conflict.
-- **Optimistic concurrency.** Commands carry the expected state they were composed against — envelope status, the Git `expectedGeneration`, and for field-dependent commands `expectedFieldGeneration`. A stale automation run or stale browser tab fails instead of overwriting concurrent work.
-- **Identifiers.** Every SignKit-owned identifier in a path or body — envelope, recipient, field, audit event — is a canonical lowercase RFC 9562 UUIDv7 and is validated as one; anything else is a validation error rather than a not-found. Identifiers are opaque: their embedded timestamp is a coarse ordering hint, never authorization or trusted event time. List cursors are not part of this rule: the API-key list cursor is a bounded opaque token forwarded unvalidated to the durable store, which must authorize the owner before it can be resolved, so a malformed cursor fails closed there (an empty page or `owner_not_active`) rather than being rejected on shape. An `Idempotency-Key` is a unique opaque string (UUIDv4 recommended); the server never parses UUID structure and still accepts any bounded visible-ASCII key. Capability tokens and access grants are deliberately not UUIDs. See [architecture/identifiers.md](architecture/identifiers.md#identifiers).
-- **Bearer exclusivity.** On the operator envelope surface, a non-empty `Authorization` value selects bearer mode for the whole request and forfeits any cookie session (an absent header and a present-but-empty one are equivalent, since neither carries a credential): a malformed, foreign, or unauthorized bearer fails closed rather than falling back to a cookie, and a valid cookie never rescues a failing bearer. Only a strict full `signkit_` token authenticates; `skr1_`, `skca1_`, `ski1_`, worker secrets, and malformed values all share one opaque 401.
-- **No API keys on management surfaces.** Presenting a well-formed `signkit_` token to any `/api/v1/api-keys`, `/api/v1/instance`, or `/api/v1/webhooks` endpoint is refused with 403 `api-key-not-permitted`, and the cookie session is suppressed for that request, so an API key can never ride an accompanying cookie into minting another key, granting itself an organization, administering instance members, or managing webhooks. `POST /api/v1/instance/bootstrap` is included in this rule like every other instance endpoint: it is cookie-session-only, so a `signkit_` key presented there is refused the same way.
-- **Errors.** RFC 9457 problem documents.
-- **Response minimization.** Responses never return object storage keys, archive bytes, capability material, audit hashes, ciphertext, or internal outbox/command IDs. Public recipient responses additionally omit organization identifiers, recipient emails and names, and raw field values.
-- **Fail-closed resolution.** Missing, malformed, unknown, expired, revoked, blocked, and inactive capabilities all share one indistinguishable not-found response, so no endpoint can be used as an existence oracle.
+Recipient endpoints use `skr1_` capability links and the encrypted browser session created from them. Background drains use their dedicated deployment secrets.
 
-## Operator API
+The contact API is human-session-only. API keys, recipient capabilities, and recipient browser sessions do not authorize contact reads or mutations.
 
-Requires an authenticated d6e-auth organization session. Reads marked `envelopes:read` additionally accept an API key bearer token carrying that scope plus a live grant for the organization named in `SignKit-Organization-Id`. Authoring mutations marked `drafts:write` and send/void marked `envelopes:send` accept the same key family when the live grant includes that scope.
+## Common rules
 
-| Method | Path                                                              | Purpose                                            | API key        |
-| ------ | ----------------------------------------------------------------- | -------------------------------------------------- | -------------- |
-| `POST` | `/api/v1/envelopes`                                               | create an envelope                                 | drafts:write   |
-| `GET`  | `/api/v1/envelopes`                                               | list envelopes in the organization                 | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}`                                  | read envelope detail (recipients, ready, fields)   | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/draft`                            | read the draft workspace                           | envelopes:read |
-| `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits`                    | commit Markdown draft changes                      | drafts:write   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx`                       | import bounded DOCX as a Markdown commit           | drafts:write   |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/docx`                             | export the pinned revision as DOCX                 | envelopes:read |
-| `POST` | `/api/v1/envelopes/{envelopeId}/documents/pdf`                    | append an uploaded PDF as a document               | drafts:write   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/ready`                            | freeze the recipient graph, mark ready             | drafts:write   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/fields`                           | replace the signing-field placement                | drafts:write   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/send`                             | pin the commit and start delivery                  | envelopes:send |
-| `POST` | `/api/v1/envelopes/{envelopeId}/void`                             | terminal operator cancellation                     | envelopes:send |
-| `POST` | `/api/v1/envelopes/{envelopeId}/reissue`                          | reissue a recipient capability (body recipientId)  | session only   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/reissue` | reissue that recipient's capability                | session only   |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/deliveries`                       | invitation delivery status                         | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact`              | completion artifact publication status             | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/evidence`                         | read published completion evidence (JSON/Markdown) | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact/evidence`     | alias of `/evidence`                               | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/document-pdf`                     | render the pinned revision as the recipient PDF    | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/document-pdf/pages`               | page geometry of that rendering                    | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf`                              | read published completion PDF                      | envelopes:read |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact/pdf`          | alias of `/pdf`                                    | envelopes:read |
+- Operator identifiers are UUIDv7.
+- Mutations require an `Idempotency-Key` opaque token; UUIDv4 is recommended.
+- Concurrent authoring uses `expectedGeneration` and, where relevant, `expectedFieldGeneration` or an expected state.
+- Errors use `application/problem+json` following RFC 9457.
+- Private object keys, token hashes, audit hashes, and raw capabilities are never returned from public models.
 
-**Agent requests** must send both `Authorization: Bearer signkit_…` and `SignKit-Organization-Id: <d6e organization id>`. The selector is never inferred — not from a single grant, not from a default, not from a cookie — so a key granted several organizations reaches only the one it names. A missing or malformed selector is 400 `api-key-organization-selector-required`, decided before any database read. An unknown, revoked, or expired key and a suspended owner share one opaque 401 with a bare `WWW-Authenticate: Bearer` challenge. A live key with no live grant for the requested organization is 403 `api-key-organization-grant-required`, and a live grant without the required scope is 403 `api-key-insufficient-scope`. Integrity drift and an unresolvable store are 503, never a downgrade to unauthenticated. Nothing is cached, so revoking the key or the grant takes effect on the next request. A live key with a live grant records `lastUsedAt` and increments the durable rate window during authentication (before handler-level scope checks). Crossing 120 requests in 60 seconds returns 429 `api-key-rate-limited`.
+## Envelope endpoints
 
-**Draft commits** track `documents/*.md` in the envelope's own Git repository, use expected-generation concurrency, and accept optional automation provenance. See [architecture/draft-git-repository.md](architecture/draft-git-repository.md#draft-git-repository).
+| Method | Path                                                 | Purpose                               | API-key scope    |
+| ------ | ---------------------------------------------------- | ------------------------------------- | ---------------- |
+| `GET`  | `/api/v1/envelopes`                                  | List envelopes                        | `envelopes:read` |
+| `POST` | `/api/v1/envelopes`                                  | Create a draft envelope               | `drafts:write`   |
+| `GET`  | `/api/v1/envelopes/{envelopeId}`                     | Read envelope detail                  | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/draft`               | Read the current draft                | `envelopes:read` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits`       | Commit Markdown edits                 | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx`          | Import DOCX as Markdown               | `drafts:write`   |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/docx`                | Export Markdown as DOCX               | `envelopes:read` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/documents/pdf`       | Add an uploaded PDF                   | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/documents/order`     | Reorder or remove documents           | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/ready`               | Validate recipients and pin readiness | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/fields`              | Place recipient fields                | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/send`                | Send a ready envelope                 | `envelopes:send` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/void`                | Void an active envelope               | `envelopes:send` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/deliveries`          | Read invitation status                | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact` | Read completion publication status    | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/evidence`            | Download JSON or Markdown evidence    | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf`                 | Download the executed PDF             | `envelopes:read` |
 
-**DOCX import** (`POST .../draft/docx`) accepts a raw WordprocessingML (or `application/octet-stream`) body with `targetPath` and `expectedGeneration` as query parameters, requires `Idempotency-Key`, and converts the upload into one Markdown document committed through the same draft persistence path. The original DOCX is discarded; it is never stored in Git or the object draft archive. Oversized or hostile packages fail closed before `commit`. `multipart/form-data` is not accepted: the request body is bounded and streamed against the size limit before it is buffered, and a multipart wrapper cannot preserve that guarantee.
+One envelope owns one ordered document set and one Git history. Markdown is committed directly. Uploaded PDFs remain immutable object bytes while Git records their manifest entries and digests. Sending pins the exact revision and renders the recipient document set.
 
-**PDF upload** (`POST .../documents/pdf`) accepts a raw `application/pdf` (or `application/octet-stream`) body with `expectedGeneration` and optional `title`/`position` as query parameters, requires `Idempotency-Key`, and appends the file as a document in the envelope's document set. `multipart/form-data` is not accepted, for the same streaming-bound reason as DOCX import.
+DOCX import and export keep their synchronous success responses for browser and CLI compatibility, but conversion begins only after a durable SQL job exists. A transient inline failure remains retryable by the protected DOCX drain; repeating the same import `Idempotency-Key` or exporting the same pinned revision resolves the durable result instead of starting unrelated work. DOCX source and result bytes stay outside Git.
 
-**DOCX export** (`GET .../docx`) renders the envelope's pinned Git locator (`sentCommitSha` otherwise `repositoryHead`) to WordprocessingML. The response is an attachment with `x-signkit-commit-sha` and `cache-control: no-store`. An envelope with no pin returns 409 `urn:signkit:problem:docx-export-empty`.
+## Contact endpoints
 
-**Create, list, and GET envelope** JSON use the same public envelope projection: Git locators (`repositoryHead`, `sentCommitSha`) and the archive digest (`repositoryArchiveSha256`) are intentional, but object-store keys such as `repositoryArchiveKey` are never returned. GET detail is `{ envelope, recipients, readyAuditEventId, fields }`. Recipients omit capability material. Fields omit labels. `readyAuditEventId` is the latest `envelope.ready` audit event when status is not `draft`, otherwise `null`. The operator UI uses this read to recover send readiness across reload and tabs.
+Contacts are private to the verified d6e-auth subject that owns them and require that subject to remain an active local `instance_member`. A request never supplies an owner or organization selector. API keys and recipient capabilities are rejected.
 
-**Ready** takes the expected Git generation plus a complete recipient graph. `signer` and `approver` are action-bearing; `viewer` is read-only and must share a routing order with an action-bearing recipient; `prefill` is pre-send-only and is rejected until its authoring command exists; `cc` stays outside the capability graph entirely.
+For a concise Japanese description of this surface, see [Contact API (日本語)](api/contacts.ja.md).
 
-**Fields** is an idempotent replace-all placement command, valid only while the envelope is `ready` and unsent. The body carries `expectedGeneration`, `expectedFieldGeneration`, and 1–50 fields, each naming a recipient, a `documents/*.md` path, a `fieldType` (`signature`, `initials`, `text`, `date`, `checkbox`), a label, a required flag, a semantic document-order `position`, and **required** normalized page geometry (`page`, `x`, `y`, `width`, `height` in `[0, 1]` unit-square fractions; `page` is 1-indexed into the whole rendered agreement). `position` remains the reading-order authority; geometry is what makes the field reachable, and a field a signer cannot see is a field they cannot complete. The named page must fall inside the page range its own document occupies in the deterministic rendering of the pinned revision, and the box must stay inside the page; otherwise the command fails `422 urn:signkit:problem:field-invalid-geometry`. Only signer recipients in the same organization and envelope may own a field, and every path must exist in the exact workspace pinned by `expectedGeneration`. Field IDs are minted per published set. Publication atomically rechecks generation, Git head, field generation, envelope state, and recipient scope, then replaces the projection, bumps the field generation, and appends one PII-minimized `envelope.fields_placed` event. The response echoes no labels.
+| Method   | Path                           | Purpose                               | Idempotency-Key |
+| -------- | ------------------------------ | ------------------------------------- | --------------- |
+| `GET`    | `/api/v1/contacts`             | List the caller's contacts            | no              |
+| `POST`   | `/api/v1/contacts/search`      | Search the caller's contacts          | no              |
+| `POST`   | `/api/v1/contacts`             | Explicitly save a contact             | required        |
+| `PUT`    | `/api/v1/contacts/{contactId}` | Replace a contact at an exact version | required        |
+| `DELETE` | `/api/v1/contacts/{contactId}` | Delete a contact at an exact version  | required        |
 
-**Send** pins the Git commit, reserves capabilities and durable delivery intents for signer, approver, and viewer recipients only, and activates the first actionable routing order together with its co-routed viewers. Later groups stay blocked.
+List accepts only `cursor` and `limit`. Search accepts a bounded strict JSON body `{ query, cursor?, limit? }`; the query is deliberately absent from URLs, access logs, and cursors. List and search return `{ items, nextCursor }`, and a cursor contains only an owner-scoped contact UUID.
 
-**Void** is the operator terminal command for `draft`, `ready`, `sent`, and `in_progress` envelopes. It requires both the expected status and the expected Git generation so a stale confirmation page cannot void a concurrently changed envelope. One atomic operation fences active delivery leases, scrubs still-deliverable invitation ciphertext, revokes every issued non-completed capability without changing recipient statuses, moves the envelope to `voided`, and appends a PII-free `envelope.voided` event. Provider-accepted messages and existing permanent evidence are never rewritten.
+The public contact model is `{ id, email, name, locale, version, createdAt, updatedAt }`. `name` is the display name and `locale` is the preferred recipient language (`en` or `ja`). Create and replacement accept only `email`, `name`, and `locale`; replacement and deletion also require `expectedVersion`. Unknown and cross-owner IDs return the same opaque not-found response. Successful safe replays return `Idempotency-Replayed: true`; deletion returns `{ deleted: { id, deletedAt } }`.
 
-**Capability reissue** (`POST .../reissue` or `POST .../recipients/{recipientId}/reissue`) requires an authenticated operator session (API keys are refused with 403 `api-key-not-permitted`). It mints a fresh capability and delivery intent for an already-released pending or viewed recipient in a `sent` or `in_progress` envelope, atomically superseding prior capabilities without rewriting first-view or delivery history.
+Contacts are created only by the explicit save operation. Selecting one copies email, name, and locale into a recipient draft while leaving role and routing order unchanged. Preparing or sending an envelope never saves a contact, and changing or deleting a contact never rewrites an existing envelope recipient or its evidence.
 
-**Document rendering** (`GET .../document-pdf`, `GET .../document-pdf/pages`) renders the envelope's currently pinned revision through the same deterministic pipeline that publishes the immutable artifact at send time. The bytes feed the sender's field-placement canvas; the `pages` variant returns `{ commitSha, generation, pageCount, pageWidth, pageHeight, documents[] }` so the editor knows which pages belong to which document before it will let a field be dropped there. Both are `private, no-store` and organization-scoped; neither returns a storage key.
+## Recipient endpoints
 
-**Completion evidence and PDF** (`GET .../evidence` and `GET .../pdf`, also aliased under `.../completion-artifact/*`) allow operators and agents (`envelopes:read`) to download published JSON or Markdown evidence (`?format=markdown` selects Markdown; otherwise JSON) and the executed agreement PDF — the sent documents with the signed values drawn at their frozen geometry, plus the evidence summary as an appendix. Cryptographic PDF certification and sealing (PAdES) remain backlog.
+The `/api/v1/signing/**` family exchanges a capability for an envelope-scoped browser session, returns the pinned recipient workspace, records viewing, and accepts decline, approve, or sign decisions. Field submissions are validated against the pinned generation and the fields assigned to that recipient.
 
-## Instance and API keys
-
-Requires the verified-identity authority above; none of these endpoints accept or require a d6e organization, except organization-grant creation, which additionally requires a current `owner`/`admin` role in the session-selected organization. Presenting a `signkit_` API key on any of these paths, including bootstrap, is refused with 403 `api-key-not-permitted` and suppresses the cookie for that request, so an API key can never escalate into management. Webhook management is the same rejection family but organization-scoped; see [Webhooks](#webhooks). See [architecture/persistence.md § Persistence](architecture/persistence.md#persistence) for the underlying `instance_member` / `instance_bootstrap` / `api_key` model and [architecture/authorization-and-instance-administration.md § Granting and revoking organization access](architecture/authorization-and-instance-administration.md#granting-and-revoking-organization-access) for the grant authority rules.
-
-| Method | Path                                                               | Purpose                                              |
-| ------ | ------------------------------------------------------------------ | ---------------------------------------------------- |
-| `POST` | `/api/v1/instance/bootstrap`                                       | one-time claim of the initial `owner` member         |
-| `GET`  | `/api/v1/instance/members/me`                                      | current caller's membership and bootstrap state      |
-| `GET`  | `/api/v1/instance/members`                                         | list current instance members (cursor-paginated)     |
-| `POST` | `/api/v1/instance/members/{userId}/role`                           | change a member's role                               |
-| `POST` | `/api/v1/instance/members/{userId}/status`                         | suspend or reactivate a member                       |
-| `POST` | `/api/v1/instance/invitations`                                     | invite a new instance member                         |
-| `GET`  | `/api/v1/instance/invitations`                                     | list pending/resolved invitations (cursor-paginated) |
-| `POST` | `/api/v1/instance/invitations/accept`                              | accept an invitation as the calling identity         |
-| `POST` | `/api/v1/instance/invitations/{invitationId}/revoke`               | revoke a pending invitation                          |
-| `POST` | `/api/v1/api-keys`                                                 | issue an owner-scoped API key                        |
-| `GET`  | `/api/v1/api-keys`                                                 | list the owner's API keys (cursor-paginated)         |
-| `POST` | `/api/v1/api-keys/{apiKeyId}/revoke`                               | revoke an owner-scoped API key                       |
-| `POST` | `/api/v1/api-keys/{apiKeyId}/organization-grants`                  | grant the key access to one d6e organization         |
-| `GET`  | `/api/v1/api-keys/{apiKeyId}/organization-grants`                  | list the key's grant history (cursor-paginated)      |
-| `POST` | `/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke` | revoke one organization grant                        |
-
-**Bootstrap** is cookie-session-only — a verified d6e-auth session and nothing else — with no deployment secret gating it. It additionally requires the session's `email_verified` claim to be `true`, exactly like instance invitation acceptance; a missing or false claim returns 403 `email-verification-required`, since claiming ownership on the strength of a session is not a provider-verified inbox guarantee. The body must be the exact empty JSON object `{}`, bounded to 1 KiB. Uninitialized instances fail closed rather than first-user-wins: a first call on an empty instance claims the caller as the sole `owner` (201) only when the caller's verified email exactly matches the deployer-configured `SIGNKIT_BOOTSTRAP_OWNER_EMAIL`, or when the local-development-only `SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP=true` opt-in applies on Node with `NODE_ENV=development` and a loopback public origin. A mismatched caller gets 403 `bootstrap-owner-mismatch` and an unconfigured non-local instance gets 403 `bootstrap-owner-required`, both without consuming the single empty-instance window; production/test/unset runtime modes stay closed even if a proxy-facing public origin is misconfigured as loopback. Exact idempotency replay returns 200 with `idempotency-replayed: true`; a conflicting request fingerprint under the same key returns 409 idempotency conflict; a cross-subject or post-bootstrap attempt returns 409 already-bootstrapped. There is no un-bootstrap or ownership transfer endpoint.
-
-**Members/me** requires identity only and always returns `{ member, bootstrapped }`, where `member` is `null` for a caller who is not yet a member.
-
-**Instance invitations** are zero-PII: the invited email address is never stored, only a token/email binding hash that can only be reproduced by someone who already holds the bearer token and asserts a specific address (see [architecture/persistence.md § Persistence](architecture/persistence.md#persistence)). Create is owner/admin-scoped, bounded to 4 KiB, accepts only `email` and `role` (`owner`, `admin`, or `member`), and never accepts a caller-supplied expiry — every invitation gets the service's fixed 7-day lifetime. A fresh create returns 201 with `{ invitation, token }`; the plaintext `ski1_` bearer token is disclosed exactly once and an idempotent replay returns 200 with only `{ invitation }` and `idempotency-replayed: true`. Because the create-request fingerprint is `{ role }` only and deliberately excludes the invited email, replaying the same `Idempotency-Key` for a different invitee silently returns the original invitation instead of inviting the new address — callers must mint a fresh `Idempotency-Key` per invited address. List is cursor-paginated and forbidden/suspended for non-owner/admin actors. Accept takes only a `token` in the body, bounded to 4 KiB; the asserted email is never a request field — it is the caller's own authenticated d6e-auth identity email claim — and additionally requires the session's `email_verified` claim to be `true`, returning 403 `email-verification-required` otherwise, so acceptance is proven by holding the bearer token for a provider-verified address, not merely an asserted one. An invalid, expired, wrong-email, or already-superseded token and an accepting identity that is already a suspended instance member resolve to the identical opaque 404, so neither case can be distinguished from the other. An accepting identity that is instead already a currently _active_ instance member never consumes the invitation at all: the store returns `already_member` before the invitation is even locked, leaving it pending and writing no receipt, and the endpoint returns 409 `instance-member-already-exists` with only the caller's own current member metadata — never invitation data or the token — since a caller who is already a member already knows their own membership and this discloses nothing new. Existing members' roles are never changed by accepting an invitation; role and status changes for already-enrolled members are the explicit member-management API described next. Revoke takes a path `invitationId` and the exact empty JSON object `{}`, bounded to 1 KiB; a suspended actor returns 403, and an authorized owner/admin actor who is forbidden from revoking a non-member-role invitation (an admin targeting an owner- or admin-role invitation) also returns 403 — this is not opaque to that caller, since list already exposes every invitation's role to any owner/admin, and it remains distinguishable from the 404 returned for an unknown or already-resolved invitation ID. All three mutations require a bounded `Idempotency-Key` and reuse the same bounded JSON body reader, `application/json` content-type check, and RFC 9457 validation shape as bootstrap. Email delivery of the invitation remains deferred.
-
-**Instance member administration** (`GET /api/v1/instance/members`, `POST /api/v1/instance/members/{userId}/role`, `POST /api/v1/instance/members/{userId}/status`) governs every already-enrolled member and, like every other endpoint in this section, is scoped to the single local instance rather than to a d6e organization — there is no organization-level owner/admin role anywhere in this surface. List requires the caller to be a currently active `owner` or `admin`, is cursor-paginated, and is bounded to a maximum page size of 100 (25 by default); a malformed cursor is forwarded unvalidated to the durable store, matching the invitation list convention. Role and status changes take the target `userId` from the path and a 1 KiB JSON body (`{ role }` or `{ status }`), require the same bounded `Idempotency-Key` as every other instance mutation, and are each a single atomic unit writing the state change and its command receipt together. An `owner` may administer any member; an `admin` may only change a target whose _current_ role is `member`, and may never grant `admin` or `owner` — including to itself — which returns 403 `role_not_permitted` ahead of the role-scope `forbidden` check. Status changes never permit self-targeting regardless of role (409 `cannot_target_self`), while role changes permit self-targeting subject to the same owner floor as everyone else: an operation that would leave the instance with no active `owner` returns 409 `last_active_owner` instead of applying. Demoting a member's role below what it invited under, or suspending a member outright, atomically revokes that member's own still-pending invitations that its new role or status can no longer justify, since a `member` or a suspended actor may not act as an inviter; the response's `revokedInvitationCount` reports how many were cascaded. PostgreSQL serializes every role/status change behind a single advisory transaction lock (matching invitation create's own lock) so two concurrent administrators can never race past each other's row locks into a deadlock or a double-cascade; D1 achieves the same serialization through its rollback-on-failed-predicate command trigger. An exact `Idempotency-Key` replay returns 200 with `idempotency-replayed: true` and the receipt-recorded `member`, `appliedAt`, and `revokedInvitationCount` from the original call, never state produced by any later command; a reused key against a different request returns 409 idempotency conflict, and an unknown `targetUserId` returns 404 `member_not_found`. Responses expose only `{ member, appliedAt, revokedInvitationCount }` — the same zero-PII `InstanceMemberMetadata` shape used everywhere else, never internal receipt or provider state.
-
-**API keys** are owned by the calling `instance_member` and require that member to be currently `active`; a missing or suspended owner fails closed with `owner_not_active` before any key material is disclosed. Create accepts a name, an explicit scope list (for example `envelopes:read`, `drafts:write`, `envelopes:send`), and an optional expiry, and returns the plaintext `signkit_`-prefixed token exactly once on creation (a 200 replay carries only the stored metadata, never the token). List is cursor-paginated. Revoke is scoped to the caller's own key; an unknown or cross-owner ID returns opaque `not_found`. All three require a bounded `Idempotency-Key` and reuse the same bounded JSON body reader, `application/json` content-type check, and RFC 9457 validation shape as bootstrap. `envelopes:read`, `drafts:write`, and `envelopes:send` are usable on the endpoints listed above; `audit:read` can be minted and stored but no endpoint accepts it.
-
-**Organization grants** are what let a key reach a d6e organization at all — key ownership never implies organization access. Create requires _both_ authorities in one request: the caller must be the key's own currently active instance-member owner, and must hold a current `owner` or `admin` role in the session-selected d6e organization. The organization comes solely from that verified session; the body is the exact empty object bounded to 1 KiB and cannot name an organization, so a caller can only grant an organization they are already authorized for, and an instance administrator cannot grant on another member's key. A key may hold live grants for several organizations at once, with at most one live grant per `(key, organization)`; history is append-only, so revoking and later re-granting the same organization produces a second row rather than resurrecting the first. A fresh create returns 201 with `{ grant }`; an exact `Idempotency-Key` replay returns 200 with `idempotency-replayed: true`, while a fresh key naming an already-granted organization returns 200 _without_ that header, since it is a no-op rather than a replay of a request it never made. A revoked or expired key returns 409 `api-key-not-active`; an unknown or cross-owner key id returns the opaque 404 `api-key-organization-grant-not-found`. List is owner-scoped and cursor-paginated (25 by default, 100 maximum), forwards a malformed cursor unvalidated like every other list here, and there is deliberately no organization-side listing surface. Revoke accepts less authority than create, because de-escalation must never be harder than escalation: the key's own active owner may revoke with no organization membership at all, and separately a current `owner`/`admin` of the session-selected organization may revoke any grant _for that organization_ without owning the key or holding any local instance membership. The organization scope always comes from the verified session and never from a request field, so an identity-only caller cannot revoke grants for an organization they have no authority over. When a caller holds both paths, `key_owner` is recorded. Grant responses expose only identifiers, the asserted grantor organization role, timestamps, and the revoking actor and path — never an email, a display name, a token, a hash, or a key prefix. Each grant is an explicit durable delegation that is independent of the key owner's later d6e membership: losing d6e organization membership does not automatically revoke an existing grant, and there is no background synchronization from d6e-auth today. The grant stays live until it is revoked — by the key's own active owner, or by any current `owner`/`admin` of the granted organization through the organization-side revoke path above — so an organization that removes an administrator should also revoke the grants that administrator created. The API-key settings UI carries this warning next to key management.
-
-## Webhooks
-
-Organization webhook management requires an authenticated operator session with a current `owner` or `admin` role in the session-selected organization. Presenting a `signkit_` API key is refused with 403 `api-key-not-permitted`. Members receive 403 `webhook-forbidden`. Create and revoke require a bounded `Idempotency-Key`. The plaintext `skwh1_` signing secret is disclosed exactly once on create.
-
-| Method | Path                                      | Purpose                                   |
-| ------ | ----------------------------------------- | ----------------------------------------- |
-| `POST` | `/api/v1/webhooks`                        | create an endpoint                        |
-| `GET`  | `/api/v1/webhooks`                        | list endpoints (cursor-paginated)         |
-| `GET`  | `/api/v1/webhooks/{webhookId}`            | read one endpoint (no secret)             |
-| `POST` | `/api/v1/webhooks/{webhookId}/revoke`     | revoke an endpoint                        |
-| `GET`  | `/api/v1/webhooks/{webhookId}/deliveries` | list delivery attempts (cursor-paginated) |
-
-Subscribed events are a nonempty unique subset of the audit catalog. Deliveries are HMAC-SHA256 over `timestamp.body` (`v1=<hex>`) with `signkit-webhook-timestamp` and `signkit-webhook-signature` headers, drained by `POST /api/v1/system/webhooks/drain`. See [architecture/agent-contract.md](architecture/agent-contract.md) and [architecture/deployment-and-risks.md § Primary risks](architecture/deployment-and-risks.md#primary-risks).
-
-**Destination allowlist.** Webhook destinations are deployer-owned: `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` lists the only hosts this deployment may call, as canonicalized exact hosts and explicit `*.` wildcard suffixes (a wildcard never covers its own bare suffix, and wildcard suffixes must carry at least three labels — `*.hooks.example.com` is allowed, `*.example.com` and `*.com` are rejected). An absent, empty, or invalid value denies by default — creation is refused with 400 and every delivery attempt ends terminally with `host_not_allowed` before any DNS or network work. The policy is re-evaluated on every creation and every delivery attempt, so tightening it stops older endpoints without a restart; the public-IP DNS checks still run on every attempt and delivery fetches never follow redirects. See [deployment.md § Webhook destination allowlist](deployment.md#webhook-destination-allowlist).
-
-## Recipient surface
-
-Authority is the recipient capability — as a `Bearer` token for the two read endpoints, and as the encrypted cookie for every mutation. Submitted envelope and recipient IDs are equality constraints against a freshly resolved capability, never an alternate authority.
-
-| Method | Path                               | Notes                                                    |
-| ------ | ---------------------------------- | -------------------------------------------------------- |
-| `GET`  | `/api/v1/signing/context`          | `Bearer` capability; minimal allowlisted context         |
-| `GET`  | `/api/v1/signing/documents`        | `Bearer` capability; page geometry of the sent rendering |
-| `POST` | `/api/v1/signing/viewed`           | records the first foreground view                        |
-| `POST` | `/api/v1/signing/decline`          | terminal signer/approver decision                        |
-| `POST` | `/api/v1/signing/approve`          | approver decision, releases the next order or completes  |
-| `POST` | `/api/v1/signing/sign`             | one-shot signer completion                               |
-| `POST` | `/api/v1/signing/signature-assets` | same-origin PNG upload; encrypted cookie                 |
-
-**Context** requires a non-revoked, future-dated capability and actionable recipient/envelope state in the database query itself. Operator OAuth sessions and organization input are deliberately not part of this route.
-
-**Documents** returns the ordered Markdown from the exact Git revision pinned at send time. The database resolves the immutable revision locator; callers cannot supply an envelope, commit, object key, or path. The archive key is re-derived server-side, compressed bytes and gzip output are bounded, and SHA-256 plus Git HEAD are verified before anything is returned.
-
-**Viewed** exists so that a page `GET` never becomes a mutation. It requires the encrypted cookie, an exact same-origin request, an `Idempotency-Key`, and matching IDs. The recipient transition, the optional `sent` → `in_progress` envelope transition, the command receipt, and the `recipient.viewed` event publish atomically. Stale tabs, inactive capabilities, key reuse, and audit-head races fail closed without revealing whether another recipient session is valid.
-
-**Decline** is available only to an active signer or approver. Publication atomically marks the actor and envelope declined, revokes every other issued non-completed capability without forging their statuses, terminally fails still-deliverable invitation intents and scrubs their ciphertext, and appends one PII-free `recipient.declined` event carrying the sorted sibling-revocation manifest. Already-delivered and permanent-failure evidence is retained. A delivery lease observed before publication returns a retryable conflict with no partial write, so a terminal commit cannot race a new provider submission. On success the active capability cookie for that envelope is replaced by a purpose-separated terminal-receipt cookie scoped to the same UUIDv7 envelope ID that expires at `declinedAt + 30 days`; it cannot read Git or object storage or call recipient mutations, and every reload re-proves the stored command, the audit event and its predecessor, and the current terminal projection before returning only IDs, statuses, timestamp, and locale.
-
-**Approve** requires an active approver who has already viewed the documents. It marks the actor `completed`, revokes its capability, and appends `recipient.approved`. If later actions remain, it releases the next signer/approver order and its co-routed viewers; if none remain, it performs the lease-fenced terminal cleanup and appends a chained `envelope.completed` event.
-
-**Sign** is the matching signer completion: same-origin, encrypted cookie, bounded `Idempotency-Key`, expected envelope/recipient IDs, `expectedFieldGeneration`, and exactly one typed value per owned field. Raw field values stay in SQL only — audit events and public receipts carry digests. Publication completes the actor, stores the immutable values, and either releases the next action-bearing group or performs terminal cleanup with a chained `recipient.signed` then `envelope.completed` pair. Drawn signature PNGs are uploaded first through `POST /api/v1/signing/signature-assets` (`image/png`, 64 KiB, `envelopeId` and `recipientId` query constraints) and referenced from the sign body. Cryptographic PDF sealing is not part of this command.
-
-## Browser link exchange
-
-`GET /s/{token}` is a one-time exchange surface, not the signing page. It resolves durable state, seals the active token into a purpose-separated, envelope-scoped, `HttpOnly`, `SameSite=Lax` cookie whose name embeds the UUIDv7 envelope ID and whose lifetime cannot exceed the durable capability expiry or 30 days, and redirects to the locale-specific `/{locale}/sign/{envelopeId}` URL. The capability token never appears in the destination URL, page data, or JavaScript. Bare `/sign` fails closed and never guesses a cookie. Path, body, query, and cookie envelope IDs must agree; any mismatch fails closed. Two envelopes opened in separate tabs keep independent cookies and reload independently.
-
-The signing page rechecks durable authorization both before and after loading the pinned revision, never exposes the raw token to client-side code, and renders only a bounded, server-sanitized Markdown node model: raw HTML stays visible as escaped text, external images become inert notices, unsafe link schemes are non-interactive, invisible Unicode controls become visible markers, and the exact escaped Markdown source stays available in a separate tab.
+The public `/s/{capability}` link redirects to `/{locale}/sign/{envelopeId}` after sealing the browser session. The envelope id remains in the URL so refreshes are deterministic; authority still comes from the encrypted session, not the URL.
 
 ## Completion artifacts
 
-Once an envelope completes, a durable reconciliation job rebuilds a canonical `signkit-completion-manifest-v1` manifest from the pinned commit plus SQL evidence, and publishes exactly one immutable artifact pointer per envelope — replaying identical evidence is safe, differing evidence is an integrity error. Manifest contents, the audit re-derivation proof, and the explicit resource bounds that surface as `completion_artifact_evidence_too_large` are specified in [architecture/completion-artifacts.md § Completion artifact publication](architecture/completion-artifacts.md#completion-artifact-publication-slice-a). This is a re-derivation guarantee: a consistent whole-database rewrite is out of scope and would require an external published anchor to detect.
+After every actionable recipient completes, background reconciliation builds immutable JSON, Markdown, and PDF artifacts from the pinned document revision and SQL evidence. `GET /api/v1/completion-artifacts` and `/c/{token}` serve recipient completion grants. Completion PDFs are visual evidence, not PAdES-certified signatures.
 
-Delivery then enrolls each eligible recipient exactly once and mails a read-only `skca1_` access grant. Signer, approver, viewer, and CC recipients are eligible; prefill recipients are authoring metadata and are excluded. Grants expire 30 days after enrollment; revoked or expired tokens return an opaque 404. Successful delivery scrubs the sealed token ciphertext while leaving access active, terminal failure scrubs ciphertext and permanently revokes access, and retryable failure keeps both. See [architecture/completion-artifacts.md § Completion artifact delivery](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b).
+## Instance administration
 
-| Method | Path                                                 | Authority                          | Default format |
-| ------ | ---------------------------------------------------- | ---------------------------------- | -------------- |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact` | operator session or envelopes:read | JSON status    |
-| `GET`  | `/api/v1/completion-artifacts`                       | `Bearer skca1_` grant              | JSON           |
-| `GET`  | `/c/{token}`                                         | path token                         | Markdown       |
+These endpoints require a human session and reject API-key credentials:
 
-The public routes accept `?format=json|markdown|pdf` and need no cookies or d6e-auth. JSON and Markdown are decompressed text; `pdf` returns verified `application/pdf` bytes and is opaque 404 until the visual PDF has been published. The operator status read is an explicit allowlist returning publication state and artifact content digests only — never storage keys, audit hashes, recipient emails or names, raw field values, capability material, or internal claim tokens. Operator evidence and PDF downloads are the envelope routes in the Operator API table above.
+| Method | Path                                  | Purpose                       |
+| ------ | ------------------------------------- | ----------------------------- |
+| `POST` | `/api/v1/instance/bootstrap`          | Claim the empty instance      |
+| `GET`  | `/api/v1/instance/members/me`         | Read current local membership |
+| `GET`  | `/api/v1/instance/members`            | List members                  |
+| `POST` | `/api/v1/instance/invitations`        | Invite a member               |
+| `POST` | `/api/v1/instance/invitations/accept` | Accept an invitation          |
+| `POST` | `/api/v1/api-keys`                    | Create an owner-bound API key |
+| `GET`  | `/api/v1/api-keys`                    | List the caller's keys        |
+| `POST` | `/api/v1/api-keys/{apiKeyId}/revoke`  | Revoke a key                  |
+| `POST` | `/api/v1/webhooks`                    | Create a webhook              |
+| `GET`  | `/api/v1/webhooks`                    | List webhooks                 |
+| `POST` | `/api/v1/webhooks/{webhookId}/revoke` | Revoke a webhook              |
 
-## System endpoints
+See [authorization and instance administration](architecture/authorization-and-instance-administration.md) for role and fail-closed details.
 
-| Method | Path                                                | Authority                           |
-| ------ | --------------------------------------------------- | ----------------------------------- |
-| `GET`  | `/api/v1/system/capabilities`                       | none; static profile/runtime report |
-| `POST` | `/api/v1/system/deliveries/drain`                   | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/deliveries/reseal-sweep`            | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/completion-artifacts/drain`         | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/completion-deliveries/drain`        | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/completion-deliveries/reseal-sweep` | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/envelopes/expiry-drain`             | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/webhooks/drain`                     | `Bearer DELIVERY_WORKER_SECRET`     |
-| `POST` | `/api/v1/system/objects/orphan-sweep`               | `Bearer DELIVERY_WORKER_SECRET`     |
-
-### Capabilities
-
-`GET /api/v1/system/capabilities` is the only unauthenticated system read. It
-is a static capability advertisement, not a health probe with live state: it
-reports the API version, the detected runtime, and the endpoint/shape
-contracts an agent or operator can rely on before composing any other request.
-The implementation lives in `src/lib/capabilities/` (`authoring.ts`,
-`evidence.ts`, `integration.ts`) and is served by
-`src/routes/api/v1/system/capabilities/+server.ts`.
-
-- **Runtime.** `runtime` is resolved per request from the serving environment
-  (`node` by default, `cloudflare` when the D1 `DB` binding is present,
-  `vercel` on Vercel) via `resolveSignKitRuntime`. `supportedProfiles` lists
-  the database, object store, and maturity status of every profile regardless
-  of the current runtime, so a caller can tell which profile it is talking to
-  (`runtime`) and which profiles exist at all.
-- **Authoring and delivery.** `draftHistory`, `readiness`, `sending`,
-  `voiding`, `delivery`, and `recipientAccess` name the exact endpoint paths,
-  concurrency tokens (`expected-generation`, expected status), idempotency
-  requirements, mail transports per profile (`email-binding` on Cloudflare,
-  `smtp-or-cloudflare-email-rest` on Node), and the at-least-once drain
-  semantics. Recipient access additionally names the link-exchange path
-  (`/s/{capability}`), the web surface (`/{locale}/sign/{envelopeId}`), and
-  the envelope-scoped encrypted-cookie session model.
-- **Completion evidence.** `completionArtifact` names the status and worker
-  endpoints, the `signkit-completion-manifest-v1` schema, the `json` /
-  `markdown` / `pdf` artifacts, and the bounded per-event hash re-derivation
-  proof. `completionDelivery` names the completion-drain endpoint, the
-  eligible roles, the `skca1` token format, and the 30-day grant retention.
-  `publicCompletionArtifact` names the `Bearer skca1_` / path-token routes,
-  the `json` / `markdown` / `pdf` formats, and the absence of cookies.
-- **Agent integration.** `apiKeyAuthentication` is the machine-readable
-  version of [Authority boundaries](#authority-boundaries) and
-  [Operator API](#operator-api): the `signkit_` scheme, the mandatory
-  `SignKit-Organization-Id` selector, the explicit-per-organization grant
-  model, the `enabledScopes` (`envelopes:read`, `drafts:write`,
-  `envelopes:send`) versus `mintedButUnusableScopes` (`audit:read`) split,
-  the exact `readEndpoints` / `writeEndpoints` path lists, the durable
-  120-requests-per-60-seconds rate window, `lastUsedAt` tracking, and the
-  grant create/list/revoke authorities. `webhooks` names the management
-  routes, the HMAC-SHA256 timestamp signature, the once-revealed secret, and
-  the SSRF defenses. `openapi` points at `/api/v1/openapi.json` (3.1) and
-  `automation` confirms idempotency keys and agent actor provenance.
-- **What it never contains.** No secrets, credentials, token material, object
-  keys, ciphertext, or per-tenant state — only endpoint paths, enum values,
-  and static policy strings. Agents should query it first and treat unknown
-  future fields as informational rather than as authorization to call an
-  endpoint not listed here.
-
-### Background drains
-
-Each drain claims durable outbox rows with bounded leases and stable ordering, reclaims abandoned work after five minutes, backs off retryable failures, and re-reads the current lease-scoped projection immediately before decrypting or sending. Claim transactions also sweep rows that became ineligible, so a recipient or envelope state change cannot strand encrypted token material.
-
-Invitation delivery authenticates and hashes the sealed capability before use and sends localized English or Japanese text and HTML mail. Provider acceptance atomically marks the row delivered and scrubs ciphertext. Provider configuration/authentication failures and sealing-key drift retain ciphertext for capped backoff; only recipient-scoped rejection, exhausted attempts, or integrity failures are terminal. One item-level database error does not abort its successfully processed siblings.
-
-The provider call is outside the database transaction, so provider acceptance and database completion form an at-least-once boundary — downstream mail must tolerate rare duplicates after an ambiguous process failure. Scheduling these drains per profile is covered in [deployment.md § Background jobs](deployment.md#background-jobs).
-
-## Rust CLI
-
-The first-party agent CLI is implemented in Rust under `cli/` with binary name `signkit` (see [cli.md](cli.md)). It covers system capabilities, JSON envelope inspection, completion evidence and PDF download, API-key authoring/send mutations, and bounded DOCX import/export. It does not expose API-key, instance, webhook, or reissue management. `envelopes audit` remains a status alias of `completion-artifact`; `envelopes evidence` and `envelopes pdf` download the published bytes.
-
-## Not yet
-
-API keys authenticate agent reads and the authoring/send mutations marked above over Bearer with explicit organization grants. `audit:read` can be minted and stored yet no endpoint accepts it. Agent mutations record `actor_type = 'agent'`. Audit hash v2 includes `actorType` and `actorId` in every event preimage, and completion-artifact publication accepts those agent-authored create/commit/ready/fields/sent events. Bearer access to the recipient surface is not planned — recipient capabilities are a separate authority. Automatic revocation of grants when d6e organization membership changes is a follow-up, and there is no grant management UI or typed browser client for grants yet. Instance invitations can be created, listed, accepted, and revoked (above), but the invitation token is never emailed — invitation email delivery remains deferred. Cryptographic PDF sealing and certification (PAdES) and commercial audit export remain on the backlog.
+The contact endpoints above are also human-session-only, but they are ordinary per-member product data rather than instance administration.

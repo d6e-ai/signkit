@@ -3,7 +3,7 @@ import type { DraftPointerUpdate, EnvelopeStore } from '$lib/ports/envelope-stor
 
 interface EnvelopeRow {
 	id: string;
-	organization_id: string;
+	created_by_user_id: string;
 	title: string;
 	status: EnvelopeStatus;
 	repository_generation: number;
@@ -19,22 +19,21 @@ interface EnvelopeRow {
 export class D1EnvelopeStore implements EnvelopeStore {
 	constructor(private readonly database: D1Database) {}
 
-	async findForOrganization(organizationId: string, envelopeId: string): Promise<Envelope | null> {
+	async findEnvelope(envelopeId: string): Promise<Envelope | null> {
 		const row = await this.database
-			.prepare('SELECT * FROM envelope WHERE organization_id = ? AND id = ? LIMIT 1')
-			.bind(organizationId, envelopeId)
+			.prepare('SELECT * FROM envelope WHERE id = ? LIMIT 1')
+			.bind(envelopeId)
 			.first<EnvelopeRow>();
 		return row ? fromRow(row) : null;
 	}
 
 	async compareAndSetDraftPointer(
-		organizationId: string,
 		envelopeId: string,
 		update: DraftPointerUpdate
 	): Promise<boolean> {
 		const result = await this.database
 			.prepare(
-				`UPDATE envelope SET repository_generation = ?, repository_head = ?, repository_archive_key = ?, repository_archive_sha256 = ?, updated_at = ? WHERE organization_id = ? AND id = ? AND status = 'draft' AND repository_generation = ?`
+				`UPDATE envelope SET repository_generation = ?, repository_head = ?, repository_archive_key = ?, repository_archive_sha256 = ?, updated_at = ? WHERE id = ? AND status = 'draft' AND repository_generation = ?`
 			)
 			.bind(
 				update.nextGeneration,
@@ -42,7 +41,6 @@ export class D1EnvelopeStore implements EnvelopeStore {
 				update.archiveKey,
 				update.archiveSha256,
 				update.updatedAt,
-				organizationId,
 				envelopeId,
 				update.expectedGeneration
 			)
@@ -51,17 +49,14 @@ export class D1EnvelopeStore implements EnvelopeStore {
 	}
 
 	async transition(
-		organizationId: string,
 		envelopeId: string,
 		expected: EnvelopeStatus,
 		next: EnvelopeStatus,
 		at: string
 	): Promise<boolean> {
 		const result = await this.database
-			.prepare(
-				'UPDATE envelope SET status = ?, updated_at = ? WHERE organization_id = ? AND id = ? AND status = ?'
-			)
-			.bind(next, at, organizationId, envelopeId, expected)
+			.prepare('UPDATE envelope SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
+			.bind(next, at, envelopeId, expected)
 			.run();
 		return result.meta.changes === 1;
 	}
@@ -70,7 +65,7 @@ export class D1EnvelopeStore implements EnvelopeStore {
 function fromRow(row: EnvelopeRow): Envelope {
 	return {
 		id: row.id,
-		organizationId: row.organization_id,
+		createdByUserId: row.created_by_user_id,
 		title: row.title,
 		status: row.status,
 		repositoryGeneration: row.repository_generation,

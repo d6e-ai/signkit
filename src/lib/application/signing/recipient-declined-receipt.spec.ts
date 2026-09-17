@@ -25,7 +25,6 @@ function store(evidence: ProvenRecipientDeclinedReceipt | null): RecipientDeclin
 
 function evidence(capabilityHash: string): ProvenRecipientDeclinedReceipt {
 	return {
-		organizationId: 'org-1',
 		envelopeId: 'envelope-1',
 		recipientId: 'recipient-1',
 		idempotencyKey: 'decline-1',
@@ -37,7 +36,6 @@ function evidence(capabilityHash: string): ProvenRecipientDeclinedReceipt {
 
 function locator(capabilityHash: string): RecipientDeclinedReceiptLocator {
 	return {
-		organizationId: 'org-1',
 		envelopeId: 'envelope-1',
 		recipientId: 'recipient-1',
 		idempotencyKey: 'decline-1',
@@ -108,7 +106,6 @@ describe('RecipientDeclinedReceiptApplication', () => {
 		expect(storePort.findByIdentity).toHaveBeenCalledWith(exact);
 
 		for (const changed of [
-			{ ...exact, organizationId: 'org-2' },
 			{ ...exact, envelopeId: 'envelope-2' },
 			{ ...exact, recipientId: 'recipient-2' },
 			{ ...exact, idempotencyKey: 'decline-2' },
@@ -127,7 +124,7 @@ describe('RecipientDeclinedReceiptApplication', () => {
 
 		await expect(
 			application.resolveLocator(
-				{ ...locator(capability.tokenHash), organizationId: '' },
+				{ ...locator(capability.tokenHash), envelopeId: '' },
 				BEFORE_EXPIRY
 			)
 		).resolves.toBeNull();

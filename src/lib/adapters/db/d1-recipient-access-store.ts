@@ -5,7 +5,6 @@ import type {
 } from '$lib/ports/recipient-access-store';
 
 interface RecipientAccessRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_name: string;
@@ -35,8 +34,7 @@ export class D1RecipientAccessStore implements RecipientAccessStore {
 	}
 }
 
-export const D1_RECIPIENT_ACCESS_QUERY: string = `SELECT recipient.organization_id,
-					recipient.envelope_id,
+export const D1_RECIPIENT_ACCESS_QUERY: string = `SELECT recipient.envelope_id,
 					recipient.id AS recipient_id,
 					recipient.name AS recipient_name,
 					recipient.locale AS recipient_locale,
@@ -50,11 +48,9 @@ export const D1_RECIPIENT_ACCESS_QUERY: string = `SELECT recipient.organization_
 					revision.archive_sha256
 				FROM recipient
 				INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
+					ON envelope.id = recipient.envelope_id
 				INNER JOIN draft_revision_command revision
-					ON revision.organization_id = envelope.organization_id
-					AND revision.envelope_id = envelope.id
+					ON revision.envelope_id = envelope.id
 					AND revision.commit_sha = envelope.sent_commit_sha
 					AND revision.archive_key = envelope.repository_archive_key
 					AND revision.archive_sha256 = envelope.repository_archive_sha256
@@ -71,7 +67,6 @@ export const D1_RECIPIENT_ACCESS_QUERY: string = `SELECT recipient.organization_
 
 function fromRow(row: RecipientAccessRow): RecipientSigningContext {
 	return {
-		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,
 		recipientId: row.recipient_id,
 		recipientName: row.recipient_name,

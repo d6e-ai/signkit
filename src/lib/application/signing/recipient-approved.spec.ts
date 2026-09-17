@@ -9,7 +9,6 @@ import type {
 import { RecipientApprovedApplication } from './recipient-approved';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
-const organizationId: string = 'org-1';
 const envelopeId: string = '01910000-0000-7000-8000-000000000001';
 const recipientId: string = '01910000-0000-7000-8000-000000000002';
 
@@ -28,7 +27,6 @@ function ready(
 ): ApprovePreparation {
 	return {
 		outcome: 'ready',
-		organizationId,
 		envelopeId,
 		recipientId,
 		recipientRole: 'approver',
@@ -184,8 +182,7 @@ describe('RecipientApprovedApplication', () => {
 		const expectedCompletedHash: string = createHash('sha256')
 			.update(
 				JSON.stringify({
-					hashVersion: 2,
-					organizationId,
+					hashVersion: 3,
 					envelopeId,
 					sequence: 5,
 					eventType: 'envelope.completed',

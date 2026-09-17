@@ -4,7 +4,6 @@ import {
 	type EnvelopeDocumentPdfApplicationPort
 } from './envelope-document-pdf';
 import { SentDocumentPdfService } from './sent-document-pdf';
-import type { EnvelopeStore } from '$lib/ports/envelope-store';
 
 export interface EnvelopeDocumentPdfRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -22,7 +21,7 @@ export async function resolveEnvelopeDocumentPdfApplication(
 	const dependencies = await resolveEnvelopeDocxExport(context);
 	if (dependencies === null) return null;
 	return new EnvelopeDocumentPdfService(
-		dependencies.envelopes as EnvelopeStore,
+		dependencies.envelopes,
 		new SentDocumentPdfService(dependencies.objects, dependencies.repository)
 	);
 }

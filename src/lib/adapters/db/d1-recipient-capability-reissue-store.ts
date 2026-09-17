@@ -29,7 +29,6 @@ interface AuditHeadRow {
 }
 
 interface CommandRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	actor_type: string;
@@ -55,8 +54,8 @@ export class D1RecipientCapabilityReissueStore implements RecipientCapabilityRei
 		if (replay !== null) return replay;
 
 		const envelope: EnvelopeRow | null = await this.#database
-			.prepare('SELECT status FROM envelope WHERE organization_id = ? AND id = ? LIMIT 1')
-			.bind(key.organizationId, key.envelopeId)
+			.prepare('SELECT status FROM envelope WHERE id = ? LIMIT 1')
+			.bind(key.envelopeId)
 			.first<EnvelopeRow>();
 		if (envelope === null) return { outcome: 'not_found' };
 		if (
@@ -74,10 +73,10 @@ export class D1RecipientCapabilityReissueStore implements RecipientCapabilityRei
 			.prepare(
 				`SELECT status, capability_hash, capability_expires_at, capability_revoked_at
 				 FROM recipient
-				 WHERE organization_id = ? AND envelope_id = ? AND id = ?
+				 WHERE envelope_id = ? AND id = ?
 				 LIMIT 1`
 			)
-			.bind(key.organizationId, key.envelopeId, key.recipientId)
+			.bind(key.envelopeId, key.recipientId)
 			.first<RecipientRow>();
 		if (recipient === null) return { outcome: 'not_found' };
 		if (recipient.status === 'completed' || recipient.status === 'declined') {
@@ -97,9 +96,9 @@ export class D1RecipientCapabilityReissueStore implements RecipientCapabilityRei
 		const outboxResult = await this.#database
 			.prepare(
 				`SELECT id, status FROM delivery_outbox
-				 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = ?`
+				 WHERE envelope_id = ? AND recipient_id = ?`
 			)
-			.bind(key.organizationId, key.envelopeId, key.recipientId)
+			.bind(key.envelopeId, key.recipientId)
 			.all<OutboxRow>();
 		const outbox: OutboxRow[] = outboxResult.results ?? [];
 		if (outbox.some((row: OutboxRow): boolean => row.status === 'processing')) {
@@ -109,10 +108,7 @@ export class D1RecipientCapabilityReissueStore implements RecipientCapabilityRei
 			return { outcome: 'not_eligible', reason: 'not_released' };
 		}
 
-		const auditHead: ReissueAuditHead | null = await this.#readAuditHead(
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: ReissueAuditHead | null = await this.#readAuditHead(key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 
 		return {
@@ -128,16 +124,15 @@ export class D1RecipientCapabilityReissueStore implements RecipientCapabilityRei
 		const statement: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO recipient_capability_reissue_command (
-					organization_id, envelope_id, recipient_id, actor_type, actor_id,
+					envelope_id, recipient_id, actor_type, actor_id,
 					idempotency_key, request_hash, previous_capability_hash, new_capability_hash,
 					reserved_capability_expires_at, sealed_capability, sealing_key_id,
 					sealed_capability_sha256, outbox_id, reason, updated_at,
 					audit_event_id, audit_sequence, previous_audit_hash, audit_event_hash,
 					audit_payload_json
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
-				command.organizationId,
 				command.envelopeId,
 				command.recipientId,
 				command.actorType,
@@ -186,19 +181,16 @@ export class D1RecipientCapabilityReissueStore implements RecipientCapabilityRei
 		}
 	}
 
-	async #readAuditHead(
-		organizationId: string,
-		envelopeId: string
-	): Promise<ReissueAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<ReissueAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash
 				 FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ?
+				 WHERE envelope_id = ?
 				 ORDER BY sequence DESC
 				 LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
@@ -208,14 +200,14 @@ export class D1RecipientCapabilityReissueStore implements RecipientCapabilityRei
 	async #resolveCommand(key: ReissueCommandKey): Promise<ReissuePreparation | null> {
 		const row: CommandRow | null = await this.#database
 			.prepare(
-				`SELECT organization_id, envelope_id, recipient_id, actor_type, actor_id,
+				`SELECT envelope_id, recipient_id, actor_type, actor_id,
 					idempotency_key, request_hash, new_capability_hash, outbox_id,
 					updated_at, audit_event_id
 				 FROM recipient_capability_reissue_command
-				 WHERE organization_id = ? AND actor_type = ? AND actor_id = ? AND idempotency_key = ?
+				 WHERE actor_type = ? AND actor_id = ? AND idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(key.organizationId, key.actorType, key.actorId, key.idempotencyKey)
+			.bind(key.actorType, key.actorId, key.idempotencyKey)
 			.first<CommandRow>();
 		if (row === null) return null;
 		if (

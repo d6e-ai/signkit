@@ -1,5 +1,4 @@
 export interface PublishCompletionArtifactPdfCommand {
-	organizationId: string;
 	envelopeId: string;
 	pdfObjectKey: string;
 	pdfSha256: string;
@@ -35,8 +34,5 @@ export interface CompletionArtifactPdfStore {
 	publishCompletionArtifactPdf(
 		command: PublishCompletionArtifactPdfCommand
 	): Promise<PublishCompletionArtifactPdfResult>;
-	readCompletionArtifactPdf(
-		organizationId: string,
-		envelopeId: string
-	): Promise<CompletionArtifactPdfRecord | null>;
+	readCompletionArtifactPdf(envelopeId: string): Promise<CompletionArtifactPdfRecord | null>;
 }

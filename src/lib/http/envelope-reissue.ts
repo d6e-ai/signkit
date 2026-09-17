@@ -6,10 +6,7 @@ import type {
 	ReissueRecipientCapabilityResult
 } from '$lib/application/signing/recipient-capability-reissue';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
-import {
-	authorizeOrganizationRequest,
-	type AuthorizedRequestActor
-} from './organization-authorization';
+import { authorizeInstanceRequest, type AuthorizedInstanceActor } from './instance-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -46,7 +43,7 @@ export function createEnvelopeReissueHandler(
 	resolveApplication: EnvelopeReissueApplicationResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedRequestActor | Response = authorizeOrganizationRequest(
+		const authorized: AuthorizedInstanceActor | Response = authorizeInstanceRequest(
 			locals,
 			url.pathname
 		);
@@ -116,8 +113,7 @@ export function createEnvelopeReissueHandler(
 
 		const actor: EnvelopeRequestActor = {
 			id: authorized.id,
-			organizationId: authorized.organizationId,
-			organizationName: authorized.organizationName
+			createdByUserId: authorized.id
 		};
 
 		const input: ReissueRecipientCapabilityInput = {
@@ -163,7 +159,7 @@ function reissueResponse(result: ReissueRecipientCapabilityResult, instance: str
 				type: 'urn:signkit:problem:envelope-not-found',
 				title: 'Envelope or recipient not found',
 				status: 404,
-				detail: 'The specified envelope or recipient does not exist in this organization.',
+				detail: 'The specified envelope or recipient does not exist in this instance.',
 				instance
 			},
 			securityHeaders()

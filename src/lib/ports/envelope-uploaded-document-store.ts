@@ -1,7 +1,6 @@
 import { MAX_UPLOADED_DOCUMENTS_PER_ENVELOPE } from '$lib/application/documents/uploaded-pdf';
 
 export interface EnvelopeUploadedDocumentRecord {
-	organizationId: string;
 	envelopeId: string;
 	sha256: string;
 	objectKey: string;
@@ -20,11 +19,7 @@ export interface EnvelopeUploadedDocumentStore {
 	 * serialized so the per-envelope cap cannot be exceeded by a race.
 	 */
 	insert(record: EnvelopeUploadedDocumentRecord): Promise<InsertUploadedDocumentResult>;
-	find(
-		organizationId: string,
-		envelopeId: string,
-		sha256: string
-	): Promise<EnvelopeUploadedDocumentRecord | null>;
+	find(envelopeId: string, sha256: string): Promise<EnvelopeUploadedDocumentRecord | null>;
 }
 
 export { MAX_UPLOADED_DOCUMENTS_PER_ENVELOPE };

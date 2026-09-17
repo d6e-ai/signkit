@@ -11,7 +11,7 @@ export interface DocxExportRuntimeContext {
 }
 
 export interface EnvelopeDocxExportDependencies {
-	envelopes: Pick<EnvelopeStore, 'findForOrganization'>;
+	envelopes: Pick<EnvelopeStore, 'findEnvelope'>;
 	objects: ObjectStore;
 	repository: DraftRepository;
 }

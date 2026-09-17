@@ -10,10 +10,26 @@ import { resolveEffectiveConfig, type EffectiveTarget } from '../../cli/effectiv
 import { conflict, generic, preflight, usage } from '../../cli/errors.js';
 import type { CommandName, ParsedCommand } from '../../cli/parse.js';
 import { isValidEmailAddress } from '../../cli/urls.js';
-import type { ReleaseResolver, ResolvedRelease } from '../../release/github.js';
+import type {
+	PreparedReleaseBundle,
+	ReleaseResolver,
+	ResolvedRelease
+} from '../../release/github.js';
+import type { ReleaseProvenance } from '../../release/provenance.js';
 import type { BundleExtractor, ExtractedBundle } from '../../release/extract.js';
 import type { FileSystem } from '../../runtime/fs.js';
 import type { HttpClient } from '../../runtime/http.js';
+import {
+	assertExactRequiredSecrets,
+	ensureRecoveryBinding,
+	ensureRecoverySecrets,
+	readOAuthSecrets,
+	RECOVERY_DIR_MODE,
+	resolveRecoveryPath,
+	stageRecoverySecrets,
+	tryReuseRecoverySecrets,
+	type OAuthSecretInput
+} from '../../recovery/bootstrap.js';
 import {
 	createStateStore,
 	d1BackupFileName,
@@ -46,6 +62,9 @@ export interface ReconcileRuntime {
 	smokeBackoffMs?: number;
 	smokeTimeoutMs?: number;
 	sleep?: (ms: number) => Promise<void>;
+	readStdin?: () => Promise<Uint8Array>;
+	recoveryPath?: string;
+	randomBytes?: (size: number) => Uint8Array;
 }
 
 export interface PlanStep {
@@ -80,6 +99,9 @@ export interface ReconcileResult {
 	message: string;
 	bootstrapWarning: string;
 	migrationPolicy: string;
+	recoveryPath?: string;
+	recoveryFingerprint?: string;
+	provenance?: ReleaseProvenance;
 }
 
 const BOOTSTRAP_WARNING_CONFIGURED =
@@ -132,6 +154,8 @@ export async function reconcileCloudflare(
 		version: input.version,
 		channel: input.channel
 	});
+	assertSupportedSecretTaxonomy(release, runtime, stateStore.path);
+	const preparedBundle = await runtime.releases.prepareBundle(release);
 	const plan = buildPlan(input, existing, target, remote, release);
 	if (input.command === 'plan') {
 		return {
@@ -140,6 +164,7 @@ export async function reconcileCloudflare(
 			provider: 'cloudflare',
 			version: release.tag,
 			commit: release.commit,
+			provenance: preparedBundle.provenance,
 			plan,
 			mutations: [],
 			statePath: stateStore.path,
@@ -154,7 +179,17 @@ export async function reconcileCloudflare(
 		};
 	}
 
-	return deployOrUpgrade(input, target, runtime, stateStore, existing, remote, release, plan);
+	return deployOrUpgrade(
+		input,
+		target,
+		runtime,
+		stateStore,
+		existing,
+		remote,
+		release,
+		preparedBundle,
+		plan
+	);
 }
 
 async function adopt(
@@ -206,6 +241,7 @@ async function deployOrUpgrade(
 	existing: DeploymentState | undefined,
 	remote: RemoteSnapshot,
 	release: ResolvedRelease,
+	preparedBundle: PreparedReleaseBundle,
 	plan: PlanStep[]
 ): Promise<ReconcileResult> {
 	const mutations: string[] = [];
@@ -230,41 +266,57 @@ async function deployOrUpgrade(
 
 	const requiredSecrets = uniqueSecrets(release.manifest.requiredSecrets);
 	const missing = missingSecrets(current.secretNames, requiredSecrets);
-	if (missing.length > 0) {
-		const where = current.workerExists
-			? `missing required Worker secrets: ${missing.join(', ')}`
-			: `Worker ${target.workerName} does not exist yet, so these required secrets cannot be verified: ${missing.join(', ')}. This command stopped before creating Cloudflare resources or uploading a Worker`;
-		throw preflight(
-			`${where}. Set them with wrangler secret put <NAME> --name ${target.workerName} (interactive stdin) or documented environment/stdin channels, then re-run. Secrets are never accepted on argv.`
-		);
+	const deploymentRecovery = await prepareDeploymentRecovery(
+		input,
+		target,
+		existing,
+		current,
+		release,
+		runtime,
+		stateStore.path,
+		missing
+	);
+	if (deploymentRecovery?.created) {
+		mutations.push('recovery');
 	}
 
-	if (!current.d1) {
-		if (input.command !== 'deploy' || existing) {
-			throw conflict(`D1 ${target.d1} does not exist`);
+	let workDir: string;
+	try {
+		if (!current.d1) {
+			if (input.command !== 'deploy' || existing) {
+				throw conflict(`D1 ${target.d1} does not exist`);
+			}
+			if (isUuid(target.d1)) {
+				throw conflict(
+					`D1 id ${target.d1} was not found; pass a D1 name to create it, or adopt an existing database`
+				);
+			}
+			current.d1 = await runtime.wrangler.createD1(target.d1);
+			mutations.push('create-d1');
 		}
-		if (isUuid(target.d1)) {
-			throw conflict(
-				`D1 id ${target.d1} was not found; pass a D1 name to create it, or adopt an existing database`
-			);
+		if (!current.r2Exists) {
+			if (input.command !== 'deploy' || existing) {
+				throw conflict(`R2 bucket ${target.r2} does not exist`);
+			}
+			await runtime.wrangler.createR2(target.r2);
+			current.r2Exists = true;
+			mutations.push('create-r2');
 		}
-		current.d1 = await runtime.wrangler.createD1(target.d1);
-		mutations.push('create-d1');
-	}
-	if (!current.r2Exists) {
-		if (input.command !== 'deploy' || existing) {
-			throw conflict(`R2 bucket ${target.r2} does not exist`);
-		}
-		await runtime.wrangler.createR2(target.r2);
-		current.r2Exists = true;
-		mutations.push('create-r2');
-	}
 
-	const workDir = await runtime.fs.mkdtemp(join(runtime.fs.tmpdir(), 'create-signkit-'));
+		workDir = await runtime.fs.mkdtemp(join(runtime.fs.tmpdir(), 'create-signkit-'));
+	} catch (error) {
+		if (deploymentRecovery) {
+			await runtime.fs.rm(deploymentRecovery.cleanupDir);
+		}
+		throw error;
+	}
 	let backupPath: string | undefined;
 	try {
-		const bundleBytes = await runtime.releases.downloadBundle(release);
-		const extracted = await runtime.extractor.extract(bundleBytes, workDir, release.manifest);
+		const extracted = await runtime.extractor.extract(
+			preparedBundle.bytes,
+			workDir,
+			release.manifest
+		);
 		const generatedVars = generatedWorkerVars(target, initialManagedDeploy);
 		assertRequiredVarsPresent(release.manifest.requiredVars, generatedVars, initialManagedDeploy);
 		await writeGeneratedConfig(runtime.fs, extracted, target, current, release, generatedVars);
@@ -281,6 +333,7 @@ async function deployOrUpgrade(
 			database: current.d1.name
 		};
 		const migrations = await runtime.wrangler.listMigrations(migrationOptions);
+		assertCompatibleSchemaEpoch(existing, release, migrations.applied);
 		const pending = [...migrations.pending];
 		if (pending.length > 0) {
 			await runtime.wrangler.applyMigrations(migrationOptions);
@@ -300,7 +353,8 @@ async function deployOrUpgrade(
 			workerName: target.workerName,
 			domain: target.domain,
 			keepVars: true,
-			noBundle: true
+			noBundle: true,
+			...(deploymentRecovery ? { secretsFile: deploymentRecovery.secretsFile } : {})
 		};
 		const uploaded = assertSuccessfulUpload(
 			input.command === 'upgrade'
@@ -341,6 +395,7 @@ async function deployOrUpgrade(
 				provider: 'cloudflare',
 				version: release.tag,
 				commit: release.commit,
+				provenance: preparedBundle.provenance,
 				plan,
 				mutations,
 				statePath: stateStore.path,
@@ -351,7 +406,8 @@ async function deployOrUpgrade(
 				rollback,
 				message: `HTTPS smoke check skipped: no production origin is known; refusing to use a version-preview URL as production verification. Pass --public-origin or --domain. ${rollback.guidance}`,
 				bootstrapWarning: bootstrapWarningFor(target),
-				migrationPolicy: MIGRATION_POLICY_NOTES
+				migrationPolicy: MIGRATION_POLICY_NOTES,
+				...recoveryMetadata(deploymentRecovery)
 			};
 		}
 		const smoke = await smokeCheck({
@@ -383,6 +439,7 @@ async function deployOrUpgrade(
 				provider: 'cloudflare',
 				version: release.tag,
 				commit: release.commit,
+				provenance: preparedBundle.provenance,
 				plan,
 				mutations,
 				statePath: stateStore.path,
@@ -393,7 +450,8 @@ async function deployOrUpgrade(
 				rollback,
 				message: `HTTPS smoke check failed: ${smoke.detail}. ${rollback.guidance}`,
 				bootstrapWarning: bootstrapWarningFor(target),
-				migrationPolicy: MIGRATION_POLICY_NOTES
+				migrationPolicy: MIGRATION_POLICY_NOTES,
+				...recoveryMetadata(deploymentRecovery)
 			};
 		}
 
@@ -410,6 +468,7 @@ async function deployOrUpgrade(
 			provider: 'cloudflare',
 			version: release.tag,
 			commit: release.commit,
+			provenance: preparedBundle.provenance,
 			plan,
 			mutations,
 			statePath: stateStore.path,
@@ -422,10 +481,14 @@ async function deployOrUpgrade(
 					? `upgraded ${target.workerName} to ${release.tag}`
 					: `deployed ${target.workerName} at ${release.tag}`,
 			bootstrapWarning: bootstrapWarningFor(target),
-			migrationPolicy: MIGRATION_POLICY_NOTES
+			migrationPolicy: MIGRATION_POLICY_NOTES,
+			...recoveryMetadata(deploymentRecovery)
 		};
 	} finally {
 		await runtime.fs.rm(workDir);
+		if (deploymentRecovery) {
+			await runtime.fs.rm(deploymentRecovery.cleanupDir);
+		}
 	}
 }
 
@@ -585,6 +648,11 @@ function buildPlan(
 			id: 'validate-manifest',
 			summary: `validate ${release.manifest.bundle.assetName} size ${release.manifest.bundle.size} sha256 ${release.manifest.bundle.sha256}`,
 			mutating: false
+		},
+		{
+			id: 'verify-provenance',
+			summary: `verify GitHub/Sigstore provenance for ${release.manifest.bundle.assetName}`,
+			mutating: false
 		}
 	];
 	if (input.command === 'adopt') {
@@ -666,6 +734,7 @@ function nextState(
 		channel: input.channel,
 		version: release.tag,
 		commit: release.commit,
+		schemaEpoch: release.manifest.migrationPolicy.schemaEpoch,
 		lastCommand: input.command,
 		updatedAt: now.toISOString(),
 		lastWorkerVersionId: extra.lastWorkerVersionId ?? existing?.lastWorkerVersionId,
@@ -801,6 +870,7 @@ function adoptState(
 		channel: input.channel,
 		version: retarget ? undefined : existing?.version,
 		commit: retarget ? undefined : existing?.commit,
+		schemaEpoch: retarget ? undefined : existing?.schemaEpoch,
 		lastCommand: 'adopt',
 		updatedAt: now.toISOString(),
 		lastWorkerVersionId: retarget ? undefined : existing?.lastWorkerVersionId,
@@ -808,6 +878,21 @@ function adoptState(
 		appliedMigrations: retarget ? undefined : existing?.appliedMigrations,
 		adopted: true
 	};
+}
+
+function assertCompatibleSchemaEpoch(
+	existing: DeploymentState | undefined,
+	release: ResolvedRelease,
+	appliedMigrations: readonly string[]
+): void {
+	const releaseEpoch = release.manifest.migrationPolicy.schemaEpoch;
+	if (!existing || existing.schemaEpoch === releaseEpoch || appliedMigrations.length === 0) {
+		return;
+	}
+	const recorded = existing.schemaEpoch ?? 'unrecorded legacy schema';
+	throw conflict(
+		`D1 schema epoch ${recorded} cannot be upgraded in place to ${releaseEpoch}. Recreate the selected D1, adopt the fresh database, and run deploy again.`
+	);
 }
 
 function assertNoTakeover(
@@ -822,6 +907,170 @@ function assertNoTakeover(
 		throw conflict(
 			'this Worker already has published versions; adopt the existing deployment before deploy rather than taking it over'
 		);
+	}
+	if (input.command === 'deploy' && remote.secretNames.length > 0) {
+		throw conflict(
+			'this Worker already has stored secrets; adopt the existing deployment before deploy rather than taking it over'
+		);
+	}
+}
+
+interface DeploymentRecovery {
+	secretsFile: string;
+	cleanupDir: string;
+	recoveryPath: string;
+	recoveryFingerprint: string;
+	created: boolean;
+}
+
+function recoveryMetadata(
+	recovery: DeploymentRecovery | undefined
+): Pick<ReconcileResult, 'recoveryPath' | 'recoveryFingerprint'> {
+	if (!recovery) {
+		return {};
+	}
+	return {
+		recoveryPath: recovery.recoveryPath,
+		recoveryFingerprint: recovery.recoveryFingerprint
+	};
+}
+
+function isPristineInitialDeploy(
+	input: ParsedCommand,
+	existing: DeploymentState | undefined,
+	remote: RemoteSnapshot
+): boolean {
+	return (
+		input.command === 'deploy' &&
+		existing === undefined &&
+		remote.versions.length === 0 &&
+		remote.secretNames.length === 0
+	);
+}
+
+function assertSupportedSecretTaxonomy(
+	release: ResolvedRelease,
+	runtime: ReconcileRuntime,
+	statePath: string
+): void {
+	try {
+		assertExactRequiredSecrets(release.manifest.requiredSecrets);
+	} catch (error) {
+		const recoveryPath = runtime.recoveryPath ?? resolveRecoveryPath(statePath);
+		throw preflight(
+			`${error instanceof Error ? error.message : String(error)}. Restore the recovery file at ${recoveryPath} from a secure backup; the CLI never accepts unknown secret types.`
+		);
+	}
+}
+
+async function prepareDeploymentRecovery(
+	input: ParsedCommand,
+	target: EffectiveTarget,
+	existing: DeploymentState | undefined,
+	remote: RemoteSnapshot,
+	release: ResolvedRelease,
+	runtime: ReconcileRuntime,
+	statePath: string,
+	missingSecrets: readonly string[]
+): Promise<DeploymentRecovery | undefined> {
+	const pristine = isPristineInitialDeploy(input, existing, remote);
+	if (!pristine && missingSecrets.length === 0) {
+		return undefined;
+	}
+	const recoveryPath = runtime.recoveryPath ?? resolveRecoveryPath(statePath);
+	const recoveryExists: boolean = await runtime.fs.exists(recoveryPath);
+	if (!recoveryExists && !pristine) {
+		throw preflight(
+			`missing required Worker secrets: ${missingSecrets.join(', ')}. Restore the flat recovery JSON at ${recoveryPath}; create-signkit will validate it and pass it to Wrangler with --secrets-file on the next deploy or upgrade. Secret values are never accepted on argv, and the CLI never generates or overwrites recovery secrets for an existing deployment.`
+		);
+	}
+	if (recoveryExists) {
+		try {
+			await ensureRecoveryBinding({
+				fs: runtime.fs,
+				recoveryPath,
+				accountId: target.accountId,
+				workerName: target.workerName,
+				allowCreate: false
+			});
+			const reused = await tryReuseRecoverySecrets({ fs: runtime.fs, recoveryPath });
+			if (!reused) {
+				throw new Error(`recovery file at ${recoveryPath} disappeared during validation`);
+			}
+			return stageDeploymentRecovery(
+				runtime,
+				reused,
+				pristine ? release.manifest.requiredSecrets : missingSecrets
+			);
+		} catch (error) {
+			throw preflight(
+				`${error instanceof Error ? error.message : String(error)}. Restore the recovery file and its binding metadata at ${recoveryPath} from a secure backup; the CLI never overwrites them and identifies the secret map by path and SHA-256 fingerprint only.`
+			);
+		}
+	}
+	if (!runtime.readStdin) {
+		throw preflight(
+			`OAuth stdin is unavailable for the initial deploy at ${recoveryPath}. Provide the initial OAuth secrets once via stdin redirection from a secure two-key JSON file containing exactly D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET. Secrets are never accepted on argv and are never printed.`
+		);
+	}
+	let oauth: OAuthSecretInput;
+	try {
+		oauth = await readOAuthSecrets(runtime.readStdin);
+	} catch (error) {
+		throw preflight(
+			`${error instanceof Error ? error.message : String(error)}. Provide the initial OAuth secrets once via stdin redirection from a secure two-key JSON file containing exactly D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET. Secrets are never accepted on argv and are never printed.`
+		);
+	}
+	try {
+		await ensureRecoveryBinding({
+			fs: runtime.fs,
+			recoveryPath,
+			accountId: target.accountId,
+			workerName: target.workerName,
+			allowCreate: true
+		});
+		const ensured = await ensureRecoverySecrets({
+			fs: runtime.fs,
+			recoveryPath,
+			requiredSecrets: release.manifest.requiredSecrets,
+			oauth,
+			...(runtime.randomBytes ? { randomBytes: runtime.randomBytes } : {})
+		});
+		return stageDeploymentRecovery(runtime, ensured, release.manifest.requiredSecrets);
+	} catch (error) {
+		throw preflight(
+			`${error instanceof Error ? error.message : String(error)}. Restore the recovery file at ${recoveryPath} from a secure backup; the CLI never overwrites it and identifies it by path and SHA-256 fingerprint only.`
+		);
+	}
+}
+
+async function stageDeploymentRecovery(
+	runtime: ReconcileRuntime,
+	recovery: { path: string; fingerprint: string; created: boolean },
+	secretNames: readonly string[]
+): Promise<DeploymentRecovery> {
+	const cleanupDir: string = await runtime.fs.mkdtemp(
+		join(runtime.fs.tmpdir(), 'create-signkit-secrets-')
+	);
+	try {
+		await runtime.fs.chmod(cleanupDir, RECOVERY_DIR_MODE);
+		const secretsFile: string = await stageRecoverySecrets({
+			fs: runtime.fs,
+			recoveryPath: recovery.path,
+			outputPath: join(cleanupDir, 'secrets.json'),
+			secretNames,
+			expectedFingerprint: recovery.fingerprint
+		});
+		return {
+			secretsFile,
+			cleanupDir,
+			recoveryPath: recovery.path,
+			recoveryFingerprint: recovery.fingerprint,
+			created: recovery.created
+		};
+	} catch (error) {
+		await runtime.fs.rm(cleanupDir);
+		throw error;
 	}
 }
 

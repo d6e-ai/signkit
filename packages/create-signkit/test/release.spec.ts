@@ -12,7 +12,8 @@ import {
 	FakeHttp,
 	githubReleaseJson,
 	sampleBundleBytes,
-	sampleManifest
+	sampleManifest,
+	sampleProvenance
 } from './helpers.js';
 
 const API = 'https://api.github.com/repos/d6e-ai/signkit';
@@ -269,6 +270,28 @@ describe('manifest and bundle validation', () => {
 		expect(() =>
 			parseReleaseManifest(JSON.stringify({ ...sampleManifest(), channel: 'beta' }))
 		).toThrow(/does not match semver prerelease/);
+		expect(() =>
+			parseReleaseManifest(
+				JSON.stringify({
+					...sampleManifest(),
+					migrationPolicy: {
+						compatibility: sampleManifest().migrationPolicy.compatibility,
+						notes: sampleManifest().migrationPolicy.notes
+					}
+				})
+			)
+		).toThrow(/schemaEpoch/);
+		expect(() =>
+			parseReleaseManifest(
+				JSON.stringify({
+					...sampleManifest(),
+					migrationPolicy: {
+						...sampleManifest().migrationPolicy,
+						schemaEpoch: 'legacy-v0'
+					}
+				})
+			)
+		).toThrow(/schemaEpoch/);
 	});
 
 	it('refuses an asset URL that is not a GitHub release origin', async () => {
@@ -301,15 +324,17 @@ describe('manifest and bundle validation', () => {
 		);
 		http.on(`${DL}/v1.2.3/signkit-cloudflare-manifest.json`, JSON.stringify(manifest));
 		http.on(`${DL}/v1.2.3/signkit-cloudflare-v1.2.3.tar.gz`, bundle);
-		const resolver = createGithubReleaseResolver(http);
+		const resolver = createGithubReleaseResolver(http, {
+			verify: async () => sampleProvenance(manifest)
+		});
 		const release = await resolver.resolve({ version: 'latest', channel: 'stable' });
-		await expect(resolver.downloadBundle(release)).resolves.toEqual(bundle);
+		await expect(resolver.prepareBundle(release)).resolves.toMatchObject({ bytes: bundle });
 
 		http.replace(
 			`${DL}/v1.2.3/signkit-cloudflare-v1.2.3.tar.gz`,
 			new TextEncoder().encode('tamperedxxxx')
 		);
-		await expect(resolver.downloadBundle(release)).rejects.toThrow(/SHA-256/);
+		await expect(resolver.prepareBundle(release)).rejects.toThrow(/SHA-256/);
 	});
 
 	it('bounds GitHub response sizes', async () => {

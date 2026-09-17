@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import {
 	DraftIntegrityError,
 	readImmutableDraftRevision
@@ -201,7 +201,6 @@ export class CompletionArtifactPublicationService {
 	): Promise<CompletionArtifactItemOutcome> {
 		const refreshed: ClaimedCompletionArtifactJob | null =
 			await this.#store.readClaimedCompletionArtifact({
-				organizationId: claim.organizationId,
 				envelopeId: claim.envelopeId,
 				claimToken
 			});
@@ -217,13 +216,11 @@ export class CompletionArtifactPublicationService {
 			// every other claim in the same batch unaffected.
 			assertClaimedPointerPresent(claim);
 			const evidence: CompletionEvidence = await this.#store.readCompletionEvidence(
-				claim.organizationId,
 				claim.envelopeId
 			);
 			await verifyFieldValueIntegrity(evidence.fields);
 			const verified = await readImmutableDraftRevision(
 				{
-					organizationId: claim.organizationId,
 					envelopeId: claim.envelopeId,
 					commitSha: claim.sentCommitSha,
 					archiveKey: claim.repositoryArchiveKey,
@@ -246,7 +243,6 @@ export class CompletionArtifactPublicationService {
 			const { documents: manifestDocuments, documentSetHash: pinnedDocumentSetHash } =
 				await completionDocumentsFromRevision(verified.documents, pinnedDocumentSet);
 			const manifest: CompletionManifestV1 = await buildCompletionManifest({
-				organizationId: claim.organizationId,
 				envelopeId: claim.envelopeId,
 				title: claim.envelopeTitle,
 				sentCommitSha: claim.sentCommitSha,
@@ -265,14 +261,8 @@ export class CompletionArtifactPublicationService {
 			const markdown: string = renderCompletionMarkdown(manifest);
 			const markdownGzip: Uint8Array = gzipCompletionArtifact(markdown);
 			const markdownSha256: string = await sha256Hex(markdownGzip);
-			const jsonKey: string = completionArtifactObjectKey(
-				claim.organizationId,
-				claim.envelopeId,
-				'json',
-				jsonSha256
-			);
+			const jsonKey: string = completionArtifactObjectKey(claim.envelopeId, 'json', jsonSha256);
 			const markdownKey: string = completionArtifactObjectKey(
-				claim.organizationId,
 				claim.envelopeId,
 				'markdown',
 				markdownSha256
@@ -300,7 +290,7 @@ export class CompletionArtifactPublicationService {
 			// in-flight replay; a separate attempt already differs by its own
 			// publication timestamp, so minting this adds no new failure mode.
 			const auditEventId: string = this.#newId();
-			const auditEventHash: string = await hashAuditEventV2(
+			const auditEventHash: string = await hashAuditEventV3(
 				{
 					sequence: anchor.sequence + 1,
 					eventType: COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE,
@@ -310,15 +300,12 @@ export class CompletionArtifactPublicationService {
 					payload: auditPayload,
 					previousHash: anchor.eventHash
 				},
-				{ organizationId: claim.organizationId, envelopeId: claim.envelopeId }
+				{ envelopeId: claim.envelopeId }
 			);
 
 			let pdfCommand: PublishCompletionArtifactPdfCommand | null = null;
 			if (this.#pdfStore !== null && this.#pdfEvidenceStore !== null) {
-				const fieldGeometry = await this.#pdfEvidenceStore.readFieldGeometry(
-					claim.organizationId,
-					claim.envelopeId
-				);
+				const fieldGeometry = await this.#pdfEvidenceStore.readFieldGeometry(claim.envelopeId);
 				const pages = buildCompletionPdfPages(manifest, verified.documents, fieldGeometry);
 				const evidenceSummaryPdf = renderCompletionPdf(pages);
 				const executed: ExecutedPdfResult | null = await this.#executeAgreement({
@@ -332,12 +319,7 @@ export class CompletionArtifactPublicationService {
 				});
 				const pdfBytes: Uint8Array = executed?.bytes ?? evidenceSummaryPdf;
 				const pdfSha256 = await sha256Hex(pdfBytes);
-				const pdfKey = completionArtifactObjectKey(
-					claim.organizationId,
-					claim.envelopeId,
-					'pdf',
-					pdfSha256
-				);
+				const pdfKey = completionArtifactObjectKey(claim.envelopeId, 'pdf', pdfSha256);
 				await this.#persistImmutable(pdfKey, pdfBytes, pdfSha256, PDF_CONTENT_TYPE);
 
 				const pdfManifest = await buildCompletionPdfManifest({
@@ -363,7 +345,6 @@ export class CompletionArtifactPublicationService {
 				const pdfManifestGzip = gzipCompletionArtifact(pdfManifestJson);
 				const pdfManifestSha256 = await sha256Hex(pdfManifestGzip);
 				const pdfManifestKey = completionArtifactObjectKey(
-					claim.organizationId,
 					claim.envelopeId,
 					'pdf-manifest',
 					pdfManifestSha256
@@ -376,7 +357,6 @@ export class CompletionArtifactPublicationService {
 				);
 
 				pdfCommand = {
-					organizationId: claim.organizationId,
 					envelopeId: claim.envelopeId,
 					pdfObjectKey: pdfKey,
 					pdfSha256,
@@ -387,7 +367,6 @@ export class CompletionArtifactPublicationService {
 			}
 
 			const publish: PublishCompletionArtifactResult = await this.#store.publishCompletionArtifact({
-				organizationId: claim.organizationId,
 				envelopeId: claim.envelopeId,
 				claimToken,
 				sentCommitSha: claim.sentCommitSha,
@@ -490,7 +469,6 @@ export class CompletionArtifactPublicationService {
 			);
 		}
 		const sentDocumentSet: SentDocumentSetPointer | null = await this.#sentDocuments.findSet(
-			input.claim.organizationId,
 			input.claim.envelopeId,
 			input.claim.sentCommitSha
 		);
@@ -502,7 +480,6 @@ export class CompletionArtifactPublicationService {
 		try {
 			return await assembleExecutedAgreementPdf({
 				objects: this.#objects,
-				organizationId: input.claim.organizationId,
 				envelopeId: input.claim.envelopeId,
 				sentCommitSha: input.claim.sentCommitSha,
 				documentSet: input.documentSet,
@@ -596,7 +573,6 @@ export class CompletionArtifactPublicationService {
 			attemptsExhausted ? 'completion_artifact_attempts_exhausted' : errorCode
 		);
 		const failure: FailCompletionArtifactResult = await this.#store.failCompletionArtifact({
-			organizationId: claim.organizationId,
 			envelopeId: claim.envelopeId,
 			claimToken,
 			errorCode: safeCode,
@@ -626,14 +602,13 @@ export function completionArtifactRetryAvailableAt(now: Date, attempts: number):
 }
 
 export function completionArtifactObjectKey(
-	organizationId: string,
 	envelopeId: string,
 	kind: 'json' | 'markdown' | 'pdf' | 'pdf-manifest',
 	sha256: string
 ): string {
 	const extension: string =
 		kind === 'json' || kind === 'pdf-manifest' ? 'json.gz' : kind === 'markdown' ? 'md.gz' : 'pdf';
-	return `completion-artifacts/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.${extension}`;
+	return `completion-artifacts/v1/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.${extension}`;
 }
 
 function summarize(
@@ -672,7 +647,7 @@ function encodeScopeSegment(value: string): string {
  * before completion, but the row mapping never enforces that (see
  * `toClaimedJob`), so this is the one place that does: all three fields must
  * be present together, or the claim fails closed as this envelope's own
- * integrity error. Format and organization-scope validation still happens in
+ * integrity error. Format and instance-scope validation still happens in
  * `readImmutableDraftRevision`, unchanged, once presence is established here.
  */
 function assertClaimedPointerPresent(

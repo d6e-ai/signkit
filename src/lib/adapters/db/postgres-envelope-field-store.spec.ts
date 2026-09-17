@@ -46,7 +46,6 @@ class ScriptedPostgres {
 }
 
 const command: PublishFieldPlacementCommand = {
-	organizationId: 'org-1',
 	envelopeId: '01910000-0000-7000-8000-000000000001',
 	actorType: 'user',
 	actorId: 'user-1',
@@ -58,7 +57,6 @@ const command: PublishFieldPlacementCommand = {
 	fields: [
 		{
 			id: '01910000-0000-7000-8000-000000000010',
-			organizationId: 'org-1',
 			envelopeId: '01910000-0000-7000-8000-000000000001',
 			recipientId: '01910000-0000-7000-8000-000000000002',
 			documentId: '01900000-0000-7000-8000-000000000021',
@@ -177,7 +175,6 @@ describe('PostgresEnvelopeFieldStore', () => {
 
 	it('rechecks idempotency after taking the envelope lock', async () => {
 		const replayRow = {
-			organizationId: command.organizationId,
 			envelopeId: command.envelopeId,
 			actorType: command.actorType,
 			actorId: command.actorId,
@@ -194,7 +191,6 @@ describe('PostgresEnvelopeFieldStore', () => {
 			auditEventHash: command.auditEventHash,
 			auditPayloadJson: command.auditPayloadJson,
 			evidenceEventId: command.auditEventId,
-			evidenceOrganizationId: command.organizationId,
 			evidenceEnvelopeId: command.envelopeId,
 			evidenceSequence: 3,
 			evidenceEventType: 'envelope.fields_placed',

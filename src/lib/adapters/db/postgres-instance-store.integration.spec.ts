@@ -261,6 +261,27 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		`;
 	}
 
+	it('uses the accepted invitation index for the committed concurrency query', async () => {
+		await database().unsafe('BEGIN');
+		try {
+			await database().unsafe('SET LOCAL enable_seqscan = off');
+			const planRows: Record<string, unknown>[] = await database().unsafe(
+				`EXPLAIN (COSTS OFF)
+				 SELECT 1
+				 FROM instance_invitation AS consumed
+				 WHERE consumed.accepted_by_user_id = 'explain-user'
+				   AND consumed.status = 'accepted'`
+			);
+			const plan: string = planRows
+				.flatMap((row: Record<string, unknown>): unknown[] => Object.values(row))
+				.map((value: unknown): string => String(value))
+				.join('\n');
+			expect(plan).toContain('instance_invitation_accepted_by_user');
+		} finally {
+			await database().unsafe('ROLLBACK');
+		}
+	});
+
 	it('claims the initial owner slot on an empty instance', async () => {
 		const result: BootstrapInstanceStoreResult =
 			await store().bootstrapInstance(bootstrapCommand());
@@ -2324,7 +2345,7 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 				'idempotency-key': idempotencyKey
 			});
 			return {
-				locals: identityOnlyLocals('authorized', { subject: ACTOR_ID, emailVerified: true, email }),
+				locals: identityOnlyLocals('active', { subject: ACTOR_ID, emailVerified: true, email }),
 				params: {},
 				request: new Request(url, { method: 'POST', headers, body: '{}' }),
 				url

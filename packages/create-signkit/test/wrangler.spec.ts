@@ -5,7 +5,9 @@ import {
 	parseDeployResult,
 	parseMigrationList,
 	sortWorkerVersions,
-	assertSuccessfulUpload
+	assertSuccessfulUpload,
+	wranglerDeployArgs,
+	wranglerUploadArgs
 } from '../src/providers/cloudflare/wrangler.js';
 import { ACCOUNT_ID, RecordingProcessRunner } from './helpers.js';
 
@@ -193,5 +195,41 @@ describe('sortWorkerVersions', () => {
 				{ id: 'missing-b' }
 			]).map((version) => version.id)
 		).toEqual(['new', 'same-first', 'same-second', 'old', 'missing-a', 'missing-b']);
+	});
+});
+
+describe('secrets file args', () => {
+	const base = {
+		cwd: '/tmp/bundle',
+		configPath: '/tmp/bundle/wrangler.jsonc',
+		workerName: 'signkit',
+		keepVars: true,
+		noBundle: true
+	};
+
+	it('omits --secrets-file when no secrets file is configured', async () => {
+		expect(wranglerUploadArgs(base)).not.toContain('--secrets-file');
+		expect(wranglerDeployArgs(base)).not.toContain('--secrets-file');
+	});
+
+	it('passes --secrets-file with its path to upload and deploy', async () => {
+		const options = { ...base, secretsFile: '/xdg/state/create-signkit/recovery.json' };
+		expect(wranglerUploadArgs(options)).toEqual([
+			'--config',
+			'/tmp/bundle/wrangler.jsonc',
+			'--name',
+			'signkit',
+			'--secrets-file',
+			'/xdg/state/create-signkit/recovery.json',
+			'--keep-vars',
+			'--strict',
+			'--no-bundle'
+		]);
+		const deployArgs = wranglerDeployArgs({ ...options, domain: 'sign.example.com' });
+		expect(deployArgs).toContain('--secrets-file');
+		expect(deployArgs.indexOf('--secrets-file') + 1).toBe(
+			deployArgs.indexOf('/xdg/state/create-signkit/recovery.json')
+		);
+		expect(deployArgs).toContain('--domain');
 	});
 });

@@ -3,7 +3,6 @@
 use tokio::sync::Mutex;
 use wiremock::MockServer;
 
-pub const TEST_ORG: &str = "org_test_12345678";
 pub const TEST_API_KEY: &str = "signkit_abcdef1234567890abcdef1234567890abcdef12345";
 pub const TEST_ENVELOPE_ID: &str = "0191b26f-4000-7000-8000-000000000001";
 pub const TEST_ENVELOPE_ID_2: &str = "0191b26f-4000-7000-8000-000000000002";
@@ -90,7 +89,7 @@ pub fn sample_capabilities_json() -> &'static str {
       },
       "voiding": {
         "endpoint": "/api/v1/envelopes/{envelopeId}/void",
-        "authentication": "organization-session",
+        "authentication": "instance-session-or-api-key",
         "concurrency": "expected-status-and-generation",
         "terminalCleanup": "atomic",
         "idempotency": "required"
@@ -129,7 +128,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "statusEndpoint": "/api/v1/envelopes/{envelopeId}/completion-artifact",
         "workerEndpoint": "/api/v1/system/completion-artifacts/drain",
         "workerAuthentication": "bearer-secret",
-        "authentication": "organization-session",
+        "authentication": "instance-session",
         "discovery": "reconciliation-job",
         "manifestSchema": "signkit-completion-manifest-v1",
         "artifacts": ["json", "markdown", "pdf"],
@@ -158,11 +157,8 @@ pub fn sample_capabilities_json() -> &'static str {
       "apiKeyAuthentication": {
         "scheme": "bearer",
         "tokenPrefix": "signkit",
-        "organizationSelector": "SignKit-Organization-Id",
-        "organizationSelectorRequired": true,
-        "grantModel": "explicit-per-organization",
-        "multipleOrganizationsPerKey": true,
-        "effectiveAuthority": "key-scopes-intersected-with-requested-live-grant",
+        "authority": "active-instance-member-key-owner",
+        "effectiveAuthority": "key-scopes-intersected-with-active-owner-membership",
         "enabledScopes": ["envelopes:read", "drafts:write", "envelopes:send"],
         "mintedButUnusableScopes": ["audit:read"],
         "readEndpoints": [
@@ -197,14 +193,7 @@ pub fn sample_capabilities_json() -> &'static str {
         "caching": "none",
         "lastUsedTracking": true,
         "rateLimits": { "durable": true, "windowSeconds": 60, "maxRequests": 120 },
-        "actor": { "type": "agent", "id": "api-key-uuidv7" },
-        "grantManagement": {
-          "create": "/api/v1/api-keys/{apiKeyId}/organization-grants",
-          "list": "/api/v1/api-keys/{apiKeyId}/organization-grants",
-          "revoke": "/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke"
-        },
-        "grantAuthority": "key-owner-and-d6e-organization-owner-or-admin",
-        "grantRevokeAuthority": ["key_owner", "organization_admin"]
+        "actor": { "type": "agent", "id": "api-key-uuidv7" }
       },
       "automation": { "idempotencyKeys": true, "actorProvenance": true, "webhooks": "supported" }
     }"#

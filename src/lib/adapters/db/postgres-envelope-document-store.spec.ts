@@ -7,7 +7,7 @@ import { PostgresEnvelopeDocumentStore } from './postgres-envelope-document-stor
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
 const postgresDescribe = TEST_DATABASE_URL === undefined ? describe.skip : describe;
-const ORGANIZATION_ID: string = 'org-1';
+const USER_ID: string = 'user-1';
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 const MIGRATION_PATHS: readonly string[] = readdirSync('migrations/postgres')
 	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
@@ -23,10 +23,10 @@ postgresDescribe('PostgresEnvelopeDocumentStore', () => {
 		await sql.unsafe(`CREATE SCHEMA "${schemaName}"`);
 		await sql.unsafe(`SET search_path TO "${schemaName}"`);
 		for (const path of MIGRATION_PATHS) await sql.unsafe(readFileSync(path, 'utf8'));
-		await sql`INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			VALUES (${ORGANIZATION_ID}, ${ORGANIZATION_ID}, 'Workspace', now())`;
-		await sql`INSERT INTO envelope (id, organization_id, title, status, created_at, updated_at)
-			VALUES (${ENVELOPE_ID}, ${ORGANIZATION_ID}, 'Agreement', 'draft', now(), now())`;
+		await sql`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			VALUES (${USER_ID}, 'owner', 'active', now(), now())`;
+		await sql`INSERT INTO envelope (id, created_by_user_id, title, status, created_at, updated_at)
+			VALUES (${ENVELOPE_ID}, ${USER_ID}, 'Agreement', 'draft', now(), now())`;
 	});
 
 	afterAll(async () => {
@@ -39,7 +39,7 @@ postgresDescribe('PostgresEnvelopeDocumentStore', () => {
 
 	it('derives titles, preserves stable ids across reordering, and drops removed paths', async () => {
 		const store = new PostgresEnvelopeDocumentStore(sql as ReturnType<typeof postgres>);
-		const first = await store.sync(ORGANIZATION_ID, ENVELOPE_ID, [
+		const first = await store.sync(ENVELOPE_ID, [
 			{ markdownPath: 'documents/agreement.md' },
 			{ markdownPath: 'documents/appendix.md' }
 		]);
@@ -47,14 +47,13 @@ postgresDescribe('PostgresEnvelopeDocumentStore', () => {
 		const agreementId: string = first[0].id;
 
 		const renamed: EnvelopeDocument | null = await store.renameDocument(
-			ORGANIZATION_ID,
 			ENVELOPE_ID,
 			'documents/agreement.md',
 			'Master Services Agreement'
 		);
 		expect(renamed?.title).toBe('Master Services Agreement');
 
-		const second = await store.sync(ORGANIZATION_ID, ENVELOPE_ID, [
+		const second = await store.sync(ENVELOPE_ID, [
 			{ markdownPath: 'documents/appendix.md' },
 			{ markdownPath: 'documents/agreement.md' }
 		]);
@@ -65,20 +64,18 @@ postgresDescribe('PostgresEnvelopeDocumentStore', () => {
 		expect(agreement?.title).toBe('Master Services Agreement');
 		expect(agreement?.position).toBe(1);
 
-		const third = await store.sync(ORGANIZATION_ID, ENVELOPE_ID, [
-			{ markdownPath: 'documents/agreement.md' }
-		]);
+		const third = await store.sync(ENVELOPE_ID, [{ markdownPath: 'documents/agreement.md' }]);
 		expect(third).toHaveLength(1);
 		expect(third[0].id).toBe(agreementId);
 
-		const listed = await store.listForEnvelope(ORGANIZATION_ID, ENVELOPE_ID);
+		const listed = await store.listForEnvelope(ENVELOPE_ID);
 		expect(listed).toEqual(third);
 	});
 
 	it('returns null when renaming an untracked path', async () => {
 		const store = new PostgresEnvelopeDocumentStore(sql as ReturnType<typeof postgres>);
 		await expect(
-			store.renameDocument(ORGANIZATION_ID, ENVELOPE_ID, 'documents/missing.md', 'Title')
+			store.renameDocument(ENVELOPE_ID, 'documents/missing.md', 'Title')
 		).resolves.toBeNull();
 	});
 });

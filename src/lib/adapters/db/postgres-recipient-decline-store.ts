@@ -21,7 +21,6 @@ class DeclinedPublicationIntegrityError extends Error {
 }
 
 interface RecipientEnvelopeRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientRole: RecipientRole;
@@ -45,7 +44,6 @@ interface EnvelopeLockRow {
 
 interface RecipientLockRow {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientRole: RecipientRole;
 	recipientStatus: string;
@@ -67,7 +65,6 @@ interface DeliveryLockRow {
 }
 
 interface DeclinedCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientRole: RecipientRole;
@@ -91,7 +88,6 @@ interface DeclinedCommandRow {
 	projectionHasRevocableRecipient: boolean;
 	projectionHasUnsafeDelivery: boolean;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -120,7 +116,6 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 		if (!isFoundRow(identity)) return identity;
 		const replay: DeclinePreparation | null = await this.#resolveCommand(
 			this.#sql,
-			identity.organizationId,
 			identity.recipientId,
 			key
 		);
@@ -147,13 +142,11 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 		}
 		const auditHead: DeclineAuditHead | null = await this.#readAuditHead(
 			this.#sql,
-			identity.organizationId,
 			identity.envelopeId
 		);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
-			organizationId: identity.organizationId,
 			envelopeId: identity.envelopeId,
 			recipientId: identity.recipientId,
 			recipientRole: identity.recipientRole,
@@ -179,20 +172,20 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				const envelopeRows = await transaction<EnvelopeLockRow[]>`
 						SELECT status, sent_commit_sha AS "sentCommitSha", repository_head AS "repositoryHead"
 						FROM envelope
-						WHERE organization_id = ${identity.organizationId} AND id = ${identity.envelopeId}
+						WHERE id = ${identity.envelopeId}
 						FOR UPDATE`;
 				if (envelopeRows.length === 0) return { outcome: 'not_found' };
 				const envelope: EnvelopeLockRow = envelopeRows[0];
 
 				const recipients = await transaction<RecipientLockRow[]>`
-						SELECT id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+						SELECT id, envelope_id AS "envelopeId",
 							role AS "recipientRole", status AS "recipientStatus",
 							capability_hash AS "recipientCapabilityHash",
 							capability_expires_at AS "recipientCapabilityExpiresAt",
 							capability_revoked_at AS "recipientCapabilityRevokedAt",
 							routing_order AS "routingOrder"
 						FROM recipient
-						WHERE organization_id = ${identity.organizationId} AND envelope_id = ${identity.envelopeId}
+						WHERE envelope_id = ${identity.envelopeId}
 						ORDER BY id
 						FOR UPDATE`;
 				const actor: RecipientLockRow | undefined = recipients.find(
@@ -211,7 +204,6 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				}
 
 				const lockedRow: RecipientEnvelopeRow = {
-					organizationId: actor.organizationId,
 					envelopeId: actor.envelopeId,
 					recipientId: actor.id,
 					recipientRole: actor.recipientRole,
@@ -228,7 +220,6 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				};
 				const raced: DeclinePreparation | null = await this.#resolveCommand(
 					transaction,
-					actor.organizationId,
 					actor.id,
 					command
 				);
@@ -264,7 +255,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				const deliveries = await transaction<DeliveryLockRow[]>`
 						SELECT id, status, retryable
 						FROM delivery_outbox
-						WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+						WHERE envelope_id = ${actor.envelopeId}
 						ORDER BY id
 						FOR UPDATE`;
 				if (
@@ -275,7 +266,6 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 
 				const auditHead: DeclineAuditHead | null = await this.#readAuditHead(
 					transaction,
-					actor.organizationId,
 					actor.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
@@ -290,7 +280,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 						UPDATE recipient
 						SET status = 'declined', capability_revoked_at = ${command.updatedAt},
 							updated_at = ${command.updatedAt}
-						WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+						WHERE envelope_id = ${actor.envelopeId}
 							AND id = ${actor.id} AND status IN ('pending', 'viewed')
 							AND role IN ('signer', 'approver') AND role = ${command.recipientRole}
 							AND routing_order = ${command.routingOrder}
@@ -313,7 +303,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 						SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = false,
 							sealed_capability = NULL, available_at = COALESCE(available_at, ${command.updatedAt}::timestamptz),
 							last_error = 'envelope_terminal', updated_at = ${command.updatedAt}::timestamptz
-						WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+						WHERE envelope_id = ${actor.envelopeId}
 							AND (status IN ('blocked', 'pending') OR (status = 'failed' AND retryable))
 						RETURNING id`;
 				const cleanedIds: readonly string[] = cleanedRows
@@ -326,7 +316,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				const revokedRows = await transaction<{ id: string }[]>`
 						UPDATE recipient
 						SET capability_revoked_at = ${command.updatedAt}, updated_at = ${command.updatedAt}
-						WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+						WHERE envelope_id = ${actor.envelopeId}
 							AND id <> ${actor.id} AND status <> 'completed'
 							AND capability_hash IS NOT NULL AND capability_revoked_at IS NULL
 						RETURNING id`;
@@ -340,7 +330,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				const envelopeUpdateRows = await transaction<{ id: string }[]>`
 						UPDATE envelope
 						SET status = 'declined', updated_at = ${command.updatedAt}
-						WHERE organization_id = ${actor.organizationId} AND id = ${actor.envelopeId}
+						WHERE id = ${actor.envelopeId}
 							AND status IN ('sent', 'in_progress')
 							AND sent_commit_sha = ${command.expectedSentCommitSha}
 							AND sent_commit_sha = repository_head
@@ -348,12 +338,12 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				if (envelopeUpdateRows.length !== 1) throw new DeclinedPublicationIntegrityError();
 
 				await transaction`INSERT INTO recipient_declined_command (
-						organization_id, envelope_id, recipient_id, recipient_role, routing_order,
+						envelope_id, recipient_id, recipient_role, routing_order,
 						actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 						sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 						previous_audit_hash, audit_event_hash, audit_payload_json,
 						revocation_evidence_version, revoked_recipient_ids_json, revoked_recipient_count
-					) VALUES (${actor.organizationId}, ${actor.envelopeId}, ${actor.id},
+					) VALUES (${actor.envelopeId}, ${actor.id},
 						${command.recipientRole}, ${command.routingOrder}, 'recipient', ${actor.id},
 						${command.idempotencyKey}, ${command.requestFingerprint}, ${command.capabilityHash},
 						${command.expectedSentCommitSha}, ${command.updatedAt}, ${command.auditEventId},
@@ -362,9 +352,9 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 						${JSON.stringify(command.revokedRecipientIds)}, ${command.revokedRecipientIds.length})`;
 
 				await transaction`INSERT INTO audit_event (
-						id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+						id, envelope_id, sequence, event_type, actor_type, actor_id,
 						payload_json, previous_hash, event_hash, occurred_at
-					) VALUES (${command.auditEventId}, ${actor.organizationId}, ${actor.envelopeId},
+					) VALUES (${command.auditEventId}, ${actor.envelopeId},
 						${command.expectedAuditSequence + 1}, 'recipient.declined', 'recipient', ${actor.id},
 						${command.auditPayloadJson}, ${command.previousAuditHash}, ${command.auditEventHash},
 						${command.updatedAt})`;
@@ -387,7 +377,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 		capabilityHash: string
 	): Promise<RecipientEnvelopeRow | null> {
 		const rows = await sql<RecipientEnvelopeRow[]>`
-			SELECT recipient.organization_id AS "organizationId",
+			SELECT
 				recipient.envelope_id AS "envelopeId",
 				recipient.id AS "recipientId",
 				recipient.role AS "recipientRole",
@@ -401,15 +391,13 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				envelope.repository_head AS "envelopeRepositoryHead",
 				EXISTS (
 					SELECT 1 FROM delivery_outbox delivery
-					WHERE delivery.organization_id = recipient.organization_id
-						AND delivery.envelope_id = recipient.envelope_id
+					WHERE delivery.envelope_id = recipient.envelope_id
 						AND delivery.status = 'processing'
 				) AS "deliveryInFlight",
 				ARRAY(
 					SELECT sibling.id
 					FROM recipient sibling
-					WHERE sibling.organization_id = recipient.organization_id
-						AND sibling.envelope_id = recipient.envelope_id
+					WHERE sibling.envelope_id = recipient.envelope_id
 						AND sibling.id <> recipient.id
 						AND sibling.status <> 'completed'
 						AND sibling.capability_hash IS NOT NULL
@@ -418,21 +406,16 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				) AS "revokedRecipientIds"
 			FROM recipient
 			INNER JOIN envelope
-				ON envelope.organization_id = recipient.organization_id
-				AND envelope.id = recipient.envelope_id
+				ON envelope.id = recipient.envelope_id
 			WHERE recipient.capability_hash = ${capabilityHash}
 			LIMIT 1`;
 		return rows[0] ?? null;
 	}
 
-	async #readAuditHead(
-		sql: Sql,
-		organizationId: string,
-		envelopeId: string
-	): Promise<DeclineAuditHead | null> {
+	async #readAuditHead(sql: Sql, envelopeId: string): Promise<DeclineAuditHead | null> {
 		const rows = await sql<AuditHeadRow[]>`
 			SELECT sequence, event_hash AS "eventHash" FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence DESC LIMIT 1`;
 		const row: AuditHeadRow | undefined = rows[0];
 		if (row === undefined) return null;
@@ -443,13 +426,11 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 
 	async #resolveCommand(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string,
 		key: DeclineCommandKey
 	): Promise<DeclinePreparation | null> {
 		const exact: DeclinedCommandRow | null = await this.#readCommandRow(
 			sql,
-			organizationId,
 			recipientId,
 			key.idempotencyKey
 		);
@@ -465,7 +446,6 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 		}
 		const byRecipient: DeclinedCommandRow | null = await this.#readCommandRowByRecipient(
 			sql,
-			organizationId,
 			recipientId
 		);
 		if (byRecipient === null) return null;
@@ -480,12 +460,11 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 
 	async #readCommandRow(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string,
 		idempotencyKey: string
 	): Promise<DeclinedCommandRow | null> {
 		const rows = await sql<DeclinedCommandRow[]>`
-			SELECT command.organization_id AS "organizationId", command.envelope_id AS "envelopeId",
+			SELECT command.envelope_id AS "envelopeId",
 				command.recipient_id AS "recipientId", command.recipient_role AS "recipientRole",
 				command.routing_order AS "routingOrder", command.actor_type AS "actorType",
 				command.actor_id AS "actorId", command.idempotency_key AS "idempotencyKey",
@@ -499,8 +478,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				command.revoked_recipient_count AS "revokedRecipientCount",
 				ARRAY(
 					SELECT sibling.id FROM recipient sibling
-					WHERE sibling.organization_id = command.organization_id
-						AND sibling.envelope_id = command.envelope_id
+					WHERE sibling.envelope_id = command.envelope_id
 						AND sibling.id <> command.recipient_id
 						AND sibling.status <> 'completed'
 						AND sibling.capability_hash IS NOT NULL
@@ -509,8 +487,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				) AS "projectionRevokedRecipientIds",
 				EXISTS (
 					SELECT 1 FROM recipient sibling
-					WHERE sibling.organization_id = command.organization_id
-						AND sibling.envelope_id = command.envelope_id
+					WHERE sibling.envelope_id = command.envelope_id
 						AND sibling.id <> command.recipient_id
 						AND sibling.status <> 'completed'
 						AND sibling.capability_hash IS NOT NULL
@@ -518,13 +495,12 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				) AS "projectionHasRevocableRecipient",
 				EXISTS (
 					SELECT 1 FROM delivery_outbox delivery
-					WHERE delivery.organization_id = command.organization_id
-						AND delivery.envelope_id = command.envelope_id
+					WHERE delivery.envelope_id = command.envelope_id
 						AND (delivery.status IN ('blocked', 'pending', 'processing')
 							OR delivery.retryable OR delivery.sealed_capability IS NOT NULL)
 				) AS "projectionHasUnsafeDelivery",
 				evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
+				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
@@ -532,8 +508,8 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				evidence.hash_version AS "evidenceHashVersion"
 			FROM recipient_declined_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${organizationId} AND command.actor_type = 'recipient'
+				ON evidence.id = command.audit_event_id
+			WHERE command.actor_type = 'recipient'
 				AND command.actor_id = ${recipientId} AND command.idempotency_key = ${idempotencyKey}
 			LIMIT 1`;
 		return rows[0] ?? null;
@@ -541,11 +517,10 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 
 	async #readCommandRowByRecipient(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string
 	): Promise<DeclinedCommandRow | null> {
 		const rows = await sql<DeclinedCommandRow[]>`
-			SELECT command.organization_id AS "organizationId", command.envelope_id AS "envelopeId",
+			SELECT command.envelope_id AS "envelopeId",
 				command.recipient_id AS "recipientId", command.recipient_role AS "recipientRole",
 				command.routing_order AS "routingOrder", command.actor_type AS "actorType",
 				command.actor_id AS "actorId", command.idempotency_key AS "idempotencyKey",
@@ -559,8 +534,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				command.revoked_recipient_count AS "revokedRecipientCount",
 				ARRAY(
 					SELECT sibling.id FROM recipient sibling
-					WHERE sibling.organization_id = command.organization_id
-						AND sibling.envelope_id = command.envelope_id
+					WHERE sibling.envelope_id = command.envelope_id
 						AND sibling.id <> command.recipient_id
 						AND sibling.status <> 'completed'
 						AND sibling.capability_hash IS NOT NULL
@@ -569,8 +543,7 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				) AS "projectionRevokedRecipientIds",
 				EXISTS (
 					SELECT 1 FROM recipient sibling
-					WHERE sibling.organization_id = command.organization_id
-						AND sibling.envelope_id = command.envelope_id
+					WHERE sibling.envelope_id = command.envelope_id
 						AND sibling.id <> command.recipient_id
 						AND sibling.status <> 'completed'
 						AND sibling.capability_hash IS NOT NULL
@@ -578,13 +551,12 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				) AS "projectionHasRevocableRecipient",
 				EXISTS (
 					SELECT 1 FROM delivery_outbox delivery
-					WHERE delivery.organization_id = command.organization_id
-						AND delivery.envelope_id = command.envelope_id
+					WHERE delivery.envelope_id = command.envelope_id
 						AND (delivery.status IN ('blocked', 'pending', 'processing')
 							OR delivery.retryable OR delivery.sealed_capability IS NOT NULL)
 				) AS "projectionHasUnsafeDelivery",
 				evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
+				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
@@ -592,8 +564,8 @@ export class PostgresRecipientDeclineStore implements RecipientDeclineStore {
 				evidence.hash_version AS "evidenceHashVersion"
 			FROM recipient_declined_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${organizationId} AND command.recipient_id = ${recipientId}
+				ON evidence.id = command.audit_event_id
+			WHERE command.recipient_id = ${recipientId}
 			LIMIT 1`;
 		return rows[0] ?? null;
 	}
@@ -676,7 +648,6 @@ function terminalReplay(row: RecipientEnvelopeRow, capabilityHash: string): bool
 function validAuditEvidence(row: DeclinedCommandRow): boolean {
 	return (
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'recipient.declined' &&
@@ -729,7 +700,7 @@ async function validStoredReceipt(row: DeclinedCommandRow): Promise<boolean> {
 			payload: auditPayloadValue,
 			previousHash: row.previousAuditHash
 		},
-		{ organizationId: row.organizationId, envelopeId: row.envelopeId }
+		{ envelopeId: row.envelopeId }
 	);
 	return (
 		requestHash === row.requestHash &&

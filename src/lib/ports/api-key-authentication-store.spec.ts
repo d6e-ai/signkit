@@ -1,42 +1,93 @@
-import { describe, expect, it } from 'vitest';
-import {
-	ORGANIZATION_SELECTOR_PATTERN,
-	SIGNKIT_ORGANIZATION_HEADER,
-	isOrganizationSelector
+import { describe, expect, it, vi } from 'vitest';
+import type {
+	ApiKeyAuthenticationStore,
+	ApiKeyPrincipal,
+	AuthenticateApiKeyQuery,
+	AuthenticateApiKeyResult
 } from './api-key-authentication-store';
 
-describe('organization selector contract', () => {
-	it('names the header in the lowercase form Headers.get expects', () => {
-		expect(SIGNKIT_ORGANIZATION_HEADER).toBe('signkit-organization-id');
-		expect(
-			new Headers({ 'SignKit-Organization-Id': 'org-alpha' }).get(SIGNKIT_ORGANIZATION_HEADER)
-		).toBe('org-alpha');
+/**
+ * The authentication port carries no runtime values -- only the shapes below --
+ * so this spec pins the instance-boundary contract instead: the query is the
+ * token hash plus an instant with no tenant selector, the principal is a
+ * machine actor with no human identity, and the outcome set is closed.
+ */
+describe('API key authentication port contract', () => {
+	it('queries by token hash and instant only, with no tenant selector', async () => {
+		const queries: AuthenticateApiKeyQuery[] = [];
+		const store: ApiKeyAuthenticationStore = {
+			authenticateApiKey: vi.fn(
+				async (query: AuthenticateApiKeyQuery): Promise<AuthenticateApiKeyResult> => {
+					queries.push(query);
+					return { outcome: 'invalid_token' };
+				}
+			)
+		};
+
+		await store.authenticateApiKey({ tokenHash: 'a'.repeat(64), at: '2026-09-13T00:00:00.000Z' });
+
+		expect(Object.keys(queries[0]).sort()).toEqual(['at', 'tokenHash']);
+		expect(queries[0]).not.toHaveProperty('organizationId');
 	});
 
-	it('accepts external d6e organization identifier shapes', () => {
-		expect(isOrganizationSelector('org-alpha')).toBe(true);
-		expect(isOrganizationSelector('org_d6e_01K9ZQ')).toBe(true);
-		// Deliberately not a UUIDv7 check: the organization identifier is external
-		// and SignKit only projects it.
-		expect(isOrganizationSelector('9f1c6f8e-0a1d-4f3b-8b0e-7c2f9a4d6e11')).toBe(true);
-		expect(isOrganizationSelector('x')).toBe(true);
-		expect(isOrganizationSelector('o'.repeat(200))).toBe(true);
+	it('authenticates into a machine principal with no human identity attached', () => {
+		const principal: ApiKeyPrincipal = {
+			apiKeyId: '01900000-0000-7000-8000-000000000201',
+			keyPrefix: 'signkit_abcdefgh',
+			ownerUserId: 'user-1',
+			scopes: ['envelopes:read'],
+			expiresAt: '2026-12-11T00:00:00.000Z'
+		};
+
+		expect(Object.keys(principal).sort()).toEqual([
+			'apiKeyId',
+			'expiresAt',
+			'keyPrefix',
+			'ownerUserId',
+			'scopes'
+		]);
+		expect(principal).not.toHaveProperty('organizationId');
+		expect(principal).not.toHaveProperty('organizationName');
+		expect(principal).not.toHaveProperty('token');
+		expect(principal).not.toHaveProperty('tokenHash');
+		expect(principal).not.toHaveProperty('name');
+		expect(principal).not.toHaveProperty('email');
 	});
 
-	it('rejects a missing, empty, overlong, or non-printable selector', () => {
-		expect(isOrganizationSelector(null)).toBe(false);
-		expect(isOrganizationSelector('')).toBe(false);
-		expect(isOrganizationSelector('o'.repeat(201))).toBe(false);
-		expect(isOrganizationSelector('org alpha')).toBe(false);
-		expect(isOrganizationSelector('org\talpha')).toBe(false);
-		expect(isOrganizationSelector('org\nalpha')).toBe(false);
-		expect(isOrganizationSelector('org\u00e9')).toBe(false);
-		expect(isOrganizationSelector('org\u00a0alpha')).toBe(false);
-	});
+	it('closes the outcome set to authenticated, invalid_token, rate_limited, and integrity_error', () => {
+		const outcomes: AuthenticateApiKeyResult[] = [
+			{
+				outcome: 'authenticated',
+				principal: {
+					apiKeyId: '01900000-0000-7000-8000-000000000201',
+					keyPrefix: 'signkit_abcdefgh',
+					ownerUserId: 'user-1',
+					scopes: ['envelopes:read'],
+					expiresAt: '2026-12-11T00:00:00.000Z'
+				}
+			},
+			{ outcome: 'invalid_token' },
+			{ outcome: 'rate_limited' },
+			{ outcome: 'integrity_error' }
+		];
 
-	it('keeps the bound in step with the SQL organization_id checks', () => {
-		// Both dialects bound organization_id to 1..200 printable ASCII, so a value
-		// this pattern admits must be storable and vice versa.
-		expect(ORGANIZATION_SELECTOR_PATTERN.source).toBe('^[!-~]{1,200}$');
+		// Exhaustive without a default: adding an outcome (a tenant selector
+		// refusal, a grant requirement) becomes a compile error here.
+		for (const result of outcomes) {
+			switch (result.outcome) {
+				case 'authenticated':
+					expect(result.principal.apiKeyId).toBe('01900000-0000-7000-8000-000000000201');
+					break;
+				case 'invalid_token':
+				case 'rate_limited':
+				case 'integrity_error':
+					expect(result).toEqual({ outcome: result.outcome });
+					break;
+				default: {
+					const _exhaustive: never = result;
+					throw new Error(`Unhandled authentication outcome: ${JSON.stringify(_exhaustive)}`);
+				}
+			}
+		}
 	});
 });

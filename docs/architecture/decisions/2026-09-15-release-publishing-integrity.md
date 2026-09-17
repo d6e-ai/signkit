@@ -38,11 +38,10 @@ generated.
 
 Release retries converge only when the tag's draft still represents the exact
 same build. Recovery from any mismatch requires a new release version rather
-than rewriting published identity. GitHub hosts and verifies the provenance
-attestations, but `create-signkit` has no local attestation verifier today; it
-continues to enforce the official-repository, manifest, size, and SHA-256
-boundary. If deploy-time policy is to require provenance, track a follow-up
-issue to add a fail-closed verifier instead of claiming generation alone closes
-that boundary. Repository immutable releases are a required administrative
+than rewriting published identity. GitHub hosts the provenance attestations.
+Deploy-time verification is specified separately in
+[2026-09-16-create-signkit-provenance-verification.md](2026-09-16-create-signkit-provenance-verification.md);
+the checksum manifest is still not treated as a signature. Repository
+immutable releases are a required administrative
 control before pushing a release tag; the workflow's draft checks do not claim
 to replace that GitHub setting.

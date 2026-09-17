@@ -1,8 +1,8 @@
 -- Instance-scoped API keys. instance_member is created in the baseline schema.
--- API keys belong to this SignKit installation, never to a d6e organization.
+-- API keys belong to this SignKit installation, never to a d6e instance.
 -- Each key is owned by an instance member. Create/list/revoke require that
 -- owner to be currently active at the durable write/query boundary; ownership
--- does not grant organization access. Organization grants for agent requests
+-- does not grant instance access. Instance grants for agent requests
 -- are deferred. Raw credentials are signkit_ plus 32 random bytes (base64url).
 -- SQL stores only the globally unique SHA-256 token_hash and a non-secret
 -- display key_prefix. Create/revoke command receipts keep the request

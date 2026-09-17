@@ -18,7 +18,6 @@ export const FAKE_DOCUMENT_SET_HASH: string = 'e'.repeat(64);
 export const FAKE_SENT_DOCUMENT_ID: string = '01900000-0000-7000-8000-000000000010';
 
 export function fakeSentDocumentArtifact(
-	organizationId: string,
 	envelopeId: string,
 	overrides: Partial<SentDocumentArtifact> = {}
 ): SentDocumentArtifact {
@@ -28,7 +27,7 @@ export function fakeSentDocumentArtifact(
 		position: 0,
 		kind: 'markdown',
 		title: 'agreement',
-		objectKey: sentPdfObjectKey(organizationId, envelopeId, sha256),
+		objectKey: sentPdfObjectKey(envelopeId, sha256),
 		sha256,
 		byteSize: 4096,
 		pageCount: 2,
@@ -39,12 +38,11 @@ export function fakeSentDocumentArtifact(
 }
 
 export function fakeSentDocumentSetArtifact(
-	organizationId: string,
 	envelopeId: string,
 	overrides: Partial<SentDocumentSetArtifact> = {}
 ): SentDocumentSetArtifact {
 	const documents: readonly SentDocumentArtifact[] = overrides.documents ?? [
-		fakeSentDocumentArtifact(organizationId, envelopeId)
+		fakeSentDocumentArtifact(envelopeId)
 	];
 	return {
 		documentSetHash: FAKE_DOCUMENT_SET_HASH,
@@ -56,7 +54,6 @@ export function fakeSentDocumentSetArtifact(
 
 /** Legacy concatenated pointer shape retained for envelope_sent_pdf tests. */
 export function fakeSentPdfArtifact(
-	organizationId: string,
 	envelopeId: string,
 	overrides: Record<string, unknown> = {}
 ): {
@@ -76,7 +73,7 @@ export function fakeSentPdfArtifact(
 	const sha256: string =
 		typeof overrides.sha256 === 'string' ? overrides.sha256 : FAKE_SENT_PDF_SHA256;
 	return {
-		objectKey: sentPdfObjectKey(organizationId, envelopeId, sha256),
+		objectKey: sentPdfObjectKey(envelopeId, sha256),
 		sha256,
 		byteSize: 4096,
 		pageCount: 2,
@@ -95,7 +92,7 @@ export class FakeSentDocumentPdf implements SentDocumentPdfPort {
 	async publish(revision: ImmutableDraftRevision): Promise<SentDocumentSetArtifact> {
 		if (this.failure !== null) throw this.failure;
 		this.published.push(revision);
-		return fakeSentDocumentSetArtifact(revision.organizationId, revision.envelopeId);
+		return fakeSentDocumentSetArtifact(revision.envelopeId);
 	}
 
 	async renderDocument(
@@ -103,11 +100,9 @@ export class FakeSentDocumentPdf implements SentDocumentPdfPort {
 		documentId: string
 	): Promise<RenderedSentDocument> {
 		if (this.failure !== null) throw this.failure;
-		const artifact: SentDocumentArtifact = fakeSentDocumentArtifact(
-			revision.organizationId,
-			revision.envelopeId,
-			{ documentId }
-		);
+		const artifact: SentDocumentArtifact = fakeSentDocumentArtifact(revision.envelopeId, {
+			documentId
+		});
 		return { bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]), ...artifact };
 	}
 
@@ -116,7 +111,7 @@ export class FakeSentDocumentPdf implements SentDocumentPdfPort {
 		documents: readonly Omit<SentDocumentArtifact, 'objectKey' | 'sha256' | 'byteSize'>[];
 	}> {
 		if (this.failure !== null) throw this.failure;
-		const set = fakeSentDocumentSetArtifact(revision.organizationId, revision.envelopeId);
+		const set = fakeSentDocumentSetArtifact(revision.envelopeId);
 		return {
 			documentSetHash: set.documentSetHash,
 			documents: set.documents.map((document) => ({

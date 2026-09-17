@@ -11,7 +11,6 @@ import type {
 import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 interface RecipientEnvelopeRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_role: RecipientRole;
@@ -33,7 +32,6 @@ interface AuditHeadRow {
 }
 
 interface DeclinedCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_role: RecipientRole;
@@ -57,7 +55,6 @@ interface DeclinedCommandRow {
 	projection_has_revocable_recipient: number;
 	projection_has_unsafe_delivery: number;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -70,7 +67,7 @@ interface DeclinedCommandRow {
 	evidence_hash_version: number | string | null;
 }
 
-const DECLINED_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_id, command.recipient_id,
+const DECLINED_COMMAND_COLUMNS: string = `command.envelope_id, command.recipient_id,
 	command.recipient_role, command.routing_order, command.actor_type, command.actor_id,
 	command.idempotency_key, command.request_hash, command.capability_hash, command.sent_commit_sha,
 	command.updated_at, command.audit_event_id, command.audit_sequence, command.previous_audit_hash,
@@ -78,8 +75,7 @@ const DECLINED_COMMAND_COLUMNS: string = `command.organization_id, command.envel
 	command.revoked_recipient_ids_json, command.revoked_recipient_count,
 	(SELECT json_group_array(id) FROM (
 		SELECT sibling.id FROM recipient sibling
-		WHERE sibling.organization_id = command.organization_id
-			AND sibling.envelope_id = command.envelope_id AND sibling.id <> command.recipient_id
+		WHERE sibling.envelope_id = command.envelope_id AND sibling.id <> command.recipient_id
 			AND sibling.status <> 'completed'
 			AND sibling.capability_hash IS NOT NULL
 			AND sibling.capability_revoked_at = command.updated_at
@@ -87,20 +83,17 @@ const DECLINED_COMMAND_COLUMNS: string = `command.organization_id, command.envel
 	)) AS projection_revoked_recipient_ids_json,
 	EXISTS (
 		SELECT 1 FROM recipient sibling
-		WHERE sibling.organization_id = command.organization_id
-			AND sibling.envelope_id = command.envelope_id AND sibling.id <> command.recipient_id
+		WHERE sibling.envelope_id = command.envelope_id AND sibling.id <> command.recipient_id
 			AND sibling.status <> 'completed' AND sibling.capability_hash IS NOT NULL
 			AND sibling.capability_revoked_at IS NULL
 	) AS projection_has_revocable_recipient,
 	EXISTS (
 		SELECT 1 FROM delivery_outbox delivery
-		WHERE delivery.organization_id = command.organization_id
-			AND delivery.envelope_id = command.envelope_id
+		WHERE delivery.envelope_id = command.envelope_id
 			AND (delivery.status IN ('blocked', 'pending', 'processing')
 				OR delivery.retryable = 1 OR delivery.sealed_capability IS NOT NULL)
 	) AS projection_has_unsafe_delivery,
-	evidence.id AS evidence_event_id, evidence.organization_id AS evidence_organization_id,
-	evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
+	evidence.id AS evidence_event_id, evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
@@ -118,7 +111,6 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 		const identity: DeclinePreparation | RecipientEnvelopeRow = classifyIdentity(row, key);
 		if (!isFoundRow(identity)) return identity;
 		const replay: DeclinePreparation | null = await this.#resolveCommand(
-			identity.organization_id,
 			identity.recipient_id,
 			key
 		);
@@ -146,14 +138,10 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 			identity.revoked_recipient_ids_json
 		);
 		if (revokedRecipientIds === null) return { outcome: 'integrity_error' };
-		const auditHead: DeclineAuditHead | null = await this.#readAuditHead(
-			identity.organization_id,
-			identity.envelope_id
-		);
+		const auditHead: DeclineAuditHead | null = await this.#readAuditHead(identity.envelope_id);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
-			organizationId: identity.organization_id,
 			envelopeId: identity.envelope_id,
 			recipientId: identity.recipient_id,
 			recipientRole: identity.recipient_role,
@@ -176,15 +164,14 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 		const statement: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO recipient_declined_command (
-					organization_id, envelope_id, recipient_id, recipient_role, routing_order,
+					envelope_id, recipient_id, recipient_role, routing_order,
 					actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 					sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json
 					, revocation_evidence_version, revoked_recipient_ids_json, revoked_recipient_count
-				) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				) VALUES (?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
-				identity.organization_id,
 				identity.envelope_id,
 				identity.recipient_id,
 				command.recipientRole,
@@ -222,8 +209,7 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 	async #readByCapabilityHash(capabilityHash: string): Promise<RecipientEnvelopeRow | null> {
 		return await this.#database
 			.prepare(
-				`SELECT recipient.organization_id AS organization_id,
-					recipient.envelope_id AS envelope_id,
+				`SELECT recipient.envelope_id AS envelope_id,
 					recipient.id AS recipient_id,
 					recipient.role AS recipient_role,
 					recipient.status AS recipient_status,
@@ -236,8 +222,7 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 					envelope.repository_head AS envelope_repository_head,
 					EXISTS (
 						SELECT 1 FROM delivery_outbox delivery
-						WHERE delivery.organization_id = recipient.organization_id
-							AND delivery.envelope_id = recipient.envelope_id
+						WHERE delivery.envelope_id = recipient.envelope_id
 							AND delivery.status = 'processing'
 					) AS delivery_in_flight,
 					(
@@ -245,8 +230,7 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 						FROM (
 							SELECT sibling.id
 							FROM recipient sibling
-							WHERE sibling.organization_id = recipient.organization_id
-								AND sibling.envelope_id = recipient.envelope_id
+							WHERE sibling.envelope_id = recipient.envelope_id
 								AND sibling.id <> recipient.id
 								AND sibling.status <> 'completed'
 								AND sibling.capability_hash IS NOT NULL
@@ -256,8 +240,7 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 					) AS revoked_recipient_ids_json
 				 FROM recipient
 				 INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
+					ON envelope.id = recipient.envelope_id
 				 WHERE recipient.capability_hash = ?
 				 LIMIT 1`
 			)
@@ -265,16 +248,13 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 			.first<RecipientEnvelopeRow>();
 	}
 
-	async #readAuditHead(
-		organizationId: string,
-		envelopeId: string
-	): Promise<DeclineAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<DeclineAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ? ORDER BY sequence DESC LIMIT 1`
+				 WHERE envelope_id = ? ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
@@ -282,12 +262,10 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 	}
 
 	async #resolveCommand(
-		organizationId: string,
 		recipientId: string,
 		key: DeclineCommandKey
 	): Promise<DeclinePreparation | null> {
 		const exact: DeclinedCommandRow | null = await this.#readCommandRow(
-			organizationId,
 			recipientId,
 			key.idempotencyKey
 		);
@@ -301,10 +279,8 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 			}
 			return await this.#evidenceResult(exact);
 		}
-		const byRecipient: DeclinedCommandRow | null = await this.#readCommandRowByRecipient(
-			organizationId,
-			recipientId
-		);
+		const byRecipient: DeclinedCommandRow | null =
+			await this.#readCommandRowByRecipient(recipientId);
 		if (byRecipient === null) return null;
 		if (
 			byRecipient.envelope_id !== key.expectedEnvelopeId ||
@@ -316,7 +292,6 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 	}
 
 	async #readCommandRow(
-		organizationId: string,
 		recipientId: string,
 		idempotencyKey: string
 	): Promise<DeclinedCommandRow | null> {
@@ -325,31 +300,26 @@ export class D1RecipientDeclineStore implements RecipientDeclineStore {
 				`SELECT ${DECLINED_COMMAND_COLUMNS}
 				 FROM recipient_declined_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = 'recipient'
+					ON evidence.id = command.audit_event_id
+				 WHERE command.actor_type = 'recipient'
 					AND command.actor_id = ? AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId, idempotencyKey)
+			.bind(recipientId, idempotencyKey)
 			.first<DeclinedCommandRow>();
 	}
 
-	async #readCommandRowByRecipient(
-		organizationId: string,
-		recipientId: string
-	): Promise<DeclinedCommandRow | null> {
+	async #readCommandRowByRecipient(recipientId: string): Promise<DeclinedCommandRow | null> {
 		return await this.#database
 			.prepare(
 				`SELECT ${DECLINED_COMMAND_COLUMNS}
 				 FROM recipient_declined_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.recipient_id = ?
+					ON evidence.id = command.audit_event_id
+				 WHERE command.recipient_id = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId)
+			.bind(recipientId)
 			.first<DeclinedCommandRow>();
 	}
 
@@ -431,7 +401,6 @@ function terminalReplay(row: RecipientEnvelopeRow, capabilityHash: string): bool
 function validAuditEvidence(row: DeclinedCommandRow): boolean {
 	return (
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'recipient.declined' &&
@@ -483,7 +452,7 @@ async function validStoredReceipt(row: DeclinedCommandRow): Promise<boolean> {
 			payload: auditPayloadValue,
 			previousHash: row.previous_audit_hash
 		},
-		{ organizationId: row.organization_id, envelopeId: row.envelope_id }
+		{ envelopeId: row.envelope_id }
 	);
 	return (
 		requestHash === row.request_hash &&

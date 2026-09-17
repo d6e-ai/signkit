@@ -1,8 +1,5 @@
 import { newUuidV7 } from '$lib/ids/uuid-v7';
-import {
-	WEBHOOK_MAX_ATTEMPTS,
-	WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION
-} from '$lib/security/webhook';
+import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_ENDPOINTS } from '$lib/security/webhook';
 import {
 	MAX_WEBHOOK_LIST_LIMIT,
 	type ClaimWebhookDeliveriesCommand,
@@ -23,12 +20,11 @@ import {
 	type WebhookStore
 } from '$lib/ports/webhook-store';
 
-const ENDPOINT_COLUMNS: string = `id, organization_id, url, description, status, events_json,
+const ENDPOINT_COLUMNS: string = `id, url, description, status, events_json,
 	secret_prefix, created_at, created_by_user_id, revoked_at, revoked_by_user_id`;
 
 interface EndpointRow {
 	id: string;
-	organization_id: string;
 	url: string;
 	description: string | null;
 	status: string;
@@ -46,7 +42,6 @@ interface CommandRow {
 }
 
 interface OutboxRow {
-	organization_id: string;
 	endpoint_id: string;
 	audit_event_id: string;
 	envelope_id: string;
@@ -72,13 +67,19 @@ interface LogRow {
 	occurred_at: string;
 }
 
+interface StaleOutboxRow {
+	endpoint_id: string;
+	audit_event_id: string;
+	event_type: string;
+	attempts: number;
+	claim_token: string;
+	locked_at: string;
+}
+
 function isWebhookLimitExceededError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	const message = error.message.toLowerCase();
-	return (
-		message.includes('organization active webhook endpoint limit exceeded') ||
-		message.includes('limit exceeded')
-	);
+	return message.includes('limit exceeded');
 }
 
 function isWebhookConflictError(error: unknown): boolean {
@@ -104,9 +105,9 @@ export class D1WebhookStore implements WebhookStore {
 		const existing: D1Result<CommandRow> = await this.#database
 			.prepare(
 				`SELECT request_hash, webhook_id FROM webhook_endpoint_command
-				 WHERE organization_id = ? AND actor_id = ? AND idempotency_key = ?`
+				 WHERE actor_id = ? AND idempotency_key = ?`
 			)
-			.bind(command.organizationId, command.actorId, command.idempotencyKey)
+			.bind(command.actorId, command.idempotencyKey)
 			.all();
 		if (existing.results.length === 1) {
 			return this.#replayOrConflict(command, existing.results[0]);
@@ -115,11 +116,10 @@ export class D1WebhookStore implements WebhookStore {
 		const count: D1Result<{ n: number }> = await this.#database
 			.prepare(
 				`SELECT COUNT(*) AS n FROM webhook_endpoint
-				 WHERE organization_id = ? AND status = 'active'`
+				 WHERE status = 'active'`
 			)
-			.bind(command.organizationId)
 			.all();
-		if ((count.results[0]?.n ?? 0) >= WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION) {
+		if ((count.results[0]?.n ?? 0) >= WEBHOOK_MAX_ENDPOINTS) {
 			return { outcome: 'limit_exceeded' };
 		}
 
@@ -128,13 +128,12 @@ export class D1WebhookStore implements WebhookStore {
 				this.#database
 					.prepare(
 						`INSERT INTO webhook_endpoint (
-							id, organization_id, url, description, status, events_json,
+							id, url, description, status, events_json,
 							secret_hash, signing_secret, sealing_key_id, secret_prefix, created_at, created_by_user_id
-						) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`
+						) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
 						command.id,
-						command.organizationId,
 						command.url,
 						command.description,
 						command.eventsJson,
@@ -148,12 +147,11 @@ export class D1WebhookStore implements WebhookStore {
 				this.#database
 					.prepare(
 						`INSERT INTO webhook_endpoint_command (
-							organization_id, actor_id, idempotency_key, command_type, request_hash,
+							actor_id, idempotency_key, command_type, request_hash,
 							webhook_id, occurred_at
-						) VALUES (?, ?, ?, 'create', ?, ?, ?)`
+						) VALUES (?, ?, 'create', ?, ?, ?)`
 					)
 					.bind(
-						command.organizationId,
 						command.actorId,
 						command.idempotencyKey,
 						command.requestFingerprint,
@@ -168,9 +166,9 @@ export class D1WebhookStore implements WebhookStore {
 			const again: D1Result<CommandRow> = await this.#database
 				.prepare(
 					`SELECT request_hash, webhook_id FROM webhook_endpoint_command
-					 WHERE organization_id = ? AND actor_id = ? AND idempotency_key = ?`
+					 WHERE actor_id = ? AND idempotency_key = ?`
 				)
-				.bind(command.organizationId, command.actorId, command.idempotencyKey)
+				.bind(command.actorId, command.idempotencyKey)
 				.all();
 			if (again.results.length === 1) return this.#replayOrConflict(command, again.results[0]);
 
@@ -181,11 +179,10 @@ export class D1WebhookStore implements WebhookStore {
 			const countAfter: D1Result<{ n: number }> = await this.#database
 				.prepare(
 					`SELECT COUNT(*) AS n FROM webhook_endpoint
-					 WHERE organization_id = ? AND status = 'active'`
+					 WHERE status = 'active'`
 				)
-				.bind(command.organizationId)
 				.all();
-			if ((countAfter.results[0]?.n ?? 0) >= WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION) {
+			if ((countAfter.results[0]?.n ?? 0) >= WEBHOOK_MAX_ENDPOINTS) {
 				return { outcome: 'limit_exceeded' };
 			}
 
@@ -195,14 +192,11 @@ export class D1WebhookStore implements WebhookStore {
 
 			throw error;
 		}
-		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(
-			command.organizationId,
-			command.id
-		);
+		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(command.id);
 		return endpoint === null ? { outcome: 'conflict' } : { outcome: 'created', endpoint };
 	}
 
-	async listEndpoints(organizationId: string, query: WebhookListQuery): Promise<WebhookListPage> {
+	async listEndpoints(query: WebhookListQuery): Promise<WebhookListPage> {
 		assertListLimit(query.limit);
 		const fetchLimit: number = query.limit + 1;
 		const result: D1Result<EndpointRow> =
@@ -210,24 +204,22 @@ export class D1WebhookStore implements WebhookStore {
 				? await this.#database
 						.prepare(
 							`SELECT ${ENDPOINT_COLUMNS} FROM webhook_endpoint
-							 WHERE organization_id = ?
 							 ORDER BY created_at DESC, id DESC
 							 LIMIT ?`
 						)
-						.bind(organizationId, fetchLimit)
+						.bind(fetchLimit)
 						.all()
 				: await this.#database
 						.prepare(
 							`SELECT ${ENDPOINT_COLUMNS} FROM webhook_endpoint
-							 WHERE organization_id = ?
-							   AND (created_at, id) < (
+							 WHERE (created_at, id) < (
 									SELECT created_at, id FROM webhook_endpoint
-									WHERE organization_id = ? AND id = ? LIMIT 1
+									WHERE id = ? LIMIT 1
 							   )
 							 ORDER BY created_at DESC, id DESC
 							 LIMIT ?`
 						)
-						.bind(organizationId, organizationId, query.cursor, fetchLimit)
+						.bind(query.cursor, fetchLimit)
 						.all();
 		const rows: EndpointRow[] = result.results;
 		const hasMore: boolean = rows.length > query.limit;
@@ -238,16 +230,13 @@ export class D1WebhookStore implements WebhookStore {
 		};
 	}
 
-	async getEndpoint(
-		organizationId: string,
-		webhookId: string
-	): Promise<WebhookEndpointMetadata | null> {
+	async getEndpoint(webhookId: string): Promise<WebhookEndpointMetadata | null> {
 		const result: D1Result<EndpointRow> = await this.#database
 			.prepare(
 				`SELECT ${ENDPOINT_COLUMNS} FROM webhook_endpoint
-				 WHERE organization_id = ? AND id = ?`
+				 WHERE id = ?`
 			)
-			.bind(organizationId, webhookId)
+			.bind(webhookId)
 			.all();
 		const row: EndpointRow | undefined = result.results[0];
 		return row === undefined ? null : metadataFromRow(row);
@@ -259,19 +248,12 @@ export class D1WebhookStore implements WebhookStore {
 		const existing: D1Result<CommandRow> = await this.#database
 			.prepare(
 				`SELECT request_hash, webhook_id FROM webhook_endpoint_command
-				 WHERE organization_id = ? AND actor_id = ? AND idempotency_key = ?`
+				 WHERE actor_id = ? AND idempotency_key = ?`
 			)
-			.bind(command.organizationId, command.actorId, command.idempotencyKey)
+			.bind(command.actorId, command.idempotencyKey)
 			.all();
 		if (existing.results.length === 1) {
-			if (existing.results[0].request_hash !== command.requestFingerprint) {
-				return { outcome: 'conflict' };
-			}
-			const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(
-				command.organizationId,
-				existing.results[0].webhook_id
-			);
-			return endpoint === null ? { outcome: 'not_found' } : { outcome: 'replayed', endpoint };
+			return this.#replayOrConflictRevoke(command, existing.results[0]);
 		}
 
 		try {
@@ -280,18 +262,17 @@ export class D1WebhookStore implements WebhookStore {
 					.prepare(
 						`UPDATE webhook_endpoint
 						 SET status = 'revoked', revoked_at = ?, revoked_by_user_id = ?
-						 WHERE organization_id = ? AND id = ? AND status = 'active'`
+						 WHERE id = ? AND status = 'active'`
 					)
-					.bind(command.revokedAt, command.actorId, command.organizationId, command.webhookId),
+					.bind(command.revokedAt, command.actorId, command.webhookId),
 				this.#database
 					.prepare(
 						`INSERT INTO webhook_endpoint_command (
-							organization_id, actor_id, idempotency_key, command_type, request_hash,
+							actor_id, idempotency_key, command_type, request_hash,
 							webhook_id, occurred_at
-						) VALUES (?, ?, ?, 'revoke', ?, ?, ?)`
+						) VALUES (?, ?, 'revoke', ?, ?, ?)`
 					)
 					.bind(
-						command.organizationId,
 						command.actorId,
 						command.idempotencyKey,
 						command.requestFingerprint,
@@ -300,27 +281,31 @@ export class D1WebhookStore implements WebhookStore {
 					)
 			]);
 			if ((results[0]?.meta.changes ?? 0) !== 1) {
-				const current: WebhookEndpointMetadata | null = await this.getEndpoint(
-					command.organizationId,
-					command.webhookId
-				);
+				const current: WebhookEndpointMetadata | null = await this.getEndpoint(command.webhookId);
 				return current === null
 					? { outcome: 'not_found' }
 					: { outcome: 'revoked', endpoint: current };
 			}
 		} catch {
-			return { outcome: 'conflict' };
+			const raced: D1Result<CommandRow> = await this.#database
+				.prepare(
+					`SELECT request_hash, webhook_id FROM webhook_endpoint_command
+					 WHERE actor_id = ? AND idempotency_key = ?`
+				)
+				.bind(command.actorId, command.idempotencyKey)
+				.all();
+			return raced.results.length === 1
+				? this.#replayOrConflictRevoke(command, raced.results[0])
+				: { outcome: 'conflict' };
 		}
-		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(
-			command.organizationId,
-			command.webhookId
-		);
+		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(command.webhookId);
 		return endpoint === null ? { outcome: 'not_found' } : { outcome: 'revoked', endpoint };
 	}
 
 	async claimPendingDeliveries(
 		command: ClaimWebhookDeliveriesCommand
 	): Promise<readonly WebhookOutboxRow[]> {
+		await this.#terminalizeExhaustedStaleDeliveries(command);
 		await this.#database
 			.prepare(
 				`UPDATE webhook_outbox
@@ -330,8 +315,7 @@ export class D1WebhookStore implements WebhookStore {
 					SELECT webhook_outbox.rowid
 					FROM webhook_outbox
 					INNER JOIN webhook_endpoint
-						ON webhook_endpoint.organization_id = webhook_outbox.organization_id
-						AND webhook_endpoint.id = webhook_outbox.endpoint_id
+						ON webhook_endpoint.id = webhook_outbox.endpoint_id
 						AND webhook_endpoint.status = 'active'
 					WHERE (
 						(webhook_outbox.status IN ('pending', 'failed')
@@ -358,7 +342,7 @@ export class D1WebhookStore implements WebhookStore {
 		const claimed: D1Result<OutboxRow> = await this.#database
 			.prepare(
 				`SELECT
-					webhook_outbox.organization_id, webhook_outbox.endpoint_id, webhook_outbox.audit_event_id,
+					webhook_outbox.endpoint_id, webhook_outbox.audit_event_id,
 					webhook_outbox.envelope_id, webhook_outbox.event_type, webhook_outbox.payload_json,
 					webhook_outbox.status, webhook_outbox.attempts, webhook_outbox.available_at,
 					webhook_outbox.claim_token, webhook_outbox.locked_at,
@@ -366,8 +350,7 @@ export class D1WebhookStore implements WebhookStore {
 					webhook_endpoint.sealing_key_id
 				 FROM webhook_outbox
 				 INNER JOIN webhook_endpoint
-					ON webhook_endpoint.organization_id = webhook_outbox.organization_id
-					AND webhook_endpoint.id = webhook_outbox.endpoint_id
+					ON webhook_endpoint.id = webhook_outbox.endpoint_id
 				 WHERE webhook_outbox.claim_token = ? AND webhook_outbox.status = 'processing'`
 			)
 			.bind(command.claimToken)
@@ -376,7 +359,6 @@ export class D1WebhookStore implements WebhookStore {
 	}
 
 	async readClaimedDelivery(
-		organizationId: string,
 		endpointId: string,
 		auditEventId: string,
 		claimToken: string
@@ -384,7 +366,7 @@ export class D1WebhookStore implements WebhookStore {
 		const result: D1Result<OutboxRow> = await this.#database
 			.prepare(
 				`SELECT
-					webhook_outbox.organization_id, webhook_outbox.endpoint_id, webhook_outbox.audit_event_id,
+					webhook_outbox.endpoint_id, webhook_outbox.audit_event_id,
 					webhook_outbox.envelope_id, webhook_outbox.event_type, webhook_outbox.payload_json,
 					webhook_outbox.status, webhook_outbox.attempts, webhook_outbox.available_at,
 					webhook_outbox.claim_token, webhook_outbox.locked_at,
@@ -392,15 +374,13 @@ export class D1WebhookStore implements WebhookStore {
 					webhook_endpoint.sealing_key_id
 				 FROM webhook_outbox
 				 INNER JOIN webhook_endpoint
-					ON webhook_endpoint.organization_id = webhook_outbox.organization_id
-					AND webhook_endpoint.id = webhook_outbox.endpoint_id
-				 WHERE webhook_outbox.organization_id = ?
-					AND webhook_outbox.endpoint_id = ?
+					ON webhook_endpoint.id = webhook_outbox.endpoint_id
+				 WHERE webhook_outbox.endpoint_id = ?
 					AND webhook_outbox.audit_event_id = ?
 					AND webhook_outbox.claim_token = ?
 					AND webhook_outbox.status = 'processing'`
 			)
-			.bind(organizationId, endpointId, auditEventId, claimToken)
+			.bind(endpointId, auditEventId, claimToken)
 			.all();
 		const row: OutboxRow | undefined = result.results[0];
 		return row === undefined ? null : outboxFromRow(row);
@@ -418,20 +398,19 @@ export class D1WebhookStore implements WebhookStore {
 			this.#database
 				.prepare(
 					`INSERT INTO webhook_delivery_log (
-						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						id, endpoint_id, audit_event_id, event_type, status,
 						attempt, http_status, error_code, occurred_at
 					)
-					SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, 'delivered',
+					SELECT ?, endpoint_id, audit_event_id, event_type, 'delivered',
 						attempts, ?, NULL, ?
 					FROM webhook_outbox
-					WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+					WHERE endpoint_id = ? AND audit_event_id = ?
 						AND status = 'processing' AND claim_token = ?`
 				)
 				.bind(
 					logId,
 					command.httpStatus,
 					command.deliveredAt,
-					command.organizationId,
 					command.endpointId,
 					command.auditEventId,
 					command.claimToken
@@ -440,16 +419,10 @@ export class D1WebhookStore implements WebhookStore {
 				.prepare(
 					`UPDATE webhook_outbox
 					 SET status = 'delivered', claim_token = NULL, locked_at = NULL, updated_at = ?
-					 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+					 WHERE endpoint_id = ? AND audit_event_id = ?
 						AND status = 'processing' AND claim_token = ?`
 				)
-				.bind(
-					command.deliveredAt,
-					command.organizationId,
-					command.endpointId,
-					command.auditEventId,
-					command.claimToken
-				)
+				.bind(command.deliveredAt, command.endpointId, command.auditEventId, command.claimToken)
 		]);
 		return (results[1]?.meta.changes ?? 0) === 1 ? { outcome: 'completed' } : { outcome: 'stale' };
 	}
@@ -467,13 +440,13 @@ export class D1WebhookStore implements WebhookStore {
 			this.#database
 				.prepare(
 					`INSERT INTO webhook_delivery_log (
-						id, organization_id, endpoint_id, audit_event_id, event_type, status,
+						id, endpoint_id, audit_event_id, event_type, status,
 						attempt, http_status, error_code, occurred_at
 					)
-					SELECT ?, organization_id, endpoint_id, audit_event_id, event_type, ?,
+					SELECT ?, endpoint_id, audit_event_id, event_type, ?,
 						attempts, ?, ?, ?
 					FROM webhook_outbox
-					WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+					WHERE endpoint_id = ? AND audit_event_id = ?
 						AND status = 'processing' AND claim_token = ?`
 				)
 				.bind(
@@ -482,7 +455,6 @@ export class D1WebhookStore implements WebhookStore {
 					command.httpStatus,
 					command.errorCode,
 					command.failedAt,
-					command.organizationId,
 					command.endpointId,
 					command.auditEventId,
 					command.claimToken
@@ -492,7 +464,7 @@ export class D1WebhookStore implements WebhookStore {
 					`UPDATE webhook_outbox
 					 SET status = 'failed', claim_token = NULL, locked_at = NULL,
 						available_at = ?, last_error = ?, updated_at = ?, retryable = ?
-					 WHERE organization_id = ? AND endpoint_id = ? AND audit_event_id = ?
+					 WHERE endpoint_id = ? AND audit_event_id = ?
 						AND status = 'processing' AND claim_token = ?`
 				)
 				.bind(
@@ -500,7 +472,6 @@ export class D1WebhookStore implements WebhookStore {
 					command.errorCode,
 					command.failedAt,
 					command.retryable ? 1 : 0,
-					command.organizationId,
 					command.endpointId,
 					command.auditEventId,
 					command.claimToken
@@ -514,13 +485,12 @@ export class D1WebhookStore implements WebhookStore {
 		limit: number
 	): Promise<readonly WebhookSigningSecretRow[]> {
 		const result: D1Result<{
-			organization_id: string;
 			id: string;
 			signing_secret: string;
 			sealing_key_id: string | null;
 		}> = await this.#database
 			.prepare(
-				`SELECT organization_id, id, signing_secret, sealing_key_id
+				`SELECT id, signing_secret, sealing_key_id
 				 FROM webhook_endpoint
 				 WHERE sealing_key_id IS NULL OR sealing_key_id <> ?
 				 ORDER BY created_at ASC, id ASC
@@ -529,7 +499,6 @@ export class D1WebhookStore implements WebhookStore {
 			.bind(activeSealingKeyId, limit)
 			.all();
 		return (result.results ?? []).map((row): WebhookSigningSecretRow => ({
-			organizationId: row.organization_id,
 			endpointId: row.id,
 			signingSecret: row.signing_secret,
 			sealingKeyId: row.sealing_key_id
@@ -545,25 +514,19 @@ export class D1WebhookStore implements WebhookStore {
 						.prepare(
 							`UPDATE webhook_endpoint
 							 SET signing_secret = ?, sealing_key_id = ?
-							 WHERE organization_id = ? AND id = ? AND sealing_key_id IS NULL`
+							 WHERE id = ? AND sealing_key_id IS NULL`
 						)
-						.bind(
-							command.signingSecret,
-							command.sealingKeyId,
-							command.organizationId,
-							command.endpointId
-						)
+						.bind(command.signingSecret, command.sealingKeyId, command.endpointId)
 						.run()
 				: await this.#database
 						.prepare(
 							`UPDATE webhook_endpoint
 							 SET signing_secret = ?, sealing_key_id = ?
-							 WHERE organization_id = ? AND id = ? AND sealing_key_id = ?`
+							 WHERE id = ? AND sealing_key_id = ?`
 						)
 						.bind(
 							command.signingSecret,
 							command.sealingKeyId,
-							command.organizationId,
 							command.endpointId,
 							command.previousSealingKeyId
 						)
@@ -572,7 +535,6 @@ export class D1WebhookStore implements WebhookStore {
 	}
 
 	async listDeliveryLogs(
-		organizationId: string,
 		webhookId: string,
 		query: WebhookListQuery
 	): Promise<WebhookDeliveryLogPage> {
@@ -584,25 +546,25 @@ export class D1WebhookStore implements WebhookStore {
 						.prepare(
 							`SELECT id, event_type, status, attempt, http_status, error_code, occurred_at
 							 FROM webhook_delivery_log
-							 WHERE organization_id = ? AND endpoint_id = ?
+							 WHERE endpoint_id = ?
 							 ORDER BY occurred_at DESC, id DESC
 							 LIMIT ?`
 						)
-						.bind(organizationId, webhookId, fetchLimit)
+						.bind(webhookId, fetchLimit)
 						.all()
 				: await this.#database
 						.prepare(
 							`SELECT id, event_type, status, attempt, http_status, error_code, occurred_at
 							 FROM webhook_delivery_log
-							 WHERE organization_id = ? AND endpoint_id = ?
+							 WHERE endpoint_id = ?
 							   AND (occurred_at, id) < (
 									SELECT occurred_at, id FROM webhook_delivery_log
-									WHERE organization_id = ? AND id = ? LIMIT 1
+									WHERE id = ? LIMIT 1
 							   )
 							 ORDER BY occurred_at DESC, id DESC
 							 LIMIT ?`
 						)
-						.bind(organizationId, webhookId, organizationId, query.cursor, fetchLimit)
+						.bind(webhookId, query.cursor, fetchLimit)
 						.all();
 		const rows: LogRow[] = result.results;
 		const hasMore: boolean = rows.length > query.limit;
@@ -626,11 +588,83 @@ export class D1WebhookStore implements WebhookStore {
 		row: CommandRow
 	): Promise<CreateWebhookEndpointResult> {
 		if (row.request_hash !== command.requestFingerprint) return { outcome: 'conflict' };
-		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(
-			command.organizationId,
-			row.webhook_id
-		);
+		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(row.webhook_id);
 		return endpoint === null ? { outcome: 'conflict' } : { outcome: 'replayed', endpoint };
+	}
+
+	async #replayOrConflictRevoke(
+		command: RevokeWebhookEndpointCommand,
+		row: CommandRow
+	): Promise<RevokeWebhookEndpointResult> {
+		if (row.request_hash !== command.requestFingerprint) return { outcome: 'conflict' };
+		const endpoint: WebhookEndpointMetadata | null = await this.getEndpoint(row.webhook_id);
+		return endpoint === null ? { outcome: 'not_found' } : { outcome: 'replayed', endpoint };
+	}
+
+	async #terminalizeExhaustedStaleDeliveries(
+		command: ClaimWebhookDeliveriesCommand
+	): Promise<void> {
+		const candidates: D1Result<StaleOutboxRow> = await this.#database
+			.prepare(
+				`SELECT endpoint_id, audit_event_id, event_type, attempts, claim_token, locked_at
+				 FROM webhook_outbox
+				 WHERE status = 'processing'
+				   AND attempts >= ?
+				   AND locked_at < ?
+				 ORDER BY locked_at ASC, endpoint_id ASC, audit_event_id ASC
+				 LIMIT ?`
+			)
+			.bind(WEBHOOK_MAX_ATTEMPTS, command.staleBefore, command.limit)
+			.all();
+		if (candidates.results.length === 0) return;
+
+		const statements: D1PreparedStatement[] = [];
+		for (const row of candidates.results) {
+			statements.push(
+				this.#database
+					.prepare(
+						`INSERT INTO webhook_delivery_log (
+							id, endpoint_id, audit_event_id, event_type, status,
+							attempt, http_status, error_code, occurred_at
+						 )
+						 SELECT ?, endpoint_id, audit_event_id, event_type, 'failed',
+							attempts, NULL, 'attempts_exhausted', ?
+						 FROM webhook_outbox
+						 WHERE endpoint_id = ? AND audit_event_id = ?
+						   AND status = 'processing' AND attempts >= ?
+						   AND claim_token = ? AND locked_at = ? AND locked_at < ?`
+					)
+					.bind(
+						newUuidV7(),
+						command.claimedAt,
+						row.endpoint_id,
+						row.audit_event_id,
+						WEBHOOK_MAX_ATTEMPTS,
+						row.claim_token,
+						row.locked_at,
+						command.staleBefore
+					),
+				this.#database
+					.prepare(
+						`UPDATE webhook_outbox
+						 SET status = 'failed', retryable = 0, claim_token = NULL,
+							locked_at = NULL, last_error = 'attempts_exhausted', updated_at = ?
+						 WHERE endpoint_id = ? AND audit_event_id = ?
+						   AND status = 'processing' AND attempts >= ?
+						   AND claim_token = ? AND locked_at = ? AND locked_at < ?`
+					)
+					.bind(
+						command.claimedAt,
+						row.endpoint_id,
+						row.audit_event_id,
+						WEBHOOK_MAX_ATTEMPTS,
+						row.claim_token,
+						row.locked_at,
+						command.staleBefore
+					)
+			);
+		}
+		await this.#database.batch(statements);
 	}
 }
 
@@ -653,7 +687,6 @@ function metadataFromRow(row: EndpointRow): WebhookEndpointMetadata {
 	}
 	return {
 		id: row.id,
-		organizationId: row.organization_id,
 		url: row.url,
 		description: row.description,
 		status: row.status as WebhookStatus,
@@ -669,7 +702,6 @@ function metadataFromRow(row: EndpointRow): WebhookEndpointMetadata {
 function outboxFromRow(row: OutboxRow): WebhookOutboxRow {
 	if (row.claim_token === null) throw new Error('Claimed webhook row is missing a claim token');
 	return {
-		organizationId: row.organization_id,
 		endpointId: row.endpoint_id,
 		auditEventId: row.audit_event_id,
 		envelopeId: row.envelope_id,

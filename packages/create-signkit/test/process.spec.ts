@@ -46,6 +46,39 @@ describe('argv secret detection', () => {
 			assertArgvHasNoSecrets(['node', 'wrangler.js', '--name', 'sk-live-secret'])
 		).toThrow(/secret-like argv value/);
 	});
+
+	it('allows --secrets-file and --config paths but still rejects secret values elsewhere', () => {
+		expect(() =>
+			assertArgvHasNoSecrets([
+				'node',
+				'wrangler.js',
+				'versions',
+				'upload',
+				'--config',
+				'/tmp/bundle/wrangler.jsonc',
+				'--name',
+				'signkit',
+				'--secrets-file',
+				'/home/operator/.local/state/create-signkit/recovery.json',
+				'--keep-vars',
+				'--strict',
+				'--no-bundle'
+			])
+		).not.toThrow();
+		expect(() =>
+			assertArgvHasNoSecrets([
+				'node',
+				'wrangler.js',
+				'--secrets-file',
+				'/tmp/recovery.json',
+				'--name',
+				'sk-live-secret'
+			])
+		).toThrow(/secret-like argv value/);
+		expect(() => assertArgvHasNoSecrets(['node', 'wrangler.js', '--secret', 'x'])).toThrow(
+			/secret-bearing argv flag/
+		);
+	});
 });
 
 describe('process output limits', () => {

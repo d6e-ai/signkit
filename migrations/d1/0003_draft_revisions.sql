@@ -1,5 +1,4 @@
 CREATE TABLE draft_revision_command (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
   actor_id TEXT NOT NULL,
@@ -16,16 +15,16 @@ CREATE TABLE draft_revision_command (
   previous_audit_hash TEXT NOT NULL,
   audit_event_hash TEXT NOT NULL,
   audit_payload_json TEXT NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, envelope_id, resulting_generation),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (envelope_id, resulting_generation),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CHECK (resulting_generation = expected_generation + 1),
   CHECK (audit_sequence > 1)
 );
 
 CREATE INDEX draft_revision_command_envelope
-  ON draft_revision_command(organization_id, envelope_id, resulting_generation DESC);
+  ON draft_revision_command(envelope_id, resulting_generation DESC);
 
 -- D1 has transactional batch execution but no interactive transaction API.
 -- Publishing is therefore attached to the command insert so a failed CAS or
@@ -39,23 +38,20 @@ BEGIN
       repository_archive_key = NEW.archive_key,
       repository_archive_sha256 = NEW.archive_sha256,
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.envelope_id
+  WHERE id = NEW.envelope_id
     AND status = 'draft'
     AND repository_generation = NEW.expected_generation
     AND EXISTS (
       SELECT 1
       FROM audit_event previous
-      WHERE previous.organization_id = NEW.organization_id
-        AND previous.envelope_id = NEW.envelope_id
+      WHERE previous.envelope_id = NEW.envelope_id
         AND previous.sequence = NEW.audit_sequence - 1
         AND previous.event_hash = NEW.previous_audit_hash
     )
     AND NOT EXISTS (
       SELECT 1
       FROM audit_event newer
-      WHERE newer.organization_id = NEW.organization_id
-        AND newer.envelope_id = NEW.envelope_id
+      WHERE newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     );
 
@@ -65,7 +61,6 @@ BEGIN
 
   INSERT INTO audit_event (
     id,
-    organization_id,
     envelope_id,
     sequence,
     event_type,
@@ -77,7 +72,6 @@ BEGIN
     occurred_at
   ) VALUES (
     NEW.audit_event_id,
-    NEW.organization_id,
     NEW.envelope_id,
     NEW.audit_sequence,
     'draft.revision_created',

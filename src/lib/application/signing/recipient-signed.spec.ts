@@ -11,7 +11,6 @@ import { hashRecipientCapability } from '$lib/security/recipient-capability';
 import { InvalidSignInputError, RecipientSignedApplication } from './recipient-signed';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
-const organizationId: string = 'org-1';
 const envelopeId: string = '01910000-0000-7000-8000-000000000001';
 const recipientId: string = '01910000-0000-7000-8000-000000000002';
 const fieldId: string = '01910000-0000-7000-8000-000000000003';
@@ -29,7 +28,6 @@ function routing(overrides: Partial<SignRoutingSnapshot> = {}): SignRoutingSnaps
 function ready(overrides: Partial<SignPreparation & { outcome: 'ready' }> = {}): SignPreparation {
 	return {
 		outcome: 'ready',
-		organizationId,
 		envelopeId,
 		recipientId,
 		recipientRole: 'signer',
@@ -249,8 +247,7 @@ describe('RecipientSignedApplication', () => {
 		const expectedCompletedHash: string = createHash('sha256')
 			.update(
 				JSON.stringify({
-					hashVersion: 2,
-					organizationId,
+					hashVersion: 3,
 					envelopeId,
 					sequence: 5,
 					eventType: 'envelope.completed',

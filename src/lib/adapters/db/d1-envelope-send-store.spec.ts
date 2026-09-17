@@ -43,8 +43,7 @@ function fakeD1(firstResults: readonly unknown[], allResults: readonly unknown[]
 const sealedDigest: string = createHash('sha256').update('sealed').digest('hex');
 
 const command: PublishSentEnvelopeCommand = {
-	sentDocumentSet: fakeSentDocumentSetArtifact('org-1', 'env-1'),
-	organizationId: 'org-1',
+	sentDocumentSet: fakeSentDocumentSetArtifact('env-1'),
 	envelopeId: 'env-1',
 	actorType: 'user',
 	actorId: 'user-1',
@@ -111,7 +110,6 @@ command.auditPayloadJson = JSON.stringify({
 
 function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organization_id: 'org-1',
 		envelope_id: 'env-1',
 		actor_type: 'user',
 		actor_id: 'user-1',
@@ -142,7 +140,6 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		document_count: command.sentDocumentSet.documentCount,
 		sent_documents_json: JSON.stringify(sentAuditDocuments(command.sentDocumentSet.documents)),
 		evidence_event_id: 'sent-audit',
-		evidence_organization_id: 'org-1',
 		evidence_envelope_id: 'env-1',
 		evidence_sequence: 4,
 		evidence_event_type: 'envelope.sent',
@@ -178,7 +175,7 @@ describe('D1EnvelopeSendStore', () => {
 				null,
 				{
 					id: 'env-1',
-					organization_id: 'org-1',
+					created_by_user_id: 'user-1',
 					title: 'Agreement',
 					status: 'ready',
 					repository_generation: 2,
@@ -202,7 +199,6 @@ describe('D1EnvelopeSendStore', () => {
 				[
 					{
 						id: 'recipient-1',
-						organization_id: 'org-1',
 						envelope_id: 'env-1',
 						email: 'a@example.com',
 						name: 'A',

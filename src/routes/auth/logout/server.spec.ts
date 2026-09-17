@@ -1,6 +1,6 @@
 import { isRedirect } from '@sveltejs/kit';
 import { describe, expect, it } from 'vitest';
-import { ORGANIZATION_COOKIE, SESSION_COOKIE } from '$lib/server/session';
+import { SESSION_COOKIE } from '$lib/server/session';
 import { POST } from './+server';
 
 interface CookieJar {
@@ -36,11 +36,11 @@ async function captureRedirect(fn: () => unknown): Promise<{ status: number; loc
 }
 
 describe('POST /auth/logout', () => {
-	it('clears the session and organization cookies', async () => {
+	it('clears the session cookie', async () => {
 		const evt = event();
 		await captureRedirect(() => POST(evt as unknown as Parameters<typeof POST>[0]));
 
-		expect(evt.deleted.map((entry) => entry.name)).toEqual([SESSION_COOKIE, ORGANIZATION_COOKIE]);
+		expect(evt.deleted.map((entry) => entry.name)).toEqual([SESSION_COOKIE]);
 	});
 
 	/**

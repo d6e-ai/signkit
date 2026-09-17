@@ -1,20 +1,28 @@
 import { Buffer } from 'node:buffer';
 import type { RequestEvent } from '@sveltejs/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { OrganizationMembership, TokenSet, VerifiedPrincipal } from '$lib/server/d6e-auth';
+import type { TokenSet, VerifiedPrincipal } from '$lib/server/d6e-auth';
+import type { InstanceCallerContext } from '$lib/ports/instance-store';
 import type { Session } from '$lib/server/session';
 
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
 const refresh = vi.fn<(refreshToken: string) => Promise<TokenSet>>();
-const organizations = vi.fn<(accessToken: string) => Promise<OrganizationMembership[]>>();
 const verifyAccessToken = vi.fn<(token: string) => Promise<VerifiedPrincipal>>();
 
 vi.mock('$lib/server/d6e-auth', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('$lib/server/d6e-auth')>();
-	return { ...actual, refresh, organizations, verifyAccessToken };
+	return { ...actual, refresh, verifyAccessToken };
 });
+
+const getCurrentMember = vi.fn<(actor: { id: string }) => Promise<InstanceCallerContext>>();
+const mockInstanceApplication = { getCurrentMember };
+const resolveInstanceApplication = vi.fn().mockResolvedValue(mockInstanceApplication);
+
+vi.mock('$lib/application/instance/instance-runtime', () => ({
+	resolveInstanceApplication
+}));
 
 const { handleSession } = await import('./hooks.server');
 const { D6eAuthRejectedError } = await import('$lib/server/d6e-auth');
@@ -27,10 +35,15 @@ const PRINCIPAL: VerifiedPrincipal = {
 	emailVerified: true
 };
 
-const ORGANIZATION: OrganizationMembership = {
-	role: 'owner',
-	joinedAt: '2026-09-01T00:00:00.000Z',
-	organization: { id: 'org-1', slug: 'org-1', name: 'Org One', status: 'active' }
+const DEFAULT_CALLER_CONTEXT: InstanceCallerContext = {
+	bootstrapped: true,
+	member: {
+		userId: 'user-1',
+		role: 'owner',
+		status: 'active',
+		createdAt: '2026-09-01T00:00:00.000Z',
+		updatedAt: '2026-09-01T00:00:00.000Z'
+	}
 };
 
 interface CookieJar {
@@ -89,8 +102,11 @@ async function run(cookies: CookieJar): Promise<App.Locals> {
 beforeEach((): void => {
 	privateEnv.SESSION_ENCRYPTION_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
 	refresh.mockReset();
-	organizations.mockReset();
 	verifyAccessToken.mockReset();
+	resolveInstanceApplication.mockReset();
+	resolveInstanceApplication.mockResolvedValue(mockInstanceApplication);
+	getCurrentMember.mockReset();
+	getCurrentMember.mockResolvedValue(DEFAULT_CALLER_CONTEXT);
 });
 
 afterEach((): void => {
@@ -98,15 +114,20 @@ afterEach((): void => {
 });
 
 describe('handleSession: distinguishing rejection from provider outage', () => {
-	it('authorizes normally when verification and organization lookup succeed', async () => {
+	it('authorizes normally when verification and instance member lookup succeed', async () => {
 		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
 		verifyAccessToken.mockResolvedValue(PRINCIPAL);
-		organizations.mockResolvedValue([ORGANIZATION]);
 
 		const locals: App.Locals = await run(cookies);
 
-		expect(locals.identityState).toBe('authorized');
+		expect(locals.identityState).toBe('active');
 		expect(locals.principal).toEqual(PRINCIPAL);
+		expect(locals.instanceMembership).toEqual({
+			userId: 'user-1',
+			role: 'owner',
+			status: 'active'
+		});
+		expect(locals.bootstrapped).toBe(true);
 		expect(cookies.deletedNames).toEqual([]);
 	});
 
@@ -120,7 +141,7 @@ describe('handleSession: distinguishing rejection from provider outage', () => {
 		expect(locals.principal).toBeNull();
 		expect(cookies.deletedNames).toEqual([SESSION_COOKIE]);
 		expect(cookies.has(SESSION_COOKIE)).toBe(false);
-		expect(organizations).not.toHaveBeenCalled();
+		expect(getCurrentMember).not.toHaveBeenCalled();
 	});
 
 	it('fails closed as unavailable, keeping the cookie, on a transient verification failure', async () => {
@@ -147,7 +168,7 @@ describe('handleSession: distinguishing rejection from provider outage', () => {
 		expect(locals.principal).toBeNull();
 		expect(cookies.deletedNames).toEqual([SESSION_COOKIE]);
 		expect(verifyAccessToken).not.toHaveBeenCalled();
-		expect(organizations).not.toHaveBeenCalled();
+		expect(getCurrentMember).not.toHaveBeenCalled();
 	});
 
 	it('fails closed as unavailable, keeping the cookie, on a refresh provider outage', async () => {
@@ -163,31 +184,66 @@ describe('handleSession: distinguishing rejection from provider outage', () => {
 		expect(cookies.has(SESSION_COOKIE)).toBe(true);
 	});
 
-	it('clears the session cookie when the organization lookup rejects the session, even after a successful refresh', async () => {
-		const cookies: CookieJar = cookieJar({
-			[SESSION_COOKIE]: await sealedSession({ expiresAt: Math.floor(Date.now() / 1000) - 3600 })
+	it('marks identity as no_membership when verified identity has no member row', async () => {
+		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		getCurrentMember.mockResolvedValue({
+			bootstrapped: true,
+			member: null
 		});
-		const renewed: TokenSet = {
-			accessToken: 'new-access-token',
-			refreshToken: 'new-refresh-token',
-			expiresIn: 3600,
-			principal: PRINCIPAL
-		};
-		refresh.mockResolvedValue(renewed);
-		organizations.mockRejectedValue(new D6eAuthRejectedError('organization lookup rejected'));
 
 		const locals: App.Locals = await run(cookies);
 
-		expect(locals.identityState).toBe('anonymous');
-		expect(locals.principal).toBeNull();
-		expect(cookies.deletedNames).toEqual([SESSION_COOKIE]);
-		expect(cookies.has(SESSION_COOKIE)).toBe(false);
+		expect(locals.identityState).toBe('no_membership');
+		expect(locals.principal).toEqual(PRINCIPAL);
+		expect(locals.instanceMembership).toBeNull();
+		expect(locals.bootstrapped).toBe(true);
+		expect(cookies.deletedNames).toEqual([]);
 	});
 
-	it('fails closed as unavailable on a transient organization lookup failure', async () => {
+	it('marks identity as suspended when member status is suspended', async () => {
 		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
 		verifyAccessToken.mockResolvedValue(PRINCIPAL);
-		organizations.mockRejectedValue(new Error('d6e-auth unreachable'));
+		getCurrentMember.mockResolvedValue({
+			bootstrapped: true,
+			member: {
+				userId: 'user-1',
+				role: 'member',
+				status: 'suspended',
+				createdAt: '2026-09-01T00:00:00.000Z',
+				updatedAt: '2026-09-01T00:00:00.000Z'
+			}
+		});
+
+		const locals: App.Locals = await run(cookies);
+
+		expect(locals.identityState).toBe('suspended');
+		expect(locals.principal).toEqual(PRINCIPAL);
+		expect(locals.instanceMembership).toEqual({
+			userId: 'user-1',
+			role: 'member',
+			status: 'suspended'
+		});
+	});
+
+	it('fails closed as unavailable when instance application cannot be resolved', async () => {
+		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		resolveInstanceApplication.mockResolvedValueOnce(null);
+
+		const locals: App.Locals = await run(cookies);
+
+		expect(locals.identityState).toBe('unavailable');
+		expect(locals.principal).toEqual(PRINCIPAL);
+		expect(locals.instanceMembership).toBeNull();
+		expect(cookies.deletedNames).toEqual([]);
+		expect(cookies.has(SESSION_COOKIE)).toBe(true);
+	});
+
+	it('fails closed as unavailable on a transient instance lookup error', async () => {
+		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		getCurrentMember.mockRejectedValue(new Error('durable store unreachable'));
 
 		const locals: App.Locals = await run(cookies);
 

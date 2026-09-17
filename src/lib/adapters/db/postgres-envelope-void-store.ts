@@ -46,7 +46,6 @@ interface AuditHeadRow {
 }
 
 interface VoidCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	actorType: string;
 	actorId: string;
@@ -73,7 +72,6 @@ interface VoidCommandRow {
 	projectionHasRevocableRecipient: boolean;
 	projectionHasUnsafeDelivery: boolean;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -120,7 +118,7 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 					SELECT id, status, capability_hash AS "capabilityHash",
 						capability_revoked_at AS "capabilityRevokedAt"
 					FROM recipient
-					WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 					ORDER BY id FOR UPDATE`;
 				const replay: VoidPreparation | null = await this.#resolveCommand(transaction, command);
 				if (replay !== null) return publishFromPreparation(replay);
@@ -145,7 +143,7 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 				}
 				const deliveries = await transaction<DeliveryLockRow[]>`
 					SELECT id, status, retryable FROM delivery_outbox
-					WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 					ORDER BY id FOR UPDATE`;
 				if (
 					deliveries.some((delivery: DeliveryLockRow): boolean => delivery.status === 'processing')
@@ -179,7 +177,7 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 						sealed_capability = NULL,
 						available_at = COALESCE(available_at, ${command.updatedAt}::timestamptz),
 						last_error = 'envelope_terminal', updated_at = ${command.updatedAt}::timestamptz
-					WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 						AND (status IN ('blocked', 'pending') OR (status = 'failed' AND retryable))
 					RETURNING id`;
 				const cleanedIds: readonly string[] = cleanedRows
@@ -191,7 +189,7 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 				const revokedRows = await transaction<{ id: string }[]>`
 					UPDATE recipient SET capability_revoked_at = ${command.updatedAt}::timestamptz,
 						updated_at = ${command.updatedAt}::timestamptz
-					WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 						AND status <> 'completed' AND capability_hash IS NOT NULL
 						AND capability_revoked_at IS NULL
 					RETURNING id`;
@@ -204,7 +202,7 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 
 				const envelopeRows = await transaction<{ id: string }[]>`
 					UPDATE envelope SET status = 'voided', updated_at = ${command.updatedAt}::timestamptz
-					WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+					WHERE id = ${command.envelopeId}
 						AND status = ${command.expectedStatus}
 						AND repository_generation = ${command.expectedGeneration}
 						AND repository_head IS NOT DISTINCT FROM ${command.repositoryHead}
@@ -214,12 +212,12 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 
 				await transaction`
 					INSERT INTO envelope_void_command (
-						organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+						envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 						previous_status, expected_generation, repository_head, sent_commit_sha,
 						updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 						audit_event_hash, audit_payload_json, revocation_evidence_version,
 						revoked_recipient_ids_json, revoked_recipient_count
-					) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.actorType},
+					) VALUES (${command.envelopeId}, ${command.actorType},
 						${command.actorId}, ${command.idempotencyKey}, ${command.requestFingerprint},
 						${command.expectedStatus}, ${command.expectedGeneration}, ${command.repositoryHead},
 						${command.sentCommitSha}, ${command.updatedAt}::timestamptz, ${command.auditEventId},
@@ -228,9 +226,9 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 						${JSON.stringify(command.revokedRecipientIds)}, ${command.revokedRecipientIds.length})`;
 				await transaction`
 					INSERT INTO audit_event (
-						id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+						id, envelope_id, sequence, event_type, actor_type, actor_id,
 						payload_json, previous_hash, event_hash, occurred_at
-					) VALUES (${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+					) VALUES (${command.auditEventId}, ${command.envelopeId},
 						${command.expectedAuditSequence + 1}, 'envelope.voided', ${command.actorType},
 						${command.actorId}, ${command.auditPayloadJson}, ${command.previousAuditHash},
 						${command.auditEventHash}, ${command.updatedAt}::timestamptz)`;
@@ -254,27 +252,25 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 			? await sql<EnvelopeRow[]>`
 				SELECT status, repository_generation AS "repositoryGeneration",
 					repository_head AS "repositoryHead", sent_commit_sha AS "sentCommitSha"
-				FROM envelope WHERE organization_id = ${key.organizationId} AND id = ${key.envelopeId}
+				FROM envelope WHERE id = ${key.envelopeId}
 				FOR UPDATE`
 			: await sql<EnvelopeRow[]>`
 				SELECT status, repository_generation AS "repositoryGeneration",
 					repository_head AS "repositoryHead", sent_commit_sha AS "sentCommitSha"
-				FROM envelope WHERE organization_id = ${key.organizationId} AND id = ${key.envelopeId}`;
+				FROM envelope WHERE id = ${key.envelopeId}`;
 		return rows[0] ?? null;
 	}
 
 	async #readRevocableRecipientIds(sql: Sql, key: VoidCommandKey): Promise<readonly string[]> {
 		const rows = await sql<{ id: string }[]>`
-			SELECT id FROM recipient WHERE organization_id = ${key.organizationId}
-				AND envelope_id = ${key.envelopeId} AND status <> 'completed'
+			SELECT id FROM recipient WHERE envelope_id = ${key.envelopeId} AND status <> 'completed'
 				AND capability_hash IS NOT NULL AND capability_revoked_at IS NULL ORDER BY id`;
 		return rows.map((row: { id: string }): string => row.id);
 	}
 
 	async #hasProcessingDelivery(sql: Sql, key: VoidCommandKey): Promise<boolean> {
 		const rows = await sql<{ active: boolean }[]>`
-			SELECT EXISTS (SELECT 1 FROM delivery_outbox WHERE organization_id = ${key.organizationId}
-				AND envelope_id = ${key.envelopeId} AND status = 'processing') AS active`;
+			SELECT EXISTS (SELECT 1 FROM delivery_outbox WHERE envelope_id = ${key.envelopeId} AND status = 'processing') AS active`;
 		return rows[0]?.active ?? false;
 	}
 
@@ -286,11 +282,11 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 		const rows = lock
 			? await sql<AuditHeadRow[]>`
 				SELECT sequence, event_hash AS "eventHash" FROM audit_event
-				WHERE organization_id = ${key.organizationId} AND envelope_id = ${key.envelopeId}
+				WHERE envelope_id = ${key.envelopeId}
 				ORDER BY sequence DESC LIMIT 1 FOR UPDATE`
 			: await sql<AuditHeadRow[]>`
 				SELECT sequence, event_hash AS "eventHash" FROM audit_event
-				WHERE organization_id = ${key.organizationId} AND envelope_id = ${key.envelopeId}
+				WHERE envelope_id = ${key.envelopeId}
 				ORDER BY sequence DESC LIMIT 1`;
 		const row: AuditHeadRow | undefined = rows[0];
 		return row === undefined ? null : { sequence: Number(row.sequence), eventHash: row.eventHash };
@@ -298,7 +294,7 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 
 	async #resolveCommand(sql: Sql, key: VoidCommandKey): Promise<VoidPreparation | null> {
 		const rows = await sql<VoidCommandRow[]>`
-			SELECT command.organization_id AS "organizationId", command.envelope_id AS "envelopeId",
+			SELECT command.envelope_id AS "envelopeId",
 				command.actor_type AS "actorType", command.actor_id AS "actorId",
 				command.idempotency_key AS "idempotencyKey", command.request_hash AS "requestHash",
 				command.previous_status AS "previousStatus", command.expected_generation AS "expectedGeneration",
@@ -314,35 +310,30 @@ export class PostgresEnvelopeVoidStore implements EnvelopeVoidStore {
 				envelope.repository_head AS "projectionRepositoryHead",
 				envelope.sent_commit_sha AS "projectionSentCommitSha",
 				ARRAY(SELECT recipient.id FROM recipient
-					WHERE recipient.organization_id = command.organization_id
-						AND recipient.envelope_id = command.envelope_id
+					WHERE recipient.envelope_id = command.envelope_id
 						AND recipient.status <> 'completed' AND recipient.capability_hash IS NOT NULL
 						AND recipient.capability_revoked_at = command.updated_at ORDER BY recipient.id
 				) AS "projectionRevokedRecipientIds",
 				EXISTS (SELECT 1 FROM recipient
-					WHERE recipient.organization_id = command.organization_id
-						AND recipient.envelope_id = command.envelope_id
+					WHERE recipient.envelope_id = command.envelope_id
 						AND recipient.status <> 'completed' AND recipient.capability_hash IS NOT NULL
 						AND recipient.capability_revoked_at IS NULL
 				) AS "projectionHasRevocableRecipient",
 				EXISTS (SELECT 1 FROM delivery_outbox delivery
-					WHERE delivery.organization_id = command.organization_id
-						AND delivery.envelope_id = command.envelope_id
+					WHERE delivery.envelope_id = command.envelope_id
 						AND (delivery.status IN ('blocked', 'pending', 'processing')
 							OR delivery.retryable OR delivery.sealed_capability IS NOT NULL)
 				) AS "projectionHasUnsafeDelivery",
-				evidence.id AS "evidenceEventId", evidence.organization_id AS "evidenceOrganizationId",
+				evidence.id AS "evidenceEventId",
 				evidence.envelope_id AS "evidenceEnvelopeId", evidence.sequence AS "evidenceSequence",
 				evidence.event_type AS "evidenceEventType", evidence.actor_type AS "evidenceActorType",
 				evidence.actor_id AS "evidenceActorId", evidence.payload_json AS "evidencePayloadJson",
 				evidence.previous_hash AS "evidencePreviousHash", evidence.event_hash AS "evidenceEventHash",
 				evidence.occurred_at AS "evidenceOccurredAt", evidence.hash_version AS "evidenceHashVersion"
 			FROM envelope_void_command command
-			LEFT JOIN envelope ON envelope.organization_id = command.organization_id
-				AND envelope.id = command.envelope_id
-			LEFT JOIN audit_event evidence ON evidence.organization_id = command.organization_id
-				AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${key.organizationId} AND command.actor_type = ${key.actorType}
+			LEFT JOIN envelope ON envelope.id = command.envelope_id
+			LEFT JOIN audit_event evidence ON evidence.id = command.audit_event_id
+			WHERE command.actor_type = ${key.actorType}
 				AND command.actor_id = ${key.actorId} AND command.idempotency_key = ${key.idempotencyKey}
 			LIMIT 1`;
 		const row: VoidCommandRow | undefined = rows[0];
@@ -414,14 +405,13 @@ async function validReplay(row: VoidCommandRow): Promise<boolean> {
 			payload: payloadValue,
 			previousHash: row.previousAuditHash
 		},
-		{ organizationId: row.organizationId, envelopeId: row.envelopeId }
+		{ envelopeId: row.envelopeId }
 	);
 	return (
 		requestHash === row.requestHash &&
 		auditPayloadJson === row.auditPayloadJson &&
 		auditEventHash === row.auditEventHash &&
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'envelope.voided' &&

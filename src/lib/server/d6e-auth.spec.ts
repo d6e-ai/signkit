@@ -4,13 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
-import {
-	authorizeUrl,
-	D6eAuthRejectedError,
-	organizations,
-	refresh,
-	verifyAccessToken
-} from './d6e-auth';
+import { authorizeUrl, D6eAuthRejectedError, refresh, verifyAccessToken } from './d6e-auth';
 
 const BASE_URL: string = 'https://auth.example';
 const CLIENT_ID: string = 'client-1';
@@ -201,21 +195,6 @@ describe('refresh', () => {
 		mockFetchResponse(503);
 
 		const error: unknown = await refresh('refresh-token').catch((caught: unknown) => caught);
-		expect(error).not.toBeInstanceOf(D6eAuthRejectedError);
-	});
-});
-
-describe('organizations', () => {
-	it('rejects (not unavailable) a 401 organization lookup', async () => {
-		mockFetchResponse(401);
-
-		await expect(organizations('access-token')).rejects.toBeInstanceOf(D6eAuthRejectedError);
-	});
-
-	it('leaves a provider outage (5xx) as a generic (unavailable) failure', async () => {
-		mockFetchResponse(502);
-
-		const error: unknown = await organizations('access-token').catch((caught: unknown) => caught);
 		expect(error).not.toBeInstanceOf(D6eAuthRejectedError);
 	});
 });

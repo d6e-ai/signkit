@@ -8,7 +8,6 @@ import {
 	completionEvidenceFailureLog
 } from './completion-evidence-service';
 
-const ORGANIZATION_ID = 'org-1';
 const ENVELOPE_ID = '01900000-0000-7000-8000-000000000020';
 
 function publishedStore(): CompletionArtifactStore {
@@ -37,17 +36,17 @@ describe('CompletionEvidenceService', () => {
 		const service = new CompletionEvidenceService(publishedStore(), objects, {
 			readCompletionArtifactPdf: vi.fn(async () => null)
 		} as unknown as CompletionArtifactPdfStore);
-		await expect(service.readEvidence(ORGANIZATION_ID, ENVELOPE_ID, 'json')).rejects.toMatchObject({
+		await expect(service.readEvidence(ENVELOPE_ID, 'json')).rejects.toMatchObject({
 			name: 'CompletionEvidenceReadError',
 			code: 'artifact_object_missing'
 		});
-		await expect(service.readEvidence(ORGANIZATION_ID, ENVELOPE_ID, 'json')).rejects.toThrow(
+		await expect(service.readEvidence(ENVELOPE_ID, 'json')).rejects.toThrow(
 			CompletionEvidenceReadError
 		);
 	});
 
 	it('throws a coded error without embedding the PDF object key when the PDF is missing', async () => {
-		const pdfKey = 'completion-artifacts/v1/organizations/org-1/envelopes/env/sha256/eeee.pdf';
+		const pdfKey = 'completion-artifacts/v1/envelopes/env/sha256/eeee.pdf';
 		const objects: ObjectStore = {
 			get: vi.fn(async () => null)
 		} as unknown as ObjectStore;
@@ -58,7 +57,7 @@ describe('CompletionEvidenceService', () => {
 			}))
 		} as unknown as CompletionArtifactPdfStore);
 		try {
-			await service.readPdf(ORGANIZATION_ID, ENVELOPE_ID);
+			await service.readPdf(ENVELOPE_ID);
 			expect.unreachable('expected readPdf to throw');
 		} catch (error) {
 			expect(error).toBeInstanceOf(CompletionEvidenceReadError);

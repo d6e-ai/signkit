@@ -21,14 +21,13 @@ import {
 	type CompletionManifestV1
 } from './completion-manifest';
 
-const ORGANIZATION_ID: string = 'org-1';
 const ENVELOPE_ID: string = 'envelope-1';
 const SENT_COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
 const ARCHIVE_SHA256: string = 'a'.repeat(64);
 const FIELD_A_SHA256: string = 'e'.repeat(64);
 const FIELD_B_SHA256: string = 'f'.repeat(64);
 
-const CONTEXT = { organizationId: ORGANIZATION_ID, envelopeId: ENVELOPE_ID };
+const CONTEXT = { envelopeId: ENVELOPE_ID };
 
 function defaultSteps(): AuditChainStep[] {
 	return [
@@ -135,7 +134,6 @@ async function baseInput(
 	overrides: Partial<BuildCompletionManifestInput> = {}
 ): Promise<BuildCompletionManifestInput> {
 	return {
-		organizationId: ORGANIZATION_ID,
 		envelopeId: ENVELOPE_ID,
 		title: 'Agreement',
 		sentCommitSha: SENT_COMMIT_SHA,
@@ -544,7 +542,6 @@ describe('renderCompletionMarkdown', () => {
 			}
 		]);
 		const manifest = await buildCompletionManifest({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			title: 'Agreement',
 			sentCommitSha: SENT_COMMIT_SHA,

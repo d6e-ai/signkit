@@ -27,17 +27,13 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 		this.#database = database;
 	}
 
-	async listOwnFields(
-		organizationId: string,
-		envelopeId: string,
-		recipientId: string
-	): Promise<RecipientOwnFields | null> {
+	async listOwnFields(envelopeId: string, recipientId: string): Promise<RecipientOwnFields | null> {
 		const envelope: { field_generation: number } | null = await this.#database
 			.prepare(
 				`SELECT field_generation FROM envelope
-				 WHERE organization_id = ? AND id = ? LIMIT 1`
+				 WHERE id = ? LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<{ field_generation: number }>();
 		if (envelope === null) return null;
 		const result: D1Result<FieldRow> = await this.#database
@@ -45,10 +41,10 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 				`SELECT id, document_id, document_path, field_type, label, required, position,
 					page, x, y, width, height
 				 FROM envelope_field
-				 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = ?
+				 WHERE envelope_id = ? AND recipient_id = ?
 				 ORDER BY COALESCE(document_id, document_path), position, id`
 			)
-			.bind(organizationId, envelopeId, recipientId)
+			.bind(envelopeId, recipientId)
 			.all<FieldRow>();
 		return {
 			fieldGeneration: envelope.field_generation,

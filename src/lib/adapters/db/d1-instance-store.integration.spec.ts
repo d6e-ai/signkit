@@ -2126,7 +2126,7 @@ describe('D1InstanceStore', () => {
 				'idempotency-key': idempotencyKey
 			});
 			return {
-				locals: identityOnlyLocals('authorized', { subject: ACTOR_ID, emailVerified: true, email }),
+				locals: identityOnlyLocals('active', { subject: ACTOR_ID, emailVerified: true, email }),
 				params: {},
 				request: new Request(url, { method: 'POST', headers, body: '{}' }),
 				url

@@ -2,15 +2,12 @@ import { DatabaseSync } from 'node:sqlite';
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it } from 'vitest';
 import { applyD1Migrations, sqliteD1Database } from '$lib/adapters/db/sqlite-d1-test-support';
-import { SIGNKIT_ORGANIZATION_HEADER } from '$lib/ports/api-key-authentication-store';
+import { API_KEY_RATE_WINDOW_MAX_REQUESTS } from '$lib/security/api-key';
 import { issueApiKey, type IssuedApiKey } from '$lib/security/api-key';
 import { handleApiKeyAuthentication, handleSession } from './hooks.server';
 
 const OWNER_ID: string = 'user-1';
 const KEY_ID: string = '01900000-0000-7000-8000-000000000201';
-const GRANT_ID: string = '01900000-0000-7000-8000-000000000301';
-const ORG_A: string = 'org-alpha';
-const ORG_B: string = 'org-beta';
 const DAY_MS: number = 24 * 60 * 60 * 1000;
 /**
  * The request path evaluates key liveness against the real clock, because the
@@ -35,45 +32,29 @@ async function createFixture(
 		memberStatus?: 'active' | 'suspended';
 		keyRevoked?: boolean;
 		keyExpiresAt?: string;
-		grantOrganization?: string | null;
-		grantRevoked?: boolean;
 		scopesJson?: string;
+		rateWindowExhausted?: boolean;
 	} = {}
 ): Promise<Fixture> {
 	const sqlite: DatabaseSync = new DatabaseSync(':memory:');
 	applyD1Migrations(sqlite);
 	const issued: IssuedApiKey = await issueApiKey();
+	const windowStart: string = new Date(Date.now()).toISOString();
 	sqlite.exec(`
 		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 		VALUES ('${OWNER_ID}', 'member', '${options.memberStatus ?? 'active'}', '${AT}', '${AT}');
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('${ORG_A}', '${ORG_A}', 'Alpha', '${AT}');
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('${ORG_B}', '${ORG_B}', 'Beta', '${AT}');
 		INSERT INTO api_key (
 			id, name, token_hash, key_prefix, scopes_json, owner_user_id,
-			created_at, expires_at, revoked_at, rate_window_count
+			created_at, expires_at, revoked_at, rate_window_started_at, rate_window_count
 		) VALUES (
 			'${KEY_ID}', 'CI agent', '${issued.tokenHash}', '${issued.keyPrefix}',
 			'${options.scopesJson ?? '["envelopes:read"]'}', '${OWNER_ID}', '${AT}',
 			'${options.keyExpiresAt ?? EXPIRES_AT}',
-			${options.keyRevoked === true ? `'${AT}'` : 'NULL'}, 0
+			${options.keyRevoked === true ? `'${AT}'` : 'NULL'},
+			${options.rateWindowExhausted === true ? `'${windowStart}'` : 'NULL'},
+			${options.rateWindowExhausted === true ? API_KEY_RATE_WINDOW_MAX_REQUESTS : 0}
 		);
 	`);
-	const grantOrganization: string | null =
-		options.grantOrganization === undefined ? ORG_A : options.grantOrganization;
-	if (grantOrganization !== null) {
-		sqlite.exec(`
-			INSERT INTO api_key_organization_grant (
-				id, api_key_id, organization_id, granted_by_user_id,
-				granted_organization_role, granted_at, revoked_at, revoked_by_user_id,
-				revoked_by_authority
-			) VALUES (
-				'${GRANT_ID}', '${KEY_ID}', '${grantOrganization}', '${OWNER_ID}', 'owner', '${AT}',
-				${options.grantRevoked === true ? `'${AT}', '${OWNER_ID}', 'key_owner'` : 'NULL, NULL, NULL'}
-			)
-		`);
-	}
 	return {
 		sqlite,
 		platform: { env: { DB: sqliteD1Database(sqlite) } } as unknown as App.Platform,
@@ -91,7 +72,6 @@ async function runHandle(
 	input: {
 		pathname?: string;
 		authorization?: string | null;
-		organization?: string | null;
 		sessionCookie?: string;
 	} = {}
 ): Promise<Outcome> {
@@ -100,9 +80,6 @@ async function runHandle(
 	const headers: Headers = new Headers();
 	if (input.authorization !== undefined && input.authorization !== null) {
 		headers.set('authorization', input.authorization);
-	}
-	if (input.organization !== undefined && input.organization !== null) {
-		headers.set(SIGNKIT_ORGANIZATION_HEADER, input.organization);
 	}
 	const cookieReads: string[] = [];
 	const locals: Partial<App.Locals> = {};
@@ -139,12 +116,11 @@ async function runHandle(
 }
 
 describe('hooks API key authentication (real D1 store)', () => {
-	it('authenticates a live key holding a live grant for the requested organization', async () => {
+	it('authenticates a live key into an instance principal with no tenant selector', async () => {
 		const fixture: Fixture = await createFixture();
 		try {
 			const outcome: Outcome = await runHandle(fixture, {
-				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_A
+				authorization: `Bearer ${fixture.token}`
 			});
 
 			expect(outcome.locals.apiKeyAuthentication).toEqual({
@@ -153,45 +129,41 @@ describe('hooks API key authentication (real D1 store)', () => {
 					apiKeyId: KEY_ID,
 					keyPrefix: expect.stringMatching(/^signkit_/) as unknown as string,
 					ownerUserId: OWNER_ID,
-					organizationId: ORG_A,
-					organizationName: 'Alpha',
 					scopes: ['envelopes:read'],
 					expiresAt: EXPIRES_AT
 				}
 			});
+			if (outcome.locals.apiKeyAuthentication.state === 'authenticated') {
+				expect(Object.keys(outcome.locals.apiKeyAuthentication.principal).sort()).toEqual([
+					'apiKeyId',
+					'expiresAt',
+					'keyPrefix',
+					'ownerUserId',
+					'scopes'
+				]);
+			}
 		} finally {
 			fixture.sqlite.close();
 		}
 	});
 
-	/**
-	 * Tenant isolation end to end: the grant is for organization A, so naming B is
-	 * refused even though the key and owner are perfectly live.
-	 */
-	it('refuses an organization the key was never granted', async () => {
+	it('authenticates the same key identically on every instance path', async () => {
 		const fixture: Fixture = await createFixture();
 		try {
-			const outcome: Outcome = await runHandle(fixture, {
-				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_B
-			});
-			expect(outcome.locals.apiKeyAuthentication).toEqual({
-				state: 'organization_grant_required'
-			});
-		} finally {
-			fixture.sqlite.close();
-		}
-	});
-
-	it('requires the organization selector and never infers the only grant', async () => {
-		const fixture: Fixture = await createFixture();
-		try {
-			const outcome: Outcome = await runHandle(fixture, {
+			// No per-request tenant is named anywhere: one deployment database is
+			// the sole instance boundary, so the key carries the same authority
+			// on the collection and on a single envelope.
+			const list: Outcome = await runHandle(fixture, {
+				pathname: '/api/v1/envelopes',
 				authorization: `Bearer ${fixture.token}`
 			});
-			expect(outcome.locals.apiKeyAuthentication).toEqual({
-				state: 'organization_selector_invalid'
+			const get: Outcome = await runHandle(fixture, {
+				pathname: '/api/v1/envelopes/01900000-0000-7000-8000-000000000001',
+				authorization: `Bearer ${fixture.token}`
 			});
+
+			expect(list.locals.apiKeyAuthentication).toEqual(get.locals.apiKeyAuthentication);
+			expect(list.locals.apiKeyAuthentication.state).toBe('authenticated');
 		} finally {
 			fixture.sqlite.close();
 		}
@@ -205,8 +177,7 @@ describe('hooks API key authentication (real D1 store)', () => {
 		const fixture: Fixture = await createFixture(options);
 		try {
 			const outcome: Outcome = await runHandle(fixture, {
-				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_A
+				authorization: `Bearer ${fixture.token}`
 			});
 			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'invalid_token' });
 		} finally {
@@ -214,16 +185,13 @@ describe('hooks API key authentication (real D1 store)', () => {
 		}
 	});
 
-	it('answers a revoked grant with the grant-required state', async () => {
-		const fixture: Fixture = await createFixture({ grantRevoked: true });
+	it('answers an exhausted key with the rate-limited state', async () => {
+		const fixture: Fixture = await createFixture({ rateWindowExhausted: true });
 		try {
 			const outcome: Outcome = await runHandle(fixture, {
-				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_A
+				authorization: `Bearer ${fixture.token}`
 			});
-			expect(outcome.locals.apiKeyAuthentication).toEqual({
-				state: 'organization_grant_required'
-			});
+			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'rate_limited' });
 		} finally {
 			fixture.sqlite.close();
 		}
@@ -238,10 +206,7 @@ describe('hooks API key authentication (real D1 store)', () => {
 	])('answers %s with the same opaque invalid-token state', async (_name, authorization) => {
 		const fixture: Fixture = await createFixture();
 		try {
-			const outcome: Outcome = await runHandle(fixture, {
-				authorization,
-				organization: ORG_A
-			});
+			const outcome: Outcome = await runHandle(fixture, { authorization });
 			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'invalid_token' });
 		} finally {
 			fixture.sqlite.close();
@@ -258,17 +223,15 @@ describe('hooks API key authentication (real D1 store)', () => {
 		try {
 			const authenticated: Outcome = await runHandle(fixture, {
 				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_A,
 				sessionCookie: 'sealed-session'
 			});
 			expect(authenticated.cookieReads).toEqual([]);
 			expect(authenticated.locals.principal).toBeNull();
 			expect(authenticated.locals.identityState).toBe('anonymous');
-			expect(authenticated.locals.organizationId).toBeNull();
+			expect(authenticated.locals.instanceMembership).toBeNull();
 
 			const rejected: Outcome = await runHandle(fixture, {
 				authorization: 'Basic dXNlcjpwYXNz',
-				organization: ORG_A,
 				sessionCookie: 'sealed-session'
 			});
 			expect(rejected.cookieReads).toEqual([]);
@@ -294,13 +257,12 @@ describe('hooks API key authentication (real D1 store)', () => {
 	 * Management surfaces refuse a well-formed key outright and never resolve it,
 	 * so there is no authority to inherit and -- critically -- no cookie either:
 	 * the refusal suppresses the session for the whole request, closing the
-	 * escalation path where a key rides a cookie into minting another key,
-	 * granting itself an organization, or administering members.
+	 * escalation path where a key rides a cookie into minting another key or
+	 * administering members.
 	 */
 	it.each([
 		'/api/v1/api-keys',
 		`/api/v1/api-keys/${KEY_ID}/revoke`,
-		`/api/v1/api-keys/${KEY_ID}/organization-grants`,
 		'/api/v1/instance/members',
 		'/api/v1/instance/members/me',
 		'/api/v1/instance/invitations'
@@ -310,7 +272,6 @@ describe('hooks API key authentication (real D1 store)', () => {
 			const outcome: Outcome = await runHandle(fixture, {
 				pathname,
 				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_A,
 				sessionCookie: 'sealed-session'
 			});
 
@@ -371,44 +332,9 @@ describe('hooks API key authentication (real D1 store)', () => {
 		try {
 			const outcome: Outcome = await runHandle(
 				{ ...fixture, platform: { env: {} } as unknown as App.Platform },
-				{ authorization: `Bearer ${fixture.token}`, organization: ORG_A }
+				{ authorization: `Bearer ${fixture.token}` }
 			);
 			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'unavailable' });
-		} finally {
-			fixture.sqlite.close();
-		}
-	});
-
-	it('resolves each granted organization independently for a multi-organization key', async () => {
-		const fixture: Fixture = await createFixture();
-		try {
-			fixture.sqlite.exec(`
-				INSERT INTO api_key_organization_grant (
-					id, api_key_id, organization_id, granted_by_user_id,
-					granted_organization_role, granted_at
-				) VALUES (
-					'01900000-0000-7000-8000-000000000302', '${KEY_ID}', '${ORG_B}', '${OWNER_ID}',
-					'admin', '${AT}'
-				)
-			`);
-
-			const alpha: Outcome = await runHandle(fixture, {
-				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_A
-			});
-			const beta: Outcome = await runHandle(fixture, {
-				authorization: `Bearer ${fixture.token}`,
-				organization: ORG_B
-			});
-
-			expect(
-				alpha.locals.apiKeyAuthentication.state === 'authenticated' &&
-					alpha.locals.apiKeyAuthentication.principal.organizationId
-			).toBe(ORG_A);
-			expect(
-				beta.locals.apiKeyAuthentication.state === 'authenticated' &&
-					beta.locals.apiKeyAuthentication.principal.organizationId
-			).toBe(ORG_B);
 		} finally {
 			fixture.sqlite.close();
 		}

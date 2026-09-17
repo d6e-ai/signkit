@@ -19,7 +19,6 @@ import type {
 import { PostgresEnvelopeStore } from './postgres-envelope-store';
 
 interface FieldCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	actorType: string;
 	actorId: string;
@@ -36,7 +35,6 @@ interface FieldCommandRow {
 	auditEventHash: string;
 	auditPayloadJson: string;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -82,10 +80,7 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 		const replay: FieldPlacementPreparation | null = await this.#resolveCommand(this.#sql, key);
 		if (replay !== null) return replay;
 
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'ready') return { outcome: 'not_ready' };
 		if (envelope.repositoryGeneration !== expectedGeneration) {
@@ -95,17 +90,9 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 			return { outcome: 'field_generation_conflict' };
 		}
 		if (envelope.repositoryHead === null) return { outcome: 'integrity_error' };
-		const auditHead: FieldAuditHead | null = await this.#readAuditHead(
-			this.#sql,
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: FieldAuditHead | null = await this.#readAuditHead(this.#sql, key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
-		const recipients: readonly Recipient[] = await this.#readRecipients(
-			this.#sql,
-			key.organizationId,
-			key.envelopeId
-		);
+		const recipients: readonly Recipient[] = await this.#readRecipients(this.#sql, key.envelopeId);
 		return { outcome: 'ready', envelope, recipients, auditHead };
 	}
 
@@ -121,7 +108,7 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 						SELECT status, repository_generation AS "repositoryGeneration",
 							repository_head AS "repositoryHead", field_generation AS "fieldGeneration"
 						FROM envelope
-						WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+						WHERE id = ${command.envelopeId}
 						FOR UPDATE
 					`;
 				if (lockedEnvelopeRows.length === 0) return { outcome: 'not_found' };
@@ -146,7 +133,6 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 
 				const auditHead: FieldAuditHead | null = await this.#readAuditHead(
 					transaction,
-					command.organizationId,
 					command.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
@@ -165,8 +151,7 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 				].sort();
 				const lockedRecipients = await transaction<LockedRecipientRow[]>`
 						SELECT id, role FROM recipient
-						WHERE organization_id = ${command.organizationId}
-							AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 							AND id = ANY(${recipientIds})
 						ORDER BY id
 						FOR UPDATE
@@ -184,8 +169,7 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 						UPDATE envelope
 						SET field_generation = ${command.expectedFieldGeneration + 1},
 							updated_at = ${command.updatedAt}
-						WHERE organization_id = ${command.organizationId}
-							AND id = ${command.envelopeId}
+						WHERE id = ${command.envelopeId}
 							AND status = 'ready'
 							AND repository_generation = ${command.expectedGeneration}
 							AND repository_head = ${command.expectedCommitSha}
@@ -196,15 +180,15 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 
 				await transaction`
 						DELETE FROM envelope_field
-						WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 					`;
 				for (const field of command.fields) {
 					await transaction`
 							INSERT INTO envelope_field (
-								id, organization_id, envelope_id, recipient_id, document_id, document_path, field_type,
+								id, envelope_id, recipient_id, document_id, document_path, field_type,
 								label, required, position, page, x, y, width, height, created_at, updated_at
 							) VALUES (
-								${field.id}, ${field.organizationId}, ${field.envelopeId}, ${field.recipientId},
+								${field.id}, ${field.envelopeId}, ${field.recipientId},
 								${field.documentId}, ${field.documentPath}, ${field.fieldType}, ${field.label}, ${field.required},
 								${field.position}, ${field.geometry?.page ?? null}, ${field.geometry?.x ?? null},
 								${field.geometry?.y ?? null}, ${field.geometry?.width ?? null},
@@ -215,12 +199,12 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 
 				await transaction`
 						INSERT INTO envelope_field_placement_command (
-							organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+							envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 							expected_generation, expected_field_generation, commit_sha, fields_json,
 							field_count, updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 							audit_event_hash, audit_payload_json
 						) VALUES (
-							${command.organizationId}, ${command.envelopeId}, ${command.actorType}, ${command.actorId},
+							${command.envelopeId}, ${command.actorType}, ${command.actorId},
 							${command.idempotencyKey}, ${command.requestFingerprint},
 							${command.expectedGeneration}, ${command.expectedFieldGeneration},
 							${command.expectedCommitSha}, ${JSON.stringify(command.fields)},
@@ -232,10 +216,10 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 
 				await transaction`
 						INSERT INTO audit_event (
-							id, organization_id, envelope_id, sequence, event_type, actor_type,
+							id, envelope_id, sequence, event_type, actor_type,
 							actor_id, payload_json, previous_hash, event_hash, occurred_at
 						) VALUES (
-							${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+							${command.auditEventId}, ${command.envelopeId},
 							${command.expectedAuditSequence + 1}, 'envelope.fields_placed', ${command.actorType},
 							${command.actorId}, ${command.auditPayloadJson}, ${command.previousAuditHash},
 							${command.auditEventHash}, ${command.updatedAt}
@@ -260,7 +244,7 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 		key: FieldCommandKey
 	): Promise<FieldPlacementPreparation | null> {
 		const rows = await sql<FieldCommandRow[]>`
-			SELECT command.organization_id AS "organizationId",
+			SELECT
 				command.envelope_id AS "envelopeId", command.actor_type AS "actorType",
 				command.actor_id AS "actorId",
 				command.request_hash AS "requestHash",
@@ -273,7 +257,6 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 				command.audit_event_hash AS "auditEventHash",
 				command.audit_payload_json AS "auditPayloadJson",
 				evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId",
 				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence",
 				evidence.event_type AS "evidenceEventType",
@@ -285,10 +268,8 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 				evidence.occurred_at AS "evidenceOccurredAt"
 			FROM envelope_field_placement_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id
-				AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${key.organizationId}
-				AND command.actor_type = ${key.actorType}
+				ON evidence.id = command.audit_event_id
+			WHERE command.actor_type = ${key.actorType}
 				AND command.actor_id = ${key.actorId}
 				AND command.idempotency_key = ${key.idempotencyKey}
 			LIMIT 1
@@ -320,13 +301,12 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 
 	async #readAuditHead(
 		sql: ReturnType<typeof postgres> | postgres.TransactionSql,
-		organizationId: string,
 		envelopeId: string
 	): Promise<FieldAuditHead | null> {
 		const rows = await sql<AuditHeadRow[]>`
 			SELECT sequence, event_hash AS "eventHash"
 			FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence DESC LIMIT 1
 		`;
 		const row: AuditHeadRow | undefined = rows[0];
@@ -338,13 +318,11 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 
 	async #readRecipients(
 		sql: ReturnType<typeof postgres> | postgres.TransactionSql,
-		organizationId: string,
 		envelopeId: string
 	): Promise<readonly Recipient[]> {
 		const rows = await sql<
 			{
 				id: string;
-				organizationId: string;
 				envelopeId: string;
 				email: string;
 				name: string;
@@ -354,10 +332,10 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 				status: Recipient['status'];
 			}[]
 		>`
-			SELECT id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+			SELECT id, envelope_id AS "envelopeId",
 				email, name, role, locale, routing_order AS "routingOrder", status
 			FROM recipient
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY routing_order, id
 		`;
 		return rows;
@@ -367,7 +345,6 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 function validAuditEvidence(row: FieldCommandRow): boolean {
 	return (
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'envelope.fields_placed' &&
@@ -384,12 +361,7 @@ async function validStoredReceipt(
 	row: FieldCommandRow,
 	fields: readonly EnvelopeField[]
 ): Promise<boolean> {
-	if (
-		fields.some(
-			(field: EnvelopeField): boolean =>
-				field.organizationId !== row.organizationId || field.envelopeId !== row.envelopeId
-		)
-	) {
+	if (fields.some((field: EnvelopeField): boolean => field.envelopeId !== row.envelopeId)) {
 		return false;
 	}
 	const canonicalRequest: string = JSON.stringify({
@@ -447,7 +419,6 @@ function isEnvelopeField(value: unknown): value is EnvelopeField {
 	const candidate = value as Record<string, unknown>;
 	return (
 		typeof candidate.id === 'string' &&
-		typeof candidate.organizationId === 'string' &&
 		typeof candidate.envelopeId === 'string' &&
 		typeof candidate.recipientId === 'string' &&
 		isDocumentScope(candidate) &&

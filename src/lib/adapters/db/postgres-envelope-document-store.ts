@@ -9,7 +9,6 @@ import type {
 
 interface DocumentRow {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	markdownPath: string;
 	title: string;
@@ -19,7 +18,6 @@ interface DocumentRow {
 function toDomain(row: DocumentRow): EnvelopeDocument {
 	return {
 		id: row.id,
-		organizationId: row.organizationId,
 		envelopeId: row.envelopeId,
 		markdownPath: row.markdownPath as `documents/${string}.md`,
 		title: row.title,
@@ -36,31 +34,27 @@ export class PostgresEnvelopeDocumentStore implements EnvelopeDocumentStore {
 		this.#newId = newId;
 	}
 
-	async listForEnvelope(
-		organizationId: string,
-		envelopeId: string
-	): Promise<readonly EnvelopeDocument[]> {
+	async listForEnvelope(envelopeId: string): Promise<readonly EnvelopeDocument[]> {
 		const rows = await this.#sql<DocumentRow[]>`
-			SELECT id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+			SELECT id, envelope_id AS "envelopeId",
 				markdown_path AS "markdownPath", title, position
 			FROM envelope_document
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY position
 		`;
 		return rows.map(toDomain);
 	}
 
 	async sync(
-		organizationId: string,
 		envelopeId: string,
 		documents: readonly EnvelopeDocumentInput[]
 	): Promise<readonly EnvelopeDocument[]> {
 		return this.#sql.begin(async (transaction): Promise<readonly EnvelopeDocument[]> => {
 			const existingRows = await transaction<DocumentRow[]>`
-				SELECT id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+				SELECT id, envelope_id AS "envelopeId",
 					markdown_path AS "markdownPath", title, position
 				FROM envelope_document
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+				WHERE envelope_id = ${envelopeId}
 				FOR UPDATE
 			`;
 			const existingByPath: Map<string, EnvelopeDocument> = new Map(
@@ -74,7 +68,6 @@ export class PostgresEnvelopeDocumentStore implements EnvelopeDocumentStore {
 					const current: EnvelopeDocument | undefined = existingByPath.get(input.markdownPath);
 					return {
 						id: current?.id ?? this.#newId(),
-						organizationId,
 						envelopeId,
 						markdownPath: input.markdownPath,
 						title: current?.title ?? input.title ?? titleFromMarkdownPath(input.markdownPath),
@@ -85,14 +78,14 @@ export class PostgresEnvelopeDocumentStore implements EnvelopeDocumentStore {
 
 			await transaction`
 				DELETE FROM envelope_document
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+				WHERE envelope_id = ${envelopeId}
 			`;
 			for (const document of next) {
 				await transaction`
 					INSERT INTO envelope_document (
-						id, organization_id, envelope_id, markdown_path, title, position, created_at, updated_at
+						id, envelope_id, markdown_path, title, position, created_at, updated_at
 					) VALUES (
-						${document.id}, ${organizationId}, ${envelopeId}, ${document.markdownPath},
+						${document.id}, ${envelopeId}, ${document.markdownPath},
 						${document.title}, ${document.position}, ${now}, ${now}
 					)
 				`;
@@ -102,7 +95,6 @@ export class PostgresEnvelopeDocumentStore implements EnvelopeDocumentStore {
 	}
 
 	async renameDocument(
-		organizationId: string,
 		envelopeId: string,
 		markdownPath: `documents/${string}.md`,
 		title: string
@@ -110,9 +102,9 @@ export class PostgresEnvelopeDocumentStore implements EnvelopeDocumentStore {
 		const rows = await this.#sql<DocumentRow[]>`
 			UPDATE envelope_document
 			SET title = ${title}, updated_at = ${new Date()}
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 				AND markdown_path = ${markdownPath}
-			RETURNING id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+			RETURNING id, envelope_id AS "envelopeId",
 				markdown_path AS "markdownPath", title, position
 		`;
 		return rows[0] === undefined ? null : toDomain(rows[0]);

@@ -1,7 +1,6 @@
 export type VoidableEnvelopeStatus = 'draft' | 'ready' | 'sent' | 'in_progress';
 
 export interface VoidCommandKey {
-	organizationId: string;
 	envelopeId: string;
 	actorType: 'user' | 'agent' | 'system';
 	actorId: string;

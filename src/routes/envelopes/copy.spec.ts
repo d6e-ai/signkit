@@ -25,7 +25,10 @@ describe('envelope list product copy', () => {
 
 		expect(en.envelope_generation_label).toBe('Revision {generation}');
 		expect(ja.envelope_generation_label).toBe('リビジョン {generation}');
-		expect(en.envelope_documents_description).toMatch(/markdown/i);
+		expect(en.envelope_documents_description).toMatch(/PDF.*Word/i);
+		expect(ja.envelope_documents_description).toMatch(/PDF.*Word/);
+		expect(en.envelope_documents_description).not.toMatch(/markdown/i);
+		expect(ja.envelope_documents_description).not.toMatch(/Markdown/i);
 		expect(en.envelope_documents_description).not.toMatch(/git/i);
 		expect(en.envelope_documents_description).not.toMatch(/generation/i);
 		expect(en.envelope_documents_description).not.toMatch(/commit/i);
@@ -33,6 +36,8 @@ describe('envelope list product copy', () => {
 		expect(en.envelope_import_docx_hint).not.toMatch(/git/i);
 		expect(en.envelope_import_docx_hint).not.toMatch(/commit/i);
 		expect(ja.envelope_import_docx_hint).not.toMatch(/Git|コミット/);
+		expect(en.envelope_import_docx_hint).not.toMatch(/markdown/i);
+		expect(ja.envelope_import_docx_hint).not.toMatch(/Markdown/i);
 
 		for (const messages of [en, ja]) {
 			for (const [key, value] of Object.entries(messages)) {
@@ -61,5 +66,23 @@ describe('envelope list product copy', () => {
 		expect(ja.envelope_delivery_status_failed).toBe('送信できませんでした');
 		expect(en.envelope_recipient_status_pending).toBe('Waiting');
 		expect(en.envelope_recipient_status_pending).not.toBe('pending');
+	});
+
+	it('localizes explicit contact reuse without implying automatic retention', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		expect(en.contacts_save_recipient_action).toBe('Save to contacts');
+		expect(ja.contacts_save_recipient_action).toBe('連絡先に保存');
+		expect(en.contacts_manage_action).toBe('Manage contacts');
+		expect(ja.contacts_manage_action).toBe('連絡先を管理');
+		for (const copy of [
+			en.contacts_manage_description,
+			en.contacts_empty_description,
+			ja.contacts_manage_description,
+			ja.contacts_empty_description
+		]) {
+			expect(copy).not.toMatch(/automatic|automatically|自動/);
+		}
 	});
 });

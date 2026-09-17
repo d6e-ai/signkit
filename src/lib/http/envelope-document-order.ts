@@ -12,10 +12,7 @@ import {
 } from '$lib/application/drafts/draft-persistence';
 import { MAX_DRAFT_GENERATION } from '$lib/domain/draft';
 import { MAX_DOCUMENT_SET_SIZE } from '$lib/domain/document-set';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -68,7 +65,7 @@ export function createDocumentOrderHandler(
 	resolvePersistence: DocumentOrderPersistenceResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'drafts:write'
@@ -163,7 +160,6 @@ export function createDocumentOrderHandler(
 
 		try {
 			const result: CommitDraftResult = await persistence.commit({
-				organizationId: authorized.organizationId,
 				envelopeId: envelopeIdResult.data,
 				expectedGeneration: parsed.data.expectedGeneration,
 				edits: [],
@@ -190,7 +186,7 @@ export function createDocumentOrderHandler(
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
 					status: 404,
-					detail: 'No envelope was found in the authorized organization.',
+					detail: 'No envelope was found.',
 					instance: url.pathname
 				});
 			}

@@ -13,8 +13,7 @@ import {
 
 const actor: EnvelopeRequestActor = {
 	id: 'user-1',
-	organizationId: 'org-1',
-	organizationName: 'Workspace'
+	createdByUserId: 'user-1'
 };
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 
@@ -22,19 +21,17 @@ class FakeStore implements EnvelopeDocumentStore {
 	documents: EnvelopeDocument[] = [];
 	syncCalls: Array<readonly EnvelopeDocumentInput[]> = [];
 
-	async listForEnvelope(): Promise<readonly EnvelopeDocument[]> {
-		return this.documents;
+	async listForEnvelope(envelopeIdArg: string): Promise<readonly EnvelopeDocument[]> {
+		return this.documents.filter((document) => document.envelopeId === envelopeIdArg);
 	}
 
 	async sync(
-		organizationId: string,
 		envelopeIdArg: string,
 		documents: readonly EnvelopeDocumentInput[]
 	): Promise<readonly EnvelopeDocument[]> {
 		this.syncCalls.push(documents);
 		this.documents = documents.map((document, index) => ({
 			id: `doc-${index}`,
-			organizationId,
 			envelopeId: envelopeIdArg,
 			markdownPath: document.markdownPath,
 			title: document.title ?? titleFromMarkdownPath(document.markdownPath),

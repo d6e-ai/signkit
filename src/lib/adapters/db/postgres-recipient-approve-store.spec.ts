@@ -86,11 +86,13 @@ command.auditPayloadJson = JSON.stringify({
 command.auditEventHash = createHash('sha256')
 	.update(
 		JSON.stringify({
-			actorId: command.expectedRecipientId,
+			hashVersion: 3,
 			envelopeId: command.expectedEnvelopeId,
+			sequence: command.expectedAuditSequence + 1,
 			eventType: 'recipient.approved',
+			actorType: 'recipient',
+			actorId: command.expectedRecipientId,
 			occurredAt: command.updatedAt,
-			organizationId: 'org-1',
 			payload: JSON.parse(command.auditPayloadJson) as unknown,
 			previousHash: command.previousAuditHash
 		})
@@ -98,7 +100,6 @@ command.auditEventHash = createHash('sha256')
 	.digest('hex');
 
 const eligibleRecipientRow = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	recipientRole: 'approver' as const,
@@ -121,7 +122,6 @@ const completedRecipientRow = {
 
 const actorLockRow = {
 	id: 'recipient-1',
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientRole: 'approver' as const,
 	recipientStatus: 'viewed',
@@ -133,7 +133,6 @@ const actorLockRow = {
 
 const siblingLockRow = {
 	id: 'recipient-2',
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientRole: 'signer' as const,
 	recipientStatus: 'viewed',
@@ -145,7 +144,6 @@ const siblingLockRow = {
 
 const laterLockRow = {
 	id: 'recipient-3',
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientRole: 'signer' as const,
 	recipientStatus: 'pending',
@@ -177,11 +175,13 @@ function completedCommand(): PublishRecipientApprovedCommand {
 	const completedAuditEventHash: string = createHash('sha256')
 		.update(
 			JSON.stringify({
-				actorId: command.expectedRecipientId,
+				hashVersion: 3,
 				envelopeId: command.expectedEnvelopeId,
+				sequence: command.expectedAuditSequence + 2,
 				eventType: 'envelope.completed',
+				actorType: 'recipient',
+				actorId: command.expectedRecipientId,
 				occurredAt: command.updatedAt,
-				organizationId: 'org-1',
 				payload: JSON.parse(completedAuditPayloadJson) as unknown,
 				previousHash: command.auditEventHash
 			})
@@ -197,7 +197,6 @@ function completedCommand(): PublishRecipientApprovedCommand {
 
 function replayRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organizationId: 'org-1',
 		envelopeId: command.expectedEnvelopeId,
 		recipientId: command.expectedRecipientId,
 		recipientRole: command.recipientRole,
@@ -221,7 +220,6 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		completedAuditEventHash: command.completedAuditEventHash,
 		completedAuditPayloadJson: command.completedAuditPayloadJson,
 		evidenceEventId: command.auditEventId,
-		evidenceOrganizationId: 'org-1',
 		evidenceEnvelopeId: command.expectedEnvelopeId,
 		evidenceSequence: command.expectedAuditSequence + 1,
 		evidenceEventType: 'recipient.approved',
@@ -231,8 +229,8 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		evidencePreviousHash: command.previousAuditHash,
 		evidenceEventHash: command.auditEventHash,
 		evidenceOccurredAt: command.updatedAt,
+		evidenceHashVersion: 3,
 		completedEvidenceEventId: null,
-		completedEvidenceOrganizationId: null,
 		completedEvidenceEnvelopeId: null,
 		completedEvidenceSequence: null,
 		completedEvidenceEventType: null,
@@ -242,6 +240,7 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		completedEvidencePreviousHash: null,
 		completedEvidenceEventHash: null,
 		completedEvidenceOccurredAt: null,
+		completedEvidenceHashVersion: null,
 		...overrides
 	};
 }
@@ -253,7 +252,6 @@ function completedReplayRow(overrides: Record<string, unknown> = {}): Record<str
 		completedAuditEventHash: completed.completedAuditEventHash,
 		completedAuditPayloadJson: completed.completedAuditPayloadJson,
 		completedEvidenceEventId: completed.completedAuditEventId,
-		completedEvidenceOrganizationId: 'org-1',
 		completedEvidenceEnvelopeId: completed.expectedEnvelopeId,
 		completedEvidenceSequence: completed.expectedAuditSequence + 2,
 		completedEvidenceEventType: 'envelope.completed',
@@ -263,6 +261,7 @@ function completedReplayRow(overrides: Record<string, unknown> = {}): Record<str
 		completedEvidencePreviousHash: completed.auditEventHash,
 		completedEvidenceEventHash: completed.completedAuditEventHash,
 		completedEvidenceOccurredAt: completed.updatedAt,
+		completedEvidenceHashVersion: 3,
 		...overrides
 	});
 }
@@ -643,7 +642,6 @@ describe('PostgresRecipientApproveStore', () => {
 		);
 		expect(result).toEqual({
 			outcome: 'ready',
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			recipientRole: 'approver',

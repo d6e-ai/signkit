@@ -26,6 +26,7 @@
 		"tag": {
 			"type": "string",
 			"minLength": 1,
+			"maxLength": 35,
 			"pattern": "^v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z]+(?:\\.[0-9A-Za-z]+)*)?$"
 		},
 		"commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
@@ -96,10 +97,11 @@
 		"migrationPolicy": {
 			"type": "object",
 			"additionalProperties": false,
-			"required": ["compatibility", "notes"],
+			"required": ["schemaEpoch", "compatibility", "notes"],
 			"properties": {
+				"schemaEpoch": { "const": "single-instance-v1" },
 				"compatibility": {
-					"const": "forward-and-backward-compatible-within-released-versions"
+					"const": "additive-within-schema-epoch"
 				},
 				"notes": { "type": "string" }
 			}

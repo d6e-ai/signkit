@@ -1,6 +1,5 @@
 CREATE TABLE recipient (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   email TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -13,9 +12,9 @@ CREATE TABLE recipient (
   capability_revoked_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  UNIQUE (organization_id, envelope_id, email),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (id),
+  UNIQUE (envelope_id, email),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT recipient_id_uuidv7 CHECK (
     length(id) = 36
     AND substr(id, 9, 1) = '-'
@@ -30,14 +29,13 @@ CREATE TABLE recipient (
 );
 
 CREATE INDEX recipient_envelope_route
-  ON recipient(organization_id, envelope_id, routing_order, id);
+  ON recipient(envelope_id, routing_order, id);
 
 CREATE UNIQUE INDEX recipient_capability_hash
   ON recipient(capability_hash)
   WHERE capability_hash IS NOT NULL;
 
 CREATE TABLE envelope_ready_command (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
   actor_id TEXT NOT NULL,
@@ -53,13 +51,13 @@ CREATE TABLE envelope_ready_command (
   previous_audit_hash TEXT NOT NULL,
   audit_event_hash TEXT NOT NULL,
   audit_payload_json TEXT NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id)
 );
 
 CREATE INDEX envelope_ready_command_envelope
-  ON envelope_ready_command(organization_id, envelope_id, updated_at DESC);
+  ON envelope_ready_command(envelope_id, updated_at DESC);
 
 -- The command insert is the D1 compare-and-set boundary. The application adds
 -- the complete recipient projection in the same D1 batch; any later statement
@@ -70,24 +68,21 @@ BEGIN
   UPDATE envelope
   SET status = 'ready',
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.envelope_id
+  WHERE id = NEW.envelope_id
     AND status = 'draft'
     AND repository_generation = NEW.expected_generation
     AND repository_head = NEW.commit_sha
     AND EXISTS (
       SELECT 1
       FROM audit_event previous
-      WHERE previous.organization_id = NEW.organization_id
-        AND previous.envelope_id = NEW.envelope_id
+      WHERE previous.envelope_id = NEW.envelope_id
         AND previous.sequence = NEW.audit_sequence - 1
         AND previous.event_hash = NEW.previous_audit_hash
     )
     AND NOT EXISTS (
       SELECT 1
       FROM audit_event newer
-      WHERE newer.organization_id = NEW.organization_id
-        AND newer.envelope_id = NEW.envelope_id
+      WHERE newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     );
 
@@ -96,10 +91,10 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at
   ) VALUES (
-    NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
+    NEW.audit_event_id, NEW.envelope_id,
     NEW.audit_sequence, 'envelope.ready', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
     NEW.updated_at

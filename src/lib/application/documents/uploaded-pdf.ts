@@ -6,7 +6,7 @@ export const UPLOADED_PDF_CONTENT_TYPE: string = 'application/pdf';
 
 const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 const UPLOADED_PDF_KEY_PATTERN: RegExp =
-	/^uploaded-documents\/v1\/organizations\/([^/]+)\/envelopes\/([^/]+)\/sha256\/([a-f0-9]{64})\.pdf$/;
+	/^uploaded-documents\/v1\/envelopes\/([^/]+)\/sha256\/([a-f0-9]{64})\.pdf$/;
 
 export class UploadedPdfError extends Error {
 	readonly code = 'UPLOADED_PDF_ERROR';
@@ -17,19 +17,13 @@ export class UploadedPdfError extends Error {
 	}
 }
 
-export function uploadedPdfObjectKey(
-	organizationId: string,
-	envelopeId: string,
-	sha256: string
-): string {
+export function uploadedPdfObjectKey(envelopeId: string, sha256: string): string {
 	if (!SHA256_PATTERN.test(sha256)) throw new UploadedPdfError('Uploaded PDF digest is invalid');
-	assertScopeSegment(organizationId, 'organization');
-	assertScopeSegment(envelopeId, 'envelope');
-	return `uploaded-documents/v1/organizations/${encodeScopeSegment(organizationId)}/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.pdf`;
+	assertScopeSegment(envelopeId);
+	return `uploaded-documents/v1/envelopes/${encodeScopeSegment(envelopeId)}/sha256/${sha256}.pdf`;
 }
 
 export interface ParsedUploadedPdfKey {
-	organizationId: string;
 	envelopeId: string;
 	sha256: string;
 }
@@ -39,11 +33,10 @@ export function parseUploadedPdfObjectKey(key: string): ParsedUploadedPdfKey | n
 	if (match === null) return null;
 	try {
 		const parsed: ParsedUploadedPdfKey = {
-			organizationId: decodeURIComponent(match[1]),
-			envelopeId: decodeURIComponent(match[2]),
-			sha256: match[3]
+			envelopeId: decodeURIComponent(match[1]),
+			sha256: match[2]
 		};
-		if (uploadedPdfObjectKey(parsed.organizationId, parsed.envelopeId, parsed.sha256) !== key) {
+		if (uploadedPdfObjectKey(parsed.envelopeId, parsed.sha256) !== key) {
 			return null;
 		}
 		return parsed;
@@ -52,15 +45,15 @@ export function parseUploadedPdfObjectKey(key: string): ParsedUploadedPdfKey | n
 	}
 }
 
-function assertScopeSegment(value: string, kind: 'organization' | 'envelope'): void {
+function assertScopeSegment(value: string): void {
 	const byteLength: number = new TextEncoder().encode(value).byteLength;
 	if (value.length === 0 || byteLength > 256) {
-		throw new UploadedPdfError(`Invalid ${kind} identifier`);
+		throw new UploadedPdfError('Invalid envelope identifier');
 	}
 	for (let index = 0; index < value.length; index += 1) {
 		const code: number = value.charCodeAt(index);
 		if (code <= 0x1f || code === 0x7f) {
-			throw new UploadedPdfError(`Invalid ${kind} identifier`);
+			throw new UploadedPdfError('Invalid envelope identifier');
 		}
 	}
 }

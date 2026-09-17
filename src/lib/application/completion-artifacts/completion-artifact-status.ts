@@ -23,18 +23,13 @@ export type PublicCompletionArtifactStatus =
 			markdownSha256: string;
 	  };
 
-/** Backs the organization-authorized completion-artifact status endpoint. */
+/** Backs the instance-authorized completion-artifact status endpoint. */
 export class CompletionArtifactStatusService {
 	constructor(private readonly store: CompletionArtifactStore) {}
 
-	async find(
-		organizationId: string,
-		envelopeId: string
-	): Promise<PublicCompletionArtifactStatus | null> {
-		const row: CompletionArtifactStatusRow | null = await this.store.findCompletionArtifactStatus(
-			organizationId,
-			envelopeId
-		);
+	async find(envelopeId: string): Promise<PublicCompletionArtifactStatus | null> {
+		const row: CompletionArtifactStatusRow | null =
+			await this.store.findCompletionArtifactStatus(envelopeId);
 		if (row === null) return null;
 		if (row.published !== null) {
 			return {

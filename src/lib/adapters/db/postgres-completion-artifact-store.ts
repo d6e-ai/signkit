@@ -1,5 +1,6 @@
 import postgres from 'postgres';
 import type { FieldType, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
+import { parseAuditHashVersion } from '$lib/domain/audit/hash';
 import {
 	CompletionArtifactIntegrityError,
 	MAX_COMPLETION_AUDIT_VERIFY_EVENTS,
@@ -29,7 +30,6 @@ class CompletionArtifactPublishIntegrityError extends Error {
 }
 
 interface ClaimCandidateRow {
-	organizationId: string;
 	envelopeId: string;
 	attempts: number | string;
 	lockedAt: Date | string | null;
@@ -120,30 +120,28 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 			async (transaction): Promise<readonly ClaimedCompletionArtifactJob[]> => {
 				await transaction`
 					INSERT INTO completion_artifact_job (
-						organization_id, envelope_id, status, attempts, available_at, retryable,
+						envelope_id, status, attempts, available_at, retryable,
 						created_at, updated_at
 					)
-					SELECT envelope.organization_id, envelope.id, 'pending', 0,
+					SELECT envelope.id, 'pending', 0,
 						${command.claimedAt}::timestamptz, true,
 						${command.claimedAt}::timestamptz, ${command.claimedAt}::timestamptz
 					FROM envelope
 					WHERE envelope.status = 'completed'
 						AND NOT EXISTS (
 							SELECT 1 FROM completion_artifact artifact
-							WHERE artifact.organization_id = envelope.organization_id
-								AND artifact.envelope_id = envelope.id
+							WHERE artifact.envelope_id = envelope.id
 						)
 						AND NOT EXISTS (
 							SELECT 1 FROM completion_artifact_job job
-							WHERE job.organization_id = envelope.organization_id
-								AND job.envelope_id = envelope.id
+							WHERE job.envelope_id = envelope.id
 						)
 					ORDER BY envelope.updated_at ASC, envelope.id ASC
 					LIMIT ${command.discoveryLimit}
-					ON CONFLICT (organization_id, envelope_id) DO NOTHING`;
+					ON CONFLICT (envelope_id) DO NOTHING`;
 
 				const candidates = await transaction<ClaimCandidateRow[]>`
-					SELECT job.organization_id AS "organizationId", job.envelope_id AS "envelopeId",
+					SELECT job.envelope_id AS "envelopeId",
 						job.attempts AS attempts, job.locked_at AS "lockedAt",
 						envelope.title AS "envelopeTitle",
 						envelope.sent_commit_sha AS "sentCommitSha",
@@ -152,8 +150,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 						envelope.field_generation AS "fieldGeneration"
 					FROM completion_artifact_job job
 					INNER JOIN envelope
-						ON envelope.organization_id = job.organization_id
-						AND envelope.id = job.envelope_id
+						ON envelope.id = job.envelope_id
 					WHERE (
 							(job.status IN ('pending', 'failed') AND job.retryable
 								AND job.available_at <= ${command.claimedAt}::timestamptz)
@@ -173,7 +170,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 						SET status = 'processing', claim_token = ${command.claimToken},
 							locked_at = ${command.claimedAt}::timestamptz, attempts = attempts + 1,
 							updated_at = ${command.claimedAt}::timestamptz
-						WHERE organization_id = ${row.organizationId} AND envelope_id = ${row.envelopeId}
+						WHERE envelope_id = ${row.envelopeId}
 							AND (
 								(status IN ('pending', 'failed') AND retryable
 									AND available_at <= ${command.claimedAt}::timestamptz)
@@ -194,7 +191,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 		command: ReadClaimedCompletionArtifactCommand
 	): Promise<ClaimedCompletionArtifactJob | null> {
 		const rows = await this.#sql<ClaimCandidateRow[]>`
-			SELECT job.organization_id AS "organizationId", job.envelope_id AS "envelopeId",
+			SELECT job.envelope_id AS "envelopeId",
 				job.attempts AS attempts, job.locked_at AS "lockedAt",
 				envelope.title AS "envelopeTitle", envelope.sent_commit_sha AS "sentCommitSha",
 				envelope.repository_archive_key AS "repositoryArchiveKey",
@@ -202,9 +199,8 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				envelope.field_generation AS "fieldGeneration"
 			FROM completion_artifact_job job
 			INNER JOIN envelope
-				ON envelope.organization_id = job.organization_id AND envelope.id = job.envelope_id
-			WHERE job.organization_id = ${command.organizationId}
-				AND job.envelope_id = ${command.envelopeId}
+				ON envelope.id = job.envelope_id
+			WHERE job.envelope_id = ${command.envelopeId}
 				AND job.status = 'processing' AND job.claim_token = ${command.claimToken}`;
 		const row: ClaimCandidateRow | undefined = rows[0];
 		if (row === undefined) return null;
@@ -215,34 +211,28 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 		return toClaimedJob(row, lockedAt, 0);
 	}
 
-	async readCompletionEvidence(
-		organizationId: string,
-		envelopeId: string
-	): Promise<CompletionEvidence> {
+	async readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence> {
 		const recipients = await this.#sql<RecipientEvidenceRow[]>`
 			SELECT recipient.id, recipient.role, recipient.routing_order AS "routingOrder",
 				recipient.status,
 				(SELECT decision.id FROM audit_event decision
-					WHERE decision.organization_id = recipient.organization_id
-						AND decision.envelope_id = recipient.envelope_id
+					WHERE decision.envelope_id = recipient.envelope_id
 						AND decision.actor_id = recipient.id
 						AND decision.event_type IN ('recipient.signed', 'recipient.approved')
 					ORDER BY decision.sequence ASC LIMIT 1) AS "decisionEventId",
 				(SELECT decision.occurred_at FROM audit_event decision
-					WHERE decision.organization_id = recipient.organization_id
-						AND decision.envelope_id = recipient.envelope_id
+					WHERE decision.envelope_id = recipient.envelope_id
 						AND decision.actor_id = recipient.id
 						AND decision.event_type IN ('recipient.signed', 'recipient.approved')
 					ORDER BY decision.sequence ASC LIMIT 1) AS "decisionOccurredAt"
 			FROM recipient
-			WHERE recipient.organization_id = ${organizationId}
-				AND recipient.envelope_id = ${envelopeId}
+			WHERE recipient.envelope_id = ${envelopeId}
 			ORDER BY recipient.id`;
 		const fields = await this.#sql<FieldEvidenceRow[]>`
 			SELECT field_id AS "fieldId", field_type AS "fieldType", value_json AS "valueJson",
 				value_sha256 AS "valueSha256"
 			FROM field_value
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY field_id`;
 		const auditEvents = await this.#sql<AuditEvidenceRow[]>`
 			SELECT id, sequence, event_type AS "eventType", actor_type AS "actorType",
@@ -250,7 +240,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				event_hash AS "eventHash", hash_version AS "hashVersion",
 				to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAtPrecise"
 			FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence ASC
 			LIMIT ${MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1}`;
 
@@ -279,7 +269,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				previousHash: row.previousHash,
 				eventHash: row.eventHash,
 				occurredAt: alignedMillisecondTimestamp(row.occurredAtPrecise),
-				hashVersion: Number(row.hashVersion) === 2 ? 2 : 1
+				hashVersion: parseAuditHashVersion(row.hashVersion)
 			}))
 		};
 	}
@@ -294,12 +284,11 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 						SELECT status, sent_commit_sha AS "sentCommitSha",
 							repository_head AS "repositoryHead", field_generation AS "fieldGeneration"
 						FROM envelope
-						WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+						WHERE id = ${command.envelopeId}
 						FOR UPDATE`;
 					const jobRows = await transaction<JobLockRow[]>`
 						SELECT status, claim_token AS "claimToken" FROM completion_artifact_job
-						WHERE organization_id = ${command.organizationId}
-							AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 						FOR UPDATE`;
 
 					const replay: PublishCompletionArtifactResult | null = await this.#resolveCommand(
@@ -322,8 +311,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 					const anchorRows = await transaction<AnchorRow[]>`
 						SELECT sequence, event_hash AS "eventHash", event_type AS "eventType"
 						FROM audit_event
-						WHERE organization_id = ${command.organizationId}
-							AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 							AND id = ${command.anchorAuditEventId}`;
 					const anchor: AnchorRow | undefined = anchorRows[0];
 					if (
@@ -336,8 +324,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 					}
 					const newerRows = await transaction<{ sequence: number }[]>`
 						SELECT sequence FROM audit_event
-						WHERE organization_id = ${command.organizationId}
-							AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 							AND sequence >= ${command.expectedAuditSequence + 1}
 						LIMIT 1`;
 					if (newerRows.length > 0) return { outcome: 'integrity_error' };
@@ -353,12 +340,12 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 
 					await transaction`
 						INSERT INTO completion_artifact (
-							organization_id, envelope_id, schema_version, manifest_sha256,
+							envelope_id, schema_version, manifest_sha256,
 							json_object_key, json_sha256, markdown_object_key, markdown_sha256,
 							sent_commit_sha, field_generation, anchor_audit_event_id,
 							audit_head_sequence, audit_head_event_hash, published_at, audit_event_id
 						) VALUES (
-							${command.organizationId}, ${command.envelopeId}, 1, ${command.manifestSha256},
+							${command.envelopeId}, 1, ${command.manifestSha256},
 							${command.jsonObjectKey}, ${command.jsonSha256}, ${command.markdownObjectKey},
 							${command.markdownSha256}, ${command.sentCommitSha}, ${command.fieldGeneration},
 							${command.anchorAuditEventId}, ${command.expectedAuditSequence + 1},
@@ -368,17 +355,16 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 						UPDATE completion_artifact_job
 						SET status = 'published', claim_token = NULL, locked_at = NULL, retryable = false,
 							updated_at = ${command.updatedAt}::timestamptz
-						WHERE organization_id = ${command.organizationId}
-							AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 							AND status = 'processing' AND claim_token = ${command.claimToken}
 						RETURNING envelope_id`;
 					if (updatedJob.length !== 1) throw new CompletionArtifactPublishIntegrityError();
 					await transaction`
 						INSERT INTO audit_event (
-							id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+							id, envelope_id, sequence, event_type, actor_type, actor_id,
 							payload_json, previous_hash, event_hash, occurred_at
 						) VALUES (
-							${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+							${command.auditEventId}, ${command.envelopeId},
 							${command.expectedAuditSequence + 1}, 'envelope.completion_artifact_published',
 							'system', 'completion-artifact-worker', ${command.auditPayloadJson},
 							${command.previousAuditHash}, ${command.auditEventHash},
@@ -386,12 +372,12 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 						)`;
 					await transaction`
 						INSERT INTO completion_artifact_publish_command (
-							organization_id, envelope_id, claim_token, sent_commit_sha, field_generation,
+							envelope_id, claim_token, sent_commit_sha, field_generation,
 							anchor_audit_event_id, manifest_sha256, json_object_key, json_sha256,
 							markdown_object_key, markdown_sha256, updated_at, audit_event_id,
 							audit_sequence, previous_audit_hash, audit_event_hash, audit_payload_json
 						) VALUES (
-							${command.organizationId}, ${command.envelopeId}, ${command.claimToken},
+							${command.envelopeId}, ${command.claimToken},
 							${command.sentCommitSha}, ${command.fieldGeneration},
 							${command.anchorAuditEventId}, ${command.manifestSha256},
 							${command.jsonObjectKey}, ${command.jsonSha256}, ${command.markdownObjectKey},
@@ -422,8 +408,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 					SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = true,
 						available_at = ${command.nextAvailableAt}, last_error = ${command.errorCode},
 						updated_at = ${command.failedAt}
-					WHERE organization_id = ${command.organizationId}
-						AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING envelope_id`
 			: await this.#sql<{ envelope_id: string }[]>`
@@ -431,15 +416,13 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 					SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = false,
 						available_at = ${command.nextAvailableAt}, last_error = ${command.errorCode},
 						updated_at = ${command.failedAt}
-					WHERE organization_id = ${command.organizationId}
-						AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING envelope_id`;
 		return rows.length === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
 	}
 
 	async findCompletionArtifactStatus(
-		organizationId: string,
 		envelopeId: string
 	): Promise<CompletionArtifactStatusRow | null> {
 		const rows = await this.#sql<
@@ -465,11 +448,10 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				artifact.audit_event_id AS "auditEventId"
 			FROM envelope
 			LEFT JOIN completion_artifact_job job
-				ON job.organization_id = envelope.organization_id AND job.envelope_id = envelope.id
+				ON job.envelope_id = envelope.id
 			LEFT JOIN completion_artifact artifact
-				ON artifact.organization_id = envelope.organization_id
-				AND artifact.envelope_id = envelope.id
-			WHERE envelope.organization_id = ${organizationId} AND envelope.id = ${envelopeId}`;
+				ON artifact.envelope_id = envelope.id
+			WHERE envelope.id = ${envelopeId}`;
 		const row = rows[0];
 		if (row === undefined) return null;
 		const published: PublishedCompletionArtifact | null =
@@ -512,7 +494,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				previous_audit_hash AS "previousAuditHash", audit_event_hash AS "auditEventHash",
 				audit_payload_json AS "auditPayloadJson"
 			FROM completion_artifact_publish_command
-			WHERE organization_id = ${key.organizationId} AND envelope_id = ${key.envelopeId}`;
+			WHERE envelope_id = ${key.envelopeId}`;
 		const row: PublishCommandRow | undefined = rows[0];
 		if (row === undefined) return null;
 		if (!sameEvidence(row, key)) return { outcome: 'integrity_error' };
@@ -532,7 +514,6 @@ function toClaimedJob(
 	attemptIncrement: number
 ): ClaimedCompletionArtifactJob {
 	return {
-		organizationId: row.organizationId,
 		envelopeId: row.envelopeId,
 		attempts: Number(row.attempts) + attemptIncrement,
 		lockedAt,

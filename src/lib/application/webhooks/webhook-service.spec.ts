@@ -17,14 +17,12 @@ import { AesGcmWebhookSigningSecretSealer } from '$lib/security/webhook-signing-
 import { WEBHOOK_MAX_ATTEMPTS, WEBHOOK_MAX_PAYLOAD_BYTES } from '$lib/security/webhook';
 import { WebhookTargetRejectedError } from '$lib/security/webhook-url';
 
-const ORG: string = 'org-1';
 const ENDPOINT_ID: string = '01900000-0000-7000-8000-000000000401';
 const ACTOR_ID: string = 'user-1';
 
 function metadata(overrides: Partial<WebhookEndpointMetadata> = {}): WebhookEndpointMetadata {
 	return {
 		id: ENDPOINT_ID,
-		organizationId: ORG,
 		url: 'https://hooks.example.com/signkit',
 		description: null,
 		status: 'active',
@@ -40,7 +38,6 @@ function metadata(overrides: Partial<WebhookEndpointMetadata> = {}): WebhookEndp
 
 function claimedRow(overrides: Partial<WebhookOutboxRow> = {}): WebhookOutboxRow {
 	return {
-		organizationId: ORG,
 		endpointId: ENDPOINT_ID,
 		auditEventId: '01900000-0000-7000-8000-000000000501',
 		envelopeId: '01900000-0000-7000-8000-000000000001',
@@ -109,7 +106,7 @@ describe('WebhookApplication.createEndpoint', () => {
 		});
 		await expect(
 			app.createEndpoint(
-				{ id: ACTOR_ID, organizationId: ORG },
+				{ id: ACTOR_ID },
 				{
 					idempotencyKey: 'wh-1',
 					url: 'http://hooks.example.com/signkit',
@@ -139,7 +136,7 @@ describe('WebhookApplication.createEndpoint', () => {
 			newId: () => ENDPOINT_ID
 		});
 		const result = await app.createEndpoint(
-			{ id: ACTOR_ID, organizationId: ORG },
+			{ id: ACTOR_ID },
 			{
 				idempotencyKey: 'wh-1',
 				url: 'https://hooks.example.com/signkit',
@@ -165,7 +162,6 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 		const persistence = store({
 			claimPendingDeliveries: vi.fn(async () => [
 				{
-					organizationId: ORG,
 					endpointId: ENDPOINT_ID,
 					auditEventId: '01900000-0000-7000-8000-000000000501',
 					envelopeId: '01900000-0000-7000-8000-000000000001',
@@ -201,13 +197,11 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 		const plaintext: string = 'skwh1_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG';
 		const secretSealer = sealer();
 		const sealed = await secretSealer.seal(plaintext, {
-			organizationId: ORG,
 			endpointId: ENDPOINT_ID
 		});
 		const persistence = store({
 			claimPendingDeliveries: vi.fn(async () => [
 				{
-					organizationId: ORG,
 					endpointId: ENDPOINT_ID,
 					auditEventId: '01900000-0000-7000-8000-000000000501',
 					envelopeId: '01900000-0000-7000-8000-000000000001',
@@ -251,7 +245,6 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 		const persistence = store({
 			listStaleSigningSecrets: vi.fn(async () => [
 				{
-					organizationId: ORG,
 					endpointId: ENDPOINT_ID,
 					signingSecret: plaintext,
 					sealingKeyId: null
@@ -268,18 +261,13 @@ describe('WebhookApplication.drainPendingDeliveries', () => {
 		const command = resealSigningSecret.mock.calls[0]?.[0];
 		if (command === undefined) throw new Error('expected resealSigningSecret to have been called');
 		expect(command).toMatchObject({
-			organizationId: ORG,
 			endpointId: ENDPOINT_ID,
 			previousSealingKeyId: null
 		});
 		expect(command.signingSecret.startsWith('skwhs1_')).toBe(true);
 		expect(command.sealingKeyId).toBe(await secretSealer.currentSealingKeyId());
 		await expect(
-			secretSealer.open(
-				command.signingSecret,
-				{ organizationId: ORG, endpointId: ENDPOINT_ID },
-				command.sealingKeyId
-			)
+			secretSealer.open(command.signingSecret, { endpointId: ENDPOINT_ID }, command.sealingKeyId)
 		).resolves.toBe(plaintext);
 	});
 
@@ -445,7 +433,7 @@ describe('WebhookApplication destination allowlist', () => {
 		const app = new WebhookApplication(persistence, sealer(), { newId: () => ENDPOINT_ID });
 		await expect(
 			app.createEndpoint(
-				{ id: ACTOR_ID, organizationId: ORG },
+				{ id: ACTOR_ID },
 				{
 					idempotencyKey: 'wh-1',
 					url: 'https://hooks.example.com/signkit',
@@ -465,7 +453,7 @@ describe('WebhookApplication destination allowlist', () => {
 		});
 		await expect(
 			app.createEndpoint(
-				{ id: ACTOR_ID, organizationId: ORG },
+				{ id: ACTOR_ID },
 				{
 					idempotencyKey: 'wh-1',
 					url: 'https://evil.example.com/signkit',
@@ -489,7 +477,7 @@ describe('WebhookApplication destination allowlist', () => {
 			allowedHostsPolicyForTests: wildcardPolicy()
 		});
 		const allowed = await app.createEndpoint(
-			{ id: ACTOR_ID, organizationId: ORG },
+			{ id: ACTOR_ID },
 			{
 				idempotencyKey: 'wh-1',
 				url: 'https://a.hooks.example.com/signkit',
@@ -500,7 +488,7 @@ describe('WebhookApplication destination allowlist', () => {
 		expect(allowed.outcome).toBe('created');
 		await expect(
 			app.createEndpoint(
-				{ id: ACTOR_ID, organizationId: ORG },
+				{ id: ACTOR_ID },
 				{
 					idempotencyKey: 'wh-2',
 					url: 'https://hooks.example.com/signkit',
@@ -535,7 +523,7 @@ describe('WebhookApplication destination allowlist', () => {
 			}
 		});
 		const created = await app.createEndpoint(
-			{ id: ACTOR_ID, organizationId: ORG },
+			{ id: ACTOR_ID },
 			{
 				idempotencyKey: 'wh-1',
 				url: 'https://hooks.example.com/signkit',

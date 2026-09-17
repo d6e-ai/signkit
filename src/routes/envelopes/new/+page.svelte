@@ -37,7 +37,7 @@
 	<title>{m.envelope_new_title()} — {m.app_name()}</title>
 </svelte:head>
 
-<div class="mx-auto w-full max-w-xl">
+<div class="w-full">
 	<Card.Root>
 		<Card.Header>
 			<div
@@ -68,7 +68,7 @@
 					</Field.Field>
 				</Field.FieldGroup>
 			</Card.Content>
-			<Card.Footer class="justify-end gap-2 border-t bg-muted/20 py-4">
+			<Card.Footer class="justify-end gap-2">
 				<Button variant="outline" href={localizeHref('/envelopes')} disabled={pending}>
 					{m.common_cancel()}
 				</Button>
