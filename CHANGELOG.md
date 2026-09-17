@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-17
+
+### Added
+
+- Durable, locale-aware instance invitation email delivery with encrypted D1 and PostgreSQL outboxes, bounded retries, crash-safe leases, and automatic Cloudflare scheduled draining.
+- Explicit `cloudflare` or `smtp` mail-provider selection in `create-signkit`, including secret-safe SMTP credential provisioning.
+
+### Changed
+
+- Cloudflare Workers, Node/Docker, and Vercel can each use either Cloudflare Email or SMTP instead of coupling mail transport to the deployment runtime.
+- Instance administration stores only stable d6e-auth subject identifiers; live name and email resolution remains the identity provider's responsibility.
+
+### Security
+
+- Invitation bearer tokens are no longer exposed to the administrator UI and are scrubbed from terminal delivery records.
+- SMTP passwords are accepted only through bounded secret input and are never stored in deployment state or command-line arguments.
+
 ## [0.1.3] - 2026-09-17
 
 ### Added
