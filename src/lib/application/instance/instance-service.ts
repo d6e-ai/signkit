@@ -3,6 +3,7 @@ import {
 	type BootstrapInstanceCommand,
 	type BootstrapInstanceStoreResult,
 	type InstanceCallerContext,
+	type InstanceMemberIdentitySnapshot,
 	type InstanceStore
 } from '$lib/ports/instance-store';
 import { memberIdentitySnapshot } from './member-identity';
@@ -81,10 +82,25 @@ export class InstanceApplication implements InstanceApplicationPort {
 			this.store.refreshInstanceMemberIdentity !== undefined &&
 			(actor.displayName !== undefined || actor.email !== undefined)
 		) {
+			// A claim the current session omits (e.g. an unverified email) is
+			// unknown, not empty: it must keep whatever snapshot is already
+			// stored rather than nulling it out from under a member whose earlier
+			// session did carry a verified claim.
+			const claimed: InstanceMemberIdentitySnapshot = memberIdentitySnapshot(
+				actor.displayName,
+				actor.email
+			);
+			const identity: InstanceMemberIdentitySnapshot = {
+				displayName:
+					actor.displayName !== undefined
+						? claimed.displayName
+						: (context.member.displayName ?? null),
+				email: actor.email !== undefined ? claimed.email : (context.member.email ?? null)
+			};
 			try {
 				await this.store.refreshInstanceMemberIdentity({
 					userId: actor.id,
-					identity: memberIdentitySnapshot(actor.displayName, actor.email)
+					identity
 				});
 			} catch {
 				// Display labels are intentionally best-effort. Their persistence must
