@@ -58,10 +58,7 @@ function application(): ApiKeyApplicationPort {
 			outcome: 'listed',
 			page: { items: [metadata], nextCursor: null }
 		})),
-		revokeApiKey: vi.fn(),
-		grantApiKeyOrganization: vi.fn(),
-		listApiKeyOrganizationGrants: vi.fn(),
-		revokeApiKeyOrganizationGrant: vi.fn()
+		revokeApiKey: vi.fn()
 	};
 }
 
@@ -132,12 +129,12 @@ describe('API key HTTP handlers', () => {
 			expect(resolver).not.toHaveBeenCalled();
 		});
 
-		it('does not require an active organization', async () => {
+		it('does not require an instance membership', async () => {
 			const app: ApiKeyApplicationPort = application();
 			const response: Response = await invoke(
 				createApiKeyHttpHandlers((): ApiKeyApplicationPort => app).create,
 				event({
-					locals: locals('no_active_organization'),
+					locals: locals('no_membership'),
 					method: 'POST',
 					body: validBody(),
 					headers: { 'idempotency-key': 'create-1' }
@@ -215,7 +212,7 @@ describe('API key HTTP handlers', () => {
 				createApiKeyHttpHandlers((): ApiKeyApplicationPort => app).create,
 				event({
 					method: 'POST',
-					body: validBody({ organizationId: 'attacker-organization' }),
+					body: validBody({ unknownField: 'attacker-value' }),
 					headers: { 'idempotency-key': 'create-1' }
 				})
 			);
@@ -245,7 +242,7 @@ describe('API key HTTP handlers', () => {
 			});
 		});
 
-		it('scopes create to the authenticated identity only, without an organization', async () => {
+		it('scopes create to the authenticated identity only', async () => {
 			const app: ApiKeyApplicationPort = application();
 			const response: Response = await invoke(
 				createApiKeyHttpHandlers((): ApiKeyApplicationPort => app).create,
@@ -399,7 +396,7 @@ describe('API key HTTP handlers', () => {
 			const app: ApiKeyApplicationPort = application();
 			const response: Response = await invoke(
 				createApiKeyHttpHandlers((): ApiKeyApplicationPort => app).list,
-				event({ search: '?organizationId=attacker-organization' })
+				event({ search: '?unknownField=attacker-value' })
 			);
 			expect(response.status).toBe(400);
 			expect(app.listApiKeys).not.toHaveBeenCalled();

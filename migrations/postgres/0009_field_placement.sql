@@ -1,13 +1,12 @@
 ALTER TABLE envelope ADD COLUMN field_generation integer NOT NULL DEFAULT 0;
 
 -- Composite reference target so signing fields can be scoped to the exact
--- organization and envelope of the recipient they are placed for.
+-- instance and envelope of the recipient they are placed for.
 ALTER TABLE recipient
-  ADD CONSTRAINT recipient_org_envelope_id UNIQUE (organization_id, envelope_id, id);
+  ADD CONSTRAINT recipient_org_envelope_id UNIQUE (envelope_id, id);
 
 CREATE TABLE envelope_field (
   id text NOT NULL,
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
   document_path text NOT NULL,
@@ -17,26 +16,24 @@ CREATE TABLE envelope_field (
   position integer NOT NULL CHECK (position BETWEEN 0 AND 100000),
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, envelope_id, recipient_id)
-    REFERENCES recipient(organization_id, envelope_id, id),
+  PRIMARY KEY (id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CONSTRAINT envelope_field_id_uuidv7 CHECK (
     id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   )
 );
 
 CREATE INDEX envelope_field_document_order
-  ON envelope_field(organization_id, envelope_id, document_path, position, id);
+  ON envelope_field(envelope_id, document_path, position, id);
 
 CREATE INDEX envelope_field_recipient
-  ON envelope_field(organization_id, recipient_id);
+  ON envelope_field(recipient_id);
 
 CREATE UNIQUE INDEX envelope_field_recipient_document_position
-  ON envelope_field(organization_id, envelope_id, recipient_id, document_path, position);
+  ON envelope_field(envelope_id, recipient_id, document_path, position);
 
 CREATE TABLE envelope_field_placement_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   actor_type text NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
   actor_id text NOT NULL,
@@ -55,10 +52,10 @@ CREATE TABLE envelope_field_placement_command (
   previous_audit_hash text NOT NULL,
   audit_event_hash text NOT NULL,
   audit_payload_json text NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id)
 );
 
 CREATE INDEX envelope_field_placement_command_envelope
-  ON envelope_field_placement_command(organization_id, envelope_id, updated_at DESC);
+  ON envelope_field_placement_command(envelope_id, updated_at DESC);

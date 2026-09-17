@@ -36,7 +36,7 @@ const ENVELOPE: Record<string, unknown> = {
 	type: 'object',
 	required: [
 		'id',
-		'organizationId',
+		'createdByUserId',
 		'title',
 		'status',
 		'repositoryGeneration',
@@ -46,7 +46,7 @@ const ENVELOPE: Record<string, unknown> = {
 	],
 	properties: {
 		id: UUIDV7,
-		organizationId: { type: 'string' },
+		createdByUserId: { type: 'string' },
 		title: { type: 'string' },
 		status: {
 			type: 'string',
@@ -66,6 +66,41 @@ const ENVELOPE: Record<string, unknown> = {
 			description: 'Git commit SHA pinned at send. A content identifier, not an object-store key.'
 		},
 		fieldGeneration: { type: 'integer' },
+		createdAt: { type: 'string', format: 'date-time' },
+		updatedAt: { type: 'string', format: 'date-time' }
+	},
+	additionalProperties: false
+};
+
+const CONTACT: Record<string, unknown> = {
+	type: 'object',
+	required: ['id', 'email', 'name', 'locale', 'version', 'createdAt', 'updatedAt'],
+	properties: {
+		id: UUIDV7,
+		email: {
+			type: 'string',
+			format: 'email',
+			maxLength: 320,
+			description:
+				'Trimmed, lower-case mailbox used for owner-scoped uniqueness and recipient prefilling.'
+		},
+		name: {
+			type: 'string',
+			minLength: 1,
+			maxLength: 200,
+			description: 'Display name copied into a recipient draft when this contact is selected.'
+		},
+		locale: {
+			type: 'string',
+			enum: ['en', 'ja'],
+			description: 'Preferred recipient locale copied into a recipient draft.'
+		},
+		version: {
+			type: 'integer',
+			minimum: 1,
+			maximum: 2_147_483_647,
+			description: 'Optimistic-concurrency version required by replacement and deletion.'
+		},
 		createdAt: { type: 'string', format: 'date-time' },
 		updatedAt: { type: 'string', format: 'date-time' }
 	},
@@ -154,7 +189,13 @@ function op(input: {
 		operationId: input.operationId,
 		tags: [...input.tags],
 		security: input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }],
-		...(input.parameters === undefined ? {} : { parameters: input.parameters }),
+		...(input.parameters === undefined
+			? {}
+			: {
+					parameters: input.parameters.filter(
+						(parameter: unknown): boolean => parameter !== undefined
+					)
+				}),
 		...(input.requestBody === undefined ? {} : { requestBody: input.requestBody }),
 		responses:
 			input.includeProblemResponses === false
@@ -189,6 +230,62 @@ const webhookIdParam = {
 	in: 'path',
 	required: true,
 	schema: UUIDV7
+};
+
+const contactIdParam = {
+	name: 'contactId',
+	in: 'path',
+	required: true,
+	schema: UUIDV7
+};
+
+const contactCursorParam = {
+	name: 'cursor',
+	in: 'query',
+	required: false,
+	description:
+		'Owner-scoped contact UUID cursor. It contains no name, email address, or search text.',
+	schema: UUIDV7
+};
+
+const contactLimitParam = {
+	name: 'limit',
+	in: 'query',
+	required: false,
+	schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 }
+};
+
+const contactMutationProperties: Record<string, unknown> = {
+	email: { type: 'string', format: 'email', maxLength: 320 },
+	name: { type: 'string', minLength: 1, maxLength: 200 },
+	locale: { type: 'string', enum: ['en', 'ja'] }
+};
+
+const contactResponse = (status: string, description: string): Record<string, unknown> =>
+	jsonResponse(status, description, {
+		type: 'object',
+		required: ['contact'],
+		additionalProperties: false,
+		properties: { contact: { $ref: '#/components/schemas/Contact' } }
+	});
+
+const contactPageResponse = jsonResponse('200', 'Owner-scoped contact page', {
+	type: 'object',
+	required: ['items', 'nextCursor'],
+	additionalProperties: false,
+	properties: {
+		items: { type: 'array', items: { $ref: '#/components/schemas/Contact' } },
+		nextCursor: {
+			type: ['string', 'null'],
+			pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+			description: 'A contact UUID only; never a name, email address, or search term.'
+		}
+	}
+});
+
+const idempotencyReplayedHeader = {
+	description: 'True only when this response safely replays an earlier mutation result.',
+	schema: { type: 'string', enum: ['true'] }
 };
 
 const evidenceFormatQuery = {
@@ -239,14 +336,6 @@ const idempotencyHeader = {
 	schema: { type: 'string', minLength: 1, maxLength: 200, pattern: '^[\\x21-\\x7E]+$' }
 };
 
-const organizationHeader = {
-	name: 'SignKit-Organization-Id',
-	in: 'header',
-	required: false,
-	schema: { type: 'string', minLength: 1, maxLength: 200 },
-	description: 'Required for API-key requests. Ignored for interactive sessions.'
-};
-
 /**
  * OpenAPI 3.1 document for the live `/api/v1` surface. Paths and bodies match
  * the implemented HTTP handlers; this is discovery, not a second contract.
@@ -265,6 +354,7 @@ export function openApiDocument(): Record<string, unknown> {
 		tags: [
 			{ name: 'System' },
 			{ name: 'Envelopes' },
+			{ name: 'Contacts' },
 			{ name: 'Webhooks' },
 			{ name: 'API keys' },
 			{ name: 'Instance' },
@@ -290,13 +380,189 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'OpenAPI 3.1 document', { type: 'object' })
 				})
 			},
+			'/api/v1/contacts': {
+				get: op({
+					summary: 'List contacts owned by the caller',
+					operationId: 'listContacts',
+					description:
+						'Human-session-only. The owner is always the verified d6e-auth subject with a currently active local instance membership. The request cannot select another owner or an organization.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [contactCursorParam, contactLimitParam],
+					responses: contactPageResponse
+				}),
+				post: op({
+					summary: 'Create a contact owned by the caller',
+					operationId: 'createContact',
+					description:
+						'Creates a contact only after the sender explicitly asks to save it. Preparing or sending an envelope never creates contacts. Email uniqueness is scoped to the verified owner after the same trim/lower-case normalization used for envelope recipients.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['email', 'name', 'locale'],
+									additionalProperties: false,
+									properties: contactMutationProperties
+								}
+							}
+						}
+					},
+					responses: {
+						...contactResponse('201', 'Created contact'),
+						'200': {
+							description: 'Safely replayed contact creation',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['contact'],
+										additionalProperties: false,
+										properties: { contact: { $ref: '#/components/schemas/Contact' } }
+									}
+								}
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/contacts/search': {
+				post: op({
+					summary: 'Search contacts owned by the caller',
+					operationId: 'searchContacts',
+					description:
+						'Human-session-only bounded search. The query is carried in a JSON body rather than the URL so contact PII does not enter request URLs, routine access logs, or cursors.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['query'],
+									additionalProperties: false,
+									properties: {
+										query: { type: 'string', minLength: 1, maxLength: 200 },
+										cursor: UUIDV7,
+										limit: {
+											type: 'integer',
+											minimum: 1,
+											maximum: 100,
+											default: 25
+										}
+									}
+								}
+							}
+						}
+					},
+					responses: contactPageResponse
+				})
+			},
+			'/api/v1/contacts/{contactId}': {
+				put: op({
+					summary: 'Replace a contact owned by the caller',
+					operationId: 'replaceContact',
+					description:
+						'Full owner-scoped replacement with optimistic concurrency. Unknown and cross-owner identifiers have the same opaque not-found response.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [contactIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['email', 'name', 'locale', 'expectedVersion'],
+									additionalProperties: false,
+									properties: {
+										...contactMutationProperties,
+										expectedVersion: { type: 'integer', minimum: 1, maximum: 2_147_483_646 }
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Updated or safely replayed contact',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['contact'],
+										additionalProperties: false,
+										properties: { contact: { $ref: '#/components/schemas/Contact' } }
+									}
+								}
+							}
+						}
+					}
+				}),
+				delete: op({
+					summary: 'Delete a contact owned by the caller',
+					operationId: 'deleteContact',
+					description:
+						'Deletes only the owner-scoped contact projection. Existing envelope recipients and immutable evidence are unchanged. Unknown and cross-owner identifiers have the same opaque not-found response.',
+					tags: ['Contacts'],
+					security: [{ SessionCookie: [] }],
+					parameters: [contactIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['expectedVersion'],
+									additionalProperties: false,
+									properties: {
+										expectedVersion: { type: 'integer', minimum: 1, maximum: 2_147_483_647 }
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Contact deletion receipt, including safe replay',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['deleted'],
+										additionalProperties: false,
+										properties: {
+											deleted: {
+												type: 'object',
+												required: ['id', 'deletedAt'],
+												additionalProperties: false,
+												properties: {
+													id: UUIDV7,
+													deletedAt: { type: 'string', format: 'date-time' }
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				})
+			},
 			'/api/v1/envelopes': {
 				get: op({
-					summary: 'List envelopes in the authorized organization',
+					summary: 'List envelopes',
 					operationId: 'listEnvelopes',
 					tags: ['Envelopes'],
 					parameters: [
-						organizationHeader,
 						{
 							name: 'cursor',
 							in: 'query',
@@ -323,7 +589,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Create a draft envelope',
 					operationId: 'createEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, idempotencyHeader],
+					parameters: [idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -349,7 +615,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Get an envelope',
 					operationId: 'getEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Envelope detail', {
 						type: 'object',
 						required: ['envelope', 'recipients', 'readyAuditEventId', 'fields'],
@@ -367,7 +633,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read the current draft workspace',
 					operationId: 'getEnvelopeDraft',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Draft workspace snapshot', { type: 'object' })
 				})
 			},
@@ -376,7 +642,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Commit draft Markdown edits',
 					operationId: 'commitEnvelopeDraft',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -424,7 +690,6 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'importEnvelopeDocx',
 					tags: ['Envelopes'],
 					parameters: [
-						organizationHeader,
 						envelopeIdParam,
 						idempotencyHeader,
 						{
@@ -462,7 +727,6 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'uploadEnvelopePdf',
 					tags: ['Envelopes'],
 					parameters: [
-						organizationHeader,
 						envelopeIdParam,
 						idempotencyHeader,
 						{
@@ -505,7 +769,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Reorder or remove documents in the envelope set',
 					operationId: 'orderEnvelopeDocuments',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -535,7 +799,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Export the pinned Markdown revision as DOCX',
 					operationId: 'exportEnvelopeDocx',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: {
 						'200': {
 							description: 'DOCX package derived from the pinned Git commit',
@@ -553,7 +817,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Prepare a draft envelope for sending',
 					operationId: 'readyEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -594,7 +858,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Place fields on a ready envelope',
 					operationId: 'placeEnvelopeFields',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -659,7 +923,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Send a ready envelope',
 					operationId: 'sendEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -684,7 +948,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Void an envelope',
 					operationId: 'voidEnvelope',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam, idempotencyHeader],
+					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
 						content: {
@@ -712,7 +976,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read invitation delivery status',
 					operationId: 'getEnvelopeDeliveries',
 					tags: ['Envelopes'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Delivery status', { type: 'object' })
 				})
 			},
@@ -721,7 +985,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read completion artifact publication status',
 					operationId: 'getEnvelopeCompletionArtifact',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Completion artifact status', { type: 'object' })
 				})
 			},
@@ -730,7 +994,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download published completion evidence',
 					operationId: 'getEnvelopeEvidence',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam, evidenceFormatQuery],
+					parameters: [envelopeIdParam, evidenceFormatQuery],
 					responses: {
 						'200': {
 							description:
@@ -748,7 +1012,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download published completion evidence',
 					operationId: 'getEnvelopeCompletionArtifactEvidence',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam, evidenceFormatQuery],
+					parameters: [envelopeIdParam, evidenceFormatQuery],
 					responses: {
 						'200': {
 							description: 'Alias of GET /api/v1/envelopes/{envelopeId}/evidence.',
@@ -766,7 +1030,7 @@ export function openApiDocument(): Record<string, unknown> {
 						'Render one document from the pinned revision as the PDF a recipient will be shown',
 					operationId: 'getEnvelopeDocumentPdf',
 					tags: ['Envelopes', 'Documents'],
-					parameters: [organizationHeader, envelopeIdParam, documentIdQueryParam],
+					parameters: [envelopeIdParam, documentIdQueryParam],
 					responses: {
 						'200': {
 							description: 'Deterministic application/pdf rendering of the pinned revision.',
@@ -782,7 +1046,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read page geometry for one document and the ordered document-set summary',
 					operationId: 'getEnvelopeDocumentPdfPages',
 					tags: ['Envelopes', 'Documents'],
-					parameters: [organizationHeader, envelopeIdParam, documentIdQueryParam],
+					parameters: [envelopeIdParam, documentIdQueryParam],
 					responses: {
 						'200': {
 							description: 'Page geometry for the pinned revision.',
@@ -843,7 +1107,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopePdf',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: {
 						'200': {
 							description:
@@ -860,7 +1124,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Download the published executed agreement PDF',
 					operationId: 'getEnvelopeCompletionArtifactPdf',
 					tags: ['Envelopes', 'Completion artifacts'],
-					parameters: [organizationHeader, envelopeIdParam],
+					parameters: [envelopeIdParam],
 					responses: {
 						'200': {
 							description: 'Alias of GET /api/v1/envelopes/{envelopeId}/pdf.',
@@ -918,7 +1182,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/webhooks': {
 				get: op({
-					summary: 'List organization webhook endpoints',
+					summary: 'List instance webhook endpoints',
 					operationId: 'listWebhooks',
 					tags: ['Webhooks'],
 					security: [{ SessionCookie: [] }],
@@ -1045,6 +1309,15 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Sweep batch result', { type: 'object' })
 				})
 			},
+			'/api/v1/system/docx-conversions/drain': {
+				post: op({
+					summary: 'Drain pending DOCX conversion jobs',
+					operationId: 'drainDocxConversions',
+					tags: ['System'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
+				})
+			},
 			'/api/v1/system/completion-artifacts/drain': {
 				post: op({
 					summary: 'Drain pending completion artifact publication',
@@ -1120,43 +1393,6 @@ export function openApiDocument(): Record<string, unknown> {
 					],
 					requestBody: JSON_BODY,
 					responses: jsonResponse('200', 'Revoked API key', { type: 'object' })
-				})
-			},
-			'/api/v1/api-keys/{apiKeyId}/organization-grants': {
-				get: op({
-					summary: 'List organization grants for an API key',
-					operationId: 'listApiKeyOrganizationGrants',
-					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
-					parameters: [{ name: 'apiKeyId', in: 'path', required: true, schema: UUIDV7 }],
-					responses: jsonResponse('200', 'Grant page', { type: 'object' })
-				}),
-				post: op({
-					summary: 'Grant an API key access to an organization',
-					operationId: 'createApiKeyOrganizationGrant',
-					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
-					parameters: [
-						{ name: 'apiKeyId', in: 'path', required: true, schema: UUIDV7 },
-						idempotencyHeader
-					],
-					requestBody: JSON_BODY,
-					responses: jsonResponse('201', 'Created grant', { type: 'object' })
-				})
-			},
-			'/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke': {
-				post: op({
-					summary: 'Revoke an API key organization grant',
-					operationId: 'revokeApiKeyOrganizationGrant',
-					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
-					parameters: [
-						{ name: 'apiKeyId', in: 'path', required: true, schema: UUIDV7 },
-						{ name: 'grantId', in: 'path', required: true, schema: UUIDV7 },
-						idempotencyHeader
-					],
-					requestBody: JSON_BODY,
-					responses: jsonResponse('200', 'Revoked grant', { type: 'object' })
 				})
 			},
 			'/api/v1/instance/bootstrap': {
@@ -1400,7 +1636,7 @@ export function openApiDocument(): Record<string, unknown> {
 					scheme: 'bearer',
 					bearerFormat: 'signkit',
 					description:
-						'Organization-scoped API key. Requires SignKit-Organization-Id. Live scopes: envelopes:read, drafts:write, envelopes:send.'
+						'Instance API key. Live scopes: envelopes:read, drafts:write, envelopes:send.'
 				},
 				SessionCookie: {
 					type: 'apiKey',
@@ -1432,7 +1668,8 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			schemas: {
 				ProblemDetail: PROBLEM,
-				Envelope: ENVELOPE
+				Envelope: ENVELOPE,
+				Contact: CONTACT
 			}
 		}
 	};

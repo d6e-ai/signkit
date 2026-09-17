@@ -24,7 +24,6 @@ class ApprovedPublicationIntegrityError extends Error {
 }
 
 interface RecipientEnvelopeRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientRole: RecipientRole;
@@ -46,7 +45,6 @@ interface EnvelopeLockRow {
 
 interface RecipientLockRow {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientRole: RecipientRole;
 	recipientStatus: string;
@@ -81,7 +79,6 @@ interface TerminalProjectionRow {
 }
 
 interface ApprovedCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientRole: RecipientRole;
@@ -105,7 +102,6 @@ interface ApprovedCommandRow {
 	completedAuditEventHash: string | null;
 	completedAuditPayloadJson: string | null;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -117,7 +113,6 @@ interface ApprovedCommandRow {
 	evidenceOccurredAt: Date | string | null;
 	evidenceHashVersion: number | string | null;
 	completedEvidenceEventId: string | null;
-	completedEvidenceOrganizationId: string | null;
 	completedEvidenceEnvelopeId: string | null;
 	completedEvidenceSequence: number | string | null;
 	completedEvidenceEventType: string | null;
@@ -146,7 +141,6 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		if (!isFoundRow(identity)) return identity;
 		const replay: ApprovePreparation | null = await this.#resolveCommand(
 			this.#sql,
-			identity.organizationId,
 			identity.recipientId,
 			key
 		);
@@ -170,7 +164,6 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		if (!liveEligible(identity, key.capabilityHash, at)) return { outcome: 'not_found' };
 		const routing: ApproveRoutingSnapshot | null = await this.#readRouting(
 			this.#sql,
-			identity.organizationId,
 			identity.envelopeId,
 			identity.recipientId,
 			identity.routingOrder
@@ -178,13 +171,11 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		if (routing === null) return { outcome: 'integrity_error' };
 		const auditHead: ApproveAuditHead | null = await this.#readAuditHead(
 			this.#sql,
-			identity.organizationId,
 			identity.envelopeId
 		);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
-			organizationId: identity.organizationId,
 			envelopeId: identity.envelopeId,
 			recipientId: identity.recipientId,
 			recipientRole: 'approver',
@@ -210,27 +201,27 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				const envelopeRows = await transaction<EnvelopeLockRow[]>`
 						SELECT status, sent_commit_sha AS "sentCommitSha", repository_head AS "repositoryHead"
 						FROM envelope
-						WHERE organization_id = ${identity.organizationId} AND id = ${identity.envelopeId}
+						WHERE id = ${identity.envelopeId}
 						FOR UPDATE`;
 				if (envelopeRows.length === 0) return { outcome: 'not_found' };
 				const envelope: EnvelopeLockRow = envelopeRows[0];
 
 				const recipients = await transaction<RecipientLockRow[]>`
-						SELECT id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+						SELECT id, envelope_id AS "envelopeId",
 							role AS "recipientRole", status AS "recipientStatus",
 							capability_hash AS "recipientCapabilityHash",
 							capability_expires_at AS "recipientCapabilityExpiresAt",
 							capability_revoked_at AS "recipientCapabilityRevokedAt",
 							routing_order AS "routingOrder"
 						FROM recipient
-						WHERE organization_id = ${identity.organizationId} AND envelope_id = ${identity.envelopeId}
+						WHERE envelope_id = ${identity.envelopeId}
 						ORDER BY id
 						FOR UPDATE`;
 
 				const deliveries = await transaction<DeliveryLockRow[]>`
 						SELECT id, status, retryable, sealed_capability AS "sealedCapability"
 						FROM delivery_outbox
-						WHERE organization_id = ${identity.organizationId} AND envelope_id = ${identity.envelopeId}
+						WHERE envelope_id = ${identity.envelopeId}
 						ORDER BY id
 						FOR UPDATE`;
 
@@ -248,7 +239,6 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				if (actor.recipientRole !== 'approver') return { outcome: 'role_not_actionable' };
 
 				const lockedRow: RecipientEnvelopeRow = {
-					organizationId: actor.organizationId,
 					envelopeId: actor.envelopeId,
 					recipientId: actor.id,
 					recipientRole: actor.recipientRole,
@@ -263,7 +253,6 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				};
 				const raced: ApprovePreparation | null = await this.#resolveCommand(
 					transaction,
-					actor.organizationId,
 					actor.id,
 					command
 				);
@@ -309,7 +298,6 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 
 				const auditHead: ApproveAuditHead | null = await this.#readAuditHead(
 					transaction,
-					actor.organizationId,
 					actor.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
@@ -324,7 +312,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 						UPDATE recipient
 						SET status = 'completed', capability_revoked_at = ${command.updatedAt},
 							updated_at = ${command.updatedAt}
-						WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+						WHERE envelope_id = ${actor.envelopeId}
 							AND id = ${actor.id} AND status = 'viewed'
 							AND role = 'approver' AND role = ${command.recipientRole}
 							AND routing_order = ${command.routingOrder}
@@ -339,7 +327,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 							UPDATE recipient
 							SET capability_expires_at = ${command.nextCapabilityExpiresAt},
 								updated_at = ${command.updatedAt}
-							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+							WHERE envelope_id = ${actor.envelopeId}
 								AND routing_order = ${command.nextRoutingOrder}
 								AND role IN ('signer', 'approver', 'viewer') AND status <> 'completed'
 								AND capability_hash IS NOT NULL AND capability_revoked_at IS NULL
@@ -354,15 +342,13 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 								reserved_capability_expires_at = ${command.nextCapabilityExpiresAt},
 								available_at = ${command.updatedAt},
 								updated_at = ${command.updatedAt}
-							WHERE delivery.organization_id = ${actor.organizationId}
-								AND delivery.envelope_id = ${actor.envelopeId}
+							WHERE delivery.envelope_id = ${actor.envelopeId}
 								AND delivery.status = 'blocked'
 								AND delivery.available_at IS NULL
 								AND delivery.sealed_capability IS NOT NULL
 								AND EXISTS (
 									SELECT 1 FROM recipient AS target
-									WHERE target.organization_id = delivery.organization_id
-										AND target.id = delivery.recipient_id
+									WHERE target.id = delivery.recipient_id
 										AND target.envelope_id = delivery.envelope_id
 										AND target.routing_order = ${command.nextRoutingOrder}
 										AND target.role IN ('signer', 'approver', 'viewer')
@@ -381,7 +367,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 					await transaction`
 							UPDATE recipient
 							SET capability_revoked_at = ${command.updatedAt}, updated_at = ${command.updatedAt}
-							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+							WHERE envelope_id = ${actor.envelopeId}
 								AND status <> 'completed' AND capability_hash IS NOT NULL
 								AND capability_revoked_at IS NULL`;
 
@@ -391,17 +377,17 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 								retryable = false, sealed_capability = NULL,
 								available_at = COALESCE(available_at, ${command.updatedAt}),
 								last_error = 'envelope_terminal', updated_at = ${command.updatedAt}
-							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+							WHERE envelope_id = ${actor.envelopeId}
 								AND (status IN ('blocked', 'pending') OR (status = 'failed' AND retryable))`;
 
 					const outstandingCapabilities = await transaction<{ id: string }[]>`
 							SELECT id FROM recipient
-							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+							WHERE envelope_id = ${actor.envelopeId}
 								AND status <> 'completed' AND capability_hash IS NOT NULL
 								AND capability_revoked_at IS NULL`;
 					const unsafeDeliveries = await transaction<{ id: string }[]>`
 							SELECT id FROM delivery_outbox
-							WHERE organization_id = ${actor.organizationId} AND envelope_id = ${actor.envelopeId}
+							WHERE envelope_id = ${actor.envelopeId}
 								AND (status IN ('blocked', 'pending', 'processing')
 									OR retryable OR sealed_capability IS NOT NULL)`;
 					if (outstandingCapabilities.length !== 0 || unsafeDeliveries.length !== 0) {
@@ -416,7 +402,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 						? await transaction<{ id: string }[]>`
 								UPDATE envelope
 								SET status = 'completed', updated_at = ${command.updatedAt}
-								WHERE organization_id = ${actor.organizationId} AND id = ${actor.envelopeId}
+								WHERE id = ${actor.envelopeId}
 									AND status IN ('sent', 'in_progress')
 									AND sent_commit_sha = ${command.expectedSentCommitSha}
 									AND sent_commit_sha = repository_head
@@ -425,7 +411,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 								UPDATE envelope
 								SET status = CASE WHEN status = 'sent' THEN 'in_progress' ELSE status END,
 									updated_at = ${command.updatedAt}
-								WHERE organization_id = ${actor.organizationId} AND id = ${actor.envelopeId}
+								WHERE id = ${actor.envelopeId}
 									AND status IN ('sent', 'in_progress')
 									AND sent_commit_sha = ${command.expectedSentCommitSha}
 									AND sent_commit_sha = repository_head
@@ -433,13 +419,13 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				if (envelopeUpdateRows.length !== 1) throw new ApprovedPublicationIntegrityError();
 
 				await transaction`INSERT INTO recipient_approved_command (
-						organization_id, envelope_id, recipient_id, recipient_role, routing_order,
+						envelope_id, recipient_id, recipient_role, routing_order,
 						actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 						sent_commit_sha, updated_at, next_routing_order, next_capability_expires_at,
 						released_delivery_count, audit_event_id, audit_sequence, previous_audit_hash,
 						audit_event_hash, audit_payload_json, completed_audit_event_id,
 						completed_audit_event_hash, completed_audit_payload_json
-					) VALUES (${actor.organizationId}, ${actor.envelopeId}, ${actor.id},
+					) VALUES (${actor.envelopeId}, ${actor.id},
 						${command.recipientRole}, ${command.routingOrder}, 'recipient', ${actor.id},
 						${command.idempotencyKey}, ${command.requestFingerprint}, ${command.capabilityHash},
 						${command.expectedSentCommitSha}, ${command.updatedAt}, ${command.nextRoutingOrder},
@@ -449,18 +435,18 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 						${command.completedAuditEventHash}, ${command.completedAuditPayloadJson})`;
 
 				await transaction`INSERT INTO audit_event (
-						id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+						id, envelope_id, sequence, event_type, actor_type, actor_id,
 						payload_json, previous_hash, event_hash, occurred_at
-					) VALUES (${command.auditEventId}, ${actor.organizationId}, ${actor.envelopeId},
+					) VALUES (${command.auditEventId}, ${actor.envelopeId},
 						${command.expectedAuditSequence + 1}, 'recipient.approved', 'recipient', ${actor.id},
 						${command.auditPayloadJson}, ${command.previousAuditHash}, ${command.auditEventHash},
 						${command.updatedAt})`;
 
 				if (command.completedAuditEventId !== null) {
 					await transaction`INSERT INTO audit_event (
-							id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+							id, envelope_id, sequence, event_type, actor_type, actor_id,
 							payload_json, previous_hash, event_hash, occurred_at
-						) VALUES (${command.completedAuditEventId}, ${actor.organizationId}, ${actor.envelopeId},
+						) VALUES (${command.completedAuditEventId}, ${actor.envelopeId},
 							${command.expectedAuditSequence + 2}, 'envelope.completed', 'recipient', ${actor.id},
 							${command.completedAuditPayloadJson}, ${command.auditEventHash},
 							${command.completedAuditEventHash}, ${command.updatedAt})`;
@@ -484,7 +470,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		capabilityHash: string
 	): Promise<RecipientEnvelopeRow | null> {
 		const rows = await sql<RecipientEnvelopeRow[]>`
-			SELECT recipient.organization_id AS "organizationId",
+			SELECT
 				recipient.envelope_id AS "envelopeId",
 				recipient.id AS "recipientId",
 				recipient.role AS "recipientRole",
@@ -498,8 +484,7 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				envelope.repository_head AS "envelopeRepositoryHead"
 			FROM recipient
 			INNER JOIN envelope
-				ON envelope.organization_id = recipient.organization_id
-				AND envelope.id = recipient.envelope_id
+				ON envelope.id = recipient.envelope_id
 			WHERE recipient.capability_hash = ${capabilityHash}
 			LIMIT 1`;
 		return rows[0] ?? null;
@@ -507,7 +492,6 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 
 	async #readRouting(
 		sql: Sql,
-		organizationId: string,
 		envelopeId: string,
 		actorId: string,
 		actorRoutingOrder: number
@@ -515,19 +499,15 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		const rows = await sql<RoutingRecipientRow[]>`
 			SELECT id, role, routing_order AS "routingOrder", status
 			FROM recipient
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}`;
+			WHERE envelope_id = ${envelopeId}`;
 		if (rows.length < 1 || rows.length > 50) return null;
 		return routingAfterActor(actorId, actorRoutingOrder, rows);
 	}
 
-	async #readAuditHead(
-		sql: Sql,
-		organizationId: string,
-		envelopeId: string
-	): Promise<ApproveAuditHead | null> {
+	async #readAuditHead(sql: Sql, envelopeId: string): Promise<ApproveAuditHead | null> {
 		const rows = await sql<AuditHeadRow[]>`
 			SELECT sequence, event_hash AS "eventHash" FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence DESC LIMIT 1`;
 		const row: AuditHeadRow | undefined = rows[0];
 		if (row === undefined) return null;
@@ -538,13 +518,11 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 
 	async #resolveCommand(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string,
 		key: ApproveCommandKey
 	): Promise<ApprovePreparation | null> {
 		const exact: ApprovedCommandRow | null = await this.#readCommandRow(
 			sql,
-			organizationId,
 			recipientId,
 			key.idempotencyKey
 		);
@@ -560,7 +538,6 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		}
 		const byRecipient: ApprovedCommandRow | null = await this.#readCommandRowByRecipient(
 			sql,
-			organizationId,
 			recipientId
 		);
 		if (byRecipient === null) return null;
@@ -575,12 +552,11 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 
 	async #readCommandRow(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string,
 		idempotencyKey: string
 	): Promise<ApprovedCommandRow | null> {
 		const rows = await sql<ApprovedCommandRow[]>`
-			SELECT command.organization_id AS "organizationId", command.envelope_id AS "envelopeId",
+			SELECT command.envelope_id AS "envelopeId",
 				command.recipient_id AS "recipientId", command.recipient_role AS "recipientRole",
 				command.routing_order AS "routingOrder", command.actor_type AS "actorType",
 				command.actor_id AS "actorId", command.idempotency_key AS "idempotencyKey",
@@ -596,14 +572,13 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				command.completed_audit_event_hash AS "completedAuditEventHash",
 				command.completed_audit_payload_json AS "completedAuditPayloadJson",
 				evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
+				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
 				evidence.event_hash AS "evidenceEventHash", evidence.occurred_at AS "evidenceOccurredAt",
 				evidence.hash_version AS "evidenceHashVersion",
 				completed_evidence.id AS "completedEvidenceEventId",
-				completed_evidence.organization_id AS "completedEvidenceOrganizationId",
 				completed_evidence.envelope_id AS "completedEvidenceEnvelopeId",
 				completed_evidence.sequence AS "completedEvidenceSequence",
 				completed_evidence.event_type AS "completedEvidenceEventType",
@@ -616,11 +591,10 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				completed_evidence.hash_version AS "completedEvidenceHashVersion"
 			FROM recipient_approved_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
+				ON evidence.id = command.audit_event_id
 			LEFT JOIN audit_event completed_evidence
-				ON completed_evidence.organization_id = command.organization_id
-				AND completed_evidence.id = command.completed_audit_event_id
-			WHERE command.organization_id = ${organizationId} AND command.actor_type = 'recipient'
+				ON completed_evidence.id = command.completed_audit_event_id
+			WHERE command.actor_type = 'recipient'
 				AND command.actor_id = ${recipientId} AND command.idempotency_key = ${idempotencyKey}
 			LIMIT 1`;
 		return rows[0] ?? null;
@@ -628,11 +602,10 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 
 	async #readCommandRowByRecipient(
 		sql: Sql,
-		organizationId: string,
 		recipientId: string
 	): Promise<ApprovedCommandRow | null> {
 		const rows = await sql<ApprovedCommandRow[]>`
-			SELECT command.organization_id AS "organizationId", command.envelope_id AS "envelopeId",
+			SELECT command.envelope_id AS "envelopeId",
 				command.recipient_id AS "recipientId", command.recipient_role AS "recipientRole",
 				command.routing_order AS "routingOrder", command.actor_type AS "actorType",
 				command.actor_id AS "actorId", command.idempotency_key AS "idempotencyKey",
@@ -648,14 +621,13 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				command.completed_audit_event_hash AS "completedAuditEventHash",
 				command.completed_audit_payload_json AS "completedAuditPayloadJson",
 				evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
+				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 				evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 				evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
 				evidence.event_hash AS "evidenceEventHash", evidence.occurred_at AS "evidenceOccurredAt",
 				evidence.hash_version AS "evidenceHashVersion",
 				completed_evidence.id AS "completedEvidenceEventId",
-				completed_evidence.organization_id AS "completedEvidenceOrganizationId",
 				completed_evidence.envelope_id AS "completedEvidenceEnvelopeId",
 				completed_evidence.sequence AS "completedEvidenceSequence",
 				completed_evidence.event_type AS "completedEvidenceEventType",
@@ -668,11 +640,10 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 				completed_evidence.hash_version AS "completedEvidenceHashVersion"
 			FROM recipient_approved_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
+				ON evidence.id = command.audit_event_id
 			LEFT JOIN audit_event completed_evidence
-				ON completed_evidence.organization_id = command.organization_id
-				AND completed_evidence.id = command.completed_audit_event_id
-			WHERE command.organization_id = ${organizationId} AND command.recipient_id = ${recipientId}
+				ON completed_evidence.id = command.completed_audit_event_id
+			WHERE command.recipient_id = ${recipientId}
 			LIMIT 1`;
 		return rows[0] ?? null;
 	}
@@ -684,28 +655,24 @@ export class PostgresRecipientApproveStore implements RecipientApproveStore {
 		const result: PublishedRecipientApproved = resultFromRow(row);
 		if (
 			result.envelopeStatus === 'completed' &&
-			!(await this.#terminalProjectionIntact(sql, row.organizationId, row.envelopeId))
+			!(await this.#terminalProjectionIntact(sql, row.envelopeId))
 		) {
 			return { outcome: 'integrity_error' };
 		}
 		return { outcome: 'replayed', result };
 	}
 
-	async #terminalProjectionIntact(
-		sql: Sql,
-		organizationId: string,
-		envelopeId: string
-	): Promise<boolean> {
+	async #terminalProjectionIntact(sql: Sql, envelopeId: string): Promise<boolean> {
 		const rows = await sql<TerminalProjectionRow[]>`
 			SELECT EXISTS (
 				SELECT 1 FROM recipient
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+				WHERE envelope_id = ${envelopeId}
 					AND status <> 'completed' AND capability_hash IS NOT NULL
 					AND capability_revoked_at IS NULL
 			) AS "hasRevocableRecipient",
 			EXISTS (
 				SELECT 1 FROM delivery_outbox
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+				WHERE envelope_id = ${envelopeId}
 					AND (status IN ('blocked', 'pending', 'processing')
 						OR retryable OR sealed_capability IS NOT NULL)
 			) AS "hasUnsafeDelivery"`;
@@ -866,7 +833,6 @@ function commandMatchesRouting(
 function validAuditEvidence(row: ApprovedCommandRow): boolean {
 	const approvedMatches: boolean =
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'recipient.approved' &&
@@ -886,7 +852,6 @@ function validAuditEvidence(row: ApprovedCommandRow): boolean {
 	}
 	return (
 		row.completedEvidenceEventId === row.completedAuditEventId &&
-		row.completedEvidenceOrganizationId === row.organizationId &&
 		row.completedEvidenceEnvelopeId === row.envelopeId &&
 		Number(row.completedEvidenceSequence) === Number(row.auditSequence) + 1 &&
 		row.completedEvidenceEventType === 'envelope.completed' &&
@@ -927,7 +892,7 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 			payload: auditPayloadValue,
 			previousHash: row.previousAuditHash
 		},
-		{ organizationId: row.organizationId, envelopeId: row.envelopeId }
+		{ envelopeId: row.envelopeId }
 	);
 	if (
 		requestHash !== row.requestHash ||
@@ -962,7 +927,7 @@ async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
 				payload: completedPayloadValue,
 				previousHash: row.auditEventHash
 			},
-			{ organizationId: row.organizationId, envelopeId: row.envelopeId }
+			{ envelopeId: row.envelopeId }
 		);
 		return (
 			completedPayload === row.completedAuditPayloadJson &&

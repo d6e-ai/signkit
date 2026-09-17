@@ -41,9 +41,17 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(lockfile).toMatch(/npm:\n\s+specifier: 11\.5\.1\n\s+version: 11\.5\.1/);
 		expect(lockfile).toMatch(/npm@11\.5\.1:\n\s+resolution: \{integrity: sha512-/);
 		expect(yaml).toMatch(/selected="\$\(pnpm exec which npm\)"/);
+		// Regression: the selected CLI must be normalized to an absolute path
+		// at selection time; the publish step runs in packages/create-signkit
+		// where a relative ./node_modules path no longer resolves.
+		expect(yaml).toMatch(/selected="\$\(realpath -m "\$selected"\)"/);
+		expect(yaml).toMatch(/npm CLI path is not absolute/);
+		expect(yaml.indexOf('case "$selected" in')).toBeLessThan(
+			yaml.indexOf('echo "bin=${selected}"')
+		);
 		expect(yaml).toMatch(/pnpm exec "\$NPM_CLI" publish --access public --tag "\$NPM_DIST_TAG"/);
 		expect(yaml).not.toMatch(/pnpm exec "\$NPM_CLI" publish --access public\s*$/m);
-		expect(yaml).toMatch('NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}');
+		expect(yaml).not.toMatch(/NODE_AUTH_TOKEN/);
 		expect(yaml).not.toMatch(/echo[^|\n]*NODE_AUTH_TOKEN/);
 		expect(yaml).toMatch(/lockfile-pinned npm CLI mismatch/);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease\)/);
@@ -78,6 +86,13 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).toMatch(/require\('\.\/package\.json'\)\.version/);
 		expect(yaml).toMatch(/require\('\.\/packages\/create-signkit\/package\.json'\)\.version/);
 		expect(yaml).toMatch(/cli\/Cargo\.toml/);
+		// Regression: `node -p` prints the evaluated expression, so combining
+		// it with `process.stdout.write(m[1])` captures e.g. `0.1.0true`.
+		// The CLI gate must use `node -e` with the explicit write instead.
+		expect(yaml).not.toMatch(/node -p[^\n]*process\.stdout\.write/);
+		expect(
+			yaml.match(/node -e "const fs=require\('fs'\);[^\n]*process\.stdout\.write\(m\[1\]\)/g) ?? []
+		).toHaveLength(3);
 		// npm publish is hard-gated on the release job.
 		expect(yaml).toMatch(/needs:\s*release/);
 		// No deployment: no wrangler deploy, no registry push.
@@ -232,6 +247,21 @@ describe('synthetic release tag precedence', () => {
 		expect(verify).toMatch(/resolveReleaseTag\(process\.env\)/);
 		expect(build).toMatch(/channelFromReleaseTag\(tag\)/);
 	});
+
+	it('preserves unrelated release assets when rebuilding the Cloudflare bundle', async () => {
+		const build = await readFile(buildScriptPath, 'utf8');
+		// Regression: recursively deleting .release/assets wipes the Node
+		// artifact built earlier in the release job.
+		expect(build).not.toMatch(/rm\(\s*outDir\s*,[^)]*recursive\s*:\s*true/);
+		// Cloudflare-owned staging may still be reset for the current run.
+		expect(build).toMatch(/rm\(\s*staging\s*,\s*\{\s*recursive:\s*true/);
+		// Only Cloudflare-owned outputs for the current tag are removed
+		// before the bundle, manifest, and temporary checksums are rewritten.
+		expect(build).toMatch(/rm\(\s*join\(\s*outDir\s*,\s*bundleName\s*\)/);
+		expect(build).toMatch(/rm\(\s*join\(\s*outDir\s*,\s*MANIFEST_NAME\s*\)/);
+		expect(build).toMatch(/rm\(\s*join\(\s*outDir\s*,\s*['"]SHA256SUMS['"]\s*\)/);
+		expect(build).toMatch(/mkdir\(\s*outDir\s*,\s*\{\s*recursive:\s*true/);
+	});
 });
 
 describe('semver release tags', () => {
@@ -243,13 +273,23 @@ describe('semver release tags', () => {
 		expect(parseReleaseTag('v1.2.3-hotfix.1').prerelease).toBe('hotfix.1');
 	});
 
+	it('bounds tags so Fulcio certificate policy stays in DER short-form encoding', () => {
+		const maximum = `v1.2.3-${'a'.repeat(28)}`;
+		const oversized = `v1.2.3-${'a'.repeat(29)}`;
+		expect(Buffer.byteLength(maximum)).toBe(35);
+		expect(parseReleaseTag(maximum).raw).toBe(maximum);
+		expect(Buffer.byteLength(oversized)).toBe(36);
+		expect(() => parseReleaseTag(oversized)).toThrow(/35-byte provenance identity limit/);
+	});
+
 	it('rejects build metadata', async () => {
 		expect(() => parseReleaseTag('v1.2.3+build.1')).toThrow(/build metadata/);
 		expect(() => parseReleaseTag('v1.2.3-beta.1+exp.sha')).toThrow(/build metadata/);
 		const schema = JSON.parse(
 			await readFile(new URL('../schema/release-manifest.v1.json', import.meta.url), 'utf8')
-		) as { properties: { tag: { pattern: string } } };
+		) as { properties: { tag: { maxLength: number; pattern: string } } };
 		const tagPattern = new RegExp(schema.properties.tag.pattern);
+		expect(schema.properties.tag.maxLength).toBe(35);
 		expect(tagPattern.test('v1.2.3')).toBe(true);
 		expect(tagPattern.test('v1.2.3-beta.1')).toBe(true);
 		expect(tagPattern.test('v1.2.3+build.1')).toBe(false);

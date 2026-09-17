@@ -50,7 +50,6 @@ async fn test_envelope_deliveries_success() {
             "/api/v1/envelopes/{}/deliveries",
             common::TEST_ENVELOPE_ID
         )))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .and(header(
             "authorization",
             format!("Bearer {}", common::TEST_API_KEY).as_str(),
@@ -64,8 +63,6 @@ async fn test_envelope_deliveries_success() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "deliveries",
         common::TEST_ENVELOPE_ID,
@@ -103,8 +100,6 @@ async fn test_envelope_deliveries_not_found() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "deliveries",
         common::TEST_ENVELOPE_ID,

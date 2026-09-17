@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
@@ -19,53 +18,17 @@ async function fixture(): Promise<{ database: D1Database; sqlite: DatabaseSync }
 	for (const path of MIGRATIONS) sqlite.exec(readFileSync(path, 'utf8'));
 	const capabilityHash: string = await hashRecipientCapability(TOKEN);
 	sqlite.exec(`
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('org-1','org-1','Workspace','2026-09-12T00:00:00.000Z');
-		INSERT INTO envelope (
-			id, organization_id, title, status, repository_generation, repository_head,
-			sent_commit_sha, created_at, updated_at
-		) VALUES (
-			'01920000-0000-7000-8000-000000000001','org-1','Agreement','sent',1,'commit-1','commit-1',
-			'2026-09-12T00:00:00.000Z','2026-09-12T00:01:00.000Z'
-		);
-		INSERT INTO audit_event (
-			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
-			payload_json, previous_hash, event_hash, occurred_at
-		) VALUES (
-			'01960000-0000-7000-8000-0000000000a1','org-1','01920000-0000-7000-8000-000000000001',1,'envelope.sent','user','user-1','{}',
-			'genesis','sent-hash','2026-09-12T00:01:00.000Z'
-		);
-		INSERT INTO recipient (
-			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
-			capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
-		) VALUES (
-			'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','actor@example.com','Actor','signer','en',1,'pending',
-			'${capabilityHash}','2026-09-30T00:00:00.000Z',NULL,
-			'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z'
-		), (
-			'01930000-0000-7000-8000-000000000002','org-1','01920000-0000-7000-8000-000000000001','sibling@example.com','Sibling','signer','en',2,'pending',
-			'sibling-capability',NULL,NULL,
-			'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z'
-		), (
-			'01930000-0000-7000-8000-000000000003','org-1','01920000-0000-7000-8000-000000000001','completed@example.com','Completed','approver','en',1,'completed',
-			'completed-capability','2026-09-30T00:00:00.000Z','${DECLINED_AT}',
-			'2026-09-12T00:01:00.000Z','${DECLINED_AT}'
-		);
-		INSERT INTO delivery_outbox (
-			id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
-			reserved_capability_expires_at, sealed_capability, sealing_key_id,
-			sealed_capability_sha256, available_at, attempts, created_at, updated_at,
-			claim_token, retryable
-		) VALUES (
-			'01940000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','recipient_invitation','pending',
-			'${capabilityHash}','2026-09-30T00:00:00.000Z','sealed-actor','key-1','hash-1',
-			'2026-09-12T00:01:00.000Z',0,'2026-09-12T00:01:00.000Z',
-			'2026-09-12T00:01:00.000Z',NULL,1
-		), (
-			'01940000-0000-7000-8000-000000000002','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000002','recipient_invitation','blocked',
-			'sibling-capability',NULL,'sealed-sibling','key-1','hash-2',NULL,0,
-			'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z',NULL,1
-		);
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '2026-09-12T00:00:00.000Z', '2026-09-12T00:00:00.000Z');
+		INSERT INTO envelope (id, created_by_user_id, title, status, repository_generation, repository_head, sent_commit_sha, created_at, updated_at) VALUES ('01920000-0000-7000-8000-000000000001', 'user-1', 'Agreement', 'sent', 1, 'commit-1', 'commit-1', '2026-09-12T00:00:00.000Z', '2026-09-12T00:01:00.000Z');
+		INSERT INTO audit_event (id, envelope_id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash, event_hash, occurred_at) VALUES ('01960000-0000-7000-8000-0000000000a1', '01920000-0000-7000-8000-000000000001', 1, 'envelope.sent', 'user', 'user-1', '{}', 'genesis', 'sent-hash', '2026-09-12T00:01:00.000Z');
+		INSERT INTO recipient (id, envelope_id, email, name, role, locale, routing_order, status, capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at) VALUES
+			('01930000-0000-7000-8000-000000000001', '01920000-0000-7000-8000-000000000001', 'actor@example.com', 'Actor', 'signer', 'en', 1, 'pending', '${capabilityHash}', '2026-09-30T00:00:00.000Z', NULL, '2026-09-12T00:01:00.000Z', '2026-09-12T00:01:00.000Z'),
+			('01930000-0000-7000-8000-000000000002', '01920000-0000-7000-8000-000000000001', 'sibling@example.com', 'Sibling', 'signer', 'en', 2, 'pending', 'sibling-capability', NULL, NULL, '2026-09-12T00:01:00.000Z', '2026-09-12T00:01:00.000Z'),
+			('01930000-0000-7000-8000-000000000003', '01920000-0000-7000-8000-000000000001', 'completed@example.com', 'Completed', 'approver', 'en', 1, 'completed', 'completed-capability', '2026-09-30T00:00:00.000Z', '${DECLINED_AT}', '2026-09-12T00:01:00.000Z', '${DECLINED_AT}');
+		INSERT INTO delivery_outbox (id, envelope_id, recipient_id, kind, status, capability_hash, reserved_capability_expires_at, sealed_capability, sealing_key_id, sealed_capability_sha256, available_at, attempts, created_at, updated_at, claim_token, retryable) VALUES
+			('01940000-0000-7000-8000-000000000001', '01920000-0000-7000-8000-000000000001', '01930000-0000-7000-8000-000000000001', 'recipient_invitation', 'pending', '${capabilityHash}', '2026-09-30T00:00:00.000Z', 'sealed-actor', 'key-1', 'hash-1', '2026-09-12T00:01:00.000Z', 0, '2026-09-12T00:01:00.000Z', '2026-09-12T00:01:00.000Z', NULL, 1),
+			('01940000-0000-7000-8000-000000000002', '01920000-0000-7000-8000-000000000001', '01930000-0000-7000-8000-000000000002', 'recipient_invitation', 'blocked', 'sibling-capability', NULL, 'sealed-sibling', 'key-1', 'hash-2', NULL, 0, '2026-09-12T00:01:00.000Z', '2026-09-12T00:01:00.000Z', NULL, 1);
 	`);
 	return { database: sqliteD1Database(sqlite), sqlite };
 }
@@ -169,88 +132,4 @@ describe('D1 terminal delivery cleanup integration', () => {
 			sqlite.close();
 		}
 	});
-
-	it('keeps a version 1 decline receipt replayable after the migration', async () => {
-		const sqlite: DatabaseSync = new DatabaseSync(':memory:');
-		try {
-			for (const path of MIGRATIONS.slice(0, 7)) sqlite.exec(readFileSync(path, 'utf8'));
-			const capabilityHash: string = await hashRecipientCapability(TOKEN);
-			const requestHash: string = sha256(
-				JSON.stringify({
-					envelopeId: '01920000-0000-7000-8000-000000000001',
-					recipientId: '01930000-0000-7000-8000-000000000001',
-					capabilityHash
-				})
-			);
-			const payloadValue = {
-				recipientId: '01930000-0000-7000-8000-000000000001',
-				role: 'signer',
-				routingOrder: 1,
-				sentCommitSha: 'commit-1',
-				declinedAt: DECLINED_AT
-			};
-			const payload: string = JSON.stringify(payloadValue);
-			const eventHash: string = sha256(
-				JSON.stringify({
-					actorId: '01930000-0000-7000-8000-000000000001',
-					envelopeId: '01920000-0000-7000-8000-000000000001',
-					eventType: 'recipient.declined',
-					occurredAt: DECLINED_AT,
-					organizationId: 'org-1',
-					payload: payloadValue,
-					previousHash: 'sent-hash'
-				})
-			);
-			sqlite.exec(`
-				INSERT INTO organization (id, d6e_organization_id, name, created_at)
-				VALUES ('org-1','org-1','Workspace','2026-09-12T00:00:00.000Z');
-				INSERT INTO envelope (
-					id, organization_id, title, status, repository_generation, repository_head,
-					sent_commit_sha, created_at, updated_at
-				) VALUES (
-					'01920000-0000-7000-8000-000000000001','org-1','Agreement','sent',1,'commit-1','commit-1',
-					'2026-09-12T00:00:00.000Z','2026-09-12T00:01:00.000Z'
-				);
-				INSERT INTO audit_event (
-					id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
-					payload_json, previous_hash, event_hash, occurred_at
-				) VALUES (
-					'01960000-0000-7000-8000-0000000000a1','org-1','01920000-0000-7000-8000-000000000001',1,'envelope.sent','user','user-1','{}',
-					'genesis','sent-hash','2026-09-12T00:01:00.000Z'
-				);
-				INSERT INTO recipient (
-					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
-					capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
-				) VALUES (
-					'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','actor@example.com','Actor','signer','en',1,'pending',
-					'${capabilityHash}','2026-09-30T00:00:00.000Z',NULL,
-					'2026-09-12T00:01:00.000Z','2026-09-12T00:01:00.000Z'
-				);
-			`);
-			sqlite
-				.prepare(
-					`INSERT INTO recipient_declined_command (
-						organization_id, envelope_id, recipient_id, recipient_role, routing_order,
-						actor_type, actor_id, idempotency_key, request_hash, capability_hash,
-						sent_commit_sha, updated_at, audit_event_id, audit_sequence,
-						previous_audit_hash, audit_event_hash, audit_payload_json
-					) VALUES ('org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','signer',1,'recipient','01930000-0000-7000-8000-000000000001',
-						'decline-terminal-cleanup',?,?, 'commit-1',?,'01960000-0000-7000-8000-0000000000a2',2,
-						'sent-hash',?,?)`
-				)
-				.run(requestHash, capabilityHash, DECLINED_AT, eventHash, payload);
-
-			for (const path of MIGRATIONS.slice(7)) sqlite.exec(readFileSync(path, 'utf8'));
-			await expect(decline(sqliteD1Database(sqlite))).resolves.toMatchObject({
-				outcome: 'replayed',
-				result: { declinedAt: DECLINED_AT }
-			});
-		} finally {
-			sqlite.close();
-		}
-	});
 });
-
-function sha256(value: string): string {
-	return createHash('sha256').update(value).digest('hex');
-}

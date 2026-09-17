@@ -4,10 +4,7 @@ import type {
 	DeliveryStatusService,
 	PublicEnvelopeDeliveryStatus
 } from '$lib/application/delivery/delivery-status';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -25,7 +22,7 @@ export function createDeliveryStatusHandler(
 	resolveService: DeliveryStatusServiceResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -52,16 +49,13 @@ export function createDeliveryStatusHandler(
 		if (service === null) return unavailable(url.pathname);
 
 		try {
-			const status: PublicEnvelopeDeliveryStatus | null = await service.find(
-				authorized.organizationId,
-				envelopeId.data
-			);
+			const status: PublicEnvelopeDeliveryStatus | null = await service.find(envelopeId.data);
 			if (status === null) {
 				return problemResponse({
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
 					status: 404,
-					detail: 'No envelope was found in the authorized organization.',
+					detail: 'No envelope was found.',
 					instance: url.pathname
 				});
 			}

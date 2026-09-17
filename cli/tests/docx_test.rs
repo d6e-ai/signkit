@@ -39,8 +39,6 @@ async fn test_envelopes_import_docx_from_file() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "import-docx",
         common::TEST_ENVELOPE_ID,
@@ -63,8 +61,6 @@ async fn test_envelopes_import_docx_rejects_invalid_target_path() {
         "signkit",
         "--base-url",
         "http://127.0.0.1:9",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "import-docx",
         common::TEST_ENVELOPE_ID,
@@ -89,7 +85,6 @@ async fn test_envelopes_export_docx_to_file() {
             "/api/v1/envelopes/{}/docx",
             common::TEST_ENVELOPE_ID
         )))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header(
@@ -113,8 +108,6 @@ async fn test_envelopes_export_docx_to_file() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "export-docx",
         common::TEST_ENVELOPE_ID,
@@ -153,8 +146,6 @@ async fn test_envelopes_export_docx_conflict_uses_existing_exit_code() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "export-docx",
         common::TEST_ENVELOPE_ID,

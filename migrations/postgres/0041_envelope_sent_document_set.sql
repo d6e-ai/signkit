@@ -16,7 +16,6 @@
 -- row whose existence means "this send is pinned".
 
 CREATE TABLE envelope_sent_document (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   commit_sha text NOT NULL,
   document_id text NOT NULL,
@@ -30,28 +29,27 @@ CREATE TABLE envelope_sent_document (
   page_width real NOT NULL CHECK (page_width > 0 AND page_width <= 20000),
   page_height real NOT NULL CHECK (page_height > 0 AND page_height <= 20000),
   created_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id, commit_sha, document_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id, commit_sha, document_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT envelope_sent_document_id_uuidv7 CHECK (
     document_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
   CONSTRAINT envelope_sent_document_sha256_hex CHECK (sha256 ~ '^[0-9a-f]{64}$'),
   CONSTRAINT envelope_sent_document_position_unique UNIQUE (
-    organization_id, envelope_id, commit_sha, position
+    envelope_id, commit_sha, position
   )
 );
 
 CREATE INDEX envelope_sent_document_object_key ON envelope_sent_document(object_key);
 
 CREATE TABLE envelope_sent_document_set (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   commit_sha text NOT NULL,
   document_set_hash text NOT NULL,
   document_count integer NOT NULL CHECK (document_count BETWEEN 1 AND 20),
   created_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id, commit_sha),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id, commit_sha),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT envelope_sent_document_set_hash_hex CHECK (document_set_hash ~ '^[0-9a-f]{64}$')
 );
 
@@ -70,19 +68,19 @@ DROP INDEX envelope_field_document_order;
 DROP INDEX envelope_field_recipient_document_position;
 
 CREATE INDEX envelope_field_document_order
-  ON envelope_field(organization_id, envelope_id, document_id, position, id)
+  ON envelope_field(envelope_id, document_id, position, id)
   WHERE document_id IS NOT NULL;
 
 CREATE INDEX envelope_field_document_path_order
-  ON envelope_field(organization_id, envelope_id, document_path, position, id)
+  ON envelope_field(envelope_id, document_path, position, id)
   WHERE document_path IS NOT NULL;
 
 CREATE UNIQUE INDEX envelope_field_recipient_document_id_position
-  ON envelope_field(organization_id, envelope_id, recipient_id, document_id, position)
+  ON envelope_field(envelope_id, recipient_id, document_id, position)
   WHERE document_id IS NOT NULL;
 
 CREATE UNIQUE INDEX envelope_field_recipient_document_path_position
-  ON envelope_field(organization_id, envelope_id, recipient_id, document_path, position)
+  ON envelope_field(envelope_id, recipient_id, document_path, position)
   WHERE document_path IS NOT NULL;
 
 ALTER TABLE envelope_send_command

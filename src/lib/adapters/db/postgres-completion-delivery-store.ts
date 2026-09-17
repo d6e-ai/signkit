@@ -24,7 +24,6 @@ const MAX_COMPLETION_DELIVERY_TERMINAL_CLEANUP_BATCH: number = 100;
 
 interface ClaimCandidateRow {
 	deliveryId: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	tokenHash: string;
@@ -45,7 +44,6 @@ interface ClaimCandidateRow {
 }
 
 interface DiscoverRecipientRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientEmail: string;
@@ -56,7 +54,6 @@ interface DiscoverRecipientRow {
 }
 
 interface ArtifactLocatorRow {
-	organizationId: string;
 	envelopeId: string;
 	jsonObjectKey: string;
 	jsonSha256: string;
@@ -75,7 +72,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 		limit: number
 	): Promise<readonly EligibleCompletionDeliveryRecipient[]> {
 		const rows = await this.#sql<DiscoverRecipientRow[]>`
-			SELECT recipient.organization_id AS "organizationId",
+			SELECT
 				recipient.envelope_id AS "envelopeId",
 				recipient.id AS "recipientId",
 				recipient.email AS "recipientEmail",
@@ -85,24 +82,20 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 				envelope.title AS "envelopeTitle"
 			FROM recipient
 			INNER JOIN envelope
-				ON envelope.organization_id = recipient.organization_id
-				AND envelope.id = recipient.envelope_id
+				ON envelope.id = recipient.envelope_id
 			INNER JOIN completion_artifact artifact
-				ON artifact.organization_id = recipient.organization_id
-				AND artifact.envelope_id = recipient.envelope_id
+				ON artifact.envelope_id = recipient.envelope_id
 			WHERE envelope.status = 'completed'
 				AND recipient.role IN ('signer', 'approver', 'viewer', 'cc')
 				AND NOT EXISTS (
 					SELECT 1 FROM completion_delivery_outbox outbox
-					WHERE outbox.organization_id = recipient.organization_id
-						AND outbox.envelope_id = recipient.envelope_id
+					WHERE outbox.envelope_id = recipient.envelope_id
 						AND outbox.recipient_id = recipient.id
 				)
 			ORDER BY envelope.updated_at ASC, recipient.routing_order ASC, recipient.id ASC
 			LIMIT ${limit}`;
 
 		return rows.map((row: DiscoverRecipientRow): EligibleCompletionDeliveryRecipient => ({
-			organizationId: row.organizationId,
 			envelopeId: row.envelopeId,
 			recipientId: row.recipientId,
 			recipientEmail: row.recipientEmail,
@@ -120,17 +113,17 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 			for (const item of items) {
 				const rows = await transaction<{ id: string }[]>`
 					INSERT INTO completion_delivery_outbox (
-						id, organization_id, envelope_id, recipient_id, status, token_hash,
+						id, envelope_id, recipient_id, status, token_hash,
 						access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 						sealed_token_sha256, available_at, attempts, locked_at, claim_token,
 						delivered_at, provider_message_id, last_error, retryable, created_at, updated_at
 					) VALUES (
-						${item.id}, ${item.organizationId}, ${item.envelopeId}, ${item.recipientId}, 'pending', ${item.tokenHash},
+						${item.id}, ${item.envelopeId}, ${item.recipientId}, 'pending', ${item.tokenHash},
 						${item.accessExpiresAt}::timestamptz, NULL, ${item.sealedToken}, ${item.sealingKeyId},
 						${item.sealedTokenSha256}, ${item.availableAt}::timestamptz, 0, NULL, NULL,
 						NULL, NULL, NULL, true, ${item.createdAt}::timestamptz, ${item.createdAt}::timestamptz
 					)
-					ON CONFLICT (organization_id, envelope_id, recipient_id) DO NOTHING
+					ON CONFLICT (envelope_id, recipient_id) DO NOTHING
 					RETURNING id`;
 				insertedCount += rows.length;
 			}
@@ -145,15 +138,13 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 			async (transaction): Promise<readonly ClaimedCompletionDelivery[]> => {
 				await transaction`
 					WITH terminal_candidates AS (
-						SELECT delivery.organization_id, delivery.id
+						SELECT delivery.id
 						FROM completion_delivery_outbox delivery
 						INNER JOIN recipient
-							ON recipient.organization_id = delivery.organization_id
-							AND recipient.id = delivery.recipient_id
+							ON recipient.id = delivery.recipient_id
 							AND recipient.envelope_id = delivery.envelope_id
 						INNER JOIN envelope
-							ON envelope.organization_id = delivery.organization_id
-							AND envelope.id = delivery.envelope_id
+							ON envelope.id = delivery.envelope_id
 						WHERE delivery.retryable
 							AND delivery.sealed_token IS NOT NULL
 							AND (
@@ -178,12 +169,10 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						available_at = COALESCE(delivery.available_at, ${command.claimedAt}::timestamptz),
 						last_error = 'delivery_not_eligible', updated_at = ${command.claimedAt}::timestamptz
 					FROM terminal_candidates candidate
-					WHERE candidate.organization_id = delivery.organization_id
-						AND candidate.id = delivery.id`;
+					WHERE candidate.id = delivery.id`;
 
 				const candidates = await transaction<ClaimCandidateRow[]>`
 					SELECT delivery.id AS "deliveryId",
-						delivery.organization_id AS "organizationId",
 						delivery.envelope_id AS "envelopeId",
 						delivery.recipient_id AS "recipientId",
 						delivery.token_hash AS "tokenHash",
@@ -203,15 +192,12 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						envelope.status AS "envelopeStatus"
 					FROM completion_delivery_outbox delivery
 					INNER JOIN recipient
-						ON recipient.organization_id = delivery.organization_id
-						AND recipient.id = delivery.recipient_id
+						ON recipient.id = delivery.recipient_id
 						AND recipient.envelope_id = delivery.envelope_id
 					INNER JOIN envelope
-						ON envelope.organization_id = delivery.organization_id
-						AND envelope.id = delivery.envelope_id
+						ON envelope.id = delivery.envelope_id
 					INNER JOIN completion_artifact artifact
-						ON artifact.organization_id = delivery.organization_id
-						AND artifact.envelope_id = delivery.envelope_id
+						ON artifact.envelope_id = delivery.envelope_id
 					WHERE (
 							(delivery.status IN ('pending', 'failed') AND delivery.retryable
 								AND delivery.available_at <= ${command.claimedAt}::timestamptz)
@@ -236,7 +222,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						SET status = 'processing', claim_token = ${command.claimToken},
 							locked_at = ${command.claimedAt}::timestamptz, attempts = attempts + 1,
 							updated_at = ${command.claimedAt}::timestamptz
-						WHERE organization_id = ${row.organizationId} AND id = ${row.deliveryId}
+						WHERE id = ${row.deliveryId}
 							AND (
 								(status IN ('pending', 'failed') AND retryable
 									AND available_at <= ${command.claimedAt}::timestamptz)
@@ -257,7 +243,6 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 	): Promise<ClaimedCompletionDelivery | null> {
 		const rows = await this.#sql<ClaimCandidateRow[]>`
 			SELECT delivery.id AS "deliveryId",
-				delivery.organization_id AS "organizationId",
 				delivery.envelope_id AS "envelopeId",
 				delivery.recipient_id AS "recipientId",
 				delivery.token_hash AS "tokenHash",
@@ -277,14 +262,11 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 				envelope.status AS "envelopeStatus"
 			FROM completion_delivery_outbox delivery
 			INNER JOIN recipient
-				ON recipient.organization_id = delivery.organization_id
-				AND recipient.id = delivery.recipient_id
+				ON recipient.id = delivery.recipient_id
 				AND recipient.envelope_id = delivery.envelope_id
 			INNER JOIN envelope
-				ON envelope.organization_id = delivery.organization_id
-				AND envelope.id = delivery.envelope_id
-			WHERE delivery.organization_id = ${command.organizationId}
-				AND delivery.id = ${command.deliveryId}
+				ON envelope.id = delivery.envelope_id
+			WHERE delivery.id = ${command.deliveryId}
 				AND delivery.status = 'processing'
 				AND delivery.claim_token = ${command.claimToken}`;
 		const row: ClaimCandidateRow | undefined = rows[0];
@@ -305,7 +287,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 				sealed_token = NULL, delivered_at = ${command.deliveredAt}::timestamptz,
 				provider_message_id = ${command.providerMessageId},
 				updated_at = ${command.deliveredAt}::timestamptz
-			WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+			WHERE id = ${command.deliveryId}
 				AND status = 'processing' AND claim_token = ${command.claimToken}
 			RETURNING id`;
 		return rows.length === 1 ? { outcome: 'completed' } : { outcome: 'stale' };
@@ -320,7 +302,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 					SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = true,
 						available_at = ${command.nextAvailableAt}::timestamptz, last_error = ${command.errorCode},
 						updated_at = ${command.failedAt}::timestamptz
-					WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+					WHERE id = ${command.deliveryId}
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING id`
 			: await this.#sql<{ id: string }[]>`
@@ -330,7 +312,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						access_revoked_at = COALESCE(access_revoked_at, ${command.failedAt}::timestamptz),
 						available_at = ${command.nextAvailableAt}::timestamptz,
 						last_error = ${command.errorCode}, updated_at = ${command.failedAt}::timestamptz
-					WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+					WHERE id = ${command.deliveryId}
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING id`;
 		return rows.length === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
@@ -341,7 +323,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 		at: string
 	): Promise<CompletionArtifactLocator | null> {
 		const rows = await this.#sql<ArtifactLocatorRow[]>`
-			SELECT artifact.organization_id AS "organizationId",
+			SELECT
 				artifact.envelope_id AS "envelopeId",
 				artifact.json_object_key AS "jsonObjectKey",
 				artifact.json_sha256 AS "jsonSha256",
@@ -349,11 +331,9 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 				artifact.markdown_sha256 AS "markdownSha256"
 			FROM completion_delivery_outbox delivery
 			INNER JOIN envelope
-				ON envelope.organization_id = delivery.organization_id
-				AND envelope.id = delivery.envelope_id
+				ON envelope.id = delivery.envelope_id
 			INNER JOIN completion_artifact artifact
-				ON artifact.organization_id = delivery.organization_id
-				AND artifact.envelope_id = delivery.envelope_id
+				ON artifact.envelope_id = delivery.envelope_id
 			WHERE delivery.token_hash = ${tokenHash}
 				AND delivery.access_revoked_at IS NULL
 				AND delivery.access_expires_at > ${at}::timestamptz
@@ -362,7 +342,6 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 		const row: ArtifactLocatorRow | undefined = rows[0];
 		if (row === undefined) return null;
 		return {
-			organizationId: row.organizationId,
 			envelopeId: row.envelopeId,
 			jsonObjectKey: row.jsonObjectKey,
 			jsonSha256: row.jsonSha256,
@@ -377,14 +356,13 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 		const rows = await this.#sql<
 			{
 				deliveryId: string;
-				organizationId: string;
 				envelopeId: string;
 				recipientId: string;
 				sealedToken: string;
 				sealingKeyId: string;
 			}[]
 		>`
-			SELECT id AS "deliveryId", organization_id AS "organizationId",
+			SELECT id AS "deliveryId",
 				envelope_id AS "envelopeId", recipient_id AS "recipientId",
 				sealed_token AS "sealedToken", sealing_key_id AS "sealingKeyId"
 			FROM completion_delivery_outbox
@@ -395,7 +373,6 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 			LIMIT ${command.limit}`;
 		return rows.map((row): StaleSealedCompletionTokenRow => ({
 			deliveryId: row.deliveryId,
-			organizationId: row.organizationId,
 			envelopeId: row.envelopeId,
 			recipientId: row.recipientId,
 			sealedToken: row.sealedToken,
@@ -412,7 +389,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 				sealing_key_id = ${command.sealingKeyId},
 				sealed_token_sha256 = ${command.sealedTokenSha256},
 				updated_at = ${command.updatedAt}::timestamptz
-			WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+			WHERE id = ${command.deliveryId}
 				AND status <> 'processing'
 				AND sealed_token IS NOT NULL
 				AND sealing_key_id = ${command.previousSealingKeyId}
@@ -428,7 +405,6 @@ function toClaimedDelivery(
 ): ClaimedCompletionDelivery {
 	return {
 		deliveryId: row.deliveryId,
-		organizationId: row.organizationId,
 		envelopeId: row.envelopeId,
 		recipientId: row.recipientId,
 		status: 'processing',

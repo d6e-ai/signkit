@@ -4,7 +4,6 @@ import { AesGcmSealingKeyring, decodeBase64SealingKey } from '$lib/security/seal
 
 export interface DeclinedReceiptSessionLocator {
 	version: 1;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	idempotencyKey: string;
@@ -51,7 +50,6 @@ const LOCATOR_KEYS: readonly string[] = [
 	'envelopeId',
 	'expiresAt',
 	'idempotencyKey',
-	'organizationId',
 	'recipientId',
 	'version'
 ];
@@ -139,7 +137,6 @@ export function isDeclinedReceiptSessionLocator(
 	}
 
 	if (value.version !== 1) return false;
-	if (!isUuidV7String(value.organizationId)) return false;
 	if (!isUuidV7String(value.envelopeId)) return false;
 	if (!isUuidV7String(value.recipientId)) return false;
 	if (typeof value.idempotencyKey !== 'string') return false;

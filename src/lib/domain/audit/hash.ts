@@ -1,13 +1,6 @@
-import {
-	AUDIT_HASH_VERSION_V1,
-	AUDIT_HASH_VERSION_V2,
-	CURRENT_AUDIT_HASH_VERSION,
-	DRAFT_REVISION_EVENT_TYPE,
-	type AuditHashVersion
-} from './catalog';
+import { CURRENT_AUDIT_HASH_VERSION, type AuditHashVersion } from './catalog';
 
 export interface AuditEventHashContext {
-	organizationId: string;
 	envelopeId: string;
 }
 
@@ -25,54 +18,23 @@ export interface AuditEventHashFields {
 /**
  * Reproduces the exact JSON.stringify preimage each writer hashed.
  *
- * v1 had two shapes:
- * 1. `draft.revision_created`:
- *    `{ organizationId, envelopeId, sequence, eventType, actorType, actorId, occurredAt, payload, previousHash }`
- * 2. Every other event:
- *    `{ actorId, envelopeId, eventType, occurredAt, organizationId, payload, previousHash }`
- *
- * v2 is one shape for every event and always includes `hashVersion`, `actorType`,
- * and `actorId`. Property order is part of the hashed bytes.
+ * The single hash version covers every event and always includes
+ * `hashVersion`, `actorType`, and `actorId`. Property order is part of the
+ * hashed bytes. One deployment database is the sole SignKit instance
+ * boundary, so the preimage carries no tenant field.
  */
 export function auditEventHashPreimage(
 	event: AuditEventHashFields,
 	context: AuditEventHashContext
 ): string {
-	if (event.hashVersion === AUDIT_HASH_VERSION_V2) {
-		return JSON.stringify({
-			hashVersion: AUDIT_HASH_VERSION_V2,
-			organizationId: context.organizationId,
-			envelopeId: context.envelopeId,
-			sequence: event.sequence,
-			eventType: event.eventType,
-			actorType: event.actorType,
-			actorId: event.actorId,
-			occurredAt: event.occurredAt,
-			payload: event.payload,
-			previousHash: event.previousHash
-		});
-	}
-
-	if (event.eventType === DRAFT_REVISION_EVENT_TYPE) {
-		return JSON.stringify({
-			organizationId: context.organizationId,
-			envelopeId: context.envelopeId,
-			sequence: event.sequence,
-			eventType: event.eventType,
-			actorType: event.actorType,
-			actorId: event.actorId,
-			occurredAt: event.occurredAt,
-			payload: event.payload,
-			previousHash: event.previousHash
-		});
-	}
-
 	return JSON.stringify({
-		actorId: event.actorId,
+		hashVersion: event.hashVersion,
 		envelopeId: context.envelopeId,
+		sequence: event.sequence,
 		eventType: event.eventType,
+		actorType: event.actorType,
+		actorId: event.actorId,
 		occurredAt: event.occurredAt,
-		organizationId: context.organizationId,
 		payload: event.payload,
 		previousHash: event.previousHash
 	});
@@ -85,7 +47,7 @@ export async function hashAuditEvent(
 	return sha256TextHex(auditEventHashPreimage(event, context));
 }
 
-export async function hashAuditEventV2(
+export async function hashAuditEventV3(
 	event: Omit<AuditEventHashFields, 'hashVersion'>,
 	context: AuditEventHashContext
 ): Promise<string> {
@@ -94,8 +56,8 @@ export async function hashAuditEventV2(
 
 /**
  * Recomputes a stored event's hash from the version recorded with it.
- * Missing/null `hashVersion` is v1 so legacy rows and test fixtures that
- * predate the column still verify. New writers stamp 2 explicitly.
+ * Only the current version verifies: old databases must be reset, so no
+ * historical preimage is retained.
  */
 export async function hashStoredAuditEvent(
 	event: Omit<AuditEventHashFields, 'hashVersion'> & {
@@ -114,9 +76,8 @@ export async function hashStoredAuditEvent(
 
 export function parseAuditHashVersion(value: number | string | null | undefined): AuditHashVersion {
 	const numeric: number =
-		typeof value === 'string' ? Number(value) : (value ?? AUDIT_HASH_VERSION_V1);
-	if (numeric === AUDIT_HASH_VERSION_V2) return AUDIT_HASH_VERSION_V2;
-	if (numeric === AUDIT_HASH_VERSION_V1) return AUDIT_HASH_VERSION_V1;
+		typeof value === 'string' ? Number(value) : (value ?? CURRENT_AUDIT_HASH_VERSION);
+	if (numeric === CURRENT_AUDIT_HASH_VERSION) return CURRENT_AUDIT_HASH_VERSION;
 	throw new Error(`Unsupported audit hash version: ${String(value)}`);
 }
 

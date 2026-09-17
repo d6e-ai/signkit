@@ -4,10 +4,9 @@ import type {
 	EnvelopeDocumentPdfApplicationPort,
 	EnvelopeDocumentPdfResult
 } from '$lib/application/documents/envelope-document-pdf';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { createEnvelopeDocumentPdfHandler } from './envelope-document-pdf';
 
-const ORGANIZATION_ID = '01900000-0000-7000-8000-000000000002';
 const ENVELOPE_ID = '01900000-0000-7000-8000-000000000001';
 const DOCUMENT_ID = '01900000-0000-7000-8000-000000000010';
 const BYTES: Uint8Array = new TextEncoder().encode('%PDF-1.7\nbody\n%%EOF\n');
@@ -48,7 +47,7 @@ function event(
 	return createHttpRequestEvent({
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/${options.path ?? 'document-pdf'}`,
 		search: `?documentId=${DOCUMENT_ID}`,
-		locals: organizationScopedLocals(options.identityState ?? 'authorized', ORGANIZATION_ID),
+		locals: instanceScopedLocals(options.identityState ?? 'active'),
 		params: { envelopeId: options.envelopeId ?? ENVELOPE_ID },
 		platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } } as App.Platform
 	});
@@ -59,7 +58,7 @@ function application(result: EnvelopeDocumentPdfResult): EnvelopeDocumentPdfAppl
 }
 
 describe('envelope document PDF handler', () => {
-	it('streams the rendering scoped to the authorized organization', async () => {
+	it('streams the rendering scoped to the authorized instance', async () => {
 		const app: EnvelopeDocumentPdfApplicationPort = application(ok);
 		const response: Response = await createEnvelopeDocumentPdfHandler(() => app, 'pdf')(event());
 
@@ -71,7 +70,7 @@ describe('envelope document PDF handler', () => {
 		// origin needs framing permission and none is granted.
 		expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
 		expect(response.headers.get('x-frame-options')).toBe('DENY');
-		expect(app.read).toHaveBeenCalledWith(ORGANIZATION_ID, ENVELOPE_ID, DOCUMENT_ID);
+		expect(app.read).toHaveBeenCalledWith(ENVELOPE_ID, DOCUMENT_ID);
 		expect(new Uint8Array(await response.arrayBuffer())).toEqual(BYTES);
 	});
 
@@ -142,7 +141,7 @@ describe('envelope document PDF handler', () => {
 	it('does not leak a renderer failure to the caller', async () => {
 		const exploding: EnvelopeDocumentPdfApplicationPort = {
 			read: async (): Promise<EnvelopeDocumentPdfResult> => {
-				throw new Error('r2: NoSuchKey draft-repositories/v1/organizations/org-1/...');
+				throw new Error('r2: NoSuchKey draft-repositories/v1/envelopes/env-1/...');
 			}
 		};
 		const response: Response = await createEnvelopeDocumentPdfHandler(

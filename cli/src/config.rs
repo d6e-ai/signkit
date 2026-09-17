@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use crate::error::CliError;
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
-pub const SIGNKIT_ORGANIZATION_HEADER: &str = "signkit-organization-id";
 
 /// Forbidden secret keys that must never appear in non-secret config files.
 const FORBIDDEN_SECRET_KEYS: &[&str] = &[
@@ -61,8 +60,6 @@ impl fmt::Debug for SecretApiKey {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignKitConfigFile {
     pub base_url: Option<String>,
-    pub organization_id: Option<String>,
-    pub org: Option<String>,
     pub timeout_secs: Option<u64>,
 }
 
@@ -71,34 +68,11 @@ pub struct SignKitConfigFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedConfig {
     pub base_url: url::Url,
-    pub organization_id: Option<String>,
     pub api_key: Option<SecretApiKey>,
     pub timeout_secs: u64,
 }
 
 impl ResolvedConfig {
-    /// Require that an organization is explicitly configured, or fail fast.
-    pub fn require_organization(&self) -> Result<&str, CliError> {
-        match &self.organization_id {
-            Some(org) if !org.trim().is_empty() => {
-                let trimmed = org.trim();
-                // Server rule: 1..200 visible ASCII characters
-                if trimmed.is_empty()
-                    || trimmed.len() > 200
-                    || !trimmed.chars().all(|c| ('!'..='~').contains(&c))
-                {
-                    return Err(CliError::usage(
-                        "Organization ID must contain 1-200 visible ASCII characters without whitespace.",
-                    ));
-                }
-                Ok(trimmed)
-            }
-            _ => Err(CliError::usage(
-                "An organization is required for this operation. Specify it via --org flag, SIGNKIT_ORG environment variable, or non-secret config file.",
-            )),
-        }
-    }
-
     /// Require that an API key is configured from environment or secure stdin and
     /// matches the exact required format `^signkit_[A-Za-z0-9_-]{43}$`.
     pub fn require_api_key(&self) -> Result<&str, CliError> {
@@ -246,7 +220,6 @@ pub fn read_api_key_from_stdin() -> Result<String, CliError> {
 /// and non-secret config file according to strict precedence rules.
 pub fn resolve_config(
     flag_base_url: Option<String>,
-    flag_org: Option<String>,
     flag_api_key_stdin: bool,
     flag_config_path: Option<&Path>,
     flag_timeout_secs: Option<u64>,
@@ -279,36 +252,7 @@ pub fn resolve_config(
         }
     };
 
-    // 2. Organization ID resolution (handles empty string env aliases cleanly)
-    let organization_id = flag_org
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            env::var("SIGNKIT_ORG")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .or_else(|| {
-            env::var("SIGNKIT_ORGANIZATION_ID")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .or_else(|| {
-            config_file
-                .organization_id
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.trim().to_string())
-        })
-        .or_else(|| {
-            config_file
-                .org
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.trim().to_string())
-        });
-
-    // 3. API Key resolution (stdin > env only, never flags, never config, no Bearer stripping)
+    // 2. API Key resolution (stdin > env only, never flags, never config, no Bearer stripping)
     let api_key = if flag_api_key_stdin {
         Some(read_api_key_from_stdin()?)
     } else {
@@ -320,7 +264,7 @@ pub fn resolve_config(
 
     let api_key = api_key.map(SecretApiKey::new);
 
-    // 4. Timeout resolution (reject timeout == 0)
+    // 3. Timeout resolution (reject timeout == 0)
     let timeout_secs = if let Some(t) = flag_timeout_secs {
         t
     } else if let Some(env_t) = env::var("SIGNKIT_TIMEOUT_SECS")
@@ -343,7 +287,6 @@ pub fn resolve_config(
 
     Ok(ResolvedConfig {
         base_url,
-        organization_id,
         api_key,
         timeout_secs,
     })

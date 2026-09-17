@@ -5,7 +5,6 @@
 -- leases one job per envelope, and publishes exactly one immutable pointer
 -- plus one chained `envelope.completion_artifact_published` audit event.
 CREATE TABLE completion_artifact_job (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','processing','published','failed')),
   claim_token TEXT,
@@ -16,8 +15,8 @@ CREATE TABLE completion_artifact_job (
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CHECK (
     (status = 'processing' AND claim_token IS NOT NULL AND locked_at IS NOT NULL) OR
     (status <> 'processing' AND claim_token IS NULL AND locked_at IS NULL)
@@ -37,7 +36,6 @@ CREATE INDEX completion_artifact_job_reclaim
 -- content-addressed and immutable, and this row is the sole SQL boundary
 -- that makes a specific pair of them the envelope's completion evidence.
 CREATE TABLE completion_artifact (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
   manifest_sha256 TEXT NOT NULL,
@@ -52,14 +50,13 @@ CREATE TABLE completion_artifact (
   audit_head_event_hash TEXT NOT NULL,
   published_at TEXT NOT NULL,
   audit_event_id TEXT NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, anchor_audit_event_id) REFERENCES audit_event(organization_id, id)
+  PRIMARY KEY (envelope_id),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (anchor_audit_event_id) REFERENCES audit_event(id)
 );
 
 CREATE TABLE completion_artifact_publish_command (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   claim_token TEXT NOT NULL,
   sent_commit_sha TEXT NOT NULL,
@@ -76,10 +73,10 @@ CREATE TABLE completion_artifact_publish_command (
   previous_audit_hash TEXT NOT NULL,
   audit_event_hash TEXT NOT NULL,
   audit_payload_json TEXT NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, anchor_audit_event_id) REFERENCES audit_event(organization_id, id)
+  PRIMARY KEY (envelope_id),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (anchor_audit_event_id) REFERENCES audit_event(id)
 );
 
 -- The command insert is the sole D1 publication boundary. It rechecks the
@@ -95,8 +92,7 @@ BEGIN
   SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM envelope
-      WHERE organization_id = NEW.organization_id
-        AND id = NEW.envelope_id
+      WHERE id = NEW.envelope_id
         AND status = 'completed'
         AND sent_commit_sha = NEW.sent_commit_sha
         AND sent_commit_sha = repository_head
@@ -107,8 +103,7 @@ BEGIN
   SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM audit_event previous
-      WHERE previous.organization_id = NEW.organization_id
-        AND previous.envelope_id = NEW.envelope_id
+      WHERE previous.envelope_id = NEW.envelope_id
         AND previous.id = NEW.anchor_audit_event_id
         AND previous.sequence = NEW.audit_sequence - 1
         AND previous.event_hash = NEW.previous_audit_hash
@@ -119,8 +114,7 @@ BEGIN
   SELECT (CASE
     WHEN EXISTS (
       SELECT 1 FROM audit_event newer
-      WHERE newer.organization_id = NEW.organization_id
-        AND newer.envelope_id = NEW.envelope_id
+      WHERE newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     ) THEN RAISE(ABORT, 'completion artifact audit head conflict')
   END);
@@ -128,20 +122,19 @@ BEGIN
   SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM completion_artifact_job
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND status = 'processing'
         AND claim_token = NEW.claim_token
     ) THEN RAISE(ABORT, 'completion artifact lease conflict')
   END);
 
   INSERT INTO completion_artifact (
-    organization_id, envelope_id, schema_version, manifest_sha256,
+    envelope_id, schema_version, manifest_sha256,
     json_object_key, json_sha256, markdown_object_key, markdown_sha256,
     sent_commit_sha, field_generation, anchor_audit_event_id,
     audit_head_sequence, audit_head_event_hash, published_at, audit_event_id
   ) VALUES (
-    NEW.organization_id, NEW.envelope_id, 1, NEW.manifest_sha256,
+    NEW.envelope_id, 1, NEW.manifest_sha256,
     NEW.json_object_key, NEW.json_sha256, NEW.markdown_object_key, NEW.markdown_sha256,
     NEW.sent_commit_sha, NEW.field_generation, NEW.anchor_audit_event_id,
     NEW.audit_sequence, NEW.audit_event_hash, NEW.updated_at, NEW.audit_event_id
@@ -150,7 +143,7 @@ BEGIN
   UPDATE completion_artifact_job
   SET status = 'published', claim_token = NULL, locked_at = NULL, retryable = 0,
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id AND envelope_id = NEW.envelope_id
+  WHERE envelope_id = NEW.envelope_id
     AND status = 'processing' AND claim_token = NEW.claim_token;
 
   SELECT (CASE
@@ -158,10 +151,10 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at
   ) VALUES (
-    NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
+    NEW.audit_event_id, NEW.envelope_id,
     NEW.audit_sequence, 'envelope.completion_artifact_published', 'system',
     'completion-artifact-worker', NEW.audit_payload_json, NEW.previous_audit_hash,
     NEW.audit_event_hash, NEW.updated_at

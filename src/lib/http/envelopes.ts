@@ -10,10 +10,7 @@ import type {
 } from '$lib/application/envelopes/model';
 import { toPublicEnvelope, toPublicEnvelopeListPage } from '$lib/application/envelopes/model';
 import { signkitIdentifierSchema } from './identifier-schema';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const createEnvelopeSchema: ZodType<{ title: string }> = z
@@ -114,8 +111,7 @@ function validationErrors(issues: readonly ZodIssue[]): readonly ProblemValidati
 function envelopeActor(authorized: AuthorizedApiActor): EnvelopeRequestActor {
 	return {
 		id: authorized.id,
-		organizationId: authorized.organizationId,
-		organizationName: authorized.organizationName,
+		createdByUserId: authorized.createdByUserId,
 		actorType: authorized.authority === 'api_key' ? 'agent' : 'user'
 	};
 }
@@ -159,7 +155,7 @@ export function createEnvelopeHttpHandlers(
 	resolveApplication: EnvelopeApplicationResolver
 ): EnvelopeHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'drafts:write'
@@ -257,7 +253,7 @@ export function createEnvelopeHttpHandlers(
 	};
 
 	const list: RequestHandler = async ({ locals, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -306,7 +302,7 @@ export function createEnvelopeHttpHandlers(
 	};
 
 	const get: RequestHandler = async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -343,7 +339,7 @@ export function createEnvelopeHttpHandlers(
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
 					status: 404,
-					detail: 'No envelope was found in the authorized organization.',
+					detail: 'No envelope was found.',
 					instance: url.pathname
 				});
 			}

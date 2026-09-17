@@ -4,7 +4,7 @@ import { WEBHOOK_AUDIT_EVENT_TYPES, isAuditEventType } from '$lib/domain/audit';
 export const WEBHOOK_SECRET_PREFIX: string = 'skwh1_';
 export const WEBHOOK_SECRET_PATTERN: RegExp = /^skwh1_[A-Za-z0-9_-]{43}$/;
 export const WEBHOOK_SECRET_DISPLAY_CHARS: number = 8;
-export const WEBHOOK_MAX_ENDPOINTS_PER_ORGANIZATION: number = 20;
+export const WEBHOOK_MAX_ENDPOINTS: number = 20;
 export const WEBHOOK_MAX_URL_LENGTH: number = 2000;
 export const WEBHOOK_MAX_DESCRIPTION_LENGTH: number = 200;
 export const WEBHOOK_MAX_PAYLOAD_BYTES: number = 32 * 1024;

@@ -6,7 +6,7 @@ Applies to the Node/Docker and Vercel deployment profiles only, which use Postgr
 
 ## What SignKit stores in PostgreSQL, and why that matters for recovery
 
-Every table SignKit writes is scoped by `organization_id`, so a restore can in principle be limited to the rows a single tenant needs — though PostgreSQL's own backup and restore primitives operate on the whole database or cluster, not per-row, so scoping a _restore_ to one tenant in practice means restoring into a scratch database and copying out only the affected rows (see [../architecture/persistence.md](../architecture/persistence.md)). SQL rows never hold object bytes directly: any row that references an object in the S3-compatible store (draft archives, completion manifests/Markdown, completion PDFs, signature assets) carries the object's key or a derived path alongside a `*_sha256` column recording the SHA-256 digest of the bytes it points to. That digest is what makes a restored row independently verifiable — see [s3-backup-restore.md](s3-backup-restore.md) and "Verifying restored rows" below.
+One PostgreSQL database is one SignKit instance, so backup and restore operate on the complete database (see [../architecture/persistence.md](../architecture/persistence.md)). SQL rows never hold object bytes directly: any row that references an object in the S3-compatible store (draft archives, completion manifests/Markdown, completion PDFs, signature assets) carries the object's key or a derived path alongside a `*_sha256` column recording the SHA-256 digest of the bytes it points to. That digest is what makes a restored row independently verifiable — see [s3-backup-restore.md](s3-backup-restore.md) and "Verifying restored rows" below.
 
 ## Backup strategies: logical vs. physical/WAL
 

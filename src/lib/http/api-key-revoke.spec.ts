@@ -51,10 +51,7 @@ function application(result?: RevokeApiKeyResult): ApiKeyApplicationPort {
 		listApiKeys: vi.fn(),
 		revokeApiKey: vi.fn(
 			async (): Promise<RevokeApiKeyResult> => result ?? { outcome: 'revoked', key: metadata }
-		),
-		grantApiKeyOrganization: vi.fn(),
-		listApiKeyOrganizationGrants: vi.fn(),
-		revokeApiKeyOrganizationGrant: vi.fn()
+		)
 	};
 }
 
@@ -111,12 +108,12 @@ describe('API key revoke HTTP handler', () => {
 		expect(resolver).not.toHaveBeenCalled();
 	});
 
-	it('does not require an active organization', async () => {
+	it('does not require an instance membership', async () => {
 		const app: ApiKeyApplicationPort = application();
 		const response: Response = await invoke(
 			createApiKeyRevokeHandler((): ApiKeyApplicationPort => app),
 			event({
-				locals: locals('no_active_organization'),
+				locals: locals('no_membership'),
 				headers: { 'idempotency-key': 'revoke-1' }
 			})
 		);
@@ -208,7 +205,7 @@ describe('API key revoke HTTP handler', () => {
 		}
 	);
 
-	it('scopes revoke to the authenticated identity only, without an organization', async () => {
+	it('scopes revoke to the authenticated identity only', async () => {
 		const app: ApiKeyApplicationPort = application();
 		const response: Response = await invoke(
 			createApiKeyRevokeHandler((): ApiKeyApplicationPort => app),

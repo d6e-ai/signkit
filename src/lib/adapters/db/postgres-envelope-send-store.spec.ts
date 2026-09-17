@@ -40,7 +40,6 @@ class ScriptedPostgres {
 }
 
 const key: SendCommandKey = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	actorType: 'user',
 	actorId: 'user-1',
@@ -51,7 +50,6 @@ const key: SendCommandKey = {
 function envelopeRow(): Record<string, unknown> {
 	return {
 		id: 'env-1',
-		organizationId: 'org-1',
 		title: 'Agreement',
 		status: 'ready',
 		repositoryGeneration: 2,
@@ -97,7 +95,7 @@ function sendCommand(): PublishSentEnvelopeCommand {
 	]);
 	return {
 		...key,
-		sentDocumentSet: fakeSentDocumentSetArtifact(key.organizationId, key.envelopeId),
+		sentDocumentSet: fakeSentDocumentSetArtifact(key.envelopeId),
 		expectedGeneration: 2,
 		expectedReadyAuditEventId: 'ready-audit',
 		commitSha: 'commit-2',
@@ -132,7 +130,6 @@ describe('PostgresEnvelopeSendStore', () => {
 			[
 				{
 					id: 'recipient-1',
-					organizationId: 'org-1',
 					envelopeId: 'env-1',
 					email: 'a@example.com',
 					name: 'A',
@@ -155,7 +152,7 @@ describe('PostgresEnvelopeSendStore', () => {
 		});
 		expect(database.queries[3]).toMatchObject({
 			text: expect.stringContaining('FROM envelope_ready_command ready'),
-			values: ['org-1', 'env-1', 2, 'commit-2', 'ready-audit']
+			values: ['env-1', 2, 'commit-2', 'ready-audit']
 		});
 	});
 
@@ -196,7 +193,6 @@ describe('PostgresEnvelopeSendStore', () => {
 			[
 				{
 					id: 'recipient-prefill',
-					organizationId: 'org-1',
 					envelopeId: 'env-1',
 					email: 'prefill@example.com',
 					name: 'Prefill',
@@ -210,7 +206,6 @@ describe('PostgresEnvelopeSendStore', () => {
 				},
 				{
 					id: 'recipient-signer',
-					organizationId: 'org-1',
 					envelopeId: 'env-1',
 					email: 'signer@example.com',
 					name: 'Signer',
@@ -290,7 +285,6 @@ describe('PostgresEnvelopeSendStore', () => {
 		];
 		function commandRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 			return {
-				organizationId: command.organizationId,
 				envelopeId: command.envelopeId,
 				actorType: command.actorType,
 				actorId: command.actorId,
@@ -321,7 +315,6 @@ describe('PostgresEnvelopeSendStore', () => {
 				documentCount: command.sentDocumentSet.documentCount,
 				sentDocumentsJson: JSON.stringify(sentAuditDocuments(command.sentDocumentSet.documents)),
 				evidenceEventId: command.auditEventId,
-				evidenceOrganizationId: command.organizationId,
 				evidenceEnvelopeId: command.envelopeId,
 				evidenceSequence: 4,
 				evidenceEventType: 'envelope.sent',

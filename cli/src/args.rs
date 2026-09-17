@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "signkit",
     author = "SignKit Authors",
-    version = "0.1.0",
+    version,
     about = "Agent-first CLI for the SignKit e-signature platform",
     long_about = "Non-interactive, agent-first CLI for SignKit. Operates within the enabled API-key surface: envelopes:read, drafts:write, and envelopes:send. Key management and instance administration require interactive operator sessions and are not exposed here."
 )]
@@ -13,10 +13,6 @@ pub struct Cli {
     /// Base URL of the SignKit service.
     #[arg(long, global = true, value_name = "URL")]
     pub base_url: Option<String>,
-
-    /// Target organization identifier (mandatory for all envelope endpoints).
-    #[arg(long, global = true, value_name = "ORG_ID")]
-    pub org: Option<String>,
 
     /// Read API key from standard input rather than the SIGNKIT_API_KEY environment variable.
     #[arg(long, global = true)]
@@ -59,7 +55,7 @@ pub struct EnvelopesArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum EnvelopesSubcommand {
-    /// List envelopes in the authorized organization.
+    /// List envelopes in the instance.
     List(EnvelopeListArgs),
 
     /// Read details of a specific envelope.

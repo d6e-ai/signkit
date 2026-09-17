@@ -20,7 +20,6 @@ const MAX_INVITATION_TERMINAL_CLEANUP_BATCH: number = 100;
 
 interface ClaimCandidateRow {
 	deliveryId: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	capabilityHash: string;
@@ -55,15 +54,13 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 			async (transaction): Promise<readonly ClaimedInvitationDelivery[]> => {
 				await transaction`
 					WITH terminal_candidates AS (
-						SELECT delivery.organization_id, delivery.id
+						SELECT delivery.id
 						FROM delivery_outbox delivery
 						INNER JOIN recipient
-							ON recipient.organization_id = delivery.organization_id
-							AND recipient.id = delivery.recipient_id
+							ON recipient.id = delivery.recipient_id
 							AND recipient.envelope_id = delivery.envelope_id
 						INNER JOIN envelope
-							ON envelope.organization_id = delivery.organization_id
-							AND envelope.id = delivery.envelope_id
+							ON envelope.id = delivery.envelope_id
 						WHERE delivery.kind = 'recipient_invitation'
 							AND delivery.retryable
 							AND delivery.sealed_capability IS NOT NULL
@@ -98,11 +95,9 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 						available_at = COALESCE(delivery.available_at, ${command.claimedAt}::timestamptz),
 						last_error = 'delivery_not_eligible', updated_at = ${command.claimedAt}::timestamptz
 					FROM terminal_candidates candidate
-					WHERE candidate.organization_id = delivery.organization_id
-						AND candidate.id = delivery.id`;
+					WHERE candidate.id = delivery.id`;
 				const candidates = await transaction<ClaimCandidateRow[]>`
 					SELECT delivery.id AS "deliveryId",
-						delivery.organization_id AS "organizationId",
 						delivery.envelope_id AS "envelopeId",
 						delivery.recipient_id AS "recipientId",
 						delivery.capability_hash AS "capabilityHash",
@@ -123,12 +118,10 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 						envelope.status AS "envelopeStatus"
 					FROM delivery_outbox delivery
 					INNER JOIN recipient
-						ON recipient.organization_id = delivery.organization_id
-						AND recipient.id = delivery.recipient_id
+						ON recipient.id = delivery.recipient_id
 						AND recipient.envelope_id = delivery.envelope_id
 					INNER JOIN envelope
-						ON envelope.organization_id = delivery.organization_id
-						AND envelope.id = delivery.envelope_id
+						ON envelope.id = delivery.envelope_id
 					WHERE delivery.kind = 'recipient_invitation'
 						AND (
 							(delivery.status IN ('pending', 'failed') AND delivery.retryable
@@ -156,7 +149,7 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 						SET status = 'processing', claim_token = ${command.claimToken},
 							locked_at = ${command.claimedAt}, attempts = attempts + 1,
 							updated_at = ${command.claimedAt}
-						WHERE organization_id = ${row.organizationId} AND id = ${row.deliveryId}
+						WHERE id = ${row.deliveryId}
 							AND (
 								(status IN ('pending', 'failed') AND retryable
 									AND available_at <= ${command.claimedAt}::timestamptz)
@@ -175,7 +168,6 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 	): Promise<ClaimedInvitationDelivery | null> {
 		const rows = await this.#sql<ClaimCandidateRow[]>`
 			SELECT delivery.id AS "deliveryId",
-				delivery.organization_id AS "organizationId",
 				delivery.envelope_id AS "envelopeId",
 				delivery.recipient_id AS "recipientId",
 				delivery.capability_hash AS "capabilityHash",
@@ -196,14 +188,11 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 				envelope.status AS "envelopeStatus"
 			FROM delivery_outbox delivery
 			INNER JOIN recipient
-				ON recipient.organization_id = delivery.organization_id
-				AND recipient.id = delivery.recipient_id
+				ON recipient.id = delivery.recipient_id
 				AND recipient.envelope_id = delivery.envelope_id
 			INNER JOIN envelope
-				ON envelope.organization_id = delivery.organization_id
-				AND envelope.id = delivery.envelope_id
-			WHERE delivery.organization_id = ${command.organizationId}
-				AND delivery.id = ${command.deliveryId}
+				ON envelope.id = delivery.envelope_id
+			WHERE delivery.id = ${command.deliveryId}
 				AND delivery.status = 'processing'
 				AND delivery.claim_token = ${command.claimToken}`;
 		const row: ClaimCandidateRow | undefined = rows[0];
@@ -222,7 +211,7 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 				sealed_capability = NULL, delivered_at = ${command.deliveredAt},
 				provider_message_id = ${command.providerMessageId}, last_error = NULL,
 				updated_at = ${command.deliveredAt}
-			WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+			WHERE id = ${command.deliveryId}
 				AND status = 'processing' AND claim_token = ${command.claimToken}
 			RETURNING id`;
 		return rows.length === 1 ? { outcome: 'completed' } : { outcome: 'stale' };
@@ -237,7 +226,7 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 					SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = true,
 						available_at = ${command.nextAvailableAt}, last_error = ${command.errorCode},
 						updated_at = ${command.failedAt}
-					WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+					WHERE id = ${command.deliveryId}
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING id`
 			: await this.#sql<{ id: string }[]>`
@@ -245,7 +234,7 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 					SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = false,
 						sealed_capability = NULL, available_at = ${command.nextAvailableAt},
 						last_error = ${command.errorCode}, updated_at = ${command.failedAt}
-					WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+					WHERE id = ${command.deliveryId}
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING id`;
 		return rows.length === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
@@ -257,14 +246,13 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 		const rows = await this.#sql<
 			{
 				deliveryId: string;
-				organizationId: string;
 				envelopeId: string;
 				recipientId: string;
 				sealedCapability: string;
 				sealingKeyId: string;
 			}[]
 		>`
-			SELECT id AS "deliveryId", organization_id AS "organizationId",
+			SELECT id AS "deliveryId",
 				envelope_id AS "envelopeId", recipient_id AS "recipientId",
 				sealed_capability AS "sealedCapability", sealing_key_id AS "sealingKeyId"
 			FROM delivery_outbox
@@ -275,7 +263,6 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 			LIMIT ${command.limit}`;
 		return rows.map((row): StaleSealedCapabilityRow => ({
 			deliveryId: row.deliveryId,
-			organizationId: row.organizationId,
 			envelopeId: row.envelopeId,
 			recipientId: row.recipientId,
 			sealedCapability: row.sealedCapability,
@@ -290,7 +277,7 @@ export class PostgresDeliveryOutboxStore implements DeliveryOutboxStore {
 				sealing_key_id = ${command.sealingKeyId},
 				sealed_capability_sha256 = ${command.sealedCapabilitySha256},
 				updated_at = ${command.updatedAt}
-			WHERE organization_id = ${command.organizationId} AND id = ${command.deliveryId}
+			WHERE id = ${command.deliveryId}
 				AND status <> 'processing'
 				AND sealed_capability IS NOT NULL
 				AND sealing_key_id = ${command.previousSealingKeyId}
@@ -306,7 +293,6 @@ function toClaimedDelivery(
 ): ClaimedInvitationDelivery {
 	return {
 		deliveryId: row.deliveryId,
-		organizationId: row.organizationId,
 		envelopeId: row.envelopeId,
 		recipientId: row.recipientId,
 		kind: 'recipient_invitation',

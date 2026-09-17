@@ -5,7 +5,7 @@ import {
 import type { EnvelopeStore } from '$lib/ports/envelope-store';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectStore } from '$lib/ports/object-store';
-import { exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
+import { DocxExportError, exportMarkdownToDocx } from '$lib/adapters/documents/docx-export';
 import { parseDocumentSet, type DocumentSetLeaf } from '$lib/domain/document-set';
 import { isMarkdownPath } from '$lib/domain/envelope';
 
@@ -32,7 +32,10 @@ export async function exportPinnedDocx(
 		isMarkdownPath(document.path)
 	);
 	if (markdownDocuments.length === 0) {
-		throw new Error('The pinned revision contains no Markdown documents to export');
+		throw new DocxExportError(
+			'empty_draft',
+			'The pinned revision contains no Markdown documents to export'
+		);
 	}
 	const skippedPdfCount: number = await countSkippedPdfDocuments(
 		verified.archive,
@@ -73,13 +76,12 @@ async function countSkippedPdfDocuments(
  * current repository head. DOCX bytes are derived, never stored in Git.
  */
 export async function exportEnvelopeDocx(
-	organizationId: string,
 	envelopeId: string,
-	envelopes: Pick<EnvelopeStore, 'findForOrganization'>,
+	envelopes: Pick<EnvelopeStore, 'findEnvelope'>,
 	objects: ObjectStore,
 	repository: DraftRepository
 ): Promise<EnvelopeDocxExportResult> {
-	const envelope = await envelopes.findForOrganization(organizationId, envelopeId);
+	const envelope = await envelopes.findEnvelope(envelopeId);
 	if (envelope === null) return { outcome: 'not_found' };
 	const commitSha: string | null = envelope.sentCommitSha ?? envelope.repositoryHead;
 	if (
@@ -91,7 +93,6 @@ export async function exportEnvelopeDocx(
 	}
 	const exported = await exportPinnedDocx(
 		{
-			organizationId,
 			envelopeId,
 			commitSha,
 			archiveKey: envelope.repositoryArchiveKey,

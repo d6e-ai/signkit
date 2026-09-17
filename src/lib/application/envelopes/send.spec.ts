@@ -18,7 +18,7 @@ import { EnvelopeSendApplication } from './send';
 
 const envelope: Envelope = {
 	id: '01900000-0000-7000-8000-000000000001',
-	organizationId: '01900000-0000-7000-8000-000000000002',
+	createdByUserId: 'user-1',
 	title: 'Agreement',
 	status: 'ready',
 	repositoryGeneration: 2,
@@ -33,7 +33,6 @@ const envelope: Envelope = {
 const recipients: readonly Recipient[] = [
 	{
 		id: 'r1',
-		organizationId: envelope.organizationId,
 		envelopeId: envelope.id,
 		email: 'a@example.com',
 		name: 'A',
@@ -44,7 +43,6 @@ const recipients: readonly Recipient[] = [
 	},
 	{
 		id: 'r2',
-		organizationId: envelope.organizationId,
 		envelopeId: envelope.id,
 		email: 'viewer@example.com',
 		name: 'Viewer',
@@ -55,7 +53,6 @@ const recipients: readonly Recipient[] = [
 	},
 	{
 		id: 'r3',
-		organizationId: envelope.organizationId,
 		envelopeId: envelope.id,
 		email: 'b@example.com',
 		name: 'B',
@@ -66,7 +63,6 @@ const recipients: readonly Recipient[] = [
 	},
 	{
 		id: 'r4',
-		organizationId: envelope.organizationId,
 		envelopeId: envelope.id,
 		email: 'cc@example.com',
 		name: 'CC',
@@ -78,8 +74,7 @@ const recipients: readonly Recipient[] = [
 ];
 const actor = {
 	id: 'user-1',
-	organizationId: envelope.organizationId,
-	organizationName: 'Workspace'
+	createdByUserId: 'user-1'
 } as const;
 const readyEventId: string = '01900000-0000-7000-8000-000000000099';
 
@@ -242,14 +237,13 @@ describe('EnvelopeSendApplication', () => {
 		// from anything the caller supplied.
 		expect(documentPdf.published).toEqual([
 			{
-				organizationId: envelope.organizationId,
 				envelopeId: envelope.id,
 				commitSha: envelope.repositoryHead,
 				archiveKey: envelope.repositoryArchiveKey,
 				archiveSha256: envelope.repositoryArchiveSha256
 			}
 		]);
-		const expected = fakeSentDocumentSetArtifact(envelope.organizationId, envelope.id);
+		const expected = fakeSentDocumentSetArtifact(envelope.id);
 		expect(store.commands[0].sentDocumentSet).toEqual(expected);
 		expect(JSON.parse(store.commands[0].auditPayloadJson)).toMatchObject({
 			documentSetHash: expected.documentSetHash,

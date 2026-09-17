@@ -25,7 +25,7 @@ export interface EnvelopeDocumentInput {
  * and reflects the draft's current document set exactly.
  */
 export interface EnvelopeDocumentStore {
-	listForEnvelope(organizationId: string, envelopeId: string): Promise<readonly EnvelopeDocument[]>;
+	listForEnvelope(envelopeId: string): Promise<readonly EnvelopeDocument[]>;
 	/**
 	 * Replaces the tracked document set to match `documents` exactly: paths
 	 * already present keep their `id`, `title`, and `position` order key
@@ -33,12 +33,10 @@ export interface EnvelopeDocumentStore {
 	 * deleted. Returns the resulting projection ordered by `position`.
 	 */
 	sync(
-		organizationId: string,
 		envelopeId: string,
 		documents: readonly EnvelopeDocumentInput[]
 	): Promise<readonly EnvelopeDocument[]>;
 	renameDocument(
-		organizationId: string,
 		envelopeId: string,
 		markdownPath: `documents/${string}.md`,
 		title: string

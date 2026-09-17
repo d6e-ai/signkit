@@ -1,6 +1,5 @@
 CREATE TABLE delivery_outbox (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   recipient_id TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind = 'recipient_invitation'),
@@ -18,10 +17,10 @@ CREATE TABLE delivery_outbox (
   last_error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  UNIQUE (organization_id, envelope_id, recipient_id, kind),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, recipient_id) REFERENCES recipient(organization_id, id),
+  PRIMARY KEY (id),
+  UNIQUE (envelope_id, recipient_id, kind),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CHECK (
     (status = 'blocked' AND available_at IS NULL) OR
     (status <> 'blocked' AND available_at IS NOT NULL)
@@ -44,7 +43,6 @@ CREATE INDEX delivery_outbox_claim
   WHERE status IN ('pending','failed');
 
 CREATE TABLE envelope_send_command (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
   actor_id TEXT NOT NULL,
@@ -65,23 +63,22 @@ CREATE TABLE envelope_send_command (
   previous_audit_hash TEXT NOT NULL,
   audit_event_hash TEXT NOT NULL,
   audit_payload_json TEXT NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, ready_audit_event_id) REFERENCES audit_event(organization_id, id)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (ready_audit_event_id) REFERENCES audit_event(id)
 );
 
 CREATE INDEX envelope_send_command_envelope
-  ON envelope_send_command(organization_id, envelope_id, updated_at DESC);
+  ON envelope_send_command(envelope_id, updated_at DESC);
 
 CREATE TABLE envelope_send_publish (
-  organization_id TEXT NOT NULL,
   actor_type TEXT NOT NULL,
   actor_id TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  FOREIGN KEY (organization_id, actor_type, actor_id, idempotency_key)
-    REFERENCES envelope_send_command(organization_id, actor_type, actor_id, idempotency_key)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  FOREIGN KEY (actor_type, actor_id, idempotency_key)
+    REFERENCES envelope_send_command(actor_type, actor_id, idempotency_key)
 );
 
 -- The guard is deliberately the last statement in the application batch. It
@@ -92,72 +89,64 @@ BEGIN
   UPDATE envelope
   SET status = 'sent', sent_commit_sha = (
         SELECT command.commit_sha FROM envelope_send_command command
-        WHERE command.organization_id = NEW.organization_id
-          AND command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
+        WHERE command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
           AND command.idempotency_key = NEW.idempotency_key
       ), updated_at = (
         SELECT command.updated_at FROM envelope_send_command command
-        WHERE command.organization_id = NEW.organization_id
-          AND command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
+        WHERE command.actor_type = NEW.actor_type AND command.actor_id = NEW.actor_id
           AND command.idempotency_key = NEW.idempotency_key
       )
-  WHERE organization_id = NEW.organization_id
-    AND id = (SELECT command.envelope_id FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+  WHERE id = (SELECT command.envelope_id FROM envelope_send_command command
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND status = 'ready'
     AND repository_generation = (SELECT command.expected_generation FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND repository_head = (SELECT command.commit_sha FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND sent_commit_sha IS NULL
     AND EXISTS (
       SELECT 1 FROM envelope_send_command command
-      JOIN audit_event previous ON previous.organization_id = command.organization_id
-        AND previous.envelope_id = command.envelope_id
+      JOIN audit_event previous ON previous.envelope_id = command.envelope_id
         AND previous.sequence = command.audit_sequence - 1
         AND previous.event_hash = command.previous_audit_hash
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
         AND previous.id = command.ready_audit_event_id
     )
     AND NOT EXISTS (
       SELECT 1 FROM envelope_send_command command
-      JOIN audit_event newer ON newer.organization_id = command.organization_id
-        AND newer.envelope_id = command.envelope_id AND newer.sequence >= command.audit_sequence
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      JOIN audit_event newer ON newer.envelope_id = command.envelope_id AND newer.sequence >= command.audit_sequence
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
     )
     AND (SELECT COUNT(*) FROM delivery_outbox delivery, envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
-        AND delivery.organization_id = command.organization_id
         AND delivery.envelope_id = command.envelope_id) = (SELECT delivery_count FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND (SELECT COUNT(*) FROM delivery_outbox delivery, envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
-        AND delivery.organization_id = command.organization_id AND delivery.envelope_id = command.envelope_id
+        AND delivery.envelope_id = command.envelope_id
         AND delivery.status = 'pending') = (SELECT queued_delivery_count FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND (SELECT COUNT(*) FROM recipient target, envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
-        AND target.organization_id = command.organization_id AND target.envelope_id = command.envelope_id
+        AND target.envelope_id = command.envelope_id
         AND target.role <> 'cc') = (SELECT delivery_count FROM envelope_send_command command
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key)
     AND NOT EXISTS (
       SELECT 1 FROM delivery_outbox delivery
-      JOIN recipient target ON target.organization_id = delivery.organization_id
-        AND target.id = delivery.recipient_id AND target.envelope_id = delivery.envelope_id
-      JOIN envelope_send_command command ON command.organization_id = delivery.organization_id
-        AND command.envelope_id = delivery.envelope_id
-      WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+      JOIN recipient target ON target.id = delivery.recipient_id AND target.envelope_id = delivery.envelope_id
+      JOIN envelope_send_command command ON command.envelope_id = delivery.envelope_id
+      WHERE command.actor_type = NEW.actor_type
         AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key
         AND (target.role = 'cc'
           OR target.status <> 'pending'
@@ -177,13 +166,13 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at
-  ) SELECT command.audit_event_id, command.organization_id, command.envelope_id,
+  ) SELECT command.audit_event_id, command.envelope_id,
       command.audit_sequence, 'envelope.sent', command.actor_type, command.actor_id,
       command.audit_payload_json, command.previous_audit_hash, command.audit_event_hash,
       command.updated_at
     FROM envelope_send_command command
-    WHERE command.organization_id = NEW.organization_id AND command.actor_type = NEW.actor_type
+    WHERE command.actor_type = NEW.actor_type
       AND command.actor_id = NEW.actor_id AND command.idempotency_key = NEW.idempotency_key;
 END;

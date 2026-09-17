@@ -79,7 +79,6 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 		if (after === null) return { outcome: 'not_found' };
 		if (after.envelopeId !== expectedEnvelopeId) return { outcome: 'not_found' };
 		if (
-			after.organizationId !== before.organizationId ||
 			after.envelopeId !== before.envelopeId ||
 			after.recipientId !== before.recipientId ||
 			after.sentRevision.commitSha !== before.sentRevision.commitSha
@@ -106,7 +105,6 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 	): Promise<{ objectKey: string; sha256: string; byteSize: number } | null> {
 		if (documentId !== undefined) {
 			const document: SentDocumentPointer | null = await this.sentDocuments.findDocument(
-				context.organizationId,
 				context.envelopeId,
 				context.sentRevision.commitSha,
 				documentId
@@ -115,7 +113,6 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 			return this.#verifiedKey(context, document);
 		}
 		const pointer: SentPdfPointer | null = await this.sentPdf.findSentPdf(
-			context.organizationId,
 			context.envelopeId,
 			context.sentRevision.commitSha
 		);
@@ -129,7 +126,7 @@ export class RecipientSentPdfService implements RecipientSentPdfApplicationPort 
 	): { objectKey: string; sha256: string; byteSize: number } | null {
 		let expectedKey: string;
 		try {
-			expectedKey = sentPdfObjectKey(context.organizationId, context.envelopeId, pointer.sha256);
+			expectedKey = sentPdfObjectKey(context.envelopeId, pointer.sha256);
 		} catch {
 			return null;
 		}

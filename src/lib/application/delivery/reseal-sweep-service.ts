@@ -60,7 +60,6 @@ export class DeliveryResealSweepService {
 		let unrecoverable: number = 0;
 		for (const row of rows) {
 			const context: CapabilitySealContext = {
-				organizationId: row.organizationId,
 				envelopeId: row.envelopeId,
 				recipientId: row.recipientId,
 				deliveryId: row.deliveryId
@@ -78,7 +77,6 @@ export class DeliveryResealSweepService {
 			}
 			const sealed: SealedRecipientCapability = await this.#cryptor.reseal(token, context);
 			const result = await this.#store.resealCapability({
-				organizationId: row.organizationId,
 				deliveryId: row.deliveryId,
 				previousSealingKeyId: row.sealingKeyId,
 				sealedCapability: sealed.sealedCapability,

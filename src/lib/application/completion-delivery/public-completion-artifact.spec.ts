@@ -21,7 +21,6 @@ import {
 } from './public-completion-artifact';
 
 const NOW: Date = new Date('2026-09-12T12:00:00.000Z');
-const ORG_ID: string = 'org-completion-1';
 const ENV_ID: string = 'envelope-completion-1';
 
 function mockObjectStore(objects: Map<string, Uint8Array> = new Map()): ObjectStore {
@@ -78,11 +77,10 @@ describe('PublicCompletionArtifactService', () => {
 		});
 		const gzipped = gzipSync(new TextEncoder().encode(manifestJson), { level: 9, mtime: 0 });
 		const digest = await sha256Hex(gzipped);
-		const objectKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'json', digest);
+		const objectKey = completionArtifactObjectKey(ENV_ID, 'json', digest);
 
 		const objects = mockObjectStore(new Map([[objectKey, gzipped]]));
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: objectKey,
 			jsonSha256: digest,
@@ -110,11 +108,10 @@ describe('PublicCompletionArtifactService', () => {
 		const markdownContent = '# Completion evidence\n- Title: Test';
 		const gzipped = gzipSync(new TextEncoder().encode(markdownContent), { level: 9, mtime: 0 });
 		const digest = await sha256Hex(gzipped);
-		const objectKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'markdown', digest);
+		const objectKey = completionArtifactObjectKey(ENV_ID, 'markdown', digest);
 
 		const objects = mockObjectStore(new Map([[objectKey, gzipped]]));
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: 'unused-json-key',
 			jsonSha256: 'b'.repeat(64),
@@ -138,11 +135,10 @@ describe('PublicCompletionArtifactService', () => {
 		const markdownContent = '# 完了証明\n- タイトル: テスト契約書\n- 署名者: 山田太郎';
 		const gzipped = gzipSync(new TextEncoder().encode(markdownContent), { level: 9, mtime: 0 });
 		const digest = await sha256Hex(gzipped);
-		const objectKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'markdown', digest);
+		const objectKey = completionArtifactObjectKey(ENV_ID, 'markdown', digest);
 
 		const objects = mockObjectStore(new Map([[objectKey, gzipped]]));
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: 'unused-json-key',
 			jsonSha256: 'b'.repeat(64),
@@ -211,7 +207,6 @@ describe('PublicCompletionArtifactService', () => {
 		const issued = await issueCompletionToken();
 		const digest = 'c'.repeat(64);
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: 'wrong/path/to/manifest.json.gz',
 			jsonSha256: digest,
@@ -231,7 +226,6 @@ describe('PublicCompletionArtifactService', () => {
 	it('throws PublicCompletionArtifactIntegrityError when locator digest is not a 64-hex sha256', async () => {
 		const issued = await issueCompletionToken();
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: 'any-key',
 			jsonSha256: 'not-a-valid-sha256',
@@ -250,9 +244,8 @@ describe('PublicCompletionArtifactService', () => {
 	it('throws PublicCompletionArtifactIntegrityError when object is missing from store', async () => {
 		const issued = await issueCompletionToken();
 		const digest = 'e'.repeat(64);
-		const expectedKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'json', digest);
+		const expectedKey = completionArtifactObjectKey(ENV_ID, 'json', digest);
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: expectedKey,
 			jsonSha256: digest,
@@ -271,9 +264,8 @@ describe('PublicCompletionArtifactService', () => {
 	it('wraps object store get errors in PublicCompletionArtifactStorageError', async () => {
 		const issued = await issueCompletionToken();
 		const digest = '1'.repeat(64);
-		const expectedKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'json', digest);
+		const expectedKey = completionArtifactObjectKey(ENV_ID, 'json', digest);
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: expectedKey,
 			jsonSha256: digest,
@@ -298,10 +290,9 @@ describe('PublicCompletionArtifactService', () => {
 		const realDigest = await sha256Hex(validGzip);
 		const differentDigest = '3'.repeat(64);
 		expect(differentDigest).not.toBe(realDigest);
-		const expectedKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'json', differentDigest);
+		const expectedKey = completionArtifactObjectKey(ENV_ID, 'json', differentDigest);
 
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: expectedKey,
 			jsonSha256: differentDigest,
@@ -323,10 +314,9 @@ describe('PublicCompletionArtifactService', () => {
 		const oversizedGzip = new Uint8Array(MAX_MANIFEST_GZIP_BYTES + 100);
 		oversizedGzip.fill(1);
 		const digest = await sha256Hex(oversizedGzip);
-		const expectedKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'json', digest);
+		const expectedKey = completionArtifactObjectKey(ENV_ID, 'json', digest);
 
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: expectedKey,
 			jsonSha256: digest,
@@ -346,10 +336,9 @@ describe('PublicCompletionArtifactService', () => {
 		const issued = await issueCompletionToken();
 		const corruptBytes = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff, 0xff]); // corrupt gzip
 		const digest = await sha256Hex(corruptBytes);
-		const expectedKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'markdown', digest);
+		const expectedKey = completionArtifactObjectKey(ENV_ID, 'markdown', digest);
 
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: 'unused',
 			jsonSha256: '6'.repeat(64),
@@ -373,9 +362,8 @@ describe('PublicCompletionArtifactService', () => {
 		expect(bombGzip.byteLength).toBeLessThan(MAX_MANIFEST_GZIP_BYTES);
 
 		const digest = await sha256Hex(bombGzip);
-		const expectedKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'markdown', digest);
+		const expectedKey = completionArtifactObjectKey(ENV_ID, 'markdown', digest);
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: 'unused',
 			jsonSha256: '7'.repeat(64),
@@ -397,10 +385,9 @@ describe('PublicCompletionArtifactService', () => {
 		const invalidUtf8 = new Uint8Array([0xff, 0xfe, 0x80, 0x81]);
 		const gzipped = gzipSync(invalidUtf8, { level: 9, mtime: 0 });
 		const digest = await sha256Hex(gzipped);
-		const expectedKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'markdown', digest);
+		const expectedKey = completionArtifactObjectKey(ENV_ID, 'markdown', digest);
 
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: 'unused',
 			jsonSha256: '8'.repeat(64),
@@ -420,10 +407,9 @@ describe('PublicCompletionArtifactService', () => {
 		const issued = await issueCompletionToken();
 		const gzipped = gzipSync(new TextEncoder().encode('{ not valid json'), { level: 9, mtime: 0 });
 		const digest = await sha256Hex(gzipped);
-		const objectKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'json', digest);
+		const objectKey = completionArtifactObjectKey(ENV_ID, 'json', digest);
 
 		const locator: CompletionArtifactLocator = {
-			organizationId: ORG_ID,
 			envelopeId: ENV_ID,
 			jsonObjectKey: objectKey,
 			jsonSha256: digest,
@@ -451,10 +437,9 @@ describe('PublicCompletionArtifactService', () => {
 		]) {
 			const gzipped = gzipSync(new TextEncoder().encode(badJson), { level: 9, mtime: 0 });
 			const digest = await sha256Hex(gzipped);
-			const objectKey = completionArtifactObjectKey(ORG_ID, ENV_ID, 'json', digest);
+			const objectKey = completionArtifactObjectKey(ENV_ID, 'json', digest);
 
 			const locator: CompletionArtifactLocator = {
-				organizationId: ORG_ID,
 				envelopeId: ENV_ID,
 				jsonObjectKey: objectKey,
 				jsonSha256: digest,
@@ -471,7 +456,7 @@ describe('PublicCompletionArtifactService', () => {
 		}
 	});
 
-	it('never leaks internal tokens, keys, hashes, or tenant IDs in thrown error messages', async () => {
+	it('never leaks internal tokens, keys, hashes, or envelope IDs in thrown error messages', async () => {
 		const issued = await issueCompletionToken();
 		const errors: Error[] = [
 			new PublicCompletionArtifactNotFoundError(),
@@ -483,7 +468,6 @@ describe('PublicCompletionArtifactService', () => {
 			const text = `${err.name}: ${err.message}`;
 			expect(text).not.toContain(issued.token);
 			expect(text).not.toContain(issued.tokenHash);
-			expect(text).not.toContain(ORG_ID);
 			expect(text).not.toContain(ENV_ID);
 			expect(text).not.toContain('completion-artifacts');
 			expect(text).not.toContain('@');

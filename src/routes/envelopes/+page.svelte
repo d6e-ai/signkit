@@ -103,7 +103,7 @@
 	<title>{m.envelope_list_title()} — {m.app_name()}</title>
 </svelte:head>
 
-<div class="mx-auto flex w-full max-w-5xl flex-col gap-6">
+<div class="flex w-full flex-col gap-6">
 	<section class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
 		<div>
 			<h1 class="text-2xl font-semibold tracking-tight">{m.envelope_list_title()}</h1>

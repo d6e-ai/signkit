@@ -14,7 +14,7 @@
 </svelte:head>
 
 <div class="flex w-full flex-col items-center gap-6">
-	<Card.Root class="w-full max-w-2xl text-center shadow-sm">
+	<Card.Root class="w-full text-center shadow-sm">
 		<Card.Header class="items-center gap-4 py-10">
 			<div class="flex size-12 items-center justify-center rounded-2xl bg-muted text-foreground">
 				<IconAlertTriangle class="size-6" />
@@ -22,7 +22,7 @@
 			<Card.Title>
 				{data.state === 'unavailable' ? m.signing_unavailable_title() : m.signing_invalid_title()}
 			</Card.Title>
-			<Card.Description class="max-w-md leading-6">
+			<Card.Description class="leading-6">
 				{data.state === 'unavailable'
 					? m.signing_unavailable_description()
 					: m.signing_invalid_description()}

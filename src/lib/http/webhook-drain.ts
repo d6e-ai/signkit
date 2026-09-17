@@ -1,14 +1,13 @@
-import { env } from '$env/dynamic/private';
 import type { RequestHandler } from '@sveltejs/kit';
 import type {
 	WebhookApplicationPort,
 	WebhookDeliveryBatchResult
 } from '$lib/application/webhooks/webhook-service';
+import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import {
-	BEARER_SECRET_PATTERN,
-	parseBearerSecret,
-	secretsEqual
-} from '$lib/security/bearer-secret';
+	resolveDeliveryWorkerSecret,
+	type DeliveryWorkerSecretResolver
+} from './delivery-worker-secret';
 import { problemResponse } from './problem';
 
 const DRAIN_BATCH_LIMIT: number = 25;
@@ -20,8 +19,6 @@ interface ResolverContext {
 export type WebhookApplicationResolver = (
 	context: ResolverContext
 ) => WebhookApplicationPort | null | Promise<WebhookApplicationPort | null>;
-
-export type DeliveryWorkerSecretResolver = (platform?: Readonly<App.Platform>) => string | null;
 
 export function createWebhookDrainHandler(
 	resolveApplication: WebhookApplicationResolver,
@@ -88,13 +85,6 @@ export function createWebhookDrainHandler(
 			});
 		}
 	};
-}
-
-function resolveDeliveryWorkerSecret(platform?: Readonly<App.Platform>): string | null {
-	const value: string | undefined =
-		platform?.env?.DELIVERY_WORKER_SECRET ?? env.DELIVERY_WORKER_SECRET;
-	if (value === undefined || !BEARER_SECRET_PATTERN.test(value)) return null;
-	return value;
 }
 
 function unauthorized(instance: string): Response {

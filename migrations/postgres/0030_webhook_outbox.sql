@@ -1,5 +1,4 @@
 CREATE TABLE webhook_outbox (
-  organization_id text NOT NULL,
   endpoint_id text NOT NULL,
   audit_event_id text NOT NULL,
   envelope_id text NOT NULL,
@@ -12,9 +11,9 @@ CREATE TABLE webhook_outbox (
   locked_at timestamptz,
   last_error text,
   updated_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, endpoint_id, audit_event_id),
-  FOREIGN KEY (organization_id, endpoint_id) REFERENCES webhook_endpoint(organization_id, id),
-  FOREIGN KEY (organization_id, audit_event_id) REFERENCES audit_event(organization_id, id),
+  PRIMARY KEY (endpoint_id, audit_event_id),
+  FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoint(id),
+  FOREIGN KEY (audit_event_id) REFERENCES audit_event(id),
   CONSTRAINT webhook_outbox_status_known CHECK (
     status IN ('pending', 'processing', 'delivered', 'failed')
   ),

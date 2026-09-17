@@ -45,7 +45,6 @@ import {
 
 export interface AssembleExecutedAgreementInput {
 	objects: ObjectStore;
-	organizationId: string;
 	envelopeId: string;
 	sentCommitSha: string;
 	documentSet: DocumentSetManifest;
@@ -179,7 +178,7 @@ export async function attestExecutedAgreementSources(
 ): Promise<void> {
 	const { payloadsByEventId } = await verifyCompletionAuditChain(
 		input.auditEvents,
-		{ organizationId: input.organizationId, envelopeId: input.envelopeId },
+		{ envelopeId: input.envelopeId },
 		MAX_COMPLETION_AUDIT_VERIFY_EVENTS
 	);
 	const sentEvents: readonly CompletionEvidenceAuditEvent[] = input.auditEvents.filter(
@@ -205,7 +204,6 @@ export async function attestExecutedAgreementSources(
 		sentPayload.documentSetHash !== pinnedDocumentSetHash ||
 		sentPayload.documentSetHash !== input.sentDocumentSet.documentSetHash ||
 		sentPayload.documentCount !== sentDocuments.length ||
-		input.sentDocumentSet.organizationId !== input.organizationId ||
 		input.sentDocumentSet.envelopeId !== input.envelopeId ||
 		input.sentDocumentSet.commitSha !== input.sentCommitSha ||
 		input.sentDocumentSet.documentSetHash !== sentPayload.documentSetHash ||
@@ -239,12 +237,11 @@ function attestSentDocument(
 ): void {
 	let expectedKey: string;
 	try {
-		expectedKey = sentPdfObjectKey(input.organizationId, input.envelopeId, pointer.sha256);
+		expectedKey = sentPdfObjectKey(input.envelopeId, pointer.sha256);
 	} catch {
 		throw new ExecutedPdfIntegrityError('invalid_document', 'Sent PDF key is invalid');
 	}
 	if (
-		pointer.organizationId !== input.organizationId ||
 		pointer.envelopeId !== input.envelopeId ||
 		pointer.commitSha !== input.sentCommitSha ||
 		pointer.position !== position ||
@@ -486,12 +483,7 @@ async function readSignatureAsset(
 	sha256: string,
 	cache: Map<string, Uint8Array>
 ): Promise<Uint8Array> {
-	const key: string = signatureAssetKey(
-		input.organizationId,
-		input.envelopeId,
-		recipientId,
-		sha256
-	);
+	const key: string = signatureAssetKey(input.envelopeId, recipientId, sha256);
 	const cached: Uint8Array | undefined = cache.get(key);
 	if (cached !== undefined) return cached;
 	const stream: ReadableStream<Uint8Array> | null = await input.objects.get(key);

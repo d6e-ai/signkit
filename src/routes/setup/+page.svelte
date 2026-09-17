@@ -67,7 +67,7 @@
 	<title>{m.setup_title()} — {m.app_name()}</title>
 </svelte:head>
 
-<div class="mx-auto flex min-h-[60vh] max-w-lg items-center">
+<div class="flex min-h-[60vh] items-center">
 	<Card.Root class="w-full">
 		<Card.Header>
 			<div

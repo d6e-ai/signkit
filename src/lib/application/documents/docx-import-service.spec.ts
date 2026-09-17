@@ -41,7 +41,6 @@ describe('DocxImportService', () => {
 		);
 
 		const result = await service.importAndCommit({
-			organizationId: 'org-1',
 			envelopeId: '01900000-0000-7000-8000-000000000001',
 			targetPath: 'documents/agreement.md',
 			expectedGeneration: 0,
@@ -53,7 +52,6 @@ describe('DocxImportService', () => {
 		expect(result.outcome).toBe('committed');
 		expect(fake.calls).toHaveLength(1);
 		expect(fake.calls[0]).toMatchObject({
-			organizationId: 'org-1',
 			envelopeId: '01900000-0000-7000-8000-000000000001',
 			expectedGeneration: 0,
 			idempotencyKey: 'import-1'
@@ -71,7 +69,6 @@ describe('DocxImportService', () => {
 
 		await expect(
 			service.importAndCommit({
-				organizationId: 'org-1',
 				envelopeId: '01900000-0000-7000-8000-000000000001',
 				targetPath: 'documents/agreement.md',
 				expectedGeneration: 0,

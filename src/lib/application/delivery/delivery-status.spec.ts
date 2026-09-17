@@ -35,7 +35,7 @@ describe('DeliveryStatusService', () => {
 				]
 			})
 		);
-		const result = await service.find('org-1', 'envelope-1');
+		const result = await service.find('envelope-1');
 
 		expect(result).toEqual({
 			envelopeId: 'envelope-1',
@@ -59,7 +59,7 @@ describe('DeliveryStatusService', () => {
 
 	it('preserves not-found without inventing an empty envelope', async () => {
 		await expect(
-			new DeliveryStatusService(new FakeStatusStore(null)).find('org-1', 'missing')
+			new DeliveryStatusService(new FakeStatusStore(null)).find('missing')
 		).resolves.toBeNull();
 	});
 });

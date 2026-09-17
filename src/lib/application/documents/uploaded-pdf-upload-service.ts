@@ -42,7 +42,6 @@ export class UploadedPdfUploadError extends Error {
 }
 
 export interface UploadPdfInput {
-	organizationId: string;
 	envelopeId: string;
 	expectedGeneration: number;
 	actor: DraftActor;
@@ -80,12 +79,11 @@ export class UploadedPdfUploadService {
 		}
 
 		const sha256: string = await sha256Hex(input.bytes);
-		const objectKey: string = uploadedPdfObjectKey(input.organizationId, input.envelopeId, sha256);
+		const objectKey: string = uploadedPdfObjectKey(input.envelopeId, sha256);
 		await this.persistImmutablePdf(objectKey, input.bytes, sha256);
 
 		const createdAt: string = input.updatedAt ?? new Date().toISOString();
 		const insert: InsertUploadedDocumentResult = await this.uploadedDocuments.insert({
-			organizationId: input.organizationId,
 			envelopeId: input.envelopeId,
 			sha256,
 			objectKey,
@@ -107,7 +105,6 @@ export class UploadedPdfUploadService {
 
 		const title: string = titleFromUpload(input.title, input.filename);
 		return this.drafts.commit({
-			organizationId: input.organizationId,
 			envelopeId: input.envelopeId,
 			expectedGeneration: input.expectedGeneration,
 			edits: [],

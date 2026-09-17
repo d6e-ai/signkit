@@ -5,18 +5,17 @@ import {
 	DraftGenerationConflictError,
 	type CommitDraftResult
 } from '$lib/application/drafts/draft-persistence';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
 import { createDocumentOrderHandler } from './envelope-document-order';
 
-const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
 const firstId = '01900000-0000-7000-8000-000000000021';
 const secondId = '01900000-0000-7000-8000-000000000022';
 const pathname = `/api/v1/envelopes/${envelopeId}/documents/order`;
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function committed(): CommitDraftResult {

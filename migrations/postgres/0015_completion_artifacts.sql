@@ -5,7 +5,6 @@
 -- leases one job per envelope, and publishes exactly one immutable pointer
 -- plus one chained `envelope.completion_artifact_published` audit event.
 CREATE TABLE completion_artifact_job (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   status text NOT NULL CHECK (status IN ('pending','processing','published','failed')),
   claim_token text,
@@ -16,8 +15,8 @@ CREATE TABLE completion_artifact_job (
   last_error text,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CHECK (
     (status = 'processing' AND claim_token IS NOT NULL AND locked_at IS NOT NULL) OR
     (status <> 'processing' AND claim_token IS NULL AND locked_at IS NULL)
@@ -37,7 +36,6 @@ CREATE INDEX completion_artifact_job_reclaim
 -- content-addressed and immutable, and this row is the sole SQL boundary
 -- that makes a specific pair of them the envelope's completion evidence.
 CREATE TABLE completion_artifact (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   schema_version integer NOT NULL CHECK (schema_version = 1),
   manifest_sha256 text NOT NULL,
@@ -52,10 +50,10 @@ CREATE TABLE completion_artifact (
   audit_head_event_hash text NOT NULL,
   published_at timestamptz NOT NULL,
   audit_event_id text NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, anchor_audit_event_id) REFERENCES audit_event(organization_id, id)
+  PRIMARY KEY (envelope_id),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (anchor_audit_event_id) REFERENCES audit_event(id)
 );
 
 -- PostgreSQL has no D1-style rollback-on-failed-predicate trigger; the
@@ -63,7 +61,6 @@ CREATE TABLE completion_artifact (
 -- transaction, rechecks the same predicates in application code, and inserts
 -- the pointer, job update, and audit event together before committing.
 CREATE TABLE completion_artifact_publish_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   claim_token text NOT NULL,
   sent_commit_sha text NOT NULL,
@@ -80,8 +77,8 @@ CREATE TABLE completion_artifact_publish_command (
   previous_audit_hash text NOT NULL,
   audit_event_hash text NOT NULL,
   audit_payload_json text NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, anchor_audit_event_id) REFERENCES audit_event(organization_id, id)
+  PRIMARY KEY (envelope_id),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (anchor_audit_event_id) REFERENCES audit_event(id)
 );

@@ -14,7 +14,7 @@ This is a small, early-stage project maintained without a dedicated security tea
 
 Areas of particular interest, drawn from the project's own risk register in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md):
 
-- cross-tenant data leakage between organizations
+- authorization bypass between instance members, API-key owners, envelopes, or recipients
 - webhook SSRF, DNS rebinding, or signing-secret handling
 - credential, session, and encryption-key handling
 - the fail-closed instance bootstrap gate (owner email match vs local-only unsafe opt-in)

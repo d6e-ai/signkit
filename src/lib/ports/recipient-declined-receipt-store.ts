@@ -1,7 +1,6 @@
 export type RecipientDeclinedReceiptLocale = 'en' | 'ja';
 
 export interface RecipientDeclinedReceiptLocator {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	idempotencyKey: string;
@@ -11,7 +10,6 @@ export interface RecipientDeclinedReceiptLocator {
 }
 
 export interface ProvenRecipientDeclinedReceipt {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	idempotencyKey: string;
@@ -22,7 +20,7 @@ export interface ProvenRecipientDeclinedReceipt {
 
 export type RecipientDeclinedReceiptIdentity = Pick<
 	RecipientDeclinedReceiptLocator,
-	'organizationId' | 'envelopeId' | 'recipientId' | 'idempotencyKey' | 'capabilityHash'
+	'envelopeId' | 'recipientId' | 'idempotencyKey' | 'capabilityHash'
 >;
 
 export interface RecipientDeclinedReceiptStore {

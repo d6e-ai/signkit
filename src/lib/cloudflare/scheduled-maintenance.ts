@@ -26,6 +26,7 @@ const INTERNAL_ORIGIN: string = 'https://signkit.internal';
  */
 export const SCHEDULED_MAINTENANCE_JOBS: readonly ScheduledMaintenanceJob[] = [
 	{ name: 'delivery drain', path: '/api/v1/system/deliveries/drain' },
+	{ name: 'DOCX conversion drain', path: '/api/v1/system/docx-conversions/drain' },
 	{ name: 'completion artifact drain', path: '/api/v1/system/completion-artifacts/drain' },
 	{ name: 'completion delivery drain', path: '/api/v1/system/completion-deliveries/drain' },
 	{ name: 'envelope expiry drain', path: '/api/v1/system/envelopes/expiry-drain' },
@@ -44,7 +45,11 @@ export function runScheduledMaintenance(
 	context: ScheduledMaintenanceContext
 ): void {
 	for (const job of SCHEDULED_MAINTENANCE_JOBS) {
-		context.waitUntil(runScheduledJob(fetchHandler, environment, context, job));
+		context.waitUntil(
+			runScheduledJob(fetchHandler, environment, context, job).catch((error: unknown): void => {
+				logScheduledMaintenanceFailure(job, error);
+			})
+		);
 	}
 }
 
@@ -66,4 +71,14 @@ async function runScheduledJob(
 		context
 	);
 	if (!response.ok) throw new Error(`${job.name} failed with status ${response.status}`);
+}
+
+function logScheduledMaintenanceFailure(job: ScheduledMaintenanceJob, error: unknown): void {
+	console.error(
+		JSON.stringify({
+			event: 'scheduled_maintenance_failed',
+			job: job.name,
+			message: error instanceof Error ? error.name : 'UnknownError'
+		})
+	);
 }

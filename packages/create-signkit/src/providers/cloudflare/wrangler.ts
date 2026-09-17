@@ -55,6 +55,7 @@ export interface DeployOptions {
 	domain?: string;
 	keepVars: boolean;
 	noBundle: boolean;
+	secretsFile?: string;
 }
 
 export interface MigrationCommandOptions {
@@ -101,6 +102,9 @@ export function wranglerDeployArgs(options: DeployOptions): string[] {
 
 export function wranglerUploadArgs(options: DeployOptions): string[] {
 	const args = ['--config', options.configPath, '--name', options.workerName];
+	if (options.secretsFile) {
+		args.push('--secrets-file', options.secretsFile);
+	}
 	if (options.keepVars) {
 		args.push('--keep-vars');
 	}

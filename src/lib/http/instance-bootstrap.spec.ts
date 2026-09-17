@@ -25,12 +25,12 @@ const mockMember: InstanceMemberMetadata = {
 };
 
 /** Claiming ownership additionally requires a verified email, like instance invitation acceptance. */
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
 	return identityOnlyLocals(state, { emailVerified: true });
 }
 
 function identityOnlyLocalsWithEmail(email: string): App.Locals {
-	return identityOnlyLocals('authorized', { emailVerified: true, email });
+	return identityOnlyLocals('active', { emailVerified: true, email });
 }
 
 function event(input: { locals?: App.Locals; body?: string; headers?: HeadersInit }): RequestEvent {
@@ -137,7 +137,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			const res = await handler(
 				event({
 					locals: identityOnlyLocals(
-						'authorized',
+						'active',
 						emailVerified === undefined ? {} : { emailVerified }
 					),
 					headers: { 'idempotency-key': 'key-1' },

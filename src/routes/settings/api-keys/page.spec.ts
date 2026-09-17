@@ -59,33 +59,6 @@ describe('settings api-keys page server contracts', () => {
 		);
 		expect(panelSource).toMatch(/aria-invalid=\{keyCreateError !== null\}/);
 	});
-
-	it('warns operators that organization grants are durable delegations without automatic revocation', () => {
-		const panelSource = readFileSync(
-			'src/lib/components/settings/settings-api-keys-panel.svelte',
-			'utf8'
-		);
-		expect(panelSource).toContain('settings_api_keys_grant_durability_title');
-		expect(panelSource).toContain('settings_api_keys_grant_durability_warning');
-		expect(panelSource).toMatch(/role="note"/);
-	});
-
-	it('defines the grant durability warning in every locale', async () => {
-		const { default: en } = (await import('../../../../messages/en.json')) as {
-			default: Record<string, string>;
-		};
-		const { default: ja } = (await import('../../../../messages/ja.json')) as {
-			default: Record<string, string>;
-		};
-		for (const key of [
-			'settings_api_keys_grant_durability_title',
-			'settings_api_keys_grant_durability_warning'
-		] as const) {
-			expect(en[key]).toMatch(/grant/i);
-			expect(ja[key].length).toBeGreaterThan(0);
-		}
-		expect(en.settings_api_keys_grant_durability_warning).toContain('automatically');
-	});
 });
 
 describe('settings api-keys page server guard', () => {

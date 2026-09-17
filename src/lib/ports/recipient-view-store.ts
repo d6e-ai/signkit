@@ -1,7 +1,6 @@
 import type { RecipientRole } from '$lib/domain/envelope';
 
 export interface ViewedCommandKey {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	capabilityHash: string;

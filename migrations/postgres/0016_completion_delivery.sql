@@ -6,7 +6,6 @@
 -- delivery progress.
 CREATE TABLE completion_delivery_outbox (
   id text NOT NULL,
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
   status text NOT NULL CHECK (status IN ('pending', 'processing', 'delivered', 'failed')),
@@ -26,13 +25,12 @@ CREATE TABLE completion_delivery_outbox (
   retryable boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  UNIQUE (organization_id, envelope_id, recipient_id),
-  FOREIGN KEY (organization_id, envelope_id)
-    REFERENCES completion_artifact(organization_id, envelope_id),
+  PRIMARY KEY (id),
+  UNIQUE (envelope_id, recipient_id),
+  FOREIGN KEY (envelope_id)
+    REFERENCES completion_artifact(envelope_id),
   CONSTRAINT completion_delivery_recipient_scope
-    FOREIGN KEY (organization_id, envelope_id, recipient_id)
-    REFERENCES recipient(organization_id, envelope_id, id),
+    FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CONSTRAINT completion_delivery_id_uuidv7 CHECK (
     id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),

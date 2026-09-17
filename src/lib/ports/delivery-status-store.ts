@@ -22,8 +22,5 @@ export interface StoredEnvelopeDeliveryStatus {
 }
 
 export interface DeliveryStatusStore {
-	findEnvelopeDeliveryStatus(
-		organizationId: string,
-		envelopeId: string
-	): Promise<StoredEnvelopeDeliveryStatus | null>;
+	findEnvelopeDeliveryStatus(envelopeId: string): Promise<StoredEnvelopeDeliveryStatus | null>;
 }

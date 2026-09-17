@@ -702,7 +702,7 @@ const ENVELOPE_LIST_PAGE_SIZE: number = 100;
 /**
  * Fetches every envelope page via `nextCursor` rather than just the first, so
  * operational counts derived from the result (dashboard stats and the like)
- * reflect the whole organization instead of being silently capped at one
+ * reflect the whole instance instead of being silently capped at one
  * page's `limit`.
  */
 export async function fetchAllEnvelopes(

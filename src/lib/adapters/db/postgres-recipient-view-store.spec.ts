@@ -46,7 +46,6 @@ class ScriptedPostgres {
 }
 
 const command: PublishRecipientViewedCommand = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	capabilityHash: 'cap-hash-1',
@@ -99,7 +98,6 @@ const viewedRecipientRow = {
 
 function replayRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organizationId: command.organizationId,
 		envelopeId: command.envelopeId,
 		recipientId: command.recipientId,
 		recipientRole: command.recipientRole,
@@ -117,7 +115,6 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		auditEventHash: command.auditEventHash,
 		auditPayloadJson: command.auditPayloadJson,
 		evidenceEventId: command.auditEventId,
-		evidenceOrganizationId: command.organizationId,
 		evidenceEnvelopeId: command.envelopeId,
 		evidenceSequence: command.expectedAuditSequence + 1,
 		evidenceEventType: 'recipient.viewed',

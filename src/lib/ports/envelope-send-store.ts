@@ -2,7 +2,6 @@ import type { Envelope, Recipient } from '$lib/domain/envelope';
 import type { SentDocumentSetArtifact } from '$lib/application/documents/sent-document-pdf';
 
 export interface SendCommandKey {
-	organizationId: string;
 	envelopeId: string;
 	actorType: 'user' | 'agent' | 'system';
 	actorId: string;

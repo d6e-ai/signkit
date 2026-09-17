@@ -34,7 +34,6 @@ export interface PublishedRecipientApproved {
 export type ApprovePreparation =
 	| {
 			outcome: 'ready';
-			organizationId: string;
 			envelopeId: string;
 			recipientId: string;
 			recipientRole: 'approver';

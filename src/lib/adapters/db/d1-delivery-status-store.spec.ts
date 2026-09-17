@@ -23,7 +23,7 @@ function fakeD1(rows: readonly object[]): { database: D1Database; record: Statem
 }
 
 describe('D1DeliveryStatusStore', () => {
-	it('uses tenant-safe joins and maps ordered delivery metadata without identity fields', async () => {
+	it('maps ordered delivery metadata without identity fields', async () => {
 		const fake = fakeD1([
 			{
 				envelope_id: 'envelope-1',
@@ -41,7 +41,6 @@ describe('D1DeliveryStatusStore', () => {
 			}
 		]);
 		const result = await new D1DeliveryStatusStore(fake.database).findEnvelopeDeliveryStatus(
-			'org-1',
 			'envelope-1'
 		);
 
@@ -49,10 +48,10 @@ describe('D1DeliveryStatusStore', () => {
 			envelopeId: 'envelope-1',
 			deliveries: [{ recipientId: 'recipient-1', status: 'pending' }]
 		});
-		expect(fake.record.bindings).toEqual(['org-1', 'envelope-1']);
-		expect(fake.record.sql).toContain('delivery.organization_id = envelope.organization_id');
-		expect(fake.record.sql).toContain('recipient.organization_id = delivery.organization_id');
-		expect(fake.record.sql).toContain('WHERE envelope.organization_id = ?');
+		expect(fake.record.bindings).toEqual(['envelope-1']);
+		expect(fake.record.sql).toContain('delivery.envelope_id = envelope.id');
+		expect(fake.record.sql).toContain('recipient.envelope_id = delivery.envelope_id');
+		expect(fake.record.sql).toContain('WHERE envelope.id = ?');
 		expect(fake.record.sql).not.toMatch(/recipient\.email|recipient\.name/);
 	});
 
@@ -76,10 +75,10 @@ describe('D1DeliveryStatusStore', () => {
 		]);
 
 		await expect(
-			new D1DeliveryStatusStore(missing.database).findEnvelopeDeliveryStatus('org-1', 'missing')
+			new D1DeliveryStatusStore(missing.database).findEnvelopeDeliveryStatus('missing')
 		).resolves.toBeNull();
 		await expect(
-			new D1DeliveryStatusStore(empty.database).findEnvelopeDeliveryStatus('org-1', 'envelope-1')
+			new D1DeliveryStatusStore(empty.database).findEnvelopeDeliveryStatus('envelope-1')
 		).resolves.toMatchObject({ deliveries: [] });
 	});
 });

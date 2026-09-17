@@ -31,7 +31,6 @@ class SendPublicationIntegrityError extends Error {
 
 interface RecipientRow {
 	id: string;
-	organizationId: string;
 	envelopeId: string;
 	email: string;
 	name: string;
@@ -53,7 +52,6 @@ interface ReadyAuditAnchorRow {
 	sequence: number | string;
 }
 interface SendCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	actorType: string;
 	actorId: string;
@@ -84,7 +82,6 @@ interface SendCommandRow {
 	documentCount: number | string | null;
 	sentDocumentsJson: string | null;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -126,25 +123,17 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 	): Promise<SendPreparation> {
 		const replay: SendPreparation | null = await this.#resolveCommand(this.#sql, key);
 		if (replay !== null) return replay;
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'ready') return { outcome: 'not_ready' };
 		if (envelope.repositoryGeneration !== expectedGeneration)
 			return { outcome: 'generation_conflict' };
 		if (envelope.repositoryHead === null || envelope.sentCommitSha !== null)
 			return { outcome: 'integrity_error' };
-		const auditHead: SendAuditHead | null = await this.#readAuditHead(
-			this.#sql,
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: SendAuditHead | null = await this.#readAuditHead(this.#sql, key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		const readyAuditSequence: number | null = await this.#readReadyAuditSequence(
 			this.#sql,
-			key.organizationId,
 			key.envelopeId,
 			expectedGeneration,
 			envelope.repositoryHead,
@@ -154,7 +143,6 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			return { outcome: 'audit_conflict' };
 		const recipients: readonly Recipient[] | null = await this.#readRecipients(
 			this.#sql,
-			key.organizationId,
 			key.envelopeId,
 			false
 		);
@@ -177,7 +165,7 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				>`
 					SELECT status, repository_generation AS "repositoryGeneration", repository_head AS "repositoryHead",
 						sent_commit_sha AS "sentCommitSha" FROM envelope
-					WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId} FOR UPDATE`;
+					WHERE id = ${command.envelopeId} FOR UPDATE`;
 				if (envelopeRows.length === 0) return { outcome: 'not_found' };
 				const raced: SendPreparation | null = await this.#resolveCommand(transaction, command);
 				if (raced !== null) return publishFromPreparation(raced);
@@ -189,13 +177,11 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					return { outcome: 'integrity_error' };
 				const auditHead: SendAuditHead | null = await this.#readAuditHead(
 					transaction,
-					command.organizationId,
 					command.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
 				const readyAuditSequence: number | null = await this.#readReadyAuditSequence(
 					transaction,
-					command.organizationId,
 					command.envelopeId,
 					command.expectedGeneration,
 					command.commitSha,
@@ -211,7 +197,6 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				}
 				const recipients: readonly Recipient[] | null = await this.#readRecipients(
 					transaction,
-					command.organizationId,
 					command.envelopeId,
 					true
 				);
@@ -259,13 +244,13 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					(delivery): boolean => delivery.status === 'pending'
 				).length;
 				await transaction`INSERT INTO envelope_send_command (
-					organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+					envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 					expected_generation, ready_audit_event_id, commit_sha, initial_routing_order,
 					delivery_count, queued_delivery_count, delivery_manifest_hash, delivery_manifest_json,
 					initial_capability_expires_at, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json,
 					document_set_hash, document_count, sent_documents_json
-				) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.actorType}, ${command.actorId},
+				) VALUES (${command.envelopeId}, ${command.actorType}, ${command.actorId},
 					${command.idempotencyKey}, ${command.requestFingerprint}, ${command.expectedGeneration},
 					${command.expectedReadyAuditEventId}, ${command.commitSha}, ${command.initialRoutingOrder},
 					${command.deliveries.length}, ${queuedDeliveryCount}, ${command.deliveryManifestHash},
@@ -279,17 +264,17 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					const updated = await transaction<{ id: string }[]>`UPDATE recipient SET
 						capability_hash = ${delivery.capabilityHash}, capability_expires_at = ${delivery.capabilityExpiresAt},
 						capability_revoked_at = NULL, updated_at = ${command.updatedAt}
-						WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 							AND id = ${delivery.recipientId} AND status = 'pending'
 							AND capability_hash IS NULL AND capability_expires_at IS NULL AND capability_revoked_at IS NULL
 						RETURNING id`;
 					if (updated.length !== 1) throw new SendPublicationIntegrityError();
 					await transaction`INSERT INTO delivery_outbox (
-						id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+						id, envelope_id, recipient_id, kind, status, capability_hash,
 						reserved_capability_expires_at,
 						sealed_capability, sealing_key_id, sealed_capability_sha256, available_at,
 						attempts, created_at, updated_at
-					) VALUES (${delivery.id}, ${command.organizationId}, ${command.envelopeId}, ${delivery.recipientId},
+					) VALUES (${delivery.id}, ${command.envelopeId}, ${delivery.recipientId},
 						'recipient_invitation', ${delivery.status}, ${delivery.capabilityHash}, ${delivery.capabilityExpiresAt}, ${delivery.sealedCapability},
 						${delivery.sealingKeyId}, ${delivery.sealedCapabilitySha256}, ${delivery.availableAt}, 0,
 						${command.updatedAt}, ${command.updatedAt})`;
@@ -297,7 +282,7 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				const counts = await transaction<{ deliveryCount: number; queuedCount: number }[]>`
 					SELECT COUNT(*)::int AS "deliveryCount",
 						COUNT(*) FILTER (WHERE status = 'pending')::int AS "queuedCount"
-					FROM delivery_outbox WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}`;
+					FROM delivery_outbox WHERE envelope_id = ${command.envelopeId}`;
 				if (
 					counts[0]?.deliveryCount !== command.deliveries.length ||
 					counts[0]?.queuedCount !== queuedDeliveryCount
@@ -305,14 +290,14 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 					throw new SendPublicationIntegrityError();
 				const sent = await transaction<{ id: string }[]>`UPDATE envelope SET status = 'sent',
 					sent_commit_sha = ${command.commitSha}, updated_at = ${command.updatedAt}
-					WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+					WHERE id = ${command.envelopeId}
 						AND status = 'ready' AND repository_generation = ${command.expectedGeneration}
 						AND repository_head = ${command.commitSha} AND sent_commit_sha IS NULL RETURNING id`;
 				if (sent.length !== 1) throw new SendPublicationIntegrityError();
 				await transaction`INSERT INTO audit_event (
-					id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+					id, envelope_id, sequence, event_type, actor_type, actor_id,
 					payload_json, previous_hash, event_hash, occurred_at
-				) VALUES (${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+				) VALUES (${command.auditEventId}, ${command.envelopeId},
 					${command.expectedAuditSequence + 1}, 'envelope.sent', ${command.actorType}, ${command.actorId},
 					${command.auditPayloadJson}, ${command.previousAuditHash}, ${command.auditEventHash}, ${command.updatedAt})`;
 				// Same transaction as the status flip and the audit event, which is
@@ -322,27 +307,26 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				// revision.
 				for (const document of command.sentDocumentSet.documents) {
 					await transaction`INSERT INTO envelope_sent_document (
-						organization_id, envelope_id, commit_sha, document_id, position, kind, title,
+						envelope_id, commit_sha, document_id, position, kind, title,
 						object_key, sha256, byte_size, page_count, page_width, page_height, created_at
 					) VALUES (
-						${command.organizationId}, ${command.envelopeId}, ${command.commitSha},
+						${command.envelopeId}, ${command.commitSha},
 						${document.documentId}, ${document.position}, ${document.kind}, ${document.title},
 						${document.objectKey}, ${document.sha256}, ${document.byteSize},
 						${document.pageCount}, ${document.pageWidth}, ${document.pageHeight},
 						${command.updatedAt}
-					) ON CONFLICT (organization_id, envelope_id, commit_sha, document_id) DO NOTHING`;
+					) ON CONFLICT (envelope_id, commit_sha, document_id) DO NOTHING`;
 				}
 				const sentDocumentCount = await transaction<{ count: number }[]>`
 					SELECT COUNT(*)::int AS count FROM envelope_sent_document
-					WHERE organization_id = ${command.organizationId}
-						AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 						AND commit_sha = ${command.commitSha}`;
 				if (sentDocumentCount[0]?.count !== command.sentDocumentSet.documentCount) {
 					throw new SendPublicationIntegrityError();
 				}
 				await transaction`INSERT INTO envelope_sent_document_set (
-					organization_id, envelope_id, commit_sha, document_set_hash, document_count, created_at
-				) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.commitSha},
+					envelope_id, commit_sha, document_set_hash, document_count, created_at
+				) VALUES (${command.envelopeId}, ${command.commitSha},
 					${command.sentDocumentSet.documentSetHash}, ${command.sentDocumentSet.documentCount},
 					${command.updatedAt})`;
 				return { outcome: 'published', result: resultFromCommand(command) };
@@ -361,25 +345,20 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 
 	async #readRecipients(
 		sql: Sql,
-		organizationId: string,
 		envelopeId: string,
 		lock: boolean
 	): Promise<readonly Recipient[] | null> {
 		const rows = lock
-			? await sql<
-					RecipientRow[]
-				>`SELECT id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+			? await sql<RecipientRow[]>`SELECT id, envelope_id AS "envelopeId",
 				email, name, role, locale, routing_order AS "routingOrder", status,
 				capability_hash AS "capabilityHash", capability_expires_at AS "capabilityExpiresAt",
 				capability_revoked_at AS "capabilityRevokedAt" FROM recipient
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId} ORDER BY routing_order, id FOR UPDATE`
-			: await sql<
-					RecipientRow[]
-				>`SELECT id, organization_id AS "organizationId", envelope_id AS "envelopeId",
+				WHERE envelope_id = ${envelopeId} ORDER BY routing_order, id FOR UPDATE`
+			: await sql<RecipientRow[]>`SELECT id, envelope_id AS "envelopeId",
 				email, name, role, locale, routing_order AS "routingOrder", status,
 				capability_hash AS "capabilityHash", capability_expires_at AS "capabilityExpiresAt",
 				capability_revoked_at AS "capabilityRevokedAt" FROM recipient
-				WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId} ORDER BY routing_order, id`;
+				WHERE envelope_id = ${envelopeId} ORDER BY routing_order, id`;
 		if (
 			rows.length < 1 ||
 			rows.length > 50 ||
@@ -394,7 +373,6 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			return null;
 		return rows.map((row: RecipientRow): Recipient => ({
 			id: row.id,
-			organizationId: row.organizationId,
 			envelopeId: row.envelopeId,
 			email: row.email,
 			name: row.name,
@@ -407,7 +385,6 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 
 	async #readReadyAuditSequence(
 		sql: Sql,
-		organizationId: string,
 		envelopeId: string,
 		expectedGeneration: number,
 		expectedCommitSha: string,
@@ -417,13 +394,11 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			SELECT ready.audit_sequence AS sequence
 			FROM envelope_ready_command ready
 			JOIN audit_event evidence
-				ON evidence.organization_id = ready.organization_id
-				AND evidence.envelope_id = ready.envelope_id
+				ON evidence.envelope_id = ready.envelope_id
 				AND evidence.id = ready.audit_event_id
 				AND evidence.sequence = ready.audit_sequence
 				AND evidence.event_type = 'envelope.ready'
-			WHERE ready.organization_id = ${organizationId}
-				AND ready.envelope_id = ${envelopeId}
+			WHERE ready.envelope_id = ${envelopeId}
 				AND ready.expected_generation = ${expectedGeneration}
 				AND ready.commit_sha = ${expectedCommitSha}
 				AND ready.audit_event_id = ${expectedReadyAuditEventId}
@@ -435,15 +410,11 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 		return Number.isSafeInteger(sequence) && sequence >= 1 ? sequence : null;
 	}
 
-	async #readAuditHead(
-		sql: Sql,
-		organizationId: string,
-		envelopeId: string
-	): Promise<SendAuditHead | null> {
+	async #readAuditHead(sql: Sql, envelopeId: string): Promise<SendAuditHead | null> {
 		const rows = await sql<
 			AuditHeadRow[]
 		>`SELECT id, sequence, event_hash AS "eventHash", event_type AS "eventType" FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId} ORDER BY sequence DESC LIMIT 1`;
+			WHERE envelope_id = ${envelopeId} ORDER BY sequence DESC LIMIT 1`;
 		const row: AuditHeadRow | undefined = rows[0];
 		if (
 			row === undefined ||
@@ -461,7 +432,7 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 	}
 
 	async #resolveCommand(sql: Sql, key: SendCommandKey): Promise<SendPreparation | null> {
-		const rows = await sql<SendCommandRow[]>`SELECT command.organization_id AS "organizationId",
+		const rows = await sql<SendCommandRow[]>`SELECT
 			command.envelope_id AS "envelopeId", command.actor_type AS "actorType", command.actor_id AS "actorId",
 			command.request_hash AS "requestHash", command.expected_generation AS "expectedGeneration",
 			command.ready_audit_event_id AS "readyAuditEventId", command.commit_sha AS "commitSha",
@@ -479,14 +450,14 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			command.document_set_hash AS "documentSetHash", command.document_count AS "documentCount",
 			command.sent_documents_json AS "sentDocumentsJson",
 			evidence.id AS "evidenceEventId",
-			evidence.organization_id AS "evidenceOrganizationId", evidence.envelope_id AS "evidenceEnvelopeId",
+			evidence.envelope_id AS "evidenceEnvelopeId",
 			evidence.sequence AS "evidenceSequence", evidence.event_type AS "evidenceEventType",
 			evidence.actor_type AS "evidenceActorType", evidence.actor_id AS "evidenceActorId",
 			evidence.payload_json AS "evidencePayloadJson", evidence.previous_hash AS "evidencePreviousHash",
 			evidence.event_hash AS "evidenceEventHash", evidence.occurred_at AS "evidenceOccurredAt"
 			FROM envelope_send_command command LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${key.organizationId} AND command.actor_type = ${key.actorType}
+				ON evidence.id = command.audit_event_id
+			WHERE command.actor_type = ${key.actorType}
 				AND command.actor_id = ${key.actorId} AND command.idempotency_key = ${key.idempotencyKey} LIMIT 1`;
 		const row: SendCommandRow | undefined = rows[0];
 		if (row === undefined) return null;
@@ -521,10 +492,9 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 			recipient.capability_hash AS "recipientCapabilityHash",
 			recipient.capability_expires_at AS "recipientCapabilityExpiresAt"
 			FROM delivery_outbox delivery JOIN recipient
-				ON recipient.organization_id = delivery.organization_id
-				AND recipient.id = delivery.recipient_id
+				ON recipient.id = delivery.recipient_id
 				AND recipient.envelope_id = delivery.envelope_id
-			WHERE delivery.organization_id = ${row.organizationId} AND delivery.envelope_id = ${row.envelopeId}
+			WHERE delivery.envelope_id = ${row.envelopeId}
 			ORDER BY delivery.id`;
 		if (evidence.length !== manifest.length) return false;
 		for (let index: number = 0; index < manifest.length; index += 1) {
@@ -570,7 +540,6 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 function validAuditEvidence(row: SendCommandRow): boolean {
 	return (
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'envelope.sent' &&

@@ -47,7 +47,7 @@ class ConcurrentEnvelopeCreationError extends Error {
 
 interface EnvelopeRow {
 	id: string;
-	organizationId: string;
+	createdByUserId: string;
 	title: string;
 	status: EnvelopeStatus;
 	repositoryGeneration: number;
@@ -66,7 +66,6 @@ interface IdempotencyRow {
 }
 
 interface DraftRevisionCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	actorType: string;
 	actorId: string;
@@ -82,7 +81,6 @@ interface DraftRevisionCommandRow {
 	auditEventHash: string;
 	auditPayloadJson: string;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -101,7 +99,7 @@ interface AuditHeadRow {
 
 /**
  * PostgreSQL collection adapter. Per-envelope operations are inherited from
- * PostgresEnvelopeStore; creation adds the organization projection,
+ * PostgresEnvelopeStore; creation adds the creator projection,
  * idempotency record, envelope, and first audit event in one transaction.
  */
 export class PostgresEnvelopeApplicationStore
@@ -131,23 +129,6 @@ export class PostgresEnvelopeApplicationStore
 
 	async #createIdempotently(command: CreateEnvelopeCommand): Promise<CreateEnvelopeStoreResult> {
 		return this.applicationSql.begin(async (transaction): Promise<CreateEnvelopeStoreResult> => {
-			const organizations = await transaction<{ id: string }[]>`
-				INSERT INTO organization (id, d6e_organization_id, name, created_at)
-				VALUES (
-					${command.organizationId},
-					${command.organizationId},
-					${command.organizationName},
-					${command.createdAt}
-				)
-				ON CONFLICT (id) DO UPDATE
-				SET name = EXCLUDED.name
-				WHERE organization.d6e_organization_id = EXCLUDED.d6e_organization_id
-				RETURNING id
-			`;
-			if (organizations.length !== 1) {
-				throw new Error('Organization projection conflicts with its d6e-auth identifier');
-			}
-
 			const replay: CreateEnvelopeStoreResult | null = await resolveIdempotency(
 				transaction,
 				command
@@ -157,7 +138,7 @@ export class PostgresEnvelopeApplicationStore
 			const createdRows = await transaction<EnvelopeRow[]>`
 				INSERT INTO envelope (
 					id,
-					organization_id,
+					created_by_user_id,
 					title,
 					status,
 					repository_generation,
@@ -166,17 +147,17 @@ export class PostgresEnvelopeApplicationStore
 				)
 				VALUES (
 					${command.envelopeId},
-					${command.organizationId},
+					${command.createdByUserId},
 					${command.title},
 					'draft',
 					0,
 					${command.createdAt},
 					${command.createdAt}
 				)
-				ON CONFLICT (organization_id, id) DO NOTHING
+				ON CONFLICT (id) DO NOTHING
 				RETURNING
 					id,
-					organization_id AS "organizationId",
+					created_by_user_id AS "createdByUserId",
 					title,
 					status,
 					repository_generation AS "repositoryGeneration",
@@ -197,7 +178,6 @@ export class PostgresEnvelopeApplicationStore
 
 			const idempotencyRows = await transaction<IdempotencyRow[]>`
 				INSERT INTO idempotency_key (
-					organization_id,
 					caller_id,
 					idempotency_key,
 					request_hash,
@@ -205,14 +185,13 @@ export class PostgresEnvelopeApplicationStore
 					created_at
 				)
 				VALUES (
-					${command.organizationId},
 					${command.actor.id},
 					${command.idempotencyKey},
 					${command.requestFingerprint},
 					${command.envelopeId},
 					${command.createdAt}
 				)
-				ON CONFLICT (organization_id, caller_id, idempotency_key) DO NOTHING
+				ON CONFLICT (caller_id, idempotency_key) DO NOTHING
 				RETURNING request_hash AS "requestHash", envelope_id AS "envelopeId"
 			`;
 			if (idempotencyRows.length !== 1) {
@@ -224,7 +203,6 @@ export class PostgresEnvelopeApplicationStore
 			await transaction`
 				INSERT INTO audit_event (
 					id,
-					organization_id,
 					envelope_id,
 					sequence,
 					event_type,
@@ -237,7 +215,6 @@ export class PostgresEnvelopeApplicationStore
 				)
 				VALUES (
 					${command.auditEventId},
-					${command.organizationId},
 					${command.envelopeId},
 					1,
 					'envelope.created',
@@ -260,15 +237,12 @@ export class PostgresEnvelopeApplicationStore
 		return resolveIdempotency(this.applicationSql, command);
 	}
 
-	async listForOrganization(
-		organizationId: string,
-		query: EnvelopeListQuery
-	): Promise<EnvelopeListPage> {
+	async listEnvelopes(query: EnvelopeListQuery): Promise<EnvelopeListPage> {
 		assertListLimit(query.limit);
 		const rows = await this.applicationSql<EnvelopeRow[]>`
 			SELECT
 				e.id,
-				e.organization_id AS "organizationId",
+				e.created_by_user_id AS "createdByUserId",
 				e.title,
 				e.status,
 				e.repository_generation AS "repositoryGeneration",
@@ -280,14 +254,12 @@ export class PostgresEnvelopeApplicationStore
 				e.created_at AS "createdAt",
 				e.updated_at AS "updatedAt"
 			FROM envelope e
-			WHERE e.organization_id = ${organizationId}
-				AND (
+			WHERE (
 					${query.cursor}::text IS NULL
 					OR (e.created_at, e.id) < (
 						SELECT cursor_envelope.created_at, cursor_envelope.id
 						FROM envelope cursor_envelope
-						WHERE cursor_envelope.organization_id = ${organizationId}
-							AND cursor_envelope.id = ${query.cursor}
+						WHERE cursor_envelope.id = ${query.cursor}
 					)
 				)
 			ORDER BY e.created_at DESC, e.id DESC
@@ -301,8 +273,8 @@ export class PostgresEnvelopeApplicationStore
 		};
 	}
 
-	async readDetail(organizationId: string, envelopeId: string): Promise<EnvelopeDetail | null> {
-		const envelope: Envelope | null = await this.findForOrganization(organizationId, envelopeId);
+	async readDetail(envelopeId: string): Promise<EnvelopeDetail | null> {
+		const envelope: Envelope | null = await this.findEnvelope(envelopeId);
 		if (envelope === null) return null;
 
 		const recipientRows = await this.applicationSql<PostgresDetailRecipientRow[]>`
@@ -315,7 +287,7 @@ export class PostgresEnvelopeApplicationStore
 				routing_order AS "routingOrder",
 				status
 			FROM recipient
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY routing_order ASC, id ASC
 		`;
 
@@ -324,8 +296,7 @@ export class PostgresEnvelopeApplicationStore
 			const readyRows = await this.applicationSql<{ id: string }[]>`
 				SELECT id
 				FROM audit_event
-				WHERE organization_id = ${organizationId}
-					AND envelope_id = ${envelopeId}
+				WHERE envelope_id = ${envelopeId}
 					AND event_type = 'envelope.ready'
 				ORDER BY sequence DESC
 				LIMIT 1
@@ -348,7 +319,7 @@ export class PostgresEnvelopeApplicationStore
 				width,
 				height
 			FROM envelope_field
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC
 		`;
 
@@ -366,7 +337,6 @@ export class PostgresEnvelopeApplicationStore
 	): Promise<DraftRevisionPreparation> {
 		const existingRows = await this.applicationSql<DraftRevisionCommandRow[]>`
 			SELECT
-				command.organization_id AS "organizationId",
 				command.envelope_id AS "envelopeId",
 				command.actor_type AS "actorType",
 				command.actor_id AS "actorId",
@@ -382,7 +352,6 @@ export class PostgresEnvelopeApplicationStore
 				command.audit_event_hash AS "auditEventHash",
 				command.audit_payload_json AS "auditPayloadJson",
 				evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId",
 				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence",
 				evidence.event_type AS "evidenceEventType",
@@ -394,10 +363,8 @@ export class PostgresEnvelopeApplicationStore
 				evidence.occurred_at AS "evidenceOccurredAt"
 			FROM draft_revision_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id
-				AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${key.organizationId}
-				AND command.actor_type = ${key.actorType}
+				ON evidence.id = command.audit_event_id
+			WHERE command.actor_type = ${key.actorType}
 				AND command.actor_id = ${key.actorId}
 				AND command.idempotency_key = ${key.idempotencyKey}
 			LIMIT 1
@@ -408,10 +375,7 @@ export class PostgresEnvelopeApplicationStore
 		);
 		if (existing !== null) return existing;
 
-		const envelope: Envelope | null = await this.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'draft') return { outcome: 'immutable' };
 		if (envelope.repositoryGeneration !== expectedGeneration) {
@@ -420,7 +384,6 @@ export class PostgresEnvelopeApplicationStore
 
 		const auditHead: DraftAuditHead | null = await this.#readAuditHead(
 			this.applicationSql,
-			key.organizationId,
 			key.envelopeId
 		);
 		if (auditHead === null) return { outcome: 'integrity_error' };
@@ -439,7 +402,6 @@ export class PostgresEnvelopeApplicationStore
 				async (transaction): Promise<PublishDraftRevisionResult> => {
 					const initialCommandRows = await transaction<DraftRevisionCommandRow[]>`
 					SELECT
-						command.organization_id AS "organizationId",
 						command.envelope_id AS "envelopeId",
 						command.actor_type AS "actorType",
 						command.actor_id AS "actorId",
@@ -455,7 +417,6 @@ export class PostgresEnvelopeApplicationStore
 						command.audit_event_hash AS "auditEventHash",
 						command.audit_payload_json AS "auditPayloadJson",
 						evidence.id AS "evidenceEventId",
-						evidence.organization_id AS "evidenceOrganizationId",
 						evidence.envelope_id AS "evidenceEnvelopeId",
 						evidence.sequence AS "evidenceSequence",
 						evidence.event_type AS "evidenceEventType",
@@ -467,10 +428,8 @@ export class PostgresEnvelopeApplicationStore
 						evidence.occurred_at AS "evidenceOccurredAt"
 					FROM draft_revision_command command
 					LEFT JOIN audit_event evidence
-						ON evidence.organization_id = command.organization_id
-						AND evidence.id = command.audit_event_id
-					WHERE command.organization_id = ${command.organizationId}
-						AND command.actor_type = ${command.actorType}
+						ON evidence.id = command.audit_event_id
+					WHERE command.actor_type = ${command.actorType}
 						AND command.actor_id = ${command.actorId}
 						AND command.idempotency_key = ${command.idempotencyKey}
 					LIMIT 1
@@ -484,7 +443,6 @@ export class PostgresEnvelopeApplicationStore
 					const envelopeRows = await transaction<EnvelopeRow[]>`
 					SELECT
 						id,
-						organization_id AS "organizationId",
 						title,
 						status,
 						repository_generation AS "repositoryGeneration",
@@ -496,7 +454,7 @@ export class PostgresEnvelopeApplicationStore
 						created_at AS "createdAt",
 						updated_at AS "updatedAt"
 					FROM envelope
-					WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+					WHERE id = ${command.envelopeId}
 					FOR UPDATE
 				`;
 					const envelopeRow: EnvelopeRow | undefined = envelopeRows[0];
@@ -506,7 +464,6 @@ export class PostgresEnvelopeApplicationStore
 					// duplicate request may have committed while this transaction waited.
 					const racedCommandRows = await transaction<DraftRevisionCommandRow[]>`
 					SELECT
-						command.organization_id AS "organizationId",
 						command.envelope_id AS "envelopeId",
 						command.actor_type AS "actorType",
 						command.actor_id AS "actorId",
@@ -522,7 +479,6 @@ export class PostgresEnvelopeApplicationStore
 						command.audit_event_hash AS "auditEventHash",
 						command.audit_payload_json AS "auditPayloadJson",
 						evidence.id AS "evidenceEventId",
-						evidence.organization_id AS "evidenceOrganizationId",
 						evidence.envelope_id AS "evidenceEnvelopeId",
 						evidence.sequence AS "evidenceSequence",
 						evidence.event_type AS "evidenceEventType",
@@ -534,10 +490,8 @@ export class PostgresEnvelopeApplicationStore
 						evidence.occurred_at AS "evidenceOccurredAt"
 					FROM draft_revision_command command
 					LEFT JOIN audit_event evidence
-						ON evidence.organization_id = command.organization_id
-						AND evidence.id = command.audit_event_id
-					WHERE command.organization_id = ${command.organizationId}
-						AND command.actor_type = ${command.actorType}
+						ON evidence.id = command.audit_event_id
+					WHERE command.actor_type = ${command.actorType}
 						AND command.actor_id = ${command.actorId}
 						AND command.idempotency_key = ${command.idempotencyKey}
 					LIMIT 1
@@ -557,8 +511,7 @@ export class PostgresEnvelopeApplicationStore
 					const auditHeadRows = await transaction<AuditHeadRow[]>`
 					SELECT sequence, event_hash AS "eventHash"
 					FROM audit_event
-					WHERE organization_id = ${command.organizationId}
-						AND envelope_id = ${command.envelopeId}
+					WHERE envelope_id = ${command.envelopeId}
 					ORDER BY sequence DESC
 					LIMIT 1
 				`;
@@ -578,8 +531,7 @@ export class PostgresEnvelopeApplicationStore
 						repository_archive_key = ${command.archiveKey},
 						repository_archive_sha256 = ${command.archiveSha256},
 						updated_at = ${command.updatedAt}
-					WHERE organization_id = ${command.organizationId}
-						AND id = ${command.envelopeId}
+					WHERE id = ${command.envelopeId}
 						AND status = 'draft'
 						AND repository_generation = ${command.expectedGeneration}
 					RETURNING id
@@ -588,12 +540,12 @@ export class PostgresEnvelopeApplicationStore
 
 					await transaction`
 					INSERT INTO draft_revision_command (
-						organization_id, envelope_id, actor_type, actor_id, idempotency_key,
+						envelope_id, actor_type, actor_id, idempotency_key,
 						request_hash, expected_generation, resulting_generation, commit_sha,
 						archive_key, archive_sha256, updated_at, audit_event_id, audit_sequence,
 						previous_audit_hash, audit_event_hash, audit_payload_json
 					) VALUES (
-						${command.organizationId}, ${command.envelopeId}, ${command.actorType},
+						${command.envelopeId}, ${command.actorType},
 						${command.actorId}, ${command.idempotencyKey}, ${command.requestFingerprint},
 						${command.expectedGeneration}, ${command.resultingGeneration},
 						${command.commitSha}, ${command.archiveKey}, ${command.archiveSha256},
@@ -605,10 +557,10 @@ export class PostgresEnvelopeApplicationStore
 
 					await transaction`
 					INSERT INTO audit_event (
-						id, organization_id, envelope_id, sequence, event_type, actor_type,
+						id, envelope_id, sequence, event_type, actor_type,
 						actor_id, payload_json, previous_hash, event_hash, occurred_at
 					) VALUES (
-						${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+						${command.auditEventId}, ${command.envelopeId},
 						${command.expectedAuditSequence + 1}, 'draft.revision_created',
 						${command.actorType}, ${command.actorId}, ${command.auditPayloadJson},
 						${command.previousAuditHash}, ${command.auditEventHash}, ${command.updatedAt}
@@ -644,13 +596,12 @@ export class PostgresEnvelopeApplicationStore
 
 	async #readAuditHead(
 		sql: ReturnType<typeof postgres>,
-		organizationId: string,
 		envelopeId: string
 	): Promise<DraftAuditHead | null> {
 		const rows = await sql<AuditHeadRow[]>`
 			SELECT sequence, event_hash AS "eventHash"
 			FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence DESC
 			LIMIT 1
 		`;
@@ -672,8 +623,7 @@ async function resolveIdempotency(
 			request_hash AS "requestHash",
 			envelope_id AS "envelopeId"
 		FROM idempotency_key
-		WHERE organization_id = ${command.organizationId}
-			AND caller_id = ${command.actor.id}
+		WHERE caller_id = ${command.actor.id}
 			AND idempotency_key = ${command.idempotencyKey}
 		LIMIT 1
 	`;
@@ -684,7 +634,6 @@ async function resolveIdempotency(
 	const replayRows = await sql<EnvelopeRow[]>`
 		SELECT
 			id,
-			organization_id AS "organizationId",
 			title,
 			status,
 			repository_generation AS "repositoryGeneration",
@@ -696,8 +645,7 @@ async function resolveIdempotency(
 			created_at AS "createdAt",
 			updated_at AS "updatedAt"
 		FROM envelope
-		WHERE organization_id = ${command.organizationId}
-			AND id = ${idempotency.envelopeId}
+		WHERE id = ${idempotency.envelopeId}
 		LIMIT 1
 	`;
 	if (replayRows.length !== 1) {
@@ -724,7 +672,6 @@ function hasValidPostgresAuditEvidence(row: DraftRevisionCommandRow): boolean {
 	const evidenceSequence: number = numericSequence(row.evidenceSequence);
 	return (
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number.isSafeInteger(auditSequence) &&
 		evidenceSequence === auditSequence &&
@@ -794,7 +741,7 @@ function publishResultFromPreparation(
 function fromRow(row: EnvelopeRow): Envelope {
 	return {
 		id: row.id,
-		organizationId: row.organizationId,
+		createdByUserId: row.createdByUserId,
 		title: row.title,
 		status: row.status,
 		repositoryGeneration: row.repositoryGeneration,

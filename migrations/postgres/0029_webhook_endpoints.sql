@@ -1,6 +1,5 @@
 CREATE TABLE webhook_endpoint (
   id text NOT NULL,
-  organization_id text NOT NULL REFERENCES organization(id),
   url text NOT NULL,
   description text,
   status text NOT NULL,
@@ -12,7 +11,7 @@ CREATE TABLE webhook_endpoint (
   created_by_user_id text NOT NULL,
   revoked_at timestamptz,
   revoked_by_user_id text,
-  PRIMARY KEY (organization_id, id),
+  PRIMARY KEY (id),
   CONSTRAINT webhook_endpoint_id_uuidv7 CHECK (
     id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
@@ -35,19 +34,18 @@ CREATE TABLE webhook_endpoint (
 );
 
 CREATE INDEX webhook_endpoint_org_created
-  ON webhook_endpoint(organization_id, created_at DESC, id DESC);
+  ON webhook_endpoint(created_at DESC, id DESC);
 
 CREATE TABLE webhook_endpoint_command (
-  organization_id text NOT NULL,
   actor_id text NOT NULL,
   idempotency_key text NOT NULL,
   command_type text NOT NULL,
   request_hash text NOT NULL,
   webhook_id text NOT NULL,
   occurred_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, actor_id, idempotency_key),
-  UNIQUE (organization_id, webhook_id, command_type),
-  FOREIGN KEY (organization_id, webhook_id) REFERENCES webhook_endpoint(organization_id, id),
+  PRIMARY KEY (actor_id, idempotency_key),
+  UNIQUE (webhook_id, command_type),
+  FOREIGN KEY (webhook_id) REFERENCES webhook_endpoint(id),
   CONSTRAINT webhook_endpoint_command_type_known CHECK (command_type IN ('create', 'revoke')),
   CONSTRAINT webhook_endpoint_command_request_hash_sha256 CHECK (request_hash ~ '^[0-9a-f]{64}$')
 );

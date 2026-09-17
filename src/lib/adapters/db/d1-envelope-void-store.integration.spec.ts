@@ -18,13 +18,11 @@ const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 const VOIDED_AT: string = '2026-09-12T02:00:00.000Z';
 const ACTOR: EnvelopeRequestActor = {
 	id: 'user-1',
-	organizationId: 'org-1',
-	organizationName: 'Workspace'
+	createdByUserId: 'user-1'
 };
 const AGENT_ACTOR: EnvelopeRequestActor = {
 	id: '01900000-0000-7000-8000-000000000201',
-	organizationId: 'org-1',
-	organizationName: 'Workspace',
+	createdByUserId: 'user-1',
 	actorType: 'agent'
 };
 
@@ -43,25 +41,25 @@ function seedEnvelope(
 ): void {
 	sqlite
 		.prepare(
-			`INSERT INTO organization (id, d6e_organization_id, name, created_at)
-			 VALUES ('org-1', 'org-1', 'Workspace', '2026-09-12T00:00:00.000Z')`
+			`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			 VALUES ('user-1', 'owner', 'active', '2026-09-12T00:00:00.000Z', '2026-09-12T00:00:00.000Z')`
 		)
 		.run();
 	sqlite
 		.prepare(
 			`INSERT INTO envelope (
-				id, organization_id, title, status, repository_generation, repository_head,
+				id, created_by_user_id, title, status, repository_generation, repository_head,
 				sent_commit_sha, created_at, updated_at
-			 ) VALUES (?, 'org-1', 'Agreement', ?, ?, ?, ?,
+			 ) VALUES (?, 'user-1', 'Agreement', ?, ?, ?, ?,
 				'2026-09-12T00:00:00.000Z', '2026-09-12T01:00:00.000Z')`
 		)
 		.run(ENVELOPE_ID, status, generation, repositoryHead, sentCommitSha);
 	sqlite
 		.prepare(
 			`INSERT INTO audit_event (
-				id, organization_id, envelope_id, sequence, event_type, actor_type,
+				id, envelope_id, sequence, event_type, actor_type,
 				actor_id, payload_json, previous_hash, event_hash, occurred_at
-			 ) VALUES ('01960000-0000-7000-8000-0000000000a0', 'org-1', ?, 1, 'envelope.created', 'user',
+			 ) VALUES ('01960000-0000-7000-8000-0000000000a0', ?, 1, 'envelope.created', 'user',
 				'user-1', '{}', 'genesis', 'head-hash', '2026-09-12T01:00:00.000Z')`
 		)
 		.run(ENVELOPE_ID);
@@ -110,25 +108,25 @@ describe('D1 envelope void store integration', () => {
 			seedEnvelope(sqlite, 'sent', 3, 'head-3', 'head-3');
 			sqlite.exec(`
 				INSERT INTO recipient (
-					id, organization_id, envelope_id, email, name, role, locale, routing_order,
+					id, envelope_id, email, name, role, locale, routing_order,
 					status, capability_hash, capability_expires_at, capability_revoked_at,
 					created_at, updated_at
 				) VALUES
-					('01930000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending','h1','2026-10-01',NULL,'2026-09-12','2026-09-12'),
-					('01930000-0000-7000-8000-000000000002','org-1','${ENVELOPE_ID}','r2@example.com','R2','approver','ja',2,'pending','h2',NULL,NULL,'2026-09-12','2026-09-12'),
-					('01930000-0000-7000-8000-000000000003','org-1','${ENVELOPE_ID}','r3@example.com','R3','signer','en',1,'completed','h3','2026-10-01','${VOIDED_AT}','2026-09-12','${VOIDED_AT}'),
-					('01930000-0000-7000-8000-000000000004','org-1','${ENVELOPE_ID}','r4@example.com','R4','viewer','en',1,'viewed','h4','2026-10-01',NULL,'2026-09-12','2026-09-12'),
-					('01930000-0000-7000-8000-000000000005','org-1','${ENVELOPE_ID}','r5@example.com','R5','signer','en',1,'completed','h5','2026-10-01','2026-09-12T01:30:00.000Z','2026-09-12','2026-09-12');
+					('01930000-0000-7000-8000-000000000001','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending','h1','2026-10-01',NULL,'2026-09-12','2026-09-12'),
+					('01930000-0000-7000-8000-000000000002','${ENVELOPE_ID}','r2@example.com','R2','approver','ja',2,'pending','h2',NULL,NULL,'2026-09-12','2026-09-12'),
+					('01930000-0000-7000-8000-000000000003','${ENVELOPE_ID}','r3@example.com','R3','signer','en',1,'completed','h3','2026-10-01','${VOIDED_AT}','2026-09-12','${VOIDED_AT}'),
+					('01930000-0000-7000-8000-000000000004','${ENVELOPE_ID}','r4@example.com','R4','viewer','en',1,'viewed','h4','2026-10-01',NULL,'2026-09-12','2026-09-12'),
+					('01930000-0000-7000-8000-000000000005','${ENVELOPE_ID}','r5@example.com','R5','signer','en',1,'completed','h5','2026-10-01','2026-09-12T01:30:00.000Z','2026-09-12','2026-09-12');
 				INSERT INTO delivery_outbox (
-					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+					id, envelope_id, recipient_id, kind, status, capability_hash,
 					reserved_capability_expires_at, sealed_capability, sealing_key_id,
 					sealed_capability_sha256, available_at, attempts, created_at, updated_at, retryable
 				) VALUES
-					('01940000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000001','recipient_invitation','pending','h1','2026-10-01','sealed-1','key','sha-1','2026-09-12',0,'2026-09-12','2026-09-12',1),
-					('01940000-0000-7000-8000-000000000002','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000002','recipient_invitation','blocked','h2',NULL,'sealed-2','key','sha-2',NULL,0,'2026-09-12','2026-09-12',1),
-					('01940000-0000-7000-8000-000000000003','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000003','recipient_invitation','delivered','h3','2026-10-01',NULL,'key','sha-3','2026-09-12',1,'2026-09-12','2026-09-12',0),
-					('01940000-0000-7000-8000-000000000004','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000004','recipient_invitation','failed','h4','2026-10-01','sealed-4','key','sha-4','2026-09-12',2,'2026-09-12','2026-09-12',1),
-					('01940000-0000-7000-8000-000000000005','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000005','recipient_invitation','failed','h5','2026-10-01',NULL,'key','sha-5','2026-09-12',3,'2026-09-12','2026-09-12',0);
+					('01940000-0000-7000-8000-000000000001','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000001','recipient_invitation','pending','h1','2026-10-01','sealed-1','key','sha-1','2026-09-12',0,'2026-09-12','2026-09-12',1),
+					('01940000-0000-7000-8000-000000000002','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000002','recipient_invitation','blocked','h2',NULL,'sealed-2','key','sha-2',NULL,0,'2026-09-12','2026-09-12',1),
+					('01940000-0000-7000-8000-000000000003','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000003','recipient_invitation','delivered','h3','2026-10-01',NULL,'key','sha-3','2026-09-12',1,'2026-09-12','2026-09-12',0),
+					('01940000-0000-7000-8000-000000000004','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000004','recipient_invitation','failed','h4','2026-10-01','sealed-4','key','sha-4','2026-09-12',2,'2026-09-12','2026-09-12',1),
+					('01940000-0000-7000-8000-000000000005','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000005','recipient_invitation','failed','h5','2026-10-01',NULL,'key','sha-5','2026-09-12',3,'2026-09-12','2026-09-12',0);
 			`);
 
 			await expect(voidEnvelope(d1, 'sent', 3)).resolves.toMatchObject({
@@ -229,16 +227,16 @@ describe('D1 envelope void store integration', () => {
 			seedEnvelope(sqlite, 'sent', 1, 'head-1', 'head-1');
 			sqlite.exec(`
 				INSERT INTO recipient (
-					id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+					id, envelope_id, email, name, role, locale, routing_order, status,
 					capability_hash, capability_expires_at, created_at, updated_at
-				) VALUES ('01930000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending',
+				) VALUES ('01930000-0000-7000-8000-000000000001','${ENVELOPE_ID}','r1@example.com','R1','signer','en',1,'pending',
 					'h1','2026-10-01','2026-09-12','2026-09-12');
 				INSERT INTO delivery_outbox (
-					id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
+					id, envelope_id, recipient_id, kind, status, capability_hash,
 					reserved_capability_expires_at, sealed_capability, sealing_key_id,
 					sealed_capability_sha256, available_at, attempts, locked_at, claim_token,
 					created_at, updated_at, retryable
-				) VALUES ('01940000-0000-7000-8000-000000000001','org-1','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000001','recipient_invitation','processing','h1',
+				) VALUES ('01940000-0000-7000-8000-000000000001','${ENVELOPE_ID}','01930000-0000-7000-8000-000000000001','recipient_invitation','processing','h1',
 					'2026-10-01','sealed','key','sha','2026-09-12',1,'2026-09-12','claim-token-0001',
 					'2026-09-12','2026-09-12',1);
 			`);
@@ -261,7 +259,7 @@ describe('D1 envelope void store integration', () => {
 		try {
 			seedEnvelope(sqlite, 'draft', 0);
 			await expect(
-				application(d1).voidEnvelope({ ...ACTOR, organizationId: 'other-org' }, ENVELOPE_ID, {
+				application(d1).voidEnvelope(ACTOR, '01900000-0000-7000-8000-000000000999', {
 					idempotencyKey: 'void-1',
 					expectedStatus: 'draft',
 					expectedGeneration: 0
@@ -324,7 +322,7 @@ describe('D1 envelope void store integration', () => {
 			expect(event).toMatchObject({
 				actor_type: 'agent',
 				actor_id: AGENT_ACTOR.id,
-				hash_version: 2
+				hash_version: 3
 			});
 			await expect(
 				hashStoredAuditEvent(
@@ -338,7 +336,7 @@ describe('D1 envelope void store integration', () => {
 						payload: JSON.parse(event.payload_json) as unknown,
 						previousHash: event.previous_hash
 					},
-					{ organizationId: 'org-1', envelopeId: ENVELOPE_ID }
+					{ envelopeId: ENVELOPE_ID }
 				)
 			).resolves.toBe(event.event_hash);
 			expect(sqlite.prepare('SELECT actor_type FROM envelope_void_command').get()).toEqual({
@@ -366,15 +364,13 @@ describe('D1 envelope void store integration', () => {
 								apiKeyId: AGENT_ACTOR.id,
 								keyPrefix: 'signkit_abcdefgh',
 								ownerUserId: 'user-1',
-								organizationId: 'org-1',
-								organizationName: 'Workspace',
 								scopes: ['envelopes:send'],
 								expiresAt: '2026-12-11T00:00:00.000Z'
 							}
 						},
 						identityState: 'anonymous',
-						memberships: [],
-						organizationId: null,
+						instanceMembership: null,
+						bootstrapped: true,
 						principal: null
 					},
 					params: { envelopeId: ENVELOPE_ID },
@@ -390,11 +386,10 @@ describe('D1 envelope void store integration', () => {
 					.prepare(
 						`SELECT command.actor_type AS actor_type, evidence.hash_version AS hash_version
 						 FROM envelope_void_command command
-						 JOIN audit_event evidence ON evidence.organization_id = command.organization_id
-							AND evidence.id = command.audit_event_id`
+						 JOIN audit_event evidence ON evidence.id = command.audit_event_id`
 					)
 					.get()
-			).toEqual({ actor_type: 'agent', hash_version: 2 });
+			).toEqual({ actor_type: 'agent', hash_version: 3 });
 		} finally {
 			sqlite.close();
 		}

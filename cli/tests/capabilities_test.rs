@@ -52,7 +52,7 @@ async fn test_capabilities_raw_output() {
 }
 
 #[tokio::test]
-async fn test_capabilities_sends_no_auth_or_org_headers_even_when_configured() {
+async fn test_capabilities_sends_no_auth_header_even_when_configured() {
     let mock_server = common::start_mock_server().await;
 
     Mock::given(method("GET"))
@@ -64,20 +64,9 @@ async fn test_capabilities_sends_no_auth_or_org_headers_even_when_configured() {
         .mount(&mock_server)
         .await;
 
-    let _env = common::EnvScope::new(&[
-        ("SIGNKIT_API_KEY", Some(common::TEST_API_KEY)),
-        ("SIGNKIT_ORG", Some(common::TEST_ORG)),
-    ])
-    .await;
+    let _env = common::EnvScope::new(&[("SIGNKIT_API_KEY", Some(common::TEST_API_KEY))]).await;
 
-    let cli = Cli::parse_from([
-        "signkit",
-        "--base-url",
-        &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
-        "capabilities",
-    ]);
+    let cli = Cli::parse_from(["signkit", "--base-url", &mock_server.uri(), "capabilities"]);
 
     let exit_code = run_cli(cli).await;
     assert_eq!(exit_code, ExitCode::Success);
@@ -86,20 +75,12 @@ async fn test_capabilities_sends_no_auth_or_org_headers_even_when_configured() {
     assert_eq!(requests.len(), 1);
     let req = &requests[0];
 
-    // Capabilities MUST NOT send authorization or organization selector headers
+    // Capabilities MUST NOT send authorization headers.
     assert!(
         !req.headers
             .contains_key(wiremock::http::HeaderName::from_static("authorization")),
         "Capabilities request must NOT include Authorization header"
     );
-    assert!(
-        !req.headers
-            .contains_key(wiremock::http::HeaderName::from_static(
-                "signkit-organization-id"
-            )),
-        "Capabilities request must NOT include signkit-organization-id header"
-    );
-
     // User-Agent must be present and match signkit-cli
     let ua = req
         .headers

@@ -15,7 +15,6 @@ async fn test_config_precedence_flag_over_env_over_file() {
         temp_file,
         r#"
         base_url = "https://config.example.com"
-        organization_id = "org_from_config"
         timeout_secs = 45
         "#
     )
@@ -23,49 +22,41 @@ async fn test_config_precedence_flag_over_env_over_file() {
 
     // 1. File only (ensure env vars are cleared)
     {
-        let _env = common::EnvScope::new(&[
-            ("SIGNKIT_ORG", None),
-            ("SIGNKIT_ORGANIZATION_ID", None),
-            ("SIGNKIT_BASE_URL", None),
-            ("SIGNKIT_TIMEOUT_SECS", None),
-        ])
-        .await;
-        let resolved = resolve_config(None, None, false, Some(temp_file.path()), None).unwrap();
+        let _env =
+            common::EnvScope::new(&[("SIGNKIT_BASE_URL", None), ("SIGNKIT_TIMEOUT_SECS", None)])
+                .await;
+        let resolved = resolve_config(None, false, Some(temp_file.path()), None).unwrap();
         assert_eq!(resolved.base_url.as_str(), "https://config.example.com/");
-        assert_eq!(resolved.organization_id.as_deref(), Some("org_from_config"));
         assert_eq!(resolved.timeout_secs, 45);
     }
 
     // 2. Env overrides file
     {
         let _env = common::EnvScope::new(&[
-            ("SIGNKIT_ORG", Some("org_from_env")),
             ("SIGNKIT_BASE_URL", Some("https://env.example.com")),
-            ("SIGNKIT_TIMEOUT_SECS", None),
+            ("SIGNKIT_TIMEOUT_SECS", Some("50")),
         ])
         .await;
-        let resolved2 = resolve_config(None, None, false, Some(temp_file.path()), None).unwrap();
+        let resolved2 = resolve_config(None, false, Some(temp_file.path()), None).unwrap();
         assert_eq!(resolved2.base_url.as_str(), "https://env.example.com/");
-        assert_eq!(resolved2.organization_id.as_deref(), Some("org_from_env"));
+        assert_eq!(resolved2.timeout_secs, 50);
     }
 
     // 3. Flag overrides env and file
     {
         let _env = common::EnvScope::new(&[
-            ("SIGNKIT_ORG", Some("org_from_env")),
             ("SIGNKIT_BASE_URL", Some("https://env.example.com")),
+            ("SIGNKIT_TIMEOUT_SECS", Some("50")),
         ])
         .await;
         let resolved3 = resolve_config(
             Some("https://flag.example.com".to_string()),
-            Some("org_from_flag".to_string()),
             false,
             Some(temp_file.path()),
             Some(60),
         )
         .unwrap();
         assert_eq!(resolved3.base_url.as_str(), "https://flag.example.com/");
-        assert_eq!(resolved3.organization_id.as_deref(), Some("org_from_flag"));
         assert_eq!(resolved3.timeout_secs, 60);
     }
 }
@@ -77,7 +68,6 @@ async fn test_config_file_rejects_api_key() {
         temp_file,
         r#"
         base_url = "https://example.com"
-        organization_id = "org_valid"
         api_key = "signkit_illegal_stored_secret"
         "#
     )
@@ -192,23 +182,9 @@ fn test_base_url_validation_rules() {
 }
 
 #[tokio::test]
-async fn test_empty_env_alias_falls_through() {
-    let _env = common::EnvScope::new(&[
-        ("SIGNKIT_ORG", Some("")),
-        ("SIGNKIT_ORGANIZATION_ID", Some("org_fallback")),
-        ("SIGNKIT_BASE_URL", Some("https://example.com")),
-    ])
-    .await;
-
-    let resolved = resolve_config(None, None, false, None, None).unwrap();
-    assert_eq!(resolved.organization_id.as_deref(), Some("org_fallback"));
-}
-
-#[tokio::test]
 async fn test_timeout_zero_rejected() {
     let result = resolve_config(
         Some("https://example.com".to_string()),
-        None,
         false,
         None,
         Some(0),
@@ -224,7 +200,7 @@ async fn test_credential_redacted_in_debug() {
     ])
     .await;
 
-    let resolved = resolve_config(None, None, false, None, None).unwrap();
+    let resolved = resolve_config(None, false, None, None).unwrap();
     let debug_output = format!("{resolved:?}");
     assert!(debug_output.contains("[REDACTED]"));
     assert!(!debug_output.contains(common::TEST_API_KEY));

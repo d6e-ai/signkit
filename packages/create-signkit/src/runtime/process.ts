@@ -84,10 +84,19 @@ export function assertArgvHasNoSecrets(argv: readonly string[]): void {
 		if (lower.startsWith('--') && SECRET_ENV_NAME.test(lower.slice(2))) {
 			throw new Error(`refusing to invoke a process with secret-bearing argv flag ${token}`);
 		}
+		if (index > 0 && isPathFlag(argv[index - 1])) {
+			continue;
+		}
 		if (index > 0 && looksLikeSecretValue(token)) {
 			throw new Error('refusing to invoke a process with a secret-like argv value');
 		}
 	}
+}
+
+const PATH_FLAGS = new Set(['--config', '--secrets-file']);
+
+function isPathFlag(token: string | undefined): boolean {
+	return token !== undefined && PATH_FLAGS.has(token.toLowerCase());
 }
 
 export function filterEnvForWrangler(

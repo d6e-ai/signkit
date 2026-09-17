@@ -26,7 +26,6 @@ export class PostgresDeliveryStatusStore implements DeliveryStatusStore {
 	constructor(private readonly sql: ReturnType<typeof postgres>) {}
 
 	async findEnvelopeDeliveryStatus(
-		organizationId: string,
 		envelopeId: string
 	): Promise<StoredEnvelopeDeliveryStatus | null> {
 		const rows = await this.sql<PostgresDeliveryStatusRow[]>`
@@ -44,14 +43,11 @@ export class PostgresDeliveryStatusStore implements DeliveryStatusStore {
 				delivery.last_error AS "lastError"
 			FROM envelope
 			LEFT JOIN delivery_outbox delivery
-				ON delivery.organization_id = envelope.organization_id
-				AND delivery.envelope_id = envelope.id
+				ON delivery.envelope_id = envelope.id
 			LEFT JOIN recipient
-				ON recipient.organization_id = delivery.organization_id
-				AND recipient.envelope_id = delivery.envelope_id
+				ON recipient.envelope_id = delivery.envelope_id
 				AND recipient.id = delivery.recipient_id
-			WHERE envelope.organization_id = ${organizationId}
-				AND envelope.id = ${envelopeId}
+			WHERE envelope.id = ${envelopeId}
 			ORDER BY recipient.routing_order, delivery.created_at, delivery.id
 		`;
 		const first: PostgresDeliveryStatusRow | undefined = rows[0];
