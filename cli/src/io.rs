@@ -10,6 +10,9 @@ pub const MAX_JSON_INPUT_BYTES: usize = 2 * 1024 * 1024;
 /// Matches the server DOCX import bound (`MAX_DOCX_INPUT_BYTES`).
 pub const MAX_DOCX_BYTES: usize = 20 * 1024 * 1024;
 
+/// Matches the server uploaded PDF bound (`MAX_UPLOADED_PDF_BYTES`).
+pub const MAX_PDF_BYTES: usize = 20 * 1024 * 1024;
+
 /// Matches the server decompressed evidence bound (`MAX_MANIFEST_SOURCE_BYTES`).
 pub const MAX_EVIDENCE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -33,6 +36,15 @@ pub fn read_docx_bytes(path: &str) -> Result<Vec<u8>, CliError> {
         read_bounded_stdin(MAX_DOCX_BYTES, "DOCX")
     } else {
         read_bounded_file(Path::new(path), MAX_DOCX_BYTES, "DOCX")
+    }
+}
+
+/// Reads PDF bytes from a regular file, or from stdin when `path` is `-`.
+pub fn read_pdf_bytes(path: &str) -> Result<Vec<u8>, CliError> {
+    if path == "-" {
+        read_bounded_stdin(MAX_PDF_BYTES, "PDF")
+    } else {
+        read_bounded_file(Path::new(path), MAX_PDF_BYTES, "PDF")
     }
 }
 
@@ -95,7 +107,7 @@ fn read_bounded_file(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8
     if path.as_os_str().is_empty() {
         return Err(CliError::usage("Input path must not be empty."));
     }
-    let mut file = open_no_follow(path, OpenMode::Read).map_err(|err| {
+    let file = open_no_follow(path, OpenMode::Read).map_err(|err| {
         open_error(
             path,
             err,
@@ -116,7 +128,9 @@ fn read_bounded_file(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8
         )));
     }
     let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+    file.take((max_bytes as u64) + 1)
+        .read_to_end(&mut buffer)
+        .map_err(|err| CliError::usage(format!("Failed to read '{}': {err}", path.display())))?;
     if buffer.len() > max_bytes {
         return Err(CliError::usage(format!(
             "{kind} input exceeds the {max_bytes} byte limit."

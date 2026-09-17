@@ -65,7 +65,7 @@ async function createCommand(
 		requestFingerprint: REQUEST_HASH,
 		apiKeyId: KEY_ID,
 		name: 'CI agent',
-		scopes: ['audit:read', 'envelopes:send'],
+		scopes: ['drafts:write', 'envelopes:send'],
 		tokenHash: issued.tokenHash,
 		keyPrefix: issued.keyPrefix,
 		createdAt: CREATED_AT,
@@ -163,7 +163,7 @@ describe('D1ApiKeyStore.createApiKey', () => {
 				id: KEY_ID,
 				name: 'CI agent',
 				keyPrefix: issued.keyPrefix,
-				scopes: ['audit:read', 'envelopes:send'],
+				scopes: ['drafts:write', 'envelopes:send'],
 				createdAt: CREATED_AT,
 				expiresAt: EXPIRES_AT,
 				lastUsedAt: null,
@@ -183,7 +183,7 @@ describe('D1ApiKeyStore.createApiKey', () => {
 			name: 'CI agent',
 			token_hash: issued.tokenHash,
 			key_prefix: issued.keyPrefix,
-			scopes_json: '["audit:read","envelopes:send"]',
+			scopes_json: '["drafts:write","envelopes:send"]',
 			owner_user_id: ACTOR_ID,
 			created_at: CREATED_AT,
 			expires_at: EXPIRES_AT,
@@ -235,7 +235,7 @@ describe('D1ApiKeyStore.createApiKey', () => {
 				id: KEY_ID,
 				name: 'CI agent',
 				keyPrefix: first.keyPrefix,
-				scopes: ['audit:read', 'envelopes:send'],
+				scopes: ['drafts:write', 'envelopes:send'],
 				createdAt: CREATED_AT,
 				expiresAt: EXPIRES_AT,
 				lastUsedAt: null,
@@ -493,7 +493,7 @@ describe('D1ApiKeyStore.listApiKeys', () => {
 			'revokedAt',
 			'scopes'
 		]);
-		expect(page.items[0].scopes).toEqual(['audit:read', 'envelopes:send']);
+		expect(page.items[0].scopes).toEqual(['drafts:write', 'envelopes:send']);
 	});
 
 	it('paginates deterministically through a cursor', async () => {
@@ -645,7 +645,7 @@ describe('D1ApiKeyStore.revokeApiKey', () => {
 				id: KEY_ID,
 				name: 'CI agent',
 				keyPrefix: created.keyPrefix,
-				scopes: ['audit:read', 'envelopes:send'],
+				scopes: ['drafts:write', 'envelopes:send'],
 				createdAt: CREATED_AT,
 				expiresAt: EXPIRES_AT,
 				lastUsedAt: null,

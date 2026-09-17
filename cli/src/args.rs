@@ -88,14 +88,17 @@ pub enum EnvelopesSubcommand {
     /// Import a bounded DOCX file as a Markdown draft commit (requires drafts:write).
     ImportDocx(EnvelopeImportDocxArgs),
 
+    /// Upload a bounded PDF as a draft document (requires drafts:write).
+    UploadPdf(EnvelopeUploadPdfArgs),
+
+    /// Reorder the draft document set, omitting IDs to remove documents (requires drafts:write).
+    DocumentOrder(EnvelopeDocumentOrderArgs),
+
     /// Export the pinned revision as DOCX (requires envelopes:read).
     ExportDocx(EnvelopeExportDocxArgs),
 
     /// Read completion artifact publication status for an envelope.
     CompletionArtifact(EnvelopeIdArg),
-
-    /// Read completion artifact publication status.
-    Audit(EnvelopeIdArg),
 
     /// Download published completion evidence bytes (JSON or Markdown).
     Evidence(EnvelopeEvidenceArgs),
@@ -261,6 +264,52 @@ pub struct EnvelopeImportDocxArgs {
     /// Expected Git generation for the draft commit.
     #[arg(long, value_name = "N")]
     pub expected_generation: u64,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeUploadPdfArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// PDF file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Expected Git generation for the draft commit.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: u64,
+
+    /// Optional display title for the uploaded document.
+    #[arg(long, value_name = "TITLE")]
+    pub title: Option<String>,
+
+    /// Optional zero-based insertion position (0..=19).
+    #[arg(long, value_name = "N")]
+    pub position: Option<u32>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeDocumentOrderArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `expectedGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_generation: Option<u64>,
 
     /// Idempotency key. Generated as a UUIDv4 when omitted.
     #[arg(long, value_name = "KEY")]

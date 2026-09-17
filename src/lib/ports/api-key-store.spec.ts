@@ -42,36 +42,33 @@ describe('api-key-store port helpers', () => {
 	});
 
 	it('serializes and parses only byte-exact canonical scope lists', () => {
-		expect(apiKeyScopesJson(['envelopes:send', 'audit:read'])).toBe(
-			'["audit:read","envelopes:send"]'
+		expect(apiKeyScopesJson(['envelopes:send', 'drafts:write'])).toBe(
+			'["drafts:write","envelopes:send"]'
 		);
-		expect(parseApiKeyScopesJson('["audit:read","envelopes:send"]')).toEqual([
-			'audit:read',
+		expect(parseApiKeyScopesJson('["drafts:write","envelopes:send"]')).toEqual([
+			'drafts:write',
 			'envelopes:send'
 		]);
-		expect(
-			parseApiKeyScopesJson('["audit:read","drafts:write","envelopes:read","envelopes:send"]')
-		).toEqual(['audit:read', 'drafts:write', 'envelopes:read', 'envelopes:send']);
+		expect(parseApiKeyScopesJson('["drafts:write","envelopes:read","envelopes:send"]')).toEqual([
+			'drafts:write',
+			'envelopes:read',
+			'envelopes:send'
+		]);
 	});
 
 	it('fails closed on drifted, duplicated, unknown, empty, or malformed stored scopes', () => {
-		expect(parseApiKeyScopesJson('["envelopes:send","audit:read"]')).toBeNull();
-		expect(parseApiKeyScopesJson('["audit:read", "envelopes:send"]')).toBeNull();
-		expect(parseApiKeyScopesJson('["audit:read","audit:read"]')).toBeNull();
+		expect(parseApiKeyScopesJson('["envelopes:send","drafts:write"]')).toBeNull();
+		expect(parseApiKeyScopesJson('["drafts:write", "envelopes:send"]')).toBeNull();
+		expect(parseApiKeyScopesJson('["drafts:write","drafts:write"]')).toBeNull();
 		expect(parseApiKeyScopesJson('["envelopes:write"]')).toBeNull();
 		expect(parseApiKeyScopesJson('[]')).toBeNull();
-		expect(parseApiKeyScopesJson('["audit:read",1]')).toBeNull();
-		expect(parseApiKeyScopesJson('{"scopes":["audit:read"]}')).toBeNull();
+		expect(parseApiKeyScopesJson('["drafts:write",1]')).toBeNull();
+		expect(parseApiKeyScopesJson('{"scopes":["drafts:write"]}')).toBeNull();
 		expect(parseApiKeyScopesJson('not json')).toBeNull();
 	});
 
 	it('round-trips every single scope', () => {
-		const scopes: readonly ApiKeyScope[] = [
-			'audit:read',
-			'drafts:write',
-			'envelopes:read',
-			'envelopes:send'
-		];
+		const scopes: readonly ApiKeyScope[] = ['drafts:write', 'envelopes:read', 'envelopes:send'];
 		for (const scope of scopes) {
 			expect(parseApiKeyScopesJson(apiKeyScopesJson([scope]))).toEqual([scope]);
 		}

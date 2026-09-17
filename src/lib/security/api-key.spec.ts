@@ -22,23 +22,18 @@ import {
 
 describe('api-key helpers', () => {
 	it('exports the exact allowed scope list', () => {
-		expect(API_KEY_SCOPES).toEqual([
-			'audit:read',
-			'drafts:write',
-			'envelopes:read',
-			'envelopes:send'
-		]);
+		expect(API_KEY_SCOPES).toEqual(['drafts:write', 'envelopes:read', 'envelopes:send']);
 		expect(isApiKeyScope('envelopes:send')).toBe(true);
 		expect(isApiKeyScope('envelopes:write')).toBe(false);
 	});
 
 	it('canonicalizes a nonempty unique subset in stable order', () => {
-		expect(canonicalizeApiKeyScopes(['envelopes:send', 'audit:read'])).toEqual([
-			'audit:read',
+		expect(canonicalizeApiKeyScopes(['envelopes:send', 'drafts:write'])).toEqual([
+			'drafts:write',
 			'envelopes:send'
 		]);
-		expect(canonicalizeApiKeyScopesJson(['envelopes:send', 'drafts:write', 'audit:read'])).toBe(
-			'["audit:read","drafts:write","envelopes:send"]'
+		expect(canonicalizeApiKeyScopesJson(['envelopes:send', 'drafts:write'])).toBe(
+			'["drafts:write","envelopes:send"]'
 		);
 		expect(canonicalizeApiKeyScopesJson(['envelopes:read'])).toBe('["envelopes:read"]');
 	});
@@ -47,9 +42,9 @@ describe('api-key helpers', () => {
 		expect((): readonly string[] => canonicalizeApiKeyScopes([])).toThrow(
 			'API key scopes must be a nonempty unique subset'
 		);
-		expect((): readonly string[] => canonicalizeApiKeyScopes(['audit:read', 'audit:read'])).toThrow(
-			'API key scopes must be a nonempty unique subset'
-		);
+		expect((): readonly string[] =>
+			canonicalizeApiKeyScopes(['drafts:write', 'drafts:write'])
+		).toThrow('API key scopes must be a nonempty unique subset');
 		expect((): readonly string[] => canonicalizeApiKeyScopes(['secrets:read'])).toThrow(
 			'API key scopes must be a nonempty unique subset'
 		);

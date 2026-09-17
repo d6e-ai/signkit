@@ -285,7 +285,7 @@ describe('D1 API key migration', () => {
 				/CHECK constraint failed/
 			);
 			expect((): void =>
-				insertApiKey(sqlite, { scopesJson: '["envelopes:send","audit:read"]' })
+				insertApiKey(sqlite, { scopesJson: '["envelopes:send","drafts:write"]' })
 			).toThrow(/CHECK constraint failed/);
 			expect((): void => insertApiKey(sqlite, { scopesJson: '[]' })).toThrow(
 				/CHECK constraint failed/
