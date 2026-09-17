@@ -51,7 +51,7 @@ describe('authorizeScopedInstanceRequest', () => {
 		 * instance member is not scope-limited, so a scope the key vocabulary
 		 * happens not to contain must not lock a session out.
 		 */
-		it.each(['audit:read', 'drafts:write', 'envelopes:read', 'envelopes:send'] as const)(
+		it.each(['drafts:write', 'envelopes:read', 'envelopes:send'] as const)(
 			'never scope-limits a session actor for %s',
 			(scope: ApiKeyScope) => {
 				expect(authorizeScopedInstanceRequest(locals(), INSTANCE, scope)).not.toBeInstanceOf(
@@ -147,7 +147,7 @@ describe('authorizeScopedInstanceRequest', () => {
 			const result = authorizeScopedInstanceRequest(
 				locals({
 					state: 'authenticated',
-					principal: principal({ scopes: ['audit:read'] })
+					principal: principal({ scopes: ['drafts:write'] })
 				}),
 				INSTANCE,
 				'envelopes:read'

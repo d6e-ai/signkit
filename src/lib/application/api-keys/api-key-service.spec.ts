@@ -87,7 +87,7 @@ function metadata(overrides: Partial<ApiKeyMetadata> = {}): ApiKeyMetadata {
 		id: KEY_ID,
 		name: 'CI agent',
 		keyPrefix: 'signkit_abcdefgh',
-		scopes: ['audit:read', 'envelopes:send'],
+		scopes: ['drafts:write', 'envelopes:send'],
 		createdAt: '2026-09-12T12:00:00.000Z',
 		expiresAt: '2026-12-11T12:00:00.000Z',
 		lastUsedAt: null,
@@ -112,7 +112,7 @@ function createInput(overrides: Partial<CreateApiKeyInput> = {}): CreateApiKeyIn
 	return {
 		idempotencyKey: 'create-1',
 		name: 'CI agent',
-		scopes: ['envelopes:send', 'audit:read'],
+		scopes: ['envelopes:send', 'drafts:write'],
 		...overrides
 	};
 }
@@ -154,7 +154,7 @@ describe('ApiKeyApplication.createApiKey', () => {
 		expect(command).not.toHaveProperty('organizationName');
 		expect(command.apiKeyId).toBe(KEY_ID);
 		expect(command.name).toBe('CI agent');
-		expect(command.scopes).toEqual(['audit:read', 'envelopes:send']);
+		expect(command.scopes).toEqual(['drafts:write', 'envelopes:send']);
 		expect(command.createdAt).toBe('2026-09-12T12:00:00.000Z');
 		expect(Date.parse(command.expiresAt) - NOW.valueOf()).toBe(API_KEY_DEFAULT_EXPIRY_MS);
 		expect(result.outcome).toBe('created');
@@ -208,7 +208,7 @@ describe('ApiKeyApplication.createApiKey', () => {
 		});
 		await service.createApiKey(ACTOR, createInput());
 		await service.createApiKey(ACTOR, createInput({ name: 'Other agent' }));
-		await service.createApiKey(ACTOR, createInput({ scopes: ['audit:read'] }));
+		await service.createApiKey(ACTOR, createInput({ scopes: ['drafts:write'] }));
 		await service.createApiKey(ACTOR, createInput({ expiresAt: '2026-12-11T12:00:00.000Z' }));
 		const fingerprints: readonly string[] = store.createCommands.map(
 			(command: CreateApiKeyCommand): string => command.requestFingerprint
@@ -262,7 +262,7 @@ describe('ApiKeyApplication.createApiKey', () => {
 			'API key scopes must be a nonempty unique subset'
 		);
 		await expect(
-			service.createApiKey(ACTOR, createInput({ scopes: ['audit:read', 'audit:read'] }))
+			service.createApiKey(ACTOR, createInput({ scopes: ['drafts:write', 'drafts:write'] }))
 		).rejects.toThrow('API key scopes must be a nonempty unique subset');
 		await expect(
 			service.createApiKey(ACTOR, createInput({ scopes: ['secrets:read'] }))
@@ -588,12 +588,7 @@ describe('ApiKeyApplication scope canonicalization', () => {
 		const service: ApiKeyApplication = application(store, {
 			uuids: [KEY_ID, OTHER_KEY_ID]
 		});
-		const requested: readonly ApiKeyScope[] = [
-			'envelopes:send',
-			'envelopes:read',
-			'drafts:write',
-			'audit:read'
-		];
+		const requested: readonly ApiKeyScope[] = ['envelopes:send', 'envelopes:read', 'drafts:write'];
 		await service.createApiKey(ACTOR, createInput({ scopes: requested }));
 		await service.createApiKey(
 			ACTOR,
@@ -601,7 +596,6 @@ describe('ApiKeyApplication scope canonicalization', () => {
 		);
 
 		expect(store.createCommands[0].scopes).toEqual([
-			'audit:read',
 			'drafts:write',
 			'envelopes:read',
 			'envelopes:send'

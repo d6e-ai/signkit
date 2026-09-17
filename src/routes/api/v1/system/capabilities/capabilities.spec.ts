@@ -17,7 +17,6 @@ interface CapabilitiesResponse {
 		authority: string;
 		effectiveAuthority: string;
 		enabledScopes: string[];
-		mintedButUnusableScopes: string[];
 		readEndpoints: string[];
 		writeEndpoints?: Record<string, string[]>;
 		mutations: boolean;
@@ -195,15 +194,13 @@ describe('GET /api/v1/system/capabilities', () => {
 		});
 
 		// API key bearer authentication capabilities. The owner-membership requirement
-		// and enabled/minted scope split are advertised because an agent integrator
-		// cannot otherwise tell which minted scopes actually work yet.
+		// and exact live scope set are advertised for agent integrators.
 		expect(data.apiKeyAuthentication).toEqual({
 			scheme: 'bearer',
 			tokenPrefix: 'signkit',
 			authority: 'active-instance-member-key-owner',
 			effectiveAuthority: 'key-scopes-intersected-with-active-owner-membership',
 			enabledScopes: ['envelopes:read', 'drafts:write', 'envelopes:send'],
-			mintedButUnusableScopes: ['audit:read'],
 			readEndpoints: [
 				'/api/v1/envelopes',
 				'/api/v1/envelopes/{envelopeId}',

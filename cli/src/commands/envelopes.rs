@@ -1,21 +1,23 @@
 use crate::args::{
-    EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeEvidenceArgs, EnvelopeExportDocxArgs,
-    EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeImportDocxArgs, EnvelopeListArgs, EnvelopePdfArgs,
-    EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeVoidArgs, EnvelopesSubcommand, EvidenceFormat,
+    EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeDocumentOrderArgs, EnvelopeEvidenceArgs,
+    EnvelopeExportDocxArgs, EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeImportDocxArgs,
+    EnvelopeListArgs, EnvelopePdfArgs, EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeUploadPdfArgs,
+    EnvelopeVoidArgs, EnvelopesSubcommand, EvidenceFormat,
 };
 use crate::client::{BinaryGetSpec, SignKitClient};
 use crate::error::CliError;
 use crate::io::{
     overlay_string, overlay_u64, read_docx_bytes, read_json_object, read_json_value,
-    resolve_idempotency_key, write_output_bytes,
+    read_pdf_bytes, resolve_idempotency_key, write_output_bytes,
 };
 use crate::output::print_success;
 use crate::types::{
     is_valid_uuid_v7, ArtifactDownloadReceipt, CompletionArtifactResponse, DeliveryStatusResponse,
-    DocxExportReceipt, DraftCommitRequest, DraftCommitResponse, DraftWorkspaceSnapshot,
-    EnvelopeCreateRequest, EnvelopeCreateResponse, EnvelopeGetResponse, EnvelopeListPage,
-    PlaceFieldsRequest, PlaceFieldsResponse, ReadyEnvelopeRequest, ReadyEnvelopeResponse,
-    SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
+    DocumentOrderRequest, DocxExportReceipt, DraftCommitRequest, DraftCommitResponse,
+    DraftWorkspaceSnapshot, EnvelopeCreateRequest, EnvelopeCreateResponse, EnvelopeGetResponse,
+    EnvelopeListPage, PlaceFieldsRequest, PlaceFieldsResponse, ReadyEnvelopeRequest,
+    ReadyEnvelopeResponse, SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest,
+    VoidEnvelopeResponse,
 };
 
 pub async fn execute(
@@ -36,8 +38,10 @@ pub async fn execute(
         EnvelopesSubcommand::Send(args) => send_envelope(client, args, raw, pretty).await,
         EnvelopesSubcommand::Void(args) => void_envelope(client, args, raw, pretty).await,
         EnvelopesSubcommand::ImportDocx(args) => import_docx(client, args, raw, pretty).await,
+        EnvelopesSubcommand::UploadPdf(args) => upload_pdf(client, args, raw, pretty).await,
+        EnvelopesSubcommand::DocumentOrder(args) => document_order(client, args, raw, pretty).await,
         EnvelopesSubcommand::ExportDocx(args) => export_docx(client, args, raw, pretty).await,
-        EnvelopesSubcommand::CompletionArtifact(args) | EnvelopesSubcommand::Audit(args) => {
+        EnvelopesSubcommand::CompletionArtifact(args) => {
             get_completion_artifact(client, args, raw, pretty).await
         }
         EnvelopesSubcommand::Evidence(args) => download_evidence(client, args, raw, pretty).await,
@@ -369,6 +373,107 @@ async fn import_docx(
         )
         .await?;
     print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+const PDF_CONTENT_TYPE: &str = "application/pdf";
+
+async fn upload_pdf(
+    client: &SignKitClient,
+    args: EnvelopeUploadPdfArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if args.expected_generation >= MAX_DRAFT_GENERATION {
+        return Err(CliError::usage(
+            "expected-generation must be an integer between 0 and 2147483646.",
+        ));
+    }
+    if let Some(position) = args.position {
+        if position > 19 {
+            return Err(CliError::usage(
+                "position must be an integer between 0 and 19.",
+            ));
+        }
+    }
+    let title = args.title.map(|value| value.trim().to_string());
+    if let Some(ref value) = title {
+        if value.is_empty()
+            || value.encode_utf16().count() > 200
+            || value
+                .chars()
+                .any(|character: char| character <= '\u{001f}' || character == '\u{007f}')
+        {
+            return Err(CliError::usage(
+                "title must contain 1-200 characters and no control characters.",
+            ));
+        }
+    }
+    let pdf_bytes = read_pdf_bytes(&args.file)?;
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let generation = args.expected_generation.to_string();
+    let position_string = args.position.map(|position| position.to_string());
+    let mut query: Vec<(&str, &str)> = vec![("expectedGeneration", generation.as_str())];
+    if let Some(ref value) = title {
+        query.push(("title", value.as_str()));
+    }
+    if let Some(ref value) = position_string {
+        query.push(("position", value.as_str()));
+    }
+    let path = format!("/api/v1/envelopes/{}/documents/pdf", args.envelope_id);
+    let response: DraftCommitResponse = client
+        .post_bytes(&path, &query, pdf_bytes, PDF_CONTENT_TYPE, &idempotency_key)
+        .await?;
+    print_success(&response, raw, pretty)?;
+    Ok(())
+}
+
+async fn document_order(
+    client: &SignKitClient,
+    args: EnvelopeDocumentOrderArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let mut object = read_json_object(&args.file)?;
+    overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    let request: DocumentOrderRequest = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|err| {
+        CliError::usage(format!(
+            "Document-order JSON did not match the required schema: {err}"
+        ))
+    })?;
+    if request.expected_generation >= MAX_DRAFT_GENERATION {
+        return Err(CliError::usage(
+            "expectedGeneration must be an integer between 0 and 2147483646.",
+        ));
+    }
+    if request.document_ids.is_empty() || request.document_ids.len() > 20 {
+        return Err(CliError::usage(
+            "documentIds must contain between 1 and 20 document IDs.",
+        ));
+    }
+    for document_id in &request.document_ids {
+        if !is_valid_uuid_v7(document_id) {
+            return Err(CliError::usage(
+                "documentIds must contain canonical lowercase RFC 9562 UUIDv7 values.",
+            ));
+        }
+    }
+    let unique_document_ids: std::collections::BTreeSet<&str> = request
+        .document_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<&str>>();
+    if unique_document_ids.len() != request.document_ids.len() {
+        return Err(CliError::usage("documentIds must contain unique values."));
+    }
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/documents/order", args.envelope_id);
+    let response: DraftCommitResponse =
+        client.post(&path, &request, &idempotency_key, true).await?;
+    print_success(&response, raw, pretty)?;
     Ok(())
 }
 

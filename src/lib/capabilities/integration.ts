@@ -8,7 +8,6 @@ export const integrationCapabilities = {
 		authority: 'active-instance-member-key-owner',
 		effectiveAuthority: 'key-scopes-intersected-with-active-owner-membership',
 		enabledScopes: ['envelopes:read', 'drafts:write', 'envelopes:send'],
-		mintedButUnusableScopes: ['audit:read'],
 		readEndpoints: [
 			'/api/v1/envelopes',
 			'/api/v1/envelopes/{envelopeId}',

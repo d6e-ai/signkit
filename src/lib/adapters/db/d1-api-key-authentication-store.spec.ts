@@ -251,7 +251,7 @@ describe('D1ApiKeyAuthenticationStore', () => {
 					created_at, expires_at, rate_window_count
 				) VALUES (
 					'${OTHER_KEY_ID}', 'Other agent', '${other.tokenHash}', '${other.keyPrefix}',
-					'["audit:read"]', '${OWNER_ID}', '${CREATED_AT}', '${EXPIRES_AT}', 0
+					'["drafts:write"]', '${OWNER_ID}', '${CREATED_AT}', '${EXPIRES_AT}', 0
 				)
 			`);
 
@@ -265,7 +265,7 @@ describe('D1ApiKeyAuthenticationStore', () => {
 					apiKeyId: OTHER_KEY_ID,
 					keyPrefix: other.keyPrefix,
 					ownerUserId: OWNER_ID,
-					scopes: ['audit:read'],
+					scopes: ['drafts:write'],
 					expiresAt: EXPIRES_AT
 				}
 			});
@@ -319,8 +319,8 @@ describe('D1ApiKeyAuthenticationStore', () => {
 	 */
 	it.each([
 		['a duplicated scope', '["envelopes:read","envelopes:read"]'],
-		['a reordered serialization', '["envelopes:read","audit:read"]'],
-		['a re-spaced serialization', '["envelopes:read", "audit:read"]'],
+		['a reordered serialization', '["envelopes:send","drafts:write"]'],
+		['a re-spaced serialization', '["drafts:write", "envelopes:send"]'],
 		['an empty array', '[]'],
 		['an unknown scope', '["envelopes:delete"]'],
 		['a non-array value', '"envelopes:read"'],
