@@ -95,6 +95,7 @@ export default defineConfig({
 		include: [
 			'pdfjs-dist',
 			'@tabler/icons-svelte',
+			'@tabler/icons-svelte/icons/address-book',
 			'@tabler/icons-svelte/icons/alert-triangle',
 			'@tabler/icons-svelte/icons/ban',
 			'@tabler/icons-svelte/icons/download',

@@ -34,6 +34,7 @@ const API_KEY_PATH_PREFIXES: readonly string[] = ['/api/v1/envelopes'];
  */
 const API_KEY_REJECTED_PATH_PREFIXES: readonly string[] = [
 	'/api/v1/api-keys',
+	'/api/v1/contacts',
 	'/api/v1/instance',
 	'/api/v1/webhooks'
 ];
