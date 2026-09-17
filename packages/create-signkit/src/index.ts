@@ -3,6 +3,7 @@ export { parseArgv, helpText } from './cli/parse.js';
 export { CliError } from './cli/errors.js';
 export { parseReleaseManifest } from './release/manifest.js';
 export { createGithubReleaseResolver } from './release/github.js';
+export { createGithubProvenanceVerifier } from './release/provenance.js';
 export { reconcileCloudflare } from './providers/cloudflare/reconciler.js';
 export { createRuntime } from './runtime.js';
 export {
@@ -29,6 +30,7 @@ export {
 } from './recovery/bootstrap.js';
 export type { ParsedArgv, ParsedCommand, ProviderId, CommandName } from './cli/parse.js';
 export type { ReleaseManifest } from './release/manifest.js';
+export type { ReleaseProvenance } from './release/provenance.js';
 export type { ReconcileResult } from './providers/cloudflare/reconciler.js';
 export type {
 	RecoverySecretMap,

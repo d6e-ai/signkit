@@ -281,6 +281,96 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect.element(languageSelect).toHaveTextContent('日本語');
 	});
 
+	it('creates a new contact after editing identity fields copied from an existing contact', async () => {
+		const contact = {
+			id: '01900000-0000-7000-8000-000000000050',
+			name: 'Alice Example',
+			email: 'alice@example.com',
+			locale: 'en',
+			version: 1,
+			createdAt: '2026-09-17T00:00:00.000Z',
+			updatedAt: '2026-09-17T00:00:00.000Z'
+		};
+		const createdContact = {
+			...contact,
+			id: '01900000-0000-7000-8000-000000000051',
+			name: 'Alice Copy'
+		};
+		const contactMutations: Array<{ method: string; url: string; body: unknown }> = [];
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.startsWith('/api/v1/contacts?')) {
+					return jsonResponse({ items: [contact], nextCursor: null });
+				}
+				if (
+					urlStr.startsWith('/api/v1/contacts') &&
+					(init?.method === 'POST' || init?.method === 'PUT')
+				) {
+					const body = parseBody(init);
+					contactMutations.push({ method: init.method, url: urlStr, body });
+					return jsonResponse(
+						{
+							contact: {
+								...createdContact,
+								...(body ?? {}),
+								id:
+									contactMutations.length === 1
+										? createdContact.id
+										: '01900000-0000-7000-8000-000000000052'
+							}
+						},
+						201
+					);
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Recipients' }).click();
+		await screen.getByRole('button', { name: 'Add recipient' }).click();
+		await screen.getByRole('combobox', { name: 'Choose contact' }).click();
+		await expect.element(screen.getByText('Alice Example')).toBeVisible();
+		await screen.getByText('Alice Example').click();
+		await screen.getByLabelText('Name').fill('Alice Copy');
+		await screen.getByLabelText('Email').fill('alice.copy@example.com');
+		await screen.getByRole('button', { name: 'Save to contacts' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Saved to contacts' })).toBeVisible();
+		await screen.getByLabelText('Name').fill('Alice Another');
+		await screen.getByLabelText('Email').fill('alice.another@example.com');
+		await screen.getByRole('button', { name: 'Save to contacts' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Saved to contacts' })).toBeVisible();
+
+		expect(contactMutations).toEqual([
+			{
+				method: 'POST',
+				url: '/api/v1/contacts',
+				body: { name: 'Alice Copy', email: 'alice.copy@example.com', locale: 'en' }
+			},
+			{
+				method: 'POST',
+				url: '/api/v1/contacts',
+				body: { name: 'Alice Another', email: 'alice.another@example.com', locale: 'en' }
+			}
+		]);
+	});
+
 	it('opens one document picker with PDF and Word choices', async () => {
 		const mockFetch = vi
 			.fn()

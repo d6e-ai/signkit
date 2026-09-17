@@ -1,4 +1,4 @@
-import { resolveEnvelopeDocxExport } from '$lib/application/documents/docx-export-runtime';
+import { resolveDocxConversionService } from '$lib/application/documents/docx-conversion-runtime';
 import { createDocxExportHandler } from '$lib/http/docx-export';
 
-export const GET = createDocxExportHandler(resolveEnvelopeDocxExport);
+export const GET = createDocxExportHandler(resolveDocxConversionService);

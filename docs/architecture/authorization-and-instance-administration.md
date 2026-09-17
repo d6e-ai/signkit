@@ -17,6 +17,8 @@ The first verified user may claim the empty instance only when their email match
 
 Invitations bind a verified email address to a future d6e-auth subject. Acceptance requires the signed-in verified email to match, and creates or reactivates the local member in one transaction.
 
+Each active member may also own a private recipient contact book. Contact ownership comes only from the verified session subject; no request body, query parameter, or header may select another owner or an organization. Owner, admin, and member roles have the same access to their own contacts and no access to another member's contacts. Unknown and cross-owner contact identifiers are deliberately indistinguishable.
+
 ## API keys
 
 API keys belong to one `instance_member` through `owner_user_id`. They never select a tenant and have no grant table. A key is usable only while all of these remain true:
@@ -34,6 +36,8 @@ Supported scopes are `envelopes:read`, `drafts:write`, and `envelopes:send`. Key
 
 Recipient pages use envelope-scoped capability tokens and encrypted browser sessions. They do not become instance members and cannot reach the operator API.
 
+Contacts are a human-session-only operator surface. API keys, recipient capabilities, and recipient-session cookies cannot authorize contact reads, search, creation, replacement, or deletion. Presenting a disallowed bearer on the contact surface must not compose with a browser session.
+
 Background drains use dedicated deployment secrets. They cannot be called with a browser session or API key.
 
 Webhook administration requires an active instance owner or admin. Webhook delivery uses a per-endpoint signing secret and a deployer-managed destination allowlist.
@@ -45,5 +49,6 @@ Webhook administration requires an active instance owner or admin. Webhook deliv
 - Unknown or revoked keys share an opaque authentication failure.
 - Authorization is evaluated on every request; it is not cached across membership changes.
 - Audit actors record the human subject or API-key id that performed the action.
+- Contact names, email addresses, and search terms never appear in audit payloads, logs, problem details, idempotency receipts, URLs, or cursors.
 
 The removal of the previous multi-tenant model is recorded in [the destructive single-instance ADR](decisions/2026-09-16-single-instance-authorization.md).

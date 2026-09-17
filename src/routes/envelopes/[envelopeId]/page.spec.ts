@@ -108,13 +108,43 @@ describe('envelope authoring page contracts', () => {
 
 	it('uses shadcn Select and Field for recipient role and language and shows locale after ready', () => {
 		expect(source).toContain('<Select.Root type="single" bind:value={draftItem.role}>');
-		expect(source).toContain('<Select.Root type="single" bind:value={draftItem.locale}>');
+		expect(source).toContain('bind:value={draftItem.locale}');
 		expect(source).toContain('<Field.Field>');
 		expect(source).toContain('<Field.FieldGroup>');
 		expect(source).toContain('recipientLocaleLabel(recipient.locale)');
 		expect(source).toContain('locale: draftItem.locale');
 		expect(source).toContain("getLocale() === 'ja' ? 'ja' : 'en'");
 		expect(source).not.toMatch(/<select[\s>]/);
+	});
+
+	it('reuses contacts without copying workflow authority and only saves them explicitly', () => {
+		expect(source).toContain('<ContactCombobox');
+		expect(source).toContain('<ContactManagementDialog bind:open={contactManagementOpen} />');
+		expect(source).toContain('draftItem.email = contact.email');
+		expect(source).toContain('draftItem.name = contact.name');
+		expect(source).toContain('draftItem.locale = contact.locale');
+		const applyContact = source.slice(
+			source.indexOf('function applyContactToRecipient'),
+			source.indexOf('async function saveRecipientToContacts')
+		);
+		expect(applyContact).not.toContain('draftItem.role =');
+		expect(applyContact).not.toContain('draftItem.routingOrder =');
+		expect(source).toContain('onclick={() => void saveRecipientToContacts(draftItem)}');
+		expect(source).toContain('draftItem.contactSaveAttempt.failed(cause)');
+		expect(source).toContain('oninput={() => markRecipientContactChanged(draftItem)}');
+		expect(source).toContain('onValueChange={() => markRecipientContactChanged(draftItem)}');
+		const markChanged = source.slice(
+			source.indexOf('function markRecipientContactChanged'),
+			source.indexOf('async function saveRecipientToContacts')
+		);
+		expect(markChanged).toContain('draftItem.savedContact = null');
+		expect(source).toContain('contactSaveSucceeded[draftItem.key] = false');
+		const markReady = source.slice(
+			source.indexOf('async function markReady'),
+			source.indexOf('function signerRecipients')
+		);
+		expect(markReady).not.toContain('contactsClient.');
+		expect(source).not.toMatch(/max-w-(?!none)/);
 	});
 
 	it('renders localized recipient role and workflow status, never raw enums', () => {

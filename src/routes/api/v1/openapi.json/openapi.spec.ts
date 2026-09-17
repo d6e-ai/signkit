@@ -25,6 +25,9 @@ describe('GET /api/v1/openapi.json', () => {
 		for (const path of [
 			'/api/v1/system/capabilities',
 			'/api/v1/openapi.json',
+			'/api/v1/contacts',
+			'/api/v1/contacts/search',
+			'/api/v1/contacts/{contactId}',
 			'/api/v1/envelopes',
 			'/api/v1/envelopes/{envelopeId}/draft/commits',
 			'/api/v1/envelopes/{envelopeId}/draft/docx',
@@ -52,11 +55,25 @@ describe('GET /api/v1/openapi.json', () => {
 		}
 
 		const components = document.components as {
-			schemas: { ProblemDetail: { required: string[] } };
+			schemas: {
+				ProblemDetail: { required: string[] };
+				Contact: {
+					required: string[];
+					additionalProperties: boolean;
+					properties: Record<string, unknown> & { version: { maximum: number } };
+				};
+			};
 		};
 		expect(components.schemas.ProblemDetail.required).toEqual(
 			expect.arrayContaining(['type', 'title', 'status', 'detail', 'instance'])
 		);
+		expect(components.schemas.Contact.required).toEqual(
+			expect.arrayContaining(['id', 'email', 'name', 'locale', 'version', 'createdAt', 'updatedAt'])
+		);
+		expect(components.schemas.Contact.additionalProperties).toBe(false);
+		expect(components.schemas.Contact.properties.version.maximum).toBe(2_147_483_647);
+		expect(components.schemas.Contact.properties).not.toHaveProperty('ownerUserId');
+		expect(components.schemas.Contact.properties).not.toHaveProperty('organizationId');
 
 		const serialized = JSON.stringify(document);
 		expect(serialized).not.toContain('repositoryArchiveKey');

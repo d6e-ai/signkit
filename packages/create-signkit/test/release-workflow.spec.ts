@@ -273,13 +273,23 @@ describe('semver release tags', () => {
 		expect(parseReleaseTag('v1.2.3-hotfix.1').prerelease).toBe('hotfix.1');
 	});
 
+	it('bounds tags so Fulcio certificate policy stays in DER short-form encoding', () => {
+		const maximum = `v1.2.3-${'a'.repeat(28)}`;
+		const oversized = `v1.2.3-${'a'.repeat(29)}`;
+		expect(Buffer.byteLength(maximum)).toBe(35);
+		expect(parseReleaseTag(maximum).raw).toBe(maximum);
+		expect(Buffer.byteLength(oversized)).toBe(36);
+		expect(() => parseReleaseTag(oversized)).toThrow(/35-byte provenance identity limit/);
+	});
+
 	it('rejects build metadata', async () => {
 		expect(() => parseReleaseTag('v1.2.3+build.1')).toThrow(/build metadata/);
 		expect(() => parseReleaseTag('v1.2.3-beta.1+exp.sha')).toThrow(/build metadata/);
 		const schema = JSON.parse(
 			await readFile(new URL('../schema/release-manifest.v1.json', import.meta.url), 'utf8')
-		) as { properties: { tag: { pattern: string } } };
+		) as { properties: { tag: { maxLength: number; pattern: string } } };
 		const tagPattern = new RegExp(schema.properties.tag.pattern);
+		expect(schema.properties.tag.maxLength).toBe(35);
 		expect(tagPattern.test('v1.2.3')).toBe(true);
 		expect(tagPattern.test('v1.2.3-beta.1')).toBe(true);
 		expect(tagPattern.test('v1.2.3+build.1')).toBe(false);

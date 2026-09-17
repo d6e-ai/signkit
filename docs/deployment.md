@@ -128,12 +128,13 @@ Both keys support an active+previous keyring, so rotation is safe: opening ciphe
 
 ## Background jobs
 
-Durable outboxes, expiry, reseal, webhook delivery, and object-store orphan collection are processed through protected endpoints:
+Durable outboxes, DOCX conversion retries, expiry, reseal, webhook delivery, and object-store orphan collection are processed through protected endpoints:
 
 | Endpoint                                                 | Work                                                                    |
 | -------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `POST /api/v1/system/deliveries/drain`                   | recipient invitation mail                                               |
 | `POST /api/v1/system/deliveries/reseal-sweep`            | migrates outstanding delivery capability ciphertext onto the active key |
+| `POST /api/v1/system/docx-conversions/drain`             | retries leased DOCX import and export jobs                              |
 | `POST /api/v1/system/completion-artifacts/drain`         | completion-artifact publication                                         |
 | `POST /api/v1/system/completion-deliveries/drain`        | completion notifications and read-only artifact access grants           |
 | `POST /api/v1/system/completion-deliveries/reseal-sweep` | migrates outstanding completion token ciphertext onto the active key    |
@@ -147,6 +148,7 @@ All endpoints authenticate with a constant-time check of `Authorization: Bearer 
 for path in \
   /api/v1/system/deliveries/drain \
   /api/v1/system/deliveries/reseal-sweep \
+  /api/v1/system/docx-conversions/drain \
   /api/v1/system/completion-artifacts/drain \
   /api/v1/system/completion-deliveries/drain \
   /api/v1/system/completion-deliveries/reseal-sweep \

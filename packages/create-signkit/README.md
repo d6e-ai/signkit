@@ -1,6 +1,6 @@
 # create-signkit
 
-Deployment CLI for publishing a SignKit GitHub Release onto Cloudflare Workers (D1 + R2). Manifest SHA-256 is GitHub download integrity, not a signature. This package is **not** the Rust SignKit API CLI (`signkit` under `cli/`).
+Deployment CLI for publishing a SignKit GitHub Release onto Cloudflare Workers (D1 + R2). `plan`, `deploy`, and `upgrade` require online GitHub/Sigstore provenance verification of the exact downloaded bundle before any Cloudflare mutation. This package is **not** the Rust SignKit API CLI (`signkit` under `cli/`).
 
 ```sh
 npx create-signkit --cloudflare plan --account-id <id>

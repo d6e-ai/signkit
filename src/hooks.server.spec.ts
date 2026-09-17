@@ -130,6 +130,9 @@ describe('bearer mode selection', () => {
 	 */
 	it.each([
 		'/api/v1/api-keys',
+		'/api/v1/contacts',
+		'/api/v1/contacts/search',
+		'/api/v1/contacts/01900000-0000-7000-8000-000000000201',
 		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/revoke',
 		'/api/v1/instance/members',
 		'/api/v1/instance/members/me',

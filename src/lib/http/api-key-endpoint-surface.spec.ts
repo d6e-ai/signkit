@@ -2,6 +2,7 @@ import type { RequestEvent, RequestHandler } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiKeyPrincipal } from '$lib/ports/api-key-authentication-store';
 import type { ApiKeyScope } from '$lib/security/api-key';
+import { DraftEnvelopeNotFoundError } from '$lib/application/drafts/draft-persistence';
 import { createApiKeyHttpHandlers } from './api-keys';
 import { createApiKeyRevokeHandler } from './api-key-revoke';
 import { createCompletionArtifactStatusHandler } from './completion-artifact-status';
@@ -181,13 +182,15 @@ function docxGetCase(): ReadCase {
 		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/docx`,
 		params: { envelopeId: ENVELOPE_ID },
 		invoke: async (apiKeyAuthentication) => {
-			const findEnvelope = vi.fn(async () => null);
+			const enqueueExport = vi.fn(async () => {
+				throw new DraftEnvelopeNotFoundError();
+			});
 			const handler: RequestHandler = createDocxExportHandler(
 				(() =>
 					({
-						envelopes: { findEnvelope },
-						objects: {},
-						repository: {}
+						enqueueExport,
+						processInline: vi.fn(),
+						readExportResult: vi.fn()
 					}) as never) as Parameters<typeof createDocxExportHandler>[0]
 			);
 			const response: Response = await handler(
@@ -197,7 +200,7 @@ function docxGetCase(): ReadCase {
 					apiKeyAuthentication
 				})
 			);
-			return { response, reachedService: findEnvelope.mock.calls.length === 1 };
+			return { response, reachedService: enqueueExport.mock.calls.length === 1 };
 		}
 	};
 }
@@ -509,7 +512,7 @@ describe('API key mutation surface', () => {
 		[
 			'POST /api/v1/envelopes/{envelopeId}/draft/docx',
 			async (): Promise<Response> =>
-				createDocxImportHandler(() => ({ commit: vi.fn() }))(
+				createDocxImportHandler(() => ({ enqueueImport: vi.fn(), processInline: vi.fn() }))(
 					event({
 						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/draft/docx`,
 						method: 'POST',

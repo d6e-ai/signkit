@@ -15,6 +15,7 @@ import type { CommandResult, ProcessRunner, RunCommandRequest } from '../src/run
 import type { ReleaseManifest } from '../src/release/manifest.js';
 import type { BundleExtractor, ExtractedBundle } from '../src/release/extract.js';
 import type { ReleaseResolver, ResolvedRelease } from '../src/release/github.js';
+import type { ReleaseProvenance } from '../src/release/provenance.js';
 import type {
 	D1Database,
 	DeployOptions,
@@ -515,6 +516,23 @@ export function sampleBundleBytes(): Uint8Array {
 	return new TextEncoder().encode('bundle-bytes');
 }
 
+export function sampleProvenance(manifest = sampleManifest()): ReleaseProvenance {
+	return {
+		status: 'verified',
+		mode: 'online',
+		repository: SIGNKIT_REPOSITORY,
+		workflow: '.github/workflows/release-cloudflare-bundle.yml',
+		sourceRef: `refs/tags/${manifest.tag}`,
+		sourceCommit: manifest.commit,
+		subjectName: manifest.bundle.assetName,
+		subjectSha256: manifest.bundle.sha256,
+		predicateType: 'https://slsa.dev/provenance/v1',
+		buildType: 'https://actions.github.io/buildtypes/workflow/v1',
+		attestationCount: 1,
+		trustRoot: 'sigstore-public-good'
+	};
+}
+
 export function fakeExtractor(fs: MemoryFileSystem): BundleExtractor {
 	return {
 		async extract(_archive, destDir, manifest): Promise<ExtractedBundle> {
@@ -558,9 +576,15 @@ export function fakeReleases(
 			this.resolveCalls += 1;
 			return resolved;
 		},
-		async downloadBundle() {
+		async prepareBundle() {
 			this.downloads += 1;
-			return bundle;
+			return {
+				bytes: bundle,
+				provenance: sampleProvenance({
+					...resolved.manifest,
+					bundle: { ...resolved.manifest.bundle }
+				})
+			};
 		}
 	};
 }

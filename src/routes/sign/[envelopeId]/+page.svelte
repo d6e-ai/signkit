@@ -1114,7 +1114,7 @@
 						</Button>
 					{/snippet}
 				</AlertDialog.Trigger>
-				<AlertDialog.Content class="max-w-[calc(100vw-2rem)] sm:max-w-md">
+				<AlertDialog.Content>
 					<AlertDialog.Header>
 						<AlertDialog.Title>{m.signing_decline_dialog_title()}</AlertDialog.Title>
 						<AlertDialog.Description>
@@ -1227,7 +1227,7 @@
 
 <div class="flex w-full flex-col items-center gap-6">
 	{#if data.state === 'declined' || isDeclined}
-		<Card.Root class="w-full max-w-2xl border-destructive/20 shadow-sm">
+		<Card.Root class="w-full border-destructive/20 shadow-sm">
 			<Card.Header class="items-center gap-4 pt-10 text-center">
 				<div
 					class="flex size-12 items-center justify-center rounded-2xl bg-destructive/10 text-destructive"
@@ -1235,7 +1235,7 @@
 					<IconCircleX />
 				</div>
 				<Card.Title class="text-2xl">{m.signing_declined_receipt_title()}</Card.Title>
-				<Card.Description class="max-w-md leading-6">
+				<Card.Description class="leading-6">
 					{m.signing_declined_receipt_description()}
 				</Card.Description>
 			</Card.Header>
@@ -1474,7 +1474,7 @@
 												? m.signing_sign_retry()
 												: m.signing_sign_action()}
 										</Button>
-										<AlertDialog.Content class="max-w-[calc(100vw-2rem)] sm:max-w-md">
+										<AlertDialog.Content>
 											<AlertDialog.Header>
 												<AlertDialog.Title>{m.signing_sign_dialog_title()}</AlertDialog.Title>
 												<AlertDialog.Description>
@@ -1583,7 +1583,7 @@
 												</Button>
 											{/snippet}
 										</AlertDialog.Trigger>
-										<AlertDialog.Content class="max-w-[calc(100vw-2rem)] sm:max-w-md">
+										<AlertDialog.Content>
 											<AlertDialog.Header>
 												<AlertDialog.Title>{m.signing_approve_dialog_title()}</AlertDialog.Title>
 												<AlertDialog.Description>
@@ -1638,7 +1638,7 @@
 			{/if}
 		</div>
 	{:else}
-		<Card.Root class="w-full max-w-2xl text-center shadow-sm">
+		<Card.Root class="w-full text-center shadow-sm">
 			<Card.Header class="items-center gap-4 py-10">
 				<div class="flex size-12 items-center justify-center rounded-2xl bg-muted text-foreground">
 					<IconAlertTriangle class="size-6" />
@@ -1646,7 +1646,7 @@
 				<Card.Title>
 					{data.state === 'unavailable' ? m.signing_unavailable_title() : m.signing_invalid_title()}
 				</Card.Title>
-				<Card.Description class="max-w-md leading-6">
+				<Card.Description class="leading-6">
 					{data.state === 'unavailable'
 						? m.signing_unavailable_description()
 						: m.signing_invalid_description()}
