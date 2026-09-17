@@ -5,7 +5,7 @@
 	"license": "AGPL-3.0-only",
 	"type": "module",
 	"bin": {
-		"create-signkit": "./dist/bin.js"
+		"create-signkit": "dist/bin.js"
 	},
 	"exports": {
 		".": {
