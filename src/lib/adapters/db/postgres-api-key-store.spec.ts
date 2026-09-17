@@ -20,7 +20,7 @@ const REQUEST_HASH: string = 'a'.repeat(64);
 const CREATED_AT: Date = new Date('2026-09-12T12:00:00.000Z');
 const EXPIRES_AT: Date = new Date('2026-12-11T12:00:00.000Z');
 const REVOKED_AT: Date = new Date('2026-09-12T13:00:00.000Z');
-const SCOPES_JSON: string = '["audit:read","envelopes:send"]';
+const SCOPES_JSON: string = '["drafts:write","envelopes:send"]';
 
 interface RecordedQuery {
 	text: string;
@@ -114,7 +114,7 @@ function createCommand(overrides: Partial<CreateApiKeyCommand> = {}): CreateApiK
 		requestFingerprint: REQUEST_HASH,
 		apiKeyId: KEY_ID,
 		name: 'CI agent',
-		scopes: ['audit:read', 'envelopes:send'],
+		scopes: ['drafts:write', 'envelopes:send'],
 		tokenHash: TOKEN_HASH,
 		keyPrefix: KEY_PREFIX,
 		createdAt: '2026-09-12T12:00:00.000Z',
@@ -192,7 +192,7 @@ const EXPECTED_METADATA: ApiKeyMetadata = {
 	id: KEY_ID,
 	name: 'CI agent',
 	keyPrefix: KEY_PREFIX,
-	scopes: ['audit:read', 'envelopes:send'],
+	scopes: ['drafts:write', 'envelopes:send'],
 	createdAt: '2026-09-12T12:00:00.000Z',
 	expiresAt: '2026-12-11T12:00:00.000Z',
 	lastUsedAt: null,
@@ -325,13 +325,13 @@ describe('PostgresApiKeyStore.createApiKey', () => {
 			{ keyId: null, keyName: null, keyPrefixCurrent: null, keyScopesJson: null },
 			{ keyName: 'Renamed agent' },
 			{ keyPrefixCurrent: 'signkit_zzzzzzzz' },
-			{ keyScopesJson: '["audit:read"]' },
+			{ keyScopesJson: '["drafts:write"]' },
 			{ keyOwnerUserId: 'user-2' },
 			{ keyCreatedAt: new Date('2026-09-12T12:00:01.000Z') },
 			{ keyExpiresAt: new Date('2026-12-12T12:00:00.000Z') },
 			{
-				scopesJson: '["audit:read", "envelopes:send"]',
-				keyScopesJson: '["audit:read", "envelopes:send"]'
+				scopesJson: '["drafts:write", "envelopes:send"]',
+				keyScopesJson: '["drafts:write", "envelopes:send"]'
 			}
 		];
 		for (const drift of drifts) {
@@ -480,7 +480,7 @@ describe('PostgresApiKeyStore.listApiKeys', () => {
 	it('refuses to project a row whose stored scopes are not canonical', async () => {
 		const scripted = new ScriptedPostgres([
 			ACTIVE_MEMBER,
-			[keyRow({ scopesJson: '["envelopes:send","audit:read"]' })]
+			[keyRow({ scopesJson: '["envelopes:send","drafts:write"]' })]
 		]);
 		await expect(
 			store(scripted).listApiKeys({ type: 'user', id: ACTOR_ID }, { cursor: null, limit: 5 })

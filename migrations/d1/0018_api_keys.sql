@@ -52,21 +52,13 @@ CREATE TABLE api_key (
   ),
   CONSTRAINT api_key_scopes_canonical CHECK (
     scopes_json IN (
-      '["audit:read"]',
       '["drafts:write"]',
       '["envelopes:read"]',
       '["envelopes:send"]',
-      '["audit:read","drafts:write"]',
-      '["audit:read","envelopes:read"]',
-      '["audit:read","envelopes:send"]',
       '["drafts:write","envelopes:read"]',
       '["drafts:write","envelopes:send"]',
       '["envelopes:read","envelopes:send"]',
-      '["audit:read","drafts:write","envelopes:read"]',
-      '["audit:read","drafts:write","envelopes:send"]',
-      '["audit:read","envelopes:read","envelopes:send"]',
-      '["drafts:write","envelopes:read","envelopes:send"]',
-      '["audit:read","drafts:write","envelopes:read","envelopes:send"]'
+      '["drafts:write","envelopes:read","envelopes:send"]'
     )
   ),
   CONSTRAINT api_key_created_at_iso CHECK (
@@ -151,21 +143,13 @@ CREATE TABLE api_key_create_command (
   ),
   CONSTRAINT api_key_create_scopes_canonical CHECK (
     scopes_json IN (
-      '["audit:read"]',
       '["drafts:write"]',
       '["envelopes:read"]',
       '["envelopes:send"]',
-      '["audit:read","drafts:write"]',
-      '["audit:read","envelopes:read"]',
-      '["audit:read","envelopes:send"]',
       '["drafts:write","envelopes:read"]',
       '["drafts:write","envelopes:send"]',
       '["envelopes:read","envelopes:send"]',
-      '["audit:read","drafts:write","envelopes:read"]',
-      '["audit:read","drafts:write","envelopes:send"]',
-      '["audit:read","envelopes:read","envelopes:send"]',
-      '["drafts:write","envelopes:read","envelopes:send"]',
-      '["audit:read","drafts:write","envelopes:read","envelopes:send"]'
+      '["drafts:write","envelopes:read","envelopes:send"]'
     )
   ),
   CONSTRAINT api_key_create_prefix_display CHECK (

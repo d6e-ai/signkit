@@ -315,8 +315,6 @@ pub struct ApiKeyAuthenticationCapability {
     pub effective_authority: String,
     #[serde(rename = "enabledScopes")]
     pub enabled_scopes: Vec<String>,
-    #[serde(rename = "mintedButUnusableScopes")]
-    pub minted_but_unusable_scopes: Vec<String>,
     #[serde(rename = "readEndpoints")]
     pub read_endpoints: Vec<String>,
     #[serde(rename = "writeEndpoints")]
@@ -905,6 +903,16 @@ pub struct DraftRevision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftCommitResponse {
     pub revision: DraftRevision,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentOrderRequest {
+    #[serde(rename = "expectedGeneration")]
+    pub expected_generation: u64,
+    #[serde(rename = "documentIds")]
+    pub document_ids: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }

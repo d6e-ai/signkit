@@ -25,6 +25,7 @@ const codeqlWorkflowPath = fileURLToPath(
 	new URL('../../../.github/workflows/codeql.yml', import.meta.url)
 );
 const rootPackagePath = fileURLToPath(new URL('../../../package.json', import.meta.url));
+const createPackagePath = fileURLToPath(new URL('../package.json', import.meta.url));
 const lockfilePath = fileURLToPath(new URL('../../../pnpm-lock.yaml', import.meta.url));
 
 describe('release-cloudflare-bundle workflow', () => {
@@ -33,13 +34,17 @@ describe('release-cloudflare-bundle workflow', () => {
 		const rootPackage = JSON.parse(await readFile(rootPackagePath, 'utf8')) as {
 			devDependencies: Record<string, string>;
 		};
+		const createPackage = JSON.parse(await readFile(createPackagePath, 'utf8')) as {
+			bin: Record<string, string>;
+		};
 		const lockfile = await readFile(lockfilePath, 'utf8');
 		expect(yaml).not.toMatch(/^\s*run:\s*pnpm publish\b/m);
 		expect(yaml).not.toMatch(/npm install --prefix/);
 		expect(yaml).not.toMatch(/npm@\^/);
-		expect(rootPackage.devDependencies.npm).toBe('11.5.1');
-		expect(lockfile).toMatch(/npm:\n\s+specifier: 11\.5\.1\n\s+version: 11\.5\.1/);
-		expect(lockfile).toMatch(/npm@11\.5\.1:\n\s+resolution: \{integrity: sha512-/);
+		expect(rootPackage.devDependencies.npm).toBe('12.0.2');
+		expect(createPackage.bin).toEqual({ 'create-signkit': 'dist/bin.js' });
+		expect(lockfile).toMatch(/npm:\n\s+specifier: 12\.0\.2\n\s+version: 12\.0\.2/);
+		expect(lockfile).toMatch(/npm@12\.0\.2:\n\s+resolution: \{integrity: sha512-/);
 		expect(yaml).toMatch(/selected="\$\(pnpm exec which npm\)"/);
 		// Regression: the selected CLI must be normalized to an absolute path
 		// at selection time; the publish step runs in packages/create-signkit
@@ -174,10 +179,10 @@ describe('release-cloudflare-bundle workflow', () => {
 		}
 		const combined = workflows.join('\n');
 		expect(combined).toMatch(
-			/actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\.4\.0/
+			/actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\.0\.1/
 		);
 		expect(combined).toMatch(
-			/actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4\.4\.0/
+			/actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7\.0\.0/
 		);
 		expect(combined).toMatch(
 			/pnpm\/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4\.4\.0/

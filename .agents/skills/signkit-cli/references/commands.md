@@ -28,6 +28,8 @@ signkit envelopes pdf <envelope-id> --output agreement.pdf
 signkit envelopes create --title "Agreement" --idempotency-key <opaque-key>
 signkit envelopes commit <envelope-id> --file commit.json
 signkit envelopes import-docx <envelope-id> --file agreement.docx --target-path documents/agreement.md
+signkit envelopes upload-pdf <envelope-id> --file exhibit.pdf --expected-generation 1
+signkit envelopes document-order <envelope-id> --file document-order.json
 signkit envelopes ready <envelope-id> --file ready.json
 signkit envelopes fields <envelope-id> --file fields.json
 signkit envelopes send <envelope-id> --file send.json
@@ -35,6 +37,8 @@ signkit envelopes void <envelope-id> --file void.json
 ```
 
 An omitted idempotency key is generated as UUIDv4. Reuse the same key only when retrying the same logical mutation.
+
+`upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. It requires `--expected-generation`; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). `document-order` accepts JSON with `expectedGeneration` and 1-20 unique UUIDv7 `documentIds`; the IDs are the complete retained set, so omitting an existing ID removes it from the draft.
 
 ## Exit codes
 
