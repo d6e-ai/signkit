@@ -23,9 +23,14 @@ YYYY-MM-DD` with the real date. Keep entries in Keep a Changelog style;
    `v0.1.0` (stable) or `v0.1.0-beta.1` (beta). Build metadata (`+build`) is
    rejected by `parseReleaseTag`, and the prerelease component alone selects
    both the GitHub prerelease flag and the npm dist-tag (`beta` vs `latest`).
-4. Before pushing the tag, a repository administrator must confirm GitHub
+4. Before creating the draft, a repository administrator must confirm GitHub
    immutable releases are enabled. This is an external repository setting and
    is not changed by the local checklist or by the release workflow.
+5. Create a draft GitHub Release for the new `v*` tag, targeting the exact
+   verified `main` commit. Do not publish it. Run the `Release` workflow on
+   that same commit with `release_tag` set to the draft tag. GitHub creates and
+   locks the tag when the workflow publishes the verified draft. Direct tag
+   pushes are intentionally rejected when immutable releases are enabled.
 
 ## 2. Migrations and operations docs
 
@@ -75,17 +80,18 @@ the release changes (see `docs/api.md` § Capabilities): a new route that the
 capabilities document does not list is a docs bug, and a listed route with
 no implementation is a release blocker.
 
-## 4. What pushing the tag does (for awareness, not action)
+## 4. What running the Release workflow does (for awareness, not action)
 
-1. The `release` job rebuilds everything (Node bundle + smoke test,
-   Cloudflare bundle + verify, Rust `--locked --release` binary, Docker
-   image), regenerates a unified `.release/assets/SHA256SUMS` over all
-   assets and verifies it with `sha256sum -c`. A first run uploads missing
-   assets to a draft. A rerun refuses a public release, mismatched prerelease
-   metadata, unexpected assets, or different bytes under an expected name;
-   byte-identical assets are downloaded, verified, and reused without
-   replacement. Only after that succeeds does the job generate GitHub build-
-   provenance attestations for the verified local files.
+1. The workflow first verifies that the draft release targets the exact commit
+   running the workflow. The `release` job then rebuilds everything (Node bundle
+   - smoke test, Cloudflare bundle + verify, Rust `--locked --release` binary,
+     Docker image), regenerates a unified `.release/assets/SHA256SUMS` over all
+     assets and verifies it with `sha256sum -c`. A first run uploads missing
+     assets to a draft. A rerun refuses a public release, mismatched prerelease
+     metadata, unexpected assets, or different bytes under an expected name;
+     byte-identical assets are downloaded, verified, and reused without
+     replacement. Only after that succeeds does the job generate GitHub build-
+     provenance attestations for the verified local files.
 2. The `publish-npm` job runs only after `release` succeeds. It uses the exact
    npm CLI version pinned in root `package.json` and `pnpm-lock.yaml` (including
    registry integrity), re-checks tag-equals-version across all

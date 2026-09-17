@@ -107,11 +107,18 @@ describe('release-cloudflare-bundle workflow', () => {
 
 	it('keeps the release draft until npm succeeds and refuses an existing public release', async () => {
 		const yaml = await readFile(workflowPath, 'utf8');
+		expect(yaml).toMatch(/workflow_dispatch:/);
+		expect(yaml).toMatch(/release_tag:/);
+		expect(yaml).toMatch(/SIGNKIT_RELEASE_TAG:/);
+		expect(yaml).toMatch(/targetCommitish/);
+		expect(yaml).toMatch(/target .* does not match workflow commit/);
 		// Draft-first creation in the release job.
 		expect(yaml).toMatch(/gh release create "\$tag" --draft/);
 		// Rerun path inspects draft status before uploading/editing and fails
 		// closed on an existing public release.
-		expect(yaml).toMatch(/gh release view "\$tag" --json isDraft,isPrerelease,assets/);
+		expect(yaml).toMatch(
+			/gh release view "\$tag" --json isDraft,isPrerelease,targetCommitish,assets/
+		);
 		expect(yaml).toMatch(/is_draft/);
 		expect(yaml).toMatch(/refusing to upload to existing public release/);
 		expect(yaml).toMatch(/prerelease metadata does not match the tag channel/);

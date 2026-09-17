@@ -1,14 +1,16 @@
 name: Release
 
-# Draft-first full-tag release: one tag in, one DRAFT GitHub Release out with
-# every shippable artifact (Node bundle, Cloudflare bundle, Rust CLI release
+# Draft-first full release: one existing DRAFT GitHub Release in, every
+# shippable artifact (Node bundle, Cloudflare bundle, Rust CLI release
 # binary, Docker image) plus a unified SHA256SUMS and GitHub provenance
 # attestations, then a hard-gated npm bootstrapper check/publish, and only then is the draft
 # marked public. Draft reruns reuse only byte-identical assets; nothing
 # clobbers an existing name or mutates a public release.
 #
-# A `v*` tag therefore never creates a PUBLIC GitHub Release before npm
-# publication succeeds: `release` uploads everything to a draft, `publish-npm`
+# The normal immutable-release path is workflow_dispatch with the existing
+# draft's `v*` tag. A tag-push trigger remains for repositories where direct
+# tag creation is allowed. Neither path creates a PUBLIC GitHub Release before
+# npm publication succeeds: `release` uploads everything to a draft, `publish-npm`
 # publishes create-signkit via OIDC Trusted Publishing only when its independent
 # package version is not already present (no token fallback), and
 # `publish-release` flips the draft public only after that gate succeeds. The
@@ -17,7 +19,7 @@ name: Release
 # `publish-release` receives the build job's exact asset hashes, then
 # re-downloads and verifies the complete remote asset set immediately before
 # the public flip. Repository immutable releases must also be enabled before
-# the tag is pushed; this workflow does not configure that repository setting.
+# the draft is created; this workflow does not configure that repository setting.
 #
 # Perfect cross-registry atomicity is impossible: once `publish-release` runs,
 # the GitHub Release is public and the npm package is published, and no
@@ -34,6 +36,15 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release tag to build and publish
+        required: true
+        type: string
+
+env:
+  SIGNKIT_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -66,24 +77,24 @@ jobs:
       - name: Enforce product tag and package versions
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${SIGNKIT_RELEASE_TAG#v}"
           root="$(node -p "require('./package.json').version")"
           csk="$(node -p "require('./packages/create-signkit/package.json').version")"
           cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           for v in "$root" "$cli"; do
             if [ "$tag" != "$v" ]; then
-              echo "git tag ${GITHUB_REF_NAME} does not match product versions root=${root} cli=${cli}" >&2
+              echo "release tag ${SIGNKIT_RELEASE_TAG} does not match product versions root=${root} cli=${cli}" >&2
               exit 1
             fi
           done
-          node --input-type=module -e 'import { parseReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; parseReleaseTag(process.argv[1]);' "$GITHUB_REF_NAME"
+          node --input-type=module -e 'import { parseReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; parseReleaseTag(process.argv[1]);' "$SIGNKIT_RELEASE_TAG"
           node --input-type=module -e 'import { parseReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; parseReleaseTag(process.argv[1]);' "v${csk}"
       - name: Build and smoke-check the Node profile
         run: |
           set -euo pipefail
           pnpm run build:node
           pnpm run test:node-build
-          tag="${GITHUB_REF_NAME}"
+          tag="${SIGNKIT_RELEASE_TAG}"
           mkdir -p .release/assets
           tar -czf ".release/assets/signkit-node-${tag}.tar.gz" build/node package.json
       - name: Build and verify the Cloudflare release bundle
@@ -95,14 +106,14 @@ jobs:
       - name: Build the Rust CLI release binary
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${SIGNKIT_RELEASE_TAG}"
           cargo build --locked --release --manifest-path cli/Cargo.toml
           mkdir -p .release/assets
           tar -czf ".release/assets/signkit-${tag}-x86_64-unknown-linux-gnu.tar.gz" -C cli/target/release signkit
       - name: Build the Docker image and archive it
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${SIGNKIT_RELEASE_TAG}"
           docker build -t "signkit:${tag}" .
           mkdir -p .release/assets
           docker save "signkit:${tag}" | gzip > ".release/assets/signkit-docker-${tag}.tar.gz"
@@ -110,7 +121,7 @@ jobs:
         id: release_asset_hashes
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${SIGNKIT_RELEASE_TAG}"
           cd .release/assets
           rm -f SHA256SUMS
           checksum_assets=(
@@ -131,7 +142,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${SIGNKIT_RELEASE_TAG}"
           channel="$(node --input-type=module -e 'import { channelFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(channelFromReleaseTag(process.argv[1]));' "$tag")"
           manifest_channel="$(node -e 'const m=require("./.release/assets/signkit-cloudflare-manifest.json"); process.stdout.write(String(m.channel||""));')"
           if [ "$channel" != "stable" ] && [ "$channel" != "beta" ]; then
@@ -168,7 +179,7 @@ jobs:
             # Rerun path: an existing release is immutable from this job. It
             # must still be a draft with matching channel metadata, and every
             # existing asset must be one of this build's expected names.
-            release_json="$(gh release view "$tag" --json isDraft,isPrerelease,assets)"
+            release_json="$(gh release view "$tag" --json isDraft,isPrerelease,targetCommitish,assets)"
             is_draft="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.isDraft));' "$release_json")"
             if [ "$is_draft" != "true" ]; then
               echo "refusing to upload to existing public release ${tag}: rerun recovery requires a draft release" >&2
@@ -178,6 +189,13 @@ jobs:
             if [ "$actual_prerelease" != "$expected_prerelease" ]; then
               echo "refusing to mutate draft release ${tag}: prerelease metadata does not match the tag channel" >&2
               exit 1
+            fi
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              target_commitish="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.targetCommitish));' "$release_json")"
+              if [ "$target_commitish" != "$GITHUB_SHA" ]; then
+                echo "refusing to publish draft release ${tag}: target ${target_commitish} does not match workflow commit ${GITHUB_SHA}" >&2
+                exit 1
+              fi
             fi
             remote_assets="$(node -e 'const value=JSON.parse(process.argv[1]); for (const asset of value.assets ?? []) console.log(asset.name);' "$release_json")"
             while IFS= read -r remote_asset; do
@@ -268,16 +286,16 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${SIGNKIT_RELEASE_TAG#v}"
           pkg="$(node -p "require('./packages/create-signkit/package.json').version")"
           root="$(node -p "require('./package.json').version")"
           cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           if [ "$tag" != "$root" ]; then
-            echo "git tag version ${GITHUB_REF_NAME} does not match root package.json version ${root}" >&2
+            echo "release tag version ${SIGNKIT_RELEASE_TAG} does not match root package.json version ${root}" >&2
             exit 1
           fi
           if [ "$tag" != "$cli" ]; then
-            echo "git tag version ${GITHUB_REF_NAME} does not match cli/Cargo.toml version ${cli}" >&2
+            echo "release tag version ${SIGNKIT_RELEASE_TAG} does not match cli/Cargo.toml version ${cli}" >&2
             exit 1
           fi
           dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "v${pkg}")"
@@ -332,12 +350,12 @@ jobs:
       - name: Enforce product tag version
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${SIGNKIT_RELEASE_TAG#v}"
           root="$(node -p "require('./package.json').version")"
           cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           for v in "$root" "$cli"; do
             if [ "$tag" != "$v" ]; then
-              echo "git tag ${GITHUB_REF_NAME} does not match product versions root=${root} cli=${cli}" >&2
+              echo "release tag ${SIGNKIT_RELEASE_TAG} does not match product versions root=${root} cli=${cli}" >&2
               exit 1
             fi
           done
@@ -347,7 +365,7 @@ jobs:
           EXPECTED_ASSETS_SHA256_BASE64: ${{ needs.release.outputs.expected_assets_sha256_base64 }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${SIGNKIT_RELEASE_TAG}"
           if ! release_json="$(gh release view "$tag" --json isDraft,assets)"; then
             echo "expected draft release ${tag} from the release job, but it does not exist" >&2
             exit 1
