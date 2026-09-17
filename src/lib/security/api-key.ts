@@ -8,7 +8,12 @@ export const API_KEY_MAX_EXPIRY_DAYS: number = 365;
 export const API_KEY_DEFAULT_EXPIRY_MS: number = API_KEY_DEFAULT_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
 export const API_KEY_MAX_EXPIRY_MS: number = API_KEY_MAX_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
 
-export const API_KEY_SCOPES = ['drafts:write', 'envelopes:read', 'envelopes:send'] as const;
+export const API_KEY_SCOPES = [
+	'audit:read',
+	'drafts:write',
+	'envelopes:read',
+	'envelopes:send'
+] as const;
 
 export const API_KEY_RATE_WINDOW_SECONDS: number = 60;
 export const API_KEY_RATE_WINDOW_MAX_REQUESTS: number = 120;

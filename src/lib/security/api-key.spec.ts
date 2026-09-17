@@ -22,7 +22,12 @@ import {
 
 describe('api-key helpers', () => {
 	it('exports the exact allowed scope list', () => {
-		expect(API_KEY_SCOPES).toEqual(['drafts:write', 'envelopes:read', 'envelopes:send']);
+		expect(API_KEY_SCOPES).toEqual([
+			'audit:read',
+			'drafts:write',
+			'envelopes:read',
+			'envelopes:send'
+		]);
 		expect(isApiKeyScope('envelopes:send')).toBe(true);
 		expect(isApiKeyScope('envelopes:write')).toBe(false);
 	});
