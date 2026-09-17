@@ -174,7 +174,7 @@ describe('release-cloudflare-bundle workflow', () => {
 		}
 		const combined = workflows.join('\n');
 		expect(combined).toMatch(
-			/actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\.4\.0/
+			/actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\.0\.1/
 		);
 		expect(combined).toMatch(
 			/actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4\.4\.0/
