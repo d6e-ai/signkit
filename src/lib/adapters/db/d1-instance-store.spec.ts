@@ -110,7 +110,6 @@ const createCommand: CreateInstanceInvitationCommand = {
 
 const acceptCommand: AcceptInstanceInvitationCommand = {
 	actor: { type: 'user', id: 'accepting-user-1' },
-	identity: { displayName: 'Accepting User', email: 'accepting@example.com' },
 	idempotencyKey: 'accept-idem-1',
 	requestFingerprint: REQUEST_FINGERPRINT,
 	tokenHash: TOKEN_HASH,
@@ -391,12 +390,7 @@ describe('D1InstanceStore unit tests', () => {
 				"WHERE consumed.accepted_by_user_id = ? AND consumed.status = 'accepted'"
 			);
 			expect(mutationBatch[0].sql).toContain('ON CONFLICT (user_id) DO NOTHING');
-			expect(mutationBatch[0].bindings.slice(0, 3)).toEqual([
-				'accepting-user-1',
-				'Accepting User',
-				'accepting@example.com'
-			]);
-			expect(mutationBatch[0].bindings[5]).toBe(INVITATION_ID);
+			expect(mutationBatch[0].bindings[3]).toBe(INVITATION_ID);
 
 			// The update is causally tied to that insert by EXISTS, and carries the
 			// same no-other-accepted-invitation guard.

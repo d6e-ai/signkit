@@ -21,7 +21,6 @@ export interface SmtpConfig {
 }
 
 export interface SmtpConfigEnv {
-	[key: string]: string | undefined;
 	SIGNKIT_SMTP_HOST?: string;
 	SIGNKIT_SMTP_PORT?: string;
 	SIGNKIT_SMTP_SECURE?: string;

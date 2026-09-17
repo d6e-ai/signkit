@@ -39,7 +39,7 @@ export async function resolveInstanceInvitationDeliveryService(
 
 	if (platformEnv !== undefined) {
 		if (platformEnv.DB === undefined) return null;
-		const mail: MailSender | null = resolveWorkerMailSender(platformEnv, platformEnv.EMAIL);
+		const mail: MailSender | null = await resolveWorkerMailSender(platformEnv, platformEnv.EMAIL);
 		if (mail === null) return null;
 		const { D1InstanceInvitationDeliveryStore } =
 			await import('$lib/adapters/db/d1-instance-invitation-delivery-store');

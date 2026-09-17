@@ -145,7 +145,6 @@ function acceptCommand(
 ): AcceptInstanceInvitationCommand {
 	return {
 		actor: { type: 'user', id: ACCEPTOR_ID },
-		identity: { displayName: 'Accepting User', email: 'accepting@example.com' },
 		idempotencyKey: 'accept-idem-1',
 		requestFingerprint: REQUEST_FINGERPRINT,
 		tokenHash: TOKEN_HASH,

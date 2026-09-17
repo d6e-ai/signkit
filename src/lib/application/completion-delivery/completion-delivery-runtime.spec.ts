@@ -71,12 +71,14 @@ describe('resolveCompletionDeliveryService', () => {
 		await expect(resolveCompletionDeliveryService({ platform })).resolves.toBeNull();
 	});
 
-	it('fails closed on Workers when SIGNKIT_MAIL_PROVIDER is smtp instead of cloudflare', async () => {
+	it('uses SMTP on Workers when the configuration is complete', async () => {
 		const platform = {
 			env: {
 				DB: {} as D1Database,
-				EMAIL: {} as SendEmail,
 				SIGNKIT_MAIL_PROVIDER: 'smtp',
+				SIGNKIT_SMTP_HOST: 'smtp.example.com',
+				SIGNKIT_SMTP_PORT: '465',
+				SIGNKIT_SMTP_SECURE: 'true',
 				DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
 				SIGNKIT_PUBLIC_ORIGIN: TEST_PUBLIC_ORIGIN,
 				SIGNKIT_EMAIL_FROM: TEST_FROM_EMAIL,
@@ -84,7 +86,8 @@ describe('resolveCompletionDeliveryService', () => {
 			}
 		} as unknown as App.Platform;
 
-		await expect(resolveCompletionDeliveryService({ platform })).resolves.toBeNull();
+		const service = await resolveCompletionDeliveryService({ platform });
+		expect(service).toBeInstanceOf(CompletionDeliveryService);
 	});
 
 	it('uses native D1, EMAIL, and sealer when complete Cloudflare environment is present', async () => {

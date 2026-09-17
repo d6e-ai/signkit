@@ -30,8 +30,6 @@ function problemResponse(status: number, detail: string): Response {
 
 interface MemberFixture {
 	userId: string;
-	displayName?: string | null;
-	email?: string | null;
 	role: 'owner' | 'admin' | 'member';
 	status: 'active' | 'suspended';
 }
@@ -69,18 +67,8 @@ describe('settings members page in the browser', () => {
 			if (urlStr.includes('/api/v1/instance/members')) {
 				return jsonResponse({
 					members: [
-						member({
-							userId: 'owner-user-1',
-							displayName: 'Owner One',
-							email: 'owner@example.com',
-							role: 'owner'
-						}),
-						member({
-							userId: 'member-user-2',
-							displayName: 'Member Two',
-							email: 'member@example.com',
-							role: 'member'
-						})
+						member({ userId: 'owner-user-1', role: 'owner' }),
+						member({ userId: 'member-user-2', role: 'member' })
 					],
 					nextCursor: null
 				});
@@ -90,12 +78,8 @@ describe('settings members page in the browser', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(MembersPage);
-		await expect.element(screen.getByText('Owner One')).toBeVisible();
-		await expect.element(screen.getByText('owner@example.com')).toBeVisible();
-		await expect.element(screen.getByText('Member Two')).toBeVisible();
-		await expect.element(screen.getByText('member@example.com')).toBeVisible();
-		expect(screen.getByText('owner-user-1').query()).toBeNull();
-		expect(screen.getByText('member-user-2').query()).toBeNull();
+		await expect.element(screen.getByText('owner-user-1')).toBeVisible();
+		await expect.element(screen.getByText('member-user-2')).toBeVisible();
 		expect(gotoMock).not.toHaveBeenCalled();
 	});
 
@@ -198,18 +182,8 @@ describe('settings members page in the browser', () => {
 					membersCallCount += 1;
 					return jsonResponse({
 						members: [
-							member({
-								userId: 'owner-user-1',
-								displayName: 'Owner One',
-								email: 'owner@example.com',
-								role: 'owner'
-							}),
-							member({
-								userId: 'member-user-2',
-								displayName: 'Member Two',
-								email: 'member@example.com',
-								role: 'member'
-							})
+							member({ userId: 'owner-user-1', role: 'owner' }),
+							member({ userId: 'member-user-2', role: 'member' })
 						],
 						nextCursor: null
 					});
@@ -219,10 +193,10 @@ describe('settings members page in the browser', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(MembersPage);
-		await expect.element(screen.getByText('Member Two')).toBeVisible();
+		await expect.element(screen.getByText('member-user-2')).toBeVisible();
 		expect(membersCallCount).toBe(1);
 
-		await screen.getByLabelText('Role for Member Two').click();
+		await screen.getByLabelText('Role for member-user-2').click();
 		await screen.getByRole('option', { name: 'Admin' }).click();
 		await screen.getByRole('button', { name: 'Update role' }).click();
 
@@ -233,7 +207,7 @@ describe('settings members page in the browser', () => {
 		expect(membersCallCount).toBe(1);
 
 		await screen.getByRole('alert').getByRole('button', { name: 'Refresh members' }).click();
-		await expect.element(screen.getByText('Member Two')).toBeVisible();
+		await expect.element(screen.getByText('member-user-2')).toBeVisible();
 		expect(membersCallCount).toBe(2);
 	});
 });

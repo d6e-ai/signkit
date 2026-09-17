@@ -22,20 +22,54 @@ describe('parseMailProvider', () => {
 });
 
 describe('resolveWorkerMailSender', () => {
-	it('fails closed when the provider is unset', () => {
-		expect(resolveWorkerMailSender({}, {} as SendEmail)).toBeNull();
+	it('fails closed when the provider is unset', async () => {
+		await expect(resolveWorkerMailSender({}, {} as SendEmail)).resolves.toBeNull();
 	});
 
-	it('fails closed when smtp is selected, since Workers only support the native EMAIL binding', () => {
-		expect(resolveWorkerMailSender({ SIGNKIT_MAIL_PROVIDER: 'smtp' }, {} as SendEmail)).toBeNull();
+	it('fails closed when smtp is selected with incomplete configuration', async () => {
+		await expect(
+			resolveWorkerMailSender(
+				{ SIGNKIT_MAIL_PROVIDER: 'smtp', SIGNKIT_SMTP_HOST: 'smtp.example.com' },
+				undefined
+			)
+		).resolves.toBeNull();
 	});
 
-	it('fails closed when cloudflare is selected but the EMAIL binding is missing', () => {
-		expect(resolveWorkerMailSender({ SIGNKIT_MAIL_PROVIDER: 'cloudflare' }, undefined)).toBeNull();
+	it('fails closed when Workers SMTP is configured on prohibited port 25', async () => {
+		await expect(
+			resolveWorkerMailSender(
+				{
+					SIGNKIT_MAIL_PROVIDER: 'smtp',
+					SIGNKIT_SMTP_HOST: 'smtp.example.com',
+					SIGNKIT_SMTP_PORT: '25',
+					SIGNKIT_SMTP_SECURE: 'false'
+				},
+				undefined
+			)
+		).resolves.toBeNull();
 	});
 
-	it('returns a binding sender when cloudflare is selected and the EMAIL binding is present', () => {
-		const sender = resolveWorkerMailSender(
+	it('returns an SMTP sender on Workers without an EMAIL binding', async () => {
+		const sender = await resolveWorkerMailSender(
+			{
+				SIGNKIT_MAIL_PROVIDER: 'smtp',
+				SIGNKIT_SMTP_HOST: 'smtp.example.com',
+				SIGNKIT_SMTP_PORT: '587',
+				SIGNKIT_SMTP_SECURE: 'false'
+			},
+			undefined
+		);
+		expect(sender).toBeInstanceOf(NodemailerSmtpMailSender);
+	});
+
+	it('fails closed when cloudflare is selected but the EMAIL binding is missing', async () => {
+		await expect(
+			resolveWorkerMailSender({ SIGNKIT_MAIL_PROVIDER: 'cloudflare' }, undefined)
+		).resolves.toBeNull();
+	});
+
+	it('returns a binding sender when cloudflare is selected and the EMAIL binding is present', async () => {
+		const sender = await resolveWorkerMailSender(
 			{ SIGNKIT_MAIL_PROVIDER: 'cloudflare' },
 			{} as SendEmail
 		);

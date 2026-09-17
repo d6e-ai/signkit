@@ -25,7 +25,6 @@ import {
 	type ListInstanceMembersStoreResult,
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult,
-	type RefreshInstanceMemberIdentityCommand,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
 	type SetInstanceMemberStatusCommand,
@@ -44,8 +43,6 @@ class InstanceRollback<T> extends Error {
 
 interface MemberRow {
 	userId: string;
-	displayName: string | null;
-	email: string | null;
 	role: string;
 	status: string;
 	createdAt: Date | string;
@@ -138,8 +135,6 @@ interface AcceptInvitationReceiptRow {
 	invRevokedAt: Date | string | null;
 	invRevokedByUserId: string | null;
 	memberUserId: string | null;
-	memberDisplayName: string | null;
-	memberEmail: string | null;
 	memberRole: string | null;
 	memberStatus: string | null;
 	memberCreatedAt: Date | string | null;
@@ -249,13 +244,9 @@ export class PostgresInstanceStore implements InstanceStore {
 				// INSERT ... SELECT ... WHERE NOT EXISTS gate) so a membership writer
 				// that lands between step 2 and here can never race the step 2 precheck.
 				const memberRows = await transaction<MemberRow[]>`
-						INSERT INTO instance_member (
-							user_id, display_name, email, role, status, created_at, updated_at
-						)
+						INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 						SELECT
 							${command.actor.id},
-							${command.identity?.displayName ?? null},
-							${command.identity?.email ?? null},
 							'owner',
 							'active',
 							${command.createdAt}::timestamptz,
@@ -263,8 +254,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						WHERE NOT EXISTS (SELECT 1 FROM instance_bootstrap)
 						  AND NOT EXISTS (SELECT 1 FROM instance_member)
 						ON CONFLICT (user_id) DO NOTHING
-						RETURNING user_id AS "userId", display_name AS "displayName", email,
-							role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 					`;
 				if (memberRows.length !== 1) {
 					throw new InstanceRollback(await this.#classifyFailure(transaction, command));
@@ -307,7 +297,6 @@ export class PostgresInstanceStore implements InstanceStore {
 					outcome: 'bootstrapped',
 					member: {
 						userId: memberRows[0].userId,
-						...identityMetadata(memberRows[0].displayName, memberRows[0].email),
 						role: 'owner',
 						status: 'active',
 						createdAt: toIso(memberRows[0].createdAt),
@@ -331,8 +320,7 @@ export class PostgresInstanceStore implements InstanceStore {
 				WHERE singleton_key = 1
 			`,
 			this.#sql<MemberRow[]>`
-				SELECT user_id AS "userId", display_name AS "displayName", email,
-					role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+				SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 				FROM instance_member
 				WHERE user_id = ${userId}
 			`
@@ -347,7 +335,6 @@ export class PostgresInstanceStore implements InstanceStore {
 			}
 			member = {
 				userId: row.userId,
-				...identityMetadata(row.displayName, row.email),
 				role: row.role,
 				status: row.status,
 				createdAt: toIso(row.createdAt),
@@ -356,21 +343,6 @@ export class PostgresInstanceStore implements InstanceStore {
 		}
 
 		return { member, bootstrapped };
-	}
-
-	async refreshInstanceMemberIdentity(
-		command: RefreshInstanceMemberIdentityCommand
-	): Promise<void> {
-		await this.#sql`
-			UPDATE instance_member
-			SET display_name = ${command.identity.displayName},
-				email = ${command.identity.email}
-			WHERE user_id = ${command.userId}
-			  AND (
-				display_name IS DISTINCT FROM ${command.identity.displayName}
-				OR email IS DISTINCT FROM ${command.identity.email}
-			  )
-		`;
 	}
 
 	async createInstanceInvitation(
@@ -605,8 +577,7 @@ export class PostgresInstanceStore implements InstanceStore {
 					// 1. Lock the actor's member row up front so replay evaluation and
 					// the checks below observe a stable snapshot.
 					const memberRows = await transaction<MemberRow[]>`
-						SELECT user_id AS "userId", display_name AS "displayName", email,
-							role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+						SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 						FROM instance_member
 						WHERE user_id = ${command.actor.id}
 						FOR UPDATE
@@ -707,21 +678,16 @@ export class PostgresInstanceStore implements InstanceStore {
 					// non-existent row can't be locked), so it — not the precheck — is
 					// what must decide whether this invitation gets consumed.
 					const insertedMemberRows = await transaction<MemberRow[]>`
-						INSERT INTO instance_member (
-							user_id, display_name, email, role, status, created_at, updated_at
-						)
+						INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 						VALUES (
 							${command.actor.id},
-							${command.identity?.displayName ?? null},
-							${command.identity?.email ?? null},
 							${inv.role},
 							'active',
 							${command.acceptedAt}::timestamptz,
 							${command.acceptedAt}::timestamptz
 						)
 						ON CONFLICT (user_id) DO NOTHING
-						RETURNING user_id AS "userId", display_name AS "displayName", email,
-							role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 					`;
 
 					const wonEnrollment: boolean = insertedMemberRows.length === 1;
@@ -732,8 +698,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						// invitation must stay pending and unconsumed, and the caller
 						// sees the winner's membership instead of a phantom acceptance.
 						const racedMemberRows = await transaction<MemberRow[]>`
-							SELECT user_id AS "userId", display_name AS "displayName", email,
-								role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+							SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 							FROM instance_member
 							WHERE user_id = ${command.actor.id}
 							FOR UPDATE
@@ -817,7 +782,6 @@ export class PostgresInstanceStore implements InstanceStore {
 						},
 						member: {
 							userId: enrolledMember.userId,
-							...identityMetadata(enrolledMember.displayName, enrolledMember.email),
 							role: enrolledMember.role as InstanceMemberRole,
 							status: enrolledMember.status,
 							createdAt: toIso(enrolledMember.createdAt),
@@ -1011,8 +975,7 @@ export class PostgresInstanceStore implements InstanceStore {
 				query.cursor === null
 					? await transaction<MemberRow[]>`
 								SELECT
-									user_id AS "userId", display_name AS "displayName", email,
-									role, status,
+									user_id AS "userId", role, status,
 									created_at AS "createdAt", updated_at AS "updatedAt"
 								FROM instance_member
 								ORDER BY user_id COLLATE "C" ASC
@@ -1020,8 +983,7 @@ export class PostgresInstanceStore implements InstanceStore {
 							`
 					: await transaction<MemberRow[]>`
 								SELECT
-									user_id AS "userId", display_name AS "displayName", email,
-									role, status,
+									user_id AS "userId", role, status,
 									created_at AS "createdAt", updated_at AS "updatedAt"
 								FROM instance_member
 								WHERE (user_id COLLATE "C") > (${query.cursor} COLLATE "C")
@@ -1158,8 +1120,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						WHERE user_id = ${command.targetUserId}
 						  AND role = ${targetRow.role}
 						  AND status = ${targetRow.status}
-						RETURNING user_id AS "userId", display_name AS "displayName", email,
-							role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 					`;
 					if (updatedRows.length !== 1) {
 						throw new InstanceRollback(await this.#classifySetRoleFailure(transaction, command));
@@ -1335,8 +1296,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						WHERE user_id = ${command.targetUserId}
 						  AND role = ${targetRow.role}
 						  AND status = ${targetRow.status}
-						RETURNING user_id AS "userId", display_name AS "displayName", email,
-							role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+						RETURNING user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 					`;
 					if (updatedRows.length !== 1) {
 						throw new InstanceRollback(await this.#classifySetStatusFailure(transaction, command));
@@ -1449,8 +1409,7 @@ export class PostgresInstanceStore implements InstanceStore {
 
 	async #findMember(sql: Sql, userId: string): Promise<MemberRow | null> {
 		const rows = await sql<MemberRow[]>`
-			SELECT user_id AS "userId", display_name AS "displayName", email,
-				role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+			SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 			FROM instance_member
 			WHERE user_id = ${userId}
 			LIMIT 1
@@ -1549,8 +1508,6 @@ export class PostgresInstanceStore implements InstanceStore {
 				invitation.revoked_at AS "invRevokedAt",
 				invitation.revoked_by_user_id AS "invRevokedByUserId",
 				member.user_id AS "memberUserId",
-				member.display_name AS "memberDisplayName",
-				member.email AS "memberEmail",
 				member.role AS "memberRole",
 				member.status AS "memberStatus",
 				member.created_at AS "memberCreatedAt",
@@ -1659,8 +1616,7 @@ export class PostgresInstanceStore implements InstanceStore {
 		command: AcceptInstanceInvitationCommand
 	): Promise<AcceptInstanceInvitationStoreResult> {
 		const memberRows = await sql<MemberRow[]>`
-			SELECT user_id AS "userId", display_name AS "displayName", email,
-				role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+			SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 			FROM instance_member
 			WHERE user_id = ${command.actor.id}
 			LIMIT 1
@@ -1790,8 +1746,7 @@ export class PostgresInstanceStore implements InstanceStore {
 		}
 
 		const memberRows = await sql<MemberRow[]>`
-				SELECT user_id AS "userId", display_name AS "displayName", email,
-					role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+				SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
 				FROM instance_member
 				WHERE user_id = ${receipt.ownerUserId}
 			`;
@@ -1817,7 +1772,6 @@ export class PostgresInstanceStore implements InstanceStore {
 			outcome: 'already_bootstrapped',
 			member: {
 				userId: memberRows[0].userId,
-				...identityMetadata(memberRows[0].displayName, memberRows[0].email),
 				role: memberRows[0].role,
 				status: memberRows[0].status,
 				createdAt: toIso(memberRows[0].createdAt),
@@ -2227,7 +2181,6 @@ function memberMetadataFromRow(row: MemberRow): InstanceMemberMetadata {
 	}
 	return {
 		userId: row.userId,
-		...identityMetadata(row.displayName, row.email),
 		role: row.role,
 		status: row.status,
 		createdAt: toIso(row.createdAt),
@@ -2237,8 +2190,6 @@ function memberMetadataFromRow(row: MemberRow): InstanceMemberMetadata {
 
 function metadataFromJoinedMember(row: {
 	memberUserId: string | null;
-	memberDisplayName: string | null;
-	memberEmail: string | null;
 	memberRole: string | null;
 	memberStatus: string | null;
 	memberCreatedAt: Date | string | null;
@@ -2255,22 +2206,11 @@ function metadataFromJoinedMember(row: {
 	}
 	return {
 		userId: row.memberUserId,
-		...identityMetadata(row.memberDisplayName, row.memberEmail),
 		role: row.memberRole,
 		status: row.memberStatus,
 		createdAt: toIso(row.memberCreatedAt),
 		updatedAt: toIso(row.memberUpdatedAt)
 	};
-}
-
-function identityMetadata(
-	displayName: string | null | undefined,
-	email: string | null | undefined
-): Pick<InstanceMemberMetadata, 'displayName' | 'email'> {
-	return (displayName === null || displayName === undefined) &&
-		(email === null || email === undefined)
-		? {}
-		: { displayName: displayName ?? null, email: email ?? null };
 }
 
 function metadataFromInvitationRow(row: InvitationMetadataRow): InstanceInvitationMetadata {

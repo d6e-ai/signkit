@@ -308,7 +308,7 @@ export function createInstanceBootstrapHandler(
 
 		try {
 			const result: BootstrapInstanceResult = await application.bootstrapInstance(
-				{ id: authorized.id, displayName: authorized.name, email: authorized.email },
+				{ id: authorized.id },
 				{ idempotencyKey: idempotencyKey.data }
 			);
 			return bootstrapResponse(result, url.pathname);

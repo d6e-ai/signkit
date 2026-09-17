@@ -25,7 +25,6 @@ import {
 	type ListInstanceMembersStoreResult,
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult,
-	type RefreshInstanceMemberIdentityCommand,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
 	type SetInstanceMemberStatusCommand,
@@ -41,8 +40,6 @@ interface BootstrapCommandReceiptRow {
 
 interface MemberRow {
 	user_id: string;
-	display_name: string | null;
-	email: string | null;
 	role: string;
 	status: string;
 	created_at: string;
@@ -129,8 +126,6 @@ interface AcceptInvitationReceiptRow {
 	inv_revoked_at: string | null;
 	inv_revoked_by_user_id: string | null;
 	member_user_id: string | null;
-	member_display_name: string | null;
-	member_email: string | null;
 	member_role: string | null;
 	member_status: string | null;
 	member_created_at: string | null;
@@ -159,8 +154,6 @@ interface RevokeInvitationReceiptRow {
 const INVITATION_METADATA_COLUMNS: string = `id, role, status, invited_by_user_id, created_at,
 	expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id`;
 
-const MEMBER_COLUMNS: string = `user_id, display_name, email, role, status, created_at, updated_at`;
-
 const CREATE_RECEIPT_JOIN_COLUMNS: string = `command.request_hash, command.command_type,
 	command.invitation_id, command.role, command.result_status, command.occurred_at,
 	invitation.id AS inv_id, invitation.role AS inv_role, invitation.status AS inv_status,
@@ -177,8 +170,7 @@ const ACCEPT_RECEIPT_JOIN_COLUMNS: string = `command.request_hash, command.comma
 	invitation.created_at AS inv_created_at, invitation.expires_at AS inv_expires_at,
 	invitation.accepted_at AS inv_accepted_at, invitation.accepted_by_user_id AS inv_accepted_by_user_id,
 	invitation.revoked_at AS inv_revoked_at, invitation.revoked_by_user_id AS inv_revoked_by_user_id,
-	member.user_id AS member_user_id, member.display_name AS member_display_name,
-	member.email AS member_email, member.role AS member_role,
+	member.user_id AS member_user_id, member.role AS member_role,
 	member.status AS member_status, member.created_at AS member_created_at,
 	member.updated_at AS member_updated_at`;
 
@@ -277,20 +269,12 @@ export class D1InstanceStore implements InstanceStore {
 
 		const memberStmt: D1PreparedStatement = this.#database
 			.prepare(
-				`INSERT INTO instance_member (
-					user_id, display_name, email, role, status, created_at, updated_at
-				)
-				SELECT ?, ?, ?, 'owner', 'active', ?, ?
+				`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+				SELECT ?, 'owner', 'active', ?, ?
 				WHERE NOT EXISTS (SELECT 1 FROM instance_bootstrap)
 				  AND NOT EXISTS (SELECT 1 FROM instance_member)`
 			)
-			.bind(
-				command.actor.id,
-				command.identity?.displayName ?? null,
-				command.identity?.email ?? null,
-				command.createdAt,
-				command.createdAt
-			);
+			.bind(command.actor.id, command.createdAt, command.createdAt);
 
 		const bootstrapStmt: D1PreparedStatement = this.#database
 			.prepare(
@@ -337,10 +321,6 @@ export class D1InstanceStore implements InstanceStore {
 				outcome: 'bootstrapped',
 				member: {
 					userId: command.actor.id,
-					...identityMetadata(
-						command.identity?.displayName ?? null,
-						command.identity?.email ?? null
-					),
 					role: 'owner',
 					status: 'active',
 					createdAt: command.createdAt,
@@ -362,7 +342,9 @@ export class D1InstanceStore implements InstanceStore {
 				'SELECT owner_user_id, created_at FROM instance_bootstrap WHERE singleton_key = 1'
 			),
 			this.#database
-				.prepare(`SELECT ${MEMBER_COLUMNS} FROM instance_member WHERE user_id = ?`)
+				.prepare(
+					'SELECT user_id, role, status, created_at, updated_at FROM instance_member WHERE user_id = ?'
+				)
 				.bind(userId)
 		]);
 		const bootstrapResult: BootstrapRow | null = firstRow<BootstrapRow>(batched[0]);
@@ -381,26 +363,6 @@ export class D1InstanceStore implements InstanceStore {
 		}
 
 		return { member, bootstrapped };
-	}
-
-	async refreshInstanceMemberIdentity(
-		command: RefreshInstanceMemberIdentityCommand
-	): Promise<void> {
-		await this.#database
-			.prepare(
-				`UPDATE instance_member
-				 SET display_name = ?, email = ?
-				 WHERE user_id = ?
-				   AND (display_name IS NOT ? OR email IS NOT ?)`
-			)
-			.bind(
-				command.identity?.displayName ?? null,
-				command.identity?.email ?? null,
-				command.userId,
-				command.identity.displayName,
-				command.identity.email
-			)
-			.run();
 	}
 
 	/**
@@ -487,7 +449,9 @@ export class D1InstanceStore implements InstanceStore {
 			MemberRow | BootstrapRow
 		>([
 			this.#database
-				.prepare(`SELECT ${MEMBER_COLUMNS} FROM instance_member WHERE user_id = ?`)
+				.prepare(
+					'SELECT user_id, role, status, created_at, updated_at FROM instance_member WHERE user_id = ?'
+				)
 				.bind(receipt.owner_user_id),
 			this.#database.prepare(
 				'SELECT singleton_key, owner_user_id, created_at FROM instance_bootstrap WHERE singleton_key = 1'
@@ -512,7 +476,6 @@ export class D1InstanceStore implements InstanceStore {
 			outcome: 'already_bootstrapped',
 			member: {
 				userId: ownerMember.user_id,
-				...identityMetadata(ownerMember.display_name, ownerMember.email),
 				role: ownerMember.role,
 				status: ownerMember.status,
 				createdAt: ownerMember.created_at,
@@ -725,10 +688,8 @@ export class D1InstanceStore implements InstanceStore {
 		// keeps that loser from clobbering the winner's membership.
 		const memberStmt: D1PreparedStatement = this.#database
 			.prepare(
-				`INSERT INTO instance_member (
-					user_id, display_name, email, role, status, created_at, updated_at
-				)
-				 SELECT ?, ?, ?, invitation.role, 'active', ?, ?
+				`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+				 SELECT ?, invitation.role, 'active', ?, ?
 				 FROM instance_invitation invitation
 				 WHERE invitation.id = ? AND invitation.status = 'pending'
 				   AND invitation.token_hash = ? AND invitation.email_binding = ?
@@ -741,8 +702,6 @@ export class D1InstanceStore implements InstanceStore {
 			)
 			.bind(
 				command.actor.id,
-				command.identity?.displayName ?? null,
-				command.identity?.email ?? null,
 				command.acceptedAt,
 				command.acceptedAt,
 				gate.invitation.id,
@@ -957,7 +916,7 @@ export class D1InstanceStore implements InstanceStore {
 			query.cursor === null
 				? this.#database
 						.prepare(
-							`SELECT ${MEMBER_COLUMNS}
+							`SELECT user_id, role, status, created_at, updated_at
 							 FROM instance_member
 							 ORDER BY user_id ASC
 							 LIMIT ?`
@@ -965,7 +924,7 @@ export class D1InstanceStore implements InstanceStore {
 						.bind(fetchLimit)
 				: this.#database
 						.prepare(
-							`SELECT ${MEMBER_COLUMNS}
+							`SELECT user_id, role, status, created_at, updated_at
 							 FROM instance_member
 							 WHERE user_id > ?
 							 ORDER BY user_id ASC
@@ -1086,7 +1045,6 @@ export class D1InstanceStore implements InstanceStore {
 				outcome: 'updated',
 				member: {
 					userId: gate.target.user_id,
-					...identityMetadata(gate.target.display_name, gate.target.email),
 					role: command.role,
 					status: gate.target.status as InstanceMemberStatus,
 					createdAt: gate.target.created_at,
@@ -1177,7 +1135,6 @@ export class D1InstanceStore implements InstanceStore {
 				outcome: 'updated',
 				member: {
 					userId: gate.target.user_id,
-					...identityMetadata(gate.target.display_name, gate.target.email),
 					role: gate.target.role as InstanceMemberRole,
 					status: command.status,
 					createdAt: gate.target.created_at,
@@ -1199,7 +1156,9 @@ export class D1InstanceStore implements InstanceStore {
 			.bind(command.actor.id);
 
 		const targetStmt: D1PreparedStatement = this.#database
-			.prepare(`SELECT ${MEMBER_COLUMNS} FROM instance_member WHERE user_id = ? LIMIT 1`)
+			.prepare(
+				'SELECT user_id, role, status, created_at, updated_at FROM instance_member WHERE user_id = ? LIMIT 1'
+			)
 			.bind(command.targetUserId);
 
 		const receiptStmt: D1PreparedStatement = this.#database
@@ -1298,7 +1257,9 @@ export class D1InstanceStore implements InstanceStore {
 			.bind(command.actor.id);
 
 		const targetStmt: D1PreparedStatement = this.#database
-			.prepare(`SELECT ${MEMBER_COLUMNS} FROM instance_member WHERE user_id = ? LIMIT 1`)
+			.prepare(
+				'SELECT user_id, role, status, created_at, updated_at FROM instance_member WHERE user_id = ? LIMIT 1'
+			)
 			.bind(command.targetUserId);
 
 		const receiptStmt: D1PreparedStatement = this.#database
@@ -1487,7 +1448,9 @@ export class D1InstanceStore implements InstanceStore {
 			.bind(command.actor.type, command.actor.id, command.idempotencyKey);
 
 		const memberStmt: D1PreparedStatement = this.#database
-			.prepare(`SELECT ${MEMBER_COLUMNS} FROM instance_member WHERE user_id = ? LIMIT 1`)
+			.prepare(
+				'SELECT user_id, role, status, created_at, updated_at FROM instance_member WHERE user_id = ? LIMIT 1'
+			)
 			.bind(command.actor.id);
 
 		const invitationStmt: D1PreparedStatement = this.#database
@@ -1664,7 +1627,9 @@ export class D1InstanceStore implements InstanceStore {
 
 	async #readMember(userId: string): Promise<MemberRow | null> {
 		return await this.#database
-			.prepare(`SELECT ${MEMBER_COLUMNS} FROM instance_member WHERE user_id = ? LIMIT 1`)
+			.prepare(
+				'SELECT user_id, role, status, created_at, updated_at FROM instance_member WHERE user_id = ? LIMIT 1'
+			)
 			.bind(userId)
 			.first<MemberRow>();
 	}
@@ -1933,8 +1898,6 @@ function metadataFromJoinedInvitation(row: {
 
 function metadataFromJoinedMember(row: {
 	member_user_id: string | null;
-	member_display_name: string | null;
-	member_email: string | null;
 	member_role: string | null;
 	member_status: string | null;
 	member_created_at: string | null;
@@ -1951,7 +1914,6 @@ function metadataFromJoinedMember(row: {
 	}
 	return {
 		userId: row.member_user_id,
-		...identityMetadata(row.member_display_name, row.member_email),
 		role: row.member_role,
 		status: row.member_status,
 		createdAt: row.member_created_at,
@@ -1983,22 +1945,11 @@ function metadataFromMemberRow(row: MemberRow): InstanceMemberMetadata {
 	}
 	return {
 		userId: row.user_id,
-		...identityMetadata(row.display_name, row.email),
 		role: row.role,
 		status: row.status,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at
 	};
-}
-
-function identityMetadata(
-	displayName: string | null | undefined,
-	email: string | null | undefined
-): Pick<InstanceMemberMetadata, 'displayName' | 'email'> {
-	return (displayName === null || displayName === undefined) &&
-		(email === null || email === undefined)
-		? {}
-		: { displayName: displayName ?? null, email: email ?? null };
 }
 
 function changeCount(result: D1Result): number {

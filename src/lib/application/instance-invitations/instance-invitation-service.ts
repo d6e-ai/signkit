@@ -34,7 +34,6 @@ import type {
 	InstanceInvitationDeliveryPayloadSealer,
 	InstanceInvitationRequestFingerprints
 } from '$lib/security/instance-invitation-delivery-payload';
-import { memberIdentitySnapshot } from '$lib/application/instance/member-identity';
 
 export { canonicalJson, sha256Hex };
 
@@ -95,7 +94,6 @@ export interface AcceptInstanceInvitationInput {
 	idempotencyKey: string;
 	token: string;
 	email: string;
-	displayName?: string;
 }
 
 /**
@@ -400,7 +398,6 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 
 		const command: AcceptInstanceInvitationCommand = {
 			actor: commandActor,
-			identity: memberIdentitySnapshot(input.displayName, input.email),
 			idempotencyKey,
 			requestFingerprint,
 			tokenHash,

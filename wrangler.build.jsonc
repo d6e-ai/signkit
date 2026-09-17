@@ -9,6 +9,7 @@
 		"binding": "ASSETS"
 	},
 	"vars": {
+		// Build the default native-Email profile; runtime code also supports SMTP.
 		"SIGNKIT_MAIL_PROVIDER": "cloudflare"
 	}
 }

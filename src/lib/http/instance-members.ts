@@ -106,9 +106,7 @@ export function createInstanceMemberMeHandler(
 
 		try {
 			const context: InstanceCallerContext = await application.getCurrentMember({
-				id: authorized.id,
-				displayName: authorized.name,
-				email: authorized.emailVerified ? authorized.email : undefined
+				id: authorized.id
 			});
 			return new Response(JSON.stringify(context), {
 				status: 200,

@@ -22,6 +22,7 @@ export const D1_BINDING = 'DB';
 export const R2_BINDING = 'OBJECTS';
 export const ASSETS_BINDING = 'ASSETS';
 export const EMAIL_BINDING = 'EMAIL';
+export const SMTP_PASSWORD_SECRET = 'SIGNKIT_SMTP_PASSWORD';
 
 export const MANIFEST_ASSET_NAME = 'signkit-cloudflare-manifest.json';
 export const BUNDLE_ASSET_PREFIX = 'signkit-cloudflare-';

@@ -870,8 +870,7 @@ describe('instance invitation HTTP handlers', () => {
 				{
 					idempotencyKey: 'accept-1',
 					token: VALID_TOKEN,
-					email: 'user@example.com',
-					displayName: 'User'
+					email: 'user@example.com'
 				}
 			);
 		});

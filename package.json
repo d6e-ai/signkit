@@ -81,7 +81,7 @@
 		"isomorphic-git": "^1.42.2",
 		"jose": "^6.2.12",
 		"mode-watcher": "^1.1.0",
-		"nodemailer": "^10.0.9",
+		"nodemailer": "^10.0.10",
 		"pdfjs-dist": "^6.3.289",
 		"postgres": "^3.4.9",
 		"rehype-sanitize": "^6.0.0",

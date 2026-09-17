@@ -6,7 +6,7 @@ import {
 	DEFAULT_WORKER_NAME
 } from '../constants.js';
 import { usage } from './errors.js';
-import type { ParsedCommand } from './parse.js';
+import type { MailProviderId, ParsedCommand } from './parse.js';
 import { hostnameFromOrigin, originFromDomain } from './urls.js';
 import type { DeploymentState } from '../state/store.js';
 
@@ -20,6 +20,11 @@ export interface EffectiveTarget {
 	d6eAuthBaseUrl: string;
 	emailFrom?: string;
 	emailFromName: string;
+	mailProvider: MailProviderId;
+	smtpHost?: string;
+	smtpPort?: number;
+	smtpSecure?: boolean;
+	smtpUsername?: string;
 	bootstrapOwnerEmail?: string;
 	inherited: {
 		workerName: boolean;
@@ -30,6 +35,11 @@ export interface EffectiveTarget {
 		d6eAuthBaseUrl: boolean;
 		emailFrom: boolean;
 		emailFromName: boolean;
+		mailProvider: boolean;
+		smtpHost: boolean;
+		smtpPort: boolean;
+		smtpSecure: boolean;
+		smtpUsername: boolean;
 		bootstrapOwnerEmail: boolean;
 	};
 	appliedDefaults: {
@@ -65,6 +75,38 @@ export function resolveEffectiveConfig(
 	const emailFrom = parsed.overrides.emailFrom
 		? parsed.emailFrom
 		: (parsed.emailFrom ?? state?.emailFrom);
+	const mailProvider: MailProviderId = parsed.overrides.mailProvider
+		? parsed.mailProvider
+		: (state?.mailProvider ?? parsed.mailProvider ?? 'cloudflare');
+	const smtpHost = parsed.overrides.smtpHost
+		? parsed.smtpHost
+		: (parsed.smtpHost ?? state?.smtpHost);
+	const smtpPort = parsed.overrides.smtpPort
+		? parsed.smtpPort
+		: (parsed.smtpPort ?? state?.smtpPort);
+	const smtpSecure = parsed.overrides.smtpSecure
+		? parsed.smtpSecure
+		: (parsed.smtpSecure ?? state?.smtpSecure);
+	const smtpUsername = parsed.overrides.smtpUsername
+		? parsed.smtpUsername
+		: (parsed.smtpUsername ?? state?.smtpUsername);
+	if (
+		mailProvider === 'cloudflare' &&
+		(parsed.overrides.smtpHost ||
+			parsed.overrides.smtpPort ||
+			parsed.overrides.smtpSecure ||
+			parsed.overrides.smtpUsername)
+	) {
+		throw usage('SMTP flags require an effective --mail-provider smtp selection');
+	}
+	if (
+		mailProvider === 'smtp' &&
+		(smtpHost === undefined || smtpPort === undefined || smtpSecure === undefined)
+	) {
+		throw usage(
+			'--mail-provider smtp requires --smtp-host, --smtp-port, and --smtp-secure (or inherited state values)'
+		);
+	}
 
 	// Non-secret bootstrap owner: an explicit flag always wins so a typo can
 	// be corrected before the claim; otherwise the recorded state value is
@@ -100,6 +142,11 @@ export function resolveEffectiveConfig(
 		d6eAuthBaseUrl,
 		emailFrom,
 		emailFromName,
+		mailProvider,
+		smtpHost,
+		smtpPort,
+		smtpSecure,
+		smtpUsername,
 		bootstrapOwnerEmail,
 		inherited: {
 			workerName: Boolean(state && !parsed.overrides.workerName),
@@ -110,6 +157,11 @@ export function resolveEffectiveConfig(
 			d6eAuthBaseUrl: Boolean(state && !parsed.overrides.d6eAuthBaseUrl),
 			emailFrom: Boolean(state && !parsed.overrides.emailFrom),
 			emailFromName: Boolean(state && !parsed.overrides.emailFromName),
+			mailProvider: Boolean(state && !parsed.overrides.mailProvider),
+			smtpHost: Boolean(state && !parsed.overrides.smtpHost),
+			smtpPort: Boolean(state && !parsed.overrides.smtpPort),
+			smtpSecure: Boolean(state && !parsed.overrides.smtpSecure),
+			smtpUsername: Boolean(state && !parsed.overrides.smtpUsername),
 			bootstrapOwnerEmail: Boolean(state && !parsed.overrides.bootstrapOwnerEmail)
 		},
 		appliedDefaults: {

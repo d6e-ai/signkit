@@ -1,5 +1,7 @@
 # Mail provider: SMTP and Cloudflare — 2026-09-14
 
+Status: superseded in part by [Workers SMTP through Nodemailer 10](2026-09-17-workers-smtp-through-nodemailer.md).
+
 Invitation and completion delivery previously picked a mail transport implicitly from whichever credentials were present: the native `EMAIL` binding on Cloudflare Workers, or the Cloudflare Email Sending REST API everywhere else. There was no way to run Node/Docker or Vercel against a generic SMTP relay, and no explicit switch recording which transport a deployment intended to use.
 
 ## Decision

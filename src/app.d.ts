@@ -83,6 +83,11 @@ declare global {
 				SIGNKIT_EMAIL_FROM?: string;
 				SIGNKIT_EMAIL_FROM_NAME?: string;
 				SIGNKIT_MAIL_PROVIDER?: string;
+				SIGNKIT_SMTP_HOST?: string;
+				SIGNKIT_SMTP_PORT?: string;
+				SIGNKIT_SMTP_SECURE?: string;
+				SIGNKIT_SMTP_USERNAME?: string;
+				SIGNKIT_SMTP_PASSWORD?: string;
 				SIGNKIT_WEBHOOK_ALLOWED_HOSTS?: string;
 				SESSION_ENCRYPTION_KEY?: string;
 				SESSION_ENCRYPTION_KEY_PREVIOUS?: string;

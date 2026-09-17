@@ -12,14 +12,21 @@ export const RECOVERY_SECRET_NAMES = [
 	'D6E_AUTH_CLIENT_ID',
 	'D6E_AUTH_CLIENT_SECRET'
 ] as const;
+export const SMTP_RECOVERY_SECRET_NAME = 'SIGNKIT_SMTP_PASSWORD' as const;
 
-export type RecoverySecretName = (typeof RECOVERY_SECRET_NAMES)[number];
+export type RecoverySecretName =
+	(typeof RECOVERY_SECRET_NAMES)[number] | typeof SMTP_RECOVERY_SECRET_NAME;
 
-export type RecoverySecretMap = Record<RecoverySecretName, string>;
+export type RecoverySecretMap = Record<(typeof RECOVERY_SECRET_NAMES)[number], string> &
+	Partial<Record<typeof SMTP_RECOVERY_SECRET_NAME, string>>;
 
 export interface OAuthSecretInput {
 	D6E_AUTH_CLIENT_ID: string;
 	D6E_AUTH_CLIENT_SECRET: string;
+}
+
+export interface InitialSecretInput extends OAuthSecretInput {
+	SIGNKIT_SMTP_PASSWORD?: string;
 }
 
 export interface EnsureRecoverySecretsOptions {
@@ -27,12 +34,14 @@ export interface EnsureRecoverySecretsOptions {
 	recoveryPath: string;
 	requiredSecrets: readonly string[];
 	oauth: unknown;
+	smtpPassword?: string;
 	randomBytes?: (size: number) => Uint8Array;
 }
 
 export interface ReuseRecoverySecretsOptions {
 	fs: FileSystem;
 	recoveryPath: string;
+	requiredSecrets?: readonly string[];
 }
 
 export interface RecoveryTarget {
@@ -65,6 +74,7 @@ export const RECOVERY_FILE_MODE: number = BACKUP_FILE_MODE;
 export const MAX_RECOVERY_FILE_BYTES: number = 16 * 1024;
 export const MAX_STDIN_BYTES: number = 16 * 1024;
 export const MAX_OAUTH_SECRET_LENGTH: number = 1024;
+export const MAX_SMTP_PASSWORD_LENGTH: number = 4096;
 export const MAX_RECOVERY_PATH_LENGTH: number = 4096;
 
 const RECOVERY_BINDING_SCHEMA_VERSION: number = 1;
@@ -113,6 +123,55 @@ export async function readOAuthSecrets(
 	return parseOAuthStdinBytes(raw);
 }
 
+export function parseInitialSecretStdinBytes(
+	raw: Uint8Array,
+	requireSmtpPassword: boolean
+): InitialSecretInput {
+	if (raw.byteLength > MAX_STDIN_BYTES) {
+		throw generic(`secret stdin exceeds the ${MAX_STDIN_BYTES}-byte limit; refusing to parse`);
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString('utf8'));
+	} catch {
+		throw generic('secret stdin is not valid JSON');
+	}
+	const oauth: OAuthSecretInput = parseOAuthInput(
+		requireSmtpPassword && isRecord(parsed)
+			? Object.fromEntries(
+					Object.entries(parsed).filter(([key]) => key !== SMTP_RECOVERY_SECRET_NAME)
+				)
+			: parsed
+	);
+	if (!requireSmtpPassword) return oauth;
+	if (
+		!isRecord(parsed) ||
+		Object.keys(parsed).sort().join(',') !==
+			[...OAUTH_SECRET_KEYS, SMTP_RECOVERY_SECRET_NAME].sort().join(',')
+	) {
+		throw generic(
+			`secret stdin must contain exactly D6E_AUTH_CLIENT_ID, D6E_AUTH_CLIENT_SECRET, and ${SMTP_RECOVERY_SECRET_NAME}`
+		);
+	}
+	assertSmtpPassword(parsed[SMTP_RECOVERY_SECRET_NAME]);
+	return { ...oauth, SIGNKIT_SMTP_PASSWORD: parsed[SMTP_RECOVERY_SECRET_NAME] as string };
+}
+
+export async function readInitialSecrets(
+	readStdin: () => Promise<Uint8Array>,
+	requireSmtpPassword: boolean
+): Promise<InitialSecretInput> {
+	let raw: Uint8Array;
+	try {
+		raw = await readStdin();
+	} catch (error) {
+		throw generic(
+			`secret stdin cannot be read: ${error instanceof Error ? error.message : String(error)}`
+		);
+	}
+	return parseInitialSecretStdinBytes(raw, requireSmtpPassword);
+}
+
 export function createNodeStdinReader(): () => Promise<Uint8Array> {
 	return async () => {
 		const stdin = process.stdin;
@@ -136,8 +195,8 @@ export function createNodeStdinReader(): () => Promise<Uint8Array> {
 
 export function canonicalSecretJson(secrets: RecoverySecretMap): string {
 	const sorted: Record<string, string> = {};
-	for (const key of SORTED_RECOVERY_KEYS) {
-		sorted[key] = secrets[key as RecoverySecretName];
+	for (const key of Object.keys(secrets).sort()) {
+		sorted[key] = secrets[key as RecoverySecretName] as string;
 	}
 	return JSON.stringify(sorted);
 }
@@ -155,14 +214,21 @@ export async function ensureRecoverySecrets(
 ): Promise<RecoverySecretsResult> {
 	const fs: FileSystem = options.fs;
 	const recoveryPath: string = options.recoveryPath;
-	assertExactRequiredSecrets(options.requiredSecrets);
-	const reused = await tryReuseRecoverySecrets({ fs, recoveryPath });
+	assertSupportedRecoverySecrets(options.requiredSecrets);
+	const reused = await tryReuseRecoverySecrets({
+		fs,
+		recoveryPath,
+		requiredSecrets: options.requiredSecrets
+	});
 	if (reused) {
 		return reused;
 	}
+	if (options.requiredSecrets.includes(SMTP_RECOVERY_SECRET_NAME)) {
+		assertSmtpPassword(options.smtpPassword);
+	}
 	const oauth: OAuthSecretInput = parseOAuthInput(options.oauth);
 	const randomBytes: (size: number) => Uint8Array = options.randomBytes ?? defaultRandomBytes;
-	const secrets: RecoverySecretMap = generateSecretMap(oauth, randomBytes);
+	const secrets: RecoverySecretMap = generateSecretMap(oauth, randomBytes, options.smtpPassword);
 	const canonical: string = canonicalSecretJson(secrets);
 	const bytes: Uint8Array = new TextEncoder().encode(canonical);
 	try {
@@ -199,6 +265,15 @@ export async function tryReuseRecoverySecrets(
 		options.recoveryPath,
 		parentDir
 	);
+	if (options.requiredSecrets) {
+		for (const name of validateSecretSubset(options.requiredSecrets)) {
+			if (typeof reused[name as RecoverySecretName] !== 'string') {
+				throw generic(
+					`recovery file at ${options.recoveryPath} is missing required secret ${name}`
+				);
+			}
+		}
+	}
 	return {
 		path: options.recoveryPath,
 		fingerprint: fingerprintSecretMap(reused),
@@ -258,7 +333,11 @@ export async function stageRecoverySecrets(options: StageRecoverySecretsOptions)
 	const names: RecoverySecretName[] = validateSecretSubset(options.secretNames);
 	const staged: Partial<RecoverySecretMap> = {};
 	for (const name of names) {
-		staged[name] = secrets[name];
+		const value: string | undefined = secrets[name];
+		if (value === undefined) {
+			throw generic(`recovery file at ${options.recoveryPath} is missing required secret ${name}`);
+		}
+		staged[name] = value;
 	}
 	const canonical: string = JSON.stringify(staged);
 	try {
@@ -300,18 +379,24 @@ function defaultRandomBytes(size: number): Uint8Array {
 
 function generateSecretMap(
 	oauth: OAuthSecretInput,
-	randomBytes: (size: number) => Uint8Array
+	randomBytes: (size: number) => Uint8Array,
+	smtpPassword?: string
 ): RecoverySecretMap {
 	const deliveryEncryptionKey: string = randomBase6432(randomBytes);
 	const sessionEncryptionKey: string = randomBase6432(randomBytes);
 	const deliveryWorkerSecret: string = randomBase6432(randomBytes);
-	return {
+	const secrets: RecoverySecretMap = {
 		DELIVERY_ENCRYPTION_KEY: deliveryEncryptionKey,
 		SESSION_ENCRYPTION_KEY: sessionEncryptionKey,
 		DELIVERY_WORKER_SECRET: deliveryWorkerSecret,
 		D6E_AUTH_CLIENT_ID: oauth.D6E_AUTH_CLIENT_ID,
 		D6E_AUTH_CLIENT_SECRET: oauth.D6E_AUTH_CLIENT_SECRET
 	};
+	if (smtpPassword !== undefined) {
+		assertSmtpPassword(smtpPassword);
+		secrets.SIGNKIT_SMTP_PASSWORD = smtpPassword;
+	}
+	return secrets;
 }
 
 function randomBase6432(randomBytes: (size: number) => Uint8Array): string {
@@ -354,6 +439,25 @@ export function assertExactRequiredSecrets(requiredSecrets: readonly string[]): 
 		throw generic(`unknown required secret names: ${unknown.join(', ')}`);
 	}
 	throw generic(`required secrets must be exactly ${[...expected].sort().join(', ')}`);
+}
+
+function assertSupportedRecoverySecrets(requiredSecrets: readonly string[]): void {
+	const names: Set<string> = new Set(requiredSecrets);
+	const base: Set<string> = new Set(RECOVERY_SECRET_NAMES);
+	const unknown: string[] = [...names]
+		.filter((name) => !base.has(name) && name !== SMTP_RECOVERY_SECRET_NAME)
+		.sort();
+	if (unknown.length > 0) {
+		throw generic(`unknown required secret names: ${unknown.join(', ')}`);
+	}
+	const validBase: boolean = names.size === base.size && [...base].every((name) => names.has(name));
+	const validSmtp: boolean =
+		names.size === base.size + 1 &&
+		[...base].every((name) => names.has(name)) &&
+		names.has(SMTP_RECOVERY_SECRET_NAME);
+	if (!validBase && !validSmtp) {
+		throw generic('required secrets contain an unsupported recovery secret set');
+	}
 }
 
 function parseOAuthInput(input: unknown): OAuthSecretInput {
@@ -401,12 +505,18 @@ function validateSecretSubset(secretNames: readonly string[]): RecoverySecretNam
 	}
 	const requested: Set<string> = new Set<string>();
 	for (const name of secretNames) {
-		if (typeof name !== 'string' || !RECOVERY_SECRET_NAMES.includes(name as RecoverySecretName)) {
+		if (
+			typeof name !== 'string' ||
+			(!RECOVERY_SECRET_NAMES.includes(name as (typeof RECOVERY_SECRET_NAMES)[number]) &&
+				name !== SMTP_RECOVERY_SECRET_NAME)
+		) {
 			throw generic(`unsupported temporary secret name ${String(name)}`);
 		}
 		requested.add(name);
 	}
-	return RECOVERY_SECRET_NAMES.filter((name) => requested.has(name));
+	return [...RECOVERY_SECRET_NAMES, SMTP_RECOVERY_SECRET_NAME].filter((name) =>
+		requested.has(name)
+	);
 }
 
 function canonicalRecoveryBinding(target: RecoveryTarget): string {
@@ -481,13 +591,14 @@ function validateSecretMap(value: unknown, recoveryPath: string): RecoverySecret
 	}
 	const record: Record<string, unknown> = value as Record<string, unknown>;
 	const keys: string[] = Object.keys(record).sort();
-	if (
-		keys.length !== SORTED_RECOVERY_KEYS.length ||
-		!keys.every((key, index) => key === SORTED_RECOVERY_KEYS[index])
-	) {
-		throw generic(
-			`recovery file at ${recoveryPath} must contain exactly ${SORTED_RECOVERY_KEYS.join(', ')}`
-		);
+	const baseKeysMatch =
+		keys.length === SORTED_RECOVERY_KEYS.length &&
+		keys.every((key, index) => key === SORTED_RECOVERY_KEYS[index]);
+	const smtpKeys: string[] = [...SORTED_RECOVERY_KEYS, SMTP_RECOVERY_SECRET_NAME].sort();
+	const smtpKeysMatch =
+		keys.length === smtpKeys.length && keys.every((key, index) => key === smtpKeys[index]);
+	if (!baseKeysMatch && !smtpKeysMatch) {
+		throw generic(`recovery file at ${recoveryPath} has an unsupported secret set`);
 	}
 	assertBase64SecretValue(
 		record['DELIVERY_ENCRYPTION_KEY'],
@@ -498,13 +609,35 @@ function validateSecretMap(value: unknown, recoveryPath: string): RecoverySecret
 	assertBase64SecretValue(record['DELIVERY_WORKER_SECRET'], 'DELIVERY_WORKER_SECRET', recoveryPath);
 	assertOAuthValue(record['D6E_AUTH_CLIENT_ID'], 'D6E_AUTH_CLIENT_ID');
 	assertOAuthValue(record['D6E_AUTH_CLIENT_SECRET'], 'D6E_AUTH_CLIENT_SECRET');
-	return {
+	const secrets: RecoverySecretMap = {
 		DELIVERY_ENCRYPTION_KEY: record['DELIVERY_ENCRYPTION_KEY'] as string,
 		SESSION_ENCRYPTION_KEY: record['SESSION_ENCRYPTION_KEY'] as string,
 		DELIVERY_WORKER_SECRET: record['DELIVERY_WORKER_SECRET'] as string,
 		D6E_AUTH_CLIENT_ID: record['D6E_AUTH_CLIENT_ID'] as string,
 		D6E_AUTH_CLIENT_SECRET: record['D6E_AUTH_CLIENT_SECRET'] as string
 	};
+	if (smtpKeysMatch) {
+		assertSmtpPassword(record[SMTP_RECOVERY_SECRET_NAME]);
+		secrets.SIGNKIT_SMTP_PASSWORD = record[SMTP_RECOVERY_SECRET_NAME] as string;
+	}
+	return secrets;
+}
+
+function assertSmtpPassword(value: unknown): void {
+	if (
+		typeof value !== 'string' ||
+		value.length < 1 ||
+		value.length > MAX_SMTP_PASSWORD_LENGTH ||
+		value.includes('\u0000')
+	) {
+		throw generic(
+			`${SMTP_RECOVERY_SECRET_NAME} must be 1-${MAX_SMTP_PASSWORD_LENGTH} characters without NUL`
+		);
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function refuseSymlinkDirent(fs: FileSystem, path: string, label: string): Promise<void> {

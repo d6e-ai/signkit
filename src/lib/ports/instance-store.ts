@@ -29,10 +29,6 @@ export type InstanceMemberStatus = 'active' | 'suspended';
 
 export interface InstanceMemberMetadata {
 	userId: string;
-	/** Display-only snapshot from the member's verified d6e-auth principal. */
-	displayName?: string | null;
-	/** Display-only snapshot from the member's verified d6e-auth principal. */
-	email?: string | null;
 	role: InstanceMemberRole;
 	status: InstanceMemberStatus;
 	createdAt: string;
@@ -46,24 +42,9 @@ export interface InstanceCallerContext {
 
 export interface BootstrapInstanceCommand {
 	actor: InstanceActor;
-	identity?: InstanceMemberIdentitySnapshot;
 	idempotencyKey: string;
 	requestFingerprint: string;
 	createdAt: string;
-}
-
-/**
- * A non-authoritative identity projection used only to label local members.
- * SignKit must never use either field for membership or authorization.
- */
-export interface InstanceMemberIdentitySnapshot {
-	displayName: string | null;
-	email: string | null;
-}
-
-export interface RefreshInstanceMemberIdentityCommand {
-	userId: string;
-	identity: InstanceMemberIdentitySnapshot;
 }
 
 /**
@@ -196,7 +177,6 @@ export type ListInstanceInvitationsStoreResult =
  */
 export interface AcceptInstanceInvitationCommand {
 	actor: InstanceActor;
-	identity?: InstanceMemberIdentitySnapshot;
 	idempotencyKey: string;
 	requestFingerprint: string;
 	tokenHash: string;
@@ -443,11 +423,6 @@ export type SetInstanceMemberStatusStoreResult =
 export interface InstanceStore {
 	bootstrapInstance(command: BootstrapInstanceCommand): Promise<BootstrapInstanceStoreResult>;
 	getInstanceCallerContext(userId: string): Promise<InstanceCallerContext>;
-	/**
-	 * Best-effort refresh of display-only identity data. It is optional so
-	 * alternate/test stores that do not persist identity labels remain valid.
-	 */
-	refreshInstanceMemberIdentity?(command: RefreshInstanceMemberIdentityCommand): Promise<void>;
 	createInstanceInvitation(
 		command: CreateInstanceInvitationCommand
 	): Promise<CreateInstanceInvitationStoreResult>;

@@ -772,8 +772,7 @@ describe('InstanceInvitationApplication', () => {
 			const input: AcceptInstanceInvitationInput = {
 				idempotencyKey: 'accept-idemp-1',
 				token: validToken,
-				email: '  Signer@Example.COM  ',
-				displayName: '  Signer Name  '
+				email: '  Signer@Example.COM  '
 			};
 
 			const result: AcceptInstanceInvitationResult = await app.accept(ACCEPTOR_ACTOR, input);
@@ -785,10 +784,6 @@ describe('InstanceInvitationApplication', () => {
 			expect(store.acceptCommands).toHaveLength(1);
 			const command = store.acceptCommands[0];
 			expect(command.actor).toEqual({ type: 'user', id: 'acceptor-user-2' });
-			expect(command.identity).toEqual({
-				displayName: 'Signer Name',
-				email: 'signer@example.com'
-			});
 			expect(command.idempotencyKey).toBe('accept-idemp-1');
 			expect(command.acceptedAt).toBe(NOW.toISOString());
 

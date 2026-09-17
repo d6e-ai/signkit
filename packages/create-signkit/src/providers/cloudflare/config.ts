@@ -1,4 +1,11 @@
-import { ASSETS_BINDING, D1_BINDING, EMAIL_BINDING, R2_BINDING } from '../../constants.js';
+import {
+	ASSETS_BINDING,
+	D1_BINDING,
+	EMAIL_BINDING,
+	R2_BINDING,
+	SMTP_PASSWORD_SECRET
+} from '../../constants.js';
+import type { MailProviderId } from '../../cli/parse.js';
 import type { ReleaseManifest } from '../../release/manifest.js';
 
 export interface WranglerConfigInput {
@@ -11,6 +18,11 @@ export interface WranglerConfigInput {
 	d6eAuthBaseUrl?: string;
 	emailFrom?: string;
 	emailFromName?: string;
+	mailProvider: MailProviderId;
+	smtpHost?: string;
+	smtpPort?: number;
+	smtpSecure?: boolean;
+	smtpUsername?: string;
 	bootstrapOwnerEmail?: string;
 	manifest: ReleaseManifest;
 	main: string;
@@ -20,8 +32,14 @@ export interface WranglerConfigInput {
 
 export function renderWranglerConfig(input: WranglerConfigInput): string {
 	const vars: Record<string, string> = {
-		SIGNKIT_MAIL_PROVIDER: 'cloudflare'
+		SIGNKIT_MAIL_PROVIDER: input.mailProvider
 	};
+	if (input.mailProvider === 'smtp') {
+		if (input.smtpHost) vars.SIGNKIT_SMTP_HOST = input.smtpHost;
+		if (input.smtpPort !== undefined) vars.SIGNKIT_SMTP_PORT = String(input.smtpPort);
+		if (input.smtpSecure !== undefined) vars.SIGNKIT_SMTP_SECURE = String(input.smtpSecure);
+		if (input.smtpUsername) vars.SIGNKIT_SMTP_USERNAME = input.smtpUsername;
+	}
 	if (input.publicOrigin) {
 		vars.SIGNKIT_PUBLIC_ORIGIN = input.publicOrigin;
 	}
@@ -60,10 +78,15 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 				bucket_name: input.r2Name
 			}
 		],
-		send_email: [{ name: input.manifest.bindings.email || EMAIL_BINDING }],
+		...(input.mailProvider === 'cloudflare'
+			? { send_email: [{ name: input.manifest.bindings.email || EMAIL_BINDING }] }
+			: {}),
 		vars,
 		secrets: {
-			required: [...input.manifest.requiredSecrets]
+			required: [
+				...input.manifest.requiredSecrets,
+				...(input.mailProvider === 'smtp' && input.smtpUsername ? [SMTP_PASSWORD_SECRET] : [])
+			]
 		},
 		triggers: { crons: ['* * * * *'] },
 		observability: { enabled: true, head_sampling_rate: 1 }

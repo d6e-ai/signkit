@@ -71,11 +71,7 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 
 	let context: InstanceCallerContext;
 	try {
-		context = await application.getCurrentMember({
-			id: locals.principal.subject,
-			displayName: locals.principal.name,
-			email: locals.principal.emailVerified === true ? locals.principal.email : undefined
-		});
+		context = await application.getCurrentMember({ id: locals.principal.subject });
 	} catch {
 		error(503, 'Instance membership could not be resolved.');
 	}

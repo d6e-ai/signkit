@@ -2,7 +2,7 @@
 
 SignKit is single-instance software: one deployment and one database form the complete authorization boundary. d6e-auth proves a human identity; SignKit decides what that identity may do from its own `instance_member` row.
 
-The member row also keeps nullable display-name and email snapshots from that user's verified d6e-auth principal so administrators can recognize people instead of seeing external subject identifiers. These snapshots are display-only, are refreshed from the member's own authenticated session, and never grant membership, select a member, or affect any authorization decision.
+Member administration currently identifies other members by their stable d6e-auth subject. SignKit does not copy profile data into its authorization store or attempt an unbounded directory lookup; resolving those subjects for display is tracked in [d6e-auth issue #218](https://github.com/d6e-ai/d6e-auth/issues/218).
 
 ## Human sessions
 

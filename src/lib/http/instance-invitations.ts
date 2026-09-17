@@ -497,8 +497,7 @@ export function createInstanceInvitationHttpHandlers(
 			const result: AcceptInstanceInvitationResult = await application.accept(actorOf(authorized), {
 				idempotencyKey: idempotencyKey.data,
 				token: parsed.data.token,
-				email: authorized.email,
-				displayName: authorized.name
+				email: authorized.email
 			});
 			return acceptResponse(result, url.pathname);
 		} catch (error: unknown) {

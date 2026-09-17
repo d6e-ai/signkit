@@ -12,27 +12,41 @@ export function parseMailProvider(value: string | undefined): MailProvider | nul
 	return normalized === 'smtp' || normalized === 'cloudflare' ? normalized : null;
 }
 
-export interface WorkerMailEnv {
+export interface WorkerMailEnv extends SmtpConfigEnv {
 	SIGNKIT_MAIL_PROVIDER?: string;
 }
 
 /**
- * SignKit intentionally supports only the native EMAIL binding on Cloudflare
- * Workers and does not bundle or support a Worker SMTP client, so `smtp` is
- * never valid here regardless of what the runtime itself can otherwise do.
- * An `smtp` selection, a missing/invalid provider, or a missing binding all
- * fail closed to `null` rather than silently falling back to another
- * transport.
+ * Selects the Cloudflare Workers mail transport. Nodemailer 10 supports its
+ * SMTP transport on Workers under `nodejs_compat`, so the same adapter and
+ * strict TLS configuration used by Node can be reused here. Workers prohibit
+ * outbound SMTP on port 25, which is rejected before a transporter is built.
+ * Missing or malformed configuration fails closed rather than falling back to
+ * another provider.
  */
-export function resolveWorkerMailSender(
+export async function resolveWorkerMailSender(
 	workerEnv: WorkerMailEnv,
 	email: SendEmail | undefined
-): MailSender | null {
-	if (parseMailProvider(workerEnv.SIGNKIT_MAIL_PROVIDER) !== 'cloudflare') return null;
-	return email === undefined ? null : new CloudflareBindingMailSender(email);
+): Promise<MailSender | null> {
+	const provider: MailProvider | null = parseMailProvider(workerEnv.SIGNKIT_MAIL_PROVIDER);
+	if (provider === 'cloudflare') {
+		return email === undefined ? null : new CloudflareBindingMailSender(email);
+	}
+	if (provider === 'smtp') {
+		const config = parseSmtpConfig(workerEnv);
+		if (config === null || config.port === 25) return null;
+		try {
+			const { NodemailerSmtpMailSender } = await import('$lib/adapters/mail/smtp');
+			return new NodemailerSmtpMailSender(config);
+		} catch {
+			return null;
+		}
+	}
+	return null;
 }
 
 export interface NodeMailEnv extends SmtpConfigEnv {
+	[key: string]: string | undefined;
 	SIGNKIT_MAIL_PROVIDER?: string;
 	CLOUDFLARE_EMAIL_ACCOUNT_ID?: string;
 	CLOUDFLARE_EMAIL_API_TOKEN?: string;
@@ -43,9 +57,8 @@ export interface NodeMailEnv extends SmtpConfigEnv {
  * existing REST sender (Cloudflare Email Sending has no Workers-only API);
  * `smtp` covers every other provider, including Resend, through its plain
  * SMTP endpoint — there is no provider-specific code path here on purpose.
- * The Nodemailer adapter is imported dynamically so it, and its native
- * TCP/TLS dependencies, are never pulled into the Cloudflare Workers bundle
- * that also links this module for `resolveWorkerMailSender`.
+ * The Nodemailer adapter is imported dynamically so a process selecting the
+ * Cloudflare REST provider does not initialize SMTP or its TCP/TLS path.
  */
 export async function resolveNodeMailSender(env: NodeMailEnv): Promise<MailSender | null> {
 	const provider: MailProvider | null = parseMailProvider(env.SIGNKIT_MAIL_PROVIDER);
