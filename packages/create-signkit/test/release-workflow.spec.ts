@@ -25,6 +25,7 @@ const codeqlWorkflowPath = fileURLToPath(
 	new URL('../../../.github/workflows/codeql.yml', import.meta.url)
 );
 const rootPackagePath = fileURLToPath(new URL('../../../package.json', import.meta.url));
+const createPackagePath = fileURLToPath(new URL('../package.json', import.meta.url));
 const lockfilePath = fileURLToPath(new URL('../../../pnpm-lock.yaml', import.meta.url));
 
 describe('release-cloudflare-bundle workflow', () => {
@@ -33,13 +34,17 @@ describe('release-cloudflare-bundle workflow', () => {
 		const rootPackage = JSON.parse(await readFile(rootPackagePath, 'utf8')) as {
 			devDependencies: Record<string, string>;
 		};
+		const createPackage = JSON.parse(await readFile(createPackagePath, 'utf8')) as {
+			bin: Record<string, string>;
+		};
 		const lockfile = await readFile(lockfilePath, 'utf8');
 		expect(yaml).not.toMatch(/^\s*run:\s*pnpm publish\b/m);
 		expect(yaml).not.toMatch(/npm install --prefix/);
 		expect(yaml).not.toMatch(/npm@\^/);
-		expect(rootPackage.devDependencies.npm).toBe('11.5.1');
-		expect(lockfile).toMatch(/npm:\n\s+specifier: 11\.5\.1\n\s+version: 11\.5\.1/);
-		expect(lockfile).toMatch(/npm@11\.5\.1:\n\s+resolution: \{integrity: sha512-/);
+		expect(rootPackage.devDependencies.npm).toBe('12.0.2');
+		expect(createPackage.bin).toEqual({ 'create-signkit': 'dist/bin.js' });
+		expect(lockfile).toMatch(/npm:\n\s+specifier: 12\.0\.2\n\s+version: 12\.0\.2/);
+		expect(lockfile).toMatch(/npm@12\.0\.2:\n\s+resolution: \{integrity: sha512-/);
 		expect(yaml).toMatch(/selected="\$\(pnpm exec which npm\)"/);
 		// Regression: the selected CLI must be normalized to an absolute path
 		// at selection time; the publish step runs in packages/create-signkit
