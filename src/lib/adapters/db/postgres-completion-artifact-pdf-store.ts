@@ -18,22 +18,21 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 	): Promise<PublishCompletionArtifactPdfResult> {
 		const artifact = await this.#sql<{ envelope_id: string }[]>`
 			SELECT envelope_id FROM completion_artifact
-			WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}`;
+			WHERE envelope_id = ${command.envelopeId}`;
 		if (artifact.length === 0) return { outcome: 'artifact_not_found' };
 
 		const inserted = await this.#sql<{ envelope_id: string }[]>`
 			INSERT INTO completion_artifact_pdf (
-				organization_id, envelope_id, pdf_object_key, pdf_sha256,
+				envelope_id, pdf_object_key, pdf_sha256,
 				pdf_manifest_object_key, pdf_manifest_sha256, published_at
-			) VALUES (${command.organizationId}, ${command.envelopeId}, ${command.pdfObjectKey},
+			) VALUES (${command.envelopeId}, ${command.pdfObjectKey},
 				${command.pdfSha256}, ${command.pdfManifestObjectKey}, ${command.pdfManifestSha256},
 				${command.publishedAt}::timestamptz)
-			ON CONFLICT (organization_id, envelope_id) DO NOTHING
+			ON CONFLICT (envelope_id) DO NOTHING
 			RETURNING envelope_id`;
 		if (inserted.length === 1) return { outcome: 'published' };
 
 		const existing: CompletionArtifactPdfRecord | null = await this.readCompletionArtifactPdf(
-			command.organizationId,
 			command.envelopeId
 		);
 		if (existing === null) return { outcome: 'artifact_not_found' };
@@ -45,10 +44,7 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 			: { outcome: 'integrity_error' };
 	}
 
-	async readCompletionArtifactPdf(
-		organizationId: string,
-		envelopeId: string
-	): Promise<CompletionArtifactPdfRecord | null> {
+	async readCompletionArtifactPdf(envelopeId: string): Promise<CompletionArtifactPdfRecord | null> {
 		const rows = await this.#sql<
 			{
 				pdfObjectKey: string;
@@ -62,7 +58,7 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 				pdf_manifest_object_key AS "pdfManifestObjectKey",
 				pdf_manifest_sha256 AS "pdfManifestSha256", published_at AS "publishedAt"
 			FROM completion_artifact_pdf
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}`;
+			WHERE envelope_id = ${envelopeId}`;
 		const row = rows[0];
 		if (row === undefined) return null;
 		return {

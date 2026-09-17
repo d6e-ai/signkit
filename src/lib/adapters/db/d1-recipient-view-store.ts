@@ -27,7 +27,6 @@ interface AuditHeadRow {
 }
 
 interface ViewedCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_role: RecipientRole;
@@ -45,7 +44,6 @@ interface ViewedCommandRow {
 	audit_event_hash: string;
 	audit_payload_json: string;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -57,13 +55,12 @@ interface ViewedCommandRow {
 	evidence_occurred_at: string | null;
 }
 
-const VIEWED_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_id, command.recipient_id,
+const VIEWED_COMMAND_COLUMNS: string = `command.envelope_id, command.recipient_id,
 	command.recipient_role, command.routing_order, command.actor_type, command.actor_id,
 	command.idempotency_key, command.request_hash, command.capability_hash, command.sent_commit_sha,
 	command.updated_at, command.audit_event_id, command.audit_sequence, command.previous_audit_hash,
 	command.audit_event_hash, command.audit_payload_json,
-	evidence.id AS evidence_event_id, evidence.organization_id AS evidence_organization_id,
-	evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
+	evidence.id AS evidence_event_id, evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
@@ -78,7 +75,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 
 	async prepareViewed(key: ViewedCommandKey, at: string): Promise<ViewedPreparation> {
 		const row: RecipientEnvelopeRow | null = await this.#readRecipientEnvelope(
-			key.organizationId,
 			key.envelopeId,
 			key.recipientId
 		);
@@ -87,7 +83,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 		if (replay !== null) {
 			if (replay.outcome !== 'replayed') return replay;
 			const current: RecipientEnvelopeRow | null = await this.#readRecipientEnvelope(
-				key.organizationId,
 				key.envelopeId,
 				key.recipientId
 			);
@@ -101,7 +96,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 		}
 		if (row.recipient_status === 'viewed') {
 			const viewedCommand: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
-				key.organizationId,
 				key.recipientId
 			);
 			if (
@@ -115,7 +109,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 				return { outcome: 'integrity_error' };
 			}
 			const lineageProven = await this.#verifyLineage(
-				key.organizationId,
 				key.recipientId,
 				viewedCommand.capability_hash,
 				key.capabilityHash
@@ -126,10 +119,7 @@ export class D1RecipientViewStore implements RecipientViewStore {
 				result: resultFromRow(viewedCommand)
 			};
 		}
-		const auditHead: ViewedAuditHead | null = await this.#readAuditHead(
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: ViewedAuditHead | null = await this.#readAuditHead(key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
@@ -147,14 +137,13 @@ export class D1RecipientViewStore implements RecipientViewStore {
 		const statement: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO recipient_viewed_command (
-					organization_id, envelope_id, recipient_id, recipient_role, routing_order,
+					envelope_id, recipient_id, recipient_role, routing_order,
 					actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 					sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json
 				) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
-				command.organizationId,
 				command.envelopeId,
 				command.recipientId,
 				command.recipientRole,
@@ -183,7 +172,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 	}
 
 	async #readRecipientEnvelope(
-		organizationId: string,
 		envelopeId: string,
 		recipientId: string
 	): Promise<RecipientEnvelopeRow | null> {
@@ -199,25 +187,21 @@ export class D1RecipientViewStore implements RecipientViewStore {
 					envelope.repository_head AS envelope_repository_head
 				 FROM recipient
 				 INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
-				 WHERE recipient.organization_id = ? AND recipient.envelope_id = ? AND recipient.id = ?
+					ON envelope.id = recipient.envelope_id
+				 WHERE recipient.envelope_id = ? AND recipient.id = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, envelopeId, recipientId)
+			.bind(envelopeId, recipientId)
 			.first<RecipientEnvelopeRow>();
 	}
 
-	async #readAuditHead(
-		organizationId: string,
-		envelopeId: string
-	): Promise<ViewedAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<ViewedAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ? ORDER BY sequence DESC LIMIT 1`
+				 WHERE envelope_id = ? ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
@@ -226,7 +210,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 
 	async #resolveCommand(key: ViewedCommandKey): Promise<ViewedPreparation | null> {
 		const exact: ViewedCommandRow | null = await this.#readCommandRow(
-			key.organizationId,
 			key.recipientId,
 			key.idempotencyKey
 		);
@@ -241,7 +224,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 			return await this.#evidenceResult(exact);
 		}
 		const byRecipient: ViewedCommandRow | null = await this.#readCommandRowByRecipient(
-			key.organizationId,
 			key.recipientId
 		);
 		if (byRecipient === null) return null;
@@ -255,7 +237,6 @@ export class D1RecipientViewStore implements RecipientViewStore {
 	}
 
 	async #verifyLineage(
-		organizationId: string,
 		recipientId: string,
 		initialHash: string,
 		currentHash: string
@@ -266,27 +247,24 @@ export class D1RecipientViewStore implements RecipientViewStore {
 				`WITH RECURSIVE lineage AS (
 					SELECT capability_hash, predecessor_capability_hash
 					FROM recipient_capability_issuance
-					WHERE organization_id = ?
-						AND recipient_id = ?
+					WHERE recipient_id = ?
 						AND capability_hash = ?
 					UNION ALL
 					SELECT prev.capability_hash, prev.predecessor_capability_hash
 					FROM recipient_capability_issuance prev
 					INNER JOIN lineage curr ON curr.predecessor_capability_hash = prev.capability_hash
-					WHERE prev.organization_id = ?
-						AND prev.recipient_id = ?
+					WHERE prev.recipient_id = ?
 				)
 				SELECT count(*) AS count
 				FROM lineage
 				WHERE capability_hash = ?`
 			)
-			.bind(organizationId, recipientId, currentHash, organizationId, recipientId, initialHash)
+			.bind(recipientId, currentHash, recipientId, initialHash)
 			.first<{ count: number }>();
 		return Number(row?.count ?? 0) > 0;
 	}
 
 	async #readCommandRow(
-		organizationId: string,
 		recipientId: string,
 		idempotencyKey: string
 	): Promise<ViewedCommandRow | null> {
@@ -295,31 +273,26 @@ export class D1RecipientViewStore implements RecipientViewStore {
 				`SELECT ${VIEWED_COMMAND_COLUMNS}
 				 FROM recipient_viewed_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = 'recipient'
+					ON evidence.id = command.audit_event_id
+				 WHERE command.actor_type = 'recipient'
 					AND command.actor_id = ? AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId, idempotencyKey)
+			.bind(recipientId, idempotencyKey)
 			.first<ViewedCommandRow>();
 	}
 
-	async #readCommandRowByRecipient(
-		organizationId: string,
-		recipientId: string
-	): Promise<ViewedCommandRow | null> {
+	async #readCommandRowByRecipient(recipientId: string): Promise<ViewedCommandRow | null> {
 		return await this.#database
 			.prepare(
 				`SELECT ${VIEWED_COMMAND_COLUMNS}
 				 FROM recipient_viewed_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.recipient_id = ?
+					ON evidence.id = command.audit_event_id
+				 WHERE command.recipient_id = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId)
+			.bind(recipientId)
 			.first<ViewedCommandRow>();
 	}
 
@@ -365,7 +338,6 @@ function authorized(row: RecipientEnvelopeRow, capabilityHash: string, at: strin
 function validAuditEvidence(row: ViewedCommandRow): boolean {
 	return (
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'recipient.viewed' &&

@@ -7,7 +7,7 @@ import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
  * database check constraints on those columns.
  *
  * This is deliberately narrower than a general UUID check. It must never be
- * used for an external d6e-auth organization or user identifier, for a
+ * used for an external d6e-auth user identifier, for a
  * caller-chosen idempotency key, or for opaque capability material.
  */
 export const signkitIdentifierSchema: ZodType<string> = z.string().regex(UUID_V7_PATTERN);

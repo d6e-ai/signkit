@@ -1,7 +1,8 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import type { ApiKeyPrincipal } from '$lib/ports/api-key-authentication-store';
-import type { OrganizationMembership, VerifiedPrincipal } from '$lib/server/d6e-auth';
+import type { VerifiedPrincipal } from '$lib/server/d6e-auth';
+import type { InstanceMemberRole, InstanceMemberStatus } from '$lib/ports/instance-store';
 
 /**
  * Outcome of resolving a `signkit_` bearer token for this request.
@@ -24,10 +25,31 @@ export type ApiKeyAuthenticationState =
 	| { state: 'rejected_surface' }
 	| { state: 'invalid_token' }
 	| { state: 'rate_limited' }
-	| { state: 'organization_selector_invalid' }
-	| { state: 'organization_grant_required' }
 	| { state: 'integrity_error' }
 	| { state: 'unavailable' };
+
+/**
+ * The caller's local instance membership, resolved from the durable instance
+ * store for every verified session. d6e-auth proves identity only
+ * (subject/name/email); this row is the sole operator authority.
+ */
+export interface InstanceMembership {
+	userId: string;
+	role: InstanceMemberRole;
+	status: InstanceMemberStatus;
+}
+
+/**
+ * Verified session identity resolved against local instance membership:
+ *
+ * - `anonymous`: no session cookie.
+ * - `active`: verified identity with an active local instance member row.
+ * - `no_membership`: verified identity with no local member row. Only
+ *   bootstrap and self-profile surfaces authorize this state.
+ * - `suspended`: verified identity whose local member row is suspended.
+ * - `unavailable`: identity or membership could not be verified.
+ */
+export type IdentityState = 'anonymous' | 'active' | 'no_membership' | 'suspended' | 'unavailable';
 
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
@@ -36,9 +58,9 @@ declare global {
 		// interface Error {}
 		interface Locals {
 			principal: VerifiedPrincipal | null;
-			memberships: OrganizationMembership[];
-			organizationId: string | null;
-			identityState: 'anonymous' | 'authorized' | 'no_active_organization' | 'unavailable';
+			instanceMembership: InstanceMembership | null;
+			bootstrapped: boolean;
+			identityState: IdentityState;
 			/**
 			 * Required rather than optional on purpose: every authorization helper
 			 * reads it to decide whether bearer mode is in force, and a field that

@@ -28,8 +28,5 @@ export interface CompletionPdfFieldGeometry {
 }
 
 export interface CompletionPdfEvidenceStore {
-	readFieldGeometry(
-		organizationId: string,
-		envelopeId: string
-	): Promise<readonly CompletionPdfFieldGeometry[]>;
+	readFieldGeometry(envelopeId: string): Promise<readonly CompletionPdfFieldGeometry[]>;
 }

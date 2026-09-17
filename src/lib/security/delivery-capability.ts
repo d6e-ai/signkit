@@ -6,7 +6,6 @@ const IV_BYTES: number = 12;
 const ENV_VAR_NAME: string = 'DELIVERY_ENCRYPTION_KEY';
 
 export interface CapabilitySealContext {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	deliveryId: string;
@@ -118,7 +117,6 @@ function additionalData(context: CapabilitySealContext): Uint8Array<ArrayBuffer>
 	return new TextEncoder().encode(
 		[
 			'signkit-delivery-capability-v1',
-			context.organizationId,
 			context.envelopeId,
 			context.recipientId,
 			context.deliveryId

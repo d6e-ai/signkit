@@ -12,7 +12,6 @@ export type ExpirableEnvelopeStatus = 'sent' | 'in_progress';
  * expiry, is what makes a reserved group resolvable.
  */
 export interface ExpirableEnvelopeId {
-	organizationId: string;
 	envelopeId: string;
 }
 
@@ -29,7 +28,6 @@ export interface EnvelopeExpiryAuditHead {
 export type EnvelopeExpiryPreparation =
 	| {
 			outcome: 'ready';
-			organizationId: string;
 			envelopeId: string;
 			previousStatus: ExpirableEnvelopeStatus;
 			generation: number;
@@ -42,7 +40,6 @@ export type EnvelopeExpiryPreparation =
 	| { outcome: 'integrity_error' };
 
 export interface PublishEnvelopeExpiryCommand {
-	organizationId: string;
 	envelopeId: string;
 	expectedStatus: ExpirableEnvelopeStatus;
 	expectedGeneration: number;
@@ -74,11 +71,7 @@ export interface EnvelopeExpiryStore {
 	discoverExpirableEnvelopes(
 		command: DiscoverExpirableEnvelopesCommand
 	): Promise<readonly ExpirableEnvelopeId[]>;
-	prepareEnvelopeExpiry(
-		organizationId: string,
-		envelopeId: string,
-		now: string
-	): Promise<EnvelopeExpiryPreparation>;
+	prepareEnvelopeExpiry(envelopeId: string, now: string): Promise<EnvelopeExpiryPreparation>;
 	publishEnvelopeExpiry(
 		command: PublishEnvelopeExpiryCommand
 	): Promise<PublishEnvelopeExpiryResult>;

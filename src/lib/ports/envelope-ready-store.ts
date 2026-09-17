@@ -1,7 +1,6 @@
 import type { Envelope, Recipient } from '$lib/domain/envelope';
 
 export interface ReadyCommandKey {
-	organizationId: string;
 	envelopeId: string;
 	actorType: 'user' | 'agent' | 'system';
 	actorId: string;

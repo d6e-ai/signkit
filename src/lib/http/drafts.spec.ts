@@ -12,16 +12,15 @@ import {
 	type DraftWorkspaceSnapshot
 } from '$lib/application/drafts/draft-persistence';
 import { createDraftHttpHandlers, type DraftPersistenceResolver } from './drafts';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const organizationId = '01900000-0000-7000-8000-000000000002';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
 const pathname = `/api/v1/envelopes/${envelopeId}/draft`;
 const commitPathname = `${pathname}/commits`;
 type DraftPersistencePort = Pick<DraftPersistenceService, 'commit' | 'readWorkspace'>;
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function event(
@@ -140,7 +139,7 @@ describe('draft HTTP handlers', () => {
 		expect(resolver).not.toHaveBeenCalled();
 	});
 
-	it('passes platform to the resolver and scopes the read using only authenticated organization', async () => {
+	it('passes platform to the resolver and scopes the read to the envelope', async () => {
 		const readWorkspace = vi.fn(async (): Promise<DraftWorkspaceSnapshot> => workspace());
 		const resolver: DraftPersistenceResolver = vi.fn(() => persistence({ readWorkspace }));
 		const platform: App.Platform = { env: {} } as App.Platform;
@@ -153,7 +152,7 @@ describe('draft HTTP handlers', () => {
 		expect(response.headers.get('cache-control')).toBe('no-store');
 		expect(response.headers.get('content-type')).toBe('application/json');
 		expect(resolver).toHaveBeenCalledWith({ locals: locals(), platform });
-		expect(readWorkspace).toHaveBeenCalledWith({ organizationId, envelopeId });
+		expect(readWorkspace).toHaveBeenCalledWith({ envelopeId });
 	});
 
 	it('returns only the public draft workspace fields', async () => {
@@ -198,7 +197,7 @@ describe('draft HTTP handlers', () => {
 		expect(await response.json()).toMatchObject({ status: 503 });
 	});
 
-	it('maps an organization-scoped missing envelope to a tenant-safe 404', async () => {
+	it('maps a missing envelope to 404', async () => {
 		const response: Response = await invoke(
 			createDraftHttpHandlers(() =>
 				persistence({
@@ -215,7 +214,7 @@ describe('draft HTTP handlers', () => {
 			type: 'urn:signkit:problem:envelope-not-found',
 			title: 'Envelope not found',
 			status: 404,
-			detail: 'No envelope was found in the authorized organization.',
+			detail: 'No envelope was found.',
 			instance: pathname
 		});
 	});
@@ -444,7 +443,6 @@ describe('draft HTTP handlers', () => {
 		expect(response.headers.get('location')).toBe(`${commitPathname}/${'2'.repeat(40)}`);
 		expect(resolver).toHaveBeenCalledWith({ locals: locals(), platform });
 		expect(commit).toHaveBeenCalledWith({
-			organizationId,
 			envelopeId,
 			actor: { id: 'user-1', name: 'User', email: 'user@example.com', type: 'user' },
 			idempotencyKey: 'draft-request-1',
@@ -498,7 +496,7 @@ describe('draft HTTP handlers', () => {
 		expect(await response.json()).toMatchObject({ type, status: 409 });
 	});
 
-	it('maps a missing organization-scoped envelope to the tenant-safe 404', async () => {
+	it('maps a missing envelope to 404', async () => {
 		const response: Response = await invoke(
 			createDraftHttpHandlers(() =>
 				persistence({

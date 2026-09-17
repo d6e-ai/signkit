@@ -7,7 +7,6 @@ const DOMAIN_SEPARATOR: string = 'signkit-completion-delivery-v1';
 const ENV_VAR_NAME: string = 'DELIVERY_ENCRYPTION_KEY';
 
 export interface CompletionTokenSealContext {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	deliveryId: string;
@@ -125,13 +124,7 @@ export class AesGcmCompletionTokenSealer implements CompletionTokenSealer, Compl
 
 function additionalData(context: CompletionTokenSealContext): Uint8Array<ArrayBuffer> {
 	return new TextEncoder().encode(
-		[
-			DOMAIN_SEPARATOR,
-			context.organizationId,
-			context.envelopeId,
-			context.recipientId,
-			context.deliveryId
-		].join('\0')
+		[DOMAIN_SEPARATOR, context.envelopeId, context.recipientId, context.deliveryId].join('\0')
 	);
 }
 

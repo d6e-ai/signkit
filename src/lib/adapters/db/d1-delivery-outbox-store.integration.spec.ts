@@ -25,33 +25,22 @@ function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 	const sqlite: DatabaseSync = new DatabaseSync(':memory:');
 	for (const path of MIGRATIONS) sqlite.exec(readFileSync(path, 'utf8'));
 	sqlite.exec(`
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('org-1','org-1','Workspace','2026-09-11T00:00:00.000Z');
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('user-1', 'owner', 'active', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
 		INSERT INTO envelope (
-			id, organization_id, title, status, repository_generation, repository_head,
-			sent_commit_sha, created_at, updated_at
+			id, created_by_user_id, title, status, repository_generation, repository_head, sent_commit_sha, created_at, updated_at
 		) VALUES (
-			'01920000-0000-7000-8000-000000000001','org-1','Agreement','sent',1,'commit-1','commit-1',
-			'2026-09-11T00:00:00.000Z','2026-09-11T00:01:00.000Z'
+			'01920000-0000-7000-8000-000000000001', 'user-1', 'Agreement', 'sent', 1, 'commit-1', 'commit-1', '2026-09-11T00:00:00.000Z', '2026-09-11T00:01:00.000Z'
 		);
 		INSERT INTO recipient (
-			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
-			capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
+			id, envelope_id, email, name, role, locale, routing_order, status, capability_hash, capability_expires_at, capability_revoked_at, created_at, updated_at
 		) VALUES (
-			'01930000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','recipient@example.com','Recipient','signer','en',1,
-			'pending','capability-hash','2026-09-25T00:00:00.000Z',NULL,
-			'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z'
+			'01930000-0000-7000-8000-000000000001', '01920000-0000-7000-8000-000000000001', 'recipient@example.com', 'Recipient', 'signer', 'en', 1, 'pending', 'capability-hash', '2026-09-25T00:00:00.000Z', NULL, '2026-09-11T00:01:00.000Z', '2026-09-11T00:01:00.000Z'
 		);
 		INSERT INTO delivery_outbox (
-			id, organization_id, envelope_id, recipient_id, kind, status, capability_hash,
-			reserved_capability_expires_at, sealed_capability, sealing_key_id,
-			sealed_capability_sha256, available_at, attempts, locked_at, delivered_at,
-			provider_message_id, last_error, created_at, updated_at, claim_token, retryable
+			id, envelope_id, recipient_id, kind, status, capability_hash, reserved_capability_expires_at, sealed_capability, sealing_key_id, sealed_capability_sha256, available_at, attempts, locked_at, delivered_at, provider_message_id, last_error, created_at, updated_at, claim_token, retryable
 		) VALUES (
-			'01940000-0000-7000-8000-000000000001','org-1','01920000-0000-7000-8000-000000000001','01930000-0000-7000-8000-000000000001','recipient_invitation','pending',
-			'capability-hash','2026-09-25T00:00:00.000Z','skdc1_ciphertext','key-1',
-			'sealed-hash','2026-09-11T00:01:00.000Z',0,NULL,NULL,NULL,NULL,
-			'2026-09-11T00:01:00.000Z','2026-09-11T00:01:00.000Z',NULL,1
+			'01940000-0000-7000-8000-000000000001', '01920000-0000-7000-8000-000000000001', '01930000-0000-7000-8000-000000000001', 'recipient_invitation', 'pending', 'capability-hash', '2026-09-25T00:00:00.000Z', 'skdc1_ciphertext', 'key-1', 'sealed-hash', '2026-09-11T00:01:00.000Z', 0, NULL, NULL, NULL, NULL, '2026-09-11T00:01:00.000Z', '2026-09-11T00:01:00.000Z', NULL, 1
 		);
 	`);
 	return {
@@ -104,14 +93,12 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 			);
 			const reclaimed = await claim(store, 'claim-token-0002');
 			const stale = await store.completeInvitationDelivery({
-				organizationId: 'org-1',
 				deliveryId: '01940000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0001',
 				deliveredAt: CLAIMED_AT,
 				providerMessageId: 'provider-old'
 			});
 			const completed = await store.completeInvitationDelivery({
-				organizationId: 'org-1',
 				deliveryId: '01940000-0000-7000-8000-000000000001',
 				claimToken: 'claim-token-0002',
 				deliveredAt: CLAIMED_AT,
@@ -235,7 +222,6 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 			expect(stale).toEqual([
 				{
 					deliveryId: '01940000-0000-7000-8000-000000000001',
-					organizationId: 'org-1',
 					envelopeId: '01920000-0000-7000-8000-000000000001',
 					recipientId: '01930000-0000-7000-8000-000000000001',
 					sealedCapability: 'skdc1_ciphertext',
@@ -245,7 +231,6 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 
 			await expect(
 				store.resealCapability({
-					organizationId: 'org-1',
 					deliveryId: '01940000-0000-7000-8000-000000000001',
 					previousSealingKeyId: 'key-1',
 					sealedCapability: 'skdc1_resealed',
@@ -283,7 +268,6 @@ describe('D1DeliveryOutboxStore SQLite integration', () => {
 			).resolves.toEqual([]);
 			await expect(
 				store.resealCapability({
-					organizationId: 'org-1',
 					deliveryId: '01940000-0000-7000-8000-000000000001',
 					previousSealingKeyId: 'key-1',
 					sealedCapability: 'skdc1_resealed',

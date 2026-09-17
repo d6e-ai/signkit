@@ -52,7 +52,6 @@ export interface RecipientWorkspaceApplicationPort {
 }
 
 export type RecipientFieldReader = (context: {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 }) => Promise<RecipientOwnFields | null>;
@@ -88,22 +87,16 @@ export class RecipientWorkspaceService implements RecipientWorkspaceApplicationP
 		if (before === null) return null;
 
 		const set: SentDocumentSetPointer | null = await this.sentDocuments.findSet(
-			before.organizationId,
 			before.envelopeId,
 			before.sentRevision.commitSha
 		);
 		const pointer: SentPdfPointer | null =
 			set === null
-				? await this.sentPdf.findSentPdf(
-						before.organizationId,
-						before.envelopeId,
-						before.sentRevision.commitSha
-					)
+				? await this.sentPdf.findSentPdf(before.envelopeId, before.sentRevision.commitSha)
 				: null;
 		if (set === null && pointer === null) throw new RecipientWorkspaceIntegrityError();
 
 		const ownFields: RecipientOwnFields | null = await this.readFields({
-			organizationId: before.organizationId,
 			envelopeId: before.envelopeId,
 			recipientId: before.recipientId
 		});
@@ -243,7 +236,6 @@ function sameAuthorizationBoundary(
 	right: RecipientSigningContext
 ): boolean {
 	return (
-		left.organizationId === right.organizationId &&
 		left.envelopeId === right.envelopeId &&
 		left.recipientId === right.recipientId &&
 		left.sentRevision.commitSha === right.sentRevision.commitSha &&

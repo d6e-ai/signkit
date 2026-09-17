@@ -24,7 +24,7 @@ class ScriptedPostgres {
 }
 
 describe('PostgresDeliveryStatusStore', () => {
-	it('keeps organization scope in SQL and normalizes timestamps', async () => {
+	it('normalizes timestamps and preserves delivery metadata without identity fields', async () => {
 		const database = new ScriptedPostgres([
 			{
 				envelopeId: 'envelope-1',
@@ -43,7 +43,7 @@ describe('PostgresDeliveryStatusStore', () => {
 		]);
 		const result = await new PostgresDeliveryStatusStore(
 			database.client()
-		).findEnvelopeDeliveryStatus('org-1', 'envelope-1');
+		).findEnvelopeDeliveryStatus('envelope-1');
 
 		expect(result).toMatchObject({
 			deliveries: [
@@ -53,18 +53,15 @@ describe('PostgresDeliveryStatusStore', () => {
 				}
 			]
 		});
-		expect(database.queries[0].values).toEqual(['org-1', 'envelope-1']);
-		expect(database.queries[0].text).toContain(
-			'delivery.organization_id = envelope.organization_id'
-		);
-		expect(database.queries[0].text).toContain('WHERE envelope.organization_id = $1');
+		expect(database.queries[0].values).toEqual(['envelope-1']);
+		expect(database.queries[0].text).toContain('delivery.envelope_id = envelope.id');
+		expect(database.queries[0].text).toContain('WHERE envelope.id = $1');
 		expect(database.queries[0].text).not.toMatch(/recipient\.email|recipient\.name/);
 	});
 
-	it('returns null for an envelope outside the organization', async () => {
+	it('returns null for a missing envelope', async () => {
 		await expect(
 			new PostgresDeliveryStatusStore(new ScriptedPostgres([]).client()).findEnvelopeDeliveryStatus(
-				'org-1',
 				'envelope-1'
 			)
 		).resolves.toBeNull();

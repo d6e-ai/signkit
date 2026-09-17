@@ -28,7 +28,7 @@ export const authoringCapabilities = {
 	},
 	voiding: {
 		endpoint: '/api/v1/envelopes/{envelopeId}/void',
-		authentication: 'organization-session-or-api-key',
+		authentication: 'instance-session-or-api-key',
 		concurrency: 'expected-status-and-generation',
 		terminalCleanup: 'atomic',
 		idempotency: 'required'

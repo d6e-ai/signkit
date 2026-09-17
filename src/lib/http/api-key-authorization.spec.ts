@@ -1,12 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiKeyPrincipal } from '$lib/ports/api-key-authentication-store';
 import type { ApiKeyScope } from '$lib/security/api-key';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
-import { authorizeOrganizationRequest } from './organization-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
+import { authorizeInstanceRequest } from './instance-authorization';
 import { authorizeIdentityRequest } from './identity-authorization';
+import { instanceScopedLocals } from './http-handler-test-support';
 
 const INSTANCE: string = '/api/v1/envelopes';
 const KEY_ID: string = '01900000-0000-7000-8000-000000000201';
@@ -16,29 +14,17 @@ function principal(overrides: Partial<ApiKeyPrincipal> = {}): ApiKeyPrincipal {
 		apiKeyId: KEY_ID,
 		keyPrefix: 'signkit_abcdefgh',
 		ownerUserId: 'user-1',
-		organizationId: 'org-alpha',
-		organizationName: 'Alpha',
 		scopes: ['envelopes:read'],
 		expiresAt: '2026-12-11T00:00:00.000Z',
 		...overrides
 	};
 }
 
-function locals(overrides: Partial<App.Locals> = {}): App.Locals {
-	return {
-		apiKeyAuthentication: { state: 'absent' },
-		identityState: 'authorized',
-		memberships: [
-			{
-				role: 'owner',
-				joinedAt: '2026-09-01T00:00:00.000Z',
-				organization: { id: 'org-session', slug: 'session', name: 'Session', status: 'active' }
-			}
-		],
-		organizationId: 'org-session',
-		principal: { subject: 'user-1', email: 'user@example.com', name: 'User' },
-		...overrides
-	};
+function locals(
+	apiKeyAuthentication: App.Locals['apiKeyAuthentication'] = { state: 'absent' },
+	state: App.Locals['identityState'] = 'active'
+): App.Locals {
+	return { ...instanceScopedLocals(state), apiKeyAuthentication };
 }
 
 async function problem(response: Response): Promise<{ type: string; status: number }> {
@@ -46,38 +32,37 @@ async function problem(response: Response): Promise<{ type: string; status: numb
 	return { type: body.type, status: response.status };
 }
 
-describe('authorizeScopedOrganizationRequest', () => {
+describe('authorizeScopedInstanceRequest', () => {
 	describe('session authority', () => {
 		it('authorizes a session actor and reports the session authority', () => {
-			const result = authorizeScopedOrganizationRequest(locals(), INSTANCE, 'envelopes:read');
+			const result = authorizeScopedInstanceRequest(locals(), INSTANCE, 'envelopes:read');
 
 			expect(result).toEqual({
 				authority: 'session',
 				id: 'user-1',
-				organizationId: 'org-session',
-				organizationName: 'Session',
+				createdByUserId: 'user-1',
 				name: 'User',
 				email: 'user@example.com'
 			} satisfies AuthorizedApiActor);
 		});
 
 		/**
-		 * Scopes are a property of issued credentials, not of people. A human with
-		 * live d6e organization authority is not scope-limited, so a scope the key
-		 * vocabulary happens not to contain must not lock a session out.
+		 * Scopes are a property of issued credentials, not of people. An active
+		 * instance member is not scope-limited, so a scope the key vocabulary
+		 * happens not to contain must not lock a session out.
 		 */
 		it.each(['audit:read', 'drafts:write', 'envelopes:read', 'envelopes:send'] as const)(
 			'never scope-limits a session actor for %s',
 			(scope: ApiKeyScope) => {
-				expect(authorizeScopedOrganizationRequest(locals(), INSTANCE, scope)).not.toBeInstanceOf(
+				expect(authorizeScopedInstanceRequest(locals(), INSTANCE, scope)).not.toBeInstanceOf(
 					Response
 				);
 			}
 		);
 
 		it('rejects an anonymous caller', async () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ identityState: 'anonymous', principal: null, organizationId: null }),
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'absent' }, 'anonymous'),
 				INSTANCE,
 				'envelopes:read'
 			);
@@ -88,23 +73,47 @@ describe('authorizeScopedOrganizationRequest', () => {
 			});
 		});
 
-		it('rejects a session with no active organization', async () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ identityState: 'no_active_organization', organizationId: null, memberships: [] }),
+		it('rejects a session with no instance membership', async () => {
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'absent' }, 'no_membership'),
 				INSTANCE,
 				'envelopes:read'
 			);
 			expect(await problem(result as Response)).toEqual({
 				status: 403,
-				type: 'urn:signkit:problem:organization-required'
+				type: 'urn:signkit:problem:instance-membership-required'
+			});
+		});
+
+		it('rejects a suspended instance member', async () => {
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'absent' }, 'suspended'),
+				INSTANCE,
+				'envelopes:read'
+			);
+			expect(await problem(result as Response)).toEqual({
+				status: 403,
+				type: 'urn:signkit:problem:instance-membership-suspended'
+			});
+		});
+
+		it('fails closed when identity is unavailable', async () => {
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'absent' }, 'unavailable'),
+				INSTANCE,
+				'envelopes:read'
+			);
+			expect(await problem(result as Response)).toEqual({
+				status: 503,
+				type: 'urn:signkit:problem:identity-unavailable'
 			});
 		});
 	});
 
 	describe('bearer authority', () => {
-		it('authorizes a key that holds the required scope for the requested organization', () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ apiKeyAuthentication: { state: 'authenticated', principal: principal() } }),
+		it('authorizes a key that holds the required scope as an instance actor', () => {
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'authenticated', principal: principal() }),
 				INSTANCE,
 				'envelopes:read'
 			);
@@ -112,35 +121,33 @@ describe('authorizeScopedOrganizationRequest', () => {
 			expect(result).toEqual({
 				authority: 'api_key',
 				id: KEY_ID,
-				organizationId: 'org-alpha',
-				organizationName: 'Alpha'
+				createdByUserId: 'user-1'
 			} satisfies AuthorizedApiActor);
 		});
 
-		/**
-		 * The organization comes from the grant the key proved, never from the
-		 * session's own selected organization. Otherwise a key could be steered into
-		 * a tenant it was never granted.
-		 */
-		it('uses the granted organization and never the session organization', () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({
-					apiKeyAuthentication: { state: 'authenticated', principal: principal() },
-					organizationId: 'org-session'
-				}),
+		it('attributes key work to the key owner without human identity', () => {
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'authenticated', principal: principal({ ownerUserId: 'user-9' }) }),
 				INSTANCE,
 				'envelopes:read'
 			);
-			expect((result as AuthorizedApiActor).organizationId).toBe('org-alpha');
+
+			// A machine actor has no human identity: no name or email travels with
+			// it, so reaching for one on a key path is a type error upstream.
+			expect(result).toEqual({
+				authority: 'api_key',
+				id: KEY_ID,
+				createdByUserId: 'user-9'
+			} satisfies AuthorizedApiActor);
+			expect(result).not.toHaveProperty('name');
+			expect(result).not.toHaveProperty('email');
 		});
 
 		it('refuses a key missing the required scope', async () => {
-			const result = authorizeScopedOrganizationRequest(
+			const result = authorizeScopedInstanceRequest(
 				locals({
-					apiKeyAuthentication: {
-						state: 'authenticated',
-						principal: principal({ scopes: ['audit:read'] })
-					}
+					state: 'authenticated',
+					principal: principal({ scopes: ['audit:read'] })
 				}),
 				INSTANCE,
 				'envelopes:read'
@@ -157,8 +164,8 @@ describe('authorizeScopedOrganizationRequest', () => {
 		});
 
 		it('answers an unresolvable token with an opaque 401 and a detail-free challenge', async () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ apiKeyAuthentication: { state: 'invalid_token' } }),
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'invalid_token' }),
 				INSTANCE,
 				'envelopes:read'
 			);
@@ -176,32 +183,15 @@ describe('authorizeScopedOrganizationRequest', () => {
 			expect(body).not.toContain('signkit_');
 		});
 
-		it('answers a missing or malformed organization selector with a 400', async () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ apiKeyAuthentication: { state: 'organization_selector_invalid' } }),
-				INSTANCE,
-				'envelopes:read'
-			);
-
-			const response = result as Response;
-			expect(await problem(response)).toEqual({
-				status: 400,
-				type: 'urn:signkit:problem:api-key-organization-selector-required'
-			});
-			// The selector is a request-shape error and carries no bearer challenge,
-			// because it is decided before the credential is ever read.
-			expect(response.headers.get('www-authenticate')).toBeNull();
-		});
-
-		it('answers a live key with no grant for the requested organization with a 403', async () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ apiKeyAuthentication: { state: 'organization_grant_required' } }),
+		it('answers an exhausted key with a 429 backoff signal', async () => {
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'rate_limited' }),
 				INSTANCE,
 				'envelopes:read'
 			);
 			expect(await problem(result as Response)).toEqual({
-				status: 403,
-				type: 'urn:signkit:problem:api-key-organization-grant-required'
+				status: 429,
+				type: 'urn:signkit:problem:api-key-rate-limited'
 			});
 		});
 
@@ -211,8 +201,8 @@ describe('authorizeScopedOrganizationRequest', () => {
 		 * the cookie if they ever overlap.
 		 */
 		it('refuses a key marked as presented on a rejected surface', async () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ apiKeyAuthentication: { state: 'rejected_surface' } }),
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'rejected_surface' }),
 				INSTANCE,
 				'envelopes:read'
 			);
@@ -225,8 +215,8 @@ describe('authorizeScopedOrganizationRequest', () => {
 		it.each(['integrity_error', 'unavailable'] as const)(
 			'answers %s with 503 rather than downgrading to unauthenticated',
 			async (state) => {
-				const result = authorizeScopedOrganizationRequest(
-					locals({ apiKeyAuthentication: { state } }),
+				const result = authorizeScopedInstanceRequest(
+					locals({ state }),
 					INSTANCE,
 					'envelopes:read'
 				);
@@ -247,19 +237,14 @@ describe('authorizeScopedOrganizationRequest', () => {
 		it.each([
 			['invalid_token', 401],
 			['rejected_surface', 403],
-			['organization_grant_required', 403],
-			['organization_selector_invalid', 400],
+			['rate_limited', 429],
 			['unavailable', 503],
 			['integrity_error', 503]
 		] as const)(
 			'refuses %s even alongside a fully authorized session cookie',
 			async (state, status) => {
-				const result = authorizeScopedOrganizationRequest(
-					locals({
-						apiKeyAuthentication: { state },
-						identityState: 'authorized',
-						organizationId: 'org-session'
-					}),
+				const result = authorizeScopedInstanceRequest(
+					locals({ state }),
 					INSTANCE,
 					'envelopes:read'
 				);
@@ -268,9 +253,9 @@ describe('authorizeScopedOrganizationRequest', () => {
 			}
 		);
 
-		it('keeps an authenticated key on its own organization even with a session present', () => {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ apiKeyAuthentication: { state: 'authenticated', principal: principal() } }),
+		it('keeps an authenticated key on its own authority even with a session present', () => {
+			const result = authorizeScopedInstanceRequest(
+				locals({ state: 'authenticated', principal: principal() }),
 				INSTANCE,
 				'envelopes:read'
 			);
@@ -285,15 +270,13 @@ describe('session-only defense in depth', () => {
 		['authenticated', { state: 'authenticated', principal: principal() }],
 		['rejected_surface', { state: 'rejected_surface' }],
 		['invalid_token', { state: 'invalid_token' }],
-		['organization_grant_required', { state: 'organization_grant_required' }],
-		['organization_selector_invalid', { state: 'organization_selector_invalid' }],
+		['rate_limited', { state: 'rate_limited' }],
 		['integrity_error', { state: 'integrity_error' }],
-		['unavailable', { state: 'unavailable' }],
-		['rate_limited', { state: 'rate_limited' }]
+		['unavailable', { state: 'unavailable' }]
 	] as const)(
-		'authorizeOrganizationRequest refuses a presented key in state %s',
+		'authorizeInstanceRequest refuses a presented key in state %s',
 		async (_name, apiKeyAuthentication) => {
-			const result = authorizeOrganizationRequest(locals({ apiKeyAuthentication }), INSTANCE);
+			const result = authorizeInstanceRequest(locals(apiKeyAuthentication), INSTANCE);
 
 			expect(result).toBeInstanceOf(Response);
 			expect(await problem(result as Response)).toEqual({
@@ -304,21 +287,22 @@ describe('session-only defense in depth', () => {
 	);
 
 	/**
-	 * An API key must never be able to mint another key, grant itself an
-	 * organization, or administer instance members. No instance path is on the
-	 * resolution allowlist today, so this branch is unreachable in normal
-	 * operation -- which is exactly why it is asserted.
+	 * An API key must never be able to mint another key or administer instance
+	 * members. No instance path is on the resolution allowlist today, so this
+	 * branch is unreachable in normal operation -- which is exactly why it is
+	 * asserted.
 	 */
 	it.each([
 		['authenticated', { state: 'authenticated', principal: principal() }],
 		['rejected_surface', { state: 'rejected_surface' }],
 		['invalid_token', { state: 'invalid_token' }],
-		['unavailable', { state: 'unavailable' }],
-		['rate_limited', { state: 'rate_limited' }]
+		['rate_limited', { state: 'rate_limited' }],
+		['integrity_error', { state: 'integrity_error' }],
+		['unavailable', { state: 'unavailable' }]
 	] as const)(
 		'authorizeIdentityRequest refuses a presented key in state %s',
 		async (_name, apiKeyAuthentication) => {
-			const result = authorizeIdentityRequest(locals({ apiKeyAuthentication }), '/api/v1/api-keys');
+			const result = authorizeIdentityRequest(locals(apiKeyAuthentication), '/api/v1/api-keys');
 
 			expect(result).toBeInstanceOf(Response);
 			expect(await problem(result as Response)).toEqual({
@@ -329,7 +313,7 @@ describe('session-only defense in depth', () => {
 	);
 
 	it('still authorizes a session when no key was presented', () => {
-		expect(authorizeOrganizationRequest(locals(), INSTANCE)).not.toBeInstanceOf(Response);
+		expect(authorizeInstanceRequest(locals(), INSTANCE)).not.toBeInstanceOf(Response);
 		const identity = authorizeIdentityRequest(locals(), '/api/v1/api-keys');
 		expect(identity).not.toBeInstanceOf(Response);
 		expect(identity).toMatchObject({
@@ -340,10 +324,10 @@ describe('session-only defense in depth', () => {
 		});
 	});
 
-	it('reports the verified d6e organization role on the session actor', () => {
-		const result = authorizeOrganizationRequest(locals(), INSTANCE);
+	it('reports the instance role on the session actor', () => {
+		const result = authorizeInstanceRequest(locals(), INSTANCE);
 		expect(result).not.toBeInstanceOf(Response);
-		expect((result as { organizationRole: string }).organizationRole).toBe('owner');
+		expect((result as { role: string }).role).toBe('owner');
 	});
 });
 
@@ -359,8 +343,7 @@ describe('no credential material escapes', () => {
 
 	it.each([
 		'invalid_token',
-		'organization_selector_invalid',
-		'organization_grant_required',
+		'rate_limited',
 		'integrity_error',
 		'unavailable',
 		'rejected_surface'
@@ -370,11 +353,7 @@ describe('no credential material escapes', () => {
 			logged.push(args.map((arg) => String(arg)).join(' '));
 		});
 		try {
-			const result = authorizeScopedOrganizationRequest(
-				locals({ apiKeyAuthentication: { state } }),
-				INSTANCE,
-				'envelopes:read'
-			);
+			const result = authorizeScopedInstanceRequest(locals({ state }), INSTANCE, 'envelopes:read');
 			const body: string = await (result as Response).text();
 
 			expect(body).not.toContain(TOKEN);
@@ -388,8 +367,8 @@ describe('no credential material escapes', () => {
 	});
 
 	it('emits no key prefix in an authorized actor', () => {
-		const result = authorizeScopedOrganizationRequest(
-			locals({ apiKeyAuthentication: { state: 'authenticated', principal: principal() } }),
+		const result = authorizeScopedInstanceRequest(
+			locals({ state: 'authenticated', principal: principal() }),
 			INSTANCE,
 			'envelopes:read'
 		);

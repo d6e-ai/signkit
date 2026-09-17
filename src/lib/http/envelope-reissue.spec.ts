@@ -9,14 +9,13 @@ import {
 	createEnvelopeReissueHandler,
 	type EnvelopeReissueApplicationResolver
 } from './envelope-reissue';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 const recipientId: string = '01900000-0000-7000-8000-000000000003';
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function event(input: {
@@ -98,8 +97,6 @@ describe('envelope reissue HTTP handler', () => {
 							apiKeyId: recipientId,
 							keyPrefix: 'signkit_abcdefgh',
 							ownerUserId: 'user-1',
-							organizationId,
-							organizationName: 'Workspace',
 							scopes: ['envelopes:send', 'drafts:write', 'envelopes:read'],
 							expiresAt: '2026-12-11T00:00:00.000Z'
 						}

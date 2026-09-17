@@ -19,7 +19,6 @@ import { sealRecipientSession, unsealRecipientSession } from './recipient-sessio
 
 const locator: DeclinedReceiptSessionLocator = {
 	version: 1,
-	organizationId: '01910000-0000-7000-8000-000000000001',
 	envelopeId: '01910000-0000-7000-8000-000000000002',
 	recipientId: '01910000-0000-7000-8000-000000000003',
 	idempotencyKey: 'decline-command-1',
@@ -108,11 +107,6 @@ describe('declined receipt session sealing', () => {
 		['an unknown version', { ...locator, version: 2 }],
 		['an extra key', { ...locator, authority: 'active' }],
 		['a missing key', omit(locator, 'recipientId')],
-		['a malformed organization UUID', { ...locator, organizationId: 'org-1' }],
-		[
-			'a UUIDv4 organization ID',
-			{ ...locator, organizationId: '00000000-0000-4000-8000-000000000001' }
-		],
 		['a malformed envelope UUID', { ...locator, envelopeId: 'env-1' }],
 		['a UUIDv4 envelope ID', { ...locator, envelopeId: '00000000-0000-4000-8000-000000000002' }],
 		['a malformed recipient UUID', { ...locator, recipientId: 'recipient-1' }],

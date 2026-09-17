@@ -1,7 +1,9 @@
 import {
 	chmod as fsChmod,
+	lstat as fsLstat,
 	mkdir,
 	mkdtemp,
+	open,
 	readFile,
 	rm,
 	writeFile,
@@ -15,10 +17,22 @@ export interface MkdirOptions {
 	mode?: number;
 }
 
+export interface FileStat {
+	mode: number;
+	size: number;
+	uid?: number;
+	isFile: boolean;
+	isDirectory: boolean;
+	isSymlink: boolean;
+}
+
 export interface FileSystem {
 	readFile(path: string): Promise<string>;
 	readFileBuffer(path: string): Promise<Uint8Array>;
 	writeFile(path: string, contents: string | Uint8Array): Promise<void>;
+	stat(path: string): Promise<FileStat>;
+	writeFileExclusive(path: string, contents: string | Uint8Array, mode: number): Promise<void>;
+	fsync(path: string): Promise<void>;
 	mkdir(path: string, options?: MkdirOptions): Promise<void>;
 	exists(path: string): Promise<boolean>;
 	mkdtemp(prefix: string): Promise<string>;
@@ -39,6 +53,28 @@ export function createNodeFileSystem(): FileSystem {
 		},
 		writeFile(path, contents) {
 			return writeFile(path, contents);
+		},
+		async stat(path) {
+			const st = await fsLstat(path);
+			return {
+				mode: st.mode & 0o777,
+				size: st.size,
+				uid: st.uid,
+				isFile: st.isFile(),
+				isDirectory: st.isDirectory(),
+				isSymlink: st.isSymbolicLink()
+			};
+		},
+		writeFileExclusive(path, contents, mode) {
+			return writeFile(path, contents, { flag: 'wx', mode });
+		},
+		async fsync(path) {
+			const handle = await open(path, 'r');
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
 		},
 		async mkdir(path, options) {
 			await mkdir(path, {

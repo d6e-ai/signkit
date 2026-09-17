@@ -81,7 +81,6 @@ export interface CompletionManifestV1 {
 }
 
 export interface BuildCompletionManifestInput {
-	organizationId: string;
 	envelopeId: string;
 	title: string;
 	sentCommitSha: string;
@@ -144,7 +143,7 @@ export async function buildCompletionManifest(
 
 	const { proof: auditProof, payloadsByEventId } = await verifyCompletionAuditChain(
 		input.auditEvents,
-		{ organizationId: input.organizationId, envelopeId: input.envelopeId },
+		{ envelopeId: input.envelopeId },
 		MAX_AUDIT_VERIFY_EVENTS
 	);
 	verifyFieldsMatchSignedAuditTrail(input.auditEvents, payloadsByEventId, input.fields);

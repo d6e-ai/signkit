@@ -16,22 +16,40 @@ describe('envelope authoring page contracts', () => {
 	it('wires DOCX import and export without storing DOCX in the draft editor', () => {
 		expect(source).toContain('client.importDocx');
 		expect(source).toContain('client.exportDocx');
-		expect(source).toContain('envelope_import_docx_hint');
+		expect(source).toContain('envelope_upload_docx_action');
 		expect(source).toContain(
 			'accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"'
 		);
 	});
 
-	it('lets senders add, reorder, and remove mixed Markdown and PDF documents', () => {
+	it('lets senders add PDF and Word documents from one dialog, then reorder and remove them', () => {
 		expect(source).toContain('client.uploadPdf');
 		expect(source).toContain('client.orderDocuments');
+		expect(source).toContain('<Dialog.Root bind:open={addDocumentDialogOpen}>');
 		expect(source).toContain('accept="application/pdf,.pdf"');
-		expect(source).toContain('envelope_add_pdf_label');
+		expect(source).toContain('envelope_upload_pdf_action');
+		expect(source).toContain('envelope_upload_docx_action');
+		expect(source).toContain('IconFileTypePdf');
+		expect(source).toContain('IconFileTypeDocx');
+		expect(source).not.toContain('id="new-doc-name"');
 		expect(source).toContain('envelope_document_kind_markdown');
 		expect(source).toContain('envelope_document_kind_pdf');
 		expect(source).toContain('envelope_document_remove_title');
 		expect(source).toContain('moveCommittedDocument');
 		expect(source).toContain('confirmRemoveDocument');
+	});
+
+	it('imports a Word file as a new document instead of overwriting the active document', () => {
+		expect(source).toContain('uniqueImportedDocumentPath');
+		expect(source).not.toContain('const targetPath = (activeDocPath ??');
+		expect(source).toContain('activeDocumentKey = `pending:${targetPath}`');
+		expect(source).toContain("document.kind === 'markdown' && document.path === targetPath");
+		expect(source).toContain('`set:${importedDocument.id}`');
+	});
+
+	it('publishes the loaded title to the persistent envelope breadcrumb', () => {
+		expect(source).toContain('envelopeBreadcrumbTitle.set(envelope?.title.trim() || null)');
+		expect(source).toContain('return () => envelopeBreadcrumbTitle.set(null)');
 	});
 
 	it('places fields on the rendered document PDF, by pointer and by keyboard', () => {
@@ -90,13 +108,43 @@ describe('envelope authoring page contracts', () => {
 
 	it('uses shadcn Select and Field for recipient role and language and shows locale after ready', () => {
 		expect(source).toContain('<Select.Root type="single" bind:value={draftItem.role}>');
-		expect(source).toContain('<Select.Root type="single" bind:value={draftItem.locale}>');
+		expect(source).toContain('bind:value={draftItem.locale}');
 		expect(source).toContain('<Field.Field>');
 		expect(source).toContain('<Field.FieldGroup>');
 		expect(source).toContain('recipientLocaleLabel(recipient.locale)');
 		expect(source).toContain('locale: draftItem.locale');
 		expect(source).toContain("getLocale() === 'ja' ? 'ja' : 'en'");
 		expect(source).not.toMatch(/<select[\s>]/);
+	});
+
+	it('reuses contacts without copying workflow authority and only saves them explicitly', () => {
+		expect(source).toContain('<ContactCombobox');
+		expect(source).toContain('<ContactManagementDialog bind:open={contactManagementOpen} />');
+		expect(source).toContain('draftItem.email = contact.email');
+		expect(source).toContain('draftItem.name = contact.name');
+		expect(source).toContain('draftItem.locale = contact.locale');
+		const applyContact = source.slice(
+			source.indexOf('function applyContactToRecipient'),
+			source.indexOf('async function saveRecipientToContacts')
+		);
+		expect(applyContact).not.toContain('draftItem.role =');
+		expect(applyContact).not.toContain('draftItem.routingOrder =');
+		expect(source).toContain('onclick={() => void saveRecipientToContacts(draftItem)}');
+		expect(source).toContain('draftItem.contactSaveAttempt.failed(cause)');
+		expect(source).toContain('oninput={() => markRecipientContactChanged(draftItem)}');
+		expect(source).toContain('onValueChange={() => markRecipientContactChanged(draftItem)}');
+		const markChanged = source.slice(
+			source.indexOf('function markRecipientContactChanged'),
+			source.indexOf('async function saveRecipientToContacts')
+		);
+		expect(markChanged).toContain('draftItem.savedContact = null');
+		expect(source).toContain('contactSaveSucceeded[draftItem.key] = false');
+		const markReady = source.slice(
+			source.indexOf('async function markReady'),
+			source.indexOf('function signerRecipients')
+		);
+		expect(markReady).not.toContain('contactsClient.');
+		expect(source).not.toMatch(/max-w-(?!none)/);
 	});
 
 	it('renders localized recipient role and workflow status, never raw enums', () => {

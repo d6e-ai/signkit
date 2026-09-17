@@ -9,12 +9,10 @@ import type { RecipientAccessApplicationPort } from './recipient-access';
 import { RecipientSentPdfService } from './recipient-sent-pdf';
 
 const TOKEN: string = `skr1_${'A'.repeat(43)}`;
-const ORGANIZATION_ID = 'org-secret';
 const ENVELOPE_ID = 'env-1';
 const PDF_BYTES: Uint8Array = new TextEncoder().encode('%PDF-1.7\nagreement bytes\n%%EOF\n');
 
 const context: RecipientSigningContext = {
-	organizationId: ORGANIZATION_ID,
 	envelopeId: ENVELOPE_ID,
 	recipientId: 'recipient-1',
 	recipientName: 'Private Recipient',
@@ -41,10 +39,9 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 async function pointerFor(bytes: Uint8Array = PDF_BYTES): Promise<SentPdfPointer> {
 	const sha256: string = await sha256Hex(bytes);
 	return {
-		organizationId: ORGANIZATION_ID,
 		envelopeId: ENVELOPE_ID,
 		commitSha: context.sentRevision.commitSha,
-		objectKey: sentPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, sha256),
+		objectKey: sentPdfObjectKey(ENVELOPE_ID, sha256),
 		sha256,
 		byteSize: bytes.byteLength,
 		pageCount: 1,
@@ -113,11 +110,7 @@ describe('RecipientSentPdfService', () => {
 		// Twice each: a capability can be revoked while object storage is slow.
 		expect(resolve).toHaveBeenCalledTimes(2);
 		expect(pointers.findSentPdf).toHaveBeenCalledTimes(2);
-		expect(pointers.findSentPdf).toHaveBeenCalledWith(
-			ORGANIZATION_ID,
-			ENVELOPE_ID,
-			context.sentRevision.commitSha
-		);
+		expect(pointers.findSentPdf).toHaveBeenCalledWith(ENVELOPE_ID, context.sentRevision.commitSha);
 	});
 
 	it('reports not_found for inactive access without touching object storage', async () => {
@@ -214,7 +207,7 @@ describe('RecipientSentPdfService', () => {
 		const pointer: SentPdfPointer = await pointerFor();
 		const crossTenant: SentPdfPointer = {
 			...pointer,
-			objectKey: sentPdfObjectKey('other-org', ENVELOPE_ID, pointer.sha256)
+			objectKey: sentPdfObjectKey('other-envelope', pointer.sha256)
 		};
 		const objects: ObjectStore = await objectsWith(crossTenant, PDF_BYTES);
 
@@ -232,7 +225,7 @@ describe('RecipientSentPdfService', () => {
 		const replaced: SentPdfPointer = {
 			...pointer,
 			sha256: 'c'.repeat(64),
-			objectKey: sentPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, 'c'.repeat(64))
+			objectKey: sentPdfObjectKey(ENVELOPE_ID, 'c'.repeat(64))
 		};
 
 		await expect(

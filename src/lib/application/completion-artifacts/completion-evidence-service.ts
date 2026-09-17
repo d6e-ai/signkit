@@ -17,12 +17,11 @@ export interface CompletionPdfResult {
 
 export interface CompletionEvidenceApplicationPort {
 	readEvidence(
-		organizationId: string,
 		envelopeId: string,
 		format?: 'json' | 'markdown'
 	): Promise<CompletionEvidenceResult | null>;
-	readPdf(organizationId: string, envelopeId: string): Promise<CompletionPdfResult | null>;
-	envelopeExists(organizationId: string, envelopeId: string): Promise<boolean>;
+	readPdf(envelopeId: string): Promise<CompletionPdfResult | null>;
+	envelopeExists(envelopeId: string): Promise<boolean>;
 }
 
 export class CompletionEvidenceReadError extends Error {
@@ -62,23 +61,17 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 	}
 
 	async readEvidence(
-		organizationId: string,
 		envelopeId: string,
 		format: 'json' | 'markdown' = 'json'
 	): Promise<CompletionEvidenceResult | null> {
-		const status = await this.#store.findCompletionArtifactStatus(organizationId, envelopeId);
+		const status = await this.#store.findCompletionArtifactStatus(envelopeId);
 		if (status === null || status.published === null) {
 			return null;
 		}
 
 		const isMarkdown = format === 'markdown';
 		const digest = isMarkdown ? status.published.markdownSha256 : status.published.jsonSha256;
-		const key = completionArtifactObjectKey(
-			organizationId,
-			envelopeId,
-			isMarkdown ? 'markdown' : 'json',
-			digest
-		);
+		const key = completionArtifactObjectKey(envelopeId, isMarkdown ? 'markdown' : 'json', digest);
 
 		const stream = await this.#objects.get(key);
 		if (stream === null) {
@@ -96,8 +89,8 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 		};
 	}
 
-	async readPdf(organizationId: string, envelopeId: string): Promise<CompletionPdfResult | null> {
-		const pdfRecord = await this.#pdfStore.readCompletionArtifactPdf(organizationId, envelopeId);
+	async readPdf(envelopeId: string): Promise<CompletionPdfResult | null> {
+		const pdfRecord = await this.#pdfStore.readCompletionArtifactPdf(envelopeId);
 		if (pdfRecord === null) {
 			return null;
 		}
@@ -113,8 +106,8 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 		};
 	}
 
-	async envelopeExists(organizationId: string, envelopeId: string): Promise<boolean> {
-		const status = await this.#store.findCompletionArtifactStatus(organizationId, envelopeId);
+	async envelopeExists(envelopeId: string): Promise<boolean> {
+		const status = await this.#store.findCompletionArtifactStatus(envelopeId);
 		return status !== null;
 	}
 }

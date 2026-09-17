@@ -1,4 +1,8 @@
-import { MIGRATION_POLICY_COMPATIBILITY, SIGNKIT_REPOSITORY } from '../constants.js';
+import {
+	D1_SCHEMA_EPOCH,
+	MIGRATION_POLICY_COMPATIBILITY,
+	SIGNKIT_REPOSITORY
+} from '../constants.js';
 import { generic } from '../cli/errors.js';
 import type { ReleaseChannel } from '../cli/parse.js';
 import { assertSafeRelativePosixPath, uniqueEnvIdentifiers } from './paths.js';
@@ -38,6 +42,7 @@ export interface ReleaseManifest {
 	requiredSecrets: string[];
 	requiredVars: string[];
 	migrationPolicy: {
+		schemaEpoch: typeof D1_SCHEMA_EPOCH;
 		compatibility: typeof MIGRATION_POLICY_COMPATIBILITY;
 		notes: string;
 	};
@@ -121,6 +126,9 @@ export function parseReleaseManifest(
 	if (parsed.migrationPolicy.compatibility !== MIGRATION_POLICY_COMPATIBILITY) {
 		throw generic('release manifest migrationPolicy.compatibility is not the supported value');
 	}
+	if (parsed.migrationPolicy.schemaEpoch !== D1_SCHEMA_EPOCH) {
+		throw generic('release manifest migrationPolicy.schemaEpoch is not the supported value');
+	}
 	if (
 		typeof parsed.migrationPolicy.notes !== 'string' ||
 		parsed.migrationPolicy.notes.length === 0
@@ -141,6 +149,7 @@ export function parseReleaseManifest(
 		requiredSecrets,
 		requiredVars,
 		migrationPolicy: {
+			schemaEpoch: D1_SCHEMA_EPOCH,
 			compatibility: MIGRATION_POLICY_COMPATIBILITY,
 			notes: parsed.migrationPolicy.notes
 		}

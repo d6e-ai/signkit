@@ -25,14 +25,9 @@ export interface PublicEnvelopeDeliveryStatus {
 export class DeliveryStatusService {
 	constructor(private readonly store: DeliveryStatusStore) {}
 
-	async find(
-		organizationId: string,
-		envelopeId: string
-	): Promise<PublicEnvelopeDeliveryStatus | null> {
-		const stored: StoredEnvelopeDeliveryStatus | null = await this.store.findEnvelopeDeliveryStatus(
-			organizationId,
-			envelopeId
-		);
+	async find(envelopeId: string): Promise<PublicEnvelopeDeliveryStatus | null> {
+		const stored: StoredEnvelopeDeliveryStatus | null =
+			await this.store.findEnvelopeDeliveryStatus(envelopeId);
 		if (stored === null) return null;
 		return {
 			envelopeId: stored.envelopeId,

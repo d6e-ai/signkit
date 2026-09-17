@@ -9,7 +9,6 @@
  */
 
 export interface SentDocumentPointer {
-	organizationId: string;
 	envelopeId: string;
 	commitSha: string;
 	documentId: string;
@@ -26,7 +25,6 @@ export interface SentDocumentPointer {
 }
 
 export interface SentDocumentSetPointer {
-	organizationId: string;
 	envelopeId: string;
 	commitSha: string;
 	documentSetHash: string;
@@ -36,13 +34,8 @@ export interface SentDocumentSetPointer {
 }
 
 export interface EnvelopeSentDocumentStore {
-	findSet(
-		organizationId: string,
-		envelopeId: string,
-		commitSha: string
-	): Promise<SentDocumentSetPointer | null>;
+	findSet(envelopeId: string, commitSha: string): Promise<SentDocumentSetPointer | null>;
 	findDocument(
-		organizationId: string,
 		envelopeId: string,
 		commitSha: string,
 		documentId: string

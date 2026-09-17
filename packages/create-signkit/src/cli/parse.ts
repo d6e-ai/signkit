@@ -385,6 +385,12 @@ Options:
 Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state before
 any Cloudflare inspection. Identity drift requires --cloudflare adopt.
 SIGNKIT_MAIL_PROVIDER is always cloudflare. Secrets are never accepted on argv.
+A pristine initial deploy (no local state, no remote Worker versions/secrets)
+reads OAuth JSON once from stdin: redirect a secure two-key file with exactly
+D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET
+(create-signkit --cloudflare deploy ... --yes < oauth.json). Back up the recovery
+file and its adjacent target-binding file together. Only the recovery file path
+and SHA-256 fingerprint are reported. See docs/create-signkit.md.
 Worker rollback cannot roll back D1. See docs/create-signkit.md.
 `;
 }

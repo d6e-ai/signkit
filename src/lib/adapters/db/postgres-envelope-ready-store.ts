@@ -12,7 +12,6 @@ import type {
 import { PostgresEnvelopeStore } from './postgres-envelope-store';
 
 interface ReadyCommandRow {
-	organizationId: string;
 	envelopeId: string;
 	actorType: string;
 	actorId: string;
@@ -28,7 +27,6 @@ interface ReadyCommandRow {
 	auditEventHash: string;
 	auditPayloadJson: string;
 	evidenceEventId: string | null;
-	evidenceOrganizationId: string | null;
 	evidenceEnvelopeId: string | null;
 	evidenceSequence: number | string | null;
 	evidenceEventType: string | null;
@@ -57,10 +55,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 	async prepareReady(key: ReadyCommandKey, expectedGeneration: number): Promise<ReadyPreparation> {
 		const replay: ReadyPreparation | null = await this.#resolveCommand(this.#sql, key);
 		if (replay !== null) return replay;
-		const envelope: Envelope | null = await this.#envelopes.findForOrganization(
-			key.organizationId,
-			key.envelopeId
-		);
+		const envelope: Envelope | null = await this.#envelopes.findEnvelope(key.envelopeId);
 		if (envelope === null) return { outcome: 'not_found' };
 		if (envelope.status !== 'draft') return { outcome: 'immutable' };
 		if (envelope.repositoryGeneration !== expectedGeneration) {
@@ -69,11 +64,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 		if (envelope.repositoryHead === null || envelope.repositoryGeneration < 1) {
 			return { outcome: 'empty_draft' };
 		}
-		const auditHead: ReadyAuditHead | null = await this.#readAuditHead(
-			this.#sql,
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: ReadyAuditHead | null = await this.#readAuditHead(this.#sql, key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return { outcome: 'ready', envelope, auditHead };
 	}
@@ -90,7 +81,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 						SELECT status, repository_generation AS "repositoryGeneration",
 							repository_head AS "repositoryHead"
 						FROM envelope
-						WHERE organization_id = ${command.organizationId} AND id = ${command.envelopeId}
+						WHERE id = ${command.envelopeId}
 						FOR UPDATE
 					`;
 				if (lockedRows.length === 0) return { outcome: 'not_found' };
@@ -112,7 +103,6 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 
 				const auditHead: ReadyAuditHead | null = await this.#readAuditHead(
 					transaction,
-					command.organizationId,
 					command.envelopeId
 				);
 				if (auditHead === null) return { outcome: 'integrity_error' };
@@ -126,8 +116,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 				const updatedRows = await transaction<{ id: string }[]>`
 						UPDATE envelope
 						SET status = 'ready', updated_at = ${command.updatedAt}
-						WHERE organization_id = ${command.organizationId}
-							AND id = ${command.envelopeId}
+						WHERE id = ${command.envelopeId}
 							AND status = 'draft'
 							AND repository_generation = ${command.expectedGeneration}
 							AND repository_head = ${command.expectedCommitSha}
@@ -137,12 +126,12 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 
 				await transaction`
 						INSERT INTO envelope_ready_command (
-							organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+							envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 							expected_generation, commit_sha, recipients_json, recipient_count,
 							updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 							audit_event_hash, audit_payload_json
 						) VALUES (
-							${command.organizationId}, ${command.envelopeId}, ${command.actorType}, ${command.actorId},
+							${command.envelopeId}, ${command.actorType}, ${command.actorId},
 							${command.idempotencyKey}, ${command.requestFingerprint},
 							${command.expectedGeneration}, ${command.expectedCommitSha},
 							${JSON.stringify(command.recipients)}, ${command.recipients.length},
@@ -154,16 +143,16 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 
 				await transaction`
 						DELETE FROM recipient
-						WHERE organization_id = ${command.organizationId} AND envelope_id = ${command.envelopeId}
+						WHERE envelope_id = ${command.envelopeId}
 					`;
 				for (const recipient of command.recipients) {
 					await transaction`
 							INSERT INTO recipient (
-								id, organization_id, envelope_id, email, name, role, locale,
+								id, envelope_id, email, name, role, locale,
 								routing_order, status, capability_hash, capability_expires_at,
 								capability_revoked_at, created_at, updated_at
 							) VALUES (
-								${recipient.id}, ${recipient.organizationId}, ${recipient.envelopeId},
+								${recipient.id}, ${recipient.envelopeId},
 								${recipient.email}, ${recipient.name}, ${recipient.role}, ${recipient.locale},
 								${recipient.routingOrder}, ${recipient.status}, NULL, NULL, NULL,
 								${command.updatedAt}, ${command.updatedAt}
@@ -173,10 +162,10 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 
 				await transaction`
 						INSERT INTO audit_event (
-							id, organization_id, envelope_id, sequence, event_type, actor_type,
+							id, envelope_id, sequence, event_type, actor_type,
 							actor_id, payload_json, previous_hash, event_hash, occurred_at
 						) VALUES (
-							${command.auditEventId}, ${command.organizationId}, ${command.envelopeId},
+							${command.auditEventId}, ${command.envelopeId},
 							${command.expectedAuditSequence + 1}, 'envelope.ready', ${command.actorType},
 							${command.actorId}, ${command.auditPayloadJson}, ${command.previousAuditHash},
 							${command.auditEventHash}, ${command.updatedAt}
@@ -200,7 +189,7 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 		key: ReadyCommandKey
 	): Promise<ReadyPreparation | null> {
 		const rows = await sql<ReadyCommandRow[]>`
-			SELECT command.organization_id AS "organizationId",
+			SELECT
 				command.envelope_id AS "envelopeId", command.actor_type AS "actorType",
 				command.actor_id AS "actorId",
 				command.request_hash AS "requestHash",
@@ -212,7 +201,6 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 				command.audit_event_hash AS "auditEventHash",
 				command.audit_payload_json AS "auditPayloadJson",
 				evidence.id AS "evidenceEventId",
-				evidence.organization_id AS "evidenceOrganizationId",
 				evidence.envelope_id AS "evidenceEnvelopeId",
 				evidence.sequence AS "evidenceSequence",
 				evidence.event_type AS "evidenceEventType",
@@ -224,10 +212,8 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 				evidence.occurred_at AS "evidenceOccurredAt"
 			FROM envelope_ready_command command
 			LEFT JOIN audit_event evidence
-				ON evidence.organization_id = command.organization_id
-				AND evidence.id = command.audit_event_id
-			WHERE command.organization_id = ${key.organizationId}
-				AND command.actor_type = ${key.actorType}
+				ON evidence.id = command.audit_event_id
+			WHERE command.actor_type = ${key.actorType}
 				AND command.actor_id = ${key.actorId}
 				AND command.idempotency_key = ${key.idempotencyKey}
 			LIMIT 1
@@ -259,13 +245,12 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 
 	async #readAuditHead(
 		sql: ReturnType<typeof postgres> | postgres.TransactionSql,
-		organizationId: string,
 		envelopeId: string
 	): Promise<ReadyAuditHead | null> {
 		const rows = await sql<AuditHeadRow[]>`
 			SELECT sequence, event_hash AS "eventHash"
 			FROM audit_event
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 			ORDER BY sequence DESC LIMIT 1
 		`;
 		const row: AuditHeadRow | undefined = rows[0];
@@ -279,7 +264,6 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 function validAuditEvidence(row: ReadyCommandRow): boolean {
 	return (
 		row.evidenceEventId === row.auditEventId &&
-		row.evidenceOrganizationId === row.organizationId &&
 		row.evidenceEnvelopeId === row.envelopeId &&
 		Number(row.evidenceSequence) === Number(row.auditSequence) &&
 		row.evidenceEventType === 'envelope.ready' &&
@@ -299,9 +283,7 @@ async function validStoredReceipt(
 	if (
 		recipients.some(
 			(recipient: Recipient): boolean =>
-				recipient.organizationId !== row.organizationId ||
-				recipient.envelopeId !== row.envelopeId ||
-				recipient.status !== 'pending'
+				recipient.envelopeId !== row.envelopeId || recipient.status !== 'pending'
 		)
 	) {
 		return false;
@@ -352,7 +334,6 @@ function isRecipient(value: unknown): value is Recipient {
 	const candidate = value as Record<string, unknown>;
 	return (
 		typeof candidate.id === 'string' &&
-		typeof candidate.organizationId === 'string' &&
 		typeof candidate.envelopeId === 'string' &&
 		typeof candidate.email === 'string' &&
 		typeof candidate.name === 'string' &&

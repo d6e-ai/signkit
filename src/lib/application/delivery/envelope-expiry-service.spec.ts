@@ -48,7 +48,6 @@ function readyPreparation(
 ): Extract<EnvelopeExpiryPreparation, { outcome: 'ready' }> {
 	return {
 		outcome: 'ready',
-		organizationId: 'org-1',
 		envelopeId: 'envelope-1',
 		previousStatus: 'sent',
 		generation: 1,
@@ -63,7 +62,7 @@ function readyPreparation(
 describe('EnvelopeExpiryDrainService', () => {
 	it('discovers, prepares, and publishes an eligible envelope with a chained audit event', async () => {
 		const store = new FakeStore();
-		store.candidates = [{ organizationId: 'org-1', envelopeId: 'envelope-1' }];
+		store.candidates = [{ envelopeId: 'envelope-1' }];
 		store.preparations = [readyPreparation()];
 		store.publishResults = [
 			{
@@ -114,7 +113,7 @@ describe('EnvelopeExpiryDrainService', () => {
 
 	it('skips a candidate no longer eligible when prepared', async () => {
 		const store = new FakeStore();
-		store.candidates = [{ organizationId: 'org-1', envelopeId: 'envelope-1' }];
+		store.candidates = [{ envelopeId: 'envelope-1' }];
 		store.preparations = [{ outcome: 'not_eligible' }];
 
 		const service = new EnvelopeExpiryDrainService(store, (): Date => NOW);
@@ -131,7 +130,7 @@ describe('EnvelopeExpiryDrainService', () => {
 
 	it('retries a bounded number of times on audit_conflict before giving up', async () => {
 		const store = new FakeStore();
-		store.candidates = [{ organizationId: 'org-1', envelopeId: 'envelope-1' }];
+		store.candidates = [{ envelopeId: 'envelope-1' }];
 		store.preparations = [readyPreparation(), readyPreparation(), readyPreparation()];
 		store.publishResults = [
 			{ outcome: 'audit_conflict' },
@@ -148,7 +147,7 @@ describe('EnvelopeExpiryDrainService', () => {
 
 	it('recovers from a single audit_conflict by re-preparing and succeeding', async () => {
 		const store = new FakeStore();
-		store.candidates = [{ organizationId: 'org-1', envelopeId: 'envelope-1' }];
+		store.candidates = [{ envelopeId: 'envelope-1' }];
 		store.preparations = [
 			readyPreparation({ auditHead: { sequence: 3, eventHash: 'hash-3' } }),
 			readyPreparation({ auditHead: { sequence: 4, eventHash: 'hash-4' } })

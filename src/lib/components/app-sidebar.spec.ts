@@ -158,6 +158,11 @@ describe('app sidebar shell', () => {
 		expect(source).toMatch(/m\.settings_tab_api_keys\(\), href: '\/settings\/api-keys'/);
 	});
 
+	it('keeps contacts inside recipient authoring rather than adding a sidebar destination', () => {
+		expect(source).not.toMatch(/href: ['"]\/contacts/);
+		expect(source).not.toMatch(/nav_contacts/);
+	});
+
 	it('filters the settings submenu by instanceMemberRole: owner/admin see all three, a plain member sees only API keys, everyone else sees none', () => {
 		expect(source).toContain('const visibleSettingsItems = $derived.by(() => {');
 		expect(source).toMatch(

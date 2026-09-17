@@ -229,7 +229,6 @@ describe('envelope-scoped signing page load', () => {
 					locale: 'en'
 				},
 				locator: {
-					organizationId: '01910000-0000-7000-8000-000000000003',
 					envelopeId: envelopeA,
 					recipientId: '01910000-0000-7000-8000-000000000002',
 					idempotencyKey: 'decline-1',

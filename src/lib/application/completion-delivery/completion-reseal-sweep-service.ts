@@ -62,7 +62,6 @@ export class CompletionDeliveryResealSweepService {
 		let unrecoverable: number = 0;
 		for (const row of rows) {
 			const context: CompletionTokenSealContext = {
-				organizationId: row.organizationId,
 				envelopeId: row.envelopeId,
 				recipientId: row.recipientId,
 				deliveryId: row.deliveryId
@@ -80,7 +79,6 @@ export class CompletionDeliveryResealSweepService {
 			}
 			const sealed: SealedCompletionToken = await this.#cryptor.reseal(token, context);
 			const result = await this.#store.resealCompletionToken({
-				organizationId: row.organizationId,
 				deliveryId: row.deliveryId,
 				previousSealingKeyId: row.sealingKeyId,
 				sealedToken: sealed.sealedToken,

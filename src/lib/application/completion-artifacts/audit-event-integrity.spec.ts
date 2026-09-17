@@ -10,7 +10,7 @@ import {
 	verifyCompletionAuditChain
 } from './audit-event-integrity';
 
-const CONTEXT = { organizationId: 'org-1', envelopeId: 'envelope-1' };
+const CONTEXT = { envelopeId: 'envelope-1' };
 
 function steps(count: number): AuditChainStep[] {
 	const built: AuditChainStep[] = [];
@@ -121,7 +121,7 @@ describe('verifyCompletionAuditChain', () => {
 
 	it('fails closed when a terminal recipient event does not end the chain with recipient actor type', async () => {
 		const events = await buildVerifiedAuditChain(CONTEXT, steps(2));
-		// v2 hashes include actorType, so this both fails the actor-type check
+		// v3 hashes include actorType, so this both fails the actor-type check
 		// and would fail hash recomputation. The verifier must still refuse.
 		events[1] = { ...events[1], actorType: 'system' };
 		await expect(verifyCompletionAuditChain(events, CONTEXT, 5_000)).rejects.toThrow(
@@ -215,7 +215,7 @@ describe('auditEventHashPreimage', () => {
 	// not catch that regression, so it would be a self-referential test that
 	// could pass even if the preimage no longer matched what the real writers
 	// hash.
-	it('hashes v2 events with hashVersion, actor type, and actor id in exact key order', async () => {
+	it('hashes v3 events with hashVersion, actor type, and actor id in exact key order', async () => {
 		const [event] = await buildVerifiedAuditChain(CONTEXT, [
 			{
 				id: 'audit-event-1',
@@ -228,47 +228,13 @@ describe('auditEventHashPreimage', () => {
 		]);
 		const preimage = auditEventHashPreimage(event, { generation: 1 }, CONTEXT);
 		expect(preimage).toBe(
-			'{"hashVersion":2,"organizationId":"org-1","envelopeId":"envelope-1","sequence":1,' +
+			'{"hashVersion":3,"envelopeId":"envelope-1","sequence":1,' +
 				'"eventType":"draft.revision_created","actorType":"agent","actorId":"agent-1",' +
 				'"occurredAt":"2026-09-11T00:00:00.000Z","payload":{"generation":1},"previousHash":null}'
 		);
 	});
 
-	it('preserves the legacy v1 draft revision shape when hashVersion is 1', async () => {
-		const [event] = await buildVerifiedAuditChain(CONTEXT, [
-			{
-				id: 'audit-event-1',
-				eventType: 'draft.revision_created',
-				actorType: 'agent',
-				actorId: 'agent-1',
-				occurredAt: '2026-09-11T00:00:00.000Z',
-				payload: { generation: 1 },
-				hashVersion: 1
-			}
-		]);
-		const preimage = auditEventHashPreimage(event, { generation: 1 }, CONTEXT);
-		expect(preimage).toBe(
-			'{"organizationId":"org-1","envelopeId":"envelope-1","sequence":1,' +
-				'"eventType":"draft.revision_created","actorType":"agent","actorId":"agent-1",' +
-				'"occurredAt":"2026-09-11T00:00:00.000Z","payload":{"generation":1},"previousHash":null}'
-		);
-	});
-
-	it('preserves the legacy v1 generic shape without actor type when hashVersion is 1', async () => {
-		const events = await buildVerifiedAuditChain(CONTEXT, [
-			{ ...steps(2)[0], hashVersion: 1 },
-			{ ...steps(2)[1], hashVersion: 1 }
-		]);
-		const event = events[0];
-		const preimage = auditEventHashPreimage(event, { title: 'Step 1' }, CONTEXT);
-		expect(preimage).toBe(
-			'{"actorId":"user-1","envelopeId":"envelope-1","eventType":"envelope.created",' +
-				'"occurredAt":"2026-09-12T00:00:00.000Z","organizationId":"org-1",' +
-				'"payload":{"title":"Step 1"},"previousHash":null}'
-		);
-	});
-
-	it('fails closed when a v2 actorType is tampered after hashing', async () => {
+	it('fails closed when a v3 actorType is tampered after hashing', async () => {
 		const events = await buildVerifiedAuditChain(CONTEXT, steps(2));
 		events[0] = { ...events[0], actorType: 'agent' };
 		await expect(verifyAuditEventRecord(events[0], CONTEXT)).rejects.toThrow(
@@ -276,24 +242,10 @@ describe('auditEventHashPreimage', () => {
 		);
 	});
 
-	it('fails closed when a v2 actorId is tampered after hashing', async () => {
+	it('fails closed when a v3 actorId is tampered after hashing', async () => {
 		const events = await buildVerifiedAuditChain(CONTEXT, steps(2));
 		events[0] = { ...events[0], actorId: 'tampered-actor' };
 		await expect(verifyAuditEventRecord(events[0], CONTEXT)).rejects.toThrow(
-			CompletionArtifactIntegrityError
-		);
-	});
-
-	it('still verifies a legacy v1 chain whose actorType is not in the v1 preimage', async () => {
-		const events = await buildVerifiedAuditChain(CONTEXT, [
-			{ ...steps(2)[0], hashVersion: 1 },
-			{ ...steps(2)[1], hashVersion: 1 }
-		]);
-		await expect(verifyCompletionAuditChain(events, CONTEXT, 5_000)).resolves.toMatchObject({
-			proof: { hashChainVerified: true, verifiedEventCount: 2 }
-		});
-		events[0] = { ...events[0], actorType: 'system' };
-		await expect(verifyCompletionAuditChain(events, CONTEXT, 5_000)).rejects.toThrow(
 			CompletionArtifactIntegrityError
 		);
 	});

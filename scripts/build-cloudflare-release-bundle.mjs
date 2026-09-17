@@ -17,9 +17,10 @@ const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const REPOSITORY = 'd6e-ai/signkit';
 const MANIFEST_NAME = 'signkit-cloudflare-manifest.json';
 const MIGRATION_POLICY = {
-	compatibility: 'forward-and-backward-compatible-within-released-versions',
+	schemaEpoch: 'single-instance-v1',
+	compatibility: 'additive-within-schema-epoch',
 	notes:
-		'Released D1 migrations are additive and must remain backward-compatible with the previous released Worker. create-signkit applies pending migrations before uploading a new Worker version so the still-serving previous Worker can run on the new schema. Worker rollback cannot roll back D1. Do not restore SQL by rolling back a Worker.'
+		'D1 migrations are additive within one schema epoch. create-signkit refuses an in-place upgrade across schema epochs unless the selected D1 is fresh. It applies pending migrations before uploading the Worker; Worker rollback cannot roll back D1.'
 };
 
 const { resolveReleaseTag, channelFromReleaseTag } = await import(
@@ -51,8 +52,11 @@ await stat(migrationsDir);
 
 const staging = join(ROOT, '.release/cloudflare-bundle');
 const outDir = join(ROOT, '.release/assets');
+const bundleName = `signkit-cloudflare-${tag}.tar.gz`;
 await rm(staging, { recursive: true, force: true });
-await rm(outDir, { recursive: true, force: true });
+await rm(join(outDir, bundleName), { force: true });
+await rm(join(outDir, MANIFEST_NAME), { force: true });
+await rm(join(outDir, 'SHA256SUMS'), { force: true });
 await mkdir(join(staging, 'worker'), { recursive: true });
 await mkdir(join(staging, 'assets'), { recursive: true });
 await mkdir(join(staging, 'migrations/d1'), { recursive: true });
@@ -96,7 +100,6 @@ const wranglerConfig = {
 };
 await writeFile(join(staging, 'wrangler.jsonc'), `${JSON.stringify(wranglerConfig, null, '\t')}\n`);
 
-const bundleName = `signkit-cloudflare-${tag}.tar.gz`;
 const bundlePath = join(outDir, bundleName);
 await run('tar', [
 	'-czf',

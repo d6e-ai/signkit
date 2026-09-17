@@ -6,9 +6,8 @@ import type { PublishDraftRevisionCommand } from '$lib/ports/draft-mutation-stor
 import { PostgresEnvelopeApplicationStore } from './postgres-envelope-application-store';
 
 describe('PostgresEnvelopeApplicationStore', () => {
-	it('creates the organization projection, envelope, idempotency key, and audit event atomically', async () => {
+	it('creates the envelope, idempotency key, and audit event atomically', async () => {
 		const database = new ScriptedPostgres([
-			[{ id: command.organizationId }],
 			[],
 			[envelopeRow()],
 			[{ requestHash: command.requestFingerprint, envelopeId: command.envelopeId }],
@@ -20,21 +19,19 @@ describe('PostgresEnvelopeApplicationStore', () => {
 
 		expect(result).toEqual({ outcome: 'created', envelope });
 		expect(database.beginCalls).toBe(1);
-		expect(database.transactionQueries).toHaveLength(5);
-		expect(database.transactionQueries[0].text).toContain('INSERT INTO organization');
-		expect(database.transactionQueries[1].text).toContain('FROM idempotency_key');
-		expect(database.transactionQueries[2].text).toContain('INSERT INTO envelope');
-		expect(database.transactionQueries[2].values).toContain(command.envelopeId);
-		expect(database.transactionQueries[3].text).toContain('INSERT INTO idempotency_key');
-		expect(database.transactionQueries[4].text).toContain('INSERT INTO audit_event');
-		expect(database.transactionQueries[4].values).toContain(command.auditEventId);
-		expect(database.transactionQueries[4].values).toContain(command.auditEventHash);
+		expect(database.transactionQueries).toHaveLength(4);
+		expect(database.transactionQueries[0].text).toContain('FROM idempotency_key');
+		expect(database.transactionQueries[1].text).toContain('INSERT INTO envelope');
+		expect(database.transactionQueries[1].values).toContain(command.envelopeId);
+		expect(database.transactionQueries[2].text).toContain('INSERT INTO idempotency_key');
+		expect(database.transactionQueries[3].text).toContain('INSERT INTO audit_event');
+		expect(database.transactionQueries[3].values).toContain(command.auditEventId);
+		expect(database.transactionQueries[3].values).toContain(command.auditEventHash);
 	});
 
 	it('replays the stored envelope, not the freshly minted candidate ID', async () => {
 		const storedEnvelopeId: string = '01910000-0000-7000-8000-0000000000ff';
 		const database = new ScriptedPostgres([
-			[{ id: command.organizationId }],
 			[{ requestHash: command.requestFingerprint, envelopeId: storedEnvelopeId }],
 			[envelopeRow({ id: storedEnvelopeId })]
 		]);
@@ -47,8 +44,8 @@ describe('PostgresEnvelopeApplicationStore', () => {
 			envelope: { ...envelope, id: storedEnvelopeId }
 		});
 		expect(database.beginCalls).toBe(1);
-		expect(database.transactionQueries).toHaveLength(3);
-		expect(database.transactionQueries[2].values).toContain(storedEnvelopeId);
+		expect(database.transactionQueries).toHaveLength(2);
+		expect(database.transactionQueries[1].values).toContain(storedEnvelopeId);
 		expect(database.transactionQueries.some((query) => query.text.includes('audit_event'))).toBe(
 			false
 		);
@@ -59,7 +56,6 @@ describe('PostgresEnvelopeApplicationStore', () => {
 
 	it('distinguishes an idempotency-key conflict from a replay', async () => {
 		const database = new ScriptedPostgres([
-			[{ id: command.organizationId }],
 			[{ requestHash: 'different-request', envelopeId: command.envelopeId }]
 		]);
 		const store = new PostgresEnvelopeApplicationStore(database.client());
@@ -68,13 +64,12 @@ describe('PostgresEnvelopeApplicationStore', () => {
 
 		expect(result).toEqual({ outcome: 'conflict' });
 		expect(database.beginCalls).toBe(1);
-		expect(database.transactionQueries).toHaveLength(2);
+		expect(database.transactionQueries).toHaveLength(1);
 	});
 
 	it('resolves a lost idempotency-key race into a replay after rolling back its candidate envelope', async () => {
 		const winningEnvelopeId: string = '01910000-0000-7000-8000-0000000000fe';
 		const database = new ScriptedPostgres([
-			[{ id: command.organizationId }],
 			[],
 			[envelopeRow()],
 			[],
@@ -90,29 +85,27 @@ describe('PostgresEnvelopeApplicationStore', () => {
 			envelope: { ...envelope, id: winningEnvelopeId }
 		});
 		expect(database.beginCalls).toBe(1);
-		expect(database.transactionQueries).toHaveLength(4);
+		expect(database.transactionQueries).toHaveLength(3);
 		expect(database.directQueries).toHaveLength(2);
 	});
 
-	it('uses an organization-scoped stable cursor and limit-plus-one pagination', async () => {
+	it('uses a stable cursor and limit-plus-one pagination', async () => {
 		const first = envelopeRow({ id: '01910000-0000-7000-8000-000000000003' });
 		const second = envelopeRow({ id: '01910000-0000-7000-8000-000000000002' });
 		const lookahead = envelopeRow({ id: '01910000-0000-7000-8000-000000000001' });
 		const database = new ScriptedPostgres([[first, second, lookahead]]);
 		const store = new PostgresEnvelopeApplicationStore(database.client());
 
-		const page = await store.listForOrganization(command.organizationId, {
+		const page = await store.listEnvelopes({
 			cursor: first.id,
 			limit: 2
 		});
 
-		expect(page.items.map((item) => item.id)).toEqual([first.id, second.id]);
+		expect(page.items.map((item: Envelope): string => item.id)).toEqual([first.id, second.id]);
 		expect(page.nextCursor).toBe(second.id);
 		expect(database.directQueries).toHaveLength(1);
 		const query = database.directQueries[0];
-		expect(query.text).toContain('cursor_envelope.organization_id');
 		expect(query.text).toContain('ORDER BY e.created_at DESC, e.id DESC');
-		expect(query.values.filter((value) => value === command.organizationId)).toHaveLength(2);
 		expect(query.values.at(-1)).toBe(3);
 	});
 
@@ -120,9 +113,9 @@ describe('PostgresEnvelopeApplicationStore', () => {
 		const database = new ScriptedPostgres([]);
 		const store = new PostgresEnvelopeApplicationStore(database.client());
 
-		await expect(
-			store.listForOrganization(command.organizationId, { cursor: null, limit: 101 })
-		).rejects.toThrow(/between 1 and 100/);
+		await expect(store.listEnvelopes({ cursor: null, limit: 101 })).rejects.toThrow(
+			/between 1 and 100/
+		);
 		expect(database.directQueries).toHaveLength(0);
 	});
 
@@ -155,7 +148,7 @@ describe('PostgresEnvelopeApplicationStore', () => {
 
 	it.each([
 		['missing audit event', { evidenceEventId: null }],
-		['wrong scope', { evidenceOrganizationId: 'other-org' }],
+		['wrong envelope', { evidenceEnvelopeId: 'other-envelope' }],
 		['wrong sequence', { evidenceSequence: 99 }],
 		['wrong event type', { evidenceEventType: 'envelope.created' }],
 		['wrong actor', { evidenceActorType: 'agent' }],
@@ -268,7 +261,6 @@ describe('PostgresEnvelopeApplicationStore', () => {
 			[
 				{
 					id: command.envelopeId,
-					organizationId: command.organizationId,
 					title: command.title,
 					status: 'ready',
 					repositoryGeneration: 1,
@@ -312,7 +304,7 @@ describe('PostgresEnvelopeApplicationStore', () => {
 		]);
 		const store = new PostgresEnvelopeApplicationStore(database.client());
 
-		const detail = await store.readDetail(command.organizationId, command.envelopeId);
+		const detail = await store.readDetail(command.envelopeId);
 
 		expect(detail?.readyAuditEventId).toBe('01900000-0000-7000-8000-000000000033');
 		expect(detail?.recipients[0]?.email).toBe('signer@example.com');
@@ -384,17 +376,16 @@ const command: CreateEnvelopeCommand = {
 	auditEventHash: 'b'.repeat(64),
 	auditEventId: '01910000-0000-7000-8000-000000000002',
 	createdAt: '2026-09-11T00:00:00.000Z',
+	createdByUserId: 'user_1',
 	envelopeId: '01910000-0000-7000-8000-000000000001',
 	idempotencyKey: 'request-1',
-	organizationId: 'org_1',
-	organizationName: 'Workspace',
 	requestFingerprint: 'a'.repeat(64),
 	title: 'Agreement'
 };
 
 const envelope: Envelope = {
 	id: command.envelopeId,
-	organizationId: command.organizationId,
+	createdByUserId: command.createdByUserId,
 	title: command.title,
 	status: 'draft',
 	repositoryGeneration: 0,
@@ -416,7 +407,6 @@ function normalizeSql(strings: TemplateStringsArray): string {
 }
 
 const draftCommand: PublishDraftRevisionCommand = {
-	organizationId: command.organizationId,
 	envelopeId: command.envelopeId,
 	actorType: 'user',
 	actorId: command.actor.id,
@@ -446,7 +436,6 @@ const publishedDraftRevision = {
 
 function draftCommandRow(): Record<string, unknown> {
 	return {
-		organizationId: draftCommand.organizationId,
 		envelopeId: draftCommand.envelopeId,
 		actorType: draftCommand.actorType,
 		actorId: draftCommand.actorId,
@@ -462,7 +451,6 @@ function draftCommandRow(): Record<string, unknown> {
 		auditEventHash: draftCommand.auditEventHash,
 		auditPayloadJson: draftCommand.auditPayloadJson,
 		evidenceEventId: draftCommand.auditEventId,
-		evidenceOrganizationId: draftCommand.organizationId,
 		evidenceEnvelopeId: draftCommand.envelopeId,
 		evidenceSequence: draftCommand.expectedAuditSequence + 1,
 		evidenceEventType: 'draft.revision_created',

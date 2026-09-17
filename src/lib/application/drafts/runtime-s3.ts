@@ -80,8 +80,7 @@ export function resolveS3RecipientWorkspaceApplication(
 		resolvePostgresRecipientAccessApplication(validated.databaseUrl),
 		resolvePostgresEnvelopeSentDocumentStore(validated.databaseUrl),
 		resolvePostgresEnvelopeSentPdfStore(validated.databaseUrl),
-		(context) =>
-			fields.listOwnFields(context.organizationId, context.envelopeId, context.recipientId)
+		(context) => fields.listOwnFields(context.envelopeId, context.recipientId)
 	);
 }
 

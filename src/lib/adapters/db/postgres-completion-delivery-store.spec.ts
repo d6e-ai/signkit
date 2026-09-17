@@ -59,7 +59,6 @@ const claimCommand: ClaimCompletionDeliveriesCommand = {
 function candidateRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		deliveryId: 'delivery-1',
-		organizationId: 'org-1',
 		envelopeId: 'env-1',
 		recipientId: 'recipient-1',
 		tokenHash: 'token-hash-1',
@@ -85,7 +84,6 @@ describe('PostgresCompletionDeliveryStore.discoverEligibleRecipients', () => {
 	it('queries completed envelopes with published completion artifacts and bounds by limit', async () => {
 		const discoverRows = [
 			{
-				organizationId: 'org-1',
 				envelopeId: 'env-1',
 				recipientId: 'rec-1',
 				recipientEmail: 'signer@example.com',
@@ -101,7 +99,6 @@ describe('PostgresCompletionDeliveryStore.discoverEligibleRecipients', () => {
 
 		expect(discovered).toEqual([
 			{
-				organizationId: 'org-1',
 				envelopeId: 'env-1',
 				recipientId: 'rec-1',
 				recipientEmail: 'signer@example.com',
@@ -142,7 +139,6 @@ describe('PostgresCompletionDeliveryStore.enrollDeliveries', () => {
 		const items: EnrollCompletionDeliveryItem[] = [
 			{
 				id: 'del-1',
-				organizationId: 'org-1',
 				envelopeId: 'env-1',
 				recipientId: 'rec-1',
 				tokenHash: 'hash-1',
@@ -155,7 +151,6 @@ describe('PostgresCompletionDeliveryStore.enrollDeliveries', () => {
 			},
 			{
 				id: 'del-2',
-				organizationId: 'org-1',
 				envelopeId: 'env-1',
 				recipientId: 'rec-2',
 				tokenHash: 'hash-2',
@@ -172,7 +167,7 @@ describe('PostgresCompletionDeliveryStore.enrollDeliveries', () => {
 		expect(scripted.beginCalls).toBe(1);
 		expect(scripted.transactionQueries).toHaveLength(2);
 		expect(scripted.transactionQueries[0].text).toContain(
-			'ON CONFLICT (organization_id, envelope_id, recipient_id) DO NOTHING'
+			'ON CONFLICT (envelope_id, recipient_id) DO NOTHING'
 		);
 		expect(scripted.transactionQueries[0].text).toContain("'pending'");
 		expect(scripted.transactionQueries[0].text).toContain('true');
@@ -234,7 +229,6 @@ describe('PostgresCompletionDeliveryStore.claimPendingDeliveries', () => {
 			claimCommand.claimToken,
 			claimCommand.claimedAt,
 			claimCommand.claimedAt,
-			'org-1',
 			'delivery-1',
 			claimCommand.claimedAt,
 			claimCommand.staleBefore
@@ -243,7 +237,6 @@ describe('PostgresCompletionDeliveryStore.claimPendingDeliveries', () => {
 		expect(claimed).toEqual([
 			{
 				deliveryId: 'delivery-1',
-				organizationId: 'org-1',
 				envelopeId: 'env-1',
 				recipientId: 'recipient-1',
 				status: 'processing',
@@ -284,13 +277,12 @@ describe('PostgresCompletionDeliveryStore.claimPendingDeliveries', () => {
 });
 
 describe('PostgresCompletionDeliveryStore.readClaimedDelivery', () => {
-	it('reads claimed delivery scoped to organization, id, status, and claimToken', async () => {
+	it('reads claimed delivery scoped to id, status, and claimToken', async () => {
 		const scripted = new ScriptedPostgres([
 			[candidateRow({ attempts: 3, lockedAt: new Date(claimCommand.claimedAt) })]
 		]);
 		const store = new PostgresCompletionDeliveryStore(scripted.client());
 		const delivery = await store.readClaimedDelivery({
-			organizationId: 'org-1',
 			deliveryId: 'delivery-1',
 			claimToken: claimCommand.claimToken
 		});
@@ -304,14 +296,13 @@ describe('PostgresCompletionDeliveryStore.readClaimedDelivery', () => {
 		const query = scripted.directQueries[0];
 		expect(query.text).toContain("delivery.status = 'processing'");
 		expect(query.text).toContain('delivery.claim_token = ?');
-		expect(query.values).toEqual(['org-1', 'delivery-1', claimCommand.claimToken]);
+		expect(query.values).toEqual(['delivery-1', claimCommand.claimToken]);
 	});
 
 	it('returns null when delivery does not exist or claim token is invalid', async () => {
 		const scripted = new ScriptedPostgres([[]]);
 		const store = new PostgresCompletionDeliveryStore(scripted.client());
 		const delivery = await store.readClaimedDelivery({
-			organizationId: 'org-1',
 			deliveryId: 'delivery-1',
 			claimToken: 'stale-token'
 		});
@@ -321,7 +312,6 @@ describe('PostgresCompletionDeliveryStore.readClaimedDelivery', () => {
 
 describe('PostgresCompletionDeliveryStore.completeDelivery', () => {
 	const completeCommand: CompleteCompletionDeliveryCommand = {
-		organizationId: 'org-1',
 		deliveryId: 'delivery-1',
 		claimToken: 'claim-token-0001',
 		deliveredAt: '2026-09-12T00:01:00.000Z',
@@ -345,7 +335,6 @@ describe('PostgresCompletionDeliveryStore.completeDelivery', () => {
 			completeCommand.deliveredAt,
 			completeCommand.providerMessageId,
 			completeCommand.deliveredAt,
-			completeCommand.organizationId,
 			completeCommand.deliveryId,
 			completeCommand.claimToken
 		]);
@@ -361,7 +350,6 @@ describe('PostgresCompletionDeliveryStore.completeDelivery', () => {
 
 describe('PostgresCompletionDeliveryStore.failDelivery', () => {
 	const baseFailCommand: FailCompletionDeliveryCommand = {
-		organizationId: 'org-1',
 		deliveryId: 'delivery-1',
 		claimToken: 'claim-token-0001',
 		errorCode: 'smtp_temporary_failure',
@@ -385,7 +373,6 @@ describe('PostgresCompletionDeliveryStore.failDelivery', () => {
 			baseFailCommand.nextAvailableAt,
 			baseFailCommand.errorCode,
 			baseFailCommand.failedAt,
-			baseFailCommand.organizationId,
 			baseFailCommand.deliveryId,
 			baseFailCommand.claimToken
 		]);
@@ -408,7 +395,6 @@ describe('PostgresCompletionDeliveryStore.failDelivery', () => {
 			baseFailCommand.nextAvailableAt,
 			baseFailCommand.errorCode,
 			baseFailCommand.failedAt,
-			baseFailCommand.organizationId,
 			baseFailCommand.deliveryId,
 			baseFailCommand.claimToken
 		]);
@@ -424,7 +410,6 @@ describe('PostgresCompletionDeliveryStore.failDelivery', () => {
 describe('PostgresCompletionDeliveryStore.resolveArtifactLocatorByTokenHash', () => {
 	it('resolves artifact locator for valid unrevoked and unexpired delivery grant with completed envelope', async () => {
 		const row = {
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			jsonObjectKey: 'completion-artifacts/v1/org-1/env-1/artifact.json.gz',
 			jsonSha256: 'j'.repeat(64),
@@ -439,7 +424,6 @@ describe('PostgresCompletionDeliveryStore.resolveArtifactLocatorByTokenHash', ()
 		);
 
 		expect(locator).toEqual({
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			jsonObjectKey: 'completion-artifacts/v1/org-1/env-1/artifact.json.gz',
 			jsonSha256: 'j'.repeat(64),
@@ -454,7 +438,6 @@ describe('PostgresCompletionDeliveryStore.resolveArtifactLocatorByTokenHash', ()
 		expect(query.text).toContain("envelope.status = 'completed'");
 		expect(query.text).toContain('INNER JOIN envelope');
 		expect(query.text).toContain('INNER JOIN completion_artifact artifact');
-		expect(query.text).toContain('artifact.organization_id = delivery.organization_id');
 		expect(query.text).toContain('artifact.envelope_id = delivery.envelope_id');
 		expect(query.text).toContain('LIMIT 1');
 		expect(query.values).toEqual(['token-hash-1', '2026-09-12T00:00:00.000Z']);

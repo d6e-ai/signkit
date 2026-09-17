@@ -190,27 +190,94 @@ function isBlockedIpv4(address: string): boolean {
 }
 
 function isBlockedIpv6(address: string): boolean {
-	const normalized: string = address.toLowerCase();
-	if (normalized === '::1' || normalized === '::') return true;
-	if (
-		normalized.startsWith('fe80:') ||
-		normalized.startsWith('ff') ||
-		normalized.startsWith('fc') ||
-		normalized.startsWith('fd')
-	) {
-		return true;
+	const words: readonly number[] | null = parseIpv6Words(address);
+	if (words === null) return true;
+
+	const allZero: boolean = words.every((word: number): boolean => word === 0);
+	const loopback: boolean =
+		words.slice(0, 7).every((word: number): boolean => word === 0) && words[7] === 1;
+	if (allZero || loopback) return true;
+
+	if ((words[0] & 0xff00) === 0xff00) return true; // multicast ff00::/8
+	if ((words[0] & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+	if ((words[0] & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
+	if (words[0] === 0x2001 && words[1] === 0x0db8) return true; // documentation
+	if (words[0] === 0x0100 && words.slice(1, 4).every((word: number): boolean => word === 0)) {
+		return true; // discard-only 100::/64
 	}
-	if (
-		normalized.startsWith('2001:db8:') ||
-		normalized === '100::' ||
-		normalized.startsWith('100::')
-	) {
-		return true;
+
+	const embeddedIpv4: string | null = ipv4FromWords(words[6], words[7]);
+	const mappedOrCompatible: boolean =
+		words.slice(0, 5).every((word: number): boolean => word === 0) &&
+		(words[5] === 0 || words[5] === 0xffff);
+	if (mappedOrCompatible && embeddedIpv4 !== null) return isBlockedIpv4(embeddedIpv4);
+	const ipv4Translated: boolean =
+		words.slice(0, 4).every((word: number): boolean => word === 0) &&
+		words[4] === 0xffff &&
+		words[5] === 0;
+	if (ipv4Translated && embeddedIpv4 !== null) return isBlockedIpv4(embeddedIpv4);
+
+	if (words[0] === 0x2002) {
+		const sixToFourIpv4: string | null = ipv4FromWords(words[1], words[2]);
+		return sixToFourIpv4 === null || isBlockedIpv4(sixToFourIpv4);
 	}
-	const mappedIpv4: RegExpMatchArray | null = normalized.match(
-		/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/
-	);
-	if (mappedIpv4 !== null) return isBlockedIpv4(mappedIpv4[1]);
-	if (normalized.startsWith('::ffff:')) return true;
+
+	const wellKnownNat64: boolean =
+		words[0] === 0x0064 &&
+		words[1] === 0xff9b &&
+		words.slice(2, 6).every((word: number): boolean => word === 0);
+	if (wellKnownNat64 && embeddedIpv4 !== null) return isBlockedIpv4(embeddedIpv4);
+
+	// RFC 8215 reserves 64:ff9b:1::/48 for local-use translation. Its
+	// mapping is deployment-defined, so webhook delivery cannot prove the
+	// translated destination is public and must fail closed.
+	if (words[0] === 0x0064 && words[1] === 0xff9b && words[2] === 0x0001) return true;
+
 	return false;
+}
+
+function parseIpv6Words(address: string): readonly number[] | null {
+	const normalized: string = address.toLowerCase();
+	if (normalized.includes('%') || normalized === '' || normalized.split('::').length > 2)
+		return null;
+
+	const [leftRaw, rightRaw]: [string, string?] = normalized.split('::') as [string, string?];
+	const left: number[] | null = parseIpv6Side(leftRaw);
+	const right: number[] | null = rightRaw === undefined ? [] : parseIpv6Side(rightRaw);
+	if (left === null || right === null) return null;
+
+	if (rightRaw === undefined) return left.length === 8 ? left : null;
+	const omittedWordCount: number = 8 - left.length - right.length;
+	if (omittedWordCount < 1) return null;
+	return [...left, ...Array<number>(omittedWordCount).fill(0), ...right];
+}
+
+function parseIpv6Side(side: string): number[] | null {
+	if (side === '') return [];
+	const parts: string[] = side.split(':');
+	const words: number[] = [];
+	for (let index: number = 0; index < parts.length; index += 1) {
+		const part: string = parts[index];
+		if (part.includes('.')) {
+			if (index !== parts.length - 1) return null;
+			const ipv4Parts: number[] = part.split('.').map((value: string): number => Number(value));
+			if (
+				ipv4Parts.length !== 4 ||
+				ipv4Parts.some(
+					(value: number): boolean => !Number.isInteger(value) || value < 0 || value > 255
+				)
+			) {
+				return null;
+			}
+			words.push((ipv4Parts[0] << 8) | ipv4Parts[1], (ipv4Parts[2] << 8) | ipv4Parts[3]);
+			continue;
+		}
+		if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+		words.push(Number.parseInt(part, 16));
+	}
+	return words;
+}
+
+function ipv4FromWords(high: number, low: number): string {
+	return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
 }

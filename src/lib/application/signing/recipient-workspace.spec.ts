@@ -17,7 +17,6 @@ import {
 const TOKEN: string = `skr1_${'A'.repeat(43)}`;
 
 const context: RecipientSigningContext = {
-	organizationId: 'org-secret',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	recipientName: 'Private Recipient',
@@ -35,11 +34,9 @@ const context: RecipientSigningContext = {
 };
 
 const pointer: SentPdfPointer = {
-	organizationId: 'org-secret',
 	envelopeId: 'env-1',
 	commitSha: 'a'.repeat(40),
-	objectKey:
-		'sent-documents/v1/organizations/org-secret/envelopes/env-1/sha256/' + 'e'.repeat(64) + '.pdf',
+	objectKey: 'sent-documents/v1/envelopes/env-1/sha256/' + 'e'.repeat(64) + '.pdf',
 	sha256: 'e'.repeat(64),
 	byteSize: 2048,
 	pageCount: 3,
@@ -104,9 +101,8 @@ describe('RecipientWorkspaceService', () => {
 			() => new Date('2026-09-11T00:00:01.000Z')
 		).resolve(TOKEN, '2026-09-11T00:00:00.000Z');
 
-		expect(store.findSentPdf).toHaveBeenCalledWith('org-secret', 'env-1', 'a'.repeat(40));
+		expect(store.findSentPdf).toHaveBeenCalledWith('env-1', 'a'.repeat(40));
 		expect(readFields).toHaveBeenCalledWith({
-			organizationId: 'org-secret',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1'
 		});
@@ -148,10 +144,10 @@ describe('RecipientWorkspaceService', () => {
 			],
 			fieldGeneration: 1
 		});
-		// No Markdown path, no archive key, no organization identifier, no object
+		// No Markdown path, archive key, or object
 		// key: the page payload describes the rendering, never how it is stored.
 		expect(JSON.stringify(workspace)).not.toMatch(
-			/org-secret|private\/archive|sent-documents|documents\/agreement\.md|[a-f0-9]{64}/
+			/private\/archive|sent-documents|documents\/agreement\.md|[a-f0-9]{64}/
 		);
 	});
 
@@ -248,7 +244,6 @@ describe('RecipientWorkspaceService', () => {
 	});
 
 	it.each([
-		['organization', { ...context, organizationId: 'org-2' }],
 		['envelope', { ...context, envelopeId: 'env-2' }],
 		['recipient', { ...context, recipientId: 'recipient-2' }],
 		[
@@ -279,17 +274,13 @@ describe('RecipientWorkspaceService', () => {
 
 	it('exposes each pinned document separately, never a concatenated page map', async () => {
 		const first: SentDocumentPointer = {
-			organizationId: 'org-secret',
 			envelopeId: 'env-1',
 			commitSha: 'a'.repeat(40),
 			documentId: '01900000-0000-7000-8000-000000000021',
 			position: 0,
 			kind: 'markdown',
 			title: 'NDA',
-			objectKey:
-				'sent-documents/v1/organizations/org-secret/envelopes/env-1/sha256/' +
-				'c'.repeat(64) +
-				'.pdf',
+			objectKey: 'sent-documents/v1/envelopes/env-1/sha256/' + 'c'.repeat(64) + '.pdf',
 			sha256: 'c'.repeat(64),
 			byteSize: 1024,
 			pageCount: 2,
@@ -303,16 +294,12 @@ describe('RecipientWorkspaceService', () => {
 			position: 1,
 			kind: 'pdf',
 			title: 'Schedule A',
-			objectKey:
-				'sent-documents/v1/organizations/org-secret/envelopes/env-1/sha256/' +
-				'd'.repeat(64) +
-				'.pdf',
+			objectKey: 'sent-documents/v1/envelopes/env-1/sha256/' + 'd'.repeat(64) + '.pdf',
 			sha256: 'd'.repeat(64),
 			byteSize: 2048,
 			pageCount: 4
 		};
 		const set: SentDocumentSetPointer = {
-			organizationId: 'org-secret',
 			envelopeId: 'env-1',
 			commitSha: 'a'.repeat(40),
 			documentSetHash: 'e'.repeat(64),
@@ -380,8 +367,6 @@ describe('RecipientWorkspaceService', () => {
 				geometry: { page: 3, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
 			}
 		]);
-		expect(JSON.stringify(workspace)).not.toMatch(
-			/org-secret|private\/archive|sent-documents|[a-f0-9]{64}/
-		);
+		expect(JSON.stringify(workspace)).not.toMatch(/private\/archive|sent-documents|[a-f0-9]{64}/);
 	});
 });

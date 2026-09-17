@@ -183,7 +183,6 @@ describe('recipient signing page resolution', () => {
 
 const declinedLocator: DeclinedReceiptSessionLocator = {
 	version: 1,
-	organizationId: '01910000-0000-7000-8000-000000000001',
 	envelopeId: '01910000-0000-7000-8000-000000000002',
 	recipientId: '01910000-0000-7000-8000-000000000003',
 	idempotencyKey: 'decline-1',
@@ -221,7 +220,6 @@ describe('terminal decline receipt page resolution', () => {
 
 		expect(application.resolveLocator).toHaveBeenCalledWith(
 			{
-				organizationId: declinedLocator.organizationId,
 				envelopeId: declinedLocator.envelopeId,
 				recipientId: declinedLocator.recipientId,
 				idempotencyKey: declinedLocator.idempotencyKey,

@@ -12,8 +12,7 @@ import { EnvelopeVoidApplication, InvalidVoidCommandError, type VoidEnvelopeInpu
 
 const actor = {
 	id: 'user-1',
-	organizationId: '01900000-0000-7000-8000-000000000002',
-	organizationName: 'Workspace'
+	createdByUserId: 'user-1'
 };
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 const input: VoidEnvelopeInput = {
@@ -89,7 +88,6 @@ describe('EnvelopeVoidApplication', () => {
 		});
 		const key = applicationStore.prepareVoid.mock.calls[0][0];
 		expect(key).toEqual({
-			organizationId: actor.organizationId,
 			envelopeId,
 			actorType: 'user',
 			actorId: actor.id,
@@ -117,8 +115,7 @@ describe('EnvelopeVoidApplication', () => {
 		expect(command.auditEventHash).toBe(
 			sha256(
 				JSON.stringify({
-					hashVersion: 2,
-					organizationId: actor.organizationId,
+					hashVersion: 3,
 					envelopeId,
 					sequence: 9,
 					eventType: 'envelope.voided',
@@ -132,7 +129,7 @@ describe('EnvelopeVoidApplication', () => {
 		);
 	});
 
-	it('hashes API-key voids as agent actors under audit hash v2', async () => {
+	it('hashes API-key voids as agent actors under audit hash v3', async () => {
 		const applicationStore = store([ready]);
 		const agent = { ...actor, actorType: 'agent' as const };
 		await new EnvelopeVoidApplication(
@@ -147,8 +144,7 @@ describe('EnvelopeVoidApplication', () => {
 		expect(command.auditEventHash).toBe(
 			sha256(
 				JSON.stringify({
-					hashVersion: 2,
-					organizationId: actor.organizationId,
+					hashVersion: 3,
 					envelopeId,
 					sequence: 9,
 					eventType: 'envelope.voided',

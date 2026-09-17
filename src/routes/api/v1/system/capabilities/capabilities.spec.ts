@@ -14,10 +14,7 @@ interface CapabilitiesResponse {
 	apiKeyAuthentication: {
 		scheme: string;
 		tokenPrefix: string;
-		organizationSelector: string;
-		organizationSelectorRequired: boolean;
-		grantModel: string;
-		multipleOrganizationsPerKey: boolean;
+		authority: string;
 		effectiveAuthority: string;
 		enabledScopes: string[];
 		mintedButUnusableScopes: string[];
@@ -29,9 +26,6 @@ interface CapabilitiesResponse {
 		lastUsedTracking: boolean;
 		rateLimits: boolean | { durable: boolean; windowSeconds: number; maxRequests: number };
 		actor?: { type: string; id: string };
-		grantManagement: { create: string; list: string; revoke: string };
-		grantAuthority: string;
-		grantRevokeAuthority: string[];
 	};
 	name: string;
 	apiVersion: string;
@@ -200,17 +194,14 @@ describe('GET /api/v1/system/capabilities', () => {
 			cookies: false
 		});
 
-		// API key bearer authentication capabilities. The selector requirement and
-		// the enabled/minted scope split are advertised because an agent integrator
+		// API key bearer authentication capabilities. The owner-membership requirement
+		// and enabled/minted scope split are advertised because an agent integrator
 		// cannot otherwise tell which minted scopes actually work yet.
 		expect(data.apiKeyAuthentication).toEqual({
 			scheme: 'bearer',
 			tokenPrefix: 'signkit',
-			organizationSelector: 'SignKit-Organization-Id',
-			organizationSelectorRequired: true,
-			grantModel: 'explicit-per-organization',
-			multipleOrganizationsPerKey: true,
-			effectiveAuthority: 'key-scopes-intersected-with-requested-live-grant',
+			authority: 'active-instance-member-key-owner',
+			effectiveAuthority: 'key-scopes-intersected-with-active-owner-membership',
 			enabledScopes: ['envelopes:read', 'drafts:write', 'envelopes:send'],
 			mintedButUnusableScopes: ['audit:read'],
 			readEndpoints: [
@@ -249,14 +240,7 @@ describe('GET /api/v1/system/capabilities', () => {
 				windowSeconds: 60,
 				maxRequests: 120
 			},
-			actor: { type: 'agent', id: 'api-key-uuidv7' },
-			grantManagement: {
-				create: '/api/v1/api-keys/{apiKeyId}/organization-grants',
-				list: '/api/v1/api-keys/{apiKeyId}/organization-grants',
-				revoke: '/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke'
-			},
-			grantAuthority: 'key-owner-and-d6e-organization-owner-or-admin',
-			grantRevokeAuthority: ['key_owner', 'organization_admin']
+			actor: { type: 'agent', id: 'api-key-uuidv7' }
 		});
 
 		// Webhook destinations are deployer-allowlisted and deny by default; the

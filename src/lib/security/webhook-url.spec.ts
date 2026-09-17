@@ -49,15 +49,31 @@ describe('isBlockedIpAddress', () => {
 		'225.1.2.3',
 		'239.255.255.255',
 		'::1',
+		'0:0:0:0:0:0:0:1',
+		'::ffff:127.0.0.1',
+		'0:0:0:0:0:ffff:7f00:1',
+		'::ffff:7f00:1',
+		'::ffff:0:7f00:1',
+		'2002:7f00:1::',
+		'64:ff9b::7f00:1',
+		'64:ff9b:1::1',
 		'fc00::1',
 		'fe80::1'
 	])('blocks %s', (address) => {
 		expect(isBlockedIpAddress(address)).toBe(true);
 	});
 
-	it('allows a public IPv4 address', () => {
+	it('allows public native and transition-mechanism addresses', () => {
 		expect(isBlockedIpAddress('1.1.1.1')).toBe(false);
 		expect(isBlockedIpAddress('223.255.255.255')).toBe(false);
+		expect(isBlockedIpAddress('2606:4700:4700::1111')).toBe(false);
+		expect(isBlockedIpAddress('::ffff:0:101:101')).toBe(false);
+		expect(isBlockedIpAddress('2002:0101:0101::')).toBe(false);
+		expect(isBlockedIpAddress('64:ff9b::101:101')).toBe(false);
+	});
+
+	it.each(['not:ipv6', '1::2::3', 'fe80::1%eth0'])('fails closed for malformed %s', (address) => {
+		expect(isBlockedIpAddress(address)).toBe(true);
 	});
 });
 

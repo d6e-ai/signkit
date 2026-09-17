@@ -22,7 +22,6 @@ import type {
 const MAX_COMPLETION_DELIVERY_TERMINAL_CLEANUP_BATCH: number = 100;
 
 const CLAIM_CANDIDATE_COLUMNS: string = `delivery.id AS delivery_id,
-	delivery.organization_id AS organization_id,
 	delivery.envelope_id AS envelope_id,
 	delivery.recipient_id AS recipient_id,
 	delivery.token_hash AS token_hash,
@@ -43,15 +42,12 @@ const CLAIM_CANDIDATE_COLUMNS: string = `delivery.id AS delivery_id,
 
 const CLAIM_CANDIDATE_JOIN: string = `FROM completion_delivery_outbox delivery
 	INNER JOIN recipient
-		ON recipient.organization_id = delivery.organization_id
-		AND recipient.id = delivery.recipient_id
+		ON recipient.id = delivery.recipient_id
 		AND recipient.envelope_id = delivery.envelope_id
 	INNER JOIN envelope
-		ON envelope.organization_id = delivery.organization_id
-		AND envelope.id = delivery.envelope_id
+		ON envelope.id = delivery.envelope_id
 	INNER JOIN completion_artifact artifact
-		ON artifact.organization_id = delivery.organization_id
-		AND artifact.envelope_id = delivery.envelope_id
+		ON artifact.envelope_id = delivery.envelope_id
 	WHERE (
 			(delivery.status IN ('pending', 'failed') AND delivery.retryable = 1 AND delivery.available_at <= ?)
 			OR (delivery.status = 'processing' AND delivery.locked_at < ?)
@@ -65,14 +61,11 @@ const CLAIM_CANDIDATE_JOIN: string = `FROM completion_delivery_outbox delivery
 const READ_CLAIMED_DELIVERY_QUERY: string = `SELECT ${CLAIM_CANDIDATE_COLUMNS}
 	FROM completion_delivery_outbox delivery
 	INNER JOIN recipient
-		ON recipient.organization_id = delivery.organization_id
-		AND recipient.id = delivery.recipient_id
+		ON recipient.id = delivery.recipient_id
 		AND recipient.envelope_id = delivery.envelope_id
 	INNER JOIN envelope
-		ON envelope.organization_id = delivery.organization_id
-		AND envelope.id = delivery.envelope_id
-	WHERE delivery.organization_id = ?
-		AND delivery.id = ?
+		ON envelope.id = delivery.envelope_id
+	WHERE delivery.id = ?
 		AND delivery.status = 'processing'
 		AND delivery.claim_token = ?`;
 
@@ -80,12 +73,10 @@ const D1_TERMINAL_CLEANUP_QUERY: string = `WITH terminal_candidates(rowid) AS (
 	SELECT delivery.rowid
 	FROM completion_delivery_outbox delivery
 	INNER JOIN recipient
-		ON recipient.organization_id = delivery.organization_id
-		AND recipient.id = delivery.recipient_id
+		ON recipient.id = delivery.recipient_id
 		AND recipient.envelope_id = delivery.envelope_id
 	INNER JOIN envelope
-		ON envelope.organization_id = delivery.organization_id
-		AND envelope.id = delivery.envelope_id
+		ON envelope.id = delivery.envelope_id
 	WHERE delivery.retryable = 1
 		AND delivery.sealed_token IS NOT NULL
 		AND (
@@ -108,19 +99,16 @@ UPDATE completion_delivery_outbox
 		last_error = 'delivery_not_eligible', updated_at = ?
 	WHERE rowid IN (SELECT rowid FROM terminal_candidates)`;
 
-const RESOLVE_ARTIFACT_LOCATOR_QUERY: string = `SELECT artifact.organization_id AS organization_id,
-	artifact.envelope_id AS envelope_id,
+const RESOLVE_ARTIFACT_LOCATOR_QUERY: string = `SELECT artifact.envelope_id AS envelope_id,
 	artifact.json_object_key AS json_object_key,
 	artifact.json_sha256 AS json_sha256,
 	artifact.markdown_object_key AS markdown_object_key,
 	artifact.markdown_sha256 AS markdown_sha256
 FROM completion_delivery_outbox delivery
 INNER JOIN envelope
-	ON envelope.organization_id = delivery.organization_id
-	AND envelope.id = delivery.envelope_id
+	ON envelope.id = delivery.envelope_id
 INNER JOIN completion_artifact artifact
-	ON artifact.organization_id = delivery.organization_id
-	AND artifact.envelope_id = delivery.envelope_id
+	ON artifact.envelope_id = delivery.envelope_id
 WHERE delivery.token_hash = ?
 	AND delivery.access_revoked_at IS NULL
 	AND julianday(delivery.access_expires_at) > julianday(?)
@@ -128,7 +116,6 @@ WHERE delivery.token_hash = ?
 LIMIT 1`;
 
 interface ArtifactLocatorRow {
-	organization_id: string;
 	envelope_id: string;
 	json_object_key: string;
 	json_sha256: string;
@@ -138,7 +125,6 @@ interface ArtifactLocatorRow {
 
 interface ClaimCandidateRow {
 	delivery_id: string;
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	token_hash: string;
@@ -159,7 +145,6 @@ interface ClaimCandidateRow {
 }
 
 interface DiscoverRecipientRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_email: string;
@@ -181,8 +166,7 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 	): Promise<readonly EligibleCompletionDeliveryRecipient[]> {
 		const result: D1Result<DiscoverRecipientRow> = await this.#database
 			.prepare(
-				`SELECT recipient.organization_id AS organization_id,
-					recipient.envelope_id AS envelope_id,
+				`SELECT recipient.envelope_id AS envelope_id,
 					recipient.id AS recipient_id,
 					recipient.email AS recipient_email,
 					recipient.name AS recipient_name,
@@ -191,17 +175,14 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 					envelope.title AS envelope_title
 				FROM recipient
 				INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
+					ON envelope.id = recipient.envelope_id
 				INNER JOIN completion_artifact artifact
-					ON artifact.organization_id = recipient.organization_id
-					AND artifact.envelope_id = recipient.envelope_id
+					ON artifact.envelope_id = recipient.envelope_id
 				WHERE envelope.status = 'completed'
 					AND recipient.role IN ('signer', 'approver', 'viewer', 'cc')
 					AND NOT EXISTS (
 						SELECT 1 FROM completion_delivery_outbox outbox
-						WHERE outbox.organization_id = recipient.organization_id
-							AND outbox.envelope_id = recipient.envelope_id
+						WHERE outbox.envelope_id = recipient.envelope_id
 							AND outbox.recipient_id = recipient.id
 					)
 				ORDER BY envelope.updated_at ASC, recipient.routing_order ASC, recipient.id ASC
@@ -212,7 +193,6 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 
 		const rows: readonly DiscoverRecipientRow[] = result.results ?? [];
 		return rows.map((row: DiscoverRecipientRow): EligibleCompletionDeliveryRecipient => ({
-			organizationId: row.organization_id,
 			envelopeId: row.envelope_id,
 			recipientId: row.recipient_id,
 			recipientEmail: row.recipient_email,
@@ -229,21 +209,20 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 			this.#database
 				.prepare(
 					`INSERT INTO completion_delivery_outbox (
-						id, organization_id, envelope_id, recipient_id, status, token_hash,
+						id, envelope_id, recipient_id, status, token_hash,
 						access_expires_at, access_revoked_at, sealed_token, sealing_key_id,
 						sealed_token_sha256, available_at, attempts, locked_at, claim_token,
 						delivered_at, provider_message_id, last_error, retryable, created_at, updated_at
 					) VALUES (
-						?, ?, ?, ?, 'pending', ?,
+						?, ?, ?, 'pending', ?,
 						?, NULL, ?, ?,
 						?, ?, 0, NULL, NULL,
 						NULL, NULL, NULL, 1, ?, ?
 					)
-					ON CONFLICT (organization_id, envelope_id, recipient_id) DO NOTHING`
+					ON CONFLICT (envelope_id, recipient_id) DO NOTHING`
 				)
 				.bind(
 					item.id,
-					item.organizationId,
 					item.envelopeId,
 					item.recipientId,
 					item.tokenHash,
@@ -304,12 +283,10 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 				`SELECT ${CLAIM_CANDIDATE_COLUMNS}
 				 FROM completion_delivery_outbox delivery
 				 INNER JOIN recipient
-					ON recipient.organization_id = delivery.organization_id
-					AND recipient.id = delivery.recipient_id
+					ON recipient.id = delivery.recipient_id
 					AND recipient.envelope_id = delivery.envelope_id
 				 INNER JOIN envelope
-					ON envelope.organization_id = delivery.organization_id
-					AND envelope.id = delivery.envelope_id
+					ON envelope.id = delivery.envelope_id
 				 WHERE delivery.status = 'processing' AND delivery.claim_token = ?
 				 ORDER BY delivery.available_at ASC, delivery.created_at ASC, delivery.id ASC`
 			)
@@ -325,7 +302,7 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 	): Promise<ClaimedCompletionDelivery | null> {
 		const row: ClaimCandidateRow | null = await this.#database
 			.prepare(READ_CLAIMED_DELIVERY_QUERY)
-			.bind(command.organizationId, command.deliveryId, command.claimToken)
+			.bind(command.deliveryId, command.claimToken)
 			.first<ClaimCandidateRow>();
 		if (row === null) return null;
 		return toClaimedDelivery(row);
@@ -339,13 +316,12 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 				`UPDATE completion_delivery_outbox
 				 SET status = 'delivered', claim_token = NULL, locked_at = NULL, retryable = 0,
 					sealed_token = NULL, delivered_at = ?, provider_message_id = ?, updated_at = ?
-				 WHERE organization_id = ? AND id = ? AND status = 'processing' AND claim_token = ?`
+				 WHERE id = ? AND status = 'processing' AND claim_token = ?`
 			)
 			.bind(
 				command.deliveredAt,
 				command.providerMessageId,
 				command.deliveredAt,
-				command.organizationId,
 				command.deliveryId,
 				command.claimToken
 			)
@@ -362,13 +338,12 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 						`UPDATE completion_delivery_outbox
 						 SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = 1,
 							available_at = ?, last_error = ?, updated_at = ?
-						 WHERE organization_id = ? AND id = ? AND status = 'processing' AND claim_token = ?`
+						 WHERE id = ? AND status = 'processing' AND claim_token = ?`
 					)
 					.bind(
 						command.nextAvailableAt,
 						command.errorCode,
 						command.failedAt,
-						command.organizationId,
 						command.deliveryId,
 						command.claimToken
 					)
@@ -378,14 +353,13 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 						 SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = 0,
 							sealed_token = NULL, access_revoked_at = COALESCE(access_revoked_at, ?),
 							available_at = ?, last_error = ?, updated_at = ?
-						 WHERE organization_id = ? AND id = ? AND status = 'processing' AND claim_token = ?`
+						 WHERE id = ? AND status = 'processing' AND claim_token = ?`
 					)
 					.bind(
 						command.failedAt,
 						command.nextAvailableAt,
 						command.errorCode,
 						command.failedAt,
-						command.organizationId,
 						command.deliveryId,
 						command.claimToken
 					);
@@ -403,7 +377,6 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 			.first<ArtifactLocatorRow>();
 		if (row === null) return null;
 		return {
-			organizationId: row.organization_id,
 			envelopeId: row.envelope_id,
 			jsonObjectKey: row.json_object_key,
 			jsonSha256: row.json_sha256,
@@ -417,7 +390,6 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 	): Promise<readonly StaleSealedCompletionTokenRow[]> {
 		interface StaleRow {
 			delivery_id: string;
-			organization_id: string;
 			envelope_id: string;
 			recipient_id: string;
 			sealed_token: string;
@@ -425,7 +397,7 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 		}
 		const result: D1Result<StaleRow> = await this.#database
 			.prepare(
-				`SELECT id AS delivery_id, organization_id, envelope_id, recipient_id,
+				`SELECT id AS delivery_id, envelope_id, recipient_id,
 					sealed_token, sealing_key_id
 				 FROM completion_delivery_outbox
 				 WHERE status IN ('pending', 'failed')
@@ -438,7 +410,6 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 			.all<StaleRow>();
 		return result.results.map((row: StaleRow): StaleSealedCompletionTokenRow => ({
 			deliveryId: row.delivery_id,
-			organizationId: row.organization_id,
 			envelopeId: row.envelope_id,
 			recipientId: row.recipient_id,
 			sealedToken: row.sealed_token,
@@ -453,7 +424,7 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 			.prepare(
 				`UPDATE completion_delivery_outbox
 				 SET sealed_token = ?, sealing_key_id = ?, sealed_token_sha256 = ?, updated_at = ?
-				 WHERE organization_id = ? AND id = ? AND status <> 'processing'
+				 WHERE id = ? AND status <> 'processing'
 					AND sealed_token IS NOT NULL AND sealing_key_id = ?`
 			)
 			.bind(
@@ -461,7 +432,6 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 				command.sealingKeyId,
 				command.sealedTokenSha256,
 				command.updatedAt,
-				command.organizationId,
 				command.deliveryId,
 				command.previousSealingKeyId
 			)
@@ -473,7 +443,6 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 function toClaimedDelivery(row: ClaimCandidateRow): ClaimedCompletionDelivery {
 	return {
 		deliveryId: row.delivery_id,
-		organizationId: row.organization_id,
 		envelopeId: row.envelope_id,
 		recipientId: row.recipient_id,
 		status: 'processing',

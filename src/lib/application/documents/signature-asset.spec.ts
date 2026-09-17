@@ -14,7 +14,6 @@ import {
 } from './signature-asset';
 
 const context: RecipientSigningContext = {
-	organizationId: 'org-1',
 	envelopeId: '01900000-0000-7000-8000-000000000001',
 	recipientId: '01900000-0000-7000-8000-000000000002',
 	recipientName: 'Alice',
@@ -62,12 +61,7 @@ describe('SignatureAssetApplication', () => {
 		const [key] = objects.keys();
 		const metadata = await objects.head(key);
 		expect(key).toBe(
-			signatureAssetKey(
-				context.organizationId,
-				context.envelopeId,
-				context.recipientId,
-				metadata?.sha256 ?? ''
-			)
+			signatureAssetKey(context.envelopeId, context.recipientId, metadata?.sha256 ?? '')
 		);
 	});
 
@@ -198,16 +192,10 @@ describe('SignatureAssetApplication', () => {
 
 describe('signature asset object keys', () => {
 	const sha256: string = 'a'.repeat(64);
-	const key: string = signatureAssetKey(
-		context.organizationId,
-		context.envelopeId,
-		context.recipientId,
-		sha256
-	);
+	const key: string = signatureAssetKey(context.envelopeId, context.recipientId, sha256);
 
 	it('round-trips a classified signature-assets/v1 key', () => {
 		expect(parseSignatureAssetKey(key)).toEqual({
-			organizationId: context.organizationId,
 			envelopeId: context.envelopeId,
 			recipientId: context.recipientId,
 			sha256
@@ -219,13 +207,11 @@ describe('signature asset object keys', () => {
 			[key, 'drafts/unrelated.git.gz'],
 			[
 				{
-					organizationId: context.organizationId,
 					envelopeId: context.envelopeId,
 					recipientId: context.recipientId,
 					valueJson: signatureAssetRefValueJson(sha256)
 				},
 				{
-					organizationId: 'org-other',
 					envelopeId: context.envelopeId,
 					recipientId: context.recipientId,
 					valueJson: signatureAssetRefValueJson(sha256)

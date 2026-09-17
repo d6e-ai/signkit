@@ -6,7 +6,6 @@ import type {
 } from '$lib/ports/recipient-access-store';
 
 interface RecipientAccessRow {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	recipientName: string;
@@ -29,8 +28,7 @@ export class PostgresRecipientAccessStore implements RecipientAccessStore {
 		at: string
 	): Promise<RecipientSigningContext | null> {
 		const rows = await this.sql<RecipientAccessRow[]>`
-			SELECT recipient.organization_id AS "organizationId",
-				recipient.envelope_id AS "envelopeId",
+			SELECT recipient.envelope_id AS "envelopeId",
 				recipient.id AS "recipientId",
 				recipient.name AS "recipientName",
 				recipient.locale AS "recipientLocale",
@@ -44,11 +42,9 @@ export class PostgresRecipientAccessStore implements RecipientAccessStore {
 				revision.archive_sha256 AS "archiveSha256"
 			FROM recipient
 			INNER JOIN envelope
-				ON envelope.organization_id = recipient.organization_id
-				AND envelope.id = recipient.envelope_id
+				ON envelope.id = recipient.envelope_id
 			INNER JOIN draft_revision_command revision
-				ON revision.organization_id = envelope.organization_id
-				AND revision.envelope_id = envelope.id
+				ON revision.envelope_id = envelope.id
 				AND revision.commit_sha = envelope.sent_commit_sha
 				AND revision.archive_key = envelope.repository_archive_key
 				AND revision.archive_sha256 = envelope.repository_archive_sha256
@@ -66,7 +62,6 @@ export class PostgresRecipientAccessStore implements RecipientAccessStore {
 		const row: RecipientAccessRow | undefined = rows[0];
 		if (row === undefined) return null;
 		return {
-			organizationId: row.organizationId,
 			envelopeId: row.envelopeId,
 			recipientId: row.recipientId,
 			recipientName: row.recipientName,

@@ -17,7 +17,6 @@ export interface ClaimInvitationDeliveriesCommand {
 
 export interface ClaimedInvitationDelivery {
 	deliveryId: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	kind: DeliveryOutboxKind;
@@ -41,7 +40,6 @@ export interface ClaimedInvitationDelivery {
 }
 
 export interface CompleteInvitationDeliveryCommand {
-	organizationId: string;
 	deliveryId: string;
 	claimToken: string;
 	deliveredAt: string;
@@ -49,13 +47,11 @@ export interface CompleteInvitationDeliveryCommand {
 }
 
 export interface ReadClaimedInvitationCommand {
-	organizationId: string;
 	deliveryId: string;
 	claimToken: string;
 }
 
 export interface FailInvitationDeliveryCommand {
-	organizationId: string;
 	deliveryId: string;
 	claimToken: string;
 	errorCode: string;
@@ -78,7 +74,6 @@ export const MAX_DELIVERY_RESEAL_SWEEP_BATCH: number = 50;
  */
 export interface StaleSealedCapabilityRow {
 	deliveryId: string;
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	sealedCapability: string;
@@ -91,7 +86,6 @@ export interface FindStaleSealedCapabilitiesCommand {
 }
 
 export interface ResealCapabilityCommand {
-	organizationId: string;
 	deliveryId: string;
 	previousSealingKeyId: string;
 	sealedCapability: string;

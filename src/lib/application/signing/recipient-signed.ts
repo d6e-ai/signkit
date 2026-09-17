@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import type { FieldType } from '$lib/domain/envelope';
 import type {
 	SignableFieldDeclaration,
@@ -122,7 +122,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 				})),
 				signedAt
 			});
-			const auditEventHash: string = await hashAuditEventV2(
+			const auditEventHash: string = await hashAuditEventV3(
 				{
 					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'recipient.signed',
@@ -132,7 +132,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
 				},
-				{ organizationId: preparation.organizationId, envelopeId: preparation.envelopeId }
+				{ envelopeId: preparation.envelopeId }
 			);
 
 			const routing: SignRoutingSnapshot = preparation.routing;
@@ -156,7 +156,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 					completedAt: signedAt
 				};
 				completedAuditPayloadJson = JSON.stringify(completedPayloadValue);
-				completedAuditEventHash = await hashAuditEventV2(
+				completedAuditEventHash = await hashAuditEventV3(
 					{
 						sequence: preparation.auditHead.sequence + 2,
 						eventType: 'envelope.completed',
@@ -166,7 +166,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 						payload: completedPayloadValue,
 						previousHash: auditEventHash
 					},
-					{ organizationId: preparation.organizationId, envelopeId: preparation.envelopeId }
+					{ envelopeId: preparation.envelopeId }
 				);
 			} else if (shouldRelease) {
 				nextRoutingOrder = routing.nextRoutingOrder;

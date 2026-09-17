@@ -27,7 +27,7 @@ function problemResponse(status: number, detail: string): Response {
 
 interface EnvelopeFixture {
 	id: string;
-	organizationId: string;
+	createdByUserId: string;
 	title: string;
 	status: 'draft' | 'ready' | 'sent' | 'in_progress' | 'completed';
 	repositoryGeneration: number;
@@ -43,7 +43,7 @@ function envelope(
 	overrides: Partial<EnvelopeFixture> & { id: string; title: string }
 ): EnvelopeFixture {
 	return {
-		organizationId: 'org-1',
+		createdByUserId: '01900000-0000-7000-8000-000000000099',
 		status: 'draft',
 		repositoryGeneration: 0,
 		repositoryHead: null,

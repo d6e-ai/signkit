@@ -10,10 +10,11 @@ asset.
 
 ## 1. Version and changelog
 
-1. Set the same version in all three versioned packages: root `package.json`,
-   `packages/create-signkit/package.json`, and `cli/Cargo.toml` (`[package]
-version`). The tag workflow refuses to release when `v<tag>` differs from
-   any of them, and `publish-npm` re-checks all three before publishing.
+1. Set the same product version in root `package.json` and `cli/Cargo.toml`
+   (`[package] version`). The deployment CLI in
+   `packages/create-signkit/package.json` is versioned independently because
+   npm versions are immutable. The tag workflow validates both semver lines
+   and publishes the npm package only when that exact CLI version is absent.
 2. Move the `CHANGELOG.md` entry out of `[Unreleased]` into `[<version>] -
 YYYY-MM-DD` with the real date. Keep entries in Keep a Changelog style;
    the `Security` section must name the current residual risks, not imply
@@ -90,8 +91,9 @@ no implementation is a release blocker.
    registry integrity), re-checks tag-equals-version across all
    three packages, derives the dist-tag from the same semver channel
    (`beta` for prereleases, `latest` for stable), and publishes with that
-   explicit `--tag`. It never runs `pnpm publish` and never prints
-   `NODE_AUTH_TOKEN`.
+   explicit `--tag` via OIDC Trusted Publishing only, with no token fallback.
+   It never runs `pnpm publish`. The package has completed its one-time
+   manual first publish, so normal releases use OIDC Trusted Publishing only.
 3. The `publish-release` job receives the exact six-name SHA-256 inventory from
    the build job. After npm succeeds and immediately before making the release
    public, it re-reads the draft's asset list, downloads every asset, and refuses
@@ -103,8 +105,9 @@ no implementation is a release blocker.
    new prerelease or patch version instead.
 
 GitHub stores the provenance attestations separately from the release assets.
-They can be verified with a compatible GitHub CLI, but the local release
-checks and `create-signkit` do not currently verify them. A policy that makes
-attestation verification mandatory at deploy time needs a follow-up issue and
-a fail-closed verifier in `create-signkit`; do not describe generation alone as
-end-to-end enforcement.
+`create-signkit plan`, `deploy`, and `upgrade` query them by the downloaded
+Cloudflare bundle digest and require online GitHub/Sigstore verification before
+any local recovery-file or Cloudflare mutation. A release is not deployable if
+its attestation is missing, invalid, ambiguous, unavailable, malformed, or too
+large. Confirm both human and `--json` plan output report verified provenance;
+`adopt` intentionally omits it because it does not select a release.

@@ -5,14 +5,13 @@ import type {
 	SendEnvelopeResult
 } from '$lib/application/envelopes/send';
 import { createEnvelopeSendHandler, type EnvelopeSendApplicationResolver } from './envelope-send';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 const readyAuditEventId: string = '01900000-0000-7000-8000-000000000099';
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 function event(input: { body?: string; headers?: HeadersInit; locals?: App.Locals }): RequestEvent {
 	return createHttpRequestEvent({
@@ -67,7 +66,7 @@ describe('envelope send HTTP handler', () => {
 		);
 		expect(response.status).toBe(202);
 		expect(app.send).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
+			{ id: 'user-1', createdByUserId: 'user-1', actorType: 'user' },
 			envelopeId,
 			{
 				idempotencyKey: 'send-1',
@@ -98,7 +97,7 @@ describe('envelope send HTTP handler', () => {
 	it('marks idempotent replay', async () => {
 		const published = application();
 		const result: SendEnvelopeResult = await published.send(
-			{ id: 'x', organizationId, organizationName: 'x' },
+			{ id: 'x', createdByUserId: 'x' },
 			envelopeId,
 			{ idempotencyKey: 'x', expectedGeneration: 2, expectedReadyAuditEventId: readyAuditEventId }
 		);

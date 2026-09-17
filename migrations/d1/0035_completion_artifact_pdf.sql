@@ -7,14 +7,13 @@
 -- here (unlike completion_artifact_publish_command): the row is
 -- content-addressed and derived, so a plain insert-if-absent is sufficient.
 CREATE TABLE completion_artifact_pdf (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   pdf_object_key TEXT NOT NULL,
   pdf_sha256 TEXT NOT NULL,
   pdf_manifest_object_key TEXT NOT NULL,
   pdf_manifest_sha256 TEXT NOT NULL,
   published_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id),
-  FOREIGN KEY (organization_id, envelope_id)
-    REFERENCES completion_artifact(organization_id, envelope_id)
+  PRIMARY KEY (envelope_id),
+  FOREIGN KEY (envelope_id)
+    REFERENCES completion_artifact(envelope_id)
 );

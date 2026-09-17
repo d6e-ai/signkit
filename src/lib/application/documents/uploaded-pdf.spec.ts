@@ -21,37 +21,30 @@ import {
 import { sha256Hex } from './sent-document-pdf';
 import { UploadedPdfUploadError, UploadedPdfUploadService } from './uploaded-pdf-upload-service';
 
-const ORGANIZATION_ID = '01900000-0000-7000-8000-000000000002';
 const ENVELOPE_ID = '01900000-0000-7000-8000-000000000001';
 
 describe('uploadedPdfObjectKey', () => {
-	it('is content-addressed and tenant-scoped, and round-trips', () => {
+	it('is content-addressed and instance-scoped, and round-trips', () => {
 		const sha256: string = 'a'.repeat(64);
-		const key: string = uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, sha256);
-		expect(key).toBe(
-			`uploaded-documents/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${sha256}.pdf`
-		);
+		const key: string = uploadedPdfObjectKey(ENVELOPE_ID, sha256);
+		expect(key).toBe(`uploaded-documents/v1/envelopes/${ENVELOPE_ID}/sha256/${sha256}.pdf`);
 		expect(parseUploadedPdfObjectKey(key)).toEqual({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			sha256
 		});
 	});
 
 	it('escapes scope segments so no identifier can climb out of its prefix', () => {
-		const key: string = uploadedPdfObjectKey('../escape', 'env/../other', 'b'.repeat(64));
+		const key: string = uploadedPdfObjectKey('env/../other', 'b'.repeat(64));
 		expect(key).not.toContain('..');
 		expect(parseUploadedPdfObjectKey(key)).toEqual({
-			organizationId: '../escape',
 			envelopeId: 'env/../other',
 			sha256: 'b'.repeat(64)
 		});
 	});
 
 	it('rejects a digest that is not a SHA-256 hex string', () => {
-		expect(() => uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, 'nope')).toThrow(
-			UploadedPdfError
-		);
+		expect(() => uploadedPdfObjectKey(ENVELOPE_ID, 'nope')).toThrow(UploadedPdfError);
 		expect(parseUploadedPdfObjectKey('uploaded-documents/v1/anything.pdf')).toBeNull();
 	});
 
@@ -98,11 +91,7 @@ class MemoryUploadedDocuments implements EnvelopeUploadedDocumentStore {
 		return this.nextInsert;
 	}
 
-	async find(
-		_organizationId: string,
-		_envelopeId: string,
-		sha256: string
-	): Promise<EnvelopeUploadedDocumentRecord | null> {
+	async find(__envelopeId: string, sha256: string): Promise<EnvelopeUploadedDocumentRecord | null> {
 		return this.inserts.find((record) => record.sha256 === sha256) ?? null;
 	}
 }
@@ -116,7 +105,6 @@ describe('UploadedPdfUploadService', () => {
 		const digest = await sha256Hex(bytes);
 
 		await new UploadedPdfUploadService({ commit }, objects, uploaded).upload({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			expectedGeneration: 0,
 			actor,
@@ -129,7 +117,7 @@ describe('UploadedPdfUploadService', () => {
 		expect(uploaded.inserts).toHaveLength(1);
 		expect(uploaded.inserts[0]).toMatchObject({
 			sha256: digest,
-			objectKey: uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, digest),
+			objectKey: uploadedPdfObjectKey(ENVELOPE_ID, digest),
 			byteSize: bytes.byteLength
 		});
 		expect(commit).toHaveBeenCalledWith(
@@ -157,7 +145,6 @@ describe('UploadedPdfUploadService', () => {
 		const service = new UploadedPdfUploadService({ commit }, objects, uploaded);
 
 		await service.upload({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			expectedGeneration: 0,
 			actor,
@@ -166,7 +153,6 @@ describe('UploadedPdfUploadService', () => {
 			title: 'Schedule A'
 		});
 		await service.upload({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			expectedGeneration: 0,
 			actor,
@@ -176,7 +162,7 @@ describe('UploadedPdfUploadService', () => {
 		});
 
 		const listed = await objects.list({
-			prefix: `uploaded-documents/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/`
+			prefix: `uploaded-documents/v1/envelopes/${ENVELOPE_ID}/`
 		});
 		expect(listed.objects).toHaveLength(1);
 		expect(commit).toHaveBeenCalledTimes(2);
@@ -192,7 +178,6 @@ describe('UploadedPdfUploadService', () => {
 				new InMemoryObjectStore(),
 				new MemoryUploadedDocuments()
 			).upload({
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				expectedGeneration: 0,
 				actor,
@@ -208,7 +193,6 @@ describe('UploadedPdfUploadService', () => {
 		const commit = vi.fn(async (): Promise<CommitDraftResult> => committed());
 		await expect(
 			new UploadedPdfUploadService({ commit }, new InMemoryObjectStore(), uploaded).upload({
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				expectedGeneration: 0,
 				actor,
@@ -222,7 +206,7 @@ describe('UploadedPdfUploadService', () => {
 	it('recovers a putImmutable failure when the digest already landed', async () => {
 		const bytes = samplePdfBytes();
 		const digest = await sha256Hex(bytes);
-		const key = uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, digest);
+		const key = uploadedPdfObjectKey(ENVELOPE_ID, digest);
 		class RecoveringStore extends InMemoryObjectStore {
 			override async putImmutable(objectKey: string, object: PutObject): Promise<ObjectMetadata> {
 				if (objectKey === key) {
@@ -239,7 +223,6 @@ describe('UploadedPdfUploadService', () => {
 				new RecoveringStore(),
 				new MemoryUploadedDocuments()
 			).upload({
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				expectedGeneration: 0,
 				actor,
@@ -274,7 +257,6 @@ describe('UploadedPdfUploadService', () => {
 				new HostileStore(),
 				new MemoryUploadedDocuments()
 			).upload({
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				expectedGeneration: 0,
 				actor,
@@ -291,7 +273,6 @@ describe('UploadedPdfUploadService', () => {
 		const service = new UploadedPdfUploadService({ commit }, objects, uploaded);
 		await expect(
 			service.upload({
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				expectedGeneration: 0,
 				actor,
@@ -301,7 +282,6 @@ describe('UploadedPdfUploadService', () => {
 		).rejects.toBeInstanceOf(UploadedPdfUploadError);
 		await expect(
 			service.upload({
-				organizationId: ORGANIZATION_ID,
 				envelopeId: ENVELOPE_ID,
 				expectedGeneration: 0,
 				actor,

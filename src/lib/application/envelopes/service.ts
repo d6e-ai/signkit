@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { Envelope } from '$lib/domain/envelope';
 import type {
@@ -43,7 +43,7 @@ export class EnvelopeApplication implements EnvelopeApplicationPort {
 		const auditEventId: string = this.#newId();
 		const createdAt: string = new Date().toISOString();
 		const actorType: 'user' | 'agent' = envelopeActorType(actor);
-		const auditEventHash: string = await hashAuditEventV2(
+		const auditEventHash: string = await hashAuditEventV3(
 			{
 				sequence: 1,
 				eventType: 'envelope.created',
@@ -53,31 +53,30 @@ export class EnvelopeApplication implements EnvelopeApplicationPort {
 				payload: { title: input.title },
 				previousHash: null
 			},
-			{ organizationId: actor.organizationId, envelopeId }
+			{ envelopeId }
 		);
 		return this.#store.createIdempotently({
 			actor: { id: actor.id, type: actorType },
 			auditEventHash,
 			auditEventId,
 			createdAt,
+			createdByUserId: actor.createdByUserId,
 			envelopeId,
 			idempotencyKey: input.idempotencyKey,
-			organizationId: actor.organizationId,
-			organizationName: actor.organizationName,
 			requestFingerprint,
 			title: input.title
 		});
 	}
 
 	async get(actor: EnvelopeRequestActor, envelopeId: string): Promise<Envelope | null> {
-		return this.#store.findForOrganization(actor.organizationId, envelopeId);
+		return this.#store.findEnvelope(envelopeId);
 	}
 
 	async getDetail(actor: EnvelopeRequestActor, envelopeId: string): Promise<EnvelopeDetail | null> {
-		return this.#store.readDetail(actor.organizationId, envelopeId);
+		return this.#store.readDetail(envelopeId);
 	}
 
 	async list(actor: EnvelopeRequestActor, query: EnvelopeListQuery): Promise<EnvelopeListPage> {
-		return this.#store.listForOrganization(actor.organizationId, query);
+		return this.#store.listEnvelopes(query);
 	}
 }

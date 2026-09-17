@@ -14,55 +14,53 @@ const MIGRATION_PATHS: readonly string[] = readdirSync('migrations/d1')
 	.filter((name: string): boolean => /^\d{4}_.+\.sql$/.test(name))
 	.sort()
 	.map((name: string): string => `migrations/d1/${name}`);
-const ORGANIZATION_ID: string = 'org-send-integration';
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000021';
 const READY_AUDIT_ID: string = '01960000-0000-7000-8000-0000000000a0';
 const COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
 const ACTOR: EnvelopeRequestActor = {
 	id: 'user-send-integration',
-	organizationId: ORGANIZATION_ID,
-	organizationName: 'Integration Workspace'
+	createdByUserId: 'user-send-integration'
 };
 
 function fixture(): { database: D1Database; sqlite: DatabaseSync } {
 	const sqlite: DatabaseSync = new DatabaseSync(':memory:');
 	for (const path of MIGRATION_PATHS) sqlite.exec(readFileSync(path, 'utf8'));
 	sqlite.exec(`
-		INSERT INTO organization (id, d6e_organization_id, name, created_at)
-		VALUES ('${ORGANIZATION_ID}','${ORGANIZATION_ID}','Workspace','2026-09-11T00:00:00.000Z');
+		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+		VALUES ('${ACTOR.createdByUserId}','owner','active','2026-09-11T00:00:00.000Z','2026-09-11T00:00:00.000Z');
 		INSERT INTO envelope (
-			id, organization_id, title, status, repository_generation, repository_head,
+			id, created_by_user_id, title, status, repository_generation, repository_head,
 			repository_archive_key, repository_archive_sha256, created_at, updated_at
 		) VALUES (
-			'${ENVELOPE_ID}','${ORGANIZATION_ID}','Agreement','draft',1,'${COMMIT_SHA}',
+			'${ENVELOPE_ID}','${ACTOR.createdByUserId}','Agreement','draft',1,'${COMMIT_SHA}',
 			'archives/integration.git.gz','${'a'.repeat(64)}',
 			'2026-09-11T00:00:00.000Z','2026-09-11T00:02:00.000Z'
 		);
 		INSERT INTO audit_event (
-			id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+			id, envelope_id, sequence, event_type, actor_type, actor_id,
 			payload_json, previous_hash, event_hash, occurred_at
 		) VALUES
-			('01960000-0000-7000-8000-00000000009e','${ORGANIZATION_ID}','${ENVELOPE_ID}',1,'envelope.created','user','${ACTOR.id}','{}',NULL,'hash-1','2026-09-11T00:00:00.000Z'),
-			('01960000-0000-7000-8000-00000000009f','${ORGANIZATION_ID}','${ENVELOPE_ID}',2,'draft.revision_created','user','${ACTOR.id}','{}','hash-1','hash-2','2026-09-11T00:01:00.000Z');
+			('01960000-0000-7000-8000-00000000009e','${ENVELOPE_ID}',1,'envelope.created','user','${ACTOR.id}','{}',NULL,'hash-1','2026-09-11T00:00:00.000Z'),
+			('01960000-0000-7000-8000-00000000009f','${ENVELOPE_ID}',2,'draft.revision_created','user','${ACTOR.id}','{}','hash-1','hash-2','2026-09-11T00:01:00.000Z');
 		INSERT INTO envelope_ready_command (
-			organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+			envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 			expected_generation, commit_sha, recipients_json, recipient_count, updated_at,
 			audit_event_id, audit_sequence, previous_audit_hash, audit_event_hash, audit_payload_json
 		) VALUES (
-			'${ORGANIZATION_ID}','${ENVELOPE_ID}','user','${ACTOR.id}','ready-integration',
+			'${ENVELOPE_ID}','user','${ACTOR.id}','ready-integration',
 			'ready-request',1,'${COMMIT_SHA}','[]',6,'2026-09-11T00:02:00.000Z',
 			'${READY_AUDIT_ID}',3,'hash-2','hash-3','{}'
 		);
 		INSERT INTO recipient (
-			id, organization_id, envelope_id, email, name, role, locale, routing_order, status,
+			id, envelope_id, email, name, role, locale, routing_order, status,
 			created_at, updated_at
 		) VALUES
-			('01930000-0000-7000-8000-00000000000a','${ORGANIZATION_ID}','${ENVELOPE_ID}','a@example.com','A','signer','en',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
-			('01930000-0000-7000-8000-00000000000b','${ORGANIZATION_ID}','${ENVELOPE_ID}','b@example.com','B','signer','ja',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
-			('01930000-0000-7000-8000-00000000000c','${ORGANIZATION_ID}','${ENVELOPE_ID}','c@example.com','C','signer','en',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
-			('01930000-0000-7000-8000-00000000000d','${ORGANIZATION_ID}','${ENVELOPE_ID}','d@example.com','D','cc','ja',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
-			('01930000-0000-7000-8000-00000000000e','${ORGANIZATION_ID}','${ENVELOPE_ID}','e@example.com','E','viewer','en',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
-			('01930000-0000-7000-8000-00000000000f','${ORGANIZATION_ID}','${ENVELOPE_ID}','f@example.com','F','prefill','ja',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z');
+			('01930000-0000-7000-8000-00000000000a','${ENVELOPE_ID}','a@example.com','A','signer','en',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
+			('01930000-0000-7000-8000-00000000000b','${ENVELOPE_ID}','b@example.com','B','signer','ja',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
+			('01930000-0000-7000-8000-00000000000c','${ENVELOPE_ID}','c@example.com','C','signer','en',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
+			('01930000-0000-7000-8000-00000000000d','${ENVELOPE_ID}','d@example.com','D','cc','ja',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
+			('01930000-0000-7000-8000-00000000000e','${ENVELOPE_ID}','e@example.com','E','viewer','en',2,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z'),
+			('01930000-0000-7000-8000-00000000000f','${ENVELOPE_ID}','f@example.com','F','prefill','ja',1,'pending','2026-09-11T00:02:00.000Z','2026-09-11T00:02:00.000Z');
 	`);
 	return { database: sqliteD1Database(sqlite), sqlite };
 }
@@ -147,16 +145,16 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 			sqlite
 				.prepare(
 					`UPDATE recipient SET capability_expires_at = ?, updated_at = ?
-					 WHERE organization_id = ? AND envelope_id = ? AND id = '01930000-0000-7000-8000-00000000000c'`
+					 WHERE envelope_id = ? AND id = '01930000-0000-7000-8000-00000000000c'`
 				)
-				.run(releasedExpiry, releasedAt, ORGANIZATION_ID, ENVELOPE_ID);
+				.run(releasedExpiry, releasedAt, ENVELOPE_ID);
 			sqlite
 				.prepare(
 					`UPDATE delivery_outbox SET status = 'pending',
 						reserved_capability_expires_at = ?, available_at = ?, updated_at = ?
-					 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = '01930000-0000-7000-8000-00000000000c'`
+					 WHERE envelope_id = ? AND recipient_id = '01930000-0000-7000-8000-00000000000c'`
 				)
-				.run(releasedExpiry, releasedAt, releasedAt, ORGANIZATION_ID, ENVELOPE_ID);
+				.run(releasedExpiry, releasedAt, releasedAt, ENVELOPE_ID);
 			await expect(application.send(ACTOR, ENVELOPE_ID, input)).resolves.toEqual({
 				outcome: 'replayed',
 				result: first.result
@@ -174,7 +172,6 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 			expect(claimed).toHaveLength(1);
 			await expect(
 				deliveryStore.failInvitationDelivery({
-					organizationId: ORGANIZATION_ID,
 					deliveryId: claimed[0].deliveryId,
 					claimToken,
 					errorCode: 'recipient_rejected',
@@ -190,11 +187,10 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 			sqlite
 				.prepare(
 					`UPDATE recipient SET capability_expires_at = ?
-					 WHERE organization_id = ? AND envelope_id = ? AND id = ?`
+					 WHERE envelope_id = ? AND id = ?`
 				)
 				.run(
 					new Date(Date.parse(claimed[0].capabilityExpiresAt as string) + 1_000).toISOString(),
-					ORGANIZATION_ID,
 					ENVELOPE_ID,
 					claimed[0].recipientId
 				);
@@ -217,14 +213,14 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 		try {
 			sqlite.exec(`
 				INSERT INTO audit_event (
-					id, organization_id, envelope_id, sequence, event_type, actor_type, actor_id,
+					id, envelope_id, sequence, event_type, actor_type, actor_id,
 					payload_json, previous_hash, event_hash, occurred_at
 				) VALUES (
-					'01960000-0000-7000-8000-0000000000a2','${ORGANIZATION_ID}','${ENVELOPE_ID}',4,
+					'01960000-0000-7000-8000-0000000000a2','${ENVELOPE_ID}',4,
 					'envelope.fields_placed','user','${ACTOR.id}','{}','hash-3','hash-4','2026-09-11T00:02:30.000Z'
 				);
 				UPDATE envelope SET field_generation = 1, updated_at = '2026-09-11T00:02:30.000Z'
-				WHERE organization_id = '${ORGANIZATION_ID}' AND id = '${ENVELOPE_ID}';
+				WHERE id = '${ENVELOPE_ID}';
 			`);
 			const application = new EnvelopeSendApplication(
 				new D1EnvelopeSendStore(database),
@@ -311,17 +307,17 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 		try {
 			sqlite.exec(`
 				INSERT INTO envelope (
-					id, organization_id, title, status, repository_generation, repository_head,
+					id, created_by_user_id, title, status, repository_generation, repository_head,
 					sent_commit_sha, created_at, updated_at
 				) VALUES (
-					'01920000-0000-7000-8000-0000000000f2','${ORGANIZATION_ID}','Other','sent',1,'other-commit','other-commit',
+					'01920000-0000-7000-8000-0000000000f2','${ACTOR.createdByUserId}','Other','sent',1,'other-commit','other-commit',
 					'2026-09-11T00:00:00.000Z','2026-09-11T00:02:00.000Z'
 				);
 				INSERT INTO recipient (
-					id, organization_id, envelope_id, email, name, role, locale, routing_order,
+					id, envelope_id, email, name, role, locale, routing_order,
 					status, created_at, updated_at
 				) VALUES (
-					'01930000-0000-7000-8000-0000000000f2','${ORGANIZATION_ID}','01920000-0000-7000-8000-0000000000f2','other@example.com',
+					'01930000-0000-7000-8000-0000000000f2','01920000-0000-7000-8000-0000000000f2','other@example.com',
 					'Other','signer','en',1,'pending','2026-09-11T00:02:00.000Z',
 					'2026-09-11T00:02:00.000Z'
 				);

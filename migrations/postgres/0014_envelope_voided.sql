@@ -1,5 +1,4 @@
 CREATE TABLE envelope_void_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   actor_type text NOT NULL CHECK (actor_type = 'user'),
   actor_id text NOT NULL,
@@ -19,8 +18,8 @@ CREATE TABLE envelope_void_command (
   revoked_recipient_ids_json text NOT NULL
     CHECK (jsonb_typeof(revoked_recipient_ids_json::jsonb) = 'array'),
   revoked_recipient_count integer NOT NULL CHECK (revoked_recipient_count >= 0),
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, envelope_id),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (envelope_id),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id)
 );

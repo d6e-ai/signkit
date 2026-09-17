@@ -16,9 +16,17 @@ describe('app breadcrumbs', () => {
 
 	it('is route-aware across the primary nav destinations', () => {
 		expect(source).toMatch(/currentPath === '\/'.*m\.nav_dashboard/);
-		expect(source).toMatch(/startsWith\('\/envelopes'\).*m\.nav_agreements/);
+		expect(source).toMatch(/currentPath === '\/envelopes'.*m\.nav_agreements/);
 		expect(source).toMatch(/startsWith\('\/settings'\).*m\.nav_settings/);
 		expect(source).toMatch(/startsWith\('\/setup'\).*m\.setup_title/);
+	});
+
+	it('shows an envelope collection link and the loaded envelope title on detail routes', () => {
+		expect(source).toContain('/^\\/envelopes\\/[^/]+$/.test(currentPath)');
+		expect(source).toContain("currentPath !== '/envelopes/new'");
+		expect(source).toContain("href={localizeHref('/envelopes')}");
+		expect(source).toContain('m.breadcrumb_envelopes()');
+		expect(source).toContain('$envelopeBreadcrumbTitle ?? m.envelope_detail_title()');
 	});
 
 	it('anchors the first crumb on the SignKit brand linking home', () => {
@@ -36,7 +44,7 @@ describe('app breadcrumbs', () => {
 	});
 
 	it('only renders the second crumb when a label is available, never an empty one', () => {
-		expect(source).toMatch(/\{#if routeLabel !== null\}/);
+		expect(source).toMatch(/\{:else if routeLabel !== null\}/);
 	});
 
 	it('identifies the active settings subsection as a third crumb', () => {
