@@ -3,7 +3,7 @@ members = ["."]
 
 [package]
 name = "signkit"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 rust-version = "1.88.0"
 license = "AGPL-3.0-only"
