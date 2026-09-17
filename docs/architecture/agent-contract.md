@@ -18,7 +18,7 @@ The API serves an OpenAPI 3.1 document at `GET /api/v1/openapi.json`, with struc
 
 The first production-quality CLI slice lives in `cli/` with binary name `signkit` (see [cli.md](../cli.md)). Built for automated, non-interactive agent integration, its design rules are:
 
-- **Truthful scope exposure:** System capabilities, JSON envelope inspection (`list`, `get`, `draft`, `deliveries`, `completion-artifact`; `audit` is a status alias), immutable evidence and PDF download (`evidence`, `pdf`), API-key authoring/send mutations, and bounded DOCX import/export. API-key, instance, webhook, and reissue management remain unexposed in the CLI.
+- **Truthful scope exposure:** System capabilities, JSON envelope inspection (`list`, `get`, `draft`, `deliveries`, `completion-artifact`), immutable evidence and PDF download (`evidence`, `pdf`), API-key authoring/send mutations, ordered PDF upload/document removal, and bounded DOCX import/export. API-key, instance, webhook, and reissue management remain unexposed in the CLI.
 - **Single-instance authority:** Envelope commands target the configured SignKit instance. API-key scopes are intersected with the active membership of the key owner; there is no external workspace selector.
 - **Credential hygiene:** API keys are ingested solely from the `SIGNKIT_API_KEY` environment variable or `--api-key-stdin`. Command-line flags and configuration files are prohibited from holding secret material.
 - **Fail-closed network posture:** Redirects are completely disabled to prevent credential leakage. Responses are strictly bounded to prevent OOM risks. Timeouts are enforced.

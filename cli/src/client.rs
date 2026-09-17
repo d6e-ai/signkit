@@ -377,7 +377,7 @@ impl SignKitClient {
         Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
     }
 
-    /// Bounded binary POST (DOCX import) with a required Idempotency-Key.
+    /// Bounded binary POST with a required Idempotency-Key.
     /// Always authenticated; JSON receipts use `MAX_RESPONSE_BYTES`.
     pub async fn post_bytes<T: DeserializeOwned>(
         &self,

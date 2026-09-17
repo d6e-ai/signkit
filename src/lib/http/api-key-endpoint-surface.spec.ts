@@ -326,7 +326,7 @@ describe('API key read surface', () => {
 			it('refuses a key without the envelopes:read scope', async () => {
 				const { response, reachedService } = await readCase.invoke({
 					state: 'authenticated',
-					principal: principal({ scopes: ['audit:read', 'drafts:write', 'envelopes:send'] })
+					principal: principal({ scopes: ['drafts:write', 'envelopes:send'] })
 				});
 
 				expect(response.status).toBe(403);
@@ -358,12 +358,7 @@ describe('API key read surface', () => {
 	}
 
 	it('accepts a key whose scope set merely includes envelopes:read', async () => {
-		const scopes: readonly ApiKeyScope[] = [
-			'audit:read',
-			'drafts:write',
-			'envelopes:read',
-			'envelopes:send'
-		];
+		const scopes: readonly ApiKeyScope[] = ['drafts:write', 'envelopes:read', 'envelopes:send'];
 		const { reachedService } = await envelopeListCase().invoke({
 			state: 'authenticated',
 			principal: principal({ scopes })

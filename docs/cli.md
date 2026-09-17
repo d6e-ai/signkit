@@ -60,6 +60,8 @@ Authoring and lifecycle commands:
 signkit envelopes create --title "Agreement" --idempotency-key <opaque-key>
 signkit envelopes commit <envelope-id> --file commit.json
 signkit envelopes import-docx <envelope-id> --file agreement.docx --target-path documents/agreement.md
+signkit envelopes upload-pdf <envelope-id> --file exhibit.pdf --expected-generation 1
+signkit envelopes document-order <envelope-id> --file document-order.json
 signkit envelopes export-docx <envelope-id> --output agreement.docx
 signkit envelopes ready <envelope-id> --file ready.json
 signkit envelopes fields <envelope-id> --file fields.json
@@ -68,6 +70,8 @@ signkit envelopes void <envelope-id> --file void.json
 ```
 
 When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope ids and cursors are validated as UUIDv7 before any network request.
+
+`upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. `--expected-generation` is required; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). The JSON supplied to `document-order` must contain `expectedGeneration` and 1-20 unique UUIDv7 `documentIds` in the desired order. The list is the complete retained set: omit an existing document ID to remove it from the draft.
 
 ## Exit codes
 
