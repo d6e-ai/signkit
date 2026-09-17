@@ -4,8 +4,8 @@ Local setup, tests, builds, and what CI enforces. For runtime configuration and 
 
 ## Prerequisites
 
-- Node.js 22 (the Docker image and CI both use Node 22).
-- pnpm 11.24.0 (pinned via `packageManager`; `corepack enable` is enough).
+- Node.js 22 or newer (CI verifies Node 22; the Docker image uses Node 26).
+- pnpm 11.24.0 (pinned via `packageManager`; Node 26 no longer bundles Corepack).
 - Chromium for the browser test project: `pnpm exec playwright install chromium`.
 - Optional for integration tests and the Node profile: PostgreSQL 18.
 

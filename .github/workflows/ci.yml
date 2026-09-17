@@ -67,6 +67,9 @@ jobs:
       - run: pnpm run build:${{ matrix.target }}
       - if: matrix.target == 'node'
         run: pnpm run test:node-build
+      - if: matrix.target == 'node'
+        name: Build Node Docker image
+        run: docker build --tag signkit-ci:${{ github.sha }} .
       - if: matrix.target == 'cloudflare'
         run: pnpm exec wrangler types --check src/worker-configuration.d.ts
       - if: matrix.target == 'cloudflare'
