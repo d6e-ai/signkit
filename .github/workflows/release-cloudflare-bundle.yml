@@ -190,12 +190,12 @@ jobs:
               echo "refusing to mutate draft release ${tag}: prerelease metadata does not match the tag channel" >&2
               exit 1
             fi
-            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-              target_commitish="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.targetCommitish));' "$release_json")"
-              if [ "$target_commitish" != "$GITHUB_SHA" ]; then
-                echo "refusing to publish draft release ${tag}: target ${target_commitish} does not match workflow commit ${GITHUB_SHA}" >&2
-                exit 1
-              fi
+            target_commitish="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.targetCommitish));' "$release_json")"
+            encoded_target="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]));' "$target_commitish")"
+            target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_target}" --jq .sha)"
+            if [ "$target_sha" != "$GITHUB_SHA" ]; then
+              echo "refusing to publish draft release ${tag}: target ${target_commitish} resolves to ${target_sha}, not workflow commit ${GITHUB_SHA}" >&2
+              exit 1
             fi
             remote_assets="$(node -e 'const value=JSON.parse(process.argv[1]); for (const asset of value.assets ?? []) console.log(asset.name);' "$release_json")"
             while IFS= read -r remote_asset; do
@@ -366,7 +366,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${SIGNKIT_RELEASE_TAG}"
-          if ! release_json="$(gh release view "$tag" --json isDraft,assets)"; then
+          if ! release_json="$(gh release view "$tag" --json isDraft,targetCommitish,assets)"; then
             echo "expected draft release ${tag} from the release job, but it does not exist" >&2
             exit 1
           fi
@@ -374,6 +374,13 @@ jobs:
           if [ "$is_draft" != "true" ]; then
             echo "release ${tag} is already public; refusing any further mutation"
             exit 0
+          fi
+          target_commitish="$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(String(value.targetCommitish));' "$release_json")"
+          encoded_target="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]));' "$target_commitish")"
+          target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${encoded_target}" --jq .sha)"
+          if [ "$target_sha" != "$GITHUB_SHA" ]; then
+            echo "refusing to publish draft release ${tag}: target ${target_commitish} resolves to ${target_sha}, not workflow commit ${GITHUB_SHA}" >&2
+            exit 1
           fi
 
           verify_dir="$(mktemp -d)"

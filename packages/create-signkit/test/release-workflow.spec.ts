@@ -111,7 +111,9 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).toMatch(/release_tag:/);
 		expect(yaml).toMatch(/SIGNKIT_RELEASE_TAG:/);
 		expect(yaml).toMatch(/targetCommitish/);
-		expect(yaml).toMatch(/target .* does not match workflow commit/);
+		expect(yaml).toMatch(/encodeURIComponent/);
+		expect(yaml).toMatch(/commits\/\$\{encoded_target\}/);
+		expect(yaml).toMatch(/resolves to .* not workflow commit/);
 		// Draft-first creation in the release job.
 		expect(yaml).toMatch(/gh release create "\$tag" --draft/);
 		// Rerun path inspects draft status before uploading/editing and fails
@@ -141,7 +143,9 @@ describe('release-cloudflare-bundle workflow', () => {
 		);
 		expect(publishReleaseSection).toMatch(/gh release edit "\$tag" --draft=false/);
 		expect(publishReleaseSection).toMatch(/needs\.release\.outputs\.expected_assets_sha256_base64/);
-		expect(publishReleaseSection).toMatch(/gh release view "\$tag" --json isDraft,assets/);
+		expect(publishReleaseSection).toMatch(
+			/gh release view "\$tag" --json isDraft,targetCommitish,assets/
+		);
 		expect(publishReleaseSection).toMatch(/remote asset set differs from the release job/);
 		expect(publishReleaseSection).toMatch(
 			/gh release download "\$tag" --dir "\$downloaded_assets"/
