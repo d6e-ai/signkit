@@ -27,7 +27,6 @@ export interface PublishedRecipientDeclined {
 export type DeclinePreparation =
 	| {
 			outcome: 'ready';
-			organizationId: string;
 			envelopeId: string;
 			recipientId: string;
 			recipientRole: RecipientRole;

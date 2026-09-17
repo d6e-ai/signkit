@@ -1,3 +1,5 @@
+import { Buffer } from 'node:buffer';
+
 export interface ParsedReleaseTag {
 	raw: string;
 	major: number;
@@ -10,6 +12,7 @@ export type NpmDistTag = 'latest' | 'beta';
 
 const RELEASE_TAG_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*))?$/;
 const NUMERIC_PRERELEASE_IDENTIFIER_RE = /^[0-9]+$/;
+export const MAX_RELEASE_TAG_BYTES = 35;
 
 export function resolveReleaseTag(env: NodeJS.ProcessEnv = process.env): string {
 	const override = env.SIGNKIT_RELEASE_TAG;
@@ -22,6 +25,11 @@ export function resolveReleaseTag(env: NodeJS.ProcessEnv = process.env): string 
 
 export function parseReleaseTag(tag: string): ParsedReleaseTag {
 	const raw = tag.trim();
+	if (Buffer.byteLength(raw, 'utf8') > MAX_RELEASE_TAG_BYTES) {
+		throw new Error(
+			`release tag exceeds the ${MAX_RELEASE_TAG_BYTES}-byte provenance identity limit`
+		);
+	}
 	if (raw.includes('+')) {
 		throw new Error(
 			`release tag ${JSON.stringify(raw)} includes build metadata; tags with +build metadata are not supported`

@@ -23,7 +23,6 @@ import {
 const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
 
 interface RecipientEnvelopeRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_role: RecipientRole;
@@ -57,7 +56,6 @@ interface FieldDeclarationRow {
 }
 
 interface SignedCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	recipient_id: string;
 	recipient_role: RecipientRole;
@@ -84,7 +82,6 @@ interface SignedCommandRow {
 	completed_audit_event_hash: string | null;
 	completed_audit_payload_json: string | null;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -96,7 +93,6 @@ interface SignedCommandRow {
 	evidence_occurred_at: string | null;
 	evidence_hash_version: number | string | null;
 	completed_evidence_event_id: string | null;
-	completed_evidence_organization_id: string | null;
 	completed_evidence_envelope_id: string | null;
 	completed_evidence_sequence: number | null;
 	completed_evidence_event_type: string | null;
@@ -115,7 +111,7 @@ interface EvidenceField {
 	valueSha256: string;
 }
 
-const SIGNED_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_id, command.recipient_id,
+const SIGNED_COMMAND_COLUMNS: string = `command.envelope_id, command.recipient_id,
 	command.recipient_role, command.routing_order, command.actor_type, command.actor_id,
 	command.idempotency_key, command.request_hash, command.capability_hash, command.sent_commit_sha,
 	command.expected_field_generation, command.field_values_json, command.field_count,
@@ -123,14 +119,12 @@ const SIGNED_COMMAND_COLUMNS: string = `command.organization_id, command.envelop
 	command.released_delivery_count, command.audit_event_id, command.audit_sequence,
 	command.previous_audit_hash, command.audit_event_hash, command.audit_payload_json,
 	command.completed_audit_event_id, command.completed_audit_event_hash, command.completed_audit_payload_json,
-	evidence.id AS evidence_event_id, evidence.organization_id AS evidence_organization_id,
-	evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
+	evidence.id AS evidence_event_id, evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
 	evidence.occurred_at AS evidence_occurred_at, evidence.hash_version AS evidence_hash_version,
 	completed_evidence.id AS completed_evidence_event_id,
-	completed_evidence.organization_id AS completed_evidence_organization_id,
 	completed_evidence.envelope_id AS completed_evidence_envelope_id,
 	completed_evidence.sequence AS completed_evidence_sequence,
 	completed_evidence.event_type AS completed_evidence_event_type,
@@ -153,11 +147,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		const row: RecipientEnvelopeRow | null = await this.#readByCapabilityHash(key.capabilityHash);
 		const identity: SignPreparation | RecipientEnvelopeRow = classifyIdentity(row, key);
 		if (!isFoundRow(identity)) return identity;
-		const replay: SignPreparation | null = await this.#resolveCommand(
-			identity.organization_id,
-			identity.recipient_id,
-			key
-		);
+		const replay: SignPreparation | null = await this.#resolveCommand(identity.recipient_id, key);
 		if (replay !== null) {
 			if (replay.outcome !== 'existing') return replay;
 			const current: RecipientEnvelopeRow | null = await this.#readByCapabilityHash(
@@ -173,10 +163,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 			}
 			if (
 				replay.result.envelopeStatus === 'completed' &&
-				!(await this.#validCompletedProjection(
-					currentIdentity.organization_id,
-					currentIdentity.envelope_id
-				))
+				!(await this.#validCompletedProjection(currentIdentity.envelope_id))
 			) {
 				return { outcome: 'integrity_error' };
 			}
@@ -185,25 +172,19 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		if (identity.recipient_status === 'completed') return { outcome: 'integrity_error' };
 		if (!liveEligible(identity, key.capabilityHash, at)) return { outcome: 'not_found' };
 		const routing: SignRoutingSnapshot | null = await this.#readRouting(
-			identity.organization_id,
 			identity.envelope_id,
 			identity.recipient_id,
 			identity.routing_order
 		);
 		if (routing === null) return { outcome: 'integrity_error' };
-		const auditHead: SignAuditHead | null = await this.#readAuditHead(
-			identity.organization_id,
-			identity.envelope_id
-		);
+		const auditHead: SignAuditHead | null = await this.#readAuditHead(identity.envelope_id);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		const fields: readonly SignableFieldDeclaration[] = await this.#readFieldDeclarations(
-			identity.organization_id,
 			identity.envelope_id,
 			identity.recipient_id
 		);
 		return {
 			outcome: 'ready',
-			organizationId: identity.organization_id,
 			envelopeId: identity.envelope_id,
 			recipientId: identity.recipient_id,
 			recipientRole: 'signer',
@@ -235,7 +216,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 			this.#database
 				.prepare(
 					`INSERT INTO recipient_signed_command (
-						organization_id, envelope_id, recipient_id, recipient_role, routing_order,
+						envelope_id, recipient_id, recipient_role, routing_order,
 						actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 						sent_commit_sha, expected_field_generation, field_values_json, field_count,
 						updated_at, next_routing_order, next_capability_expires_at,
@@ -245,7 +226,6 @@ export class D1RecipientSignStore implements RecipientSignStore {
 					) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
-					identity.organization_id,
 					identity.envelope_id,
 					identity.recipient_id,
 					command.recipientRole,
@@ -275,12 +255,11 @@ export class D1RecipientSignStore implements RecipientSignStore {
 				this.#database
 					.prepare(
 						`INSERT INTO field_value (
-							organization_id, field_id, envelope_id, recipient_id, field_type,
+							field_id, envelope_id, recipient_id, field_type,
 							value_json, value_sha256, created_at
 						) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
-						identity.organization_id,
 						field.fieldId,
 						identity.envelope_id,
 						identity.recipient_id,
@@ -305,8 +284,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 	async #readByCapabilityHash(capabilityHash: string): Promise<RecipientEnvelopeRow | null> {
 		return await this.#database
 			.prepare(
-				`SELECT recipient.organization_id AS organization_id,
-					recipient.envelope_id AS envelope_id,
+				`SELECT recipient.envelope_id AS envelope_id,
 					recipient.id AS recipient_id,
 					recipient.role AS recipient_role,
 					recipient.status AS recipient_status,
@@ -320,8 +298,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 					envelope.field_generation AS envelope_field_generation
 				 FROM recipient
 				 INNER JOIN envelope
-					ON envelope.organization_id = recipient.organization_id
-					AND envelope.id = recipient.envelope_id
+					ON envelope.id = recipient.envelope_id
 				 WHERE recipient.capability_hash = ?
 				 LIMIT 1`
 			)
@@ -330,7 +307,6 @@ export class D1RecipientSignStore implements RecipientSignStore {
 	}
 
 	async #readRouting(
-		organizationId: string,
 		envelopeId: string,
 		actorId: string,
 		actorRoutingOrder: number
@@ -338,21 +314,21 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		const result: D1Result<RoutingRecipientRow> = await this.#database
 			.prepare(
 				`SELECT id, role, routing_order, status FROM recipient
-				 WHERE organization_id = ? AND envelope_id = ?`
+				 WHERE envelope_id = ?`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.all<RoutingRecipientRow>();
 		if (result.results.length < 1 || result.results.length > 50) return null;
 		return routingAfterActor(actorId, actorRoutingOrder, result.results);
 	}
 
-	async #readAuditHead(organizationId: string, envelopeId: string): Promise<SignAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<SignAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ? ORDER BY sequence DESC LIMIT 1`
+				 WHERE envelope_id = ? ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		if (row === null || !Number.isSafeInteger(row.sequence) || row.sequence < 1) return null;
 		if (row.event_hash.length === 0) return null;
@@ -360,17 +336,16 @@ export class D1RecipientSignStore implements RecipientSignStore {
 	}
 
 	async #readFieldDeclarations(
-		organizationId: string,
 		envelopeId: string,
 		recipientId: string
 	): Promise<readonly SignableFieldDeclaration[]> {
 		const result: D1Result<FieldDeclarationRow> = await this.#database
 			.prepare(
 				`SELECT id, field_type, required FROM envelope_field
-				 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = ?
+				 WHERE envelope_id = ? AND recipient_id = ?
 				 ORDER BY id`
 			)
-			.bind(organizationId, envelopeId, recipientId)
+			.bind(envelopeId, recipientId)
 			.all<FieldDeclarationRow>();
 		return result.results.map((row: FieldDeclarationRow): SignableFieldDeclaration => ({
 			id: row.id,
@@ -379,13 +354,8 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		}));
 	}
 
-	async #resolveCommand(
-		organizationId: string,
-		recipientId: string,
-		key: SignLookupKey
-	): Promise<SignPreparation | null> {
+	async #resolveCommand(recipientId: string, key: SignLookupKey): Promise<SignPreparation | null> {
 		const exact: SignedCommandRow | null = await this.#readCommandRow(
-			organizationId,
 			recipientId,
 			key.idempotencyKey
 		);
@@ -398,10 +368,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 			}
 			return await this.#evidenceResult(exact);
 		}
-		const byRecipient: SignedCommandRow | null = await this.#readCommandRowByRecipient(
-			organizationId,
-			recipientId
-		);
+		const byRecipient: SignedCommandRow | null = await this.#readCommandRowByRecipient(recipientId);
 		if (byRecipient === null) return null;
 		if (
 			byRecipient.envelope_id !== key.expectedEnvelopeId ||
@@ -413,7 +380,6 @@ export class D1RecipientSignStore implements RecipientSignStore {
 	}
 
 	async #readCommandRow(
-		organizationId: string,
 		recipientId: string,
 		idempotencyKey: string
 	): Promise<SignedCommandRow | null> {
@@ -422,42 +388,34 @@ export class D1RecipientSignStore implements RecipientSignStore {
 				`SELECT ${SIGNED_COMMAND_COLUMNS}
 				 FROM recipient_signed_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
+					ON evidence.id = command.audit_event_id
 				 LEFT JOIN audit_event completed_evidence
-					ON completed_evidence.organization_id = command.organization_id
-					AND completed_evidence.id = command.completed_audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = 'recipient'
+					ON completed_evidence.id = command.completed_audit_event_id
+				 WHERE command.actor_type = 'recipient'
 					AND command.actor_id = ? AND command.idempotency_key = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId, idempotencyKey)
+			.bind(recipientId, idempotencyKey)
 			.first<SignedCommandRow>();
 	}
 
-	async #readCommandRowByRecipient(
-		organizationId: string,
-		recipientId: string
-	): Promise<SignedCommandRow | null> {
+	async #readCommandRowByRecipient(recipientId: string): Promise<SignedCommandRow | null> {
 		return await this.#database
 			.prepare(
 				`SELECT ${SIGNED_COMMAND_COLUMNS}
 				 FROM recipient_signed_command command
 				 LEFT JOIN audit_event evidence
-					ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
+					ON evidence.id = command.audit_event_id
 				 LEFT JOIN audit_event completed_evidence
-					ON completed_evidence.organization_id = command.organization_id
-					AND completed_evidence.id = command.completed_audit_event_id
-				 WHERE command.organization_id = ? AND command.recipient_id = ?
+					ON completed_evidence.id = command.completed_audit_event_id
+				 WHERE command.recipient_id = ?
 				 LIMIT 1`
 			)
-			.bind(organizationId, recipientId)
+			.bind(recipientId)
 			.first<SignedCommandRow>();
 	}
 
 	async #readStoredValues(
-		organizationId: string,
 		envelopeId: string,
 		recipientId: string
 	): Promise<readonly StoredSignValue[]> {
@@ -469,10 +427,10 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		}> = await this.#database
 			.prepare(
 				`SELECT field_id, field_type, value_json, value_sha256 FROM field_value
-				 WHERE organization_id = ? AND envelope_id = ? AND recipient_id = ?
+				 WHERE envelope_id = ? AND recipient_id = ?
 				 ORDER BY field_id`
 			)
-			.bind(organizationId, envelopeId, recipientId)
+			.bind(envelopeId, recipientId)
 			.all();
 		return result.results.map(
 			(row: {
@@ -491,7 +449,6 @@ export class D1RecipientSignStore implements RecipientSignStore {
 
 	async #evidenceResult(row: SignedCommandRow): Promise<SignPreparation> {
 		const stored: readonly StoredSignValue[] = await this.#readStoredValues(
-			row.organization_id,
 			row.envelope_id,
 			row.recipient_id
 		);
@@ -554,32 +511,30 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		const row: { present: number } | null = await this.#database
 			.prepare(
 				`SELECT 1 AS present FROM delivery_outbox
-				 WHERE organization_id = (
-					SELECT organization_id FROM recipient WHERE capability_hash = ? LIMIT 1
-				 ) AND envelope_id = ? AND status = 'processing' LIMIT 1`
+				 WHERE envelope_id = ? AND status = 'processing' LIMIT 1`
 			)
-			.bind(capabilityHash, envelopeId)
+			.bind(envelopeId)
 			.first<{ present: number }>();
 		return row !== null;
 	}
 
-	async #validCompletedProjection(organizationId: string, envelopeId: string): Promise<boolean> {
+	async #validCompletedProjection(envelopeId: string): Promise<boolean> {
 		const row: { valid: number } | null = await this.#database
 			.prepare(
 				`SELECT CASE WHEN NOT EXISTS (
 					SELECT 1 FROM recipient
-					WHERE organization_id = ? AND envelope_id = ?
+					WHERE envelope_id = ?
 						AND status <> 'completed'
 						AND capability_hash IS NOT NULL
 						AND capability_revoked_at IS NULL
 				) AND NOT EXISTS (
 					SELECT 1 FROM delivery_outbox
-					WHERE organization_id = ? AND envelope_id = ?
+					WHERE envelope_id = ?
 						AND (status IN ('blocked', 'pending', 'processing')
 							OR retryable = 1 OR sealed_capability IS NOT NULL)
 				) THEN 1 ELSE 0 END AS valid`
 			)
-			.bind(organizationId, envelopeId, organizationId, envelopeId)
+			.bind(envelopeId, envelopeId)
 			.first<{ valid: number }>();
 		return row?.valid === 1;
 	}
@@ -709,7 +664,6 @@ function commandMatchesRouting(
 function validAuditEvidence(row: SignedCommandRow): boolean {
 	const signedMatches: boolean =
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'recipient.signed' &&
@@ -729,7 +683,6 @@ function validAuditEvidence(row: SignedCommandRow): boolean {
 	}
 	return (
 		row.completed_evidence_event_id === row.completed_audit_event_id &&
-		row.completed_evidence_organization_id === row.organization_id &&
 		row.completed_evidence_envelope_id === row.envelope_id &&
 		row.completed_evidence_sequence === row.audit_sequence + 1 &&
 		row.completed_evidence_event_type === 'envelope.completed' &&
@@ -829,7 +782,7 @@ async function validStoredReceipt(
 			payload: auditPayloadValue,
 			previousHash: row.previous_audit_hash
 		},
-		{ organizationId: row.organization_id, envelopeId: row.envelope_id }
+		{ envelopeId: row.envelope_id }
 	);
 	if (auditPayload !== row.audit_payload_json || auditEventHash !== row.audit_event_hash) {
 		return false;
@@ -860,7 +813,7 @@ async function validStoredReceipt(
 				payload: completedPayloadValue,
 				previousHash: row.audit_event_hash
 			},
-			{ organizationId: row.organization_id, envelopeId: row.envelope_id }
+			{ envelopeId: row.envelope_id }
 		);
 		return (
 			completedPayload === row.completed_audit_payload_json &&

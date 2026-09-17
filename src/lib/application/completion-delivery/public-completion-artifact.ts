@@ -85,10 +85,7 @@ export class PublicCompletionArtifactService {
 			if (this.#pdfStore === null) {
 				throw new PublicCompletionArtifactNotFoundError();
 			}
-			const pdfRecord = await this.#pdfStore.readCompletionArtifactPdf(
-				locator.organizationId,
-				locator.envelopeId
-			);
+			const pdfRecord = await this.#pdfStore.readCompletionArtifactPdf(locator.envelopeId);
 			if (pdfRecord === null) {
 				throw new PublicCompletionArtifactNotFoundError();
 			}
@@ -96,7 +93,6 @@ export class PublicCompletionArtifactService {
 				throw new PublicCompletionArtifactIntegrityError();
 			}
 			const expectedPdfKey: string = completionArtifactObjectKey(
-				locator.organizationId,
 				locator.envelopeId,
 				'pdf',
 				pdfRecord.pdfSha256
@@ -132,12 +128,7 @@ export class PublicCompletionArtifactService {
 		if (!SHA256_PATTERN.test(digest)) {
 			throw new PublicCompletionArtifactIntegrityError();
 		}
-		const expectedKey: string = completionArtifactObjectKey(
-			locator.organizationId,
-			locator.envelopeId,
-			format,
-			digest
-		);
+		const expectedKey: string = completionArtifactObjectKey(locator.envelopeId, format, digest);
 		if (storedKey !== expectedKey) {
 			throw new PublicCompletionArtifactIntegrityError();
 		}

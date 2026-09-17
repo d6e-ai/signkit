@@ -40,7 +40,6 @@ class ScriptedPostgres {
 }
 
 const command: PublishVoidedEnvelopeCommand = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	actorType: 'user',
 	actorId: 'user-1',

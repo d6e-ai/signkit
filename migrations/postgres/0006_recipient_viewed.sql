@@ -1,5 +1,4 @@
 CREATE TABLE recipient_viewed_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
   recipient_role text NOT NULL CHECK (recipient_role IN ('signer','approver','viewer','prefill','cc')),
@@ -16,12 +15,12 @@ CREATE TABLE recipient_viewed_command (
   previous_audit_hash text NOT NULL,
   audit_event_hash text NOT NULL,
   audit_payload_json text NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, recipient_id),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, recipient_id) REFERENCES recipient(organization_id, id)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (recipient_id),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id)
 );
 
 CREATE INDEX recipient_viewed_command_envelope
-  ON recipient_viewed_command(organization_id, envelope_id, updated_at DESC);
+  ON recipient_viewed_command(envelope_id, updated_at DESC);

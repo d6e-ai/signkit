@@ -17,6 +17,11 @@ import type { HttpClient } from '../runtime/http.js';
 import { utf8 } from '../runtime/http.js';
 import { parseReleaseManifest, type ReleaseManifest } from './manifest.js';
 import {
+	createGithubProvenanceVerifier,
+	type ProvenanceVerifier,
+	type ReleaseProvenance
+} from './provenance.js';
+import {
 	compareReleaseTags,
 	parseReleaseTag,
 	tagHasSemverPrerelease,
@@ -50,19 +55,29 @@ export interface ResolvedRelease {
 
 export interface ReleaseResolver {
 	resolve(input: { version: string; channel: ReleaseChannel }): Promise<ResolvedRelease>;
-	downloadBundle(release: ResolvedRelease): Promise<Uint8Array>;
+	prepareBundle(release: ResolvedRelease): Promise<PreparedReleaseBundle>;
+}
+
+export interface PreparedReleaseBundle {
+	bytes: Uint8Array;
+	provenance: ReleaseProvenance;
 }
 
 const USER_AGENT = `${PACKAGE_NAME}/${PACKAGE_VERSION}`;
 const ACCEPT_JSON = 'application/vnd.github+json';
 
-export function createGithubReleaseResolver(http: HttpClient): ReleaseResolver {
+export function createGithubReleaseResolver(
+	http: HttpClient,
+	provenance: ProvenanceVerifier = createGithubProvenanceVerifier(http)
+): ReleaseResolver {
 	return {
 		resolve(input) {
 			return resolveRelease(http, input);
 		},
-		downloadBundle(release) {
-			return downloadValidatedBundle(http, release);
+		async prepareBundle(release) {
+			const bytes = await downloadValidatedBundle(http, release);
+			const digest = sha256Hex(bytes);
+			return { bytes, provenance: await provenance.verify(release, digest) };
 		}
 	};
 }

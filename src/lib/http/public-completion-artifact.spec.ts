@@ -19,8 +19,7 @@ import {
 const NOW: Date = new Date('2026-09-12T12:00:00.000Z');
 const SECRET_ORG_ID: string = '01900000-0000-7000-8000-000000000001';
 const SECRET_ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000002';
-const SECRET_OBJECT_KEY: string =
-	'completion-artifacts/v1/organizations/secret/envelopes/secret/sha256/abc.json.gz';
+const SECRET_OBJECT_KEY: string = 'completion-artifacts/v1/envelopes/secret/sha256/abc.json.gz';
 const SECRET_TOKEN_HASH: string =
 	'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 const SECRET_EMAIL: string = 'signer@example.com';

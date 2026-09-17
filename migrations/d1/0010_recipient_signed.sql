@@ -2,13 +2,12 @@
 -- the foreign-key level, to belong to the exact recipient/envelope/type of
 -- the field it claims to answer.
 CREATE UNIQUE INDEX envelope_field_identity
-  ON envelope_field(organization_id, id, recipient_id, envelope_id, field_type);
+  ON envelope_field(id, recipient_id, envelope_id, field_type);
 
 -- Field values are declared only in SQL. Each field gets exactly one
 -- immutable row for its lifetime (the primary key forbids re-signing), and
 -- only a SHA-256 digest of the value ever leaves this table.
 CREATE TABLE field_value (
-  organization_id TEXT NOT NULL,
   field_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   recipient_id TEXT NOT NULL,
@@ -16,17 +15,15 @@ CREATE TABLE field_value (
   value_json TEXT NOT NULL,
   value_sha256 TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, field_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, field_id, recipient_id, envelope_id, field_type)
-    REFERENCES envelope_field(organization_id, id, recipient_id, envelope_id, field_type)
+  PRIMARY KEY (field_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (field_id) REFERENCES envelope_field(id)
 );
 
 CREATE INDEX field_value_recipient
-  ON field_value(organization_id, recipient_id);
+  ON field_value(recipient_id);
 
 CREATE TABLE recipient_signed_command (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   recipient_id TEXT NOT NULL,
   recipient_role TEXT NOT NULL CHECK (recipient_role = 'signer'),
@@ -56,12 +53,12 @@ CREATE TABLE recipient_signed_command (
   completed_audit_event_id TEXT,
   completed_audit_event_hash TEXT,
   completed_audit_payload_json TEXT,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, recipient_id),
-  UNIQUE (organization_id, audit_event_id),
-  UNIQUE (organization_id, completed_audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
-  FOREIGN KEY (organization_id, recipient_id) REFERENCES recipient(organization_id, id),
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (recipient_id),
+  UNIQUE (audit_event_id),
+  UNIQUE (completed_audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
+  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CHECK (
     (
       completed_audit_event_id IS NULL
@@ -92,7 +89,7 @@ CREATE TABLE recipient_signed_command (
 );
 
 CREATE INDEX recipient_signed_command_envelope
-  ON recipient_signed_command(organization_id, envelope_id, updated_at DESC);
+  ON recipient_signed_command(envelope_id, updated_at DESC);
 
 -- The command insert is the single D1 compare-and-set boundary, mirroring
 -- recipient_approved_command_publish for the signer role: complete and
@@ -109,8 +106,7 @@ BEGIN
   SET status = 'completed',
       capability_revoked_at = NEW.updated_at,
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.recipient_id
+  WHERE id = NEW.recipient_id
     AND envelope_id = NEW.envelope_id
     AND status = 'viewed'
     AND role = 'signer'
@@ -128,8 +124,7 @@ BEGIN
   SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM envelope
-      WHERE organization_id = NEW.organization_id
-        AND id = NEW.envelope_id
+      WHERE id = NEW.envelope_id
         AND field_generation = NEW.expected_field_generation
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
   END);
@@ -142,8 +137,7 @@ BEGIN
   SELECT (CASE
     WHEN (
       SELECT COUNT(*) FROM envelope_field
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND recipient_id = NEW.recipient_id
     ) <> NEW.field_count
     THEN RAISE(ABORT, 'recipient signed publish conflict')
@@ -154,8 +148,7 @@ BEGIN
       SELECT 1 FROM json_each(NEW.field_values_json) declared
       WHERE NOT EXISTS (
         SELECT 1 FROM envelope_field field
-        WHERE field.organization_id = NEW.organization_id
-          AND field.envelope_id = NEW.envelope_id
+        WHERE field.envelope_id = NEW.envelope_id
           AND field.recipient_id = NEW.recipient_id
           AND field.id = json_extract(declared.value, '$.id')
           AND field.field_type = json_extract(declared.value, '$.fieldType')
@@ -175,8 +168,7 @@ BEGIN
   SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
@@ -185,8 +177,7 @@ BEGIN
   SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NULL AND NOT EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
     ) THEN RAISE(ABORT, 'recipient signed publish conflict')
@@ -195,8 +186,7 @@ BEGIN
   SELECT (CASE
     WHEN NEW.next_routing_order IS NOT NULL AND EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND routing_order = NEW.routing_order
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
@@ -208,8 +198,7 @@ BEGIN
      AND NEW.completed_audit_event_id IS NULL
      AND NOT EXISTS (
       SELECT 1 FROM recipient
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND routing_order = NEW.routing_order
         AND role IN ('signer', 'approver')
         AND status <> 'completed'
@@ -220,8 +209,7 @@ BEGIN
     WHEN NEW.next_routing_order IS NOT NULL
      AND (
        SELECT MIN(routing_order) FROM recipient
-       WHERE organization_id = NEW.organization_id
-         AND envelope_id = NEW.envelope_id
+       WHERE envelope_id = NEW.envelope_id
          AND role IN ('signer', 'approver')
          AND status <> 'completed'
          AND routing_order > NEW.routing_order
@@ -233,7 +221,6 @@ BEGIN
   SET capability_expires_at = NEW.next_capability_expires_at,
       updated_at = NEW.updated_at
   WHERE NEW.next_routing_order IS NOT NULL
-    AND organization_id = NEW.organization_id
     AND envelope_id = NEW.envelope_id
     AND routing_order = NEW.next_routing_order
     AND role <> 'cc'
@@ -253,15 +240,13 @@ BEGIN
       available_at = NEW.updated_at,
       updated_at = NEW.updated_at
   WHERE NEW.next_routing_order IS NOT NULL
-    AND organization_id = NEW.organization_id
     AND envelope_id = NEW.envelope_id
     AND status = 'blocked'
     AND available_at IS NULL
     AND sealed_capability IS NOT NULL
     AND EXISTS (
       SELECT 1 FROM recipient target
-      WHERE target.organization_id = delivery_outbox.organization_id
-        AND target.id = delivery_outbox.recipient_id
+      WHERE target.id = delivery_outbox.recipient_id
         AND target.envelope_id = delivery_outbox.envelope_id
         AND target.routing_order = NEW.next_routing_order
         AND target.role <> 'cc'
@@ -283,24 +268,21 @@ BEGIN
         ELSE status
       END),
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.envelope_id
+  WHERE id = NEW.envelope_id
     AND status IN ('sent', 'in_progress')
     AND sent_commit_sha = NEW.sent_commit_sha
     AND sent_commit_sha = repository_head
     AND EXISTS (
       SELECT 1
       FROM audit_event previous
-      WHERE previous.organization_id = NEW.organization_id
-        AND previous.envelope_id = NEW.envelope_id
+      WHERE previous.envelope_id = NEW.envelope_id
         AND previous.sequence = NEW.audit_sequence - 1
         AND previous.event_hash = NEW.previous_audit_hash
     )
     AND NOT EXISTS (
       SELECT 1
       FROM audit_event newer
-      WHERE newer.organization_id = NEW.organization_id
-        AND newer.envelope_id = NEW.envelope_id
+      WHERE newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     );
 
@@ -309,20 +291,20 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at
   ) VALUES (
-    NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
+    NEW.audit_event_id, NEW.envelope_id,
     NEW.audit_sequence, 'recipient.signed', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
     NEW.updated_at
   );
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at
   )
-  SELECT NEW.completed_audit_event_id, NEW.organization_id, NEW.envelope_id,
+  SELECT NEW.completed_audit_event_id, NEW.envelope_id,
     NEW.audit_sequence + 1, 'envelope.completed', NEW.actor_type, NEW.actor_id,
     NEW.completed_audit_payload_json, NEW.audit_event_hash, NEW.completed_audit_event_hash,
     NEW.updated_at
@@ -331,8 +313,7 @@ BEGIN
   SELECT (CASE
     WHEN NEW.completed_audit_event_id IS NOT NULL AND (
       SELECT COUNT(*) FROM audit_event
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND id = NEW.completed_audit_event_id
         AND sequence = NEW.audit_sequence + 1
         AND event_type = 'envelope.completed'

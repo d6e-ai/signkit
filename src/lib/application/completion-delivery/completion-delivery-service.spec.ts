@@ -83,8 +83,7 @@ class FakeStore implements CompletionDeliveryStore {
 		if (this.readResult !== undefined) return this.readResult;
 		return (
 			this.rows.find(
-				(row: ClaimedCompletionDelivery): boolean =>
-					row.organizationId === command.organizationId && row.deliveryId === command.deliveryId
+				(row: ClaimedCompletionDelivery): boolean => row.deliveryId === command.deliveryId
 			) ?? null
 		);
 	}
@@ -240,7 +239,6 @@ async function eligibleClaim(
 		token,
 		claim: {
 			deliveryId: 'delivery-1',
-			organizationId: 'org-1',
 			envelopeId: 'envelope-1',
 			recipientId: 'recipient-1',
 			status: 'processing',
@@ -311,7 +309,6 @@ describe('CompletionDeliveryService', () => {
 		it('discovers and seeds deliveries when envelope has a published artifact, then claims and delivers', async () => {
 			const sealer = new AesGcmCompletionTokenSealer(SEALING_KEY);
 			const recipient: EligibleCompletionDeliveryRecipient = {
-				organizationId: 'org-1',
 				envelopeId: 'envelope-1',
 				recipientId: 'recipient-1',
 				recipientEmail: 'morgan@example.com',
@@ -333,7 +330,6 @@ describe('CompletionDeliveryService', () => {
 					store.rows = [
 						{
 							deliveryId: seededItem.id,
-							organizationId: seededItem.organizationId,
 							envelopeId: seededItem.envelopeId,
 							recipientId: seededItem.recipientId,
 							status: 'processing',
@@ -373,7 +369,6 @@ describe('CompletionDeliveryService', () => {
 			});
 			expect(store.enrolled).toHaveLength(1);
 			expect(store.enrolled[0][0]).toMatchObject({
-				organizationId: 'org-1',
 				envelopeId: 'envelope-1',
 				recipientId: 'recipient-1',
 				availableAt: NOW.toISOString(),
@@ -392,7 +387,6 @@ describe('CompletionDeliveryService', () => {
 			const store: FakeStore = new FakeStore();
 			store.discoveredRecipients = [
 				{
-					organizationId: 'org-1',
 					envelopeId: 'envelope-1',
 					recipientId: 'recipient-1',
 					recipientEmail: 'morgan@example.com',
@@ -823,7 +817,6 @@ describe('CompletionDeliveryService', () => {
 			const issued = await issueCompletionToken();
 			const sealer = new AesGcmCompletionTokenSealer(SEALING_KEY);
 			const context: CompletionTokenSealContext = {
-				organizationId: 'org-1',
 				envelopeId: 'envelope-1',
 				recipientId: 'recipient-1',
 				deliveryId: 'delivery-1'
@@ -856,7 +849,6 @@ describe('CompletionDeliveryService', () => {
 			expect(mail.messages[0].html).toContain(`href="https://signkit.example/c/${issued.token}"`);
 			expect(store.completions).toHaveLength(1);
 			expect(store.completions[0]).toMatchObject({
-				organizationId: 'org-1',
 				deliveryId: 'delivery-1',
 				claimToken: CLAIM_TOKEN
 			});

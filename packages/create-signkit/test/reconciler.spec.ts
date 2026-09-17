@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { runCreateSignkit } from '../src/cli/run.js';
 import { reconcileCloudflare } from '../src/providers/cloudflare/reconciler.js';
+import { D1_SCHEMA_EPOCH } from '../src/constants.js';
 import {
 	ACCOUNT_ID,
 	D1_ID,
@@ -19,7 +20,8 @@ async function run(
 	argv: string[],
 	wrangler: FakeWrangler,
 	fs = new MemoryFileSystem(),
-	releases = fakeReleases()
+	releases = fakeReleases(),
+	stdinText?: string
 ) {
 	const stdout: string[] = [];
 	const stderr: string[] = [];
@@ -42,7 +44,13 @@ async function run(
 			http,
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			smokeBackoffMs: 0,
-			sleep: async () => undefined
+			sleep: async () => undefined,
+			readStdin:
+				stdinText === undefined
+					? async (): Promise<Uint8Array> => {
+							throw new Error('stdin must not be read in this test');
+						}
+					: async (): Promise<Uint8Array> => new TextEncoder().encode(stdinText)
 		}
 	});
 	return { code, stdout: stdout.join(''), stderr: stderr.join(''), fs, wrangler, releases };
@@ -56,6 +64,11 @@ const INITIAL_DEPLOY_FLAGS = [
 	'--bootstrap-owner-email',
 	'Owner@Example.com'
 ];
+
+const OAUTH_STDIN_JSON = JSON.stringify({
+	D6E_AUTH_CLIENT_ID: 'test-oauth-client-id',
+	D6E_AUTH_CLIENT_SECRET: 'test-oauth-client-secret'
+});
 
 describe('plan is read-only', () => {
 	it('does not create resources, apply migrations, deploy, or write state', async () => {
@@ -72,14 +85,21 @@ describe('plan is read-only', () => {
 		);
 		expect(result.code).toBe(0);
 		expect(releases.resolveCalls).toBe(1);
-		expect(releases.downloads).toBe(0);
+		expect(releases.downloads).toBe(1);
 		expect(wrangler.calls.some((call) => call.startsWith('create'))).toBe(false);
 		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
 		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
 		expect(fs.writes).toEqual([]);
-		expect(JSON.parse(result.stdout).mutations).toEqual([]);
-		const plan = JSON.parse(result.stdout).plan as Array<{ id: string; mutating: boolean }>;
+		const parsed = JSON.parse(result.stdout);
+		expect(parsed.mutations).toEqual([]);
+		expect(parsed.provenance).toMatchObject({
+			status: 'verified',
+			repository: 'd6e-ai/signkit',
+			sourceRef: 'refs/tags/v1.2.3'
+		});
+		const plan = parsed.plan as Array<{ id: string; mutating: boolean }>;
+		expect(plan.find((step) => step.id === 'verify-provenance')?.mutating).toBe(false);
 		expect(plan.find((step) => step.id === 'd1-export')?.mutating).toBe(true);
 		expect(plan.find((step) => step.id === 'deploy')?.mutating).toBe(true);
 		expect(plan.find((step) => step.id === 'd1-migrations')?.mutating).toBe(true);
@@ -90,13 +110,6 @@ describe('plan is read-only', () => {
 describe('deploy, adopt, and upgrade state transitions', () => {
 	it('deploy creates missing D1/R2, applies pending migrations, deploys, and records state', async () => {
 		const wrangler = new FakeWrangler();
-		wrangler.secrets.set('signkit', [
-			'DELIVERY_ENCRYPTION_KEY',
-			'SESSION_ENCRYPTION_KEY',
-			'DELIVERY_WORKER_SECRET',
-			'D6E_AUTH_CLIENT_ID',
-			'D6E_AUTH_CLIENT_SECRET'
-		]);
 		wrangler.versions.set('signkit', []);
 		wrangler.pendingMigrations = ['0001_core.sql'];
 		const result = await run(
@@ -109,7 +122,10 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			wrangler,
+			new MemoryFileSystem(),
+			fakeReleases(),
+			OAUTH_STDIN_JSON
 		);
 		expect(result.code).toBe(0);
 		expect(wrangler.calls).toContain('createD1:signkit');
@@ -124,6 +140,7 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 			d1: { name: 'signkit', id: D1_ID },
 			r2: { name: 'signkit-objects' },
 			version: 'v1.2.3',
+			schemaEpoch: D1_SCHEMA_EPOCH,
 			lastCommand: 'deploy'
 		});
 		expect(JSON.stringify(state)).not.toMatch(/DELIVERY_ENCRYPTION_KEY|cf-|token/i);
@@ -150,6 +167,7 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 		const state = JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state.adopted).toBe(true);
 		expect(state.lastCommand).toBe('adopt');
+		expect(parsed.provenance).toBeUndefined();
 		expect(state.version).toBeUndefined();
 		expect(state.commit).toBeUndefined();
 		expect(parsed.plan.find((step: { id: string }) => step.id === 'adopt').mutating).toBe(true);
@@ -187,6 +205,37 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 			JSON.parse(result.stdout).lastCommand ??
 				JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json')).lastCommand
 		).toBe('upgrade');
+	});
+
+	it('refuses a populated legacy D1 without the release schema epoch', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.appliedMigrations = ['0001_core.sql'];
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { schemaEpoch: undefined });
+		const result = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(4);
+		expect(result.stdout).toMatch(/cannot be upgraded in place/);
+		expect(result.stdout).toMatch(/Recreate the selected D1/);
+		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
+	});
+
+	it('accepts a recreated empty D1 and records the current schema epoch', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.pendingMigrations = ['0001_core.sql'];
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { schemaEpoch: undefined });
+		const result = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(0);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.schemaEpoch).toBe(D1_SCHEMA_EPOCH);
 	});
 
 	it('refuses upgrade resource overrides until adopt records the intended identity', async () => {
@@ -419,6 +468,8 @@ describe('failure and rollback reporting', () => {
 		const wrangler = new FakeWrangler();
 		wrangler.d1 = [{ uuid: D1_ID, name: 'signkit' }];
 		wrangler.r2.add('signkit-objects');
+		wrangler.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
+		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			[
 				'--cloudflare',
@@ -434,7 +485,8 @@ describe('failure and rollback reporting', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			wrangler,
+			fs
 		);
 		expect(result.code).toBe(6);
 		expect(result.stdout).toMatch(/DELIVERY_ENCRYPTION_KEY/);
@@ -444,6 +496,10 @@ describe('failure and rollback reporting', () => {
 
 	it('does not create D1 or R2 when required secrets are missing', async () => {
 		const wrangler = new FakeWrangler();
+		wrangler.d1 = [{ uuid: D1_ID, name: 'signkit' }];
+		wrangler.r2.add('signkit-objects');
+		wrangler.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
+		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			[
 				'--cloudflare',
@@ -454,7 +510,8 @@ describe('failure and rollback reporting', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			wrangler,
+			fs
 		);
 		expect(result.code).toBe(6);
 		expect(result.stdout).toMatch(/DELIVERY_ENCRYPTION_KEY/);
@@ -601,15 +658,8 @@ describe('initial managed deploy vars', () => {
 		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 	});
 
-	it('still requires origin and email flags for a secret-bearing Worker stub with no state', async () => {
+	it('still requires origin and email flags for a pristine deploy with no state', async () => {
 		const wrangler = new FakeWrangler();
-		wrangler.secrets.set('signkit', [
-			'DELIVERY_ENCRYPTION_KEY',
-			'SESSION_ENCRYPTION_KEY',
-			'DELIVERY_WORKER_SECRET',
-			'D6E_AUTH_CLIENT_ID',
-			'D6E_AUTH_CLIENT_SECRET'
-		]);
 		const denied = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
 			wrangler
@@ -618,6 +668,7 @@ describe('initial managed deploy vars', () => {
 		expect(denied.stdout).toMatch(/--email-from is required for the initial managed deploy/);
 		expect(wrangler.calls).not.toContain('createD1:signkit');
 
+		const allowedWrangler = new FakeWrangler();
 		const allowed = await run(
 			[
 				'--cloudflare',
@@ -628,15 +679,18 @@ describe('initial managed deploy vars', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			allowedWrangler,
+			new MemoryFileSystem(),
+			fakeReleases(),
+			OAUTH_STDIN_JSON
 		);
 		expect(allowed.code).toBe(0);
-		expect(wrangler.calls).toContain('createD1:signkit');
-		expect(wrangler.lastConfig).toMatch(/SIGNKIT_MAIL_PROVIDER/);
-		expect(wrangler.lastConfig).toMatch(/https:\/\/signkit\.example\.workers\.dev/);
-		expect(wrangler.lastConfig).toMatch(/sign@example.com/);
-		expect(wrangler.lastConfig).toMatch(/https:\/\/www\.d6e\.ai/);
-		expect(wrangler.lastConfig).toMatch(/SignKit/);
+		expect(allowedWrangler.calls).toContain('createD1:signkit');
+		expect(allowedWrangler.lastConfig).toMatch(/SIGNKIT_MAIL_PROVIDER/);
+		expect(allowedWrangler.lastConfig).toMatch(/https:\/\/signkit\.example\.workers\.dev/);
+		expect(allowedWrangler.lastConfig).toMatch(/sign@example.com/);
+		expect(allowedWrangler.lastConfig).toMatch(/https:\/\/www\.d6e\.ai/);
+		expect(allowedWrangler.lastConfig).toMatch(/SignKit/);
 	});
 });
 
@@ -787,7 +841,7 @@ describe('takeover and secret-only stub', () => {
 		expect(wrangler.calls).not.toContain('createD1:signkit');
 	});
 
-	it('allows the secret-only stub case with no published versions', async () => {
+	it('refuses the secret-only stub case with no published versions', async () => {
 		const wrangler = new FakeWrangler();
 		wrangler.secrets.set('signkit', [
 			'DELIVERY_ENCRYPTION_KEY',
@@ -806,10 +860,15 @@ describe('takeover and secret-only stub', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			wrangler,
+			new MemoryFileSystem(),
+			fakeReleases(),
+			OAUTH_STDIN_JSON
 		);
-		expect(result.code).toBe(0);
-		expect(wrangler.calls).toContain('deploy:signkit');
+		expect(result.code).toBe(4);
+		expect(result.stdout).toMatch(/already has stored secrets|adopt the existing deployment/);
+		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(wrangler.calls).not.toContain('createD1:signkit');
 	});
 });
 
@@ -855,13 +914,6 @@ describe('upgrade routing flags', () => {
 describe('bootstrap owner email', () => {
 	it('requires --bootstrap-owner-email for a fresh deploy', async () => {
 		const wrangler = new FakeWrangler();
-		wrangler.secrets.set('signkit', [
-			'DELIVERY_ENCRYPTION_KEY',
-			'SESSION_ENCRYPTION_KEY',
-			'DELIVERY_WORKER_SECRET',
-			'D6E_AUTH_CLIENT_ID',
-			'D6E_AUTH_CLIENT_SECRET'
-		]);
 		const denied = await run(
 			[
 				'--cloudflare',
@@ -885,13 +937,6 @@ describe('bootstrap owner email', () => {
 
 	it('canonicalizes the flag, records it in state, and applies it as a non-secret Worker var', async () => {
 		const wrangler = new FakeWrangler();
-		wrangler.secrets.set('signkit', [
-			'DELIVERY_ENCRYPTION_KEY',
-			'SESSION_ENCRYPTION_KEY',
-			'DELIVERY_WORKER_SECRET',
-			'D6E_AUTH_CLIENT_ID',
-			'D6E_AUTH_CLIENT_SECRET'
-		]);
 		wrangler.versions.set('signkit', []);
 		const result = await run(
 			[
@@ -908,7 +953,10 @@ describe('bootstrap owner email', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			wrangler,
+			new MemoryFileSystem(),
+			fakeReleases(),
+			OAUTH_STDIN_JSON
 		);
 		expect(result.code).toBe(0);
 		const state = JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json'));
@@ -1049,6 +1097,9 @@ describe('human plan output', () => {
 		expect(result.code).toBe(0);
 		expect(result.stdout).toMatch(/Plan:/);
 		expect(result.stdout).toMatch(/plan only/);
+		expect(result.stdout).toMatch(
+			/Provenance: verified d6e-ai\/signkit\/\.github\/workflows\/release-cloudflare-bundle\.yml refs\/tags\/v1\.2\.3/
+		);
 		expect(result.stderr).toBe('');
 	});
 
@@ -1125,13 +1176,6 @@ describe('applied migrations on smoke failure', () => {
 describe('custom-domain smoke fallback', () => {
 	it('treats a healthy workers.dev origin as success without rollback', async () => {
 		const wrangler = new FakeWrangler();
-		wrangler.secrets.set('signkit', [
-			'DELIVERY_ENCRYPTION_KEY',
-			'SESSION_ENCRYPTION_KEY',
-			'DELIVERY_WORKER_SECRET',
-			'D6E_AUTH_CLIENT_ID',
-			'D6E_AUTH_CLIENT_SECRET'
-		]);
 		const fs = new MemoryFileSystem();
 		wrangler.fs = fs;
 		const http = new FakeHttp();
@@ -1164,7 +1208,8 @@ describe('custom-domain smoke fallback', () => {
 				env: { XDG_STATE_HOME: '/xdg/state' },
 				smokeAttempts: 1,
 				smokeBackoffMs: 0,
-				sleep: async () => undefined
+				sleep: async () => undefined,
+				readStdin: async (): Promise<Uint8Array> => new TextEncoder().encode(OAUTH_STDIN_JSON)
 			}
 		);
 		expect(result.exitCode).toBe(0);

@@ -36,7 +36,6 @@ function fakeD1(firstResults: readonly unknown[]) {
 }
 
 const command: PublishRecipientViewedCommand = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	capabilityHash: 'cap-hash-1',
@@ -71,7 +70,6 @@ command.auditPayloadJson = JSON.stringify({
 
 function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organization_id: command.organizationId,
 		envelope_id: command.envelopeId,
 		recipient_id: command.recipientId,
 		recipient_role: command.recipientRole,
@@ -89,7 +87,6 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		audit_event_hash: command.auditEventHash,
 		audit_payload_json: command.auditPayloadJson,
 		evidence_event_id: command.auditEventId,
-		evidence_organization_id: command.organizationId,
 		evidence_envelope_id: command.envelopeId,
 		evidence_sequence: command.expectedAuditSequence + 1,
 		evidence_event_type: 'recipient.viewed',
@@ -205,19 +202,14 @@ describe('D1RecipientViewStore', () => {
 			'2026-09-11T00:02:30.000Z'
 		);
 		expect(fake.prepared[0].bindings).toEqual([
-			otherRecipient.organizationId,
 			otherRecipient.envelopeId,
 			otherRecipient.recipientId
 		]);
 		expect(fake.prepared[1].bindings).toEqual([
-			otherRecipient.organizationId,
 			otherRecipient.recipientId,
 			otherRecipient.idempotencyKey
 		]);
-		expect(fake.prepared[2].bindings).toEqual([
-			otherRecipient.organizationId,
-			otherRecipient.recipientId
-		]);
+		expect(fake.prepared[2].bindings).toEqual([otherRecipient.recipientId]);
 	});
 
 	it('fails closed when the stored viewed command capability hash does not match', async () => {

@@ -21,7 +21,6 @@ pub async fn run_cli(cli: Cli) -> ExitCode {
 
     let config = match resolve_config(
         cli.base_url,
-        cli.org,
         cli.api_key_stdin,
         cli.config.as_deref(),
         cli.timeout,

@@ -86,11 +86,13 @@ command.auditPayloadJson = JSON.stringify({
 command.auditEventHash = createHash('sha256')
 	.update(
 		JSON.stringify({
-			actorId: command.expectedRecipientId,
+			hashVersion: 3,
 			envelopeId: command.expectedEnvelopeId,
+			sequence: command.expectedAuditSequence + 1,
 			eventType: 'recipient.declined',
+			actorType: 'recipient',
+			actorId: command.expectedRecipientId,
 			occurredAt: command.updatedAt,
-			organizationId: 'org-1',
 			payload: JSON.parse(command.auditPayloadJson) as unknown,
 			previousHash: command.previousAuditHash
 		})
@@ -98,7 +100,6 @@ command.auditEventHash = createHash('sha256')
 	.digest('hex');
 
 const eligibleRecipientRow = {
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientId: 'recipient-1',
 	recipientRole: 'signer' as const,
@@ -123,7 +124,6 @@ const declinedRecipientRow = {
 
 const actorLockRow = {
 	id: 'recipient-1',
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientRole: 'signer' as const,
 	recipientStatus: 'pending',
@@ -135,7 +135,6 @@ const actorLockRow = {
 
 const siblingLockRow = {
 	id: 'recipient-2',
-	organizationId: 'org-1',
 	envelopeId: 'env-1',
 	recipientRole: 'signer' as const,
 	recipientStatus: 'pending',
@@ -147,7 +146,6 @@ const siblingLockRow = {
 
 function replayRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organizationId: 'org-1',
 		envelopeId: command.expectedEnvelopeId,
 		recipientId: command.expectedRecipientId,
 		recipientRole: command.recipientRole,
@@ -171,7 +169,6 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		projectionHasRevocableRecipient: false,
 		projectionHasUnsafeDelivery: false,
 		evidenceEventId: command.auditEventId,
-		evidenceOrganizationId: 'org-1',
 		evidenceEnvelopeId: command.expectedEnvelopeId,
 		evidenceSequence: command.expectedAuditSequence + 1,
 		evidenceEventType: 'recipient.declined',
@@ -181,42 +178,9 @@ function replayRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		evidencePreviousHash: command.previousAuditHash,
 		evidenceEventHash: command.auditEventHash,
 		evidenceOccurredAt: command.updatedAt,
+		evidenceHashVersion: 3,
 		...overrides
 	};
-}
-
-function versionOneReplayRow(): Record<string, unknown> {
-	const payloadValue = {
-		recipientId: command.expectedRecipientId,
-		role: command.recipientRole,
-		routingOrder: command.routingOrder,
-		sentCommitSha: command.expectedSentCommitSha,
-		declinedAt: command.updatedAt
-	};
-	const auditPayloadJson: string = JSON.stringify(payloadValue);
-	const auditEventHash: string = createHash('sha256')
-		.update(
-			JSON.stringify({
-				actorId: command.expectedRecipientId,
-				envelopeId: command.expectedEnvelopeId,
-				eventType: 'recipient.declined',
-				occurredAt: command.updatedAt,
-				organizationId: 'org-1',
-				payload: payloadValue,
-				previousHash: command.previousAuditHash
-			})
-		)
-		.digest('hex');
-	return replayRow({
-		auditPayloadJson,
-		auditEventHash,
-		revocationEvidenceVersion: 1,
-		revokedRecipientIdsJson: '[]',
-		revokedRecipientCount: 0,
-		projectionRevokedRecipientIds: [],
-		evidencePayloadJson: auditPayloadJson,
-		evidenceEventHash: auditEventHash
-	});
 }
 
 describe('PostgresRecipientDeclineStore', () => {
@@ -330,20 +294,6 @@ describe('PostgresRecipientDeclineStore', () => {
 		).toBe(false);
 	});
 
-	it('keeps a version 1 decline receipt replayable after migration defaults are applied', async () => {
-		const database = new ScriptedPostgres([
-			[declinedRecipientRow],
-			[versionOneReplayRow()],
-			[declinedRecipientRow]
-		]);
-		await expect(
-			new PostgresRecipientDeclineStore(database.client()).prepareDeclined(
-				command,
-				command.updatedAt
-			)
-		).resolves.toMatchObject({ outcome: 'replayed' });
-	});
-
 	it('does not disclose the stored receipt under a different idempotency key', async () => {
 		const differentKey = { ...command, idempotencyKey: 'declined-from-another-tab' };
 		const database = new ScriptedPostgres([
@@ -436,7 +386,6 @@ describe('PostgresRecipientDeclineStore', () => {
 		);
 		expect(result).toEqual({
 			outcome: 'ready',
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			recipientRole: 'signer',

@@ -26,8 +26,7 @@ BEGIN
         FROM (
           SELECT id
           FROM recipient
-          WHERE organization_id = NEW.organization_id
-            AND envelope_id = NEW.envelope_id
+          WHERE envelope_id = NEW.envelope_id
             AND id <> NEW.recipient_id
             AND status <> 'completed'
             AND capability_hash IS NOT NULL
@@ -54,8 +53,7 @@ BEGIN
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND status = 'processing'
     )
     THEN RAISE(ABORT, 'recipient declined delivery in flight')
@@ -70,8 +68,7 @@ BEGIN
       available_at = COALESCE(available_at, NEW.updated_at),
       last_error = 'envelope_terminal',
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND envelope_id = NEW.envelope_id
+  WHERE envelope_id = NEW.envelope_id
     AND (
       status IN ('blocked', 'pending')
       OR (status = 'failed' AND retryable = 1)
@@ -81,8 +78,7 @@ BEGIN
     WHEN EXISTS (
       SELECT 1
       FROM delivery_outbox
-      WHERE organization_id = NEW.organization_id
-        AND envelope_id = NEW.envelope_id
+      WHERE envelope_id = NEW.envelope_id
         AND (
           status IN ('blocked', 'pending', 'processing')
           OR (status = 'failed' AND retryable = 1)
@@ -95,8 +91,7 @@ BEGIN
   SET status = 'declined',
       capability_revoked_at = NEW.updated_at,
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.recipient_id
+  WHERE id = NEW.recipient_id
     AND envelope_id = NEW.envelope_id
     AND status IN ('pending', 'viewed')
     AND role = NEW.recipient_role
@@ -114,8 +109,7 @@ BEGIN
   UPDATE recipient
   SET capability_revoked_at = NEW.updated_at,
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND envelope_id = NEW.envelope_id
+  WHERE envelope_id = NEW.envelope_id
     AND id <> NEW.recipient_id
     AND status <> 'completed'
     AND capability_hash IS NOT NULL
@@ -129,24 +123,21 @@ BEGIN
   UPDATE envelope
   SET status = 'declined',
       updated_at = NEW.updated_at
-  WHERE organization_id = NEW.organization_id
-    AND id = NEW.envelope_id
+  WHERE id = NEW.envelope_id
     AND status IN ('sent', 'in_progress')
     AND sent_commit_sha = NEW.sent_commit_sha
     AND sent_commit_sha = repository_head
     AND EXISTS (
       SELECT 1
       FROM audit_event previous
-      WHERE previous.organization_id = NEW.organization_id
-        AND previous.envelope_id = NEW.envelope_id
+      WHERE previous.envelope_id = NEW.envelope_id
         AND previous.sequence = NEW.audit_sequence - 1
         AND previous.event_hash = NEW.previous_audit_hash
     )
     AND NOT EXISTS (
       SELECT 1
       FROM audit_event newer
-      WHERE newer.organization_id = NEW.organization_id
-        AND newer.envelope_id = NEW.envelope_id
+      WHERE newer.envelope_id = NEW.envelope_id
         AND newer.sequence >= NEW.audit_sequence
     );
 
@@ -155,10 +146,10 @@ BEGIN
   END);
 
   INSERT INTO audit_event (
-    id, organization_id, envelope_id, sequence, event_type, actor_type,
+    id, envelope_id, sequence, event_type, actor_type,
     actor_id, payload_json, previous_hash, event_hash, occurred_at
   ) VALUES (
-    NEW.audit_event_id, NEW.organization_id, NEW.envelope_id,
+    NEW.audit_event_id, NEW.envelope_id,
     NEW.audit_sequence, 'recipient.declined', NEW.actor_type, NEW.actor_id,
     NEW.audit_payload_json, NEW.previous_audit_hash, NEW.audit_event_hash,
     NEW.updated_at

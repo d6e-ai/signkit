@@ -5,13 +5,12 @@ import type {
 	VoidEnvelopeResult
 } from '$lib/application/envelopes/void';
 import { createEnvelopeVoidHandler, type EnvelopeVoidApplicationResolver } from './envelope-void';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const organizationId: string = '01900000-0000-7000-8000-000000000002';
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function apiKeyLocals(): App.Locals {
@@ -22,15 +21,13 @@ function apiKeyLocals(): App.Locals {
 				apiKeyId: '01900000-0000-7000-8000-000000000201',
 				keyPrefix: 'signkit_abcdefgh',
 				ownerUserId: 'user-1',
-				organizationId,
-				organizationName: 'Workspace',
 				scopes: ['envelopes:send'],
 				expiresAt: '2026-12-11T00:00:00.000Z'
 			}
 		},
 		identityState: 'anonymous',
-		memberships: [],
-		organizationId: null,
+		instanceMembership: null,
+		bootstrapped: true,
 		principal: null
 	};
 }
@@ -159,7 +156,7 @@ describe('envelope void HTTP handler', () => {
 			);
 			expect(response.status).toBe(200);
 			expect(app.voidEnvelope).toHaveBeenCalledWith(
-				{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
+				{ id: 'user-1', createdByUserId: 'user-1', actorType: 'user' },
 				envelopeId,
 				{ idempotencyKey: 'void-1', expectedStatus, expectedGeneration }
 			);
@@ -180,8 +177,7 @@ describe('envelope void HTTP handler', () => {
 		expect(app.voidEnvelope).toHaveBeenCalledWith(
 			{
 				id: '01900000-0000-7000-8000-000000000201',
-				organizationId,
-				organizationName: 'Workspace',
+				createdByUserId: 'user-1',
 				actorType: 'agent'
 			},
 			envelopeId,

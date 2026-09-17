@@ -110,7 +110,6 @@ export interface PublishedRecipientSigned {
 export type SignPreparation =
 	| {
 			outcome: 'ready';
-			organizationId: string;
 			envelopeId: string;
 			recipientId: string;
 			recipientRole: 'signer';

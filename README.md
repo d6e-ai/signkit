@@ -8,9 +8,9 @@ SignKit v0.1.0 is production-ready for self-hosted electronic-signature workflow
 
 Shipped in v0.1.0:
 
-- Organization-scoped Envelope API with Markdown drafts under bounded Git history, recipient readiness, send/void/reissue, and recipient decisions (view, decline, approve, sign)
+- Instance-scoped Envelope API with Markdown drafts under bounded Git history, recipient readiness, send/void/reissue, and recipient decisions (view, decline, approve, sign)
 - Deterministic executed agreement PDFs rendered from the pinned revision, with immutable completion artifacts and hash-chained audit evidence re-derived from Git plus SQL
-- Fail-closed secure bootstrap (configured owner email; local-only unsafe opt-in), d6e-auth OAuth, API-key agent access with per-organization grants, and signed retryable webhooks behind a deployer allowlist
+- Fail-closed secure bootstrap (configured owner email; local-only unsafe opt-in), d6e-auth OAuth, owner-bound API-key agent access, and signed retryable webhooks behind a deployer allowlist
 - PostgreSQL 18 and D1 migrations with parity suites, S3-compatible and R2 object storage, durable background drains with bounded leases, and backup/restore runbooks for PostgreSQL/S3 and D1-Time-Travel/R2
 - First-party Rust CLI (`signkit` under `cli/`) and the Cloudflare deployment CLI (`create-signkit --cloudflare ...`) that reconciles Worker/D1/R2 from GitHub Releases
 
@@ -53,7 +53,7 @@ SignKit provides two repository-packaged agent skills. Users can discover and in
 npx skills add https://github.com/d6e-ai/signkit
 ```
 
-- `signkit-api` — Calling the `/api/v1` HTTP API, capability discovery, organization scoping, API-key reads and authoring/send mutations, UUIDv7 validation, and RFC 9457 error handling.
+- `signkit-api` — Calling the `/api/v1` HTTP API, capability discovery, instance-scoped API-key reads and authoring/send mutations, UUIDv7 validation, and RFC 9457 error handling.
 - `signkit-cli` — Building, configuring, and operating the agent-first Rust CLI (`signkit`), credential hygiene, loopback networking, mutations, DOCX import/export, and exit codes.
 
 ## Documentation

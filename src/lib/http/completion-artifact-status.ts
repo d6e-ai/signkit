@@ -4,10 +4,7 @@ import type {
 	CompletionArtifactStatusService,
 	PublicCompletionArtifactStatus
 } from '$lib/application/completion-artifacts/completion-artifact-status';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -22,7 +19,7 @@ export type CompletionArtifactStatusServiceResolver = (
 ) => CompletionArtifactStatusService | null | Promise<CompletionArtifactStatusService | null>;
 
 /**
- * Organization-authorized, explicit-allowlist status read. It never returns
+ * Instance-authorized, explicit-allowlist status read. It never returns
  * storage keys, audit hashes, recipient email/name, raw field values,
  * capability material, or internal claim tokens.
  */
@@ -30,7 +27,7 @@ export function createCompletionArtifactStatusHandler(
 	resolveService: CompletionArtifactStatusServiceResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -57,16 +54,13 @@ export function createCompletionArtifactStatusHandler(
 		if (service === null) return unavailable(url.pathname);
 
 		try {
-			const status: PublicCompletionArtifactStatus | null = await service.find(
-				authorized.organizationId,
-				envelopeId.data
-			);
+			const status: PublicCompletionArtifactStatus | null = await service.find(envelopeId.data);
 			if (status === null) {
 				return problemResponse({
 					type: 'urn:signkit:problem:envelope-not-found',
 					title: 'Envelope not found',
 					status: 404,
-					detail: 'No envelope was found in the authorized organization.',
+					detail: 'No envelope was found.',
 					instance: url.pathname
 				});
 			}

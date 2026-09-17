@@ -25,7 +25,6 @@ interface AuditHeadRow {
 }
 
 interface VoidCommandRow {
-	organization_id: string;
 	envelope_id: string;
 	actor_type: string;
 	actor_id: string;
@@ -52,7 +51,6 @@ interface VoidCommandRow {
 	projection_has_revocable_recipient: number;
 	projection_has_unsafe_delivery: number;
 	evidence_event_id: string | null;
-	evidence_organization_id: string | null;
 	evidence_envelope_id: string | null;
 	evidence_sequence: number | null;
 	evidence_event_type: string | null;
@@ -65,7 +63,7 @@ interface VoidCommandRow {
 	evidence_hash_version: number | string | null;
 }
 
-const VOID_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_id,
+const VOID_COMMAND_COLUMNS: string = `command.envelope_id,
 	command.actor_type, command.actor_id, command.idempotency_key, command.request_hash,
 	command.previous_status, command.expected_generation, command.repository_head,
 	command.sent_commit_sha, command.updated_at, command.audit_event_id, command.audit_sequence,
@@ -77,8 +75,7 @@ const VOID_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_
 	envelope.sent_commit_sha AS projection_sent_commit_sha,
 	(SELECT json_group_array(id) FROM (
 		SELECT recipient.id FROM recipient
-		WHERE recipient.organization_id = command.organization_id
-			AND recipient.envelope_id = command.envelope_id
+		WHERE recipient.envelope_id = command.envelope_id
 			AND recipient.status <> 'completed'
 			AND recipient.capability_hash IS NOT NULL
 			AND recipient.capability_revoked_at = command.updated_at
@@ -86,21 +83,18 @@ const VOID_COMMAND_COLUMNS: string = `command.organization_id, command.envelope_
 	)) AS projection_revoked_recipient_ids_json,
 	EXISTS (
 		SELECT 1 FROM recipient
-		WHERE recipient.organization_id = command.organization_id
-			AND recipient.envelope_id = command.envelope_id
+		WHERE recipient.envelope_id = command.envelope_id
 			AND recipient.status <> 'completed'
 			AND recipient.capability_hash IS NOT NULL
 			AND recipient.capability_revoked_at IS NULL
 	) AS projection_has_revocable_recipient,
 	EXISTS (
 		SELECT 1 FROM delivery_outbox delivery
-		WHERE delivery.organization_id = command.organization_id
-			AND delivery.envelope_id = command.envelope_id
+		WHERE delivery.envelope_id = command.envelope_id
 			AND (delivery.status IN ('blocked', 'pending', 'processing')
 				OR delivery.retryable = 1 OR delivery.sealed_capability IS NOT NULL)
 	) AS projection_has_unsafe_delivery,
-	evidence.id AS evidence_event_id, evidence.organization_id AS evidence_organization_id,
-	evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
+	evidence.id AS evidence_event_id, evidence.envelope_id AS evidence_envelope_id, evidence.sequence AS evidence_sequence,
 	evidence.event_type AS evidence_event_type, evidence.actor_type AS evidence_actor_type,
 	evidence.actor_id AS evidence_actor_id, evidence.payload_json AS evidence_payload_json,
 	evidence.previous_hash AS evidence_previous_hash, evidence.event_hash AS evidence_event_hash,
@@ -128,10 +122,7 @@ export class D1EnvelopeVoidStore implements EnvelopeVoidStore {
 			row.revoked_recipient_ids_json
 		);
 		if (revokedRecipientIds === null) return { outcome: 'integrity_error' };
-		const auditHead: VoidAuditHead | null = await this.#readAuditHead(
-			key.organizationId,
-			key.envelopeId
-		);
+		const auditHead: VoidAuditHead | null = await this.#readAuditHead(key.envelopeId);
 		if (auditHead === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
@@ -150,15 +141,14 @@ export class D1EnvelopeVoidStore implements EnvelopeVoidStore {
 		const statement: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO envelope_void_command (
-					organization_id, envelope_id, actor_type, actor_id, idempotency_key, request_hash,
+					envelope_id, actor_type, actor_id, idempotency_key, request_hash,
 					previous_status, expected_generation, repository_head, sent_commit_sha,
 					updated_at, audit_event_id, audit_sequence, previous_audit_hash,
 					audit_event_hash, audit_payload_json, revocation_evidence_version,
 					revoked_recipient_ids_json, revoked_recipient_count
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
 			)
 			.bind(
-				command.organizationId,
 				command.envelopeId,
 				command.actorType,
 				command.actorId,
@@ -207,31 +197,29 @@ export class D1EnvelopeVoidStore implements EnvelopeVoidStore {
 					envelope.sent_commit_sha,
 					EXISTS (
 						SELECT 1 FROM delivery_outbox delivery
-						WHERE delivery.organization_id = envelope.organization_id
-							AND delivery.envelope_id = envelope.id AND delivery.status = 'processing'
+						WHERE delivery.envelope_id = envelope.id AND delivery.status = 'processing'
 					) AS delivery_in_flight,
 					(SELECT json_group_array(id) FROM (
 						SELECT recipient.id FROM recipient
-						WHERE recipient.organization_id = envelope.organization_id
-							AND recipient.envelope_id = envelope.id
+						WHERE recipient.envelope_id = envelope.id
 							AND recipient.status <> 'completed'
 							AND recipient.capability_hash IS NOT NULL
 							AND recipient.capability_revoked_at IS NULL
 						ORDER BY recipient.id
 					)) AS revoked_recipient_ids_json
-				 FROM envelope WHERE organization_id = ? AND id = ? LIMIT 1`
+				 FROM envelope WHERE id = ? LIMIT 1`
 			)
-			.bind(key.organizationId, key.envelopeId)
+			.bind(key.envelopeId)
 			.first<EnvelopeProjectionRow>();
 	}
 
-	async #readAuditHead(organizationId: string, envelopeId: string): Promise<VoidAuditHead | null> {
+	async #readAuditHead(envelopeId: string): Promise<VoidAuditHead | null> {
 		const row: AuditHeadRow | null = await this.#database
 			.prepare(
 				`SELECT sequence, event_hash FROM audit_event
-				 WHERE organization_id = ? AND envelope_id = ? ORDER BY sequence DESC LIMIT 1`
+				 WHERE envelope_id = ? ORDER BY sequence DESC LIMIT 1`
 			)
-			.bind(organizationId, envelopeId)
+			.bind(envelopeId)
 			.first<AuditHeadRow>();
 		return row === null ? null : { sequence: row.sequence, eventHash: row.event_hash };
 	}
@@ -241,14 +229,12 @@ export class D1EnvelopeVoidStore implements EnvelopeVoidStore {
 			.prepare(
 				`SELECT ${VOID_COMMAND_COLUMNS}
 				 FROM envelope_void_command command
-				 LEFT JOIN envelope ON envelope.organization_id = command.organization_id
-					AND envelope.id = command.envelope_id
-				 LEFT JOIN audit_event evidence ON evidence.organization_id = command.organization_id
-					AND evidence.id = command.audit_event_id
-				 WHERE command.organization_id = ? AND command.actor_type = ?
+				 LEFT JOIN envelope ON envelope.id = command.envelope_id
+				 LEFT JOIN audit_event evidence ON evidence.id = command.audit_event_id
+				 WHERE command.actor_type = ?
 					AND command.actor_id = ? AND command.idempotency_key = ? LIMIT 1`
 			)
-			.bind(key.organizationId, key.actorType, key.actorId, key.idempotencyKey)
+			.bind(key.actorType, key.actorId, key.idempotencyKey)
 			.first<VoidCommandRow>();
 		if (row === null) return null;
 		if (
@@ -293,7 +279,7 @@ async function validReplay(row: VoidCommandRow): Promise<boolean> {
 			payload: payloadValue,
 			previousHash: row.previous_audit_hash
 		},
-		{ organizationId: row.organization_id, envelopeId: row.envelope_id }
+		{ envelopeId: row.envelope_id }
 	);
 	const projectedIds: readonly string[] | null = parseStringArray(
 		row.projection_revoked_recipient_ids_json
@@ -303,7 +289,6 @@ async function validReplay(row: VoidCommandRow): Promise<boolean> {
 		auditPayloadJson === row.audit_payload_json &&
 		auditEventHash === row.audit_event_hash &&
 		row.evidence_event_id === row.audit_event_id &&
-		row.evidence_organization_id === row.organization_id &&
 		row.evidence_envelope_id === row.envelope_id &&
 		row.evidence_sequence === row.audit_sequence &&
 		row.evidence_event_type === 'envelope.voided' &&

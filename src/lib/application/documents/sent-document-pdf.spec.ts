@@ -28,7 +28,6 @@ import {
 	renderRevisionPdf
 } from './sent-document-pdf';
 
-const ORGANIZATION_ID = '01900000-0000-7000-8000-000000000002';
 const ENVELOPE_ID = '01900000-0000-7000-8000-000000000001';
 const MARKDOWN_A_ID = '01900000-0000-7000-8000-000000000021';
 const PDF_ID = '01900000-0000-7000-8000-000000000022';
@@ -102,14 +101,14 @@ async function pinnedMixedRevision(
 		'seed mixed bundle',
 		actor
 	);
-	const archiveKey: string = draftArchiveKey(ORGANIZATION_ID, ENVELOPE_ID, version.archiveSha256);
+	const archiveKey: string = draftArchiveKey(ENVELOPE_ID, version.archiveSha256);
 	await objects.putImmutable(archiveKey, {
 		contentType: 'application/vnd.signkit.git-archive+gzip',
 		body: version.archive,
 		sha256: version.archiveSha256
 	});
 	if (includeUploadedPdf) {
-		await objects.putImmutable(uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, uploadedSha256), {
+		await objects.putImmutable(uploadedPdfObjectKey(ENVELOPE_ID, uploadedSha256), {
 			contentType: 'application/pdf',
 			body: uploadedBytes,
 			sha256: uploadedSha256
@@ -117,7 +116,6 @@ async function pinnedMixedRevision(
 	}
 	return {
 		revision: {
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			commitSha: version.commitSha,
 			archiveKey,
@@ -132,34 +130,28 @@ async function pinnedMixedRevision(
 }
 
 describe('sentPdfObjectKey', () => {
-	it('is content-addressed and tenant-scoped, and round-trips', () => {
+	it('is content-addressed and instance-scoped, and round-trips', () => {
 		const sha256: string = 'a'.repeat(64);
-		const key: string = sentPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, sha256);
-		expect(key).toBe(
-			`sent-documents/v1/organizations/${ORGANIZATION_ID}/envelopes/${ENVELOPE_ID}/sha256/${sha256}.pdf`
-		);
+		const key: string = sentPdfObjectKey(ENVELOPE_ID, sha256);
+		expect(key).toBe(`sent-documents/v1/envelopes/${ENVELOPE_ID}/sha256/${sha256}.pdf`);
 		expect(parseSentPdfObjectKey(key)).toEqual({
-			organizationId: ORGANIZATION_ID,
 			envelopeId: ENVELOPE_ID,
 			sha256
 		});
 	});
 
 	it('escapes scope segments so no identifier can climb out of its prefix', () => {
-		const key: string = sentPdfObjectKey('../escape', 'env/../other', 'b'.repeat(64));
+		const key: string = sentPdfObjectKey('env/../other', 'b'.repeat(64));
 		expect(key).not.toContain('..');
-		expect(key.split('/')).toHaveLength(8);
+		expect(key.split('/')).toHaveLength(6);
 		expect(parseSentPdfObjectKey(key)).toEqual({
-			organizationId: '../escape',
 			envelopeId: 'env/../other',
 			sha256: 'b'.repeat(64)
 		});
 	});
 
 	it('rejects a digest that is not a SHA-256 hex string', () => {
-		expect(() => sentPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, 'nope')).toThrow(
-			SentDocumentPdfError
-		);
+		expect(() => sentPdfObjectKey(ENVELOPE_ID, 'nope')).toThrow(SentDocumentPdfError);
 		expect(parseSentPdfObjectKey('sent-documents/v1/anything.pdf')).toBeNull();
 	});
 });
@@ -270,14 +262,11 @@ describe('SentDocumentPdfService', () => {
 			body: archive,
 			sha256: seeded.revision.archiveSha256
 		});
-		await hostile.putImmutable(
-			uploadedPdfObjectKey(ORGANIZATION_ID, ENVELOPE_ID, seeded.uploadedSha256),
-			{
-				contentType: 'application/pdf',
-				body: seeded.uploadedBytes,
-				sha256: seeded.uploadedSha256
-			}
-		);
+		await hostile.putImmutable(uploadedPdfObjectKey(ENVELOPE_ID, seeded.uploadedSha256), {
+			contentType: 'application/pdf',
+			body: seeded.uploadedBytes,
+			sha256: seeded.uploadedSha256
+		});
 
 		await expect(
 			new SentDocumentPdfService(hostile, repository).publish(seeded.revision)

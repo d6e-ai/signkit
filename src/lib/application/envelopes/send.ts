@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import {
 	isActionableRecipientRole,
 	isPostSendInvitationRecipientRole,
@@ -90,7 +90,6 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		);
 		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key = {
-			organizationId: actor.organizationId,
 			envelopeId,
 			actorType,
 			actorId: actor.id,
@@ -158,7 +157,6 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 				const deliveryId: string = this.#newId();
 				const capability = await issueRecipientCapability();
 				const sealed = await this.#sealer.seal(capability.token, {
-					organizationId: actor.organizationId,
 					envelopeId,
 					recipientId: recipient.id,
 					deliveryId
@@ -214,7 +212,7 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 			documentCount: sentDocumentSet.documentCount,
 			documents: sentAuditDocuments(sentDocumentSet.documents)
 		});
-		const auditEventHash: string = await hashAuditEventV2(
+		const auditEventHash: string = await hashAuditEventV3(
 			{
 				sequence: preparation.auditHead.sequence + 1,
 				eventType: 'envelope.sent',
@@ -224,7 +222,7 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 				payload: JSON.parse(auditPayloadJson) as unknown,
 				previousHash: preparation.auditHead.eventHash
 			},
-			{ organizationId: actor.organizationId, envelopeId }
+			{ envelopeId }
 		);
 		const command: PublishSentEnvelopeCommand = {
 			...key,
@@ -264,7 +262,6 @@ function assertExpectedGeneration(expectedGeneration: number): void {
  * envelope row rather than from anything the caller supplied.
  */
 function pinnedRevision(envelope: {
-	organizationId: string;
 	id: string;
 	repositoryHead: string | null;
 	repositoryArchiveKey: string | null;
@@ -278,7 +275,6 @@ function pinnedRevision(envelope: {
 		return null;
 	}
 	return {
-		organizationId: envelope.organizationId,
 		envelopeId: envelope.id,
 		commitSha: envelope.repositoryHead,
 		archiveKey: envelope.repositoryArchiveKey,

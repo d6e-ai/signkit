@@ -11,7 +11,7 @@ import { EnvelopeReadyApplication, InvalidRecipientGraphError } from './ready';
 
 const envelope: Envelope = {
 	id: '01900000-0000-7000-8000-000000000001',
-	organizationId: '01900000-0000-7000-8000-000000000002',
+	createdByUserId: 'user-1',
 	title: 'Agreement',
 	status: 'draft',
 	repositoryGeneration: 2,
@@ -26,8 +26,7 @@ const envelope: Envelope = {
 
 const actor = {
 	id: 'user-1',
-	organizationId: envelope.organizationId,
-	organizationName: 'Workspace'
+	createdByUserId: 'user-1'
 } as const;
 
 class CapturingStore implements EnvelopeReadyStore {
@@ -71,7 +70,6 @@ describe('EnvelopeReadyApplication', () => {
 
 		expect(result.outcome).toBe('published');
 		expect(store.keys[0]).toMatchObject({
-			organizationId: envelope.organizationId,
 			envelopeId: envelope.id,
 			actorType: 'user',
 			actorId: actor.id,

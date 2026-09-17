@@ -44,14 +44,13 @@ describe('readImmutableDraftRevision', () => {
 			'Initial agreement',
 			{ id: 'user-1', name: 'User', email: 'user@example.com', type: 'user' }
 		);
-		const archiveKey: string = draftArchiveKey('org-1', 'env-1', version.archiveSha256);
+		const archiveKey: string = draftArchiveKey('env-1', version.archiveSha256);
 		const objects = new ReadOnlyObjectStore();
 		objects.seed(archiveKey, version.archive);
 
 		await expect(
 			readImmutableDraftRevision(
 				{
-					organizationId: 'org-1',
 					envelopeId: 'env-1',
 					commitSha: version.commitSha,
 					archiveKey,
@@ -71,7 +70,6 @@ describe('readImmutableDraftRevision', () => {
 		await expect(
 			readImmutableDraftRevision(
 				{
-					organizationId: 'org-1',
 					envelopeId: 'env-1',
 					commitSha: 'a'.repeat(40),
 					archiveKey: 'other/archive.git.gz',
@@ -92,9 +90,8 @@ describe('readImmutableDraftRevision', () => {
 			'Initial agreement',
 			{ id: 'user-1', name: 'User', email: 'user@example.com', type: 'user' }
 		);
-		const archiveKey: string = draftArchiveKey('org-1', 'env-1', version.archiveSha256);
+		const archiveKey: string = draftArchiveKey('env-1', version.archiveSha256);
 		const revision = {
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			commitSha: version.commitSha,
 			archiveKey,

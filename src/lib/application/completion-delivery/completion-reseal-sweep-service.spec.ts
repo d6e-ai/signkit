@@ -68,7 +68,6 @@ describe('CompletionDeliveryResealSweepService', () => {
 		const beforeRotation = new AesGcmCompletionTokenSealer(previousKey);
 		const issued = await issueCompletionToken();
 		const context = {
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
@@ -79,7 +78,6 @@ describe('CompletionDeliveryResealSweepService', () => {
 		store.rows = [
 			{
 				deliveryId: context.deliveryId,
-				organizationId: context.organizationId,
 				envelopeId: context.envelopeId,
 				recipientId: context.recipientId,
 				sealedToken: sealed.sealedToken,
@@ -108,7 +106,6 @@ describe('CompletionDeliveryResealSweepService', () => {
 		const retiredSealer = new AesGcmCompletionTokenSealer(key(200));
 		const issued = await issueCompletionToken();
 		const context = {
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			deliveryId: 'delivery-1'
@@ -119,7 +116,6 @@ describe('CompletionDeliveryResealSweepService', () => {
 		store.rows = [
 			{
 				deliveryId: context.deliveryId,
-				organizationId: context.organizationId,
 				envelopeId: context.envelopeId,
 				recipientId: context.recipientId,
 				sealedToken: sealed.sealedToken,

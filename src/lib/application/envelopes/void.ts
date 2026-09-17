@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { EnvelopeRequestActor } from './model';
 import { envelopeActorType } from './model';
@@ -60,7 +60,6 @@ export class EnvelopeVoidApplication implements EnvelopeVoidApplicationPort {
 		);
 		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key: VoidCommandKey = {
-			organizationId: actor.organizationId,
 			envelopeId,
 			actorType,
 			actorId: actor.id,
@@ -98,7 +97,7 @@ export class EnvelopeVoidApplication implements EnvelopeVoidApplicationPort {
 					recipientIds: revokedRecipientIds
 				}
 			});
-			const auditEventHash: string = await hashAuditEventV2(
+			const auditEventHash: string = await hashAuditEventV3(
 				{
 					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'envelope.voided',
@@ -108,7 +107,7 @@ export class EnvelopeVoidApplication implements EnvelopeVoidApplicationPort {
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
 				},
-				{ organizationId: actor.organizationId, envelopeId }
+				{ envelopeId }
 			);
 			const command: PublishVoidedEnvelopeCommand = {
 				...key,

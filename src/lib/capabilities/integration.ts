@@ -5,11 +5,8 @@ export const integrationCapabilities = {
 	apiKeyAuthentication: {
 		scheme: 'bearer',
 		tokenPrefix: 'signkit',
-		organizationSelector: 'SignKit-Organization-Id',
-		organizationSelectorRequired: true,
-		grantModel: 'explicit-per-organization',
-		multipleOrganizationsPerKey: true,
-		effectiveAuthority: 'key-scopes-intersected-with-requested-live-grant',
+		authority: 'active-instance-member-key-owner',
+		effectiveAuthority: 'key-scopes-intersected-with-active-owner-membership',
 		enabledScopes: ['envelopes:read', 'drafts:write', 'envelopes:send'],
 		mintedButUnusableScopes: ['audit:read'],
 		readEndpoints: [
@@ -48,14 +45,7 @@ export const integrationCapabilities = {
 			windowSeconds: API_KEY_RATE_WINDOW_SECONDS,
 			maxRequests: API_KEY_RATE_WINDOW_MAX_REQUESTS
 		},
-		actor: { type: 'agent', id: 'api-key-uuidv7' },
-		grantManagement: {
-			create: '/api/v1/api-keys/{apiKeyId}/organization-grants',
-			list: '/api/v1/api-keys/{apiKeyId}/organization-grants',
-			revoke: '/api/v1/api-keys/{apiKeyId}/organization-grants/{grantId}/revoke'
-		},
-		grantAuthority: 'key-owner-and-d6e-organization-owner-or-admin',
-		grantRevokeAuthority: ['key_owner', 'organization_admin']
+		actor: { type: 'agent', id: 'api-key-uuidv7' }
 	},
 	webhooks: {
 		status: 'supported',
@@ -70,7 +60,7 @@ export const integrationCapabilities = {
 		workerAuthentication: 'bearer-secret',
 		signature: 'hmac-sha256-timestamp',
 		secretReveal: 'once',
-		tenantIsolation: 'organization',
+		tenantIsolation: 'instance',
 		outbox: 'durable-atomic-with-audit-event',
 		ssrfDefense: [
 			'https-only',

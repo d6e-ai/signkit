@@ -134,7 +134,6 @@ export async function resolveDeclinedReceiptPage(
 		});
 		if (application === null) return { state: 'unavailable' };
 		const receiptLocator: RecipientDeclinedReceiptLocator = {
-			organizationId: locator.organizationId,
 			envelopeId: locator.envelopeId,
 			recipientId: locator.recipientId,
 			idempotencyKey: locator.idempotencyKey,

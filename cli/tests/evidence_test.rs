@@ -4,7 +4,7 @@ use clap::Parser;
 use signkit_cli::args::Cli;
 use signkit_cli::error::ExitCode;
 use signkit_cli::run_cli;
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 #[tokio::test]
@@ -20,7 +20,6 @@ async fn test_envelopes_evidence_downloads_json_bytes() {
             common::TEST_ENVELOPE_ID
         )))
         .and(query_param("format", "json"))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
@@ -34,8 +33,6 @@ async fn test_envelopes_evidence_downloads_json_bytes() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "evidence",
         common::TEST_ENVELOPE_ID,
@@ -72,8 +69,6 @@ async fn test_envelopes_evidence_downloads_markdown_bytes() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "evidence",
         common::TEST_ENVELOPE_ID,
@@ -98,7 +93,6 @@ async fn test_envelopes_pdf_downloads_bytes() {
             "/api/v1/envelopes/{}/pdf",
             common::TEST_ENVELOPE_ID
         )))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/pdf")
@@ -112,8 +106,6 @@ async fn test_envelopes_pdf_downloads_bytes() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "pdf",
         common::TEST_ENVELOPE_ID,
@@ -152,8 +144,6 @@ async fn test_envelopes_evidence_not_found_uses_existing_exit_code() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "evidence",
         common::TEST_ENVELOPE_ID,

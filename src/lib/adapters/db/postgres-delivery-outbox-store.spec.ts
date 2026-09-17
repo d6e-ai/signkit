@@ -58,7 +58,6 @@ const claimCommand: ClaimInvitationDeliveriesCommand = {
 function candidateRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		deliveryId: 'delivery-1',
-		organizationId: 'org-1',
 		envelopeId: 'env-1',
 		recipientId: 'recipient-1',
 		capabilityHash: 'capability-hash-1',
@@ -128,7 +127,6 @@ describe('PostgresDeliveryOutboxStore.claimPendingInvitations', () => {
 			claimCommand.claimToken,
 			claimCommand.claimedAt,
 			claimCommand.claimedAt,
-			'org-1',
 			'delivery-1',
 			claimCommand.claimedAt,
 			claimCommand.staleBefore
@@ -137,7 +135,6 @@ describe('PostgresDeliveryOutboxStore.claimPendingInvitations', () => {
 		expect(claimed).toHaveLength(2);
 		expect(claimed[0]).toEqual({
 			deliveryId: 'delivery-1',
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			kind: 'recipient_invitation',
@@ -204,24 +201,18 @@ describe('PostgresDeliveryOutboxStore.readClaimedInvitation', () => {
 			]
 		]);
 		const result = await new PostgresDeliveryOutboxStore(scripted.client()).readClaimedInvitation({
-			organizationId: 'org-1',
 			deliveryId: 'delivery-1',
 			claimToken: claimCommand.claimToken
 		});
 
 		expect(result).toMatchObject({ attempts: 4, lockedAt: claimCommand.claimedAt });
-		expect(scripted.directQueries[0].values).toEqual([
-			'org-1',
-			'delivery-1',
-			claimCommand.claimToken
-		]);
+		expect(scripted.directQueries[0].values).toEqual(['delivery-1', claimCommand.claimToken]);
 		expect(scripted.directQueries[0].text).toContain("delivery.status = 'processing'");
 	});
 
 	it('returns null when the claim token is stale', async () => {
 		await expect(
 			new PostgresDeliveryOutboxStore(new ScriptedPostgres([[]]).client()).readClaimedInvitation({
-				organizationId: 'org-1',
 				deliveryId: 'delivery-1',
 				claimToken: 'stale-claim-token'
 			})
@@ -231,7 +222,6 @@ describe('PostgresDeliveryOutboxStore.readClaimedInvitation', () => {
 
 describe('PostgresDeliveryOutboxStore.completeInvitationDelivery', () => {
 	const completeCommand: CompleteInvitationDeliveryCommand = {
-		organizationId: 'org-1',
 		deliveryId: 'delivery-1',
 		claimToken: 'claim-token-0001',
 		deliveredAt: '2026-09-12T00:01:00.000Z',
@@ -255,13 +245,12 @@ describe('PostgresDeliveryOutboxStore.completeInvitationDelivery', () => {
 			completeCommand.deliveredAt,
 			completeCommand.providerMessageId,
 			completeCommand.deliveredAt,
-			completeCommand.organizationId,
 			completeCommand.deliveryId,
 			completeCommand.claimToken
 		]);
 	});
 
-	it('reports a stale outcome when the organization, delivery, status, or claim no longer match', async () => {
+	it('reports a stale outcome when the delivery, status, or claim no longer match', async () => {
 		const scripted = new ScriptedPostgres([[]]);
 		const store = new PostgresDeliveryOutboxStore(scripted.client());
 		const result = await store.completeInvitationDelivery(completeCommand);
@@ -271,7 +260,6 @@ describe('PostgresDeliveryOutboxStore.completeInvitationDelivery', () => {
 
 describe('PostgresDeliveryOutboxStore.failInvitationDelivery', () => {
 	const baseFailCommand: FailInvitationDeliveryCommand = {
-		organizationId: 'org-1',
 		deliveryId: 'delivery-1',
 		claimToken: 'claim-token-0001',
 		errorCode: 'mail_delivery_failed',
@@ -293,7 +281,6 @@ describe('PostgresDeliveryOutboxStore.failInvitationDelivery', () => {
 			baseFailCommand.nextAvailableAt,
 			baseFailCommand.errorCode,
 			baseFailCommand.failedAt,
-			baseFailCommand.organizationId,
 			baseFailCommand.deliveryId,
 			baseFailCommand.claimToken
 		]);
@@ -313,7 +300,6 @@ describe('PostgresDeliveryOutboxStore.failInvitationDelivery', () => {
 			command.nextAvailableAt,
 			command.errorCode,
 			command.failedAt,
-			command.organizationId,
 			command.deliveryId,
 			command.claimToken
 		]);

@@ -4,18 +4,16 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   INSERT INTO webhook_outbox (
-    organization_id, endpoint_id, audit_event_id, envelope_id, event_type,
+    endpoint_id, audit_event_id, envelope_id, event_type,
     payload_json, status, attempts, available_at, updated_at
   )
   SELECT
-    NEW.organization_id,
     endpoint.id,
     NEW.id,
     NEW.envelope_id,
     NEW.event_type,
     jsonb_build_object(
       'eventType', NEW.event_type,
-      'organizationId', NEW.organization_id,
       'envelopeId', NEW.envelope_id,
       'auditEventId', NEW.id,
       'sequence', NEW.sequence,
@@ -26,8 +24,7 @@ BEGIN
     NEW.occurred_at,
     NEW.occurred_at
   FROM webhook_endpoint endpoint
-  WHERE endpoint.organization_id = NEW.organization_id
-    AND endpoint.status = 'active'
+  WHERE endpoint.status = 'active'
     AND endpoint.events_json::jsonb @> to_jsonb(NEW.event_type);
   RETURN NEW;
 END;

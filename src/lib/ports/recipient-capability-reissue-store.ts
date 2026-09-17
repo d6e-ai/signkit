@@ -1,5 +1,4 @@
 export interface ReissueCommandKey {
-	organizationId: string;
 	envelopeId: string;
 	recipientId: string;
 	actorType: 'user' | 'agent' | 'system';

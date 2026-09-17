@@ -21,17 +21,12 @@ SELECT (CASE
       OR request_hash GLOB '*[^0-9a-f]*'
   )
   THEN json('existing webhook_endpoint_command rows violate constraints')
-  WHEN EXISTS (
-    SELECT 1 FROM webhook_endpoint
-    WHERE status = 'active'
-    GROUP BY organization_id
-    HAVING COUNT(*) > 20
-  )
-  THEN json('existing organization exceeds active webhook endpoint limit')
+  WHEN (SELECT COUNT(*) FROM webhook_endpoint WHERE status = 'active') > 20
+  THEN json('instance exceeds active webhook endpoint limit')
   ELSE 1
 END);
 
--- 2. Cap guard triggers (atomic enforcement of max 20 active endpoints per organization).
+-- 2. Cap guard triggers (atomic enforcement of max 20 active endpoints per instance).
 DROP TRIGGER IF EXISTS webhook_endpoint_active_cap_guard;
 CREATE TRIGGER webhook_endpoint_active_cap_guard
 BEFORE INSERT ON webhook_endpoint
@@ -41,10 +36,9 @@ BEGIN
     WHEN (
       SELECT COUNT(*)
       FROM webhook_endpoint
-      WHERE organization_id = NEW.organization_id
-        AND status = 'active'
+      WHERE status = 'active'
     ) >= 20
-    THEN RAISE(ABORT, 'organization active webhook endpoint limit exceeded')
+    THEN RAISE(ABORT, 'instance active webhook endpoint limit exceeded')
   END);
 END;
 
@@ -57,10 +51,9 @@ BEGIN
     WHEN (
       SELECT COUNT(*)
       FROM webhook_endpoint
-      WHERE organization_id = NEW.organization_id
-        AND status = 'active'
+      WHERE status = 'active'
     ) >= 20
-    THEN RAISE(ABORT, 'organization active webhook endpoint limit exceeded')
+    THEN RAISE(ABORT, 'instance active webhook endpoint limit exceeded')
   END);
 END;
 

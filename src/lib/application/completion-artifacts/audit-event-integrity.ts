@@ -1,9 +1,7 @@
 import {
-	AUDIT_HASH_VERSION_V1,
 	COMPLETION_AUDIT_ANCHOR_EVENT_TYPE,
 	CURRENT_AUDIT_HASH_VERSION,
 	DRAFT_REVISION_EVENT_TYPE,
-	LEGACY_V1_FIXED_ACTOR_TYPES,
 	auditEventHashPreimage as domainAuditEventHashPreimage,
 	isAllowedActorType,
 	isAuditEventType,
@@ -24,12 +22,6 @@ export {
 	CURRENT_AUDIT_HASH_VERSION,
 	DRAFT_REVISION_EVENT_TYPE
 };
-
-/** @deprecated Use the registry in `$lib/domain/audit`; kept for existing imports. */
-export const COMPLETION_AUDIT_EVENT_ACTOR_TYPES: Readonly<Record<string, string>> =
-	LEGACY_V1_FIXED_ACTOR_TYPES;
-
-export const DRAFT_REVISION_ACTOR_TYPES: ReadonlySet<string> = new Set(['user', 'agent', 'system']);
 
 /** Sum of every `payloadJson` byte length in a chain; bounds work before any hashing happens. */
 export const MAX_AUDIT_CHAIN_PAYLOAD_BYTES: number = 4 * 1024 * 1024;
@@ -56,9 +48,9 @@ export interface CompletionAuditChainVerification {
 }
 
 /**
- * Reproduces the exact JSON.stringify preimage each writer hashed. v1 keeps the
- * historical two-shape contract so legacy rows still verify; v2 includes
- * `hashVersion`, `actorType`, and `actorId` for every event.
+ * Reproduces the exact JSON.stringify preimage each writer hashed: the single
+ * hash version, which includes `hashVersion`, `actorType`, and `actorId` for
+ * every event.
  */
 export function auditEventHashPreimage(
 	event: CompletionEvidenceAuditEvent,
@@ -202,29 +194,11 @@ function hashVersionOf(event: CompletionEvidenceAuditEvent): AuditHashVersion {
 }
 
 function assertExpectedActorType(event: CompletionEvidenceAuditEvent): void {
-	const version: AuditHashVersion = hashVersionOf(event);
+	hashVersionOf(event);
 	if (!isAuditEventType(event.eventType)) {
 		throw new CompletionArtifactIntegrityError(
 			`Completion audit event has an unknown event type: ${event.eventType}`
 		);
-	}
-
-	if (version === AUDIT_HASH_VERSION_V1) {
-		if (event.eventType === DRAFT_REVISION_EVENT_TYPE) {
-			if (!DRAFT_REVISION_ACTOR_TYPES.has(event.actorType)) {
-				throw new CompletionArtifactIntegrityError(
-					'Draft revision audit event has an unexpected actor type'
-				);
-			}
-			return;
-		}
-		const expectedActorType: string | undefined = LEGACY_V1_FIXED_ACTOR_TYPES[event.eventType];
-		if (expectedActorType === undefined || event.actorType !== expectedActorType) {
-			throw new CompletionArtifactIntegrityError(
-				'Completion audit event has an unexpected actor type'
-			);
-		}
-		return;
 	}
 
 	if (!isAllowedActorType(event.eventType, event.actorType)) {

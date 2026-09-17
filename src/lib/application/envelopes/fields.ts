@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import {
 	fieldTypes,
 	type EnvelopeField,
@@ -113,7 +113,6 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 		const requestFingerprint: string = await sha256(canonicalRequest);
 		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key = {
-			organizationId: actor.organizationId,
 			envelopeId,
 			actorType,
 			actorId: actor.id,
@@ -138,7 +137,6 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 		}
 
 		const workspace: DraftWorkspaceSnapshot = await this.#drafts.readWorkspace({
-			organizationId: actor.organizationId,
 			envelopeId
 		});
 		if (
@@ -180,7 +178,6 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 		const fields: readonly EnvelopeField[] = canonicalFields.map(
 			(field: FieldPlacementInput): EnvelopeField => ({
 				id: this.#newId(),
-				organizationId: actor.organizationId,
 				envelopeId,
 				recipientId: field.recipientId,
 				documentId: field.documentId,
@@ -210,7 +207,7 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				geometry: field.geometry
 			}))
 		});
-		const auditEventHash: string = await hashAuditEventV2(
+		const auditEventHash: string = await hashAuditEventV3(
 			{
 				sequence: preparation.auditHead.sequence + 1,
 				eventType: 'envelope.fields_placed',
@@ -220,7 +217,7 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				payload: JSON.parse(auditPayloadJson) as unknown,
 				previousHash: preparation.auditHead.eventHash
 			},
-			{ organizationId: actor.organizationId, envelopeId }
+			{ envelopeId }
 		);
 		const command: PublishFieldPlacementCommand = {
 			...key,

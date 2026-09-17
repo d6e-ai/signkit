@@ -10,11 +10,24 @@
 	import IconSend from '@tabler/icons-svelte/icons/send';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
+	import IconFileTypeDocx from '@tabler/icons-svelte/icons/file-type-docx';
+	import IconFileTypePdf from '@tabler/icons-svelte/icons/file-type-pdf';
+	import IconAddressBook from '@tabler/icons-svelte/icons/address-book';
+	import ContactCombobox from '$lib/components/contacts/contact-combobox.svelte';
+	import ContactManagementDialog from '$lib/components/contacts/contact-management-dialog.svelte';
+	import {
+		ContactsApiError,
+		createContactMutationAttempt,
+		createContactsClient,
+		type Contact,
+		type ContactMutationAttempt
+	} from '$lib/client/contacts';
 	import PdfDocumentView, { type PdfRenderedPage } from '$lib/components/pdf-document-view.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Checkbox } from '$lib/components/ui/checkbox';
+	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
 	import * as Select from '$lib/components/ui/select';
@@ -40,6 +53,8 @@
 	} from '$lib/client/envelopes';
 	import type { DocumentSetLeaf, DocumentSetManifest } from '$lib/domain/document-set';
 	import { isMarkdownPath, type MarkdownPath, type RecipientStatus } from '$lib/domain/envelope';
+	import { normalizeRecipientEmail } from '$lib/domain/recipient-identity';
+	import { envelopeBreadcrumbTitle } from '$lib/navigation/envelope-breadcrumb-title';
 	import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
 	import * as m from '$lib/paraglide/messages';
@@ -54,6 +69,7 @@
 	} from './document-page-map';
 
 	const client = createEnvelopesClient();
+	const contactsClient = createContactsClient();
 	const envelopeId = $derived(page.params.envelopeId as string);
 
 	let loading = $state(true);
@@ -67,7 +83,9 @@
 	let editedContent = $state<Record<string, string>>({});
 	const dirtyPaths = new SvelteSet<string>();
 	let activeDocPath = $state<string | null>(null);
-	let newDocumentName = $state('');
+	let addDocumentDialogOpen = $state(false);
+	let docxInput = $state<HTMLInputElement | null>(null);
+	let pdfInput = $state<HTMLInputElement | null>(null);
 	let commitPending = $state(false);
 	let commitError = $state<string | null>(null);
 	let previewMode = $state<'formatted' | 'source'>('formatted');
@@ -80,8 +98,14 @@
 		role: RecipientRole;
 		locale: 'en' | 'ja';
 		routingOrder: number;
+		savedContact: Contact | null;
+		contactSaveAttempt: ContactMutationAttempt;
 	}
 	let recipientDrafts = $state<RecipientDraft[]>([]);
+	let contactManagementOpen = $state(false);
+	let contactSavePending = $state<Record<string, boolean>>({});
+	let contactSaveError = $state<Record<string, string | null>>({});
+	let contactSaveSucceeded = $state<Record<string, boolean>>({});
 	let readyPending = $state(false);
 	let readyError = $state<string | null>(null);
 	let readyRecipients = $state<readonly ReadyRecipientPublic[]>([]);
@@ -371,25 +395,6 @@
 		}
 	}
 
-	function addDocument(): void {
-		const name = newDocumentName
-			.trim()
-			.toLowerCase()
-			.replaceAll(/[^a-z0-9._-]+/g, '-')
-			.replace(/^-+|-+$/g, '');
-		if (name.length === 0) return;
-		const path = `documents/${name}.md`;
-		if (path in editedContent) {
-			activeDocPath = path;
-			return;
-		}
-		editedContent = { ...editedContent, [path]: `# ${documentTitle(path)}\n\n` };
-		dirtyPaths.add(path);
-		activeDocPath = path;
-		activeDocumentKey = `pending:${path}`;
-		newDocumentName = '';
-	}
-
 	function updateContent(path: string, content: string): void {
 		editedContent = { ...editedContent, [path]: content };
 		dirtyPaths.add(path);
@@ -442,13 +447,82 @@
 				name: '',
 				role: 'signer',
 				locale: getLocale() === 'ja' ? 'ja' : 'en',
-				routingOrder: recipientDrafts.length + 1
+				routingOrder: recipientDrafts.length + 1,
+				savedContact: null,
+				contactSaveAttempt: createContactMutationAttempt()
 			}
 		];
 	}
 
 	function removeRecipientDraft(key: string): void {
 		recipientDrafts = recipientDrafts.filter((draftItem) => draftItem.key !== key);
+	}
+
+	function applyContactToRecipient(key: string, contact: Contact): void {
+		const draftItem: RecipientDraft | undefined = recipientDrafts.find((item) => item.key === key);
+		if (draftItem === undefined) return;
+		// Contact reuse is identity-only. Workflow authority remains an explicit
+		// choice on this envelope and is never copied from the address book.
+		draftItem.email = contact.email;
+		draftItem.name = contact.name;
+		draftItem.locale = contact.locale;
+		draftItem.savedContact = contact;
+		draftItem.contactSaveAttempt.invalidate();
+		contactSaveError[key] = null;
+		contactSaveSucceeded[key] = false;
+	}
+
+	function markRecipientContactChanged(draftItem: RecipientDraft): void {
+		// Only an email edit that actually diverges from the linked contact's
+		// address breaks the link: email is the owner-scoped unique key, so
+		// changing it to a different address means the next save must create a
+		// separate contact. Name and locale edits (and an email edit that ends
+		// up unchanged) still describe the same contact, so the next save stays
+		// an update instead of colliding with the contact's own email.
+		if (
+			draftItem.savedContact !== null &&
+			normalizeRecipientEmail(draftItem.email) !== draftItem.savedContact.email
+		) {
+			draftItem.savedContact = null;
+		}
+		draftItem.contactSaveAttempt.invalidate();
+		contactSaveError[draftItem.key] = null;
+		contactSaveSucceeded[draftItem.key] = false;
+	}
+
+	async function saveRecipientToContacts(draftItem: RecipientDraft): Promise<void> {
+		if (contactSavePending[draftItem.key]) return;
+		contactSavePending[draftItem.key] = true;
+		contactSaveError[draftItem.key] = null;
+		contactSaveSucceeded[draftItem.key] = false;
+		const idempotencyKey: string = draftItem.contactSaveAttempt.key();
+		try {
+			const input = {
+				name: draftItem.name.trim(),
+				email: draftItem.email.trim(),
+				locale: draftItem.locale
+			};
+			const result =
+				draftItem.savedContact === null
+					? await contactsClient.create(input, { idempotencyKey })
+					: await contactsClient.update(
+							draftItem.savedContact.id,
+							{
+								...input,
+								expectedVersion: draftItem.savedContact.version
+							},
+							{ idempotencyKey }
+						);
+			draftItem.contactSaveAttempt.succeeded();
+			draftItem.savedContact = result.contact;
+			contactSaveSucceeded[draftItem.key] = true;
+		} catch (cause) {
+			draftItem.contactSaveAttempt.failed(cause);
+			contactSaveError[draftItem.key] =
+				cause instanceof ContactsApiError ? cause.detail : m.contacts_save_unavailable();
+		} finally {
+			contactSavePending[draftItem.key] = false;
+		}
 	}
 
 	async function markReady(): Promise<void> {
@@ -754,17 +828,15 @@
 		}
 	}
 
-	async function importDocx(fileList: FileList | null): Promise<void> {
-		if (fileList === null || fileList.length === 0 || draft === null || importPending) return;
-		const file = fileList[0];
+	async function importDocx(file: File | null): Promise<void> {
+		if (file === null || draft === null || importPending) return;
 		const sourceName = file.name.replace(/\.docx$/i, '');
 		const slug = sourceName
 			.trim()
 			.toLowerCase()
 			.replaceAll(/[^a-z0-9._-]+/g, '-')
 			.replace(/^-+|-+$/g, '');
-		const targetPath = (activeDocPath ??
-			`documents/${slug.length > 0 ? slug : 'imported'}.md`) as `documents/${string}.md`;
+		const targetPath = uniqueImportedDocumentPath(slug.length > 0 ? slug : 'imported');
 		importPending = true;
 		importError = null;
 		try {
@@ -774,13 +846,35 @@
 				file
 			});
 			activeDocPath = targetPath;
+			activeDocumentKey = `pending:${targetPath}`;
 			await reloadAuthoringSurface();
+			const importedDocument = draft?.documentSet?.documents.find(
+				(document) => document.kind === 'markdown' && document.path === targetPath
+			);
+			activeDocumentKey =
+				importedDocument !== undefined ? `set:${importedDocument.id}` : `pending:${targetPath}`;
 		} catch (cause) {
 			importError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_import_unavailable();
 		} finally {
 			importPending = false;
 		}
+	}
+
+	function uniqueImportedDocumentPath(slug: string): `documents/${string}.md` {
+		const occupied = new Set<string>([
+			...Object.keys(editedContent),
+			...(draft?.documentSet?.documents.flatMap((document) =>
+				document.kind === 'markdown' ? [document.path] : []
+			) ?? [])
+		]);
+		let suffix = 1;
+		let path = `documents/${slug}.md` as `documents/${string}.md`;
+		while (occupied.has(path)) {
+			suffix += 1;
+			path = `documents/${slug}-${suffix}.md`;
+		}
+		return path;
 	}
 
 	async function exportDocx(): Promise<void> {
@@ -808,9 +902,8 @@
 		}
 	}
 
-	async function uploadPdf(fileList: FileList | null): Promise<void> {
-		if (fileList === null || fileList.length === 0 || draft === null || pdfUploadPending) return;
-		const file = fileList[0];
+	async function uploadPdf(file: File | null): Promise<void> {
+		if (file === null || draft === null || pdfUploadPending) return;
 		pdfUploadPending = true;
 		pdfUploadError = null;
 		try {
@@ -949,6 +1042,11 @@
 	onMount(() => {
 		void reloadAuthoringSurface();
 	});
+
+	$effect(() => {
+		envelopeBreadcrumbTitle.set(envelope?.title.trim() || null);
+		return () => envelopeBreadcrumbTitle.set(null);
+	});
 </script>
 
 {#snippet renderMarkdownNode(node: RecipientMarkdownNode)}
@@ -971,7 +1069,7 @@
 	<title>{envelope?.title ?? m.envelope_detail_title()} — {m.app_name()}</title>
 </svelte:head>
 
-<div class="mx-auto flex w-full max-w-6xl flex-col gap-6">
+<div class="flex w-full flex-col gap-6">
 	{#if authRequired}
 		<Card.Root>
 			<Card.Content class="flex flex-col items-center gap-4 py-10 text-center">
@@ -1017,66 +1115,76 @@
 				{#if envelope.status === 'draft'}
 					<Card.Root>
 						<Card.Header class="flex-row items-center justify-between gap-3">
-							<div>
+							<div class="min-w-0">
 								<Card.Title>{m.envelope_documents_title()}</Card.Title>
 								<Card.Description>{m.envelope_documents_description()}</Card.Description>
 							</div>
+							<Button
+								variant="outline"
+								disabled={importPending || pdfUploadPending || draft === null}
+								onclick={() => (addDocumentDialogOpen = true)}
+							>
+								{#if importPending || pdfUploadPending}
+									<Spinner data-icon="inline-start" />
+								{:else}
+									<IconPlus data-icon="inline-start" />
+								{/if}
+								{m.envelope_add_document()}
+							</Button>
 						</Card.Header>
 						<Card.Content class="flex flex-col gap-4">
-							<div class="flex flex-wrap items-end gap-2">
-								<Field.Field class="min-w-48 flex-1">
-									<Field.FieldLabel for="new-doc-name">
-										{m.envelope_new_document_label()}
-									</Field.FieldLabel>
+							<Dialog.Root bind:open={addDocumentDialogOpen}>
+								<Dialog.Content closeLabel={m.common_cancel()}>
+									<Dialog.Header>
+										<Dialog.Title>{m.envelope_add_document_title()}</Dialog.Title>
+										<Dialog.Description>{m.envelope_add_document_description()}</Dialog.Description>
+									</Dialog.Header>
+									<div class="flex flex-col gap-3">
+										<Button
+											variant="outline"
+											class="h-auto justify-start py-4"
+											onclick={() => pdfInput?.click()}
+										>
+											<IconFileTypePdf data-icon="inline-start" />
+											{m.envelope_upload_pdf_action()}
+										</Button>
+										<Button
+											variant="outline"
+											class="h-auto justify-start py-4"
+											onclick={() => docxInput?.click()}
+										>
+											<IconFileTypeDocx data-icon="inline-start" />
+											{m.envelope_upload_docx_action()}
+										</Button>
+									</div>
 									<Input
-										id="new-doc-name"
-										bind:value={newDocumentName}
-										placeholder={m.envelope_new_document_placeholder()}
-									/>
-								</Field.Field>
-								<Button
-									variant="outline"
-									onclick={addDocument}
-									disabled={newDocumentName.trim().length === 0}
-								>
-									<IconPlus data-icon="inline-start" />{m.envelope_add_document()}
-								</Button>
-								<Field.Field class="w-fit">
-									<Field.FieldLabel for="docx-import"
-										>{m.envelope_import_docx_label()}</Field.FieldLabel
-									>
-									<Input
-										id="docx-import"
+										bind:ref={pdfInput}
+										class="sr-only"
 										type="file"
-										accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-										disabled={importPending || draft === null}
+										accept="application/pdf,.pdf"
+										aria-label={m.envelope_upload_pdf_action()}
 										onchange={(event) => {
-											const files = event.currentTarget.files;
+											const file = event.currentTarget.files?.[0] ?? null;
 											event.currentTarget.value = '';
-											void importDocx(files);
+											addDocumentDialogOpen = false;
+											void uploadPdf(file);
 										}}
 									/>
-									<Field.FieldDescription>{m.envelope_import_docx_hint()}</Field.FieldDescription>
-								</Field.Field>
-								<Field.Field class="w-fit">
-									<Field.FieldLabel for="pdf-upload">{m.envelope_add_pdf_label()}</Field.FieldLabel>
-									<div class="flex items-center gap-2">
-										<Input
-											id="pdf-upload"
-											type="file"
-											accept="application/pdf,.pdf"
-											disabled={pdfUploadPending || draft === null}
-											onchange={(event) => {
-												const files = event.currentTarget.files;
-												event.currentTarget.value = '';
-												void uploadPdf(files);
-											}}
-										/>
-										{#if pdfUploadPending}<Spinner data-icon="inline-start" />{/if}
-									</div>
-									<Field.FieldDescription>{m.envelope_add_pdf_hint()}</Field.FieldDescription>
-								</Field.Field>
-							</div>
+									<Input
+										bind:ref={docxInput}
+										class="sr-only"
+										type="file"
+										accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+										aria-label={m.envelope_upload_docx_action()}
+										onchange={(event) => {
+											const file = event.currentTarget.files?.[0] ?? null;
+											event.currentTarget.value = '';
+											addDocumentDialogOpen = false;
+											void importDocx(file);
+										}}
+									/>
+								</Dialog.Content>
+							</Dialog.Root>
 
 							{#if authoringDocuments.length === 0}
 								<p class="text-sm text-muted-foreground">{m.envelope_documents_empty()}</p>
@@ -1332,152 +1440,202 @@
 
 			<Tabs.Content value="recipients" class="flex flex-col gap-4">
 				<Card.Root>
-					<Card.Header>
-						<Card.Title>{m.envelope_recipients_title()}</Card.Title>
-						<Card.Description>{m.envelope_recipients_description()}</Card.Description>
+					<Card.Header class="flex-row items-center justify-between gap-3">
+						<div class="min-w-0">
+							<Card.Title>{m.envelope_recipients_title()}</Card.Title>
+							<Card.Description>{m.envelope_recipients_description()}</Card.Description>
+						</div>
+						<Button variant="outline" onclick={() => (contactManagementOpen = true)}>
+							<IconAddressBook data-icon="inline-start" />{m.contacts_manage_action()}
+						</Button>
 					</Card.Header>
 					<Card.Content class="flex flex-col gap-4">
 						{#if envelope.status === 'draft'}
 							<Field.FieldGroup>
-								<Table.Root>
-									<Table.Header>
-										<Table.Row>
-											<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
-											<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
-											<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
-										</Table.Row>
-									</Table.Header>
-									<Table.Body>
-										{#each recipientDrafts as draftItem (draftItem.key)}
+								<div class="overflow-x-auto">
+									<Table.Root>
+										<Table.Header>
 											<Table.Row>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-email-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_email()}</span>
-														</Field.FieldLabel>
-														<Input
-															id={`recipient-email-${draftItem.key}`}
-															type="email"
-															bind:value={draftItem.email}
-														/>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-name-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_name()}</span>
-														</Field.FieldLabel>
-														<Input
-															id={`recipient-name-${draftItem.key}`}
-															bind:value={draftItem.name}
-														/>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-role-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_role()}</span>
-														</Field.FieldLabel>
-														<Select.Root type="single" bind:value={draftItem.role}>
-															<Select.Trigger
-																id={`recipient-role-${draftItem.key}`}
-																class="w-full"
-																aria-label={m.envelope_recipient_col_role()}
-															>
-																{recipientRoleLabel(draftItem.role)}
-															</Select.Trigger>
-															<Select.Content>
-																<Select.Group>
-																	<Select.Item value="signer" label={m.signing_role_signer()}>
-																		{m.signing_role_signer()}
-																	</Select.Item>
-																	<Select.Item value="approver" label={m.signing_role_approver()}>
-																		{m.signing_role_approver()}
-																	</Select.Item>
-																	<Select.Item value="viewer" label={m.signing_role_viewer()}>
-																		{m.signing_role_viewer()}
-																	</Select.Item>
-																	<Select.Item value="cc" label={m.envelope_role_cc()}>
-																		{m.envelope_role_cc()}
-																	</Select.Item>
-																</Select.Group>
-															</Select.Content>
-														</Select.Root>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-locale-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_locale()}</span>
-														</Field.FieldLabel>
-														<Select.Root type="single" bind:value={draftItem.locale}>
-															<Select.Trigger
-																id={`recipient-locale-${draftItem.key}`}
-																class="w-full"
-																aria-label={m.envelope_recipient_col_locale()}
-															>
-																{recipientLocaleLabel(draftItem.locale)}
-															</Select.Trigger>
-															<Select.Content>
-																<Select.Group>
-																	<Select.Item value="en" label="English">English</Select.Item>
-																	<Select.Item value="ja" label="日本語">日本語</Select.Item>
-																</Select.Group>
-															</Select.Content>
-														</Select.Root>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Field.Field>
-														<Field.FieldLabel
-															class="contents"
-															for={`recipient-order-${draftItem.key}`}
-														>
-															<span class="sr-only">{m.envelope_recipient_col_order()}</span>
-														</Field.FieldLabel>
-														<Input
-															id={`recipient-order-${draftItem.key}`}
-															type="number"
-															min="1"
-															max="1000"
-															value={draftItem.routingOrder}
-															oninput={(event) => {
-																const parsed = Number(event.currentTarget.value);
-																if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
-															}}
-															class="w-20"
-														/>
-													</Field.Field>
-												</Table.Cell>
-												<Table.Cell>
-													<Button
-														size="icon"
-														variant="ghost"
-														aria-label={m.common_remove()}
-														onclick={() => removeRecipientDraft(draftItem.key)}
-													>
-														<IconTrash />
-													</Button>
-												</Table.Cell>
+												<Table.Head>{m.contacts_search_results()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
+												<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
+												<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
 											</Table.Row>
-										{/each}
-									</Table.Body>
-								</Table.Root>
+										</Table.Header>
+										<Table.Body>
+											{#each recipientDrafts as draftItem (draftItem.key)}
+												<Table.Row>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldTitle class="sr-only">
+																{m.contacts_choose_action()}
+															</Field.FieldTitle>
+															<ContactCombobox
+																label={m.contacts_choose_action()}
+																onSelect={(contact) =>
+																	applyContactToRecipient(draftItem.key, contact)}
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-email-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_email()}</span>
+															</Field.FieldLabel>
+															<Input
+																id={`recipient-email-${draftItem.key}`}
+																type="email"
+																bind:value={draftItem.email}
+																oninput={() => markRecipientContactChanged(draftItem)}
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-name-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_name()}</span>
+															</Field.FieldLabel>
+															<Input
+																id={`recipient-name-${draftItem.key}`}
+																bind:value={draftItem.name}
+																oninput={() => markRecipientContactChanged(draftItem)}
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-role-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_role()}</span>
+															</Field.FieldLabel>
+															<Select.Root type="single" bind:value={draftItem.role}>
+																<Select.Trigger
+																	id={`recipient-role-${draftItem.key}`}
+																	class="w-full"
+																	aria-label={m.envelope_recipient_col_role()}
+																>
+																	{recipientRoleLabel(draftItem.role)}
+																</Select.Trigger>
+																<Select.Content>
+																	<Select.Group>
+																		<Select.Item value="signer" label={m.signing_role_signer()}>
+																			{m.signing_role_signer()}
+																		</Select.Item>
+																		<Select.Item value="approver" label={m.signing_role_approver()}>
+																			{m.signing_role_approver()}
+																		</Select.Item>
+																		<Select.Item value="viewer" label={m.signing_role_viewer()}>
+																			{m.signing_role_viewer()}
+																		</Select.Item>
+																		<Select.Item value="cc" label={m.envelope_role_cc()}>
+																			{m.envelope_role_cc()}
+																		</Select.Item>
+																	</Select.Group>
+																</Select.Content>
+															</Select.Root>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-locale-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_locale()}</span>
+															</Field.FieldLabel>
+															<Select.Root
+																type="single"
+																bind:value={draftItem.locale}
+																onValueChange={() => markRecipientContactChanged(draftItem)}
+															>
+																<Select.Trigger
+																	id={`recipient-locale-${draftItem.key}`}
+																	class="w-full"
+																	aria-label={m.envelope_recipient_col_locale()}
+																>
+																	{recipientLocaleLabel(draftItem.locale)}
+																</Select.Trigger>
+																<Select.Content>
+																	<Select.Group>
+																		<Select.Item value="en" label="English">English</Select.Item>
+																		<Select.Item value="ja" label="日本語">日本語</Select.Item>
+																	</Select.Group>
+																</Select.Content>
+															</Select.Root>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<Field.Field>
+															<Field.FieldLabel
+																class="contents"
+																for={`recipient-order-${draftItem.key}`}
+															>
+																<span class="sr-only">{m.envelope_recipient_col_order()}</span>
+															</Field.FieldLabel>
+															<Input
+																id={`recipient-order-${draftItem.key}`}
+																type="number"
+																min="1"
+																max="1000"
+																value={draftItem.routingOrder}
+																oninput={(event) => {
+																	const parsed = Number(event.currentTarget.value);
+																	if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
+																}}
+																class="w-20"
+															/>
+														</Field.Field>
+													</Table.Cell>
+													<Table.Cell>
+														<div class="flex items-center justify-end gap-1">
+															<Button
+																size="sm"
+																variant="outline"
+																disabled={contactSavePending[draftItem.key] ||
+																	!draftItem.email.trim() ||
+																	!draftItem.name.trim()}
+																onclick={() => void saveRecipientToContacts(draftItem)}
+															>
+																{#if contactSavePending[draftItem.key]}
+																	<Spinner data-icon="inline-start" />
+																{:else}
+																	<IconAddressBook data-icon="inline-start" />
+																{/if}
+																{contactSaveSucceeded[draftItem.key]
+																	? m.contacts_saved()
+																	: m.contacts_save_recipient_action()}
+															</Button>
+															<Button
+																size="icon"
+																variant="ghost"
+																aria-label={m.common_remove()}
+																onclick={() => removeRecipientDraft(draftItem.key)}
+															>
+																<IconTrash />
+															</Button>
+														</div>
+														{#if contactSaveError[draftItem.key]}
+															<p class="mt-1 text-xs text-destructive" role="alert">
+																{contactSaveError[draftItem.key]}
+															</p>
+														{/if}
+													</Table.Cell>
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</div>
 								<Button variant="outline" onclick={addRecipientDraft} class="w-fit">
 									<IconPlus data-icon="inline-start" />{m.envelope_add_recipient()}
 								</Button>
@@ -1524,6 +1682,7 @@
 						</Card.Footer>
 					{/if}
 				</Card.Root>
+				<ContactManagementDialog bind:open={contactManagementOpen} />
 			</Tabs.Content>
 
 			<Tabs.Content value="fields" class="flex flex-col gap-4">

@@ -28,15 +28,11 @@ export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDec
 		this.#sql = sql;
 	}
 
-	async listOwnFields(
-		organizationId: string,
-		envelopeId: string,
-		recipientId: string
-	): Promise<RecipientOwnFields | null> {
+	async listOwnFields(envelopeId: string, recipientId: string): Promise<RecipientOwnFields | null> {
 		const envelopes = await this.#sql<{ fieldGeneration: number }[]>`
 			SELECT field_generation AS "fieldGeneration"
 			FROM envelope
-			WHERE organization_id = ${organizationId} AND id = ${envelopeId}
+			WHERE id = ${envelopeId}
 			LIMIT 1`;
 		const envelope: { fieldGeneration: number } | undefined = envelopes[0];
 		if (envelope === undefined) return null;
@@ -45,7 +41,7 @@ export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDec
 				field_type AS "fieldType",
 				label, required, position, page, x, y, width, height
 			FROM envelope_field
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 				AND recipient_id = ${recipientId}
 			ORDER BY COALESCE(document_id, document_path), position, id`;
 		return {

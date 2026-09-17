@@ -5,10 +5,7 @@ import {
 	type CompletionEvidenceApplicationPort,
 	type CompletionEvidenceResult
 } from '$lib/application/completion-artifacts/completion-evidence-service';
-import {
-	authorizeScopedOrganizationRequest,
-	type AuthorizedApiActor
-} from './api-key-authorization';
+import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 
@@ -26,7 +23,7 @@ export function createCompletionEvidenceHandler(
 	resolveService: CompletionEvidenceServiceResolver
 ): RequestHandler {
 	return async ({ locals, params, platform, url }): Promise<Response> => {
-		const authorized: AuthorizedApiActor | Response = authorizeScopedOrganizationRequest(
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
 			locals,
 			url.pathname,
 			'envelopes:read'
@@ -63,18 +60,17 @@ export function createCompletionEvidenceHandler(
 
 		try {
 			const evidence: CompletionEvidenceResult | null = await service.readEvidence(
-				authorized.organizationId,
 				envelopeId.data,
 				format
 			);
 			if (evidence === null) {
-				const exists = await service.envelopeExists(authorized.organizationId, envelopeId.data);
+				const exists = await service.envelopeExists(envelopeId.data);
 				if (!exists) {
 					return problemResponse({
 						type: 'urn:signkit:problem:envelope-not-found',
 						title: 'Envelope not found',
 						status: 404,
-						detail: 'No envelope was found in the authorized organization.',
+						detail: 'No envelope was found.',
 						instance: url.pathname
 					});
 				}

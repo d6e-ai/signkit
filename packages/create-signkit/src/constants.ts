@@ -29,6 +29,9 @@ export const BUNDLE_ASSET_PREFIX = 'signkit-cloudflare-';
 export const MAX_MANIFEST_BYTES = 64 * 1024;
 export const MAX_RELEASE_LIST_BYTES = 2 * 1024 * 1024;
 export const MAX_BUNDLE_BYTES = 250 * 1024 * 1024;
+export const MAX_ATTESTATION_LIST_BYTES = 512 * 1024;
+export const MAX_ATTESTATION_BUNDLE_BYTES = 1024 * 1024;
+export const MAX_ATTESTATION_STATEMENT_BYTES = 4 * 1024 * 1024;
 export const MAX_SMOKE_BYTES = 64 * 1024;
 export const DEFAULT_SMOKE_ATTEMPTS = 3;
 export const DEFAULT_SMOKE_BACKOFF_MS = 1000;
@@ -85,8 +88,9 @@ export const PROVIDER_FLAGS = {
 
 export const COMMANDS = ['plan', 'deploy', 'adopt', 'upgrade'] as const;
 
-export const MIGRATION_POLICY_COMPATIBILITY =
-	'forward-and-backward-compatible-within-released-versions' as const;
+export const MIGRATION_POLICY_COMPATIBILITY = 'additive-within-schema-epoch' as const;
+
+export const D1_SCHEMA_EPOCH = 'single-instance-v1' as const;
 
 export const MIGRATION_POLICY_NOTES =
-	'Released D1 migrations are additive and must remain backward-compatible with the previous released Worker. create-signkit applies pending migrations before uploading a new Worker version so the still-serving previous Worker can run on the new schema. Worker rollback cannot roll back D1. Do not restore SQL by rolling back a Worker.';
+	'D1 migrations are additive within one schema epoch. create-signkit refuses an in-place upgrade across schema epochs unless the selected D1 is fresh. It applies pending migrations before uploading the Worker; Worker rollback cannot roll back D1.';

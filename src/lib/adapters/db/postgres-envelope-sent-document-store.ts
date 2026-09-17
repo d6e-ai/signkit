@@ -8,7 +8,6 @@ import type {
 type Sql = ReturnType<typeof postgres>;
 
 interface SentDocumentSetRow {
-	organizationId: string;
 	envelopeId: string;
 	commitSha: string;
 	documentSetHash: string;
@@ -17,7 +16,6 @@ interface SentDocumentSetRow {
 }
 
 interface SentDocumentRow {
-	organizationId: string;
 	envelopeId: string;
 	commitSha: string;
 	documentId: string;
@@ -40,13 +38,9 @@ export class PostgresEnvelopeSentDocumentStore implements EnvelopeSentDocumentSt
 		this.#sql = sql;
 	}
 
-	async findSet(
-		organizationId: string,
-		envelopeId: string,
-		commitSha: string
-	): Promise<SentDocumentSetPointer | null> {
+	async findSet(envelopeId: string, commitSha: string): Promise<SentDocumentSetPointer | null> {
 		const setRows = await this.#sql<SentDocumentSetRow[]>`
-			SELECT document_set.organization_id AS "organizationId",
+			SELECT
 				document_set.envelope_id AS "envelopeId",
 				document_set.commit_sha AS "commitSha",
 				document_set.document_set_hash AS "documentSetHash",
@@ -54,23 +48,21 @@ export class PostgresEnvelopeSentDocumentStore implements EnvelopeSentDocumentSt
 				document_set.created_at AS "createdAt"
 			FROM envelope_sent_document_set document_set
 			INNER JOIN envelope
-				ON envelope.organization_id = document_set.organization_id
-				AND envelope.id = document_set.envelope_id
+				ON envelope.id = document_set.envelope_id
 				AND envelope.sent_commit_sha = document_set.commit_sha
-			WHERE document_set.organization_id = ${organizationId}
-				AND document_set.envelope_id = ${envelopeId}
+			WHERE document_set.envelope_id = ${envelopeId}
 				AND document_set.commit_sha = ${commitSha}
 			LIMIT 1`;
 		const setRow: SentDocumentSetRow | undefined = setRows[0];
 		if (setRow === undefined) return null;
 		const documentRows = await this.#sql<SentDocumentRow[]>`
-			SELECT organization_id AS "organizationId", envelope_id AS "envelopeId",
+			SELECT envelope_id AS "envelopeId",
 				commit_sha AS "commitSha", document_id AS "documentId", position, kind, title,
 				object_key AS "objectKey", sha256, byte_size AS "byteSize",
 				page_count AS "pageCount", page_width AS "pageWidth", page_height AS "pageHeight",
 				created_at AS "createdAt"
 			FROM envelope_sent_document
-			WHERE organization_id = ${organizationId} AND envelope_id = ${envelopeId}
+			WHERE envelope_id = ${envelopeId}
 				AND commit_sha = ${commitSha}
 			ORDER BY position ASC, document_id ASC`;
 		const documents: SentDocumentPointer[] = [];
@@ -84,7 +76,6 @@ export class PostgresEnvelopeSentDocumentStore implements EnvelopeSentDocumentSt
 			if (documents[index].position !== index) return null;
 		}
 		return {
-			organizationId: setRow.organizationId,
 			envelopeId: setRow.envelopeId,
 			commitSha: setRow.commitSha,
 			documentSetHash: setRow.documentSetHash,
@@ -96,16 +87,11 @@ export class PostgresEnvelopeSentDocumentStore implements EnvelopeSentDocumentSt
 	}
 
 	async findDocument(
-		organizationId: string,
 		envelopeId: string,
 		commitSha: string,
 		documentId: string
 	): Promise<SentDocumentPointer | null> {
-		const set: SentDocumentSetPointer | null = await this.findSet(
-			organizationId,
-			envelopeId,
-			commitSha
-		);
+		const set: SentDocumentSetPointer | null = await this.findSet(envelopeId, commitSha);
 		if (set === null) return null;
 		return set.documents.find((document) => document.documentId === documentId) ?? null;
 	}
@@ -133,7 +119,6 @@ function toDocumentPointer(row: SentDocumentRow): SentDocumentPointer | null {
 		return null;
 	}
 	return {
-		organizationId: row.organizationId,
 		envelopeId: row.envelopeId,
 		commitSha: row.commitSha,
 		documentId: row.documentId,

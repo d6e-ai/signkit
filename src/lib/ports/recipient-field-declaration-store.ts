@@ -29,9 +29,5 @@ export interface RecipientOwnFields {
 }
 
 export interface RecipientFieldDeclarationStore {
-	listOwnFields(
-		organizationId: string,
-		envelopeId: string,
-		recipientId: string
-	): Promise<RecipientOwnFields | null>;
+	listOwnFields(envelopeId: string, recipientId: string): Promise<RecipientOwnFields | null>;
 }

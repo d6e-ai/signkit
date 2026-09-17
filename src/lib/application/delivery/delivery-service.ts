@@ -153,7 +153,6 @@ export class InvitationDeliveryService {
 		now: Date
 	): Promise<InvitationDeliveryItemOutcome> {
 		const refreshed: ClaimedInvitationDelivery | null = await this.#store.readClaimedInvitation({
-			organizationId: claim.organizationId,
 			deliveryId: claim.deliveryId,
 			claimToken
 		});
@@ -258,7 +257,6 @@ export class InvitationDeliveryService {
 
 		const completion: CompleteInvitationDeliveryResult =
 			await this.#store.completeInvitationDelivery({
-				organizationId: claim.organizationId,
 				deliveryId: claim.deliveryId,
 				claimToken,
 				deliveredAt: now.toISOString(),
@@ -310,7 +308,6 @@ export class InvitationDeliveryService {
 			attemptsExhausted ? 'delivery_attempts_exhausted' : errorCode
 		);
 		const failure: FailInvitationDeliveryResult = await this.#store.failInvitationDelivery({
-			organizationId: claim.organizationId,
 			deliveryId: claim.deliveryId,
 			claimToken,
 			errorCode: safeCode,
@@ -387,13 +384,12 @@ function invitationMessage(
 		subject: copy.subject,
 		text: copy.text,
 		html: copy.html,
-		deliveryKey: `signkit-invitation-v1:${claim.organizationId}:${claim.deliveryId}`
+		deliveryKey: `signkit-invitation-v1:${claim.deliveryId}`
 	};
 }
 
 function sealContext(claim: ClaimedInvitationDelivery): CapabilitySealContext {
 	return {
-		organizationId: claim.organizationId,
 		envelopeId: claim.envelopeId,
 		recipientId: claim.recipientId,
 		deliveryId: claim.deliveryId

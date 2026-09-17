@@ -55,7 +55,7 @@ export class EnvelopeDocumentApplication implements EnvelopeDocumentApplicationP
 		actor: EnvelopeRequestActor,
 		envelopeId: string
 	): Promise<readonly EnvelopeDocument[]> {
-		return this.store.listForEnvelope(actor.organizationId, envelopeId);
+		return this.store.listForEnvelope(envelopeId);
 	}
 
 	async syncFromPaths(
@@ -79,7 +79,7 @@ export class EnvelopeDocumentApplication implements EnvelopeDocumentApplicationP
 				return { markdownPath: path };
 			}
 		);
-		return this.store.sync(actor.organizationId, envelopeId, inputs);
+		return this.store.sync(envelopeId, inputs);
 	}
 
 	async rename(
@@ -93,7 +93,7 @@ export class EnvelopeDocumentApplication implements EnvelopeDocumentApplicationP
 		if (trimmed.length === 0 || trimmed.length > MAX_TITLE_LENGTH || hasControlCharacter(trimmed)) {
 			throw new InvalidEnvelopeDocumentInputError('Document title is invalid');
 		}
-		return this.store.renameDocument(actor.organizationId, envelopeId, markdownPath, trimmed);
+		return this.store.renameDocument(envelopeId, markdownPath, trimmed);
 	}
 }
 

@@ -9,15 +9,15 @@ pub enum ExitCode {
     Success = 0,
     /// Unspecified / unexpected internal error.
     GenericError = 1,
-    /// Command-line usage, invalid arguments, local validation error, missing
-    /// mandatory organization, missing API key, or invalid configuration.
+    /// Command-line usage, invalid arguments, local validation error,
+    /// missing API key, or invalid configuration.
     UsageError = 2,
     /// Authentication failure (HTTP 401): invalid, expired, revoked token or suspended owner.
     AuthenticationError = 3,
-    /// Authorization failure (HTTP 403): missing organization grant, insufficient scope,
+    /// Authorization failure (HTTP 403): insufficient scope,
     /// or API key presented on a forbidden management surface.
     ForbiddenError = 4,
-    /// Resource not found (HTTP 404): envelope not found in authorized organization.
+    /// Resource not found (HTTP 404): envelope not found in instance.
     NotFoundError = 5,
     /// State conflict (HTTP 409): idempotency or concurrency conflict.
     ConflictError = 6,
@@ -39,7 +39,7 @@ impl ExitCode {
 pub enum CliError {
     /// An RFC 9457 problem document returned from the server.
     ServerProblem(Box<ProblemDetail>),
-    /// Local usage or input validation failure (e.g. missing organization or API key).
+    /// Local usage or input validation failure (e.g. missing API key).
     Usage {
         detail: String,
         errors: Option<Vec<ProblemValidationError>>,

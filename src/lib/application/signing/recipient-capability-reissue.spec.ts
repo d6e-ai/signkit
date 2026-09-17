@@ -15,8 +15,7 @@ import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 
 const actor: EnvelopeRequestActor = {
 	id: '01900000-0000-7000-8000-000000000001',
-	organizationId: '01900000-0000-7000-8000-000000000010',
-	organizationName: 'Test Org'
+	createdByUserId: '01900000-0000-7000-8000-000000000001'
 };
 
 const defaultInput: ReissueRecipientCapabilityInput = {

@@ -5,7 +5,6 @@
 -- This table is that SQL reference: every digest this envelope ever uploaded
 -- stays live, even if a later replace-commit no longer points at it.
 CREATE TABLE envelope_uploaded_document (
-  organization_id TEXT NOT NULL,
   envelope_id TEXT NOT NULL,
   sha256 TEXT NOT NULL,
   object_key TEXT NOT NULL,
@@ -14,8 +13,8 @@ CREATE TABLE envelope_uploaded_document (
   page_width REAL NOT NULL CHECK (page_width > 0 AND page_width <= 20000),
   page_height REAL NOT NULL CHECK (page_height > 0 AND page_height <= 20000),
   created_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id, sha256),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id, sha256),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT envelope_uploaded_document_sha256_hex CHECK (
     length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'
   )

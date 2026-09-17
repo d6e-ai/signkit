@@ -77,11 +77,13 @@ command.auditPayloadJson = JSON.stringify({
 command.auditEventHash = createHash('sha256')
 	.update(
 		JSON.stringify({
-			actorId: command.expectedRecipientId,
+			hashVersion: 3,
 			envelopeId: command.expectedEnvelopeId,
+			sequence: command.expectedAuditSequence + 1,
 			eventType: 'recipient.declined',
+			actorType: 'recipient',
+			actorId: command.expectedRecipientId,
 			occurredAt: command.updatedAt,
-			organizationId: 'org-1',
 			payload: JSON.parse(command.auditPayloadJson) as unknown,
 			previousHash: command.previousAuditHash
 		})
@@ -90,7 +92,6 @@ command.auditEventHash = createHash('sha256')
 
 function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
-		organization_id: 'org-1',
 		envelope_id: command.expectedEnvelopeId,
 		recipient_id: command.expectedRecipientId,
 		recipient_role: command.recipientRole,
@@ -114,7 +115,6 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		projection_has_revocable_recipient: 0,
 		projection_has_unsafe_delivery: 0,
 		evidence_event_id: command.auditEventId,
-		evidence_organization_id: 'org-1',
 		evidence_envelope_id: command.expectedEnvelopeId,
 		evidence_sequence: command.expectedAuditSequence + 1,
 		evidence_event_type: 'recipient.declined',
@@ -124,12 +124,12 @@ function storedRow(overrides: Record<string, unknown> = {}): Record<string, unkn
 		evidence_previous_hash: command.previousAuditHash,
 		evidence_event_hash: command.auditEventHash,
 		evidence_occurred_at: command.updatedAt,
+		evidence_hash_version: 3,
 		...overrides
 	};
 }
 
 const eligibleRow = {
-	organization_id: 'org-1',
 	envelope_id: 'env-1',
 	recipient_id: 'recipient-1',
 	recipient_role: 'signer',
@@ -161,7 +161,6 @@ describe('D1RecipientDeclineStore', () => {
 		);
 		expect(result).toEqual({
 			outcome: 'ready',
-			organizationId: 'org-1',
 			envelopeId: 'env-1',
 			recipientId: 'recipient-1',
 			recipientRole: 'signer',

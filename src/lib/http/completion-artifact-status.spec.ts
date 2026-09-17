@@ -6,18 +6,17 @@ import {
 	createCompletionArtifactStatusHandler,
 	type CompletionArtifactStatusServiceResolver
 } from './completion-artifact-status';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const ORGANIZATION_ID: string = '01900000-0000-7000-8000-000000000002';
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, ORGANIZATION_ID);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function event(
 	envelopeId: string = ENVELOPE_ID,
-	state: App.Locals['identityState'] = 'authorized'
+	state: App.Locals['identityState'] = 'active'
 ): RequestEvent {
 	return createHttpRequestEvent({
 		pathname: `/api/v1/envelopes/${envelopeId}/completion-artifact`,
@@ -77,14 +76,14 @@ describe('completion artifact status HTTP handler', () => {
 
 		expect(response.status).toBe(200);
 		expect(response.headers.get('cache-control')).toBe('no-store');
-		expect(find).toHaveBeenCalledWith(ORGANIZATION_ID, ENVELOPE_ID);
+		expect(find).toHaveBeenCalledWith(ENVELOPE_ID);
 		expect(body).toContain('published');
 		expect(body).toContain('m'.repeat(64));
 		expect(body).not.toContain('completion-artifacts/v1');
 		expect(body).not.toContain('audit-event-1');
 	});
 
-	it('returns the same tenant-scoped not-found result for a missing envelope', async () => {
+	it('returns not found for a missing envelope', async () => {
 		const find = vi.fn(async () => null);
 		const response: Response = await createCompletionArtifactStatusHandler(() => service(find))(
 			event()

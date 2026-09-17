@@ -10,7 +10,6 @@ import { RecipientViewedApplication } from './recipient-viewed';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
 const context: RecipientSigningContext = {
-	organizationId: 'org-1',
 	envelopeId: '01910000-0000-7000-8000-000000000001',
 	recipientId: '01910000-0000-7000-8000-000000000002',
 	recipientName: 'Recipient',
@@ -22,7 +21,7 @@ const context: RecipientSigningContext = {
 	expiresAt: '2026-09-25T00:00:00.000Z',
 	sentRevision: {
 		commitSha: 'a'.repeat(40),
-		archiveKey: `draft-repositories/v1/organizations/org-1/envelopes/01910000-0000-7000-8000-000000000001/sha256/${'b'.repeat(64)}.git.gz`,
+		archiveKey: `draft-repositories/v1/envelopes/01910000-0000-7000-8000-000000000001/sha256/${'b'.repeat(64)}.git.gz`,
 		archiveSha256: 'b'.repeat(64)
 	}
 };
@@ -93,7 +92,6 @@ describe('RecipientViewedApplication', () => {
 		expect(accessPort.resolve).toHaveBeenCalledTimes(2);
 		const command: PublishRecipientViewedCommand = storePort.publishViewed.mock.calls[0][0];
 		expect(command).toMatchObject({
-			organizationId: context.organizationId,
 			envelopeId: context.envelopeId,
 			recipientId: context.recipientId,
 			idempotencyKey: input.idempotencyKey,

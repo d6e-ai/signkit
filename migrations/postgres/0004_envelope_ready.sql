@@ -1,6 +1,5 @@
 CREATE TABLE recipient (
   id text NOT NULL,
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   email text NOT NULL,
   name text NOT NULL,
@@ -13,23 +12,22 @@ CREATE TABLE recipient (
   capability_revoked_at timestamptz,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, id),
-  UNIQUE (organization_id, envelope_id, email),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (id),
+  UNIQUE (envelope_id, email),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT recipient_id_uuidv7 CHECK (
     id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   )
 );
 
 CREATE INDEX recipient_envelope_route
-  ON recipient(organization_id, envelope_id, routing_order, id);
+  ON recipient(envelope_id, routing_order, id);
 
 CREATE UNIQUE INDEX recipient_capability_hash
   ON recipient(capability_hash)
   WHERE capability_hash IS NOT NULL;
 
 CREATE TABLE envelope_ready_command (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   actor_type text NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
   actor_id text NOT NULL,
@@ -45,10 +43,10 @@ CREATE TABLE envelope_ready_command (
   previous_audit_hash text NOT NULL,
   audit_event_hash text NOT NULL,
   audit_payload_json text NOT NULL,
-  PRIMARY KEY (organization_id, actor_type, actor_id, idempotency_key),
-  UNIQUE (organization_id, audit_event_id),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id)
+  PRIMARY KEY (actor_type, actor_id, idempotency_key),
+  UNIQUE (audit_event_id),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id)
 );
 
 CREATE INDEX envelope_ready_command_envelope
-  ON envelope_ready_command(organization_id, envelope_id, updated_at DESC);
+  ON envelope_ready_command(envelope_id, updated_at DESC);

@@ -3,18 +3,17 @@ name: Release
 # Draft-first full-tag release: one tag in, one DRAFT GitHub Release out with
 # every shippable artifact (Node bundle, Cloudflare bundle, Rust CLI release
 # binary, Docker image) plus a unified SHA256SUMS and GitHub provenance
-# attestations, then a hard-gated npm publish, and only then is the draft
+# attestations, then a hard-gated npm bootstrapper check/publish, and only then is the draft
 # marked public. Draft reruns reuse only byte-identical assets; nothing
 # clobbers an existing name or mutates a public release.
 #
 # A `v*` tag therefore never creates a PUBLIC GitHub Release before npm
 # publication succeeds: `release` uploads everything to a draft, `publish-npm`
-# publishes create-signkit (OIDC Trusted Publishing, `NODE_AUTH_TOKEN`
-# fallback — an explicit provenance/auth failure fails the workflow and the
-# draft stays private), and `publish-release` flips the draft public only
-# after `publish-npm` succeeds. The tag-equals-version gate runs in `release`
-# before any asset is built and is re-checked in `publish-npm` and
-# `publish-release` before anything is published.
+# publishes create-signkit via OIDC Trusted Publishing only when its independent
+# package version is not already present (no token fallback), and
+# `publish-release` flips the draft public only after that gate succeeds. The
+# product tag must match the application and Rust CLI versions; create-signkit
+# has an independent npm version because it installs any exact product tag.
 # `publish-release` receives the build job's exact asset hashes, then
 # re-downloads and verifies the complete remote asset set immediately before
 # the public flip. Repository immutable releases must also be enabled before
@@ -64,20 +63,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter create-signkit test
       - run: pnpm run build:create-signkit
-      - name: Enforce tag equals all package versions
+      - name: Enforce product tag and package versions
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           root="$(node -p "require('./package.json').version")"
           csk="$(node -p "require('./packages/create-signkit/package.json').version")"
-          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
-          for v in "$root" "$csk" "$cli"; do
+          cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          for v in "$root" "$cli"; do
             if [ "$tag" != "$v" ]; then
-              echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
+              echo "git tag ${GITHUB_REF_NAME} does not match product versions root=${root} cli=${cli}" >&2
               exit 1
             fi
           done
           node --input-type=module -e 'import { parseReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; parseReleaseTag(process.argv[1]);' "$GITHUB_REF_NAME"
+          node --input-type=module -e 'import { parseReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; parseReleaseTag(process.argv[1]);' "v${csk}"
       - name: Build and smoke-check the Node profile
         run: |
           set -euo pipefail
@@ -243,6 +243,17 @@ jobs:
           # Never resolve a range dynamically in a privileged release job.
           expected="$(node -p "require('./package.json').devDependencies.npm")"
           selected="$(pnpm exec which npm)"
+          # Normalize to an absolute path at selection time: the publish step
+          # runs in packages/create-signkit, so a relative ./node_modules path
+          # would no longer resolve there.
+          selected="$(realpath -m "$selected")"
+          case "$selected" in
+            /*) ;;
+            *)
+              echo "npm CLI path is not absolute: ${selected}" >&2
+              exit 1
+              ;;
+          esac
           if [ ! -x "$selected" ]; then
             echo "npm CLI was not found at ${selected}" >&2
             exit 1
@@ -253,18 +264,14 @@ jobs:
             exit 1
           fi
           echo "bin=${selected}" >> "$GITHUB_OUTPUT"
-      - name: Enforce git tag version equals package.json
+      - name: Validate product tag and independent npm package version
         id: version
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./packages/create-signkit/package.json').version")"
           root="$(node -p "require('./package.json').version")"
-          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "git tag version ${GITHUB_REF_NAME} does not match packages/create-signkit/package.json version ${pkg}" >&2
-            exit 1
-          fi
+          cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
           if [ "$tag" != "$root" ]; then
             echo "git tag version ${GITHUB_REF_NAME} does not match root package.json version ${root}" >&2
             exit 1
@@ -273,21 +280,30 @@ jobs:
             echo "git tag version ${GITHUB_REF_NAME} does not match cli/Cargo.toml version ${cli}" >&2
             exit 1
           fi
-          dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "$GITHUB_REF_NAME")"
-          pkg_dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "v${pkg}")"
-          if [ "$dist_tag" != "$pkg_dist_tag" ]; then
-            echo "git tag and package.json classified to different npm dist-tags: ${dist_tag} vs ${pkg_dist_tag}" >&2
-            exit 1
-          fi
+          dist_tag="$(node --input-type=module -e 'import { npmDistTagFromReleaseTag } from "./packages/create-signkit/dist/release/semver.js"; process.stdout.write(npmDistTagFromReleaseTag(process.argv[1]));' "v${pkg}")"
           if [ "$dist_tag" != "latest" ] && [ "$dist_tag" != "beta" ]; then
             echo "refusing to publish with unexpected npm dist-tag ${dist_tag}" >&2
             exit 1
           fi
           echo "dist_tag=${dist_tag}" >> "$GITHUB_OUTPUT"
+          echo "package_version=${pkg}" >> "$GITHUB_OUTPUT"
+      - name: Check whether create-signkit is already published
+        id: npm_status
+        env:
+          NPM_CLI: ${{ steps.npm_cli.outputs.bin }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          published="$("$NPM_CLI" view "create-signkit@${PACKAGE_VERSION}" version --json 2>/dev/null || true)"
+          if [ "$published" = "\"${PACKAGE_VERSION}\"" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish create-signkit
+        if: steps.npm_status.outputs.already_published != 'true'
         working-directory: packages/create-signkit
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
           NPM_CLI: ${{ steps.npm_cli.outputs.bin }}
           NPM_DIST_TAG: ${{ steps.version.outputs.dist_tag }}
         run: |
@@ -313,18 +329,15 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          fetch-tags: true
-      - name: Enforce git tag version equals every package version
+      - name: Enforce product tag version
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           root="$(node -p "require('./package.json').version")"
-          csk="$(node -p "require('./packages/create-signkit/package.json').version")"
-          cli="$(node -p "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
-          for v in "$root" "$csk" "$cli"; do
+          cli="$(node -e "const fs=require('fs'); const t=fs.readFileSync('cli/Cargo.toml','utf8'); const m=t.match(/^version\s*=\s*\"([^\"]+)\"/m); if(!m) throw new Error('cli version not found'); process.stdout.write(m[1]);")"
+          for v in "$root" "$cli"; do
             if [ "$tag" != "$v" ]; then
-              echo "git tag ${GITHUB_REF_NAME} does not match versions root=${root} create-signkit=${csk} cli=${cli}" >&2
+              echo "git tag ${GITHUB_REF_NAME} does not match product versions root=${root} cli=${cli}" >&2
               exit 1
             fi
           done

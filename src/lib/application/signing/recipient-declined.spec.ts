@@ -8,13 +8,11 @@ import type {
 import { RecipientDeclinedApplication } from './recipient-declined';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
-const organizationId: string = 'org-1';
 const envelopeId: string = '01910000-0000-7000-8000-000000000001';
 const recipientId: string = '01910000-0000-7000-8000-000000000002';
 
 const ready: Extract<DeclinePreparation, { outcome: 'ready' }> = {
 	outcome: 'ready',
-	organizationId,
 	envelopeId,
 	recipientId,
 	recipientRole: 'signer',

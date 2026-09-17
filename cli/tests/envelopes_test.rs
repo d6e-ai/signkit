@@ -11,7 +11,6 @@ fn envelope_json(id: &str) -> String {
     format!(
         r#"{{
             "id": "{id}",
-            "organizationId": "{}",
             "title": "Mutual Non-Disclosure Agreement",
             "status": "draft",
             "repositoryGeneration": 1,
@@ -21,8 +20,7 @@ fn envelope_json(id: &str) -> String {
             "fieldGeneration": 0,
             "createdAt": "2026-09-13T10:00:00Z",
             "updatedAt": "2026-09-13T10:05:00Z"
-        }}"#,
-        common::TEST_ORG
+        }}"#
     )
 }
 
@@ -41,7 +39,6 @@ async fn test_envelopes_list_single_page() {
     Mock::given(method("GET"))
         .and(path("/api/v1/envelopes"))
         .and(query_param("limit", "50"))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .and(header(
             "authorization",
             format!("Bearer {}", common::TEST_API_KEY).as_str(),
@@ -55,8 +52,6 @@ async fn test_envelopes_list_single_page() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
     ]);
@@ -81,7 +76,6 @@ async fn test_envelopes_list_with_cursor_and_limit() {
         .and(path("/api/v1/envelopes"))
         .and(query_param("limit", "25"))
         .and(query_param("cursor", common::TEST_ENVELOPE_ID))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .and(header(
             "authorization",
             format!("Bearer {}", common::TEST_API_KEY).as_str(),
@@ -95,8 +89,6 @@ async fn test_envelopes_list_with_cursor_and_limit() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
         "--limit",
@@ -116,8 +108,6 @@ async fn test_envelopes_list_rejects_invalid_cursor_uuidv7() {
         "signkit",
         "--base-url",
         "http://localhost:5173",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
         "--cursor",
@@ -132,8 +122,6 @@ async fn test_envelopes_list_rejects_invalid_cursor_uuidv7() {
         "signkit",
         "--base-url",
         "http://localhost:5173",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "list",
         "--cursor",
@@ -159,7 +147,6 @@ async fn test_envelope_get_success() {
             "/api/v1/envelopes/{}",
             common::TEST_ENVELOPE_ID
         )))
-        .and(header("signkit-organization-id", common::TEST_ORG))
         .and(header(
             "authorization",
             format!("Bearer {}", common::TEST_API_KEY).as_str(),
@@ -173,8 +160,6 @@ async fn test_envelope_get_success() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "get",
         common::TEST_ENVELOPE_ID,
@@ -212,8 +197,6 @@ async fn test_envelope_get_not_found() {
         "signkit",
         "--base-url",
         &mock_server.uri(),
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "get",
         common::TEST_ENVELOPE_ID,
@@ -230,8 +213,6 @@ async fn test_envelope_get_invalid_uuid() {
         "signkit",
         "--base-url",
         "http://localhost:5173",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "get",
         "not-a-valid-uuid",
@@ -245,8 +226,6 @@ async fn test_envelope_get_invalid_uuid() {
         "signkit",
         "--base-url",
         "http://localhost:5173",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "get",
         "0191B26F-4000-7000-8000-000000000001",
@@ -259,8 +238,6 @@ async fn test_envelope_get_invalid_uuid() {
         "signkit",
         "--base-url",
         "http://localhost:5173",
-        "--org",
-        common::TEST_ORG,
         "envelopes",
         "get",
         "0191b26f-4000-4000-8000-000000000001",

@@ -1,6 +1,5 @@
 CREATE TABLE webhook_endpoint (
   id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
   url TEXT NOT NULL,
   description TEXT,
   status TEXT NOT NULL,
@@ -12,8 +11,7 @@ CREATE TABLE webhook_endpoint (
   created_by_user_id TEXT NOT NULL,
   revoked_at TEXT,
   revoked_by_user_id TEXT,
-  PRIMARY KEY (organization_id, id),
-  FOREIGN KEY (organization_id) REFERENCES organization(id),
+  PRIMARY KEY (id),
   -- Same portable UUIDv7 shape as 0001_core.sql: a per-character GLOB would
   -- exceed the Cloudflare D1 LIKE/GLOB pattern complexity cap.
   CONSTRAINT webhook_endpoint_id_uuidv7 CHECK (
@@ -49,19 +47,18 @@ CREATE TABLE webhook_endpoint (
 );
 
 CREATE INDEX webhook_endpoint_org_created
-  ON webhook_endpoint(organization_id, created_at DESC, id DESC);
+  ON webhook_endpoint(created_at DESC, id DESC);
 
 CREATE TABLE webhook_endpoint_command (
-  organization_id TEXT NOT NULL,
   actor_id TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   command_type TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   webhook_id TEXT NOT NULL,
   occurred_at TEXT NOT NULL,
-  PRIMARY KEY (organization_id, actor_id, idempotency_key),
-  UNIQUE (organization_id, webhook_id, command_type),
-  FOREIGN KEY (organization_id, webhook_id) REFERENCES webhook_endpoint(organization_id, id),
+  PRIMARY KEY (actor_id, idempotency_key),
+  UNIQUE (webhook_id, command_type),
+  FOREIGN KEY (webhook_id) REFERENCES webhook_endpoint(id),
   CONSTRAINT webhook_endpoint_command_type_known CHECK (command_type IN ('create', 'revoke')),
   CONSTRAINT webhook_endpoint_command_request_hash_sha256 CHECK (
     length(request_hash) = 64
@@ -77,10 +74,9 @@ BEGIN
     WHEN (
       SELECT COUNT(*)
       FROM webhook_endpoint
-      WHERE organization_id = NEW.organization_id
-        AND status = 'active'
+      WHERE status = 'active'
     ) >= 20
-    THEN RAISE(ABORT, 'organization active webhook endpoint limit exceeded')
+    THEN RAISE(ABORT, 'instance active webhook endpoint limit exceeded')
   END);
 END;
 
@@ -92,10 +88,9 @@ BEGIN
     WHEN (
       SELECT COUNT(*)
       FROM webhook_endpoint
-      WHERE organization_id = NEW.organization_id
-        AND status = 'active'
+      WHERE status = 'active'
     ) >= 20
-    THEN RAISE(ABORT, 'organization active webhook endpoint limit exceeded')
+    THEN RAISE(ABORT, 'instance active webhook endpoint limit exceeded')
   END);
 END;
 

@@ -1,15 +1,19 @@
-import { env } from '$env/dynamic/private';
 import type { RequestHandler } from '@sveltejs/kit';
 import type {
 	InvitationDeliveryBatchResult,
 	InvitationDeliveryService
 } from '$lib/application/delivery/delivery-service';
+import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import {
-	BEARER_SECRET_PATTERN,
-	parseBearerSecret,
-	secretsEqual
-} from '$lib/security/bearer-secret';
+	resolveDeliveryWorkerSecret,
+	type DeliveryWorkerSecretResolver
+} from './delivery-worker-secret';
 import { problemResponse } from './problem';
+
+export {
+	resolveDeliveryWorkerSecret,
+	type DeliveryWorkerSecretResolver
+} from './delivery-worker-secret';
 
 const DRAIN_BATCH_LIMIT: number = 25;
 
@@ -20,8 +24,6 @@ interface ResolverContext {
 export type InvitationDeliveryServiceResolver = (
 	context: ResolverContext
 ) => InvitationDeliveryService | null | Promise<InvitationDeliveryService | null>;
-
-export type DeliveryWorkerSecretResolver = (platform?: Readonly<App.Platform>) => string | null;
 
 export function createDeliveryDrainHandler(
 	resolveService: InvitationDeliveryServiceResolver,
@@ -78,13 +80,6 @@ export function createDeliveryDrainHandler(
 			});
 		}
 	};
-}
-
-export function resolveDeliveryWorkerSecret(platform?: Readonly<App.Platform>): string | null {
-	const value: string | undefined =
-		platform?.env?.DELIVERY_WORKER_SECRET ?? env.DELIVERY_WORKER_SECRET;
-	if (value === undefined || !BEARER_SECRET_PATTERN.test(value)) return null;
-	return value;
 }
 
 function unauthorized(instance: string): Response {

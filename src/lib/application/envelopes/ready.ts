@@ -1,4 +1,10 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
+import {
+	isValidRecipientEmail,
+	isValidRecipientName,
+	normalizeRecipientEmail,
+	normalizeRecipientName
+} from '$lib/domain/recipient-identity';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	isActionableRecipientRole,
@@ -81,7 +87,6 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 		const requestFingerprint: string = await sha256(canonicalRequest);
 		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key = {
-			organizationId: actor.organizationId,
 			envelopeId,
 			actorType,
 			actorId: actor.id,
@@ -102,7 +107,6 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 		const recipients: readonly Recipient[] = canonicalRecipients.map(
 			(recipient: ReadyRecipientInput): Recipient => ({
 				id: this.#newId(),
-				organizationId: actor.organizationId,
 				envelopeId,
 				email: recipient.email,
 				name: recipient.name,
@@ -122,7 +126,7 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 				routingOrder: recipient.routingOrder
 			}))
 		});
-		const auditEventHash: string = await hashAuditEventV2(
+		const auditEventHash: string = await hashAuditEventV3(
 			{
 				sequence: preparation.auditHead.sequence + 1,
 				eventType: 'envelope.ready',
@@ -132,7 +136,7 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 				payload: JSON.parse(auditPayloadJson) as unknown,
 				previousHash: preparation.auditHead.eventHash
 			},
-			{ organizationId: actor.organizationId, envelopeId }
+			{ envelopeId }
 		);
 		const command: PublishReadyEnvelopeCommand = {
 			...key,
@@ -169,10 +173,10 @@ function assertReadyInput(
 	}
 	const emails: Set<string> = new Set<string>();
 	for (const recipient of recipients) {
-		if (!isEmail(recipient.email) || recipient.email.length > 320) {
+		if (!isValidRecipientEmail(recipient.email)) {
 			throw new InvalidRecipientGraphError('Recipient email is invalid');
 		}
-		if (recipient.name.length < 1 || recipient.name.length > 200) {
+		if (!isValidRecipientName(recipient.name)) {
 			throw new InvalidRecipientGraphError('Recipient name is invalid');
 		}
 		if (!recipientRoles.includes(recipient.role)) {
@@ -220,17 +224,13 @@ function assertReadyInput(
 	}
 }
 
-function isEmail(value: string): boolean {
-	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-}
-
 function canonicalizeRecipients(
 	recipients: readonly ReadyRecipientInput[]
 ): readonly ReadyRecipientInput[] {
 	return recipients
 		.map((recipient: ReadyRecipientInput): ReadyRecipientInput => ({
-			email: recipient.email.trim().toLowerCase(),
-			name: recipient.name.trim(),
+			email: normalizeRecipientEmail(recipient.email),
+			name: normalizeRecipientName(recipient.name),
 			role: recipient.role,
 			locale: recipient.locale,
 			routingOrder: recipient.routingOrder

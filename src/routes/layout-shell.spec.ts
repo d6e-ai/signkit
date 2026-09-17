@@ -38,6 +38,18 @@ describe('application layout shell', () => {
 		expect(source).toContain('<Sidebar.Inset class="min-w-0">');
 	});
 
+	it('keeps authenticated header and page content on the same px-4 horizontal grid with a shared container', () => {
+		expect(source).toContain('bg-background/85 px-4 backdrop-blur-xl');
+		expect(source).toContain('<div class="container mx-auto w-full flex-1 px-4 py-6">');
+		expect(source).not.toContain('<main class="flex-1 px-4 py-6">');
+		expect(source).not.toMatch(/<main class="[^"]*(?:md:p-6|lg:p-8)/);
+	});
+
+	it('leaves Sidebar.Inset as the sole main landmark outside bare shells', () => {
+		const authenticatedShell = source.slice(source.indexOf('{:else}'));
+		expect(authenticatedShell.match(/<main\b/g)).toBeNull();
+	});
+
 	it('carries no dead header search action', () => {
 		expect(source).not.toMatch(/IconSearch|aria-label="Search"/);
 	});

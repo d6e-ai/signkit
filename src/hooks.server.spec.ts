@@ -125,14 +125,15 @@ describe('bearer mode selection', () => {
 	/**
 	 * Management surfaces reject rather than ignore. Ignoring would leave the
 	 * accompanying cookie to authorize a request an API key must never reach --
-	 * minting a key, granting itself an organization, or administering members --
+	 * minting a key or administering members --
 	 * so the key is refused and the cookie is suppressed along with it.
 	 */
 	it.each([
 		'/api/v1/api-keys',
+		'/api/v1/contacts',
+		'/api/v1/contacts/search',
+		'/api/v1/contacts/01900000-0000-7000-8000-000000000201',
 		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/revoke',
-		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/organization-grants',
-		'/api/v1/api-keys/01900000-0000-7000-8000-000000000201/organization-grants/01900000-0000-7000-8000-000000000301/revoke',
 		'/api/v1/instance/members',
 		'/api/v1/instance/members/me',
 		'/api/v1/instance/members/user-2/role',
@@ -177,8 +178,7 @@ describe('cookie session suppression', () => {
 	it.each([
 		'rejected_surface',
 		'invalid_token',
-		'organization_selector_invalid',
-		'organization_grant_required',
+		'rate_limited',
 		'integrity_error',
 		'unavailable'
 	] as const)('suppresses the cookie session for the failing state %s', (state) => {
@@ -193,8 +193,6 @@ describe('cookie session suppression', () => {
 					apiKeyId: '01900000-0000-7000-8000-000000000201',
 					keyPrefix: 'signkit_abcdefgh',
 					ownerUserId: 'user-1',
-					organizationId: 'org-alpha',
-					organizationName: 'Alpha',
 					scopes: ['envelopes:read'],
 					expiresAt: '2026-12-11T00:00:00.000Z'
 				}

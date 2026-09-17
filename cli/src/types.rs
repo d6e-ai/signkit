@@ -286,15 +286,6 @@ pub struct PublicCompletionArtifactCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantManagementPaths {
-    pub create: String,
-    pub list: String,
-    pub revoke: String,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, serde_json::Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKeyRateLimits {
     pub durable: bool,
     #[serde(rename = "windowSeconds")]
@@ -319,14 +310,7 @@ pub struct ApiKeyAuthenticationCapability {
     pub scheme: String,
     #[serde(rename = "tokenPrefix")]
     pub token_prefix: String,
-    #[serde(rename = "organizationSelector")]
-    pub organization_selector: String,
-    #[serde(rename = "organizationSelectorRequired")]
-    pub organization_selector_required: bool,
-    #[serde(rename = "grantModel")]
-    pub grant_model: String,
-    #[serde(rename = "multipleOrganizationsPerKey")]
-    pub multiple_organizations_per_key: bool,
+    pub authority: String,
     #[serde(rename = "effectiveAuthority")]
     pub effective_authority: String,
     #[serde(rename = "enabledScopes")]
@@ -346,12 +330,6 @@ pub struct ApiKeyAuthenticationCapability {
     #[serde(rename = "rateLimits")]
     pub rate_limits: ApiKeyRateLimits,
     pub actor: ApiKeyActor,
-    #[serde(rename = "grantManagement")]
-    pub grant_management: GrantManagementPaths,
-    #[serde(rename = "grantAuthority")]
-    pub grant_authority: String,
-    #[serde(rename = "grantRevokeAuthority")]
-    pub grant_revoke_authority: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -460,8 +438,8 @@ impl<'de> Deserialize<'de> for EnvelopeStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
     pub id: String,
-    #[serde(rename = "organizationId")]
-    pub organization_id: String,
+    #[serde(default, rename = "createdByUserId")]
+    pub created_by_user_id: Option<String>,
     pub title: String,
     pub status: EnvelopeStatus,
     #[serde(rename = "repositoryGeneration")]
@@ -1161,7 +1139,7 @@ mod tests {
     fn test_public_envelope_does_not_require_object_keys() {
         let raw = r#"{
             "id": "0191b26f-4000-7000-8000-000000000001",
-            "organizationId": "org_test",
+            "createdByUserId": "user_test",
             "title": "Test Envelope",
             "status": "draft",
             "repositoryGeneration": 1,
@@ -1184,7 +1162,7 @@ mod tests {
     fn test_envelope_preserves_unknown_fields_round_trip() {
         let raw = r#"{
             "id": "0191b26f-4000-7000-8000-000000000001",
-            "organizationId": "org_test",
+            "createdByUserId": "user_test",
             "title": "Test Envelope",
             "status": "draft",
             "repositoryGeneration": 1,

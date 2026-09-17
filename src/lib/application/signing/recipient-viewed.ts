@@ -1,4 +1,4 @@
-import { hashAuditEventV2 } from '$lib/domain/audit';
+import { hashAuditEventV3 } from '$lib/domain/audit';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type {
@@ -61,7 +61,6 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 			})
 		);
 		const key = {
-			organizationId: before.organizationId,
 			envelopeId: before.envelopeId,
 			recipientId: before.recipientId,
 			capabilityHash,
@@ -97,7 +96,7 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 				sentCommitSha: preparation.sentCommitSha,
 				viewedAt
 			});
-			const auditEventHash: string = await hashAuditEventV2(
+			const auditEventHash: string = await hashAuditEventV3(
 				{
 					sequence: preparation.auditHead.sequence + 1,
 					eventType: 'recipient.viewed',
@@ -107,7 +106,7 @@ export class RecipientViewedApplication implements RecipientViewedApplicationPor
 					payload: JSON.parse(auditPayloadJson) as unknown,
 					previousHash: preparation.auditHead.eventHash
 				},
-				{ organizationId: before.organizationId, envelopeId: before.envelopeId }
+				{ envelopeId: before.envelopeId }
 			);
 			const command: PublishRecipientViewedCommand = {
 				...key,
@@ -156,7 +155,6 @@ function sameAuthorizationBoundary(
 	right: RecipientSigningContext
 ): boolean {
 	return (
-		left.organizationId === right.organizationId &&
 		left.envelopeId === right.envelopeId &&
 		left.recipientId === right.recipientId &&
 		left.sentRevision.commitSha === right.sentRevision.commitSha &&

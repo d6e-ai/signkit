@@ -6,7 +6,7 @@
 -- field's page/x/y geometry can be pinned against.
 --
 -- The pointer is integrity-pinned three ways -- content-addressed object key,
--- SHA-256, and byte size -- and scoped to (organization, envelope, commit), so
+-- SHA-256, and byte size -- and scoped to (instance, envelope, commit), so
 -- a pointer published for one revision can never satisfy a read pinned to
 -- another.
 --
@@ -36,7 +36,6 @@ ALTER TABLE envelope_send_command
   );
 
 CREATE TABLE envelope_sent_pdf (
-  organization_id text NOT NULL,
   envelope_id text NOT NULL,
   commit_sha text NOT NULL,
   object_key text NOT NULL,
@@ -47,8 +46,8 @@ CREATE TABLE envelope_sent_pdf (
   page_height real NOT NULL CHECK (page_height > 0 AND page_height <= 20000),
   document_pages_json text NOT NULL,
   created_at timestamptz NOT NULL,
-  PRIMARY KEY (organization_id, envelope_id, commit_sha),
-  FOREIGN KEY (organization_id, envelope_id) REFERENCES envelope(organization_id, id),
+  PRIMARY KEY (envelope_id, commit_sha),
+  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
   CONSTRAINT envelope_sent_pdf_sha256_hex CHECK (sha256 ~ '^[0-9a-f]{64}$')
 );
 

@@ -67,6 +67,17 @@ function emit(io: RunIo, parsed: ParsedCommand, result: ReconcileResult): void {
 	if (result.d1BackupPath) {
 		io.stdout.write(`D1 backup: ${result.d1BackupPath}\n`);
 	}
+	if (result.provenance) {
+		io.stdout.write(
+			`Provenance: verified ${result.provenance.repository}/${result.provenance.workflow} ${result.provenance.sourceRef}\n`
+		);
+	}
+	if (result.recoveryPath) {
+		io.stdout.write(`Recovery file: ${result.recoveryPath}\n`);
+	}
+	if (result.recoveryFingerprint) {
+		io.stdout.write(`Recovery fingerprint: ${result.recoveryFingerprint}\n`);
+	}
 	if (result.missingSecrets.length > 0) {
 		io.stdout.write(`Missing secrets: ${result.missingSecrets.join(', ')}\n`);
 	}

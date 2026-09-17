@@ -7,16 +7,16 @@ import type {
 } from '$lib/application/envelopes/model';
 import type { Envelope } from '$lib/domain/envelope';
 import { createEnvelopeHttpHandlers, type EnvelopeApplicationResolver } from './envelopes';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 import { expectProblemResponse } from './problem-response-test-support';
 
-const organizationId = '01900000-0000-7000-8000-000000000002';
+const createdByUserId = 'user-1';
 const envelopeId = '01900000-0000-7000-8000-000000000001';
 const archiveKey =
-	'draft-repositories/v1/organizations/org/envelopes/01900000-0000-7000-8000-000000000001/sha256/ab.git.gz';
+	'draft-repositories/v1/envelopes/01900000-0000-7000-8000-000000000001/sha256/ab.git.gz';
 const envelope: Envelope = {
 	id: envelopeId,
-	organizationId,
+	createdByUserId,
 	title: 'Agreement',
 	status: 'draft',
 	repositoryGeneration: 0,
@@ -30,7 +30,7 @@ const envelope: Envelope = {
 };
 const publicEnvelope = {
 	id: envelopeId,
-	organizationId,
+	createdByUserId,
 	title: 'Agreement',
 	status: 'draft',
 	repositoryGeneration: 0,
@@ -42,8 +42,8 @@ const publicEnvelope = {
 	updatedAt: '2026-09-11T00:00:00.000Z'
 };
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, organizationId);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function event(input: {
@@ -123,24 +123,6 @@ describe('envelope HTTP handlers', () => {
 		});
 	});
 
-	it('rejects tenant scope supplied in the request body', async () => {
-		const app: EnvelopeApplicationPort = application();
-		const response: Response = await invoke(
-			createEnvelopeHttpHandlers((): EnvelopeApplicationPort => app).create,
-			event({
-				method: 'POST',
-				headers: { 'idempotency-key': 'request-1' },
-				body: JSON.stringify({ title: 'Agreement', organizationId: 'attacker-organization' })
-			})
-		);
-
-		await expectProblemResponse(response, {
-			status: 400,
-			type: 'urn:signkit:problem:validation-failed'
-		});
-		expect(app.create).not.toHaveBeenCalled();
-	});
-
 	it('rejects request bodies larger than the bounded JSON limit', async () => {
 		const app: EnvelopeApplicationPort = application();
 		const response: Response = await invoke(
@@ -159,7 +141,7 @@ describe('envelope HTTP handlers', () => {
 		expect(app.create).not.toHaveBeenCalled();
 	});
 
-	it('passes only the authenticated organization to create', async () => {
+	it('passes only the authenticated instance actor to create', async () => {
 		const app: EnvelopeApplicationPort = application();
 		const response: Response = await invoke(
 			createEnvelopeHttpHandlers((): EnvelopeApplicationPort => app).create,
@@ -172,7 +154,7 @@ describe('envelope HTTP handlers', () => {
 
 		expect(response.status).toBe(201);
 		expect(app.create).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
+			{ id: 'user-1', createdByUserId: 'user-1', actorType: 'user' },
 			{ idempotencyKey: 'request-1', title: 'Agreement' }
 		);
 		expect(response.headers.get('location')).toBe(`/api/v1/envelopes/${envelopeId}`);
@@ -182,7 +164,7 @@ describe('envelope HTTP handlers', () => {
 		expect(JSON.stringify(created)).not.toContain(archiveKey);
 	});
 
-	it('scopes list and get to the authenticated organization', async () => {
+	it('scopes list and get to the authenticated instance', async () => {
 		const app: EnvelopeApplicationPort = application();
 		const handlers = createEnvelopeHttpHandlers((): EnvelopeApplicationPort => app);
 		const listResponse: Response = await invoke(handlers.list, event({ search: '?limit=25' }));
@@ -197,11 +179,11 @@ describe('envelope HTTP handlers', () => {
 		expect(listResponse.status).toBe(200);
 		expect(getResponse.status).toBe(200);
 		expect(app.list).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
+			{ id: 'user-1', createdByUserId: 'user-1', actorType: 'user' },
 			{ cursor: null, limit: 25 }
 		);
 		expect(app.getDetail).toHaveBeenCalledWith(
-			{ id: 'user-1', organizationId, organizationName: 'Workspace', actorType: 'user' },
+			{ id: 'user-1', createdByUserId: 'user-1', actorType: 'user' },
 			envelopeId
 		);
 		const listed = (await listResponse.json()) as { items: unknown[] };

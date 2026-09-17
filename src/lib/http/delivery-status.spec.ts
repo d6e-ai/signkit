@@ -3,18 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { DeliveryStatusService } from '$lib/application/delivery/delivery-status';
 import type { DeliveryStatusStore } from '$lib/ports/delivery-status-store';
 import { createDeliveryStatusHandler, type DeliveryStatusServiceResolver } from './delivery-status';
-import { createHttpRequestEvent, organizationScopedLocals } from './http-handler-test-support';
+import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
-const ORGANIZATION_ID: string = '01900000-0000-7000-8000-000000000002';
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 
-function locals(state: App.Locals['identityState'] = 'authorized'): App.Locals {
-	return organizationScopedLocals(state, ORGANIZATION_ID);
+function locals(state: App.Locals['identityState'] = 'active'): App.Locals {
+	return instanceScopedLocals(state);
 }
 
 function event(
 	envelopeId: string = ENVELOPE_ID,
-	state: App.Locals['identityState'] = 'authorized'
+	state: App.Locals['identityState'] = 'active'
 ): RequestEvent {
 	return createHttpRequestEvent({
 		pathname: `/api/v1/envelopes/${envelopeId}/deliveries`,
@@ -41,7 +40,7 @@ describe('delivery status HTTP handler', () => {
 		expect(resolver).not.toHaveBeenCalled();
 	});
 
-	it('scopes the query to the authenticated organization and returns no private delivery ID', async () => {
+	it('scopes the query to the authenticated instance and returns no private delivery ID', async () => {
 		const find = vi.fn(async () => ({
 			envelopeId: ENVELOPE_ID,
 			envelopeStatus: 'sent' as const,
@@ -65,12 +64,12 @@ describe('delivery status HTTP handler', () => {
 
 		expect(response.status).toBe(200);
 		expect(response.headers.get('cache-control')).toBe('no-store');
-		expect(find).toHaveBeenCalledWith(ORGANIZATION_ID, ENVELOPE_ID);
+		expect(find).toHaveBeenCalledWith(ENVELOPE_ID);
 		expect(body).toContain('recipient-1');
 		expect(body).not.toContain('private-outbox-1');
 	});
 
-	it('returns the same tenant-scoped not-found result for a missing envelope', async () => {
+	it('returns not found for a missing envelope', async () => {
 		const find = vi.fn(async () => null);
 		const response: Response = await createDeliveryStatusHandler(() => service(find))(event());
 
