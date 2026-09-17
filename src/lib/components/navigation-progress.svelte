@@ -17,7 +17,7 @@
 	>
 		<div class="flex justify-center pt-8">
 			<div class="flex items-center gap-3 rounded-lg border bg-background/90 px-6 py-4 shadow-lg">
-				<Spinner class="size-6" />
+				<Spinner class="size-6" aria-hidden="true" />
 				<span class="text-sm font-medium text-muted-foreground">{m.nav_loading()}</span>
 			</div>
 		</div>

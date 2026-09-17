@@ -73,6 +73,7 @@ describe('application layout shell', () => {
 		expect(progress).toMatch(/navigating\.to\s*!==\s*null/);
 		expect(progress).toContain('top-16');
 		expect(progress).toContain('m.nav_loading()');
+		expect(progress).toContain('aria-hidden="true"');
 	});
 
 	it('never shows a header sign-in action, since anonymous callers are redirected server-side', () => {
