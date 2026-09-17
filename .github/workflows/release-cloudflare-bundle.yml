@@ -312,11 +312,21 @@ jobs:
           PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
         run: |
           set -euo pipefail
-          published="$("$NPM_CLI" view "create-signkit@${PACKAGE_VERSION}" version --json 2>/dev/null || true)"
-          if [ "$published" = "\"${PACKAGE_VERSION}\"" ]; then
+          lookup_errors="$(mktemp)"
+          trap 'rm -f "$lookup_errors"' EXIT
+          if ! published_json="$("$NPM_CLI" view "create-signkit@${PACKAGE_VERSION}" version --json 2>"$lookup_errors")"; then
+            if grep -Eq 'E404|404 Not Found|is not in this registry' "$lookup_errors"; then
+              echo "already_published=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "npm registry lookup failed; refusing to infer that create-signkit@${PACKAGE_VERSION} is unpublished" >&2
+            exit 1
+          fi
+          if node -e 'const value=JSON.parse(process.argv[1]); const expected=process.argv[2]; process.exit(value===expected || (Array.isArray(value) && value.includes(expected)) ? 0 : 1);' "$published_json" "$PACKAGE_VERSION"; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
           else
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "npm registry returned unexpected version metadata for create-signkit@${PACKAGE_VERSION}" >&2
+            exit 1
           fi
       - name: Publish create-signkit
         if: steps.npm_status.outputs.already_published != 'true'
