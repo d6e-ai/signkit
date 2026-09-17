@@ -28,6 +28,9 @@ const SLSA_PREDICATE_TYPE = 'https://slsa.dev/provenance/v1';
 const WORKFLOW_BUILD_TYPE = 'https://actions.github.io/buildtypes/workflow/v1';
 const IN_TOTO_STATEMENT_TYPE = 'https://in-toto.io/Statement/v1';
 const GITHUB_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
+const RELEASE_BRANCH_REF = 'refs/heads/main';
+
+type ReleaseEventName = 'push' | 'workflow_dispatch';
 
 export interface ReleaseProvenance {
 	status: 'verified';
@@ -123,18 +126,19 @@ async function verifyGithubProvenance(
 	if (bundleSha256 !== release.manifest.bundle.sha256) {
 		throw generic('release provenance subject digest does not match the downloaded bundle');
 	}
-	const sourceRef = `refs/tags/${release.tag}`;
-	const certificatePolicy = createGithubCertificatePolicy({
+	const releaseTagRef = `refs/tags/${release.tag}`;
+	// Fail on an oversized tag before any network lookup, even when the selected
+	// attestation was produced by the workflow-dispatch release path.
+	createGithubCertificatePolicy({
 		repository: SIGNKIT_REPOSITORY,
 		repositoryId: REPOSITORY_ID,
 		repositoryOwner: 'd6e-ai',
 		repositoryOwnerId: REPOSITORY_OWNER_ID,
 		workflowPath: WORKFLOW_PATH,
-		sourceRef,
+		sourceRef: releaseTagRef,
 		commit,
 		eventName: 'push'
 	});
-	const workflowIdentity = certificatePolicy.workflowIdentity;
 	const attestations = await fetchAttestationList(http, bundleSha256);
 	if (attestations.length === 0) {
 		throw generic('GitHub release provenance is missing for the downloaded Cloudflare bundle');
@@ -143,11 +147,28 @@ async function verifyGithubProvenance(
 		throw generic(`GitHub returned more than ${MAX_ATTESTATIONS} provenance attestations`);
 	}
 
+	let verifiedSourceRef: string | undefined;
 	for (const attestation of attestations) {
 		if (String(attestation.repository_id) !== REPOSITORY_ID) {
 			throw generic('GitHub returned release provenance for an unexpected repository identity');
 		}
 		const bundle = await fetchAttestationBundle(http, attestation.bundle_url);
+		const statement = parseStatement(bundle);
+		const releaseSource = selectReleaseSource(statement, releaseTagRef);
+		if (verifiedSourceRef !== undefined && verifiedSourceRef !== releaseSource.sourceRef) {
+			throw generic('GitHub release provenance contains conflicting workflow source refs');
+		}
+		verifiedSourceRef = releaseSource.sourceRef;
+		const certificatePolicy = createGithubCertificatePolicy({
+			repository: SIGNKIT_REPOSITORY,
+			repositoryId: REPOSITORY_ID,
+			repositoryOwner: 'd6e-ai',
+			repositoryOwnerId: REPOSITORY_OWNER_ID,
+			workflowPath: WORKFLOW_PATH,
+			sourceRef: releaseSource.sourceRef,
+			commit,
+			eventName: releaseSource.eventName
+		});
 		try {
 			await verifyBundle(bundle, {
 				...certificatePolicy.verifyOptions,
@@ -163,11 +184,11 @@ async function verifyGithubProvenance(
 			}
 			throw generic('GitHub release provenance signature or signer identity is invalid');
 		}
-		const statement = parseStatement(bundle);
 		assertStatementMatches(statement, release, bundleSha256, {
 			commit,
-			sourceRef,
-			workflowIdentity
+			sourceRef: releaseSource.sourceRef,
+			eventName: releaseSource.eventName,
+			workflowIdentity: certificatePolicy.workflowIdentity
 		});
 	}
 
@@ -176,7 +197,7 @@ async function verifyGithubProvenance(
 		mode: 'online',
 		repository: SIGNKIT_REPOSITORY,
 		workflow: WORKFLOW_PATH,
-		sourceRef,
+		sourceRef: verifiedSourceRef as string,
 		sourceCommit: commit,
 		subjectName: release.manifest.bundle.assetName,
 		subjectSha256: bundleSha256,
@@ -185,6 +206,21 @@ async function verifyGithubProvenance(
 		attestationCount: attestations.length,
 		trustRoot: 'sigstore-public-good'
 	};
+}
+
+function selectReleaseSource(
+	statement: InTotoStatement,
+	releaseTagRef: string
+): { sourceRef: string; eventName: ReleaseEventName } {
+	const sourceRef = statement.predicate?.buildDefinition?.externalParameters?.workflow?.ref;
+	const eventName = statement.predicate?.buildDefinition?.internalParameters?.github?.event_name;
+	if (sourceRef === releaseTagRef && eventName === 'push') {
+		return { sourceRef, eventName };
+	}
+	if (sourceRef === RELEASE_BRANCH_REF && eventName === 'workflow_dispatch') {
+		return { sourceRef, eventName };
+	}
+	throw generic('GitHub release provenance event or workflow source ref is not allowed');
 }
 
 async function fetchAttestationList(
@@ -325,7 +361,12 @@ function assertStatementMatches(
 	statement: InTotoStatement,
 	release: ResolvedRelease,
 	bundleSha256: string,
-	expected: { commit: string; sourceRef: string; workflowIdentity: string }
+	expected: {
+		commit: string;
+		sourceRef: string;
+		eventName: ReleaseEventName;
+		workflowIdentity: string;
+	}
 ): void {
 	if (statement._type !== IN_TOTO_STATEMENT_TYPE) {
 		throw generic('GitHub release provenance statement type is not in-toto Statement v1');
@@ -387,7 +428,7 @@ function assertStatementMatches(
 	const github = definition.internalParameters?.github;
 	if (
 		!isObject(github) ||
-		github.event_name !== 'push' ||
+		github.event_name !== expected.eventName ||
 		String(github.repository_id) !== REPOSITORY_ID ||
 		String(github.repository_owner_id) !== REPOSITORY_OWNER_ID ||
 		github.runner_environment !== 'github-hosted'
@@ -418,6 +459,7 @@ export function createGithubCertificatePolicy(
 ): GithubCertificatePolicy {
 	const repositoryUrl = `https://github.com/${input.repository}`;
 	const repositoryOwnerUrl = `https://github.com/${input.repositoryOwner}`;
+	const repositoryName = input.repository.slice(input.repositoryOwner.length + 1);
 	const workflowIdentity = `${repositoryUrl}/${input.workflowPath}@${input.sourceRef}`;
 	const values: Record<string, string> = {
 		'1.3.6.1.4.1.57264.1.9': workflowIdentity,
@@ -433,7 +475,7 @@ export function createGithubCertificatePolicy(
 		'1.3.6.1.4.1.57264.1.19': input.commit,
 		'1.3.6.1.4.1.57264.1.20': input.eventName,
 		'1.3.6.1.4.1.57264.1.22': 'public',
-		'1.3.6.1.4.1.57264.1.24': `repo:${input.repository}:ref:${input.sourceRef}`
+		'1.3.6.1.4.1.57264.1.24': `repo:${input.repositoryOwner}@${input.repositoryOwnerId}/${repositoryName}@${input.repositoryId}:ref:${input.sourceRef}`
 	};
 	return {
 		workflowIdentity,

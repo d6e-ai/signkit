@@ -45,11 +45,51 @@ describe('GitHub release provenance', () => {
 			`release-cloudflare-bundle\\.yml@refs/tags/${tag.replaceAll('.', '\\.')}`
 		);
 		expect(options.certificateOIDs?.['1.3.6.1.4.1.57264.1.24']).toBe(
-			derUtf8String(`repo:d6e-ai/signkit:ref:refs/tags/${tag}`)
+			derUtf8String(`repo:d6e-ai@251581364/signkit@1365209252:ref:refs/tags/${tag}`)
 		);
 		expect(http.requests[0]?.url).toContain(
 			'predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1'
 		);
+	});
+
+	it('verifies the normal workflow-dispatch release path from main', async () => {
+		const release = resolvedRelease();
+		const statement = statementFor(release, {
+			sourceRef: 'refs/heads/main',
+			eventName: 'workflow_dispatch'
+		});
+		const http = configuredHttp(release, [statement]);
+		const verifyBundle = vi.fn(async () => ({}));
+
+		await expect(
+			createGithubProvenanceVerifier(http, verifyBundle).verify(
+				release,
+				release.manifest.bundle.sha256
+			)
+		).resolves.toMatchObject({ sourceRef: 'refs/heads/main', sourceCommit: COMMIT });
+
+		const options = verifyBundle.mock.calls[0]![1];
+		expect(options.certificateIdentityURI).toContain(
+			'release-cloudflare-bundle\\.yml@refs/heads/main'
+		);
+		expect(options.certificateOIDs?.['1.3.6.1.4.1.57264.1.20']).toBe(
+			derUtf8String('workflow_dispatch')
+		);
+	});
+
+	it.each([
+		{ sourceRef: 'refs/heads/feature', eventName: 'workflow_dispatch' as const },
+		{ sourceRef: 'refs/heads/main', eventName: 'push' as const },
+		{ sourceRef: 'refs/tags/v1.2.3', eventName: 'workflow_dispatch' as const }
+	])('rejects disallowed release source $sourceRef for $eventName', async (source) => {
+		const release = resolvedRelease();
+		const http = configuredHttp(release, [statementFor(release, source)]);
+		await expect(
+			createGithubProvenanceVerifier(http, async () => ({})).verify(
+				release,
+				release.manifest.bundle.sha256
+			)
+		).rejects.toThrow(/event or workflow source ref is not allowed/);
 	});
 
 	it('accepts the maximum release tag and rejects the first oversized tag before lookup', async () => {
@@ -225,7 +265,7 @@ describe('GitHub release provenance', () => {
 				release,
 				release.manifest.bundle.sha256
 			)
-		).rejects.toThrow(/workflow parameters/);
+		).rejects.toThrow(/event or workflow source ref/);
 
 		const duplicate = statementFor(release);
 		duplicate.subject.push(structuredClone(duplicate.subject[0]!));
@@ -276,8 +316,14 @@ function resolvedRelease(tag = 'v1.2.3', channel: 'stable' | 'beta' = 'stable'):
 	};
 }
 
-function statementFor(release: ResolvedRelease) {
-	const sourceRef = `refs/tags/${release.tag}`;
+function statementFor(
+	release: ResolvedRelease,
+	source: { sourceRef: string; eventName: 'push' | 'workflow_dispatch' } = {
+		sourceRef: `refs/tags/${release.tag}`,
+		eventName: 'push'
+	}
+) {
+	const { sourceRef, eventName } = source;
 	const workflowIdentity = `https://github.com/d6e-ai/signkit/.github/workflows/release-cloudflare-bundle.yml@${sourceRef}`;
 	return {
 		_type: 'https://in-toto.io/Statement/v1',
@@ -300,7 +346,7 @@ function statementFor(release: ResolvedRelease) {
 				},
 				internalParameters: {
 					github: {
-						event_name: 'push',
+						event_name: eventName,
 						repository_id: String(REPOSITORY_ID),
 						repository_owner_id: '251581364',
 						runner_environment: 'github-hosted'
