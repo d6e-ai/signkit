@@ -134,13 +134,16 @@ describe('D1 API key migration', () => {
 				'role',
 				'status',
 				'created_at',
-				'updated_at'
+				'updated_at',
+				'display_name',
+				'email'
 			]);
 			expect(columnNames(sqlite, 'api_key')).not.toContain('organization_id');
 			expect(columnNames(sqlite, 'api_key')).toContain('owner_user_id');
 			expect(columnNames(sqlite, 'api_key_create_command')).not.toContain('organization_id');
 			expect(columnNames(sqlite, 'api_key')).not.toContain('email');
-			expect(columnNames(sqlite, 'instance_member')).not.toContain('email');
+			expect(columnNames(sqlite, 'instance_member')).toContain('email');
+			expect(columnNames(sqlite, 'instance_member')).toContain('display_name');
 			expect(columnNames(sqlite, 'instance_member')).not.toContain('name');
 			expect(columnNames(sqlite, 'instance_member')).not.toContain('instance_id');
 		} finally {

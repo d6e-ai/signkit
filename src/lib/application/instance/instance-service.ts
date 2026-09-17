@@ -5,9 +5,12 @@ import {
 	type InstanceCallerContext,
 	type InstanceStore
 } from '$lib/ports/instance-store';
+import { memberIdentitySnapshot } from './member-identity';
 
 export interface InstanceBootstrapActor {
 	id: string;
+	displayName?: string;
+	email?: string;
 }
 
 export interface BootstrapInstanceInput {
@@ -62,6 +65,7 @@ export class InstanceApplication implements InstanceApplicationPort {
 
 		const command: BootstrapInstanceCommand = {
 			actor: { type: 'user', id: actor.id },
+			identity: memberIdentitySnapshot(actor.displayName, actor.email),
 			idempotencyKey: input.idempotencyKey,
 			requestFingerprint,
 			createdAt
@@ -71,7 +75,23 @@ export class InstanceApplication implements InstanceApplicationPort {
 	}
 
 	async getCurrentMember(actor: InstanceBootstrapActor): Promise<InstanceCallerContext> {
-		return this.store.getInstanceCallerContext(actor.id);
+		const context: InstanceCallerContext = await this.store.getInstanceCallerContext(actor.id);
+		if (
+			context.member !== null &&
+			this.store.refreshInstanceMemberIdentity !== undefined &&
+			(actor.displayName !== undefined || actor.email !== undefined)
+		) {
+			try {
+				await this.store.refreshInstanceMemberIdentity({
+					userId: actor.id,
+					identity: memberIdentitySnapshot(actor.displayName, actor.email)
+				});
+			} catch {
+				// Display labels are intentionally best-effort. Their persistence must
+				// never turn a valid local membership into an authentication failure.
+			}
+		}
+		return context;
 	}
 }
 

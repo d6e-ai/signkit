@@ -20,6 +20,8 @@ describe('sanitizeDeliveryErrorCode', () => {
 			FALLBACK_DELIVERY_ERROR_CODE
 		);
 		expect(sanitizeDeliveryErrorCode('skdc1_ciphertext')).toBe(FALLBACK_DELIVERY_ERROR_CODE);
+		expect(sanitizeDeliveryErrorCode('ski1_invitation')).toBe(FALLBACK_DELIVERY_ERROR_CODE);
+		expect(sanitizeDeliveryErrorCode('skiod1_ciphertext')).toBe(FALLBACK_DELIVERY_ERROR_CODE);
 		expect(sanitizeDeliveryErrorCode('https://signkit.example/s/token')).toBe(
 			FALLBACK_DELIVERY_ERROR_CODE
 		);

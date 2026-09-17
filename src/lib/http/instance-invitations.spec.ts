@@ -73,8 +73,7 @@ function event(input: {
 function application(): InstanceInvitationApplicationPort {
 	const create = vi.fn(async (): Promise<CreateInstanceInvitationResult> => ({
 		outcome: 'created',
-		invitation,
-		token: VALID_TOKEN
+		invitation
 	}));
 	const list = vi.fn(async (): Promise<ListInstanceInvitationsResult> => ({
 		outcome: 'listed',
@@ -376,10 +375,16 @@ describe('instance invitation HTTP handlers', () => {
 			expect(response.status).toBe(201);
 			expect(app.create).toHaveBeenCalledWith(
 				{ id: 'user-1' },
-				{ idempotencyKey: 'create-1', email: 'invitee@example.com', role: 'member' }
+				{
+					idempotencyKey: 'create-1',
+					email: 'invitee@example.com',
+					role: 'member',
+					locale: undefined
+				}
 			);
-			const body: { invitation: InstanceInvitationMetadata; token: string } = await response.json();
-			expect(body.token).toBe(VALID_TOKEN);
+			const body: { invitation: InstanceInvitationMetadata; delivery: { status: string } } =
+				await response.json();
+			expect(body.delivery).toEqual({ status: 'scheduled' });
 			expect(body.invitation.id).toBe(INVITATION_ID);
 			expect(response.headers.get('cache-control')).toBe('no-store');
 		});
@@ -862,7 +867,12 @@ describe('instance invitation HTTP handlers', () => {
 			expect(response.status).toBe(200);
 			expect(app.accept).toHaveBeenCalledWith(
 				{ id: 'user-1' },
-				{ idempotencyKey: 'accept-1', token: VALID_TOKEN, email: 'user@example.com' }
+				{
+					idempotencyKey: 'accept-1',
+					token: VALID_TOKEN,
+					email: 'user@example.com',
+					displayName: 'User'
+				}
 			);
 		});
 

@@ -4,7 +4,7 @@ SignKit supports PostgreSQL 18 for Node deployments and D1 for Cloudflare Worker
 
 ## Identity and ownership
 
-`instance_member` is keyed by the d6e-auth subject and stores only local role, status, and timestamps. `instance_bootstrap` records the first owner claim. Invitations bind a verified email to a future local member.
+`instance_member` is keyed by the d6e-auth subject and stores local role, status, timestamps, plus nullable display-name and email snapshots copied from that member's verified d6e-auth principal. The snapshots only label the member-management UI: they may be stale, are refreshed best-effort from the member's own session, and never participate in authorization. `instance_bootstrap` records the first owner claim. Invitations bind a verified email to a future local member.
 
 Every envelope has a required `created_by_user_id` foreign key to `instance_member`. Every API key has a required `owner_user_id` foreign key to the member that created it. There is no separate tenant table, instance id column, selector, or API-key grant table.
 

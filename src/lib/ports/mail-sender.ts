@@ -36,7 +36,13 @@ export interface MailSender {
 }
 
 export function sanitizeMailErrorCode(code: string): string {
-	if (MAIL_ERROR_CODE_PATTERN.test(code) && !code.startsWith('skr1_') && !code.startsWith('skdc1_'))
+	if (
+		MAIL_ERROR_CODE_PATTERN.test(code) &&
+		!code.startsWith('skr1_') &&
+		!code.startsWith('skdc1_') &&
+		!code.startsWith('ski1_') &&
+		!code.startsWith('skiod1_')
+	)
 		return code;
 	return FALLBACK_MAIL_ERROR_CODE;
 }

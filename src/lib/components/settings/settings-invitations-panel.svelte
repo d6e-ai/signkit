@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onMount } from 'svelte';
 	import {
 		createInstanceManagementClient,
 		type InstanceInvitationMetadata,
@@ -10,20 +10,13 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
+	import * as Alert from '$lib/components/ui/alert';
 	import * as Card from '$lib/components/ui/card';
 	import * as Field from '$lib/components/ui/field';
 	import * as Select from '$lib/components/ui/select';
 	import * as Table from '$lib/components/ui/table';
 	import { Spinner } from '$lib/components/ui/spinner';
-	import { settingsRevealState } from './settings-reveal-state.svelte';
-	import {
-		IconCheck,
-		IconCopy,
-		IconPlus,
-		IconRefresh,
-		IconShield,
-		IconX
-	} from '@tabler/icons-svelte';
+	import { IconMailForward, IconRefresh } from '@tabler/icons-svelte';
 
 	let { isCallerOwner, isCallerAdmin }: { isCallerOwner: boolean; isCallerAdmin: boolean } =
 		$props();
@@ -49,6 +42,7 @@
 	let inviteRole = $state<InstanceMemberRole>('member');
 	let invitePending = $state(false);
 	let inviteCreateError = $state<string | null>(null);
+	let inviteScheduledEmail = $state<string | null>(null);
 	let revokeInvitePending = $state<Record<string, boolean>>({});
 
 	function isInvitationExpired(invitation: InstanceInvitationMetadata): boolean {
@@ -79,15 +73,14 @@
 		if (!email) return;
 		invitePending = true;
 		inviteCreateError = null;
+		inviteScheduledEmail = null;
 		try {
-			const res = await client.createInvitation({ email, role: inviteRole });
-			if (res.token) {
-				settingsRevealState.setRevealedInvitation({
-					token: res.token,
-					invitationId: res.invitation.id,
-					email
-				});
-			}
+			await client.createInvitation({
+				email,
+				role: inviteRole,
+				locale: getLocale() === 'ja' ? 'ja' : 'en'
+			});
+			inviteScheduledEmail = email;
 			inviteEmail = '';
 			inviteRole = 'member';
 			await loadInvitations();
@@ -114,10 +107,6 @@
 	onMount(() => {
 		void loadInvitations();
 	});
-
-	onDestroy(() => {
-		settingsRevealState.teardownInvitationPanel();
-	});
 </script>
 
 <div class="flex flex-col gap-6">
@@ -125,11 +114,12 @@
 	<Card.Root>
 		<Card.Header>
 			<Card.Title>{m.settings_invitations_create_title()}</Card.Title>
+			<Card.Description>{m.settings_invitations_create_description()}</Card.Description>
 		</Card.Header>
 		<Card.Content>
 			<form onsubmit={handleCreateInvitation}>
 				<Field.FieldGroup>
-					<div class="grid gap-4 sm:grid-cols-2">
+					<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
 						<Field.Field data-invalid={inviteCreateError !== null} data-disabled={invitePending}>
 							<Field.FieldLabel for="invite-email">
 								{m.settings_invitations_email_label()}
@@ -171,14 +161,14 @@
 								</Select.Content>
 							</Select.Root>
 						</Field.Field>
-					</div>
+					</Field.FieldGroup>
 
 					<Button type="submit" disabled={invitePending || !inviteEmail.trim()}>
 						{#if invitePending}
 							<Spinner data-icon="inline-start" />
 							<span>{m.settings_invitations_create_pending()}</span>
 						{:else}
-							<IconPlus data-icon="inline-start" />
+							<IconMailForward data-icon="inline-start" />
 							<span>{m.settings_invitations_create_action()}</span>
 						{/if}
 					</Button>
@@ -187,62 +177,14 @@
 		</Card.Content>
 	</Card.Root>
 
-	<!-- One-Time Token Reveal Warning Banner -->
-	{#if settingsRevealState.revealedInvitation}
-		<div class="rounded-2xl border-2 border-primary bg-primary/5 p-4 shadow-xs sm:p-5" role="alert">
-			<div class="flex items-start justify-between gap-3">
-				<div class="flex items-center gap-2 text-primary">
-					<IconShield class="size-5 shrink-0" />
-					<h2 class="text-base font-semibold">
-						{m.settings_invitations_token_reveal_title()}
-					</h2>
-				</div>
-				<Button
-					variant="ghost"
-					size="xs"
-					onclick={() => settingsRevealState.dismissRevealedInvitation()}
-					aria-label={m.settings_invitations_dismiss()}
-				>
-					<IconX data-icon="inline-start" />
-				</Button>
-			</div>
-			<p class="mt-1 text-xs text-muted-foreground">
-				{m.settings_invitations_token_reveal_warning()}
-			</p>
-			<p class="mt-1 text-xs font-medium text-foreground">
-				{m.settings_invitations_token_reveal_metadata({
-					email: settingsRevealState.revealedInvitation.email,
-					invitationId: settingsRevealState.revealedInvitation.invitationId
-				})}
-			</p>
-			<div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-				<div
-					class="flex-1 rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs break-all select-all"
-				>
-					{settingsRevealState.revealedInvitation.token}
-				</div>
-				<Button
-					variant="default"
-					size="sm"
-					class="shrink-0"
-					onclick={() =>
-						settingsRevealState.copyInvitationToken(settingsRevealState.revealedInvitation!.token)}
-				>
-					{#if settingsRevealState.invitationCopied}
-						<IconCheck data-icon="inline-start" />
-						<span>{m.settings_invitations_token_copied()}</span>
-					{:else}
-						<IconCopy data-icon="inline-start" />
-						<span>{m.settings_invitations_copy_token()}</span>
-					{/if}
-				</Button>
-			</div>
-			{#if settingsRevealState.invitationCopyError}
-				<p class="mt-2 text-xs font-medium text-destructive" role="alert">
-					{settingsRevealState.invitationCopyError}
-				</p>
-			{/if}
-		</div>
+	{#if inviteScheduledEmail}
+		<Alert.Root>
+			<IconMailForward />
+			<Alert.Title>{m.settings_invitations_email_scheduled_title()}</Alert.Title>
+			<Alert.Description>
+				{m.settings_invitations_email_scheduled_description({ email: inviteScheduledEmail })}
+			</Alert.Description>
+		</Alert.Root>
 	{/if}
 
 	<!-- Invitations List -->
@@ -263,15 +205,14 @@
 		</Card.Header>
 		<Card.Content>
 			{#if invitationsError}
-				<div
-					class="mb-4 flex items-center justify-between rounded-xl border border-destructive/20 bg-destructive/10 p-3 text-destructive"
-					role="alert"
-				>
-					<span class="text-sm font-medium">{invitationsError}</span>
-					<Button variant="outline" size="xs" onclick={() => loadInvitations()}
-						>{m.settings_invitations_refresh()}</Button
-					>
-				</div>
+				<Alert.Root variant="destructive" class="mb-4">
+					<Alert.Title>{invitationsError}</Alert.Title>
+					<Alert.Action>
+						<Button variant="outline" size="xs" onclick={() => loadInvitations()}>
+							{m.settings_invitations_refresh()}
+						</Button>
+					</Alert.Action>
+				</Alert.Root>
 			{/if}
 
 			<div class="overflow-x-auto">

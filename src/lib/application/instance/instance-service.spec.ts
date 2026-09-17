@@ -28,6 +28,8 @@ const EXPECTED_HASH: string = '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e831
 class MockInstanceStore implements InstanceStore {
 	lastCommand: BootstrapInstanceCommand | null = null;
 	lastUserId: string | null = null;
+	lastIdentityRefresh: { userId: string; displayName: string | null; email: string | null } | null =
+		null;
 	bootstrapResult: BootstrapInstanceStoreResult = {
 		outcome: 'bootstrapped',
 		member: {
@@ -53,6 +55,13 @@ class MockInstanceStore implements InstanceStore {
 	async getInstanceCallerContext(userId: string): Promise<InstanceCallerContext> {
 		this.lastUserId = userId;
 		return this.callerContext;
+	}
+
+	async refreshInstanceMemberIdentity(command: {
+		userId: string;
+		identity: { displayName: string | null; email: string | null };
+	}): Promise<void> {
+		this.lastIdentityRefresh = { userId: command.userId, ...command.identity };
 	}
 
 	async createInstanceInvitation(
@@ -122,6 +131,7 @@ describe('InstanceApplication', () => {
 		expect(result).toEqual(store.bootstrapResult);
 		expect(store.lastCommand).toEqual({
 			actor: { type: 'user', id: 'user-1' },
+			identity: { displayName: null, email: null },
 			idempotencyKey: 'valid-idem-key',
 			requestFingerprint: EXPECTED_HASH,
 			createdAt: NOW.toISOString()
@@ -175,5 +185,32 @@ describe('InstanceApplication', () => {
 		const context = await app.getCurrentMember({ id: 'user-1' });
 		expect(context).toEqual(store.callerContext);
 		expect(store.lastUserId).toBe('user-1');
+	});
+
+	it('refreshes bounded display-only identity snapshots for an existing member', async () => {
+		const store = new MockInstanceStore();
+		store.callerContext = {
+			member: {
+				userId: 'user-1',
+				role: 'owner',
+				status: 'active',
+				createdAt: NOW.toISOString(),
+				updatedAt: NOW.toISOString()
+			},
+			bootstrapped: true
+		};
+		const app = new InstanceApplication(store, () => NOW);
+
+		await app.getCurrentMember({
+			id: 'user-1',
+			displayName: '  KIMURA Yu  ',
+			email: '  YU.KIMURA@CAUCHYE.COM '
+		});
+
+		expect(store.lastIdentityRefresh).toEqual({
+			userId: 'user-1',
+			displayName: 'KIMURA Yu',
+			email: 'yu.kimura@cauchye.com'
+		});
 	});
 });

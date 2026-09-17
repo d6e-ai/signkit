@@ -9,6 +9,7 @@ import {
 	type InstanceMemberApplicationPort
 } from '$lib/application/instance-members/instance-member-service';
 import { InstanceApplication, type InstanceApplicationPort } from './instance-service';
+import { AesGcmInstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
 
 export interface InstanceRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -43,17 +44,26 @@ export async function resolveInstanceApplication(
 export async function resolveInstanceInvitationApplication(
 	context: InstanceRuntimeContext
 ): Promise<InstanceInvitationApplicationPort | null> {
+	const encryptionKey: string | undefined =
+		context.platform?.env?.DELIVERY_ENCRYPTION_KEY ?? env.DELIVERY_ENCRYPTION_KEY;
+	if (encryptionKey === undefined || encryptionKey.trim().length === 0) return null;
+	const previousEncryptionKey: string | undefined =
+		context.platform?.env?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS;
+	const payloadSealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(
+		encryptionKey,
+		previousEncryptionKey
+	);
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
 		return database === undefined
 			? null
-			: new InstanceInvitationApplication(new D1InstanceStore(database));
+			: new InstanceInvitationApplication({ store: new D1InstanceStore(database), payloadSealer });
 	}
 
 	const databaseUrl: string | undefined = env.DATABASE_URL;
 	if (databaseUrl === undefined || databaseUrl.trim().length === 0) return null;
 	const { resolvePostgresInstanceInvitationApplication } = await import('./runtime-postgres');
-	return resolvePostgresInstanceInvitationApplication(databaseUrl);
+	return resolvePostgresInstanceInvitationApplication(databaseUrl, payloadSealer);
 }
 
 /**

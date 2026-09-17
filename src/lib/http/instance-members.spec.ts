@@ -87,7 +87,26 @@ describe('GET /api/v1/instance/members/me HTTP handler', () => {
 			member: null,
 			bootstrapped: false
 		});
-		expect(app.getCurrentMember).toHaveBeenCalledWith({ id: 'user-1' });
+		expect(app.getCurrentMember).toHaveBeenCalledWith({
+			id: 'user-1',
+			displayName: 'User',
+			email: undefined
+		});
+	});
+
+	it('passes the mailbox snapshot only when d6e-auth verified it', async () => {
+		const app: InstanceApplicationPort = {
+			bootstrapInstance: vi.fn(),
+			getCurrentMember: vi.fn().mockResolvedValue({ member: null, bootstrapped: false })
+		};
+		const handler = createInstanceMemberMeHandler((): InstanceApplicationPort => app);
+
+		await handler(event({ locals: locals('active', { emailVerified: true }) }));
+		expect(app.getCurrentMember).toHaveBeenCalledWith({
+			id: 'user-1',
+			displayName: 'User',
+			email: 'user@example.com'
+		});
 	});
 
 	it('returns member metadata and bootstrapped true when caller is an active member', async () => {

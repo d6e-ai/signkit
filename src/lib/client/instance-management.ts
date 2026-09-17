@@ -88,6 +88,7 @@ export interface SetMemberStatusInput {
 export interface CreateInvitationInput {
 	email: string;
 	role: InstanceMemberRole;
+	locale?: 'en' | 'ja';
 }
 
 export interface AcceptInvitationInput {
@@ -127,8 +128,12 @@ export interface SetInstanceMemberStatusResponse {
 
 export interface CreateInstanceInvitationResponse {
 	invitation: InstanceInvitationMetadata;
-	token?: string;
+	delivery: InstanceInvitationDelivery;
 	replayed: boolean;
+}
+
+export interface InstanceInvitationDelivery {
+	readonly status: 'scheduled';
 }
 
 export interface ListInstanceInvitationsResponse {
@@ -492,7 +497,7 @@ export class InstanceManagementClient {
 		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
 		const { data, response } = await this.request<{
 			invitation: InstanceInvitationMetadata;
-			token?: string;
+			delivery: InstanceInvitationDelivery;
 		}>(
 			url,
 			{
@@ -502,14 +507,14 @@ export class InstanceManagementClient {
 					accept: 'application/json, application/problem+json',
 					'idempotency-key': idempotencyKey
 				},
-				body: JSON.stringify({ email: input.email, role: input.role })
+				body: JSON.stringify({ email: input.email, role: input.role, locale: input.locale })
 			},
 			options?.fetch
 		);
 		const replayed = response.headers.get('idempotency-replayed') === 'true';
 		return {
 			invitation: data.invitation,
-			...(data.token ? { token: data.token } : {}),
+			delivery: data.delivery,
 			replayed
 		};
 	}

@@ -132,6 +132,7 @@ Durable outboxes, DOCX conversion retries, expiry, reseal, webhook delivery, and
 
 | Endpoint                                                 | Work                                                                    |
 | -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `POST /api/v1/system/instance-invitations/drain`         | instance member invitation mail                                         |
 | `POST /api/v1/system/deliveries/drain`                   | recipient invitation mail                                               |
 | `POST /api/v1/system/deliveries/reseal-sweep`            | migrates outstanding delivery capability ciphertext onto the active key |
 | `POST /api/v1/system/docx-conversions/drain`             | retries leased DOCX import and export jobs                              |
@@ -146,6 +147,7 @@ All endpoints authenticate with a constant-time check of `Authorization: Bearer 
 
 ```sh
 for path in \
+  /api/v1/system/instance-invitations/drain \
   /api/v1/system/deliveries/drain \
   /api/v1/system/deliveries/reseal-sweep \
   /api/v1/system/docx-conversions/drain \
@@ -166,6 +168,8 @@ Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitiz
 Each delivery drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [architecture/completion-artifacts.md](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
 
 The reseal sweeps are bounded maintenance, not delivery: each run migrates at most 50 non-`processing` outbox rows sealed under a key other than the active one, leaving rows sealed under a key outside the active/previous pair untouched for an operator to investigate rather than silently discarding them.
+
+Instance-invitation payloads and their privacy-preserving idempotency fingerprints currently use the active/previous delivery key pair but do not have a separate reseal sweep. Keep `DELIVERY_ENCRYPTION_KEY_PREVIOUS` configured until every instance invitation created under it has reached its fixed seven-day expiry. Do not rotate a second time inside that overlap. Removing the previous key earlier makes encrypted rows unreadable and exact retries conflict until the key is restored; retries after the seven-day invitation window conflict by design.
 
 The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable (signer/approver) recipient that has ever been released has an expired capability and none currently has a live one, then transitions each envelope to `expired` with the same delivery-outbox scrub and capability revocation as an operator void, plus a chained `envelope.expired` audit event.
 

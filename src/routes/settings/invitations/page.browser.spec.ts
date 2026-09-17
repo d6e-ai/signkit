@@ -208,8 +208,7 @@ describe('settings invitations page in the browser', () => {
 		expect(screen.getByRole('button', { name: 'Revoke' }).query()).toBeNull();
 	});
 
-	it('binds the one-time invitation reveal to the invited email and invitation id, and clears on the next attempt', async () => {
-		let inviteCount = 0;
+	it('queues invitation email without rendering the bearer token and updates the recipient on the next success', async () => {
 		const mockFetch = vi
 			.fn()
 			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -218,11 +217,10 @@ describe('settings invitations page in the browser', () => {
 					return meResponse(member({ userId: 'owner-user-1', role: 'owner' }));
 				}
 				if (urlStr.includes('/api/v1/instance/invitations') && init?.method === 'POST') {
-					inviteCount += 1;
 					return jsonResponse(
 						{
 							invitation: {
-								id: `inv-${inviteCount}`,
+								id: 'inv-1',
 								role: 'member',
 								status: 'pending',
 								invitedByUserId: 'owner-user-1',
@@ -233,7 +231,7 @@ describe('settings invitations page in the browser', () => {
 								revokedAt: null,
 								revokedByUserId: null
 							},
-							token: `ski1_token_${inviteCount}`
+							delivery: { status: 'scheduled' }
 						},
 						201
 					);
@@ -248,133 +246,30 @@ describe('settings invitations page in the browser', () => {
 		const screen = await render(InvitationsPage);
 
 		await screen.getByLabelText('Email address').fill('alice@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
+		await screen.getByRole('button', { name: 'Send invitation email' }).first().click();
 		await expect
-			.element(screen.getByText('For alice@example.com — invitation inv-1'))
+			.element(
+				screen.getByText(
+					'The invitation email for alice@example.com is queued for background delivery.'
+				)
+			)
 			.toBeVisible();
+		expect(screen.getByText(/ski1_/).query()).toBeNull();
 
 		await screen.getByLabelText('Email address').fill('bob@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
-		await expect.element(screen.getByText('For bob@example.com — invitation inv-2')).toBeVisible();
-		expect(screen.getByText('For alice@example.com — invitation inv-1').query()).toBeNull();
-	});
-
-	it('never carries a stale clipboard error onto a newly revealed invitation token', async () => {
-		let inviteCount = 0;
-		const mockFetch = vi
-			.fn()
-			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
-				const urlStr = String(url);
-				if (urlStr.includes('/api/v1/instance/members/me')) {
-					return meResponse(member({ userId: 'owner-user-1', role: 'owner' }));
-				}
-				if (urlStr.includes('/api/v1/instance/invitations') && init?.method === 'POST') {
-					inviteCount += 1;
-					return jsonResponse(
-						{
-							invitation: {
-								id: `inv-${inviteCount}`,
-								role: 'member',
-								status: 'pending',
-								invitedByUserId: 'owner-user-1',
-								createdAt: '2026-09-03T00:00:00.000Z',
-								expiresAt: '2099-01-01T00:00:00.000Z',
-								acceptedAt: null,
-								acceptedByUserId: null,
-								revokedAt: null,
-								revokedByUserId: null
-							},
-							token: `ski1_token_${inviteCount}`
-						},
-						201
-					);
-				}
-				if (urlStr.includes('/api/v1/instance/invitations')) {
-					return jsonResponse({ invitations: [], nextCursor: null });
-				}
-				return jsonResponse({});
-			});
-		vi.stubGlobal('fetch', mockFetch);
-		vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'));
-
-		const screen = await render(InvitationsPage);
-
-		await screen.getByLabelText('Email address').fill('alice@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
-		await expect.element(screen.getByText('ski1_token_1')).toBeVisible();
-
-		await screen.getByRole('button', { name: 'Copy token' }).click();
+		await screen.getByRole('button', { name: 'Send invitation email' }).first().click();
 		await expect
-			.element(screen.getByText('Could not copy to clipboard. Copy the value manually.'))
+			.element(
+				screen.getByText(
+					'The invitation email for bob@example.com is queued for background delivery.'
+				)
+			)
 			.toBeVisible();
-
-		await screen.getByLabelText('Email address').fill('bob@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
-		await expect.element(screen.getByText('ski1_token_2')).toBeVisible();
-
 		expect(
-			screen.getByText('Could not copy to clipboard. Copy the value manually.').query()
+			screen
+				.getByText('The invitation email for alice@example.com is queued for background delivery.')
+				.query()
 		).toBeNull();
-	});
-
-	it('keeps the revealed invitation token intact when a follow-up create fails', async () => {
-		let inviteCount = 0;
-		const mockFetch = vi
-			.fn()
-			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
-				const urlStr = String(url);
-				if (urlStr.endsWith('/api/v1/instance/members/me')) {
-					return meResponse(member({ userId: 'owner-user-1', role: 'owner' }));
-				}
-				if (urlStr.includes('/api/v1/instance/invitations') && init?.method === 'POST') {
-					inviteCount += 1;
-					if (inviteCount === 2) {
-						return problemResponse(409, 'The Idempotency-Key was already used.');
-					}
-					return jsonResponse(
-						{
-							invitation: {
-								id: `inv-${inviteCount}`,
-								role: 'member',
-								status: 'pending',
-								invitedByUserId: 'owner-user-1',
-								createdAt: '2026-09-03T00:00:00.000Z',
-								expiresAt: '2099-01-01T00:00:00.000Z',
-								acceptedAt: null,
-								acceptedByUserId: null,
-								revokedAt: null,
-								revokedByUserId: null
-							},
-							token: `ski1_token_${inviteCount}`
-						},
-						201
-					);
-				}
-				if (urlStr.includes('/api/v1/instance/invitations')) {
-					return jsonResponse({ invitations: [], nextCursor: null });
-				}
-				return jsonResponse({});
-			});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(InvitationsPage);
-
-		await screen.getByLabelText('Email address').fill('alice@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
-		await expect.element(screen.getByText('ski1_token_1')).toBeVisible();
-		await expect
-			.element(screen.getByText('For alice@example.com — invitation inv-1'))
-			.toBeVisible();
-
-		await screen.getByLabelText('Email address').fill('bob@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
-		await expect.element(screen.getByText('The Idempotency-Key was already used.')).toBeVisible();
-
-		await expect.element(screen.getByText('ski1_token_1')).toBeVisible();
-		await expect
-			.element(screen.getByText('For alice@example.com — invitation inv-1'))
-			.toBeVisible();
-		expect(screen.getByText('ski1_token_2').query()).toBeNull();
 	});
 
 	it('associates a create failure FieldError inside its invalid Field with data-invalid and aria-invalid', async () => {
@@ -398,7 +293,7 @@ describe('settings invitations page in the browser', () => {
 		const screen = await render(InvitationsPage);
 
 		await screen.getByLabelText('Email address').fill('dup@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
+		await screen.getByRole('button', { name: 'Send invitation email' }).first().click();
 		const fieldError = screen.getByText('Invitation already pending.');
 		await expect.element(fieldError).toBeVisible();
 		const field = fieldError.element().closest('[data-slot="field"]');
@@ -406,50 +301,5 @@ describe('settings invitations page in the browser', () => {
 		expect(field?.getAttribute('data-invalid')).not.toBeNull();
 		const emailInput = screen.getByLabelText('Email address');
 		expect(emailInput.element().getAttribute('aria-invalid')).toBe('true');
-	});
-
-	it('dismisses the revealed invitation token via its dismiss action', async () => {
-		const mockFetch = vi
-			.fn()
-			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
-				const urlStr = String(url);
-				if (urlStr.includes('/api/v1/instance/members/me')) {
-					return meResponse(member({ userId: 'owner-user-1', role: 'owner' }));
-				}
-				if (urlStr.includes('/api/v1/instance/invitations') && init?.method === 'POST') {
-					return jsonResponse(
-						{
-							invitation: {
-								id: 'inv-dismiss',
-								role: 'member',
-								status: 'pending',
-								invitedByUserId: 'owner-user-1',
-								createdAt: '2026-09-03T00:00:00.000Z',
-								expiresAt: '2099-01-01T00:00:00.000Z',
-								acceptedAt: null,
-								acceptedByUserId: null,
-								revokedAt: null,
-								revokedByUserId: null
-							},
-							token: 'ski1_dismiss_me'
-						},
-						201
-					);
-				}
-				if (urlStr.includes('/api/v1/instance/invitations')) {
-					return jsonResponse({ invitations: [], nextCursor: null });
-				}
-				return jsonResponse({});
-			});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(InvitationsPage);
-
-		await screen.getByLabelText('Email address').fill('gone@example.com');
-		await screen.getByRole('button', { name: 'Create invitation' }).first().click();
-		await expect.element(screen.getByText('ski1_dismiss_me')).toBeVisible();
-
-		await screen.getByRole('alert').getByRole('button').first().click();
-		expect(screen.getByText('ski1_dismiss_me').query()).toBeNull();
 	});
 });

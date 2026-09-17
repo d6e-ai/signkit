@@ -138,7 +138,12 @@ export function sanitizeDeliveryErrorCode(code: string): string {
 }
 
 function isSensitiveCode(code: string): boolean {
-	return code.startsWith('skr1_') || code.startsWith('skdc1_');
+	return (
+		code.startsWith('skr1_') ||
+		code.startsWith('skdc1_') ||
+		code.startsWith('ski1_') ||
+		code.startsWith('skiod1_')
+	);
 }
 
 export function boundInvitationClaimLimit(limit: number): number {

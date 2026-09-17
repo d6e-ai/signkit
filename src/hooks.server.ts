@@ -232,7 +232,11 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 			event.locals.identityState = 'unavailable';
 			return resolve(event);
 		}
-		const caller = await application.getCurrentMember({ id: session.principal.subject });
+		const caller = await application.getCurrentMember({
+			id: session.principal.subject,
+			displayName: session.principal.name,
+			email: session.principal.emailVerified === true ? session.principal.email : undefined
+		});
 		event.locals.principal = session.principal;
 		event.locals.bootstrapped = caller.bootstrapped;
 		if (caller.member === null) {

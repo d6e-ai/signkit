@@ -72,6 +72,18 @@ describe('settings invitations page server contracts', () => {
 		expect(panelSource).not.toMatch(/<label[\s>]/);
 		expect(panelSource).not.toContain('space-y');
 	});
+
+	it('reports durable email scheduling with Alert and never exposes invitation capabilities', () => {
+		const panelSource = readFileSync(
+			'src/lib/components/settings/settings-invitations-panel.svelte',
+			'utf8'
+		);
+		expect(panelSource).toContain('<Alert.Root>');
+		expect(panelSource).toContain('settings_invitations_email_scheduled_title');
+		expect(panelSource).toContain('settings_invitations_email_scheduled_description');
+		expect(panelSource).not.toMatch(/settingsRevealState|revealedInvitation|\.token/);
+		expect(panelSource).not.toMatch(/settings_invitations_token_/);
+	});
 });
 
 describe('settings invitations page server guard', () => {

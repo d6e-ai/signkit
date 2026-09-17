@@ -19,7 +19,7 @@ SMTP failure classification preserves the existing durable-outbox invariant (see
 
 ## Consequences
 
-- `resolveWorkerMailSender` and `resolveNodeMailSender` (`src/lib/application/mail/mail-runtime.ts`) are now the single place both invitation delivery (`delivery-runtime.ts`) and completion delivery (`completion-delivery-runtime.ts`) resolve a `MailSender`, replacing the duplicated ad hoc selection each runtime file previously inlined.
+- `resolveWorkerMailSender` and `resolveNodeMailSender` (`src/lib/application/mail/mail-runtime.ts`) are now the single place recipient invitation, instance invitation, and completion delivery resolve a `MailSender`, replacing duplicated ad hoc selection.
 - `wrangler.jsonc` and `wrangler.build.jsonc` ship `SIGNKIT_MAIL_PROVIDER=cloudflare` as a plain (non-secret) `vars` entry, so Workers deployments do not need to set it separately and cannot accidentally select `smtp`.
 - Every existing Node/Docker or Vercel deployment that relied on Cloudflare Email Sending without setting a provider must now also set `SIGNKIT_MAIL_PROVIDER=cloudflare`, or delivery stops (fails closed) rather than silently continuing on the old default.
 - The `MailSender` port, durable outboxes, retry/backoff behavior, idempotent delivery, and error/secret sanitization are unchanged — only the transport selection and the addition of the SMTP adapter are new.

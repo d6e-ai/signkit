@@ -93,17 +93,23 @@ function bootstrapCommand(
 function createCommand(
 	overrides: Partial<CreateInstanceInvitationCommand> = {}
 ): CreateInstanceInvitationCommand {
+	const invitationId: string = overrides.invitationId ?? INVITATION_ID;
 	return {
 		actor: { type: 'user', id: OWNER_ID },
 		idempotencyKey: 'create-idem-key-1',
 		requestFingerprint: REQUEST_FINGERPRINT,
-		invitationId: INVITATION_ID,
+		deliveryLocale: 'ja',
+		sealedDeliveryPayload: 'skiod1_test',
+		deliverySealingKeyId: 'test-key',
+		sealedDeliveryPayloadSha256: 'd'.repeat(64),
 		role: 'member',
 		tokenHash: TOKEN_HASH,
 		emailBinding: EMAIL_BINDING,
 		createdAt: CREATED_AT,
 		expiresAt: EXPIRES_AT,
-		...overrides
+		...overrides,
+		invitationId,
+		deliveryId: overrides.deliveryId ?? invitationId
 	};
 }
 

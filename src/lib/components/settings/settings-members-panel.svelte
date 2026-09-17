@@ -173,12 +173,19 @@
 							{@const canAdminManageStatus = isCallerAdmin && isTargetMember && !isSelf}
 							{@const canManageStatus = canOwnerManageStatus || canAdminManageStatus}
 							{@const isPendingThis = memberActionPending[member.userId] ?? false}
+							{@const memberLabel =
+								member.displayName ?? member.email ?? m.settings_members_unknown_identity()}
 
 							<Table.Row>
-								<Table.Cell class="font-mono text-xs">
-									<div class="flex items-center gap-1.5">
-										<IconUser class="size-3.5 text-muted-foreground" />
-										<span class="max-w-[140px] truncate sm:max-w-[220px]">{member.userId}</span>
+								<Table.Cell>
+									<div class="flex min-w-0 items-center gap-2">
+										<IconUser class="text-muted-foreground" />
+										<div class="flex min-w-0 flex-col gap-0.5">
+											<span class="truncate text-sm leading-none font-medium">{memberLabel}</span>
+											{#if member.email && member.email !== memberLabel}
+												<span class="truncate text-xs text-muted-foreground">{member.email}</span>
+											{/if}
+										</div>
 										{#if isSelf}
 											<Badge variant="secondary" class="text-[10px]"
 												>{m.settings_members_you()}</Badge
@@ -198,7 +205,7 @@
 													size="sm"
 													class="h-7 text-xs font-medium"
 													aria-label={m.settings_members_role_aria_label({
-														userId: member.userId
+														userId: memberLabel
 													})}
 												>
 													{roleLabel(memberRoleDrafts[member.userId])}

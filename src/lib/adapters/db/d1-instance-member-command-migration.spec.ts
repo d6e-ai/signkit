@@ -66,6 +66,8 @@ interface MemberRow {
 	status: Status;
 	created_at: string;
 	updated_at: string;
+	display_name: string | null;
+	email: string | null;
 }
 
 function memberRow(sqlite: DatabaseSync, userId: string): MemberRow {
@@ -641,7 +643,9 @@ describe('D1 instance member command migration', () => {
 				role: 'owner',
 				status: 'active',
 				created_at: CREATED_AT,
-				updated_at: CREATED_AT
+				updated_at: CREATED_AT,
+				display_name: null,
+				email: null
 			});
 
 			// Touching the last active owner without leaving the active-owner set

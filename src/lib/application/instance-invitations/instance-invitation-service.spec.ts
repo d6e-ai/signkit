@@ -28,7 +28,6 @@ import {
 	canonicalJson,
 	InstanceInvitationApplication,
 	InstanceInvitationCollisionExhaustedError,
-	InstanceInvitationService,
 	InvalidInstanceInvitationRequestError,
 	sha256Hex,
 	type AcceptInstanceInvitationInput,
@@ -43,6 +42,12 @@ import {
 	hashInstanceInvitationToken,
 	type IssuedInstanceInvitationToken
 } from '$lib/security/instance-invitation';
+import type {
+	InstanceInvitationDeliveryPayload,
+	InstanceInvitationDeliveryPayloadSealer,
+	InstanceInvitationDeliverySealContext,
+	SealedInstanceInvitationDeliveryPayload
+} from '$lib/security/instance-invitation-delivery-payload';
 
 const NOW: Date = new Date('2026-09-12T12:00:00.000Z');
 const EXPECTED_EXPIRY: string = new Date(
@@ -54,6 +59,31 @@ const VALID_UUID_1: string = '01900000-0000-7000-8000-000000000001';
 const VALID_UUID_2: string = '01900000-0000-7000-8000-000000000002';
 const VALID_UUID_3: string = '01900000-0000-7000-8000-000000000003';
 const VALID_UUID_4: string = '01900000-0000-7000-8000-000000000004';
+const TEST_TOKEN: string = `ski1_${'a'.repeat(43)}`;
+
+const fakePayloadSealer: InstanceInvitationDeliveryPayloadSealer = {
+	async fingerprintRequest(input) {
+		return { active: await sha256Hex(canonicalJson(input)) };
+	},
+	async seal(
+		payload: InstanceInvitationDeliveryPayload,
+		context: InstanceInvitationDeliverySealContext
+	): Promise<SealedInstanceInvitationDeliveryPayload> {
+		void payload;
+		void context;
+		return {
+			sealedPayload: 'skiod1_test-ciphertext',
+			sealingKeyId: 'test-key',
+			sealedPayloadSha256: 'd'.repeat(64)
+		};
+	},
+	async open(): Promise<InstanceInvitationDeliveryPayload> {
+		throw new Error('not used');
+	},
+	async isKnownSealingKeyId(): Promise<boolean> {
+		return true;
+	}
+};
 
 class FakeInstanceStore implements InstanceStore {
 	readonly createCommands: CreateInstanceInvitationCommand[] = [];
@@ -238,22 +268,24 @@ function createTestApp(
 	const issueToken = async (): Promise<IssuedInstanceInvitationToken> => {
 		if (tokenPool.length > 0) return tokenPool.shift()!;
 		// Mint a deterministic ski1_ test token
-		const token = `ski1_${'a'.repeat(43)}`;
+		const token = TEST_TOKEN;
 		const tokenHash = await hashInstanceInvitationToken(token);
 		return { token, tokenHash };
 	};
 
 	return new InstanceInvitationApplication({
 		store,
+		payloadSealer: fakePayloadSealer,
 		now: clock,
 		newId,
+		newDeliveryId: (): string => VALID_UUID_4,
 		issueToken
 	});
 }
 
 describe('InstanceInvitationApplication', () => {
 	describe('create', () => {
-		it('creates a fresh invitation with fixed 7-day expiry, canonical {role} fingerprint, and one-time token', async () => {
+		it('creates a fresh invitation with fixed 7-day expiry and encrypted delivery payload', async () => {
 			const store = new FakeInstanceStore();
 			const app = createTestApp(store);
 
@@ -269,7 +301,7 @@ describe('InstanceInvitationApplication', () => {
 			if (result.outcome !== 'created') return;
 
 			expect(result.replayed).toBe(false);
-			expect(result.token).toMatch(/^ski1_[A-Za-z0-9_-]{43}$/);
+			expect('token' in result).toBe(false);
 			expect(result.invitation.id).toBe(VALID_UUID_1);
 			expect(result.invitation.role).toBe('admin');
 			expect(result.invitation.status).toBe('pending');
@@ -282,13 +314,18 @@ describe('InstanceInvitationApplication', () => {
 			expect(command.role).toBe('admin');
 			expect(command.createdAt).toBe(NOW.toISOString());
 			expect(command.expiresAt).toBe(EXPECTED_EXPIRY);
-			expect(command.tokenHash).toBe(await hashInstanceInvitationToken(result.token));
+			expect(command.tokenHash).toBe(await hashInstanceInvitationToken(TEST_TOKEN));
 			expect(command.emailBinding).toBe(
-				await computeInstanceInvitationEmailBinding(result.token, 'alice@example.com')
+				await computeInstanceInvitationEmailBinding(TEST_TOKEN, 'alice@example.com')
 			);
+			expect(command.deliveryId).toBe(VALID_UUID_4);
+			expect(command.deliveryLocale).toBe('ja');
+			expect(command.sealedDeliveryPayload).toBe('skiod1_test-ciphertext');
 
-			// Stable sha256 fingerprint covers canonical { role } only:
-			const expectedFingerprint = await sha256Hex(canonicalJson({ role: 'admin' }));
+			// The keyed production fingerprint covers every delivery-affecting field.
+			const expectedFingerprint = await sha256Hex(
+				canonicalJson({ email: 'alice@example.com', locale: 'ja', role: 'admin' })
+			);
 			expect(command.requestFingerprint).toBe(expectedFingerprint);
 		});
 
@@ -322,7 +359,7 @@ describe('InstanceInvitationApplication', () => {
 			}
 		});
 
-		it('guarantees email is absent from fingerprint and outputs (zero PII)', async () => {
+		it('binds normalized email and locale without exposing plaintext PII in outputs', async () => {
 			const store = new FakeInstanceStore();
 			const app = createTestApp(store);
 
@@ -345,9 +382,8 @@ describe('InstanceInvitationApplication', () => {
 			const fp1 = store.createCommands[0].requestFingerprint;
 			const fp2 = store.createCommands[1].requestFingerprint;
 
-			// Fingerprints must be identical because role is the same
-			expect(fp1).toBe(fp2);
-			expect(fp1).toBe(await sha256Hex(canonicalJson({ role: 'owner' })));
+			// A corrected destination must not replay a command for the old mailbox.
+			expect(fp1).not.toBe(fp2);
 
 			// Neither the plain emails nor any substring appears in the fingerprints
 			expect(fp1).not.toContain(email1);
@@ -364,6 +400,37 @@ describe('InstanceInvitationApplication', () => {
 			expect(serializedResult).not.toContain('email');
 		});
 
+		it('normalizes equivalent mailboxes but distinguishes delivery locale', async () => {
+			const store = new FakeInstanceStore();
+			const app = createTestApp(store);
+
+			await app.create(ACTOR, {
+				idempotencyKey: 'key-1',
+				email: '  Alice@Example.COM ',
+				role: 'member',
+				locale: 'ja'
+			});
+			await app.create(ACTOR, {
+				idempotencyKey: 'key-2',
+				email: 'alice@example.com',
+				role: 'member',
+				locale: 'ja'
+			});
+			await app.create(ACTOR, {
+				idempotencyKey: 'key-3',
+				email: 'alice@example.com',
+				role: 'member',
+				locale: 'en'
+			});
+
+			expect(store.createCommands[0].requestFingerprint).toBe(
+				store.createCommands[1].requestFingerprint
+			);
+			expect(store.createCommands[2].requestFingerprint).not.toBe(
+				store.createCommands[1].requestFingerprint
+			);
+		});
+
 		it('demonstrates the fresh key caveat: fresh key mints new credential, replay returns no secret', async () => {
 			const store = new FakeInstanceStore();
 			const app = createTestApp(store);
@@ -376,9 +443,8 @@ describe('InstanceInvitationApplication', () => {
 			});
 			expect(first.outcome).toBe('created');
 			if (first.outcome !== 'created') return;
-			const firstToken = first.token;
 			const firstId = first.invitation.id;
-			expect(firstToken).toMatch(/^ski1_/);
+			expect('token' in first).toBe(false);
 
 			// 2. Replay with key-1: returns replayed: true, NO token
 			const replayStore = new FakeInstanceStore([
@@ -706,7 +772,8 @@ describe('InstanceInvitationApplication', () => {
 			const input: AcceptInstanceInvitationInput = {
 				idempotencyKey: 'accept-idemp-1',
 				token: validToken,
-				email: '  Signer@Example.COM  '
+				email: '  Signer@Example.COM  ',
+				displayName: '  Signer Name  '
 			};
 
 			const result: AcceptInstanceInvitationResult = await app.accept(ACCEPTOR_ACTOR, input);
@@ -718,6 +785,10 @@ describe('InstanceInvitationApplication', () => {
 			expect(store.acceptCommands).toHaveLength(1);
 			const command = store.acceptCommands[0];
 			expect(command.actor).toEqual({ type: 'user', id: 'acceptor-user-2' });
+			expect(command.identity).toEqual({
+				displayName: 'Signer Name',
+				email: 'signer@example.com'
+			});
 			expect(command.idempotencyKey).toBe('accept-idemp-1');
 			expect(command.acceptedAt).toBe(NOW.toISOString());
 
@@ -1001,7 +1072,7 @@ describe('InstanceInvitationApplication', () => {
 	describe('aliases and dependency injection', () => {
 		it('supports InstanceInvitationService alias and method aliases', async () => {
 			const store = new FakeInstanceStore();
-			const service = new InstanceInvitationService(store, () => NOW);
+			const service = createTestApp(store);
 
 			const createRes = await service.createInstanceInvitation(ACTOR, {
 				idempotencyKey: 'alias-1',
@@ -1013,10 +1084,9 @@ describe('InstanceInvitationApplication', () => {
 			const listRes = await service.listInstanceInvitations(ACTOR);
 			expect(listRes.outcome).toBe('listed');
 
-			const token = (createRes as { token: string }).token;
 			const acceptRes = await service.acceptInstanceInvitation(ACCEPTOR_ACTOR, {
 				idempotencyKey: 'alias-2',
-				token,
+				token: TEST_TOKEN,
 				email: 'alice@example.com'
 			});
 			expect(acceptRes.outcome).toBe('accepted');
@@ -1027,10 +1097,11 @@ describe('InstanceInvitationApplication', () => {
 			expect(revokeRes.outcome).toBe('revoked');
 		});
 
-		it('supports constructor with positional arguments', () => {
+		it('fails closed when delivery encryption is omitted', () => {
 			const store = new FakeInstanceStore();
-			const app = new InstanceInvitationApplication(store);
-			expect(app).toBeDefined();
+			expect(() => new InstanceInvitationApplication(store)).toThrow(
+				'Instance invitation delivery encryption is required'
+			);
 		});
 	});
 });

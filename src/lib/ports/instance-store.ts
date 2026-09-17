@@ -1,4 +1,5 @@
 import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
+import type { InstanceInvitationDeliveryLocale } from '$lib/security/instance-invitation-delivery-payload';
 
 export const INSTANCE_IDEMPOTENCY_KEY_PATTERN: RegExp = /^[!-~]{1,200}$/;
 /** Instance invitations are SignKit-owned, so their IDs are UUIDv7. */
@@ -28,6 +29,10 @@ export type InstanceMemberStatus = 'active' | 'suspended';
 
 export interface InstanceMemberMetadata {
 	userId: string;
+	/** Display-only snapshot from the member's verified d6e-auth principal. */
+	displayName?: string | null;
+	/** Display-only snapshot from the member's verified d6e-auth principal. */
+	email?: string | null;
 	role: InstanceMemberRole;
 	status: InstanceMemberStatus;
 	createdAt: string;
@@ -41,9 +46,24 @@ export interface InstanceCallerContext {
 
 export interface BootstrapInstanceCommand {
 	actor: InstanceActor;
+	identity?: InstanceMemberIdentitySnapshot;
 	idempotencyKey: string;
 	requestFingerprint: string;
 	createdAt: string;
+}
+
+/**
+ * A non-authoritative identity projection used only to label local members.
+ * SignKit must never use either field for membership or authorization.
+ */
+export interface InstanceMemberIdentitySnapshot {
+	displayName: string | null;
+	email: string | null;
+}
+
+export interface RefreshInstanceMemberIdentityCommand {
+	userId: string;
+	identity: InstanceMemberIdentitySnapshot;
 }
 
 /**
@@ -99,10 +119,16 @@ export interface CreateInstanceInvitationCommand {
 	actor: InstanceActor;
 	idempotencyKey: string;
 	requestFingerprint: string;
+	previousRequestFingerprint?: string;
 	invitationId: string;
 	role: InstanceMemberRole;
 	tokenHash: string;
 	emailBinding: string;
+	deliveryId: string;
+	deliveryLocale: InstanceInvitationDeliveryLocale;
+	sealedDeliveryPayload: string;
+	deliverySealingKeyId: string;
+	sealedDeliveryPayloadSha256: string;
 	createdAt: string;
 	expiresAt: string;
 }
@@ -170,6 +196,7 @@ export type ListInstanceInvitationsStoreResult =
  */
 export interface AcceptInstanceInvitationCommand {
 	actor: InstanceActor;
+	identity?: InstanceMemberIdentitySnapshot;
 	idempotencyKey: string;
 	requestFingerprint: string;
 	tokenHash: string;
@@ -416,6 +443,11 @@ export type SetInstanceMemberStatusStoreResult =
 export interface InstanceStore {
 	bootstrapInstance(command: BootstrapInstanceCommand): Promise<BootstrapInstanceStoreResult>;
 	getInstanceCallerContext(userId: string): Promise<InstanceCallerContext>;
+	/**
+	 * Best-effort refresh of display-only identity data. It is optional so
+	 * alternate/test stores that do not persist identity labels remain valid.
+	 */
+	refreshInstanceMemberIdentity?(command: RefreshInstanceMemberIdentityCommand): Promise<void>;
 	createInstanceInvitation(
 		command: CreateInstanceInvitationCommand
 	): Promise<CreateInstanceInvitationStoreResult>;
