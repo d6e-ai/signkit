@@ -59,6 +59,13 @@ describe('release-cloudflare-bundle workflow', () => {
 		expect(yaml).not.toMatch(/NODE_AUTH_TOKEN/);
 		expect(yaml).not.toMatch(/echo[^|\n]*NODE_AUTH_TOKEN/);
 		expect(yaml).toMatch(/lockfile-pinned npm CLI mismatch/);
+		expect(yaml).toMatch(/Array\.isArray\(value\)/);
+		expect(yaml).toMatch(/value\.includes\(expected\)/);
+		expect(yaml).toMatch(/npm registry lookup failed; refusing to infer/);
+		expect(yaml).toMatch(/npm registry returned unexpected version metadata/);
+		expect(yaml).not.toMatch(
+			/view "create-signkit@\$\{PACKAGE_VERSION\}" version --json[^\n]*\|\| true/
+		);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease\)/);
 		expect(yaml).toMatch(/prerelease_args\+=\(--prerelease=false\)/);
 		expect(yaml).not.toMatch(/gh release edit "\$tag" "\$\{prerelease_args\[@\]\}"/);
