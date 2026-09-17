@@ -180,7 +180,7 @@ describe('release-cloudflare-bundle workflow', () => {
 			/actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4\.4\.0/
 		);
 		expect(combined).toMatch(
-			/pnpm\/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4\.4\.0/
+			/pnpm\/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4\.4\.0/
 		);
 		expect(combined).toMatch(
 			/dtolnay\/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1\.88\.0/
