@@ -44,6 +44,11 @@ describe('Sigstore integration fixture', () => {
 			commit: '9628f5ca470dea2adaa8194365541e304e3d56dc',
 			eventName: 'push'
 		});
+		// This historical fixture predates GitHub's owner/repository-id-qualified
+		// runner-identity claim. Production policy uses the current exact form.
+		certificatePolicy.verifyOptions.certificateOIDs['1.3.6.1.4.1.57264.1.24'] = derUtf8String(
+			'repo:diesel-rs/diesel:ref:refs/tags/v2.3.13'
+		);
 		const verifier = new Verifier(toTrustMaterial(trustedRoot), {
 			ctlogThreshold: 1,
 			tlogThreshold: 1
@@ -67,4 +72,9 @@ function toVerificationPolicy(policy: GithubCertificatePolicy): VerificationPoli
 			value: Buffer.from(value)
 		}))
 	};
+}
+
+function derUtf8String(value: string): string {
+	const bytes = Buffer.from(value, 'utf8');
+	return String.fromCharCode(0x0c, bytes.byteLength, ...bytes);
 }
