@@ -4,9 +4,9 @@
 	import AppBreadcrumbs from '$lib/components/app-breadcrumbs.svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import LanguageSwitch from '$lib/components/language-switch.svelte';
+	import NavigationProgress from '$lib/components/navigation-progress.svelte';
 	import ThemeSwitch from '$lib/components/theme-switch.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
-	import { Spinner } from '$lib/components/ui/spinner';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import favicon from '$lib/assets/favicon.svg';
 	import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
@@ -61,16 +61,12 @@
 				email={data.email ?? null}
 				instanceMemberRole={data.instanceMemberRole ?? null}
 			/>
-			<Sidebar.Inset class="min-w-0">
+			<Sidebar.Inset class="min-w-0" aria-busy={navigationPending}>
 				<header
 					class="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl"
 				>
 					<Sidebar.Trigger />
-					{#if navigationPending}
-						<Spinner aria-label={m.nav_loading()} />
-					{:else}
-						<AppBreadcrumbs />
-					{/if}
+					<AppBreadcrumbs />
 					<div class="ml-auto flex min-w-0 items-center gap-1">
 						<ThemeSwitch />
 						<LanguageSwitch />
@@ -80,4 +76,5 @@
 			</Sidebar.Inset>
 		</Sidebar.Provider>
 	{/if}
+	<NavigationProgress />
 </Tooltip.Provider>
