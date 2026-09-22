@@ -173,6 +173,10 @@ export class RemotePdfSealValidator implements PdfSealValidator {
 			cancelBodyBestEffort(response.body, redirectFailure.code);
 			throw redirectFailure;
 		}
+		if (!response.ok) {
+			void framedBody.cancel(validatorError('validator_rejected', false));
+			return this.#readValidationResponse(response, reference, timeoutSignal);
+		}
 		try {
 			await waitForFrameCompletion(framedBody, timeoutSignal);
 		} catch (error: unknown) {
