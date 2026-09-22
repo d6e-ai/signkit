@@ -106,3 +106,127 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+
+  pades-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Keep generated PAdES evidence outside the checkout
+        run: echo "PADES_OUT=$RUNNER_TEMP/signkit-pades-conformance" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: 0.12.7
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: tools/pades-conformance/uv.lock
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Install the pinned PAdES fixture environment
+        run: uv sync --project tools/pades-conformance --locked --python 3.12
+      - name: Test the fail-closed artifact inventory
+        run: >-
+          uv run --project tools/pades-conformance --locked
+          python -m unittest discover -s tools/pades-conformance
+          -p 'test_*.py'
+      - name: Generate ephemeral PAdES B-B and B-T fixtures
+        run: >-
+          uv run --project tools/pades-conformance
+          --locked
+          python tools/pades-conformance/generate.py --out "$PADES_OUT"
+      - name: Validate PAdES B-B and B-T with pyHanko
+        run: |
+          trust_args=(--trust-replace)
+          for certificate in "$PADES_OUT"/trust/*.pem; do
+            trust_args+=(--trust "$certificate")
+          done
+          for profile in b-b b-t; do
+            uv run --project tools/pades-conformance --locked \
+              python tools/pades-conformance/pyhanko_frozen.py \
+              --signkit-expect "valid-$profile" \
+              sign adesverify \
+              "${trust_args[@]}" \
+              --no-revocation-check \
+              --validation-time 2026-09-23T00:00:00Z \
+              --pretty-print "$PADES_OUT/pades-$profile.pdf" \
+              > "$PADES_OUT/reports/pyhanko-$profile.txt" \
+              2> "$PADES_OUT/reports/pyhanko-$profile.stderr.txt"
+          done
+          grep -Fq \
+            'AdES time slide yields 2026-09-23 00:00:00+00:00' \
+            "$PADES_OUT/reports/pyhanko-b-t.stderr.txt"
+      - name: Require pyHanko to reject signed-byte and timestamp-policy violations
+        run: |
+          trust_args=(--trust-replace)
+          for certificate in "$PADES_OUT"/trust/*.pem; do
+            trust_args+=(--trust "$certificate")
+          done
+          rejected=(
+            tampered-b-b.pdf
+            tampered-b-t.pdf
+            invalid-ess-missing.pdf
+            invalid-ess-mismatch.pdf
+            invalid-tsa-eku-absent.pdf
+            invalid-tsa-eku-noncritical.pdf
+            invalid-tsa-eku-multipurpose.pdf
+          )
+          for pdf_name in "${rejected[@]}"; do
+            report_name="${pdf_name%.pdf}"
+            report_name="${report_name#invalid-}"
+            report="$PADES_OUT/reports/pyhanko-$report_name.txt"
+            expectation=rejected-policy
+            if [[ "$pdf_name" == tampered-b-b.pdf ]]; then
+              expectation=rejected-b-b
+            elif [[ "$pdf_name" == tampered-b-t.pdf ]]; then
+              expectation=rejected-b-t
+            fi
+            if uv run --project tools/pades-conformance --locked \
+              python tools/pades-conformance/pyhanko_frozen.py \
+              --signkit-expect "$expectation" \
+              sign adesverify \
+              "${trust_args[@]}" \
+              --no-revocation-check \
+              --validation-time 2026-09-23T00:00:00Z \
+              --pretty-print "$PADES_OUT/$pdf_name" \
+              > "$report" 2>&1; then
+              echo "pyHanko accepted $pdf_name" >&2
+              exit 1
+            fi
+            if [[ "$expectation" == rejected-policy ]]; then
+              grep -Eq '^SIGNKIT_PYHANKO_UPSTREAM_EXIT=[01]$' "$report"
+              grep -Fxq 'SIGNKIT_TIMESTAMP_POLICY=REJECTED' "$report"
+            else
+              grep -Eq '^SIGNKIT_PYHANKO_UPSTREAM_EXIT=[1-9][0-9]*$' "$report"
+              grep -Fxq 'SIGNKIT_TIMESTAMP_POLICY=ACCEPTED' "$report"
+            fi
+          done
+      - name: Record the effective Java and Maven toolchain
+        run: |
+          java -version > "$PADES_OUT/reports/java-version.txt" 2>&1
+          mvn -version > "$PADES_OUT/reports/maven-version.txt"
+          mvn -B -ntp -C -f tools/pades-conformance/dss/pom.xml \
+            dependency:tree \
+            -DoutputFile="$PADES_OUT/reports/maven-dependency-tree.txt"
+      - name: Validate profiles and mutations with EU DSS 6.5
+        run: >-
+          mvn -B -ntp -C -f tools/pades-conformance/dss/pom.xml
+          compile exec:java
+          -Dexec.mainClass=ai.d6e.signkit.pades.DssValidate
+          -Dexec.args="$PADES_OUT"
+      - name: Prove the upload inventory is complete and contains no private keys
+        id: pades-secret-scan
+        if: always()
+        run: >-
+          uv run --project tools/pades-conformance --locked
+          python tools/pades-conformance/verify_artifacts.py --out "$PADES_OUT"
+      - name: Upload public PAdES conformance evidence
+        if: always() && steps.pades-secret-scan.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pades-conformance-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: ${{ runner.temp }}/signkit-pades-conformance/
