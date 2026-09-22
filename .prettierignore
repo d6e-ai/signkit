@@ -21,6 +21,11 @@ bun.lockb
 # Rust CLI
 /cli/
 
+# Python tooling
+/.venv/
+**/.venv/
+**/__pycache__/
+
 # create-signkit build output
 /packages/create-signkit/dist/
 /.release/

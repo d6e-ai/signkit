@@ -106,3 +106,105 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+
+  pades-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Keep generated PAdES evidence outside the checkout
+        run: echo "PADES_OUT=$RUNNER_TEMP/signkit-pades-conformance" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: 0.12.7
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: tools/pades-conformance/uv.lock
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Install the pinned PAdES fixture environment
+        run: uv sync --project tools/pades-conformance --locked --python 3.12
+      - name: Generate ephemeral PAdES B-B and B-T fixtures
+        run: >-
+          uv run --project tools/pades-conformance
+          --locked
+          python tools/pades-conformance/generate.py --out "$PADES_OUT"
+      - name: Validate PAdES B-B and B-T with pyHanko
+        run: |
+          for profile in b-b b-t; do
+            uv run --project tools/pades-conformance --locked pyhanko sign adesverify \
+              --trust-replace \
+              --trust "$PADES_OUT/trust/signer.pem" \
+              --trust "$PADES_OUT/trust/tsa.pem" \
+              --no-revocation-check \
+              --validation-time 2026-09-23T00:00:00Z \
+              --pretty-print "$PADES_OUT/pades-$profile.pdf" \
+              > "$PADES_OUT/reports/pyhanko-$profile.txt"
+          done
+      - name: Require pyHanko to reject signed-byte mutations
+        run: |
+          for profile in b-b b-t; do
+            report="$PADES_OUT/reports/pyhanko-tampered-$profile.txt"
+            if uv run --project tools/pades-conformance --locked pyhanko sign adesverify \
+              --trust-replace \
+              --trust "$PADES_OUT/trust/signer.pem" \
+              --trust "$PADES_OUT/trust/tsa.pem" \
+              --no-revocation-check \
+              --validation-time 2026-09-23T00:00:00Z \
+              --pretty-print "$PADES_OUT/tampered-$profile.pdf" \
+              > "$report" 2>&1; then
+              echo "pyHanko accepted tampered-$profile.pdf" >&2
+              exit 1
+            fi
+          done
+      - name: Validate profiles and mutations with EU DSS 6.5
+        run: >-
+          mvn -B -ntp -f tools/pades-conformance/dss/pom.xml
+          compile exec:java
+          -Dexec.mainClass=ai.d6e.signkit.pades.DssValidate
+          -Dexec.args="$PADES_OUT"
+      - name: Prove uploaded paths contain no private keys
+        id: pades-secret-scan
+        if: always()
+        run: |
+          if [[ ! -d "$PADES_OUT" ]]; then
+            echo "PAdES output directory was not created" >&2
+            exit 1
+          fi
+          if find "$PADES_OUT" -type f \( \
+            -iname '*.key' -o -iname '*.p12' -o -iname '*.pfx' -o -iname '*.pkcs12' \
+          \) -print -quit | grep -q .; then
+            echo "Forbidden private-key file extension in PAdES artifacts" >&2
+            exit 1
+          fi
+          if grep -RIlE 'BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY' \
+            "$PADES_OUT/source.pdf" \
+            "$PADES_OUT"/pades-*.pdf \
+            "$PADES_OUT"/tampered-*.pdf \
+            "$PADES_OUT/trust" \
+            "$PADES_OUT/reports" \
+            "$PADES_OUT/manifest.json" \
+            "$PADES_OUT/SHA256SUMS"; then
+            echo "Private-key material in PAdES artifact allowlist" >&2
+            exit 1
+          fi
+      - name: Upload public PAdES conformance evidence
+        if: always() && steps.pades-secret-scan.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pades-conformance-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/signkit-pades-conformance/source.pdf
+            ${{ runner.temp }}/signkit-pades-conformance/pades-b-b.pdf
+            ${{ runner.temp }}/signkit-pades-conformance/pades-b-t.pdf
+            ${{ runner.temp }}/signkit-pades-conformance/tampered-b-b.pdf
+            ${{ runner.temp }}/signkit-pades-conformance/tampered-b-t.pdf
+            ${{ runner.temp }}/signkit-pades-conformance/trust/signer.pem
+            ${{ runner.temp }}/signkit-pades-conformance/trust/tsa.pem
+            ${{ runner.temp }}/signkit-pades-conformance/manifest.json
+            ${{ runner.temp }}/signkit-pades-conformance/SHA256SUMS
+            ${{ runner.temp }}/signkit-pades-conformance/reports/

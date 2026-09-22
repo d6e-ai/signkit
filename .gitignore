@@ -32,6 +32,11 @@ vite.config.ts.timestamp-*
 target/
 cli/target/
 
+# Python tooling
+.venv/
+__pycache__/
+*.pyc
+
 # create-signkit
 packages/create-signkit/dist/
 packages/create-signkit/LICENSE
