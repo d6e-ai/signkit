@@ -33,8 +33,14 @@ describe('PdfSealProvider port', () => {
 		const provider: PdfSealProvider = {
 			submit: async () => Promise.reject(new Error('unused')),
 			getStatus: async () => Promise.reject(new Error('unused')),
+			recoverAmbiguousSubmit: async () => Promise.reject(new Error('unused')),
 			readResult: async () => Promise.reject(new Error('unused'))
 		};
-		expect(Object.keys(provider).sort()).toEqual(['getStatus', 'readResult', 'submit']);
+		expect(Object.keys(provider).sort()).toEqual([
+			'getStatus',
+			'readResult',
+			'recoverAmbiguousSubmit',
+			'submit'
+		]);
 	});
 });

@@ -1,6 +1,7 @@
 import {
 	PdfSealProviderError,
 	type PdfSealOperationReference,
+	type PdfSealOperationReceipt,
 	type PdfSealProviderOperation,
 	type PdfSealSucceededOperation,
 	type SubmitPdfSealOperation
@@ -39,6 +40,13 @@ function command(overrides: Partial<SubmitPdfSealOperation> = {}): SubmitPdfSeal
 		source: byteStream(SOURCE_BYTES),
 		...overrides
 	};
+}
+
+function receipt(
+	referenceValue: PdfSealOperationReference = reference(),
+	providerReceiptId: string = 'receipt-01'
+): PdfSealOperationReceipt {
+	return { ...referenceValue, providerReceiptId };
 }
 
 function operationEnvelope(
@@ -227,6 +235,33 @@ describe('RemotePdfSealProvider', () => {
 	});
 
 	it.each([
+		'café',
+		'token😀',
+		'token:with-colon',
+		'token with space',
+		'token\nwith-newline',
+		'token,with-comma',
+		'token"with-quote'
+	])('rejects a non-ASCII or unsupported bearer token without reflecting it: %s', (bearerToken) => {
+		let caught: unknown;
+		try {
+			provider(vi.fn(), { bearerToken });
+		} catch (error: unknown) {
+			caught = error;
+		}
+		expectProviderError(caught, {
+			code: 'invalid_configuration',
+			retryable: false,
+			ambiguous: false
+		});
+		expect((caught as Error).message).not.toContain(bearerToken);
+	});
+
+	it('accepts the RFC 6750 b64token character set', () => {
+		expect(() => provider(vi.fn(), { bearerToken: 'AZaz09-._~+/==' })).not.toThrow();
+	});
+
+	it.each([
 		{ requestedProfile: 'pades-b-t' as const },
 		{ tsaPolicyId: 'unexpected', tsaTrustBundleSha256: TRUST_BUNDLE_SHA256 },
 		{ sourceSha256: 'NOT-A-DIGEST' },
@@ -262,7 +297,33 @@ describe('RemotePdfSealProvider', () => {
 		);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(requestReference);
+			await provider(fetchMock).getStatus(receipt(requestReference));
+		} catch (error: unknown) {
+			caught = error;
+		}
+		expectProviderError(caught, {
+			code: 'integrity_mismatch',
+			retryable: false,
+			ambiguous: false
+		});
+	});
+
+	it('pins a known receipt in the request and rejects a changed receipt in the response', async () => {
+		const expectedReceipt: PdfSealOperationReceipt = receipt();
+		const fetchMock = vi.fn(
+			async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				const headers: Headers = new Headers(init?.headers);
+				expect(headers.get('x-signkit-provider-receipt-id')).toBe(
+					expectedReceipt.providerReceiptId
+				);
+				return jsonResponse(
+					operationEnvelope(expectedReceipt, { providerReceiptId: 'different-receipt' })
+				);
+			}
+		);
+		let caught: unknown;
+		try {
+			await provider(fetchMock).getStatus(expectedReceipt);
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -291,7 +352,7 @@ describe('RemotePdfSealProvider', () => {
 		);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(requestReference);
+			await provider(fetchMock).getStatus(receipt(requestReference));
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -318,7 +379,7 @@ describe('RemotePdfSealProvider', () => {
 		);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(reference());
+			await provider(fetchMock).getStatus(receipt());
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -347,7 +408,7 @@ describe('RemotePdfSealProvider', () => {
 			);
 			let caught: unknown;
 			try {
-				await provider(fetchMock).getStatus(reference());
+				await provider(fetchMock).getStatus(receipt());
 			} catch (error: unknown) {
 				caught = error;
 			}
@@ -358,11 +419,14 @@ describe('RemotePdfSealProvider', () => {
 	it('marks an interrupted submit ambiguous and recovers through the same operation URL', async () => {
 		const requestReference: PdfSealOperationReference = reference();
 		const urls: string[] = [];
-		const fetchMock = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
-			urls.push(String(input));
-			if (urls.length === 1) throw new Error(`${SECRET}: connection reset`);
-			return jsonResponse(operationEnvelope(requestReference, { status: 'processing' }));
-		});
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				urls.push(String(input));
+				if (urls.length === 1) throw new Error(`${SECRET}: connection reset`);
+				expect(new Headers(init?.headers).get('x-signkit-provider-receipt-id')).toBeNull();
+				return jsonResponse(operationEnvelope(requestReference, { status: 'processing' }));
+			}
+		);
 		const adapter: RemotePdfSealProvider = provider(fetchMock);
 		let caught: unknown;
 		try {
@@ -375,7 +439,7 @@ describe('RemotePdfSealProvider', () => {
 			retryable: true,
 			ambiguous: true
 		});
-		await expect(adapter.getStatus(requestReference)).resolves.toMatchObject({
+		await expect(adapter.recoverAmbiguousSubmit(requestReference)).resolves.toMatchObject({
 			status: 'processing'
 		});
 		expect(urls).toEqual([
@@ -432,7 +496,7 @@ describe('RemotePdfSealProvider', () => {
 		);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(reference());
+			await provider(fetchMock).getStatus(receipt());
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -465,7 +529,7 @@ describe('RemotePdfSealProvider', () => {
 	it('preserves a deterministic source-size failure wrapped by Node fetch', async () => {
 		const fetchMock = vi.fn(async (): Promise<Response> => {
 			const wrapped: Error & { cause?: unknown } = new TypeError('fetch failed');
-			wrapped.cause = new PdfSealProviderError('source_size_mismatch', false, false);
+			wrapped.cause = new PdfSealProviderError('source_size_mismatch', false, true);
 			throw wrapped;
 		});
 		let caught: unknown;
@@ -477,7 +541,7 @@ describe('RemotePdfSealProvider', () => {
 		expectProviderError(caught, {
 			code: 'source_size_mismatch',
 			retryable: false,
-			ambiguous: false
+			ambiguous: true
 		});
 	});
 
@@ -497,24 +561,38 @@ describe('RemotePdfSealProvider', () => {
 		}
 	);
 
-	it('rejects a source stream whose bytes do not match its attested size', async () => {
+	it('marks a post-dispatch source-size mismatch ambiguous and recovers the same operation', async () => {
+		const requestReference: PdfSealOperationReference = reference();
+		const urls: string[] = [];
 		const fetchMock = vi.fn(
-			async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-				await new Response(init?.body as BodyInit).arrayBuffer();
-				return jsonResponse(operationEnvelope(reference()));
+			async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				urls.push(String(input));
+				if (init?.method === 'PUT') {
+					await new Response(init.body as BodyInit).arrayBuffer();
+				}
+				return jsonResponse(operationEnvelope(requestReference, { status: 'processing' }));
 			}
 		);
+		const adapter: RemotePdfSealProvider = provider(fetchMock);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).submit(command({ source: byteStream(SOURCE_BYTES.slice(0, -1)) }));
+			await adapter.submit(command({ source: byteStream(SOURCE_BYTES.slice(0, -1)) }));
 		} catch (error: unknown) {
 			caught = error;
 		}
 		expectProviderError(caught, {
 			code: 'source_size_mismatch',
 			retryable: false,
-			ambiguous: false
+			ambiguous: true
 		});
+		await expect(adapter.recoverAmbiguousSubmit(requestReference)).resolves.toMatchObject({
+			status: 'processing',
+			providerReceiptId: 'receipt-01'
+		});
+		expect(urls).toEqual([
+			'https://seal.example.test/api/v1/pdf-seals/seal-op_01-test',
+			'https://seal.example.test/api/v1/pdf-seals/seal-op_01-test'
+		]);
 	});
 
 	it('returns only an exact, digest-verified result from the fixed result endpoint', async () => {
@@ -629,7 +707,7 @@ describe('RemotePdfSealProvider', () => {
 		);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(requestReference);
+			await provider(fetchMock).getStatus(receipt(requestReference));
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -646,7 +724,7 @@ describe('RemotePdfSealProvider', () => {
 		const fetchMock = vi.fn(async (): Promise<Response> => redirected);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(reference());
+			await provider(fetchMock).getStatus(receipt());
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -665,7 +743,7 @@ describe('RemotePdfSealProvider', () => {
 		);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(reference());
+			await provider(fetchMock).getStatus(receipt());
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -691,7 +769,7 @@ describe('RemotePdfSealProvider', () => {
 		);
 		let caught: unknown;
 		try {
-			await provider(fetchMock).getStatus(reference());
+			await provider(fetchMock).getStatus(receipt());
 		} catch (error: unknown) {
 			caught = error;
 		}

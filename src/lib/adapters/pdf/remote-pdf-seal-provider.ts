@@ -1,6 +1,7 @@
 import {
 	PdfSealProviderError,
 	type PdfSealOperationReference,
+	type PdfSealOperationReceipt,
 	type PdfSealProfile,
 	type PdfSealProvider,
 	type PdfSealProviderOperation,
@@ -12,6 +13,7 @@ import {
 const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 const SAFE_IDENTIFIER_PATTERN: RegExp = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SAFE_ERROR_CODE_PATTERN: RegExp = /^[a-z][a-z0-9_]{1,64}$/;
+const BEARER_TOKEN_PATTERN: RegExp = /^[A-Za-z0-9\-._~+/]+=*$/;
 const MAX_PROVIDER_JSON_BYTES: number = 64 * 1024;
 const MAX_PROVIDER_ERROR_BYTES: number = 16 * 1024;
 const MAX_CONFIGURED_RESULT_BYTES: number = 64 * 1024 * 1024;
@@ -100,7 +102,24 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 		return this.#readOperationResponse(response, reference, true);
 	}
 
-	async getStatus(reference: PdfSealOperationReference): Promise<PdfSealProviderOperation> {
+	async getStatus(receipt: PdfSealOperationReceipt): Promise<PdfSealProviderOperation> {
+		const normalized: PdfSealOperationReceipt = normalizedOperationReceipt(receipt);
+		const response: Response = await this.#performFetch(
+			this.#operationUrl(normalized.operationId),
+			{
+				method: 'GET',
+				redirect: 'error',
+				signal: AbortSignal.timeout(this.#timeoutMs),
+				headers: this.#headers(normalized, false, 'application/json', normalized.providerReceiptId)
+			},
+			false
+		);
+		return this.#readOperationResponse(response, normalized, false, normalized.providerReceiptId);
+	}
+
+	async recoverAmbiguousSubmit(
+		reference: PdfSealOperationReference
+	): Promise<PdfSealProviderOperation> {
 		const normalized: PdfSealOperationReference = normalizedOperationReference(reference);
 		const response: Response = await this.#performFetch(
 			this.#operationUrl(normalized.operationId),
@@ -112,7 +131,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			},
 			false
 		);
-		return this.#readOperationResponse(response, normalized, false);
+		return this.#readOperationResponse(response, normalized, false, null);
 	}
 
 	async readResult(operation: PdfSealSucceededOperation): Promise<PdfSealResult> {
@@ -123,7 +142,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 				method: 'GET',
 				redirect: 'error',
 				signal: AbortSignal.timeout(this.#timeoutMs),
-				headers: this.#headers(operation, false, 'application/pdf')
+				headers: this.#headers(operation, false, 'application/pdf', operation.providerReceiptId)
 			},
 			false
 		);
@@ -170,7 +189,8 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 	#headers(
 		reference: PdfSealOperationReference,
 		includeContentType: boolean,
-		accept: string = 'application/json'
+		accept: string = 'application/json',
+		providerReceiptId: string | null = null
 	): Headers {
 		const headers: Headers = new Headers({
 			accept,
@@ -189,6 +209,9 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			// Workers ignores a manually supplied Content-Length for an ordinary
 			// ReadableStream and uses chunked encoding. The signed size travels in
 			// x-signkit-source-byte-size and exactLengthStream enforces it locally.
+		}
+		if (providerReceiptId !== null) {
+			headers.set('x-signkit-provider-receipt-id', providerReceiptId);
 		}
 		if (reference.tsaPolicyId !== null) {
 			headers.set('x-signkit-tsa-policy-id', reference.tsaPolicyId);
@@ -217,7 +240,8 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 	async #readOperationResponse(
 		response: Response,
 		reference: PdfSealOperationReference,
-		ambiguous: boolean
+		ambiguous: boolean,
+		expectedProviderReceiptId: string | null = null
 	): Promise<PdfSealProviderOperation> {
 		await assertSuccessfulResponse(response, ambiguous);
 		if (mediaType(response.headers.get('content-type')) !== 'application/json') {
@@ -244,7 +268,13 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 		} catch {
 			throw providerError('invalid_response', false, ambiguous);
 		}
-		return parseOperationEnvelope(envelope, reference, this.#maxResultBytes, ambiguous);
+		return parseOperationEnvelope(
+			envelope,
+			reference,
+			this.#maxResultBytes,
+			ambiguous,
+			expectedProviderReceiptId
+		);
 	}
 }
 
@@ -275,11 +305,7 @@ function validateBearerToken(value: string): string {
 		typeof value !== 'string' ||
 		value.length < 1 ||
 		value.length > 4096 ||
-		value !== value.trim() ||
-		Array.from(value).some((character: string): boolean => {
-			const codePoint: number = character.codePointAt(0) ?? 0;
-			return codePoint <= 0x20 || codePoint === 0x7f;
-		})
+		!BEARER_TOKEN_PATTERN.test(value)
 	) {
 		throw providerError('invalid_configuration', false, false);
 	}
@@ -323,6 +349,12 @@ function normalizedOperationReference(
 	};
 }
 
+function normalizedOperationReceipt(receipt: PdfSealOperationReceipt): PdfSealOperationReceipt {
+	const reference: PdfSealOperationReference = normalizedOperationReference(receipt);
+	assertSafeIdentifier(receipt.providerReceiptId);
+	return { ...reference, providerReceiptId: receipt.providerReceiptId };
+}
+
 function assertSucceededOperation(
 	operation: PdfSealSucceededOperation,
 	maxResultBytes: number
@@ -345,10 +377,14 @@ function parseOperationEnvelope(
 	envelope: ProviderOperationEnvelope,
 	reference: PdfSealOperationReference,
 	maxResultBytes: number,
-	ambiguous: boolean
+	ambiguous: boolean,
+	expectedProviderReceiptId: string | null
 ): PdfSealProviderOperation {
 	assertEcho(envelope, reference, ambiguous);
 	const providerReceiptId: string = requireSafeIdentifier(envelope.providerReceiptId, ambiguous);
+	if (expectedProviderReceiptId !== null && providerReceiptId !== expectedProviderReceiptId) {
+		throw providerError('integrity_mismatch', false, ambiguous);
+	}
 	if (envelope.status === 'pending' || envelope.status === 'processing') {
 		return { ...reference, status: envelope.status, providerReceiptId };
 	}
@@ -498,7 +534,7 @@ function exactLengthStream(
 			const result: ReadableStreamReadResult<Uint8Array> = await reader.read();
 			if (result.done) {
 				if (seen !== expectedSize) {
-					controller.error(providerError('source_size_mismatch', false, false));
+					controller.error(providerError('source_size_mismatch', false, true));
 					return;
 				}
 				controller.close();
@@ -511,7 +547,7 @@ function exactLengthStream(
 				} catch {
 					// The size mismatch remains authoritative.
 				}
-				controller.error(providerError('source_size_mismatch', false, false));
+				controller.error(providerError('source_size_mismatch', false, true));
 				return;
 			}
 			controller.enqueue(result.value);

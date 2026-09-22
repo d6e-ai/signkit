@@ -22,9 +22,11 @@ export interface SubmitPdfSealOperation extends PdfSealOperationReference {
 	source: ReadableStream<Uint8Array>;
 }
 
-export interface PdfSealOperationBase extends PdfSealOperationReference {
+export interface PdfSealOperationReceipt extends PdfSealOperationReference {
 	providerReceiptId: string;
 }
+
+export type PdfSealOperationBase = PdfSealOperationReceipt;
 
 export type PdfSealProviderOperation =
 	| (PdfSealOperationBase & { status: 'pending' | 'processing' })
@@ -90,6 +92,12 @@ export class PdfSealProviderError extends Error {
  */
 export interface PdfSealProvider {
 	submit(command: SubmitPdfSealOperation): Promise<PdfSealProviderOperation>;
-	getStatus(reference: PdfSealOperationReference): Promise<PdfSealProviderOperation>;
+	/** Reconcile an accepted operation while pinning its provider receipt. */
+	getStatus(receipt: PdfSealOperationReceipt): Promise<PdfSealProviderOperation>;
+	/**
+	 * Recover only after an ambiguous submit outcome, before a receipt is known.
+	 * Callers must persist the returned receipt before using getStatus.
+	 */
+	recoverAmbiguousSubmit(reference: PdfSealOperationReference): Promise<PdfSealProviderOperation>;
 	readResult(operation: PdfSealSucceededOperation): Promise<PdfSealResult>;
 }
