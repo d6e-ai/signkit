@@ -28,14 +28,15 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 			await this.#database
 				.prepare(
 					`INSERT INTO completion_artifact_pdf (
-						envelope_id, pdf_object_key, pdf_sha256,
-						pdf_manifest_object_key, pdf_manifest_sha256, published_at
-					) VALUES (?, ?, ?, ?, ?, ?)`
+						 envelope_id, pdf_object_key, pdf_sha256, pdf_byte_size,
+						 pdf_manifest_object_key, pdf_manifest_sha256, published_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					command.envelopeId,
 					command.pdfObjectKey,
 					command.pdfSha256,
+					command.pdfByteSize,
 					command.pdfManifestObjectKey,
 					command.pdfManifestSha256,
 					command.publishedAt
@@ -49,6 +50,7 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 			if (existing === null) return { outcome: 'artifact_not_found' };
 			return existing.pdfObjectKey === command.pdfObjectKey &&
 				existing.pdfSha256 === command.pdfSha256 &&
+				(existing.pdfByteSize === null || existing.pdfByteSize === command.pdfByteSize) &&
 				existing.pdfManifestObjectKey === command.pdfManifestObjectKey &&
 				existing.pdfManifestSha256 === command.pdfManifestSha256
 				? { outcome: 'already_published' }
@@ -60,13 +62,14 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 		interface Row {
 			pdf_object_key: string;
 			pdf_sha256: string;
+			pdf_byte_size: number | null;
 			pdf_manifest_object_key: string;
 			pdf_manifest_sha256: string;
 			published_at: string;
 		}
 		const row: Row | null = await this.#database
 			.prepare(
-				`SELECT pdf_object_key, pdf_sha256, pdf_manifest_object_key, pdf_manifest_sha256, published_at
+				`SELECT pdf_object_key, pdf_sha256, pdf_byte_size, pdf_manifest_object_key, pdf_manifest_sha256, published_at
 				 FROM completion_artifact_pdf
 				 WHERE envelope_id = ?`
 			)
@@ -76,6 +79,7 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 		return {
 			pdfObjectKey: row.pdf_object_key,
 			pdfSha256: row.pdf_sha256,
+			pdfByteSize: row.pdf_byte_size === null ? null : Number(row.pdf_byte_size),
 			pdfManifestObjectKey: row.pdf_manifest_object_key,
 			pdfManifestSha256: row.pdf_manifest_sha256,
 			publishedAt: row.published_at

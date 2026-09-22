@@ -120,6 +120,7 @@ describe('completion artifact status HTTP handler', () => {
 		const pdfRecord: CompletionArtifactPdfRecord = {
 			pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.pdf',
 			pdfSha256: 'a'.repeat(64),
+			pdfByteSize: 1024,
 			pdfManifestObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.json.gz',
 			pdfManifestSha256: 'a'.repeat(64),
 			publishedAt: '2026-09-12T00:00:00.000Z'

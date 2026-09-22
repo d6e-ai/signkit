@@ -23,10 +23,10 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 
 		const inserted = await this.#sql<{ envelope_id: string }[]>`
 			INSERT INTO completion_artifact_pdf (
-				envelope_id, pdf_object_key, pdf_sha256,
+				envelope_id, pdf_object_key, pdf_sha256, pdf_byte_size,
 				pdf_manifest_object_key, pdf_manifest_sha256, published_at
 			) VALUES (${command.envelopeId}, ${command.pdfObjectKey},
-				${command.pdfSha256}, ${command.pdfManifestObjectKey}, ${command.pdfManifestSha256},
+				${command.pdfSha256}, ${command.pdfByteSize}, ${command.pdfManifestObjectKey}, ${command.pdfManifestSha256},
 				${command.publishedAt}::timestamptz)
 			ON CONFLICT (envelope_id) DO NOTHING
 			RETURNING envelope_id`;
@@ -38,6 +38,7 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 		if (existing === null) return { outcome: 'artifact_not_found' };
 		return existing.pdfObjectKey === command.pdfObjectKey &&
 			existing.pdfSha256 === command.pdfSha256 &&
+			(existing.pdfByteSize === null || existing.pdfByteSize === command.pdfByteSize) &&
 			existing.pdfManifestObjectKey === command.pdfManifestObjectKey &&
 			existing.pdfManifestSha256 === command.pdfManifestSha256
 			? { outcome: 'already_published' }
@@ -49,13 +50,14 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 			{
 				pdfObjectKey: string;
 				pdfSha256: string;
+				pdfByteSize: number | string | null;
 				pdfManifestObjectKey: string;
 				pdfManifestSha256: string;
 				publishedAt: Date | string;
 			}[]
 		>`
 			SELECT pdf_object_key AS "pdfObjectKey", pdf_sha256 AS "pdfSha256",
-				pdf_manifest_object_key AS "pdfManifestObjectKey",
+				pdf_byte_size AS "pdfByteSize", pdf_manifest_object_key AS "pdfManifestObjectKey",
 				pdf_manifest_sha256 AS "pdfManifestSha256", published_at AS "publishedAt"
 			FROM completion_artifact_pdf
 			WHERE envelope_id = ${envelopeId}`;
@@ -64,6 +66,7 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 		return {
 			pdfObjectKey: row.pdfObjectKey,
 			pdfSha256: row.pdfSha256,
+			pdfByteSize: row.pdfByteSize === null ? null : Number(row.pdfByteSize),
 			pdfManifestObjectKey: row.pdfManifestObjectKey,
 			pdfManifestSha256: row.pdfManifestSha256,
 			publishedAt: isoTimestamp(row.publishedAt)

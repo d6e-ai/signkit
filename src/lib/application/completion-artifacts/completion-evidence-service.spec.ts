@@ -173,6 +173,7 @@ describe('CompletionEvidenceService', () => {
 			return {
 				pdfObjectKey: completionArtifactObjectKey(ENVELOPE_ID, 'pdf', sha256),
 				pdfSha256: sha256,
+				pdfByteSize: pdfBytes.byteLength,
 				pdfManifestObjectKey: completionArtifactObjectKey(ENVELOPE_ID, 'pdf-manifest', sha256),
 				pdfManifestSha256: sha256,
 				publishedAt: '2026-09-12T12:00:00.000Z'
@@ -270,6 +271,7 @@ describe('CompletionEvidenceService', () => {
 			const record: CompletionArtifactPdfRecord = {
 				pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/bad.pdf',
 				pdfSha256: 'not-a-hash',
+				pdfByteSize: 1024,
 				pdfManifestObjectKey: 'unused',
 				pdfManifestSha256: 'unused',
 				publishedAt: '2026-09-12T12:00:00.000Z'
@@ -294,6 +296,7 @@ describe('CompletionEvidenceService', () => {
 			const record: CompletionArtifactPdfRecord = {
 				pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/wrong-key.pdf',
 				pdfSha256: sha256,
+				pdfByteSize: pdfBytes.byteLength,
 				pdfManifestObjectKey: 'unused',
 				pdfManifestSha256: 'unused',
 				publishedAt: '2026-09-12T12:00:00.000Z'
