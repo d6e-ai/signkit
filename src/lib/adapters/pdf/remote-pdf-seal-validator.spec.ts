@@ -170,14 +170,22 @@ function byteStream(
 }
 
 function validator(
-	fetchImplementation: RemotePdfSealValidatorOptions['fetch'],
-	overrides: Partial<RemotePdfSealValidatorOptions> = {}
+	fetchImplementation: NonNullable<RemotePdfSealValidatorOptions['fetch']>,
+	overrides: Partial<RemotePdfSealValidatorOptions> = {},
+	autoConsumeBody: boolean = true
 ): RemotePdfSealValidator {
 	return new RemotePdfSealValidator({
 		baseUrl: 'https://validator.example.test/api/v1/',
 		bearerToken: SECRET,
 		maxSealedBytes: 1024 * 1024,
-		fetch: fetchImplementation,
+		fetch: async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const response: Response = await fetchImplementation(input, init);
+			const requestBody: BodyInit | null | undefined = init?.body;
+			if (autoConsumeBody && requestBody instanceof ReadableStream && !requestBody.locked) {
+				await new Response(requestBody).arrayBuffer();
+			}
+			return response;
+		},
 		...overrides
 	});
 }
@@ -274,6 +282,27 @@ describe('RemotePdfSealValidator', () => {
 			});
 		}
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('never accepts a valid response before the complete request frame is consumed', async () => {
+		let responseCancelled: boolean = false;
+		const responseBody: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+			cancel(): void {
+				responseCancelled = true;
+			}
+		});
+		const fetchMock = vi.fn(
+			async (): Promise<Response> =>
+				new Response(responseBody, {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				})
+		);
+		const error: unknown = await capturedError(() =>
+			validator(fetchMock, { timeoutMs: 5 }, false).validate(command())
+		);
+		expectValidatorError(error, { code: 'request_timeout', retryable: true });
+		await vi.waitFor((): void => expect(responseCancelled).toBe(true));
 	});
 
 	it('requires and echoes the complete B-T TSA tuple and timestamp checks', async () => {
@@ -461,6 +490,48 @@ describe('RemotePdfSealValidator', () => {
 		expectValidatorError(error, { code: 'source_size_mismatch', retryable: false });
 	});
 
+	it('classifies a source read rejection and cancels the sealed sibling without leaking locks', async () => {
+		let sealedCancelled: boolean = false;
+		const source: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+			pull(controller: ReadableStreamDefaultController<Uint8Array>): void {
+				controller.error(new Error(`${SECRET}: source storage read failed`));
+			}
+		});
+		const sealed: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+			cancel(): void {
+				sealedCancelled = true;
+			}
+		});
+		const fetchMock = vi.fn(async (): Promise<Response> =>
+			jsonResponse(validEnvelope(reference()))
+		);
+		const error: unknown = await capturedError(() =>
+			validator(fetchMock).validate(command({ source, sealed }))
+		);
+		expectValidatorError(error, { code: 'network_error', retryable: true });
+		expect(sealedCancelled).toBe(true);
+		expect(source.locked).toBe(false);
+		expect(sealed.locked).toBe(false);
+	});
+
+	it('classifies a sealed read rejection and releases both reader locks', async () => {
+		const source: ReadableStream<Uint8Array> = byteStream(SOURCE_BYTES, 2);
+		const sealed: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+			pull(controller: ReadableStreamDefaultController<Uint8Array>): void {
+				controller.error(new Error(`${SECRET}: sealed storage read failed`));
+			}
+		});
+		const fetchMock = vi.fn(async (): Promise<Response> =>
+			jsonResponse(validEnvelope(reference()))
+		);
+		const error: unknown = await capturedError(() =>
+			validator(fetchMock).validate(command({ source, sealed }))
+		);
+		expectValidatorError(error, { code: 'network_error', retryable: true });
+		expect(source.locked).toBe(false);
+		expect(sealed.locked).toBe(false);
+	});
+
 	it.each([
 		['http://validator.example.test', SECRET],
 		['https://user@validator.example.test', SECRET],
@@ -564,7 +635,9 @@ describe('RemotePdfSealValidator', () => {
 		try {
 			const adapter: RemotePdfSealValidator = validator(
 				async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
-					fetch(`${redirectServer.origin}/redirect`, init)
+					fetch(`${redirectServer.origin}/redirect`, init),
+				{},
+				false
 			);
 			const error: unknown = await capturedError(() => adapter.validate(command()));
 			expectValidatorError(error, {
@@ -678,5 +751,36 @@ describe('RemotePdfSealValidator', () => {
 			const error: unknown = await capturedError(() => validator(fetchMock).validate(command()));
 			expectValidatorError(error, { code, retryable: true });
 		}
+	});
+
+	it('classifies a post-header AbortError as timeout when the request signal expires', async () => {
+		const fetchMock = vi.fn(
+			async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				await new Response(init?.body as BodyInit).arrayBuffer();
+				const signal: AbortSignal = init?.signal as AbortSignal;
+				const responseBody: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+					pull(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
+						return new Promise<void>((resolve: () => void): void => {
+							const fail = (): void => {
+								const error: Error = new Error(`${SECRET}: response body aborted`);
+								error.name = 'AbortError';
+								controller.error(error);
+								resolve();
+							};
+							if (signal.aborted) fail();
+							else signal.addEventListener('abort', fail, { once: true });
+						});
+					}
+				});
+				return new Response(responseBody, {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				});
+			}
+		);
+		const error: unknown = await capturedError(() =>
+			validator(fetchMock, { timeoutMs: 5 }).validate(command())
+		);
+		expectValidatorError(error, { code: 'request_timeout', retryable: true });
 	});
 });

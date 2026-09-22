@@ -190,7 +190,9 @@ compare their exact lengths and digests, and echo every frozen field. The source
 the shared 32 MiB completion-PDF lifecycle bound, and deployment policy chooses a sealed-result
 bound no larger than 64 MiB. B-B responses echo both TSA fields as explicit `null`; omission is an
 integrity failure. JSON is requested with identity content encoding so transparent decompression
-cannot invalidate its bounded byte accounting.
+cannot invalidate its bounded byte accounting. A response is never accepted until both input frames
+reach their exact expected lengths and close successfully; an early response, input read failure, or
+deadline cancels the input readers and response body and cannot publish a validation result.
 
 A successful JSON result is bounded to 64 KiB and must report the exact requested profile plus all
 of these checks as true: exact source prefix, valid incremental update, complete `ByteRange`, valid

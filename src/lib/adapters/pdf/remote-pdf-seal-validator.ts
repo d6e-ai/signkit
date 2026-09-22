@@ -79,7 +79,9 @@ interface ValidationEnvelope {
 
 interface FramedValidationBody {
 	stream: ReadableStream<Uint8Array>;
+	completed: Promise<void>;
 	failure(): PdfSealValidatorError | null;
+	cancel(error: PdfSealValidatorError): Promise<void>;
 }
 
 /**
@@ -128,13 +130,15 @@ export class RemotePdfSealValidator implements PdfSealValidator {
 			]);
 			throw error;
 		}
+		const timeoutSignal: AbortSignal = AbortSignal.timeout(this.#timeoutMs);
 		let framedBody: FramedValidationBody;
 		try {
 			framedBody = framedValidationStream(
 				command.source,
 				command.sealed,
 				reference.sourceByteSize,
-				reference.sealedByteSize
+				reference.sealedByteSize,
+				timeoutSignal
 			);
 		} catch (error: unknown) {
 			await Promise.all([
@@ -143,21 +147,41 @@ export class RemotePdfSealValidator implements PdfSealValidator {
 			]);
 			throw error;
 		}
-		const timeoutSignal: AbortSignal = AbortSignal.timeout(this.#timeoutMs);
-		const response: Response = await this.#performFetch(
-			this.#validationUrl(reference.validationId),
-			{
-				method: 'PUT',
-				redirect: 'manual',
-				signal: timeoutSignal,
-				headers: this.#headers(reference),
-				body: framedBody.stream,
-				duplex: 'half'
-			} as RequestInit & { duplex: 'half' },
-			framedBody.failure,
-			timeoutSignal
-		);
-		return this.#readValidationResponse(response, reference);
+		let response: Response;
+		try {
+			response = await this.#performFetch(
+				this.#validationUrl(reference.validationId),
+				{
+					method: 'PUT',
+					redirect: 'manual',
+					signal: timeoutSignal,
+					headers: this.#headers(reference),
+					body: framedBody.stream,
+					duplex: 'half'
+				} as RequestInit & { duplex: 'half' },
+				framedBody.failure,
+				timeoutSignal
+			);
+		} catch (error: unknown) {
+			const classified: PdfSealValidatorError = classifyTransportError(error, timeoutSignal);
+			void framedBody.cancel(classified);
+			throw classified;
+		}
+		const redirectFailure: PdfSealValidatorError | null = responseRedirectFailure(response);
+		if (redirectFailure !== null) {
+			void framedBody.cancel(redirectFailure);
+			cancelBodyBestEffort(response.body, redirectFailure.code);
+			throw redirectFailure;
+		}
+		try {
+			await waitForFrameCompletion(framedBody, timeoutSignal);
+		} catch (error: unknown) {
+			const classified: PdfSealValidatorError = classifyTransportError(error, timeoutSignal);
+			void framedBody.cancel(classified);
+			cancelBodyBestEffort(response.body, classified.code);
+			throw classified;
+		}
+		return this.#readValidationResponse(response, reference, timeoutSignal);
 	}
 
 	#validationUrl(validationId: string): string {
@@ -212,7 +236,8 @@ export class RemotePdfSealValidator implements PdfSealValidator {
 
 	async #readValidationResponse(
 		response: Response,
-		reference: PdfSealValidationReference
+		reference: PdfSealValidationReference,
+		timeoutSignal: AbortSignal
 	): Promise<PdfSealValidationResult> {
 		await assertSuccessfulResponse(response);
 		if (mediaType(response.headers.get('content-type')) !== 'application/json') {
@@ -227,7 +252,8 @@ export class RemotePdfSealValidator implements PdfSealValidator {
 		const body: Uint8Array<ArrayBuffer> = await readBoundedBody(
 			response.body,
 			response.headers.get('content-length'),
-			MAX_VALIDATOR_JSON_BYTES
+			MAX_VALIDATOR_JSON_BYTES,
+			timeoutSignal
 		);
 		let envelope: ValidationEnvelope;
 		try {
@@ -467,7 +493,8 @@ function framedValidationStream(
 	source: ReadableStream<Uint8Array>,
 	sealed: ReadableStream<Uint8Array>,
 	expectedSourceSize: number,
-	expectedSealedSize: number
+	expectedSealedSize: number,
+	timeoutSignal: AbortSignal
 ): FramedValidationBody {
 	let sourceReader: ReadableStreamDefaultReader<Uint8Array>;
 	let sealedReader: ReadableStreamDefaultReader<Uint8Array>;
@@ -486,59 +513,153 @@ function framedValidationStream(
 	let sourceSeen: number = 0;
 	let sealedSeen: number = 0;
 	let framingFailure: PdfSealValidatorError | null = null;
+	let resolveCompletion: (() => void) | null = null;
+	let rejectCompletion: ((error: PdfSealValidatorError) => void) | null = null;
+	let completionSettled: boolean = false;
+	const completed: Promise<void> = new Promise<void>(
+		(resolve: () => void, reject: (error: PdfSealValidatorError) => void): void => {
+			resolveCompletion = resolve;
+			rejectCompletion = reject;
+		}
+	);
+	// Fetch may reject before validate reaches the explicit completion await.
+	void completed.catch((): void => undefined);
+	const recordFailure = (error: PdfSealValidatorError): PdfSealValidatorError => {
+		if (framingFailure === null) framingFailure = error;
+		if (!completionSettled) {
+			completionSettled = true;
+			rejectCompletion!(framingFailure);
+		}
+		return framingFailure;
+	};
 	const fail = (
 		controller: ReadableStreamDefaultController<Uint8Array>,
-		code: 'source_size_mismatch' | 'sealed_size_mismatch'
+		error: PdfSealValidatorError
 	): void => {
-		framingFailure = validatorError(code, false);
-		controller.error(framingFailure);
+		controller.error(recordFailure(error));
+	};
+	const cancelBoth = async (error: PdfSealValidatorError): Promise<void> => {
+		recordFailure(error);
+		await Promise.all([
+			cancelReader(sourceReader, error.code),
+			cancelReader(sealedReader, error.code)
+		]);
 	};
 	const stream: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
 		async pull(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
-			if (phase === 'source') {
-				const result: ReadableStreamReadResult<Uint8Array> = await sourceReader.read();
-				if (!result.done) {
-					sourceSeen += result.value.byteLength;
-					if (sourceSeen > expectedSourceSize) {
-						await cancelReader(sourceReader, 'source_size_mismatch');
-						await cancelReader(sealedReader, 'source_size_mismatch');
-						fail(controller, 'source_size_mismatch');
+			try {
+				if (phase === 'source') {
+					const result: ReadableStreamReadResult<Uint8Array> = await sourceReader.read();
+					if (!result.done) {
+						sourceSeen += result.value.byteLength;
+						if (sourceSeen > expectedSourceSize) {
+							const error: PdfSealValidatorError = validatorError('source_size_mismatch', false);
+							await cancelBoth(error);
+							fail(controller, error);
+							return;
+						}
+						controller.enqueue(result.value);
 						return;
 					}
-					controller.enqueue(result.value);
+					if (sourceSeen !== expectedSourceSize) {
+						const error: PdfSealValidatorError = validatorError('source_size_mismatch', false);
+						await cancelBoth(error);
+						fail(controller, error);
+						return;
+					}
+					releaseReader(sourceReader);
+					phase = 'sealed';
+				}
+				const result: ReadableStreamReadResult<Uint8Array> = await sealedReader.read();
+				if (result.done) {
+					if (sealedSeen !== expectedSealedSize) {
+						const error: PdfSealValidatorError = validatorError('sealed_size_mismatch', false);
+						await cancelBoth(error);
+						fail(controller, error);
+						return;
+					}
+					releaseReader(sealedReader);
+					controller.close();
+					if (!completionSettled) {
+						completionSettled = true;
+						resolveCompletion!();
+					}
 					return;
 				}
-				if (sourceSeen !== expectedSourceSize) {
-					await cancelReader(sealedReader, 'source_size_mismatch');
-					fail(controller, 'source_size_mismatch');
+				sealedSeen += result.value.byteLength;
+				if (sealedSeen > expectedSealedSize) {
+					const error: PdfSealValidatorError = validatorError('sealed_size_mismatch', false);
+					await cancelBoth(error);
+					fail(controller, error);
 					return;
 				}
-				releaseReader(sourceReader);
-				phase = 'sealed';
+				controller.enqueue(result.value);
+			} catch (error: unknown) {
+				const classified: PdfSealValidatorError = validatorError(
+					timeoutSignal.aborted || isTimeoutError(error) ? 'request_timeout' : 'network_error',
+					true
+				);
+				await cancelBoth(classified);
+				fail(controller, classified);
 			}
-			const result: ReadableStreamReadResult<Uint8Array> = await sealedReader.read();
-			if (result.done) {
-				if (sealedSeen !== expectedSealedSize) {
-					fail(controller, 'sealed_size_mismatch');
-					return;
-				}
-				releaseReader(sealedReader);
-				controller.close();
-				return;
-			}
-			sealedSeen += result.value.byteLength;
-			if (sealedSeen > expectedSealedSize) {
-				await cancelReader(sealedReader, 'sealed_size_mismatch');
-				fail(controller, 'sealed_size_mismatch');
-				return;
-			}
-			controller.enqueue(result.value);
 		},
 		async cancel(reason: unknown): Promise<void> {
-			await Promise.all([cancelReader(sourceReader, reason), cancelReader(sealedReader, reason)]);
+			const classified: PdfSealValidatorError =
+				reason instanceof PdfSealValidatorError
+					? reason
+					: validatorError(timeoutSignal.aborted ? 'request_timeout' : 'network_error', true);
+			await cancelBoth(classified);
 		}
 	});
-	return { stream, failure: (): PdfSealValidatorError | null => framingFailure };
+	return {
+		stream,
+		completed,
+		failure: (): PdfSealValidatorError | null => framingFailure,
+		cancel: cancelBoth
+	};
+}
+
+async function waitForFrameCompletion(
+	body: FramedValidationBody,
+	timeoutSignal: AbortSignal
+): Promise<void> {
+	if (timeoutSignal.aborted) throw validatorError('request_timeout', true);
+	await new Promise<void>(
+		(resolve: () => void, reject: (error: PdfSealValidatorError) => void): void => {
+			const onAbort = (): void => {
+				cleanup();
+				reject(validatorError('request_timeout', true));
+			};
+			const cleanup = (): void => timeoutSignal.removeEventListener('abort', onAbort);
+			timeoutSignal.addEventListener('abort', onAbort, { once: true });
+			if (timeoutSignal.aborted) onAbort();
+			body.completed.then(
+				(): void => {
+					cleanup();
+					resolve();
+				},
+				(error: unknown): void => {
+					cleanup();
+					reject(classifyTransportError(error, timeoutSignal));
+				}
+			);
+		}
+	);
+}
+
+function classifyTransportError(error: unknown, timeoutSignal: AbortSignal): PdfSealValidatorError {
+	if (error instanceof PdfSealValidatorError) return error;
+	const cause: unknown = errorCause(error);
+	if (cause instanceof PdfSealValidatorError) return cause;
+	return validatorError(
+		timeoutSignal.aborted || isTimeoutError(error) ? 'request_timeout' : 'network_error',
+		true
+	);
+}
+
+function cancelBodyBestEffort(body: ReadableStream<Uint8Array> | null, reason: string): void {
+	if (body === null) return;
+	void body.cancel(reason).catch((): void => undefined);
 }
 
 async function cancelReadableStream(value: unknown, reason: string): Promise<void> {
@@ -572,15 +693,12 @@ function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
 }
 
 async function assertSuccessfulResponse(response: Response): Promise<void> {
-	if (response.redirected || response.type === 'opaqueredirect') {
-		await cancelBody(response.body, 'validator_redirected');
-		throw validatorError('validator_redirected', false, response.status);
+	const redirectFailure: PdfSealValidatorError | null = responseRedirectFailure(response);
+	if (redirectFailure !== null) {
+		await cancelBody(response.body, redirectFailure.code);
+		throw redirectFailure;
 	}
 	if (response.status >= 200 && response.status < 300) return;
-	if (response.status >= 300 && response.status < 400) {
-		await cancelBody(response.body, 'validator_redirected');
-		throw validatorError('validator_redirected', false, response.status);
-	}
 	await discardBoundedBody(response.body, MAX_VALIDATOR_ERROR_BYTES);
 	if (response.status === 408) {
 		throw validatorError('request_timeout', true, response.status);
@@ -600,10 +718,22 @@ async function assertSuccessfulResponse(response: Response): Promise<void> {
 	throw validatorError('validator_rejected', false, response.status);
 }
 
+function responseRedirectFailure(response: Response): PdfSealValidatorError | null {
+	if (
+		response.redirected ||
+		response.type === 'opaqueredirect' ||
+		(response.status >= 300 && response.status < 400)
+	) {
+		return validatorError('validator_redirected', false, response.status);
+	}
+	return null;
+}
+
 async function readBoundedBody(
 	body: ReadableStream<Uint8Array> | null,
 	contentLength: string | null,
-	maxBytes: number
+	maxBytes: number,
+	timeoutSignal: AbortSignal
 ): Promise<Uint8Array<ArrayBuffer>> {
 	if (body === null) throw validatorError('invalid_response', false);
 	let declaredLength: number | null;
@@ -623,7 +753,10 @@ async function readBoundedBody(
 	let total: number = 0;
 	try {
 		while (true) {
-			const result: ReadableStreamReadResult<Uint8Array> = await reader.read();
+			const result: ReadableStreamReadResult<Uint8Array> = await readWithTimeout(
+				reader,
+				timeoutSignal
+			);
 			if (result.done) break;
 			total += result.value.byteLength;
 			if (total > maxBytes) {
@@ -634,7 +767,10 @@ async function readBoundedBody(
 		}
 	} catch (error: unknown) {
 		if (error instanceof PdfSealValidatorError) throw error;
-		throw validatorError(isTimeoutError(error) ? 'request_timeout' : 'network_error', true);
+		throw validatorError(
+			timeoutSignal.aborted || isTimeoutError(error) ? 'request_timeout' : 'network_error',
+			true
+		);
 	} finally {
 		try {
 			reader.releaseLock();
@@ -652,6 +788,38 @@ async function readBoundedBody(
 		offset += chunk.byteLength;
 	}
 	return bytes;
+}
+
+async function readWithTimeout(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+	timeoutSignal: AbortSignal
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+	if (timeoutSignal.aborted) throw validatorError('request_timeout', true);
+	return new Promise<ReadableStreamReadResult<Uint8Array>>(
+		(
+			resolve: (result: ReadableStreamReadResult<Uint8Array>) => void,
+			reject: (error: PdfSealValidatorError) => void
+		): void => {
+			const onAbort = (): void => {
+				cleanup();
+				void reader.cancel('request_timeout').catch((): void => undefined);
+				reject(validatorError('request_timeout', true));
+			};
+			const cleanup = (): void => timeoutSignal.removeEventListener('abort', onAbort);
+			timeoutSignal.addEventListener('abort', onAbort, { once: true });
+			if (timeoutSignal.aborted) onAbort();
+			reader.read().then(
+				(result: ReadableStreamReadResult<Uint8Array>): void => {
+					cleanup();
+					resolve(result);
+				},
+				(): void => {
+					cleanup();
+					reject(validatorError(timeoutSignal.aborted ? 'request_timeout' : 'network_error', true));
+				}
+			);
+		}
+	);
 }
 
 async function discardBoundedBody(
