@@ -46,7 +46,6 @@ import {
 	COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE,
 	CompletionArtifactIntegrityError,
 	gzipCompletionArtifact,
-	MAX_MANIFEST_GZIP_BYTES,
 	renderCompletionMarkdown,
 	sha256Hex,
 	sha256TextHex,
@@ -67,6 +66,7 @@ import {
 	type ExecutedPdfResult
 } from './executed-pdf';
 import { assembleExecutedAgreementPdf } from './executed-pdf-assembly';
+import { verifyImmutableObject } from './exact-object-stream';
 
 export const COMPLETION_ARTIFACT_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -551,11 +551,7 @@ export class CompletionArtifactPublicationService {
 		expectedSha256: string,
 		expectedSize: number
 	): Promise<'missing' | 'verified' | 'mismatched'> {
-		const stream: ReadableStream<Uint8Array> | null = await this.#objects.get(key);
-		if (stream === null) return 'missing';
-		const bytes: Uint8Array = await readStreamBounded(stream, MAX_MANIFEST_GZIP_BYTES);
-		if (bytes.byteLength !== expectedSize) return 'mismatched';
-		return (await sha256Hex(bytes)) === expectedSha256 ? 'verified' : 'mismatched';
+		return verifyImmutableObject(this.#objects, key, expectedSha256, expectedSize);
 	}
 
 	async #finishFailure(
@@ -750,36 +746,4 @@ async function completionDocumentFromLeaf(
 		position: leaf.position,
 		title: leaf.title
 	};
-}
-
-async function readStreamBounded(
-	stream: ReadableStream<Uint8Array>,
-	maximumBytes: number
-): Promise<Uint8Array> {
-	const reader: ReadableStreamDefaultReader<Uint8Array> = stream.getReader();
-	const chunks: Uint8Array[] = [];
-	let size: number = 0;
-	try {
-		while (true) {
-			const result: ReadableStreamReadResult<Uint8Array> = await reader.read();
-			if (result.done) break;
-			size += result.value.byteLength;
-			if (size > maximumBytes) {
-				await reader.cancel('Completion artifact exceeds the size limit');
-				throw new CompletionArtifactBoundExceededError(
-					'Completion artifact exceeds the size limit'
-				);
-			}
-			chunks.push(result.value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	const bytes: Uint8Array = new Uint8Array(size);
-	let offset: number = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
 }

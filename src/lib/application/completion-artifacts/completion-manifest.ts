@@ -569,7 +569,11 @@ export function gzipCompletionArtifact(source: string): Uint8Array {
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes));
+	const digestInput: Uint8Array<ArrayBuffer> =
+		bytes.buffer instanceof ArrayBuffer
+			? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+			: Uint8Array.from(bytes);
+	const digest: ArrayBuffer = await crypto.subtle.digest('SHA-256', digestInput);
 	return Array.from(new Uint8Array(digest), (byte: number): string =>
 		byte.toString(16).padStart(2, '0')
 	).join('');

@@ -109,8 +109,6 @@ function unavailable(instance: string): Response {
 	});
 }
 
-function pdfResponseBody(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
-	const body: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(bytes.byteLength));
-	body.set(bytes);
-	return body;
+function pdfResponseBody(bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+	return bytes;
 }

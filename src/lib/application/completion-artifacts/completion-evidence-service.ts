@@ -1,13 +1,14 @@
 import type { CompletionArtifactStore } from '$lib/ports/completion-artifact-store';
 import type { CompletionArtifactPdfStore } from '$lib/ports/completion-artifact-pdf-store';
-import type { ObjectStore } from '$lib/ports/object-store';
+import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { completionArtifactObjectKey } from './completion-artifact-service';
 import {
 	MAX_MANIFEST_GZIP_BYTES,
 	MAX_MANIFEST_SOURCE_BYTES,
 	sha256Hex
 } from './completion-manifest';
-import { MAX_COMPLETION_PDF_BYTES } from './completion-pdf';
+import { MAX_PUBLISHED_COMPLETION_PDF_BYTES } from './completion-pdf-limits';
+import { ExactObjectStreamError, readExactObjectStream } from './exact-object-stream';
 
 const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 
@@ -18,7 +19,7 @@ export interface CompletionEvidenceResult {
 }
 
 export interface CompletionPdfResult {
-	bytes: Uint8Array;
+	bytes: Uint8Array<ArrayBuffer>;
 	sha256: string;
 }
 
@@ -120,12 +121,36 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 			throw new CompletionEvidenceReadError('pdf_key_mismatch');
 		}
 
-		const stream = await this.#objects.get(expectedKey);
+		const metadata: ObjectMetadata | null = await this.#objects.head(expectedKey);
+		if (metadata === null) {
+			throw new CompletionEvidenceReadError('pdf_object_missing');
+		}
+		if (
+			metadata.key !== expectedKey ||
+			metadata.sha256 !== pdfRecord.pdfSha256 ||
+			!Number.isSafeInteger(metadata.size) ||
+			metadata.size <= 0
+		) {
+			throw new CompletionEvidenceReadError('pdf_integrity_mismatch');
+		}
+		if (metadata.size > MAX_PUBLISHED_COMPLETION_PDF_BYTES) {
+			throw new CompletionEvidenceReadError('stream_too_large');
+		}
+
+		const stream: ReadableStream<Uint8Array> | null = await this.#objects.get(expectedKey);
 		if (stream === null) {
 			throw new CompletionEvidenceReadError('pdf_object_missing');
 		}
 
-		const bytes = await readStreamBounded(stream, MAX_COMPLETION_PDF_BYTES);
+		let bytes: Uint8Array<ArrayBuffer>;
+		try {
+			bytes = await readExactObjectStream(stream, metadata.size);
+		} catch (error: unknown) {
+			if (error instanceof ExactObjectStreamError) {
+				throw new CompletionEvidenceReadError('pdf_integrity_mismatch');
+			}
+			throw error;
+		}
 		if ((await sha256Hex(bytes)) !== pdfRecord.pdfSha256) {
 			throw new CompletionEvidenceReadError('pdf_integrity_mismatch');
 		}
