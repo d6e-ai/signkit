@@ -1,7 +1,7 @@
 # PDF sealing
 
-Status: accepted design for Issue #78; no sealing runtime, API, migration, or dependency is
-implemented yet
+Status: accepted design for Issue #78; provider and validator transports are implemented but
+unwired; no sealing runtime, API, migration, or publication dependency is implemented yet
 
 ## Boundary and terminology
 
@@ -165,11 +165,62 @@ The application port is named `PdfSealProvider`; `PdfCertificationProvider` and 
 are deliberately not used because both collide with PDF certification-signature and certificate-
 authority terminology.
 
-| Runtime            | Initial support                                                                                                                                                    |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Node/Docker        | Remote HTTPS seal provider or a separately deployed, co-located seal provider. A subprocess or key file in the app container is not the portable contract.         |
-| Cloudflare Workers | Remote HTTPS seal provider only. No certificate private key or PKCS#12 bundle in Worker secrets; D1/R2 retain only jobs, public metadata, and immutable artifacts. |
-| Vercel             | Unspecified until its deployment profile becomes supported; it must use the same provider contract rather than a divergent in-process implementation.              |
+## Independent validator protocol
+
+`PdfSealValidator` is a provider-neutral gate between untrusted provider output and future atomic
+publication. The remote adapter is implemented but deliberately unwired. It does not expose a
+runtime capability, write an artifact, or treat a validator receipt as publication.
+
+One validation freezes a stable validation ID and seal operation ID together with both PDFs' exact
+SHA-256 and byte length, requested profile, signer-certificate SHA-256, seal-policy ID,
+validation-policy ID, and the B-T TSA policy/trust-bundle tuple. Its only endpoint is derived from
+one credential-free HTTPS base URL:
+`PUT {base}/pdf-seal-validations/{validationId}`. The stable validation ID is also the idempotency
+key. Repeating the ID with byte-identical PDFs and identical frozen metadata must return the stored
+result (or safely repeat the pure validation); `409` is reserved for reusing it with different
+input. A retry reopens both immutable objects because request streams are single-use. Redirects are
+handled manually and any 3xx, redirected, or opaque-redirect response fails permanently; a response
+cannot supply another URL.
+
+The request media type is `application/vnd.signkit.pdf-seal-validation-v1`. Its bounded binary body
+is the exact source PDF followed immediately by the exact sealed PDF. Frozen source and sealed
+length headers delimit the frames without base64 or multipart buffering. The adapter rejects a
+short or long frame while streaming; the remote validator must independently hash both frames,
+compare their exact lengths and digests, and echo every frozen field. The source frame is capped by
+the shared 32 MiB completion-PDF lifecycle bound, and deployment policy chooses a sealed-result
+bound no larger than 64 MiB. B-B responses echo both TSA fields as explicit `null`; omission is an
+integrity failure. JSON is requested with identity content encoding so transparent decompression
+cannot invalidate its bounded byte accounting. A response is never accepted until both input frames
+reach their exact expected lengths and close successfully; an early response, input read failure, or
+deadline cancels the input readers and response body and cannot publish a validation result.
+
+A successful JSON result is bounded to 64 KiB and must report the exact requested profile plus all
+of these checks as true: exact source prefix, valid incremental update, complete `ByteRange`, valid
+`ETSI.CAdES.detached` CMS, protected and digest-matching signer certificate, certificate path and
+seal policy, invisible approval signature, no DocMDP transform/catalogue entry, and no bytes after
+the signed revision. B-T additionally requires true RFC 3161 status, imprint, nonce-when-present,
+policy, token signature, pinned path, critical time-stamping-only EKU, ESS certificate binding, and
+`genTime` checks. B-B requires no timestamp result; B-T requires one. Profile substitution is an
+integrity failure, never a downgrade.
+
+An invalid document is a successful protocol response with one or more allowlisted failure codes;
+it is not a retryable transport error. Only timeout, transport interruption, rate limiting, 5xx,
+and validation-service unavailability retry. Authentication, request rejection, validation-ID
+conflict, redirects, malformed or oversized responses, changed echoes, and integrity failures are
+permanent. Errors contain only a stable code, retryability, and optional HTTP status: remote URLs,
+credentials, response bodies, raw engine messages, certificate material, and provider key
+references never cross the port.
+
+The eventual runtime must configure a validator trust boundary independent of the signing provider,
+read both immutable objects with their existing digest/size checks, persist the structured result,
+then re-read and re-hash the exact sealed object immediately before publishing its pointer. None of
+that wiring is part of this slice.
+
+| Runtime            | Initial support                                                                                                                                                                                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Node/Docker        | Remote HTTPS seal provider and independent validator, which may be separately deployed alongside the app. A subprocess or key file in the app container is not the portable contract.               |
+| Cloudflare Workers | Remote HTTPS seal provider and remote independent validator only. No certificate private key or PKCS#12 bundle in Worker secrets; D1/R2 retain only jobs, public metadata, and immutable artifacts. |
+| Vercel             | Unspecified until its deployment profile becomes supported; it must use the same provider and validator contracts rather than divergent in-process implementations.                                 |
 
 Cloudflare processing starts at concurrency one and streams the source where possible. Returned
 bytes and all validation inputs remain bounded so the Worker cannot multiply large in-memory PDF
