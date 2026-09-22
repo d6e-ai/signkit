@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-22
+
+### Added
+
+- Verified completion-artifact downloads for senders and localized recipient receipt pages for completed PDF and evidence exports.
+- Precise keyboard-only signing-field placement with bounded percentage controls, fine and coarse movement or resizing, live announcements, and exact persisted-coordinate review.
+
+### Changed
+
+- Recipient name and email validation now blocks readiness before network mutation and focuses the first invalid field for keyboard submissions.
+- Envelope navigation keeps stable breadcrumbs during client transitions, and the product favicon is served consistently.
+- Published signing fields fail closed as read-only in the sender editor until a complete field set can be reconstructed safely for whole-set replacement.
+
+### Fixed
+
+- Cloudflare orphan sweeps now use D1-safe bounded queries, actionable single-boundary failure logging, covered empty, retained, deletion, and provider-failure paths, and an isolated five-minute cron separate from the one-minute maintenance trigger.
+- Completion download responses verify object keys, size bounds, and SHA-256 digests before returning bytes.
+
+### Security
+
+- Completion artifacts no longer trust object-store bytes or metadata without re-deriving the expected key and verifying the stored digest.
+- Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements and the absence of PAdES/TSA certification.
+
 ## [0.1.4] - 2026-09-17
 
 ### Added
