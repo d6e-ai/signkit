@@ -1,7 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import ReceiptPage from './+page.svelte';
 import type { CompletionReceiptPageState } from './+page.server';
+
+const TOKEN = 'skca1_' + 'a'.repeat(43);
+
+vi.mock('$app/state', () => ({
+	page: {
+		url: new URL(`https://signkit.example/c/${TOKEN}/view`),
+		params: { token: TOKEN },
+		route: { id: '/c/[token]/view' },
+		status: 200,
+		error: null,
+		data: {},
+		form: null,
+		state: {}
+	}
+}));
 
 describe('completion receipt page in browser', () => {
 	it('published with a PDF: offers final PDF and evidence downloads as real, keyboard-reachable links', async () => {
@@ -10,13 +25,13 @@ describe('completion receipt page in browser', () => {
 
 		const pdfLink = screen.getByRole('link', { name: 'Download final PDF' });
 		await expect.element(pdfLink).toBeVisible();
-		expect(pdfLink.element().getAttribute('href')).toBe('../?format=pdf');
+		expect(pdfLink.element().getAttribute('href')).toBe(`/c/${TOKEN}?format=pdf`);
 		expect(pdfLink.element().tagName).toBe('A');
 
 		const jsonLink = screen.getByRole('link', { name: 'Download evidence (JSON)' });
-		expect(jsonLink.element().getAttribute('href')).toBe('../?format=json');
+		expect(jsonLink.element().getAttribute('href')).toBe(`/c/${TOKEN}?format=json`);
 		const markdownLink = screen.getByRole('link', { name: 'Download evidence (Markdown)' });
-		expect(markdownLink.element().getAttribute('href')).toBe('../?format=markdown');
+		expect(markdownLink.element().getAttribute('href')).toBe(`/c/${TOKEN}?format=markdown`);
 	});
 
 	it('published without a PDF yet: notes the PDF is pending but still offers evidence downloads', async () => {

@@ -2,12 +2,22 @@
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconFileTypePdf from '@tabler/icons-svelte/icons/file-type-pdf';
+	import { page } from '$app/state';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import * as m from '$lib/paraglide/messages';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+
+	/**
+	 * Built from the route param, not `data`: `view` is a real path segment, so a
+	 * relative `../?format=pdf` link resolves against `/c/{token}/`, not
+	 * `/c/{token}`, landing on the bare `/c/` collection route instead of the
+	 * grant-scoped raw endpoint. An absolute path anchored on the token sidesteps
+	 * that ambiguity entirely.
+	 */
+	const token = $derived(page.params.token as string);
 </script>
 
 <svelte:head>
@@ -23,7 +33,7 @@
 			</Card.Header>
 			<Card.Content class="flex flex-col gap-3">
 				{#if data.pdfAvailable}
-					<Button href="../?format=pdf" download="completion.pdf" class="w-fit">
+					<Button href="/c/{token}?format=pdf" download="completion.pdf" class="w-fit">
 						<IconFileTypePdf data-icon="inline-start" />
 						{m.completion_receipt_pdf_download()}
 					</Button>
@@ -31,11 +41,19 @@
 					<p class="text-sm text-muted-foreground">{m.completion_receipt_pdf_pending()}</p>
 				{/if}
 				<div class="flex flex-wrap gap-2">
-					<Button href="../?format=json" download="completion-evidence.json" variant="outline">
+					<Button
+						href="/c/{token}?format=json"
+						download="completion-evidence.json"
+						variant="outline"
+					>
 						<IconDownload data-icon="inline-start" />
 						{m.completion_receipt_evidence_json_download()}
 					</Button>
-					<Button href="../?format=markdown" download="completion-evidence.md" variant="outline">
+					<Button
+						href="/c/{token}?format=markdown"
+						download="completion-evidence.md"
+						variant="outline"
+					>
 						<IconDownload data-icon="inline-start" />
 						{m.completion_receipt_evidence_markdown_download()}
 					</Button>
