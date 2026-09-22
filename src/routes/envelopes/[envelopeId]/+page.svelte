@@ -53,7 +53,12 @@
 	} from '$lib/client/envelopes';
 	import type { DocumentSetLeaf, DocumentSetManifest } from '$lib/domain/document-set';
 	import { isMarkdownPath, type MarkdownPath, type RecipientStatus } from '$lib/domain/envelope';
-	import { normalizeRecipientEmail } from '$lib/domain/recipient-identity';
+	import {
+		isValidRecipientEmail,
+		isValidRecipientName,
+		normalizeRecipientEmail,
+		normalizeRecipientName
+	} from '$lib/domain/recipient-identity';
 	import { envelopeBreadcrumbTitle } from '$lib/navigation/envelope-breadcrumb-title';
 	import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
@@ -106,10 +111,21 @@
 	let contactSavePending = $state<Record<string, boolean>>({});
 	let contactSaveError = $state<Record<string, string | null>>({});
 	let contactSaveSucceeded = $state<Record<string, boolean>>({});
+	// A field's invalid state is shown once its own input has been blurred,
+	// or once a ready/submit attempt has touched every row - otherwise every
+	// freshly added row would open already showing errors.
+	let recipientNameTouched = $state<Record<string, boolean>>({});
+	let recipientEmailTouched = $state<Record<string, boolean>>({});
+	let recipientValidationAttempted = $state(false);
 	let readyPending = $state(false);
 	let readyError = $state<string | null>(null);
 	let readyRecipients = $state<readonly ReadyRecipientPublic[]>([]);
 	let readyAuditEventId = $state<string | null>(null);
+	const recipientsHaveInvalidIdentity = $derived(
+		recipientDrafts.some(
+			(draftItem) => recipientEmailInvalid(draftItem) || recipientNameInvalid(draftItem)
+		)
+	);
 	let importPending = $state(false);
 	let importError = $state<string | null>(null);
 	let exportPending = $state(false);
@@ -456,6 +472,91 @@
 
 	function removeRecipientDraft(key: string): void {
 		recipientDrafts = recipientDrafts.filter((draftItem) => draftItem.key !== key);
+		delete recipientNameTouched[key];
+		delete recipientEmailTouched[key];
+	}
+
+	// Both checks reuse the exact predicates the server applies after the same
+	// trim/lowercase normalization (see ready.ts's canonicalizeRecipients), so
+	// a whitespace-only value is blank here for the identical reason it is
+	// blank there, and nothing can pass client-side that the server rejects.
+	function recipientNameInvalid(draftItem: RecipientDraft): boolean {
+		return !isValidRecipientName(normalizeRecipientName(draftItem.name));
+	}
+
+	function recipientEmailInvalid(draftItem: RecipientDraft): boolean {
+		return !isValidRecipientEmail(normalizeRecipientEmail(draftItem.email));
+	}
+
+	function recipientNameErrorVisible(draftItem: RecipientDraft): boolean {
+		return (
+			recipientNameInvalid(draftItem) &&
+			(recipientNameTouched[draftItem.key] === true || recipientValidationAttempted)
+		);
+	}
+
+	function recipientEmailErrorVisible(draftItem: RecipientDraft): boolean {
+		return (
+			recipientEmailInvalid(draftItem) &&
+			(recipientEmailTouched[draftItem.key] === true || recipientValidationAttempted)
+		);
+	}
+
+	function markRecipientNameTouched(key: string): void {
+		recipientNameTouched[key] = true;
+	}
+
+	function markRecipientEmailTouched(key: string): void {
+		recipientEmailTouched[key] = true;
+	}
+
+	interface InvalidRecipientField {
+		key: string;
+		field: 'email' | 'name';
+	}
+
+	/**
+	 * Row by row, in the same left-to-right order the columns render (email
+	 * before name), so "the first invalid input" always means what it looks
+	 * like it means on screen.
+	 */
+	function firstInvalidRecipientField(): InvalidRecipientField | undefined {
+		for (const draftItem of recipientDrafts) {
+			if (recipientEmailInvalid(draftItem)) return { key: draftItem.key, field: 'email' };
+			if (recipientNameInvalid(draftItem)) return { key: draftItem.key, field: 'name' };
+		}
+		return undefined;
+	}
+
+	function focusRecipientField(target: InvalidRecipientField): void {
+		document.getElementById(`recipient-${target.field}-${target.key}`)?.focus();
+	}
+
+	/**
+	 * The shared gate for both the Ready button and a keyboard submission
+	 * attempt: a disabled button never dispatches a click or an implicit form
+	 * submission, so pressing Enter in a recipient field has to reach this
+	 * directly to move focus to the first invalid field instead of silently
+	 * doing nothing.
+	 */
+	function attemptMarkReady(): void {
+		recipientValidationAttempted = true;
+		const invalidField = firstInvalidRecipientField();
+		if (invalidField !== undefined) {
+			focusRecipientField(invalidField);
+			return;
+		}
+		void markReady();
+	}
+
+	function handleRecipientRowKeydown(event: KeyboardEvent): void {
+		if (event.key !== 'Enter') return;
+		// isComposing (and the legacy keyCode 229) excludes the Enter that
+		// confirms an IME conversion - treating that as a submission attempt
+		// would make it impossible to finish typing a Japanese recipient name.
+		if (event.isComposing || event.keyCode === 229) return;
+		event.preventDefault();
+		attemptMarkReady();
 	}
 
 	function applyContactToRecipient(key: string, contact: Contact): void {
@@ -527,7 +628,7 @@
 
 	async function markReady(): Promise<void> {
 		if (envelope === null || draft === null || readyPending) return;
-		if (recipientDrafts.length === 0) return;
+		if (recipientDrafts.length === 0 || recipientsHaveInvalidIdentity) return;
 		readyPending = true;
 		readyError = null;
 		try {
@@ -1481,7 +1582,7 @@
 														</Field.Field>
 													</Table.Cell>
 													<Table.Cell>
-														<Field.Field>
+														<Field.Field data-invalid={recipientEmailErrorVisible(draftItem)}>
 															<Field.FieldLabel
 																class="contents"
 																for={`recipient-email-${draftItem.key}`}
@@ -1491,13 +1592,25 @@
 															<Input
 																id={`recipient-email-${draftItem.key}`}
 																type="email"
+																maxlength={320}
 																bind:value={draftItem.email}
+																aria-invalid={recipientEmailErrorVisible(draftItem)}
+																aria-describedby={recipientEmailErrorVisible(draftItem)
+																	? `recipient-email-error-${draftItem.key}`
+																	: undefined}
 																oninput={() => markRecipientContactChanged(draftItem)}
+																onblur={() => markRecipientEmailTouched(draftItem.key)}
+																onkeydown={handleRecipientRowKeydown}
 															/>
+															{#if recipientEmailErrorVisible(draftItem)}
+																<Field.FieldError id={`recipient-email-error-${draftItem.key}`}>
+																	{m.envelope_recipient_email_invalid()}
+																</Field.FieldError>
+															{/if}
 														</Field.Field>
 													</Table.Cell>
 													<Table.Cell>
-														<Field.Field>
+														<Field.Field data-invalid={recipientNameErrorVisible(draftItem)}>
 															<Field.FieldLabel
 																class="contents"
 																for={`recipient-name-${draftItem.key}`}
@@ -1506,9 +1619,21 @@
 															</Field.FieldLabel>
 															<Input
 																id={`recipient-name-${draftItem.key}`}
+																maxlength={200}
 																bind:value={draftItem.name}
+																aria-invalid={recipientNameErrorVisible(draftItem)}
+																aria-describedby={recipientNameErrorVisible(draftItem)
+																	? `recipient-name-error-${draftItem.key}`
+																	: undefined}
 																oninput={() => markRecipientContactChanged(draftItem)}
+																onblur={() => markRecipientNameTouched(draftItem.key)}
+																onkeydown={handleRecipientRowKeydown}
 															/>
+															{#if recipientNameErrorVisible(draftItem)}
+																<Field.FieldError id={`recipient-name-error-${draftItem.key}`}>
+																	{m.envelope_recipient_name_required()}
+																</Field.FieldError>
+															{/if}
 														</Field.Field>
 													</Table.Cell>
 													<Table.Cell>
@@ -1673,8 +1798,10 @@
 					{#if envelope.status === 'draft'}
 						<Card.Footer class="justify-end border-t bg-muted/20 py-4">
 							<Button
-								disabled={recipientDrafts.length === 0 || readyPending}
-								onclick={() => void markReady()}
+								disabled={recipientDrafts.length === 0 ||
+									readyPending ||
+									recipientsHaveInvalidIdentity}
+								onclick={attemptMarkReady}
 							>
 								{#if readyPending}<Spinner data-icon="inline-start" />{/if}
 								{m.envelope_mark_ready()}

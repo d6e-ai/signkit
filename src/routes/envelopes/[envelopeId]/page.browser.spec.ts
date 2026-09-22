@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+import { userEvent } from 'vitest/browser';
 import EnvelopePage from './+page.svelte';
 
 const { ENVELOPE_ID } = vi.hoisted(() => ({
@@ -7,6 +8,8 @@ const { ENVELOPE_ID } = vi.hoisted(() => ({
 }));
 const READY_AUDIT_ID = '01900000-0000-7000-8000-000000000099';
 const SIGNER_ID = '01900000-0000-7000-8000-000000000011';
+const NAME_REQUIRED_MESSAGE = "Enter this recipient's name.";
+const EMAIL_INVALID_MESSAGE = 'Enter a valid email address for this recipient.';
 
 vi.mock('$app/state', () => ({
 	page: {
@@ -584,5 +587,180 @@ describe('envelope authoring page remounts durable send state', () => {
 		expect(
 			mockFetch.mock.calls.some((call) => String(call[0]).includes('/document-pdf/pages'))
 		).toBe(false);
+	});
+
+	it('keeps Mark ready disabled and shows an inline error for a blank recipient name (mouse)', async () => {
+		let readyCalled = false;
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/ready`)) {
+					readyCalled = true;
+					return jsonResponse({});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Recipients' }).click();
+		await screen.getByRole('button', { name: 'Add recipient' }).click();
+		await screen.getByLabelText('Email').fill('signer@example.com');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		expect(screen.container.textContent).not.toContain(NAME_REQUIRED_MESSAGE);
+
+		// Leaving the still-blank name field shows the inline error.
+		await screen.getByLabelText('Name').click();
+		await screen.getByLabelText('Email').click();
+		await expect.element(screen.getByText(NAME_REQUIRED_MESSAGE)).toBeVisible();
+		await expect.element(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+
+		// A whitespace-only name is treated the same as blank.
+		await screen.getByLabelText('Name').fill('   ');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+
+		await screen.getByLabelText('Name').fill('Signer Example');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeEnabled();
+		expect(screen.container.textContent).not.toContain(NAME_REQUIRED_MESSAGE);
+		expect(readyCalled).toBe(false);
+	});
+
+	it('keeps Mark ready disabled and shows an inline error for a blank or malformed recipient email (mouse)', async () => {
+		let readyCalled = false;
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/ready`)) {
+					readyCalled = true;
+					return jsonResponse({});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Recipients' }).click();
+		await screen.getByRole('button', { name: 'Add recipient' }).click();
+		await screen.getByLabelText('Name').fill('Signer Example');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		expect(screen.container.textContent).not.toContain(EMAIL_INVALID_MESSAGE);
+
+		// Leaving the still-blank email field shows the inline error.
+		await screen.getByLabelText('Email').click();
+		await screen.getByLabelText('Name').click();
+		await expect.element(screen.getByText(EMAIL_INVALID_MESSAGE)).toBeVisible();
+		await expect.element(screen.getByLabelText('Email')).toHaveAttribute('aria-invalid', 'true');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+
+		// A malformed address is rejected by the same predicate the server uses.
+		await screen.getByLabelText('Email').fill('not-an-email');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect.element(screen.getByText(EMAIL_INVALID_MESSAGE)).toBeVisible();
+
+		// Structurally malformed domains must not pass the client while the API rejects them.
+		await screen.getByLabelText('Email').fill('signer@example..com');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect.element(screen.getByText(EMAIL_INVALID_MESSAGE)).toBeVisible();
+
+		// A whitespace-only email is treated the same as blank.
+		await screen.getByLabelText('Email').fill('   ');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+
+		await screen.getByLabelText('Email').fill('signer@example.com');
+		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeEnabled();
+		expect(screen.container.textContent).not.toContain(EMAIL_INVALID_MESSAGE);
+		expect(readyCalled).toBe(false);
+	});
+
+	it('orders keyboard focus by row and column - email before name - and never submits early (keyboard)', async () => {
+		let readyCalled = false;
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse({
+						envelope: { ...readyEnvelope, status: 'draft' },
+						recipients: [],
+						readyAuditEventId: null,
+						fields: []
+					});
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					return jsonResponse(draft);
+				}
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/ready`)) {
+					readyCalled = true;
+					return jsonResponse({
+						ready: { recipients: [], auditEventId: READY_AUDIT_ID }
+					});
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await screen.getByRole('tab', { name: 'Recipients' }).click();
+		await screen.getByRole('button', { name: 'Add recipient' }).click();
+		const emailInput = screen.getByLabelText('Email');
+		const nameInput = screen.getByLabelText('Name');
+
+		// Both fields are blank. Pressing Enter from the name field still moves
+		// focus to email, since it is the first invalid field in column order,
+		// not just a re-check of whichever field currently has focus.
+		await nameInput.click();
+		await userEvent.keyboard('{Enter}');
+		await expect.element(emailInput).toHaveFocus();
+		await expect.element(screen.getByText(EMAIL_INVALID_MESSAGE)).toBeVisible();
+		expect(readyCalled).toBe(false);
+
+		await emailInput.fill('not-an-email');
+		await userEvent.keyboard('{Enter}');
+		await expect.element(emailInput).toHaveFocus();
+		expect(readyCalled).toBe(false);
+
+		await emailInput.fill('signer@example.com');
+		await userEvent.keyboard('{Enter}');
+		await expect.element(nameInput).toHaveFocus();
+		await expect.element(screen.getByText(NAME_REQUIRED_MESSAGE)).toBeVisible();
+		expect(readyCalled).toBe(false);
+
+		await nameInput.fill('Signer Example');
+		await userEvent.keyboard('{Enter}');
+		expect(readyCalled).toBe(true);
 	});
 });

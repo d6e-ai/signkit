@@ -117,6 +117,31 @@ describe('envelope authoring page contracts', () => {
 		expect(source).not.toMatch(/<select[\s>]/);
 	});
 
+	it('gates Ready on every identity field and never submits on a blocked keyboard attempt', () => {
+		expect(source).toContain('disabled={recipientDrafts.length === 0 ||');
+		expect(source).toContain('recipientsHaveInvalidIdentity}');
+		expect(source).toContain('onclick={attemptMarkReady}');
+		expect(source).toContain(
+			'if (recipientDrafts.length === 0 || recipientsHaveInvalidIdentity) return;'
+		);
+		expect(source).toContain('!isValidRecipientName(normalizeRecipientName(draftItem.name))');
+		expect(source).toContain('!isValidRecipientEmail(normalizeRecipientEmail(draftItem.email))');
+		expect(source).toContain(
+			'recipientNameTouched[draftItem.key] === true || recipientValidationAttempted'
+		);
+		expect(source).toContain(
+			'recipientEmailTouched[draftItem.key] === true || recipientValidationAttempted'
+		);
+		expect(source).toContain('aria-invalid={recipientNameErrorVisible(draftItem)}');
+		expect(source).toContain('aria-invalid={recipientEmailErrorVisible(draftItem)}');
+		expect(source).toContain('m.envelope_recipient_name_required()');
+		expect(source).toContain('m.envelope_recipient_email_invalid()');
+		expect(source).toContain(
+			"if (recipientEmailInvalid(draftItem)) return { key: draftItem.key, field: 'email' };"
+		);
+		expect(source).toContain('event.isComposing || event.keyCode === 229');
+	});
+
 	it('reuses contacts without copying workflow authority and only saves them explicitly', () => {
 		expect(source).toContain('<ContactCombobox');
 		expect(source).toContain('<ContactManagementDialog bind:open={contactManagementOpen} />');

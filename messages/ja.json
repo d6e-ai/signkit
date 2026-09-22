@@ -285,6 +285,8 @@
 	"envelope_recipient_col_locale": "言語",
 	"envelope_recipient_col_order": "順番",
 	"envelope_recipient_col_status": "状況",
+	"envelope_recipient_name_required": "この受信者の名前を入力してください。",
+	"envelope_recipient_email_invalid": "この受信者の有効なメールアドレスを入力してください。",
 	"envelope_recipient_status_pending": "待機中",
 	"envelope_recipient_status_viewed": "閲覧済み",
 	"envelope_recipient_status_completed": "完了",
