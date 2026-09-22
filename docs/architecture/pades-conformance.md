@@ -24,10 +24,12 @@ Two pinned engines enforce complementary gates:
   incremental-update differences. pyHanko documents that it does not by itself determine every
   structural requirement of a PAdES profile, so it is not the sole profile gate.
 
-Both validator entry points add the same SignKit policy check around their upstream engine. Negative
-fixtures cover missing or mismatched ESS bindings and absent, non-critical, or multi-purpose TSA EKU,
-in addition to signed-byte mutations. This explicit layer is necessary because generic validators can
-accept a cryptographically valid timestamp without enforcing every deployment policy.
+Both validator entry points first run their upstream engine, then apply the same SignKit policy check.
+Negative fixtures cover missing or mismatched ESS bindings and absent, non-critical, or multi-purpose
+TSA EKU, in addition to signed-byte mutations. CI requires stage markers proving that pyHanko completed
+its parsing and cryptographic evaluation before the SignKit policy rejected each policy fixture. This
+explicit layer is necessary because generic validators can accept a cryptographically valid timestamp
+without enforcing every deployment policy.
 
 The validation time and pyHanko's internal AdES wall-clock fallbacks are fixed to
 `2026-09-23T00:00:00Z` for repeatable policy results, but private keys are freshly generated. Signed

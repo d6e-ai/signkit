@@ -51,15 +51,6 @@ def main() -> None:
         "rejected-b-t",
         "rejected-policy",
     }
-    try:
-        assert_pdf_timestamp_policy(
-            input_path.read_bytes(), timestamped=timestamp_expected
-        )
-    except AssertionError as error:
-        if expectation == "rejected-policy":
-            raise SystemExit(f"PAdES policy rejected {input_path}: {error}") from error
-        raise
-
     datetime_targets = (
         "pyhanko.sign.validation.ades.datetime",
         "pyhanko_certvalidator.ltv.ades_past.datetime",
@@ -69,7 +60,29 @@ def main() -> None:
     with ExitStack() as stack:
         for target in datetime_targets:
             stack.enter_context(patch(target, FrozenDateTime))
-        launch()
+        try:
+            launch()
+        except SystemExit as error:
+            upstream_exit_code = error.code if isinstance(error.code, int) else 1
+        else:
+            upstream_exit_code = 0
+    print(f"SIGNKIT_PYHANKO_UPSTREAM_EXIT={upstream_exit_code}", file=sys.stderr)
+
+    try:
+        assert_pdf_timestamp_policy(
+            input_path.read_bytes(), timestamped=timestamp_expected
+        )
+    except AssertionError as error:
+        print("SIGNKIT_TIMESTAMP_POLICY=REJECTED", file=sys.stderr)
+        if expectation != "rejected-policy":
+            raise
+        raise SystemExit(f"PAdES policy rejected {input_path}: {error}") from error
+
+    print("SIGNKIT_TIMESTAMP_POLICY=ACCEPTED", file=sys.stderr)
+    if expectation == "rejected-policy":
+        raise SystemExit(f"SignKit policy unexpectedly accepted {input_path}")
+    if upstream_exit_code != 0:
+        raise SystemExit(upstream_exit_code)
 
 
 if __name__ == "__main__":

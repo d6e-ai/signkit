@@ -195,6 +195,13 @@ jobs:
               echo "pyHanko accepted $pdf_name" >&2
               exit 1
             fi
+            if [[ "$expectation" == rejected-policy ]]; then
+              grep -Eq '^SIGNKIT_PYHANKO_UPSTREAM_EXIT=[01]$' "$report"
+              grep -Fxq 'SIGNKIT_TIMESTAMP_POLICY=REJECTED' "$report"
+            else
+              grep -Eq '^SIGNKIT_PYHANKO_UPSTREAM_EXIT=[1-9][0-9]*$' "$report"
+              grep -Fxq 'SIGNKIT_TIMESTAMP_POLICY=ACCEPTED' "$report"
+            fi
           done
       - name: Record the effective Java and Maven toolchain
         run: |
