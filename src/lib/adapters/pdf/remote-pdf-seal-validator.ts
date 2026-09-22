@@ -173,9 +173,11 @@ export class RemotePdfSealValidator implements PdfSealValidator {
 			cancelBodyBestEffort(response.body, redirectFailure.code);
 			throw redirectFailure;
 		}
-		if (!response.ok) {
-			void framedBody.cancel(validatorError('validator_rejected', false));
-			return this.#readValidationResponse(response, reference, timeoutSignal);
+		const responseFailure: PdfSealValidatorError | null = responseStatusFailure(response);
+		if (responseFailure !== null) {
+			void framedBody.cancel(responseFailure);
+			await discardBoundedBody(response.body, MAX_VALIDATOR_ERROR_BYTES);
+			throw responseFailure;
 		}
 		try {
 			await waitForFrameCompletion(framedBody, timeoutSignal);
@@ -702,24 +704,30 @@ async function assertSuccessfulResponse(response: Response): Promise<void> {
 		await cancelBody(response.body, redirectFailure.code);
 		throw redirectFailure;
 	}
-	if (response.status >= 200 && response.status < 300) return;
+	const statusFailure: PdfSealValidatorError | null = responseStatusFailure(response);
+	if (statusFailure === null) return;
 	await discardBoundedBody(response.body, MAX_VALIDATOR_ERROR_BYTES);
+	throw statusFailure;
+}
+
+function responseStatusFailure(response: Response): PdfSealValidatorError | null {
+	if (response.status >= 200 && response.status < 300) return null;
 	if (response.status === 408) {
-		throw validatorError('request_timeout', true, response.status);
+		return validatorError('request_timeout', true, response.status);
 	}
 	if (response.status === 425 || response.status === 429) {
-		throw validatorError('rate_limited', true, response.status);
+		return validatorError('rate_limited', true, response.status);
 	}
 	if (response.status >= 500) {
-		throw validatorError('validator_unavailable', true, response.status);
+		return validatorError('validator_unavailable', true, response.status);
 	}
 	if (response.status === 401 || response.status === 403) {
-		throw validatorError('validator_authentication_failed', false, response.status);
+		return validatorError('validator_authentication_failed', false, response.status);
 	}
 	if (response.status === 409) {
-		throw validatorError('validation_conflict', false, response.status);
+		return validatorError('validation_conflict', false, response.status);
 	}
-	throw validatorError('validator_rejected', false, response.status);
+	return validatorError('validator_rejected', false, response.status);
 }
 
 function responseRedirectFailure(response: Response): PdfSealValidatorError | null {

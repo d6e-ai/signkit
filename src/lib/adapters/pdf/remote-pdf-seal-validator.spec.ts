@@ -630,6 +630,41 @@ describe('RemotePdfSealValidator', () => {
 		expectValidatorError(error, { code, retryable, httpStatus: status });
 	});
 
+	it.each([
+		[401, 'validator_authentication_failed', false],
+		[409, 'validation_conflict', false],
+		[429, 'rate_limited', true]
+	] as const)(
+		'classifies fast HTTP %s before an unconsumed upload can time out',
+		async (status, code, retryable) => {
+			const cancelled: { source: boolean; sealed: boolean } = { source: false, sealed: false };
+			const source: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+				cancel(): void {
+					cancelled.source = true;
+				}
+			});
+			const sealed: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+				cancel(): void {
+					cancelled.sealed = true;
+				}
+			});
+			const fetchMock = vi.fn(
+				async (): Promise<Response> =>
+					new Response('bounded error', {
+						status,
+						headers: { 'content-type': 'text/plain' }
+					})
+			);
+			const error: unknown = await capturedError(() =>
+				validator(fetchMock, { timeoutMs: 5 }, false).validate(command({ source, sealed }))
+			);
+			expectValidatorError(error, { code, retryable, httpStatus: status });
+			await vi.waitFor((): void => expect(cancelled).toEqual({ source: true, sealed: true }));
+			expect(source.locked).toBe(false);
+			expect(sealed.locked).toBe(false);
+		}
+	);
+
 	it('uses real fetch manual semantics and never follows redirects', async () => {
 		const redirectServer: RedirectTestServer = await startRedirectTestServer();
 		try {
