@@ -13,6 +13,7 @@ import {
 	FakeWrangler,
 	MemoryFileSystem,
 	PREVIOUS_VERSION,
+	WORKER_VERSION,
 	fakeExtractor,
 	fakeReleases,
 	sampleManifest,
@@ -140,6 +141,105 @@ describe('pristine initial deploy recovery lifecycle', () => {
 		expect(result.stdout).not.toContain(OAUTH.D6E_AUTH_CLIENT_ID);
 		expect(result.stdout).not.toContain(OAUTH.D6E_AUTH_CLIENT_SECRET);
 		expect(result.stdout).not.toContain((flat.DELIVERY_ENCRYPTION_KEY as string).slice(0, 12));
+		expect(result.wrangler.calls).toContain('deploy:signkit');
+		expect(result.wrangler.calls).not.toContain('uploadVersion:signkit');
+		expect(result.wrangler.calls.some((call) => call.startsWith('deployVersion:'))).toBe(false);
+		expect(result.wrangler.calls).not.toContain('deployTriggers:signkit');
+	});
+
+	it('persists partial state when the first deploy fails after creating a Worker version', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.failFirstDeploy = true;
+		wrangler.publishVersionBeforeFirstDeployFailure = true;
+		const result = await runDeploy({ wrangler, stdinText: OAUTH_JSON });
+
+		expect(result.code).toBe(1);
+		const parsed = JSON.parse(result.stdout);
+		expect(parsed.message).toMatch(/appeared after the required first deploy failed/i);
+		expect(parsed.mutations).toContain('deploy-partial');
+		expect(parsed.rollback).toMatchObject({ attempted: false, workerRolledBack: false });
+		expect(wrangler.calls.filter((call) => call === 'listVersions:signkit')).toHaveLength(2);
+		expect(wrangler.calls.some((call) => call.startsWith('deployVersion:'))).toBe(false);
+		expect(wrangler.calls).not.toContain('deployTriggers:signkit');
+		const state = JSON.parse(await result.fs.readFile(STATE_PATH));
+		expect(state).toMatchObject({
+			lastWorkerVersionId: WORKER_VERSION,
+			version: 'v1.2.3',
+			lastCommand: 'deploy',
+			triggerReconciliationRequired: {
+				workerVersionId: WORKER_VERSION,
+				releaseVersion: 'v1.2.3',
+				recordedAt: '2026-09-15T00:00:00.000Z'
+			}
+		});
+		expect(state.lastD1BackupPath).toMatch(/\.sql$/);
+		expect(await result.fs.exists(RECOVERY_PATH)).toBe(true);
+	});
+
+	it('preserves the original first-deploy failure when no new Worker version exists', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.failFirstDeploy = true;
+		const result = await runDeploy({ wrangler, stdinText: OAUTH_JSON });
+
+		expect(result.code).toBe(1);
+		expect(result.stdout).toMatch(/first deploy failed/);
+		expect(result.stdout).not.toMatch(/deploy-partial/);
+		expect(await result.fs.exists(STATE_PATH)).toBe(false);
+		expect(await result.fs.exists(RECOVERY_PATH)).toBe(true);
+	});
+
+	it('preserves the original failure when post-failure inspection reports a missing Worker', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.failFirstDeploy = true;
+		const listVersions = wrangler.listVersions.bind(wrangler);
+		let inspections = 0;
+		wrangler.listVersions = async (workerName: string) => {
+			inspections += 1;
+			if (inspections === 2) {
+				throw new Error('code: 10007 script_not_found');
+			}
+			return listVersions(workerName);
+		};
+		const result = await runDeploy({ wrangler, stdinText: OAUTH_JSON });
+
+		expect(result.code).toBe(1);
+		expect(result.stdout).toMatch(/first deploy failed/);
+		expect(result.stdout).not.toContain('script_not_found');
+		expect(await result.fs.exists(STATE_PATH)).toBe(false);
+	});
+
+	it('retries a partial first deploy through explicit version and trigger reconciliation', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.failFirstDeploy = true;
+		wrangler.publishVersionBeforeFirstDeployFailure = true;
+		const fs = new MemoryFileSystem();
+		const first = await runDeploy({ wrangler, fs, stdinText: OAUTH_JSON });
+		expect(first.code).toBe(1);
+
+		const retryVersion = '44444444-4444-4444-4444-444444444444';
+		wrangler.failFirstDeploy = false;
+		wrangler.publishVersionBeforeFirstDeployFailure = false;
+		wrangler.deployResult = {
+			workerVersionId: retryVersion,
+			workerUrl: 'https://signkit.example.workers.dev',
+			stdout: `Uploaded signkit\nVersion ID: ${retryVersion}\nhttps://signkit.example.workers.dev`,
+			aborted: false
+		};
+		const retried = await runDeploy({ wrangler, fs });
+
+		expect(retried.code).toBe(0);
+		const parsed = JSON.parse(retried.stdout);
+		expect(parsed.mutations).toEqual(
+			expect.arrayContaining(['versions-upload', 'versions-deploy', 'triggers-deploy'])
+		);
+		expect(wrangler.calls.filter((call) => call === 'deploy:signkit')).toHaveLength(1);
+		expect(wrangler.calls).toContain('uploadVersion:signkit');
+		expect(wrangler.calls).toContain(`deployVersion:signkit:${retryVersion}`);
+		expect(wrangler.calls).toContain('deployTriggers:signkit');
+		const state = JSON.parse(await fs.readFile(STATE_PATH));
+		expect(state.lastWorkerVersionId).toBe(retryVersion);
+		expect(state.previousWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.triggerReconciliationRequired).toBeUndefined();
 	});
 
 	it('keeps plan read-only: never reads stdin and never creates files', async () => {
@@ -167,6 +267,11 @@ describe('pristine initial deploy recovery lifecycle', () => {
 		const parsed = JSON.parse(stdout.join(''));
 		expect(parsed.recoveryPath).toBeUndefined();
 		expect(parsed.recoveryFingerprint).toBeUndefined();
+		const plan = parsed.plan as Array<{ id: string; mutating: boolean }>;
+		expect(plan.find((step) => step.id === 'deploy')).toMatchObject({ mutating: true });
+		expect(plan.some((step) => step.id === 'versions-upload')).toBe(false);
+		expect(plan.some((step) => step.id === 'versions-deploy')).toBe(false);
+		expect(plan.some((step) => step.id === 'triggers-deploy')).toBe(false);
 	});
 
 	it('fails plan read-only when the manifest declares an unknown secret type', async () => {

@@ -18,10 +18,11 @@ import type { ReleaseResolver, ResolvedRelease } from '../src/release/github.js'
 import type { ReleaseProvenance } from '../src/release/provenance.js';
 import type {
 	D1Database,
-	DeployOptions,
 	DeployResult,
 	MigrationCommandOptions,
 	MigrationList,
+	TriggerDeployOptions,
+	UploadVersionOptions,
 	Whoami,
 	WorkerVersion,
 	WranglerClient,
@@ -287,12 +288,14 @@ export class FakeWrangler implements WranglerClient {
 		stdout: `Deployed signkit\nVersion ID: ${WORKER_VERSION}\nhttps://signkit.example.workers.dev`,
 		aborted: false
 	};
-	failRollback = false;
+	failTriggerDeploy = false;
+	failFirstDeploy = false;
+	publishVersionBeforeFirstDeployFailure = false;
 	leavePendingAfterApply = false;
 	lastConfig?: string;
 	readonly migrationCalls: MigrationCommandOptions[] = [];
 	readonly recordedInvocations: WranglerInvocation[] = [];
-	readonly deployOptions: DeployOptions[] = [];
+	readonly deployOptions: UploadVersionOptions[] = [];
 	readonly stagedSecrets: string[] = [];
 
 	invocations(): readonly WranglerInvocation[] {
@@ -386,8 +389,27 @@ export class FakeWrangler implements WranglerClient {
 		return [...(this.versions.get(workerName) ?? [])];
 	}
 
-	async deploy(options: DeployOptions): Promise<DeployResult> {
+	async deployFirst(options: UploadVersionOptions): Promise<DeployResult> {
 		this.calls.push(`deploy:${options.workerName}`);
+		this.deployOptions.push(options);
+		this.lastConfig = this.fs
+			? await this.fs.readFile(options.configPath).catch(() => undefined)
+			: undefined;
+		if (this.fs && options.secretsFile) {
+			this.stagedSecrets.push(await this.fs.readFile(options.secretsFile));
+		}
+		if (this.failFirstDeploy) {
+			if (this.publishVersionBeforeFirstDeployFailure) {
+				this.ensureWorker(options.workerName);
+			}
+			throw new Error('first deploy failed');
+		}
+		this.ensureWorker(options.workerName);
+		return this.deployResult;
+	}
+
+	async uploadVersion(options: UploadVersionOptions): Promise<DeployResult> {
+		this.calls.push(`uploadVersion:${options.workerName}`);
 		this.deployOptions.push(options);
 		this.lastConfig = this.fs
 			? await this.fs.readFile(options.configPath).catch(() => undefined)
@@ -399,24 +421,19 @@ export class FakeWrangler implements WranglerClient {
 		return this.deployResult;
 	}
 
-	async uploadVersion(options: DeployOptions): Promise<DeployResult> {
-		this.calls.push(`uploadVersion:${options.workerName}`);
-		this.deployOptions.push(options);
-		if (this.fs && options.secretsFile) {
-			this.stagedSecrets.push(await this.fs.readFile(options.secretsFile));
-		}
-		this.ensureWorker(options.workerName);
-		return this.deployResult;
-	}
-
 	async deployVersion(workerName: string, versionId: string): Promise<void> {
 		this.calls.push(`deployVersion:${workerName}:${versionId}`);
 	}
 
-	async rollback(workerName: string, versionId: string, message: string): Promise<void> {
-		this.calls.push(`rollback:${workerName}:${versionId}:${message}`);
-		if (this.failRollback) {
-			throw new Error('rollback not supported');
+	async deployTriggers(options: TriggerDeployOptions): Promise<void> {
+		this.calls.push(`deployTriggers:${options.workerName}`);
+		this.recordedInvocations.push({
+			args: ['triggers', 'deploy', '--config', options.configPath, '--name', options.workerName],
+			cwd: options.cwd,
+			env: {}
+		});
+		if (this.failTriggerDeploy) {
+			throw new Error('trigger deployment failed');
 		}
 	}
 

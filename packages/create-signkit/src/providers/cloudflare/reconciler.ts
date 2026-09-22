@@ -3,7 +3,6 @@ import {
 	BACKUP_DIR_MODE,
 	BACKUP_FILE_MODE,
 	MIGRATION_POLICY_NOTES,
-	PACKAGE_NAME,
 	REQUIRED_WORKER_SECRETS,
 	SMTP_PASSWORD_SECRET
 } from '../../constants.js';
@@ -45,8 +44,10 @@ import { posixRelativeToRoot } from '../../release/paths.js';
 import {
 	assertSelectedAccountAuthorized,
 	assertSuccessfulUpload,
+	isMissingWorkerError,
 	sortWorkerVersions,
 	type D1Database,
+	type DeployResult,
 	type WorkerVersion,
 	type WranglerClient
 } from './wrangler.js';
@@ -251,6 +252,7 @@ async function deployOrUpgrade(
 	const mutations: string[] = [];
 	const current = { ...remote };
 	const initialManagedDeploy = input.command === 'deploy' && existing === undefined;
+	const requiresFirstWorkerUpload = current.versions.length === 0;
 	assertNoTakeover(input, existing, current);
 	assertInitialManagedDeployVars(target, release, initialManagedDeploy);
 	if (input.command === 'deploy' && !initialManagedDeploy) {
@@ -351,43 +353,141 @@ async function deployOrUpgrade(
 		const appliedMigrations = unionAppliedMigrations(existing?.appliedMigrations, newlyApplied);
 
 		const previousVersionId = existing?.lastWorkerVersionId ?? current.versions[0]?.id;
-		const deployOptions = {
+		const uploadOptions = {
 			cwd: extracted.root,
 			configPath: extracted.configPath,
 			workerName: target.workerName,
-			domain: target.domain,
 			keepVars: true,
 			noBundle: true,
 			...(deploymentRecovery ? { secretsFile: deploymentRecovery.secretsFile } : {})
 		};
-		const uploaded = assertSuccessfulUpload(
-			input.command === 'upgrade'
-				? await runtime.wrangler.uploadVersion(deployOptions)
-				: await runtime.wrangler.deploy(deployOptions)
-		);
-		assertNewWorkerVersion(uploaded.workerVersionId, previousVersionId);
-		mutations.push(input.command === 'upgrade' ? 'versions-upload' : 'deploy');
-		if (input.command === 'upgrade') {
+		let uploaded: DeployResult;
+		if (requiresFirstWorkerUpload) {
+			try {
+				uploaded = assertSuccessfulUpload(await runtime.wrangler.deployFirst(uploadOptions));
+			} catch (error) {
+				let versionsAfterFailure: WorkerVersion[];
+				try {
+					versionsAfterFailure = sortWorkerVersions(
+						await runtime.wrangler.listVersions(target.workerName)
+					);
+				} catch (inspectionError) {
+					const inspectionDetail =
+						inspectionError instanceof Error ? inspectionError.message : String(inspectionError);
+					if (isMissingWorkerError(inspectionDetail)) {
+						throw error;
+					}
+					const deployDetail = error instanceof Error ? error.message : String(error);
+					throw generic(
+						`first Worker deploy failed (${deployDetail}) and its remote version state could not be re-inspected (${inspectionDetail})`
+					);
+				}
+				const observedVersion = firstNewWorkerVersion(current.versions, versionsAfterFailure);
+				if (!observedVersion) {
+					throw error;
+				}
+				mutations.push('deploy-partial');
+				const failureAt = runtime.now();
+				const rollback = firstDeployPartialFailureReport(observedVersion.id);
+				const state = nextState(input, target, existing, current, release, failureAt, {
+					lastWorkerVersionId: observedVersion.id,
+					previousWorkerVersionId: previousVersionId,
+					appliedMigrations,
+					lastD1BackupPath: backupPath,
+					triggerReconciliationRequired: {
+						workerVersionId: observedVersion.id,
+						releaseVersion: release.tag,
+						...(release.commit ? { releaseCommit: release.commit } : {}),
+						recordedAt: failureAt.toISOString()
+					}
+				});
+				await stateStore.save(state);
+				const detail = error instanceof Error ? error.message : String(error);
+				return {
+					exitCode: 1,
+					command: input.command,
+					provider: 'cloudflare',
+					version: release.tag,
+					commit: release.commit,
+					provenance: preparedBundle.provenance,
+					plan,
+					mutations,
+					statePath: stateStore.path,
+					workerUrl: target.publicOrigin,
+					d1BackupPath: backupPath,
+					missingSecrets: [],
+					drift: [],
+					rollback,
+					message: `Worker version ${observedVersion.id} appeared after the required first deploy failed (${detail}); activation, route, and Cron Trigger state may be partial. ${rollback.guidance}`,
+					bootstrapWarning: bootstrapWarningFor(target),
+					migrationPolicy: MIGRATION_POLICY_NOTES,
+					...recoveryMetadata(deploymentRecovery)
+				};
+			}
+			assertNewWorkerVersion(uploaded.workerVersionId, previousVersionId);
+			mutations.push('deploy');
+		} else {
+			uploaded = assertSuccessfulUpload(await runtime.wrangler.uploadVersion(uploadOptions));
+			assertNewWorkerVersion(uploaded.workerVersionId, previousVersionId);
+			mutations.push('versions-upload');
 			await runtime.wrangler.deployVersion(target.workerName, uploaded.workerVersionId);
 			mutations.push('versions-deploy');
+			try {
+				await runtime.wrangler.deployTriggers({
+					cwd: extracted.root,
+					configPath: extracted.configPath,
+					workerName: target.workerName
+				});
+			} catch (error) {
+				const failureAt = runtime.now();
+				const rollback = triggerReconciliationFailureReport(
+					uploaded.workerVersionId,
+					previousVersionId
+				);
+				const state = nextState(input, target, existing, current, release, failureAt, {
+					lastWorkerVersionId: uploaded.workerVersionId,
+					previousWorkerVersionId: previousVersionId,
+					appliedMigrations,
+					lastD1BackupPath: backupPath,
+					triggerReconciliationRequired: {
+						workerVersionId: uploaded.workerVersionId,
+						releaseVersion: release.tag,
+						...(release.commit ? { releaseCommit: release.commit } : {}),
+						recordedAt: failureAt.toISOString()
+					}
+				});
+				await stateStore.save(state);
+				const detail = error instanceof Error ? error.message : String(error);
+				return {
+					exitCode: 1,
+					command: input.command,
+					provider: 'cloudflare',
+					version: release.tag,
+					commit: release.commit,
+					provenance: preparedBundle.provenance,
+					plan,
+					mutations,
+					statePath: stateStore.path,
+					workerUrl: resolveProductionSmokeOrigin(target, uploaded, target.workerName),
+					d1BackupPath: backupPath,
+					missingSecrets: [],
+					drift: [],
+					rollback,
+					message: `Worker version ${uploaded.workerVersionId} is active, but route/Cron Trigger reconciliation failed (${detail}). ${rollback.guidance}`,
+					bootstrapWarning: bootstrapWarningFor(target),
+					migrationPolicy: MIGRATION_POLICY_NOTES,
+					...recoveryMetadata(deploymentRecovery)
+				};
+			}
+			mutations.push('triggers-deploy');
 		}
 
 		const workerUrl = resolveProductionSmokeOrigin(target, uploaded, target.workerName);
-		const attachedCustomDomainThisDeploy =
-			input.command === 'deploy' && Boolean(deployOptions.domain);
-		const fallbackUrl = attachedCustomDomainThisDeploy
-			? selectProductionWorkersDevOrigin(uploaded.stdout, target.workerName)
-			: undefined;
 		let rollback: RollbackReport | undefined;
 		if (!workerUrl) {
-			rollback = await maybeRollback(
-				runtime.wrangler,
-				target.workerName,
-				previousVersionId,
-				'HTTPS smoke check skipped: no production origin is known'
-			);
+			rollback = postReconciliationSmokeFailureReport(uploaded.workerVersionId, previousVersionId);
 			const state = nextState(input, target, existing, current, release, runtime.now(), {
-				lastWorkerVersionId: rollback.performed ? previousVersionId : uploaded.workerVersionId,
+				lastWorkerVersionId: uploaded.workerVersionId,
 				previousWorkerVersionId: previousVersionId,
 				appliedMigrations,
 				lastD1BackupPath: backupPath
@@ -416,7 +516,6 @@ async function deployOrUpgrade(
 		}
 		const smoke = await smokeCheck({
 			url: workerUrl,
-			fallbackUrl: fallbackUrl && fallbackUrl !== workerUrl ? fallbackUrl : undefined,
 			http: runtime.http,
 			attempts: runtime.smokeAttempts,
 			backoffMs: runtime.smokeBackoffMs,
@@ -424,14 +523,9 @@ async function deployOrUpgrade(
 			sleep: runtime.sleep
 		});
 		if (!smoke.ok) {
-			rollback = await maybeRollback(
-				runtime.wrangler,
-				target.workerName,
-				previousVersionId,
-				smoke.detail
-			);
+			rollback = postReconciliationSmokeFailureReport(uploaded.workerVersionId, previousVersionId);
 			const state = nextState(input, target, existing, current, release, runtime.now(), {
-				lastWorkerVersionId: rollback.performed ? previousVersionId : uploaded.workerVersionId,
+				lastWorkerVersionId: uploaded.workerVersionId,
 				previousWorkerVersionId: previousVersionId,
 				appliedMigrations,
 				lastD1BackupPath: backupPath
@@ -525,48 +619,42 @@ async function uniqueD1BackupPath(
 	return candidate;
 }
 
-async function maybeRollback(
-	wrangler: WranglerClient,
-	workerName: string,
-	previousVersionId: string | undefined,
-	smokeDetail: string
-): Promise<RollbackReport> {
-	const guidanceBase =
-		'D1 was not rolled back and cannot be rolled back by rolling back the Worker. Restore SQL with D1 Time Travel if needed. Worker rollback cannot undo applied migrations.';
-	if (!previousVersionId) {
-		return {
-			attempted: false,
-			performed: false,
-			workerRolledBack: false,
-			d1RolledBack: false,
-			guidance: `No previous Worker version ID is recorded, so Worker rollback was not performed. ${guidanceBase} Smoke failure: ${smokeDetail}`
-		};
-	}
-	try {
-		await wrangler.rollback(
-			workerName,
-			previousVersionId,
-			`${PACKAGE_NAME} smoke check failed; restoring previous Worker version`
-		);
-		return {
-			attempted: true,
-			performed: true,
-			workerRolledBack: true,
-			d1RolledBack: false,
-			previousWorkerVersionId: previousVersionId,
-			guidance: `Rolled the Worker back to version ${previousVersionId}. ${guidanceBase}`
-		};
-	} catch (error) {
-		const detail = error instanceof Error ? error.message : String(error);
-		return {
-			attempted: true,
-			performed: false,
-			workerRolledBack: false,
-			d1RolledBack: false,
-			previousWorkerVersionId: previousVersionId,
-			guidance: `Worker rollback to ${previousVersionId} was attempted and failed (${detail}). ${guidanceBase}`
-		};
-	}
+function postReconciliationSmokeFailureReport(
+	activeWorkerVersionId: string,
+	previousWorkerVersionId: string | undefined
+): RollbackReport {
+	return {
+		attempted: false,
+		performed: false,
+		workerRolledBack: false,
+		d1RolledBack: false,
+		previousWorkerVersionId,
+		guidance: `Worker version ${activeWorkerVersionId} and the release routes/Cron Triggers remain active. Automatic Worker-only rollback was not attempted because it would leave the active trigger and route configuration out of sync with the Worker. Inspect the active Worker and triggers, then reconcile them before retrying.`
+	};
+}
+
+function firstDeployPartialFailureReport(observedWorkerVersionId: string): RollbackReport {
+	return {
+		attempted: false,
+		performed: false,
+		workerRolledBack: false,
+		d1RolledBack: false,
+		guidance: `State records Worker version ${observedWorkerVersionId} with triggerReconciliationRequired. Automatic rollback and HTTPS smoke were not attempted because the first deploy's activation, route, and Cron Trigger state cannot be proven after Wrangler failed. Inspect the remote Worker and triggers, then rerun deploy to reconcile them.`
+	};
+}
+
+function triggerReconciliationFailureReport(
+	activeWorkerVersionId: string,
+	previousWorkerVersionId: string | undefined
+): RollbackReport {
+	return {
+		attempted: false,
+		performed: false,
+		workerRolledBack: false,
+		d1RolledBack: false,
+		previousWorkerVersionId,
+		guidance: `State records active Worker version ${activeWorkerVersionId} with triggerReconciliationRequired. Automatic Worker-only rollback and HTTPS smoke were not attempted because trigger reconciliation may have partially applied. Inspect the active routes and Cron Triggers, then rerun the same deploy or upgrade command to reconcile them.`
+	};
 }
 
 interface RemoteSnapshot {
@@ -688,14 +776,30 @@ function buildPlan(
 		summary: 'apply pending D1 migrations only',
 		mutating: true
 	});
-	steps.push({
-		id: input.command === 'upgrade' ? 'versions-upload' : 'deploy',
-		summary:
-			input.command === 'upgrade'
-				? `upload Worker version for ${target.workerName} with --keep-vars`
-				: `deploy Worker ${target.workerName} with --keep-vars`,
-		mutating: true
-	});
+	const firstWorkerUpload = remote.versions.length === 0;
+	if (firstWorkerUpload) {
+		steps.push({
+			id: 'deploy',
+			summary: `perform the required first Worker upload for ${target.workerName} with complete route and Cron Trigger deployment`,
+			mutating: true
+		});
+	} else {
+		steps.push({
+			id: 'versions-upload',
+			summary: `upload Worker version for ${target.workerName} with --keep-vars`,
+			mutating: true
+		});
+		steps.push({
+			id: 'versions-deploy',
+			summary: `deploy the uploaded Worker version for ${target.workerName}`,
+			mutating: true
+		});
+		steps.push({
+			id: 'triggers-deploy',
+			summary: `apply routes and Cron Triggers from the release config for ${target.workerName}`,
+			mutating: true
+		});
+	}
 	steps.push({
 		id: 'smoke',
 		summary: `HTTPS smoke check ${target.publicOrigin ?? 'workers.dev URL'}/api/v1/system/capabilities`,
@@ -752,6 +856,9 @@ function nextState(
 		updatedAt: now.toISOString(),
 		lastWorkerVersionId: extra.lastWorkerVersionId ?? existing?.lastWorkerVersionId,
 		previousWorkerVersionId: extra.previousWorkerVersionId ?? existing?.previousWorkerVersionId,
+		...(extra.triggerReconciliationRequired
+			? { triggerReconciliationRequired: extra.triggerReconciliationRequired }
+			: {}),
 		appliedMigrations: extra.appliedMigrations ?? existing?.appliedMigrations,
 		adopted: extra.adopted ?? existing?.adopted
 	};
@@ -903,6 +1010,7 @@ function adoptState(
 		updatedAt: now.toISOString(),
 		lastWorkerVersionId: retarget ? undefined : existing?.lastWorkerVersionId,
 		previousWorkerVersionId: retarget ? undefined : existing?.previousWorkerVersionId,
+		triggerReconciliationRequired: retarget ? undefined : existing?.triggerReconciliationRequired,
 		appliedMigrations: retarget ? undefined : existing?.appliedMigrations,
 		adopted: true
 	};
@@ -1177,6 +1285,14 @@ function unionAppliedMigrations(existing: string[] | undefined, newlyApplied: st
 		result.push(name);
 	}
 	return result;
+}
+
+function firstNewWorkerVersion(
+	before: readonly WorkerVersion[],
+	after: readonly WorkerVersion[]
+): WorkerVersion | undefined {
+	const previousIds = new Set(before.map((version) => version.id));
+	return after.find((version) => !previousIds.has(version.id));
 }
 
 function missingSecrets(present: string[], required: readonly string[]): string[] {

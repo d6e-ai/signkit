@@ -22,10 +22,10 @@ export interface WranglerClient {
 	createR2(name: string): Promise<void>;
 	listSecrets(workerName: string): Promise<string[]>;
 	listVersions(workerName: string): Promise<WorkerVersion[]>;
-	deploy(options: DeployOptions): Promise<DeployResult>;
-	uploadVersion(options: DeployOptions): Promise<DeployResult>;
+	deployFirst(options: UploadVersionOptions): Promise<DeployResult>;
+	uploadVersion(options: UploadVersionOptions): Promise<DeployResult>;
 	deployVersion(workerName: string, versionId: string): Promise<void>;
-	rollback(workerName: string, versionId: string, message: string): Promise<void>;
+	deployTriggers(options: TriggerDeployOptions): Promise<void>;
 	invocations(): readonly WranglerInvocation[];
 }
 
@@ -48,11 +48,10 @@ export interface WorkerVersion {
 	createdOn?: string;
 }
 
-export interface DeployOptions {
+export interface UploadVersionOptions {
 	cwd: string;
 	configPath: string;
 	workerName: string;
-	domain?: string;
 	keepVars: boolean;
 	noBundle: boolean;
 	secretsFile?: string;
@@ -62,6 +61,12 @@ export interface MigrationCommandOptions {
 	cwd: string;
 	configPath: string;
 	database: string;
+}
+
+export interface TriggerDeployOptions {
+	cwd: string;
+	configPath: string;
+	workerName: string;
 }
 
 export interface DeployResult {
@@ -92,15 +97,7 @@ export function resolveWranglerBin(from = import.meta.url): string {
 	return join(dirname(pkg), 'bin', 'wrangler.js');
 }
 
-export function wranglerDeployArgs(options: DeployOptions): string[] {
-	const args = wranglerUploadArgs(options);
-	if (options.domain) {
-		args.push('--domain', options.domain);
-	}
-	return args;
-}
-
-export function wranglerUploadArgs(options: DeployOptions): string[] {
+export function wranglerUploadArgs(options: UploadVersionOptions): string[] {
 	const args = ['--config', options.configPath, '--name', options.workerName];
 	if (options.secretsFile) {
 		args.push('--secrets-file', options.secretsFile);
@@ -115,11 +112,21 @@ export function wranglerUploadArgs(options: DeployOptions): string[] {
 	return args;
 }
 
+export function wranglerFirstDeployArgs(options: UploadVersionOptions): string[] {
+	// The first Worker upload cannot use `versions upload`. Routing is already
+	// authoritative in the extracted config, so no separate --domain is added.
+	return wranglerUploadArgs(options);
+}
+
 export function wranglerMigrationArgs(
 	action: 'list' | 'apply',
 	options: MigrationCommandOptions
 ): string[] {
 	return ['d1', 'migrations', action, options.database, '--remote', '--config', options.configPath];
+}
+
+export function wranglerTriggerDeployArgs(options: TriggerDeployOptions): string[] {
+	return ['triggers', 'deploy', '--config', options.configPath, '--name', options.workerName];
 }
 
 export function accountIdIsAuthorized(whoami: Whoami, accountId: string): boolean {
@@ -281,21 +288,21 @@ export function createWranglerClient(options: WranglerClientOptions): WranglerCl
 				throw error;
 			}
 		},
-		async deploy(options) {
-			const args = wranglerDeployArgs(options);
-			const result = await run(['deploy', ...args], options.cwd);
-			return assertSuccessfulUpload(parseDeployResult(result.stdout, result.stderr));
-		},
 		async uploadVersion(options) {
 			const args = wranglerUploadArgs(options);
 			const result = await run(['versions', 'upload', ...args], options.cwd);
 			return assertSuccessfulUpload(parseDeployResult(result.stdout, result.stderr));
 		},
+		async deployFirst(options) {
+			const args = wranglerFirstDeployArgs(options);
+			const result = await run(['deploy', ...args], options.cwd);
+			return assertSuccessfulUpload(parseDeployResult(result.stdout, result.stderr));
+		},
 		async deployVersion(workerName, versionId) {
 			await run(['versions', 'deploy', `${versionId}@100`, '--name', workerName, '--yes']);
 		},
-		async rollback(workerName, versionId, message) {
-			await run(['rollback', versionId, '--name', workerName, '--yes', '--message', message]);
+		async deployTriggers(options) {
+			await run(wranglerTriggerDeployArgs(options), options.cwd);
 		}
 	};
 }
