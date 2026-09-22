@@ -6,6 +6,8 @@ import {
 	type PdfSealSucceededOperation,
 	type SubmitPdfSealOperation
 } from '$lib/ports/pdf-seal-provider';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import {
 	RemotePdfSealProvider,
@@ -18,6 +20,58 @@ const CERTIFICATE_SHA256: string = 'b'.repeat(64);
 const TRUST_BUNDLE_SHA256: string = 'c'.repeat(64);
 const RESULT_SHA256_PLACEHOLDER: string = 'd'.repeat(64);
 const SOURCE_BYTES: Uint8Array<ArrayBuffer> = new TextEncoder().encode('%PDF-1.7\nsource');
+
+interface RedirectTestServer {
+	origin: string;
+	counts: { redirect: number; followed: number };
+	close(): Promise<void>;
+}
+
+async function startRedirectTestServer(): Promise<RedirectTestServer> {
+	const counts: { redirect: number; followed: number } = { redirect: 0, followed: 0 };
+	const server: Server = createServer(
+		(request: IncomingMessage, response: ServerResponse): void => {
+			request.resume();
+			request.once('end', (): void => {
+				if (request.url === '/redirect') {
+					counts.redirect += 1;
+					response.writeHead(307, { location: '/followed', 'content-type': 'text/plain' });
+					response.end('redirect body must not be consumed');
+					return;
+				}
+				counts.followed += 1;
+				response.writeHead(200, { 'content-type': 'application/json' });
+				response.end('{}');
+			});
+		}
+	);
+	await new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
+		const onError = (error: Error): void => reject(error);
+		server.once('error', onError);
+		server.listen(0, '127.0.0.1', (): void => {
+			server.off('error', onError);
+			resolve();
+		});
+	});
+	const address: AddressInfo | string | null = server.address();
+	if (address === null || typeof address === 'string') {
+		server.close();
+		throw new Error('redirect test server did not bind a TCP port');
+	}
+	return {
+		origin: `http://127.0.0.1:${address.port}`,
+		counts,
+		close: async (): Promise<void> => {
+			await new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
+				server.close((error?: Error): void => {
+					if (error !== undefined) reject(error);
+					else resolve();
+				});
+				server.closeAllConnections();
+			});
+		}
+	};
+}
 
 function reference(overrides: Partial<PdfSealOperationReference> = {}): PdfSealOperationReference {
 	return {
@@ -737,9 +791,18 @@ describe('RemotePdfSealProvider', () => {
 	});
 
 	it('classifies an explicit non-followed 3xx response as a rejected redirect', async () => {
+		let cancelled: boolean = false;
+		const redirectBody: ReadableStream<Uint8Array> = new ReadableStream<Uint8Array>({
+			cancel(): void {
+				cancelled = true;
+			}
+		});
 		const fetchMock = vi.fn(
 			async (): Promise<Response> =>
-				new Response(null, { status: 307, headers: { location: 'https://other.example.test' } })
+				new Response(redirectBody, {
+					status: 307,
+					headers: { location: 'https://other.example.test' }
+				})
 		);
 		let caught: unknown;
 		try {
@@ -753,6 +816,57 @@ describe('RemotePdfSealProvider', () => {
 			ambiguous: false,
 			httpStatus: 307
 		});
+		expect(cancelled).toBe(true);
+	});
+
+	it('uses real fetch manual semantics and never follows a status redirect', async () => {
+		const redirectServer: RedirectTestServer = await startRedirectTestServer();
+		try {
+			const adapter: RemotePdfSealProvider = provider(
+				async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+					fetch(`${redirectServer.origin}/redirect`, init)
+			);
+			let caught: unknown;
+			try {
+				await adapter.getStatus(receipt());
+			} catch (error: unknown) {
+				caught = error;
+			}
+			expectProviderError(caught, {
+				code: 'provider_redirected',
+				retryable: false,
+				ambiguous: false,
+				httpStatus: 307
+			});
+			expect(redirectServer.counts).toEqual({ redirect: 1, followed: 0 });
+		} finally {
+			await redirectServer.close();
+		}
+	});
+
+	it('uses real fetch manual semantics for submit without following the redirect', async () => {
+		const redirectServer: RedirectTestServer = await startRedirectTestServer();
+		try {
+			const adapter: RemotePdfSealProvider = provider(
+				async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+					fetch(`${redirectServer.origin}/redirect`, init)
+			);
+			let caught: unknown;
+			try {
+				await adapter.submit(command());
+			} catch (error: unknown) {
+				caught = error;
+			}
+			expectProviderError(caught, {
+				code: 'provider_redirected',
+				retryable: false,
+				ambiguous: true,
+				httpStatus: 307
+			});
+			expect(redirectServer.counts).toEqual({ redirect: 1, followed: 0 });
+		} finally {
+			await redirectServer.close();
+		}
 	});
 
 	it('classifies a timed-out response body as a timeout without leaking detail', async () => {

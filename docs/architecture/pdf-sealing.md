@@ -147,6 +147,9 @@ idempotency key. Every response echoes the frozen source digest and size, exact 
 signer-certificate digest, seal and validation policy identifiers, and the B-T TSA policy tuple.
 The result requires an exact content length and SHA-256 and must achieve the requested profile;
 redirects, changed metadata, profile substitution, and arbitrary response URLs fail closed.
+Transport requests use manual redirect handling. Any 3xx or already-redirected response is rejected
+as a permanent provider error and its body is cancelled before parsing; a submit remains ambiguous
+because the original provider may already have accepted the stable operation ID.
 After submit returns a provider receipt, every ordinary status and result request pins that receipt
 and rejects a changed echo. A separate receipt-free status operation exists only to reconcile an
 ambiguous submit outcome; its first valid receipt must be persisted before ordinary polling. A

@@ -458,14 +458,15 @@ function assertEcho(
 
 async function assertSuccessfulResponse(response: Response, ambiguous: boolean): Promise<void> {
 	if (response.redirected || response.type === 'opaqueredirect') {
-		await discardBoundedBody(response.body, MAX_PROVIDER_ERROR_BYTES);
+		await cancelBody(response.body, 'provider_redirected');
 		throw providerError('provider_redirected', false, ambiguous, response.status);
 	}
 	if (response.status >= 200 && response.status < 300) return;
-	await discardBoundedBody(response.body, MAX_PROVIDER_ERROR_BYTES);
 	if (response.status >= 300 && response.status < 400) {
-		throw providerError('provider_redirected', false, false, response.status);
+		await cancelBody(response.body, 'provider_redirected');
+		throw providerError('provider_redirected', false, ambiguous, response.status);
 	}
+	await discardBoundedBody(response.body, MAX_PROVIDER_ERROR_BYTES);
 	if (response.status === 408) {
 		throw providerError('request_timeout', true, false, response.status);
 	}
@@ -688,6 +689,15 @@ async function discardBoundedBody(
 		} catch {
 			// Ignore lock release failure.
 		}
+	}
+}
+
+async function cancelBody(body: ReadableStream<Uint8Array> | null, reason: string): Promise<void> {
+	if (body === null) return;
+	try {
+		await body.cancel(reason);
+	} catch {
+		// The redirect classification remains authoritative when cancellation fails.
 	}
 }
 
