@@ -161,7 +161,7 @@ describe('RemotePdfSealProvider', () => {
 				);
 				expect(String(input)).toBe('https://seal.example.test/api/v1/pdf-seals/op%3Awith-colon');
 				expect(init?.method).toBe('PUT');
-				expect(init?.redirect).toBe('error');
+				expect(init?.redirect).toBe('manual');
 				expect(body).toEqual(SOURCE_BYTES);
 				const headers: Headers = new Headers(init?.headers);
 				expect(headers.get('authorization')).toBe(`Bearer ${SECRET}`);

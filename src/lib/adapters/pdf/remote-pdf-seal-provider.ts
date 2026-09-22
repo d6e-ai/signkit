@@ -89,7 +89,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			this.#operationUrl(reference.operationId),
 			{
 				method: 'PUT',
-				redirect: 'error',
+				redirect: 'manual',
 				signal: AbortSignal.timeout(this.#timeoutMs),
 				headers: this.#headers(reference, true),
 				body: exactLengthStream(command.source, reference.sourceByteSize),
@@ -108,7 +108,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			this.#operationUrl(normalized.operationId),
 			{
 				method: 'GET',
-				redirect: 'error',
+				redirect: 'manual',
 				signal: AbortSignal.timeout(this.#timeoutMs),
 				headers: this.#headers(normalized, false, 'application/json', normalized.providerReceiptId)
 			},
@@ -125,7 +125,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			this.#operationUrl(normalized.operationId),
 			{
 				method: 'GET',
-				redirect: 'error',
+				redirect: 'manual',
 				signal: AbortSignal.timeout(this.#timeoutMs),
 				headers: this.#headers(normalized, false)
 			},
@@ -140,7 +140,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			`${this.#operationUrl(operation.operationId)}/result`,
 			{
 				method: 'GET',
-				redirect: 'error',
+				redirect: 'manual',
 				signal: AbortSignal.timeout(this.#timeoutMs),
 				headers: this.#headers(operation, false, 'application/pdf', operation.providerReceiptId)
 			},
@@ -457,7 +457,7 @@ function assertEcho(
 }
 
 async function assertSuccessfulResponse(response: Response, ambiguous: boolean): Promise<void> {
-	if (response.redirected) {
+	if (response.redirected || response.type === 'opaqueredirect') {
 		await discardBoundedBody(response.body, MAX_PROVIDER_ERROR_BYTES);
 		throw providerError('provider_redirected', false, ambiguous, response.status);
 	}
