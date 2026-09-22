@@ -11,7 +11,10 @@ repository or uploaded as a CI artifact. The public fixture certificates are int
 The generated seal is an invisible PDF approval signature. The harness rejects a DocMDP
 certification signature, requires `/ETSI.CAdES.detached`, checks that the source PDF remains the exact
 prefix of the incremental update, and verifies that the PDF byte range covers the signed revision
-apart from `/Contents`. A mutation inside the signed source bytes must be rejected for both profiles.
+apart from `/Contents`. B-T tokens must bind the exact TSA certificate with SHA-256
+`SigningCertificateV2`/`ESSCertIDv2`; legacy SHA-1 ESS identifiers are not accepted by this gate. The
+TSA EKU must be critical and contain only `id-kp-timeStamping`. A mutation inside the signed source
+bytes must be rejected for both profiles.
 
 Two pinned engines enforce complementary gates:
 
@@ -21,9 +24,17 @@ Two pinned engines enforce complementary gates:
   incremental-update differences. pyHanko documents that it does not by itself determine every
   structural requirement of a PAdES profile, so it is not the sole profile gate.
 
-The validation time is fixed for repeatable policy results, but private keys are freshly generated.
-Signed PDF bytes and their hashes therefore differ between runs. CI records the hashes, certificate
-fingerprints, exact tool versions, and validator reports instead of comparing golden signed bytes.
+Both validator entry points add the same SignKit policy check around their upstream engine. Negative
+fixtures cover missing or mismatched ESS bindings and absent, non-critical, or multi-purpose TSA EKU,
+in addition to signed-byte mutations. This explicit layer is necessary because generic validators can
+accept a cryptographically valid timestamp without enforcing every deployment policy.
+
+The validation time and pyHanko's internal AdES wall-clock fallbacks are fixed to
+`2026-09-23T00:00:00Z` for repeatable policy results, but private keys are freshly generated. Signed
+PDF bytes and their hashes therefore differ between runs. CI records hashes, certificate fingerprints,
+the locked Python library versions, the pinned DSS version and dependency tree, the effective Java and
+Maven versions, and validator reports instead of comparing golden signed bytes. The job has a bounded
+20-minute runtime.
 
 ## Runtime boundary
 
@@ -54,14 +65,20 @@ uv run --project tools/pades-conformance --locked \
 ```
 
 Validate the unmodified PDFs with pyHanko's AdES validator, using only the generated public fixture
-certificates as trust anchors. Keep difference analysis enabled:
+certificates as trust anchors. The wrapper fixes wall-clock fallbacks and enforces SignKit's timestamp
+policy; keep difference analysis enabled:
 
 ```sh
+trust_args=(--trust-replace)
+for certificate in "$output_dir"/trust/*.pem; do
+  trust_args+=(--trust "$certificate")
+done
 for profile in b-b b-t; do
-  uv run --project tools/pades-conformance --locked pyhanko sign adesverify \
-    --trust-replace \
-    --trust "$output_dir/trust/signer.pem" \
-    --trust "$output_dir/trust/tsa.pem" \
+  uv run --project tools/pades-conformance --locked \
+    python tools/pades-conformance/pyhanko_frozen.py \
+    --signkit-expect "valid-$profile" \
+    sign adesverify \
+    "${trust_args[@]}" \
     --no-revocation-check \
     --validation-time 2026-09-23T00:00:00Z \
     --pretty-print "$output_dir/pades-$profile.pdf" \
@@ -69,14 +86,17 @@ for profile in b-b b-t; do
 done
 ```
 
-The equivalent commands for `tampered-b-b.pdf` and `tampered-b-t.pdf` must fail. Finally, run DSS:
+The equivalent commands with `--signkit-expect rejected-b-b` or `rejected-b-t` must fail for the
+tampered PDFs after their timestamp policy passes. `--signkit-expect rejected-policy` must fail for
+every `invalid-*.pdf` policy fixture. Finally, run DSS with strict repository checksum handling:
 
 ```sh
-mvn -B -ntp -f tools/pades-conformance/dss/pom.xml \
+mvn -B -ntp -C -f tools/pades-conformance/dss/pom.xml \
   compile exec:java \
   -Dexec.mainClass=ai.d6e.signkit.pades.DssValidate \
   -Dexec.args="$output_dir"
 ```
 
-Only the PDF fixtures, public certificates, checksums, version manifest, and validator reports are
-eligible for upload. CI scans the allowlisted artifact paths for private-key material before upload.
+Only the exact PDF fixtures, public certificates, checksums, version manifest, provenance files, and
+validator reports declared by `verify_artifacts.py` are eligible for upload. Missing, additional, or
+symlinked paths fail closed before upload, and every resolved file is scanned for private-key material.
