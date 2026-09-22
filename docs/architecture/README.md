@@ -2,7 +2,7 @@
 
 Status: normative draft
 
-Last updated: 2026-09-17
+Last updated: 2026-09-23
 
 These files are the normative architecture, security, and evidence contracts for SignKit. Together they win over [`../api.md`](../api.md), [`../cli.md`](../cli.md), [`../create-signkit.md`](../create-signkit.md), [`../deployment.md`](../deployment.md), and [`../development.md`](../development.md) on any disagreement; those documents summarize what is implemented today and link back into these sections. No individual file below restates that precedence.
 
@@ -16,6 +16,7 @@ These files are the normative architecture, security, and evidence contracts for
 | [authorization-and-instance-administration.md](authorization-and-instance-administration.md) | Operator/recipient authority, recipient decisions, API key grants, instance bootstrap/members/invitations | implemented                                                                                                                    |
 | [recipient-contact-book.md](recipient-contact-book.md)                                       | Private owner-scoped contacts, session-only API, search privacy, and authoring integration                | accepted design for Issue #99                                                                                                  |
 | [completion-artifacts.md](completion-artifacts.md)                                           | Completion manifest publication and delivery (Slices A/B); capability reissue                             | implemented — publication, delivery, visual PDF, and capability reissue; cryptographic PDF sealing is backlog                  |
+| [pdf-sealing.md](pdf-sealing.md)                                                             | Instance PAdES seal, seal-provider/key-custody boundary, RFC 3161 trust, and conformance gate             | accepted design for Issue #78; runtime implementation is backlog                                                               |
 | [agent-contract.md](agent-contract.md)                                                       | Agent/CLI command contract                                                                                | implemented — CLI reads, evidence/PDF download, authoring/send/DOCX mutations, served OpenAPI 3.1, signed retryable webhooks   |
 | [documents-localization-open-core.md](documents-localization-open-core.md)                   | DOCX/PDF derivation, localization, open-core licensing boundary                                           | mixed — localization, bounded DOCX, executed agreement PDF; cryptographic PDF sealing is backlog; open-core boundary is policy |
 | [deployment-and-risks.md](deployment-and-risks.md)                                           | Deployment target boundary and the primary risk register                                                  | mixed — Node/Docker and Cloudflare Workers supported (Vercel CI-only); the risk list is policy, not a status claim             |
@@ -23,8 +24,9 @@ These files are the normative architecture, security, and evidence contracts for
 
 The recipient-facing agreement rendering — the deterministic PDF an envelope is converted to at send time, how its pointer is pinned, and how it reaches a recipient — is specified in [envelope-model.md](envelope-model.md#sent-agreement-rendering).
 
-Rationale for early decisions, not normative today, lives in [decisions/](decisions/README.md).
+Rationale for early decisions, not normative today, lives in [decisions/](decisions/README.md),
+including the [instance PAdES seal and RFC 3161 boundary](decisions/2026-09-23-instance-pades-seal-and-rfc3161.md).
 
 ## Reading order
 
-For newcomers: [overview](overview.md) → [envelope-model](envelope-model.md) → [draft-git-repository](draft-git-repository.md) → [persistence](persistence.md) → [identifiers](identifiers.md) → [authorization-and-instance-administration](authorization-and-instance-administration.md) → [recipient-contact-book](recipient-contact-book.md) → [completion-artifacts](completion-artifacts.md).
+For newcomers: [overview](overview.md) → [envelope-model](envelope-model.md) → [draft-git-repository](draft-git-repository.md) → [persistence](persistence.md) → [identifiers](identifiers.md) → [authorization-and-instance-administration](authorization-and-instance-administration.md) → [recipient-contact-book](recipient-contact-book.md) → [completion-artifacts](completion-artifacts.md) → [pdf-sealing](pdf-sealing.md).
