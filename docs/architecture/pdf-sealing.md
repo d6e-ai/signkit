@@ -139,7 +139,29 @@ and result operations. The protocol accepts a stable operation ID, source digest
 stream, requested profile, and non-secret policy identifiers. It returns bounded sealed bytes and a
 structured receipt; it never returns or accepts a raw private key.
 
-The future application port is named `PdfSealProvider`; `PdfCertificationProvider` and `Certifier`
+The initial remote transport derives every endpoint from one operator-configured HTTPS base URL;
+provider responses cannot redirect the application or supply a status or result URL. It uses
+`PUT {base}/pdf-seals/{operationId}` for the streamed source, `GET` on that same URL for status, and
+`GET {base}/pdf-seals/{operationId}/result` for the bounded result. The operation ID is also the
+idempotency key. Every response echoes the frozen source digest and size, exact requested profile,
+signer-certificate digest, seal and validation policy identifiers, and the B-T TSA policy tuple.
+The result requires an exact content length and SHA-256 and must achieve the requested profile;
+redirects, changed metadata, profile substitution, and arbitrary response URLs fail closed.
+Transport requests use manual redirect handling. Any 3xx or already-redirected response is rejected
+as a permanent provider error and its body is cancelled before parsing; a submit remains ambiguous
+because the original provider may already have accepted the stable operation ID.
+After submit returns a provider receipt, every ordinary status and result request pins that receipt
+and rejects a changed echo. A separate receipt-free status operation exists only to reconcile an
+ambiguous submit outcome; its first valid receipt must be persisted before ordinary polling. A
+source-length failure discovered while the PUT body is already being consumed is also ambiguous,
+because the provider may have created the stable operation before the stream failed.
+
+`PdfSealProvider` and the remote HTTPS adapter implement only this untrusted transport boundary.
+They are not runtime-wired and do not make sealing available. Provider success cannot publish an
+artifact until the separate independent validator, durable job, and atomic publication boundary are
+implemented.
+
+The application port is named `PdfSealProvider`; `PdfCertificationProvider` and `Certifier`
 are deliberately not used because both collide with PDF certification-signature and certificate-
 authority terminology.
 
@@ -175,13 +197,14 @@ EU DSS and pyHanko are independent conformance checks; neither the signing provi
 response nor a PDF viewer's badge is proof of profile compliance. Test certificates and keys are
 fixture-only and must be unmistakably unrelated to any deployment certificate.
 
-## Prerequisite and legacy behavior
+## Source bound and legacy behavior
 
-`src/lib/application/completion-artifacts/executed-pdf.ts` permits a 32 MiB executed PDF, while
-`src/lib/application/completion-artifacts/completion-evidence-service.ts` currently reads published
-PDFs with the 8 MiB `MAX_COMPLETION_PDF_BYTES` bound from `completion-pdf.ts`. That mismatch must be
-resolved before sealing reads the source; the sealing path must use one documented
-bound consistently for generation, download, provider submission, validation, and object reads.
+The former generation/read mismatch is resolved. Executed-PDF generation, private and public
+completion downloads, and completion-evidence reads now share the 32 MiB
+`MAX_PUBLISHED_COMPLETION_PDF_BYTES` lifecycle bound. Before invoking the provider, the future
+sealing runtime must still verify the immutable object's recorded length and SHA-256 under that
+same source bound. The remote provider adapter independently enforces the attested stream length;
+its separately configured result bound caps the full PDF after the incremental sealing update.
 
 Envelopes completed before sealing support remain `not_requested`. There is no automatic
 historical sealing: applying a current certificate or time-stamp later could otherwise be mistaken
