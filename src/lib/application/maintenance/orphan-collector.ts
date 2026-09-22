@@ -11,6 +11,64 @@ import type postgres from 'postgres';
 export const DEFAULT_ORPHAN_GRACE_PERIOD_MS: number = 24 * 60 * 60 * 1000; // 24 hours
 export const DEFAULT_ORPHAN_BATCH_SIZE: number = 100;
 export const MAX_ORPHAN_SCAN_LIMIT: number = MAX_LIST_OBJECTS_LIMIT;
+export const D1_MAX_BOUND_PARAMETERS: number = 100;
+export const D1_FREE_QUERY_LIMIT: number = 50;
+const D1_REFERENCE_CHUNK_SIZE: number = DEFAULT_ORPHAN_BATCH_SIZE;
+const D1_REFERENCE_QUERIES: readonly string[] = [
+	`SELECT repository_archive_key AS key FROM envelope
+	 WHERE repository_archive_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT archive_key AS key FROM draft_revision_command
+	 WHERE archive_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT json_object_key AS key FROM completion_artifact
+	 WHERE json_object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT markdown_object_key AS key FROM completion_artifact
+	 WHERE markdown_object_key IN (SELECT value FROM json_each(?1))`,
+	`SELECT pdf_object_key AS key FROM completion_artifact_pdf
+	 WHERE pdf_object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT pdf_manifest_object_key AS key FROM completion_artifact_pdf
+	 WHERE pdf_manifest_object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT object_key AS key FROM envelope_sent_pdf
+	 WHERE object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT object_key AS key FROM envelope_uploaded_document
+	 WHERE object_key IN (SELECT value FROM json_each(?1))`,
+	`SELECT object_key AS key FROM envelope_sent_document
+	 WHERE object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT source_object_key AS key FROM docx_conversion_job
+	 WHERE source_object_key IN (SELECT value FROM json_each(?1))
+		AND (status IN ('pending','processing') OR (status = 'failed' AND retryable = 1))
+	 UNION
+	 SELECT result_object_key AS key FROM docx_conversion_job
+	 WHERE result_object_key IN (SELECT value FROM json_each(?1)) AND status = 'succeeded'`
+];
+
+export type OrphanSweepFailureCode =
+	| 'checkpoint_read_failed'
+	| 'object_list_failed'
+	| 'reference_lookup_failed'
+	| 'object_delete_failed'
+	| 'checkpoint_write_failed';
+
+export type OrphanSweepOperation =
+	'checkpoint_read' | 'object_list' | 'reference_lookup' | 'object_delete' | 'checkpoint_write';
+
+export class OrphanSweepFailure extends Error {
+	readonly code: OrphanSweepFailureCode;
+	readonly operation: OrphanSweepOperation;
+
+	constructor(code: OrphanSweepFailureCode, operation: OrphanSweepOperation, cause: unknown) {
+		super(code, { cause });
+		this.name = 'OrphanSweepFailure';
+		this.code = code;
+		this.operation = operation;
+	}
+}
 
 export interface OrphanReferenceStore {
 	filterReferencedKeys(keys: readonly string[]): Promise<Set<string>>;
@@ -20,6 +78,8 @@ export interface OrphanCollectorOptions {
 	gracePeriodMs?: number;
 	batchSize?: number;
 	maxObjectsToScan?: number;
+	/** Maximum object-store list calls in this invocation. */
+	maxListPages?: number;
 	dryRun?: boolean;
 	prefix?: string;
 	/** Exclusive resume key for this invocation when no durable checkpoint is wired. */
@@ -83,9 +143,15 @@ export class OrphanCollector {
 			1,
 			Math.min(options.maxObjectsToScan ?? MAX_ORPHAN_SCAN_LIMIT, MAX_ORPHAN_SCAN_LIMIT)
 		);
+		const maxListPages = Math.max(1, Math.floor(options.maxListPages ?? Number.MAX_SAFE_INTEGER));
 		const dryRun = options.dryRun ?? false;
 		const nowTime = this.#now().getTime();
-		const resume = await this.#resumeAfter(options.startAfter);
+		const resume = await runOrphanSweepOperation(
+			'checkpoint_read_failed',
+			'checkpoint_read',
+			async (): Promise<{ stored: string; startAfter: string | undefined }> =>
+				this.#resumeAfter(options.startAfter)
+		);
 		const startAfter = resume.startAfter;
 
 		let scanned = 0;
@@ -96,15 +162,19 @@ export class OrphanCollector {
 		let cursor: string | undefined = undefined;
 		let hasMore = true;
 		let lastKey = startAfter ?? '';
+		let listedPages = 0;
 
-		while (hasMore && scanned < maxScan) {
+		while (hasMore && scanned < maxScan && listedPages < maxListPages) {
 			const limit = Math.min(batchSize, maxScan - scanned);
-			const listed = await this.#objects.list({
-				prefix: options.prefix,
-				cursor,
-				startAfter: cursor === undefined ? startAfter : undefined,
-				limit
-			});
+			const listed = await runOrphanSweepOperation('object_list_failed', 'object_list', async () =>
+				this.#objects.list({
+					prefix: options.prefix,
+					cursor,
+					startAfter: cursor === undefined ? startAfter : undefined,
+					limit
+				})
+			);
+			listedPages += 1;
 
 			if (listed.objects.length === 0) {
 				hasMore = false;
@@ -125,13 +195,21 @@ export class OrphanCollector {
 			}
 
 			if (candidates.length > 0) {
-				const referencedKeys = await this.#references.filterReferencedKeys(candidates);
+				const referencedKeys = await runOrphanSweepOperation(
+					'reference_lookup_failed',
+					'reference_lookup',
+					async (): Promise<Set<string>> => this.#references.filterReferencedKeys(candidates)
+				);
 				referencedCount += referencedKeys.size;
 
 				const orphans = candidates.filter((k) => !referencedKeys.has(k));
 				if (orphans.length > 0) {
 					if (!dryRun) {
-						await this.#objects.deleteMany(orphans);
+						await runOrphanSweepOperation(
+							'object_delete_failed',
+							'object_delete',
+							async (): Promise<void> => this.#objects.deleteMany(orphans)
+						);
 					}
 					deletedKeys.push(...orphans);
 				}
@@ -143,10 +221,13 @@ export class OrphanCollector {
 
 		const nextStartAfter = hasMore && lastKey.length > 0 ? lastKey : '';
 		let checkpointConflict = false;
-		if (this.#checkpoint !== null) {
-			const advanced = await this.#checkpoint.compareAndSwapLastObjectKey(
-				resume.stored,
-				nextStartAfter
+		const checkpoint: OrphanSweepCheckpointStore | null = this.#checkpoint;
+		if (checkpoint !== null) {
+			const advanced = await runOrphanSweepOperation(
+				'checkpoint_write_failed',
+				'checkpoint_write',
+				async (): Promise<boolean> =>
+					checkpoint.compareAndSwapLastObjectKey(resume.stored, nextStartAfter)
 			);
 			checkpointConflict = !advanced;
 		}
@@ -186,59 +267,23 @@ export class D1OrphanReferenceStore implements OrphanReferenceStore {
 		if (keys.length === 0) return new Set();
 		const referenced = new Set<string>();
 
-		// Chunk to avoid SQLite variable limit
-		const CHUNK_SIZE = 50;
-		for (let i = 0; i < keys.length; i += CHUNK_SIZE) {
-			const chunk = keys.slice(i, i + CHUNK_SIZE);
-			const placeholders = chunk.map(() => '?').join(',');
-
-			const query = `
-				SELECT repository_archive_key AS key FROM envelope WHERE repository_archive_key IN (${placeholders})
-				UNION
-				SELECT archive_key AS key FROM draft_revision_command WHERE archive_key IN (${placeholders})
-				UNION
-				SELECT json_object_key AS key FROM completion_artifact WHERE json_object_key IN (${placeholders})
-				UNION
-				SELECT markdown_object_key AS key FROM completion_artifact WHERE markdown_object_key IN (${placeholders})
-				UNION
-				SELECT pdf_object_key AS key FROM completion_artifact_pdf WHERE pdf_object_key IN (${placeholders})
-				UNION
-				SELECT pdf_manifest_object_key AS key FROM completion_artifact_pdf WHERE pdf_manifest_object_key IN (${placeholders})
-				UNION
-				SELECT object_key AS key FROM envelope_sent_pdf WHERE object_key IN (${placeholders})
-				UNION
-				SELECT object_key AS key FROM envelope_uploaded_document WHERE object_key IN (${placeholders})
-				UNION
-				SELECT object_key AS key FROM envelope_sent_document WHERE object_key IN (${placeholders})
-				UNION
-				SELECT source_object_key AS key FROM docx_conversion_job
-				WHERE source_object_key IN (${placeholders})
-					AND (status IN ('pending','processing') OR (status = 'failed' AND retryable = 1))
-				UNION
-				SELECT result_object_key AS key FROM docx_conversion_job
-				WHERE result_object_key IN (${placeholders}) AND status = 'succeeded'
-			`;
-
-			const bindings = [
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk,
-				...chunk
-			];
-
-			const rows = await this.#database
-				.prepare(query)
-				.bind(...bindings)
-				.all<{ key: string }>();
-			for (const row of rows.results ?? []) {
-				if (row.key) referenced.add(row.key);
+		// D1 allows 100 bound parameters per statement, five terms per compound
+		// SELECT, and 50 queries per invocation on the free plan. Three batched
+		// set-based queries keep every UNION below that limit. Each query expands
+		// one bound JSON array through json_each instead of repeating the
+		// candidate list for every reference source.
+		for (let i = 0; i < keys.length; i += D1_REFERENCE_CHUNK_SIZE) {
+			const chunk = keys.slice(i, i + D1_REFERENCE_CHUNK_SIZE);
+			const serializedKeys: string = JSON.stringify(chunk);
+			const results: D1Result<{ key: string }>[] = await this.#database.batch<{ key: string }>(
+				D1_REFERENCE_QUERIES.map((query: string): D1PreparedStatement =>
+					this.#database.prepare(query).bind(serializedKeys)
+				)
+			);
+			for (const result of results) {
+				for (const row of result.results ?? []) {
+					if (row.key) referenced.add(row.key);
+				}
 			}
 
 			for (const key of await filterSignatureAssetReferences(
@@ -250,6 +295,19 @@ export class D1OrphanReferenceStore implements OrphanReferenceStore {
 		}
 
 		return referenced;
+	}
+}
+
+async function runOrphanSweepOperation<T>(
+	code: OrphanSweepFailureCode,
+	operation: OrphanSweepOperation,
+	run: () => Promise<T>
+): Promise<T> {
+	try {
+		return await run();
+	} catch (error: unknown) {
+		if (error instanceof OrphanSweepFailure) throw error;
+		throw new OrphanSweepFailure(code, operation, error);
 	}
 }
 
@@ -418,19 +476,22 @@ function loadD1SignatureFieldValues(database: D1Database): SignatureFieldValueLo
 	return async (
 		scopes: readonly ParsedSignatureAssetKey[]
 	): Promise<readonly SignatureFieldValueRow[]> => {
-		const clauses: string[] = [];
-		const bindings: string[] = [];
-		for (const scope of scopes) {
-			clauses.push('(envelope_id = ? AND recipient_id = ?)');
-			bindings.push(scope.envelopeId, scope.recipientId);
-		}
+		const serializedScopes: string = JSON.stringify(
+			scopes.map((scope: ParsedSignatureAssetKey): readonly [string, string] => [
+				scope.envelopeId,
+				scope.recipientId
+			])
+		);
 		const rows = await database
 			.prepare(
 				`SELECT envelope_id, recipient_id, value_json
-				 FROM field_value
-				 WHERE field_type = 'signature' AND (${clauses.join(' OR ')})`
+				 FROM field_value AS field
+				 INNER JOIN json_each(?1) AS scope
+					ON field.envelope_id = json_extract(scope.value, '$[0]')
+					AND field.recipient_id = json_extract(scope.value, '$[1]')
+				 WHERE field_type = 'signature'`
 			)
-			.bind(...bindings)
+			.bind(serializedScopes)
 			.all<{
 				envelope_id: string;
 				recipient_id: string;

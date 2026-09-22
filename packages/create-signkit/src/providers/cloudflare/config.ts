@@ -88,7 +88,7 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 				...(input.mailProvider === 'smtp' && input.smtpUsername ? [SMTP_PASSWORD_SECRET] : [])
 			]
 		},
-		triggers: { crons: ['* * * * *'] },
+		triggers: { crons: ['* * * * *', '*/5 * * * *'] },
 		observability: { enabled: true, head_sampling_rate: 1 }
 	};
 	return `${JSON.stringify(config, null, '\t')}\n`;

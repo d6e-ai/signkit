@@ -28,7 +28,7 @@
 		"SIGNKIT_MAIL_PROVIDER": "cloudflare"
 	},
 	"triggers": {
-		"crons": ["* * * * *"]
+		"crons": ["* * * * *", "*/5 * * * *"]
 	},
 	"observability": {
 		"enabled": true,

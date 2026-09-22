@@ -95,7 +95,7 @@ const wranglerConfig = {
 	r2_buckets: [{ binding: 'OBJECTS', bucket_name: 'signkit-objects' }],
 	send_email: [{ name: 'EMAIL' }],
 	vars: { SIGNKIT_MAIL_PROVIDER: 'cloudflare' },
-	triggers: { crons: ['* * * * *'] },
+	triggers: { crons: ['* * * * *', '*/5 * * * *'] },
 	observability: { enabled: true, head_sampling_rate: 1 }
 };
 await writeFile(join(staging, 'wrangler.jsonc'), `${JSON.stringify(wranglerConfig, null, '\t')}\n`);

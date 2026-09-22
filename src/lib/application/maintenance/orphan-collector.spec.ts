@@ -2,6 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import {
 	DEFAULT_ORPHAN_GRACE_PERIOD_MS,
+	DEFAULT_ORPHAN_BATCH_SIZE,
+	D1_FREE_QUERY_LIMIT,
+	D1_MAX_BOUND_PARAMETERS,
 	MAX_ORPHAN_SCAN_LIMIT,
 	OrphanCollector,
 	D1OrphanReferenceStore,
@@ -362,8 +365,100 @@ describe('OrphanCollector', () => {
 				},
 				() => now
 			).sweep()
-		).rejects.toThrow('sql unavailable');
+		).rejects.toMatchObject({
+			code: 'reference_lookup_failed',
+			operation: 'reference_lookup'
+		});
 		expect(deleteManyMock).not.toHaveBeenCalled();
+	});
+
+	it('classifies object-store list failures without exposing provider details', async () => {
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async () => {
+				throw new Error('bucket and key must not be logged');
+			}),
+			deleteMany: vi.fn()
+		};
+
+		await expect(
+			new OrphanCollector(
+				objects,
+				{ filterReferencedKeys: vi.fn(async () => new Set<string>()) },
+				() => now
+			).sweep()
+		).rejects.toMatchObject({ code: 'object_list_failed', operation: 'object_list' });
+	});
+
+	it('classifies object-store deletion failures', async () => {
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async () => ({
+				objects: [{ key: 'orphan.bin', size: 1, uploadedAt: twentyFiveHoursAgo }],
+				truncated: false
+			})),
+			deleteMany: vi.fn(async () => {
+				throw new Error('provider deletion detail');
+			})
+		};
+
+		await expect(
+			new OrphanCollector(
+				objects,
+				{ filterReferencedKeys: vi.fn(async () => new Set<string>()) },
+				() => now
+			).sweep()
+		).rejects.toMatchObject({ code: 'object_delete_failed', operation: 'object_delete' });
+	});
+
+	it('classifies checkpoint read and write failures independently', async () => {
+		const objects: ObjectStore = {
+			get: vi.fn(),
+			head: vi.fn(),
+			putImmutable: vi.fn(),
+			delete: vi.fn(),
+			list: vi.fn(async () => ({ objects: [], truncated: false })),
+			deleteMany: vi.fn()
+		};
+		const readFailure: OrphanSweepCheckpointStore = {
+			async readLastObjectKey(): Promise<string> {
+				throw new Error('read provider detail');
+			},
+			async compareAndSwapLastObjectKey(): Promise<boolean> {
+				return true;
+			}
+		};
+		const writeFailure: OrphanSweepCheckpointStore = {
+			async readLastObjectKey(): Promise<string> {
+				return '';
+			},
+			async compareAndSwapLastObjectKey(): Promise<boolean> {
+				throw new Error('write provider detail');
+			}
+		};
+
+		await expect(
+			new OrphanCollector(
+				objects,
+				{ filterReferencedKeys: vi.fn(async () => new Set<string>()) },
+				() => now,
+				readFailure
+			).sweep()
+		).rejects.toMatchObject({ code: 'checkpoint_read_failed', operation: 'checkpoint_read' });
+		await expect(
+			new OrphanCollector(
+				objects,
+				{ filterReferencedKeys: vi.fn(async () => new Set<string>()) },
+				() => now,
+				writeFailure
+			).sweep()
+		).rejects.toMatchObject({ code: 'checkpoint_write_failed', operation: 'checkpoint_write' });
 	});
 });
 
@@ -376,20 +471,60 @@ describe('D1OrphanReferenceStore', () => {
 	});
 
 	it('queries database and returns set of found keys', async () => {
-		const allMock = vi.fn(async () => ({
-			results: [{ key: 'key-1' }, { key: 'key-3' }]
-		}));
-		const bindMock = vi.fn(() => ({ all: allMock }));
+		const bindMock = vi.fn((serializedKeys: string) => ({ serializedKeys }));
 		const prepareMock = vi.fn(() => ({ bind: bindMock }));
-		const db = { prepare: prepareMock } as unknown as D1Database;
+		const batchMock = vi.fn(async () => [
+			{ results: [{ key: 'key-1' }, { key: 'key-3' }] },
+			{ results: [] },
+			{ results: [] }
+		]);
+		const db = { prepare: prepareMock, batch: batchMock } as unknown as D1Database;
 
 		const store = new D1OrphanReferenceStore(db);
 		const result = await store.filterReferencedKeys(['key-1', 'key-2', 'key-3']);
 
-		expect(prepareMock).toHaveBeenCalledOnce();
+		expect(prepareMock).toHaveBeenCalledTimes(3);
+		expect(batchMock).toHaveBeenCalledOnce();
+		expect(bindMock).toHaveBeenCalledTimes(3);
+		for (const [serializedKeys] of bindMock.mock.calls) {
+			expect(JSON.parse(String(serializedKeys))).toEqual(['key-1', 'key-2', 'key-3']);
+		}
 		expect(result.has('key-1')).toBe(true);
 		expect(result.has('key-2')).toBe(false);
 		expect(result.has('key-3')).toBe(true);
+	});
+
+	it('keeps every D1 statement within the production binding limit', async () => {
+		const bindingCounts: number[] = [];
+		const queries: string[] = [];
+		const prepareMock = vi.fn((query: string) => ({
+			bind: vi.fn((...bindings: unknown[]) => {
+				queries.push(query);
+				bindingCounts.push(bindings.length);
+				if (bindings.length > D1_MAX_BOUND_PARAMETERS) {
+					throw new Error('D1 binding limit exceeded');
+				}
+				return {};
+			})
+		}));
+		const batchMock = vi.fn(async () => [{ results: [] }, { results: [] }, { results: [] }]);
+		const keys: string[] = Array.from({ length: 100 }, (_, index: number) => `key-${index}`);
+
+		await expect(
+			new D1OrphanReferenceStore({
+				prepare: prepareMock,
+				batch: batchMock
+			} as unknown as D1Database).filterReferencedKeys(keys)
+		).resolves.toEqual(new Set());
+		expect(bindingCounts).toEqual([1, 1, 1]);
+		expect(Math.max(...bindingCounts)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
+		expect(
+			queries.every((query: string): boolean => (query.match(/\bUNION\b/g)?.length ?? 0) <= 4)
+		).toBe(true);
+		const chunksPerFullPage: number = MAX_ORPHAN_SCAN_LIMIT / DEFAULT_ORPHAN_BATCH_SIZE;
+		const worstCaseD1Queries: number = queries.length * chunksPerFullPage + chunksPerFullPage + 2;
+		expect(worstCaseD1Queries).toBe(42);
+		expect(worstCaseD1Queries).toBeLessThanOrEqual(D1_FREE_QUERY_LIMIT);
 	});
 
 	it('classifies signature-assets/v1 keys referenced by field_value sig:sha256 as live', async () => {

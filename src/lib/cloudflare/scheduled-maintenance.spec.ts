@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+	ORPHAN_SWEEP_CRON,
+	ORPHAN_SWEEP_JOBS,
+	PRIMARY_MAINTENANCE_CRON,
+	PRIMARY_MAINTENANCE_JOBS,
 	runScheduledMaintenance,
 	SCHEDULED_MAINTENANCE_JOBS,
 	type ScheduledWorkerFetch
@@ -8,7 +12,7 @@ import {
 const SECRET: string = 'delivery-worker-secret-0123456789abcdef';
 
 describe('Cloudflare scheduled maintenance', () => {
-	it('invokes every required drain and sweep through waitUntil without chaining', async () => {
+	it('isolates orphan collection in its own cron invocation', async () => {
 		const fetchHandler: ScheduledWorkerFetch = vi.fn(async (request) => {
 			expect(request.method).toBe('POST');
 			expect(request.headers.get('authorization')).toBe(`Bearer ${SECRET}`);
@@ -21,8 +25,22 @@ describe('Cloudflare scheduled maintenance', () => {
 			}
 		};
 
-		runScheduledMaintenance(fetchHandler, { DELIVERY_WORKER_SECRET: SECRET }, context);
-		expect(pending).toHaveLength(SCHEDULED_MAINTENANCE_JOBS.length);
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			PRIMARY_MAINTENANCE_CRON
+		);
+		expect(pending).toHaveLength(PRIMARY_MAINTENANCE_JOBS.length);
+		await Promise.all(pending);
+		pending.length = 0;
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			ORPHAN_SWEEP_CRON
+		);
+		expect(pending).toHaveLength(ORPHAN_SWEEP_JOBS.length);
 		await Promise.all(pending);
 
 		const paths: string[] = vi
@@ -54,20 +72,57 @@ describe('Cloudflare scheduled maintenance', () => {
 			}
 		};
 
-		runScheduledMaintenance(fetchHandler, { DELIVERY_WORKER_SECRET: SECRET }, context);
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			PRIMARY_MAINTENANCE_CRON
+		);
 		const results: PromiseSettledResult<unknown>[] = await Promise.allSettled(pending);
 
-		expect(pending).toHaveLength(SCHEDULED_MAINTENANCE_JOBS.length);
-		expect(fetchHandler).toHaveBeenCalledTimes(SCHEDULED_MAINTENANCE_JOBS.length);
+		expect(pending).toHaveLength(PRIMARY_MAINTENANCE_JOBS.length);
+		expect(fetchHandler).toHaveBeenCalledTimes(PRIMARY_MAINTENANCE_JOBS.length);
 		expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
 		expect(errorSpy).toHaveBeenCalledOnce();
 		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
 			expect.objectContaining({
 				event: 'scheduled_maintenance_failed',
 				job: 'delivery drain',
-				message: 'Error'
+				code: 'maintenance_http_failed',
+				status: 503
 			})
 		);
+		errorSpy.mockRestore();
+	});
+
+	it('does not duplicate a failure already logged by a maintenance handler', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const fetchHandler: ScheduledWorkerFetch = vi.fn(async (request) => {
+			if (new URL(request.url).pathname === '/api/v1/system/objects/orphan-sweep') {
+				return new Response(null, {
+					status: 503,
+					headers: { 'x-signkit-maintenance-failure-code': 'reference_lookup_failed' }
+				});
+			}
+			return new Response(null, { status: 200 });
+		});
+		const pending: Promise<unknown>[] = [];
+		const context = {
+			waitUntil(promise: Promise<unknown>): void {
+				pending.push(promise);
+			}
+		};
+
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			ORPHAN_SWEEP_CRON
+		);
+		await Promise.all(pending);
+
+		expect(fetchHandler).toHaveBeenCalledTimes(ORPHAN_SWEEP_JOBS.length);
+		expect(errorSpy).not.toHaveBeenCalled();
 		errorSpy.mockRestore();
 	});
 
@@ -114,5 +169,24 @@ describe('Cloudflare scheduled maintenance', () => {
 		runScheduledMaintenance(fetchHandler, { DELIVERY_WORKER_SECRET: SECRET }, context);
 		await Promise.all(pending);
 		expect(fetchHandler).toHaveBeenCalledTimes(SCHEDULED_MAINTENANCE_JOBS.length);
+	});
+
+	it('fails closed for an unrecognized cron expression', () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const fetchHandler: ScheduledWorkerFetch = vi.fn(
+			async () => new Response(null, { status: 200 })
+		);
+		const context = { waitUntil: vi.fn() };
+
+		runScheduledMaintenance(fetchHandler, { DELIVERY_WORKER_SECRET: SECRET }, context, '0 0 * * *');
+
+		expect(fetchHandler).not.toHaveBeenCalled();
+		expect(context.waitUntil).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual({
+			event: 'scheduled_maintenance_unknown_cron',
+			code: 'maintenance_schedule_unrecognized'
+		});
+		errorSpy.mockRestore();
 	});
 });
