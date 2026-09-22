@@ -252,6 +252,7 @@ async function deployOrUpgrade(
 	const mutations: string[] = [];
 	const current = { ...remote };
 	const initialManagedDeploy = input.command === 'deploy' && existing === undefined;
+	const requiresFirstWorkerUpload = current.versions.length === 0;
 	assertNoTakeover(input, existing, current);
 	assertInitialManagedDeployVars(target, release, initialManagedDeploy);
 	if (input.command === 'deploy' && !initialManagedDeploy) {
@@ -361,7 +362,7 @@ async function deployOrUpgrade(
 			...(deploymentRecovery ? { secretsFile: deploymentRecovery.secretsFile } : {})
 		};
 		let uploaded: DeployResult;
-		if (initialManagedDeploy) {
+		if (requiresFirstWorkerUpload) {
 			try {
 				uploaded = assertSuccessfulUpload(await runtime.wrangler.deployFirst(uploadOptions));
 			} catch (error) {
