@@ -1,7 +1,8 @@
 # PDF sealing
 
-Status: accepted design for Issue #78; provider and validator transports are implemented but
-unwired; no sealing runtime, API, migration, or publication dependency is implemented yet
+Status: accepted design for Issue #78; provider and validator transports plus the durable job
+store are implemented but unwired; no sealing runtime, public API, or publication dependency is
+implemented yet
 
 ## Boundary and terminology
 
@@ -88,6 +89,30 @@ tokens, lease expiry and reclaim, capped attempts, exponential backoff, evidence
 replay, and no provider call inside a database transaction. D1 publishes through a rollback-on-
 failed-predicate command trigger; PostgreSQL locks the envelope, source PDF, and sealing job
 in a stable order before the equivalent transaction.
+
+The internal durable state separates the coarse job `status` from its `nextAction` so a process
+crash cannot erase which idempotent remote operation must be reconciled:
+
+| Status              | Next action      | Durable evidence required                                                         |
+| ------------------- | ---------------- | --------------------------------------------------------------------------------- |
+| `pending`           | `submit`         | Frozen source and policy tuple; no provider receipt                               |
+| `pending`           | `recover_submit` | Same tuple and operation ID after an ambiguous submit; still no receipt           |
+| `pending`           | `poll_provider`  | Exact provider receipt                                                            |
+| `pending`           | `validate`       | Receipt plus sealed object key, digest, size, and exact achieved profile          |
+| `processing`        | Any non-publish  | The same evidence plus a bounded lease and incremented attempt number             |
+| `failed`            | Preserved action | Operator-safe error code and retryability; no URL, body, secret, or raw message   |
+| `publication_ready` | `publish`        | Validator receipt, structured valid checks, and immutable validation-report tuple |
+
+One row is allowed for each immutable `completion_artifact_pdf`. The job, provider operation, and
+validation identifiers are stable UUIDv7 values; lease tokens and remote receipts remain opaque.
+Every lease outcome appends an immutable attempt row. Retry delay is derived from the attempt
+number, capped at one hour, and an eighth attempt is terminal even if the failure would otherwise
+be retryable. D1 batches each CAS transition and its attempt insert in one transaction;
+PostgreSQL locks the job row and performs the same transition and insert in one transaction.
+
+This store is intentionally not runtime wiring. Creating rows, calling the provider or validator,
+writing their objects, and atomically publishing the ready evidence remain later slices. Until
+those exist, no capability or product surface may report PDF sealing as available.
 
 Retryable failures include transport interruption, timeout, provider 5xx/rate limiting, an
 explicitly temporary key or HSM outage, and validation-service unavailability. Permanent or
