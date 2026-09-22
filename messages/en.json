@@ -285,6 +285,8 @@
 	"envelope_recipient_col_locale": "Language",
 	"envelope_recipient_col_order": "Order",
 	"envelope_recipient_col_status": "Status",
+	"envelope_recipient_name_required": "Enter this recipient's name.",
+	"envelope_recipient_email_invalid": "Enter a valid email address for this recipient.",
 	"envelope_recipient_status_pending": "Waiting",
 	"envelope_recipient_status_viewed": "Viewed",
 	"envelope_recipient_status_completed": "Completed",

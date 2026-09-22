@@ -11,8 +11,11 @@ export function normalizeRecipientName(name: string): string {
 	return name.trim();
 }
 
+const RECIPIENT_EMAIL_PATTERN: RegExp =
+	/^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+
 export function isValidRecipientEmail(email: string): boolean {
-	return email.length >= 1 && email.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+	return email.length >= 1 && email.length <= 320 && RECIPIENT_EMAIL_PATTERN.test(email);
 }
 
 export function isValidRecipientName(name: string): boolean {

@@ -7,7 +7,11 @@ import type {
 } from '$lib/application/envelopes/ready';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import { isActionableRecipientRole, recipientRoles } from '$lib/domain/envelope';
-import { normalizeRecipientEmail } from '$lib/domain/recipient-identity';
+import {
+	isValidRecipientEmail,
+	isValidRecipientName,
+	normalizeRecipientEmail
+} from '$lib/domain/recipient-identity';
 import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse, type ProblemValidationError } from './problem';
@@ -22,8 +26,8 @@ const idempotencyKeySchema: ZodType<string> = z
 	.regex(/^[\x21-\x7E]+$/, 'Idempotency-Key must contain visible ASCII characters only');
 const recipientSchema = z
 	.object({
-		email: z.string().trim().email().max(320),
-		name: z.string().trim().min(1).max(200),
+		email: z.string().trim().max(320).refine(isValidRecipientEmail),
+		name: z.string().trim().max(200).refine(isValidRecipientName),
 		role: z.enum(recipientRoles),
 		locale: z.enum(['en', 'ja']),
 		routingOrder: z.number().int().min(1).max(1000)

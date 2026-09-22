@@ -164,6 +164,30 @@ describe('envelope ready HTTP handler', () => {
 		expect(detachedViewer.status).toBe(400);
 	});
 
+	it('rejects structurally malformed recipient addresses with the shared predicate', async () => {
+		const app: EnvelopeReadyApplicationPort = application();
+		const response: Response = await createEnvelopeReadyHandler(() => app)(
+			event({
+				headers: { 'idempotency-key': 'ready-malformed-email' },
+				body: JSON.stringify({
+					expectedGeneration: 1,
+					recipients: [
+						{
+							email: 'signer@example..com',
+							name: 'Signer',
+							role: 'signer',
+							locale: 'en',
+							routingOrder: 1
+						}
+					]
+				})
+			})
+		);
+
+		expect(response.status).toBe(400);
+		expect(app.ready).not.toHaveBeenCalled();
+	});
+
 	it('passes only authenticated tenant scope and returns an idempotent receipt', async () => {
 		const app: EnvelopeReadyApplicationPort = application();
 		const response: Response = await createEnvelopeReadyHandler(() => app)(
