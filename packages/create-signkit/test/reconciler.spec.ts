@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { runCreateSignkit } from '../src/cli/run.js';
 import { reconcileCloudflare } from '../src/providers/cloudflare/reconciler.js';
-import { D1_SCHEMA_EPOCH } from '../src/constants.js';
+import { D1_SCHEMA_EPOCH, REQUIRED_WORKER_SECRETS } from '../src/constants.js';
 import {
 	ACCOUNT_ID,
 	D1_ID,
@@ -278,6 +278,54 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 		expect(state.version).toBeUndefined();
 		expect(state.commit).toBeUndefined();
 		expect(parsed.plan.find((step: { id: string }) => step.id === 'adopt').mutating).toBe(true);
+	});
+
+	it('uses the required first deploy after adopting a Worker with secrets but zero versions', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.d1 = [{ uuid: D1_ID, name: 'signkit' }];
+		wrangler.r2.add('signkit-objects');
+		wrangler.secrets.set('signkit', [...REQUIRED_WORKER_SECRETS]);
+		wrangler.versions.set('signkit', []);
+		const fs = new MemoryFileSystem();
+
+		const adopted = await run(
+			[
+				'--cloudflare',
+				'adopt',
+				'--account-id',
+				ACCOUNT_ID,
+				'--email-from',
+				'sign@example.com',
+				'--public-origin',
+				'https://signkit.example.workers.dev',
+				'--bootstrap-owner-email',
+				'owner@example.com',
+				'--yes',
+				'--json'
+			],
+			wrangler,
+			fs
+		);
+		expect(adopted.code).toBe(0);
+
+		const deployed = await run(
+			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+
+		expect(deployed.code).toBe(0);
+		expect(wrangler.calls).toContain('deploy:signkit');
+		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
+		expect(wrangler.calls.some((call) => call.startsWith('deployVersion:'))).toBe(false);
+		expect(wrangler.calls).not.toContain('deployTriggers:signkit');
+		const output = JSON.parse(deployed.stdout);
+		expect(output.mutations).toContain('deploy');
+		expect(output.plan.find((step: { id: string }) => step.id === 'deploy')).toBeDefined();
+		expect(output.plan.some((step: { id: string }) => step.id === 'versions-upload')).toBe(false);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.lastWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.lastCommand).toBe('deploy');
 	});
 
 	it('refuses no-state upgrade of an existing Worker until adopt records it', async () => {
