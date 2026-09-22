@@ -44,6 +44,27 @@ export function completionAccessPath(token: string): `/c/${string}` {
 	return `/c/${token}`;
 }
 
+export type CompletionReceiptLocale = 'en' | 'ja';
+
+/**
+ * The recipient-facing receipt landing page for a completion grant, prefixed
+ * for `locale` so the first click from a transactional email already renders
+ * in the recipient's language -- there is no session or cookie yet to carry
+ * that preference. Mirrors the `en`/`ja` URL prefixing the app's Paraglide
+ * routing config applies everywhere else (base locale `en` unprefixed, `ja`
+ * under `/ja`), without depending on the generated runtime module, which
+ * this security-layer helper has no reason to import.
+ */
+export function completionReceiptPath(
+	token: string,
+	locale: CompletionReceiptLocale
+): `/c/${string}/view` | `/ja/c/${string}/view` {
+	if (!isCompletionToken(token)) {
+		throw new Error('Invalid completion token');
+	}
+	return locale === 'ja' ? `/ja/c/${token}/view` : `/c/${token}/view`;
+}
+
 export function computeCompletionAccessExpiry(now: Date): string {
 	return new Date(now.valueOf() + COMPLETION_ACCESS_EXPIRY_MS).toISOString();
 }

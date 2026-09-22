@@ -205,4 +205,31 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain("case 'failed':");
 		expect(source).toContain('envelope_delivery_status_pending');
 	});
+
+	it('shows the completed-artifacts card only for a completed envelope, distinct from the original documents above it', () => {
+		const documentsTab = source.slice(
+			source.indexOf('<Tabs.Content value="documents"'),
+			source.indexOf('<Tabs.Content value="recipients"')
+		);
+		expect(documentsTab).toContain("{#if envelope.status === 'completed'}");
+		expect(documentsTab).toContain('m.envelope_completed_title()');
+		expect(documentsTab.indexOf('envelope_documents_immutable')).toBeLessThan(
+			documentsTab.indexOf('envelope_completed_title')
+		);
+		expect(source).toContain('client.completionArtifactStatus(envelopeId)');
+		expect(source).toContain('client.completionPdf(envelopeId)');
+		expect(source).toContain('client.completionEvidence(envelopeId, format)');
+		expect(source).toContain("downloadCompletionEvidence('json')");
+		expect(source).toContain("downloadCompletionEvidence('markdown')");
+	});
+
+	it('uses real buttons (not anchors) for completion downloads, so they stay keyboard-activatable without navigation', () => {
+		const cardStart = source.indexOf('m.envelope_completed_title()');
+		const cardEnd = source.indexOf('</Tabs.Content>', cardStart);
+		const card = source.slice(cardStart, cardEnd);
+		expect(card).toContain('onclick={() => void downloadCompletionPdf()}');
+		expect(card).toContain("onclick={() => void downloadCompletionEvidence('json')}");
+		expect(card).toContain("onclick={() => void downloadCompletionEvidence('markdown')}");
+		expect(card).not.toMatch(/<a\s/);
+	});
 });

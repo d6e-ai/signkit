@@ -764,3 +764,149 @@ describe('envelope authoring page remounts durable send state', () => {
 		expect(readyCalled).toBe(true);
 	});
 });
+
+describe('completed envelope shows the completed-artifacts card', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const completedEnvelope = {
+		...readyEnvelope,
+		status: 'completed' as const,
+		sentCommitSha: '0123456789abcdef0123456789abcdef01234567'
+	};
+
+	const completedDetail = { ...detail, envelope: completedEnvelope };
+
+	function mockCompletedFetch(
+		completionArtifactResponse: () => Response,
+		extraRoutes: (urlStr: string, init: RequestInit | undefined) => Response | undefined = () =>
+			undefined
+	) {
+		return vi.fn().mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+			const urlStr = String(url);
+			const extra = extraRoutes(urlStr, init);
+			if (extra) return extra;
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+				return jsonResponse(completedDetail);
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+				return new Response(null, { status: 404 });
+			}
+			if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+				return jsonResponse(deliveries);
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact`)) {
+				return completionArtifactResponse();
+			}
+			return jsonResponse({});
+		});
+	}
+
+	it('published: offers final PDF and evidence downloads once the PDF has published', async () => {
+		const mockFetch = mockCompletedFetch(() =>
+			jsonResponse({
+				completionArtifact: {
+					envelopeId: ENVELOPE_ID,
+					status: 'published',
+					publishedAt: '2026-09-12T00:00:00.000Z',
+					manifestSha256: 'm'.repeat(64),
+					jsonSha256: 'j'.repeat(64),
+					markdownSha256: 'd'.repeat(64),
+					pdfStatus: 'published'
+				}
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await expect.element(screen.getByRole('button', { name: 'Download final PDF' })).toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Download evidence (JSON)' }))
+			.toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Download evidence (Markdown)' }))
+			.toBeVisible();
+	});
+
+	it('pending: notes that the final PDF is still being prepared, but evidence stays downloadable', async () => {
+		const mockFetch = mockCompletedFetch(() =>
+			jsonResponse({
+				completionArtifact: {
+					envelopeId: ENVELOPE_ID,
+					status: 'published',
+					publishedAt: '2026-09-12T00:00:00.000Z',
+					manifestSha256: 'm'.repeat(64),
+					jsonSha256: 'j'.repeat(64),
+					markdownSha256: 'd'.repeat(64),
+					pdfStatus: 'pending'
+				}
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await expect.element(screen.getByText('The final PDF is still being prepared.')).toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Download final PDF' }))
+			.not.toBeInTheDocument();
+		await expect
+			.element(screen.getByRole('button', { name: 'Download evidence (JSON)' }))
+			.toBeVisible();
+	});
+
+	it('failed: explains that completion evidence could not be generated', async () => {
+		const mockFetch = mockCompletedFetch(() =>
+			jsonResponse({
+				completionArtifact: {
+					envelopeId: ENVELOPE_ID,
+					status: 'failed',
+					attempts: 10,
+					errorCode: 'completion_artifact_attempts_exhausted',
+					availableAt: null
+				}
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await expect
+			.element(
+				screen.getByText(
+					'Completion evidence could not be generated. Contact support if this continues.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Download final PDF' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('unavailable: reports the status could not be loaded when the read fails', async () => {
+		const mockFetch = mockCompletedFetch(
+			() =>
+				new Response(JSON.stringify({ status: 503 }), {
+					status: 503,
+					headers: { 'content-type': 'application/problem+json' }
+				})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await expect
+			.element(screen.getByText('Completion status could not be loaded. Please try again shortly.'))
+			.toBeVisible();
+	});
+});

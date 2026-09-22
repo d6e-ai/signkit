@@ -266,6 +266,100 @@ describe('EnvelopesClient', () => {
 		});
 		expect(error.message).toBe('Request failed with status 503');
 	});
+
+	it('reads the completion artifact status, including the coarse PDF status', async () => {
+		const completionArtifact = {
+			envelopeId: envelope.id,
+			status: 'published' as const,
+			publishedAt: '2026-09-12T00:00:00.000Z',
+			manifestSha256: 'm'.repeat(64),
+			jsonSha256: 'j'.repeat(64),
+			markdownSha256: 'd'.repeat(64),
+			pdfStatus: 'pending' as const
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ completionArtifact })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.completionArtifactStatus(envelope.id)).resolves.toEqual(completionArtifact);
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/completion-artifact`);
+	});
+
+	it('downloads the completion PDF, taking the filename from Content-Disposition', async () => {
+		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+		const fetchMock = vi.fn<typeof globalThis.fetch>(
+			async () =>
+				new Response(bytes, {
+					status: 200,
+					headers: {
+						'content-type': 'application/pdf',
+						'content-disposition': `attachment; filename="completion-${envelope.id}.pdf"`
+					}
+				})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.completionPdf(envelope.id)).resolves.toEqual({
+			bytes,
+			filename: `completion-${envelope.id}.pdf`
+		});
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			`/api/v1/envelopes/${envelope.id}/completion-artifact/pdf`
+		);
+	});
+
+	it('falls back to a default PDF filename when Content-Disposition is missing', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(
+			async () => new Response(new Uint8Array([1]), { status: 200 })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.completionPdf(envelope.id)).resolves.toMatchObject({
+			filename: `completion-${envelope.id}.pdf`
+		});
+	});
+
+	it('downloads completion evidence in the requested format', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(
+			async () =>
+				new Response('# Evidence', {
+					status: 200,
+					headers: {
+						'content-type': 'text/markdown; charset=utf-8',
+						'content-disposition': `attachment; filename="completion-evidence-${envelope.id}.md"`
+					}
+				})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.completionEvidence(envelope.id, 'markdown')).resolves.toEqual({
+			content: '# Evidence',
+			filename: `completion-evidence-${envelope.id}.md`,
+			contentType: 'text/markdown; charset=utf-8'
+		});
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			`/api/v1/envelopes/${envelope.id}/completion-artifact/evidence?format=markdown`
+		);
+	});
+
+	it('surfaces a problem response when completion artifact downloads fail', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockProblemResponse({
+				type: 'urn:signkit:problem:completion-pdf-not-found',
+				title: 'Completion PDF not published',
+				status: 404,
+				detail: 'Completion PDF artifact has not been published for this envelope.',
+				instance: `/api/v1/envelopes/${envelope.id}/completion-artifact/pdf`
+			})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.completionPdf(envelope.id)).rejects.toMatchObject({
+			status: 404,
+			type: 'urn:signkit:problem:completion-pdf-not-found'
+		});
+	});
 });
 
 describe('fetchAllEnvelopes', () => {

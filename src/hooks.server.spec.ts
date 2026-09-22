@@ -27,6 +27,8 @@ describe('session exclusions', () => {
 		expect(isSessionExcludedPath('/ja/sign')).toBe(true);
 		expect(isSessionExcludedPath('/sign/01910000-0000-7000-8000-000000000001')).toBe(true);
 		expect(isSessionExcludedPath('/en/sign/01910000-0000-7000-8000-000000000001')).toBe(true);
+		expect(isSessionExcludedPath('/c/skca1_token')).toBe(true);
+		expect(isSessionExcludedPath('/ja/c/skca1_token/view')).toBe(true);
 		expect(isSessionExcludedPath('/api/v1/envelopes')).toBe(false);
 		expect(isSessionExcludedPath('/signature')).toBe(false);
 	});

@@ -11,6 +11,7 @@ import type {
 	CompletionArtifactLocator,
 	CompletionDeliveryStore
 } from '$lib/ports/completion-delivery-store';
+import type { CompletionArtifactPdfStore } from '$lib/ports/completion-artifact-pdf-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { issueCompletionToken } from '$lib/security/completion-token';
 import {
@@ -152,6 +153,127 @@ describe('PublicCompletionArtifactService', () => {
 
 		expect(result.content).toBe(markdownContent);
 		expect(result.contentType).toBe('text/markdown; charset=utf-8');
+	});
+
+	describe('status', () => {
+		it('rejects a malformed token as not found without querying the store', async () => {
+			const store = mockStore(async () => null);
+			const objects = mockObjectStore();
+			const service = new PublicCompletionArtifactService(store, objects);
+
+			await expect(service.status('invalid-token', NOW)).rejects.toThrow(
+				PublicCompletionArtifactNotFoundError
+			);
+			expect(store.resolveArtifactLocatorByTokenHash).not.toHaveBeenCalled();
+		});
+
+		it('throws PublicCompletionArtifactNotFoundError for an unknown, expired, or revoked grant', async () => {
+			const issued = await issueCompletionToken();
+			const store = mockStore(async () => null);
+			const objects = mockObjectStore();
+			const service = new PublicCompletionArtifactService(store, objects);
+
+			await expect(service.status(issued.token, NOW)).rejects.toThrow(
+				PublicCompletionArtifactNotFoundError
+			);
+		});
+
+		it('reports pdfAvailable=false without a PDF store configured, and never exposes the envelope ID', async () => {
+			const issued = await issueCompletionToken();
+			const locator: CompletionArtifactLocator = {
+				envelopeId: ENV_ID,
+				jsonObjectKey: 'unused',
+				jsonSha256: 'a'.repeat(64),
+				markdownObjectKey: 'unused',
+				markdownSha256: 'b'.repeat(64)
+			};
+			const store = mockStore(async () => locator);
+			const objects = mockObjectStore();
+			const service = new PublicCompletionArtifactService(store, objects);
+
+			const status = await service.status(issued.token, NOW);
+			expect(status).toEqual({ pdfAvailable: false });
+			expect(JSON.stringify(status)).not.toContain(ENV_ID);
+		});
+
+		it('reports pdfAvailable=false when a PDF store is configured but has not published a record yet', async () => {
+			const issued = await issueCompletionToken();
+			const locator: CompletionArtifactLocator = {
+				envelopeId: ENV_ID,
+				jsonObjectKey: 'unused',
+				jsonSha256: 'a'.repeat(64),
+				markdownObjectKey: 'unused',
+				markdownSha256: 'b'.repeat(64)
+			};
+			const store = mockStore(async () => locator);
+			const objects = mockObjectStore();
+			const pdfStore: CompletionArtifactPdfStore = {
+				publishCompletionArtifactPdf: vi.fn(async () => {
+					throw new Error('unused');
+				}),
+				readCompletionArtifactPdf: vi.fn(async () => null)
+			};
+			const service = new PublicCompletionArtifactService(store, objects, pdfStore);
+
+			await expect(service.status(issued.token, NOW)).resolves.toEqual({ pdfAvailable: false });
+		});
+
+		it('reports pdfAvailable=true once the PDF store has a published record, without exposing its key or digest', async () => {
+			const issued = await issueCompletionToken();
+			const locator: CompletionArtifactLocator = {
+				envelopeId: ENV_ID,
+				jsonObjectKey: 'unused',
+				jsonSha256: 'a'.repeat(64),
+				markdownObjectKey: 'unused',
+				markdownSha256: 'b'.repeat(64)
+			};
+			const store = mockStore(async () => locator);
+			const objects = mockObjectStore();
+			const pdfStore: CompletionArtifactPdfStore = {
+				publishCompletionArtifactPdf: vi.fn(async () => {
+					throw new Error('unused');
+				}),
+				readCompletionArtifactPdf: vi.fn(async () => ({
+					pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.pdf',
+					pdfSha256: 'c'.repeat(64),
+					pdfManifestObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.json.gz',
+					pdfManifestSha256: 'c'.repeat(64),
+					publishedAt: NOW.toISOString()
+				}))
+			};
+			const service = new PublicCompletionArtifactService(store, objects, pdfStore);
+
+			const status = await service.status(issued.token, NOW);
+			expect(status).toEqual({ pdfAvailable: true });
+			expect(JSON.stringify(status)).not.toContain('completion-artifacts/');
+			expect(JSON.stringify(status)).not.toContain('c'.repeat(64));
+		});
+
+		it('wraps PDF store failures in PublicCompletionArtifactStorageError', async () => {
+			const issued = await issueCompletionToken();
+			const locator: CompletionArtifactLocator = {
+				envelopeId: ENV_ID,
+				jsonObjectKey: 'unused',
+				jsonSha256: 'a'.repeat(64),
+				markdownObjectKey: 'unused',
+				markdownSha256: 'b'.repeat(64)
+			};
+			const store = mockStore(async () => locator);
+			const objects = mockObjectStore();
+			const pdfStore: CompletionArtifactPdfStore = {
+				publishCompletionArtifactPdf: vi.fn(async () => {
+					throw new Error('unused');
+				}),
+				readCompletionArtifactPdf: vi.fn(async () => {
+					throw new Error('object store unavailable');
+				})
+			};
+			const service = new PublicCompletionArtifactService(store, objects, pdfStore);
+
+			await expect(service.status(issued.token, NOW)).rejects.toThrow(
+				PublicCompletionArtifactStorageError
+			);
+		});
 	});
 
 	it('rejects an skr1 cross-purpose token as not found without querying store', async () => {
