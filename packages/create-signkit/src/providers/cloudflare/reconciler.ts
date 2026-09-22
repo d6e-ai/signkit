@@ -776,7 +776,7 @@ function buildPlan(
 		summary: 'apply pending D1 migrations only',
 		mutating: true
 	});
-	const firstWorkerUpload = !existing && !remote.workerExists;
+	const firstWorkerUpload = remote.versions.length === 0;
 	if (firstWorkerUpload) {
 		steps.push({
 			id: 'deploy',
