@@ -53,7 +53,7 @@ async function run(
 					: async (): Promise<Uint8Array> => new TextEncoder().encode(stdinText)
 		}
 	});
-	return { code, stdout: stdout.join(''), stderr: stderr.join(''), fs, wrangler, releases };
+	return { code, stdout: stdout.join(''), stderr: stderr.join(''), fs, http, wrangler, releases };
 }
 
 describe('SMTP managed deployment', () => {
@@ -204,7 +204,9 @@ describe('plan is read-only', () => {
 		const plan = parsed.plan as Array<{ id: string; mutating: boolean }>;
 		expect(plan.find((step) => step.id === 'verify-provenance')?.mutating).toBe(false);
 		expect(plan.find((step) => step.id === 'd1-export')?.mutating).toBe(true);
-		expect(plan.find((step) => step.id === 'deploy')?.mutating).toBe(true);
+		expect(plan.find((step) => step.id === 'versions-upload')?.mutating).toBe(true);
+		expect(plan.find((step) => step.id === 'versions-deploy')?.mutating).toBe(true);
+		expect(plan.find((step) => step.id === 'triggers-deploy')?.mutating).toBe(true);
 		expect(plan.find((step) => step.id === 'd1-migrations')?.mutating).toBe(true);
 		expect(plan.find((step) => step.id === 'state')?.mutating).toBe(true);
 	});
@@ -235,6 +237,8 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 		expect(wrangler.calls).toContain('createR2:signkit-objects');
 		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(true);
 		expect(wrangler.calls).toContain('deploy:signkit');
+		expect(wrangler.calls).not.toContain('deployTriggers:signkit');
+		expect(JSON.parse(result.stdout).mutations).not.toContain('triggers-deploy');
 		const state = JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state).toMatchObject({
 			provider: 'cloudflare',
@@ -304,6 +308,17 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 		expect(wrangler.calls).not.toContain('createR2:signkit-objects');
 		expect(wrangler.calls).toContain('uploadVersion:signkit');
 		expect(wrangler.calls.some((call) => call.startsWith('deployVersion:signkit:'))).toBe(true);
+		expect(wrangler.calls).toContain('deployTriggers:signkit');
+		expect(JSON.parse(result.stdout).mutations).toEqual(
+			expect.arrayContaining(['versions-upload', 'versions-deploy', 'triggers-deploy'])
+		);
+		const plan = JSON.parse(result.stdout).plan as Array<{ id: string; summary: string }>;
+		expect(plan.map((step) => step.id)).toEqual(
+			expect.arrayContaining(['versions-upload', 'versions-deploy', 'triggers-deploy'])
+		);
+		expect(plan.find((step) => step.id === 'triggers-deploy')?.summary).toMatch(
+			/routes and Cron Triggers/
+		);
 		expect(
 			JSON.parse(result.stdout).lastCommand ??
 				JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json')).lastCommand
@@ -460,14 +475,20 @@ describe('migration and deploy ordering', () => {
 			fs
 		);
 		const order = wrangler.calls.filter((call) =>
-			['exportD1', 'applyMigrations', 'uploadVersion', 'deployVersion', 'deploy'].some((name) =>
-				call.startsWith(name)
-			)
+			[
+				'exportD1',
+				'applyMigrations',
+				'uploadVersion',
+				'deployVersion',
+				'deployTriggers',
+				'deploy'
+			].some((name) => call.startsWith(name))
 		);
 		expect(order[0]).toMatch(/^exportD1:/);
 		expect(order[1]).toMatch(/^applyMigrations/);
 		expect(order[2]).toMatch(/^uploadVersion:/);
 		expect(order[3]).toMatch(/^deployVersion:/);
+		expect(order[4]).toMatch(/^deployTriggers:/);
 		expect(wrangler.migrationCalls).toHaveLength(3);
 		expect(wrangler.calls.filter((call) => call.startsWith('listMigrations'))).toHaveLength(2);
 		for (const call of wrangler.migrationCalls) {
@@ -477,6 +498,188 @@ describe('migration and deploy ordering', () => {
 		}
 		expect(wrangler.recordedInvocations[0]?.args).toContain('--config');
 		expect(wrangler.recordedInvocations[0]?.cwd).toBe(wrangler.migrationCalls[0]?.cwd);
+		const triggerInvocation = wrangler.recordedInvocations.at(-1);
+		expect(triggerInvocation?.args).toEqual([
+			'triggers',
+			'deploy',
+			'--config',
+			triggerInvocation?.cwd + '/wrangler.jsonc',
+			'--name',
+			'signkit'
+		]);
+		expect(triggerInvocation?.cwd).toMatch(/^\/tmp\/create-signkit-/);
+	});
+
+	it('persists the active partial state after trigger deployment fails and skips smoke', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.failTriggerDeploy = true;
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+
+		expect(result.code).toBe(1);
+		const output = JSON.parse(result.stdout);
+		expect(output.message).toMatch(/trigger reconciliation failed.*trigger deployment failed/i);
+		expect(output.mutations).toEqual(
+			expect.arrayContaining(['versions-upload', 'versions-deploy'])
+		);
+		expect(output.mutations).not.toContain('triggers-deploy');
+		expect(output.rollback).toMatchObject({ attempted: false, workerRolledBack: false });
+		expect(wrangler.calls).toContain(`deployVersion:signkit:${WORKER_VERSION}`);
+		expect(wrangler.calls).toContain('deployTriggers:signkit');
+		expect(result.http.requests).toEqual([]);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state).toMatchObject({
+			version: 'v1.2.3',
+			commit: expect.any(String),
+			schemaEpoch: D1_SCHEMA_EPOCH,
+			lastWorkerVersionId: WORKER_VERSION,
+			previousWorkerVersionId: PREVIOUS_VERSION,
+			lastD1BackupPath: expect.any(String),
+			triggerReconciliationRequired: {
+				workerVersionId: WORKER_VERSION,
+				releaseVersion: 'v1.2.3',
+				releaseCommit: expect.any(String),
+				recordedAt: '2026-09-15T00:00:00.000Z'
+			}
+		});
+	});
+
+	it('uses the same explicit trigger failure state for a non-pristine deploy', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.failTriggerDeploy = true;
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await run(
+			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+
+		expect(result.code).toBe(1);
+		const output = JSON.parse(result.stdout);
+		expect(output.command).toBe('deploy');
+		expect(output.mutations).toEqual(
+			expect.arrayContaining(['versions-upload', 'versions-deploy'])
+		);
+		expect(output.mutations).not.toContain('triggers-deploy');
+		expect(result.http.requests).toEqual([]);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state).toMatchObject({
+			lastCommand: 'deploy',
+			lastWorkerVersionId: WORKER_VERSION,
+			previousWorkerVersionId: PREVIOUS_VERSION,
+			triggerReconciliationRequired: {
+				workerVersionId: WORKER_VERSION,
+				releaseVersion: 'v1.2.3'
+			}
+		});
+	});
+
+	it('clears the trigger marker after a successful retry and uses the active partial version as previous', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.failTriggerDeploy = true;
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const failed = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(failed.code).toBe(1);
+
+		const retryVersion = '44444444-4444-4444-4444-444444444444';
+		wrangler.failTriggerDeploy = false;
+		wrangler.deployResult = {
+			workerVersionId: retryVersion,
+			workerUrl: 'https://signkit.example.workers.dev',
+			stdout: `Uploaded signkit\nVersion ID: ${retryVersion}\nhttps://signkit.example.workers.dev`,
+			aborted: false
+		};
+		const retried = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+
+		expect(retried.code).toBe(0);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.triggerReconciliationRequired).toBeUndefined();
+		expect(state.lastWorkerVersionId).toBe(retryVersion);
+		expect(state.previousWorkerVersionId).toBe(WORKER_VERSION);
+	});
+
+	it('clears an inherited trigger marker after a successful complete deploy', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem(), {
+			triggerReconciliationRequired: {
+				workerVersionId: PREVIOUS_VERSION,
+				releaseVersion: 'v1.2.2',
+				releaseCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+				recordedAt: '2026-09-14T00:00:00.000Z'
+			}
+		});
+
+		const result = await run(
+			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+
+		expect(result.code).toBe(0);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.triggerReconciliationRequired).toBeUndefined();
+		expect(state.lastWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.previousWorkerVersionId).toBe(PREVIOUS_VERSION);
+	});
+
+	it('keeps the next coherent deploy active after smoke failure and clears trigger uncertainty', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.failTriggerDeploy = true;
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const failed = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+		expect(failed.code).toBe(1);
+
+		const nextVersion = '55555555-5555-5555-5555-555555555555';
+		wrangler.failTriggerDeploy = false;
+		wrangler.deployResult = {
+			workerVersionId: nextVersion,
+			workerUrl: 'https://signkit.example.workers.dev',
+			stdout: `Deployed signkit\nVersion ID: ${nextVersion}\nhttps://signkit.example.workers.dev`,
+			aborted: false
+		};
+		const http = new FakeHttp();
+		http.on('https://signkit.example.workers.dev/api/v1/system/capabilities', 'nope', 500);
+		const deployed = await reconcileCloudflare(command({ command: 'deploy' }), {
+			fs,
+			http,
+			releases: fakeReleases(),
+			wrangler,
+			extractor: fakeExtractor(fs),
+			now: () => new Date('2026-09-15T00:01:00.000Z'),
+			env: { XDG_STATE_HOME: '/xdg/state' },
+			smokeAttempts: 1,
+			smokeBackoffMs: 0,
+			sleep: async () => undefined
+		});
+
+		expect(deployed.exitCode).toBe(1);
+		expect(deployed.rollback).toMatchObject({ attempted: false, workerRolledBack: false });
+		expect(deployed.rollback?.guidance).toMatch(/remain active/);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.lastWorkerVersionId).toBe(nextVersion);
+		expect(state.previousWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.triggerReconciliationRequired).toBeUndefined();
 	});
 
 	it('refuses remaining pending migrations after apply', async () => {
@@ -512,8 +715,8 @@ describe('migration and deploy ordering', () => {
 	});
 });
 
-describe('failure and rollback reporting', () => {
-	it('rolls back the Worker after a failed smoke check and never claims D1 rollback', async () => {
+describe('failure state reporting', () => {
+	it('keeps the activated upgrade version and triggers after a failed smoke check', async () => {
 		const wrangler = new FakeWrangler();
 		wrangler.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
@@ -533,22 +736,27 @@ describe('failure and rollback reporting', () => {
 			sleep: async () => undefined
 		});
 		expect(result.exitCode).toBe(1);
-		expect(result.rollback?.attempted).toBe(true);
-		expect(result.rollback?.workerRolledBack).toBe(true);
+		expect(result.rollback?.attempted).toBe(false);
+		expect(result.rollback?.workerRolledBack).toBe(false);
 		expect(result.rollback?.d1RolledBack).toBe(false);
-		expect(result.rollback?.guidance).toMatch(/D1 was not rolled back/);
-		expect(wrangler.calls.some((call) => call.startsWith('rollback:'))).toBe(true);
+		expect(result.rollback?.guidance).toMatch(/remain active/);
+		expect(result.mutations).toEqual(
+			expect.arrayContaining(['versions-upload', 'versions-deploy', 'triggers-deploy'])
+		);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.lastWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.previousWorkerVersionId).toBe(PREVIOUS_VERSION);
+		expect(state.version).toBe('v1.2.3');
 	});
 
-	it('reports guidance when Worker rollback is not verifiably supported', async () => {
+	it('keeps a complete deploy and its routes and triggers active after a failed smoke check', async () => {
 		const wrangler = new FakeWrangler();
 		wrangler.seedReadyWorker();
-		wrangler.failRollback = true;
 		const http = new FakeHttp();
 		http.on('https://signkit.example.workers.dev/api/v1/system/capabilities', 'nope', 500);
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		wrangler.fs = fs;
-		const result = await reconcileCloudflare(command({ command: 'upgrade' }), {
+		const result = await reconcileCloudflare(command({ command: 'deploy' }), {
 			fs,
 			http,
 			releases: fakeReleases(),
@@ -560,11 +768,19 @@ describe('failure and rollback reporting', () => {
 			smokeBackoffMs: 0,
 			sleep: async () => undefined
 		});
-		expect(result.rollback?.attempted).toBe(true);
+		expect(result.exitCode).toBe(1);
+		expect(result.rollback?.attempted).toBe(false);
 		expect(result.rollback?.performed).toBe(false);
+		expect(result.rollback?.workerRolledBack).toBe(false);
 		expect(result.rollback?.d1RolledBack).toBe(false);
 		expect(result.message).toMatch(/smoke check failed/i);
-		expect(result.rollback?.guidance).toMatch(/rollback to .* was attempted and failed/);
+		expect(result.rollback?.guidance).toMatch(/remain active/);
+		expect(wrangler.calls).toContain('uploadVersion:signkit');
+		expect(wrangler.calls).toContain(`deployVersion:signkit:${WORKER_VERSION}`);
+		expect(wrangler.calls).toContain('deployTriggers:signkit');
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.lastWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.previousWorkerVersionId).toBe(PREVIOUS_VERSION);
 	});
 
 	it('lists missing secret names and does not upload a Worker', async () => {
@@ -857,7 +1073,32 @@ describe('state provider isolation', () => {
 	});
 });
 
-describe('adopt retarget clears invented release metadata', () => {
+describe('adopt state reconciliation markers', () => {
+	it('preserves an unresolved trigger marker when adopting the same target', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const marker = {
+			workerVersionId: WORKER_VERSION,
+			releaseVersion: 'v1.2.3',
+			releaseCommit: '0123456789abcdef0123456789abcdef01234567',
+			recordedAt: '2026-09-15T00:00:00.000Z'
+		};
+		const fs = await writeCloudflareState(new MemoryFileSystem(), {
+			lastWorkerVersionId: WORKER_VERSION,
+			triggerReconciliationRequired: marker
+		});
+
+		const result = await run(
+			['--cloudflare', 'adopt', '--account-id', ACCOUNT_ID, '--yes', '--json'],
+			wrangler,
+			fs
+		);
+
+		expect(result.code).toBe(0);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.triggerReconciliationRequired).toEqual(marker);
+	});
+
 	it('clears previous version metadata when recording a different identity', async () => {
 		const wrangler = new FakeWrangler();
 		wrangler.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
@@ -884,6 +1125,12 @@ describe('adopt retarget clears invented release metadata', () => {
 				version: 'v0.0.1',
 				commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 				lastWorkerVersionId: PREVIOUS_VERSION,
+				triggerReconciliationRequired: {
+					workerVersionId: PREVIOUS_VERSION,
+					releaseVersion: 'v0.0.1',
+					releaseCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+					recordedAt: '2026-09-15T00:00:00.000Z'
+				},
 				updatedAt: '2026-09-15T00:00:00.000Z'
 			})
 		);
@@ -912,6 +1159,7 @@ describe('adopt retarget clears invented release metadata', () => {
 		expect(state.version).toBeUndefined();
 		expect(state.commit).toBeUndefined();
 		expect(state.lastWorkerVersionId).toBeUndefined();
+		expect(state.triggerReconciliationRequired).toBeUndefined();
 	});
 });
 
@@ -1011,6 +1259,54 @@ describe('upgrade routing flags', () => {
 		);
 		expect(result.code).toBe(4);
 		expect(result.stdout).toMatch(/deploy or adopt to change routing/);
+	});
+
+	it('reconciles an inherited custom domain from the extracted config with exact trigger args', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem(), {
+			domain: 'sign.example.com',
+			publicOrigin: 'https://sign.example.com'
+		});
+		wrangler.fs = fs;
+		const http = new FakeHttp();
+		http.on(
+			'https://sign.example.com/api/v1/system/capabilities',
+			JSON.stringify({ name: 'signkit', apiVersion: '1' })
+		);
+
+		const result = await reconcileCloudflare(command({ command: 'upgrade' }), {
+			fs,
+			http,
+			releases: fakeReleases(),
+			wrangler,
+			extractor: fakeExtractor(fs),
+			now: () => new Date('2026-09-15T00:00:00.000Z'),
+			env: { XDG_STATE_HOME: '/xdg/state' },
+			smokeAttempts: 1,
+			smokeBackoffMs: 0,
+			sleep: async () => undefined
+		});
+
+		expect(result.exitCode).toBe(0);
+		const config = JSON.parse(wrangler.lastConfig ?? '{}') as Record<string, unknown>;
+		expect(config.workers_dev).toBe(false);
+		expect(config.routes).toEqual([{ pattern: 'sign.example.com', custom_domain: true }]);
+		const triggerInvocation = wrangler.recordedInvocations.find(
+			(invocation) => invocation.args[0] === 'triggers'
+		);
+		expect(triggerInvocation).toMatchObject({
+			args: [
+				'triggers',
+				'deploy',
+				'--config',
+				triggerInvocation?.cwd + '/wrangler.jsonc',
+				'--name',
+				'signkit'
+			],
+			cwd: triggerInvocation?.cwd
+		});
+		expect(triggerInvocation?.args).not.toContain('--domain');
 	});
 });
 
@@ -1276,17 +1572,14 @@ describe('applied migrations on smoke failure', () => {
 	});
 });
 
-describe('custom-domain smoke fallback', () => {
-	it('treats a healthy workers.dev origin as success without rollback', async () => {
+describe('custom-domain smoke', () => {
+	it('does not use workers.dev when the generated custom-domain config disables it', async () => {
 		const wrangler = new FakeWrangler();
 		const fs = new MemoryFileSystem();
 		wrangler.fs = fs;
 		const http = new FakeHttp();
 		http.on('https://sign.example.com/api/v1/system/capabilities', 'nope', 503);
-		http.on(
-			'https://signkit.example.workers.dev/api/v1/system/capabilities',
-			JSON.stringify({ name: 'signkit', apiVersion: '1' })
-		);
+		http.on('https://signkit.example.workers.dev/api/v1/system/capabilities', 'healthy', 200);
 		const result = await reconcileCloudflare(
 			command({
 				command: 'deploy',
@@ -1315,8 +1608,10 @@ describe('custom-domain smoke fallback', () => {
 				readStdin: async (): Promise<Uint8Array> => new TextEncoder().encode(OAUTH_STDIN_JSON)
 			}
 		);
-		expect(result.exitCode).toBe(0);
-		expect(wrangler.calls.some((call) => call.startsWith('rollback:'))).toBe(false);
+		expect(result.exitCode).toBe(1);
+		expect(http.requests.map((request) => request.url)).toEqual([
+			'https://sign.example.com/api/v1/system/capabilities'
+		]);
 	});
 });
 
@@ -1347,7 +1642,54 @@ describe('production smoke origin', () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.message).toMatch(/smoke check skipped/i);
 		expect(result.message).toMatch(/version-preview/);
-		expect(wrangler.calls.some((call) => call.startsWith('rollback:'))).toBe(true);
+		expect(result.rollback?.attempted).toBe(false);
+		expect(result.rollback?.guidance).toMatch(/remain active/);
+		expect(result.mutations).toContain('triggers-deploy');
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.lastWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.previousWorkerVersionId).toBe(PREVIOUS_VERSION);
+	});
+
+	it('keeps a complete deploy active and clears the trigger marker when smoke is skipped', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		wrangler.deployResult = {
+			workerVersionId: WORKER_VERSION,
+			workerUrl: `https://${WORKER_VERSION}-signkit.example.workers.dev`,
+			stdout: `Deployed\nVersion ID: ${WORKER_VERSION}\nhttps://${WORKER_VERSION}-signkit.example.workers.dev`,
+			aborted: false
+		};
+		const fs = await writeCloudflareState(new MemoryFileSystem(), {
+			publicOrigin: undefined,
+			triggerReconciliationRequired: {
+				workerVersionId: PREVIOUS_VERSION,
+				releaseVersion: 'v1.2.2',
+				recordedAt: '2026-09-14T00:00:00.000Z'
+			}
+		});
+		wrangler.fs = fs;
+
+		const result = await reconcileCloudflare(command({ command: 'deploy' }), {
+			fs,
+			http: new FakeHttp(),
+			releases: fakeReleases(),
+			wrangler,
+			extractor: fakeExtractor(fs),
+			now: () => new Date('2026-09-15T00:00:00.000Z'),
+			env: { XDG_STATE_HOME: '/xdg/state' },
+			smokeAttempts: 1,
+			smokeBackoffMs: 0,
+			sleep: async () => undefined
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.message).toMatch(/smoke check skipped/i);
+		expect(result.rollback).toMatchObject({ attempted: false, workerRolledBack: false });
+		expect(result.rollback?.guidance).toMatch(/remain active/);
+		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
+		expect(state.lastWorkerVersionId).toBe(WORKER_VERSION);
+		expect(state.previousWorkerVersionId).toBe(PREVIOUS_VERSION);
+		expect(state.triggerReconciliationRequired).toBeUndefined();
 	});
 });
 

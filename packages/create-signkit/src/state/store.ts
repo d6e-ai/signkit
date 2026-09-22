@@ -6,6 +6,13 @@ import type { FileSystem } from '../runtime/fs.js';
 
 export const STATE_SCHEMA_VERSION = 1 as const;
 
+export interface TriggerReconciliationRequired {
+	workerVersionId: string;
+	releaseVersion: string;
+	releaseCommit?: string;
+	recordedAt: string;
+}
+
 export interface DeploymentState {
 	schemaVersion: typeof STATE_SCHEMA_VERSION;
 	provider: ProviderId;
@@ -41,6 +48,7 @@ export interface DeploymentState {
 	updatedAt: string;
 	lastWorkerVersionId?: string;
 	previousWorkerVersionId?: string;
+	triggerReconciliationRequired?: TriggerReconciliationRequired;
 	appliedMigrations?: string[];
 	adopted?: boolean;
 }
@@ -140,6 +148,9 @@ export function parseState(raw: string): DeploymentState {
 	if (parsed.schemaEpoch !== undefined && typeof parsed.schemaEpoch !== 'string') {
 		throw generic('deployment state schemaEpoch is invalid');
 	}
+	if (parsed.triggerReconciliationRequired !== undefined) {
+		assertTriggerReconciliationMarker(parsed.triggerReconciliationRequired);
+	}
 	if (
 		parsed.mailProvider !== undefined &&
 		parsed.mailProvider !== 'cloudflare' &&
@@ -179,6 +190,35 @@ export function parseState(raw: string): DeploymentState {
 		throw generic('deployment state smtpUsername is invalid');
 	}
 	return parsed as unknown as DeploymentState;
+}
+
+function assertTriggerReconciliationMarker(value: unknown): void {
+	if (!isObject(value)) {
+		throw generic('deployment state triggerReconciliationRequired is invalid');
+	}
+	if (
+		typeof value.workerVersionId !== 'string' ||
+		!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.workerVersionId)
+	) {
+		throw generic('deployment state triggerReconciliationRequired.workerVersionId is invalid');
+	}
+	if (
+		typeof value.releaseVersion !== 'string' ||
+		value.releaseVersion.length < 1 ||
+		value.releaseVersion.length > 35 ||
+		!/^[\x21-\x7e]+$/.test(value.releaseVersion)
+	) {
+		throw generic('deployment state triggerReconciliationRequired.releaseVersion is invalid');
+	}
+	if (
+		value.releaseCommit !== undefined &&
+		(typeof value.releaseCommit !== 'string' || !/^[0-9a-f]{40}$/i.test(value.releaseCommit))
+	) {
+		throw generic('deployment state triggerReconciliationRequired.releaseCommit is invalid');
+	}
+	if (typeof value.recordedAt !== 'string' || !Number.isFinite(Date.parse(value.recordedAt))) {
+		throw generic('deployment state triggerReconciliationRequired.recordedAt is invalid');
+	}
 }
 
 export function assertStateHasNoSecrets(value: unknown): void {

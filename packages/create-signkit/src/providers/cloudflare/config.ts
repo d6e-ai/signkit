@@ -58,6 +58,8 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 	const config = {
 		name: input.workerName,
 		main: input.main,
+		workers_dev: !input.domain,
+		...(input.domain ? { routes: [{ pattern: input.domain, custom_domain: true as const }] } : {}),
 		compatibility_date: input.manifest.worker.compatibilityDate,
 		compatibility_flags: input.manifest.worker.compatibilityFlags,
 		assets: {
