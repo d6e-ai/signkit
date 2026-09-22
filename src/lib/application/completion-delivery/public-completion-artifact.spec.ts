@@ -7,11 +7,18 @@ import {
 	MAX_MANIFEST_SOURCE_BYTES,
 	sha256Hex
 } from '$lib/application/completion-artifacts/completion-manifest';
+import {
+	MAX_EVIDENCE_SUMMARY_PDF_BYTES,
+	MAX_PUBLISHED_COMPLETION_PDF_BYTES
+} from '$lib/application/completion-artifacts/completion-pdf-limits';
 import type {
 	CompletionArtifactLocator,
 	CompletionDeliveryStore
 } from '$lib/ports/completion-delivery-store';
-import type { CompletionArtifactPdfStore } from '$lib/ports/completion-artifact-pdf-store';
+import type {
+	CompletionArtifactPdfRecord,
+	CompletionArtifactPdfStore
+} from '$lib/ports/completion-artifact-pdf-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { issueCompletionToken } from '$lib/security/completion-token';
 import {
@@ -26,7 +33,17 @@ const ENV_ID: string = 'envelope-completion-1';
 
 function mockObjectStore(objects: Map<string, Uint8Array> = new Map()): ObjectStore {
 	return {
-		head: vi.fn(async (): Promise<ObjectMetadata | null> => null),
+		head: vi.fn(async (key: string): Promise<ObjectMetadata | null> => {
+			const bytes: Uint8Array | undefined = objects.get(key);
+			if (bytes === undefined) return null;
+			return {
+				key,
+				contentType: 'application/pdf',
+				size: bytes.byteLength,
+				sha256: await sha256Hex(bytes),
+				version: null
+			};
+		}),
 		get: vi.fn(async (key: string): Promise<ReadableStream<Uint8Array> | null> => {
 			const bytes = objects.get(key);
 			if (!bytes) return null;
@@ -49,6 +66,15 @@ function mockObjectStore(objects: Map<string, Uint8Array> = new Map()): ObjectSt
 		deleteMany: vi.fn(async () => {
 			throw new Error('unused');
 		})
+	};
+}
+
+function pdfStoreFixture(record: CompletionArtifactPdfRecord | null): CompletionArtifactPdfStore {
+	return {
+		publishCompletionArtifactPdf: vi.fn(async () => {
+			throw new Error('unused');
+		}),
+		readCompletionArtifactPdf: vi.fn(async () => record)
 	};
 }
 
@@ -153,6 +179,122 @@ describe('PublicCompletionArtifactService', () => {
 
 		expect(result.content).toBe(markdownContent);
 		expect(result.contentType).toBe('text/markdown; charset=utf-8');
+	});
+
+	describe('PDF reads', () => {
+		async function fixture(size: number): Promise<{
+			issued: Awaited<ReturnType<typeof issueCompletionToken>>;
+			locator: CompletionArtifactLocator;
+			record: CompletionArtifactPdfRecord;
+			bytes: Uint8Array;
+		}> {
+			const issued = await issueCompletionToken();
+			const bytes = new Uint8Array(size);
+			bytes.set(new TextEncoder().encode('%PDF-1.7'));
+			const digest = await sha256Hex(bytes);
+			const objectKey = completionArtifactObjectKey(ENV_ID, 'pdf', digest);
+			return {
+				issued,
+				bytes,
+				record: {
+					pdfObjectKey: objectKey,
+					pdfSha256: digest,
+					pdfManifestObjectKey: 'unused',
+					pdfManifestSha256: 'a'.repeat(64),
+					publishedAt: NOW.toISOString()
+				},
+				locator: {
+					envelopeId: ENV_ID,
+					jsonObjectKey: 'unused',
+					jsonSha256: 'b'.repeat(64),
+					markdownObjectKey: 'unused',
+					markdownSha256: 'c'.repeat(64)
+				}
+			};
+		}
+
+		it('returns a verified executed PDF larger than the evidence-summary ceiling', async () => {
+			const { issued, locator, record, bytes } = await fixture(MAX_EVIDENCE_SUMMARY_PDF_BYTES + 1);
+			const objects = mockObjectStore(new Map([[record.pdfObjectKey, bytes]]));
+			const service = new PublicCompletionArtifactService(
+				mockStore(async () => locator),
+				objects,
+				pdfStoreFixture(record)
+			);
+
+			await expect(service.read(issued.token, 'pdf', NOW)).resolves.toMatchObject({
+				contentType: 'application/pdf'
+			});
+		});
+
+		it('rejects oversized metadata opaquely before fetching the body', async () => {
+			const { issued, locator, record } = await fixture(8);
+			const objects = mockObjectStore();
+			vi.mocked(objects.head).mockResolvedValue({
+				key: record.pdfObjectKey,
+				contentType: 'application/pdf',
+				size: MAX_PUBLISHED_COMPLETION_PDF_BYTES + 1,
+				sha256: record.pdfSha256,
+				version: null
+			});
+			const service = new PublicCompletionArtifactService(
+				mockStore(async () => locator),
+				objects,
+				pdfStoreFixture(record)
+			);
+
+			await expect(service.read(issued.token, 'pdf', NOW)).rejects.toThrow(
+				PublicCompletionArtifactIntegrityError
+			);
+			expect(objects.get).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			['short', 1],
+			['long', -1]
+		])('maps a %s object stream to the opaque integrity error', async (_label, delta) => {
+			const { issued, locator, record, bytes } = await fixture(32);
+			const objects = mockObjectStore(new Map([[record.pdfObjectKey, bytes]]));
+			vi.mocked(objects.head).mockResolvedValue({
+				key: record.pdfObjectKey,
+				contentType: 'application/pdf',
+				size: bytes.byteLength + delta,
+				sha256: record.pdfSha256,
+				version: null
+			});
+			const service = new PublicCompletionArtifactService(
+				mockStore(async () => locator),
+				objects,
+				pdfStoreFixture(record)
+			);
+
+			await expect(service.read(issued.token, 'pdf', NOW)).rejects.toThrow(
+				PublicCompletionArtifactIntegrityError
+			);
+		});
+
+		it('rehashes the body even when metadata claims the published digest', async () => {
+			const { issued, locator, record, bytes } = await fixture(32);
+			const tampered = Uint8Array.from(bytes);
+			tampered[tampered.byteLength - 1] = 1;
+			const objects = mockObjectStore(new Map([[record.pdfObjectKey, tampered]]));
+			vi.mocked(objects.head).mockResolvedValue({
+				key: record.pdfObjectKey,
+				contentType: 'application/pdf',
+				size: tampered.byteLength,
+				sha256: record.pdfSha256,
+				version: null
+			});
+			const service = new PublicCompletionArtifactService(
+				mockStore(async () => locator),
+				objects,
+				pdfStoreFixture(record)
+			);
+
+			await expect(service.read(issued.token, 'pdf', NOW)).rejects.toThrow(
+				PublicCompletionArtifactIntegrityError
+			);
+		});
 	});
 
 	describe('status', () => {

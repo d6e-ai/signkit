@@ -8,6 +8,11 @@ import {
 	COMPLETION_PDF_MANIFEST_SCHEMA,
 	renderCompletionPdf
 } from './completion-pdf';
+import {
+	MAX_EVIDENCE_SUMMARY_PDF_BYTES,
+	MAX_PUBLISHED_COMPLETION_PDF_BYTES
+} from './completion-pdf-limits';
+import { MAX_EXECUTED_PDF_BYTES } from './executed-pdf';
 import { CompletionArtifactIntegrityError, type CompletionManifestV1 } from './completion-manifest';
 
 const MANIFEST: CompletionManifestV1 = {
@@ -63,6 +68,12 @@ const GEOMETRY: readonly CompletionPdfFieldGeometry[] = [
 ];
 
 describe('buildCompletionPdfPages + renderCompletionPdf', () => {
+	it('keeps the final artifact limit separate from the smaller evidence-summary limit', () => {
+		expect(MAX_EXECUTED_PDF_BYTES).toBe(MAX_PUBLISHED_COMPLETION_PDF_BYTES);
+		expect(MAX_PUBLISHED_COMPLETION_PDF_BYTES).toBe(32 * 1024 * 1024);
+		expect(MAX_EVIDENCE_SUMMARY_PDF_BYTES).toBe(8 * 1024 * 1024);
+	});
+
 	it('is fully deterministic for identical inputs', () => {
 		const pagesA = buildCompletionPdfPages(MANIFEST, DOCUMENTS, GEOMETRY);
 		const pagesB = buildCompletionPdfPages(MANIFEST, DOCUMENTS, GEOMETRY);

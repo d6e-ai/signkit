@@ -12,9 +12,9 @@ import {
 	sha256Hex,
 	type CompletionManifestV1
 } from './completion-manifest';
+import { MAX_EVIDENCE_SUMMARY_PDF_BYTES } from './completion-pdf-limits';
 
 export const COMPLETION_PDF_MANIFEST_SCHEMA: string = 'signkit-completion-pdf-manifest-v2';
-export const MAX_COMPLETION_PDF_BYTES: number = 8 * 1024 * 1024;
 
 export class CompletionPdfBoundExceededError extends Error {
 	constructor(message: string) {
@@ -193,10 +193,10 @@ function round(value: number): string {
 	return (Math.round(value * 1e4) / 1e4).toString();
 }
 
-/** Renders the evidence summary and verifies it against {@link MAX_COMPLETION_PDF_BYTES}. */
+/** Renders the evidence summary and verifies it against its appendix-specific bound. */
 export function renderCompletionPdf(pages: readonly (readonly string[])[]): Uint8Array {
 	const bytes: Uint8Array = renderDeterministicTextPdf(pages);
-	if (bytes.byteLength > MAX_COMPLETION_PDF_BYTES) {
+	if (bytes.byteLength > MAX_EVIDENCE_SUMMARY_PDF_BYTES) {
 		throw new CompletionPdfBoundExceededError('Completion PDF exceeds the size limit');
 	}
 	return bytes;

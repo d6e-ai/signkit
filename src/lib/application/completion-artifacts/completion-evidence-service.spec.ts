@@ -9,6 +9,10 @@ import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { completionArtifactObjectKey } from './completion-artifact-service';
 import { sha256Hex } from './completion-manifest';
 import {
+	MAX_EVIDENCE_SUMMARY_PDF_BYTES,
+	MAX_PUBLISHED_COMPLETION_PDF_BYTES
+} from './completion-pdf-limits';
+import {
 	CompletionEvidenceReadError,
 	CompletionEvidenceService,
 	completionEvidenceFailureLog
@@ -39,7 +43,17 @@ function publishedStore(overrides: {
 
 function mockObjectStore(objects: Map<string, Uint8Array> = new Map()): ObjectStore {
 	return {
-		head: vi.fn(async (): Promise<ObjectMetadata | null> => null),
+		head: vi.fn(async (key: string): Promise<ObjectMetadata | null> => {
+			const bytes: Uint8Array | undefined = objects.get(key);
+			if (bytes === undefined) return null;
+			return {
+				key,
+				contentType: 'application/pdf',
+				size: bytes.byteLength,
+				sha256: await sha256Hex(bytes),
+				version: null
+			};
+		}),
 		get: vi.fn(async (key: string): Promise<ReadableStream<Uint8Array> | null> => {
 			const bytes = objects.get(key);
 			if (!bytes) return null;
@@ -180,6 +194,69 @@ describe('CompletionEvidenceService', () => {
 			});
 		});
 
+		it('reads an executed PDF larger than the evidence-summary ceiling', async () => {
+			const pdfBytes = new Uint8Array(MAX_EVIDENCE_SUMMARY_PDF_BYTES + 1);
+			pdfBytes.set(new TextEncoder().encode('%PDF-1.7'));
+			const sha256 = await sha256Hex(pdfBytes);
+			const record = pdfRecord(pdfBytes, sha256);
+			const service = new CompletionEvidenceService(
+				publishedStore({}),
+				mockObjectStore(new Map([[record.pdfObjectKey, pdfBytes]])),
+				pdfStoreFixture(record)
+			);
+
+			await expect(service.readPdf(ENVELOPE_ID)).resolves.toMatchObject({ sha256 });
+		});
+
+		it('rejects metadata over the published limit before reading the object body', async () => {
+			const sha256: string = 'a'.repeat(64);
+			const record = pdfRecord(new Uint8Array(), sha256);
+			const objects = mockObjectStore();
+			vi.mocked(objects.head).mockResolvedValue({
+				key: record.pdfObjectKey,
+				contentType: 'application/pdf',
+				size: MAX_PUBLISHED_COMPLETION_PDF_BYTES + 1,
+				sha256,
+				version: null
+			});
+			const service = new CompletionEvidenceService(
+				publishedStore({}),
+				objects,
+				pdfStoreFixture(record)
+			);
+
+			await expect(service.readPdf(ENVELOPE_ID)).rejects.toMatchObject({
+				code: 'stream_too_large'
+			});
+			expect(objects.get).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			['short', 1],
+			['long', -1]
+		])('rejects a %s object stream relative to its attested size', async (_label, delta) => {
+			const pdfBytes = new TextEncoder().encode('%PDF-1.7 fixture');
+			const sha256 = await sha256Hex(pdfBytes);
+			const record = pdfRecord(pdfBytes, sha256);
+			const objects = mockObjectStore(new Map([[record.pdfObjectKey, pdfBytes]]));
+			vi.mocked(objects.head).mockResolvedValue({
+				key: record.pdfObjectKey,
+				contentType: 'application/pdf',
+				size: pdfBytes.byteLength + delta,
+				sha256,
+				version: null
+			});
+			const service = new CompletionEvidenceService(
+				publishedStore({}),
+				objects,
+				pdfStoreFixture(record)
+			);
+
+			await expect(service.readPdf(ENVELOPE_ID)).rejects.toMatchObject({
+				code: 'pdf_integrity_mismatch'
+			});
+		});
+
 		it('returns null when no PDF has been published', async () => {
 			const service = new CompletionEvidenceService(
 				publishedStore({}),
@@ -260,9 +337,17 @@ describe('CompletionEvidenceService', () => {
 			const sha256 = await sha256Hex(original);
 			const record = pdfRecord(original, sha256);
 			const tampered = new TextEncoder().encode('%PDF-1.7 tampered!');
+			const objects = mockObjectStore(new Map([[record.pdfObjectKey, tampered]]));
+			vi.mocked(objects.head).mockResolvedValue({
+				key: record.pdfObjectKey,
+				contentType: 'application/pdf',
+				size: tampered.byteLength,
+				sha256,
+				version: null
+			});
 			const service = new CompletionEvidenceService(
 				publishedStore({}),
-				mockObjectStore(new Map([[record.pdfObjectKey, tampered]])),
+				objects,
 				pdfStoreFixture(record)
 			);
 			try {
