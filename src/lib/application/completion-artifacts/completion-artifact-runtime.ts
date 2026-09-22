@@ -84,17 +84,27 @@ export async function resolveCompletionArtifactStatusService(
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
 		if (database === undefined) return null;
-		return new CompletionArtifactStatusService(new D1CompletionArtifactStore(database));
+		return new CompletionArtifactStatusService(
+			new D1CompletionArtifactStore(database),
+			new D1CompletionArtifactPdfStore(database)
+		);
 	}
 
 	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
 	if (databaseUrl === undefined) return null;
-	const [{ PostgresCompletionArtifactStore }, { resolvePostgresSql }] = await Promise.all([
+	const [
+		{ PostgresCompletionArtifactStore },
+		{ PostgresCompletionArtifactPdfStore },
+		{ resolvePostgresSql }
+	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
+		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
 		import('$lib/application/envelopes/runtime-postgres')
 	]);
+	const sql = resolvePostgresSql(databaseUrl);
 	return new CompletionArtifactStatusService(
-		new PostgresCompletionArtifactStore(resolvePostgresSql(databaseUrl))
+		new PostgresCompletionArtifactStore(sql),
+		new PostgresCompletionArtifactPdfStore(sql)
 	);
 }
 

@@ -2,7 +2,14 @@ import type { CompletionArtifactStore } from '$lib/ports/completion-artifact-sto
 import type { CompletionArtifactPdfStore } from '$lib/ports/completion-artifact-pdf-store';
 import type { ObjectStore } from '$lib/ports/object-store';
 import { completionArtifactObjectKey } from './completion-artifact-service';
-import { MAX_MANIFEST_GZIP_BYTES, MAX_MANIFEST_SOURCE_BYTES } from './completion-manifest';
+import {
+	MAX_MANIFEST_GZIP_BYTES,
+	MAX_MANIFEST_SOURCE_BYTES,
+	sha256Hex
+} from './completion-manifest';
+import { MAX_COMPLETION_PDF_BYTES } from './completion-pdf';
+
+const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 
 export interface CompletionEvidenceResult {
 	content: string;
@@ -11,7 +18,7 @@ export interface CompletionEvidenceResult {
 }
 
 export interface CompletionPdfResult {
-	stream: ReadableStream<Uint8Array>;
+	bytes: Uint8Array;
 	sha256: string;
 }
 
@@ -71,6 +78,9 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 
 		const isMarkdown = format === 'markdown';
 		const digest = isMarkdown ? status.published.markdownSha256 : status.published.jsonSha256;
+		if (!SHA256_PATTERN.test(digest)) {
+			throw new CompletionEvidenceReadError('artifact_digest_invalid');
+		}
 		const key = completionArtifactObjectKey(envelopeId, isMarkdown ? 'markdown' : 'json', digest);
 
 		const stream = await this.#objects.get(key);
@@ -79,8 +89,16 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 		}
 
 		const gzipped = await readStreamBounded(stream, MAX_MANIFEST_GZIP_BYTES);
+		if ((await sha256Hex(gzipped)) !== digest) {
+			throw new CompletionEvidenceReadError('artifact_integrity_mismatch');
+		}
 		const unzipped = await gunzip(gzipped, MAX_MANIFEST_SOURCE_BYTES);
-		const content = new TextDecoder('utf-8', { fatal: true }).decode(unzipped);
+		let content: string;
+		try {
+			content = new TextDecoder('utf-8', { fatal: true }).decode(unzipped);
+		} catch {
+			throw new CompletionEvidenceReadError('artifact_decode_failed');
+		}
 
 		return {
 			content,
@@ -94,14 +112,26 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 		if (pdfRecord === null) {
 			return null;
 		}
+		if (!SHA256_PATTERN.test(pdfRecord.pdfSha256)) {
+			throw new CompletionEvidenceReadError('pdf_digest_invalid');
+		}
+		const expectedKey = completionArtifactObjectKey(envelopeId, 'pdf', pdfRecord.pdfSha256);
+		if (pdfRecord.pdfObjectKey !== expectedKey) {
+			throw new CompletionEvidenceReadError('pdf_key_mismatch');
+		}
 
-		const stream = await this.#objects.get(pdfRecord.pdfObjectKey);
+		const stream = await this.#objects.get(expectedKey);
 		if (stream === null) {
 			throw new CompletionEvidenceReadError('pdf_object_missing');
 		}
 
+		const bytes = await readStreamBounded(stream, MAX_COMPLETION_PDF_BYTES);
+		if ((await sha256Hex(bytes)) !== pdfRecord.pdfSha256) {
+			throw new CompletionEvidenceReadError('pdf_integrity_mismatch');
+		}
+
 		return {
-			stream,
+			bytes,
 			sha256: pdfRecord.pdfSha256
 		};
 	}

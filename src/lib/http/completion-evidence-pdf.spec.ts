@@ -57,7 +57,7 @@ function mockService(
 			})
 		),
 		readPdf: vi.fn(async (): Promise<CompletionPdfResult | null> => ({
-			stream: new ReadableStream<Uint8Array>(),
+			bytes: new TextEncoder().encode('%PDF-1.7 fixture'),
 			sha256: 'e'.repeat(64)
 		})),
 		envelopeExists: vi.fn(async () => true),
@@ -99,8 +99,11 @@ describe('Completion Evidence HTTP Handler', () => {
 
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-type')).toBe('application/json');
-		expect(response.headers.get('cache-control')).toBe('private, no-cache');
+		expect(response.headers.get('cache-control')).toBe('private, no-store');
 		expect(response.headers.get('etag')).toBe(`"${'d'.repeat(64)}"`);
+		expect(response.headers.get('content-disposition')).toBe(
+			`attachment; filename="completion-evidence-${envelopeId}.json"`
+		);
 		expect(await response.text()).toBe('{"schema":"completion-manifest-v1"}');
 		expect(service.readEvidence).toHaveBeenCalledWith(envelopeId, 'json');
 	});
@@ -117,6 +120,9 @@ describe('Completion Evidence HTTP Handler', () => {
 
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+		expect(response.headers.get('content-disposition')).toBe(
+			`attachment; filename="completion-evidence-${envelopeId}.md"`
+		);
 		expect(await response.text()).toBe('# Evidence');
 		expect(service.readEvidence).toHaveBeenCalledWith(envelopeId, 'markdown');
 	});
@@ -197,17 +203,17 @@ describe('Completion PDF HTTP Handler', () => {
 		expect(service.readPdf).not.toHaveBeenCalled();
 	});
 
-	it('returns 200 with immutable PDF stream, etag, and content disposition headers', async () => {
+	it('returns 200 with a private, no-store PDF attachment and etag', async () => {
 		const service = mockService();
 		const handler = createCompletionPdfHandler(() => service);
 		const response = await handler(event({ pathname: `/api/v1/envelopes/${envelopeId}/pdf` }));
 
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-type')).toBe('application/pdf');
-		expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+		expect(response.headers.get('cache-control')).toBe('private, no-store');
 		expect(response.headers.get('etag')).toBe(`"${'e'.repeat(64)}"`);
 		expect(response.headers.get('content-disposition')).toBe(
-			`inline; filename="completion-${envelopeId}.pdf"`
+			`attachment; filename="completion-${envelopeId}.pdf"`
 		);
 		expect(service.readPdf).toHaveBeenCalledWith(envelopeId);
 	});

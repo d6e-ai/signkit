@@ -2,6 +2,10 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import { CompletionArtifactStatusService } from '$lib/application/completion-artifacts/completion-artifact-status';
 import type { CompletionArtifactStore } from '$lib/ports/completion-artifact-store';
+import type {
+	CompletionArtifactPdfRecord,
+	CompletionArtifactPdfStore
+} from '$lib/ports/completion-artifact-pdf-store';
 import {
 	createCompletionArtifactStatusHandler,
 	type CompletionArtifactStatusServiceResolver
@@ -25,7 +29,10 @@ function event(
 	});
 }
 
-function service(findCompletionArtifactStatus = vi.fn()) {
+function service(
+	findCompletionArtifactStatus = vi.fn(),
+	pdfRecord: CompletionArtifactPdfRecord | null | undefined = undefined
+) {
 	const store: CompletionArtifactStore = {
 		claimPendingCompletionArtifacts: vi.fn(),
 		readClaimedCompletionArtifact: vi.fn(),
@@ -34,7 +41,16 @@ function service(findCompletionArtifactStatus = vi.fn()) {
 		failCompletionArtifact: vi.fn(),
 		findCompletionArtifactStatus
 	};
-	return new CompletionArtifactStatusService(store);
+	if (pdfRecord === undefined) {
+		return new CompletionArtifactStatusService(store);
+	}
+	const pdfStore: CompletionArtifactPdfStore = {
+		publishCompletionArtifactPdf: vi.fn(async () => {
+			throw new Error('unused');
+		}),
+		readCompletionArtifactPdf: vi.fn(async () => pdfRecord)
+	};
+	return new CompletionArtifactStatusService(store, pdfStore);
 }
 
 describe('completion artifact status HTTP handler', () => {
@@ -79,8 +95,44 @@ describe('completion artifact status HTTP handler', () => {
 		expect(find).toHaveBeenCalledWith(ENVELOPE_ID);
 		expect(body).toContain('published');
 		expect(body).toContain('m'.repeat(64));
+		expect(body).toContain('"pdfStatus":"unavailable"');
 		expect(body).not.toContain('completion-artifacts/v1');
 		expect(body).not.toContain('audit-event-1');
+	});
+
+	it('reports a published PDF status without exposing its object key or digest', async () => {
+		const find = vi.fn(async () => ({
+			envelopeId: ENVELOPE_ID,
+			envelopeCompleted: true,
+			jobStatus: 'published' as const,
+			attempts: 1,
+			lastError: null,
+			availableAt: null,
+			published: {
+				envelopeId: ENVELOPE_ID,
+				manifestSha256: 'm'.repeat(64),
+				jsonSha256: 'j'.repeat(64),
+				markdownSha256: 'd'.repeat(64),
+				publishedAt: '2026-09-12T00:00:00.000Z',
+				auditEventId: 'audit-event-1'
+			}
+		}));
+		const pdfRecord: CompletionArtifactPdfRecord = {
+			pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.pdf',
+			pdfSha256: 'a'.repeat(64),
+			pdfManifestObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.json.gz',
+			pdfManifestSha256: 'a'.repeat(64),
+			publishedAt: '2026-09-12T00:00:00.000Z'
+		};
+		const response: Response = await createCompletionArtifactStatusHandler(() =>
+			service(find, pdfRecord)
+		)(event());
+		const body: string = await response.text();
+
+		expect(response.status).toBe(200);
+		expect(body).toContain('"pdfStatus":"published"');
+		expect(body).not.toContain('completion-artifacts/v1');
+		expect(body).not.toContain('a'.repeat(64));
 	});
 
 	it('returns not found for a missing envelope', async () => {

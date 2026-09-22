@@ -2,9 +2,11 @@ import type { DraftPath, FieldGeometry, FieldType, RecipientRole } from '$lib/do
 import type { DocumentSetManifest } from '$lib/domain/document-set';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
 import type { PublicEnvelopeDeliveryStatus } from '$lib/application/delivery/delivery-status';
+import type { PublicCompletionArtifactStatus } from '$lib/application/completion-artifacts/completion-artifact-status';
 
 export type Envelope = PublicEnvelope;
 export type { FieldGeometry, FieldType, RecipientRole, PublicEnvelopeDeliveryStatus };
+export type { PublicCompletionArtifactStatus };
 
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -684,6 +686,73 @@ export class EnvelopesClient {
 		);
 		return data.delivery;
 	}
+
+	async completionArtifactStatus(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<PublicCompletionArtifactStatus> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-artifact`
+		);
+		const { data } = await this.request<{ completionArtifact: PublicCompletionArtifactStatus }>(
+			url,
+			{ method: 'GET', headers: { accept: 'application/json, application/problem+json' } },
+			options?.fetch
+		);
+		return data.completionArtifact;
+	}
+
+	async completionPdf(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<{ bytes: Uint8Array; filename: string }> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-artifact/pdf`
+		);
+		const fetchFn = this.resolveFetch(options?.fetch);
+		const response = await fetchFn(url, {
+			credentials: 'same-origin',
+			method: 'GET',
+			headers: { accept: 'application/pdf, application/problem+json' }
+		});
+		if (!response.ok) throw await this.parseErrorResponse(response, url);
+		const buffer = await response.arrayBuffer();
+		return {
+			bytes: new Uint8Array(buffer),
+			filename: contentDispositionFilename(response) ?? `completion-${envelopeId}.pdf`
+		};
+	}
+
+	async completionEvidence(
+		envelopeId: string,
+		format: 'json' | 'markdown',
+		options?: RequestOptions
+	): Promise<{ content: string; filename: string; contentType: string }> {
+		const url = `${this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-artifact/evidence`
+		)}?format=${format}`;
+		const fetchFn = this.resolveFetch(options?.fetch);
+		const response = await fetchFn(url, {
+			credentials: 'same-origin',
+			method: 'GET',
+			headers: {
+				accept: `${format === 'markdown' ? 'text/markdown' : 'application/json'}, application/problem+json`
+			}
+		});
+		if (!response.ok) throw await this.parseErrorResponse(response, url);
+		const content = await response.text();
+		const defaultFilename = `completion-evidence-${envelopeId}.${format === 'markdown' ? 'md' : 'json'}`;
+		return {
+			content,
+			filename: contentDispositionFilename(response) ?? defaultFilename,
+			contentType: response.headers.get('content-type') ?? 'application/octet-stream'
+		};
+	}
+}
+
+function contentDispositionFilename(response: Response): string | null {
+	const disposition = response.headers.get('content-disposition');
+	return disposition?.match(/filename="([^"]+)"/)?.[1] ?? null;
 }
 
 export function createEnvelopesClient(options?: EnvelopesClientOptions): EnvelopesClient {

@@ -434,14 +434,14 @@ describe('CompletionDeliveryService', () => {
 			expect(msg.text).toContain(
 				'"NDA "Special" & <Offer> 2026" has been completed by all participants.'
 			);
-			expect(msg.text).toContain(`https://signkit.example/c/${token}`);
+			expect(msg.text).toContain(`https://signkit.example/c/${token}/view`);
 
 			// HTML escaping checks
 			expect(msg.html).toContain('lang="en"');
 			expect(msg.html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
 			expect(msg.html).toContain('O&#39;Connor');
 			expect(msg.html).toContain('NDA &quot;Special&quot; &amp; &lt;Offer&gt; 2026');
-			expect(msg.html).toContain(`href="https://signkit.example/c/${token}"`);
+			expect(msg.html).toContain(`href="https://signkit.example/c/${token}/view"`);
 			expect(msg.html).toContain('View completed documents');
 			expect(msg.html).not.toContain('<script>');
 		});
@@ -465,14 +465,14 @@ describe('CompletionDeliveryService', () => {
 			expect(msg.subject).toBe('「業務委託契約書 <甲乙> & "覚書"」の手続きが完了しました');
 			expect(msg.text).toContain('佐藤 <次郎> & "顧問" 様');
 			expect(msg.text).toContain('「業務委託契約書 <甲乙> & "覚書"」の手続きが完了しました。');
-			expect(msg.text).toContain(`https://signkit.example/c/${token}`);
+			expect(msg.text).toContain(`https://signkit.example/ja/c/${token}/view`);
 
 			// HTML escaping checks
 			expect(msg.html).toContain('lang="ja"');
 			expect(msg.html).toContain('&lt;次郎&gt;');
 			expect(msg.html).toContain('&quot;顧問&quot;');
 			expect(msg.html).toContain('業務委託契約書 &lt;甲乙&gt; &amp; &quot;覚書&quot;');
-			expect(msg.html).toContain(`href="https://signkit.example/c/${token}"`);
+			expect(msg.html).toContain(`href="https://signkit.example/ja/c/${token}/view"`);
 			expect(msg.html).toContain('完了した契約書を開く');
 			expect(msg.html).not.toContain('合意書');
 			expect(msg.text).not.toContain('合意書');
@@ -845,8 +845,10 @@ describe('CompletionDeliveryService', () => {
 				integrityFailed: 0
 			});
 			expect(mail.messages).toHaveLength(1);
-			expect(mail.messages[0].text).toContain(`https://signkit.example/c/${issued.token}`);
-			expect(mail.messages[0].html).toContain(`href="https://signkit.example/c/${issued.token}"`);
+			expect(mail.messages[0].text).toContain(`https://signkit.example/c/${issued.token}/view`);
+			expect(mail.messages[0].html).toContain(
+				`href="https://signkit.example/c/${issued.token}/view"`
+			);
 			expect(store.completions).toHaveLength(1);
 			expect(store.completions[0]).toMatchObject({
 				deliveryId: 'delivery-1',

@@ -10,7 +10,10 @@ describe('recipient surface route classification', () => {
 		'/en/s/token',
 		'/sign/01910000-0000-7000-8000-000000000001',
 		'/en/sign/01910000-0000-7000-8000-000000000001',
-		'/sign/01910000-0000-7000-8000-000000000001/agreement.pdf'
+		'/sign/01910000-0000-7000-8000-000000000001/agreement.pdf',
+		'/c/skca1_token',
+		'/en/c/skca1_token',
+		'/ja/c/skca1_token/view'
 	])('classifies %s as a recipient surface', (pathname) =>
 		expect(isRecipientSurfacePath(pathname)).toBe(true)
 	);

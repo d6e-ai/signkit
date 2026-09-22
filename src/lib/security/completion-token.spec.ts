@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	completionAccessPath,
+	completionReceiptPath,
 	computeCompletionAccessExpiry,
 	hashCompletionToken,
 	isCompletionToken,
@@ -30,6 +31,20 @@ describe('completion-token helpers', () => {
 	it('computes completion access path', async () => {
 		const issued = await issueCompletionToken();
 		expect(completionAccessPath(issued.token)).toBe(`/c/${issued.token}`);
+	});
+
+	it('computes an unprefixed receipt path for the base locale', async () => {
+		const issued = await issueCompletionToken();
+		expect(completionReceiptPath(issued.token, 'en')).toBe(`/c/${issued.token}/view`);
+	});
+
+	it('computes a /ja-prefixed receipt path for Japanese', async () => {
+		const issued = await issueCompletionToken();
+		expect(completionReceiptPath(issued.token, 'ja')).toBe(`/ja/c/${issued.token}/view`);
+	});
+
+	it('rejects a malformed token for the receipt path', () => {
+		expect(() => completionReceiptPath('invalid-token', 'en')).toThrow('Invalid completion token');
 	});
 
 	it('computes 30-day access expiry', () => {

@@ -44,6 +44,7 @@
 		type Envelope,
 		type FieldGeometry,
 		type FieldType,
+		type PublicCompletionArtifactStatus,
 		type PublicEnvelopeDeliveryStatus,
 		type PublicEnvelopeFieldResponse,
 		type ReadyRecipientInput,
@@ -83,6 +84,11 @@
 	let envelope = $state<Envelope | null>(null);
 	let draft = $state<DraftWorkspaceResponse | null>(null);
 	let delivery = $state<PublicEnvelopeDeliveryStatus | null>(null);
+	let completionStatus = $state<PublicCompletionArtifactStatus | null>(null);
+	let completionStatusError = $state<string | null>(null);
+	let completionDownloadError = $state<string | null>(null);
+	let completionPdfDownloadPending = $state(false);
+	let completionEvidenceDownloadPending = $state<'json' | 'markdown' | null>(null);
 
 	// Documents editor state.
 	let editedContent = $state<Record<string, string>>({});
@@ -398,6 +404,15 @@
 			}
 			if (detail.envelope.status !== 'draft') {
 				delivery = await client.deliveries(envelopeId).catch(() => null);
+			}
+			if (detail.envelope.status === 'completed') {
+				completionStatusError = null;
+				try {
+					completionStatus = await client.completionArtifactStatus(envelopeId);
+				} catch {
+					completionStatus = null;
+					completionStatusError = m.envelope_completed_status_unavailable();
+				}
 			}
 		} catch (cause) {
 			if (cause instanceof EnvelopesApiError && cause.status === 401) {
@@ -1003,6 +1018,48 @@
 		}
 	}
 
+	function triggerDownload(content: BlobPart, filename: string, type: string): void {
+		const blob = new Blob([content], { type });
+		const href = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = href;
+		link.download = filename;
+		link.click();
+		URL.revokeObjectURL(href);
+	}
+
+	async function downloadCompletionPdf(): Promise<void> {
+		if (completionPdfDownloadPending) return;
+		completionPdfDownloadPending = true;
+		completionDownloadError = null;
+		try {
+			const result = await client.completionPdf(envelopeId);
+			const body = new Uint8Array(result.bytes.byteLength);
+			body.set(result.bytes);
+			triggerDownload(body, result.filename, 'application/pdf');
+		} catch (cause) {
+			completionDownloadError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_completed_download_error();
+		} finally {
+			completionPdfDownloadPending = false;
+		}
+	}
+
+	async function downloadCompletionEvidence(format: 'json' | 'markdown'): Promise<void> {
+		if (completionEvidenceDownloadPending !== null) return;
+		completionEvidenceDownloadPending = format;
+		completionDownloadError = null;
+		try {
+			const result = await client.completionEvidence(envelopeId, format);
+			triggerDownload(result.content, result.filename, result.contentType);
+		} catch (cause) {
+			completionDownloadError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_completed_download_error();
+		} finally {
+			completionEvidenceDownloadPending = null;
+		}
+	}
+
 	async function uploadPdf(file: File | null): Promise<void> {
 		if (file === null || draft === null || pdfUploadPending) return;
 		pdfUploadPending = true;
@@ -1536,6 +1593,81 @@
 					</div>
 				{:else}
 					<p class="text-sm text-muted-foreground">{m.envelope_documents_immutable()}</p>
+				{/if}
+
+				{#if envelope.status === 'completed'}
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>{m.envelope_completed_title()}</Card.Title>
+							<Card.Description>{m.envelope_completed_description()}</Card.Description>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-4">
+							{#if completionStatusError}
+								<p class="text-sm font-medium text-destructive" role="alert">
+									{completionStatusError}
+								</p>
+							{:else if completionStatus === null}
+								<Skeleton class="h-9 w-48" />
+							{:else if completionStatus.status === 'failed'}
+								<p class="text-sm text-muted-foreground">{m.envelope_completed_status_failed()}</p>
+							{:else if completionStatus.status === 'pending' || completionStatus.status === 'processing'}
+								<p class="text-sm text-muted-foreground">{m.envelope_completed_status_pending()}</p>
+							{:else if completionStatus.status === 'published'}
+								{#if completionDownloadError}
+									<p class="text-sm font-medium text-destructive" role="alert">
+										{completionDownloadError}
+									</p>
+								{/if}
+								{#if completionStatus.pdfStatus === 'published'}
+									<Button
+										variant="outline"
+										class="w-fit"
+										disabled={completionPdfDownloadPending}
+										onclick={() => void downloadCompletionPdf()}
+									>
+										{#if completionPdfDownloadPending}
+											<Spinner data-icon="inline-start" />
+										{:else}
+											<IconFileTypePdf data-icon="inline-start" />
+										{/if}
+										{m.envelope_completed_pdf_download()}
+									</Button>
+								{:else}
+									<p class="text-sm text-muted-foreground">
+										{completionStatus.pdfStatus === 'pending'
+											? m.envelope_completed_pdf_pending()
+											: m.envelope_completed_pdf_unavailable()}
+									</p>
+								{/if}
+								<div class="flex flex-wrap gap-2">
+									<Button
+										variant="outline"
+										disabled={completionEvidenceDownloadPending !== null}
+										onclick={() => void downloadCompletionEvidence('json')}
+									>
+										{#if completionEvidenceDownloadPending === 'json'}
+											<Spinner data-icon="inline-start" />
+										{:else}
+											<IconDownload data-icon="inline-start" />
+										{/if}
+										{m.envelope_completed_evidence_json_download()}
+									</Button>
+									<Button
+										variant="outline"
+										disabled={completionEvidenceDownloadPending !== null}
+										onclick={() => void downloadCompletionEvidence('markdown')}
+									>
+										{#if completionEvidenceDownloadPending === 'markdown'}
+											<Spinner data-icon="inline-start" />
+										{:else}
+											<IconDownload data-icon="inline-start" />
+										{/if}
+										{m.envelope_completed_evidence_markdown_download()}
+									</Button>
+								</div>
+							{/if}
+						</Card.Content>
+					</Card.Root>
 				{/if}
 			</Tabs.Content>
 

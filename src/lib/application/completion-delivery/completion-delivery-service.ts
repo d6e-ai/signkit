@@ -22,7 +22,7 @@ import {
 	type MailSender
 } from '$lib/ports/mail-sender';
 import {
-	completionAccessPath,
+	completionReceiptPath,
 	computeCompletionAccessExpiry,
 	hashCompletionToken,
 	issueCompletionToken
@@ -497,15 +497,11 @@ function completionMessage(
 	origin: string,
 	token: string
 ): MailMessage {
-	const completionUrl: string = new URL(completionAccessPath(token), origin).href;
+	const locale: 'en' | 'ja' = claim.recipientLocale === 'ja' ? 'ja' : 'en';
+	const completionUrl: string = new URL(completionReceiptPath(token, locale), origin).href;
 	const title: string = safeDisplayText(claim.envelopeTitle).slice(0, 300);
 	const name: string = safeDisplayText(claim.recipientName).slice(0, 200);
-	const copy: TransactionalMailCopy = renderCompletionMail(
-		claim.recipientLocale === 'ja' ? 'ja' : 'en',
-		name,
-		title,
-		completionUrl
-	);
+	const copy: TransactionalMailCopy = renderCompletionMail(locale, name, title, completionUrl);
 	return {
 		to: claim.recipientEmail,
 		from: { email: sender.fromEmail, name: sender.fromName },
