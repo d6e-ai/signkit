@@ -8,7 +8,7 @@ import {
 	boundPdfSealClaimLimit,
 	pdfSealProviderPollAvailableAt,
 	pdfSealRetryAvailableAt,
-	PDF_SEAL_JOB_MAX_ATTEMPTS,
+	PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES,
 	type ClaimPdfSealJobsCommand,
 	type ClaimedPdfSealJob,
 	type CompletePdfSealJobCommand,
@@ -37,7 +37,8 @@ interface D1PdfSealJobRow {
 	validation_id: string;
 	status: PdfSealJobStatus;
 	next_action: PdfSealJobAction;
-	attempts: number;
+	attempt_sequence: number;
+	retry_failures: number;
 	available_at: string;
 	locked_at: string | null;
 	retryable: number | null;
@@ -69,7 +70,7 @@ interface D1PdfSealJobRow {
 }
 
 const JOB_COLUMNS: string = `id, envelope_id, operation_id, validation_id, status, next_action,
-	attempts, available_at, locked_at, retryable, last_error_code,
+	attempt_sequence, retry_failures, available_at, locked_at, retryable, last_error_code,
 	source_object_key, source_sha256, source_byte_size, requested_profile,
 	signer_certificate_sha256, seal_policy_id, validation_policy_id,
 	tsa_policy_id, tsa_trust_bundle_sha256, provider_receipt_id,
@@ -92,16 +93,17 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 			.prepare(
 				`INSERT INTO pdf_seal_job (
 					id, envelope_id, operation_id, validation_id, status, next_action,
-					claim_token, attempts, available_at, locked_at, retryable, last_error_code,
+					claim_token, attempt_sequence, retry_failures, available_at, locked_at, retryable, last_error_code,
 					source_object_key, source_sha256, source_byte_size, requested_profile,
 					signer_certificate_sha256, seal_policy_id, validation_policy_id,
 					tsa_policy_id, tsa_trust_bundle_sha256, created_at, updated_at
 				)
 				SELECT ?, pdf.envelope_id, ?, ?, 'pending', 'submit',
-					NULL, 0, ?, NULL, NULL, NULL,
+					NULL, 0, 0, ?, NULL, NULL, NULL,
 					?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 				FROM completion_artifact_pdf AS pdf
 				WHERE pdf.envelope_id = ? AND pdf.pdf_object_key = ? AND pdf.pdf_sha256 = ?
+					AND pdf.pdf_byte_size = ?
 				ON CONFLICT DO NOTHING`
 			)
 			.bind(
@@ -122,7 +124,8 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 				command.createdAt,
 				command.envelopeId,
 				command.sourceObjectKey,
-				command.sourceSha256
+				command.sourceSha256,
+				command.sourceByteSize
 			)
 			.run();
 
@@ -141,9 +144,15 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 		const exactSource: { envelope_id: string } | null = await this.#database
 			.prepare(
 				`SELECT envelope_id FROM completion_artifact_pdf
-				 WHERE envelope_id = ? AND pdf_object_key = ? AND pdf_sha256 = ?`
+				 WHERE envelope_id = ? AND pdf_object_key = ? AND pdf_sha256 = ?
+					AND pdf_byte_size = ?`
 			)
-			.bind(command.envelopeId, command.sourceObjectKey, command.sourceSha256)
+			.bind(
+				command.envelopeId,
+				command.sourceObjectKey,
+				command.sourceSha256,
+				command.sourceByteSize
+			)
 			.first<{ envelope_id: string }>();
 		return exactSource === null ? { outcome: 'source_mismatch' } : { outcome: 'conflict' };
 	}
@@ -164,39 +173,31 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 		if (command.jobId !== undefined) bindings.push(command.jobId);
 		bindings.push(limitValue);
 
-		const claim: D1PreparedStatement = this.#database
+		const claimed: D1Result<D1PdfSealJobRow> = await this.#database
 			.prepare(
 				`UPDATE pdf_seal_job
 				 SET status = 'processing', claim_token = ?, locked_at = ?,
-					attempts = CASE WHEN status = 'processing' THEN attempts ELSE attempts + 1 END,
+					attempt_sequence = attempt_sequence + 1,
 					retryable = NULL, last_error_code = NULL,
 					failed_at = NULL, updated_at = ?
 				 WHERE id IN (
 					SELECT id FROM pdf_seal_job
 					WHERE next_action <> 'publish'
 					AND (
-						(status = 'pending' AND attempts < ${PDF_SEAL_JOB_MAX_ATTEMPTS} AND available_at <= ?)
-						OR (status = 'failed' AND attempts < ${PDF_SEAL_JOB_MAX_ATTEMPTS}
-							AND retryable = 1 AND available_at <= ?)
-						OR (status = 'processing' AND attempts BETWEEN 1 AND ${PDF_SEAL_JOB_MAX_ATTEMPTS}
-							AND locked_at < ?)
+						(status = 'pending' AND available_at <= ?)
+						OR (status = 'failed' AND retryable = 1
+							AND retry_failures < ${PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES} AND available_at <= ?)
+						OR (status = 'processing' AND locked_at < ?)
 					)
 					${jobPredicate}
 					ORDER BY available_at ASC, created_at ASC, id ASC
 					LIMIT ?
-				 )`
+				 )
+				 RETURNING ${JOB_COLUMNS}`
 			)
-			.bind(...bindings);
-		const read: D1PreparedStatement = this.#database
-			.prepare(
-				`SELECT ${JOB_COLUMNS} FROM pdf_seal_job
-				 WHERE status = 'processing' AND claim_token = ? AND locked_at = ?
-				 ORDER BY available_at ASC, created_at ASC, id ASC`
-			)
-			.bind(command.claimToken, command.claimedAt);
-		const results: D1Result[] = await this.#database.batch([claim, read]);
-		const rows: readonly D1PdfSealJobRow[] = (results[1]?.results ??
-			[]) as unknown as D1PdfSealJobRow[];
+			.bind(...bindings)
+			.all<D1PdfSealJobRow>();
+		const rows: readonly D1PdfSealJobRow[] = claimed.results ?? [];
 		return rows.map((row: D1PdfSealJobRow): ClaimedPdfSealJob => ({
 			job: mapRow(row),
 			claimToken: command.claimToken,
@@ -224,30 +225,31 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 			`INSERT INTO pdf_seal_attempt (
 				id, job_id, attempt_number, action, outcome, error_code,
 				provider_receipt_id, validator_receipt_id, sealed_sha256, started_at, finished_at
-			 ) SELECT ?, id, ?, next_action, 'ambiguous', NULL, NULL, NULL, NULL, ?, ?
+			 ) SELECT ?, id, ?, next_action, 'ambiguous', NULL, NULL, NULL, NULL, locked_at, ?
 			 FROM pdf_seal_job
 			 WHERE id = ? AND status = 'processing' AND next_action = 'submit'
-				AND claim_token = ? AND attempts = ?`,
+				AND claim_token = ? AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.attemptId,
 				command.attemptNumber,
-				command.startedAt,
 				command.finishedAt,
 				command.jobId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			],
 			`UPDATE pdf_seal_job
 			 SET status = 'pending', next_action = 'recover_submit', claim_token = NULL,
-				locked_at = NULL, available_at = ?, updated_at = ?
+				locked_at = NULL, retry_failures = 0, available_at = ?, updated_at = ?
 			 WHERE id = ? AND status = 'processing' AND next_action = 'submit'
-				AND claim_token = ? AND attempts = ?`,
+				AND claim_token = ? AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.finishedAt,
 				command.finishedAt,
 				command.jobId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			]
 		);
 	}
@@ -260,32 +262,35 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 			`INSERT INTO pdf_seal_attempt (
 				id, job_id, attempt_number, action, outcome, error_code,
 				provider_receipt_id, validator_receipt_id, sealed_sha256, started_at, finished_at
-			 ) SELECT ?, id, ?, next_action, 'checkpointed', NULL, ?, NULL, NULL, ?, ?
+			 ) SELECT ?, id, ?, next_action, 'checkpointed', NULL, ?, NULL, NULL, locked_at, ?
 			 FROM pdf_seal_job
 			 WHERE id = ? AND status = 'processing' AND next_action IN ('submit','recover_submit')
-				AND provider_receipt_id IS NULL AND claim_token = ? AND attempts = ?`,
+				AND provider_receipt_id IS NULL AND claim_token = ?
+				AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.attemptId,
 				command.attemptNumber,
 				command.providerReceiptId,
-				command.startedAt,
 				command.finishedAt,
 				command.jobId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			],
 			`UPDATE pdf_seal_job
 			 SET status = 'pending', next_action = 'poll_provider', claim_token = NULL,
-				locked_at = NULL, provider_receipt_id = ?, available_at = ?, updated_at = ?
+				locked_at = NULL, retry_failures = 0, provider_receipt_id = ?, available_at = ?, updated_at = ?
 			 WHERE id = ? AND status = 'processing' AND next_action IN ('submit','recover_submit')
-				AND provider_receipt_id IS NULL AND claim_token = ? AND attempts = ?`,
+				AND provider_receipt_id IS NULL AND claim_token = ?
+				AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.providerReceiptId,
 				command.finishedAt,
 				command.finishedAt,
 				command.jobId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			]
 		);
 	}
@@ -299,33 +304,36 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 			`INSERT INTO pdf_seal_attempt (
 				id, job_id, attempt_number, action, outcome, error_code,
 				provider_receipt_id, validator_receipt_id, sealed_sha256, started_at, finished_at
-			 ) SELECT ?, id, ?, next_action, 'deferred', NULL, ?, NULL, NULL, ?, ?
+			 ) SELECT ?, id, ?, next_action, 'deferred', NULL, ?, NULL, NULL, locked_at, ?
 			 FROM pdf_seal_job
 			 WHERE id = ? AND status = 'processing' AND next_action = 'poll_provider'
-				AND provider_receipt_id = ? AND claim_token = ? AND attempts = ?`,
+				AND provider_receipt_id = ? AND claim_token = ?
+				AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.attemptId,
 				command.attemptNumber,
 				command.providerReceiptId,
-				command.startedAt,
 				command.finishedAt,
 				command.jobId,
 				command.providerReceiptId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			],
 			`UPDATE pdf_seal_job
 			 SET status = 'pending', claim_token = NULL, locked_at = NULL,
-				available_at = ?, updated_at = ?
+				retry_failures = 0, available_at = ?, updated_at = ?
 			 WHERE id = ? AND status = 'processing' AND next_action = 'poll_provider'
-				AND provider_receipt_id = ? AND claim_token = ? AND attempts = ?`,
+				AND provider_receipt_id = ? AND claim_token = ?
+				AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				availableAt,
 				command.finishedAt,
 				command.jobId,
 				command.providerReceiptId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			]
 		);
 	}
@@ -341,28 +349,30 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 			`INSERT INTO pdf_seal_attempt (
 				id, job_id, attempt_number, action, outcome, error_code,
 				provider_receipt_id, validator_receipt_id, sealed_sha256, started_at, finished_at
-			 ) SELECT ?, id, ?, next_action, 'checkpointed', NULL, ?, NULL, ?, ?, ?
+			 ) SELECT ?, id, ?, next_action, 'checkpointed', NULL, ?, NULL, ?, locked_at, ?
 			 FROM pdf_seal_job
 			 WHERE id = ? AND status = 'processing' AND next_action = 'poll_provider'
-				AND provider_receipt_id = ? AND claim_token = ? AND attempts = ?`,
+				AND provider_receipt_id = ? AND claim_token = ?
+				AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.attemptId,
 				command.attemptNumber,
 				command.providerReceiptId,
 				command.sealedArtifact.sha256,
-				command.startedAt,
 				command.finishedAt,
 				command.jobId,
 				command.providerReceiptId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			],
 			`UPDATE pdf_seal_job
 			 SET status = 'pending', next_action = 'validate', claim_token = NULL, locked_at = NULL,
 				sealed_object_key = ?, sealed_sha256 = ?, sealed_byte_size = ?, achieved_profile = ?,
-				available_at = ?, updated_at = ?
+				retry_failures = 0, available_at = ?, updated_at = ?
 			 WHERE id = ? AND status = 'processing' AND next_action = 'poll_provider'
-				AND provider_receipt_id = ? AND claim_token = ? AND attempts = ?`,
+				AND provider_receipt_id = ? AND claim_token = ?
+				AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.sealedArtifact.objectKey,
 				command.sealedArtifact.sha256,
@@ -373,7 +383,8 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 				command.jobId,
 				command.providerReceiptId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			]
 		);
 	}
@@ -391,19 +402,18 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 			`INSERT INTO pdf_seal_attempt (
 				id, job_id, attempt_number, action, outcome, error_code,
 				provider_receipt_id, validator_receipt_id, sealed_sha256, started_at, finished_at
-			 ) SELECT ?, id, ?, next_action, 'publication_ready', NULL, ?, ?, ?, ?, ?
+			 ) SELECT ?, id, ?, next_action, 'publication_ready', NULL, ?, ?, ?, locked_at, ?
 			 FROM pdf_seal_job
 			 WHERE id = ? AND status = 'processing' AND next_action = 'validate'
 				AND provider_receipt_id = ? AND sealed_object_key = ? AND sealed_sha256 = ?
 				AND sealed_byte_size = ? AND achieved_profile = ?
-				AND claim_token = ? AND attempts = ?`,
+				AND claim_token = ? AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.attemptId,
 				command.attemptNumber,
 				command.providerReceiptId,
 				command.validationEvidence.validatorReceiptId,
 				command.sealedArtifact.sha256,
-				command.startedAt,
 				command.finishedAt,
 				command.jobId,
 				command.providerReceiptId,
@@ -412,17 +422,19 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 				command.sealedArtifact.byteSize,
 				command.sealedArtifact.achievedProfile,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			],
 			`UPDATE pdf_seal_job
 			 SET status = 'publication_ready', next_action = 'publish', claim_token = NULL,
-				locked_at = NULL, validator_receipt_id = ?, validation_checks_json = ?,
+				locked_at = NULL, retry_failures = 0,
+				validator_receipt_id = ?, validation_checks_json = ?,
 				validation_report_object_key = ?, validation_report_sha256 = ?,
 				validation_report_byte_size = ?, validated_at = ?, ready_at = ?, updated_at = ?
 			 WHERE id = ? AND status = 'processing' AND next_action = 'validate'
 				AND provider_receipt_id = ? AND sealed_object_key = ? AND sealed_sha256 = ?
 				AND sealed_byte_size = ? AND achieved_profile = ?
-				AND claim_token = ? AND attempts = ?`,
+				AND claim_token = ? AND attempt_sequence = ? AND locked_at = ?`,
 			[
 				command.validationEvidence.validatorReceiptId,
 				checksJson,
@@ -439,7 +451,8 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 				command.sealedArtifact.byteSize,
 				command.sealedArtifact.achievedProfile,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt
 			]
 		);
 	}
@@ -447,10 +460,15 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 	async fail(command: FailPdfSealJobCommand): Promise<boolean> {
 		assertPdfSealAttemptCommand(command);
 		assertPdfSealErrorCode(command.errorCode);
+		const job: PdfSealJob | null = await this.find(command.jobId);
+		if (job === null) return false;
+		if (command.retryable && job.retryFailures >= PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES)
+			return false;
+		const nextRetryFailures: number = command.retryable ? job.retryFailures + 1 : job.retryFailures;
 		const retryable: boolean =
-			command.retryable && command.attemptNumber < PDF_SEAL_JOB_MAX_ATTEMPTS;
+			command.retryable && nextRetryFailures < PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES;
 		const availableAt: string = retryable
-			? pdfSealRetryAvailableAt(command.finishedAt, command.attemptNumber)
+			? pdfSealRetryAvailableAt(command.finishedAt, nextRetryFailures)
 			: command.finishedAt;
 		const outcome: string = retryable ? 'retryable_failed' : 'permanently_failed';
 		return this.#transition(
@@ -458,27 +476,32 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 			`INSERT INTO pdf_seal_attempt (
 				id, job_id, attempt_number, action, outcome, error_code,
 				provider_receipt_id, validator_receipt_id, sealed_sha256, started_at, finished_at
-			 ) SELECT ?, id, ?, next_action, ?, ?, provider_receipt_id, NULL, sealed_sha256, ?, ?
+			 ) SELECT ?, id, ?, next_action, ?, ?, provider_receipt_id, NULL, sealed_sha256, locked_at, ?
 			 FROM pdf_seal_job
 			 WHERE id = ? AND status = 'processing' AND next_action <> 'publish'
-				AND claim_token = ? AND attempts = ?`,
+				AND claim_token = ? AND attempt_sequence = ? AND locked_at = ?
+				AND retry_failures = ?`,
 			[
 				command.attemptId,
 				command.attemptNumber,
 				outcome,
 				command.errorCode,
-				command.startedAt,
 				command.finishedAt,
 				command.jobId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt,
+				job.retryFailures
 			],
 			`UPDATE pdf_seal_job
 			 SET status = 'failed', claim_token = NULL, locked_at = NULL,
-				retryable = ?, last_error_code = ?, available_at = ?, failed_at = ?, updated_at = ?
+				retry_failures = ?, retryable = ?, last_error_code = ?,
+				available_at = ?, failed_at = ?, updated_at = ?
 			 WHERE id = ? AND status = 'processing' AND next_action <> 'publish'
-				AND claim_token = ? AND attempts = ?`,
+				AND claim_token = ? AND attempt_sequence = ? AND locked_at = ?
+				AND retry_failures = ?`,
 			[
+				nextRetryFailures,
 				retryable ? 1 : 0,
 				command.errorCode,
 				availableAt,
@@ -486,7 +509,9 @@ export class D1PdfSealJobStore implements PdfSealJobStore {
 				command.finishedAt,
 				command.jobId,
 				command.claimToken,
-				command.attemptNumber
+				command.attemptNumber,
+				command.startedAt,
+				job.retryFailures
 			]
 		);
 	}
@@ -559,7 +584,8 @@ function mapRow(row: D1PdfSealJobRow): PdfSealJob {
 		validationId: row.validation_id,
 		status: row.status,
 		nextAction: row.next_action,
-		attempts: Number(row.attempts),
+		attemptSequence: Number(row.attempt_sequence),
+		retryFailures: Number(row.retry_failures),
 		availableAt: row.available_at,
 		lockedAt: row.locked_at,
 		retryable: row.retryable === null ? null : row.retryable === 1,

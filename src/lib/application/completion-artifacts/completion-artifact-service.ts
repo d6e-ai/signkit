@@ -360,6 +360,7 @@ export class CompletionArtifactPublicationService {
 					envelopeId: claim.envelopeId,
 					pdfObjectKey: pdfKey,
 					pdfSha256,
+					pdfByteSize: pdfBytes.byteLength,
 					pdfManifestObjectKey: pdfManifestKey,
 					pdfManifestSha256,
 					publishedAt: now.toISOString()

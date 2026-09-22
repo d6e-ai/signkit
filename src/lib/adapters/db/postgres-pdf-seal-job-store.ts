@@ -9,7 +9,7 @@ import {
 	boundPdfSealClaimLimit,
 	pdfSealProviderPollAvailableAt,
 	pdfSealRetryAvailableAt,
-	PDF_SEAL_JOB_MAX_ATTEMPTS,
+	PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES,
 	type ClaimPdfSealJobsCommand,
 	type ClaimedPdfSealJob,
 	type CompletePdfSealJobCommand,
@@ -38,7 +38,8 @@ interface PostgresPdfSealJobRow {
 	validation_id: string;
 	status: PdfSealJobStatus;
 	next_action: PdfSealJobAction;
-	attempts: number | string;
+	attempt_sequence: number | string;
+	retry_failures: number | string;
 	available_at: Date | string;
 	locked_at: Date | string | null;
 	retryable: boolean | null;
@@ -72,7 +73,9 @@ interface PostgresPdfSealJobRow {
 interface LockedJobRow {
 	id: string;
 	nextAction: PdfSealJobAction;
-	attempts: number | string;
+	attemptSequence: number | string;
+	retryFailures: number | string;
+	lockedAt: Date | string;
 	sourceByteSize: number | string;
 	requestedProfile: PdfSealProfile;
 	providerReceiptId: string | null;
@@ -122,13 +125,13 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 		const inserted: PostgresPdfSealJobRow[] = await this.#sql<PostgresPdfSealJobRow[]>`
 			INSERT INTO pdf_seal_job (
 				id, envelope_id, operation_id, validation_id, status, next_action,
-				claim_token, attempts, available_at, locked_at, retryable, last_error_code,
+				claim_token, attempt_sequence, retry_failures, available_at, locked_at, retryable, last_error_code,
 				source_object_key, source_sha256, source_byte_size, requested_profile,
 				signer_certificate_sha256, seal_policy_id, validation_policy_id,
 				tsa_policy_id, tsa_trust_bundle_sha256, created_at, updated_at
 			)
 			SELECT ${command.jobId}, pdf.envelope_id, ${command.operationId}, ${command.validationId},
-				'pending', 'submit', NULL, 0, ${command.createdAt}::timestamptz,
+				'pending', 'submit', NULL, 0, 0, ${command.createdAt}::timestamptz,
 				NULL, NULL, NULL, ${command.sourceObjectKey}, ${command.sourceSha256},
 				${command.sourceByteSize}, ${command.requestedProfile},
 				${command.signerCertificateSha256}, ${command.sealPolicyId},
@@ -139,6 +142,7 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 			WHERE pdf.envelope_id = ${command.envelopeId}
 				AND pdf.pdf_object_key = ${command.sourceObjectKey}
 				AND pdf.pdf_sha256 = ${command.sourceSha256}
+				AND pdf.pdf_byte_size = ${command.sourceByteSize}
 			ON CONFLICT DO NOTHING
 			RETURNING *`;
 		if (inserted.length === 1) return { outcome: 'enqueued', job: mapRow(inserted[0]) };
@@ -152,7 +156,8 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 			SELECT envelope_id AS "envelopeId" FROM completion_artifact_pdf
 			WHERE envelope_id = ${command.envelopeId}
 				AND pdf_object_key = ${command.sourceObjectKey}
-				AND pdf_sha256 = ${command.sourceSha256}`;
+				AND pdf_sha256 = ${command.sourceSha256}
+				AND pdf_byte_size = ${command.sourceByteSize}`;
 		return exactSource.length === 0 ? { outcome: 'source_mismatch' } : { outcome: 'conflict' };
 	}
 
@@ -167,11 +172,11 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 						WITH candidates AS (
 							SELECT id FROM pdf_seal_job
 							WHERE next_action <> 'publish'
-							AND ((status = 'pending' AND attempts < ${PDF_SEAL_JOB_MAX_ATTEMPTS}
+							AND ((status = 'pending' AND available_at <= ${command.claimedAt}::timestamptz)
+								OR (status = 'failed' AND retryable
+									AND retry_failures < ${PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES}
 									AND available_at <= ${command.claimedAt}::timestamptz)
-								OR (status = 'failed' AND attempts < ${PDF_SEAL_JOB_MAX_ATTEMPTS}
-									AND retryable AND available_at <= ${command.claimedAt}::timestamptz)
-								OR (status = 'processing' AND attempts BETWEEN 1 AND ${PDF_SEAL_JOB_MAX_ATTEMPTS}
+								OR (status = 'processing'
 									AND locked_at < ${command.staleBefore}::timestamptz))
 							ORDER BY available_at ASC, created_at ASC, id ASC
 							LIMIT ${limit} FOR UPDATE SKIP LOCKED
@@ -179,7 +184,7 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 						UPDATE pdf_seal_job AS job
 						SET status = 'processing', claim_token = ${command.claimToken},
 							locked_at = ${command.claimedAt}::timestamptz,
-							attempts = CASE WHEN job.status = 'processing' THEN job.attempts ELSE job.attempts + 1 END,
+							attempt_sequence = job.attempt_sequence + 1,
 							retryable = NULL, last_error_code = NULL, failed_at = NULL,
 							updated_at = ${command.claimedAt}::timestamptz
 						FROM candidates WHERE job.id = candidates.id
@@ -188,11 +193,11 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 						WITH candidates AS (
 							SELECT id FROM pdf_seal_job
 							WHERE id = ${command.jobId} AND next_action <> 'publish'
-							AND ((status = 'pending' AND attempts < ${PDF_SEAL_JOB_MAX_ATTEMPTS}
+							AND ((status = 'pending' AND available_at <= ${command.claimedAt}::timestamptz)
+								OR (status = 'failed' AND retryable
+									AND retry_failures < ${PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES}
 									AND available_at <= ${command.claimedAt}::timestamptz)
-								OR (status = 'failed' AND attempts < ${PDF_SEAL_JOB_MAX_ATTEMPTS}
-									AND retryable AND available_at <= ${command.claimedAt}::timestamptz)
-								OR (status = 'processing' AND attempts BETWEEN 1 AND ${PDF_SEAL_JOB_MAX_ATTEMPTS}
+								OR (status = 'processing'
 									AND locked_at < ${command.staleBefore}::timestamptz))
 							ORDER BY available_at ASC, created_at ASC, id ASC
 							LIMIT 1 FOR UPDATE SKIP LOCKED
@@ -200,7 +205,7 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 						UPDATE pdf_seal_job AS job
 						SET status = 'processing', claim_token = ${command.claimToken},
 							locked_at = ${command.claimedAt}::timestamptz,
-							attempts = CASE WHEN job.status = 'processing' THEN job.attempts ELSE job.attempts + 1 END,
+							attempt_sequence = job.attempt_sequence + 1,
 							retryable = NULL, last_error_code = NULL, failed_at = NULL,
 							updated_at = ${command.claimedAt}::timestamptz
 						FROM candidates WHERE job.id = candidates.id
@@ -234,7 +239,8 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 			['submit'],
 			async (sql: postgres.TransactionSql): Promise<AttemptResult> => {
 				await sql`UPDATE pdf_seal_job SET status = 'pending', next_action = 'recover_submit',
-				claim_token = NULL, locked_at = NULL, available_at = ${command.finishedAt}::timestamptz,
+				claim_token = NULL, locked_at = NULL, retry_failures = 0,
+				available_at = ${command.finishedAt}::timestamptz,
 				updated_at = ${command.finishedAt}::timestamptz WHERE id = ${command.jobId}`;
 				return {
 					outcome: 'ambiguous',
@@ -255,7 +261,8 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 			['submit', 'recover_submit'],
 			async (sql: postgres.TransactionSql): Promise<AttemptResult> => {
 				await sql`UPDATE pdf_seal_job SET status = 'pending', next_action = 'poll_provider',
-				claim_token = NULL, locked_at = NULL, provider_receipt_id = ${command.providerReceiptId},
+				claim_token = NULL, locked_at = NULL, retry_failures = 0,
+				provider_receipt_id = ${command.providerReceiptId},
 				available_at = ${command.finishedAt}::timestamptz,
 				updated_at = ${command.finishedAt}::timestamptz WHERE id = ${command.jobId}`;
 				return {
@@ -280,7 +287,7 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 				if (row.providerReceiptId !== command.providerReceiptId)
 					throw new PdfSealTransitionRollback(false);
 				await sql`UPDATE pdf_seal_job SET status = 'pending', claim_token = NULL, locked_at = NULL,
-				available_at = ${availableAt}::timestamptz,
+				retry_failures = 0, available_at = ${availableAt}::timestamptz,
 				updated_at = ${command.finishedAt}::timestamptz WHERE id = ${command.jobId}`;
 				return {
 					outcome: 'deferred',
@@ -308,7 +315,8 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 					row.requestedProfile
 				);
 				await sql`UPDATE pdf_seal_job SET status = 'pending', next_action = 'validate',
-				claim_token = NULL, locked_at = NULL, sealed_object_key = ${command.sealedArtifact.objectKey},
+				claim_token = NULL, locked_at = NULL, retry_failures = 0,
+				sealed_object_key = ${command.sealedArtifact.objectKey},
 				sealed_sha256 = ${command.sealedArtifact.sha256}, sealed_byte_size = ${command.sealedArtifact.byteSize},
 				achieved_profile = ${command.sealedArtifact.achievedProfile},
 				available_at = ${command.finishedAt}::timestamptz,
@@ -345,7 +353,7 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 				assertValidPdfSealValidationEvidence(command.validationEvidence, row.requestedProfile);
 				const checksJson: string = JSON.stringify(command.validationEvidence.checks);
 				await sql`UPDATE pdf_seal_job SET status = 'publication_ready', next_action = 'publish',
-				claim_token = NULL, locked_at = NULL,
+				claim_token = NULL, locked_at = NULL, retry_failures = 0,
 				validator_receipt_id = ${command.validationEvidence.validatorReceiptId},
 				validation_checks_json = ${checksJson},
 				validation_report_object_key = ${command.validationEvidence.reportObjectKey},
@@ -368,17 +376,27 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 	async fail(command: FailPdfSealJobCommand): Promise<boolean> {
 		assertPdfSealAttemptCommand(command);
 		assertPdfSealErrorCode(command.errorCode);
-		const retryable: boolean =
-			command.retryable && command.attemptNumber < PDF_SEAL_JOB_MAX_ATTEMPTS;
-		const availableAt: string = retryable
-			? pdfSealRetryAvailableAt(command.finishedAt, command.attemptNumber)
-			: command.finishedAt;
 		return this.#transition(
 			command,
 			['submit', 'recover_submit', 'poll_provider', 'validate'],
 			async (sql: postgres.TransactionSql, row: LockedJobRow): Promise<AttemptResult> => {
+				if (
+					command.retryable &&
+					Number(row.retryFailures) >= PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES
+				) {
+					throw new PdfSealTransitionRollback(false);
+				}
+				const nextRetryFailures: number = command.retryable
+					? Number(row.retryFailures) + 1
+					: Number(row.retryFailures);
+				const retryable: boolean =
+					command.retryable && nextRetryFailures < PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES;
+				const availableAt: string = retryable
+					? pdfSealRetryAvailableAt(command.finishedAt, nextRetryFailures)
+					: command.finishedAt;
 				await sql`UPDATE pdf_seal_job SET status = 'failed', claim_token = NULL, locked_at = NULL,
-				retryable = ${retryable}, last_error_code = ${command.errorCode},
+				retry_failures = ${nextRetryFailures}, retryable = ${retryable},
+				last_error_code = ${command.errorCode},
 				available_at = ${availableAt}::timestamptz,
 				failed_at = ${retryable ? null : command.finishedAt}::timestamptz,
 				updated_at = ${command.finishedAt}::timestamptz WHERE id = ${command.jobId}`;
@@ -413,13 +431,17 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 		try {
 			return await this.#sql.begin(async (sql: postgres.TransactionSql): Promise<boolean> => {
 				const rows: LockedJobRow[] = await sql<LockedJobRow[]>`
-					SELECT id, next_action AS "nextAction", attempts,
+					SELECT id, next_action AS "nextAction",
+						attempt_sequence AS "attemptSequence", retry_failures AS "retryFailures",
+						locked_at AS "lockedAt",
 						source_byte_size AS "sourceByteSize", requested_profile AS "requestedProfile",
 						provider_receipt_id AS "providerReceiptId", sealed_object_key AS "sealedObjectKey",
 						sealed_sha256 AS "sealedSha256", sealed_byte_size AS "sealedByteSize",
 						achieved_profile AS "achievedProfile"
 					FROM pdf_seal_job WHERE id = ${command.jobId} AND status = 'processing'
-						AND claim_token = ${command.claimToken} AND attempts = ${command.attemptNumber}
+						AND claim_token = ${command.claimToken}
+						AND attempt_sequence = ${command.attemptNumber}
+						AND locked_at = ${command.startedAt}::timestamptz
 					FOR UPDATE`;
 				const row: LockedJobRow | undefined = rows[0];
 				if (row === undefined || !allowedActions.includes(row.nextAction)) {
@@ -432,7 +454,7 @@ export class PostgresPdfSealJobStore implements PdfSealJobStore {
 				) VALUES (${command.attemptId}, ${command.jobId}, ${command.attemptNumber},
 					${row.nextAction}, ${attempt.outcome}, ${attempt.errorCode},
 					${attempt.providerReceiptId}, ${attempt.validatorReceiptId}, ${attempt.sealedSha256},
-					${command.startedAt}::timestamptz, ${command.finishedAt}::timestamptz)`;
+					${row.lockedAt}::timestamptz, ${command.finishedAt}::timestamptz)`;
 				return true;
 			});
 		} catch (error: unknown) {
@@ -478,7 +500,8 @@ function mapRow(row: PostgresPdfSealJobRow): PdfSealJob {
 		validationId: row.validation_id,
 		status: row.status,
 		nextAction: row.next_action,
-		attempts: Number(row.attempts),
+		attemptSequence: Number(row.attempt_sequence),
+		retryFailures: Number(row.retry_failures),
 		availableAt: iso(row.available_at),
 		lockedAt: row.locked_at === null ? null : iso(row.locked_at),
 		retryable: row.retryable,

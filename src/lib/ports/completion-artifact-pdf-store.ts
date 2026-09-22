@@ -2,6 +2,7 @@ export interface PublishCompletionArtifactPdfCommand {
 	envelopeId: string;
 	pdfObjectKey: string;
 	pdfSha256: string;
+	pdfByteSize: number;
 	pdfManifestObjectKey: string;
 	pdfManifestSha256: string;
 	publishedAt: string;
@@ -10,6 +11,8 @@ export interface PublishCompletionArtifactPdfCommand {
 export interface CompletionArtifactPdfRecord {
 	pdfObjectKey: string;
 	pdfSha256: string;
+	/** Null only for rows created before the authoritative-size migration. */
+	pdfByteSize: number | null;
 	pdfManifestObjectKey: string;
 	pdfManifestSha256: string;
 	publishedAt: string;

@@ -55,6 +55,7 @@ describe('D1CompletionArtifactPdfStore integration', () => {
 				envelopeId: ENVELOPE_ID,
 				pdfObjectKey: 'completion-artifacts/v1/org-1/env-1/sha256/pdf-hash.pdf',
 				pdfSha256: 'f'.repeat(64),
+				pdfByteSize: 1024,
 				pdfManifestObjectKey:
 					'completion-artifacts/v1/org-1/env-1/sha256/pdf-manifest-hash.json.gz',
 				pdfManifestSha256: 'g'.repeat(64),
@@ -67,6 +68,7 @@ describe('D1CompletionArtifactPdfStore integration', () => {
 			await expect(store.readCompletionArtifactPdf(ENVELOPE_ID)).resolves.toEqual({
 				pdfObjectKey: command.pdfObjectKey,
 				pdfSha256: command.pdfSha256,
+				pdfByteSize: command.pdfByteSize,
 				pdfManifestObjectKey: command.pdfManifestObjectKey,
 				pdfManifestSha256: command.pdfManifestSha256,
 				publishedAt: command.publishedAt
@@ -85,6 +87,7 @@ describe('D1CompletionArtifactPdfStore integration', () => {
 				envelopeId: ENVELOPE_ID,
 				pdfObjectKey: 'key-1',
 				pdfSha256: 'f'.repeat(64),
+				pdfByteSize: 1024,
 				pdfManifestObjectKey: 'manifest-key-1',
 				pdfManifestSha256: 'g'.repeat(64),
 				publishedAt: '2026-09-11T00:04:00.000Z'
@@ -110,6 +113,7 @@ describe('D1CompletionArtifactPdfStore integration', () => {
 				envelopeId: ENVELOPE_ID,
 				pdfObjectKey: 'key-1',
 				pdfSha256: 'f'.repeat(64),
+				pdfByteSize: 1024,
 				pdfManifestObjectKey: 'manifest-key-1',
 				pdfManifestSha256: 'g'.repeat(64),
 				publishedAt: '2026-09-11T00:04:00.000Z'
@@ -119,6 +123,53 @@ describe('D1CompletionArtifactPdfStore integration', () => {
 			await expect(
 				store.publishCompletionArtifactPdf({ ...command, pdfSha256: 'h'.repeat(64) })
 			).resolves.toEqual({ outcome: 'integrity_error' });
+			await expect(
+				store.publishCompletionArtifactPdf({ ...command, pdfByteSize: 1025 })
+			).resolves.toEqual({ outcome: 'integrity_error' });
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('preserves a legacy null size without fabricating authoritative metadata', async () => {
+		const { sqlite, d1 } = database();
+		try {
+			seedCompletionArtifact(sqlite);
+			sqlite
+				.prepare(
+					`INSERT INTO completion_artifact_pdf (
+						envelope_id, pdf_object_key, pdf_sha256, pdf_manifest_object_key,
+						pdf_manifest_sha256, pdf_byte_size, published_at
+					 ) VALUES (?, ?, ?, ?, ?, NULL, ?)`
+				)
+				.run(
+					ENVELOPE_ID,
+					'key-1',
+					'f'.repeat(64),
+					'manifest-key-1',
+					'g'.repeat(64),
+					'2026-09-11T00:04:00.000Z'
+				);
+			const store = new D1CompletionArtifactPdfStore(d1);
+			await expect(store.readCompletionArtifactPdf(ENVELOPE_ID)).resolves.toMatchObject({
+				pdfByteSize: null
+			});
+			await expect(
+				store.publishCompletionArtifactPdf({
+					envelopeId: ENVELOPE_ID,
+					pdfObjectKey: 'key-1',
+					pdfSha256: 'f'.repeat(64),
+					pdfByteSize: 1024,
+					pdfManifestObjectKey: 'manifest-key-1',
+					pdfManifestSha256: 'g'.repeat(64),
+					publishedAt: '2026-09-11T00:04:00.000Z'
+				})
+			).resolves.toEqual({ outcome: 'already_published' });
+			expect(
+				sqlite
+					.prepare('SELECT pdf_byte_size FROM completion_artifact_pdf WHERE envelope_id = ?')
+					.get(ENVELOPE_ID)
+			).toEqual({ pdf_byte_size: null });
 		} finally {
 			sqlite.close();
 		}
@@ -133,6 +184,7 @@ describe('D1CompletionArtifactPdfStore integration', () => {
 					envelopeId: ENVELOPE_ID,
 					pdfObjectKey: 'key-1',
 					pdfSha256: 'f'.repeat(64),
+					pdfByteSize: 1024,
 					pdfManifestObjectKey: 'manifest-key-1',
 					pdfManifestSha256: 'g'.repeat(64),
 					publishedAt: '2026-09-11T00:04:00.000Z'

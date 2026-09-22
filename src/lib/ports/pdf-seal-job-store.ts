@@ -3,7 +3,8 @@ import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import type { PdfSealProfile } from './pdf-seal-provider';
 import type { PdfSealValidationChecks } from './pdf-seal-validator';
 
-export const PDF_SEAL_JOB_MAX_ATTEMPTS: number = 8;
+export const PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES: number = 8;
+export const PDF_SEAL_JOB_MAX_ATTEMPT_SEQUENCE: number = 2_147_483_647;
 export const PDF_SEAL_JOB_MAX_CLAIM_BATCH: number = 10;
 export const PDF_SEAL_JOB_RETRY_BASE_DELAY_MS: number = 30_000;
 export const PDF_SEAL_JOB_RETRY_MAX_DELAY_MS: number = 60 * 60 * 1_000;
@@ -50,7 +51,8 @@ export interface PdfSealValidationEvidence {
 export interface PdfSealJob extends PdfSealFrozenReference {
 	status: PdfSealJobStatus;
 	nextAction: PdfSealJobAction;
-	attempts: number;
+	attemptSequence: number;
+	retryFailures: number;
 	availableAt: string;
 	lockedAt: string | null;
 	retryable: boolean | null;
@@ -213,11 +215,43 @@ export function assertValidPdfSealValidationEvidence(
 	if (evidence.checks.cmsSubFilter !== 'ETSI.CAdES.detached') {
 		throw new TypeError('validationEvidence.checks has an invalid CMS profile');
 	}
+	for (const [name, value] of [
+		['sourcePrefixExact', evidence.checks.sourcePrefixExact],
+		['incrementalUpdateValid', evidence.checks.incrementalUpdateValid],
+		['byteRangeComplete', evidence.checks.byteRangeComplete],
+		['cmsSignatureValid', evidence.checks.cmsSignatureValid],
+		['signerCertificateProtected', evidence.checks.signerCertificateProtected],
+		['signerCertificateDigestMatches', evidence.checks.signerCertificateDigestMatches],
+		['certificatePathValid', evidence.checks.certificatePathValid],
+		['sealPolicyValid', evidence.checks.sealPolicyValid],
+		['invisibleApprovalSignature', evidence.checks.invisibleApprovalSignature],
+		['docMdpAbsent', evidence.checks.docMdpAbsent],
+		['noPostSealChanges', evidence.checks.noPostSealChanges]
+	] as const) {
+		if (value !== true) throw new TypeError(`validationEvidence.checks.${name} must be true`);
+	}
 	if (requestedProfile === 'pades-b-t' && evidence.checks.timestamp === null) {
 		throw new TypeError('pades-b-t validation evidence requires timestamp checks');
 	}
 	if (requestedProfile === 'pades-b-b' && evidence.checks.timestamp !== null) {
 		throw new TypeError('pades-b-b validation evidence must not include timestamp checks');
+	}
+	if (evidence.checks.timestamp !== null) {
+		for (const [name, value] of [
+			['responseStatusGranted', evidence.checks.timestamp.responseStatusGranted],
+			['messageImprintValid', evidence.checks.timestamp.messageImprintValid],
+			['nonceValidWhenPresent', evidence.checks.timestamp.nonceValidWhenPresent],
+			['policyValid', evidence.checks.timestamp.policyValid],
+			['tokenSignatureValid', evidence.checks.timestamp.tokenSignatureValid],
+			['certificatePathValid', evidence.checks.timestamp.certificatePathValid],
+			['ekuCriticalTimeStampingOnly', evidence.checks.timestamp.ekuCriticalTimeStampingOnly],
+			['essCertificateBindingValid', evidence.checks.timestamp.essCertificateBindingValid],
+			['genTimeValid', evidence.checks.timestamp.genTimeValid]
+		] as const) {
+			if (value !== true) {
+				throw new TypeError(`validationEvidence.checks.timestamp.${name} must be true`);
+			}
+		}
 	}
 }
 
@@ -228,7 +262,7 @@ export function assertPdfSealAttemptCommand(command: PdfSealAttemptCommand): voi
 	if (
 		!Number.isSafeInteger(command.attemptNumber) ||
 		command.attemptNumber < 1 ||
-		command.attemptNumber > PDF_SEAL_JOB_MAX_ATTEMPTS
+		command.attemptNumber > PDF_SEAL_JOB_MAX_ATTEMPT_SEQUENCE
 	) {
 		throw new TypeError('attemptNumber is outside the supported range');
 	}
@@ -252,13 +286,17 @@ export function boundPdfSealClaimLimit(limit: number): number {
 	return Math.min(limit, PDF_SEAL_JOB_MAX_CLAIM_BATCH);
 }
 
-export function pdfSealRetryAvailableAt(failedAt: string, attemptNumber: number): string {
+export function pdfSealRetryAvailableAt(failedAt: string, consecutiveFailures: number): string {
 	assertIsoTimestamp(failedAt, 'failedAt');
-	if (!Number.isSafeInteger(attemptNumber) || attemptNumber < 1) {
-		throw new TypeError('attemptNumber must be positive');
+	if (
+		!Number.isSafeInteger(consecutiveFailures) ||
+		consecutiveFailures < 1 ||
+		consecutiveFailures > PDF_SEAL_JOB_MAX_CONSECUTIVE_FAILURES
+	) {
+		throw new TypeError('consecutiveFailures is outside the supported range');
 	}
 	const delay: number = Math.min(
-		PDF_SEAL_JOB_RETRY_BASE_DELAY_MS * 2 ** Math.min(attemptNumber - 1, 16),
+		PDF_SEAL_JOB_RETRY_BASE_DELAY_MS * 2 ** Math.min(consecutiveFailures - 1, 16),
 		PDF_SEAL_JOB_RETRY_MAX_DELAY_MS
 	);
 	return new Date(Date.parse(failedAt) + delay).toISOString();

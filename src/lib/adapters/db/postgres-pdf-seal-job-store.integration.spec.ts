@@ -73,10 +73,10 @@ postgresDescribe('PostgresPdfSealJobStore integration', () => {
 			);
 			INSERT INTO completion_artifact_pdf (
 				envelope_id, pdf_object_key, pdf_sha256, pdf_manifest_object_key,
-				pdf_manifest_sha256, published_at
+				pdf_manifest_sha256, pdf_byte_size, published_at
 			) VALUES (
 				'${ENVELOPE_ID}', '${SOURCE_KEY}', '${SOURCE_SHA}', 'manifest.json.gz',
-				'${'9'.repeat(64)}', '2026-09-23T00:03:00.000Z'
+				'${'9'.repeat(64)}', 1024, '2026-09-23T00:03:00.000Z'
 			);
 		`);
 	});
@@ -114,7 +114,8 @@ postgresDescribe('PostgresPdfSealJobStore integration', () => {
 		await expect(store.find(command.jobId)).resolves.toMatchObject({
 			status: 'pending',
 			nextAction: 'recover_submit',
-			attempts: 1
+			attemptSequence: 1,
+			retryFailures: 0
 		});
 		expect(
 			await sql<{ count: number }[]>`SELECT count(*)::int AS count FROM pdf_seal_attempt`

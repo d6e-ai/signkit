@@ -70,7 +70,8 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 		validation_id: command.validationId,
 		status: 'pending',
 		next_action: 'submit',
-		attempts: 0,
+		attempt_sequence: 0,
+		retry_failures: 0,
 		available_at: new Date(command.createdAt),
 		locked_at: null,
 		retryable: null,
@@ -114,6 +115,7 @@ describe('PostgresPdfSealJobStore', () => {
 		expect(scripted.directQueries[0]?.text).toContain('FROM completion_artifact_pdf AS pdf');
 		expect(scripted.directQueries[0]?.text).toContain('pdf.pdf_object_key = ?');
 		expect(scripted.directQueries[0]?.text).toContain('pdf.pdf_sha256 = ?');
+		expect(scripted.directQueries[0]?.text).toContain('pdf.pdf_byte_size = ?');
 		expect(scripted.directQueries[0]?.text).toContain('ON CONFLICT DO NOTHING');
 	});
 
@@ -122,7 +124,8 @@ describe('PostgresPdfSealJobStore', () => {
 			[
 				row({
 					status: 'processing',
-					attempts: 1,
+					attempt_sequence: 1,
+					retry_failures: 0,
 					locked_at: new Date('2026-09-23T00:01:00.000Z')
 				})
 			]
@@ -135,7 +138,7 @@ describe('PostgresPdfSealJobStore', () => {
 			limit: 100
 		});
 		expect(claimed).toHaveLength(1);
-		expect(claimed[0]?.job.attempts).toBe(1);
+		expect(claimed[0]?.job.attemptSequence).toBe(1);
 		expect(scripted.beginCalls).toBe(1);
 		expect(scripted.transactionQueries[0]?.text).toContain('LIMIT ? FOR UPDATE SKIP LOCKED');
 		expect(scripted.transactionQueries[0]?.values).toContain(10);
@@ -147,7 +150,9 @@ describe('PostgresPdfSealJobStore', () => {
 				{
 					id: command.jobId,
 					nextAction: 'submit',
-					attempts: 1,
+					attemptSequence: 1,
+					retryFailures: 0,
+					lockedAt: new Date('2026-09-23T00:01:00.000Z'),
 					sourceByteSize: 1024,
 					requestedProfile: 'pades-b-b',
 					providerReceiptId: null,
@@ -174,8 +179,13 @@ describe('PostgresPdfSealJobStore', () => {
 		).resolves.toBe(true);
 		expect(scripted.transactionQueries).toHaveLength(3);
 		expect(scripted.transactionQueries[0]?.text).toContain('FOR UPDATE');
+		expect(scripted.transactionQueries[0]?.text).toContain('locked_at = ?::timestamptz');
+		expect(scripted.transactionQueries[0]?.values).toContain('2026-09-23T00:01:00.000Z');
 		expect(scripted.transactionQueries[1]?.text).toContain("next_action = 'recover_submit'");
 		expect(scripted.transactionQueries[2]?.text).toContain('INSERT INTO pdf_seal_attempt');
+		expect(scripted.transactionQueries[2]?.values).toContainEqual(
+			new Date('2026-09-23T00:01:00.000Z')
+		);
 	});
 
 	it('does not mutate when the lease CAS no longer matches', async () => {
