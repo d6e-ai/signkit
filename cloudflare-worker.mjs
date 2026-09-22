@@ -6,11 +6,12 @@ export default {
 		return svelteKitWorker.fetch(request, environment, context);
 	},
 
-	scheduled(_controller, environment, context) {
+	scheduled(controller, environment, context) {
 		runScheduledMaintenance(
 			(request, env, ctx) => svelteKitWorker.fetch(request, env, ctx),
 			environment,
-			context
+			context,
+			controller.cron
 		);
 	}
 };

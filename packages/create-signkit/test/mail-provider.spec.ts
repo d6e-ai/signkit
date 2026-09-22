@@ -28,6 +28,7 @@ describe('Cloudflare mail provider selection', () => {
 		) as Record<string, unknown>;
 		expect(config.send_email).toEqual([{ name: 'EMAIL' }]);
 		expect(config.vars).toMatchObject({ SIGNKIT_MAIL_PROVIDER: 'cloudflare' });
+		expect(config.triggers).toEqual({ crons: ['* * * * *', '*/5 * * * *'] });
 	});
 
 	it('renders bounded SMTP vars without an EMAIL binding and requires only the password secret', () => {

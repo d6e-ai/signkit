@@ -2,11 +2,13 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import {
 	DEFAULT_ORPHAN_GRACE_PERIOD_MS,
+	OrphanSweepFailure,
 	type OrphanCollector
 } from '$lib/application/maintenance/orphan-collector';
 import {
 	createOrphanSweepHandler,
 	ORPHAN_SWEEP_BATCH_SIZE,
+	ORPHAN_SWEEP_MAX_LIST_PAGES,
 	ORPHAN_SWEEP_MAX_OBJECTS,
 	type OrphanCollectorResolver
 } from './orphan-sweep';
@@ -80,12 +82,14 @@ describe('orphan sweep HTTP handler', () => {
 		expect(resolver).toHaveBeenCalledWith({ platform });
 		expect(app.sweep).toHaveBeenCalledWith({
 			batchSize: ORPHAN_SWEEP_BATCH_SIZE,
-			maxObjectsToScan: ORPHAN_SWEEP_MAX_OBJECTS
+			maxObjectsToScan: ORPHAN_SWEEP_MAX_OBJECTS,
+			maxListPages: ORPHAN_SWEEP_MAX_LIST_PAGES
 		});
 		expect(body).toEqual({ scanned: 3, referenced: 1, inGracePeriod: 1, deleted: 1 });
 		expect(JSON.stringify(body)).not.toContain('secret-orphan');
 		expect(JSON.stringify(body)).not.toContain(SECRET);
 		expect(ORPHAN_SWEEP_BATCH_SIZE).toBeLessThanOrEqual(ORPHAN_SWEEP_MAX_OBJECTS);
+		expect(ORPHAN_SWEEP_MAX_LIST_PAGES).toBe(1);
 		expect(DEFAULT_ORPHAN_GRACE_PERIOD_MS).toBe(24 * 60 * 60 * 1000);
 	});
 
@@ -129,10 +133,16 @@ describe('orphan sweep HTTP handler', () => {
 		error.mockRestore();
 	});
 
-	it('does not expose thrown store details', async () => {
+	it('logs stable operation context without exposing thrown store details', async () => {
 		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 		const app = collector();
-		app.sweep.mockRejectedValueOnce(new Error(`database failed ${SECRET}`));
+		app.sweep.mockRejectedValueOnce(
+			new OrphanSweepFailure(
+				'reference_lookup_failed',
+				'reference_lookup',
+				new Error(`database failed for drafts/private-key.git.gz using ${SECRET}`)
+			)
+		);
 		const response: Response = await createOrphanSweepHandler(
 			() => app as unknown as OrphanCollector,
 			() => SECRET
@@ -140,10 +150,20 @@ describe('orphan sweep HTTP handler', () => {
 		const body: string = await response.text();
 
 		expect(response.status).toBe(503);
-		expect(body).not.toContain(SECRET);
-		expect(error).toHaveBeenCalledWith(
-			JSON.stringify({ event: 'orphan_sweep_failed', message: 'Error' })
+		expect(response.headers.get('x-signkit-maintenance-failure-code')).toBe(
+			'reference_lookup_failed'
 		);
+		expect(body).not.toContain(SECRET);
+		expect(body).not.toContain('private-key');
+		expect(error).toHaveBeenCalledWith(
+			JSON.stringify({
+				event: 'orphan_sweep_failed',
+				code: 'reference_lookup_failed',
+				operation: 'reference_lookup'
+			})
+		);
+		expect(String(error.mock.calls[0]?.[0])).not.toContain(SECRET);
+		expect(String(error.mock.calls[0]?.[0])).not.toContain('private-key');
 		error.mockRestore();
 	});
 });
