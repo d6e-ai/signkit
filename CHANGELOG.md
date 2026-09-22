@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-- Cloudflare deployment failures remain fail-closed and require explicit reconciliation when code, route, or trigger state cannot be proven complete. Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements and the absence of PAdES/TSA certification.
+- Cloudflare deployment failures fail the CLI command, record observed partial state, and require explicit reconciliation when code, route, or trigger state cannot be proven complete. Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements and the absence of PAdES/TSA certification.
 - A provider failure after the first `wrangler deploy` may leave remote activation or trigger state indeterminate: `create-signkit` re-inspects versions and records a retry marker when it observes a new version, but operators must still inspect and retry because Cloudflare does not expose an atomic result across all affected surfaces.
 
 ## [0.1.5] - 2026-09-22
