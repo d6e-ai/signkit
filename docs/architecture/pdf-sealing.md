@@ -1,13 +1,13 @@
-# PDF certification
+# PDF sealing
 
-Status: accepted design for Issue #78; no certification runtime, API, migration, or dependency is
+Status: accepted design for Issue #78; no sealing runtime, API, migration, or dependency is
 implemented yet
 
 ## Boundary and terminology
 
 The current completion PDF is the executed agreement: the immutable sent document set, signed field
 values drawn at frozen coordinates, and the evidence appendix. It remains the source of truth even
-when certification is enabled.
+when sealing is enabled.
 
 A **sealed PDF** is a separate immutable artifact that adds an invisible PAdES signature over that
 completed PDF. The signer is the configured SignKit **instance**, not an envelope recipient. The
@@ -15,7 +15,13 @@ seal does not upgrade typed, drawn, approved, or viewed recipient decisions into
 recipient signatures, and certificate identity is never inferred from recipient email, name, or
 authentication claims.
 
-Certification adds cryptographic evidence; it does not decide legal effect. Product copy must not
+The initial seal is an invisible **approval signature**, not a PDF certification signature. It is
+deliberately non-DocMDP: its signature dictionary has no certification-signature `/Reference` entry
+with `/TransformMethod /DocMDP`, the document catalogue has no `/Perms /DocMDP` entry for it, and
+SignKit does not attach an allowed-change policy to the seal. “Instance seal” must not be shortened
+to “certification signature” in API names, storage names, audit events, logs, or product copy.
+
+Sealing adds cryptographic evidence; it does not decide legal effect. Product copy must not
 describe B-B, B-T, or their certificate as an advanced or qualified signature without a separate,
 explicit qualification result from an appropriate trust and identity design.
 
@@ -38,17 +44,18 @@ renewal schedule before algorithms, certificates, or previous time-stamps cease 
 
 ## Artifact and publication flow
 
-Certification is a durable reconciliation step after `completion_artifact_pdf` exists. It is never
-added to the recipient sign/approve transaction.
+Sealing is a durable reconciliation step after `completion_artifact_pdf` exists. It is never added
+to the recipient sign/approve transaction.
 
 1. Resolve one immutable source PDF pointer and independently verify its object key, byte length,
    and SHA-256.
 2. Freeze the requested profile and public policy identifiers: source PDF digest, expected signer
-   certificate digest, certifier policy ID, TSA policy ID and trust-bundle digest when applicable,
+   certificate digest, seal-provider policy ID, TSA policy ID and trust-bundle digest when
+   applicable,
    and validation-policy version.
-3. Submit the bounded source stream to the certifier under a stable, opaque operation ID. Reusing
-   that ID with identical input returns the same operation; reusing it with different input is a
-   conflict.
+3. Submit the bounded source stream to the seal provider under a stable, opaque operation ID.
+   Reusing that ID with identical input returns the same operation; reusing it with different input
+   is a conflict.
 4. Poll a submitted operation rather than keeping a Worker invocation open for an unbounded signing
    or TSA request. An ambiguous transport failure is resolved by reading the same operation ID.
 5. Before publication, independently validate the returned PDF against the frozen source and
@@ -57,7 +64,7 @@ added to the recipient sign/approve transaction.
    the CMS, signer certificate, profile, and optional time-stamp must all verify.
 6. Write the bounded result and validation report as immutable, content-addressed objects. Publish
    their pointers, the durable command receipt, job state, and a chained
-   `envelope.pdf_certification_published` audit event atomically in D1 or PostgreSQL.
+   `envelope.pdf_seal_published` audit event atomically in D1 or PostgreSQL.
 
 Provider output is not deterministic because certificates and time-stamps can vary. Safe replay
 therefore depends on the durable operation ID and provider receipt, not on rebuilding the same bytes
@@ -66,10 +73,11 @@ are never exposed through public status, logs, webhooks, or errors.
 
 ## State and failure semantics
 
-The public state machine is explicit:
+The future API exposes this state as `pdfSeal.status`; it does not introduce a
+`pdfCertification` resource. The state machine is explicit:
 
-- `disabled`: this instance has no valid certification policy or runtime provider;
-- `not_requested`: a completion PDF exists, but no certification was requested;
+- `disabled`: this instance has no valid seal policy or runtime provider;
+- `not_requested`: a completion PDF exists, but no seal was requested;
 - `pending`: a durable request exists and is eligible for work or retry;
 - `processing`: a bounded lease owns the current attempt;
 - `failed`: processing stopped with an operator-safe error code and retryability signal; and
@@ -78,7 +86,7 @@ The public state machine is explicit:
 The persistence layer follows the existing bounded-claim pattern: stable ordering, unique claim
 tokens, lease expiry and reclaim, capped attempts, exponential backoff, evidence-checked command
 replay, and no provider call inside a database transaction. D1 publishes through a rollback-on-
-failed-predicate command trigger; PostgreSQL locks the envelope, source PDF, and certification job
+failed-predicate command trigger; PostgreSQL locks the envelope, source PDF, and sealing job
 in a stable order before the equivalent transaction.
 
 Retryable failures include transport interruption, timeout, provider 5xx/rate limiting, an
@@ -88,16 +96,16 @@ unsupported algorithms, the wrong certificate or profile, certificate policy rej
 invalid CMS/byte range, and an invalid or policy-mismatched time-stamp. Exhaustion makes a retryable
 failure terminal without relabelling an unverified artifact as published.
 
-If a future instance policy makes certification required, completion delivery waits for
+If a future instance policy makes sealing required, completion delivery waits for
 `published`; failure must remain visible to an operator. An optional policy may continue to deliver
-the original visual PDF, but it must not label that attachment as certified.
+the original visual PDF, but it must not label that attachment as instance-sealed.
 
 ## Key, certificate, and TSA trust
 
-SignKit stores only public policy metadata and opaque provider references. Private keys and
-PKCS#12 passwords must not enter application SQL, D1, R2/S3, Git, release assets, audit payloads,
-logs, or Worker secrets. The certifier holds or delegates the signing operation to a PKCS#11 HSM,
-KMS, Cloud Signature Consortium service, or equivalent non-exportable key boundary.
+SignKit stores only public policy metadata and opaque provider references. Private keys and PKCS#12
+passwords must not enter application SQL, D1, R2/S3, Git, release assets, audit payloads, logs, or
+Worker secrets. The seal provider holds or delegates the signing operation to a PKCS#11 HSM, KMS,
+Cloud Signature Consortium service, or equivalent non-exportable key boundary.
 
 Each operation pins the expected signer certificate SHA-256 and validation policy. A certificate
 rotation creates a new policy generation for future operations; public certificate material needed
@@ -105,12 +113,24 @@ to validate old artifacts remains available. Definitive key loss or unknown key 
 permanently, while an explicitly temporary device outage may retry. Compromise requires certificate
 revocation, policy retirement, and a new key; old artifacts are never rewritten silently.
 
-For B-T, the certifier and independent validator must check at least the RFC 3161 response status,
-message imprint and hash OID, request nonce when present, TSA policy OID, token signature, pinned TSA
-chain, the critical `id-kp-timeStamping` extended-key usage, and the relationship between `genTime`
-and the configured validation policy. Ambient operating-system or TLS roots are not document-signing
-trust roots. TSA and revocation endpoints are static operator configuration, never URLs supplied by
-an envelope or certificate without an explicit allowlist.
+For B-T, the seal provider and independent validator must check at least the RFC 3161 response
+status, message imprint and hash OID, request nonce when present, TSA policy OID, token signature,
+pinned TSA chain, and the relationship between `genTime` and the configured validation policy. As
+required by [RFC 3161 section 2.3](https://www.rfc-editor.org/rfc/rfc3161.html#section-2.3), the TSA
+signing certificate's Extended Key Usage extension must be critical and contain only
+`id-kp-timeStamping`; an absent, non-critical, or multi-purpose EKU is rejected.
+
+The time-stamp token must also bind the exact TSA signing certificate through an ESS certificate
+identifier signed attribute. `SigningCertificate` with `ESSCertID` is accepted for SHA-1 only when
+the configured algorithm policy still permits SHA-1. For every other certificate-hash algorithm,
+`SigningCertificateV2` with `ESSCertIDv2` is required, as specified by
+[RFC 5816 section 2.2.1](https://www.rfc-editor.org/rfc/rfc5816.html#section-2.2.1). The identifier's
+certificate hash and any issuer/serial fields must match the certificate that verifies the token
+signature, following the verification update in
+[RFC 5816 section 2.2.2](https://www.rfc-editor.org/rfc/rfc5816.html#section-2.2.2). Missing,
+malformed, mismatched, or policy-disallowed identifiers fail validation. Ambient operating-system
+or TLS roots are not document-signing trust roots. TSA and revocation endpoints are static operator
+configuration, never URLs supplied by an envelope or certificate without an explicit allowlist.
 
 ## Provider and deployment boundary
 
@@ -119,11 +139,15 @@ and result operations. The protocol accepts a stable operation ID, source digest
 stream, requested profile, and non-secret policy identifiers. It returns bounded sealed bytes and a
 structured receipt; it never returns or accepts a raw private key.
 
-| Runtime            | Initial support                                                                                                                                                |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Node/Docker        | Remote HTTPS certifier or a separately deployed, co-located certifier. A subprocess or key file in the app container is not the portable contract.             |
-| Cloudflare Workers | Remote HTTPS certifier only. No certificate private key or PKCS#12 bundle in Worker secrets; D1/R2 retain only jobs, public metadata, and immutable artifacts. |
-| Vercel             | Unspecified until its deployment profile becomes supported; it must use the same provider contract rather than a divergent in-process implementation.          |
+The future application port is named `PdfSealProvider`; `PdfCertificationProvider` and `Certifier`
+are deliberately not used because both collide with PDF certification-signature and certificate-
+authority terminology.
+
+| Runtime            | Initial support                                                                                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Node/Docker        | Remote HTTPS seal provider or a separately deployed, co-located seal provider. A subprocess or key file in the app container is not the portable contract.         |
+| Cloudflare Workers | Remote HTTPS seal provider only. No certificate private key or PKCS#12 bundle in Worker secrets; D1/R2 retain only jobs, public metadata, and immutable artifacts. |
+| Vercel             | Unspecified until its deployment profile becomes supported; it must use the same provider contract rather than a divergent in-process implementation.              |
 
 Cloudflare processing starts at concurrency one and streams the source where possible. Returned
 bytes and all validation inputs remain bounded so the Worker cannot multiply large in-memory PDF
@@ -138,7 +162,10 @@ validation policy. The conformance matrix records exact tool versions and includ
 
 - valid B-B and B-T output, including source-prefix and complete-byte-range checks;
 - modified source content, audit appendix, `ByteRange`, CMS value, and signer certificate;
-- timestamp wrong imprint, nonce, policy, TSA key usage, trust root, or signature;
+- timestamp wrong imprint, nonce, policy, trust root, signature, non-critical/multi-purpose TSA EKU,
+  or missing/mismatched ESS certificate binding;
+- a DocMDP `/Reference` transform, catalogue `/Perms /DocMDP` entry, or claimed allowed-change
+  policy on the initial approval seal;
 - expired and revoked signer/TSA certificates at the applicable validation time;
 - bytes appended after the sealing revision;
 - provider replay, ambiguous response loss, validation outage, and certificate rotation; and
@@ -153,10 +180,10 @@ fixture-only and must be unmistakably unrelated to any deployment certificate.
 `src/lib/application/completion-artifacts/executed-pdf.ts` permits a 32 MiB executed PDF, while
 `src/lib/application/completion-artifacts/completion-evidence-service.ts` currently reads published
 PDFs with the 8 MiB `MAX_COMPLETION_PDF_BYTES` bound from `completion-pdf.ts`. That mismatch must be
-resolved before certification reads the source; the certification path must use one documented
+resolved before sealing reads the source; the sealing path must use one documented
 bound consistently for generation, download, provider submission, validation, and object reads.
 
-Envelopes completed before certification support remain `not_requested`. There is no automatic
+Envelopes completed before sealing support remain `not_requested`. There is no automatic
 historical sealing: applying a current certificate or time-stamp later could otherwise be mistaken
 for evidence that existed at the original completion time. A future explicit backfill preserves and
 reports both `completedAt` and the later certificate/time-stamp time.

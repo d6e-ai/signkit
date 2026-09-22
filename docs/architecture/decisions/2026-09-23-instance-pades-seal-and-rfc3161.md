@@ -13,6 +13,8 @@ certificate signature.
 - The existing executed PDF remains the source artifact. A sealed PDF is a second immutable,
   content-addressed artifact produced through a PDF incremental update; the source bytes are never
   overwritten or re-rendered.
+- The initial seal is an invisible PDF approval signature. It is not a PDF certification signature
+  and does not use a DocMDP transform or declare which later document changes are permitted.
 - The first supported profiles are PAdES B-B and B-T. B-B proves that the configured instance
   certificate signed the PDF but supplies no trusted signing time. B-T additionally requires a
   verified RFC 3161 signature time-stamp. A B-T request may never silently succeed as B-B when the
@@ -20,12 +22,12 @@ certificate signature.
 - B-LT and B-LTA are later work. They add certificate and revocation material and, for B-LTA, an
   actively maintained document time-stamp chain; they are not names for a one-time B-T operation.
 - SignKit never stores a certificate private key in its database, object storage, Git repository,
-  release artifacts, logs, or Worker secrets. A certifier owns key custody and exposes an
-  idempotent remote operation. Node/Docker may call a co-located or remote certifier over HTTPS.
-  Cloudflare Workers initially support only a remote certifier.
-- A certifier is not trusted merely because it returned bytes. Fixtures and every supported engine
-  combination must be independently verified with both EU DSS and pyHanko before the profile is
-  advertised. Runtime publication also fails closed unless the configured validation boundary
+  release artifacts, logs, or Worker secrets. A seal provider owns key custody and exposes an
+  idempotent remote operation. Node/Docker may call a co-located or remote seal provider over HTTPS.
+  Cloudflare Workers initially support only a remote seal provider.
+- A seal provider is not trusted merely because it returned bytes. Fixtures and every supported
+  engine combination must be independently verified with both EU DSS and pyHanko before the profile
+  is advertised. Runtime publication also fails closed unless the configured validation boundary
   verifies the source binding, PDF byte range, CMS signature, certificate policy, and requested
   profile.
 - Existing completed envelopes are not sealed automatically after this feature is enabled. An
@@ -33,8 +35,8 @@ certificate signature.
 
 The certificate belongs to the SignKit instance operator under an explicit certificate policy.
 Certificate issuance, subject verification, HSM/KMS/PKCS#11 or remote-signing custody, backup,
-revocation, and rotation remain operator or certifier responsibilities. Rotation affects new seal
-operations only; previously published PDFs remain immutable.
+revocation, and rotation remain operator or seal-provider responsibilities. Rotation affects new
+seal operations only; previously published PDFs remain immutable.
 
 ## Product and legal boundary
 
@@ -53,18 +55,19 @@ validation design.
 
 ## Consequences
 
-- Certification runs after completion PDF publication and outside recipient decision transactions.
+- Sealing runs after completion PDF publication and outside recipient decision transactions.
 - A requested B-T seal remains pending or failed until a conforming time-stamp is present; there is
   no best-effort downgrade.
-- Deployments without a configured certifier remain fully functional visual-signature services and
-  report certification as disabled rather than pretending that a PDF is sealed.
-- The portable application boundary is an authenticated, idempotent certifier protocol rather than
-  a JavaScript, Rust, Java, or Python library embedded in every runtime.
+- Deployments without a configured seal provider remain fully functional visual-signature services
+  and report sealing as disabled rather than pretending that a PDF is sealed.
+- The portable application boundary is an authenticated, idempotent seal-provider protocol rather
+  than a JavaScript, Rust, Java, or Python library embedded in every runtime.
 - Certificate loss prevents new seals but does not erase already-published signed bytes. Suspected
   compromise requires revocation and rotation; it does not authorize rewriting old artifacts.
 
 The normative implementation contract is in
-[`../pdf-certification.md`](../pdf-certification.md). The profile requirements derive from
+[`../pdf-sealing.md`](../pdf-sealing.md). The profile requirements derive from
 [ETSI EN 319 142-1](https://www.etsi.org/deliver/etsi_en/319100_319199/31914201/01.02.01_60/en_31914201v010201p.pdf),
 and the time-stamp protocol and response checks derive from
-[RFC 3161](https://www.rfc-editor.org/rfc/rfc3161.html).
+[RFC 3161](https://www.rfc-editor.org/rfc/rfc3161.html) and
+[RFC 5816](https://www.rfc-editor.org/rfc/rfc5816.html).
