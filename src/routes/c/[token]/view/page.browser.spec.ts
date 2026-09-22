@@ -3,7 +3,9 @@ import { render } from 'vitest-browser-svelte';
 import ReceiptPage from './+page.svelte';
 import type { CompletionReceiptPageState } from './+page.server';
 
-const TOKEN = 'skca1_' + 'a'.repeat(43);
+const { TOKEN } = vi.hoisted(() => ({
+	TOKEN: 'skca1_' + 'a'.repeat(43)
+}));
 
 vi.mock('$app/state', () => ({
 	page: {
