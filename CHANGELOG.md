@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-09-23
+
+### Changed
+
+- Cloudflare upgrades and non-initial deploys now activate the verified Worker version and then reconcile routes, custom domains, and Cron Triggers from the same release configuration before smoke verification.
+- The first Worker upload—including an adopted Worker with zero published versions—continues to use complete `wrangler deploy`, as required by Cloudflare, while later deployments use the explicit version-and-trigger sequence.
+- Custom-domain configuration now explicitly disables `workers.dev`, records one `custom_domain` route, and limits production smoke checks to the intended custom-domain origin instead of falling back to `workers.dev`.
+
+### Fixed
+
+- Follow-up to [#125](https://github.com/d6e-ai/signkit/issues/125): `create-signkit` no longer activates new Worker code without applying the release's changed routes and Cron Triggers.
+- Trigger-reconciliation and first-upload failures now preserve honest non-secret partial state, including the observed or active Worker version, previous version when known, release metadata, applied migrations, D1 backup, and a retry marker; retained recovery material remains available for a safe retry.
+- Smoke failure after a completed Worker-and-trigger transition keeps that coherent state instead of attempting a Worker-only rollback that could leave routes or Cron Triggers mismatched.
+
+### Security
+
+- Cloudflare deployment failures fail the CLI command, record observed partial state, and require explicit reconciliation when code, route, or trigger state cannot be proven complete. Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements and the absence of PAdES/TSA certification.
+- A provider failure after the first `wrangler deploy` may leave remote activation or trigger state indeterminate: `create-signkit` re-inspects versions and records a retry marker when it observes a new version, but operators must still inspect and retry because Cloudflare does not expose an atomic result across all affected surfaces.
+
 ## [0.1.5] - 2026-09-22
 
 ### Added
