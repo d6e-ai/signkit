@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
@@ -153,6 +153,17 @@
 	let placementPending = $state(false);
 	let placementError = $state<string | null>(null);
 	let placedFields = $state<readonly PublicEnvelopeFieldResponse[]>([]);
+	/**
+	 * Placement replaces the entire field set, and the public read model omits
+	 * labels, so a persisted field can never be safely folded back into a
+	 * republishable draft. Once any field is persisted, further placement is
+	 * fully locked in this revision rather than risking a partial-set publish
+	 * that silently deletes everything already there.
+	 */
+	const placementLocked = $derived(placedFields.length > 0);
+	let selectedPublishedFieldId = $state<string | null>(null);
+	let keyboardAddPage = $state(1);
+	let geometryAnnouncement = $state('');
 	let newField = $state<{
 		recipientId: string;
 		fieldType: FieldType;
@@ -186,7 +197,11 @@
 	const DEFAULT_FIELD_WIDTH = 0.26;
 	const DEFAULT_FIELD_HEIGHT = 0.05;
 	const MIN_FIELD_SIZE = 0.02;
-	const KEYBOARD_STEP = 0.005;
+	/** Arrow = fine step; Shift+Arrow = coarse step. Matches the displayed hint exactly. */
+	const FINE_STEP = 0.005;
+	const COARSE_STEP = 0.025;
+	/** Inset (from the page's top-left corner) for zero-click keyboard field creation - deliberately not centered, so it never lands under an existing centered box. */
+	const KEYBOARD_ADD_INSET = 0.08;
 	let dragState: {
 		key: string;
 		mode: 'move' | 'resize';
@@ -744,6 +759,11 @@
 		return Math.round(value * 10_000) / 10_000;
 	}
 
+	/** Percentages shown in the geometry panel: tenths, not raw 0..1 fractions. */
+	function round1(value: number): number {
+		return Math.round(value * 10) / 10;
+	}
+
 	/** Keeps every box finite, non-degenerate, and fully inside its page. */
 	function clampGeometry(geometry: FieldGeometry): FieldGeometry {
 		const width = Math.min(1, Math.max(MIN_FIELD_SIZE, geometry.width));
@@ -757,10 +777,39 @@
 		};
 	}
 
+	/** The page count of the document currently open for placement, for clamping page input/selection. */
+	function currentDocumentPageCount(): number {
+		const documentId = documentIdForPlacement();
+		const fromDocuments = documentPages?.documents.find(
+			(entry) => entry.documentId === documentId
+		)?.pageCount;
+		return fromDocuments ?? documentPages?.pageCount ?? 1;
+	}
+
+	function announceGeometry(label: string, geometry: FieldGeometry): void {
+		geometryAnnouncement = m.envelope_placement_geometry_announcement({
+			label,
+			left: String(round1(geometry.x * 100)),
+			top: String(round1(geometry.y * 100)),
+			width: String(round1(geometry.width * 100)),
+			height: String(round1(geometry.height * 100)),
+			page: String(geometry.page)
+		});
+	}
+
 	function addFieldAt(page: number, x: number, y: number): void {
+		if (placementLocked) return;
 		const documentId = documentIdForPlacement();
 		if (newField.recipientId === '' || documentId === null) return;
 		const key = crypto.randomUUID();
+		const label = newField.label.trim() || fieldTypeLabel(newField.fieldType);
+		const geometry = clampGeometry({
+			page,
+			x: x - DEFAULT_FIELD_WIDTH / 2,
+			y: y - DEFAULT_FIELD_HEIGHT / 2,
+			width: DEFAULT_FIELD_WIDTH,
+			height: DEFAULT_FIELD_HEIGHT
+		});
 		fieldDrafts = [
 			...fieldDrafts,
 			{
@@ -768,26 +817,23 @@
 				recipientId: newField.recipientId,
 				documentId,
 				fieldType: newField.fieldType,
-				label: newField.label.trim() || fieldTypeLabel(newField.fieldType),
+				label,
 				required: newField.required,
 				position: fieldDrafts.length + 1,
-				geometry: clampGeometry({
-					page,
-					x: x - DEFAULT_FIELD_WIDTH / 2,
-					y: y - DEFAULT_FIELD_HEIGHT / 2,
-					width: DEFAULT_FIELD_WIDTH,
-					height: DEFAULT_FIELD_HEIGHT
-				})
+				geometry
 			}
 		];
 		selectedFieldKey = key;
+		selectedPublishedFieldId = null;
 		newField = { ...newField, label: '' };
+		announceGeometry(label, geometry);
 	}
 
 	function handlePageClick(
 		event: MouseEvent & { currentTarget: EventTarget & HTMLElement },
 		page: number
 	): void {
+		if (placementLocked) return;
 		const rect = event.currentTarget.getBoundingClientRect();
 		if (rect.width <= 0 || rect.height <= 0) return;
 		addFieldAt(
@@ -797,14 +843,101 @@
 		);
 	}
 
+	/**
+	 * Zero-click field creation: places a field of the currently selected
+	 * recipient/type at a deterministic, bounded inset on the chosen page,
+	 * then moves focus onto the new box so arrow-key editing can continue
+	 * without ever touching a pointer. Shares clampGeometry/addFieldAt with
+	 * pointer-driven placement, so both paths agree on bounds.
+	 */
+	async function addFieldViaKeyboard(): Promise<void> {
+		if (placementLocked) return;
+		const pageCount = currentDocumentPageCount();
+		const page = Math.min(Math.max(1, Math.round(keyboardAddPage) || 1), pageCount);
+		keyboardAddPage = page;
+		addFieldAt(
+			page,
+			KEYBOARD_ADD_INSET + DEFAULT_FIELD_WIDTH / 2,
+			KEYBOARD_ADD_INSET + DEFAULT_FIELD_HEIGHT / 2
+		);
+		const key = selectedFieldKey;
+		if (key === null) return;
+		await tick();
+		document.getElementById(`field-box-${key}`)?.focus();
+	}
+
 	function updateGeometry(key: string, next: FieldGeometry): void {
 		fieldDrafts = fieldDrafts.map((draftItem) =>
 			draftItem.key === key ? { ...draftItem, geometry: clampGeometry(next) } : draftItem
 		);
+		const updated = fieldDrafts.find((draftItem) => draftItem.key === key);
+		if (updated) announceGeometry(updated.label, updated.geometry);
 	}
 
 	function geometryOf(key: string): FieldGeometry | null {
 		return fieldDrafts.find((draftItem) => draftItem.key === key)?.geometry ?? null;
+	}
+
+	interface SelectedFieldGeometryPanel {
+		key: string;
+		label: string;
+		geometry: FieldGeometry;
+		editable: boolean;
+	}
+
+	/**
+	 * Backs the Page/Left/Top/Width/Height FieldSet. Resolves to whichever of
+	 * the two mutually exclusive selections (a mutable draft, or a read-only
+	 * persisted field) is active, so the panel has one source regardless of
+	 * which kind of box the operator focused.
+	 */
+	const selectedFieldPanel = $derived.by((): SelectedFieldGeometryPanel | null => {
+		const activeDocumentId = documentIdForPlacement();
+		if (selectedFieldKey !== null) {
+			const draftItem = fieldDrafts.find((item) => item.key === selectedFieldKey);
+			if (draftItem !== undefined && draftItem.documentId === activeDocumentId) {
+				return {
+					key: draftItem.key,
+					label: draftItem.label,
+					geometry: draftItem.geometry,
+					editable: true
+				};
+			}
+		}
+		if (selectedPublishedFieldId !== null) {
+			const field = placedFields.find((item) => item.id === selectedPublishedFieldId);
+			if (field !== undefined && field.documentId === activeDocumentId && field.geometry !== null) {
+				return {
+					key: field.id,
+					label: fieldTypeLabel(field.fieldType),
+					geometry: field.geometry,
+					editable: false
+				};
+			}
+		}
+		return null;
+	});
+
+	function updateSelectedGeometry(patch: Partial<FieldGeometry>): void {
+		const panel = selectedFieldPanel;
+		if (panel === null || !panel.editable) return;
+		updateGeometry(panel.key, { ...panel.geometry, ...patch });
+	}
+
+	function updateSelectedPage(value: number): void {
+		if (!Number.isFinite(value)) return;
+		const pageCount = currentDocumentPageCount();
+		updateSelectedGeometry({ page: Math.min(Math.max(1, Math.round(value)), pageCount) });
+	}
+
+	function updateSelectedPercent(field: 'x' | 'y' | 'width' | 'height', percent: number): void {
+		if (!Number.isFinite(percent)) return;
+		updateSelectedGeometry({ [field]: percent / 100 } as Partial<FieldGeometry>);
+	}
+
+	function togglePublishedFieldSelection(id: string): void {
+		selectedPublishedFieldId = selectedPublishedFieldId === id ? null : id;
+		selectedFieldKey = null;
 	}
 
 	function startDrag(event: PointerEvent, key: string, mode: 'move' | 'resize'): void {
@@ -818,6 +951,7 @@
 		event.stopPropagation();
 		target.setPointerCapture(event.pointerId);
 		selectedFieldKey = key;
+		selectedPublishedFieldId = null;
 		dragState = {
 			key,
 			mode,
@@ -860,7 +994,7 @@
 			removeFieldDraft(key);
 			return;
 		}
-		const step = event.shiftKey ? KEYBOARD_STEP * 2 : KEYBOARD_STEP;
+		const step = event.shiftKey ? COARSE_STEP : FINE_STEP;
 		let next: FieldGeometry | null = null;
 		const resizing = event.altKey;
 		if (event.key === 'ArrowLeft') {
@@ -894,6 +1028,7 @@
 	}
 
 	async function publishFields(): Promise<void> {
+		if (placementLocked) return;
 		if (envelope === null || draft === null || fieldDrafts.length === 0 || placementPending) return;
 		placementPending = true;
 		placementError = null;
@@ -1971,69 +2106,76 @@
 							<Card.Description>{m.envelope_fields_description()}</Card.Description>
 						</Card.Header>
 						<Card.Content class="flex flex-col gap-4">
-							<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
-								<Field.Field>
-									<Field.FieldLabel for="field-recipient">
-										{m.envelope_field_recipient_label()}
-									</Field.FieldLabel>
-									<Select.Root type="single" bind:value={newField.recipientId}>
-										<Select.Trigger id="field-recipient" class="w-full">
-											{signerRecipients().find((recipient) => recipient.id === newField.recipientId)
-												?.name ?? m.envelope_field_select_placeholder()}
-										</Select.Trigger>
-										<Select.Content>
-											<Select.Group>
-												{#each signerRecipients() as recipient (recipient.id)}
-													<Select.Item value={recipient.id} label={recipient.name}>
-														{recipient.name}
+							{#if placementLocked}
+								<p class="text-sm text-muted-foreground" role="status">
+									{m.envelope_fields_locked_notice()}
+								</p>
+							{:else}
+								<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
+									<Field.Field>
+										<Field.FieldLabel for="field-recipient">
+											{m.envelope_field_recipient_label()}
+										</Field.FieldLabel>
+										<Select.Root type="single" bind:value={newField.recipientId}>
+											<Select.Trigger id="field-recipient" class="w-full">
+												{signerRecipients().find(
+													(recipient) => recipient.id === newField.recipientId
+												)?.name ?? m.envelope_field_select_placeholder()}
+											</Select.Trigger>
+											<Select.Content>
+												<Select.Group>
+													{#each signerRecipients() as recipient (recipient.id)}
+														<Select.Item value={recipient.id} label={recipient.name}>
+															{recipient.name}
+														</Select.Item>
+													{/each}
+												</Select.Group>
+											</Select.Content>
+										</Select.Root>
+									</Field.Field>
+									<Field.Field>
+										<Field.FieldLabel for="field-type">
+											{m.envelope_field_type_label()}
+										</Field.FieldLabel>
+										<Select.Root type="single" bind:value={newField.fieldType}>
+											<Select.Trigger id="field-type" class="w-full">
+												{fieldTypeLabel(newField.fieldType)}
+											</Select.Trigger>
+											<Select.Content>
+												<Select.Group>
+													<Select.Item value="signature" label={m.signing_field_type_signature()}>
+														{m.signing_field_type_signature()}
 													</Select.Item>
-												{/each}
-											</Select.Group>
-										</Select.Content>
-									</Select.Root>
-								</Field.Field>
-								<Field.Field>
-									<Field.FieldLabel for="field-type">
-										{m.envelope_field_type_label()}
-									</Field.FieldLabel>
-									<Select.Root type="single" bind:value={newField.fieldType}>
-										<Select.Trigger id="field-type" class="w-full">
-											{fieldTypeLabel(newField.fieldType)}
-										</Select.Trigger>
-										<Select.Content>
-											<Select.Group>
-												<Select.Item value="signature" label={m.signing_field_type_signature()}>
-													{m.signing_field_type_signature()}
-												</Select.Item>
-												<Select.Item value="initials" label={m.signing_field_type_initials()}>
-													{m.signing_field_type_initials()}
-												</Select.Item>
-												<Select.Item value="text" label={m.signing_field_type_text()}>
-													{m.signing_field_type_text()}
-												</Select.Item>
-												<Select.Item value="date" label={m.signing_field_type_date()}>
-													{m.signing_field_type_date()}
-												</Select.Item>
-												<Select.Item value="checkbox" label={m.signing_field_type_checkbox()}>
-													{m.signing_field_type_checkbox()}
-												</Select.Item>
-											</Select.Group>
-										</Select.Content>
-									</Select.Root>
-								</Field.Field>
-								<Field.Field>
-									<Field.FieldLabel for="field-label">
-										{m.envelope_field_label_label()}
-									</Field.FieldLabel>
-									<Input id="field-label" bind:value={newField.label} maxlength={200} />
-								</Field.Field>
-								<Field.Field orientation="horizontal">
-									<Checkbox id="field-required" bind:checked={newField.required} />
-									<Field.FieldLabel for="field-required" class="font-normal">
-										{m.signing_field_required()}
-									</Field.FieldLabel>
-								</Field.Field>
-							</Field.FieldGroup>
+													<Select.Item value="initials" label={m.signing_field_type_initials()}>
+														{m.signing_field_type_initials()}
+													</Select.Item>
+													<Select.Item value="text" label={m.signing_field_type_text()}>
+														{m.signing_field_type_text()}
+													</Select.Item>
+													<Select.Item value="date" label={m.signing_field_type_date()}>
+														{m.signing_field_type_date()}
+													</Select.Item>
+													<Select.Item value="checkbox" label={m.signing_field_type_checkbox()}>
+														{m.signing_field_type_checkbox()}
+													</Select.Item>
+												</Select.Group>
+											</Select.Content>
+										</Select.Root>
+									</Field.Field>
+									<Field.Field>
+										<Field.FieldLabel for="field-label">
+											{m.envelope_field_label_label()}
+										</Field.FieldLabel>
+										<Input id="field-label" bind:value={newField.label} maxlength={200} />
+									</Field.Field>
+									<Field.Field orientation="horizontal">
+										<Checkbox id="field-required" bind:checked={newField.required} />
+										<Field.FieldLabel for="field-required" class="font-normal">
+											{m.signing_field_required()}
+										</Field.FieldLabel>
+									</Field.Field>
+								</Field.FieldGroup>
+							{/if}
 
 							<div class="flex flex-col gap-3">
 								<div>
@@ -2041,14 +2183,45 @@
 									<p class="text-xs text-muted-foreground">
 										{m.envelope_placement_description()}
 									</p>
-									<p class="mt-1 text-xs text-muted-foreground">
-										{m.envelope_placement_keyboard_hint()}
-									</p>
+									{#if !placementLocked}
+										<p class="mt-1 text-xs text-muted-foreground">
+											{m.envelope_placement_keyboard_hint()}
+										</p>
+									{/if}
 								</div>
-								{#if newField.recipientId === ''}
-									<p class="text-sm text-muted-foreground">
-										{m.envelope_placement_needs_signer()}
-									</p>
+								{#if !placementLocked}
+									{#if newField.recipientId === ''}
+										<p class="text-sm text-muted-foreground">
+											{m.envelope_placement_needs_signer()}
+										</p>
+									{:else}
+										<div class="flex flex-wrap items-end gap-3">
+											<Field.Field class="w-24">
+												<Field.FieldLabel for="field-add-page">
+													{m.envelope_field_geometry_page()}
+												</Field.FieldLabel>
+												<Input
+													id="field-add-page"
+													type="number"
+													min="1"
+													max={currentDocumentPageCount()}
+													value={keyboardAddPage}
+													oninput={(event) => {
+														const parsed = Number(event.currentTarget.value);
+														if (Number.isFinite(parsed)) keyboardAddPage = parsed;
+													}}
+												/>
+											</Field.Field>
+											<Button
+												type="button"
+												variant="outline"
+												onclick={() => void addFieldViaKeyboard()}
+											>
+												<IconPlus data-icon="inline-start" />
+												{m.envelope_field_add_action()}
+											</Button>
+										</div>
+									{/if}
 								{/if}
 								{#if documentPages !== null && documentPages.documents.length > 1}
 									<nav class="flex flex-wrap gap-2" aria-label={m.envelope_document_switcher()}>
@@ -2059,6 +2232,9 @@
 													? 'default'
 													: 'outline'}
 												onclick={() => {
+													selectedFieldKey = null;
+													selectedPublishedFieldId = null;
+													keyboardAddPage = 1;
 													selectedPlacementDocumentId = document.documentId;
 													void loadDocumentPages();
 												}}
@@ -2086,26 +2262,42 @@
 											<!-- svelte-ignore a11y_click_events_have_key_events -->
 											<div
 												class="absolute inset-0"
-												class:cursor-crosshair={placementReady && newField.recipientId !== ''}
+												class:cursor-crosshair={!placementLocked &&
+													placementReady &&
+													newField.recipientId !== ''}
+												aria-label={m.envelope_field_geometry_page_aria()}
 												onclick={(event) => handlePageClick(event, page.pageNumber)}
 											>
 												{#each publishedOnPage(page.pageNumber) as field (field.id)}
 													{#if field.geometry}
-														<span
-															class="pointer-events-none absolute rounded border border-muted-foreground/50 bg-muted/40 text-[10px] text-muted-foreground"
+														<button
+															type="button"
+															id={`field-box-${field.id}`}
+															aria-label={m.envelope_placement_box_label({
+																label: fieldTypeLabel(field.fieldType),
+																recipient: recipientName(field.recipientId),
+																page: String(field.geometry.page)
+															})}
+															aria-pressed={selectedPublishedFieldId === field.id}
+															class="absolute rounded border-2 border-dashed border-muted-foreground/60 bg-muted/40 text-[10px] text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+															class:ring-2={selectedPublishedFieldId === field.id}
 															style={`left:${field.geometry.x * 100}%;top:${field.geometry.y * 100}%;width:${field.geometry.width * 100}%;height:${field.geometry.height * 100}%;`}
+															onclick={(event) => {
+																event.stopPropagation();
+																togglePublishedFieldSelection(field.id);
+															}}
 														>
 															<span class="block truncate px-1">
 																{fieldTypeLabel(field.fieldType)}
 															</span>
-														</span>
+														</button>
 													{/if}
 												{/each}
 												{#each draftsOnPage(page.pageNumber) as fieldDraft (fieldDraft.key)}
 													{#if fieldDraft.geometry}
-														<div
-															role="button"
-															tabindex="0"
+														<button
+															type="button"
+															id={`field-box-${fieldDraft.key}`}
 															aria-label={m.envelope_placement_box_label({
 																label: fieldDraft.label,
 																recipient: recipientName(fieldDraft.recipientId),
@@ -2120,7 +2312,10 @@
 															onpointerup={endDrag}
 															onpointercancel={endDrag}
 															onkeydown={(event) => handleFieldKeydown(event, fieldDraft.key)}
-															onfocus={() => (selectedFieldKey = fieldDraft.key)}
+															onfocus={() => {
+																selectedFieldKey = fieldDraft.key;
+																selectedPublishedFieldId = null;
+															}}
 															onclick={(event) => event.stopPropagation()}
 														>
 															<span class="block truncate px-1">{fieldDraft.label}</span>
@@ -2133,16 +2328,110 @@
 																onpointerup={endDrag}
 																onpointercancel={endDrag}
 															></span>
-														</div>
+														</button>
 													{/if}
 												{/each}
 											</div>
 										{/snippet}
 									</PdfDocumentView>
 								{/key}
+								<div class="sr-only" role="status" aria-live="polite">{geometryAnnouncement}</div>
 							</div>
 
-							{#if fieldDrafts.length > 0}
+							{#if selectedFieldPanel}
+								<Field.FieldSet>
+									<Field.FieldLegend variant="label">
+										{m.envelope_field_geometry_label()}
+									</Field.FieldLegend>
+									<Field.FieldDescription>
+										{selectedFieldPanel.editable
+											? m.envelope_field_geometry_description()
+											: m.envelope_field_geometry_readonly()}
+									</Field.FieldDescription>
+									<Field.FieldGroup class="grid gap-3 sm:grid-cols-5">
+										<Field.Field data-disabled={!selectedFieldPanel.editable}>
+											<Field.FieldLabel for="selected-field-page">
+												{m.envelope_field_geometry_page()}
+											</Field.FieldLabel>
+											<Input
+												id="selected-field-page"
+												type="number"
+												min="1"
+												max={currentDocumentPageCount()}
+												disabled={!selectedFieldPanel.editable}
+												value={selectedFieldPanel.geometry.page}
+												oninput={(event) => updateSelectedPage(Number(event.currentTarget.value))}
+											/>
+										</Field.Field>
+										<Field.Field data-disabled={!selectedFieldPanel.editable}>
+											<Field.FieldLabel for="selected-field-left">
+												{m.envelope_field_geometry_left()}
+											</Field.FieldLabel>
+											<Input
+												id="selected-field-left"
+												type="number"
+												min="0"
+												max="100"
+												step="0.1"
+												disabled={!selectedFieldPanel.editable}
+												value={round1(selectedFieldPanel.geometry.x * 100)}
+												oninput={(event) =>
+													updateSelectedPercent('x', Number(event.currentTarget.value))}
+											/>
+										</Field.Field>
+										<Field.Field data-disabled={!selectedFieldPanel.editable}>
+											<Field.FieldLabel for="selected-field-top">
+												{m.envelope_field_geometry_top()}
+											</Field.FieldLabel>
+											<Input
+												id="selected-field-top"
+												type="number"
+												min="0"
+												max="100"
+												step="0.1"
+												disabled={!selectedFieldPanel.editable}
+												value={round1(selectedFieldPanel.geometry.y * 100)}
+												oninput={(event) =>
+													updateSelectedPercent('y', Number(event.currentTarget.value))}
+											/>
+										</Field.Field>
+										<Field.Field data-disabled={!selectedFieldPanel.editable}>
+											<Field.FieldLabel for="selected-field-width">
+												{m.envelope_field_geometry_width()}
+											</Field.FieldLabel>
+											<Input
+												id="selected-field-width"
+												type="number"
+												min={MIN_FIELD_SIZE * 100}
+												max="100"
+												step="0.1"
+												disabled={!selectedFieldPanel.editable}
+												value={round1(selectedFieldPanel.geometry.width * 100)}
+												oninput={(event) =>
+													updateSelectedPercent('width', Number(event.currentTarget.value))}
+											/>
+										</Field.Field>
+										<Field.Field data-disabled={!selectedFieldPanel.editable}>
+											<Field.FieldLabel for="selected-field-height">
+												{m.envelope_field_geometry_height()}
+											</Field.FieldLabel>
+											<Input
+												id="selected-field-height"
+												type="number"
+												min={MIN_FIELD_SIZE * 100}
+												max="100"
+												step="0.1"
+												disabled={!selectedFieldPanel.editable}
+												value={round1(selectedFieldPanel.geometry.height * 100)}
+												oninput={(event) =>
+													updateSelectedPercent('height', Number(event.currentTarget.value))}
+											/>
+										</Field.Field>
+									</Field.FieldGroup>
+								</Field.FieldSet>
+							{/if}
+
+							{#if !placementLocked && fieldDrafts.length > 0}
 								<Table.Root>
 									<Table.Header>
 										<Table.Row>
@@ -2185,15 +2474,17 @@
 								</p>
 							{/if}
 						</Card.Content>
-						<Card.Footer class="justify-end border-t bg-muted/20 py-4">
-							<Button
-								disabled={fieldDrafts.length === 0 || placementPending}
-								onclick={() => void publishFields()}
-							>
-								{#if placementPending}<Spinner data-icon="inline-start" />{/if}
-								{m.envelope_publish_fields()}
-							</Button>
-						</Card.Footer>
+						{#if !placementLocked}
+							<Card.Footer class="justify-end border-t bg-muted/20 py-4">
+								<Button
+									disabled={fieldDrafts.length === 0 || placementPending}
+									onclick={() => void publishFields()}
+								>
+									{#if placementPending}<Spinner data-icon="inline-start" />{/if}
+									{m.envelope_publish_fields()}
+								</Button>
+							</Card.Footer>
+						{/if}
 					</Card.Root>
 				{/if}
 			</Tabs.Content>
