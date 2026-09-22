@@ -8,7 +8,6 @@
 	import ThemeSwitch from '$lib/components/theme-switch.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import favicon from '$lib/assets/favicon.svg';
 	import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 	import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
 	import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
@@ -26,7 +25,7 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
+	<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 	<title>{m.app_name()}</title>
 	<meta name="description" content="Electronic signature workspace." />
 </svelte:head>
