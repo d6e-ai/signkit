@@ -139,6 +139,20 @@ and result operations. The protocol accepts a stable operation ID, source digest
 stream, requested profile, and non-secret policy identifiers. It returns bounded sealed bytes and a
 structured receipt; it never returns or accepts a raw private key.
 
+The initial remote transport derives every endpoint from one operator-configured HTTPS base URL;
+provider responses cannot redirect the application or supply a status or result URL. It uses
+`PUT {base}/pdf-seals/{operationId}` for the streamed source, `GET` on that same URL for status, and
+`GET {base}/pdf-seals/{operationId}/result` for the bounded result. The operation ID is also the
+idempotency key. Every response echoes the frozen source digest and size, exact requested profile,
+signer-certificate digest, seal and validation policy identifiers, and the B-T TSA policy tuple.
+The result requires an exact content length and SHA-256 and must achieve the requested profile;
+redirects, changed metadata, profile substitution, and arbitrary response URLs fail closed.
+
+`PdfSealProvider` and the remote HTTPS adapter implement only this untrusted transport boundary.
+They are not runtime-wired and do not make sealing available. Provider success cannot publish an
+artifact until the separate independent validator, durable job, and atomic publication boundary are
+implemented.
+
 The future application port is named `PdfSealProvider`; `PdfCertificationProvider` and `Certifier`
 are deliberately not used because both collide with PDF certification-signature and certificate-
 authority terminology.
