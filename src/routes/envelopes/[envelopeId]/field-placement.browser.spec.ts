@@ -437,11 +437,12 @@ describe('published fields protect against partial-replacement data loss', () =>
 		await userEvent.keyboard('{Enter}');
 		await expect.poll(() => box?.getAttribute('aria-pressed')).toBe('true');
 
-		// The geometry FieldSet mirrors the exact stored value but is disabled.
+		// The geometry FieldSet mirrors the exact stored value but is read-only -
+		// not disabled, so it stays reachable by Tab and readable by a screen reader.
 		const pageInput = screen.container.querySelector('#selected-field-page') as HTMLInputElement;
 		const leftInput = screen.container.querySelector('#selected-field-left') as HTMLInputElement;
-		expect(pageInput.disabled).toBe(true);
-		expect(leftInput.disabled).toBe(true);
+		expect(pageInput.readOnly).toBe(true);
+		expect(leftInput.readOnly).toBe(true);
 		expect(Number(leftInput.value)).toBeCloseTo(10, 5);
 		await expect.element(screen.getByText(/already published and can't be edited/i)).toBeVisible();
 

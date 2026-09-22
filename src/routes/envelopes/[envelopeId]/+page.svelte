@@ -164,6 +164,17 @@
 	let selectedPublishedFieldId = $state<string | null>(null);
 	let keyboardAddPage = $state(1);
 	let geometryAnnouncement = $state('');
+	/**
+	 * Raw text currently being typed into the Left/Top/Width/Height percentage
+	 * inputs, keyed by axis. Displaying this instead of a freshly rounded
+	 * value while the field has an in-progress edit is what lets an
+	 * intermediate value like "8." survive to become "8.5" - echoing the
+	 * rounded number back on every keystroke would silently drop the trailing
+	 * decimal point before a digit after it could be typed.
+	 */
+	let selectedGeometryFieldText = $state<Partial<Record<'x' | 'y' | 'width' | 'height', string>>>(
+		{}
+	);
 	let newField = $state<{
 		recipientId: string;
 		fieldType: FieldType;
@@ -862,8 +873,26 @@
 		);
 		const key = selectedFieldKey;
 		if (key === null) return;
-		await tick();
-		document.getElementById(`field-box-${key}`)?.focus();
+		await focusFieldBoxWhenMounted(key);
+	}
+
+	/**
+	 * The field box lives inside PdfDocumentView's overlay, which only mounts
+	 * once PDF.js finishes loading - the Add field control is available as
+	 * soon as the page map JSON loads, well before that. A single tick is not
+	 * enough to wait out that race, so poll a bounded number of frames for the
+	 * box to actually mount before giving up.
+	 */
+	async function focusFieldBoxWhenMounted(key: string, maxAttempts = 50): Promise<void> {
+		for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+			await tick();
+			const element = document.getElementById(`field-box-${key}`);
+			if (element !== null) {
+				element.focus();
+				return;
+			}
+			await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+		}
 	}
 
 	function updateGeometry(key: string, next: FieldGeometry): void {
@@ -935,9 +964,36 @@
 		updateSelectedGeometry({ [field]: percent / 100 } as Partial<FieldGeometry>);
 	}
 
+	/** What the Left/Top/Width/Height inputs show: the in-progress typed text, or the stored value once it isn't being edited. */
+	function selectedGeometryDisplayValue(
+		field: 'x' | 'y' | 'width' | 'height',
+		geometry: FieldGeometry
+	): string {
+		return selectedGeometryFieldText[field] ?? String(round1(geometry[field] * 100));
+	}
+
+	function handleSelectedGeometryPercentInput(
+		field: 'x' | 'y' | 'width' | 'height',
+		raw: string
+	): void {
+		selectedGeometryFieldText = { ...selectedGeometryFieldText, [field]: raw };
+		updateSelectedPercent(field, Number(raw));
+	}
+
+	function commitSelectedGeometryPercentInput(field: 'x' | 'y' | 'width' | 'height'): void {
+		if (!(field in selectedGeometryFieldText)) return;
+		const next = { ...selectedGeometryFieldText };
+		delete next[field];
+		selectedGeometryFieldText = next;
+	}
+
 	function togglePublishedFieldSelection(id: string): void {
-		selectedPublishedFieldId = selectedPublishedFieldId === id ? null : id;
+		const nextSelected = selectedPublishedFieldId === id ? null : id;
+		selectedPublishedFieldId = nextSelected;
 		selectedFieldKey = null;
+		if (nextSelected === null) return;
+		const field = placedFields.find((item) => item.id === nextSelected);
+		if (field?.geometry) announceGeometry(fieldTypeLabel(field.fieldType), field.geometry);
 	}
 
 	function startDrag(event: PointerEvent, key: string, mode: 'move' | 'resize'): void {
@@ -2358,7 +2414,8 @@
 												type="number"
 												min="1"
 												max={currentDocumentPageCount()}
-												disabled={!selectedFieldPanel.editable}
+												readonly={!selectedFieldPanel.editable}
+												aria-readonly={!selectedFieldPanel.editable}
 												value={selectedFieldPanel.geometry.page}
 												oninput={(event) => updateSelectedPage(Number(event.currentTarget.value))}
 											/>
@@ -2373,10 +2430,12 @@
 												min="0"
 												max="100"
 												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.x * 100)}
+												readonly={!selectedFieldPanel.editable}
+												aria-readonly={!selectedFieldPanel.editable}
+												value={selectedGeometryDisplayValue('x', selectedFieldPanel.geometry)}
 												oninput={(event) =>
-													updateSelectedPercent('x', Number(event.currentTarget.value))}
+													handleSelectedGeometryPercentInput('x', event.currentTarget.value)}
+												onblur={() => commitSelectedGeometryPercentInput('x')}
 											/>
 										</Field.Field>
 										<Field.Field data-disabled={!selectedFieldPanel.editable}>
@@ -2389,10 +2448,12 @@
 												min="0"
 												max="100"
 												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.y * 100)}
+												readonly={!selectedFieldPanel.editable}
+												aria-readonly={!selectedFieldPanel.editable}
+												value={selectedGeometryDisplayValue('y', selectedFieldPanel.geometry)}
 												oninput={(event) =>
-													updateSelectedPercent('y', Number(event.currentTarget.value))}
+													handleSelectedGeometryPercentInput('y', event.currentTarget.value)}
+												onblur={() => commitSelectedGeometryPercentInput('y')}
 											/>
 										</Field.Field>
 										<Field.Field data-disabled={!selectedFieldPanel.editable}>
@@ -2405,10 +2466,12 @@
 												min={MIN_FIELD_SIZE * 100}
 												max="100"
 												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.width * 100)}
+												readonly={!selectedFieldPanel.editable}
+												aria-readonly={!selectedFieldPanel.editable}
+												value={selectedGeometryDisplayValue('width', selectedFieldPanel.geometry)}
 												oninput={(event) =>
-													updateSelectedPercent('width', Number(event.currentTarget.value))}
+													handleSelectedGeometryPercentInput('width', event.currentTarget.value)}
+												onblur={() => commitSelectedGeometryPercentInput('width')}
 											/>
 										</Field.Field>
 										<Field.Field data-disabled={!selectedFieldPanel.editable}>
@@ -2421,10 +2484,12 @@
 												min={MIN_FIELD_SIZE * 100}
 												max="100"
 												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.height * 100)}
+												readonly={!selectedFieldPanel.editable}
+												aria-readonly={!selectedFieldPanel.editable}
+												value={selectedGeometryDisplayValue('height', selectedFieldPanel.geometry)}
 												oninput={(event) =>
-													updateSelectedPercent('height', Number(event.currentTarget.value))}
+													handleSelectedGeometryPercentInput('height', event.currentTarget.value)}
+												onblur={() => commitSelectedGeometryPercentInput('height')}
 											/>
 										</Field.Field>
 									</Field.FieldGroup>
