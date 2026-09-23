@@ -14,7 +14,7 @@ Shipped in v0.1.0:
 - PostgreSQL 18 and D1 migrations with parity suites, S3-compatible and R2 object storage, durable background drains with bounded leases, and backup/restore runbooks for PostgreSQL/S3 and D1-Time-Travel/R2
 - First-party Rust CLI (`signkit` under `cli/`) and the Cloudflare deployment CLI (`create-signkit --cloudflare ...`) that reconciles Worker/D1/R2 from GitHub Releases
 
-Scope: SignKit v0.1.0 is an electronic-signature workflow service, not a certificate-backed or qualified-signature service. PAdES sealing and RFC 3161 timestamping (TSA) are outside v0.1.0 — completion PDFs and audit evidence attest to workflow integrity, not to a PKI signature. See the [issue tracker](https://github.com/d6e-ai/signkit/issues) for the backlog.
+Scope: SignKit is an electronic-signature workflow service. A configured external provider and independent validator can optionally add a PAdES B-B or RFC 3161-backed B-T **instance seal** to the completed PDF. That instance signature does not turn recipient decisions into certificate-backed or qualified electronic signatures; B-LT/B-LTA are not supported.
 
 ## Core ideas
 

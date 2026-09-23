@@ -2,9 +2,9 @@
 
 Status: accepted design for Issue #78; provider and validator transports, the durable job store,
 runtime-neutral orchestration, atomic D1/PostgreSQL publication, fail-closed Node/Cloudflare runtime
-configuration, protected scheduled drain, and explicit request/status API are implemented. The
-drain processes only jobs created by the explicit request transaction. Authenticated sealed-PDF
-download is implemented; CLI and UI surfaces remain separate follow-up slices.
+configuration, protected scheduled drain, explicit request/status/download API, Rust CLI commands,
+and operator UI are implemented. The drain processes only jobs created by the explicit request
+transaction.
 
 ## Boundary and terminology
 

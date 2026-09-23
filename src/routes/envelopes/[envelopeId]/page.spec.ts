@@ -232,4 +232,34 @@ describe('envelope authoring page contracts', () => {
 		expect(card).toContain("onclick={() => void downloadCompletionEvidence('markdown')}");
 		expect(card).not.toMatch(/<a\s/);
 	});
+
+	it('keeps certificate-backed PDF sealing distinct and exposes explicit request and published download actions', () => {
+		const documentsTab = source.slice(
+			source.indexOf('<Tabs.Content value="documents"'),
+			source.indexOf('<Tabs.Content value="recipients"')
+		);
+		expect(documentsTab).toContain('m.envelope_pdf_seal_title()');
+		expect(documentsTab.indexOf('envelope_completed_title')).toBeLessThan(
+			documentsTab.indexOf('envelope_pdf_seal_title')
+		);
+		expect(source).toContain('client.pdfSealStatus(envelopeId)');
+		expect(source).toContain('client.requestPdfSeal(envelopeId, requestedPdfSealProfile)');
+		expect(source).toContain("completionPdfStatus !== 'published'");
+		expect(source).toContain("completionStatus?.status === 'failed'");
+		expect(source).toContain("completionStatus?.status === 'pending'");
+		expect(source).toContain("completionStatus?.status === 'processing'");
+		expect(source).toContain('client.sealedPdf(envelopeId)');
+		expect(source).toContain(
+			"pdfSealStatus?.status === 'not_requested' && completionPdfStatus === 'published'"
+		);
+		expect(source).toContain("pdfSealStatus?.status === 'published'");
+		expect(source).toContain('m.envelope_pdf_seal_status_disabled()');
+		expect(source).toContain('m.envelope_pdf_seal_status_processing()');
+		expect(source).toContain('m.envelope_pdf_seal_status_failed_retryable()');
+		expect(source).toContain('m.envelope_pdf_seal_validation_badge()');
+		expect(source).toContain('m.envelope_pdf_seal_timestamp_present()');
+		expect(source).toContain('<Field.FieldGroup>');
+		expect(source).toContain('<Card.Footer>');
+		expect(source).toContain('<Spinner data-icon="inline-start" />');
+	});
 });

@@ -799,6 +799,11 @@ describe('completed envelope shows the completed-artifacts card', () => {
 			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact`)) {
 				return completionArtifactResponse();
 			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method !== 'POST') {
+				return jsonResponse({
+					pdfSeal: { envelopeId: ENVELOPE_ID, status: 'disabled' }
+				});
+			}
 			return jsonResponse({});
 		});
 	}
@@ -908,5 +913,253 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		await expect
 			.element(screen.getByText('Completion status could not be loaded. Please try again shortly.'))
 			.toBeVisible();
+	});
+
+	it('keeps visual completion distinct from unavailable certificate-backed instance sealing', async () => {
+		const mockFetch = mockCompletedFetch(() =>
+			jsonResponse({
+				completionArtifact: {
+					envelopeId: ENVELOPE_ID,
+					status: 'published',
+					publishedAt: '2026-09-12T00:00:00.000Z',
+					manifestSha256: 'm'.repeat(64),
+					jsonSha256: 'j'.repeat(64),
+					markdownSha256: 'd'.repeat(64),
+					pdfStatus: 'published'
+				}
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(
+				screen.getByText(
+					'An optional certificate-backed instance signature over the final PDF. This is separate from the visual completion document above.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(
+				screen.getByText('PDF instance sealing is not configured for this SignKit instance.')
+			)
+			.toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Request PDF instance seal' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('does not offer an instance seal until the completion PDF is published', async () => {
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'pending'
+					}
+				}),
+			(urlStr, init) =>
+				urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method !== 'POST'
+					? jsonResponse({ pdfSeal: { envelopeId: ENVELOPE_ID, status: 'not_requested' } })
+					: undefined
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByText('The final PDF is still being prepared.').last())
+			.toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Request PDF instance seal' }))
+			.not.toBeInTheDocument();
+		expect(
+			mockFetch.mock.calls.some(
+				([url, init]) =>
+					String(url).endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) &&
+					init?.method === 'POST'
+			)
+		).toBe(false);
+	});
+
+	it('reports completion processing instead of claiming the source PDF is unavailable', async () => {
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'processing',
+						attempts: 1
+					}
+				}),
+			(urlStr, init) =>
+				urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method !== 'POST'
+					? jsonResponse({ pdfSeal: { envelopeId: ENVELOPE_ID, status: 'not_requested' } })
+					: undefined
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(
+				screen
+					.getByText('Completion evidence is being prepared. This can take a few minutes.')
+					.last()
+			)
+			.toBeVisible();
+		await expect
+			.element(screen.getByText('A final PDF is not available for this agreement.'))
+			.not.toBeInTheDocument();
+		await expect
+			.element(screen.getByRole('button', { name: 'Request PDF instance seal' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('submits an explicit B-T instance-seal request only from the not-requested state', async () => {
+		let requestBody: Record<string, unknown> | undefined;
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'published'
+					}
+				}),
+			(urlStr, init) => {
+				if (!urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`)) return undefined;
+				if (init?.method === 'POST') {
+					requestBody = parseBody(init);
+					return jsonResponse(
+						{
+							pdfSeal: {
+								envelopeId: ENVELOPE_ID,
+								jobId: '01900000-0000-7000-8000-000000000088',
+								requestedProfile: 'pades-b-t',
+								requestedAt: '2026-09-23T00:00:00.000Z'
+							}
+						},
+						202
+					);
+				}
+				return jsonResponse({ pdfSeal: { envelopeId: ENVELOPE_ID, status: 'not_requested' } });
+			}
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(
+				screen.getByText('Certificate-backed PDF signature with an RFC 3161 trusted timestamp.')
+			)
+			.toBeVisible();
+		await screen.getByRole('button', { name: 'Request PDF instance seal' }).click();
+		await vi.waitFor(() => expect(requestBody).toEqual({ requestedProfile: 'pades-b-t' }));
+		const post = mockFetch.mock.calls.find(
+			([url, init]) =>
+				String(url).endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method === 'POST'
+		);
+		expect((post?.[1]?.headers as Record<string, string>)['idempotency-key']).toBeTruthy();
+	});
+
+	it('shows independently validated B-T publication and enables only the sealed download', async () => {
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'published'
+					}
+				}),
+			(urlStr, init) => {
+				if (
+					urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) &&
+					init?.method !== 'POST'
+				) {
+					return jsonResponse({
+						pdfSeal: {
+							envelopeId: ENVELOPE_ID,
+							status: 'published',
+							requestedProfile: 'pades-b-t',
+							achievedProfile: 'pades-b-t',
+							signerCertificateSha256: 'c'.repeat(64),
+							sealedSha256: 's'.repeat(64),
+							sealedByteSize: 1024,
+							validationReportSha256: 'v'.repeat(64),
+							validatedAt: '2026-09-23T00:01:00.000Z',
+							publishedAt: '2026-09-23T00:02:00.000Z'
+						}
+					});
+				}
+				return undefined;
+			}
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByText('Independently validated', { exact: true }))
+			.toBeVisible();
+		await expect.element(screen.getByText('Trusted timestamp validated')).toBeVisible();
+		await expect.element(screen.getByRole('button', { name: 'Download sealed PDF' })).toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Request PDF instance seal' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('shows retry semantics for a failed instance seal without offering a sealed download', async () => {
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'published'
+					}
+				}),
+			(urlStr, init) =>
+				urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method !== 'POST'
+					? jsonResponse({
+							pdfSeal: {
+								envelopeId: ENVELOPE_ID,
+								status: 'failed',
+								requestedProfile: 'pades-b-b',
+								attempts: 2,
+								retryable: true,
+								errorCode: 'provider_timeout',
+								requestedAt: '2026-09-23T00:00:00.000Z'
+							}
+						})
+					: undefined
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByText('SignKit will retry this request. Refresh to check its status.'))
+			.toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Refresh instance seal status' }))
+			.toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Download sealed PDF' }))
+			.not.toBeInTheDocument();
 	});
 });
