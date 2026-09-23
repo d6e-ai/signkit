@@ -15,6 +15,7 @@ export const evidenceCapabilities = {
 	pdfSeal: {
 		statusEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
 		requestEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+		downloadEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
 		workerEndpoint: '/api/v1/system/pdf-seals/drain',
 		workerAuthentication: 'bearer-secret',
 		authentication: 'instance-session-or-api-key',

@@ -16,6 +16,7 @@ export const integrationCapabilities = {
 			'/api/v1/envelopes/{envelopeId}/deliveries',
 			'/api/v1/envelopes/{envelopeId}/completion-artifact',
 			'/api/v1/envelopes/{envelopeId}/pdf-seal',
+			'/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
 			'/api/v1/envelopes/{envelopeId}/evidence',
 			'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
 			'/api/v1/envelopes/{envelopeId}/pdf',

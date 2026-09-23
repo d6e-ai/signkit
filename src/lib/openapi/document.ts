@@ -1048,6 +1048,74 @@ export function openApiDocument(): Record<string, unknown> {
 					}
 				})
 			},
+			'/api/v1/envelopes/{envelopeId}/pdf-seal/pdf': {
+				get: op({
+					summary: 'Download the published certificate-backed PDF',
+					operationId: 'getEnvelopePdfSealPdf',
+					description:
+						'Returns only the atomically published, independently validated sealed PDF. The stored bytes are length-checked and SHA-256 verified on every read.',
+					tags: ['Envelopes', 'PDF seals'],
+					parameters: [envelopeIdParam],
+					responses: {
+						'200': {
+							description: 'Verified certificate-backed application/pdf bytes.',
+							content: {
+								'application/pdf': { schema: { type: 'string', format: 'binary' } }
+							}
+						},
+						'404': {
+							description: 'Envelope not found or a validated PDF seal is not published',
+							content: {
+								'application/problem+json': {
+									schema: { $ref: '#/components/schemas/ProblemDetail' }
+								}
+							}
+						},
+						'503': {
+							description: 'The published sealed PDF could not be verified or read',
+							content: {
+								'application/problem+json': {
+									schema: { $ref: '#/components/schemas/ProblemDetail' }
+								}
+							}
+						}
+					}
+				}),
+				head: op({
+					summary: 'Inspect the published certificate-backed PDF download',
+					operationId: 'headEnvelopePdfSealPdf',
+					description:
+						'Performs the same publication and integrity verification as GET while returning headers only.',
+					tags: ['Envelopes', 'PDF seals'],
+					parameters: [envelopeIdParam],
+					responses: {
+						'200': {
+							description: 'Verified certificate-backed PDF metadata.',
+							headers: {
+								'Content-Type': { schema: { type: 'string', const: 'application/pdf' } },
+								'Content-Length': { schema: { type: 'integer', minimum: 1 } },
+								ETag: { schema: { type: 'string' } }
+							}
+						},
+						'404': {
+							description: 'Envelope not found or a validated PDF seal is not published',
+							content: {
+								'application/problem+json': {
+									schema: { $ref: '#/components/schemas/ProblemDetail' }
+								}
+							}
+						},
+						'503': {
+							description: 'The published sealed PDF could not be verified or read',
+							content: {
+								'application/problem+json': {
+									schema: { $ref: '#/components/schemas/ProblemDetail' }
+								}
+							}
+						}
+					}
+				})
+			},
 			'/api/v1/envelopes/{envelopeId}/evidence': {
 				get: op({
 					summary: 'Download published completion evidence',
