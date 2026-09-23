@@ -1,8 +1,10 @@
 # PDF sealing
 
 Status: accepted design for Issue #78; provider and validator transports, the durable job store,
-and the runtime-neutral pre-publication orchestrator are implemented. Runtime configuration,
-scheduled drain wiring, atomic publication, and public product surfaces are not implemented yet.
+the runtime-neutral pre-publication orchestrator, and the atomic D1/PostgreSQL publication
+persistence boundary are implemented. That persistence boundary is not yet wired to the
+orchestrator: runtime configuration, scheduled drain wiring, the application-layer publish call,
+and public product surfaces are not implemented yet.
 
 ## Boundary and terminology
 
@@ -119,9 +121,33 @@ transaction.
 The runtime-neutral orchestrator advances an existing durable row through submit recovery, provider
 polling, immutable sealed-object persistence, independent validation, and immutable validation-report
 persistence. Every stored object is re-opened and re-hashed before the job becomes
-`publication_ready`. Enqueue policy, deployment configuration, scheduled drain wiring, and the
-atomic `publish` action remain later slices. Until those exist, no capability or product surface may
-report PDF sealing as available.
+`publication_ready`. Enqueue policy, deployment configuration, and scheduled drain wiring remain
+later slices. Until those exist, no capability or product surface may report PDF sealing as
+available.
+
+### Publication persistence boundary
+
+`PdfSealPublicationStore` is the atomic D1/PostgreSQL boundary that promotes an already
+`publication_ready`/`publish` job into one immutable publication pointer. Discovery finds
+`publication_ready` jobs lacking a publication row; `publishPdfSeal` accepts the exact frozen
+job/evidence tuple plus an audit anchor, payload, and hash the caller re-read and re-hashed
+immediately beforehand, and returns `published`, `replayed`, `stale`, or `integrity_error` — no
+provider or validator call runs inside the store transaction, and none is made by the store at all.
+`pdf_seal_job` is never mutated by publication: discovery excludes an envelope that already has a
+publication row, and the public seal state is derived from that row's presence rather than from
+`pdf_seal_job.status`. The transaction rechecks the job's exact frozen/evidence tuple, that the
+envelope is still `completed` with an unchanged source `completion_artifact_pdf` row, and that the
+supplied audit anchor is still the current head, before inserting the publication pointer, appending
+a chained `envelope.pdf_seal_published` system audit event, and persisting a durable command receipt
+for evidence-checked replay — all atomically. D1 uses an `AFTER INSERT` trigger on the command table
+so a failed predicate rolls the command, pointer, and audit event back together, following the
+existing completion-artifact-publication trigger pattern. PostgreSQL locks the envelope then the job
+row and performs the same checks and inserts in one transaction. Object keys and provider/validator
+receipts stay internal to the store and are never copied into an audit payload or a public DTO. The
+application-layer call that wires the orchestrator's `publication_ready` output through this store —
+including its own re-read/re-hash immediately before calling — remains a later slice.
+Both the publication pointer and durable replay receipt reject updates and deletes at the database
+boundary; publication evidence is append-only after the atomic transaction commits.
 
 Retryable failures include transport interruption, timeout, provider 5xx/rate limiting, an
 explicitly temporary key or HSM outage, and validation-service unavailability. Permanent or
