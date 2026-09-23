@@ -25,8 +25,12 @@ Legacy rows whose size is unknown remain readable but are not sealable. The job 
 tuple, policy tuple, stable provider and validator operation identifiers, opaque receipts, and later
 sealed/validation object evidence. A monotonic attempt sequence is kept separately from the
 consecutive retry-failure budget. The D1 and PostgreSQL stores expose only lease, checkpoint,
-completion, and failure transitions; remote calls never run inside a database transaction. See
-[PDF sealing](pdf-sealing.md#state-and-failure-semantics).
+completion, and failure transitions; remote calls never run inside a database transaction. A
+separate atomic publication boundary promotes an already `publication_ready` job into one immutable
+`pdf_seal_publication` pointer plus a chained `envelope.pdf_seal_published` audit event and a durable
+`pdf_seal_publish_command` replay receipt, all in one transaction; `pdf_seal_job` itself is never
+mutated by publication. See [PDF sealing](pdf-sealing.md#state-and-failure-semantics) and
+[publication persistence boundary](pdf-sealing.md#publication-persistence-boundary).
 
 ## Concurrency and evidence
 
