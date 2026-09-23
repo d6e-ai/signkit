@@ -19,6 +19,9 @@ pub const MAX_EVIDENCE_BYTES: usize = 2 * 1024 * 1024;
 /// Matches the server executed agreement PDF bound (`MAX_EXECUTED_PDF_BYTES`).
 pub const MAX_COMPLETION_PDF_BYTES: usize = 32 * 1024 * 1024;
 
+/// Matches the server sealed PDF bound (`MAX_SEALED_PDF_BYTES`).
+pub const MAX_SEALED_PDF_BYTES: usize = 64 * 1024 * 1024;
+
 /// Reads JSON from a regular file, or from stdin when `path` is `-`.
 pub fn read_json_value(path: &str) -> Result<Value, CliError> {
     let bytes = if path == "-" {

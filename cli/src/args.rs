@@ -105,6 +105,15 @@ pub enum EnvelopesSubcommand {
 
     /// Download the published executed agreement PDF.
     Pdf(EnvelopePdfArgs),
+
+    /// Request a PAdES seal for the published executed agreement PDF (requires envelopes:send).
+    PdfSealRequest(EnvelopePdfSealRequestArgs),
+
+    /// Read PAdES seal job status for an envelope.
+    PdfSealStatus(EnvelopeIdArg),
+
+    /// Download the published, validated PAdES-sealed PDF.
+    PdfSealDownload(EnvelopePdfSealDownloadArgs),
 }
 
 #[derive(Debug, Args)]
@@ -364,6 +373,49 @@ pub struct EnvelopePdfArgs {
     pub envelope_id: String,
 
     /// Destination file, or `-` for stdout.
+    #[arg(long, value_name = "PATH")]
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PdfSealProfileArg {
+    #[value(name = "pades-b-b")]
+    PadesBB,
+    #[value(name = "pades-b-t")]
+    PadesBT,
+}
+
+impl PdfSealProfileArg {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PadesBB => "pades-b-b",
+            Self::PadesBT => "pades-b-t",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopePdfSealRequestArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Requested PAdES conformance profile. Must match the instance's configured profile.
+    #[arg(long, value_enum)]
+    pub profile: PdfSealProfileArg,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopePdfSealDownloadArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Destination file. Sealed agreement bytes are never written to stdout.
     #[arg(long, value_name = "PATH")]
     pub output: String,
 }
