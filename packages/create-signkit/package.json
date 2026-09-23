@@ -20,7 +20,7 @@
 		"LICENSE"
 	],
 	"engines": {
-		"node": ">=22.14.0"
+		"node": "^22.22.2 || ^24.15.0 || >=26.0.0"
 	},
 	"publishConfig": {
 		"access": "public"
@@ -51,9 +51,9 @@
 		"wrangler": "^4.131.2"
 	},
 	"devDependencies": {
-		"@sigstore/bundle": "4.0.0",
+		"@sigstore/bundle": "5.0.0",
 		"@sigstore/protobuf-specs": "0.5.2",
-		"@sigstore/verify": "3.1.1",
+		"@sigstore/verify": "4.1.2",
 		"@types/node": "^26",
 		"@types/snappyjs": "0.7.1",
 		"ajv": "^8.20.0",
