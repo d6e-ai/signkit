@@ -47,6 +47,7 @@ The contact API is human-session-only. API keys, recipient capabilities, and rec
 | `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact` | Read completion publication status    | `envelopes:read` |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/pdf-seal`            | Read instance PDF seal status         | `envelopes:read` |
 | `POST` | `/api/v1/envelopes/{envelopeId}/pdf-seal`            | Explicitly request an instance seal   | `envelopes:send` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf-seal/pdf`        | Download the validated sealed PDF     | `envelopes:read` |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/evidence`            | Download JSON or Markdown evidence    | `envelopes:read` |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/pdf`                 | Download the executed PDF             | `envelopes:read` |
 
@@ -90,6 +91,10 @@ strict `{ "requestedProfile": "pades-b-b" | "pades-b-t" }` body matching the ins
 The scheduler never discovers or seals historical completion PDFs automatically. `GET` on the same
 resource returns disabled, not-requested, pending, processing, failed, or published state and safe
 verification digests, never storage keys, remote receipts, lease tokens, or audit hashes.
+After the state is `published`, `GET /api/v1/envelopes/{envelopeId}/pdf-seal/pdf` returns the exact
+validated sealed bytes as a private, non-cacheable PDF download. The server rechecks the immutable
+publication tuple, object metadata, byte length, and SHA-256 digest on every read; a missing
+publication is `404` and an integrity or storage failure is `503`.
 
 ## Instance administration
 

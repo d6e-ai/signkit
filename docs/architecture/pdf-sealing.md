@@ -142,6 +142,16 @@ locks and publishes both in one transaction. A completion PDF without byte-size 
 closed. Neither completion publication nor the scheduled drain discovers or creates a seal job, so
 enabling a policy later never rewrites the history of an older envelope.
 
+### Sealed PDF download
+
+`GET /api/v1/envelopes/{envelopeId}/pdf-seal/pdf` requires `envelopes:read` and serves only a seal
+that crossed the atomic publication boundary below. SQL publication is authoritative, but each
+download also revalidates the frozen publication tuple and validation evidence, derives the only
+permitted object key, compares object metadata, and reads the exact declared byte count before
+recomputing SHA-256. Any drift fails closed with an RFC 9457 `503`; an envelope without a published
+seal returns `404`. Successful responses are private, non-cacheable `application/pdf` attachments
+and never expose object keys, provider receipts, audit hashes, or signing credentials.
+
 ### Publication persistence boundary
 
 `PdfSealPublicationStore` is the atomic D1/PostgreSQL boundary that promotes an already

@@ -18,6 +18,7 @@ import { createEnvelopeReadyHandler } from './envelope-ready';
 import { createEnvelopeSendHandler } from './envelope-send';
 import { createEnvelopeVoidHandler } from './envelope-void';
 import { createPdfSealRequestHandler, createPdfSealStatusHandler } from './pdf-seal';
+import { createPdfSealDownloadHandler } from './pdf-seal-download';
 import { createInstanceBootstrapHandler } from './instance-bootstrap';
 import { createInstanceInvitationHttpHandlers } from './instance-invitations';
 import {
@@ -272,6 +273,25 @@ function pdfSealStatusCase(): ReadCase {
 	};
 }
 
+function pdfSealDownloadCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal/pdf`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const read = vi.fn(async () => ({ outcome: 'not_published' as const }));
+			const response: Response = await createPdfSealDownloadHandler(() => ({ read }))(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal/pdf`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, reachedService: read.mock.calls.length === 1 };
+		}
+	};
+}
+
 function completionEvidenceCase(): ReadCase {
 	return {
 		name: 'GET /api/v1/envelopes/{envelopeId}/evidence',
@@ -328,6 +348,7 @@ const READ_CASES: readonly ReadCase[] = [
 	deliveriesCase(),
 	completionArtifactCase(),
 	pdfSealStatusCase(),
+	pdfSealDownloadCase(),
 	completionEvidenceCase(),
 	completionPdfCase()
 ];

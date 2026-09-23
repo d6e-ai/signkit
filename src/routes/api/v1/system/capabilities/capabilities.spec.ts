@@ -127,6 +127,7 @@ interface CapabilitiesResponse {
 	pdfSeal: {
 		statusEndpoint: string;
 		requestEndpoint: string;
+		downloadEndpoint: string;
 		workerEndpoint: string;
 		discovery: string;
 		supportedProfiles: string[];
@@ -178,6 +179,7 @@ describe('GET /api/v1/system/capabilities', () => {
 		expect(data.pdfSeal).toMatchObject({
 			statusEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
 			requestEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+			downloadEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
 			workerEndpoint: '/api/v1/system/pdf-seals/drain',
 			discovery: 'explicit-request-only',
 			supportedProfiles: ['pades-b-b', 'pades-b-t'],
@@ -227,6 +229,7 @@ describe('GET /api/v1/system/capabilities', () => {
 				'/api/v1/envelopes/{envelopeId}/deliveries',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact',
 				'/api/v1/envelopes/{envelopeId}/pdf-seal',
+				'/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
 				'/api/v1/envelopes/{envelopeId}/evidence',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
 				'/api/v1/envelopes/{envelopeId}/pdf',
