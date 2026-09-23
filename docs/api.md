@@ -45,6 +45,8 @@ The contact API is human-session-only. API keys, recipient capabilities, and rec
 | `POST` | `/api/v1/envelopes/{envelopeId}/void`                | Void an active envelope               | `envelopes:send` |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/deliveries`          | Read invitation status                | `envelopes:read` |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact` | Read completion publication status    | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf-seal`            | Read instance PDF seal status         | `envelopes:read` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/pdf-seal`            | Explicitly request an instance seal   | `envelopes:send` |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/evidence`            | Download JSON or Markdown evidence    | `envelopes:read` |
 | `GET`  | `/api/v1/envelopes/{envelopeId}/pdf`                 | Download the executed PDF             | `envelopes:read` |
 
@@ -81,6 +83,13 @@ The public `/s/{capability}` link redirects to `/{locale}/sign/{envelopeId}` aft
 ## Completion artifacts
 
 After every actionable recipient completes, background reconciliation builds immutable JSON, Markdown, and PDF artifacts from the pinned document revision and SQL evidence. `GET /api/v1/completion-artifacts` and `/c/{token}` serve recipient completion grants. Completion PDFs are visual evidence, not PAdES-certified signatures.
+
+An enabled instance may explicitly request a PAdES B-B or B-T instance seal for the exact published
+completion PDF. `POST /api/v1/envelopes/{envelopeId}/pdf-seal` requires `Idempotency-Key` and a
+strict `{ "requestedProfile": "pades-b-b" | "pades-b-t" }` body matching the instance policy.
+The scheduler never discovers or seals historical completion PDFs automatically. `GET` on the same
+resource returns disabled, not-requested, pending, processing, failed, or published state and safe
+verification digests, never storage keys, remote receipts, lease tokens, or audit hashes.
 
 ## Instance administration
 

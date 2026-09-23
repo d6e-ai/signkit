@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	parsePdfSealRuntimeConfiguration,
 	PdfSealRuntimeConfigurationError,
+	resolvePdfSealRequestPolicy,
 	resolvePdfSealRuntime,
 	type PdfSealRuntimeEnvironment
 } from './pdf-seal-runtime';
@@ -23,6 +24,22 @@ function environment(overrides: PdfSealRuntimeEnvironment = {}): PdfSealRuntimeE
 describe('PDF seal runtime configuration', () => {
 	it('treats a completely absent configuration as disabled', () => {
 		expect(parsePdfSealRuntimeConfiguration({})).toBeNull();
+		expect(resolvePdfSealRequestPolicy({ platform: { env: {} } as App.Platform })).toBeNull();
+	});
+
+	it('resolves the frozen request policy without constructing durable or remote adapters', () => {
+		expect(
+			resolvePdfSealRequestPolicy({
+				platform: { env: environment() } as unknown as App.Platform
+			})
+		).toEqual({
+			requestedProfile: 'pades-b-b',
+			signerCertificateSha256: 'a'.repeat(64),
+			sealPolicyId: 'seal-policy-v1',
+			validationPolicyId: 'validation-policy-v1',
+			tsaPolicyId: null,
+			tsaTrustBundleSha256: null
+		});
 	});
 
 	it('rejects a configured Cloudflare runtime without its durable bindings', async () => {

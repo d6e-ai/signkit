@@ -17,6 +17,7 @@ import { createEnvelopeHttpHandlers } from './envelopes';
 import { createEnvelopeReadyHandler } from './envelope-ready';
 import { createEnvelopeSendHandler } from './envelope-send';
 import { createEnvelopeVoidHandler } from './envelope-void';
+import { createPdfSealRequestHandler, createPdfSealStatusHandler } from './pdf-seal';
 import { createInstanceBootstrapHandler } from './instance-bootstrap';
 import { createInstanceInvitationHttpHandlers } from './instance-invitations';
 import {
@@ -249,6 +250,28 @@ function completionArtifactCase(): ReadCase {
 	};
 }
 
+function pdfSealStatusCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/pdf-seal',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const findStatus = vi.fn(async () => null);
+			const response: Response = await createPdfSealStatusHandler(() => ({
+				application: { findStatus, request: vi.fn() },
+				requestPolicy: null
+			}))(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, reachedService: findStatus.mock.calls.length === 1 };
+		}
+	};
+}
+
 function completionEvidenceCase(): ReadCase {
 	return {
 		name: 'GET /api/v1/envelopes/{envelopeId}/evidence',
@@ -304,6 +327,7 @@ const READ_CASES: readonly ReadCase[] = [
 	docxGetCase(),
 	deliveriesCase(),
 	completionArtifactCase(),
+	pdfSealStatusCase(),
 	completionEvidenceCase(),
 	completionPdfCase()
 ];
@@ -463,6 +487,36 @@ describe('API key mutation surface', () => {
 					})
 				);
 				return { response, called: send.mock.calls.length === 1 };
+			}
+		],
+		[
+			'POST /api/v1/envelopes/{envelopeId}/pdf-seal',
+			'envelopes:send',
+			async () => {
+				const request = vi.fn(async () => ({ outcome: 'source_unavailable' as const }));
+				const response: Response = await createPdfSealRequestHandler(() => ({
+					application: { request, findStatus: vi.fn() },
+					requestPolicy: {
+						requestedProfile: 'pades-b-b',
+						signerCertificateSha256: 'a'.repeat(64),
+						sealPolicyId: 'seal-policy-v1',
+						validationPolicyId: 'validation-policy-v1',
+						tsaPolicyId: null,
+						tsaTrustBundleSha256: null
+					}
+				}))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						body: JSON.stringify({ requestedProfile: 'pades-b-b' }),
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: principal({ scopes: ['envelopes:send'] })
+						}
+					})
+				);
+				return { response, called: request.mock.calls.length === 1 };
 			}
 		]
 	];

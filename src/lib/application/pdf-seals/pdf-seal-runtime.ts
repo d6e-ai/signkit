@@ -113,6 +113,21 @@ export function parsePdfSealRuntimeConfiguration(
 	};
 }
 
+/**
+ * Resolves only the public policy frozen by an explicit request. It does not
+ * construct a provider, validator, object store, or worker drain, so API
+ * reads can distinguish an intentionally disabled instance without opening
+ * any remote connection.
+ */
+export function resolvePdfSealRequestPolicy(
+	context: PdfSealRuntimeContext
+): PdfSealRequestPolicy | null {
+	const configuration: PdfSealRuntimeConfiguration | null = parsePdfSealRuntimeConfiguration(
+		configurationEnvironment(context.platform?.env)
+	);
+	return configuration?.requestPolicy ?? null;
+}
+
 export async function resolvePdfSealRuntime(
 	context: PdfSealRuntimeContext
 ): Promise<PdfSealRuntime | null> {

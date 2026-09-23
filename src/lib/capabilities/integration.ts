@@ -15,6 +15,7 @@ export const integrationCapabilities = {
 			'/api/v1/envelopes/{envelopeId}/docx',
 			'/api/v1/envelopes/{envelopeId}/deliveries',
 			'/api/v1/envelopes/{envelopeId}/completion-artifact',
+			'/api/v1/envelopes/{envelopeId}/pdf-seal',
 			'/api/v1/envelopes/{envelopeId}/evidence',
 			'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
 			'/api/v1/envelopes/{envelopeId}/pdf',
@@ -32,7 +33,8 @@ export const integrationCapabilities = {
 			],
 			'envelopes:send': [
 				'/api/v1/envelopes/{envelopeId}/send',
-				'/api/v1/envelopes/{envelopeId}/void'
+				'/api/v1/envelopes/{envelopeId}/void',
+				'/api/v1/envelopes/{envelopeId}/pdf-seal'
 			]
 		},
 		mutations: true,

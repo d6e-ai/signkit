@@ -124,6 +124,15 @@ interface CapabilitiesResponse {
 		tokenFormat: string;
 		grantRetentionDays: number;
 	};
+	pdfSeal: {
+		statusEndpoint: string;
+		requestEndpoint: string;
+		workerEndpoint: string;
+		discovery: string;
+		supportedProfiles: string[];
+		publication: string;
+		privateKeyCustody: string;
+	};
 	publicCompletionArtifact: {
 		apiEndpoint: string;
 		linkEndpoint: string;
@@ -165,6 +174,15 @@ describe('GET /api/v1/system/capabilities', () => {
 			workerAuthentication: 'bearer-secret',
 			ccDelivery: 'supported',
 			publicArtifactGrants: 'supported'
+		});
+		expect(data.pdfSeal).toMatchObject({
+			statusEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+			requestEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+			workerEndpoint: '/api/v1/system/pdf-seals/drain',
+			discovery: 'explicit-request-only',
+			supportedProfiles: ['pades-b-b', 'pades-b-t'],
+			publication: 'independently-validated-atomic',
+			privateKeyCustody: 'external-provider'
 		});
 
 		// Completion delivery capabilities
@@ -208,6 +226,7 @@ describe('GET /api/v1/system/capabilities', () => {
 				'/api/v1/envelopes/{envelopeId}/docx',
 				'/api/v1/envelopes/{envelopeId}/deliveries',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact',
+				'/api/v1/envelopes/{envelopeId}/pdf-seal',
 				'/api/v1/envelopes/{envelopeId}/evidence',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
 				'/api/v1/envelopes/{envelopeId}/pdf',
@@ -225,7 +244,8 @@ describe('GET /api/v1/system/capabilities', () => {
 				],
 				'envelopes:send': [
 					'/api/v1/envelopes/{envelopeId}/send',
-					'/api/v1/envelopes/{envelopeId}/void'
+					'/api/v1/envelopes/{envelopeId}/void',
+					'/api/v1/envelopes/{envelopeId}/pdf-seal'
 				]
 			},
 			mutations: true,
