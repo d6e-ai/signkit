@@ -41,7 +41,7 @@
 		"@sveltejs/adapter-vercel": "^6.3.4",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
-		"@tabler/icons-svelte": "^3.46.0",
+		"@tabler/icons-svelte": "^3.47.0",
 		"@tailwindcss/typography": "^0.5.19",
 		"@tailwindcss/vite": "^4.3.0",
 		"@types/hast": "^3.0.5",
