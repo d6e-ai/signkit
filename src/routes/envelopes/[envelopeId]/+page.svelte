@@ -1230,7 +1230,7 @@
 	}
 
 	async function requestPdfSeal(): Promise<void> {
-		if (pdfSealRequestPending) return;
+		if (pdfSealRequestPending || completionStatus?.pdfStatus !== 'published') return;
 		pdfSealRequestPending = true;
 		pdfSealRequestError = null;
 		try {
@@ -1890,7 +1890,11 @@
 								</p>
 							{:else if pdfSealStatus.status === 'not_requested'}
 								<p class="text-sm text-muted-foreground">
-									{m.envelope_pdf_seal_status_not_requested()}
+									{completionStatus?.pdfStatus === 'published'
+										? m.envelope_pdf_seal_status_not_requested()
+										: completionStatus?.pdfStatus === 'pending'
+											? m.envelope_completed_pdf_pending()
+											: m.envelope_completed_pdf_unavailable()}
 								</p>
 							{:else if pdfSealStatus.status === 'pending' || pdfSealStatus.status === 'processing'}
 								<div class="flex flex-col gap-3">
@@ -1964,7 +1968,7 @@
 								</Alert.Root>
 							{/if}
 						</Card.Content>
-						{#if pdfSealStatus?.status === 'not_requested'}
+						{#if pdfSealStatus?.status === 'not_requested' && completionStatus?.pdfStatus === 'published'}
 							<Card.Footer>
 								<form
 									class="flex w-full flex-col gap-4"
