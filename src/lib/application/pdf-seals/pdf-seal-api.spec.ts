@@ -117,7 +117,7 @@ describe('PDF seal API application', () => {
 		expect(await pending.findStatus(ENVELOPE_ID, false)).toMatchObject({ status: 'pending' });
 	});
 
-	it('returns only safe publication evidence', async () => {
+	it('returns only safe publication evidence after current seal configuration is removed', async () => {
 		const published = application(
 			store(
 				{ outcome: 'not_found' },
@@ -139,7 +139,7 @@ describe('PDF seal API application', () => {
 				}
 			)
 		);
-		const serialized: string = JSON.stringify(await published.findStatus(ENVELOPE_ID, true));
+		const serialized: string = JSON.stringify(await published.findStatus(ENVELOPE_ID, false));
 		expect(serialized).toContain('b'.repeat(64));
 		expect(serialized).not.toMatch(/objectKey|receipt|audit|claimToken|provider/i);
 	});

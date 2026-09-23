@@ -504,6 +504,33 @@ describe('PdfSealService', () => {
 		expect(objects.getCallsByKey.get(job.sourceObjectKey)).toBe(2);
 	});
 
+	it('resumes an in-flight job with its frozen certificate and policy after configuration rotates', async () => {
+		const job = await seedJobWithSource(store, objects, {
+			signerCertificateSha256: 'd'.repeat(64),
+			sealPolicyId: 'seal-policy-before-rotation',
+			validationPolicyId: 'validation-policy-before-rotation'
+		});
+		submitMock.mockImplementation(async (command) => ({
+			...command,
+			providerReceiptId: 'receipt-frozen-policy',
+			status: 'pending'
+		}));
+
+		await expect(service.processJob(job.jobId)).resolves.toEqual({
+			jobId: job.jobId,
+			outcome: 'submitted'
+		});
+
+		expect(submitMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				operationId: job.operationId,
+				signerCertificateSha256: 'd'.repeat(64),
+				sealPolicyId: 'seal-policy-before-rotation',
+				validationPolicyId: 'validation-policy-before-rotation'
+			})
+		);
+	});
+
 	it('checkpoints ambiguous_submit instead of failing on an ambiguous submit error', async () => {
 		const job = await seedJobWithSource(store, objects);
 		submitMock.mockRejectedValue(new PdfSealProviderError('network_error', true, true));
@@ -954,6 +981,11 @@ describe('PdfSealService', () => {
 		expect(updated?.status).toBe('failed');
 		expect(updated?.retryable).toBe(true);
 		expect(updated?.availableAt).toBe(pdfSealRetryAvailableAt(NOW_ISO, 1));
+		expect(updated?.nextAction).toBe('validate');
+		expect(updated?.sealedArtifact).toEqual(sealedArtifact);
+		expect(submitMock).not.toHaveBeenCalled();
+		expect(getStatusMock).not.toHaveBeenCalled();
+		expect(readResultMock).not.toHaveBeenCalled();
 	});
 
 	it('reports a stale outcome when the lease is stolen before the checkpoint lands', async () => {
