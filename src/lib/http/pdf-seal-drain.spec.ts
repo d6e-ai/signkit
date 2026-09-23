@@ -70,14 +70,20 @@ describe('PDF seal drain HTTP handler', () => {
 		});
 	});
 
-	it('fails closed when disabled, partially configured, or unavailable', async () => {
+	it('treats an intentionally disabled runtime as a successful no-op', async () => {
+		const response: Response = await createPdfSealDrainHandler(
+			() => null,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(response.status).toBe(204);
+		expect(response.headers.get('cache-control')).toBe('no-store');
+		expect(await response.text()).toBe('');
+	});
+
+	it('fails closed when the maintenance secret or configured runtime is unavailable', async () => {
 		const missingSecret = await createPdfSealDrainHandler(
 			() => null,
 			() => null
-		)(event(`Bearer ${SECRET}`));
-		const missingRuntime = await createPdfSealDrainHandler(
-			() => null,
-			() => SECRET
 		)(event(`Bearer ${SECRET}`));
 		const error = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 		const invalidRuntime = await createPdfSealDrainHandler(
@@ -87,7 +93,6 @@ describe('PDF seal drain HTTP handler', () => {
 			() => SECRET
 		)(event(`Bearer ${SECRET}`));
 		expect(missingSecret.status).toBe(503);
-		expect(missingRuntime.status).toBe(503);
 		expect(invalidRuntime.status).toBe(503);
 		expect(await invalidRuntime.text()).not.toContain(SECRET);
 		expect(error).toHaveBeenCalledWith(

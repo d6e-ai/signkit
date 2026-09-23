@@ -175,7 +175,9 @@ Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitiz
 The PDF seal drain never discovers or enqueues completion PDFs. Envelopes completed before sealing
 was configured remain `not_requested`; only an explicit request surface may create a job. The drain
 re-verifies the source PDF, sealed PDF, and validation report before atomically publishing the
-pointer and chained audit event.
+pointer and chained audit event. An instance with every `PDF_SEAL_*` value unset returns an empty
+`204` from this maintenance endpoint, so the documented disabled default remains a healthy
+scheduled-maintenance state. Partial configuration or missing durable bindings fails with `503`.
 
 Each delivery drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [architecture/completion-artifacts.md](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
 

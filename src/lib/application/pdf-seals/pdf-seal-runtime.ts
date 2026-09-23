@@ -128,13 +128,13 @@ export async function resolvePdfSealRuntime(
 	if (platformEnv !== undefined) {
 		const database: D1Database | undefined = platformEnv.DB;
 		const bucket: R2Bucket | undefined = platformEnv.OBJECTS;
-		if (database === undefined || bucket === undefined) return null;
+		if (database === undefined || bucket === undefined) invalidConfiguration();
 		jobs = new D1PdfSealJobStore(database);
 		publications = new D1PdfSealPublicationStore(database);
 		objects = new R2ObjectStore(bucket);
 	} else {
 		const databaseUrl: string | undefined = optionalTrimmed(env.DATABASE_URL);
-		if (databaseUrl === undefined || !hasS3Configuration(env)) return null;
+		if (databaseUrl === undefined || !hasS3Configuration(env)) invalidConfiguration();
 		const [jobAdapter, publicationAdapter, postgresRuntime, s3Runtime] = await Promise.all([
 			import('$lib/adapters/db/postgres-pdf-seal-job-store'),
 			import('$lib/adapters/db/postgres-pdf-seal-publication-store'),
