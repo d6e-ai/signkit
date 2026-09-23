@@ -69,17 +69,11 @@ export function createPdfSealDownloadHandler(
 				"default-src 'none'; object-src 'none'; script-src 'none'; frame-ancestors 'none'",
 			'x-frame-options': 'DENY'
 		});
-		return new Response(request.method === 'HEAD' ? null : responseBody(result.pdf.bytes), {
+		return new Response(request.method === 'HEAD' ? null : result.pdf.bytes, {
 			status: 200,
 			headers
 		});
 	};
-}
-
-function responseBody(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
-	const copy: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(bytes.byteLength));
-	copy.set(bytes);
-	return copy;
 }
 
 function envelopeNotFound(instance: string): Response {
