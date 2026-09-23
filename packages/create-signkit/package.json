@@ -45,7 +45,7 @@
 		"test:watch": "vitest"
 	},
 	"dependencies": {
-		"sigstore": "4.1.1",
+		"sigstore": "5.0.0",
 		"snappyjs": "0.7.0",
 		"tar": "^7.5.11",
 		"wrangler": "^4.131.2"
