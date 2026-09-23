@@ -52,6 +52,8 @@ signkit envelopes deliveries <envelope-id>
 signkit envelopes completion-artifact <envelope-id>
 signkit envelopes evidence <envelope-id> --format json --output evidence.json
 signkit envelopes pdf <envelope-id> --output agreement.pdf
+signkit envelopes pdf-seal-status <envelope-id>
+signkit envelopes pdf-seal-download <envelope-id> --output sealed-agreement.pdf
 ```
 
 Authoring and lifecycle commands:
@@ -67,11 +69,14 @@ signkit envelopes ready <envelope-id> --file ready.json
 signkit envelopes fields <envelope-id> --file fields.json
 signkit envelopes send <envelope-id> --file send.json
 signkit envelopes void <envelope-id> --file void.json
+signkit envelopes pdf-seal-request <envelope-id> --profile pades-b-t --idempotency-key <opaque-key>
 ```
 
 When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope ids and cursors are validated as UUIDv7 before any network request.
 
 `upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. `--expected-generation` is required; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). The JSON supplied to `document-order` must contain `expectedGeneration` and 1-20 unique UUIDv7 `documentIds` in the desired order. The list is the complete retained set: omit an existing document ID to remove it from the draft.
+
+`pdf-seal-request` explicitly requests the instance's configured `pades-b-b` or `pades-b-t` profile for an already-published completion PDF. `pdf-seal-status` reports the durable job and validation state. `pdf-seal-download` is available only after independent validation and atomic publication; it requires a regular output file and never writes agreement bytes to stdout.
 
 ## Exit codes
 

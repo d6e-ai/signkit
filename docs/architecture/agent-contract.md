@@ -1,6 +1,6 @@
 # Agent-first contract
 
-Status: implemented — Rust CLI reads, evidence/PDF download, and authoring/send/DOCX mutations, a served OpenAPI 3.1 document covering the live `/api/v1` surface, and signed retryable webhooks
+Status: implemented — Rust CLI reads, evidence/PDF and validated instance-seal download, authoring/send/DOCX mutations, and explicit PAdES B-B/B-T instance-seal requests; a served OpenAPI 3.1 document covers the live `/api/v1` surface, with signed retryable webhooks
 
 The first-party UI calls the same versioned application API available to agents, except session-only management surfaces (instance administration, API-key management, webhooks, and capability reissue). Core commands are create envelope, add documents, commit draft, add recipients, place fields, send, sign/approve/decline, read status, and export evidence.
 
@@ -18,7 +18,7 @@ The API serves an OpenAPI 3.1 document at `GET /api/v1/openapi.json`, with struc
 
 The first production-quality CLI slice lives in `cli/` with binary name `signkit` (see [cli.md](../cli.md)). Built for automated, non-interactive agent integration, its design rules are:
 
-- **Truthful scope exposure:** System capabilities, JSON envelope inspection (`list`, `get`, `draft`, `deliveries`, `completion-artifact`), immutable evidence and PDF download (`evidence`, `pdf`), API-key authoring/send mutations, ordered PDF upload/document removal, and bounded DOCX import/export. API-key, instance, webhook, and reissue management remain unexposed in the CLI.
+- **Truthful scope exposure:** System capabilities, JSON envelope inspection (`list`, `get`, `draft`, `deliveries`, `completion-artifact`, `pdf-seal-status`), immutable evidence/PDF download (`evidence`, `pdf`, `pdf-seal-download`), explicit instance-seal requests (`pdf-seal-request`), API-key authoring/send mutations, ordered PDF upload/document removal, and bounded DOCX import/export. API-key, instance, webhook, and reissue management remain unexposed in the CLI.
 - **Single-instance authority:** Envelope commands target the configured SignKit instance. API-key scopes are intersected with the active membership of the key owner; there is no external workspace selector.
 - **Credential hygiene:** API keys are ingested solely from the `SIGNKIT_API_KEY` environment variable or `--api-key-stdin`. Command-line flags and configuration files are prohibited from holding secret material.
 - **Fail-closed network posture:** Redirects are completely disabled to prevent credential leakage. Responses are strictly bounded to prevent OOM risks. Timeouts are enforced.
