@@ -1,6 +1,7 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import type { PdfSealRuntime } from '$lib/application/pdf-seals/pdf-seal-runtime';
 import type { PdfSealDrainResult } from '$lib/application/pdf-seals/pdf-seal-drain-service';
+import { maintenanceFailureHeaders } from '$lib/observability/maintenance-failure';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
@@ -31,7 +32,13 @@ export function createPdfSealDrainHandler(
 			logPdfSealError('pdf_seal_runtime_resolution_failed', error);
 			return unavailable(url.pathname);
 		}
-		if (runtime === null) return unavailable(url.pathname);
+		// Leaving every PDF_SEAL_* value unset is the documented disabled
+		// default, not an operational failure: mark it handled so the
+		// once-a-minute Cloudflare primary cron does not log
+		// scheduled_maintenance_failed for every default (sealing-disabled)
+		// instance. A thrown resolution error above is a real misconfiguration
+		// and is deliberately left unmarked so it still surfaces.
+		if (runtime === null) return unavailable(url.pathname, 'pdf_seal_disabled');
 
 		try {
 			const result: PdfSealDrainResult = await runtime.drainService.drain();
@@ -62,14 +69,17 @@ function unauthorized(instance: string): Response {
 	});
 }
 
-function unavailable(instance: string): Response {
-	return problemResponse({
-		type: 'urn:signkit:problem:pdf-seal-unavailable',
-		title: 'PDF sealing unavailable',
-		status: 503,
-		detail: 'PDF sealing is disabled or its durable dependencies are unavailable.',
-		instance
-	});
+function unavailable(instance: string, handledCode?: string): Response {
+	return problemResponse(
+		{
+			type: 'urn:signkit:problem:pdf-seal-unavailable',
+			title: 'PDF sealing unavailable',
+			status: 503,
+			detail: 'PDF sealing is disabled or its durable dependencies are unavailable.',
+			instance
+		},
+		handledCode === undefined ? undefined : maintenanceFailureHeaders(handledCode)
+	);
 }
 
 function logPdfSealError(event: string, error: unknown): void {
