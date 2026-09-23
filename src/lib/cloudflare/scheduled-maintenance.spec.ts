@@ -54,6 +54,7 @@ describe('Cloudflare scheduled maintenance', () => {
 		expect(paths).toContain('/api/v1/system/envelopes/expiry-drain');
 		expect(paths).toContain('/api/v1/system/deliveries/reseal-sweep');
 		expect(paths).toContain('/api/v1/system/completion-deliveries/reseal-sweep');
+		expect(paths).toContain('/api/v1/system/pdf-seals/drain');
 	});
 
 	it('isolates a failing job so sibling drains still run', async () => {

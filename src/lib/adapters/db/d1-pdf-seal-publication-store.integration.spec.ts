@@ -139,6 +139,22 @@ function command(overrides: Partial<PublishPdfSealCommand> = {}): PublishPdfSeal
 }
 
 describe('D1PdfSealPublicationStore integration', () => {
+	it('reads the current audit head for publication preparation', async () => {
+		const { sqlite, store } = fixture();
+		try {
+			await expect(store.readAuditHeadForEnvelope(ENVELOPE_ID)).resolves.toEqual({
+				auditEventId: ANCHOR_EVENT_ID,
+				sequence: 1,
+				eventHash: ANCHOR_HASH
+			});
+			await expect(
+				store.readAuditHeadForEnvelope('019a0000-0000-7000-8000-000000000099')
+			).resolves.toBeNull();
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('publishes atomically, appends the chained audit event, and leaves the job untouched', async () => {
 		const { sqlite, store } = fixture();
 		try {

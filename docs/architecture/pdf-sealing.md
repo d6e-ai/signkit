@@ -1,10 +1,10 @@
 # PDF sealing
 
 Status: accepted design for Issue #78; provider and validator transports, the durable job store,
-the runtime-neutral pre-publication orchestrator, and the atomic D1/PostgreSQL publication
-persistence boundary are implemented. That persistence boundary is not yet wired to the
-orchestrator: runtime configuration, scheduled drain wiring, the application-layer publish call,
-and public product surfaces are not implemented yet.
+runtime-neutral orchestration, atomic D1/PostgreSQL publication, fail-closed Node/Cloudflare runtime
+configuration, and the protected scheduled drain are implemented. The drain processes only durable
+jobs created by an explicit request; that request API and public API/CLI/UI certification state are
+not implemented yet, so product capability surfaces must still report sealing as unavailable.
 
 ## Boundary and terminology
 
@@ -144,10 +144,16 @@ so a failed predicate rolls the command, pointer, and audit event back together,
 existing completion-artifact-publication trigger pattern. PostgreSQL locks the envelope then the job
 row and performs the same checks and inserts in one transaction. Object keys and provider/validator
 receipts stay internal to the store and are never copied into an audit payload or a public DTO. The
-application-layer call that wires the orchestrator's `publication_ready` output through this store —
-including its own re-read/re-hash immediately before calling — remains a later slice.
+application drain wires the orchestrator's `publication_ready` output through this store. It
+re-reads the durable job after independently reading and hashing the source PDF, sealed PDF, and
+validation report, then prepares and hashes a secret-free audit payload immediately before calling
+the atomic store. It never discovers completion PDFs or creates jobs, preserving the explicit
+request and no-automatic-backfill boundary.
 Both the publication pointer and durable replay receipt reject updates and deletes at the database
 boundary; publication evidence is append-only after the atomic transaction commits.
+The orphan collector treats every sealed PDF and validation report referenced by a durable seal job
+as live, including pre-publication and failed jobs, so its 24-hour sweep cannot erase evidence that
+is still needed for retry or operator diagnosis.
 
 Retryable failures include transport interruption, timeout, provider 5xx/rate limiting, an
 explicitly temporary key or HSM outage, and validation-service unavailability. Permanent or
@@ -217,9 +223,9 @@ source-length failure discovered while the PUT body is already being consumed is
 because the provider may have created the stable operation before the stream failed.
 
 `PdfSealProvider` and the remote HTTPS adapter implement only this untrusted transport boundary.
-They are not runtime-wired and do not make sealing available. Provider success cannot publish an
-artifact until the separate independent validator, durable job, and atomic publication boundary are
-implemented.
+The protected drain wires them to explicitly requested durable jobs, but provider success alone
+cannot publish an artifact: the independent validator and atomic publication boundary still gate
+every result.
 
 The application port is named `PdfSealProvider`; `PdfCertificationProvider` and `Certifier`
 are deliberately not used because both collide with PDF certification-signature and certificate-
@@ -227,9 +233,9 @@ authority terminology.
 
 ## Independent validator protocol
 
-`PdfSealValidator` is a provider-neutral gate between untrusted provider output and future atomic
-publication. The remote adapter is implemented but deliberately unwired. It does not expose a
-runtime capability, write an artifact, or treat a validator receipt as publication.
+`PdfSealValidator` is a provider-neutral gate between untrusted provider output and atomic
+publication. The protected drain wires the remote adapter without exposing a product capability;
+the validator receipt and report remain pre-publication evidence until the atomic store succeeds.
 
 One validation freezes a stable validation ID and seal operation ID together with both PDFs' exact
 SHA-256 and byte length, requested profile, signer-certificate SHA-256, seal-policy ID,

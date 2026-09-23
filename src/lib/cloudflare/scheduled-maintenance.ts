@@ -33,6 +33,7 @@ export const PRIMARY_MAINTENANCE_JOBS: readonly ScheduledMaintenanceJob[] = [
 	{ name: 'delivery drain', path: '/api/v1/system/deliveries/drain' },
 	{ name: 'DOCX conversion drain', path: '/api/v1/system/docx-conversions/drain' },
 	{ name: 'completion artifact drain', path: '/api/v1/system/completion-artifacts/drain' },
+	{ name: 'PDF seal drain', path: '/api/v1/system/pdf-seals/drain' },
 	{ name: 'completion delivery drain', path: '/api/v1/system/completion-deliveries/drain' },
 	{ name: 'envelope expiry drain', path: '/api/v1/system/envelopes/expiry-drain' },
 	{ name: 'webhook drain', path: '/api/v1/system/webhooks/drain' },

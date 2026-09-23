@@ -1336,6 +1336,15 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Drain batch result', { type: 'object' })
 				})
 			},
+			'/api/v1/system/pdf-seals/drain': {
+				post: op({
+					summary: 'Drain explicitly requested PDF seal jobs',
+					operationId: 'drainPdfSeals',
+					tags: ['System', 'Completion artifacts'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'PDF seal drain batch result', { type: 'object' })
+				})
+			},
 			'/api/v1/system/completion-deliveries/drain': {
 				post: op({
 					summary: 'Drain pending completion deliveries',

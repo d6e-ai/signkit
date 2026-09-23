@@ -2,6 +2,7 @@ import {
 	assertValidPublishPdfSealCommand,
 	boundPdfSealPublicationDiscoveryLimit,
 	type DiscoverPdfSealPublicationCandidatesCommand,
+	type PdfSealAuditHead,
 	type PdfSealPublicationCandidate,
 	type PdfSealPublicationRecord,
 	type PdfSealPublicationStore,
@@ -101,6 +102,19 @@ export class D1PdfSealPublicationStore implements PdfSealPublicationStore {
 			jobId: row.job_id,
 			envelopeId: row.envelope_id
 		}));
+	}
+
+	async readAuditHeadForEnvelope(envelopeId: string): Promise<PdfSealAuditHead | null> {
+		const row: { id: string; sequence: number; event_hash: string } | null = await this.#database
+			.prepare(
+				`SELECT id, sequence, event_hash FROM audit_event
+				 WHERE envelope_id = ? ORDER BY sequence DESC LIMIT 1`
+			)
+			.bind(envelopeId)
+			.first<{ id: string; sequence: number; event_hash: string }>();
+		return row === null
+			? null
+			: { auditEventId: row.id, sequence: Number(row.sequence), eventHash: row.event_hash };
 	}
 
 	async publishPdfSeal(command: PublishPdfSealCommand): Promise<PublishPdfSealResult> {

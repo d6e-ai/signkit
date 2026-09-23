@@ -135,6 +135,25 @@ function matchingJobRow(overrides: Record<string, unknown> = {}): Record<string,
 }
 
 describe('PostgresPdfSealPublicationStore', () => {
+	it('reads the latest audit head used to prepare publication', async () => {
+		const scripted = new ScriptedPostgres([
+			[
+				{
+					auditEventId: command.anchorAuditEventId,
+					sequence: 7,
+					eventHash: command.previousAuditHash
+				}
+			]
+		]);
+		const store = new PostgresPdfSealPublicationStore(scripted.client());
+		await expect(store.readAuditHeadForEnvelope(command.envelopeId)).resolves.toEqual({
+			auditEventId: command.anchorAuditEventId,
+			sequence: 7,
+			eventHash: command.previousAuditHash
+		});
+		expect(scripted.directQueries[0]?.text).toContain('ORDER BY sequence DESC LIMIT 1');
+	});
+
 	it('discovers publication_ready jobs lacking a publication row', async () => {
 		const scripted = new ScriptedPostgres([
 			[{ jobId: command.jobId, envelopeId: command.envelopeId }]

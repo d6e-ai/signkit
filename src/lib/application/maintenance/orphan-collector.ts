@@ -45,7 +45,13 @@ const D1_REFERENCE_QUERIES: readonly string[] = [
 		AND (status IN ('pending','processing') OR (status = 'failed' AND retryable = 1))
 	 UNION
 	 SELECT result_object_key AS key FROM docx_conversion_job
-	 WHERE result_object_key IN (SELECT value FROM json_each(?1)) AND status = 'succeeded'`
+	 WHERE result_object_key IN (SELECT value FROM json_each(?1)) AND status = 'succeeded'
+	 UNION
+	 SELECT sealed_object_key AS key FROM pdf_seal_job
+	 WHERE sealed_object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT validation_report_object_key AS key FROM pdf_seal_job
+	 WHERE validation_report_object_key IN (SELECT value FROM json_each(?1))`
 ];
 
 export type OrphanSweepFailureCode =
@@ -351,6 +357,12 @@ export class PostgresOrphanReferenceStore implements OrphanReferenceStore {
 				UNION
 				SELECT result_object_key AS key FROM docx_conversion_job
 				WHERE result_object_key = ANY(${chunk}) AND status = 'succeeded'
+				UNION
+				SELECT sealed_object_key AS key FROM pdf_seal_job
+				WHERE sealed_object_key = ANY(${chunk})
+				UNION
+				SELECT validation_report_object_key AS key FROM pdf_seal_job
+				WHERE validation_report_object_key = ANY(${chunk})
 			`;
 
 			for (const row of rows) {

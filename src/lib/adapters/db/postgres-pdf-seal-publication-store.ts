@@ -3,6 +3,7 @@ import {
 	assertValidPublishPdfSealCommand,
 	boundPdfSealPublicationDiscoveryLimit,
 	type DiscoverPdfSealPublicationCandidatesCommand,
+	type PdfSealAuditHead,
 	type PdfSealPublicationCandidate,
 	type PdfSealPublicationRecord,
 	type PdfSealPublicationStore,
@@ -155,6 +156,22 @@ export class PostgresPdfSealPublicationStore implements PdfSealPublicationStore 
 			jobId: row.jobId,
 			envelopeId: row.envelopeId
 		}));
+	}
+
+	async readAuditHeadForEnvelope(envelopeId: string): Promise<PdfSealAuditHead | null> {
+		const rows = await this.#sql<
+			{ auditEventId: string; sequence: number | string; eventHash: string }[]
+		>`SELECT id AS "auditEventId", sequence, event_hash AS "eventHash"
+			FROM audit_event WHERE envelope_id = ${envelopeId}
+			ORDER BY sequence DESC LIMIT 1`;
+		const row = rows[0];
+		return row === undefined
+			? null
+			: {
+					auditEventId: row.auditEventId,
+					sequence: Number(row.sequence),
+					eventHash: row.eventHash
+				};
 	}
 
 	async publishPdfSeal(command: PublishPdfSealCommand): Promise<PublishPdfSealResult> {
