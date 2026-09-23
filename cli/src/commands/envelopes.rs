@@ -1,8 +1,9 @@
 use crate::args::{
     EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeDocumentOrderArgs, EnvelopeEvidenceArgs,
     EnvelopeExportDocxArgs, EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeImportDocxArgs,
-    EnvelopeListArgs, EnvelopePdfArgs, EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeUploadPdfArgs,
-    EnvelopeVoidArgs, EnvelopesSubcommand, EvidenceFormat,
+    EnvelopeListArgs, EnvelopePdfArgs, EnvelopePdfSealDownloadArgs, EnvelopePdfSealRequestArgs,
+    EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeUploadPdfArgs, EnvelopeVoidArgs,
+    EnvelopesSubcommand, EvidenceFormat,
 };
 use crate::client::{BinaryGetSpec, SignKitClient};
 use crate::error::CliError;
@@ -15,9 +16,9 @@ use crate::types::{
     is_valid_uuid_v7, ArtifactDownloadReceipt, CompletionArtifactResponse, DeliveryStatusResponse,
     DocumentOrderRequest, DocxExportReceipt, DraftCommitRequest, DraftCommitResponse,
     DraftWorkspaceSnapshot, EnvelopeCreateRequest, EnvelopeCreateResponse, EnvelopeGetResponse,
-    EnvelopeListPage, PlaceFieldsRequest, PlaceFieldsResponse, ReadyEnvelopeRequest,
-    ReadyEnvelopeResponse, SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest,
-    VoidEnvelopeResponse,
+    EnvelopeListPage, PdfSealRequestResponse, PdfSealStatusResponse, PlaceFieldsRequest,
+    PlaceFieldsResponse, ReadyEnvelopeRequest, ReadyEnvelopeResponse, RequestPdfSealBody,
+    SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
 };
 
 pub async fn execute(
@@ -46,6 +47,15 @@ pub async fn execute(
         }
         EnvelopesSubcommand::Evidence(args) => download_evidence(client, args, raw, pretty).await,
         EnvelopesSubcommand::Pdf(args) => download_pdf(client, args, raw, pretty).await,
+        EnvelopesSubcommand::PdfSealRequest(args) => {
+            request_pdf_seal(client, args, raw, pretty).await
+        }
+        EnvelopesSubcommand::PdfSealStatus(args) => {
+            get_pdf_seal_status(client, args, raw, pretty).await
+        }
+        EnvelopesSubcommand::PdfSealDownload(args) => {
+            download_pdf_seal(client, args, raw, pretty).await
+        }
     }
 }
 
@@ -565,6 +575,63 @@ async fn download_pdf(
         };
         print_success(&receipt, raw, pretty)?;
     }
+    Ok(())
+}
+
+async fn request_pdf_seal(
+    client: &SignKitClient,
+    args: EnvelopePdfSealRequestArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let request = RequestPdfSealBody {
+        requested_profile: args.profile.as_str().to_string(),
+    };
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/pdf-seal", args.envelope_id);
+    let resp: PdfSealRequestResponse = client.post(&path, &request, &idempotency_key, true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn get_pdf_seal_status(
+    client: &SignKitClient,
+    args: EnvelopeIdArg,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let path = format!("/api/v1/envelopes/{}/pdf-seal", args.envelope_id);
+    let resp: PdfSealStatusResponse = client.get(&path, &[], true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn download_pdf_seal(
+    client: &SignKitClient,
+    args: EnvelopePdfSealDownloadArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if args.output.is_empty() || args.output == "-" {
+        return Err(CliError::usage(
+            "Provide a regular file path with --output; sealed agreement bytes are never written to stdout.",
+        ));
+    }
+    let path = format!("/api/v1/envelopes/{}/pdf-seal/pdf", args.envelope_id);
+    let resp = client
+        .get_bytes(&path, &[], true, BinaryGetSpec::SEALED_PDF)
+        .await?;
+    write_output_bytes(&args.output, &resp.bytes)?;
+    let receipt = ArtifactDownloadReceipt {
+        path: args.output,
+        bytes: resp.bytes.len() as u64,
+        format: "pdf".to_string(),
+        content_type: resp.content_type,
+    };
+    print_success(&receipt, raw, pretty)?;
     Ok(())
 }
 

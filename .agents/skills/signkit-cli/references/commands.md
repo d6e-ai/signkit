@@ -20,6 +20,8 @@ signkit envelopes deliveries <envelope-id>
 signkit envelopes completion-artifact <envelope-id>
 signkit envelopes evidence <envelope-id> --format json --output evidence.json
 signkit envelopes pdf <envelope-id> --output agreement.pdf
+signkit envelopes pdf-seal-status <envelope-id>
+signkit envelopes pdf-seal-download <envelope-id> --output sealed-agreement.pdf
 ```
 
 ## Mutation commands
@@ -34,11 +36,14 @@ signkit envelopes ready <envelope-id> --file ready.json
 signkit envelopes fields <envelope-id> --file fields.json
 signkit envelopes send <envelope-id> --file send.json
 signkit envelopes void <envelope-id> --file void.json
+signkit envelopes pdf-seal-request <envelope-id> --profile pades-b-b --idempotency-key <opaque-key>
 ```
 
 An omitted idempotency key is generated as UUIDv4. Reuse the same key only when retrying the same logical mutation.
 
 `upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. It requires `--expected-generation`; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). `document-order` accepts JSON with `expectedGeneration` and 1-20 unique UUIDv7 `documentIds`; the IDs are the complete retained set, so omitting an existing ID removes it from the draft.
+
+`pdf-seal-request` asks the instance to produce a PAdES seal for the published executed agreement PDF (requires `envelopes:send`). `--profile` must be `pades-b-b` or `pades-b-t` and must match the profile the instance is configured for, or the request fails with a 409 conflict. `pdf-seal-status` reads job status (`disabled`, `not_requested`, `pending`, `processing`, `failed`, or `published`, with profile, attempt, and validation detail once available). `pdf-seal-download` downloads the published, validated sealed PDF once status is `published`; it requires a regular output path and never writes agreement bytes to stdout. It 404s with a distinct problem type before publication.
 
 ## Exit codes
 
