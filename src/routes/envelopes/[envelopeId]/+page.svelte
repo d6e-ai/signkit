@@ -1893,11 +1893,18 @@
 								</p>
 							{:else if pdfSealStatus.status === 'not_requested'}
 								<p class="text-sm text-muted-foreground">
-									{completionPdfStatus === 'published'
-										? m.envelope_pdf_seal_status_not_requested()
-										: completionPdfStatus === 'pending'
-											? m.envelope_completed_pdf_pending()
-											: m.envelope_completed_pdf_unavailable()}
+									{completionStatusError
+										? completionStatusError
+										: completionStatus?.status === 'failed'
+											? m.envelope_completed_status_failed()
+											: completionStatus?.status === 'pending' ||
+												  completionStatus?.status === 'processing'
+												? m.envelope_completed_status_pending()
+												: completionPdfStatus === 'published'
+													? m.envelope_pdf_seal_status_not_requested()
+													: completionPdfStatus === 'pending'
+														? m.envelope_completed_pdf_pending()
+														: m.envelope_completed_pdf_unavailable()}
 								</p>
 							{:else if pdfSealStatus.status === 'pending' || pdfSealStatus.status === 'processing'}
 								<div class="flex flex-col gap-3">
