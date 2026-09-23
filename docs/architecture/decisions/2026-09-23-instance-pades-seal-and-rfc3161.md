@@ -19,8 +19,11 @@ certificate signature.
   certificate signed the PDF but supplies no trusted signing time. B-T additionally requires a
   verified RFC 3161 signature time-stamp. A B-T request may never silently succeed as B-B when the
   TSA is unavailable or rejects the request.
-- B-LT and B-LTA are later work. They add certificate and revocation material and, for B-LTA, an
-  actively maintained document time-stamp chain; they are not names for a one-time B-T operation.
+- SignKit's current product boundary ends at B-B and B-T. B-LT and B-LTA are not supported,
+  advertised, inferred from a successful B-T validation, or emitted as API status. B-LT would
+  require complete certificate and revocation material embedded in the PDF. B-LTA would additionally
+  require a continuously operated archival renewal service that adds document time-stamps before
+  prior algorithms, certificates, revocation evidence, or time-stamps lose trust.
 - SignKit never stores a certificate private key in its database, object storage, Git repository,
   release artifacts, logs, or Worker secrets. A seal provider owns key custody and exposes an
   idempotent remote operation. Node/Docker may call a co-located or remote seal provider over HTTPS.
@@ -32,6 +35,20 @@ certificate signature.
   profile.
 - Existing completed envelopes are not sealed automatically after this feature is enabled. An
   explicit future backfill records a seal time distinct from the original completion time.
+
+### Long-term validation product decision
+
+B-LT/B-LTA will not be added by relabelling a B-T result or replacing its immutable publication.
+Any future implementation must first introduce a versioned derived-artifact model that preserves
+the original B-B/B-T bytes and publication evidence. An LT augmentation must independently validate
+the exact input revision, embed the complete validation material required by the selected policy,
+and publish a new immutable artifact with its own evidence. An LTA service must also own durable
+renewal scheduling, monitoring, retry and escalation, algorithm-policy migration, and verification
+of every archival time-stamp in the chain.
+
+Until those lifecycle and storage boundaries exist, SignKit fails closed at B-B/B-T and does not
+offer an `LT`, `LTA`, `archival`, `long-term valid`, or equivalent product claim. This is a firm
+scope decision, not an assertion that every deployment needs B-LT/B-LTA.
 
 The certificate belongs to the SignKit instance operator under an explicit certificate policy.
 Certificate issuance, subject verification, HSM/KMS/PKCS#11 or remote-signing custody, backup,
@@ -64,6 +81,10 @@ validation design.
   than a JavaScript, Rust, Java, or Python library embedded in every runtime.
 - Certificate loss prevents new seals but does not erase already-published signed bytes. Suspected
   compromise requires revocation and rotation; it does not authorize rewriting old artifacts.
+- A future LT/LTA extension is a new immutable artifact generation, never an in-place mutation or
+  automatic status upgrade of the current publication.
+- B-LTA is an ongoing managed operation, not a one-time seal-provider response. A deployment that
+  cannot guarantee renewal before trust material expires must not enable or advertise it.
 
 The normative implementation contract is in
 [`../pdf-sealing.md`](../pdf-sealing.md). The profile requirements derive from

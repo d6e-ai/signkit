@@ -3,8 +3,8 @@
 Status: accepted design for Issue #78; provider and validator transports, the durable job store,
 runtime-neutral orchestration, atomic D1/PostgreSQL publication, fail-closed Node/Cloudflare runtime
 configuration, protected scheduled drain, and explicit request/status API are implemented. The
-drain processes only jobs created by the explicit request transaction. Sealed-PDF download plus
-CLI and UI surfaces remain separate follow-up slices.
+drain processes only jobs created by the explicit request transaction. Authenticated sealed-PDF
+download is implemented; CLI and UI surfaces remain separate follow-up slices.
 
 ## Boundary and terminology
 
@@ -41,9 +41,14 @@ The request and durable result carry separate `requestedProfile` and `achievedPr
 B-T operation is successful only when `achievedProfile` is B-T. A TSA timeout, rejection, invalid
 token, wrong policy, wrong imprint, or untrusted TSA never publishes a B-B result for that request.
 
-B-LT and B-LTA are deferred. B-LT requires complete certificate and revocation values in the PDF
-Document Security Store. B-LTA additionally requires a document time-stamp and an operational
-renewal schedule before algorithms, certificates, or previous time-stamps cease to be trustworthy.
+B-LT and B-LTA are outside the current product boundary. B-LT requires complete certificate and
+revocation values in the PDF Document Security Store. B-LTA additionally requires a document
+time-stamp and an operational renewal schedule before algorithms, certificates, or previous
+time-stamps cease to be trustworthy. SignKit does not relabel B-T as LT/LTA or mutate its immutable
+publication; a future extension must publish a separately versioned derived artifact and, for
+B-LTA, operate durable renewal and escalation for the artifact's full retention lifetime. The
+binding decision is recorded in
+[`decisions/2026-09-23-instance-pades-seal-and-rfc3161.md`](decisions/2026-09-23-instance-pades-seal-and-rfc3161.md#long-term-validation-product-decision).
 
 ## Artifact and publication flow
 
@@ -205,6 +210,10 @@ rotation creates a new policy generation for future operations; public certifica
 to validate old artifacts remains available. Definitive key loss or unknown key identifiers fail
 permanently, while an explicitly temporary device outage may retry. Compromise requires certificate
 revocation, policy retirement, and a new key; old artifacts are never rewritten silently.
+
+The operator procedures for loss, planned rotation, revocation/expiry, TSA/provider/validator
+outages, and post-recovery verification are in
+[`../operations/pdf-sealing.md`](../operations/pdf-sealing.md).
 
 For B-T, the seal provider and independent validator must check at least the RFC 3161 response
 status, message imprint and hash OID, request nonce when present, TSA policy OID, token signature,
