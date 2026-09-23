@@ -1,8 +1,8 @@
 # PDF sealing
 
-Status: accepted design for Issue #78; provider and validator transports plus the durable job
-store are implemented but unwired; no sealing runtime, public API, or publication dependency is
-implemented yet
+Status: accepted design for Issue #78; provider and validator transports, the durable job store,
+and the runtime-neutral pre-publication orchestrator are implemented. Runtime configuration,
+scheduled drain wiring, atomic publication, and public product surfaces are not implemented yet.
 
 ## Boundary and terminology
 
@@ -116,9 +116,12 @@ consecutive retryable failure is terminal. D1 batches each CAS transition and it
 one transaction; PostgreSQL locks the job row and performs the same transition and insert in one
 transaction.
 
-This store is intentionally not runtime wiring. Creating rows, calling the provider or validator,
-writing their objects, and atomically publishing the ready evidence remain later slices. Until
-those exist, no capability or product surface may report PDF sealing as available.
+The runtime-neutral orchestrator advances an existing durable row through submit recovery, provider
+polling, immutable sealed-object persistence, independent validation, and immutable validation-report
+persistence. Every stored object is re-opened and re-hashed before the job becomes
+`publication_ready`. Enqueue policy, deployment configuration, scheduled drain wiring, and the
+atomic `publish` action remain later slices. Until those exist, no capability or product surface may
+report PDF sealing as available.
 
 Retryable failures include transport interruption, timeout, provider 5xx/rate limiting, an
 explicitly temporary key or HSM outage, and validation-service unavailability. Permanent or
@@ -254,9 +257,11 @@ that wiring is part of this slice.
 | Vercel             | Unspecified until its deployment profile becomes supported; it must use the same provider and validator contracts rather than divergent in-process implementations.                                 |
 
 Cloudflare processing starts at concurrency one and streams the source where possible. Returned
-bytes and all validation inputs remain bounded so the Worker cannot multiply large in-memory PDF
-copies. The provider should return quickly with an operation receipt and perform slow HSM, TSA, or
-validation work asynchronously.
+bytes and all validation inputs remain bounded. Before each external call the orchestrator fully
+reads and hashes the immutable object, then reopens a fresh stream for the call; this intentionally
+trades one bounded in-memory verification buffer for independent object-store evidence. The provider
+should return quickly with an operation receipt and perform slow HSM, TSA, or validation work
+asynchronously.
 
 ## Verification gate
 
