@@ -2,7 +2,7 @@
 
 > **Recipient-facing rendering.** Everything below concerns DOCX derivation and the completion-evidence PDF. The agreement a recipient is shown is a different artifact with a different renderer: see [envelope-model.md](envelope-model.md#sent-agreement-rendering) and [decisions/2026-09-14-sent-agreement-pdf.md](decisions/2026-09-14-sent-agreement-pdf.md). The completion-evidence writer described here still substitutes `?` for characters outside WinAnsi and is deliberately not reused for recipient-facing documents.
 
-Status: mixed — localization, bounded DOCX import/export, and executed agreement PDF composition are implemented; cryptographic PDF sealing is backlog; the open-core boundary is policy
+Status: mixed — localization, bounded DOCX import/export, executed agreement PDF composition, and optional instance PAdES sealing are implemented; sealed-PDF download and operator/CLI surfaces remain follow-up work; the open-core boundary is policy
 
 ## Documents and evidence
 
@@ -10,7 +10,7 @@ DOCX import is a durable bounded conversion on `POST /api/v1/envelopes/{envelope
 
 DOCX export is `GET /api/v1/envelopes/{envelopeId}/docx` (`envelopes:read`). A durable job captures the envelope's current trusted locator (`sentCommitSha` when present, otherwise `repositoryHead`), renders that exact revision through `readImmutableDraftRevision`, retains the content-addressed result outside Git, and returns WordprocessingML bytes plus `x-signkit-commit-sha`. Both directions use leased SQL jobs, bounded retry, and append-only attempt outcomes described in [docx-conversion-jobs.md](docx-conversion-jobs.md).
 
-The executed agreement PDF is a deterministic composition of the immutable sent document set — uploaded PDFs imported page-for-page, Markdown rendered by the same per-document renderer recipients read — with each signed value drawn at its frozen geometry and the completion evidence summary appended (see [completion-artifacts.md](completion-artifacts.md)). The product must distinguish that visual executed agreement plus evidence trail from cryptographic PDF certification/PAdES. It must not claim the latter until certificate, timestamping, and long-term validation are implemented and verified.
+The executed agreement PDF is a deterministic composition of the immutable sent document set — uploaded PDFs imported page-for-page, Markdown rendered by the same per-document renderer recipients read — with each signed value drawn at its frozen geometry and the completion evidence summary appended (see [completion-artifacts.md](completion-artifacts.md)). The product must distinguish that visual executed agreement plus evidence trail from the separately requested instance PAdES seal. A configured external provider and independent validator can publish PAdES B-B or B-T evidence, but the product must not describe that instance approval signature as a PDF certification signature, qualified electronic signature, or long-term B-LT/B-LTA artifact.
 
 Audit events are normalized append-only rows with tenant, envelope, sequence, actor, event type, canonical payload, time, previous hash, and event hash. Hash chaining improves evidence but does not make the operator-independent claim “tamper-proof.”
 

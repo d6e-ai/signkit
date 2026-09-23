@@ -2,9 +2,9 @@
 
 Status: accepted design for Issue #78; provider and validator transports, the durable job store,
 runtime-neutral orchestration, atomic D1/PostgreSQL publication, fail-closed Node/Cloudflare runtime
-configuration, and the protected scheduled drain are implemented. The drain processes only durable
-jobs created by an explicit request; that request API and public API/CLI/UI certification state are
-not implemented yet, so product capability surfaces must still report sealing as unavailable.
+configuration, protected scheduled drain, and explicit request/status API are implemented. The
+drain processes only jobs created by the explicit request transaction. Sealed-PDF download plus
+CLI and UI surfaces remain separate follow-up slices.
 
 ## Boundary and terminology
 
@@ -76,7 +76,7 @@ are never exposed through public status, logs, webhooks, or errors.
 
 ## State and failure semantics
 
-The future API exposes this state as `pdfSeal.status`; it does not introduce a
+The instance API exposes this state as `pdfSeal.status`; it does not introduce a
 `pdfCertification` resource. The state machine is explicit:
 
 - `disabled`: this instance has no valid seal policy or runtime provider;
@@ -121,9 +121,26 @@ transaction.
 The runtime-neutral orchestrator advances an existing durable row through submit recovery, provider
 polling, immutable sealed-object persistence, independent validation, and immutable validation-report
 persistence. Every stored object is re-opened and re-hashed before the job becomes
-`publication_ready`. Enqueue policy, deployment configuration, and scheduled drain wiring remain
-later slices. Until those exist, no capability or product surface may report PDF sealing as
-available.
+`publication_ready`. Runtime configuration and the protected bounded drain support D1/R2 and
+PostgreSQL/S3 deployments and fail closed when a configured durable dependency is absent.
+
+### Explicit request and status API
+
+`GET /api/v1/envelopes/{envelopeId}/pdf-seal` requires `envelopes:read` for API keys.
+`POST` on the same resource requires `envelopes:send`, a bounded strict JSON body naming
+`pades-b-b` or `pades-b-t`, and an opaque `Idempotency-Key`. The requested profile must equal the
+instance policy. The request transaction freezes the exact published completion-PDF object key,
+digest, byte size, certificate digest, profile, seal policy, validation policy, and optional TSA
+tuple while creating the job. Public responses omit the object key, provider and validator
+receipts, lease tokens, and audit identifiers or hashes.
+
+The immutable request command is keyed by actor type, actor ID, and idempotency key. An exact replay
+returns the original job identifiers; reuse for another envelope or profile conflicts. A separate
+key racing for the same envelope resolves to the single existing request and never creates a second
+provider operation. D1 creates the receipt and job through one trigger-backed insert; PostgreSQL
+locks and publishes both in one transaction. A completion PDF without byte-size attestation fails
+closed. Neither completion publication nor the scheduled drain discovers or creates a seal job, so
+enabling a policy later never rewrites the history of an older envelope.
 
 ### Publication persistence boundary
 

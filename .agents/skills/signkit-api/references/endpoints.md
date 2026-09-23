@@ -9,9 +9,9 @@
 
 | Scope | Endpoints |
 | --- | --- |
-| `envelopes:read` | envelope list/detail, draft read, DOCX export, delivery status, completion status/evidence/PDF |
+| `envelopes:read` | envelope list/detail, draft read, DOCX export, delivery status, completion status/evidence/PDF, PDF seal status |
 | `drafts:write` | create envelope, commit draft, import DOCX, upload/reorder documents, ready, place fields |
-| `envelopes:send` | send and void |
+| `envelopes:send` | send, void, and explicitly request a PDF seal |
 
 All routes are rooted at `/api/v1/envelopes`. Path templates are discoverable from the capability document and OpenAPI description.
 

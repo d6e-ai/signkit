@@ -359,7 +359,8 @@ export function openApiDocument(): Record<string, unknown> {
 			{ name: 'API keys' },
 			{ name: 'Instance' },
 			{ name: 'Signing' },
-			{ name: 'Completion artifacts' }
+			{ name: 'Completion artifacts' },
+			{ name: 'PDF seals' }
 		],
 		paths: {
 			'/api/v1/system/capabilities': {
@@ -987,6 +988,64 @@ export function openApiDocument(): Record<string, unknown> {
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Completion artifact status', { type: 'object' })
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/pdf-seal': {
+				get: op({
+					summary: 'Read certificate-backed PDF seal status',
+					operationId: 'getEnvelopePdfSeal',
+					description:
+						'Returns only public verification state and content digests. Object keys, provider receipts, claim tokens, and audit hashes are never exposed.',
+					tags: ['Envelopes', 'PDF seals'],
+					parameters: [envelopeIdParam],
+					responses: jsonResponse('200', 'PDF seal status', {
+						type: 'object',
+						required: ['pdfSeal'],
+						additionalProperties: false,
+						properties: { pdfSeal: { type: 'object' } }
+					})
+				}),
+				post: op({
+					summary: 'Explicitly request a certificate-backed PDF seal',
+					operationId: 'requestEnvelopePdfSeal',
+					description:
+						'Creates one durable seal job only for the exact published completion PDF. Historical completion PDFs are never discovered or sealed automatically.',
+					tags: ['Envelopes', 'PDF seals'],
+					parameters: [envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['requestedProfile'],
+									additionalProperties: false,
+									properties: {
+										requestedProfile: {
+											type: 'string',
+											enum: ['pades-b-b', 'pades-b-t']
+										}
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'202': {
+							description: 'Created, safely replayed, or already-existing envelope seal request',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['pdfSeal'],
+										additionalProperties: false,
+										properties: { pdfSeal: { type: 'object' } }
+									}
+								}
+							}
+						}
+					}
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/evidence': {
