@@ -13,6 +13,8 @@
 	import IconFileTypeDocx from '@tabler/icons-svelte/icons/file-type-docx';
 	import IconFileTypePdf from '@tabler/icons-svelte/icons/file-type-pdf';
 	import IconAddressBook from '@tabler/icons-svelte/icons/address-book';
+	import IconCertificate from '@tabler/icons-svelte/icons/certificate';
+	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
 	import ContactCombobox from '$lib/components/contacts/contact-combobox.svelte';
 	import ContactManagementDialog from '$lib/components/contacts/contact-management-dialog.svelte';
 	import {
@@ -24,6 +26,7 @@
 	} from '$lib/client/contacts';
 	import PdfDocumentView, { type PdfRenderedPage } from '$lib/components/pdf-document-view.svelte';
 	import { Badge } from '$lib/components/ui/badge';
+	import * as Alert from '$lib/components/ui/alert';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Checkbox } from '$lib/components/ui/checkbox';
@@ -47,6 +50,8 @@
 		type PublicCompletionArtifactStatus,
 		type PublicEnvelopeDeliveryStatus,
 		type PublicEnvelopeFieldResponse,
+		type PdfSealProfile,
+		type PublicPdfSealStatus,
 		type ReadyRecipientInput,
 		type ReadyRecipientPublic,
 		type RecipientRole,
@@ -89,6 +94,14 @@
 	let completionDownloadError = $state<string | null>(null);
 	let completionPdfDownloadPending = $state(false);
 	let completionEvidenceDownloadPending = $state<'json' | 'markdown' | null>(null);
+	let pdfSealStatus = $state<PublicPdfSealStatus | null>(null);
+	let pdfSealStatusError = $state<string | null>(null);
+	let pdfSealRequestError = $state<string | null>(null);
+	let pdfSealDownloadError = $state<string | null>(null);
+	let pdfSealStatusPending = $state(false);
+	let pdfSealRequestPending = $state(false);
+	let pdfSealDownloadPending = $state(false);
+	let requestedPdfSealProfile = $state<PdfSealProfile>('pades-b-t');
 
 	// Documents editor state.
 	let editedContent = $state<Record<string, string>>({});
@@ -341,6 +354,12 @@
 		return locale === 'ja' ? '日本語' : 'English';
 	}
 
+	function pdfSealProfileLabel(profile: PdfSealProfile): string {
+		return profile === 'pades-b-t'
+			? m.envelope_pdf_seal_profile_bt()
+			: m.envelope_pdf_seal_profile_bb();
+	}
+
 	function recipientWorkflowStatusLabel(status: string): string {
 		const workflowStatus: RecipientStatus | null =
 			status === 'pending' || status === 'viewed' || status === 'completed' || status === 'declined'
@@ -428,6 +447,7 @@
 					completionStatus = null;
 					completionStatusError = m.envelope_completed_status_unavailable();
 				}
+				await refreshPdfSealStatus();
 			}
 		} catch (cause) {
 			if (cause instanceof EnvelopesApiError && cause.status === 401) {
@@ -1195,6 +1215,52 @@
 		}
 	}
 
+	async function refreshPdfSealStatus(): Promise<void> {
+		if (pdfSealStatusPending) return;
+		pdfSealStatusPending = true;
+		pdfSealStatusError = null;
+		try {
+			pdfSealStatus = await client.pdfSealStatus(envelopeId);
+		} catch {
+			pdfSealStatus = null;
+			pdfSealStatusError = m.envelope_pdf_seal_status_unavailable();
+		} finally {
+			pdfSealStatusPending = false;
+		}
+	}
+
+	async function requestPdfSeal(): Promise<void> {
+		if (pdfSealRequestPending) return;
+		pdfSealRequestPending = true;
+		pdfSealRequestError = null;
+		try {
+			await client.requestPdfSeal(envelopeId, requestedPdfSealProfile);
+			await refreshPdfSealStatus();
+		} catch (cause) {
+			pdfSealRequestError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_pdf_seal_request_error();
+		} finally {
+			pdfSealRequestPending = false;
+		}
+	}
+
+	async function downloadSealedPdf(): Promise<void> {
+		if (pdfSealDownloadPending || pdfSealStatus?.status !== 'published') return;
+		pdfSealDownloadPending = true;
+		pdfSealDownloadError = null;
+		try {
+			const result = await client.sealedPdf(envelopeId);
+			const body = new Uint8Array(result.bytes.byteLength);
+			body.set(result.bytes);
+			triggerDownload(body, result.filename, 'application/pdf');
+		} catch (cause) {
+			pdfSealDownloadError =
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_pdf_seal_download_error();
+		} finally {
+			pdfSealDownloadPending = false;
+		}
+	}
+
 	async function uploadPdf(file: File | null): Promise<void> {
 		if (file === null || draft === null || pdfUploadPending) return;
 		pdfUploadPending = true;
@@ -1802,6 +1868,179 @@
 								</div>
 							{/if}
 						</Card.Content>
+					</Card.Root>
+
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>{m.envelope_pdf_seal_title()}</Card.Title>
+							<Card.Description>{m.envelope_pdf_seal_description()}</Card.Description>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-4" aria-live="polite">
+							{#if pdfSealStatusError}
+								<Alert.Root variant="destructive">
+									<IconAlertTriangle />
+									<Alert.Title>{m.envelope_pdf_seal_status_label()}</Alert.Title>
+									<Alert.Description>{pdfSealStatusError}</Alert.Description>
+								</Alert.Root>
+							{:else if pdfSealStatus === null}
+								<Skeleton class="h-9 w-48" />
+							{:else if pdfSealStatus.status === 'disabled'}
+								<p class="text-sm text-muted-foreground">
+									{m.envelope_pdf_seal_status_disabled()}
+								</p>
+							{:else if pdfSealStatus.status === 'not_requested'}
+								<p class="text-sm text-muted-foreground">
+									{m.envelope_pdf_seal_status_not_requested()}
+								</p>
+							{:else if pdfSealStatus.status === 'pending' || pdfSealStatus.status === 'processing'}
+								<div class="flex flex-col gap-3">
+									<p class="text-sm text-muted-foreground">
+										{pdfSealStatus.status === 'pending'
+											? m.envelope_pdf_seal_status_pending()
+											: m.envelope_pdf_seal_status_processing()}
+									</p>
+									<div class="flex flex-wrap gap-2">
+										<Badge variant="secondary">
+											{m.envelope_pdf_seal_profile_requested({
+												profile: pdfSealProfileLabel(pdfSealStatus.requestedProfile)
+											})}
+										</Badge>
+										<Badge variant="outline">
+											{pdfSealStatus.requestedProfile === 'pades-b-t'
+												? m.envelope_pdf_seal_timestamp_requested()
+												: m.envelope_pdf_seal_timestamp_absent()}
+										</Badge>
+									</div>
+								</div>
+							{:else if pdfSealStatus.status === 'failed'}
+								<div class="flex flex-col gap-3">
+									<Alert.Root variant="destructive">
+										<IconAlertTriangle />
+										<Alert.Title>{m.envelope_pdf_seal_status_failed()}</Alert.Title>
+										<Alert.Description>
+											{pdfSealStatus.retryable
+												? m.envelope_pdf_seal_status_failed_retryable()
+												: m.envelope_pdf_seal_status_failed_final()}
+										</Alert.Description>
+									</Alert.Root>
+									<Badge variant="secondary">
+										{m.envelope_pdf_seal_profile_requested({
+											profile: pdfSealProfileLabel(pdfSealStatus.requestedProfile)
+										})}
+									</Badge>
+								</div>
+							{:else if pdfSealStatus.status === 'published'}
+								<div class="flex flex-col gap-3">
+									<p class="text-sm text-muted-foreground">
+										{m.envelope_pdf_seal_status_published()}
+									</p>
+									<div class="flex flex-wrap gap-2">
+										<Badge>
+											{m.envelope_pdf_seal_profile_achieved({
+												profile: pdfSealProfileLabel(pdfSealStatus.achievedProfile)
+											})}
+										</Badge>
+										<Badge variant="secondary">{m.envelope_pdf_seal_validation_badge()}</Badge>
+										<Badge variant="outline">
+											{pdfSealStatus.achievedProfile === 'pades-b-t'
+												? m.envelope_pdf_seal_timestamp_present()
+												: m.envelope_pdf_seal_timestamp_absent()}
+										</Badge>
+									</div>
+								</div>
+							{/if}
+							{#if pdfSealRequestError}
+								<Alert.Root variant="destructive">
+									<IconAlertTriangle />
+									<Alert.Title>{m.envelope_pdf_seal_request_action()}</Alert.Title>
+									<Alert.Description>{pdfSealRequestError}</Alert.Description>
+								</Alert.Root>
+							{/if}
+							{#if pdfSealDownloadError}
+								<Alert.Root variant="destructive">
+									<IconAlertTriangle />
+									<Alert.Title>{m.envelope_pdf_seal_download_action()}</Alert.Title>
+									<Alert.Description>{pdfSealDownloadError}</Alert.Description>
+								</Alert.Root>
+							{/if}
+						</Card.Content>
+						{#if pdfSealStatus?.status === 'not_requested'}
+							<Card.Footer>
+								<form
+									class="flex w-full flex-col gap-4"
+									onsubmit={(event) => {
+										event.preventDefault();
+										void requestPdfSeal();
+									}}
+								>
+									<Field.FieldGroup>
+										<Field.Field data-disabled={pdfSealRequestPending}>
+											<Field.FieldLabel for="pdf-seal-profile">
+												{m.envelope_pdf_seal_profile_label()}
+											</Field.FieldLabel>
+											<Select.Root
+												type="single"
+												bind:value={requestedPdfSealProfile}
+												disabled={pdfSealRequestPending}
+											>
+												<Select.Trigger id="pdf-seal-profile" class="w-full">
+													{pdfSealProfileLabel(requestedPdfSealProfile)}
+												</Select.Trigger>
+												<Select.Content>
+													<Select.Group>
+														<Select.Item value="pades-b-b" label={m.envelope_pdf_seal_profile_bb()}>
+															{m.envelope_pdf_seal_profile_bb()}
+														</Select.Item>
+														<Select.Item value="pades-b-t" label={m.envelope_pdf_seal_profile_bt()}>
+															{m.envelope_pdf_seal_profile_bt()}
+														</Select.Item>
+													</Select.Group>
+												</Select.Content>
+											</Select.Root>
+											<Field.FieldDescription>
+												{requestedPdfSealProfile === 'pades-b-t'
+													? m.envelope_pdf_seal_profile_bt_description()
+													: m.envelope_pdf_seal_profile_bb_description()}
+											</Field.FieldDescription>
+										</Field.Field>
+									</Field.FieldGroup>
+									<Button type="submit" class="w-fit" disabled={pdfSealRequestPending}>
+										{#if pdfSealRequestPending}
+											<Spinner data-icon="inline-start" />
+										{:else}
+											<IconCertificate data-icon="inline-start" />
+										{/if}
+										{m.envelope_pdf_seal_request_action()}
+									</Button>
+								</form>
+							</Card.Footer>
+						{:else if pdfSealStatus?.status === 'published'}
+							<Card.Footer>
+								<Button disabled={pdfSealDownloadPending} onclick={() => void downloadSealedPdf()}>
+									{#if pdfSealDownloadPending}
+										<Spinner data-icon="inline-start" />
+									{:else}
+										<IconFileTypePdf data-icon="inline-start" />
+									{/if}
+									{m.envelope_pdf_seal_download_action()}
+								</Button>
+							</Card.Footer>
+						{:else if pdfSealStatusError || pdfSealStatus?.status === 'pending' || pdfSealStatus?.status === 'processing' || pdfSealStatus?.status === 'failed'}
+							<Card.Footer>
+								<Button
+									variant="outline"
+									disabled={pdfSealStatusPending}
+									onclick={() => void refreshPdfSealStatus()}
+								>
+									{#if pdfSealStatusPending}
+										<Spinner data-icon="inline-start" />
+									{:else}
+										<IconRefresh data-icon="inline-start" />
+									{/if}
+									{m.envelope_pdf_seal_refresh_action()}
+								</Button>
+							</Card.Footer>
+						{/if}
 					</Card.Root>
 				{/if}
 			</Tabs.Content>

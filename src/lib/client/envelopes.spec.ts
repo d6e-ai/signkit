@@ -360,6 +360,69 @@ describe('EnvelopesClient', () => {
 			type: 'urn:signkit:problem:completion-pdf-not-found'
 		});
 	});
+
+	it('reads the public PDF instance-seal status', async () => {
+		const pdfSeal = {
+			envelopeId: envelope.id,
+			status: 'processing' as const,
+			requestedProfile: 'pades-b-t' as const,
+			attempts: 1,
+			requestedAt: '2026-09-23T00:00:00.000Z'
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse({ pdfSeal }));
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.pdfSealStatus(envelope.id)).resolves.toEqual(pdfSeal);
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/pdf-seal`);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET' });
+	});
+
+	it('requests an explicit PAdES profile with an idempotency key', async () => {
+		const pdfSeal = {
+			envelopeId: envelope.id,
+			jobId: '01900000-0000-7000-8000-000000000088',
+			requestedProfile: 'pades-b-t' as const,
+			requestedAt: '2026-09-23T00:00:00.000Z'
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ pdfSeal }, 202, { 'idempotency-replayed': 'true' })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(
+			client.requestPdfSeal(envelope.id, 'pades-b-t', { idempotencyKey: 'seal-attempt-1' })
+		).resolves.toEqual({ pdfSeal, replayed: true });
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe(`/api/v1/envelopes/${envelope.id}/pdf-seal`);
+		expect(init?.method).toBe('POST');
+		expect(init?.headers).toMatchObject({
+			'content-type': 'application/json',
+			'idempotency-key': 'seal-attempt-1'
+		});
+		expect(JSON.parse(init?.body as string)).toEqual({ requestedProfile: 'pades-b-t' });
+	});
+
+	it('downloads an independently validated sealed PDF', async () => {
+		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+		const fetchMock = vi.fn<typeof globalThis.fetch>(
+			async () =>
+				new Response(bytes, {
+					status: 200,
+					headers: {
+						'content-type': 'application/pdf',
+						'content-disposition': 'attachment; filename="sealed-agreement.pdf"'
+					}
+				})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.sealedPdf(envelope.id)).resolves.toEqual({
+			bytes,
+			filename: 'sealed-agreement.pdf'
+		});
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/pdf-seal/pdf`);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET' });
+	});
 });
 
 describe('fetchAllEnvelopes', () => {
