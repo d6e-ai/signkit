@@ -244,8 +244,11 @@ describe('envelope authoring page contracts', () => {
 		);
 		expect(source).toContain('client.pdfSealStatus(envelopeId)');
 		expect(source).toContain('client.requestPdfSeal(envelopeId, requestedPdfSealProfile)');
+		expect(source).toContain("completionPdfStatus !== 'published'");
 		expect(source).toContain('client.sealedPdf(envelopeId)');
-		expect(source).toContain("pdfSealStatus?.status === 'not_requested'");
+		expect(source).toContain(
+			"pdfSealStatus?.status === 'not_requested' && completionPdfStatus === 'published'"
+		);
 		expect(source).toContain("pdfSealStatus?.status === 'published'");
 		expect(source).toContain('m.envelope_pdf_seal_status_disabled()');
 		expect(source).toContain('m.envelope_pdf_seal_status_processing()');

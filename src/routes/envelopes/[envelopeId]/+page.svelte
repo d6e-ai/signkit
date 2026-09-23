@@ -94,6 +94,9 @@
 	let completionDownloadError = $state<string | null>(null);
 	let completionPdfDownloadPending = $state(false);
 	let completionEvidenceDownloadPending = $state<'json' | 'markdown' | null>(null);
+	const completionPdfStatus = $derived(
+		completionStatus?.status === 'published' ? completionStatus.pdfStatus : null
+	);
 	let pdfSealStatus = $state<PublicPdfSealStatus | null>(null);
 	let pdfSealStatusError = $state<string | null>(null);
 	let pdfSealRequestError = $state<string | null>(null);
@@ -1230,7 +1233,7 @@
 	}
 
 	async function requestPdfSeal(): Promise<void> {
-		if (pdfSealRequestPending || completionStatus?.pdfStatus !== 'published') return;
+		if (pdfSealRequestPending || completionPdfStatus !== 'published') return;
 		pdfSealRequestPending = true;
 		pdfSealRequestError = null;
 		try {
@@ -1890,9 +1893,9 @@
 								</p>
 							{:else if pdfSealStatus.status === 'not_requested'}
 								<p class="text-sm text-muted-foreground">
-									{completionStatus?.pdfStatus === 'published'
+									{completionPdfStatus === 'published'
 										? m.envelope_pdf_seal_status_not_requested()
-										: completionStatus?.pdfStatus === 'pending'
+										: completionPdfStatus === 'pending'
 											? m.envelope_completed_pdf_pending()
 											: m.envelope_completed_pdf_unavailable()}
 								</p>
@@ -1968,7 +1971,7 @@
 								</Alert.Root>
 							{/if}
 						</Card.Content>
-						{#if pdfSealStatus?.status === 'not_requested' && completionStatus?.pdfStatus === 'published'}
+						{#if pdfSealStatus?.status === 'not_requested' && completionPdfStatus === 'published'}
 							<Card.Footer>
 								<form
 									class="flex w-full flex-col gap-4"
