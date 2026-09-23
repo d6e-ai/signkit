@@ -245,6 +245,9 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('client.pdfSealStatus(envelopeId)');
 		expect(source).toContain('client.requestPdfSeal(envelopeId, requestedPdfSealProfile)');
 		expect(source).toContain("completionPdfStatus !== 'published'");
+		expect(source).toContain("completionStatus?.status === 'failed'");
+		expect(source).toContain("completionStatus?.status === 'pending'");
+		expect(source).toContain("completionStatus?.status === 'processing'");
 		expect(source).toContain('client.sealedPdf(envelopeId)');
 		expect(source).toContain(
 			"pdfSealStatus?.status === 'not_requested' && completionPdfStatus === 'published'"

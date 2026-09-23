@@ -986,6 +986,39 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		).toBe(false);
 	});
 
+	it('reports completion processing instead of claiming the source PDF is unavailable', async () => {
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'processing',
+						attempts: 1
+					}
+				}),
+			(urlStr, init) =>
+				urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method !== 'POST'
+					? jsonResponse({ pdfSeal: { envelopeId: ENVELOPE_ID, status: 'not_requested' } })
+					: undefined
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(
+				screen
+					.getByText('Completion evidence is being prepared. This can take a few minutes.')
+					.last()
+			)
+			.toBeVisible();
+		await expect
+			.element(screen.getByText('A final PDF is not available for this agreement.'))
+			.not.toBeInTheDocument();
+		await expect
+			.element(screen.getByRole('button', { name: 'Request PDF instance seal' }))
+			.not.toBeInTheDocument();
+	});
+
 	it('submits an explicit B-T instance-seal request only from the not-requested state', async () => {
 		let requestBody: Record<string, unknown> | undefined;
 		const mockFetch = mockCompletedFetch(
