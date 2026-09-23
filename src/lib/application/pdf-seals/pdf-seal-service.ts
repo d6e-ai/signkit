@@ -126,8 +126,8 @@ interface PdfSealValidationReport {
  *
  * Advances jobs claimed from {@link PdfSealJobStore} through `submit` /
  * `recover_submit` / `poll_provider` / `validate` up to `publication_ready`.
- * It never publishes: the `publish` action and every runtime, API, and
- * capability surface remain a later slice.
+ * It never publishes: the protected drain owns the separate atomic publish
+ * action after this service reaches `publication_ready`.
  */
 export class PdfSealService {
 	readonly #store: PdfSealJobStore;

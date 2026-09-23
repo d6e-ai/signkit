@@ -88,10 +88,24 @@ export interface PdfSealPublicationRecord extends PdfSealFrozenReference {
 	auditHeadEventHash: string;
 }
 
+/**
+ * The envelope's current audit chain head, read immediately before a caller
+ * builds a `PublishPdfSealCommand`. This is a preparation read only: the
+ * `publishPdfSeal` transaction re-reads and re-checks the exact same anchor
+ * itself, so a head that goes stale between this read and that call is
+ * reported back as `stale`/`integrity_error`, never silently accepted.
+ */
+export interface PdfSealAuditHead {
+	auditEventId: string;
+	sequence: number;
+	eventHash: string;
+}
+
 export interface PdfSealPublicationStore {
 	discoverPdfSealPublicationCandidates(
 		command: DiscoverPdfSealPublicationCandidatesCommand
 	): Promise<readonly PdfSealPublicationCandidate[]>;
+	readAuditHeadForEnvelope(envelopeId: string): Promise<PdfSealAuditHead | null>;
 	publishPdfSeal(command: PublishPdfSealCommand): Promise<PublishPdfSealResult>;
 	readPdfSealPublicationByEnvelope(envelopeId: string): Promise<PdfSealPublicationRecord | null>;
 }

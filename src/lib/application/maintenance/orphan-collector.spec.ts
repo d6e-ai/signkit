@@ -521,6 +521,10 @@ describe('D1OrphanReferenceStore', () => {
 		expect(
 			queries.every((query: string): boolean => (query.match(/\bUNION\b/g)?.length ?? 0) <= 4)
 		).toBe(true);
+		expect(queries.join('\n')).toContain('SELECT sealed_object_key AS key FROM pdf_seal_job');
+		expect(queries.join('\n')).toContain(
+			'SELECT validation_report_object_key AS key FROM pdf_seal_job'
+		);
 		const chunksPerFullPage: number = MAX_ORPHAN_SCAN_LIMIT / DEFAULT_ORPHAN_BATCH_SIZE;
 		const worstCaseD1Queries: number = queries.length * chunksPerFullPage + chunksPerFullPage + 2;
 		expect(worstCaseD1Queries).toBe(42);
