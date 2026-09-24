@@ -1610,6 +1610,206 @@ pub struct ValidationReceipt {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// A single revision history entry within a `DraftRevisionHistoryPage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftRevisionMetadata {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    pub timestamp: String,
+    pub message: String,
+    #[serde(rename = "actorType")]
+    pub actor_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<DraftCommitProvenance>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/envelopes/{envelopeId}/revisions`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftRevisionHistoryPage {
+    pub revisions: Vec<DraftRevisionMetadata>,
+    pub truncated: bool,
+    #[serde(rename = "nextCursor")]
+    pub next_cursor: Option<u64>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/envelopes/{envelopeId}/revisions/{revisionRef}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftExactRevision {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    #[serde(rename = "archiveSha256")]
+    pub archive_sha256: String,
+    pub timestamp: String,
+    pub message: String,
+    #[serde(rename = "actorType")]
+    pub actor_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<DraftCommitProvenance>,
+    /// The single selected document, present only when the `path` query was specified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document: Option<DraftDocument>,
+    pub documents: Vec<DraftDocument>,
+    #[serde(rename = "documentSet")]
+    pub document_set: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Per-document title diff within a `DocumentChange`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentTitleDiff {
+    pub current: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    pub changed: bool,
+}
+
+/// Per-document position diff within a `DocumentChange`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentPositionDiff {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<u32>,
+    pub changed: bool,
+}
+
+/// Per-document content diff within a `DocumentChange`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentContentDiff {
+    pub changed: bool,
+    #[serde(rename = "previousSha256", skip_serializing_if = "Option::is_none")]
+    pub previous_sha256: Option<String>,
+    #[serde(rename = "currentSha256", skip_serializing_if = "Option::is_none")]
+    pub current_sha256: Option<String>,
+    #[serde(rename = "unifiedDiff", skip_serializing_if = "Option::is_none")]
+    pub unified_diff: Option<String>,
+    pub additions: u32,
+    pub deletions: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+}
+
+/// PDF-specific details within a `DocumentChange`, present only for PDF documents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentPdfDetailsDiff {
+    #[serde(rename = "previousByteSize", skip_serializing_if = "Option::is_none")]
+    pub previous_byte_size: Option<u64>,
+    #[serde(rename = "currentByteSize", skip_serializing_if = "Option::is_none")]
+    pub current_byte_size: Option<u64>,
+    #[serde(rename = "previousPageCount", skip_serializing_if = "Option::is_none")]
+    pub previous_page_count: Option<u32>,
+    #[serde(rename = "currentPageCount", skip_serializing_if = "Option::is_none")]
+    pub current_page_count: Option<u32>,
+    #[serde(rename = "previousPageWidth", skip_serializing_if = "Option::is_none")]
+    pub previous_page_width: Option<f64>,
+    #[serde(rename = "currentPageWidth", skip_serializing_if = "Option::is_none")]
+    pub current_page_width: Option<f64>,
+    #[serde(rename = "previousPageHeight", skip_serializing_if = "Option::is_none")]
+    pub previous_page_height: Option<f64>,
+    #[serde(rename = "currentPageHeight", skip_serializing_if = "Option::is_none")]
+    pub current_page_height: Option<f64>,
+}
+
+/// One document's change entry within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentChange {
+    #[serde(rename = "documentId")]
+    pub document_id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(rename = "previousPath", skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    #[serde(rename = "pathChanged")]
+    pub path_changed: bool,
+    #[serde(rename = "changeType")]
+    pub change_type: String,
+    pub addition: bool,
+    pub removal: bool,
+    #[serde(rename = "titleChanged")]
+    pub title_changed: bool,
+    #[serde(rename = "orderChanged")]
+    pub order_changed: bool,
+    #[serde(rename = "contentChanged")]
+    pub content_changed: bool,
+    pub title: DocumentTitleDiff,
+    pub position: DocumentPositionDiff,
+    pub content: DocumentContentDiff,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<DocumentPdfDetailsDiff>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Aggregate counts within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionDiffSummary {
+    #[serde(rename = "documentsAdded")]
+    pub documents_added: u32,
+    #[serde(rename = "documentsRemoved")]
+    pub documents_removed: u32,
+    #[serde(rename = "documentsModified")]
+    pub documents_modified: u32,
+    #[serde(rename = "documentsReordered")]
+    pub documents_reordered: u32,
+    #[serde(rename = "titlesChanged")]
+    pub titles_changed: u32,
+    #[serde(rename = "totalChanges")]
+    pub total_changes: u32,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Base revision locator within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionDiffBase {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Head revision locator within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionDiffHead {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// JSON response payload from `GET /api/v1/envelopes/{envelopeId}/revisions/diff` (format=json).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevisionDiffResponse {
+    pub schema: String,
+    pub base: RevisionDiffBase,
+    pub head: RevisionDiffHead,
+    pub summary: RevisionDiffSummary,
+    pub changes: Vec<DocumentChange>,
+    #[serde(rename = "unifiedText")]
+    pub unified_text: String,
+    pub truncated: bool,
+    #[serde(
+        rename = "truncationReason",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncation_reason: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,6 +22,7 @@ import type {
 	DraftMutationStore,
 	DraftRevisionKey,
 	DraftRevisionPreparation,
+	PersistedDraftRevisionLocator,
 	PublishDraftRevisionCommand,
 	PublishDraftRevisionResult,
 	PublishedDraftRevision
@@ -347,6 +348,77 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 		return this.#envelopes.transition(envelopeId, expected, next, at);
 	}
 
+	async listDraftRevisionLocators(
+		envelopeId: string,
+		options?: { limit?: number; cursor?: number }
+	): Promise<readonly PersistedDraftRevisionLocator[]> {
+		// The persistence service requests the public limit (max 100) plus one
+		// extra row to detect truncation; cap one above that so the extra row
+		// is never silently dropped back down to the public max.
+		const limit = Math.max(1, Math.min(options?.limit ?? 50, 101));
+		const cursor = options?.cursor;
+		if (cursor !== undefined) {
+			const result = await this.#database
+				.prepare(
+					`SELECT envelope_id, resulting_generation, commit_sha, archive_key,
+					        archive_sha256, updated_at, actor_type, actor_id, audit_payload_json
+					 FROM draft_revision_command
+					 WHERE envelope_id = ? AND resulting_generation < ?
+					 ORDER BY resulting_generation DESC
+					 LIMIT ?`
+				)
+				.bind(envelopeId, cursor, limit)
+				.all<DraftRevisionLocatorRow>();
+			return result.results.map(fromDraftRevisionLocatorRow);
+		}
+		const result = await this.#database
+			.prepare(
+				`SELECT envelope_id, resulting_generation, commit_sha, archive_key,
+				        archive_sha256, updated_at, actor_type, actor_id, audit_payload_json
+				 FROM draft_revision_command
+				 WHERE envelope_id = ?
+				 ORDER BY resulting_generation DESC
+				 LIMIT ?`
+			)
+			.bind(envelopeId, limit)
+			.all<DraftRevisionLocatorRow>();
+		return result.results.map(fromDraftRevisionLocatorRow);
+	}
+
+	async findDraftRevisionLocatorByGeneration(
+		envelopeId: string,
+		generation: number
+	): Promise<PersistedDraftRevisionLocator | null> {
+		const row = await this.#database
+			.prepare(
+				`SELECT envelope_id, resulting_generation, commit_sha, archive_key,
+				        archive_sha256, updated_at, actor_type, actor_id, audit_payload_json
+				 FROM draft_revision_command
+				 WHERE envelope_id = ? AND resulting_generation = ?
+				 LIMIT 1`
+			)
+			.bind(envelopeId, generation)
+			.first<DraftRevisionLocatorRow>();
+		return row ? fromDraftRevisionLocatorRow(row) : null;
+	}
+
+	async findDraftRevisionLocatorByCommit(
+		envelopeId: string,
+		commitSha: string
+	): Promise<PersistedDraftRevisionLocator | null> {
+		const row = await this.#database
+			.prepare(
+				`SELECT envelope_id, resulting_generation, commit_sha, archive_key,
+				        archive_sha256, updated_at, actor_type, actor_id, audit_payload_json
+				 FROM draft_revision_command
+				 WHERE envelope_id = ? AND commit_sha = ?
+				 LIMIT 1`
+			)
+			.bind(envelopeId, commitSha)
+			.first<DraftRevisionLocatorRow>();
+		return row ? fromDraftRevisionLocatorRow(row) : null;
+	}
+
 	async #resolveIdempotency(
 		command: CreateEnvelopeCommand
 	): Promise<CreateEnvelopeStoreResult | null> {
@@ -604,4 +676,30 @@ function geometryFromColumns(
 		return null;
 	}
 	return { page, x, y, width, height };
+}
+
+interface DraftRevisionLocatorRow {
+	envelope_id: string;
+	resulting_generation: number;
+	commit_sha: string;
+	archive_key: string;
+	archive_sha256: string;
+	updated_at: string;
+	actor_type: string;
+	actor_id: string;
+	audit_payload_json: string;
+}
+
+function fromDraftRevisionLocatorRow(row: DraftRevisionLocatorRow): PersistedDraftRevisionLocator {
+	return {
+		envelopeId: row.envelope_id,
+		generation: row.resulting_generation,
+		commitSha: row.commit_sha,
+		archiveKey: row.archive_key,
+		archiveSha256: row.archive_sha256,
+		updatedAt: row.updated_at,
+		actorType: row.actor_type as 'user' | 'agent' | 'system',
+		actorId: row.actor_id,
+		auditPayloadJson: row.audit_payload_json
+	};
 }

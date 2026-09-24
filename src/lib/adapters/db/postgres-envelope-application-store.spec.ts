@@ -322,6 +322,56 @@ describe('PostgresEnvelopeApplicationStore', () => {
 		expect(sql).not.toContain('capability_hash');
 		expect(sql).not.toMatch(/\blabel\b/);
 	});
+
+	it('lists draft revision locators and finds by generation or commit', async () => {
+		const database = new ScriptedPostgres([
+			[
+				draftCommandRow(),
+				{
+					...draftCommandRow(),
+					resultingGeneration: 2,
+					commitSha: '2'.repeat(40),
+					archiveSha256: '2'.repeat(64)
+				}
+			],
+			[draftCommandRow()],
+			[draftCommandRow()]
+		]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		const locators = await store.listDraftRevisionLocators(command.envelopeId, { limit: 10 });
+		expect(locators).toHaveLength(2);
+		expect(locators[0].generation).toBe(1);
+		expect(locators[0].commitSha).toBe(draftCommand.commitSha);
+		expect(locators[0].archiveKey).toBe(draftCommand.archiveKey);
+		expect(locators[0].archiveSha256).toBe(draftCommand.archiveSha256);
+
+		const byGen = await store.findDraftRevisionLocatorByGeneration(command.envelopeId, 1);
+		expect(byGen?.generation).toBe(1);
+
+		const byCommit = await store.findDraftRevisionLocatorByCommit(
+			command.envelopeId,
+			draftCommand.commitSha
+		);
+		expect(byCommit?.commitSha).toBe(draftCommand.commitSha);
+
+		const sql = database.directQueries.map((query) => query.text).join('\n');
+		expect(sql).toContain('FROM draft_revision_command');
+		expect(sql).toContain('ORDER BY resulting_generation DESC');
+	});
+
+	it('does not clamp the truncation-detection limit back down to the public max', async () => {
+		const database = new ScriptedPostgres([[]]);
+		const store = new PostgresEnvelopeApplicationStore(database.client());
+
+		// DraftPersistenceService.listRevisions requests the public max (100)
+		// plus one extra row to detect truncation; the store must forward 101,
+		// not clamp it back to 100, or truncation at exactly 100 revisions
+		// would never be reported.
+		await store.listDraftRevisionLocators(command.envelopeId, { limit: 101 });
+
+		expect(database.directQueries[0].values).toContain(101);
+	});
 });
 
 interface RecordedQuery {

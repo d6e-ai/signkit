@@ -766,6 +766,325 @@ const reissueReceipt = jsonResponse('200', 'Reissue receipt without capability m
 	}
 });
 
+const DRAFT_REVISION_ITEM: Record<string, unknown> = {
+	type: 'object',
+	required: ['generation', 'commitSha', 'timestamp', 'message', 'actorType'],
+	properties: {
+		generation: { type: 'integer', minimum: 0 },
+		commitSha: {
+			type: 'string',
+			pattern: '^[0-9a-fA-F]{40}$',
+			description: 'Verified Git commit SHA.'
+		},
+		timestamp: { type: 'string', format: 'date-time' },
+		message: { type: 'string', description: 'Clean commit message from verified Git object.' },
+		actorType: { type: 'string', enum: ['user', 'agent', 'system'] },
+		provenance: {
+			type: 'object',
+			additionalProperties: false,
+			properties: {
+				automationRunId: { type: 'string' },
+				externalId: { type: 'string' }
+			}
+		}
+	},
+	additionalProperties: false
+};
+
+const DRAFT_REVISION_HISTORY_PAGE: Record<string, unknown> = {
+	type: 'object',
+	required: ['revisions', 'truncated', 'nextCursor'],
+	properties: {
+		revisions: {
+			type: 'array',
+			items: DRAFT_REVISION_ITEM
+		},
+		truncated: {
+			type: 'boolean',
+			description: 'True when more revisions exist beyond this page.'
+		},
+		nextCursor: {
+			type: ['integer', 'null'],
+			description:
+				'Cursor generation for fetching the next page, or null if at the earliest revision.'
+		}
+	},
+	additionalProperties: false
+};
+
+const DRAFT_EXACT_REVISION: Record<string, unknown> = {
+	type: 'object',
+	required: [
+		'generation',
+		'commitSha',
+		'archiveSha256',
+		'timestamp',
+		'message',
+		'actorType',
+		'documents',
+		'documentSet'
+	],
+	properties: {
+		generation: { type: 'integer', minimum: 0 },
+		commitSha: { type: 'string', pattern: '^[0-9a-fA-F]{40}$' },
+		archiveSha256: {
+			type: 'string',
+			pattern: '^[0-9a-fA-F]{64}$',
+			description: 'SHA-256 digest of immutable archive bytes.'
+		},
+		timestamp: { type: 'string', format: 'date-time' },
+		message: { type: 'string' },
+		actorType: { type: 'string', enum: ['user', 'agent', 'system'] },
+		provenance: {
+			type: 'object',
+			additionalProperties: false,
+			properties: {
+				automationRunId: { type: 'string' },
+				externalId: { type: 'string' }
+			}
+		},
+		document: {
+			type: 'object',
+			description: 'Selected document when path query is specified.',
+			required: ['path', 'content'],
+			properties: {
+				path: { type: 'string' },
+				content: { type: 'string' }
+			},
+			additionalProperties: false
+		},
+		documents: {
+			type: 'array',
+			items: {
+				type: 'object',
+				required: ['path', 'content'],
+				properties: {
+					path: { type: 'string' },
+					content: { type: 'string' }
+				},
+				additionalProperties: false
+			}
+		},
+		documentSet: {
+			type: ['object', 'null'],
+			description: 'Manifest leaf metadata describing documents, ordering, and digests.'
+		}
+	},
+	additionalProperties: false
+};
+
+const REVISION_DIFF_DOCUMENT_CHANGE: Record<string, unknown> = {
+	type: 'object',
+	required: [
+		'documentId',
+		'kind',
+		'pathChanged',
+		'changeType',
+		'addition',
+		'removal',
+		'titleChanged',
+		'orderChanged',
+		'contentChanged',
+		'title',
+		'position',
+		'content'
+	],
+	properties: {
+		documentId: { type: 'string' },
+		kind: { type: 'string', enum: ['markdown', 'pdf'] },
+		path: { type: 'string', description: 'Markdown document path; absent for PDF leaves.' },
+		previousPath: {
+			type: 'string',
+			description: 'Previous Markdown path; present only when the document was renamed.'
+		},
+		pathChanged: { type: 'boolean' },
+		changeType: { type: 'string', enum: ['added', 'removed', 'modified', 'unchanged'] },
+		addition: { type: 'boolean' },
+		removal: { type: 'boolean' },
+		titleChanged: { type: 'boolean' },
+		orderChanged: { type: 'boolean' },
+		contentChanged: { type: 'boolean' },
+		title: {
+			type: 'object',
+			required: ['current', 'changed'],
+			properties: {
+				current: { type: 'string' },
+				previous: { type: 'string' },
+				changed: { type: 'boolean' }
+			},
+			additionalProperties: false
+		},
+		position: {
+			type: 'object',
+			required: ['changed'],
+			properties: {
+				current: { type: 'integer' },
+				previous: { type: 'integer' },
+				changed: { type: 'boolean' }
+			},
+			additionalProperties: false
+		},
+		content: {
+			type: 'object',
+			required: ['changed', 'additions', 'deletions'],
+			properties: {
+				changed: { type: 'boolean' },
+				previousSha256: { type: 'string', pattern: '^[0-9a-fA-F]{64}$' },
+				currentSha256: { type: 'string', pattern: '^[0-9a-fA-F]{64}$' },
+				unifiedDiff: { type: 'string' },
+				additions: { type: 'integer' },
+				deletions: { type: 'integer' },
+				truncated: { type: 'boolean' }
+			},
+			additionalProperties: false
+		},
+		pdf: {
+			type: 'object',
+			description: 'Present only for PDF leaves.',
+			properties: {
+				previousByteSize: { type: 'integer' },
+				currentByteSize: { type: 'integer' },
+				previousPageCount: { type: 'integer' },
+				currentPageCount: { type: 'integer' },
+				previousPageWidth: { type: 'number' },
+				currentPageWidth: { type: 'number' },
+				previousPageHeight: { type: 'number' },
+				currentPageHeight: { type: 'number' }
+			},
+			additionalProperties: false
+		}
+	},
+	additionalProperties: false
+};
+
+const REVISION_DIFF: Record<string, unknown> = {
+	type: 'object',
+	required: ['schema', 'base', 'head', 'summary', 'changes', 'unifiedText', 'truncated'],
+	properties: {
+		schema: { type: 'string', const: 'signkit-revision-diff-v1' },
+		base: {
+			type: 'object',
+			required: ['generation', 'commitSha'],
+			properties: {
+				generation: { type: 'integer' },
+				commitSha: { type: ['string', 'null'] }
+			},
+			additionalProperties: false
+		},
+		head: {
+			type: 'object',
+			required: ['generation', 'commitSha'],
+			properties: {
+				generation: { type: 'integer' },
+				commitSha: { type: ['string', 'null'] },
+				message: { type: ['string', 'null'] }
+			},
+			additionalProperties: false
+		},
+		summary: {
+			type: 'object',
+			required: [
+				'documentsAdded',
+				'documentsRemoved',
+				'documentsModified',
+				'documentsReordered',
+				'titlesChanged',
+				'totalChanges'
+			],
+			properties: {
+				documentsAdded: { type: 'integer' },
+				documentsRemoved: { type: 'integer' },
+				documentsModified: { type: 'integer' },
+				documentsReordered: { type: 'integer' },
+				titlesChanged: { type: 'integer' },
+				totalChanges: { type: 'integer' }
+			},
+			additionalProperties: false
+		},
+		changes: {
+			type: 'array',
+			items: REVISION_DIFF_DOCUMENT_CHANGE
+		},
+		unifiedText: {
+			type: 'string',
+			description: 'Concatenated unified diff text across bounded changes.'
+		},
+		truncated: { type: 'boolean' },
+		truncationReason: {
+			type: 'string',
+			enum: ['diff_bytes_limit', 'file_count_limit']
+		}
+	},
+	additionalProperties: false
+};
+
+const revisionRefParam = {
+	name: 'revisionRef',
+	in: 'path',
+	required: true,
+	description: 'Generation 0-2147483647 or a 40-character hexadecimal Git commit SHA.',
+	schema: {
+		type: 'string',
+		pattern: '^([0-9]{1,10}|[0-9a-fA-F]{40})$'
+	}
+};
+
+const revisionPathQueryParam = {
+	name: 'path',
+	in: 'query',
+	required: false,
+	description: 'Specific document path to read (e.g. documents/agreement.md).',
+	schema: { type: 'string' }
+};
+
+const revisionLimitParam = {
+	name: 'limit',
+	in: 'query',
+	required: false,
+	description: 'Maximum number of revision history items to return (1-100, default 50).',
+	schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 }
+};
+
+const revisionCursorParam = {
+	name: 'cursor',
+	in: 'query',
+	required: false,
+	description: 'Cursor generation to paginate historical revisions.',
+	schema: { type: 'integer', minimum: 0, maximum: 2147483647 }
+};
+
+const diffBaseParam = {
+	name: 'base',
+	in: 'query',
+	required: false,
+	description: 'Base revision reference (generation or commit SHA). Defaults to head - 1.',
+	schema: { type: 'string', pattern: '^([0-9]{1,10}|[0-9a-fA-F]{40})$' }
+};
+
+const diffHeadParam = {
+	name: 'head',
+	in: 'query',
+	required: false,
+	description: 'Head revision reference (generation or commit SHA). Defaults to current revision.',
+	schema: { type: 'string', pattern: '^([0-9]{1,10}|[0-9a-fA-F]{40})$' }
+};
+
+const diffFormatParam = {
+	name: 'format',
+	in: 'query',
+	required: false,
+	description: 'Diff presentation format: json (default), text, or unified.',
+	schema: { type: 'string', enum: ['json', 'text', 'unified'], default: 'json' }
+};
+
+const diffIncludeUnifiedParam = {
+	name: 'includeUnified',
+	in: 'query',
+	required: false,
+	description: 'Whether to compute unified diff text for modified text files.',
+	schema: { type: 'boolean', default: true }
+};
+
 const idempotencyHeader = {
 	name: 'Idempotency-Key',
 	in: 'header',
@@ -1082,6 +1401,53 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Draft workspace snapshot', {
 						$ref: '#/components/schemas/DraftWorkspaceSnapshot'
 					})
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/revisions': {
+				get: op({
+					summary: 'List bounded revision history',
+					operationId: 'listEnvelopeRevisions',
+					tags: ['Envelopes'],
+					parameters: [envelopeIdParam, revisionLimitParam, revisionCursorParam],
+					responses: jsonResponse('200', 'Revision history page', DRAFT_REVISION_HISTORY_PAGE)
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/revisions/diff': {
+				get: op({
+					summary: 'Compute structured bounded document-set diff',
+					operationId: 'diffEnvelopeRevisions',
+					tags: ['Envelopes'],
+					parameters: [
+						envelopeIdParam,
+						diffBaseParam,
+						diffHeadParam,
+						diffFormatParam,
+						diffIncludeUnifiedParam
+					],
+					responses: {
+						'200': {
+							description: 'Structured revision diff or unified diff text',
+							content: {
+								'application/json': { schema: REVISION_DIFF },
+								'text/plain': { schema: { type: 'string' } }
+							}
+						}
+					}
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/revisions/{revisionRef}': {
+				get: op({
+					summary: 'Read exact draft revision',
+					operationId: 'getEnvelopeRevision',
+					tags: ['Envelopes'],
+					parameters: [envelopeIdParam, revisionRefParam, revisionPathQueryParam],
+					responses: {
+						...jsonResponse('200', 'Exact revision snapshot', DRAFT_EXACT_REVISION),
+						'404': {
+							description: 'Envelope, revision, or document path not found',
+							content: { 'application/problem+json': { schema: PROBLEM } }
+						}
+					}
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/draft/commits': {
@@ -2179,7 +2545,11 @@ export function openApiDocument(): Record<string, unknown> {
 				SendEnvelopeRequest: SEND_ENVELOPE_REQUEST,
 				SendEnvelopeReceipt: SEND_ENVELOPE_RECEIPT,
 				VoidEnvelopeRequest: VOID_ENVELOPE_REQUEST,
-				VoidEnvelopeReceipt: VOID_ENVELOPE_RECEIPT
+				VoidEnvelopeReceipt: VOID_ENVELOPE_RECEIPT,
+				DraftRevisionItem: DRAFT_REVISION_ITEM,
+				DraftRevisionHistoryPage: DRAFT_REVISION_HISTORY_PAGE,
+				DraftExactRevision: DRAFT_EXACT_REVISION,
+				RevisionDiff: REVISION_DIFF
 			}
 		}
 	};

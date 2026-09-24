@@ -19,11 +19,13 @@ import {
 	type Envelope,
 	type MarkdownPath
 } from '$lib/domain/envelope';
+import { generateRevisionDiff, type RevisionDiffResult } from '$lib/domain/revision-diff';
 import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	DraftMutationStore,
 	DraftRevisionKey,
 	DraftRevisionPreparation,
+	PersistedDraftRevisionLocator,
 	PublishedDraftRevision,
 	PublishDraftRevisionResult
 } from '$lib/ports/draft-mutation-store';
@@ -191,6 +193,71 @@ export class DraftDocumentSetError extends Error {
 	}
 }
 
+export class DraftRevisionNotFoundError extends Error {
+	readonly code = 'DRAFT_REVISION_NOT_FOUND';
+
+	constructor(message: string = 'Draft revision was not found') {
+		super(message);
+		this.name = 'DraftRevisionNotFoundError';
+	}
+}
+
+export class DraftDocumentNotFoundError extends Error {
+	readonly code = 'DRAFT_DOCUMENT_NOT_FOUND';
+
+	constructor(message: string = 'Document was not found in this revision') {
+		super(message);
+		this.name = 'DraftDocumentNotFoundError';
+	}
+}
+
+export interface DraftRevisionMetadata {
+	generation: number;
+	commitSha: string;
+	timestamp: string;
+	message: string;
+	actorType: 'user' | 'agent' | 'system';
+	provenance?: DraftCommitProvenance;
+}
+
+export interface DraftRevisionHistoryPage {
+	revisions: readonly DraftRevisionMetadata[];
+	truncated: boolean;
+	nextCursor?: number | null;
+}
+
+export interface DraftExactRevision {
+	generation: number;
+	commitSha: string;
+	archiveSha256: string;
+	timestamp: string;
+	message: string;
+	actorType: 'user' | 'agent' | 'system';
+	provenance?: DraftCommitProvenance;
+	documentSet: DocumentSetManifest | null;
+	documents: readonly DraftDocument[];
+	selectedDocument?: DraftDocument;
+}
+
+export interface ListDraftRevisionsInput {
+	envelopeId: string;
+	limit?: number;
+	cursor?: number;
+}
+
+export interface ReadExactDraftRevisionInput {
+	envelopeId: string;
+	revisionRef: string;
+	path?: string;
+}
+
+export interface DiffDraftRevisionsInput {
+	envelopeId: string;
+	baseRef?: string;
+	headRef?: string;
+	includeUnified?: boolean;
+}
+
 /**
  * Coordinates the mutable Git archive with an immutable object store and the
  * database's atomic publication of the envelope pointer, idempotency result,
@@ -238,6 +305,344 @@ export class DraftPersistenceService {
 			archiveSha256: snapshot.archiveSha256,
 			documents,
 			documentSet
+		};
+	}
+
+	async listRevisions(input: ListDraftRevisionsInput): Promise<DraftRevisionHistoryPage> {
+		assertScopedIdentifier(input.envelopeId, 'envelope');
+		await this.findEnvelope(input.envelopeId);
+
+		const limit = Math.max(1, Math.min(input.limit ?? 50, 100));
+		const locators = await this.store.listDraftRevisionLocators(input.envelopeId, {
+			limit: limit + 1,
+			cursor: input.cursor
+		});
+
+		const truncated = locators.length > limit;
+		const pageLocators = locators.slice(0, limit);
+		const nextCursor = truncated ? pageLocators[pageLocators.length - 1].generation : null;
+
+		const revisions: DraftRevisionMetadata[] = [];
+		for (const locator of pageLocators) {
+			const listed = extractListedRevisionMetadata(locator);
+			if (listed !== null) {
+				revisions.push({
+					generation: locator.generation,
+					commitSha: locator.commitSha,
+					timestamp: locator.updatedAt,
+					message: listed.message,
+					actorType: locator.actorType,
+					provenance: listed.provenance ?? undefined
+				});
+				continue;
+			}
+			// Commits published before the audited message field existed still
+			// obtain their message from the verified immutable Git archive.
+			const verified = await this.loadVerifiedRevisionLocator(input.envelopeId, locator);
+			revisions.push({
+				generation: verified.generation,
+				commitSha: verified.commitSha,
+				timestamp: verified.timestamp,
+				message: verified.message,
+				actorType: verified.actorType,
+				provenance: verified.provenance
+			});
+		}
+
+		return {
+			revisions,
+			truncated,
+			nextCursor
+		};
+	}
+
+	async readRevision(input: ReadExactDraftRevisionInput): Promise<DraftExactRevision> {
+		assertScopedIdentifier(input.envelopeId, 'envelope');
+		await this.findEnvelope(input.envelopeId);
+
+		const ref = parseRevisionReference(input.revisionRef);
+		let locator: PersistedDraftRevisionLocator | null;
+		if (ref.kind === 'generation') {
+			locator = await this.store.findDraftRevisionLocatorByGeneration(input.envelopeId, ref.value);
+		} else {
+			locator = await this.store.findDraftRevisionLocatorByCommit(input.envelopeId, ref.value);
+		}
+
+		if (locator === null) {
+			throw new DraftRevisionNotFoundError();
+		}
+
+		const verified = await this.loadVerifiedRevisionLocator(input.envelopeId, locator);
+		let selectedDocument: DraftDocument | undefined;
+		if (input.path !== undefined) {
+			assertDraftPath(input.path);
+			const found = verified.documents.find((d) => d.path === input.path);
+			if (!found) {
+				throw new DraftDocumentNotFoundError();
+			}
+			selectedDocument = found;
+		}
+
+		return {
+			generation: verified.generation,
+			commitSha: verified.commitSha,
+			archiveSha256: verified.archiveSha256,
+			timestamp: verified.timestamp,
+			message: verified.message,
+			actorType: verified.actorType,
+			provenance: verified.provenance,
+			documentSet: verified.documentSet,
+			documents: verified.documents,
+			selectedDocument
+		};
+	}
+
+	async diffRevisions(input: DiffDraftRevisionsInput): Promise<RevisionDiffResult> {
+		assertScopedIdentifier(input.envelopeId, 'envelope');
+		const envelope = await this.findEnvelope(input.envelopeId);
+
+		// Resolve head revision
+		let headData: {
+			generation: number;
+			commitSha: string | null;
+			message: string | null;
+			documentSet: DocumentSetManifest | null;
+			documents: readonly DraftDocument[];
+		};
+
+		if (input.headRef !== undefined) {
+			const headRef = parseRevisionReference(input.headRef);
+			let locator: PersistedDraftRevisionLocator | null = null;
+			if (headRef.kind === 'generation') {
+				if (headRef.value === 0) {
+					headData = {
+						generation: 0,
+						commitSha: null,
+						message: null,
+						documentSet: null,
+						documents: []
+					};
+				} else {
+					locator = await this.store.findDraftRevisionLocatorByGeneration(
+						input.envelopeId,
+						headRef.value
+					);
+				}
+			} else {
+				locator = await this.store.findDraftRevisionLocatorByCommit(
+					input.envelopeId,
+					headRef.value
+				);
+			}
+
+			if (locator !== null) {
+				const verified = await this.loadVerifiedRevisionLocator(input.envelopeId, locator);
+				headData = {
+					generation: verified.generation,
+					commitSha: verified.commitSha,
+					message: verified.message,
+					documentSet: verified.documentSet,
+					documents: verified.documents
+				};
+			} else if (!headData!) {
+				throw new DraftRevisionNotFoundError('Head revision not found');
+			}
+		} else {
+			if (envelope.repositoryGeneration === 0) {
+				headData = {
+					generation: 0,
+					commitSha: null,
+					message: null,
+					documentSet: null,
+					documents: []
+				};
+			} else {
+				const locator = await this.store.findDraftRevisionLocatorByGeneration(
+					input.envelopeId,
+					envelope.repositoryGeneration
+				);
+				if (locator === null) {
+					throw new DraftRevisionNotFoundError('Current draft revision not found');
+				}
+				const verified = await this.loadVerifiedRevisionLocator(input.envelopeId, locator);
+				headData = {
+					generation: verified.generation,
+					commitSha: verified.commitSha,
+					message: verified.message,
+					documentSet: verified.documentSet,
+					documents: verified.documents
+				};
+			}
+		}
+
+		// Resolve base revision
+		let baseData: {
+			generation: number;
+			commitSha: string | null;
+			documentSet: DocumentSetManifest | null;
+			documents: readonly DraftDocument[];
+		};
+
+		if (input.baseRef !== undefined) {
+			const baseRef = parseRevisionReference(input.baseRef);
+			let locator: PersistedDraftRevisionLocator | null = null;
+			if (baseRef.kind === 'generation') {
+				if (baseRef.value === 0) {
+					baseData = {
+						generation: 0,
+						commitSha: null,
+						documentSet: null,
+						documents: []
+					};
+				} else {
+					locator = await this.store.findDraftRevisionLocatorByGeneration(
+						input.envelopeId,
+						baseRef.value
+					);
+				}
+			} else {
+				locator = await this.store.findDraftRevisionLocatorByCommit(
+					input.envelopeId,
+					baseRef.value
+				);
+			}
+
+			if (locator !== null) {
+				const verified = await this.loadVerifiedRevisionLocator(input.envelopeId, locator);
+				baseData = {
+					generation: verified.generation,
+					commitSha: verified.commitSha,
+					documentSet: verified.documentSet,
+					documents: verified.documents
+				};
+			} else if (!baseData!) {
+				throw new DraftRevisionNotFoundError('Base revision not found');
+			}
+		} else {
+			const targetBaseGen = Math.max(0, headData.generation - 1);
+			if (targetBaseGen === 0) {
+				baseData = {
+					generation: 0,
+					commitSha: null,
+					documentSet: null,
+					documents: []
+				};
+			} else {
+				const locator = await this.store.findDraftRevisionLocatorByGeneration(
+					input.envelopeId,
+					targetBaseGen
+				);
+				if (locator === null) {
+					throw new DraftRevisionNotFoundError('Base revision not found');
+				}
+				const verified = await this.loadVerifiedRevisionLocator(input.envelopeId, locator);
+				baseData = {
+					generation: verified.generation,
+					commitSha: verified.commitSha,
+					documentSet: verified.documentSet,
+					documents: verified.documents
+				};
+			}
+		}
+
+		return generateRevisionDiff({
+			base: {
+				generation: baseData.generation,
+				commitSha: baseData.commitSha,
+				manifest: baseData.documentSet,
+				documents: new Map(baseData.documents.map((d) => [d.path, d.content]))
+			},
+			head: {
+				generation: headData.generation,
+				commitSha: headData.commitSha,
+				message: headData.message,
+				manifest: headData.documentSet,
+				documents: new Map(headData.documents.map((d) => [d.path, d.content]))
+			},
+			options: {
+				includeUnified: input.includeUnified ?? true
+			}
+		});
+	}
+
+	private async loadVerifiedRevisionLocator(
+		envelopeId: string,
+		locator: PersistedDraftRevisionLocator
+	): Promise<{
+		generation: number;
+		commitSha: string;
+		archiveSha256: string;
+		timestamp: string;
+		message: string;
+		actorType: 'user' | 'agent' | 'system';
+		provenance?: DraftCommitProvenance;
+		documentSet: DocumentSetManifest | null;
+		documents: readonly DraftDocument[];
+		archive: Uint8Array;
+	}> {
+		if (!GIT_SHA_PATTERN.test(locator.commitSha)) {
+			throw new DraftIntegrityError('Stored draft command has an invalid Git commit SHA');
+		}
+		assertSha256(locator.archiveSha256);
+		const expectedKey = draftArchiveKey(envelopeId, locator.archiveSha256);
+		if (locator.archiveKey !== expectedKey) {
+			throw new DraftIntegrityError('Stored draft command has an invalid archive key');
+		}
+
+		const archive = await this.readVerifiedArchive(locator.archiveKey, locator.archiveSha256);
+
+		let documents: readonly DraftDocument[];
+		let documentSet: DocumentSetManifest | null = null;
+		let message = '';
+
+		if (typeof this.repository.readRevisionSnapshot === 'function') {
+			const snapshot = await this.repository.readRevisionSnapshot(archive, locator.commitSha);
+			if (snapshot === null) {
+				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
+			}
+			documents = snapshot.documents;
+			message = snapshot.message;
+			if (snapshot.manifest !== null) {
+				try {
+					documentSet = parseDocumentSet(snapshot.manifest);
+				} catch {
+					throw new DraftIntegrityError('Pinned document set is invalid');
+				}
+			} else if (documents.length > 0) {
+				documentSet = await this.materializeFromMarkdown(
+					new Map(documents.map((d): [MarkdownPath, string] => [d.path, d.content]))
+				);
+			}
+		} else {
+			try {
+				documents = await this.repository.read(archive, locator.commitSha);
+			} catch {
+				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
+			}
+			documentSet = await this.loadDocumentSet(archive, locator.commitSha);
+			if (documentSet === null && documents.length > 0) {
+				documentSet = await this.materializeFromMarkdown(
+					new Map(documents.map((d): [MarkdownPath, string] => [d.path, d.content]))
+				);
+			}
+			if (typeof this.repository.readCommitMessage === 'function') {
+				message = (await this.repository.readCommitMessage(archive, locator.commitSha)) ?? '';
+			}
+		}
+
+		const provenance = extractAllowlistedProvenance(locator.auditPayloadJson);
+
+		return {
+			generation: locator.generation,
+			commitSha: locator.commitSha,
+			archiveSha256: locator.archiveSha256,
+			timestamp: locator.updatedAt,
+			message,
+			actorType: locator.actorType,
+			provenance: provenance ?? undefined,
+			documentSet,
+			documents,
+			archive
 		};
 	}
 
@@ -325,6 +730,7 @@ export class DraftPersistenceService {
 		const auditPayload = {
 			generation: nextGeneration,
 			commitSha: version.commitSha,
+			message: canonical.message,
 			archiveSha256,
 			changedPaths: next.edits.map((edit: DraftEdit): string => edit.path),
 			provenance: canonical.provenance,
@@ -962,6 +1368,21 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	).join('');
 }
 
+function parseRevisionReference(
+	input: string
+): { kind: 'generation'; value: number } | { kind: 'commit'; value: string } {
+	const value = input.trim().toLowerCase();
+	// A 40-digit Git SHA is a commit, not a huge decimal generation.
+	if (GIT_SHA_PATTERN.test(value)) return { kind: 'commit', value };
+	if (/^\d{1,10}$/.test(value)) {
+		const generation = Number(value);
+		if (Number.isSafeInteger(generation) && generation <= MAX_DRAFT_GENERATION) {
+			return { kind: 'generation', value: generation };
+		}
+	}
+	throw new DraftRevisionNotFoundError('Invalid revision reference');
+}
+
 function assertGeneration(generation: number): void {
 	if (!Number.isSafeInteger(generation) || generation < 0 || generation > MAX_DRAFT_GENERATION) {
 		throw new DraftIntegrityError('Draft repository generation is invalid');
@@ -993,4 +1414,66 @@ function encodeScopeSegment(value: string): string {
 	// encodeURIComponent leaves dots unescaped; escaping them prevents any `..`
 	// segment from reaching provider-specific key normalization.
 	return encodeURIComponent(value).replaceAll('.', '%2E');
+}
+
+function extractListedRevisionMetadata(
+	locator: PersistedDraftRevisionLocator
+): { message: string; provenance: DraftCommitProvenance | null } | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(locator.auditPayloadJson) as unknown;
+	} catch {
+		throw new DraftIntegrityError('Stored draft revision audit payload is invalid');
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		throw new DraftIntegrityError('Stored draft revision audit payload is invalid');
+	}
+	const payload = parsed as Record<string, unknown>;
+	if (
+		payload.generation !== locator.generation ||
+		payload.commitSha !== locator.commitSha ||
+		payload.archiveSha256 !== locator.archiveSha256
+	) {
+		throw new DraftIntegrityError('Stored draft revision audit payload does not match its command');
+	}
+	if (payload.message === undefined) return null;
+	if (
+		typeof payload.message !== 'string' ||
+		payload.message.length === 0 ||
+		payload.message.length > MAX_COMMIT_MESSAGE_LENGTH ||
+		hasControlCharacter(payload.message)
+	) {
+		throw new DraftIntegrityError('Stored draft revision message is invalid');
+	}
+	return {
+		message: payload.message,
+		provenance: extractAllowlistedProvenance(locator.auditPayloadJson)
+	};
+}
+
+function extractAllowlistedProvenance(auditPayloadJson: string): DraftCommitProvenance | null {
+	try {
+		const payload = JSON.parse(auditPayloadJson) as Record<string, unknown>;
+		if (
+			payload &&
+			typeof payload === 'object' &&
+			payload.provenance &&
+			typeof payload.provenance === 'object'
+		) {
+			const prov = payload.provenance as Record<string, unknown>;
+			const result: DraftCommitProvenance = {};
+			if (typeof prov.automationRunId === 'string' && prov.automationRunId.trim().length > 0) {
+				result.automationRunId = prov.automationRunId.trim();
+			}
+			if (typeof prov.externalId === 'string' && prov.externalId.trim().length > 0) {
+				result.externalId = prov.externalId.trim();
+			}
+			if (Object.keys(result).length > 0) {
+				return result;
+			}
+		}
+		return null;
+	} catch {
+		return null;
+	}
 }

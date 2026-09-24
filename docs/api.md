@@ -39,32 +39,41 @@ The `signkit openapi` CLI command retrieves this document for schema discovery.
 
 ## Envelope endpoints
 
-| Method | Path                                                 | Purpose                               | API-key scope    |
-| ------ | ---------------------------------------------------- | ------------------------------------- | ---------------- |
-| `GET`  | `/api/v1/envelopes`                                  | List envelopes                        | `envelopes:read` |
-| `POST` | `/api/v1/envelopes`                                  | Create a draft envelope               | `drafts:write`   |
-| `GET`  | `/api/v1/envelopes/{envelopeId}`                     | Read envelope detail                  | `envelopes:read` |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/draft`               | Read the current draft                | `envelopes:read` |
-| `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits`       | Commit Markdown edits                 | `drafts:write`   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx`          | Import DOCX as Markdown               | `drafts:write`   |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/docx`                | Export Markdown as DOCX               | `envelopes:read` |
-| `POST` | `/api/v1/envelopes/{envelopeId}/documents/pdf`       | Add an uploaded PDF                   | `drafts:write`   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/documents/order`     | Reorder or remove documents           | `drafts:write`   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/ready`               | Validate recipients and pin readiness | `drafts:write`   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/fields`              | Place recipient fields                | `drafts:write`   |
-| `POST` | `/api/v1/envelopes/{envelopeId}/send`                | Send a ready envelope                 | `envelopes:send` |
-| `POST` | `/api/v1/envelopes/{envelopeId}/void`                | Void an active envelope               | `envelopes:send` |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/deliveries`          | Read invitation status                | `envelopes:read` |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact` | Read completion publication status    | `envelopes:read` |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf-seal`            | Read instance PDF seal status         | `envelopes:read` |
-| `POST` | `/api/v1/envelopes/{envelopeId}/pdf-seal`            | Explicitly request an instance seal   | `envelopes:send` |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf-seal/pdf`        | Download the validated sealed PDF     | `envelopes:read` |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/evidence`            | Download JSON or Markdown evidence    | `envelopes:read` |
-| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf`                 | Download the executed PDF             | `envelopes:read` |
+| Method | Path                                                  | Purpose                               | API-key scope    |
+| ------ | ----------------------------------------------------- | ------------------------------------- | ---------------- |
+| `GET`  | `/api/v1/envelopes`                                   | List envelopes                        | `envelopes:read` |
+| `POST` | `/api/v1/envelopes`                                   | Create a draft envelope               | `drafts:write`   |
+| `GET`  | `/api/v1/envelopes/{envelopeId}`                      | Read envelope detail                  | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/draft`                | Read the current draft                | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/revisions`            | List bounded revision history         | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/revisions/{revision}` | Read exact revision snapshot or path  | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/revisions/diff`       | Structured document-set revision diff | `envelopes:read` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/draft/commits`        | Commit Markdown edits                 | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/draft/docx`           | Import DOCX as Markdown               | `drafts:write`   |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/docx`                 | Export Markdown as DOCX               | `envelopes:read` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/documents/pdf`        | Add an uploaded PDF                   | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/documents/order`      | Reorder or remove documents           | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/ready`                | Validate recipients and pin readiness | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/fields`               | Place recipient fields                | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/send`                 | Send a ready envelope                 | `envelopes:send` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/void`                 | Void an active envelope               | `envelopes:send` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/deliveries`           | Read invitation status                | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/completion-artifact`  | Read completion publication status    | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf-seal`             | Read instance PDF seal status         | `envelopes:read` |
+| `POST` | `/api/v1/envelopes/{envelopeId}/pdf-seal`             | Explicitly request an instance seal   | `envelopes:send` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf-seal/pdf`         | Download the validated sealed PDF     | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/evidence`             | Download JSON or Markdown evidence    | `envelopes:read` |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/pdf`                  | Download the executed PDF             | `envelopes:read` |
 
 One envelope owns one ordered document set and one Git history. Markdown is committed directly. Uploaded PDFs remain immutable object bytes while Git records their manifest entries and digests. Sending pins the exact revision and renders the recipient document set.
 
 DOCX import and export keep their synchronous success responses for browser and CLI compatibility, but conversion begins only after a durable SQL job exists. A transient inline failure remains retryable by the protected DOCX drain; repeating the same import `Idempotency-Key` or exporting the same pinned revision resolves the durable result instead of starting unrelated work. DOCX source and result bytes stay outside Git.
+
+Draft revision history and diff endpoints expose content-addressed, verified Git snapshots:
+
+- `GET /api/v1/envelopes/{envelopeId}/revisions` returns bounded historical generations (`limit` 1-100, `cursor` generation), commit SHA, ISO-8601 timestamp, commit message directly from the verified Git object, actor type, and allowlisted automation provenance (`automationRunId`, `externalId`). Internal object keys, recipient emails, capability secrets, and audit hashes are never disclosed.
+- `GET /api/v1/envelopes/{envelopeId}/revisions/{revisionRef}` reads an exact revision by generation number or 40-character hexadecimal Git commit SHA. An optional `path` query parameter reads a specific document leaf; when requested with `Accept: text/markdown` or `Accept: text/plain`, the endpoint serves raw markdown text.
+- `GET /api/v1/envelopes/{envelopeId}/revisions/diff` computes a bounded, structured document-set diff across Markdown and PDF manifest leaves between `base` and `head` revisions (defaulting to previous and current). Detected changes include additions, removals, content modifications, title renames, and ordering updates. It enforces machine-readable bounds (`MAX_DIFF_BYTES = 512KB`, `MAX_DIFF_FILES = 50`) and supports unified diff output via `format=text` or `Accept: text/plain`.
 
 ## Contact endpoints
 
