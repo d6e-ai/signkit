@@ -81,6 +81,23 @@ Response:
 
 ### Step 2: Proposing Revisions
 
+For an agent-driven review, keep the proposed JSON file local until a human or
+workflow explicitly approves publication. The CLI can inspect the base and
+validate the proposal without making a network mutation:
+
+```sh
+signkit envelopes revisions "$ENVELOPE_ID" --limit 1
+signkit envelopes revision "$ENVELOPE_ID" "$BASE_GENERATION"
+signkit envelopes commit "$ENVELOPE_ID" --file proposal.json --validate-only
+```
+
+Set `expectedGeneration` in `proposal.json` to the inspected base generation.
+Before publication, re-read the current revision; the eventual explicit
+`signkit envelopes commit "$ENVELOPE_ID" --file proposal.json` uses server-side
+compare-and-set and returns a conflict if another author advanced the draft.
+`--validate-only` checks the request locally; it does not reserve a generation
+or publish a commit.
+
 The agent commits proposed redlines:
 
 ```http
