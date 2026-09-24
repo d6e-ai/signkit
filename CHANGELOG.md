@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-09-24
+
+### Fixed
+
+- Restore recipient viewing and signing on Cloudflare D1 by correcting the viewed-command, signed-command, and field-value writes. Migration-backed tests now cover publication, completion, routing, audit chaining, and safe replay ([#170](https://github.com/d6e-ai/signkit/issues/170)).
+- Display the pinned PDF documents of sent and completed envelopes in the Documents tab, including PDF-only and mixed document sets, with localized loading failures ([#171](https://github.com/d6e-ai/signkit/issues/171)).
+- Render PDF page content on first load and after navigation or resize, including Japanese CID/CMap text, with a document-open fallback when rendering fails ([#172](https://github.com/d6e-ai/signkit/issues/172)).
+
+### Security
+
+- Sent-document previews continue to use sender authorization, immutable revision verification, and no-store responses. Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements and the absence of PAdES/TSA certification; Vercel remains CI-only.
+
 ## [0.1.8] - 2026-09-24
 
 ### Fixed
