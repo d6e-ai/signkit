@@ -26,6 +26,17 @@ The contact API is human-session-only. API keys, recipient capabilities, and rec
 - Errors use `application/problem+json` following RFC 9457.
 - Private object keys, token hashes, audit hashes, and raw capabilities are never returned from public models.
 
+## OpenAPI 3.1 Specification
+
+The live OpenAPI 3.1 specification is discoverable at `GET /api/v1/openapi.json` without authentication. It provides concrete, named schema components for all envelope queries and mutations:
+
+- **Draft Models**: `DraftWorkspaceSnapshot`, `DocumentSetManifest`, `DocumentSetLeaf`, `MarkdownDocumentLeaf`, `PdfDocumentLeaf`
+- **Envelope Models**: `EnvelopeRecipient`, `EnvelopeField`, `FieldGeometry`
+- **Mutation Requests**: `DraftCommitRequest`, `ReadyEnvelopeRequest`, `PlaceFieldsRequest`, `SendEnvelopeRequest`, `VoidEnvelopeRequest`
+- **Mutation Receipts**: `DraftRevisionReceipt`, `ReadyEnvelopeReceipt`, `PlaceFieldsReceipt`, `SendEnvelopeReceipt`, `VoidEnvelopeReceipt`
+
+The `signkit openapi` CLI command retrieves this document for schema discovery.
+
 ## Envelope endpoints
 
 | Method | Path                                                 | Purpose                               | API-key scope    |

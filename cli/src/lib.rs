@@ -6,6 +6,7 @@ pub mod error;
 pub mod io;
 pub mod output;
 pub mod types;
+pub mod validation;
 
 use args::{Cli, Command};
 use client::SignKitClient;
@@ -18,6 +19,21 @@ use output::print_problem;
 pub async fn run_cli(cli: Cli) -> ExitCode {
     let raw = cli.raw;
     let pretty = cli.pretty;
+
+    if let Command::Envelopes(ref args) = cli.command {
+        if commands::envelopes::is_offline(&args.subcommand) {
+            let result = commands::envelopes::execute_offline(&args.subcommand, raw, pretty);
+            return match result {
+                Ok(()) => ExitCode::Success,
+                Err(err) => {
+                    let exit_code = err.exit_code();
+                    let problem = err.to_problem_detail("cli://signkit/validation");
+                    print_problem(&problem, pretty);
+                    exit_code
+                }
+            };
+        }
+    }
 
     let config = match resolve_config(
         cli.base_url,
@@ -46,6 +62,7 @@ pub async fn run_cli(cli: Cli) -> ExitCode {
 
     let result = match cli.command {
         Command::Capabilities => commands::capabilities::execute(&client, raw, pretty).await,
+        Command::Openapi => commands::openapi::execute(&client, raw, pretty).await,
         Command::Envelopes(args) => {
             commands::envelopes::execute(&client, args.subcommand, raw, pretty).await
         }

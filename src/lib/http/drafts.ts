@@ -47,7 +47,7 @@ const normalizedMetadataValueSchema = z
 	.refine((value: string): boolean => !hasControlCharacter(value), {
 		message: 'Provenance values must not contain control characters'
 	});
-const commitDraftSchema = z
+export const commitDraftSchema = z
 	.object({
 		expectedGeneration: z
 			.number()

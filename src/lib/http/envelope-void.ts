@@ -18,7 +18,7 @@ const idempotencyKeySchema: ZodType<string> = z
 	.min(1)
 	.max(200)
 	.regex(/^[\x21-\x7E]+$/, 'Idempotency-Key must contain visible ASCII characters only');
-const voidSchema = z
+export const voidSchema = z
 	.object({
 		expectedStatus: z.enum(['draft', 'ready', 'sent', 'in_progress']),
 		expectedGeneration: z.number().int().min(0).max(MAX_GENERATION)
