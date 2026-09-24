@@ -116,6 +116,7 @@
 	let commitPending = $state(false);
 	let commitError = $state<string | null>(null);
 	let previewMode = $state<'formatted' | 'source'>('formatted');
+	let sentDocumentsLoadError = $state<string | null>(null);
 
 	// Recipients / ready state.
 	interface RecipientDraft {
@@ -306,6 +307,63 @@
 		return leaf?.kind === 'pdf' ? leaf : null;
 	});
 
+	interface SentMarkdownDocumentView {
+		kind: 'markdown';
+		key: string;
+		title: string;
+		content: string | null;
+	}
+
+	interface SentPdfDocumentView {
+		kind: 'pdf';
+		key: string;
+		documentId: string;
+		title: string;
+		pageCount: number;
+	}
+
+	type SentDocumentView = SentMarkdownDocumentView | SentPdfDocumentView;
+
+	/**
+	 * The read-only view of every document in the envelope's pinned document
+	 * set once it is no longer draft-editable. A PDF leaf has no Markdown
+	 * source at all, so `draft.documents` (the Git-sourced Markdown tree) is
+	 * always empty for a PDF-only envelope; this instead walks the same
+	 * `documentSet` manifest the authoring editor already understands, and
+	 * renders PDF leaves through the sender-authorized `/document-pdf`
+	 * endpoint used by the field-placement editor. That endpoint renders off
+	 * `repositoryHead`, which cannot move again once an envelope leaves
+	 * `draft`, so it is exactly the pinned sent revision.
+	 */
+	const sentDocumentViews = $derived.by((): SentDocumentView[] => {
+		const set: DocumentSetManifest | null = draft?.documentSet ?? null;
+		if (set !== null && set.documents.length > 0) {
+			return set.documents.map((leaf): SentDocumentView => {
+				if (leaf.kind === 'pdf') {
+					return {
+						kind: 'pdf',
+						key: leaf.id,
+						documentId: leaf.id,
+						title: leaf.title,
+						pageCount: leaf.pageCount
+					};
+				}
+				return {
+					kind: 'markdown',
+					key: leaf.id,
+					title: leaf.title,
+					content: draft?.documents.find((document) => document.path === leaf.path)?.content ?? null
+				};
+			});
+		}
+		return (draft?.documents ?? []).map((document): SentDocumentView => ({
+			kind: 'markdown',
+			key: document.path,
+			title: documentTitle(document.path),
+			content: document.content
+		}));
+	});
+
 	function selectAuthoringDocument(entry: AuthoringDocument): void {
 		activeDocumentKey = entry.key;
 		if (entry.source === 'pending') {
@@ -430,7 +488,11 @@
 								: null;
 				}
 			} else {
-				draft = await client.getDraft(envelopeId).catch(() => null);
+				sentDocumentsLoadError = null;
+				draft = await client.getDraft(envelopeId).catch(() => {
+					sentDocumentsLoadError = m.envelope_sent_documents_unavailable();
+					return null;
+				});
 			}
 			if (
 				detail.recipients.some((recipient) => recipient.role === 'signer') &&
@@ -1768,35 +1830,67 @@
 						{#if exportError}
 							<p class="text-sm font-medium text-destructive" role="alert">{exportError}</p>
 						{/if}
-						{#each draft.documents as document (document.path)}
-							{@const title = documentTitle(document.path)}
-							{@const rendered = renderRecipientMarkdown(document.content)}
-							<Card.Root>
-								<!-- A document with no readable authored title renders no header at
-								     all, rather than an empty one: an empty header leaves a band of
-								     padding above the text that reads like a layout bug. -->
-								{#if title.length > 0}
-									<Card.Header>
-										<Card.Title>{title}</Card.Title>
+						{#each sentDocumentViews as view (view.key)}
+							{#if view.kind === 'pdf'}
+								<Card.Root>
+									<Card.Header class="flex-row items-center gap-2">
+										<Card.Title>{view.title}</Card.Title>
+										<Badge variant="secondary">{m.envelope_document_kind_pdf()}</Badge>
 									</Card.Header>
-								{/if}
-								<Card.Content class={title.length > 0 ? undefined : 'pt-6'}>
-									<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
-										{#each rendered.nodes as node, nodeIndex (nodeIndex)}
-											{@render renderMarkdownNode(node)}
-										{/each}
-									</div>
-									{#if rendered.hasVisibleUnicodeControls}
-										<p class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
-											{m.envelope_document_unicode_warning()}
+									<Card.Content class="flex flex-col gap-3">
+										<p class="text-sm text-muted-foreground">
+											{m.envelope_pdf_pages_label({ count: String(view.pageCount) })}
 										</p>
+										<PdfDocumentView
+											src={`/api/v1/envelopes/${envelopeId}/document-pdf?documentId=${encodeURIComponent(view.documentId)}`}
+											label={view.title}
+											expectedPageCount={view.pageCount}
+											loadingLabel={m.envelope_sent_document_loading()}
+											errorTitle={m.envelope_sent_document_error_title()}
+											errorDescription={m.envelope_sent_document_error_description()}
+											openLabel={m.envelope_sent_document_open()}
+										/>
+									</Card.Content>
+								</Card.Root>
+							{:else}
+								<Card.Root>
+									<!-- A document with no readable authored title renders no header at
+									     all, rather than an empty one: an empty header leaves a band of
+									     padding above the text that reads like a layout bug. -->
+									{#if view.title.length > 0}
+										<Card.Header>
+											<Card.Title>{view.title}</Card.Title>
+										</Card.Header>
 									{/if}
-								</Card.Content>
-							</Card.Root>
+									<Card.Content class={view.title.length > 0 ? undefined : 'pt-6'}>
+										{#if view.content === null}
+											<p class="text-sm font-medium text-destructive" role="alert">
+												{m.envelope_sent_document_content_unavailable()}
+											</p>
+										{:else}
+											{@const rendered = renderRecipientMarkdown(view.content)}
+											<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
+												{#each rendered.nodes as node, nodeIndex (nodeIndex)}
+													{@render renderMarkdownNode(node)}
+												{/each}
+											</div>
+											{#if rendered.hasVisibleUnicodeControls}
+												<p class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
+													{m.envelope_document_unicode_warning()}
+												</p>
+											{/if}
+										{/if}
+									</Card.Content>
+								</Card.Root>
+							{/if}
+						{:else}
+							<p class="text-sm text-muted-foreground">{m.envelope_documents_immutable()}</p>
 						{/each}
 					</div>
 				{:else}
-					<p class="text-sm text-muted-foreground">{m.envelope_documents_immutable()}</p>
+					<p class="text-sm font-medium text-destructive" role="alert">
+						{sentDocumentsLoadError ?? m.envelope_sent_documents_unavailable()}
+					</p>
 				{/if}
 
 				{#if envelope.status === 'completed'}

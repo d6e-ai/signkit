@@ -93,8 +93,8 @@ describe('envelope authoring page contracts', () => {
 	});
 
 	it('omits a document card header entirely when the document has no title', () => {
-		expect(source).toContain('{#if title.length > 0}');
-		expect(source).toContain("class={title.length > 0 ? undefined : 'pt-6'}");
+		expect(source).toContain('{#if view.title.length > 0}');
+		expect(source).toContain("class={view.title.length > 0 ? undefined : 'pt-6'}");
 	});
 
 	it('keeps keyed each blocks and does not render raw HTML', () => {
