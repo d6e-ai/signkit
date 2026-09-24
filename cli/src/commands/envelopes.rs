@@ -2,8 +2,9 @@ use crate::args::{
     EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeDocumentOrderArgs, EnvelopeEvidenceArgs,
     EnvelopeExportDocxArgs, EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeImportDocxArgs,
     EnvelopeListArgs, EnvelopePdfArgs, EnvelopePdfSealDownloadArgs, EnvelopePdfSealRequestArgs,
-    EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeUploadPdfArgs, EnvelopeVoidArgs,
-    EnvelopesSubcommand, EvidenceFormat,
+    EnvelopeReadyArgs, EnvelopeRevisionArgs, EnvelopeRevisionDiffArgs, EnvelopeRevisionsArgs,
+    EnvelopeSendArgs, EnvelopeUploadPdfArgs, EnvelopeVoidArgs, EnvelopesSubcommand, EvidenceFormat,
+    RevisionDiffFormatArg,
 };
 use crate::client::{BinaryGetSpec, SignKitClient};
 use crate::error::CliError;
@@ -15,10 +16,11 @@ use crate::output::print_success;
 use crate::types::{
     is_valid_uuid_v7, ArtifactDownloadReceipt, CompletionArtifactResponse, DeliveryStatusResponse,
     DocumentOrderRequest, DocxExportReceipt, DraftCommitRequest, DraftCommitResponse,
-    DraftWorkspaceSnapshot, EnvelopeCreateRequest, EnvelopeCreateResponse, EnvelopeGetResponse,
-    EnvelopeListPage, PdfSealRequestResponse, PdfSealStatusResponse, PlaceFieldsRequest,
-    PlaceFieldsResponse, ReadyEnvelopeRequest, ReadyEnvelopeResponse, RequestPdfSealBody,
-    SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
+    DraftExactRevision, DraftRevisionHistoryPage, DraftWorkspaceSnapshot, EnvelopeCreateRequest,
+    EnvelopeCreateResponse, EnvelopeGetResponse, EnvelopeListPage, PdfSealRequestResponse,
+    PdfSealStatusResponse, PlaceFieldsRequest, PlaceFieldsResponse, ReadyEnvelopeRequest,
+    ReadyEnvelopeResponse, RequestPdfSealBody, RevisionDiffResponse, SendEnvelopeRequest,
+    SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
 };
 
 pub fn is_offline(subcommand: &EnvelopesSubcommand) -> bool {
@@ -192,6 +194,9 @@ pub async fn execute(
         EnvelopesSubcommand::PdfSealDownload(args) => {
             download_pdf_seal(client, args, raw, pretty).await
         }
+        EnvelopesSubcommand::Revisions(args) => list_revisions(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Revision(args) => get_revision(client, args, raw, pretty).await,
+        EnvelopesSubcommand::RevisionDiff(args) => diff_revisions(client, args, raw, pretty).await,
     }
 }
 
@@ -818,5 +823,138 @@ fn validate_envelope_id(id: &str) -> Result<(), CliError> {
             "Invalid envelope ID '{id}'. Envelope IDs must be canonical lowercase RFC 9562 UUIDv7."
         )));
     }
+    Ok(())
+}
+
+/// Validates that a revision reference is an integer generation or a
+/// 40-character hexadecimal Git commit SHA, matching the server's schema.
+fn validate_revision_ref(revision_ref: &str) -> Result<(), CliError> {
+    let is_commit_sha =
+        revision_ref.len() == 40 && revision_ref.bytes().all(|b| b.is_ascii_hexdigit());
+    let is_generation = !is_commit_sha
+        && !revision_ref.is_empty()
+        && revision_ref.len() <= 10
+        && revision_ref.bytes().all(|b| b.is_ascii_digit())
+        && revision_ref
+            .parse::<u64>()
+            .is_ok_and(|generation| generation <= 2_147_483_647);
+    if !is_generation && !is_commit_sha {
+        return Err(CliError::usage(format!(
+            "Invalid revision reference '{revision_ref}'. Must be an integer generation or a 40-character hexadecimal commit SHA."
+        )));
+    }
+    Ok(())
+}
+
+async fn list_revisions(
+    client: &SignKitClient,
+    args: EnvelopeRevisionsArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+
+    let limit = args.limit.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return Err(CliError::usage(format!(
+            "Limit must be between 1 and 100, received {limit}."
+        )));
+    }
+
+    let limit_str = limit.to_string();
+    let mut query_params: Vec<(&str, &str)> = vec![("limit", &limit_str)];
+    let cursor_str = args.cursor.map(|c| c.to_string());
+    if let Some(ref cursor) = cursor_str {
+        query_params.push(("cursor", cursor.as_str()));
+    }
+
+    let path = format!("/api/v1/envelopes/{}/revisions", args.envelope_id);
+    let page: DraftRevisionHistoryPage = client.get(&path, &query_params, true).await?;
+    print_success(&page, raw, pretty)?;
+    Ok(())
+}
+
+async fn get_revision(
+    client: &SignKitClient,
+    args: EnvelopeRevisionArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    validate_revision_ref(&args.revision_ref)?;
+    if let Some(ref path) = args.path {
+        if path.trim().is_empty() || path.encode_utf16().count() > 240 {
+            return Err(CliError::usage(
+                "--path must contain 1-240 characters when provided.",
+            ));
+        }
+    }
+
+    let path = format!(
+        "/api/v1/envelopes/{}/revisions/{}",
+        args.envelope_id, args.revision_ref
+    );
+    let mut query_params: Vec<(&str, &str)> = Vec::new();
+    if let Some(ref document_path) = args.path {
+        query_params.push(("path", document_path.as_str()));
+    }
+
+    let revision: DraftExactRevision = client.get(&path, &query_params, true).await?;
+    print_success(&revision, raw, pretty)?;
+    Ok(())
+}
+
+async fn diff_revisions(
+    client: &SignKitClient,
+    args: EnvelopeRevisionDiffArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if let Some(ref base) = args.base {
+        validate_revision_ref(base)?;
+    }
+    if let Some(ref head) = args.head {
+        validate_revision_ref(head)?;
+    }
+
+    let format_str = args.format.as_str();
+    let include_unified_str = args.include_unified.unwrap_or(true).to_string();
+    let mut query_params: Vec<(&str, &str)> = vec![
+        ("format", format_str),
+        ("includeUnified", include_unified_str.as_str()),
+    ];
+    if let Some(ref base) = args.base {
+        query_params.push(("base", base.as_str()));
+    }
+    if let Some(ref head) = args.head {
+        query_params.push(("head", head.as_str()));
+    }
+
+    let path = format!("/api/v1/envelopes/{}/revisions/diff", args.envelope_id);
+
+    // The server ignores content negotiation and always returns `text/plain`
+    // once `format` is `text` or `unified`, regardless of the Accept header.
+    if matches!(
+        args.format,
+        RevisionDiffFormatArg::Text | RevisionDiffFormatArg::Unified
+    ) {
+        let resp = client
+            .get_bytes(
+                &path,
+                &query_params,
+                true,
+                BinaryGetSpec::REVISION_DIFF_TEXT,
+            )
+            .await?;
+        let text = String::from_utf8(resp.bytes).map_err(|err| {
+            CliError::usage(format!("Server returned non-UTF-8 diff text: {err}"))
+        })?;
+        print!("{text}");
+        return Ok(());
+    }
+
+    let diff: RevisionDiffResponse = client.get(&path, &query_params, true).await?;
+    print_success(&diff, raw, pretty)?;
     Ok(())
 }

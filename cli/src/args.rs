@@ -104,6 +104,15 @@ pub enum EnvelopesSubcommand {
     /// Read completion artifact publication status for an envelope.
     CompletionArtifact(EnvelopeIdArg),
 
+    /// List bounded draft revision history for an envelope.
+    Revisions(EnvelopeRevisionsArgs),
+
+    /// Read an exact draft revision by generation or commit SHA.
+    Revision(EnvelopeRevisionArgs),
+
+    /// Diff two draft revisions.
+    RevisionDiff(EnvelopeRevisionDiffArgs),
+
     /// Download published completion evidence bytes (JSON or Markdown).
     Evidence(EnvelopeEvidenceArgs),
 
@@ -579,4 +588,74 @@ pub struct EnvelopePdfSealDownloadArgs {
     /// Destination file. Sealed agreement bytes are never written to stdout.
     #[arg(long, value_name = "PATH")]
     pub output: String,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeRevisionsArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Pagination cursor generation from a previous page's nextCursor.
+    #[arg(long, value_name = "GENERATION")]
+    pub cursor: Option<u64>,
+
+    /// Maximum number of revisions to return per page (1..=100, default: 50).
+    #[arg(long, value_name = "LIMIT")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeRevisionArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Revision reference: an integer generation or a 40-character hexadecimal commit SHA.
+    #[arg(value_name = "REVISION_REF")]
+    pub revision_ref: String,
+
+    /// Specific document path to read (e.g. documents/agreement.md).
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RevisionDiffFormatArg {
+    Json,
+    Text,
+    Unified,
+}
+
+impl RevisionDiffFormatArg {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Text => "text",
+            Self::Unified => "unified",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct EnvelopeRevisionDiffArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Base revision reference (generation or commit SHA). Defaults to head - 1.
+    #[arg(long, value_name = "REVISION_REF")]
+    pub base: Option<String>,
+
+    /// Head revision reference (generation or commit SHA). Defaults to the current revision.
+    #[arg(long, value_name = "REVISION_REF")]
+    pub head: Option<String>,
+
+    /// Diff presentation format returned by the server (default: json).
+    #[arg(long, value_enum, default_value = "json")]
+    pub format: RevisionDiffFormatArg,
+
+    /// Whether to compute unified diff text for modified text documents (default: true).
+    #[arg(long, value_name = "BOOL")]
+    pub include_unified: Option<bool>,
 }

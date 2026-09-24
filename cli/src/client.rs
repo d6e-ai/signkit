@@ -38,6 +38,10 @@ impl BinaryGetSpec {
         accept: "application/pdf, application/problem+json",
         max_bytes: crate::io::MAX_SEALED_PDF_BYTES,
     };
+    pub const REVISION_DIFF_TEXT: Self = Self {
+        accept: "text/plain, application/problem+json",
+        max_bytes: MAX_RESPONSE_BYTES,
+    };
 }
 
 /// Successful binary GET body plus optional commit pin header.

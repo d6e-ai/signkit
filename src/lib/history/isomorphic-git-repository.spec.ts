@@ -50,4 +50,23 @@ describe('IsomorphicGitDraftRepository', () => {
 		expect(archive.byteLength).toBeLessThan(12 * 1024 * 1024);
 		await expect(repository.read(archive, '0'.repeat(40))).rejects.toThrow(/decoded size limit/);
 	});
+
+	it('reads commit message and revision snapshot from verified Git archive', async () => {
+		const repository = new IsomorphicGitDraftRepository();
+		const version = await repository.commit(
+			null,
+			[{ path: 'documents/contract.md', content: '# Terms' }],
+			'Add contractual terms',
+			actor
+		);
+
+		const message = await repository.readCommitMessage(version.archive, version.commitSha);
+		expect(message).toBe('Add contractual terms');
+
+		const snapshot = await repository.readRevisionSnapshot(version.archive, version.commitSha);
+		expect(snapshot).not.toBeNull();
+		expect(snapshot?.commitSha).toBe(version.commitSha);
+		expect(snapshot?.message).toBe('Add contractual terms');
+		expect(snapshot?.documents).toEqual([{ path: 'documents/contract.md', content: '# Terms\n' }]);
+	});
 });
