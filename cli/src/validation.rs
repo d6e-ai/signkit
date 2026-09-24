@@ -257,8 +257,7 @@ pub fn validate_commit_payload(
                     errors.push(ProblemValidationError {
                         path: "message".to_string(),
                         message: format!(
-                            "Commit message must contain 1-{} characters.",
-                            MAX_COMMIT_MESSAGE_CHARS
+                            "Commit message must contain 1-{MAX_COMMIT_MESSAGE_CHARS} characters."
                         ),
                         extra: Default::default(),
                     });
@@ -297,7 +296,7 @@ pub fn validate_commit_payload(
             if edits.is_empty() || edits.len() > MAX_EDIT_COUNT {
                 errors.push(ProblemValidationError {
                     path: "edits".to_string(),
-                    message: format!("edits must contain 1-{} items.", MAX_EDIT_COUNT),
+                    message: format!("edits must contain 1-{MAX_EDIT_COUNT} items."),
                     extra: Default::default(),
                 });
             }
@@ -371,8 +370,7 @@ pub fn validate_commit_payload(
                                             errors.push(ProblemValidationError {
                                             path: format!("edits[{i}].content"),
                                             message: format!(
-                                                "Edit content size ({} bytes) exceeds the {} byte limit.",
-                                                content_bytes, MAX_EDIT_CONTENT_BYTES
+                                                "Edit content size ({content_bytes} bytes) exceeds the {MAX_EDIT_CONTENT_BYTES} byte limit."
                                             ),
                                             extra: Default::default(),
                                         });
@@ -411,8 +409,7 @@ pub fn validate_commit_payload(
                 errors.push(ProblemValidationError {
                     path: "edits".to_string(),
                     message: format!(
-                        "Total edits content size ({} bytes) exceeds the {} byte limit.",
-                        total_content_bytes, MAX_TOTAL_CONTENT_BYTES
+                        "Total edits content size ({total_content_bytes} bytes) exceeds the {MAX_TOTAL_CONTENT_BYTES} byte limit."
                     ),
                     extra: Default::default(),
                 });
@@ -549,8 +546,7 @@ pub fn validate_ready_payload(
                 errors.push(ProblemValidationError {
                     path: "expectedGeneration".to_string(),
                     message: format!(
-                        "expectedGeneration must be an integer between 1 and {}.",
-                        MAX_GENERATION
+                        "expectedGeneration must be an integer between 1 and {MAX_GENERATION}."
                     ),
                     extra: Default::default(),
                 });
@@ -572,7 +568,7 @@ pub fn validate_ready_payload(
             if recipients.is_empty() || recipients.len() > MAX_RECIPIENTS_COUNT {
                 errors.push(ProblemValidationError {
                     path: "recipients".to_string(),
-                    message: format!("recipients must contain 1-{} items.", MAX_RECIPIENTS_COUNT),
+                    message: format!("recipients must contain 1-{MAX_RECIPIENTS_COUNT} items."),
                     extra: Default::default(),
                 });
             }
@@ -868,8 +864,7 @@ pub fn validate_fields_payload(
                 errors.push(ProblemValidationError {
                     path: "expectedGeneration".to_string(),
                     message: format!(
-                        "expectedGeneration must be an integer between 1 and {}.",
-                        MAX_GENERATION
+                        "expectedGeneration must be an integer between 1 and {MAX_GENERATION}."
                     ),
                     extra: Default::default(),
                 });
@@ -914,7 +909,7 @@ pub fn validate_fields_payload(
             if fields.is_empty() || fields.len() > MAX_FIELDS_COUNT {
                 errors.push(ProblemValidationError {
                     path: "fields".to_string(),
-                    message: format!("fields must contain 1-{} items.", MAX_FIELDS_COUNT),
+                    message: format!("fields must contain 1-{MAX_FIELDS_COUNT} items."),
                     extra: Default::default(),
                 });
             }
@@ -1281,8 +1276,7 @@ pub fn validate_send_payload(
                 errors.push(ProblemValidationError {
                     path: "expectedGeneration".to_string(),
                     message: format!(
-                        "expectedGeneration must be an integer between 1 and {}.",
-                        MAX_GENERATION
+                        "expectedGeneration must be an integer between 1 and {MAX_GENERATION}."
                     ),
                     extra: Default::default(),
                 });
@@ -1400,8 +1394,7 @@ pub fn validate_void_payload(
                 errors.push(ProblemValidationError {
                     path: "expectedGeneration".to_string(),
                     message: format!(
-                        "expectedGeneration must be an integer between 0 and {}.",
-                        MAX_GENERATION
+                        "expectedGeneration must be an integer between 0 and {MAX_GENERATION}."
                     ),
                     extra: Default::default(),
                 });

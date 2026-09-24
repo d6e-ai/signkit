@@ -346,7 +346,7 @@ async fn commit_draft(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/draft/commits", envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/draft/commits");
     let resp: DraftCommitResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -377,7 +377,7 @@ async fn ready_envelope(
         ))
     })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/ready", envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/ready");
     let resp: ReadyEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -413,7 +413,7 @@ async fn place_fields(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/fields", envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/fields");
     let resp: PlaceFieldsResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -449,7 +449,7 @@ async fn send_envelope(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/send", envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/send");
     let resp: SendEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -485,7 +485,7 @@ async fn void_envelope(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/void", envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/void");
     let resp: VoidEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
