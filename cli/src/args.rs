@@ -7,7 +7,8 @@ use std::path::PathBuf;
     author = "SignKit Authors",
     version,
     about = "Agent-first CLI for the SignKit e-signature platform",
-    long_about = "Non-interactive, agent-first CLI for SignKit. Operates within the enabled API-key surface: envelopes:read, drafts:write, and envelopes:send. Key management and instance administration require interactive operator sessions and are not exposed here."
+    long_about = "Non-interactive, agent-first CLI for SignKit. Operates within the enabled API-key surface: envelopes:read, drafts:write, and envelopes:send. Key management and instance administration require interactive operator sessions and are not exposed here.",
+    after_long_help = "Exit codes: 0 success; 1 internal or JSON error; 2 usage or local validation error; 3 authentication failure; 4 authorization failure; 5 not found; 6 conflict; 7 other client error; 8 rate limited; 9 server unavailable; 10 network failure; 11 timeout; 12 redirect refused."
 )]
 pub struct Cli {
     /// Base URL of the SignKit service.

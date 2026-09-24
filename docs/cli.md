@@ -97,3 +97,7 @@ When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope
 | `12` | redirect refused                |
 
 The CLI preserves unknown API fields so newer servers remain inspectable by older clients.
+
+## Compatibility
+
+Scripts written against v0.1.x must treat exit codes `8` (formerly any server/network/timeout failure) as stale. The stable automation contract is `0`–`12` as tabulated above: `8` now means rate limited (HTTP 429) with retry-after semantics, `9` means server unavailable (HTTP 5xx, retryable with backoff), `10` means transport failure (retryable), `11` means timeout (retryable), and `12` means redirect refused (do not retry against another origin). The RFC 9457 `status` field on stderr always carries the original HTTP status independently of the process exit code.

@@ -47,4 +47,6 @@ An omitted idempotency key is generated as UUIDv4. Reuse the same key only when 
 
 ## Exit codes
 
-`0` success; `2` usage; `3` authentication; `4` authorization; `5` not found; `6` conflict; `7` other client error; `8` rate limit; `9` server unavailable; `10` network; `11` timeout; `12` redirect refused.
+`0` success; `1` internal or JSON error; `2` usage; `3` authentication; `4` authorization; `5` not found; `6` conflict; `7` other client error; `8` rate limited (HTTP 429); `9` server unavailable (HTTP 5xx); `10` network failure; `11` timeout; `12` redirect refused.
+
+Scripts written against v0.1.x must not treat `8` as generic server failure: `8` is rate limited, `9` is server unavailable, `10` is transport failure, `11` is timeout, and `12` is redirect refused. Stderr always carries the original RFC 9457 HTTP `status` independently of the process code.
