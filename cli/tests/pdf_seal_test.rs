@@ -407,5 +407,5 @@ async fn test_pdf_seal_download_refuses_redirect() {
         "--output",
         output.path().to_str().unwrap(),
     ]);
-    assert_eq!(run_cli(cli).await, ExitCode::ForbiddenError);
+    assert_eq!(run_cli(cli).await, ExitCode::RedirectRefusedError);
 }

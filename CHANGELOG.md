@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Aligned the Rust CLI process exit codes with the documented `0`–`12` automation contract ([#163](https://github.com/d6e-ai/signkit/issues/163)): HTTP 429 now exits `8` (rate limited), HTTP 5xx exits `9` (server unavailable), transport failures exit `10`, timeouts exit `11`, and refused redirects exit `12`. RFC 9457 JSON on stderr still carries the original HTTP `status`. Scripts written against v0.1.x must refresh any handling of the former compact `8` code.
+
 ## [0.1.6] - 2026-09-23
 
 ### Changed

@@ -2,6 +2,12 @@ use crate::types::{ProblemDetail, ProblemValidationError};
 use std::fmt;
 
 /// Exact documented exit codes for the SignKit CLI.
+///
+/// Stable automation contract (docs/cli.md): 0 success, 1 internal/JSON,
+/// 2 usage, 3 authentication (HTTP 401), 4 authorization (HTTP 403),
+/// 5 not found (HTTP 404), 6 conflict (HTTP 409), 7 other client error,
+/// 8 rate limited (HTTP 429), 9 server unavailable (HTTP 5xx),
+/// 10 network failure, 11 timeout, 12 redirect refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ExitCode {
@@ -21,11 +27,21 @@ pub enum ExitCode {
     NotFoundError = 5,
     /// State conflict (HTTP 409): idempotency or concurrency conflict.
     ConflictError = 6,
-    /// Server validation or client error (HTTP 400, 422, or any other unhandled 4xx).
+    /// Server validation or other client error (HTTP 400, 422, or any other
+    /// 4xx besides 401/403/404/409/429).
     ValidationError = 7,
-    /// Service unavailable, gateway failure, request timeout, or network connection error
-    /// (HTTP 500, 502, 503, 504, connection refused, or timeout).
-    UnavailableError = 8,
+    /// Rate limited (HTTP 429).
+    RateLimitedError = 8,
+    /// Server unavailable (HTTP 500, 502, 503, 504, or any other 5xx).
+    ServerUnavailableError = 9,
+    /// Network connection failure (e.g. connection refused, DNS failure,
+    /// TLS failure, or body-stream transport error).
+    NetworkError = 10,
+    /// Request timed out.
+    TimeoutError = 11,
+    /// An HTTP redirect was received and refused to prevent Authorization
+    /// credential leakage.
+    RedirectRefusedError = 12,
 }
 
 impl ExitCode {
@@ -93,16 +109,17 @@ impl CliError {
                 403 => ExitCode::ForbiddenError,
                 404 => ExitCode::NotFoundError,
                 409 => ExitCode::ConflictError,
+                429 => ExitCode::RateLimitedError,
                 400..=499 => ExitCode::ValidationError,
-                500 | 502 | 503 | 504 => ExitCode::UnavailableError,
+                500..=599 => ExitCode::ServerUnavailableError,
                 _ => ExitCode::GenericError,
             },
             Self::Usage { .. } => ExitCode::UsageError,
             Self::Config(_) => ExitCode::UsageError,
-            Self::Network(_) => ExitCode::UnavailableError,
-            Self::Timeout(_) => ExitCode::UnavailableError,
+            Self::Network(_) => ExitCode::NetworkError,
+            Self::Timeout(_) => ExitCode::TimeoutError,
             Self::ResponseTooLarge { .. } => ExitCode::ValidationError,
-            Self::RedirectRefused(_) => ExitCode::ForbiddenError,
+            Self::RedirectRefused(_) => ExitCode::RedirectRefusedError,
             Self::Io(_) => ExitCode::GenericError,
             Self::Json(_) => ExitCode::GenericError,
         }
