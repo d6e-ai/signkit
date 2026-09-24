@@ -245,20 +245,33 @@ test('handles zero-width container and recovers cleanly when container width exp
 	}
 });
 
-test('handles rapid resize without leaving a permanently blank canvas or failing', async () => {
+test('serializes overlapping resize renders and paints at the final width', async () => {
 	const { url, revoke } = agreementUrl();
 	try {
-		const screen = await render(PdfDocumentViewTestHost, { src: url });
+		const screen = await render(PdfDocumentViewTestHost, {
+			src: url,
+			wrapperStyle: 'width: 600px;'
+		});
 		await expect
 			.poll((): HTMLCanvasElement | null => screen.container.querySelector('canvas'))
 			.not.toBeNull();
 		const canvas = screen.container.querySelector('canvas') as HTMLCanvasElement;
+		const wrapper = screen.container.querySelector(
+			'[data-testid="pdf-view-wrapper"]'
+		) as HTMLElement;
 
-		// Trigger rapid burst of resize events
-		for (let i = 0; i < 5; i += 1) {
+		// Keep changing width across animation frames so resize notifications
+		// arrive while PDF.js may still be rendering the previous pages.
+		for (const width of [480, 720, 500, 760, 640, 800]) {
+			wrapper.style.width = `${width}px`;
 			window.dispatchEvent(new Event('resize'));
+			await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 		}
 
+		const ratio = Math.min(window.devicePixelRatio || 1, 2);
+		await expect
+			.poll((): number => canvas.width, { timeout: 5000 })
+			.toBeGreaterThan(Math.floor(790 * ratio));
 		await expect
 			.poll((): number => countContentPixels(canvas), { timeout: 5000 })
 			.toBeGreaterThan(50);

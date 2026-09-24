@@ -91,12 +91,26 @@
 	let renderToken = 0;
 	let lastWidth = 0;
 	let frame = 0;
+	let rendering = false;
+	let pendingRender = false;
 
 	function scheduleRender(): void {
-		if (frame !== 0) cancelAnimationFrame(frame);
+		pendingRender = true;
+		if (frame !== 0 || rendering) return;
 		frame = requestAnimationFrame(() => {
 			frame = 0;
-			void renderAll();
+			pendingRender = false;
+			rendering = true;
+			// PDF.js cannot render twice into one canvas at the same time. Keep
+			// one render loop in flight and replay the latest resize afterward.
+			void renderAll()
+				.catch(() => {
+					failed = true;
+				})
+				.finally(() => {
+					rendering = false;
+					if (pendingRender) scheduleRender();
+				});
 		});
 	}
 
@@ -268,6 +282,7 @@
 
 		return () => {
 			disposed = true;
+			pendingRender = false;
 			if (frame !== 0) {
 				cancelAnimationFrame(frame);
 				frame = 0;
