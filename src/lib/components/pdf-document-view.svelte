@@ -192,52 +192,54 @@
 					}
 
 					const activeTasks = new SvelteMap<number, import('pdfjs-dist').RenderTask>();
+					// Serializes renderPage calls per page number so a cancelled task's
+					// teardown (which spans an await) can never overlap with the next
+					// task's page.render() on the same canvas.
+					const renderChains = new Map<number, Promise<void>>();
 
 					activeDoc = {
-						renderPage: async (
+						renderPage: (
 							pageNumber: number,
 							canvas: HTMLCanvasElement,
 							cssWidth: number
 						): Promise<void> => {
 							const existing = activeTasks.get(pageNumber);
-							if (existing) {
-								existing.cancel();
+							existing?.cancel();
+
+							const previous = renderChains.get(pageNumber) ?? Promise.resolve();
+							const next = previous.catch(() => {}).then(async () => {
+								const page = await document_.getPage(pageNumber);
+								const base = page.getViewport({ scale: 1 });
+								const ratio = Math.min(window.devicePixelRatio || 1, 2);
+								const scale = (cssWidth / base.width) * ratio;
+								const viewport = page.getViewport({ scale });
+								canvas.width = Math.max(1, Math.floor(viewport.width));
+								canvas.height = Math.max(1, Math.floor(viewport.height));
+								const context = canvas.getContext('2d');
+								if (context === null) throw new Error('2d canvas context unavailable');
+
+								const renderTask = page.render({ canvas, canvasContext: context, viewport });
+								activeTasks.set(pageNumber, renderTask);
 								try {
-									await existing.promise;
-								} catch (err) {
-									if (!isCancelledException(err)) throw err;
+									await renderTask.promise;
+								} catch (err: unknown) {
+									if (isCancelledException(err)) return;
+									throw err;
+								} finally {
+									if (activeTasks.get(pageNumber) === renderTask) {
+										activeTasks.delete(pageNumber);
+									}
 								}
-								activeTasks.delete(pageNumber);
-							}
-
-							const page = await document_.getPage(pageNumber);
-							const base = page.getViewport({ scale: 1 });
-							const ratio = Math.min(window.devicePixelRatio || 1, 2);
-							const scale = (cssWidth / base.width) * ratio;
-							const viewport = page.getViewport({ scale });
-							canvas.width = Math.max(1, Math.floor(viewport.width));
-							canvas.height = Math.max(1, Math.floor(viewport.height));
-							const context = canvas.getContext('2d');
-							if (context === null) throw new Error('2d canvas context unavailable');
-
-							const renderTask = page.render({ canvas, canvasContext: context, viewport });
-							activeTasks.set(pageNumber, renderTask);
-							try {
-								await renderTask.promise;
-							} catch (err: unknown) {
-								if (isCancelledException(err)) return;
-								throw err;
-							} finally {
-								if (activeTasks.get(pageNumber) === renderTask) {
-									activeTasks.delete(pageNumber);
-								}
-							}
+							});
+							renderChains.set(pageNumber, next);
+							return next;
 						},
 						destroy: async (): Promise<void> => {
 							for (const active of activeTasks.values()) {
 								active.cancel();
 							}
 							activeTasks.clear();
+							renderChains.clear();
 							await task.destroy();
 						}
 					};
