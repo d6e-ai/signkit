@@ -221,30 +221,32 @@
 							existing?.cancel();
 
 							const previous = renderChains.get(pageNumber) ?? Promise.resolve();
-							const next = previous.catch(() => {}).then(async () => {
-								const page = await document_.getPage(pageNumber);
-								const base = page.getViewport({ scale: 1 });
-								const ratio = Math.min(window.devicePixelRatio || 1, 2);
-								const scale = (cssWidth / base.width) * ratio;
-								const viewport = page.getViewport({ scale });
-								canvas.width = Math.max(1, Math.floor(viewport.width));
-								canvas.height = Math.max(1, Math.floor(viewport.height));
-								const context = canvas.getContext('2d');
-								if (context === null) throw new Error('2d canvas context unavailable');
+							const next = previous
+								.catch(() => {})
+								.then(async () => {
+									const page = await document_.getPage(pageNumber);
+									const base = page.getViewport({ scale: 1 });
+									const ratio = Math.min(window.devicePixelRatio || 1, 2);
+									const scale = (cssWidth / base.width) * ratio;
+									const viewport = page.getViewport({ scale });
+									canvas.width = Math.max(1, Math.floor(viewport.width));
+									canvas.height = Math.max(1, Math.floor(viewport.height));
+									const context = canvas.getContext('2d');
+									if (context === null) throw new Error('2d canvas context unavailable');
 
-								const renderTask = page.render({ canvas, canvasContext: context, viewport });
-								activeTasks.set(pageNumber, renderTask);
-								try {
-									await renderTask.promise;
-								} catch (err: unknown) {
-									if (isCancelledException(err)) return;
-									throw err;
-								} finally {
-									if (activeTasks.get(pageNumber) === renderTask) {
-										activeTasks.delete(pageNumber);
+									const renderTask = page.render({ canvas, canvasContext: context, viewport });
+									activeTasks.set(pageNumber, renderTask);
+									try {
+										await renderTask.promise;
+									} catch (err: unknown) {
+										if (isCancelledException(err)) return;
+										throw err;
+									} finally {
+										if (activeTasks.get(pageNumber) === renderTask) {
+											activeTasks.delete(pageNumber);
+										}
 									}
-								}
-							});
+								});
 							renderChains.set(pageNumber, next);
 							return next;
 						},
