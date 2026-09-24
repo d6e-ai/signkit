@@ -35,7 +35,8 @@ import type {
 	DraftDocument,
 	DraftEdit,
 	DraftRepository,
-	DraftVersion
+	DraftVersion,
+	VerifiedDraftRevisionSnapshot
 } from '$lib/ports/draft-repository';
 import type { EnvelopeUploadedDocumentStore } from '$lib/ports/envelope-uploaded-document-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
@@ -596,7 +597,12 @@ export class DraftPersistenceService {
 		let message = '';
 
 		if (typeof this.repository.readRevisionSnapshot === 'function') {
-			const snapshot = await this.repository.readRevisionSnapshot(archive, locator.commitSha);
+			let snapshot: VerifiedDraftRevisionSnapshot | null;
+			try {
+				snapshot = await this.repository.readRevisionSnapshot(archive, locator.commitSha);
+			} catch {
+				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
+			}
 			if (snapshot === null) {
 				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
 			}
@@ -619,14 +625,23 @@ export class DraftPersistenceService {
 			} catch {
 				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
 			}
-			documentSet = await this.loadDocumentSet(archive, locator.commitSha);
+			try {
+				documentSet = await this.loadDocumentSet(archive, locator.commitSha);
+			} catch (error: unknown) {
+				if (error instanceof DraftIntegrityError) throw error;
+				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
+			}
 			if (documentSet === null && documents.length > 0) {
 				documentSet = await this.materializeFromMarkdown(
 					new Map(documents.map((d): [MarkdownPath, string] => [d.path, d.content]))
 				);
 			}
 			if (typeof this.repository.readCommitMessage === 'function') {
-				message = (await this.repository.readCommitMessage(archive, locator.commitSha)) ?? '';
+				try {
+					message = (await this.repository.readCommitMessage(archive, locator.commitSha)) ?? '';
+				} catch {
+					throw new DraftIntegrityError('Pinned draft repository failed Git verification');
+				}
 			}
 		}
 

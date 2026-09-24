@@ -357,4 +357,32 @@ describe('DraftPersistenceService - revision history, reads, and diffs', () => {
 			DraftIntegrityError
 		);
 	});
+
+	it('classifies Git snapshot verification failures as archive integrity errors', async () => {
+		const store = new InMemoryDraftStore(baseEnvelope());
+		const objects = new InMemoryObjectStore();
+		const repository = new IsomorphicGitDraftRepository();
+		const service = new DraftPersistenceService(store, objects, repository);
+		await service.commit({
+			envelopeId,
+			expectedGeneration: 0,
+			message: 'Initial draft',
+			actor,
+			idempotencyKey: 'snapshot-verification-1',
+			edits: [{ path: 'documents/doc1.md', content: '# Doc 1' }]
+		});
+
+		repository.readRevisionSnapshot = async () => {
+			throw new Error('HEAD mismatch');
+		};
+		await expect(service.readRevision({ envelopeId, revisionRef: '1' })).rejects.toThrow(
+			'Pinned draft repository failed Git verification'
+		);
+		await expect(service.readRevision({ envelopeId, revisionRef: '1' })).rejects.toBeInstanceOf(
+			DraftIntegrityError
+		);
+		await expect(service.diffRevisions({ envelopeId, headRef: '1' })).rejects.toBeInstanceOf(
+			DraftIntegrityError
+		);
+	});
 });
