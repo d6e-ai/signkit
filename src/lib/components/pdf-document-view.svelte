@@ -209,7 +209,7 @@
 					// Serializes renderPage calls per page number so a cancelled task's
 					// teardown (which spans an await) can never overlap with the next
 					// task's page.render() on the same canvas.
-					const renderChains = new Map<number, Promise<void>>();
+					const renderChains = new SvelteMap<number, Promise<void>>();
 
 					activeDoc = {
 						renderPage: (
