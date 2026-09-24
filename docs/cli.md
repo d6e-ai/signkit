@@ -44,6 +44,7 @@ Use `--raw` for the API body and `--pretty` for formatted JSON. Errors are RFC 9
 ## Commands
 
 ```sh
+signkit openapi
 signkit capabilities
 signkit envelopes list --limit 25
 signkit envelopes get <envelope-id>
@@ -54,6 +55,130 @@ signkit envelopes evidence <envelope-id> --format json --output evidence.json
 signkit envelopes pdf <envelope-id> --output agreement.pdf
 signkit envelopes pdf-seal-status <envelope-id>
 signkit envelopes pdf-seal-download <envelope-id> --output sealed-agreement.pdf
+```
+
+### OpenAPI Specification
+
+Retrieve the OpenAPI 3.1 specification document without credentials:
+
+```sh
+signkit openapi
+signkit openapi --raw
+```
+
+### Mutation Discovery and Offline Validation
+
+Mutation commands support discovering canonical request schemas and performing offline local validation:
+
+- `--example`: Prints the canonical JSON request payload template for schema discovery and agent authoring.
+- `--validate-only`: Safely validates request payloads locally offline without issuing any network requests. Guarantees no network calls can occur, and does not require `--base-url` or `SIGNKIT_API_KEY`.
+
+```sh
+# Discover canonical request schemas
+signkit envelopes commit --example
+signkit envelopes ready --example
+signkit envelopes fields --example
+signkit envelopes send --example
+signkit envelopes void --example
+
+# Offline validation without network credentials
+signkit envelopes commit --validate-only --file commit.json
+signkit envelopes ready --validate-only --file ready.json
+signkit envelopes fields --validate-only --file fields.json
+signkit envelopes send --validate-only --file send.json
+signkit envelopes void --validate-only --file void.json
+
+# Pipe canonical example directly to offline validator
+signkit envelopes commit --example | signkit envelopes commit --validate-only
+```
+
+#### Mutation Request Payloads
+
+**1. Draft Commit (`envelopes commit`)**
+
+```json
+{
+	"expectedGeneration": 0,
+	"message": "Initial agreement draft",
+	"edits": [
+		{
+			"path": "documents/agreement.md",
+			"content": "# Mutual Non-Disclosure Agreement\n\nThis agreement is entered into..."
+		}
+	],
+	"provenance": {
+		"automationRunId": "run-2026-09-24-001",
+		"externalId": "workflow-step-1"
+	}
+}
+```
+
+**2. Ready (`envelopes ready`)**
+
+```json
+{
+	"expectedGeneration": 1,
+	"recipients": [
+		{
+			"email": "signer@example.com",
+			"name": "Jane Doe",
+			"role": "signer",
+			"locale": "en",
+			"routingOrder": 1
+		},
+		{
+			"email": "approver@example.com",
+			"name": "John Smith",
+			"role": "approver",
+			"locale": "en",
+			"routingOrder": 2
+		}
+	]
+}
+```
+
+**3. Fields Placement (`envelopes fields`)**
+
+```json
+{
+	"expectedGeneration": 1,
+	"expectedFieldGeneration": 0,
+	"fields": [
+		{
+			"recipientId": "0191eb70-6523-74b2-b7b5-2fa75bb6d001",
+			"documentId": "0191eb70-6523-74b2-b7b5-2fa75bb6d002",
+			"fieldType": "signature",
+			"label": "Signer Signature",
+			"required": true,
+			"position": 0,
+			"geometry": {
+				"page": 1,
+				"x": 0.1,
+				"y": 0.7,
+				"width": 0.25,
+				"height": 0.05
+			}
+		}
+	]
+}
+```
+
+**4. Send (`envelopes send`)**
+
+```json
+{
+	"expectedGeneration": 1,
+	"expectedReadyAuditEventId": "0191eb70-6523-74b2-b7b5-2fa75bb6d003"
+}
+```
+
+**5. Void (`envelopes void`)**
+
+```json
+{
+	"expectedStatus": "sent",
+	"expectedGeneration": 1
+}
 ```
 
 Authoring and lifecycle commands:

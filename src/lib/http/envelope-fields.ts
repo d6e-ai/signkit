@@ -54,7 +54,7 @@ const fieldSchema = z
 		geometry: geometrySchema
 	})
 	.strict();
-const fieldsSchema = z
+export const fieldsSchema = z
 	.object({
 		expectedGeneration: z.number().int().min(1).max(MAX_GENERATION),
 		expectedFieldGeneration: z

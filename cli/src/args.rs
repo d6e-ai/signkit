@@ -44,6 +44,9 @@ pub enum Command {
     /// Read system capabilities and supported runtime profiles (unauthenticated).
     Capabilities,
 
+    /// Retrieve the OpenAPI 3.1 specification document (unauthenticated).
+    Openapi,
+
     /// Envelope query, mutation, and evidence commands.
     Envelopes(EnvelopesArgs),
 }
@@ -151,10 +154,35 @@ pub struct EnvelopeCreateArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Commit draft Markdown edits (requires drafts:write).",
+    long_about = "Commit draft Markdown edits to the envelope draft workspace.\n\n\
+        Supports local input validation via --validate-only (offline, non-mutating) \
+        and schema discovery via --example.",
+    after_help = "CANONICAL JSON EXAMPLE:\n  \
+        {\n    \
+          \"expectedGeneration\": 0,\n    \
+          \"message\": \"Initial agreement draft\",\n    \
+          \"edits\": [\n      \
+            {\n        \
+              \"path\": \"documents/agreement.md\",\n        \
+              \"content\": \"# Mutual Non-Disclosure Agreement\\n\\nThis agreement...\"\n      \
+            }\n    \
+          ],\n    \
+          \"provenance\": {\n      \
+            \"automationRunId\": \"run-2026-09-24-001\",\n      \
+            \"externalId\": \"workflow-step-1\"\n    \
+          }\n  \
+        }\n\n\
+        EXAMPLES:\n  \
+          signkit envelopes commit --example\n  \
+          signkit envelopes commit --validate-only --file payload.json\n  \
+          signkit envelopes commit 0191b26f-4000-7000-8000-000000000001 --file payload.json"
+)]
 pub struct EnvelopeCommitArgs {
-    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope. Optional when using --validate-only or --example.
     #[arg(value_name = "ENVELOPE_ID")]
-    pub envelope_id: String,
+    pub envelope_id: Option<String>,
 
     /// JSON file or `-` for stdin. Defaults to stdin.
     #[arg(long, value_name = "PATH", default_value = "-")]
@@ -167,13 +195,51 @@ pub struct EnvelopeCommitArgs {
     /// Idempotency key. Generated as a UUIDv4 when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
+
+    /// Safely validate payload locally without issuing a network request.
+    #[arg(long)]
+    pub validate_only: bool,
+
+    /// Print a canonical JSON request example and exit.
+    #[arg(long)]
+    pub example: bool,
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Prepare a draft envelope for sending (requires drafts:write).",
+    long_about = "Prepare a draft envelope for sending by declaring recipients and routing orders.\n\n\
+        Supports local input validation via --validate-only (offline, non-mutating) \
+        and schema discovery via --example.",
+    after_help = "CANONICAL JSON EXAMPLE:\n  \
+        {\n    \
+          \"expectedGeneration\": 1,\n    \
+          \"recipients\": [\n      \
+            {\n        \
+              \"email\": \"signer@example.com\",\n        \
+              \"name\": \"Jane Doe\",\n        \
+              \"role\": \"signer\",\n        \
+              \"locale\": \"en\",\n        \
+              \"routingOrder\": 1\n      \
+            },\n      \
+            {\n        \
+              \"email\": \"approver@example.com\",\n        \
+              \"name\": \"John Smith\",\n        \
+              \"role\": \"approver\",\n        \
+              \"locale\": \"en\",\n        \
+              \"routingOrder\": 2\n      \
+            }\n    \
+          ]\n  \
+        }\n\n\
+        EXAMPLES:\n  \
+          signkit envelopes ready --example\n  \
+          signkit envelopes ready --validate-only --file payload.json\n  \
+          signkit envelopes ready 0191b26f-4000-7000-8000-000000000001 --file payload.json"
+)]
 pub struct EnvelopeReadyArgs {
-    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope. Optional when using --validate-only or --example.
     #[arg(value_name = "ENVELOPE_ID")]
-    pub envelope_id: String,
+    pub envelope_id: Option<String>,
 
     /// JSON file or `-` for stdin. Defaults to stdin.
     #[arg(long, value_name = "PATH", default_value = "-")]
@@ -186,13 +252,53 @@ pub struct EnvelopeReadyArgs {
     /// Idempotency key. Generated as a UUIDv4 when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
+
+    /// Safely validate payload locally without issuing a network request.
+    #[arg(long)]
+    pub validate_only: bool,
+
+    /// Print a canonical JSON request example and exit.
+    #[arg(long)]
+    pub example: bool,
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Place fields on a ready envelope (requires drafts:write).",
+    long_about = "Place fields on a ready envelope.\n\n\
+        Supports local input validation via --validate-only (offline, non-mutating) \
+        and schema discovery via --example.",
+    after_help = "CANONICAL JSON EXAMPLE:\n  \
+        {\n    \
+          \"expectedGeneration\": 1,\n    \
+          \"expectedFieldGeneration\": 0,\n    \
+          \"fields\": [\n      \
+            {\n        \
+              \"recipientId\": \"0191eb70-6523-74b2-b7b5-2fa75bb6d001\",\n        \
+              \"documentId\": \"0191eb70-6523-74b2-b7b5-2fa75bb6d002\",\n        \
+              \"fieldType\": \"signature\",\n        \
+              \"label\": \"Signer Signature\",\n        \
+              \"required\": true,\n        \
+              \"position\": 0,\n        \
+              \"geometry\": {\n          \
+                \"page\": 1,\n          \
+                \"x\": 0.1,\n          \
+                \"y\": 0.7,\n          \
+                \"width\": 0.25,\n          \
+                \"height\": 0.05\n        \
+              }\n      \
+            }\n    \
+          ]\n  \
+        }\n\n\
+        EXAMPLES:\n  \
+          signkit envelopes fields --example\n  \
+          signkit envelopes fields --validate-only --file payload.json\n  \
+          signkit envelopes fields 0191b26f-4000-7000-8000-000000000001 --file payload.json"
+)]
 pub struct EnvelopeFieldsArgs {
-    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope. Optional when using --validate-only or --example.
     #[arg(value_name = "ENVELOPE_ID")]
-    pub envelope_id: String,
+    pub envelope_id: Option<String>,
 
     /// JSON file or `-` for stdin. Defaults to stdin.
     #[arg(long, value_name = "PATH", default_value = "-")]
@@ -209,13 +315,36 @@ pub struct EnvelopeFieldsArgs {
     /// Idempotency key. Generated as a UUIDv4 when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
+
+    /// Safely validate payload locally without issuing a network request.
+    #[arg(long)]
+    pub validate_only: bool,
+
+    /// Print a canonical JSON request example and exit.
+    #[arg(long)]
+    pub example: bool,
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Send a ready envelope (requires envelopes:send).",
+    long_about = "Send a ready envelope to initiate recipient signing workflow.\n\n\
+        Supports local input validation via --validate-only (offline, non-mutating) \
+        and schema discovery via --example.",
+    after_help = "CANONICAL JSON EXAMPLE:\n  \
+        {\n    \
+          \"expectedGeneration\": 1,\n    \
+          \"expectedReadyAuditEventId\": \"0191eb70-6523-74b2-b7b5-2fa75bb6d003\"\n  \
+        }\n\n\
+        EXAMPLES:\n  \
+          signkit envelopes send --example\n  \
+          signkit envelopes send --validate-only --file payload.json\n  \
+          signkit envelopes send 0191b26f-4000-7000-8000-000000000001 --file payload.json"
+)]
 pub struct EnvelopeSendArgs {
-    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope. Optional when using --validate-only or --example.
     #[arg(value_name = "ENVELOPE_ID")]
-    pub envelope_id: String,
+    pub envelope_id: Option<String>,
 
     /// JSON file or `-` for stdin. Defaults to stdin.
     #[arg(long, value_name = "PATH", default_value = "-")]
@@ -232,13 +361,36 @@ pub struct EnvelopeSendArgs {
     /// Idempotency key. Generated as a UUIDv4 when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
+
+    /// Safely validate payload locally without issuing a network request.
+    #[arg(long)]
+    pub validate_only: bool,
+
+    /// Print a canonical JSON request example and exit.
+    #[arg(long)]
+    pub example: bool,
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Void an envelope (requires envelopes:send).",
+    long_about = "Void an envelope to terminate workflow.\n\n\
+        Supports local input validation via --validate-only (offline, non-mutating) \
+        and schema discovery via --example.",
+    after_help = "CANONICAL JSON EXAMPLE:\n  \
+        {\n    \
+          \"expectedStatus\": \"sent\",\n    \
+          \"expectedGeneration\": 1\n  \
+        }\n\n\
+        EXAMPLES:\n  \
+          signkit envelopes void --example\n  \
+          signkit envelopes void --validate-only --file payload.json\n  \
+          signkit envelopes void 0191b26f-4000-7000-8000-000000000001 --file payload.json"
+)]
 pub struct EnvelopeVoidArgs {
-    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope. Optional when using --validate-only or --example.
     #[arg(value_name = "ENVELOPE_ID")]
-    pub envelope_id: String,
+    pub envelope_id: Option<String>,
 
     /// JSON file or `-` for stdin. Defaults to stdin.
     #[arg(long, value_name = "PATH", default_value = "-")]
@@ -255,6 +407,14 @@ pub struct EnvelopeVoidArgs {
     /// Idempotency key. Generated as a UUIDv4 when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
+
+    /// Safely validate payload locally without issuing a network request.
+    #[arg(long)]
+    pub validate_only: bool,
+
+    /// Print a canonical JSON request example and exit.
+    #[arg(long)]
+    pub example: bool,
 }
 
 #[derive(Debug, Args)]

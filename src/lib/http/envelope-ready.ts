@@ -33,7 +33,7 @@ const recipientSchema = z
 		routingOrder: z.number().int().min(1).max(1000)
 	})
 	.strict();
-const readySchema = z
+export const readySchema = z
 	.object({
 		expectedGeneration: z.number().int().min(1).max(MAX_GENERATION),
 		recipients: z.array(recipientSchema).min(1).max(50)

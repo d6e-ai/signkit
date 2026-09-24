@@ -1526,6 +1526,80 @@ pub struct PdfSealStatusResponse {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// OpenAPI 3.1 specification document representation returned by `GET /api/v1/openapi.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiDocument {
+    pub openapi: String,
+    pub info: OpenApiInfo,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<OpenApiServer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<OpenApiTag>,
+    #[serde(default)]
+    pub paths: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<OpenApiComponents>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiInfo {
+    pub title: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiServer {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiTag {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiComponents {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, serde_json::Value>,
+    #[serde(
+        rename = "securitySchemes",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub security_schemes: BTreeMap<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Stable receipt returned when inputs are safely validated locally via `--validate-only`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationReceipt {
+    pub valid: bool,
+    pub command: String,
+    #[serde(rename = "envelopeId", skip_serializing_if = "Option::is_none")]
+    pub envelope_id: Option<String>,
+    #[serde(rename = "expectedGeneration", skip_serializing_if = "Option::is_none")]
+    pub expected_generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

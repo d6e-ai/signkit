@@ -21,12 +21,148 @@ use crate::types::{
     SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
 };
 
+pub fn is_offline(subcommand: &EnvelopesSubcommand) -> bool {
+    match subcommand {
+        EnvelopesSubcommand::Commit(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Ready(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Fields(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Send(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Void(args) => args.example || args.validate_only,
+        _ => false,
+    }
+}
+
+pub fn execute_offline(
+    subcommand: &EnvelopesSubcommand,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    match subcommand {
+        EnvelopesSubcommand::Commit(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_COMMIT_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                let receipt = crate::validation::validate_commit_payload(
+                    &object,
+                    args.envelope_id.as_deref(),
+                )?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Ready(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_READY_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                let receipt = crate::validation::validate_ready_payload(
+                    &object,
+                    args.envelope_id.as_deref(),
+                )?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Fields(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_FIELDS_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                overlay_u64(
+                    &mut object,
+                    "expectedFieldGeneration",
+                    args.expected_field_generation,
+                );
+                let receipt = crate::validation::validate_fields_payload(
+                    &object,
+                    args.envelope_id.as_deref(),
+                )?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Send(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_SEND_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                overlay_string(
+                    &mut object,
+                    "expectedReadyAuditEventId",
+                    args.expected_ready_audit_event_id.as_deref(),
+                );
+                let receipt =
+                    crate::validation::validate_send_payload(&object, args.envelope_id.as_deref())?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Void(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_VOID_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                overlay_string(
+                    &mut object,
+                    "expectedStatus",
+                    args.expected_status.as_deref(),
+                );
+                let receipt =
+                    crate::validation::validate_void_payload(&object, args.envelope_id.as_deref())?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub async fn execute(
     client: &SignKitClient,
     subcommand: EnvelopesSubcommand,
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
+    if is_offline(&subcommand) {
+        return execute_offline(&subcommand, raw, pretty);
+    }
     match subcommand {
         EnvelopesSubcommand::List(args) => list_envelopes(client, args, raw, pretty).await,
         EnvelopesSubcommand::Get(args) => get_envelope(client, args, raw, pretty).await,
@@ -191,9 +327,18 @@ async fn commit_draft(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    let _receipt = crate::validation::validate_commit_payload(&object, Some(envelope_id))?;
     let request: DraftCommitRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
@@ -201,7 +346,7 @@ async fn commit_draft(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/draft/commits", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{}/draft/commits", envelope_id);
     let resp: DraftCommitResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -213,9 +358,18 @@ async fn ready_envelope(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    let _receipt = crate::validation::validate_ready_payload(&object, Some(envelope_id))?;
     let request: ReadyEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
         CliError::usage(format!(
@@ -223,7 +377,7 @@ async fn ready_envelope(
         ))
     })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/ready", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{}/ready", envelope_id);
     let resp: ReadyEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -235,7 +389,15 @@ async fn place_fields(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
     overlay_u64(
@@ -243,6 +405,7 @@ async fn place_fields(
         "expectedFieldGeneration",
         args.expected_field_generation,
     );
+    let _receipt = crate::validation::validate_fields_payload(&object, Some(envelope_id))?;
     let request: PlaceFieldsRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
@@ -250,7 +413,7 @@ async fn place_fields(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/fields", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{}/fields", envelope_id);
     let resp: PlaceFieldsResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -262,7 +425,15 @@ async fn send_envelope(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
     overlay_string(
@@ -270,19 +441,15 @@ async fn send_envelope(
         "expectedReadyAuditEventId",
         args.expected_ready_audit_event_id.as_deref(),
     );
+    let _receipt = crate::validation::validate_send_payload(&object, Some(envelope_id))?;
     let request: SendEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
                 "Send JSON did not match the required schema: {err}"
             ))
         })?;
-    if !is_valid_uuid_v7(&request.expected_ready_audit_event_id) {
-        return Err(CliError::usage(
-            "expectedReadyAuditEventId must be a canonical lowercase RFC 9562 UUIDv7.",
-        ));
-    }
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/send", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{}/send", envelope_id);
     let resp: SendEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -294,7 +461,15 @@ async fn void_envelope(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
     overlay_string(
@@ -302,6 +477,7 @@ async fn void_envelope(
         "expectedStatus",
         args.expected_status.as_deref(),
     );
+    let _receipt = crate::validation::validate_void_payload(&object, Some(envelope_id))?;
     let request: VoidEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
@@ -309,7 +485,7 @@ async fn void_envelope(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/void", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{}/void", envelope_id);
     let resp: VoidEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())

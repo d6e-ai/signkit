@@ -107,6 +107,437 @@ const CONTACT: Record<string, unknown> = {
 	additionalProperties: false
 };
 
+const FIELD_GEOMETRY: Record<string, unknown> = {
+	type: 'object',
+	description:
+		'Where the field sits on the rendered document, as unit-square fractions of one page. Resolution- and zoom-independent.',
+	required: ['page', 'x', 'y', 'width', 'height'],
+	properties: {
+		page: { type: 'integer', minimum: 1, maximum: 100000 },
+		x: { type: 'number', minimum: 0, maximum: 1 },
+		y: { type: 'number', minimum: 0, maximum: 1 },
+		width: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+		height: { type: 'number', exclusiveMinimum: 0, maximum: 1 }
+	},
+	additionalProperties: false
+};
+
+const ENVELOPE_RECIPIENT: Record<string, unknown> = {
+	type: 'object',
+	description:
+		'Operator-safe recipient projection. Omits capability hashes, ciphertext, and secret tokens.',
+	required: ['id', 'email', 'name', 'role', 'locale', 'routingOrder', 'status'],
+	properties: {
+		id: UUIDV7,
+		envelopeId: UUIDV7,
+		email: {
+			type: 'string',
+			format: 'email',
+			maxLength: 320,
+			description: 'Lower-case normalized mailbox.'
+		},
+		name: { type: 'string', minLength: 1, maxLength: 200 },
+		role: { type: 'string', enum: [...recipientRoles] },
+		locale: { type: 'string', enum: ['en', 'ja'] },
+		routingOrder: { type: 'integer', minimum: 1, maximum: 1000 },
+		status: {
+			type: 'string',
+			enum: ['pending', 'viewed', 'completed', 'declined']
+		}
+	},
+	additionalProperties: false
+};
+
+const ENVELOPE_FIELD: Record<string, unknown> = {
+	type: 'object',
+	description: 'Operator-safe field projection. Labels can carry PII and are never echoed back.',
+	required: [
+		'id',
+		'recipientId',
+		'documentId',
+		'documentPath',
+		'fieldType',
+		'required',
+		'position',
+		'geometry'
+	],
+	properties: {
+		id: UUIDV7,
+		recipientId: UUIDV7,
+		documentId: { anyOf: [UUIDV7, { type: 'null' }] },
+		documentPath: { type: ['string', 'null'] },
+		fieldType: { type: 'string', enum: [...fieldTypes] },
+		required: { type: 'boolean' },
+		position: { type: 'integer', minimum: 0, maximum: 100000 },
+		geometry: {
+			anyOf: [{ $ref: '#/components/schemas/FieldGeometry' }, { type: 'null' }]
+		}
+	},
+	additionalProperties: false
+};
+
+const MARKDOWN_DOCUMENT_LEAF: Record<string, unknown> = {
+	type: 'object',
+	required: ['id', 'position', 'kind', 'title', 'path', 'contentSha256'],
+	properties: {
+		id: UUIDV7,
+		position: { type: 'integer', minimum: 0 },
+		kind: { type: 'string', enum: ['markdown'] },
+		title: { type: 'string' },
+		path: { type: 'string' },
+		contentSha256: { type: 'string' }
+	},
+	additionalProperties: false
+};
+
+const PDF_DOCUMENT_LEAF: Record<string, unknown> = {
+	type: 'object',
+	required: [
+		'id',
+		'position',
+		'kind',
+		'title',
+		'sha256',
+		'byteSize',
+		'pageCount',
+		'pageWidth',
+		'pageHeight'
+	],
+	properties: {
+		id: UUIDV7,
+		position: { type: 'integer', minimum: 0 },
+		kind: { type: 'string', enum: ['pdf'] },
+		title: { type: 'string' },
+		sha256: { type: 'string' },
+		byteSize: { type: 'integer', minimum: 0 },
+		pageCount: { type: 'integer', minimum: 1 },
+		pageWidth: { type: 'number', minimum: 0 },
+		pageHeight: { type: 'number', minimum: 0 }
+	},
+	additionalProperties: false
+};
+
+const DOCUMENT_SET_LEAF: Record<string, unknown> = {
+	oneOf: [
+		{ $ref: '#/components/schemas/MarkdownDocumentLeaf' },
+		{ $ref: '#/components/schemas/PdfDocumentLeaf' }
+	]
+};
+
+const DOCUMENT_SET_MANIFEST: Record<string, unknown> = {
+	type: 'object',
+	required: ['schema', 'documents'],
+	properties: {
+		schema: { type: 'string', enum: ['signkit-document-set-v1'] },
+		documents: {
+			type: 'array',
+			items: { $ref: '#/components/schemas/DocumentSetLeaf' }
+		}
+	},
+	additionalProperties: false
+};
+
+const DRAFT_WORKSPACE_SNAPSHOT: Record<string, unknown> = {
+	type: 'object',
+	required: ['generation', 'documents'],
+	properties: {
+		generation: { type: 'integer', minimum: 0 },
+		commitSha: { type: ['string', 'null'] },
+		archiveSha256: { type: ['string', 'null'] },
+		documents: {
+			type: 'array',
+			items: {
+				type: 'object',
+				required: ['path', 'content'],
+				properties: {
+					path: { type: 'string' },
+					content: { type: 'string' }
+				},
+				additionalProperties: false
+			}
+		},
+		documentSet: {
+			anyOf: [{ $ref: '#/components/schemas/DocumentSetManifest' }, { type: 'null' }]
+		}
+	},
+	additionalProperties: false
+};
+
+const DRAFT_COMMIT_REQUEST: Record<string, unknown> = {
+	type: 'object',
+	required: ['expectedGeneration', 'message', 'edits'],
+	additionalProperties: false,
+	properties: {
+		expectedGeneration: { type: 'integer', minimum: 0, maximum: 2_147_483_646 },
+		message: { type: 'string', minLength: 1, maxLength: 200 },
+		edits: {
+			type: 'array',
+			minItems: 1,
+			maxItems: 50,
+			items: {
+				type: 'object',
+				required: ['path', 'content'],
+				additionalProperties: false,
+				properties: {
+					path: {
+						type: 'string',
+						maxLength: 240,
+						pattern: '^documents/[a-zA-Z0-9][a-zA-Z0-9._-]*\\.md$'
+					},
+					content: { type: 'string' }
+				}
+			}
+		},
+		provenance: {
+			type: 'object',
+			additionalProperties: false,
+			properties: {
+				automationRunId: { type: 'string', minLength: 1, maxLength: 200 },
+				externalId: { type: 'string', minLength: 1, maxLength: 200 }
+			}
+		}
+	}
+};
+
+const DRAFT_REVISION_RECEIPT: Record<string, unknown> = {
+	type: 'object',
+	required: ['revision'],
+	properties: {
+		revision: {
+			type: 'object',
+			required: ['generation', 'commitSha', 'archiveSha256'],
+			properties: {
+				generation: { type: 'integer', minimum: 0 },
+				commitSha: { type: 'string' },
+				archiveSha256: { type: 'string' }
+			},
+			additionalProperties: false
+		}
+	},
+	additionalProperties: false
+};
+
+const READY_ENVELOPE_REQUEST: Record<string, unknown> = {
+	type: 'object',
+	required: ['expectedGeneration', 'recipients'],
+	additionalProperties: false,
+	properties: {
+		expectedGeneration: { type: 'integer', minimum: 1, maximum: 2_147_483_647 },
+		recipients: {
+			type: 'array',
+			minItems: 1,
+			maxItems: 50,
+			items: {
+				type: 'object',
+				required: ['email', 'name', 'role', 'locale', 'routingOrder'],
+				additionalProperties: false,
+				properties: {
+					email: { type: 'string', format: 'email', maxLength: 320 },
+					name: { type: 'string', minLength: 1, maxLength: 200 },
+					role: { type: 'string', enum: ['signer', 'approver', 'viewer'] },
+					locale: { type: 'string', enum: ['en', 'ja'] },
+					routingOrder: { type: 'integer', minimum: 1, maximum: 1000 }
+				}
+			}
+		}
+	}
+};
+
+const READY_ENVELOPE_RECEIPT: Record<string, unknown> = {
+	type: 'object',
+	required: ['ready'],
+	properties: {
+		ready: {
+			type: 'object',
+			required: [
+				'envelopeId',
+				'status',
+				'generation',
+				'commitSha',
+				'recipients',
+				'updatedAt',
+				'auditEventId'
+			],
+			properties: {
+				envelopeId: UUIDV7,
+				status: { type: 'string', enum: ['ready'] },
+				generation: { type: 'integer', minimum: 1 },
+				commitSha: { type: 'string' },
+				recipients: {
+					type: 'array',
+					items: { $ref: '#/components/schemas/EnvelopeRecipient' }
+				},
+				updatedAt: { type: 'string', format: 'date-time' },
+				auditEventId: UUIDV7
+			},
+			additionalProperties: false
+		}
+	},
+	additionalProperties: false
+};
+
+const PLACE_FIELDS_REQUEST: Record<string, unknown> = {
+	type: 'object',
+	required: ['expectedGeneration', 'expectedFieldGeneration', 'fields'],
+	additionalProperties: false,
+	properties: {
+		expectedGeneration: { type: 'integer', minimum: 1, maximum: 2_147_483_647 },
+		expectedFieldGeneration: { type: 'integer', minimum: 0, maximum: 2_147_483_646 },
+		fields: {
+			type: 'array',
+			minItems: 1,
+			maxItems: 50,
+			items: {
+				type: 'object',
+				required: [
+					'recipientId',
+					'documentId',
+					'fieldType',
+					'label',
+					'required',
+					'position',
+					'geometry'
+				],
+				additionalProperties: false,
+				properties: {
+					recipientId: UUIDV7,
+					documentId: UUIDV7,
+					fieldType: { type: 'string', enum: [...fieldTypes] },
+					label: { type: 'string', minLength: 1, maxLength: 200 },
+					required: { type: 'boolean' },
+					position: { type: 'integer', minimum: 0, maximum: 100000 },
+					geometry: { $ref: '#/components/schemas/FieldGeometry' }
+				}
+			}
+		}
+	}
+};
+
+const PLACE_FIELDS_RECEIPT: Record<string, unknown> = {
+	type: 'object',
+	required: ['fields'],
+	properties: {
+		fields: {
+			type: 'object',
+			required: [
+				'envelopeId',
+				'generation',
+				'fieldGeneration',
+				'commitSha',
+				'fields',
+				'updatedAt',
+				'auditEventId'
+			],
+			properties: {
+				envelopeId: UUIDV7,
+				generation: { type: 'integer', minimum: 1 },
+				fieldGeneration: { type: 'integer', minimum: 0 },
+				commitSha: { type: 'string' },
+				fields: {
+					type: 'array',
+					items: { $ref: '#/components/schemas/EnvelopeField' }
+				},
+				updatedAt: { type: 'string', format: 'date-time' },
+				auditEventId: UUIDV7
+			},
+			additionalProperties: false
+		}
+	},
+	additionalProperties: false
+};
+
+const SEND_ENVELOPE_REQUEST: Record<string, unknown> = {
+	type: 'object',
+	required: ['expectedGeneration', 'expectedReadyAuditEventId'],
+	additionalProperties: false,
+	properties: {
+		expectedGeneration: { type: 'integer', minimum: 1, maximum: 2_147_483_647 },
+		expectedReadyAuditEventId: UUIDV7
+	}
+};
+
+const SEND_ENVELOPE_RECEIPT: Record<string, unknown> = {
+	type: 'object',
+	required: ['sent'],
+	properties: {
+		sent: {
+			type: 'object',
+			required: [
+				'envelopeId',
+				'status',
+				'generation',
+				'commitSha',
+				'readyAuditEventId',
+				'queuedDeliveryCount',
+				'reservedCapabilityCount',
+				'initialCapabilityExpiresAt',
+				'updatedAt',
+				'auditEventId'
+			],
+			properties: {
+				envelopeId: UUIDV7,
+				status: { type: 'string', enum: ['sent'] },
+				generation: { type: 'integer', minimum: 1 },
+				commitSha: { type: 'string' },
+				readyAuditEventId: UUIDV7,
+				queuedDeliveryCount: { type: 'integer', minimum: 0 },
+				reservedCapabilityCount: { type: 'integer', minimum: 0 },
+				initialCapabilityExpiresAt: { type: 'string', format: 'date-time' },
+				updatedAt: { type: 'string', format: 'date-time' },
+				auditEventId: UUIDV7
+			},
+			additionalProperties: false
+		}
+	},
+	additionalProperties: false
+};
+
+const VOID_ENVELOPE_REQUEST: Record<string, unknown> = {
+	type: 'object',
+	required: ['expectedStatus', 'expectedGeneration'],
+	additionalProperties: false,
+	properties: {
+		expectedStatus: {
+			type: 'string',
+			enum: ['draft', 'ready', 'sent', 'in_progress']
+		},
+		expectedGeneration: { type: 'integer', minimum: 0, maximum: 2_147_483_647 }
+	}
+};
+
+const VOID_ENVELOPE_RECEIPT: Record<string, unknown> = {
+	type: 'object',
+	required: ['voided'],
+	properties: {
+		voided: {
+			type: 'object',
+			required: [
+				'envelopeId',
+				'status',
+				'previousStatus',
+				'generation',
+				'voidedAt',
+				'revokedCapabilityCount',
+				'auditEventId'
+			],
+			properties: {
+				envelopeId: UUIDV7,
+				status: { type: 'string', enum: ['voided'] },
+				previousStatus: {
+					type: 'string',
+					enum: ['draft', 'ready', 'sent', 'in_progress']
+				},
+				generation: { type: 'integer', minimum: 0 },
+				voidedAt: { type: 'string', format: 'date-time' },
+				revokedCapabilityCount: { type: 'integer', minimum: 0 },
+				auditEventId: UUIDV7
+			},
+			additionalProperties: false
+		}
+	},
+	additionalProperties: false
+};
+
 const JSON_BODY: Record<string, unknown> = {
 	required: true,
 	content: { 'application/json': { schema: { type: 'object' } } }
@@ -622,10 +1053,17 @@ export function openApiDocument(): Record<string, unknown> {
 						required: ['envelope', 'recipients', 'readyAuditEventId', 'fields'],
 						properties: {
 							envelope: { $ref: '#/components/schemas/Envelope' },
-							recipients: { type: 'array', items: { type: 'object' } },
-							readyAuditEventId: { type: ['string', 'null'] },
-							fields: { type: 'array', items: { type: 'object' } }
-						}
+							recipients: {
+								type: 'array',
+								items: { $ref: '#/components/schemas/EnvelopeRecipient' }
+							},
+							readyAuditEventId: { anyOf: [UUIDV7, { type: 'null' }] },
+							fields: {
+								type: 'array',
+								items: { $ref: '#/components/schemas/EnvelopeField' }
+							}
+						},
+						additionalProperties: false
 					})
 				})
 			},
@@ -635,7 +1073,9 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'getEnvelopeDraft',
 					tags: ['Envelopes'],
 					parameters: [envelopeIdParam],
-					responses: jsonResponse('200', 'Draft workspace snapshot', { type: 'object' })
+					responses: jsonResponse('200', 'Draft workspace snapshot', {
+						$ref: '#/components/schemas/DraftWorkspaceSnapshot'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/draft/commits': {
@@ -648,41 +1088,13 @@ export function openApiDocument(): Record<string, unknown> {
 						required: true,
 						content: {
 							'application/json': {
-								schema: {
-									type: 'object',
-									required: ['expectedGeneration', 'message', 'edits'],
-									additionalProperties: false,
-									properties: {
-										expectedGeneration: { type: 'integer', minimum: 0 },
-										message: { type: 'string', minLength: 1, maxLength: 200 },
-										edits: {
-											type: 'array',
-											minItems: 1,
-											maxItems: 50,
-											items: {
-												type: 'object',
-												required: ['path', 'content'],
-												additionalProperties: false,
-												properties: {
-													path: { type: 'string' },
-													content: { type: 'string' }
-												}
-											}
-										},
-										provenance: {
-											type: 'object',
-											additionalProperties: false,
-											properties: {
-												automationRunId: { type: 'string' },
-												externalId: { type: 'string' }
-											}
-										}
-									}
-								}
+								schema: { $ref: '#/components/schemas/DraftCommitRequest' }
 							}
 						}
 					},
-					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+					responses: jsonResponse('201', 'Draft revision', {
+						$ref: '#/components/schemas/DraftRevisionReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/draft/docx': {
@@ -719,7 +1131,9 @@ export function openApiDocument(): Record<string, unknown> {
 							}
 						}
 					},
-					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+					responses: jsonResponse('201', 'Draft revision', {
+						$ref: '#/components/schemas/DraftRevisionReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/documents/pdf': {
@@ -762,7 +1176,9 @@ export function openApiDocument(): Record<string, unknown> {
 							}
 						}
 					},
-					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+					responses: jsonResponse('201', 'Draft revision', {
+						$ref: '#/components/schemas/DraftRevisionReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/documents/order': {
@@ -792,7 +1208,9 @@ export function openApiDocument(): Record<string, unknown> {
 							}
 						}
 					},
-					responses: jsonResponse('201', 'Draft revision', { type: 'object' })
+					responses: jsonResponse('201', 'Draft revision', {
+						$ref: '#/components/schemas/DraftRevisionReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/docx': {
@@ -823,35 +1241,13 @@ export function openApiDocument(): Record<string, unknown> {
 						required: true,
 						content: {
 							'application/json': {
-								schema: {
-									type: 'object',
-									required: ['expectedGeneration', 'recipients'],
-									additionalProperties: false,
-									properties: {
-										expectedGeneration: { type: 'integer', minimum: 1 },
-										recipients: {
-											type: 'array',
-											minItems: 1,
-											maxItems: 50,
-											items: {
-												type: 'object',
-												required: ['email', 'name', 'role', 'locale', 'routingOrder'],
-												additionalProperties: false,
-												properties: {
-													email: { type: 'string', format: 'email' },
-													name: { type: 'string' },
-													role: { type: 'string', enum: [...recipientRoles] },
-													locale: { type: 'string', enum: ['en', 'ja'] },
-													routingOrder: { type: 'integer', minimum: 1, maximum: 1000 }
-												}
-											}
-										}
-									}
-								}
+								schema: { $ref: '#/components/schemas/ReadyEnvelopeRequest' }
 							}
 						}
 					},
-					responses: jsonResponse('200', 'Ready receipt', { type: 'object' })
+					responses: jsonResponse('200', 'Ready receipt', {
+						$ref: '#/components/schemas/ReadyEnvelopeReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/fields': {
@@ -864,59 +1260,13 @@ export function openApiDocument(): Record<string, unknown> {
 						required: true,
 						content: {
 							'application/json': {
-								schema: {
-									type: 'object',
-									required: ['expectedGeneration', 'expectedFieldGeneration', 'fields'],
-									additionalProperties: false,
-									properties: {
-										expectedGeneration: { type: 'integer', minimum: 1 },
-										expectedFieldGeneration: { type: 'integer', minimum: 0 },
-										fields: {
-											type: 'array',
-											minItems: 1,
-											maxItems: 50,
-											items: {
-												type: 'object',
-												required: [
-													'recipientId',
-													'documentId',
-													'fieldType',
-													'label',
-													'required',
-													'position',
-													'geometry'
-												],
-												additionalProperties: false,
-												properties: {
-													recipientId: UUIDV7,
-													documentId: UUIDV7,
-													fieldType: { type: 'string', enum: [...fieldTypes] },
-													label: { type: 'string' },
-													required: { type: 'boolean' },
-													position: { type: 'integer', minimum: 0, maximum: 100000 },
-													geometry: {
-														type: 'object',
-														description:
-															'Where the field sits on the rendered document, as unit-square fractions of one page. Required: a field a signer cannot see is a field they cannot complete. The page must belong to the named document.',
-														required: ['page', 'x', 'y', 'width', 'height'],
-														additionalProperties: false,
-														properties: {
-															page: { type: 'integer', minimum: 1, maximum: 100000 },
-															x: { type: 'number', minimum: 0, maximum: 1 },
-															y: { type: 'number', minimum: 0, maximum: 1 },
-															width: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
-															height: { type: 'number', exclusiveMinimum: 0, maximum: 1 }
-														}
-													}
-												}
-											}
-										}
-									}
-								}
+								schema: { $ref: '#/components/schemas/PlaceFieldsRequest' }
 							}
 						}
 					},
-					responses: jsonResponse('200', 'Field placement receipt', { type: 'object' })
+					responses: jsonResponse('200', 'Field placement receipt', {
+						$ref: '#/components/schemas/PlaceFieldsReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/send': {
@@ -929,19 +1279,13 @@ export function openApiDocument(): Record<string, unknown> {
 						required: true,
 						content: {
 							'application/json': {
-								schema: {
-									type: 'object',
-									required: ['expectedGeneration', 'expectedReadyAuditEventId'],
-									additionalProperties: false,
-									properties: {
-										expectedGeneration: { type: 'integer', minimum: 1 },
-										expectedReadyAuditEventId: UUIDV7
-									}
-								}
+								schema: { $ref: '#/components/schemas/SendEnvelopeRequest' }
 							}
 						}
 					},
-					responses: jsonResponse('202', 'Send receipt', { type: 'object' })
+					responses: jsonResponse('202', 'Send receipt', {
+						$ref: '#/components/schemas/SendEnvelopeReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/void': {
@@ -954,22 +1298,13 @@ export function openApiDocument(): Record<string, unknown> {
 						required: true,
 						content: {
 							'application/json': {
-								schema: {
-									type: 'object',
-									required: ['expectedStatus', 'expectedGeneration'],
-									additionalProperties: false,
-									properties: {
-										expectedStatus: {
-											type: 'string',
-											enum: ['draft', 'ready', 'sent', 'in_progress']
-										},
-										expectedGeneration: { type: 'integer', minimum: 0 }
-									}
-								}
+								schema: { $ref: '#/components/schemas/VoidEnvelopeRequest' }
 							}
 						}
 					},
-					responses: jsonResponse('200', 'Void receipt', { type: 'object' })
+					responses: jsonResponse('200', 'Void receipt', {
+						$ref: '#/components/schemas/VoidEnvelopeReceipt'
+					})
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/deliveries': {
@@ -1820,7 +2155,25 @@ export function openApiDocument(): Record<string, unknown> {
 			schemas: {
 				ProblemDetail: PROBLEM,
 				Envelope: ENVELOPE,
-				Contact: CONTACT
+				Contact: CONTACT,
+				FieldGeometry: FIELD_GEOMETRY,
+				EnvelopeRecipient: ENVELOPE_RECIPIENT,
+				EnvelopeField: ENVELOPE_FIELD,
+				MarkdownDocumentLeaf: MARKDOWN_DOCUMENT_LEAF,
+				PdfDocumentLeaf: PDF_DOCUMENT_LEAF,
+				DocumentSetLeaf: DOCUMENT_SET_LEAF,
+				DocumentSetManifest: DOCUMENT_SET_MANIFEST,
+				DraftWorkspaceSnapshot: DRAFT_WORKSPACE_SNAPSHOT,
+				DraftCommitRequest: DRAFT_COMMIT_REQUEST,
+				DraftRevisionReceipt: DRAFT_REVISION_RECEIPT,
+				ReadyEnvelopeRequest: READY_ENVELOPE_REQUEST,
+				ReadyEnvelopeReceipt: READY_ENVELOPE_RECEIPT,
+				PlaceFieldsRequest: PLACE_FIELDS_REQUEST,
+				PlaceFieldsReceipt: PLACE_FIELDS_RECEIPT,
+				SendEnvelopeRequest: SEND_ENVELOPE_REQUEST,
+				SendEnvelopeReceipt: SEND_ENVELOPE_RECEIPT,
+				VoidEnvelopeRequest: VOID_ENVELOPE_REQUEST,
+				VoidEnvelopeReceipt: VOID_ENVELOPE_RECEIPT
 			}
 		}
 	};
