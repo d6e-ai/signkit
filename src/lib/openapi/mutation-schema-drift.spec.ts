@@ -5,6 +5,7 @@ import { readySchema } from '$lib/http/envelope-ready';
 import { fieldsSchema } from '$lib/http/envelope-fields';
 import { sendSchema } from '$lib/http/envelope-send';
 import { voidSchema } from '$lib/http/envelope-void';
+import { isValidRecipientEmail } from '$lib/domain/recipient-identity';
 
 describe('OpenAPI mutation schema drift and validity', () => {
 	const document = openApiDocument() as {
@@ -58,6 +59,24 @@ describe('OpenAPI mutation schema drift and validity', () => {
 			type: 'string',
 			pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
 		});
+	});
+
+	it('keeps ready roles and email pattern aligned with the server', () => {
+		const recipient = (
+			(schemas.ReadyEnvelopeRequest.properties as Record<string, unknown>).recipients as {
+				items: { properties: Record<string, { enum?: string[]; pattern?: string }> };
+			}
+		).items.properties;
+		expect(recipient.role.enum).toEqual(['signer', 'approver', 'viewer', 'cc']);
+		const emailPattern = new RegExp(recipient.email.pattern ?? '');
+		for (const email of [
+			'signer@example.com',
+			"o'hara+sign@example.co.uk",
+			'.bad@example.com',
+			'bad@example..com'
+		]) {
+			expect(emailPattern.test(email)).toBe(isValidRecipientEmail(email));
+		}
 	});
 
 	it('ensures mutation endpoints link to named request and receipt schemas via $ref', () => {

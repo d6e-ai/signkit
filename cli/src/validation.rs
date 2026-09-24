@@ -119,6 +119,9 @@ pub fn is_valid_recipient_email(email: &str) -> bool {
         return false;
     }
     let local_bytes = local.as_bytes();
+    if local_bytes[0] == b'.' {
+        return false;
+    }
     let last_byte = local_bytes[local_bytes.len() - 1];
     if !last_byte.is_ascii_alphanumeric()
         && last_byte != b'_'
@@ -672,13 +675,13 @@ pub fn validate_ready_payload(
                                         extra: Default::default(),
                                     });
                                 }
-                                Some(r @ ("signer" | "approver" | "viewer")) => {
+                                Some(r @ ("signer" | "approver" | "viewer" | "cc")) => {
                                     role_str = Some(r);
                                 }
                                 Some(_) => {
                                     errors.push(ProblemValidationError {
                                         path: format!("recipients[{i}].role"),
-                                        message: "Recipient role must be 'signer', 'approver', or 'viewer'.".to_string(),
+                                        message: "Recipient role must be 'signer', 'approver', 'viewer', or 'cc'.".to_string(),
                                         extra: Default::default(),
                                     });
                                 }

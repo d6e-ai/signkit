@@ -580,3 +580,52 @@ fn test_local_field_type_matches_server_enum() {
     });
     assert!(validate_fields_payload(payload.as_object().unwrap(), None).is_err());
 }
+
+#[test]
+fn test_ready_validation_accepts_cc_and_rejects_leading_dot_email() {
+    let mut payload: serde_json::Value = serde_json::json!({
+        "expectedGeneration": 1,
+        "recipients": [
+            {"email": "signer@example.com", "name": "Signer", "role": "signer", "locale": "en", "routingOrder": 1},
+            {"email": "cc@example.com", "name": "Copy", "role": "cc", "locale": "en", "routingOrder": 2}
+        ]
+    });
+    assert!(validate_ready_payload(payload.as_object().unwrap(), None).is_ok());
+    payload["recipients"][1]["email"] = serde_json::Value::String(".cc@example.com".to_string());
+    assert!(validate_ready_payload(payload.as_object().unwrap(), None).is_err());
+}
+
+#[tokio::test]
+async fn test_validated_field_payload_can_be_sent_once() {
+    let mock_server = common::start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/envelopes/{}/fields", common::TEST_ENVELOPE_ID)))
+        .and(header("idempotency-key", "fields-once"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"fields":{"envelopeId":"0191b26f-4000-7000-8000-000000000001","generation":1,"fieldGeneration":1,"commitSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","updatedAt":"2026-09-24T00:00:00Z","auditEventId":"0191b26f-4000-7000-8000-000000000003"}}"#,
+            "application/json",
+        ))
+        .mount(&mock_server)
+        .await;
+
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(
+        r#"{"expectedGeneration":1,"expectedFieldGeneration":0,"fields":[{"recipientId":"0191b26f-4000-7000-8000-000000000001","documentId":"0191b26f-4000-7000-8000-000000000002","fieldType":"signature","label":"Sign","required":true,"position":0,"geometry":{"page":1,"x":0.1,"y":0.7,"width":0.25,"height":0.05}}]}"#.as_bytes(),
+    ).unwrap();
+
+    let _env = common::EnvScope::new(&[("SIGNKIT_API_KEY", Some(common::TEST_API_KEY))]).await;
+    let cli = Cli::parse_from([
+        "signkit",
+        "--base-url",
+        &mock_server.uri(),
+        "envelopes",
+        "fields",
+        common::TEST_ENVELOPE_ID,
+        "--file",
+        file.path().to_str().unwrap(),
+        "--idempotency-key",
+        "fields-once",
+    ]);
+    assert_eq!(run_cli(cli).await, ExitCode::Success);
+    assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
+}

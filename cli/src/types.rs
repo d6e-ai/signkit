@@ -980,22 +980,32 @@ pub struct ReadyEnvelopeResponse {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldGeometry {
+    pub page: u32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldPlacement {
     #[serde(rename = "recipientId")]
     pub recipient_id: String,
-    #[serde(rename = "documentPath")]
-    pub document_path: String,
+    #[serde(rename = "documentId")]
+    pub document_id: String,
     #[serde(rename = "fieldType")]
     pub field_type: String,
     pub label: String,
     pub required: bool,
     pub position: u32,
+    pub geometry: FieldGeometry,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaceFieldsRequest {
     #[serde(rename = "expectedGeneration")]
     pub expected_generation: u64,

@@ -332,9 +332,15 @@ const READY_ENVELOPE_REQUEST: Record<string, unknown> = {
 				required: ['email', 'name', 'role', 'locale', 'routingOrder'],
 				additionalProperties: false,
 				properties: {
-					email: { type: 'string', format: 'email', maxLength: 320 },
+					email: {
+						type: 'string',
+						format: 'email',
+						maxLength: 320,
+						pattern:
+							"^(?:[A-Za-z0-9_'+-]+\\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\\.)+[A-Za-z]{2,}$"
+					},
 					name: { type: 'string', minLength: 1, maxLength: 200 },
-					role: { type: 'string', enum: ['signer', 'approver', 'viewer'] },
+					role: { type: 'string', enum: ['signer', 'approver', 'viewer', 'cc'] },
 					locale: { type: 'string', enum: ['en', 'ja'] },
 					routingOrder: { type: 'integer', minimum: 1, maximum: 1000 }
 				}
