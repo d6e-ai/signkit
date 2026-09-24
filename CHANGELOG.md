@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-09-24
+
+### Fixed
+
+- Advertise all three read-only revision history and diff endpoints in system capabilities, including the API-key `envelopes:read` endpoint list, so agents can discover the v0.1.7 contract-review API.
+
+### Security
+
+- Existing read-scope authorization and Git archive verification remain unchanged. Known residual risks are documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements and the absence of PAdES/TSA certification; Vercel remains CI-only.
+
 ## [0.1.7] - 2026-09-24
 
 ### Added
