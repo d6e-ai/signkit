@@ -223,7 +223,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 						released_delivery_count, audit_event_id, audit_sequence, previous_audit_hash,
 						audit_event_hash, audit_payload_json, completed_audit_event_id,
 						completed_audit_event_hash, completed_audit_payload_json
-					) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					) VALUES (?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 				)
 				.bind(
 					identity.envelope_id,
@@ -257,7 +257,7 @@ export class D1RecipientSignStore implements RecipientSignStore {
 						`INSERT INTO field_value (
 							field_id, envelope_id, recipient_id, field_type,
 							value_json, value_sha256, created_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+						) VALUES (?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
 						field.fieldId,
