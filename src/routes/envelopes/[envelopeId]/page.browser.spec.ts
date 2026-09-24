@@ -11,6 +11,15 @@ const SIGNER_ID = '01900000-0000-7000-8000-000000000011';
 const NAME_REQUIRED_MESSAGE = "Enter this recipient's name.";
 const EMAIL_INVALID_MESSAGE = 'Enter a valid email address for this recipient.';
 
+// The Fields tab's own placement gating and the Documents tab's sent-PDF
+// rendering are exercised here through this stand-in rather than the real
+// PdfDocumentView, so these tests do not each boot pdf.js: the component's
+// loading/error/canvas behavior has its own browser suite
+// (pdf-document-view.browser.spec.ts).
+vi.mock('$lib/components/pdf-document-view.svelte', async () => ({
+	default: (await import('./sent-document-pdf-view-test-stub.svelte')).default
+}));
+
 vi.mock('$app/state', () => ({
 	page: {
 		url: new URL(`https://signkit.example/envelopes/${ENVELOPE_ID}`),
@@ -1161,5 +1170,186 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		await expect
 			.element(screen.getByRole('button', { name: 'Download sealed PDF' }))
 			.not.toBeInTheDocument();
+	});
+});
+
+describe('sent envelope Documents tab renders the pinned document set', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const PDF_DOCUMENT_ID = '01900000-0000-7000-8000-000000000210';
+	const MARKDOWN_DOCUMENT_ID = '01900000-0000-7000-8000-000000000211';
+
+	const sentEnvelope = {
+		...readyEnvelope,
+		status: 'sent' as const,
+		sentCommitSha: readyEnvelope.repositoryHead
+	};
+
+	const sentDetail = { ...detail, envelope: sentEnvelope };
+
+	const pdfLeaf = {
+		id: PDF_DOCUMENT_ID,
+		position: 0,
+		kind: 'pdf' as const,
+		title: 'signkit-sample-agreement-ja',
+		sha256: 'b'.repeat(64),
+		byteSize: 12345,
+		pageCount: 3,
+		pageWidth: 595.28,
+		pageHeight: 841.89
+	};
+
+	const markdownLeaf = {
+		id: MARKDOWN_DOCUMENT_ID,
+		position: 0,
+		kind: 'markdown' as const,
+		title: 'cover letter',
+		path: 'documents/cover-letter.md' as const,
+		contentSha256: 'a'.repeat(64)
+	};
+
+	const pdfOnlyDraft = {
+		generation: 1,
+		commitSha: sentEnvelope.repositoryHead,
+		archiveSha256: 'a'.repeat(64),
+		documents: [],
+		documentSet: { schema: 'signkit-document-set-v1', documents: [pdfLeaf] }
+	};
+
+	const mixedDraft = {
+		generation: 1,
+		commitSha: sentEnvelope.repositoryHead,
+		archiveSha256: 'a'.repeat(64),
+		documents: [{ path: 'documents/cover-letter.md', content: '# Terms\n\nSee attached.' }],
+		documentSet: {
+			schema: 'signkit-document-set-v1',
+			documents: [markdownLeaf, { ...pdfLeaf, position: 1 }]
+		}
+	};
+
+	function mockSentFetch(
+		workspace: unknown,
+		envelope: unknown = sentEnvelope
+	): ReturnType<typeof vi.fn> {
+		return vi.fn().mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+			const urlStr = String(url);
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+				return jsonResponse({ ...sentDetail, envelope });
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+				return jsonResponse(workspace);
+			}
+			if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+				return jsonResponse(deliveries);
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact`)) {
+				return jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'published'
+					}
+				});
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method !== 'POST') {
+				return jsonResponse({ pdfSeal: { envelopeId: ENVELOPE_ID, status: 'disabled' } });
+			}
+			return jsonResponse({});
+		});
+	}
+
+	it("shows a PDF-only sent envelope's document with its title and page count", async () => {
+		vi.stubGlobal('fetch', mockSentFetch(pdfOnlyDraft));
+
+		const screen = await render(EnvelopePage);
+		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+		await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect.element(documentsPanel.getByText('Pages: 3')).toBeVisible();
+		const stub = documentsPanel.getByTestId('sent-document-pdf-stub');
+		await expect.element(stub).toBeInTheDocument();
+		expect(stub.element().getAttribute('data-src')).toBe(
+			`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf?documentId=${PDF_DOCUMENT_ID}`
+		);
+		expect(stub.element().getAttribute('data-page-count')).toBe('3');
+		expect(documentsPanel.element().textContent).not.toContain('Add document');
+	});
+
+	it('shows both the Markdown document and the PDF document for a mixed sent envelope', async () => {
+		vi.stubGlobal('fetch', mockSentFetch(mixedDraft));
+
+		const screen = await render(EnvelopePage);
+		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+		await expect.element(documentsPanel.getByText('cover letter')).toBeVisible();
+		await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect.element(documentsPanel.getByText('See attached.')).toBeVisible();
+	});
+
+	it('keeps showing the sent PDF document after the page is unmounted and remounted', async () => {
+		vi.stubGlobal('fetch', mockSentFetch(pdfOnlyDraft));
+
+		const first = await render(EnvelopePage);
+		await expect
+			.element(
+				first.getByRole('tabpanel', { name: 'Documents' }).getByText('signkit-sample-agreement-ja')
+			)
+			.toBeVisible();
+		first.unmount();
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(
+				screen.getByRole('tabpanel', { name: 'Documents' }).getByText('signkit-sample-agreement-ja')
+			)
+			.toBeVisible();
+	});
+
+	it('still shows the original sent PDF for a completed envelope, distinct from the completed-artifacts card', async () => {
+		vi.stubGlobal(
+			'fetch',
+			mockSentFetch(pdfOnlyDraft, { ...sentEnvelope, status: 'completed' as const })
+		);
+
+		const screen = await render(EnvelopePage);
+		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+		await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect
+			.element(documentsPanel.getByRole('button', { name: 'Download final PDF' }))
+			.toBeVisible();
+	});
+
+	it('shows an explicit error, not a blank pane, when the sent document set cannot be loaded', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+					return jsonResponse(sentDetail);
+				}
+				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+					throw new Error('network unavailable');
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+					return jsonResponse(deliveries);
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+		await expect
+			.element(
+				documentsPanel.getByText('The sent documents could not be loaded. Please try again.')
+			)
+			.toBeVisible();
+		expect(documentsPanel.element().textContent).not.toContain(
+			"This envelope's documents can no longer be edited."
+		);
 	});
 });
