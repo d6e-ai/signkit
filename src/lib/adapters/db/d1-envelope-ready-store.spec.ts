@@ -157,7 +157,21 @@ describe('D1EnvelopeReadyStore', () => {
 			expect.stringContaining('DELETE FROM recipient'),
 			expect.stringContaining('INSERT INTO recipient')
 		]);
-		expect(fake.batches[0][2].bindings).toContain('a@example.com');
+		expect(fake.batches[0][2].bindings).toEqual([
+			command.recipients[0].id,
+			command.recipients[0].envelopeId,
+			command.recipients[0].email,
+			command.recipients[0].name,
+			command.recipients[0].role,
+			command.recipients[0].locale,
+			command.recipients[0].routingOrder,
+			command.recipients[0].status,
+			command.updatedAt,
+			command.updatedAt
+		]);
+		const recipientSql = fake.batches[0][2].sql;
+		const placeholderCount = (recipientSql.match(/\?/g) || []).length;
+		expect(placeholderCount).toBe(fake.batches[0][2].bindings.length);
 	});
 
 	it('fails closed when durable replay evidence does not match the command', async () => {

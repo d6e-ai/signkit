@@ -110,7 +110,7 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 							id, envelope_id, email, name, role, locale,
 							routing_order, status, capability_hash, capability_expires_at,
 							capability_revoked_at, created_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`
 					)
 					.bind(
 						recipient.id,
