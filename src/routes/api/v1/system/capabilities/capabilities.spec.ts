@@ -39,6 +39,9 @@ interface CapabilitiesResponse {
 		archive: string;
 		trackedFiles: string[];
 		commitEndpoint: string;
+		revisionListEndpoint: string;
+		revisionReadEndpoint: string;
+		revisionDiffEndpoint: string;
 		docxImportEndpoint: string;
 		docxExportEndpoint: string;
 		concurrency: string;
@@ -167,6 +170,11 @@ describe('GET /api/v1/system/capabilities', () => {
 		expect(data.name).toBe('SignKit');
 		expect(data.apiVersion).toBe('v1');
 		expect(data.runtime).toBe('node');
+		expect(data.draftHistory).toMatchObject({
+			revisionListEndpoint: '/api/v1/envelopes/{envelopeId}/revisions',
+			revisionReadEndpoint: '/api/v1/envelopes/{envelopeId}/revisions/{revisionRef}',
+			revisionDiffEndpoint: '/api/v1/envelopes/{envelopeId}/revisions/diff'
+		});
 
 		// Completion artifact capabilities
 		expect(data.completionArtifact).toMatchObject({
@@ -225,6 +233,9 @@ describe('GET /api/v1/system/capabilities', () => {
 				'/api/v1/envelopes',
 				'/api/v1/envelopes/{envelopeId}',
 				'/api/v1/envelopes/{envelopeId}/draft',
+				'/api/v1/envelopes/{envelopeId}/revisions',
+				'/api/v1/envelopes/{envelopeId}/revisions/{revisionRef}',
+				'/api/v1/envelopes/{envelopeId}/revisions/diff',
 				'/api/v1/envelopes/{envelopeId}/docx',
 				'/api/v1/envelopes/{envelopeId}/deliveries',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact',
