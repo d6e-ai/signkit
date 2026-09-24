@@ -6,9 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-09-24
+
+### Added
+
+- Rust CLI mutation commands validate envelope, field, and recipient payloads offline against schemas shared with the server before sending them, and expose those schemas plus a generated OpenAPI document for agent tooling ([#161](https://github.com/d6e-ai/signkit/issues/161)).
+- Verified contract revision history and diff: agents can list an envelope's Git-tracked draft revisions and fetch a Git-verified diff between any two revisions through both the HTTP API and the Rust CLI, supporting a non-mutating review-and-propose workflow ([#162](https://github.com/d6e-ai/signkit/issues/162)).
+
 ### Fixed
 
+- Resolved a D1 envelope readiness `INSERT` arity bug in `D1EnvelopeReadyStore` where an extraneous value placeholder and `NULL` literal made the `VALUES` clause disagree with the destination columns and bound parameters, breaking the draft-to-ready transition on Cloudflare; added integration coverage against the real D1 migration chain ([#160](https://github.com/d6e-ai/signkit/issues/160)).
 - Aligned the Rust CLI process exit codes with the documented `0`–`12` automation contract ([#163](https://github.com/d6e-ai/signkit/issues/163)): HTTP 429 now exits `8` (rate limited), HTTP 5xx exits `9` (server unavailable), transport failures exit `10`, timeouts exit `11`, and refused redirects exit `12`. RFC 9457 JSON on stderr still carries the original HTTP `status`. Scripts written against v0.1.x must refresh any handling of the former compact `8` code.
+
+### Security
+
+- Revision diffs re-verify each revision against Git history before returning content and classify tampered or unreconstructable revisions as integrity errors rather than serving unverified data.
+- Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements and the absence of PAdES/TSA certification; Vercel remains CI-only and is not supported for production deployment.
 
 ## [0.1.6] - 2026-09-23
 
