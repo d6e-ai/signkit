@@ -59,7 +59,7 @@ signkit recipient approve --file approve.json --consent
 signkit recipient decline --file decline.json --consent
 ```
 
-`signkit recipient sign --example` and `--validate-only --file sign.json` are offline and need no credential or consent. Signing payloads use the IDs and `fieldGeneration` returned by `documents`; the server revalidates the assigned fields and current recipient capability. All mutations require an idempotency key, generated when omitted. The PDF is the pinned sent document and must be saved to a regular output file, never stdout.
+`signkit recipient sign --example` and `--validate-only --file sign.json` are offline and need no credential or consent. Signing payloads use the IDs and `fieldGeneration` returned by `documents`; the server revalidates the assigned fields and current recipient capability. All mutations require an idempotency key. For automation, pass an explicit `--idempotency-key` and retain it for an exact retry after a timeout; a fresh key cannot replay a completed recipient action. The PDF is the pinned sent document and must be saved to a regular output file, never stdout.
 
 ## Exit codes
 

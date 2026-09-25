@@ -222,7 +222,7 @@ signkit recipient decline --file decline.json --consent
 
 `context` and `documents` reveal only the active recipient's pinned agreement metadata, their own placed fields, and `fieldGeneration`. Download and review the PDF before deciding. For older single-document envelopes, omit `--document-id`; for document-set envelopes, provide the ID returned by `documents`. Recipient PDF downloads require a regular output file; no agreement bytes are written to stdout.
 
-Action payloads use UUIDv7 IDs from the recipient context. `viewed`, `approve`, and `decline` each accept `{ "envelopeId": "…", "recipientId": "…" }`. Signing additionally requires the `expectedFieldGeneration` from `documents` and exactly one `{ "fieldId": "…", "value": "…" }` (or boolean checkbox value) for every assigned field. The server rechecks field ownership, types, required values, generation, role, routing, expiry, and revocation. Every action gets an idempotency key; reuse the same key only for an exact retry.
+Action payloads use UUIDv7 IDs from the recipient context. `viewed`, `approve`, and `decline` each accept `{ "envelopeId": "…", "recipientId": "…" }`. Signing additionally requires the `expectedFieldGeneration` from `documents` and exactly one `{ "fieldId": "…", "value": "…" }` (or boolean checkbox value) for every assigned field. The server rechecks field ownership, types, required values, generation, role, routing, expiry, and revocation. Every action gets an idempotency key. For automation, pass an explicit `--idempotency-key` and retain it for an exact retry, especially after a timeout: a newly generated key cannot recover the original receipt once signing has completed. Never reuse the key for a different decision or payload.
 
 ```sh
 signkit recipient sign --example

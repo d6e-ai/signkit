@@ -72,7 +72,7 @@ describe('recipient documents HTTP handler', () => {
 		const response: Response = await createRecipientDocumentsHandler(
 			() => app,
 			undefined,
-			true
+			'bearer'
 		)(requestEvent);
 		expect(response.status).toBe(404);
 		expect(app.resolve).not.toHaveBeenCalled();
@@ -105,15 +105,31 @@ describe('recipient documents HTTP handler', () => {
 		expect(body).toEqual({
 			access: workspace.access,
 			documents: workspace.documents,
+			source: workspace.source
+		});
+		const serialized: string = JSON.stringify(body);
+		expect(serialized).not.toMatch(
+			/organization|archiveKey|archiveSha256|skr1_|Your signature|fieldGeneration|field-1/
+		);
+		// The agreement text itself is never part of a JSON response: recipients
+		// read the pinned PDF from a capability-authorized endpoint instead.
+		expect(serialized).not.toMatch(/# Agreement|documents\/|\.md/);
+	});
+
+	it('returns only the recipient-owned fields on the bearer CLI surface', async () => {
+		const response: Response = await createRecipientDocumentsHandler(
+			() => application(),
+			undefined,
+			'bearer'
+		)(event(`Bearer ${token}`));
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			access: workspace.access,
+			documents: workspace.documents,
 			source: workspace.source,
 			fields: workspace.fields,
 			fieldGeneration: workspace.fieldGeneration
 		});
-		const serialized: string = JSON.stringify(body);
-		expect(serialized).not.toMatch(/organization|archiveKey|archiveSha256|skr1_/);
-		// The agreement text itself is never part of a JSON response: recipients
-		// read the pinned PDF from a capability-authorized endpoint instead.
-		expect(serialized).not.toMatch(/# Agreement|documents\/|\.md/);
 	});
 
 	it.each([

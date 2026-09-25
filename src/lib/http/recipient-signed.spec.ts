@@ -91,6 +91,7 @@ describe('recipient signed HTTP handler', () => {
 			authorization: `Bearer signkit_${'A'.repeat(43)}`,
 			idempotencyKey: 'sign-cli-2'
 		});
+		const getReader = vi.spyOn(event.request.body!, 'getReader');
 		const app: RecipientSignedApplicationPort = application(published);
 		const response: Response = await createRecipientSignedHandler(
 			() => app,
@@ -99,6 +100,7 @@ describe('recipient signed HTTP handler', () => {
 		)(event);
 		expect(response.status).toBe(404);
 		expect(app.sign).not.toHaveBeenCalled();
+		expect(getReader).not.toHaveBeenCalled();
 	});
 
 	it('rejects cross-origin and origin-less POSTs before reading the cookie', async () => {

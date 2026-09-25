@@ -57,7 +57,7 @@ describe('recipient access HTTP handler', () => {
 		const response: Response = await createRecipientAccessHandler(
 			() => app,
 			undefined,
-			true
+			'bearer'
 		)(requestEvent);
 		expect(response.status).toBe(404);
 		expect(app.resolve).not.toHaveBeenCalled();

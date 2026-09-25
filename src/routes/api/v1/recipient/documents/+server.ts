@@ -4,5 +4,5 @@ import { createRecipientDocumentsHandler } from '$lib/http/recipient-documents';
 export const GET = createRecipientDocumentsHandler(
 	resolveRecipientWorkspaceApplication,
 	undefined,
-	true
+	'bearer'
 );

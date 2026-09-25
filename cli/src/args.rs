@@ -724,7 +724,7 @@ pub struct RecipientPdfArgs {
     #[arg(long, value_name = "DOCUMENT_ID")]
     pub document_id: Option<String>,
 
-    /// Destination file, or `-` for stdout.
+    /// Destination regular file. Agreement bytes are never written to stdout.
     #[arg(long, value_name = "PATH")]
     pub output: String,
 }

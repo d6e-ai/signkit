@@ -67,6 +67,8 @@ export function createRecipientSignedHandler(
 	return async ({ cookies, platform, request, url }): Promise<Response> => {
 		if (mode === 'browser' && request.headers.get('origin') !== url.origin)
 			return crossOriginDenied(url.pathname);
+		const explicitToken: string | null = mode === 'bearer' ? recipientBearerToken(request) : null;
+		if (mode === 'bearer' && explicitToken === null) return accessNotFound(url.pathname);
 
 		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
 		if (!idempotencyKey.success) return idempotencyRequired(url.pathname);
@@ -86,7 +88,7 @@ export function createRecipientSignedHandler(
 
 		let token: string | null;
 		if (mode === 'bearer') {
-			token = recipientBearerToken(request);
+			token = explicitToken;
 		} else {
 			const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
 			if (sealed === undefined) return accessNotFound(url.pathname);

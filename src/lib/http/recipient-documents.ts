@@ -6,7 +6,7 @@ import type {
 import { RecipientWorkspaceIntegrityError } from '$lib/application/signing/recipient-workspace';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import { problemResponse } from './problem';
-import { recipientBearerToken } from './recipient-bearer';
+import { recipientBearerToken, type RecipientHttpMode } from './recipient-bearer';
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
@@ -19,12 +19,13 @@ export type RecipientWorkspaceApplicationResolver = (
 export function createRecipientDocumentsHandler(
 	resolveApplication: RecipientWorkspaceApplicationResolver,
 	now: () => Date = (): Date => new Date(),
-	strictBearer: boolean = false
+	mode: RecipientHttpMode = 'browser'
 ): RequestHandler {
 	return async ({ request, platform, url }): Promise<Response> => {
-		const token: string | null = strictBearer
-			? recipientBearerToken(request)
-			: bearerToken(request.headers.get('authorization'));
+		const token: string | null =
+			mode === 'bearer'
+				? recipientBearerToken(request)
+				: bearerToken(request.headers.get('authorization'));
 		if (token === null || !isRecipientCapability(token)) return accessNotFound(url.pathname);
 
 		let application: RecipientWorkspaceApplicationPort | null;
@@ -51,8 +52,9 @@ export function createRecipientDocumentsHandler(
 					access: workspace.access,
 					documents: workspace.documents,
 					source: workspace.source,
-					fields: workspace.fields,
-					fieldGeneration: workspace.fieldGeneration
+					...(mode === 'bearer'
+						? { fields: workspace.fields, fieldGeneration: workspace.fieldGeneration }
+						: {})
 				}),
 				{
 					status: 200,

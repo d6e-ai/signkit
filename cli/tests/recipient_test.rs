@@ -5,7 +5,7 @@ use signkit_cli::args::Cli;
 use signkit_cli::error::ExitCode;
 use signkit_cli::run_cli;
 use std::io::Write;
-use wiremock::matchers::{header, header_exists, method, path, query_param};
+use wiremock::matchers::{body_json, header, header_exists, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
 fn context_json() -> String {
@@ -536,6 +536,17 @@ async fn test_recipient_sign_replay_reports_success() {
 
     Mock::given(method("POST"))
         .and(path("/api/v1/recipient/sign"))
+        .and(header(
+            "authorization",
+            format!("Bearer {}", common::TEST_RECIPIENT_CAPABILITY).as_str(),
+        ))
+        .and(header("idempotency-key", "sign-replay-1"))
+        .and(body_json(serde_json::json!({
+            "envelopeId": common::TEST_ENVELOPE_ID,
+            "recipientId": common::TEST_RECIPIENT_ID,
+            "expectedFieldGeneration": 0,
+            "values": [{ "fieldId": common::TEST_FIELD_ID, "value": "Jane Doe" }]
+        })))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("idempotency-replayed", "true")
@@ -570,6 +581,10 @@ async fn test_recipient_sign_replay_reports_success() {
         "sign-replay-1",
     ]);
     assert_eq!(run_cli(cli).await, ExitCode::Success);
+    let requests = mock_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(!requests[0].headers.contains_key("cookie"));
+    assert!(!requests[0].headers.contains_key("origin"));
 }
 
 #[tokio::test]
