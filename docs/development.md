@@ -38,6 +38,8 @@ POSTGRES_TEST_URL=postgres://signkit_test:signkit_test@127.0.0.1:5432/signkit_te
 
 These suites apply migrations and write data; never aim them at a database you care about.
 
+CI also runs `scripts/test-cli-recipient-e2e.mjs` against the built Node server, a disposable PostgreSQL 18 database, and a disposable SeaweedFS S3-compatible bucket. It drives the real Rust CLI through create, PDF upload, ready, field placement, send, recipient PDF review/viewed/sign, completion evidence/PDF, and a separate approver flow. Only external OAuth login and SMTP delivery are outside this test: the harness seeds a test-only member/API key and opens its own invitation capability from the encrypted local outbox. No browser or sender key performs a recipient action, and the test checks that credentials are absent from CLI output, server logs, and audit payloads. The script requires loopback endpoints and dedicated `signkit_cli_e2e` database and `signkit-cli-e2e` bucket names.
+
 ## Static checks and formatting
 
 ```sh

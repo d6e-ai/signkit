@@ -107,6 +107,57 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
 
+  cli-recipient-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: signkit_cli_e2e
+          POSTGRES_USER: signkit_cli_e2e
+          POSTGRES_PASSWORD: signkit_cli_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U signkit_cli_e2e -d signkit_cli_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_TEST_URL: postgres://signkit_cli_e2e:signkit_cli_e2e@127.0.0.1:5432/signkit_cli_e2e
+      S3_ENDPOINT: http://127.0.0.1:8333
+      S3_REGION: us-east-1
+      S3_BUCKET: signkit-cli-e2e
+      S3_ACCESS_KEY_ID: signkit_cli_e2e
+      S3_SECRET_ACCESS_KEY: signkit_cli_e2e_secret
+      S3_FORCE_PATH_STYLE: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1.88.0
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/postgres-migrate.mjs
+        env:
+          DATABASE_URL: ${{ env.POSTGRES_TEST_URL }}
+      - name: Start disposable S3-compatible object storage
+        run: >-
+          docker run -d --name signkit-cli-e2e-s3 -p 8333:8333
+          -e AWS_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID"
+          -e AWS_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY"
+          chrislusf/seaweedfs@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+      - run: pnpm run build:node
+      - run: cargo build --locked --manifest-path cli/Cargo.toml
+      - name: Exercise sender and recipient CLI against the real Node server
+        run: node scripts/test-cli-recipient-e2e.mjs
+      - if: always()
+        run: docker rm -f signkit-cli-e2e-s3 || true
+
   pades-conformance:
     runs-on: ubuntu-latest
     timeout-minutes: 20
