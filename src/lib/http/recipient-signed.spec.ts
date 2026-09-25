@@ -58,6 +58,49 @@ const published: RecipientSignedResult = {
 };
 
 describe('recipient signed HTTP handler', () => {
+	it('signs with an explicit browserless capability without clearing browser cookies', async () => {
+		const app: RecipientSignedApplicationPort = application(published);
+		const unseal = vi.fn(async (): Promise<string> => token);
+		const { event, cookies, deleted } = createRecipientRequestEvent({
+			pathname: '/api/v1/recipient/sign',
+			defaultBody: commandBody,
+			origin: null,
+			authorization: `Bearer ${token}`,
+			idempotencyKey: 'sign-cli-1'
+		});
+		const response: Response = await createRecipientSignedHandler(
+			() => app,
+			unseal,
+			'bearer'
+		)(event);
+		expect(response.status).toBe(200);
+		expect(app.sign).toHaveBeenCalledWith(
+			expect.objectContaining({ token, expectedFieldGeneration: 1, values: commandBody.values })
+		);
+		expect(cookies.get).not.toHaveBeenCalled();
+		expect(deleted).not.toHaveBeenCalled();
+		expect(unseal).not.toHaveBeenCalled();
+		expect(JSON.stringify(await response.json())).not.toContain(token);
+	});
+
+	it('rejects a sender API key even when an ambient signing cookie exists', async () => {
+		const { event } = createRecipientRequestEvent({
+			pathname: '/api/v1/recipient/sign',
+			defaultBody: commandBody,
+			origin: null,
+			authorization: `Bearer signkit_${'A'.repeat(43)}`,
+			idempotencyKey: 'sign-cli-2'
+		});
+		const app: RecipientSignedApplicationPort = application(published);
+		const response: Response = await createRecipientSignedHandler(
+			() => app,
+			async (): Promise<string> => token,
+			'bearer'
+		)(event);
+		expect(response.status).toBe(404);
+		expect(app.sign).not.toHaveBeenCalled();
+	});
+
 	it('rejects cross-origin and origin-less POSTs before reading the cookie', async () => {
 		for (const origin of ['https://attacker.example', null]) {
 			const { event } = requestEvent({ origin, idempotencyKey: 'sign-1' });

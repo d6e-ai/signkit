@@ -51,6 +51,26 @@ const published: RecipientApprovedResult = {
 };
 
 describe('recipient approved HTTP handler', () => {
+	it('accepts browserless recipient approval without touching a browser session', async () => {
+		const app: RecipientApprovedApplicationPort = application(published);
+		const { event, cookies, deleted } = createRecipientRequestEvent({
+			pathname: '/api/v1/recipient/approve',
+			defaultBody: { envelopeId, recipientId },
+			origin: null,
+			authorization: `Bearer ${token}`,
+			idempotencyKey: 'approve-cli-1'
+		});
+		const response: Response = await createRecipientApprovedHandler(
+			() => app,
+			async (): Promise<string> => token,
+			'bearer'
+		)(event);
+		expect(response.status).toBe(200);
+		expect(app.approve).toHaveBeenCalledWith(expect.objectContaining({ token }));
+		expect(cookies.get).not.toHaveBeenCalled();
+		expect(deleted).not.toHaveBeenCalled();
+	});
+
 	it('rejects cross-origin and origin-less POSTs before reading the cookie', async () => {
 		for (const origin of ['https://attacker.example', null]) {
 			const { event } = requestEvent({ origin, idempotencyKey: 'approve-1' });

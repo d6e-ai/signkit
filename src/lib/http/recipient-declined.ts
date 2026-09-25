@@ -23,6 +23,7 @@ import {
 import { boundEnvelopeId } from './envelope-binding';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
+import { recipientBearerToken, type RecipientHttpMode } from './recipient-bearer';
 
 const MAX_BODY_BYTES: number = 4 * 1024;
 const idSchema: ZodType<string> = signkitIdentifierSchema;
@@ -74,10 +75,12 @@ type JsonBodyResult = { ok: true; value: unknown } | { ok: false; reason: 'inval
 export function createRecipientDeclinedHandler(
 	resolveApplication: RecipientDeclinedApplicationResolver,
 	unsealSession: RecipientSessionUnsealer,
-	options?: RecipientDeclinedHandlerOptions
+	options?: RecipientDeclinedHandlerOptions,
+	mode: RecipientHttpMode = 'browser'
 ): RequestHandler {
 	return async ({ cookies, platform, request, url }): Promise<Response> => {
-		if (request.headers.get('origin') !== url.origin) return crossOriginDenied(url.pathname);
+		if (mode === 'browser' && request.headers.get('origin') !== url.origin)
+			return crossOriginDenied(url.pathname);
 
 		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
 		if (!idempotencyKey.success) return idempotencyRequired(url.pathname);
@@ -95,15 +98,18 @@ export function createRecipientDeclinedHandler(
 		);
 		if (envelopeId === null) return invalidCommand(url.pathname);
 
-		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
-		if (sealed === undefined) return accessNotFound(url.pathname);
-
 		let token: string | null;
-		try {
-			token = await unsealSession(sealed, envelopeId);
-		} catch {
-			console.error(JSON.stringify({ event: 'recipient_declined_session_failed' }));
-			return unavailable(url.pathname);
+		if (mode === 'bearer') {
+			token = recipientBearerToken(request);
+		} else {
+			const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
+			if (sealed === undefined) return accessNotFound(url.pathname);
+			try {
+				token = await unsealSession(sealed, envelopeId);
+			} catch {
+				console.error(JSON.stringify({ event: 'recipient_declined_session_failed' }));
+				return unavailable(url.pathname);
+			}
 		}
 		if (token === null) {
 			return accessNotFound(url.pathname);
@@ -125,7 +131,15 @@ export function createRecipientDeclinedHandler(
 				expectedRecipientId: parsed.data.recipientId,
 				idempotencyKey: idempotencyKey.data
 			});
-			return await resultResponse(result, token, envelopeId, url, platform, cookies, options);
+			return await resultResponse(
+				result,
+				token,
+				envelopeId,
+				url,
+				platform,
+				mode === 'browser' ? cookies : null,
+				options
+			);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_declined_failed' }));
 			return unavailable(url.pathname);
@@ -139,21 +153,23 @@ async function resultResponse(
 	envelopeId: string,
 	url: URL,
 	platform: Readonly<App.Platform> | undefined,
-	cookies: Cookies,
+	cookies: Cookies | null,
 	options: RecipientDeclinedHandlerOptions | undefined
 ): Promise<Response> {
 	const instance: string = url.pathname;
 	if (result.outcome === 'published' || result.outcome === 'replayed') {
-		const exchanged: boolean = await exchangeDeclinedReceipt(
-			result,
-			token,
-			envelopeId,
-			url,
-			platform,
-			cookies,
-			options
-		);
-		if (!exchanged) return unavailable(instance);
+		if (cookies !== null) {
+			const exchanged: boolean = await exchangeDeclinedReceipt(
+				result,
+				token,
+				envelopeId,
+				url,
+				platform,
+				cookies,
+				options
+			);
+			if (!exchanged) return unavailable(instance);
+		}
 		const headers: Headers = new Headers(securityHeaders({ 'content-type': 'application/json' }));
 		if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
 		return new Response(

@@ -38,10 +38,7 @@ function fileToOpenApiPath(file: string): string {
 	if (relative === '+server.ts' || relative.length === 0) return '/api/v1';
 	const suffix = relative
 		.split('/')
-		.map((segment) => {
-			const match = /^\[([^\]]+)\]$/.exec(segment);
-			return match === null ? segment : `{${match[1]}}`;
-		})
+		.map((segment) => segment.replace(/\[([^\]]+)\]/g, '{$1}'))
 		.join('/');
 	return `/api/v1/${suffix}`;
 }
@@ -95,6 +92,36 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 	it('enumerates every shipped public/operator handler exactly once', () => {
 		const document = openApiDocument();
 		expect(openApiOperations(document)).toEqual(shippedApiV1Operations());
+	});
+
+	it('advertises browserless recipient operations without granting sender API-key authority', () => {
+		const document = openApiDocument();
+		for (const path of [
+			'/api/v1/recipient/context',
+			'/api/v1/recipient/documents',
+			'/api/v1/recipient/documents/{envelopeId}.pdf',
+			'/api/v1/recipient/viewed',
+			'/api/v1/recipient/sign',
+			'/api/v1/recipient/approve',
+			'/api/v1/recipient/decline'
+		]) {
+			const operation = pathItem(document, path);
+			for (const method of Object.values(operation)) {
+				expect(method.security).toEqual([{ RecipientCapability: [] }]);
+			}
+		}
+		for (const path of [
+			'/api/v1/recipient/viewed',
+			'/api/v1/recipient/sign',
+			'/api/v1/recipient/approve',
+			'/api/v1/recipient/decline'
+		]) {
+			expect(pathItem(document, path).post.parameters).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: 'Idempotency-Key', in: 'header', required: true })
+				])
+			);
+		}
 	});
 
 	it('documents the webhook destination allowlist default-deny on creation', () => {

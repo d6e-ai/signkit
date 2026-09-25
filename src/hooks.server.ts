@@ -30,6 +30,8 @@ export function isSessionExcludedPath(pathname: string): boolean {
 	return (
 		pathname === '/api/v1/signing' ||
 		pathname.startsWith('/api/v1/signing/') ||
+		pathname === '/api/v1/recipient' ||
+		pathname.startsWith('/api/v1/recipient/') ||
 		isRecipientSurfacePath(pathname)
 	);
 }

@@ -8,10 +8,10 @@ pub mod output;
 pub mod types;
 pub mod validation;
 
-use args::{Cli, Command};
+use args::{Cli, Command, RecipientSubcommand};
 use client::SignKitClient;
 use config::resolve_config;
-use error::ExitCode;
+use error::{CliError, ExitCode};
 use output::print_problem;
 
 /// Executes the SignKit CLI and returns the appropriate ExitCode.
@@ -48,6 +48,35 @@ pub async fn run_cli(cli: Cli) -> ExitCode {
                 }
             };
         }
+    }
+
+    let stdin_conflict: Option<&str> = match &cli.command {
+        Command::Recipient(_) if cli.api_key_stdin => Some(
+            "Recipient commands cannot use --api-key-stdin; only the recipient capability grants this authority.",
+        ),
+        Command::Recipient(args)
+            if cli.recipient_capability_stdin
+                && match &args.subcommand {
+                    RecipientSubcommand::Viewed(action)
+                    | RecipientSubcommand::Approve(action)
+                    | RecipientSubcommand::Decline(action) => action.file == "-",
+                    RecipientSubcommand::Sign(action) => action.file == "-",
+                    _ => false,
+                } =>
+        {
+            Some("Use --file PATH for the action JSON when --recipient-capability-stdin consumes standard input.")
+        }
+        Command::Recipient(_) => None,
+        _ if cli.recipient_capability_stdin => Some(
+            "--recipient-capability-stdin is only valid for recipient commands.",
+        ),
+        _ => None,
+    };
+    if let Some(detail) = stdin_conflict {
+        let error: CliError = CliError::usage(detail);
+        let problem = error.to_problem_detail("cli://signkit/config");
+        print_problem(&problem, pretty);
+        return error.exit_code();
     }
 
     let config = match resolve_config(

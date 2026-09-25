@@ -352,6 +352,40 @@ async fn test_recipient_pdf_rejects_invalid_document_id_without_network_call() {
     assert!(!output_path.exists());
 }
 
+#[tokio::test]
+async fn test_recipient_pdf_never_writes_agreement_bytes_to_stdout() {
+    let _env = common::EnvScope::new(&[(
+        "SIGNKIT_RECIPIENT_CAPABILITY",
+        Some(common::TEST_RECIPIENT_CAPABILITY),
+    )])
+    .await;
+    let cli = Cli::parse_from([
+        "signkit",
+        "--base-url",
+        "http://127.0.0.1:9",
+        "recipient",
+        "pdf",
+        common::TEST_ENVELOPE_ID,
+        "--output",
+        "-",
+    ]);
+    assert_eq!(run_cli(cli).await, ExitCode::UsageError);
+}
+
+#[tokio::test]
+async fn test_recipient_capability_stdin_requires_json_payload_file() {
+    let cli = Cli::parse_from([
+        "signkit",
+        "--base-url",
+        "http://127.0.0.1:9",
+        "--recipient-capability-stdin",
+        "recipient",
+        "sign",
+        "--consent",
+    ]);
+    assert_eq!(run_cli(cli).await, ExitCode::UsageError);
+}
+
 // --- Consent gating ----------------------------------------------------------------
 
 #[tokio::test]
@@ -726,6 +760,33 @@ async fn test_recipient_error_detail_echoing_token_is_redacted() {
         "recipient capability token must never leak in stderr, got: {stderr_str}"
     );
     assert!(stderr_str.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+async fn test_recipient_success_echoing_token_is_not_printed() {
+    let mock_server = common::start_mock_server().await;
+    let leaking_context = context_json().replace(
+        "Jane Doe",
+        &format!("Jane {}", common::TEST_RECIPIENT_CAPABILITY),
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/v1/recipient/context"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(leaking_context, "application/json"))
+        .mount(&mock_server)
+        .await;
+
+    let mut cmd = assert_cmd::Command::cargo_bin("signkit").unwrap();
+    let assert = cmd
+        .args(["--base-url", &mock_server.uri(), "recipient", "context"])
+        .env(
+            "SIGNKIT_RECIPIENT_CAPABILITY",
+            common::TEST_RECIPIENT_CAPABILITY,
+        )
+        .assert()
+        .code(10)
+        .stdout(predicates::str::is_empty());
+    let stderr_str = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(!stderr_str.contains(common::TEST_RECIPIENT_CAPABILITY));
 }
 
 #[tokio::test]

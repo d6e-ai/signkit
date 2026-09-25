@@ -547,7 +547,14 @@ impl SignKitClient {
         let bytes = Self::read_bounded_body(response, MAX_RESPONSE_BYTES).await?;
 
         if status.is_success() {
-            let data: T = serde_json::from_slice(&bytes).map_err(CliError::Json)?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(CliError::Json)?;
+            if Self::json_value_contains_token(&value, token) {
+                return Err(CliError::Network(
+                    "Recipient response echoed a credential; refusing to print it".to_string(),
+                ));
+            }
+            let data: T = serde_json::from_value(value).map_err(CliError::Json)?;
             Ok(data)
         } else {
             Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
@@ -636,7 +643,14 @@ impl SignKitClient {
         let bytes = Self::read_bounded_body(response, MAX_RESPONSE_BYTES).await?;
 
         if status.is_success() {
-            let data: T = serde_json::from_slice(&bytes).map_err(CliError::Json)?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(CliError::Json)?;
+            if Self::json_value_contains_token(&value, token) {
+                return Err(CliError::Network(
+                    "Recipient response echoed a credential; refusing to print it".to_string(),
+                ));
+            }
+            let data: T = serde_json::from_value(value).map_err(CliError::Json)?;
             Ok(data)
         } else {
             Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
@@ -712,6 +726,18 @@ impl SignKitClient {
         let bytes = Self::read_bounded_body(response, spec.max_bytes).await?;
 
         if status.is_success() {
+            if spec == BinaryGetSpec::RECIPIENT_PDF
+                && (content_type
+                    .as_deref()
+                    .and_then(|value| value.split(';').next())
+                    .map(|value| !value.trim().eq_ignore_ascii_case("application/pdf"))
+                    .unwrap_or(true)
+                    || !bytes.starts_with(b"%PDF-"))
+            {
+                return Err(CliError::Network(
+                    "Recipient document response is not a PDF; refusing to save it".to_string(),
+                ));
+            }
             return Ok(BinaryResponse {
                 bytes,
                 commit_sha: None,
@@ -719,6 +745,19 @@ impl SignKitClient {
             });
         }
         Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
+    }
+
+    fn json_value_contains_token(value: &serde_json::Value, token: &str) -> bool {
+        match value {
+            serde_json::Value::String(text) => text.contains(token),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .any(|item| Self::json_value_contains_token(item, token)),
+            serde_json::Value::Object(items) => items.iter().any(|(key, item)| {
+                key.contains(token) || Self::json_value_contains_token(item, token)
+            }),
+            _ => false,
+        }
     }
 
     /// Defense in depth: strips any accidental echo of the recipient capability
@@ -735,6 +774,25 @@ impl SignKitClient {
             }
         }
 
+        fn redact_json(value: &mut serde_json::Value, token: &str) {
+            match value {
+                serde_json::Value::String(text) => *text = redact(text, token),
+                serde_json::Value::Array(items) => {
+                    for item in items.iter_mut() {
+                        redact_json(item, token);
+                    }
+                }
+                serde_json::Value::Object(items) => {
+                    let original = std::mem::take(items);
+                    for (key, mut item) in original {
+                        redact_json(&mut item, token);
+                        items.insert(redact(&key, token), item);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         match err {
             CliError::ServerProblem(problem) => {
                 let mut problem = *problem;
@@ -746,12 +804,17 @@ impl SignKitClient {
                     for error in errors.iter_mut() {
                         error.path = redact(&error.path, token);
                         error.message = redact(&error.message, token);
+                        let original = std::mem::take(&mut error.extra);
+                        for (key, mut value) in original {
+                            redact_json(&mut value, token);
+                            error.extra.insert(redact(&key, token), value);
+                        }
                     }
                 }
-                for value in problem.extra.values_mut() {
-                    if let serde_json::Value::String(s) = value {
-                        *s = redact(s, token);
-                    }
+                let original = std::mem::take(&mut problem.extra);
+                for (key, mut value) in original {
+                    redact_json(&mut value, token);
+                    problem.extra.insert(redact(&key, token), value);
                 }
                 CliError::server_problem(problem)
             }

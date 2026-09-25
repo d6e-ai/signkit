@@ -2356,6 +2356,91 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Revoked invitation', { type: 'object' })
 				})
 			},
+			'/api/v1/recipient/context': {
+				get: op({
+					summary: 'Read browserless recipient context',
+					description:
+						'Requires the recipient invitation capability as a bearer credential, without a browser cookie or Origin header. Instance API keys have no recipient authority.',
+					operationId: 'getRecipientCliContext',
+					tags: ['Signing'],
+					security: [{ RecipientCapability: [] }],
+					responses: jsonResponse('200', 'Recipient context', { type: 'object' })
+				})
+			},
+			'/api/v1/recipient/documents': {
+				get: op({
+					summary: 'Discover pinned recipient documents and own fields',
+					description:
+						'Returns the recipient-owned field declarations and fieldGeneration, but no Markdown source or storage keys.',
+					operationId: 'getRecipientCliDocuments',
+					tags: ['Signing'],
+					security: [{ RecipientCapability: [] }],
+					responses: jsonResponse('200', 'Pinned documents and own fields', { type: 'object' })
+				})
+			},
+			'/api/v1/recipient/documents/{envelopeId}.pdf': {
+				get: op({
+					summary: 'Download one pinned recipient PDF',
+					description:
+						'Bound to the active recipient capability and pinned sent revision. Supply documentId for document-set envelopes; omit it only for legacy sent PDFs. Never place the capability in the URL.',
+					operationId: 'downloadRecipientCliDocumentPdf',
+					tags: ['Signing'],
+					security: [{ RecipientCapability: [] }],
+					parameters: [envelopeIdParam, { ...documentIdQueryParam, required: false }],
+					responses: {
+						'200': {
+							description: 'Pinned agreement PDF',
+							content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } }
+						}
+					}
+				})
+			},
+			'/api/v1/recipient/viewed': {
+				post: op({
+					summary: 'Record a browserless recipient view',
+					operationId: 'recordRecipientCliViewed',
+					tags: ['Signing'],
+					security: [{ RecipientCapability: [] }],
+					parameters: [idempotencyHeader],
+					requestBody: JSON_BODY,
+					responses: jsonResponse('200', 'View receipt', { type: 'object' })
+				})
+			},
+			'/api/v1/recipient/sign': {
+				post: op({
+					summary: 'Sign as the authorized recipient without a browser',
+					description:
+						'Requires explicit recipient intent in the client; the invitation capability, expected field generation, idempotency key, and every owned field value are validated server-side. An agent must not silently sign for someone else.',
+					operationId: 'signRecipientCli',
+					tags: ['Signing'],
+					security: [{ RecipientCapability: [] }],
+					parameters: [idempotencyHeader],
+					requestBody: JSON_BODY,
+					responses: jsonResponse('200', 'Signature receipt', { type: 'object' })
+				})
+			},
+			'/api/v1/recipient/approve': {
+				post: op({
+					summary: 'Approve as the authorized recipient without a browser',
+					operationId: 'approveRecipientCli',
+					tags: ['Signing'],
+					security: [{ RecipientCapability: [] }],
+					parameters: [idempotencyHeader],
+					requestBody: JSON_BODY,
+					responses: jsonResponse('200', 'Approval receipt', { type: 'object' })
+				})
+			},
+			'/api/v1/recipient/decline': {
+				post: op({
+					summary: 'Decline as the authorized recipient without a browser',
+					operationId: 'declineRecipientCli',
+					tags: ['Signing'],
+					security: [{ RecipientCapability: [] }],
+					parameters: [idempotencyHeader],
+					requestBody: JSON_BODY,
+					responses: jsonResponse('200', 'Decline receipt', { type: 'object' })
+				})
+			},
 			'/api/v1/signing/context': {
 				get: op({
 					summary: 'Read recipient signing context',

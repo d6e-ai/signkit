@@ -6,6 +6,7 @@ import type {
 import { RecipientWorkspaceIntegrityError } from '$lib/application/signing/recipient-workspace';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import { problemResponse } from './problem';
+import { recipientBearerToken } from './recipient-bearer';
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
@@ -17,10 +18,13 @@ export type RecipientWorkspaceApplicationResolver = (
 
 export function createRecipientDocumentsHandler(
 	resolveApplication: RecipientWorkspaceApplicationResolver,
-	now: () => Date = (): Date => new Date()
+	now: () => Date = (): Date => new Date(),
+	strictBearer: boolean = false
 ): RequestHandler {
 	return async ({ request, platform, url }): Promise<Response> => {
-		const token: string | null = bearerToken(request.headers.get('authorization'));
+		const token: string | null = strictBearer
+			? recipientBearerToken(request)
+			: bearerToken(request.headers.get('authorization'));
 		if (token === null || !isRecipientCapability(token)) return accessNotFound(url.pathname);
 
 		let application: RecipientWorkspaceApplicationPort | null;
@@ -39,14 +43,16 @@ export function createRecipientDocumentsHandler(
 			);
 			if (workspace === null) return accessNotFound(url.pathname);
 			// Deliberately no Markdown and no storage key: a recipient is entitled
-			// to the agreement they were sent, which is the PDF served from the
-			// session-protected endpoint, not to SignKit's source representation
-			// of it. What travels here is only enough to describe that document.
+			// to the agreement they were sent, which is the PDF served from a
+			// capability-authorized endpoint, not to SignKit's source representation.
+			// Own fields and generation are included for safe browserless signing.
 			return new Response(
 				JSON.stringify({
 					access: workspace.access,
 					documents: workspace.documents,
-					source: workspace.source
+					source: workspace.source,
+					fields: workspace.fields,
+					fieldGeneration: workspace.fieldGeneration
 				}),
 				{
 					status: 200,

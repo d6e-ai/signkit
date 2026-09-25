@@ -48,6 +48,50 @@ const published: RecipientViewedResult = {
 };
 
 describe('recipient viewed HTTP handler', () => {
+	it('accepts an explicit browserless recipient bearer without reading a cookie or Origin', async () => {
+		const app: RecipientViewedApplicationPort = application(published);
+		const unseal = vi.fn(async (): Promise<string> => token);
+		const { event, cookies } = createRecipientRequestEvent({
+			pathname: '/api/v1/recipient/viewed',
+			defaultBody: { envelopeId, recipientId },
+			origin: null,
+			authorization: `Bearer ${token}`,
+			idempotencyKey: 'view-cli-1'
+		});
+		const response: Response = await createRecipientViewedHandler(
+			() => app,
+			unseal,
+			'bearer'
+		)(event);
+		expect(response.status).toBe(200);
+		expect(app.view).toHaveBeenCalledWith(expect.objectContaining({ token }));
+		expect(cookies.get).not.toHaveBeenCalled();
+		expect(unseal).not.toHaveBeenCalled();
+	});
+
+	it.each([`Bearer signkit_${'A'.repeat(43)}`, `Bearer ${token}`])(
+		'refuses foreign or ambient recipient authority on the browserless path',
+		async (authorization: string) => {
+			const { event } = createRecipientRequestEvent({
+				pathname: '/api/v1/recipient/viewed',
+				defaultBody: { envelopeId, recipientId },
+				origin: null,
+				authorization,
+				idempotencyKey: 'view-cli-2'
+			});
+			if (authorization.startsWith('Bearer skr1_'))
+				event.request.headers.set('cookie', 'ambient=1');
+			const app: RecipientViewedApplicationPort = application(published);
+			const response: Response = await createRecipientViewedHandler(
+				() => app,
+				async (): Promise<string> => token,
+				'bearer'
+			)(event);
+			expect(response.status).toBe(404);
+			expect(app.view).not.toHaveBeenCalled();
+		}
+	);
+
 	it('rejects cross-origin and origin-less POSTs before reading the cookie', async () => {
 		for (const origin of ['https://attacker.example', null]) {
 			const { event } = requestEvent({ origin, idempotencyKey: 'view-1' });

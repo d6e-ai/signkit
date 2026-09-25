@@ -178,16 +178,16 @@ async fn download_pdf(
     pretty: bool,
 ) -> Result<(), CliError> {
     validate_envelope_id(&args.envelope_id)?;
-    if args.output.is_empty() {
+    if args.output.is_empty() || args.output == "-" {
         return Err(CliError::usage(
-            "Provide --output PATH (use '-' to write PDF bytes to stdout).",
+            "Provide --output PATH naming a regular file; recipient document bytes are never written to stdout.",
         ));
     }
     if let Some(ref document_id) = args.document_id {
         if !is_valid_uuid_v7(document_id) {
-            return Err(CliError::usage(format!(
-                "Invalid document ID '{document_id}'. Document IDs must be canonical lowercase RFC 9562 UUIDv7."
-            )));
+            return Err(CliError::usage(
+                "Document IDs must be canonical lowercase RFC 9562 UUIDv7.",
+            ));
         }
     }
     let path = format!("/api/v1/recipient/documents/{}.pdf", args.envelope_id);
@@ -199,15 +199,13 @@ async fn download_pdf(
         .get_bytes_recipient(&path, &query, BinaryGetSpec::RECIPIENT_PDF)
         .await?;
     write_output_bytes(&args.output, &resp.bytes)?;
-    if args.output != "-" {
-        let receipt = ArtifactDownloadReceipt {
-            path: args.output,
-            bytes: resp.bytes.len() as u64,
-            format: "pdf".to_string(),
-            content_type: resp.content_type,
-        };
-        print_success(&receipt, raw, pretty)?;
-    }
+    let receipt = ArtifactDownloadReceipt {
+        path: args.output,
+        bytes: resp.bytes.len() as u64,
+        format: "pdf".to_string(),
+        content_type: resp.content_type,
+    };
+    print_success(&receipt, raw, pretty)?;
     Ok(())
 }
 
@@ -280,9 +278,9 @@ async fn sign(
 /// Validates that an envelope ID is a canonical lowercase RFC 9562 UUIDv7.
 fn validate_envelope_id(id: &str) -> Result<(), CliError> {
     if !is_valid_uuid_v7(id) {
-        return Err(CliError::usage(format!(
-            "Invalid envelope ID '{id}'. Envelope IDs must be canonical lowercase RFC 9562 UUIDv7."
-        )));
+        return Err(CliError::usage(
+            "Envelope IDs must be canonical lowercase RFC 9562 UUIDv7.",
+        ));
     }
     Ok(())
 }

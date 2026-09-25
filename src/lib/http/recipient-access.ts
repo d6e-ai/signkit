@@ -6,6 +6,7 @@ import {
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import { problemResponse } from './problem';
+import { recipientBearerToken } from './recipient-bearer';
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
@@ -17,10 +18,13 @@ export type RecipientAccessApplicationResolver = (
 
 export function createRecipientAccessHandler(
 	resolveApplication: RecipientAccessApplicationResolver,
-	now: () => Date = (): Date => new Date()
+	now: () => Date = (): Date => new Date(),
+	strictBearer: boolean = false
 ): RequestHandler {
 	return async ({ platform, request, url }): Promise<Response> => {
-		const token: string | null = bearerToken(request.headers.get('authorization'));
+		const token: string | null = strictBearer
+			? recipientBearerToken(request)
+			: bearerToken(request.headers.get('authorization'));
 		if (token === null || !isRecipientCapability(token)) return accessNotFound(url.pathname);
 
 		let application: RecipientAccessApplicationPort | null;
