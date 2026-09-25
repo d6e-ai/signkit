@@ -4,8 +4,12 @@ use tokio::sync::Mutex;
 use wiremock::MockServer;
 
 pub const TEST_API_KEY: &str = "signkit_abcdef1234567890abcdef1234567890abcdef12345";
+pub const TEST_RECIPIENT_CAPABILITY: &str = "skr1_abcdef1234567890abcdef1234567890abcdef12345";
 pub const TEST_ENVELOPE_ID: &str = "0191b26f-4000-7000-8000-000000000001";
 pub const TEST_ENVELOPE_ID_2: &str = "0191b26f-4000-7000-8000-000000000002";
+pub const TEST_RECIPIENT_ID: &str = "0191eb70-6523-74b2-b7b5-2fa75bb6d001";
+pub const TEST_DOCUMENT_ID: &str = "0191eb70-6523-74b2-b7b5-2fa75bb6d002";
+pub const TEST_FIELD_ID: &str = "0191eb70-6523-74b2-b7b5-2fa75bb6d003";
 
 static TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 

@@ -19,6 +19,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub api_key_stdin: bool,
 
+    /// Read the recipient capability token from standard input rather than the
+    /// SIGNKIT_RECIPIENT_CAPABILITY environment variable. Used only by `recipient`
+    /// commands; the sender SIGNKIT_API_KEY never authorizes them.
+    #[arg(long, global = true)]
+    pub recipient_capability_stdin: bool,
+
     /// Path to non-secret configuration file.
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
@@ -49,6 +55,11 @@ pub enum Command {
 
     /// Envelope query, mutation, and evidence commands.
     Envelopes(EnvelopesArgs),
+
+    /// Recipient capability commands: read context/documents, download a bounded
+    /// PDF, and record viewed/sign/approve/decline. Authenticated solely by a
+    /// recipient capability token, never by the sender API key.
+    Recipient(RecipientArgs),
 }
 
 #[derive(Debug, Args)]
@@ -658,4 +669,173 @@ pub struct EnvelopeRevisionDiffArgs {
     /// Whether to compute unified diff text for modified text documents (default: true).
     #[arg(long, value_name = "BOOL")]
     pub include_unified: Option<bool>,
+}
+
+#[derive(Debug, Args)]
+pub struct RecipientArgs {
+    #[command(subcommand)]
+    pub subcommand: RecipientSubcommand,
+}
+
+const RECIPIENT_CONSENT_HELP: &str = "Explicit confirmation that the recipient has reviewed and authorized this exact action. Supplying this flag is an attestation, by the caller, that the recipient genuinely took this action; an automated agent must never supply it without real, contemporaneous recipient authorization. Omit it (or use --validate-only / --example) to inspect or validate the command without submitting it.";
+
+#[derive(Debug, Subcommand)]
+pub enum RecipientSubcommand {
+    /// Read the current recipient's signing context (authenticated by recipient capability).
+    Context,
+
+    /// Read the recipient's sent documents, source, placed fields, and field generation.
+    Documents,
+
+    /// Download the bounded PDF bytes for one sent document.
+    Pdf(RecipientPdfArgs),
+
+    /// Record that the recipient viewed the envelope (requires --consent).
+    Viewed(RecipientActionArgs),
+
+    /// Record the recipient's field values and signature (requires --consent).
+    Sign(RecipientSignArgs),
+
+    /// Record the recipient's approval (requires --consent).
+    Approve(RecipientActionArgs),
+
+    /// Record the recipient's decline (requires --consent).
+    Decline(RecipientActionArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(
+    about = "Download the bounded PDF bytes for one sent document.",
+    long_about = "Download the bounded PDF bytes for one sent document belonging to the \
+        envelope named by the recipient capability's own context.\n\n\
+        Provide --document-id for envelopes with a pinned multi-document set. \
+        Omit it only for legacy single-document envelopes, where the server \
+        serves the one frozen agreement PDF directly.",
+    after_help = "EXAMPLES:\n  \
+        signkit recipient pdf 0191b26f-4000-7000-8000-000000000001 --document-id 0191eb70-6523-74b2-b7b5-2fa75bb6d002 --output agreement.pdf\n  \
+        signkit recipient pdf 0191b26f-4000-7000-8000-000000000001 --output agreement.pdf"
+)]
+pub struct RecipientPdfArgs {
+    /// Canonical RFC 9562 UUIDv7 identifier of the envelope.
+    #[arg(value_name = "ENVELOPE_ID")]
+    pub envelope_id: String,
+
+    /// Canonical RFC 9562 UUIDv7 identifier of the document within the envelope. Omit only for legacy single-document envelopes.
+    #[arg(long, value_name = "DOCUMENT_ID")]
+    pub document_id: Option<String>,
+
+    /// Destination file, or `-` for stdout.
+    #[arg(long, value_name = "PATH")]
+    pub output: String,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    long_about = "Submit a recipient command (viewed, approve, or decline) identified by \
+        envelopeId and recipientId.\n\n\
+        Supports local input validation via --validate-only (offline, non-mutating) \
+        and schema discovery via --example. Submitting the command for real requires \
+        --consent, documented below.",
+    after_help = "CANONICAL JSON EXAMPLE:\n  \
+        {\n    \
+          \"envelopeId\": \"0191b26f-4000-7000-8000-000000000001\",\n    \
+          \"recipientId\": \"0191eb70-6523-74b2-b7b5-2fa75bb6d001\"\n  \
+        }\n\n\
+        CONSENT:\n  \
+          Supplying --consent is an attestation that the recipient authorized this exact \
+          action. An automated agent must never supply --consent without genuine, \
+          contemporaneous recipient authorization for this specific command.\n\n\
+        EXAMPLES:\n  \
+          signkit recipient viewed --example\n  \
+          signkit recipient viewed --validate-only --file payload.json\n  \
+          signkit recipient viewed --file payload.json --consent"
+)]
+pub struct RecipientActionArgs {
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `envelopeId` onto the JSON body.
+    #[arg(long, value_name = "ENVELOPE_ID")]
+    pub envelope_id: Option<String>,
+
+    /// Overlay `recipientId` onto the JSON body.
+    #[arg(long, value_name = "RECIPIENT_ID")]
+    pub recipient_id: Option<String>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+
+    /// Safely validate payload locally without issuing a network request.
+    #[arg(long)]
+    pub validate_only: bool,
+
+    /// Print a canonical JSON request example and exit.
+    #[arg(long)]
+    pub example: bool,
+
+    #[arg(long, help = RECIPIENT_CONSENT_HELP)]
+    pub consent: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(
+    long_about = "Submit the recipient's field values and record their signature.\n\n\
+        Supports local input validation via --validate-only (offline, non-mutating) \
+        and schema discovery via --example. Submitting the command for real requires \
+        --consent, documented below.",
+    after_help = "CANONICAL JSON EXAMPLE:\n  \
+        {\n    \
+          \"envelopeId\": \"0191b26f-4000-7000-8000-000000000001\",\n    \
+          \"recipientId\": \"0191eb70-6523-74b2-b7b5-2fa75bb6d001\",\n    \
+          \"expectedFieldGeneration\": 0,\n    \
+          \"values\": [\n      \
+            {\n        \
+              \"fieldId\": \"0191eb70-6523-74b2-b7b5-2fa75bb6d002\",\n        \
+              \"value\": \"Jane Doe\"\n      \
+            }\n    \
+          ]\n  \
+        }\n\n\
+        CONSENT:\n  \
+          Supplying --consent is an attestation that the recipient reviewed and \
+          authorized signing with exactly these field values. An automated agent \
+          must never supply --consent without genuine, contemporaneous recipient \
+          authorization for this specific command.\n\n\
+        EXAMPLES:\n  \
+          signkit recipient sign --example\n  \
+          signkit recipient sign --validate-only --file payload.json\n  \
+          signkit recipient sign --file payload.json --consent"
+)]
+pub struct RecipientSignArgs {
+    /// JSON file or `-` for stdin. Defaults to stdin.
+    #[arg(long, value_name = "PATH", default_value = "-")]
+    pub file: String,
+
+    /// Overlay `envelopeId` onto the JSON body.
+    #[arg(long, value_name = "ENVELOPE_ID")]
+    pub envelope_id: Option<String>,
+
+    /// Overlay `recipientId` onto the JSON body.
+    #[arg(long, value_name = "RECIPIENT_ID")]
+    pub recipient_id: Option<String>,
+
+    /// Overlay `expectedFieldGeneration` onto the JSON body.
+    #[arg(long, value_name = "N")]
+    pub expected_field_generation: Option<u64>,
+
+    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+
+    /// Safely validate payload locally without issuing a network request.
+    #[arg(long)]
+    pub validate_only: bool,
+
+    /// Print a canonical JSON request example and exit.
+    #[arg(long)]
+    pub example: bool,
+
+    #[arg(long, help = RECIPIENT_CONSENT_HELP)]
+    pub consent: bool,
 }

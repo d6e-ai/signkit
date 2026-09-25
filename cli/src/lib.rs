@@ -35,9 +35,25 @@ pub async fn run_cli(cli: Cli) -> ExitCode {
         }
     }
 
+    if let Command::Recipient(ref args) = cli.command {
+        if commands::recipient::is_offline(&args.subcommand) {
+            let result = commands::recipient::execute_offline(&args.subcommand, raw, pretty);
+            return match result {
+                Ok(()) => ExitCode::Success,
+                Err(err) => {
+                    let exit_code = err.exit_code();
+                    let problem = err.to_problem_detail("cli://signkit/validation");
+                    print_problem(&problem, pretty);
+                    exit_code
+                }
+            };
+        }
+    }
+
     let config = match resolve_config(
         cli.base_url,
         cli.api_key_stdin,
+        cli.recipient_capability_stdin,
         cli.config.as_deref(),
         cli.timeout,
     ) {
@@ -65,6 +81,9 @@ pub async fn run_cli(cli: Cli) -> ExitCode {
         Command::Openapi => commands::openapi::execute(&client, raw, pretty).await,
         Command::Envelopes(args) => {
             commands::envelopes::execute(&client, args.subcommand, raw, pretty).await
+        }
+        Command::Recipient(args) => {
+            commands::recipient::execute(&client, args.subcommand, raw, pretty).await
         }
     };
 
