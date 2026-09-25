@@ -65,6 +65,15 @@ pnpm --filter create-signkit test
 cd cli && cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cd ..
 ```
 
+CI also runs `scripts/test-cli-recipient-e2e.mjs` as a separate real-backend
+gate. For a local repeat, build the Node server and debug Rust CLI, then point
+`POSTGRES_TEST_URL` only at a disposable loopback PostgreSQL database named
+`signkit_cli_e2e` and the `S3_*` variables only at a disposable loopback
+S3-compatible bucket named `signkit-cli-e2e`. The script refuses other names
+or non-loopback endpoints, creates records and objects, and exercises both
+signer and approver CLI completion without a browser. Never aim it at a shared
+instance or reuse production credentials.
+
 Then build and verify a synthetic release bundle exactly like CI does. The
 `SIGNKIT_RELEASE_TAG` override keeps the branch name out of the tag, and
 `GITHUB_SHA` must be a 40-character commit:
