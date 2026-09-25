@@ -14,7 +14,7 @@ Authorization: Bearer signkit_<43 base64url characters>
 
 No tenant selector is accepted. A key belongs to the local member that created it and works only while that owner remains active. Its scopes are intersected with the route's required scope on every request.
 
-Recipient endpoints use `skr1_` capability links and the encrypted browser session created from them. Background drains use their dedicated deployment secrets.
+Recipient browser endpoints use `skr1_` capability links and the encrypted browser session created from them. The separate `/api/v1/recipient/**` CLI surface accepts only the recipient's own `skr1_` bearer capability; neither a sender API key nor a browser cookie authorizes it. Background drains use their dedicated deployment secrets.
 
 The contact API is human-session-only. API keys, recipient capabilities, and recipient browser sessions do not authorize contact reads or mutations.
 
@@ -100,6 +100,20 @@ Contacts are created only by the explicit save operation. Selecting one copies e
 The `/api/v1/signing/**` family exchanges a capability for an envelope-scoped browser session, returns the pinned recipient workspace, records viewing, and accepts decline, approve, or sign decisions. Field submissions are validated against the pinned generation and the fields assigned to that recipient.
 
 The public `/s/{capability}` link redirects to `/{locale}/sign/{envelopeId}` after sealing the browser session. The envelope id remains in the URL so refreshes are deterministic; authority still comes from the encrypted session, not the URL.
+
+The browserless `/api/v1/recipient/**` family uses `Authorization: Bearer skr1_…` from the recipient's own invitation. It rejects requests carrying browser `Cookie` or `Origin` headers and never accepts an operator API key. Its endpoints are:
+
+| Method | Path                                           | Purpose                              |
+| ------ | ---------------------------------------------- | ------------------------------------ |
+| `GET`  | `/api/v1/recipient/context`                    | Read active recipient context        |
+| `GET`  | `/api/v1/recipient/documents`                  | Discover pinned documents and fields |
+| `GET`  | `/api/v1/recipient/documents/{envelopeId}.pdf` | Download a pinned document PDF       |
+| `POST` | `/api/v1/recipient/viewed`                     | Record document viewing              |
+| `POST` | `/api/v1/recipient/sign`                       | Sign assigned fields                 |
+| `POST` | `/api/v1/recipient/approve`                    | Approve the agreement                |
+| `POST` | `/api/v1/recipient/decline`                    | Decline the agreement                |
+
+Decision requests require an `Idempotency-Key` and the expected envelope/recipient identifiers; signing also requires the expected field generation and all assigned field values. The server rechecks the live capability, routing, role, expiry, revocation, and pinned documents. An automation agent must obtain the recipient's explicit authorization for the specific decision; possession of the capability alone is not consent. See [CLI recipient review and decisions](cli.md#recipient-review-and-decisions).
 
 ## Completion artifacts
 

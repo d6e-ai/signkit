@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-09-25
+
+### Added
+
+- Browserless recipient review, signing, approval, and decline in the Rust CLI using a recipient's own invitation capability. A separate bearer-only API serves recipient context, pinned documents/PDF, and decisions without requiring a browser session ([#177](https://github.com/d6e-ai/signkit/issues/177)).
+- A real-backend CLI end-to-end test covers sender preparation, signer and approver decisions, completion evidence/PDF, and credential-leak checks against PostgreSQL and S3-compatible storage.
+
+### Security
+
+- Recipient capabilities remain separate from sender API keys; CLI decisions require explicit consent, and server-side role, routing, revocation, expiry, field, and idempotency checks remain in force. An automation agent must not sign on a person's behalf without that person's contemporaneous authorization for the specific document and field values.
+- Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements. The optional PAdES B-B/B-T instance seal is not a recipient certificate signature or a claim of advanced or qualified status; Vercel remains CI-only.
+
 ## [0.1.9] - 2026-09-24
 
 ### Fixed
