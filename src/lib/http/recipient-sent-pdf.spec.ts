@@ -55,6 +55,30 @@ const ok: RecipientSentPdfResult = {
 const unseal = async (): Promise<string> => TOKEN;
 
 describe('recipient sent PDF HTTP handler', () => {
+	it('downloads the pinned document with a browserless bearer and no cookie lookup', async () => {
+		const documentId: string = '01910000-0000-7000-8000-000000000003';
+		const app: RecipientSentPdfApplicationPort = application(ok);
+		const cookies = { get: vi.fn() } as unknown as Cookies;
+		const url = new URL(
+			`https://signkit.example/api/v1/recipient/documents/${ENVELOPE_ID}.pdf?documentId=${documentId}`
+		);
+		const request = new Request(url, { headers: { authorization: `Bearer ${TOKEN}` } });
+		const response: Response = await createRecipientSentPdfHandler(
+			() => app,
+			unseal,
+			'bearer'
+		)({
+			cookies,
+			params: { envelopeId: ENVELOPE_ID },
+			request,
+			url
+		} as unknown as RequestEvent);
+		expect(response.status).toBe(200);
+		expect(response.headers.get('vary')).toBe('Authorization');
+		expect(app.read).toHaveBeenCalledWith(TOKEN, ENVELOPE_ID, documentId);
+		expect(cookies.get).not.toHaveBeenCalled();
+	});
+
 	it('serves application/pdf with private, unframeable headers', async () => {
 		const app: RecipientSentPdfApplicationPort = application(ok);
 		const response: Response = await createRecipientSentPdfHandler(

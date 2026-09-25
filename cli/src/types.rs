@@ -1810,6 +1810,167 @@ pub struct RevisionDiffResponse {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
+/// Public recipient signing context, shared shape for both the standalone
+/// context response and the `access` field of the documents response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientContext {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+    #[serde(rename = "recipientName")]
+    pub recipient_name: String,
+    pub role: String,
+    pub locale: String,
+    #[serde(rename = "recipientStatus")]
+    pub recipient_status: String,
+    #[serde(rename = "envelopeTitle")]
+    pub envelope_title: String,
+    #[serde(rename = "envelopeStatus")]
+    pub envelope_status: EnvelopeStatus,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/recipient/context`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientContextResponse {
+    pub access: RecipientContext,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// One sent document within a `RecipientDocumentsResponse`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientSentDocument {
+    #[serde(rename = "documentId")]
+    pub document_id: String,
+    pub position: u32,
+    pub title: String,
+    pub kind: String,
+    #[serde(rename = "pageCount")]
+    pub page_count: u32,
+    #[serde(rename = "pageWidth")]
+    pub page_width: f64,
+    #[serde(rename = "pageHeight")]
+    pub page_height: f64,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// A field the recipient must complete, positioned on one sent document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientPlacedField {
+    pub id: String,
+    #[serde(rename = "documentId")]
+    pub document_id: Option<String>,
+    #[serde(rename = "fieldType")]
+    pub field_type: String,
+    pub label: String,
+    pub required: bool,
+    pub geometry: FieldGeometry,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/recipient/documents`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientDocumentsResponse {
+    pub access: RecipientContext,
+    pub documents: Vec<RecipientSentDocument>,
+    pub source: String,
+    pub fields: Vec<RecipientPlacedField>,
+    #[serde(rename = "fieldGeneration")]
+    pub field_generation: u64,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Request body shared by `POST /api/v1/recipient/viewed|approve|decline`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientSimpleActionRequest {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+}
+
+/// Result entity shared by the `viewed`, `approved`, and `declined` response wrappers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientActionResult {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+    #[serde(rename = "recipientStatus")]
+    pub recipient_status: String,
+    #[serde(rename = "envelopeStatus")]
+    pub envelope_status: EnvelopeStatus,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `POST /api/v1/recipient/viewed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientViewedResponse {
+    pub viewed: RecipientActionResult,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `POST /api/v1/recipient/approve`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientApproveResponse {
+    pub approved: RecipientActionResult,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `POST /api/v1/recipient/decline`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientDeclineResponse {
+    pub declined: RecipientActionResult,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// A single field value submitted with a `POST /api/v1/recipient/sign` command.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RecipientFieldValue {
+    Text(String),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientSignFieldValue {
+    #[serde(rename = "fieldId")]
+    pub field_id: String,
+    pub value: RecipientFieldValue,
+}
+
+/// Request body for `POST /api/v1/recipient/sign`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientSignRequest {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+    #[serde(rename = "expectedFieldGeneration")]
+    pub expected_field_generation: u64,
+    pub values: Vec<RecipientSignFieldValue>,
+}
+
+/// Response payload from `POST /api/v1/recipient/sign`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientSignResponse {
+    pub signed: RecipientActionResult,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

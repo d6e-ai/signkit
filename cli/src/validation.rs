@@ -79,6 +79,36 @@ pub const EXAMPLE_VOID_JSON: &str = r#"{
   "expectedGeneration": 1
 }"#;
 
+pub const EXAMPLE_RECIPIENT_VIEWED_JSON: &str = r#"{
+  "envelopeId": "0191b26f-4000-7000-8000-000000000001",
+  "recipientId": "0191eb70-6523-74b2-b7b5-2fa75bb6d001"
+}"#;
+
+pub const EXAMPLE_RECIPIENT_APPROVE_JSON: &str = r#"{
+  "envelopeId": "0191b26f-4000-7000-8000-000000000001",
+  "recipientId": "0191eb70-6523-74b2-b7b5-2fa75bb6d001"
+}"#;
+
+pub const EXAMPLE_RECIPIENT_DECLINE_JSON: &str = r#"{
+  "envelopeId": "0191b26f-4000-7000-8000-000000000001",
+  "recipientId": "0191eb70-6523-74b2-b7b5-2fa75bb6d001"
+}"#;
+
+pub const EXAMPLE_RECIPIENT_SIGN_JSON: &str = r#"{
+  "envelopeId": "0191b26f-4000-7000-8000-000000000001",
+  "recipientId": "0191eb70-6523-74b2-b7b5-2fa75bb6d001",
+  "expectedFieldGeneration": 0,
+  "values": [
+    {
+      "fieldId": "0191eb70-6523-74b2-b7b5-2fa75bb6d002",
+      "value": "Jane Doe"
+    }
+  ]
+}"#;
+
+pub const MAX_RECIPIENT_VALUES: usize = 50;
+pub const MAX_RECIPIENT_VALUE_CHARS: usize = 4000;
+
 /// Prints the canonical JSON request example to stdout.
 pub fn print_example(example: &str, raw: bool, pretty: bool) -> Result<(), CliError> {
     if raw && !pretty {
@@ -1425,6 +1455,304 @@ pub fn validate_void_payload(
         envelope_id: envelope_id.map(|s| s.to_string()),
         expected_generation: expected_gen_val,
         summary: Some("Validated void parameters.".to_string()),
+        extra: Default::default(),
+    })
+}
+
+/// Validates the `{ envelopeId, recipientId }` payload shared by the
+/// `viewed`, `approve`, and `decline` recipient commands.
+pub fn validate_recipient_action_payload(
+    object: &serde_json::Map<String, serde_json::Value>,
+    command: &str,
+) -> Result<ValidationReceipt, CliError> {
+    let mut errors: Vec<ProblemValidationError> = Vec::new();
+
+    let allowed_keys: HashSet<&str> = ["envelopeId", "recipientId"].into_iter().collect();
+    for key in object.keys() {
+        if !allowed_keys.contains(key.as_str()) {
+            errors.push(ProblemValidationError {
+                path: key.clone(),
+                message: format!(
+                    "Unrecognized property '{key}'. Extra properties are not permitted."
+                ),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    let mut envelope_id_val: Option<String> = None;
+    match object.get("envelopeId") {
+        Some(val) => match val.as_str() {
+            Some(id) if is_valid_uuid_v7(id) => {
+                envelope_id_val = Some(id.to_string());
+            }
+            _ => {
+                errors.push(ProblemValidationError {
+                    path: "envelopeId".to_string(),
+                    message: "envelopeId must be a canonical lowercase RFC 9562 UUIDv7."
+                        .to_string(),
+                    extra: Default::default(),
+                });
+            }
+        },
+        None => {
+            errors.push(ProblemValidationError {
+                path: "envelopeId".to_string(),
+                message: "envelopeId is required.".to_string(),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    match object.get("recipientId") {
+        Some(val) => match val.as_str() {
+            Some(id) if is_valid_uuid_v7(id) => {}
+            _ => {
+                errors.push(ProblemValidationError {
+                    path: "recipientId".to_string(),
+                    message: "recipientId must be a canonical lowercase RFC 9562 UUIDv7."
+                        .to_string(),
+                    extra: Default::default(),
+                });
+            }
+        },
+        None => {
+            errors.push(ProblemValidationError {
+                path: "recipientId".to_string(),
+                message: "recipientId is required.".to_string(),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(CliError::usage_with_errors(
+            format!("{command} JSON did not match the required schema."),
+            errors,
+        ));
+    }
+
+    Ok(ValidationReceipt {
+        valid: true,
+        command: command.to_string(),
+        envelope_id: envelope_id_val,
+        expected_generation: None,
+        summary: Some(format!("Validated {command} parameters.")),
+        extra: Default::default(),
+    })
+}
+
+/// Validates the `{ envelopeId, recipientId, expectedFieldGeneration, values }`
+/// payload for the `sign` recipient command.
+pub fn validate_recipient_sign_payload(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<ValidationReceipt, CliError> {
+    let mut errors: Vec<ProblemValidationError> = Vec::new();
+
+    let allowed_keys: HashSet<&str> = [
+        "envelopeId",
+        "recipientId",
+        "expectedFieldGeneration",
+        "values",
+    ]
+    .into_iter()
+    .collect();
+    for key in object.keys() {
+        if !allowed_keys.contains(key.as_str()) {
+            errors.push(ProblemValidationError {
+                path: key.clone(),
+                message: format!(
+                    "Unrecognized property '{key}'. Extra properties are not permitted."
+                ),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    let mut envelope_id_val: Option<String> = None;
+    match object.get("envelopeId") {
+        Some(val) => match val.as_str() {
+            Some(id) if is_valid_uuid_v7(id) => {
+                envelope_id_val = Some(id.to_string());
+            }
+            _ => {
+                errors.push(ProblemValidationError {
+                    path: "envelopeId".to_string(),
+                    message: "envelopeId must be a canonical lowercase RFC 9562 UUIDv7."
+                        .to_string(),
+                    extra: Default::default(),
+                });
+            }
+        },
+        None => {
+            errors.push(ProblemValidationError {
+                path: "envelopeId".to_string(),
+                message: "envelopeId is required.".to_string(),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    match object.get("recipientId") {
+        Some(val) => match val.as_str() {
+            Some(id) if is_valid_uuid_v7(id) => {}
+            _ => {
+                errors.push(ProblemValidationError {
+                    path: "recipientId".to_string(),
+                    message: "recipientId must be a canonical lowercase RFC 9562 UUIDv7."
+                        .to_string(),
+                    extra: Default::default(),
+                });
+            }
+        },
+        None => {
+            errors.push(ProblemValidationError {
+                path: "recipientId".to_string(),
+                message: "recipientId is required.".to_string(),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    let mut expected_field_gen_val: Option<u64> = None;
+    match object.get("expectedFieldGeneration") {
+        Some(val) => match val.as_u64() {
+            Some(n) if n < MAX_GENERATION => {
+                expected_field_gen_val = Some(n);
+            }
+            _ => {
+                errors.push(ProblemValidationError {
+                    path: "expectedFieldGeneration".to_string(),
+                    message: format!(
+                        "expectedFieldGeneration must be an integer between 0 and {}.",
+                        MAX_GENERATION - 1
+                    ),
+                    extra: Default::default(),
+                });
+            }
+        },
+        None => {
+            errors.push(ProblemValidationError {
+                path: "expectedFieldGeneration".to_string(),
+                message: "expectedFieldGeneration is required.".to_string(),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    match object.get("values") {
+        Some(serde_json::Value::Array(values)) => {
+            if values.len() > MAX_RECIPIENT_VALUES {
+                errors.push(ProblemValidationError {
+                    path: "values".to_string(),
+                    message: format!("values must contain at most {MAX_RECIPIENT_VALUES} items."),
+                    extra: Default::default(),
+                });
+            }
+            let value_allowed_keys: HashSet<&str> = ["fieldId", "value"].into_iter().collect();
+            for (i, item) in values.iter().enumerate() {
+                match item.as_object() {
+                    Some(value_obj) => {
+                        for key in value_obj.keys() {
+                            if !value_allowed_keys.contains(key.as_str()) {
+                                errors.push(ProblemValidationError {
+                                    path: format!("values[{i}].{key}"),
+                                    message: format!(
+                                        "Unrecognized property '{key}' in value item."
+                                    ),
+                                    extra: Default::default(),
+                                });
+                            }
+                        }
+                        match value_obj.get("fieldId") {
+                            Some(val) => {
+                                match val.as_str() {
+                                    Some(id) if is_valid_uuid_v7(id) => {}
+                                    _ => {
+                                        errors.push(ProblemValidationError {
+                                        path: format!("values[{i}].fieldId"),
+                                        message: "fieldId must be a canonical lowercase RFC 9562 UUIDv7.".to_string(),
+                                        extra: Default::default(),
+                                    });
+                                    }
+                                }
+                            }
+                            None => {
+                                errors.push(ProblemValidationError {
+                                    path: format!("values[{i}].fieldId"),
+                                    message: "fieldId is required.".to_string(),
+                                    extra: Default::default(),
+                                });
+                            }
+                        }
+                        match value_obj.get("value") {
+                            Some(serde_json::Value::String(s)) => {
+                                if javascript_string_length(s) > MAX_RECIPIENT_VALUE_CHARS {
+                                    errors.push(ProblemValidationError {
+                                        path: format!("values[{i}].value"),
+                                        message: format!(
+                                            "value must contain at most {MAX_RECIPIENT_VALUE_CHARS} characters."
+                                        ),
+                                        extra: Default::default(),
+                                    });
+                                }
+                            }
+                            Some(serde_json::Value::Bool(_)) => {}
+                            Some(_) => {
+                                errors.push(ProblemValidationError {
+                                    path: format!("values[{i}].value"),
+                                    message: "value must be a string or a boolean.".to_string(),
+                                    extra: Default::default(),
+                                });
+                            }
+                            None => {
+                                errors.push(ProblemValidationError {
+                                    path: format!("values[{i}].value"),
+                                    message: "value is required.".to_string(),
+                                    extra: Default::default(),
+                                });
+                            }
+                        }
+                    }
+                    None => {
+                        errors.push(ProblemValidationError {
+                            path: format!("values[{i}]"),
+                            message: "Each value item must be an object.".to_string(),
+                            extra: Default::default(),
+                        });
+                    }
+                }
+            }
+        }
+        Some(_) => {
+            errors.push(ProblemValidationError {
+                path: "values".to_string(),
+                message: "values must be an array.".to_string(),
+                extra: Default::default(),
+            });
+        }
+        None => {
+            errors.push(ProblemValidationError {
+                path: "values".to_string(),
+                message: "values is required.".to_string(),
+                extra: Default::default(),
+            });
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(CliError::usage_with_errors(
+            "Sign JSON did not match the required schema.",
+            errors,
+        ));
+    }
+
+    Ok(ValidationReceipt {
+        valid: true,
+        command: "sign".to_string(),
+        envelope_id: envelope_id_val,
+        expected_generation: expected_field_gen_val,
+        summary: Some("Validated sign parameters.".to_string()),
         extra: Default::default(),
     })
 }

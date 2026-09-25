@@ -65,6 +65,19 @@ function application(
 }
 
 describe('recipient documents HTTP handler', () => {
+	it('rejects a browser Origin on the CLI document-discovery surface', async () => {
+		const app: RecipientWorkspaceApplicationPort = application();
+		const requestEvent: RequestEvent = event(`Bearer ${token}`);
+		requestEvent.request.headers.set('origin', 'https://signkit.example');
+		const response: Response = await createRecipientDocumentsHandler(
+			() => app,
+			undefined,
+			'bearer'
+		)(requestEvent);
+		expect(response.status).toBe(404);
+		expect(app.resolve).not.toHaveBeenCalled();
+	});
+
 	it.each([undefined, 'Bearer malformed', `${`Bearer ${token}`}, Basic extra`])(
 		'rejects missing or malformed authorization without resolving storage',
 		async (authorization) => {
@@ -95,11 +108,28 @@ describe('recipient documents HTTP handler', () => {
 			source: workspace.source
 		});
 		const serialized: string = JSON.stringify(body);
-		expect(serialized).not.toMatch(/organization|archiveKey|archiveSha256|skr1_/);
-		expect(serialized).not.toMatch(/Your signature|fieldGeneration|field-1/);
+		expect(serialized).not.toMatch(
+			/organization|archiveKey|archiveSha256|skr1_|Your signature|fieldGeneration|field-1/
+		);
 		// The agreement text itself is never part of a JSON response: recipients
-		// read the rendered PDF from the session-protected endpoint instead.
+		// read the pinned PDF from a capability-authorized endpoint instead.
 		expect(serialized).not.toMatch(/# Agreement|documents\/|\.md/);
+	});
+
+	it('returns only the recipient-owned fields on the bearer CLI surface', async () => {
+		const response: Response = await createRecipientDocumentsHandler(
+			() => application(),
+			undefined,
+			'bearer'
+		)(event(`Bearer ${token}`));
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			access: workspace.access,
+			documents: workspace.documents,
+			source: workspace.source,
+			fields: workspace.fields,
+			fieldGeneration: workspace.fieldGeneration
+		});
 	});
 
 	it.each([

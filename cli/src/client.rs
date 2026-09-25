@@ -42,6 +42,10 @@ impl BinaryGetSpec {
         accept: "text/plain, application/problem+json",
         max_bytes: MAX_RESPONSE_BYTES,
     };
+    pub const RECIPIENT_PDF: Self = Self {
+        accept: "application/pdf, application/problem+json",
+        max_bytes: crate::io::MAX_COMPLETION_PDF_BYTES,
+    };
 }
 
 /// Successful binary GET body plus optional commit pin header.
@@ -463,6 +467,368 @@ impl SignKitClient {
         auth_val.set_sensitive(true);
         headers.insert(AUTHORIZATION, auth_val);
         Ok(())
+    }
+
+    /// Applies recipient capability bearer authorization. Deliberately reads
+    /// only `config.recipient_capability`, never `config.api_key`: a sender
+    /// API key must never authorize a recipient command.
+    fn apply_recipient_auth(&self, headers: &mut HeaderMap, token: &str) -> Result<(), CliError> {
+        let auth_str = format!("Bearer {token}");
+        let mut auth_val = HeaderValue::from_str(&auth_str).map_err(|_| {
+            CliError::usage("Recipient capability contains invalid characters for HTTP header")
+        })?;
+        auth_val.set_sensitive(true);
+        headers.insert(AUTHORIZATION, auth_val);
+        Ok(())
+    }
+
+    /// Performs a safe, bounded GET request authenticated by the recipient
+    /// capability token (never the sender API key).
+    pub async fn get_recipient<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, CliError> {
+        let token = self.config.require_recipient_capability()?.to_string();
+        self.get_recipient_inner(path, query, &token)
+            .await
+            .map_err(|err| Self::sanitize_recipient_error(err, &token))
+    }
+
+    async fn get_recipient_inner<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        token: &str,
+    ) -> Result<T, CliError> {
+        let relative = path.trim_start_matches('/');
+        let url = self
+            .config
+            .base_url
+            .join(relative)
+            .map_err(|e| CliError::usage(format!("Failed to construct request URL: {e}")))?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, application/problem+json"),
+        );
+        self.apply_recipient_auth(&mut headers, token)?;
+
+        let mut request_builder = self.http.get(url).headers(headers);
+        if !query.is_empty() {
+            request_builder = request_builder.query(query);
+        }
+
+        let response = request_builder.send().await.map_err(|err| {
+            if err.is_timeout() {
+                CliError::Timeout(format!(
+                    "Request to {path} timed out after {}s",
+                    self.config.timeout_secs
+                ))
+            } else if err.is_redirect() {
+                CliError::RedirectRefused(format!("Redirect requested for {path}"))
+            } else {
+                CliError::Network(format!("Request failed: {err}"))
+            }
+        })?;
+
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+            return Err(CliError::RedirectRefused(location));
+        }
+
+        let bytes = Self::read_bounded_body(response, MAX_RESPONSE_BYTES).await?;
+
+        if status.is_success() {
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(CliError::Json)?;
+            if Self::json_value_contains_token(&value, token) {
+                return Err(CliError::Network(
+                    "Recipient response echoed a credential; refusing to print it".to_string(),
+                ));
+            }
+            let data: T = serde_json::from_value(value).map_err(CliError::Json)?;
+            Ok(data)
+        } else {
+            Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
+        }
+    }
+
+    /// Performs a safe, bounded JSON POST with a required Idempotency-Key,
+    /// authenticated by the recipient capability token (never the sender API key).
+    pub async fn post_recipient<T, B>(
+        &self,
+        path: &str,
+        body: &B,
+        idempotency_key: &str,
+    ) -> Result<T, CliError>
+    where
+        T: DeserializeOwned,
+        B: serde::Serialize,
+    {
+        let token = self.config.require_recipient_capability()?.to_string();
+        self.post_recipient_inner(path, body, idempotency_key, &token)
+            .await
+            .map_err(|err| Self::sanitize_recipient_error(err, &token))
+    }
+
+    async fn post_recipient_inner<T, B>(
+        &self,
+        path: &str,
+        body: &B,
+        idempotency_key: &str,
+        token: &str,
+    ) -> Result<T, CliError>
+    where
+        T: DeserializeOwned,
+        B: serde::Serialize,
+    {
+        let relative = path.trim_start_matches('/');
+        let url = self
+            .config
+            .base_url
+            .join(relative)
+            .map_err(|e| CliError::usage(format!("Failed to construct request URL: {e}")))?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, application/problem+json"),
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let idempotency_val = HeaderValue::from_str(idempotency_key).map_err(|_| {
+            CliError::usage("Idempotency-Key contains invalid characters for HTTP header")
+        })?;
+        headers.insert(HeaderName::from_static("idempotency-key"), idempotency_val);
+        self.apply_recipient_auth(&mut headers, token)?;
+
+        let response = self
+            .http
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() {
+                    CliError::Timeout(format!(
+                        "Request to {path} timed out after {}s",
+                        self.config.timeout_secs
+                    ))
+                } else if err.is_redirect() {
+                    CliError::RedirectRefused(format!("Redirect requested for {path}"))
+                } else {
+                    CliError::Network(format!("Request failed: {err}"))
+                }
+            })?;
+
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+            return Err(CliError::RedirectRefused(location));
+        }
+
+        let bytes = Self::read_bounded_body(response, MAX_RESPONSE_BYTES).await?;
+
+        if status.is_success() {
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(CliError::Json)?;
+            if Self::json_value_contains_token(&value, token) {
+                return Err(CliError::Network(
+                    "Recipient response echoed a credential; refusing to print it".to_string(),
+                ));
+            }
+            let data: T = serde_json::from_value(value).map_err(CliError::Json)?;
+            Ok(data)
+        } else {
+            Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
+        }
+    }
+
+    /// Bounded binary GET authenticated by the recipient capability token
+    /// (never the sender API key). JSON problem documents still parse as errors.
+    pub async fn get_bytes_recipient(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        spec: BinaryGetSpec,
+    ) -> Result<BinaryResponse, CliError> {
+        let token = self.config.require_recipient_capability()?.to_string();
+        self.get_bytes_recipient_inner(path, query, spec, &token)
+            .await
+            .map_err(|err| Self::sanitize_recipient_error(err, &token))
+    }
+
+    async fn get_bytes_recipient_inner(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        spec: BinaryGetSpec,
+        token: &str,
+    ) -> Result<BinaryResponse, CliError> {
+        let relative = path.trim_start_matches('/');
+        let url = self
+            .config
+            .base_url
+            .join(relative)
+            .map_err(|e| CliError::usage(format!("Failed to construct request URL: {e}")))?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static(spec.accept));
+        self.apply_recipient_auth(&mut headers, token)?;
+
+        let mut request_builder = self.http.get(url).headers(headers);
+        if !query.is_empty() {
+            request_builder = request_builder.query(query);
+        }
+
+        let response = request_builder.send().await.map_err(|err| {
+            if err.is_timeout() {
+                CliError::Timeout(format!(
+                    "Request to {path} timed out after {}s",
+                    self.config.timeout_secs
+                ))
+            } else if err.is_redirect() {
+                CliError::RedirectRefused(format!("Redirect requested for {path}"))
+            } else {
+                CliError::Network(format!("Request failed: {err}"))
+            }
+        })?;
+
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+            return Err(CliError::RedirectRefused(location));
+        }
+
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = Self::read_bounded_body(response, spec.max_bytes).await?;
+
+        if status.is_success() {
+            if spec == BinaryGetSpec::RECIPIENT_PDF
+                && (content_type
+                    .as_deref()
+                    .and_then(|value| value.split(';').next())
+                    .map(|value| !value.trim().eq_ignore_ascii_case("application/pdf"))
+                    .unwrap_or(true)
+                    || !bytes.starts_with(b"%PDF-"))
+            {
+                return Err(CliError::Network(
+                    "Recipient document response is not a PDF; refusing to save it".to_string(),
+                ));
+            }
+            return Ok(BinaryResponse {
+                bytes,
+                commit_sha: None,
+                content_type,
+            });
+        }
+        Err(Self::problem_from_bytes(path, status.as_u16(), &bytes))
+    }
+
+    fn json_value_contains_token(value: &serde_json::Value, token: &str) -> bool {
+        match value {
+            serde_json::Value::String(text) => text.contains(token),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .any(|item| Self::json_value_contains_token(item, token)),
+            serde_json::Value::Object(items) => items.iter().any(|(key, item)| {
+                key.contains(token) || Self::json_value_contains_token(item, token)
+            }),
+            _ => false,
+        }
+    }
+
+    /// Defense in depth: strips any accidental echo of the recipient capability
+    /// token from an error before it can reach stdout/stderr, in case a
+    /// misbehaving or compromised server reflects the Authorization value back
+    /// (e.g. in a problem `detail`, `instance`, a redirect `location`, or a raw
+    /// network error string).
+    fn sanitize_recipient_error(err: CliError, token: &str) -> CliError {
+        fn redact(value: &str, token: &str) -> String {
+            if value.contains(token) {
+                value.replace(token, "[REDACTED]")
+            } else {
+                value.to_string()
+            }
+        }
+
+        fn redact_json(value: &mut serde_json::Value, token: &str) {
+            match value {
+                serde_json::Value::String(text) => *text = redact(text, token),
+                serde_json::Value::Array(items) => {
+                    for item in items.iter_mut() {
+                        redact_json(item, token);
+                    }
+                }
+                serde_json::Value::Object(items) => {
+                    let original = std::mem::take(items);
+                    for (key, mut item) in original {
+                        redact_json(&mut item, token);
+                        items.insert(redact(&key, token), item);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        match err {
+            CliError::ServerProblem(problem) => {
+                let mut problem = *problem;
+                problem.r#type = redact(&problem.r#type, token);
+                problem.title = redact(&problem.title, token);
+                problem.detail = redact(&problem.detail, token);
+                problem.instance = redact(&problem.instance, token);
+                if let Some(errors) = problem.errors.as_mut() {
+                    for error in errors.iter_mut() {
+                        error.path = redact(&error.path, token);
+                        error.message = redact(&error.message, token);
+                        let original = std::mem::take(&mut error.extra);
+                        for (key, mut value) in original {
+                            redact_json(&mut value, token);
+                            error.extra.insert(redact(&key, token), value);
+                        }
+                    }
+                }
+                let original = std::mem::take(&mut problem.extra);
+                for (key, mut value) in original {
+                    redact_json(&mut value, token);
+                    problem.extra.insert(redact(&key, token), value);
+                }
+                CliError::server_problem(problem)
+            }
+            CliError::RedirectRefused(location) => {
+                CliError::RedirectRefused(redact(&location, token))
+            }
+            CliError::Network(detail) => CliError::Network(redact(&detail, token)),
+            CliError::Timeout(detail) => CliError::Timeout(redact(&detail, token)),
+            CliError::Usage { detail, errors } => CliError::Usage {
+                detail: redact(&detail, token),
+                errors,
+            },
+            other => other,
+        }
     }
 
     fn problem_from_bytes(path: &str, status: u16, bytes: &[u8]) -> CliError {

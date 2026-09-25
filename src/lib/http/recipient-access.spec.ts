@@ -50,6 +50,19 @@ function application(
 }
 
 describe('recipient access HTTP handler', () => {
+	it('requires an explicit, unaccompanied bearer on the CLI surface', async () => {
+		const app: RecipientAccessApplicationPort = application();
+		const requestEvent: RequestEvent = event(`Bearer ${token}`);
+		requestEvent.request.headers.set('cookie', 'ambient=1');
+		const response: Response = await createRecipientAccessHandler(
+			() => app,
+			undefined,
+			'bearer'
+		)(requestEvent);
+		expect(response.status).toBe(404);
+		expect(app.resolve).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		undefined,
 		'Basic abc',

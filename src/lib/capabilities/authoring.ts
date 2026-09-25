@@ -65,6 +65,16 @@ export const authoringCapabilities = {
 			mutations: false
 		},
 		mutations: 'same-origin-cookie-context',
+		browserless: {
+			contextEndpoint: '/api/v1/recipient/context',
+			documentsEndpoint: '/api/v1/recipient/documents',
+			documentPdfEndpoint: '/api/v1/recipient/documents/{envelopeId}.pdf',
+			viewedEndpoint: '/api/v1/recipient/viewed',
+			signEndpoint: '/api/v1/recipient/sign',
+			approveEndpoint: '/api/v1/recipient/approve',
+			declineEndpoint: '/api/v1/recipient/decline',
+			authentication: 'recipient-bearer-capability-only'
+		},
 		roles: ['signer', 'approver', 'viewer'],
 		states: ['sent', 'in_progress'],
 		cache: 'no-store'

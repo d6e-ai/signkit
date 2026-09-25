@@ -26,7 +26,9 @@ After `pdfSeal.status` becomes `published`, download the independently validated
 
 ## Recipient surface
 
-`/api/v1/signing/**` uses recipient capability or encrypted recipient-session authority. `/s/{capability}` exchanges the link for a browser session and redirects to `/{locale}/sign/{envelopeId}`.
+`/api/v1/signing/**` and `/sign/**` serve the browser signing flow, with same-origin encrypted recipient-session authority for mutations and PDF reads. `/s/{capability}` exchanges an invitation link for that browser session and redirects to `/{locale}/sign/{envelopeId}`.
+
+Non-browser clients use `/api/v1/recipient/context`, `/documents`, `/documents/{envelopeId}.pdf`, `/viewed`, `/sign`, `/approve`, and `/decline` with the recipient's own `Authorization: Bearer skr1_...` header. These endpoints reject ambient `Cookie` and `Origin` headers and never accept an instance-member API key. Mutations require `Idempotency-Key`; signing also requires the current `expectedFieldGeneration` and the recipient's own assigned field values. Do not treat capability possession as consent to a decision.
 
 ## Common problem families
 

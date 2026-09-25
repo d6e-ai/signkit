@@ -25,7 +25,7 @@ async fn test_config_precedence_flag_over_env_over_file() {
         let _env =
             common::EnvScope::new(&[("SIGNKIT_BASE_URL", None), ("SIGNKIT_TIMEOUT_SECS", None)])
                 .await;
-        let resolved = resolve_config(None, false, Some(temp_file.path()), None).unwrap();
+        let resolved = resolve_config(None, false, false, Some(temp_file.path()), None).unwrap();
         assert_eq!(resolved.base_url.as_str(), "https://config.example.com/");
         assert_eq!(resolved.timeout_secs, 45);
     }
@@ -37,7 +37,7 @@ async fn test_config_precedence_flag_over_env_over_file() {
             ("SIGNKIT_TIMEOUT_SECS", Some("50")),
         ])
         .await;
-        let resolved2 = resolve_config(None, false, Some(temp_file.path()), None).unwrap();
+        let resolved2 = resolve_config(None, false, false, Some(temp_file.path()), None).unwrap();
         assert_eq!(resolved2.base_url.as_str(), "https://env.example.com/");
         assert_eq!(resolved2.timeout_secs, 50);
     }
@@ -51,6 +51,7 @@ async fn test_config_precedence_flag_over_env_over_file() {
         .await;
         let resolved3 = resolve_config(
             Some("https://flag.example.com".to_string()),
+            false,
             false,
             Some(temp_file.path()),
             Some(60),
@@ -186,6 +187,7 @@ async fn test_timeout_zero_rejected() {
     let result = resolve_config(
         Some("https://example.com".to_string()),
         false,
+        false,
         None,
         Some(0),
     );
@@ -200,8 +202,56 @@ async fn test_credential_redacted_in_debug() {
     ])
     .await;
 
-    let resolved = resolve_config(None, false, None, None).unwrap();
+    let resolved = resolve_config(None, false, false, None, None).unwrap();
     let debug_output = format!("{resolved:?}");
     assert!(debug_output.contains("[REDACTED]"));
     assert!(!debug_output.contains(common::TEST_API_KEY));
+}
+
+#[tokio::test]
+async fn test_recipient_capability_redacted_in_debug_and_never_substituted_by_api_key() {
+    let _env = common::EnvScope::new(&[
+        ("SIGNKIT_BASE_URL", Some("https://example.com")),
+        ("SIGNKIT_API_KEY", Some(common::TEST_API_KEY)),
+        (
+            "SIGNKIT_RECIPIENT_CAPABILITY",
+            Some(common::TEST_RECIPIENT_CAPABILITY),
+        ),
+    ])
+    .await;
+
+    let resolved = resolve_config(None, false, false, None, None).unwrap();
+    let debug_output = format!("{resolved:?}");
+    assert!(debug_output.contains("[REDACTED]"));
+    assert!(!debug_output.contains(common::TEST_RECIPIENT_CAPABILITY));
+
+    // The sender API key must never be usable as a recipient capability.
+    assert!(resolved.require_recipient_capability().is_ok());
+    assert_ne!(
+        resolved.require_recipient_capability().unwrap(),
+        common::TEST_API_KEY
+    );
+}
+
+#[tokio::test]
+async fn test_config_file_rejects_recipient_capability_key() {
+    let mut temp_file = NamedTempFile::new().unwrap();
+    writeln!(
+        temp_file,
+        r#"
+        base_url = "https://example.com"
+        recipient_capability = "skr1_illegal_stored_secret"
+        "#
+    )
+    .unwrap();
+
+    let cli = Cli::parse_from([
+        "signkit",
+        "--config",
+        temp_file.path().to_str().unwrap(),
+        "capabilities",
+    ]);
+
+    let exit_code = run_cli(cli).await;
+    assert_eq!(exit_code, ExitCode::UsageError);
 }
