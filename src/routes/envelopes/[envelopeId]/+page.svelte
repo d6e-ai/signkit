@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
-	import { SvelteSet } from 'svelte/reactivity';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
@@ -42,6 +42,8 @@
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import {
 		createEnvelopesClient,
+		createEnvelopeMutationAttempt,
+		type EnvelopeMutationAttempt,
 		EnvelopesApiError,
 		type DraftWorkspaceResponse,
 		type Envelope,
@@ -233,6 +235,17 @@
 	let voidError = $state<string | null>(null);
 	let sendDialogOpen = $state(false);
 	let voidDialogOpen = $state(false);
+
+	interface ReissueTarget {
+		id: string;
+		name: string;
+	}
+	let reissueTarget = $state<ReissueTarget | null>(null);
+	let reissuePending = $state(false);
+	let reissueError = $state<string | null>(null);
+	let reissueSuccessMessage = $state<string | null>(null);
+	let reissueRefreshWarning = $state<string | null>(null);
+	const reissueAttempts = new SvelteMap<string, EnvelopeMutationAttempt>();
 
 	const signInHref = $derived(
 		localizeHref(`/auth/login?return=${encodeURIComponent(page.url.pathname)}`)
@@ -468,6 +481,32 @@
 
 	function recipientForDelivery(recipientId: string): ReadyRecipientPublic | undefined {
 		return readyRecipients.find((recipient) => recipient.id === recipientId);
+	}
+
+	function deliveryStatusForRecipient(recipientId: string): InvitationDeliveryStatus | null {
+		const items = delivery?.deliveries.filter((entry) => entry.recipientId === recipientId) ?? [];
+		return (
+			items.find((entry) => entry.status === 'processing' || entry.status === 'blocked')?.status ??
+			items.at(-1)?.status ??
+			null
+		);
+	}
+
+	function reissueDisabledReason(recipient: ReadyRecipientPublic): string | null {
+		const status = deliveryStatusForRecipient(recipient.id);
+		if (status === null) return m.envelope_reissue_status_unavailable();
+		if (status === 'processing') return m.envelope_reissue_unavailable_processing();
+		if (status === 'blocked') return m.envelope_reissue_unavailable_blocked();
+		return null;
+	}
+
+	function reissueVisible(recipient: ReadyRecipientPublic): boolean {
+		if (envelope === null) return false;
+		const { status: envelopeStatus } = envelope;
+		const { status: recipientStatus } = recipient;
+		const envelopeOpen = envelopeStatus === 'sent' || envelopeStatus === 'in_progress';
+		const recipientOpen = recipientStatus === 'pending' || recipientStatus === 'viewed';
+		return envelopeOpen && recipientOpen;
 	}
 
 	async function refreshCompletionStatus(): Promise<void> {
@@ -1407,6 +1446,88 @@
 		}
 	}
 
+	function reissueAttemptFor(recipientId: string): EnvelopeMutationAttempt {
+		let attempt = reissueAttempts.get(recipientId);
+		if (attempt === undefined) {
+			attempt = createEnvelopeMutationAttempt();
+			reissueAttempts.set(recipientId, attempt);
+		}
+		return attempt;
+	}
+
+	function chooseReissueTarget(recipient: ReadyRecipientPublic): void {
+		if (reissuePending || !reissueVisible(recipient) || reissueDisabledReason(recipient) !== null)
+			return;
+		reissueError = null;
+		reissueSuccessMessage = null;
+		reissueRefreshWarning = null;
+		reissueTarget = { id: recipient.id, name: recipient.name };
+	}
+
+	function closeReissueDialog(): void {
+		if (reissuePending) return;
+		reissueError = null;
+		reissueTarget = null;
+	}
+
+	async function refreshDeliveryAndRecipients(): Promise<void> {
+		const [detail, deliveryStatus] = await Promise.all([
+			client.getDetail(envelopeId),
+			client.deliveries(envelopeId)
+		]);
+		envelope = detail.envelope;
+		readyRecipients = detail.recipients;
+		readyAuditEventId = detail.readyAuditEventId;
+		placedFields = detail.fields;
+		delivery = deliveryStatus;
+	}
+
+	async function confirmReissue(): Promise<void> {
+		if (reissuePending || reissueTarget === null) return;
+		const target = reissueTarget;
+		const attempt = reissueAttemptFor(target.id);
+		const idempotencyKey = attempt.key();
+		reissuePending = true;
+		reissueError = null;
+		try {
+			await client.reissueRecipientCapability(envelopeId, target.id, { idempotencyKey });
+			attempt.succeeded();
+			reissueSuccessMessage = m.envelope_reissue_success({ name: target.name });
+			reissueRefreshWarning = null;
+			reissueTarget = null;
+			try {
+				await refreshDeliveryAndRecipients();
+			} catch {
+				delivery = null;
+				reissueRefreshWarning = m.envelope_reissue_refresh_failed();
+			}
+		} catch (cause) {
+			attempt.failed(cause);
+			if (cause instanceof EnvelopesApiError && cause.status === 401) {
+				authRequired = true;
+				reissueTarget = null;
+			} else if (
+				cause instanceof EnvelopesApiError &&
+				cause.type === 'urn:signkit:problem:delivery-in-flight'
+			) {
+				reissueError = m.envelope_reissue_delivery_in_flight();
+			} else if (
+				cause instanceof EnvelopesApiError &&
+				cause.type === 'urn:signkit:problem:recipient-reissue-not-eligible'
+			) {
+				reissueError = m.envelope_reissue_not_eligible();
+			} else if (cause instanceof EnvelopesApiError && cause.status === 403) {
+				reissueError = m.envelope_reissue_forbidden();
+			} else if (cause instanceof EnvelopesApiError && cause.status === 409) {
+				reissueError = m.envelope_reissue_conflict();
+			} else {
+				reissueError = m.envelope_reissue_unavailable();
+			}
+		} finally {
+			reissuePending = false;
+		}
+	}
+
 	const isVoidable = $derived(
 		envelope !== null &&
 			(['draft', 'ready', 'sent', 'in_progress'] as const).includes(
@@ -2166,6 +2287,17 @@
 			</Tabs.Content>
 
 			<Tabs.Content value="recipients" class="flex flex-col gap-4">
+				{#if reissueSuccessMessage}
+					<Alert.Root role="status">
+						<Alert.Description>{reissueSuccessMessage}</Alert.Description>
+					</Alert.Root>
+				{/if}
+				{#if reissueRefreshWarning}
+					<Alert.Root variant="destructive" role="alert">
+						<IconAlertTriangle />
+						<Alert.Description>{reissueRefreshWarning}</Alert.Description>
+					</Alert.Root>
+				{/if}
 				<Card.Root>
 					<Card.Header class="flex-row items-center justify-between gap-3">
 						<div class="min-w-0">
@@ -2408,6 +2540,7 @@
 											<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
 											<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
 											<Table.Head>{m.envelope_recipient_col_status()}</Table.Head>
+											<Table.Head class="text-right">{m.envelope_reissue_col_actions()}</Table.Head>
 										</Table.Row>
 									</Table.Header>
 									<Table.Body>
@@ -2418,6 +2551,32 @@
 												<Table.Cell>{recipientRoleLabel(recipient.role)}</Table.Cell>
 												<Table.Cell>{recipientLocaleLabel(recipient.locale)}</Table.Cell>
 												<Table.Cell>{recipientWorkflowStatusLabel(recipient.status)}</Table.Cell>
+												<Table.Cell class="text-right">
+													{#if reissueVisible(recipient)}
+														{@const disabledReason = reissueDisabledReason(recipient)}
+														<Button
+															size="sm"
+															variant="outline"
+															aria-label={m.envelope_reissue_action_aria({ name: recipient.name })}
+															title={disabledReason ?? undefined}
+															aria-describedby={disabledReason !== null
+																? `reissue-disabled-${recipient.id}`
+																: undefined}
+															disabled={reissuePending || disabledReason !== null}
+															onclick={() => chooseReissueTarget(recipient)}
+														>
+															{m.envelope_reissue_action()}
+														</Button>
+														{#if disabledReason !== null}
+															<p
+																id={`reissue-disabled-${recipient.id}`}
+																class="mt-1 text-xs text-muted-foreground"
+															>
+																{disabledReason}
+															</p>
+														{/if}
+													{/if}
+												</Table.Cell>
 											</Table.Row>
 										{/each}
 									</Table.Body>
@@ -2442,6 +2601,45 @@
 					{/if}
 				</Card.Root>
 				<ContactManagementDialog bind:open={contactManagementOpen} />
+				<AlertDialog.Root
+					bind:open={
+						() => reissueTarget !== null,
+						(open) => {
+							if (!open) closeReissueDialog();
+						}
+					}
+				>
+					{#if reissueTarget !== null}
+						<AlertDialog.Content escapeKeydownBehavior={reissuePending ? 'ignore' : 'close'}>
+							<AlertDialog.Header>
+								<AlertDialog.Title>
+									{m.envelope_reissue_dialog_title({ name: reissueTarget.name })}
+								</AlertDialog.Title>
+								<AlertDialog.Description>
+									{m.envelope_reissue_dialog_description({ name: reissueTarget.name })}
+								</AlertDialog.Description>
+							</AlertDialog.Header>
+							{#if reissueError}
+								<p class="text-sm font-medium text-destructive" role="alert">{reissueError}</p>
+							{/if}
+							<AlertDialog.Footer>
+								<AlertDialog.Cancel disabled={reissuePending} onclick={closeReissueDialog}>
+									{m.common_cancel()}
+								</AlertDialog.Cancel>
+								<AlertDialog.Action
+									disabled={reissuePending}
+									onclick={(event) => {
+										event.preventDefault();
+										void confirmReissue();
+									}}
+								>
+									{#if reissuePending}<Spinner data-icon="inline-start" />{/if}
+									{m.envelope_reissue_dialog_confirm()}
+								</AlertDialog.Action>
+							</AlertDialog.Footer>
+						</AlertDialog.Content>
+					{/if}
+				</AlertDialog.Root>
 			</Tabs.Content>
 
 			<Tabs.Content value="fields" class="flex flex-col gap-4">
@@ -2961,7 +3159,7 @@
 										</Table.Row>
 									</Table.Header>
 									<Table.Body>
-										{#each delivery.deliveries as item (item.recipientId)}
+										{#each delivery.deliveries as item (item)}
 											{@const matched = recipientForDelivery(item.recipientId)}
 											<Table.Row>
 												<Table.Cell>
