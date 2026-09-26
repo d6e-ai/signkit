@@ -52,6 +52,49 @@ export class EnvelopesApiError extends Error {
 
 export type IdempotencyKeyGenerator = () => string;
 
+export class EnvelopeMutationAttempt {
+	private readonly newIdempotencyKey: IdempotencyKeyGenerator;
+	private currentKey: string | null = null;
+
+	constructor(newIdempotencyKey: IdempotencyKeyGenerator = defaultNewIdempotencyKey) {
+		this.newIdempotencyKey = newIdempotencyKey;
+	}
+
+	key(): string {
+		this.currentKey ??= this.newIdempotencyKey();
+		return this.currentKey;
+	}
+
+	succeeded(): void {
+		this.currentKey = null;
+	}
+
+	failed(cause: unknown): void {
+		if (!isAmbiguousEnvelopeMutationFailure(cause)) this.currentKey = null;
+	}
+
+	invalidate(): void {
+		this.currentKey = null;
+	}
+}
+
+export function createEnvelopeMutationAttempt(
+	newIdempotencyKey?: IdempotencyKeyGenerator
+): EnvelopeMutationAttempt {
+	return new EnvelopeMutationAttempt(newIdempotencyKey);
+}
+
+export function isAmbiguousEnvelopeMutationFailure(cause: unknown): boolean {
+	if (!(cause instanceof EnvelopesApiError)) return true;
+	const { type: problemType, status } = cause;
+	return (
+		problemType === 'urn:signkit:problem:invalid-response-json' ||
+		status === 408 ||
+		status === 429 ||
+		status >= 500
+	);
+}
+
 export function defaultNewIdempotencyKey(): string {
 	const source: Crypto | undefined = globalThis.crypto;
 	if (source === undefined || typeof source.randomUUID !== 'function') {
@@ -231,6 +274,15 @@ export interface VoidEnvelopeResponse {
 		voidedAt: string;
 		revokedCapabilityCount: number;
 		auditEventId: string;
+	};
+	replayed: boolean;
+}
+
+export interface ReissueRecipientCapabilityResponse {
+	reissued: {
+		envelopeId: string;
+		recipientId: string;
+		reissuedAt: string;
 	};
 	replayed: boolean;
 }
@@ -657,6 +709,55 @@ export class EnvelopesClient {
 		);
 		return {
 			sent: data.sent,
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
+	async reissueRecipientCapability(
+		envelopeId: string,
+		recipientId: string,
+		options?: RequestOptions
+	): Promise<ReissueRecipientCapabilityResponse> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/recipients/${encodeURIComponent(recipientId)}/reissue`
+		);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{
+			reissued?: ReissueRecipientCapabilityResponse['reissued'];
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body: JSON.stringify({})
+			},
+			options?.fetch
+		);
+		const receipt = data?.reissued;
+		if (
+			receipt?.envelopeId !== envelopeId ||
+			receipt?.recipientId !== recipientId ||
+			typeof receipt?.reissuedAt !== 'string' ||
+			!Number.isFinite(Date.parse(receipt.reissuedAt))
+		) {
+			throw new EnvelopesApiError({
+				status: 502,
+				type: 'urn:signkit:problem:invalid-response-json',
+				title: 'Invalid invitation replacement receipt',
+				detail: 'The response did not confirm the selected envelope and recipient.',
+				instance: url
+			});
+		}
+		return {
+			reissued: {
+				envelopeId: receipt.envelopeId,
+				recipientId: receipt.recipientId,
+				reissuedAt: receipt.reissuedAt
+			},
 			replayed: response.headers.get('idempotency-replayed') === 'true'
 		};
 	}

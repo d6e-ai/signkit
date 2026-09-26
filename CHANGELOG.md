@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-09-26
+
+### Added
+
+- Let senders replace an individual recipient's invitation from the Recipients tab without voiding the envelope or changing its documents ([#200](https://github.com/d6e-ai/signkit/issues/200)). Confirmation explains that the old link is invalidated and the replacement email awaits delivery. Ambiguous retries retain their idempotency key, and a failed status refresh does not misreport a successful replacement as failed.
+
+### Fixed
+
+- Render invitation delivery history safely when a recipient has multiple invitation deliveries, preventing duplicate-key failures after replacement while preserving the full history ([#201](https://github.com/d6e-ai/signkit/issues/201)).
+
 ## [0.1.13] - 2026-09-26
 
 ### Fixed
