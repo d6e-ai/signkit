@@ -66,6 +66,7 @@ describe('D1CompletionArtifactPdfStore integration', () => {
 				outcome: 'published'
 			});
 			await expect(store.readCompletionArtifactPdf(ENVELOPE_ID)).resolves.toEqual({
+				envelopeId: ENVELOPE_ID,
 				pdfObjectKey: command.pdfObjectKey,
 				pdfSha256: command.pdfSha256,
 				pdfByteSize: command.pdfByteSize,

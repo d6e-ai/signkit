@@ -48,6 +48,7 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 	async readCompletionArtifactPdf(envelopeId: string): Promise<CompletionArtifactPdfRecord | null> {
 		const rows = await this.#sql<
 			{
+				envelopeId: string;
 				pdfObjectKey: string;
 				pdfSha256: string;
 				pdfByteSize: number | string | null;
@@ -56,7 +57,7 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 				publishedAt: Date | string;
 			}[]
 		>`
-			SELECT pdf_object_key AS "pdfObjectKey", pdf_sha256 AS "pdfSha256",
+			SELECT envelope_id AS "envelopeId", pdf_object_key AS "pdfObjectKey", pdf_sha256 AS "pdfSha256",
 				pdf_byte_size AS "pdfByteSize", pdf_manifest_object_key AS "pdfManifestObjectKey",
 				pdf_manifest_sha256 AS "pdfManifestSha256", published_at AS "publishedAt"
 			FROM completion_artifact_pdf
@@ -64,6 +65,7 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 		const row = rows[0];
 		if (row === undefined) return null;
 		return {
+			envelopeId: row.envelopeId,
 			pdfObjectKey: row.pdfObjectKey,
 			pdfSha256: row.pdfSha256,
 			pdfByteSize: row.pdfByteSize === null ? null : Number(row.pdfByteSize),

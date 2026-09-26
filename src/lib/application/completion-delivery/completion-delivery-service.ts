@@ -35,8 +35,14 @@ import type {
 } from '$lib/security/completion-token-sealer';
 import {
 	renderCompletionMail,
+	type CompletionMailAttachmentStatus,
 	type TransactionalMailCopy
 } from '$lib/application/mail/transactional-email';
+import {
+	MissingCompletionPdfAttachmentReader,
+	type CompletionPdfAttachmentOutcome,
+	type CompletionPdfAttachmentReaderPort
+} from './completion-pdf-attachment-reader';
 
 export const COMPLETION_DELIVERY_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_DELIVERY_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -111,6 +117,7 @@ export class CompletionDeliveryService {
 	readonly #now: () => Date;
 	readonly #newClaimToken: OpaqueTokenGenerator;
 	readonly #newId: UuidV7Generator;
+	readonly #pdfAttachmentReader: CompletionPdfAttachmentReaderPort;
 
 	constructor(
 		store: CompletionDeliveryStore,
@@ -123,7 +130,8 @@ export class CompletionDeliveryService {
 		// A lease token is opaque unguessable material, never a row identifier:
 		// 256 random bits with no embedded creation time.
 		newClaimToken: OpaqueTokenGenerator = newOpaqueToken,
-		newId: UuidV7Generator = newUuidV7
+		newId: UuidV7Generator = newUuidV7,
+		pdfAttachmentReader: CompletionPdfAttachmentReaderPort | null = null
 	) {
 		this.#store = store;
 		this.#cryptor =
@@ -149,6 +157,7 @@ export class CompletionDeliveryService {
 		this.#now = now;
 		this.#newClaimToken = newClaimToken;
 		this.#newId = newId;
+		this.#pdfAttachmentReader = pdfAttachmentReader ?? new MissingCompletionPdfAttachmentReader();
 	}
 
 	async deliverPendingCompletions(
@@ -333,11 +342,50 @@ export class CompletionDeliveryService {
 			);
 		}
 
+		const attachmentOutcome: CompletionPdfAttachmentOutcome = await this.#pdfAttachmentReader.read(
+			claim.envelopeId
+		);
+		if (attachmentOutcome.outcome === 'retryable_error') {
+			return this.#finishFailure(
+				claim,
+				claimToken,
+				attachmentOutcome.errorCode,
+				true,
+				now,
+				'retryable_failed'
+			);
+		}
+		if (attachmentOutcome.outcome === 'integrity_error') {
+			return this.#finishFailure(
+				claim,
+				claimToken,
+				attachmentOutcome.errorCode,
+				false,
+				now,
+				'integrity_failed'
+			);
+		}
+		// The completion PDF is published by a job that runs independently of,
+		// and after, completion delivery becoming eligible: an absent row is a
+		// timing race, not a permanent state, so this waits (bounded retry)
+		// for the immutable PDF rather than substituting a link-only send.
+		if (attachmentOutcome.outcome === 'unpublished') {
+			return this.#finishFailure(
+				claim,
+				claimToken,
+				'completion_pdf_not_yet_published',
+				true,
+				now,
+				'retryable_failed'
+			);
+		}
+
 		const message: MailMessage = completionMessage(
 			claim,
 			this.#sender,
 			this.#publicHttpsOrigin,
-			token
+			token,
+			attachmentOutcome
 		);
 		let receipt: MailSendReceipt;
 		try {
@@ -495,21 +543,45 @@ function completionMessage(
 	claim: ClaimedCompletionDelivery,
 	sender: CompletionSenderConfig,
 	origin: string,
-	token: string
+	token: string,
+	attachmentOutcome: CompletionPdfAttachmentOutcome
 ): MailMessage {
 	const locale: 'en' | 'ja' = claim.recipientLocale === 'ja' ? 'ja' : 'en';
 	const completionUrl: string = new URL(completionReceiptPath(token, locale), origin).href;
 	const title: string = safeDisplayText(claim.envelopeTitle).slice(0, 300);
 	const name: string = safeDisplayText(claim.recipientName).slice(0, 200);
-	const copy: TransactionalMailCopy = renderCompletionMail(locale, name, title, completionUrl);
+	const attachmentStatus: CompletionMailAttachmentStatus =
+		attachmentOutcome.outcome === 'attached' ? 'attached' : 'not_attached';
+	const copy: TransactionalMailCopy = renderCompletionMail(
+		locale,
+		name,
+		title,
+		completionUrl,
+		attachmentStatus
+	);
 	return {
 		to: claim.recipientEmail,
 		from: { email: sender.fromEmail, name: sender.fromName },
 		subject: copy.subject,
 		text: copy.text,
 		html: copy.html,
-		deliveryKey: `signkit-completion-delivery-v1:${claim.deliveryId}`
+		deliveryKey: `signkit-completion-delivery-v1:${claim.deliveryId}`,
+		...(attachmentOutcome.outcome === 'attached'
+			? {
+					attachment: {
+						filename: completionPdfAttachmentFilename(claim.envelopeId),
+						contentType: 'application/pdf',
+						content: attachmentOutcome.bytes
+					}
+				}
+			: {})
 	};
+}
+
+/** Stable, safe-ASCII filename derived only from the envelope ID; never the (untrusted) document title. */
+function completionPdfAttachmentFilename(envelopeId: string): string {
+	const safeId: string = envelopeId.replace(/[^A-Za-z0-9-]/g, '');
+	return `signkit-completed-${safeId}.pdf`;
 }
 
 function sealContext(claim: ClaimedCompletionDelivery): CompletionTokenSealContext {

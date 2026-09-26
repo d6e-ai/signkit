@@ -31,7 +31,16 @@ interface LocalizedMailContent {
 	fallbackIntro: string;
 	footer: string;
 	textLines: readonly string[];
+	attachmentNote: string | null;
 }
+
+/**
+ * `attached` — the immutable published completion PDF is included on this
+ * exact message. `not_attached` — the verified PDF exceeded the attachment
+ * budget; the recipient can retrieve it through the expiring secure link.
+ * Publication or storage failures are retried, not sent without attachment.
+ */
+export type CompletionMailAttachmentStatus = 'attached' | 'not_attached';
 
 export function renderInvitationMail(
 	locale: TransactionalMailLocale,
@@ -46,9 +55,10 @@ export function renderCompletionMail(
 	locale: TransactionalMailLocale,
 	name: string,
 	title: string,
-	completionUrl: string
+	completionUrl: string,
+	attachmentStatus: CompletionMailAttachmentStatus = 'not_attached'
 ): TransactionalMailCopy {
-	return renderMail(completionContent(locale, name, title), title, completionUrl);
+	return renderMail(completionContent(locale, name, title, attachmentStatus), title, completionUrl);
 }
 
 export function escapeHtml(value: string): string {
@@ -83,7 +93,8 @@ function invitationContent(
 				'',
 				'次のリンクを開いて手続きを続けてください。',
 				''
-			]
+			],
+			attachmentNote: null
 		};
 	}
 	return {
@@ -103,14 +114,16 @@ function invitationContent(
 			'',
 			'Open this link to continue:',
 			''
-		]
+		],
+		attachmentNote: null
 	};
 }
 
 function completionContent(
 	locale: TransactionalMailLocale,
 	name: string,
-	title: string
+	title: string,
+	attachmentStatus: CompletionMailAttachmentStatus
 ): LocalizedMailContent {
 	if (locale === 'ja') {
 		return {
@@ -130,7 +143,11 @@ function completionContent(
 				'',
 				'次のリンクを開いて完了した契約書を確認またはダウンロードしてください。',
 				''
-			]
+			],
+			attachmentNote:
+				attachmentStatus === 'attached'
+					? '完了した契約書のPDFをこのメールに添付しております。以下の安全なリンクからも確認・ダウンロードいただけます。'
+					: 'ファイルサイズの都合により、完了した契約書のPDFは本メールに添付されておりません。以下の安全なリンクからご確認・ダウンロードください。'
 		};
 	}
 	return {
@@ -150,7 +167,11 @@ function completionContent(
 			'',
 			'Open this link to view or download the completed documents:',
 			''
-		]
+		],
+		attachmentNote:
+			attachmentStatus === 'attached'
+				? 'The completed PDF is attached to this email for your records. You can also view or download it using the secure link below.'
+				: 'Due to its file size, the completed PDF is not attached to this email. Use the secure link below to view or download it.'
 	};
 }
 
@@ -159,9 +180,13 @@ function renderMail(
 	title: string,
 	url: string
 ): TransactionalMailCopy {
+	const textLines: readonly string[] =
+		content.attachmentNote === null
+			? [...content.textLines, url]
+			: [...content.textLines, url, '', content.attachmentNote];
 	return {
 		subject: content.subject,
-		text: [...content.textLines, url, '', content.footer].join('\n'),
+		text: [...textLines, '', content.footer].join('\n'),
 		html: renderHtmlDocument(content, title, url)
 	};
 }
@@ -178,6 +203,12 @@ function renderHtmlDocument(content: LocalizedMailContent, title: string, url: s
 	const footer: string = escapeHtml(content.footer);
 	const preheader: string = escapeHtml(`${content.intro} ${title}`);
 	const wordmark: string = escapeHtml(WORDMARK);
+	const attachmentNoteRow: string =
+		content.attachmentNote === null
+			? ''
+			: '<tr>' +
+				`<td style="padding:12px 28px 0;font-family:${FONT_STACK};font-size:14px;line-height:1.6;color:${TRANSACTIONAL_EMAIL_MUTED_FOREGROUND};">${escapeHtml(content.attachmentNote)}</td>` +
+				'</tr>';
 
 	return (
 		'<!doctype html>' +
@@ -229,6 +260,7 @@ function renderHtmlDocument(content: LocalizedMailContent, title: string, url: s
 		'</table>' +
 		'</td>' +
 		'</tr>' +
+		attachmentNoteRow +
 		'<tr>' +
 		`<td style="padding:12px 28px 0;font-family:${FONT_STACK};font-size:13px;line-height:1.5;color:${TRANSACTIONAL_EMAIL_MUTED_FOREGROUND};">${fallbackIntro}<br><a href="${safeUrl}" style="color:${TRANSACTIONAL_EMAIL_PRIMARY};text-decoration:underline;word-break:break-all;">${safeUrl}</a></td>` +
 		'</tr>' +

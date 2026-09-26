@@ -171,6 +171,7 @@ describe('CompletionEvidenceService', () => {
 	describe('readPdf', () => {
 		function pdfRecord(pdfBytes: Uint8Array, sha256: string): CompletionArtifactPdfRecord {
 			return {
+				envelopeId: ENVELOPE_ID,
 				pdfObjectKey: completionArtifactObjectKey(ENVELOPE_ID, 'pdf', sha256),
 				pdfSha256: sha256,
 				pdfByteSize: pdfBytes.byteLength,
@@ -269,6 +270,7 @@ describe('CompletionEvidenceService', () => {
 
 		it('fails closed when the published PDF digest is not a well-formed SHA-256 hex string', async () => {
 			const record: CompletionArtifactPdfRecord = {
+				envelopeId: ENVELOPE_ID,
 				pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/bad.pdf',
 				pdfSha256: 'not-a-hash',
 				pdfByteSize: 1024,
@@ -294,6 +296,7 @@ describe('CompletionEvidenceService', () => {
 			const pdfBytes = new TextEncoder().encode('%PDF-1.7 fixture');
 			const sha256 = await sha256Hex(pdfBytes);
 			const record: CompletionArtifactPdfRecord = {
+				envelopeId: ENVELOPE_ID,
 				pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/wrong-key.pdf',
 				pdfSha256: sha256,
 				pdfByteSize: pdfBytes.byteLength,

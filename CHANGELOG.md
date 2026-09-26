@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-09-26
+
+### Fixed
+
+- Include the verified, immutable completed PDF in recipient completion emails through SMTP, Cloudflare Workers email bindings, and Cloudflare REST ([#198](https://github.com/d6e-ai/signkit/issues/198)). Publication and temporary storage failures retry instead of silently sending without the PDF; integrity failures prevent sending. PDFs above the conservative attachment budget use an explicit localized secure-download fallback.
+
 ## [0.1.12] - 2026-09-26
 
 ### Changed

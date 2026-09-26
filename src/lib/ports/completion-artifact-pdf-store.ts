@@ -9,6 +9,8 @@ export interface PublishCompletionArtifactPdfCommand {
 }
 
 export interface CompletionArtifactPdfRecord {
+	/** The row's own persisted envelope ID, never the caller's requested ID — lets a reader verify the two agree. */
+	envelopeId: string;
 	pdfObjectKey: string;
 	pdfSha256: string;
 	/** Null only for rows created before the authoritative-size migration. */
