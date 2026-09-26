@@ -1415,6 +1415,13 @@ describe('bootstrap owner email', () => {
 		expect(result.stdout).not.toContain('owner@example.com');
 		expect(result.stdout).not.toContain('Owner@Example.com');
 		expect(result.stdout).toMatch(/bootstrap owner/i);
+		const json = JSON.parse(result.stdout);
+		expect(json.bootstrapWarning).toContain(
+			'If this is a fresh or uninitialized instance, claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL'
+		);
+		expect(json.bootstrapWarning).toContain(
+			'Initialized instances retain their existing owner and do not bootstrap again.'
+		);
 	});
 
 	it('inherits the recorded address on upgrade so the flag is passed once', async () => {
@@ -1429,6 +1436,14 @@ describe('bootstrap owner email', () => {
 		expect(result.code).toBe(0);
 		expect(wrangler.calls).toContain('uploadVersion:signkit');
 		expect(result.stdout).not.toContain('owner@example.com');
+		expect(result.stdout).not.toContain('Owner@Example.com');
+		const json = JSON.parse(result.stdout);
+		expect(json.bootstrapWarning).toContain(
+			'If this is a fresh or uninitialized instance, claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL'
+		);
+		expect(json.bootstrapWarning).toContain(
+			'Initialized instances retain their existing owner and do not bootstrap again.'
+		);
 	});
 
 	it('rejects an adversarially long recorded address before upgrading', async () => {
@@ -1533,6 +1548,125 @@ describe('bootstrap owner email', () => {
 		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state.bootstrapOwnerEmail).toBe('owner@example.com');
 		expect(result.stdout).not.toContain('owner@example.com');
+	});
+
+	it('prints conditional bootstrap guidance without echoing email in human deploy output', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.versions.set('signkit', []);
+		const result = await run(
+			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, ...INITIAL_DEPLOY_FLAGS, '--yes'],
+			wrangler,
+			new MemoryFileSystem(),
+			fakeReleases(),
+			OAUTH_STDIN_JSON
+		);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			'If this is a fresh or uninitialized instance, claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL: only the matching verified identity can claim it, and the window stays open until then.'
+		);
+		expect(result.stdout).toContain(
+			'Initialized instances retain their existing owner and do not bootstrap again.'
+		);
+		expect(result.stdout).not.toContain('owner@example.com');
+		expect(result.stdout).not.toContain('Owner@Example.com');
+	});
+
+	it('prints conditional bootstrap guidance without echoing email in human upgrade output', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await run(
+			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes'],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			'If this is a fresh or uninitialized instance, claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL: only the matching verified identity can claim it, and the window stays open until then.'
+		);
+		expect(result.stdout).toContain(
+			'Initialized instances retain their existing owner and do not bootstrap again.'
+		);
+		expect(result.stdout).not.toContain('owner@example.com');
+		expect(result.stdout).not.toContain('Owner@Example.com');
+	});
+
+	it('prints conditional bootstrap guidance without echoing email in human plan output', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await run(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID], wrangler, fs);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toMatch(/Plan:/);
+		expect(result.stdout).toMatch(/plan only/);
+		expect(result.stdout).toContain(
+			'If this is a fresh or uninitialized instance, claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL: only the matching verified identity can claim it, and the window stays open until then.'
+		);
+		expect(result.stdout).toContain(
+			'Initialized instances retain their existing owner and do not bootstrap again.'
+		);
+		expect(result.stdout).not.toContain('owner@example.com');
+		expect(result.stdout).not.toContain('Owner@Example.com');
+	});
+
+	it('includes conditional bootstrap guidance without echoing email in JSON plan output', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await run(
+			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
+			wrangler,
+			fs
+		);
+		expect(result.code).toBe(0);
+		const json = JSON.parse(result.stdout);
+		expect(json.bootstrapWarning).toContain(
+			'If this is a fresh or uninitialized instance, claim the initial owner immediately via POST /api/v1/instance/bootstrap'
+		);
+		expect(json.bootstrapWarning).toContain(
+			'Initialized instances retain their existing owner and do not bootstrap again.'
+		);
+		expect(result.stdout).not.toContain('owner@example.com');
+		expect(result.stdout).not.toContain('Owner@Example.com');
+	});
+
+	it('prints fail-closed missing bootstrap owner warning in read-only plan output without mutating calls', async () => {
+		const wrangler = new FakeWrangler();
+		wrangler.seedReadyWorker();
+		const fs = new MemoryFileSystem();
+		const jsonResult = await run(
+			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
+			wrangler,
+			fs
+		);
+		expect(jsonResult.code).toBe(0);
+		const json = JSON.parse(jsonResult.stdout);
+		expect(json.bootstrapWarning).toBe(
+			'No bootstrap owner email is configured: an uninitialized instance fails closed and cannot be claimed. Pass --bootstrap-owner-email <email> to deploy or upgrade; create-signkit applies it as a non-secret Worker var.'
+		);
+		expect(json.mutations).toEqual([]);
+		expect(wrangler.calls.some((call) => call.startsWith('create'))).toBe(false);
+		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
+		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
+		expect(fs.writes).toEqual([]);
+
+		const humanResult = await run(
+			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID],
+			wrangler,
+			fs
+		);
+		expect(humanResult.code).toBe(0);
+		expect(humanResult.stdout).toMatch(/Plan:/);
+		expect(humanResult.stdout).toMatch(/plan only/);
+		expect(humanResult.stdout).toContain(
+			'No bootstrap owner email is configured: an uninitialized instance fails closed and cannot be claimed. Pass --bootstrap-owner-email <email> to deploy or upgrade; create-signkit applies it as a non-secret Worker var.'
+		);
+		expect(wrangler.calls.some((call) => call.startsWith('create'))).toBe(false);
+		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
+		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
+		expect(fs.writes).toEqual([]);
 	});
 });
 
