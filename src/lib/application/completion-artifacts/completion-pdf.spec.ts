@@ -8,12 +8,18 @@ import {
 	COMPLETION_PDF_MANIFEST_SCHEMA,
 	renderCompletionPdf
 } from './completion-pdf';
+import { PDF_CHARS_PER_LINE } from '$lib/adapters/pdf/deterministic-pdf-writer';
 import {
 	MAX_EVIDENCE_SUMMARY_PDF_BYTES,
 	MAX_PUBLISHED_COMPLETION_PDF_BYTES
 } from './completion-pdf-limits';
 import { MAX_EXECUTED_PDF_BYTES } from './executed-pdf';
-import { CompletionArtifactIntegrityError, type CompletionManifestV1 } from './completion-manifest';
+import {
+	CompletionArtifactIntegrityError,
+	type CompletionManifestField,
+	type CompletionManifestRecipient,
+	type CompletionManifestV1
+} from './completion-manifest';
 
 const MANIFEST: CompletionManifestV1 = {
 	schema: 'signkit-completion-manifest-v1',
@@ -86,12 +92,108 @@ describe('buildCompletionPdfPages + renderCompletionPdf', () => {
 	it('includes document content, field ink references, geometry, recipients, and audit proof', () => {
 		const pages = buildCompletionPdfPages(MANIFEST, DOCUMENTS, GEOMETRY);
 		const text = pages.flat().join('\n');
+		// Field/recipient rows are word-wrapped to the page width, so a long
+		// value may be hard-broken across two physical lines with no
+		// separator between them (see wrapPlainTextLines); dewrapping by
+		// joining without a separator reconstructs the original value.
+		const dewrapped = pages.flat().join('');
 		expect(text).toContain('documents/agreement.md');
 		expect(text).toContain('This is the agreement text.');
-		expect(text).toContain('ink-sha256:' + 'd'.repeat(64));
-		expect(text).toContain('documents/agreement.md#1 page 2 at 0.25,0.5 size 0.3x0.05');
+		expect(dewrapped).toContain('ink-sha256:' + 'd'.repeat(64));
+		expect(dewrapped).toContain('documents/agreement.md#1 page 2 at 0.25,0.5 size 0.3x0.05');
 		expect(text).toContain('01930000-0000-7000-8000-000000000001');
 		expect(text).toContain('envelope.completed');
+	});
+
+	it('never draws a field or recipient row wider than the page content width', () => {
+		const pages = buildCompletionPdfPages(MANIFEST, DOCUMENTS, GEOMETRY);
+		for (const page of pages) {
+			for (const line of page) {
+				expect(line.length).toBeLessThanOrEqual(PDF_CHARS_PER_LINE);
+			}
+		}
+	});
+
+	it('wraps a long title without truncating or ellipsizing it', () => {
+		const longTitle = 'Master Services Agreement — ' + 'Exhibit '.repeat(30) + 'Z';
+		const manifest: CompletionManifestV1 = { ...MANIFEST, title: longTitle };
+		const pages = buildCompletionPdfPages(manifest, DOCUMENTS, GEOMETRY);
+		for (const page of pages) {
+			for (const line of page) {
+				expect(line.length).toBeLessThanOrEqual(PDF_CHARS_PER_LINE);
+			}
+		}
+		const dewrapped = pages.flat().join('');
+		expect(dewrapped).toContain(`Title: ${longTitle.replaceAll('—', '?')}`);
+	});
+
+	it('wraps long unbroken field and recipient IDs/digests across lines without losing any characters', () => {
+		const longFieldId = 'field-' + '9'.repeat(120);
+		const longRecipientId = 'recipient-' + '8'.repeat(120);
+		const manifest: CompletionManifestV1 = {
+			...MANIFEST,
+			fields: [{ id: longFieldId, fieldType: 'signature', valueSha256: 'd'.repeat(64) }],
+			recipients: [
+				{
+					id: longRecipientId,
+					role: 'signer',
+					routingOrder: 1,
+					status: 'completed',
+					decisionEventId: null,
+					decisionAt: null
+				}
+			]
+		};
+		const pages = buildCompletionPdfPages(manifest, DOCUMENTS, []);
+		for (const page of pages) {
+			for (const line of page) {
+				expect(line.length).toBeLessThanOrEqual(PDF_CHARS_PER_LINE);
+			}
+		}
+		const dewrapped = pages.flat().join('');
+		expect(dewrapped).toContain(longFieldId);
+		expect(dewrapped).toContain(longRecipientId);
+		expect(dewrapped).toContain('d'.repeat(64));
+	});
+
+	it('paginates many fields and recipients without dropping any row across page boundaries', () => {
+		const manyFields: CompletionManifestField[] = Array.from({ length: 60 }, (_, index) => ({
+			id: `01940000-0000-7000-8000-${index.toString().padStart(12, '0')}`,
+			fieldType: 'signature',
+			valueSha256: index.toString().padStart(2, '0').repeat(32)
+		}));
+		const manyRecipients: CompletionManifestRecipient[] = Array.from(
+			{ length: 40 },
+			(_, index) => ({
+				id: `01930000-0000-7000-8000-${index.toString().padStart(12, '0')}`,
+				role: 'signer',
+				routingOrder: index + 1,
+				status: 'completed',
+				decisionEventId: `01960000-0000-7000-8000-${index.toString().padStart(12, '0')}`,
+				decisionAt: '2026-09-12T00:00:00.000Z'
+			})
+		);
+		const manifest: CompletionManifestV1 = {
+			...MANIFEST,
+			fields: manyFields,
+			recipients: manyRecipients
+		};
+		const pages = buildCompletionPdfPages(manifest, DOCUMENTS, []);
+		expect(pages.length).toBeGreaterThan(1);
+		const dewrapped = pages.flat().join('');
+		for (const field of manyFields) {
+			expect(dewrapped).toContain(field.id);
+			expect(dewrapped).toContain(field.valueSha256);
+		}
+		for (const recipient of manyRecipients) {
+			expect(dewrapped).toContain(recipient.id);
+			expect(dewrapped).toContain(recipient.decisionEventId);
+		}
+		for (const page of pages) {
+			for (const line of page) {
+				expect(line.length).toBeLessThanOrEqual(PDF_CHARS_PER_LINE);
+			}
+		}
 	});
 
 	it('renders "unplaced" for a field with no geometry evidence rather than failing', () => {
