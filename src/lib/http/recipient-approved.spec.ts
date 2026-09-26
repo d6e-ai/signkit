@@ -4,11 +4,17 @@ import type {
 	RecipientApprovedApplicationPort,
 	RecipientApprovedResult
 } from '$lib/application/signing/recipient-approved';
+import type {
+	AuthorizedRecipientCompletedReceipt,
+	RecipientCompletedReceiptApplicationPort
+} from '$lib/application/signing/recipient-completed-receipt';
+import { completedReceiptCookieName } from '$lib/server/completed-receipt-session';
 import { recipientSessionCookieName } from '$lib/server/recipient-session';
 import {
 	createRecipientApprovedHandler,
 	type RecipientApprovedApplicationResolver
 } from './recipient-approved';
+import type { RecipientCompletedReceiptHandlerOptions } from './recipient-completed-receipt';
 import { createRecipientRequestEvent } from './recipient-request-event-test-support';
 
 const envelopeId: string = '01910000-0000-7000-8000-000000000001';
@@ -22,12 +28,19 @@ function requestEvent(
 		body?: unknown;
 		cookie?: string;
 	} = {}
-): { event: RequestEvent; deleted: ReturnType<typeof vi.fn> } {
-	return createRecipientRequestEvent({
+): {
+	event: RequestEvent;
+	deleted: ReturnType<typeof vi.fn>;
+	set: ReturnType<typeof vi.fn>;
+} {
+	const { event, deleted, cookies } = createRecipientRequestEvent({
 		pathname: '/api/v1/signing/approve',
 		defaultBody: { envelopeId, recipientId },
 		...options
 	});
+	const set = vi.fn();
+	cookies.set = set;
+	return { event, deleted, set };
 }
 
 function application(result: RecipientApprovedResult): RecipientApprovedApplicationPort {
@@ -50,6 +63,46 @@ const published: RecipientApprovedResult = {
 	}
 };
 
+const authorizedReceipt: AuthorizedRecipientCompletedReceipt = {
+	receipt: {
+		envelopeId,
+		recipientId,
+		recipientStatus: 'completed',
+		action: 'approved',
+		completedAt: '2026-09-11T00:02:00.000Z',
+		envelopeStatus: 'in_progress',
+		envelopeCompletedByThisAction: false,
+		locale: 'en'
+	},
+	locator: {
+		envelopeId,
+		recipientId,
+		idempotencyKey: 'approve-1',
+		capabilityHash: 'b'.repeat(64),
+		action: 'approved',
+		completedAt: '2026-09-11T00:02:00.000Z',
+		expiresAt: '2026-10-11T00:02:00.000Z'
+	}
+};
+
+function receiptOptions(
+	authorized: AuthorizedRecipientCompletedReceipt | null = authorizedReceipt
+): RecipientCompletedReceiptHandlerOptions {
+	const application: RecipientCompletedReceiptApplicationPort = {
+		recoverByToken: vi.fn(
+			async (): Promise<AuthorizedRecipientCompletedReceipt | null> => authorized
+		),
+		resolveLocator: vi.fn(
+			async (): Promise<AuthorizedRecipientCompletedReceipt | null> => authorized
+		)
+	};
+	return {
+		resolveReceiptApplication: vi.fn(() => application),
+		sealReceiptSession: vi.fn(async (): Promise<string> => 'sealed-completed-receipt'),
+		now: (): Date => new Date('2026-09-11T00:02:30.000Z')
+	};
+}
+
 describe('recipient approved HTTP handler', () => {
 	it('accepts browserless recipient approval without touching a browser session', async () => {
 		const app: RecipientApprovedApplicationPort = application(published);
@@ -60,15 +113,21 @@ describe('recipient approved HTTP handler', () => {
 			authorization: `Bearer ${token}`,
 			idempotencyKey: 'approve-cli-1'
 		});
+		const set = vi.fn();
+		cookies.set = set;
+		const options: RecipientCompletedReceiptHandlerOptions = receiptOptions();
 		const response: Response = await createRecipientApprovedHandler(
 			() => app,
 			async (): Promise<string> => token,
+			options,
 			'bearer'
 		)(event);
 		expect(response.status).toBe(200);
 		expect(app.approve).toHaveBeenCalledWith(expect.objectContaining({ token }));
 		expect(cookies.get).not.toHaveBeenCalled();
 		expect(deleted).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
+		expect(options.resolveReceiptApplication).not.toHaveBeenCalled();
 	});
 
 	it('rejects cross-origin and origin-less POSTs before reading the cookie', async () => {
@@ -200,6 +259,117 @@ describe('recipient approved HTTP handler', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('idempotency-replayed')).toBe('true');
 		expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+	});
+
+	it.each([
+		['published', published, null],
+		['replayed', { ...published, outcome: 'replayed' } as RecipientApprovedResult, 'true']
+	])(
+		'exchanges the used capability for a read-only receipt cookie on a %s approval',
+		async (_label, result: RecipientApprovedResult, replayHeader: string | null) => {
+			const options: RecipientCompletedReceiptHandlerOptions = receiptOptions();
+			const { event, deleted, set } = requestEvent({ idempotencyKey: 'approve-1' });
+			const response: Response = await createRecipientApprovedHandler(
+				() => application(result),
+				async (): Promise<string> => token,
+				options
+			)(event);
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get('idempotency-replayed')).toBe(replayHeader);
+			expect(options.resolveReceiptApplication).toHaveBeenCalledWith({
+				platform: { env: { DB: {} } }
+			});
+			expect(set).toHaveBeenCalledWith(
+				completedReceiptCookieName(envelopeId),
+				'sealed-completed-receipt',
+				expect.objectContaining({ path: '/', httpOnly: true, sameSite: 'lax' })
+			);
+			expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+		}
+	);
+
+	it('keeps the approval a success when the receipt evidence cannot be proven', async () => {
+		const diagnostic = vi.spyOn(console, 'error').mockImplementation((): void => {});
+		try {
+			const { event, deleted, set } = requestEvent({ idempotencyKey: 'approve-1' });
+			const response: Response = await createRecipientApprovedHandler(
+				() => application(published),
+				async (): Promise<string> => token,
+				receiptOptions(null)
+			)(event);
+
+			// The approval is durable: reporting failure here would invite an
+			// irreversible retry. Only the tokenless reload is lost.
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({ approved: { recipientStatus: 'completed' } });
+			expect(set).not.toHaveBeenCalled();
+			expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+			const logged: string = diagnostic.mock.calls.map(String).join('|');
+			expect(logged).toContain('recipient_completed_receipt_exchange_failed');
+			expect(logged).not.toContain(token);
+		} finally {
+			diagnostic.mockRestore();
+		}
+	});
+
+	it.each([
+		['published', published],
+		['replayed', { ...published, outcome: 'replayed' } as RecipientApprovedResult]
+	])(
+		'reports a %s approval as successful when retiring the live cookie itself fails',
+		async (_label, result: RecipientApprovedResult) => {
+			const diagnostic = vi.spyOn(console, 'error').mockImplementation((): void => {});
+			try {
+				const { event, deleted, set } = requestEvent({ idempotencyKey: 'approve-1' });
+				deleted.mockImplementation((): never => {
+					throw new Error('cookie serialization failed');
+				});
+
+				const response: Response = await createRecipientApprovedHandler(
+					() => application(result),
+					async (): Promise<string> => token,
+					receiptOptions()
+				)(event);
+
+				// A durable approval must never surface as a 503 because a
+				// Set-Cookie deletion failed after the commit.
+				expect(response.status).toBe(200);
+				expect(await response.json()).toMatchObject({
+					approved: { recipientStatus: 'completed' }
+				});
+				expect(set).toHaveBeenCalledWith(
+					completedReceiptCookieName(envelopeId),
+					'sealed-completed-receipt',
+					expect.anything()
+				);
+				const logged: string = diagnostic.mock.calls.map(String).join('|');
+				expect(logged).toContain('recipient_completed_receipt_session_retirement_failed');
+				expect(logged).not.toMatch(/skr1_|cookie serialization failed/);
+			} finally {
+				diagnostic.mockRestore();
+			}
+		}
+	);
+
+	it('grants no receipt cookie for fail-closed 404, 409, and 503 outcomes', async () => {
+		for (const [outcome, status] of [
+			['not_found', 404],
+			['idempotency_conflict', 409],
+			['integrity_error', 503]
+		] as const) {
+			const options: RecipientCompletedReceiptHandlerOptions = receiptOptions();
+			const { event, deleted, set } = requestEvent({ idempotencyKey: 'approve-1' });
+			const response: Response = await createRecipientApprovedHandler(
+				() => application({ outcome }),
+				async (): Promise<string> => token,
+				options
+			)(event);
+			expect(response.status).toBe(status);
+			expect(set).not.toHaveBeenCalled();
+			expect(deleted).not.toHaveBeenCalled();
+			expect(options.resolveReceiptApplication).not.toHaveBeenCalled();
+		}
 	});
 
 	it('preserves the cookie for opaque not_found, context_mismatch, and role_not_actionable outcomes', async () => {

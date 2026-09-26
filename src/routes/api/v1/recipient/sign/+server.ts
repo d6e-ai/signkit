@@ -5,5 +5,6 @@ import { unsealRecipientSession } from '$lib/server/recipient-session';
 export const POST = createRecipientSignedHandler(
 	resolveRecipientSignedApplication,
 	unsealRecipientSession,
+	undefined,
 	'bearer'
 );
