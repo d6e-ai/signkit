@@ -177,7 +177,14 @@ async function resolveNodeCompletionPdfAttachmentReader(
 		import('$lib/application/envelopes/runtime-postgres'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
-	const objects: ObjectStore = resolveS3ObjectStore({ databaseUrl, ...s3OnlyConfiguration });
+	let objects: ObjectStore;
+	try {
+		objects = resolveS3ObjectStore({ databaseUrl, ...s3OnlyConfiguration });
+	} catch {
+		// Partial or invalid storage configuration must enter durable retry
+		// handling, not abort the whole drain before deliveries are claimed.
+		return new MissingCompletionPdfAttachmentReader();
+	}
 	return new CompletionPdfAttachmentReader(
 		new PostgresCompletionArtifactPdfStore(resolveSql(databaseUrl)),
 		objects

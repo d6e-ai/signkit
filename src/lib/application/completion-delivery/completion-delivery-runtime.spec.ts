@@ -245,6 +245,45 @@ describe('resolveCompletionDeliveryService', () => {
 			errorCode: 'completion_pdf_storage_not_configured'
 		});
 	});
+
+	it.each([
+		{ S3_FORCE_PATH_STYLE: 'true' },
+		{ S3_BUCKET: 'partial-bucket' },
+		{ S3_ENDPOINT: 'https://s3.example.com' }
+	])('does not abort completion delivery with partial S3 configuration %j', async (partial) => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'smtp';
+		privateEnv.SIGNKIT_SMTP_HOST = 'smtp.example.com';
+		privateEnv.SIGNKIT_SMTP_PORT = '587';
+		privateEnv.SIGNKIT_SMTP_SECURE = 'false';
+		Object.assign(privateEnv, partial);
+
+		await expect(resolveCompletionDeliveryService({})).resolves.toBeInstanceOf(
+			CompletionDeliveryService
+		);
+		expect(constructedReaders.at(-1)).toBeInstanceOf(MissingCompletionPdfAttachmentReader);
+	});
+
+	it.each([
+		{ S3_ENDPOINT: 'not-a-url' },
+		{ S3_ENDPOINT: 'http://s3.example.com' },
+		{ S3_FORCE_PATH_STYLE: 'not-a-boolean' },
+		{ S3_BUCKET: '   ' }
+	])('uses durable missing-storage retry for invalid S3 configuration %j', async (invalid) => {
+		setCompleteNodeConfiguration();
+		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'smtp';
+		privateEnv.SIGNKIT_SMTP_HOST = 'smtp.example.com';
+		privateEnv.SIGNKIT_SMTP_PORT = '587';
+		privateEnv.SIGNKIT_SMTP_SECURE = 'false';
+		Object.assign(privateEnv, invalid);
+
+		await expect(resolveCompletionDeliveryService({})).resolves.toBeInstanceOf(
+			CompletionDeliveryService
+		);
+		expect(constructedReaders.at(-1)).toBeInstanceOf(MissingCompletionPdfAttachmentReader);
+	});
 });
 
 function setCompleteNodeConfiguration(): void {
