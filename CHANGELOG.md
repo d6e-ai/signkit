@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Make sender tabs lifecycle-aware: keep post-send field placements read-only and show delivery progress separately from each recipient signing status.
 - Restore a signed/approved confirmation as a bounded, evidence-checked, read-only receipt available for 30 days; no mutation or document/artifact access authority is restored.
 - Fix completion-evidence line wrapping and pagination so long identifiers and digests remain fully visible without truncation, while published artifacts remain immutable.
+- Correct the D1 approval-command SQL bindings so approvals persist and route and complete envelopes correctly ([#185](https://github.com/d6e-ai/signkit/issues/185)).
+- Correctly encode supported accented Latin-1 text in evidence PDFs so glyphs stay within wrapped bounds ([#188](https://github.com/d6e-ai/signkit/issues/188)).
 
 ### Security
 
