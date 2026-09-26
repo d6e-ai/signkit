@@ -101,30 +101,47 @@ export function buildCompletionPdfPages(
 	lines.push('='.repeat(27));
 	lines.push('');
 	lines.push(`Envelope ID: ${manifest.envelopeId}`);
-	lines.push(`Title: ${toPdfSafeText(manifest.title)}`);
+	lines.push(...wrapPlainTextLines(`Title: ${toPdfSafeText(manifest.title)}`, PDF_CHARS_PER_LINE));
 	lines.push(`Sent commit: ${manifest.sentCommitSha}`);
-	lines.push(`Draft archive SHA-256: ${manifest.draftArchiveSha256}`);
+	lines.push(
+		...wrapPlainTextLines(
+			`Draft archive SHA-256: ${manifest.draftArchiveSha256}`,
+			PDF_CHARS_PER_LINE
+		)
+	);
 	lines.push(`Field generation: ${manifest.fieldGeneration}`);
 	lines.push(`Completed at: ${manifest.completedAt}`);
 	if (manifest.documentSetHash !== undefined) {
-		lines.push(`Document set hash: ${manifest.documentSetHash}`);
+		lines.push(
+			...wrapPlainTextLines(`Document set hash: ${manifest.documentSetHash}`, PDF_CHARS_PER_LINE)
+		);
 	}
 	lines.push('');
 
 	for (const document of manifest.documents) {
 		lines.push('-'.repeat(PDF_CHARS_PER_LINE));
 		if (document.kind === 'pdf') {
-			lines.push(`Document: ${toPdfSafeText(document.title ?? document.id ?? 'PDF')}`);
+			lines.push(
+				...wrapPlainTextLines(
+					`Document: ${toPdfSafeText(document.title ?? document.id ?? 'PDF')}`,
+					PDF_CHARS_PER_LINE
+				)
+			);
 			lines.push('Kind: pdf');
 			if (document.pageCount !== undefined) lines.push(`Pages: ${document.pageCount}`);
-			lines.push(`SHA-256: ${document.sha256}`);
+			lines.push(...wrapPlainTextLines(`SHA-256: ${document.sha256}`, PDF_CHARS_PER_LINE));
 			if (document.byteSize !== undefined) lines.push(`Size: ${document.byteSize} bytes`);
 			lines.push('-'.repeat(PDF_CHARS_PER_LINE));
 			lines.push('');
 			continue;
 		}
-		lines.push(`Document: ${toPdfSafeText(document.path ?? document.title ?? 'Document')}`);
-		lines.push(`SHA-256: ${document.sha256}`);
+		lines.push(
+			...wrapPlainTextLines(
+				`Document: ${toPdfSafeText(document.path ?? document.title ?? 'Document')}`,
+				PDF_CHARS_PER_LINE
+			)
+		);
+		lines.push(...wrapPlainTextLines(`SHA-256: ${document.sha256}`, PDF_CHARS_PER_LINE));
 		lines.push('-'.repeat(PDF_CHARS_PER_LINE));
 		lines.push('');
 		const content: DraftDocument | undefined =
@@ -141,7 +158,10 @@ export function buildCompletionPdfPages(
 	for (const field of manifest.fields) {
 		const geometry: CompletionPdfFieldGeometry | undefined = geometryById.get(field.id);
 		lines.push(
-			`${field.id} | ${field.fieldType} | ink-sha256:${field.valueSha256} | ${fieldLocation(geometry)}`
+			...wrapPlainTextLines(
+				`${field.id} | ${field.fieldType} | ink-sha256:${field.valueSha256} | ${fieldLocation(geometry)}`,
+				PDF_CHARS_PER_LINE
+			)
 		);
 	}
 	lines.push('');
@@ -151,10 +171,13 @@ export function buildCompletionPdfPages(
 	lines.push('-'.repeat(PDF_CHARS_PER_LINE));
 	for (const recipient of manifest.recipients) {
 		lines.push(
-			`${recipient.id} | ${recipient.role} | order ${recipient.routingOrder} | ${recipient.status}` +
-				(recipient.decisionEventId === null
-					? ''
-					: ` | decision ${recipient.decisionEventId} at ${recipient.decisionAt}`)
+			...wrapPlainTextLines(
+				`${recipient.id} | ${recipient.role} | order ${recipient.routingOrder} | ${recipient.status}` +
+					(recipient.decisionEventId === null
+						? ''
+						: ` | decision ${recipient.decisionEventId} at ${recipient.decisionAt}`),
+				PDF_CHARS_PER_LINE
+			)
 		);
 	}
 	lines.push('');
@@ -167,12 +190,13 @@ export function buildCompletionPdfPages(
 	lines.push(`Head sequence: ${manifest.auditProof.headSequence}`);
 	lines.push(`Verified event count: ${manifest.auditProof.verifiedEventCount}`);
 	lines.push(
-		'Every stored event hash was independently re-derived and the chain verified end-to-end.'
+		...wrapPlainTextLines(
+			'Every stored event hash was independently re-derived and the chain verified ' +
+				'end-to-end. This is not a tamper-proof guarantee against a whole-chain database ' +
+				'rewrite; see the completion manifest Markdown rendering for the full caveat.',
+			PDF_CHARS_PER_LINE
+		)
 	);
-	lines.push(
-		'This is not a tamper-proof guarantee against a whole-chain database rewrite; see the'
-	);
-	lines.push('completion manifest Markdown rendering for the full caveat.');
 
 	return paginateLines(lines);
 }
