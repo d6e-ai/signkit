@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - The Documents tab for a completed envelope now prioritizes the final PDF when available, clearly labels original documents, and offers same-origin downloads.
-- Read-only, post-send fields now distinguish delivery progress (sent, viewed) from a recipient's own signing state, instead of conflating the two.
+- Make sender tabs lifecycle-aware: keep post-send field placements read-only and show delivery progress separately from each recipient signing status.
 - Restore a signed/approved confirmation as a bounded, evidence-checked, read-only receipt available for 30 days; no mutation or document/artifact access authority is restored.
 - Fix completion-evidence line wrapping and pagination so long identifiers and digests remain fully visible without truncation, while published artifacts remain immutable.
 
