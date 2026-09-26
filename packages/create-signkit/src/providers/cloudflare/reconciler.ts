@@ -107,7 +107,7 @@ export interface ReconcileResult {
 }
 
 const BOOTSTRAP_WARNING_CONFIGURED =
-	'The bootstrap owner email is configured as a non-secret Worker var. Claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL: only the matching verified identity can claim it, and the window stays open until then.';
+	'The bootstrap owner email is configured as a non-secret Worker var. If this is a fresh or uninitialized instance, claim the initial owner immediately via POST /api/v1/instance/bootstrap before advertising this URL: only the matching verified identity can claim it, and the window stays open until then. Initialized instances retain their existing owner and do not bootstrap again.';
 
 const BOOTSTRAP_WARNING_MISSING =
 	'No bootstrap owner email is configured: an uninitialized instance fails closed and cannot be claimed. Pass --bootstrap-owner-email <email> to deploy or upgrade; create-signkit applies it as a non-secret Worker var.';

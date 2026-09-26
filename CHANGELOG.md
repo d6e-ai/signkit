@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-09-26
+
+### Changed
+
+- Make `create-signkit` post-deploy, upgrade, and plan bootstrap guidance explicitly conditional on a fresh or uninitialized instance, clarifying that initialized instances retain their existing owner and do not bootstrap again ([#191](https://github.com/d6e-ai/signkit/issues/191)). Only bootstrapper operator guidance is changed; instance initialization, authorization, and fail-closed safety remain unchanged.
+
+### Security
+
+- Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements. The optional PAdES B-B/B-T instance seal is not a recipient certificate signature or a claim of advanced or qualified status; Vercel remains CI-only.
+
 ## [0.1.11] - 2026-09-26
 
 ### Fixed
