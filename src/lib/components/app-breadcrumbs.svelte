@@ -35,37 +35,44 @@
 	});
 </script>
 
-<Breadcrumb.Root>
-	<Breadcrumb.List>
-		<Breadcrumb.Item>
-			<Breadcrumb.Link href={localizeHref('/')}>{m.app_name()}</Breadcrumb.Link>
+<Breadcrumb.Root class="min-w-0">
+	<Breadcrumb.List class="min-w-0 flex-nowrap">
+		<Breadcrumb.Item class="min-w-0 shrink">
+			<Breadcrumb.Link href={localizeHref('/')} class="truncate">{m.app_name()}</Breadcrumb.Link>
 		</Breadcrumb.Item>
 		{#if isEnvelopeDetail}
-			<Breadcrumb.Separator />
-			<Breadcrumb.Item>
-				<Breadcrumb.Link href={localizeHref('/envelopes')}
+			<Breadcrumb.Separator class="shrink-0" />
+			<Breadcrumb.Item class="min-w-0 shrink">
+				<Breadcrumb.Link href={localizeHref('/envelopes')} class="truncate"
 					>{m.breadcrumb_envelopes()}</Breadcrumb.Link
 				>
 			</Breadcrumb.Item>
-			<Breadcrumb.Separator />
-			<Breadcrumb.Item>
-				<Breadcrumb.Page>{$envelopeBreadcrumbTitle ?? m.envelope_detail_title()}</Breadcrumb.Page>
+			<Breadcrumb.Separator class="shrink-0" />
+			<Breadcrumb.Item class="min-w-0">
+				<Breadcrumb.Page
+					class="truncate"
+					title={$envelopeBreadcrumbTitle ?? m.envelope_detail_title()}
+				>
+					{$envelopeBreadcrumbTitle ?? m.envelope_detail_title()}
+				</Breadcrumb.Page>
 			</Breadcrumb.Item>
 		{:else if routeLabel !== null}
-			<Breadcrumb.Separator />
-			<Breadcrumb.Item>
+			<Breadcrumb.Separator class="shrink-0" />
+			<Breadcrumb.Item class="min-w-0">
 				<!-- Never a link: /settings is only a redirector for a non-member
 				     accepting an invitation or an active member being routed to
 				     their own child route -- it is not a stable page any caller
 				     who is already on a settings child route could usefully land
 				     back on. -->
-				<Breadcrumb.Page>{routeLabel}</Breadcrumb.Page>
+				<Breadcrumb.Page class="truncate" title={routeLabel}>{routeLabel}</Breadcrumb.Page>
 			</Breadcrumb.Item>
 		{/if}
 		{#if settingsChildLabel !== null}
-			<Breadcrumb.Separator />
-			<Breadcrumb.Item>
-				<Breadcrumb.Page>{settingsChildLabel}</Breadcrumb.Page>
+			<Breadcrumb.Separator class="shrink-0" />
+			<Breadcrumb.Item class="min-w-0">
+				<Breadcrumb.Page class="truncate" title={settingsChildLabel}
+					>{settingsChildLabel}</Breadcrumb.Page
+				>
 			</Breadcrumb.Item>
 		{/if}
 	</Breadcrumb.List>
