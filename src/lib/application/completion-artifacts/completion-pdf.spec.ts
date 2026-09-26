@@ -127,6 +127,34 @@ describe('buildCompletionPdfPages + renderCompletionPdf', () => {
 		expect(dewrapped).toContain(`Title: ${longTitle.replaceAll('—', '?')}`);
 	});
 
+	it('renders a long accented title as one glyph per character, within the page content edge', () => {
+		// Regression: the writer used to emit raw UTF-8 bytes for accented
+		// characters inside PDF literals despite declaring WinAnsiEncoding, so
+		// each "é" rendered as two glyphs ("Ã©") and overran the fixed-width
+		// line-wrap bound computed assuming one glyph per character.
+		const accentedTitle = 'é'.repeat(90);
+		const manifest: CompletionManifestV1 = { ...MANIFEST, title: accentedTitle };
+		const pages = buildCompletionPdfPages(manifest, DOCUMENTS, GEOMETRY);
+		const pdfBytes = renderCompletionPdf(pages);
+		const text = new TextDecoder('latin1').decode(pdfBytes);
+
+		const titleLines = pages
+			.flat()
+			.filter((line) => line.startsWith('Title: ') || /^é+$/.test(line));
+		expect(titleLines.length).toBeGreaterThan(0);
+		expect(titleLines.join('').replace('Title: ', '')).toBe(accentedTitle);
+
+		for (const literalMatch of text.matchAll(/\(((?:\\.|[^()\\])*)\) Tj/g)) {
+			const glyphCount = decodePdfLiteralByteCount(literalMatch[1]);
+			expect(glyphCount).toBeLessThanOrEqual(PDF_CHARS_PER_LINE);
+		}
+
+		// The historical bug encoded each "é" as its two-byte UTF-8 sequence
+		// (0xC3 0xA9) rather than the single WinAnsi byte 0xE9.
+		const utf8OfE = new TextEncoder().encode('é');
+		expect(containsSubsequence(pdfBytes, utf8OfE)).toBe(false);
+	});
+
 	it('wraps long unbroken field and recipient IDs/digests across lines without losing any characters', () => {
 		const longFieldId = 'field-' + '9'.repeat(120);
 		const longRecipientId = 'recipient-' + '8'.repeat(120);
@@ -336,3 +364,37 @@ describe('buildCompletionPdfManifest', () => {
 		expect(canonicalPdfManifestJson(pdfManifest)).toBe(canonicalPdfManifestJson(pdfManifest));
 	});
 });
+
+/** Counts the glyphs a PDF literal-string body decodes to (ISO 32000-1 §7.3.4.2 octal escapes). */
+function decodePdfLiteralByteCount(literal: string): number {
+	let count: number = 0;
+	for (let index: number = 0; index < literal.length; index += 1) {
+		if (literal[index] !== '\\') {
+			count += 1;
+			continue;
+		}
+		const next: string = literal[index + 1];
+		if (next === '\\' || next === '(' || next === ')') {
+			index += 1;
+		} else {
+			index += 3; // \ddd octal escape
+		}
+		count += 1;
+	}
+	return count;
+}
+
+function containsSubsequence(haystack: Uint8Array, needle: Uint8Array): boolean {
+	if (needle.length === 0) return true;
+	for (let start: number = 0; start <= haystack.length - needle.length; start += 1) {
+		let matches: boolean = true;
+		for (let offset: number = 0; offset < needle.length; offset += 1) {
+			if (haystack[start + offset] !== needle[offset]) {
+				matches = false;
+				break;
+			}
+		}
+		if (matches) return true;
+	}
+	return false;
+}
