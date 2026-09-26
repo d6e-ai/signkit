@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-09-26
+
+### Fixed
+
+- The Documents tab for a completed envelope now prioritizes the final PDF when available, clearly labels original documents, and offers same-origin downloads.
+- Read-only, post-send fields now distinguish delivery progress (sent, viewed) from a recipient's own signing state, instead of conflating the two.
+- Restore a signed/approved confirmation as a bounded, evidence-checked, read-only receipt available for 30 days; no mutation or document/artifact access authority is restored.
+- Fix completion-evidence line wrapping and pagination so long identifiers and digests remain fully visible without truncation, while published artifacts remain immutable.
+
+### Security
+
+- Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements. The optional PAdES B-B/B-T instance seal is not a recipient certificate signature or a claim of advanced or qualified status; Vercel remains CI-only.
+
 ## [0.1.10] - 2026-09-25
 
 ### Added
