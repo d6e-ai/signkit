@@ -86,8 +86,14 @@ describe('recipient document rendering', () => {
 		expect(source).toContain('resolveDeclinedReceiptPage');
 		expect(source).toContain('resolveRecipientDeclinedReceiptApplication');
 		expect(source).toContain('unsealDeclinedReceiptSession');
+		// The completed-action receipt is a second, separately sealed terminal
+		// cookie resolved after the declined one, never a document read.
+		expect(source).toContain('resolveCompletedReceiptPage');
+		expect(source).toContain('resolveRecipientCompletedReceiptApplication');
+		expect(source).toContain('unsealCompletedReceiptSession');
+		expect(source).toContain('readCompletedReceiptCookie');
 		expect(source).not.toContain('renderActivePage');
-		expect(source).toContain('return page;');
+		expect(source).toContain("if (declinedPage.state !== 'invalid') return declinedPage;");
 	});
 
 	it('keeps approval capability-bound and client-driven', () => {

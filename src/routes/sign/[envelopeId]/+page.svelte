@@ -876,6 +876,49 @@
 		}).format(new Date(expiresAt));
 	}
 
+	/**
+	 * The recipient's own completed action, which is distinct from whole-envelope
+	 * progress. Both are shown; neither implies the other.
+	 */
+	function completedReceiptTitle(action: 'signed' | 'approved'): string {
+		return action === 'signed'
+			? m.signing_signed_receipt_title()
+			: m.signing_approved_receipt_title();
+	}
+
+	function completedReceiptDescription(action: 'signed' | 'approved'): string {
+		return action === 'signed'
+			? m.signing_signed_receipt_description()
+			: m.signing_approved_receipt_description();
+	}
+
+	function completedReceiptStatus(action: 'signed' | 'approved'): string {
+		return action === 'signed' ? m.signing_status_signed() : m.signing_status_approved();
+	}
+
+	function completedReceiptRecordedAt(
+		action: 'signed' | 'approved',
+		completedAt: string,
+		locale: string
+	): string {
+		const timestamp: string = formatExpiry(completedAt, locale);
+		return action === 'signed'
+			? m.signing_completed_receipt_signed_recorded_at({ timestamp })
+			: m.signing_completed_receipt_approved_recorded_at({ timestamp });
+	}
+
+	function completedReceiptEnvelopeProgress(
+		envelopeStatus: 'in_progress' | 'completed',
+		completedByThisAction: boolean
+	): string {
+		if (envelopeStatus !== 'completed') {
+			return m.signing_completed_receipt_envelope_in_progress();
+		}
+		return completedByThisAction
+			? m.signing_completed_receipt_envelope_completed_by_you()
+			: m.signing_completed_receipt_envelope_completed();
+	}
+
 	/** A safe, local rendering of what the signer entered; never document content. */
 	function signaturePreview(value: unknown): string {
 		if (typeof value !== 'string' || value.trim().length === 0) return '';
@@ -1083,7 +1126,9 @@
 	<title
 		>{data.state === 'declined' || isDeclined
 			? m.signing_declined_receipt_title()
-			: m.signing_page_title()} — {m.app_name()}</title
+			: data.state === 'completed'
+				? completedReceiptTitle(data.action)
+				: m.signing_page_title()} — {m.app_name()}</title
 	>
 	<meta name="robots" content="noindex,nofollow,noarchive" />
 	<meta name="referrer" content="no-referrer" />
@@ -1253,6 +1298,37 @@
 				class="justify-center border-t bg-muted/20 py-4 text-center text-sm text-muted-foreground"
 			>
 				{m.signing_declined_receipt_access_closed()}
+			</Card.Footer>
+		</Card.Root>
+	{:else if data.state === 'completed'}
+		<Card.Root class="w-full border-primary/20 shadow-sm">
+			<Card.Header class="items-center gap-4 pt-10 text-center">
+				<div
+					class="flex size-12 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+				>
+					<IconCircleCheck />
+				</div>
+				<Card.Title class="text-2xl">{completedReceiptTitle(data.action)}</Card.Title>
+				<Card.Description class="leading-6">
+					{completedReceiptDescription(data.action)}
+				</Card.Description>
+			</Card.Header>
+			<Card.Content class="flex flex-col items-center gap-3 pb-8 text-center">
+				<Badge variant="secondary">{completedReceiptStatus(data.action)}</Badge>
+				<p class="text-sm text-muted-foreground">
+					{completedReceiptRecordedAt(data.action, data.completedAt, getLocale())}
+				</p>
+				<p class="text-sm text-muted-foreground">
+					{completedReceiptEnvelopeProgress(
+						data.envelopeStatus,
+						data.envelopeCompletedByThisAction
+					)}
+				</p>
+			</Card.Content>
+			<Card.Footer
+				class="justify-center border-t bg-muted/20 py-4 text-center text-sm text-muted-foreground"
+			>
+				{m.signing_completed_receipt_access_closed()}
 			</Card.Footer>
 		</Card.Root>
 	{:else if data.state === 'active'}
