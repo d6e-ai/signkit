@@ -60,6 +60,7 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 
 	async readCompletionArtifactPdf(envelopeId: string): Promise<CompletionArtifactPdfRecord | null> {
 		interface Row {
+			envelope_id: string;
 			pdf_object_key: string;
 			pdf_sha256: string;
 			pdf_byte_size: number | null;
@@ -69,7 +70,7 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 		}
 		const row: Row | null = await this.#database
 			.prepare(
-				`SELECT pdf_object_key, pdf_sha256, pdf_byte_size, pdf_manifest_object_key, pdf_manifest_sha256, published_at
+				`SELECT envelope_id, pdf_object_key, pdf_sha256, pdf_byte_size, pdf_manifest_object_key, pdf_manifest_sha256, published_at
 				 FROM completion_artifact_pdf
 				 WHERE envelope_id = ?`
 			)
@@ -77,6 +78,7 @@ export class D1CompletionArtifactPdfStore implements CompletionArtifactPdfStore 
 			.first<Row>();
 		if (row === null) return null;
 		return {
+			envelopeId: row.envelope_id,
 			pdfObjectKey: row.pdf_object_key,
 			pdfSha256: row.pdf_sha256,
 			pdfByteSize: row.pdf_byte_size === null ? null : Number(row.pdf_byte_size),

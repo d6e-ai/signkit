@@ -5,6 +5,11 @@ import type { ObjectStore } from '$lib/ports/object-store';
 import { AesGcmCompletionTokenSealer } from '$lib/security/completion-token-sealer';
 import { CompletionDeliveryResealSweepService } from './completion-reseal-sweep-service';
 import { CompletionDeliveryService } from './completion-delivery-service';
+import {
+	CompletionPdfAttachmentReader,
+	MissingCompletionPdfAttachmentReader,
+	type CompletionPdfAttachmentReaderPort
+} from './completion-pdf-attachment-reader';
 import { PublicCompletionArtifactService } from './public-completion-artifact';
 
 export interface CompletionDeliveryRuntimeContext {
@@ -84,12 +89,18 @@ export async function resolveCompletionDeliveryService(
 		if (database === undefined || mailSender === null) return null;
 		const { D1CompletionDeliveryStore } =
 			await import('$lib/adapters/db/d1-completion-delivery-store');
+		const pdfAttachmentReader: CompletionPdfAttachmentReaderPort =
+			await resolveWorkerCompletionPdfAttachmentReader(context.platform.env, database);
 		return new CompletionDeliveryService(
 			new D1CompletionDeliveryStore(database),
 			sealer,
 			mailSender,
 			configuration.publicOrigin,
-			{ fromEmail: configuration.fromEmail, fromName: configuration.fromName }
+			{ fromEmail: configuration.fromEmail, fromName: configuration.fromName },
+			undefined,
+			undefined,
+			undefined,
+			pdfAttachmentReader
 		);
 	}
 
@@ -100,12 +111,76 @@ export async function resolveCompletionDeliveryService(
 		import('$lib/adapters/db/postgres-completion-delivery-store'),
 		import('$lib/application/envelopes/runtime-postgres')
 	]);
+	const pdfAttachmentReader: CompletionPdfAttachmentReaderPort =
+		await resolveNodeCompletionPdfAttachmentReader(databaseUrl);
 	return new CompletionDeliveryService(
 		new PostgresCompletionDeliveryStore(resolvePostgresSql(databaseUrl)),
 		sealer,
 		mailSender,
 		configuration.publicOrigin,
-		{ fromEmail: configuration.fromEmail, fromName: configuration.fromName }
+		{ fromEmail: configuration.fromEmail, fromName: configuration.fromName },
+		undefined,
+		undefined,
+		undefined,
+		pdfAttachmentReader
+	);
+}
+
+/**
+ * No new required secret or provider: a bucket-less D1 deployment (no
+ * `OBJECTS` binding) does not need R2 to run completion delivery at all. But
+ * once this attachment feature is live, that gap must not be mistaken for
+ * "PDF not published yet" — a `MissingCompletionPdfAttachmentReader` fails
+ * every read closed as retryable, so completion delivery surfaces the missing
+ * configuration as an operational failure rather than silently sending
+ * link-only mail forever.
+ */
+async function resolveWorkerCompletionPdfAttachmentReader(
+	workerEnv: Readonly<App.Platform>['env'],
+	database: D1Database
+): Promise<CompletionPdfAttachmentReaderPort> {
+	const bucket: R2Bucket | undefined = workerEnv?.OBJECTS;
+	if (bucket === undefined) return new MissingCompletionPdfAttachmentReader();
+	const [{ D1CompletionArtifactPdfStore }, { R2ObjectStore }] = await Promise.all([
+		import('$lib/adapters/db/d1-completion-artifact-pdf-store'),
+		import('$lib/adapters/object/r2')
+	]);
+	return new CompletionPdfAttachmentReader(
+		new D1CompletionArtifactPdfStore(database),
+		new R2ObjectStore(bucket)
+	);
+}
+
+/** Mirrors `resolveWorkerCompletionPdfAttachmentReader`: no S3 configuration fails closed as retryable, never link-only. */
+async function resolveNodeCompletionPdfAttachmentReader(
+	databaseUrl: string
+): Promise<CompletionPdfAttachmentReaderPort> {
+	const s3OnlyConfiguration = {
+		endpoint: env.S3_ENDPOINT,
+		region: env.S3_REGION,
+		bucket: env.S3_BUCKET,
+		accessKeyId: env.S3_ACCESS_KEY_ID,
+		secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+		forcePathStyle: env.S3_FORCE_PATH_STYLE
+	};
+	if (
+		Object.values(s3OnlyConfiguration).every((value: string | undefined): boolean => !value?.trim())
+	) {
+		return new MissingCompletionPdfAttachmentReader();
+	}
+	const [
+		{ PostgresCompletionArtifactPdfStore },
+		{ resolvePostgresSql: resolveSql },
+		{ resolveS3ObjectStore }
+	] = await Promise.all([
+		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
+		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/drafts/runtime-s3')
+	]);
+	const objects: ObjectStore = resolveS3ObjectStore({ databaseUrl, ...s3OnlyConfiguration });
+	return new CompletionPdfAttachmentReader(
+		new PostgresCompletionArtifactPdfStore(resolveSql(databaseUrl)),
+		objects
 	);
 }
 

@@ -1,10 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CompletionDeliveryService } from './completion-delivery-service';
 import { PublicCompletionArtifactService } from './public-completion-artifact';
+import {
+	CompletionPdfAttachmentReader,
+	MissingCompletionPdfAttachmentReader
+} from './completion-pdf-attachment-reader';
 
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
+const constructedReaders = vi.hoisted<unknown[]>(() => []);
 
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
+vi.mock('./completion-delivery-service', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('./completion-delivery-service')>();
+	return {
+		...actual,
+		CompletionDeliveryService: class extends actual.CompletionDeliveryService {
+			constructor(...args: ConstructorParameters<typeof actual.CompletionDeliveryService>) {
+				super(...args);
+				constructedReaders.push(args[8]);
+			}
+		}
+	};
+});
 
 import {
 	resolveCompletionDeliveryService,
@@ -18,6 +35,7 @@ const TEST_FROM_NAME = 'SignKit';
 
 afterEach((): void => {
 	for (const key of Object.keys(privateEnv)) delete privateEnv[key];
+	constructedReaders.length = 0;
 });
 
 describe('resolvePublicCompletionArtifactService', () => {
@@ -139,6 +157,7 @@ describe('resolveCompletionDeliveryService', () => {
 
 		const service = await resolveCompletionDeliveryService({});
 		expect(service).toBeInstanceOf(CompletionDeliveryService);
+		expect(constructedReaders.at(-1)).toBeInstanceOf(CompletionPdfAttachmentReader);
 	});
 
 	it('fails closed on Node when the mail provider is smtp but the SMTP configuration is incomplete', async () => {
@@ -160,6 +179,71 @@ describe('resolveCompletionDeliveryService', () => {
 
 		const service = await resolveCompletionDeliveryService({});
 		expect(service).toBeInstanceOf(CompletionDeliveryService);
+		expect(constructedReaders.at(-1)).toBeInstanceOf(CompletionPdfAttachmentReader);
+	});
+
+	it('still constructs a valid Workers delivery service with no R2 bucket bound, failing PDF attachment closed as retryable', async () => {
+		const platform = {
+			env: {
+				DB: {} as D1Database,
+				EMAIL: {} as SendEmail,
+				SIGNKIT_MAIL_PROVIDER: 'cloudflare',
+				DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
+				SIGNKIT_PUBLIC_ORIGIN: TEST_PUBLIC_ORIGIN,
+				SIGNKIT_EMAIL_FROM: TEST_FROM_EMAIL,
+				SIGNKIT_EMAIL_FROM_NAME: TEST_FROM_NAME
+			}
+		} as unknown as App.Platform;
+
+		const service = await resolveCompletionDeliveryService({ platform });
+		expect(service).toBeInstanceOf(CompletionDeliveryService);
+		const reader = constructedReaders.at(-1);
+		expect(reader).toBeInstanceOf(MissingCompletionPdfAttachmentReader);
+		if (!(reader instanceof MissingCompletionPdfAttachmentReader))
+			throw new Error('Missing reader');
+		await expect(reader.read()).resolves.toEqual({
+			outcome: 'retryable_error',
+			errorCode: 'completion_pdf_storage_not_configured'
+		});
+	});
+
+	it('constructs a valid Workers delivery service when D1 and an R2 OBJECTS bucket are both present', async () => {
+		const platform = {
+			env: {
+				DB: {} as D1Database,
+				OBJECTS: {} as R2Bucket,
+				EMAIL: {} as SendEmail,
+				SIGNKIT_MAIL_PROVIDER: 'cloudflare',
+				DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
+				SIGNKIT_PUBLIC_ORIGIN: TEST_PUBLIC_ORIGIN,
+				SIGNKIT_EMAIL_FROM: TEST_FROM_EMAIL,
+				SIGNKIT_EMAIL_FROM_NAME: TEST_FROM_NAME
+			}
+		} as unknown as App.Platform;
+
+		const service = await resolveCompletionDeliveryService({ platform });
+		expect(service).toBeInstanceOf(CompletionDeliveryService);
+		expect(constructedReaders.at(-1)).toBeInstanceOf(CompletionPdfAttachmentReader);
+	});
+
+	it('still constructs a valid PostgreSQL delivery service with no S3 configuration, failing PDF attachment closed as retryable', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		setCompleteDeliveryConfiguration();
+		privateEnv.SIGNKIT_MAIL_PROVIDER = 'smtp';
+		privateEnv.SIGNKIT_SMTP_HOST = 'smtp.example.com';
+		privateEnv.SIGNKIT_SMTP_PORT = '587';
+		privateEnv.SIGNKIT_SMTP_SECURE = 'false';
+
+		const service = await resolveCompletionDeliveryService({});
+		expect(service).toBeInstanceOf(CompletionDeliveryService);
+		const reader = constructedReaders.at(-1);
+		expect(reader).toBeInstanceOf(MissingCompletionPdfAttachmentReader);
+		if (!(reader instanceof MissingCompletionPdfAttachmentReader))
+			throw new Error('Missing reader');
+		await expect(reader.read()).resolves.toEqual({
+			outcome: 'retryable_error',
+			errorCode: 'completion_pdf_storage_not_configured'
+		});
 	});
 });
 

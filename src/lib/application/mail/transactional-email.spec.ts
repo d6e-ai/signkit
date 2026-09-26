@@ -93,6 +93,48 @@ describe('transactional completion mail', () => {
 		expect(copy.text).not.toContain('合意書');
 		assertRichTemplate(copy.html, 'ja');
 	});
+
+	it('defaults to fallback (not-attached) English copy when no attachment status is given', () => {
+		const copy = renderCompletionMail('en', 'Morgan', 'Partnership Agreement', COMPLETION_URL);
+		expect(copy.text).toContain(
+			'Due to its file size, the completed PDF is not attached to this email.'
+		);
+		expect(copy.html).toContain(
+			'Due to its file size, the completed PDF is not attached to this email.'
+		);
+	});
+
+	it('renders attached English copy confirming the PDF is included', () => {
+		const copy = renderCompletionMail(
+			'en',
+			'Morgan',
+			'Partnership Agreement',
+			COMPLETION_URL,
+			'attached'
+		);
+		expect(copy.text).toContain('The completed PDF is attached to this email for your records.');
+		expect(copy.html).toContain('The completed PDF is attached to this email for your records.');
+		expect(copy.text).not.toContain('is not attached to this email');
+	});
+
+	it('renders attached and fallback Japanese copy without 合意書 terminology', () => {
+		const attached = renderCompletionMail('ja', '佐藤', '業務委託契約', COMPLETION_URL, 'attached');
+		expect(attached.text).toContain('完了した契約書のPDFをこのメールに添付しております。');
+		expect(attached.html).toContain('完了した契約書のPDFをこのメールに添付しております。');
+		expect(attached.text).not.toContain('合意書');
+
+		const fallback = renderCompletionMail(
+			'ja',
+			'佐藤',
+			'業務委託契約',
+			COMPLETION_URL,
+			'not_attached'
+		);
+		expect(fallback.text).toContain(
+			'ファイルサイズの都合により、完了した契約書のPDFは本メールに添付されておりません。'
+		);
+		expect(fallback.text).not.toContain('合意書');
+	});
 });
 
 describe('transactional mail escaping', () => {

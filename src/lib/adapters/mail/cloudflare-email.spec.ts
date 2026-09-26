@@ -31,6 +31,55 @@ describe('Cloudflare email adapters', () => {
 		});
 	});
 
+	interface SentBuilderOptions {
+		attachments?: { disposition: string; filename: string; type: string; content: ArrayBuffer }[];
+	}
+
+	it('attaches binary content as an ArrayBuffer through the Workers builder API', async () => {
+		const send = vi.fn(async (): Promise<EmailSendResult> => ({
+			messageId: '<message-1@email.cloudflare.net>'
+		}));
+		const sender = new CloudflareBindingMailSender({ send } as unknown as SendEmail);
+		const content: Uint8Array = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]);
+
+		await sender.send({
+			...message,
+			attachment: {
+				filename: 'signkit-completed-envelope.pdf',
+				contentType: 'application/pdf',
+				content
+			}
+		});
+
+		expect(send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attachments: [
+					{
+						disposition: 'attachment',
+						filename: 'signkit-completed-envelope.pdf',
+						type: 'application/pdf',
+						content: expect.any(ArrayBuffer)
+					}
+				]
+			})
+		);
+		const sentOptions = send.mock.calls[0] as unknown as [SentBuilderOptions];
+		const sentAttachment = sentOptions[0].attachments?.[0];
+		expect(new Uint8Array(sentAttachment?.content ?? new ArrayBuffer(0))).toEqual(content);
+	});
+
+	it('sends no attachments field on the Workers builder API when the message has no attachment', async () => {
+		const send = vi.fn(async (): Promise<EmailSendResult> => ({
+			messageId: '<message-1@email.cloudflare.net>'
+		}));
+		const sender = new CloudflareBindingMailSender({ send } as unknown as SendEmail);
+
+		await sender.send(message);
+
+		const sentOptions = send.mock.calls[0] as unknown as [SentBuilderOptions];
+		expect(sentOptions[0]).not.toHaveProperty('attachments');
+	});
+
 	it('classifies binding errors without retaining provider messages', async () => {
 		const send = vi.fn(async (): Promise<EmailSendResult> => {
 			throw { code: 'E_RATE_LIMIT_EXCEEDED', message: 'token=secret recipient@example.com' };
@@ -92,6 +141,53 @@ describe('Cloudflare email adapters', () => {
 			text: message.text,
 			html: message.html
 		});
+	});
+
+	it('base64-encodes attachment content in the REST JSON body', async () => {
+		const fetchFn = vi.fn<typeof fetch>(async () =>
+			Response.json({
+				success: true,
+				result: { delivered: [message.to], permanent_bounces: [], queued: [] }
+			})
+		);
+		const sender = new CloudflareRestMailSender('a'.repeat(32), 'api-secret', fetchFn);
+		const content: Uint8Array = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]);
+
+		await sender.send({
+			...message,
+			attachment: {
+				filename: 'signkit-completed-envelope.pdf',
+				contentType: 'application/pdf',
+				content
+			}
+		});
+
+		const [, init] = fetchFn.mock.calls[0];
+		const body: { attachments: { filename: string; type: string; content: string }[] } = JSON.parse(
+			String(init?.body)
+		);
+		expect(body.attachments).toEqual([
+			{
+				filename: 'signkit-completed-envelope.pdf',
+				type: 'application/pdf',
+				content: Buffer.from(content).toString('base64')
+			}
+		]);
+	});
+
+	it('sends no attachments field over REST when the message has no attachment', async () => {
+		const fetchFn = vi.fn<typeof fetch>(async () =>
+			Response.json({
+				success: true,
+				result: { delivered: [message.to], permanent_bounces: [], queued: [] }
+			})
+		);
+		const sender = new CloudflareRestMailSender('a'.repeat(32), 'api-secret', fetchFn);
+
+		await sender.send(message);
+
+		const [, init] = fetchFn.mock.calls[0];
+		expect(JSON.parse(String(init?.body))).not.toHaveProperty('attachments');
 	});
 
 	it.each([

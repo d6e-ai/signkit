@@ -57,6 +57,18 @@ Published artifacts in object storage and SQL pointer records in `completion_art
 
 Node/Docker and Cloudflare Workers runtime profiles are fully supported; Vercel uses the existing PostgreSQL and S3-compatible path. Host schedulers invoke the protected `POST /api/v1/system/completion-deliveries/drain` endpoint using constant-time `DELIVERY_WORKER_SECRET` bearer validation; Cloudflare Workers drain completion deliveries in-process within `scheduled()` via `context.waitUntil` following invitation and completion artifact drains.
 
+### Mailed PDF attachment
+
+Completion mail attaches the immutable published PDF, not a new render or a draft. `CompletionPdfAttachmentReader` resolves only the claimed envelope through `CompletionArtifactPdfStore` and `ObjectStore`: it checks the persisted envelope ID, derives the content-addressed key, validates recorded and object metadata, reads exactly the bounded size, and recomputes SHA-256 before attaching bytes.
+
+- Missing publication, storage configuration, or a temporary read failure uses the existing bounded retry/backoff. A missing or null reader cannot silently send link-only mail.
+- Envelope, key, digest, or size inconsistencies fail closed as `integrity_failed`, with no mail sent.
+- A verified object above the 3 MiB raw-PDF budget is the sole link-only fallback. JA/EN copy explains the size limit and provides the existing expiring secure link. Smaller verified PDFs are attached as `signkit-completed-{envelopeId}.pdf`.
+
+The budget leaves headroom for base64 expansion and MIME overhead under Cloudflare's general 5 MiB message limit. Its 25 MiB exception requires a verified **destination** address, not merely a verified sender or domain, so arbitrary completion recipients cannot rely on it. See [Cloudflare Email Service limits](https://developers.cloudflare.com/email-service/platform/limits/).
+
+D1/R2 and PostgreSQL/S3 use the same reader ports, without new migrations or secrets. Mail provider selection remains independent of the host: SMTP uses a byte-preserving Nodemailer `Buffer`, Cloudflare Workers bindings use a right-sized `ArrayBuffer`, and Cloudflare REST uses base64. All preserve nonzero-offset byte views.
+
 ## Recipient capability reissue
 
 Recipient capability reissue is implemented via `POST /api/v1/envelopes/{envelopeId}/recipients/{recipientId}/reissue` (and `POST /api/v1/envelopes/{envelopeId}/reissue`). It satisfies the following normative rules governing the issuance ledger, delivery worker, and view-continuation semantics so that reissuing never silently redefines what a "capability" or a "view" means.

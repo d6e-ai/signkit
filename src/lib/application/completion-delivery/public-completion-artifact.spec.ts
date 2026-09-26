@@ -197,6 +197,7 @@ describe('PublicCompletionArtifactService', () => {
 				issued,
 				bytes,
 				record: {
+					envelopeId: ENV_ID,
 					pdfObjectKey: objectKey,
 					pdfSha256: digest,
 					pdfByteSize: bytes.byteLength,
@@ -377,6 +378,7 @@ describe('PublicCompletionArtifactService', () => {
 					throw new Error('unused');
 				}),
 				readCompletionArtifactPdf: vi.fn(async () => ({
+					envelopeId: ENV_ID,
 					pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.pdf',
 					pdfSha256: 'c'.repeat(64),
 					pdfByteSize: 1024,

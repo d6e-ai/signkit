@@ -118,6 +118,7 @@ describe('completion artifact status HTTP handler', () => {
 			}
 		}));
 		const pdfRecord: CompletionArtifactPdfRecord = {
+			envelopeId: ENVELOPE_ID,
 			pdfObjectKey: 'completion-artifacts/v1/envelopes/env/sha256/abc.pdf',
 			pdfSha256: 'a'.repeat(64),
 			pdfByteSize: 1024,

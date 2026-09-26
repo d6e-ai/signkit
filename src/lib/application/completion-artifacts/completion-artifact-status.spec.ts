@@ -155,6 +155,7 @@ describe('CompletionArtifactStatusService.find', () => {
 
 	it('reports a published PDF status once a PDF record exists, without exposing its object key or digest', async () => {
 		const record: CompletionArtifactPdfRecord = {
+			envelopeId: ENVELOPE_ID,
 			pdfObjectKey: 'completion-artifacts/v1/envelopes/envelope-1/sha256/abc.pdf',
 			pdfSha256: 'a'.repeat(64),
 			pdfByteSize: 1024,
