@@ -65,6 +65,27 @@ describe('resolvePublicCompletionArtifactService', () => {
 		const service = await resolvePublicCompletionArtifactService({});
 		expect(service).toBeInstanceOf(PublicCompletionArtifactService);
 	});
+
+	it.each([
+		{ S3_FORCE_PATH_STYLE: 'true' },
+		{ S3_BUCKET: 'partial-bucket' },
+		{ S3_ENDPOINT: 'https://s3.example.com' }
+	])('fails closed without throwing for partial public-artifact storage %j', async (partial) => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		Object.assign(privateEnv, partial);
+		await expect(resolvePublicCompletionArtifactService({})).resolves.toBeNull();
+	});
+
+	it.each([
+		{ S3_ENDPOINT: 'not-a-url' },
+		{ S3_ENDPOINT: 'http://s3.example.com' },
+		{ S3_FORCE_PATH_STYLE: 'not-a-boolean' },
+		{ S3_BUCKET: '   ' }
+	])('fails closed without throwing for invalid public-artifact storage %j', async (invalid) => {
+		setCompleteNodeConfiguration();
+		Object.assign(privateEnv, invalid);
+		await expect(resolvePublicCompletionArtifactService({})).resolves.toBeNull();
+	});
 });
 
 describe('resolveCompletionDeliveryService', () => {
