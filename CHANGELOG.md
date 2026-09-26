@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Make `create-signkit` post-deploy, upgrade, and plan bootstrap guidance explicitly conditional on a fresh or uninitialized instance, clarifying that initialized instances retain their existing owner and do not bootstrap again ([#191](https://github.com/d6e-ai/signkit/issues/191)). Only bootstrapper operator guidance is changed; instance initialization, authorization, and fail-closed safety remain unchanged.
 
+### Fixed
+
+- Make shared recipient access, invalid/unavailable status, generic document review, and non-signer decline and approval failure wording role-neutral across English and Japanese locales, keeping signing-specific copy strictly on genuine signer controls ([#193](https://github.com/d6e-ai/signkit/issues/193)).
+- Prevent application header overflow on mobile viewports by making appearance and language controls non-shrinking and breadcrumbs flexible with accessible truncation, preserving the shared 64px header height and control usability at 390px and 320px ([#195](https://github.com/d6e-ai/signkit/issues/195)).
+
 ### Security
 
 - Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements. The optional PAdES B-B/B-T instance seal is not a recipient certificate signature or a claim of advanced or qualified status; Vercel remains CI-only.

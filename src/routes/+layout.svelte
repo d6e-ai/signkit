@@ -43,7 +43,7 @@
 			<header class="border-b bg-background/90 backdrop-blur-xl">
 				<div class="container mx-auto flex h-16 w-full items-center px-4 sm:px-6">
 					<a href="/" class="font-semibold tracking-tight">{m.app_name()}</a>
-					<div class="ml-auto flex items-center gap-1">
+					<div class="ml-auto flex shrink-0 items-center gap-1">
 						<ThemeSwitch />
 						<LanguageSwitch />
 					</div>
@@ -66,7 +66,7 @@
 				>
 					<Sidebar.Trigger />
 					<AppBreadcrumbs />
-					<div class="ml-auto flex min-w-0 items-center gap-1">
+					<div class="ml-auto flex shrink-0 items-center gap-1">
 						<ThemeSwitch />
 						<LanguageSwitch />
 					</div>
