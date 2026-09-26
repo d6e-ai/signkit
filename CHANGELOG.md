@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Keep a signed or approved recipient on their confirmation after completing the action in the browser. The response now exchanges the just-used capability for the bounded, evidence-checked read-only receipt before retiring the live signing cookie, so an immediate reload no longer falls through to the generic invalid page and no longer requires returning to the invitation email ([#194](https://github.com/d6e-ai/signkit/issues/194)). Unproven, mismatched, or expired evidence grants no receipt, the live capability is never retained as a substitute, and the browserless bearer API stays cookie-independent.
 - Make shared recipient access, invalid/unavailable status, generic document review, and non-signer decline and approval failure wording role-neutral across English and Japanese locales, keeping signing-specific copy strictly on genuine signer controls ([#193](https://github.com/d6e-ai/signkit/issues/193)).
 - Prevent application header overflow on mobile viewports by making appearance and language controls non-shrinking and breadcrumbs flexible with accessible truncation, preserving the shared 64px header height and control usability at 390px and 320px ([#195](https://github.com/d6e-ai/signkit/issues/195)).
 

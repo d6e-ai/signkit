@@ -1,10 +1,16 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type {
+	AuthorizedRecipientCompletedReceipt,
+	RecipientCompletedReceiptApplicationPort
+} from '$lib/application/signing/recipient-completed-receipt';
+import type {
 	RecipientSignedApplicationPort,
 	RecipientSignedResult
 } from '$lib/application/signing/recipient-signed';
+import { completedReceiptCookieName } from '$lib/server/completed-receipt-session';
 import { recipientSessionCookieName } from '$lib/server/recipient-session';
+import type { RecipientCompletedReceiptHandlerOptions } from './recipient-completed-receipt';
 import {
 	createRecipientSignedHandler,
 	type RecipientSignedApplicationResolver
@@ -29,12 +35,19 @@ function requestEvent(
 		body?: unknown;
 		cookie?: string;
 	} = {}
-): { event: RequestEvent; deleted: ReturnType<typeof vi.fn> } {
-	return createRecipientRequestEvent({
+): {
+	event: RequestEvent;
+	deleted: ReturnType<typeof vi.fn>;
+	set: ReturnType<typeof vi.fn>;
+} {
+	const { event, deleted, cookies } = createRecipientRequestEvent({
 		pathname: '/api/v1/signing/sign',
 		defaultBody: commandBody,
 		...options
 	});
+	const set = vi.fn();
+	cookies.set = set;
+	return { event, deleted, set };
 }
 
 function application(result: RecipientSignedResult): RecipientSignedApplicationPort {
@@ -57,6 +70,46 @@ const published: RecipientSignedResult = {
 	}
 };
 
+const authorizedReceipt: AuthorizedRecipientCompletedReceipt = {
+	receipt: {
+		envelopeId,
+		recipientId,
+		recipientStatus: 'completed',
+		action: 'signed',
+		completedAt: '2026-09-11T00:02:00.000Z',
+		envelopeStatus: 'in_progress',
+		envelopeCompletedByThisAction: false,
+		locale: 'en'
+	},
+	locator: {
+		envelopeId,
+		recipientId,
+		idempotencyKey: 'sign-1',
+		capabilityHash: 'b'.repeat(64),
+		action: 'signed',
+		completedAt: '2026-09-11T00:02:00.000Z',
+		expiresAt: '2026-10-11T00:02:00.000Z'
+	}
+};
+
+function receiptOptions(
+	authorized: AuthorizedRecipientCompletedReceipt | null = authorizedReceipt
+): RecipientCompletedReceiptHandlerOptions {
+	const application: RecipientCompletedReceiptApplicationPort = {
+		recoverByToken: vi.fn(
+			async (): Promise<AuthorizedRecipientCompletedReceipt | null> => authorized
+		),
+		resolveLocator: vi.fn(
+			async (): Promise<AuthorizedRecipientCompletedReceipt | null> => authorized
+		)
+	};
+	return {
+		resolveReceiptApplication: vi.fn(() => application),
+		sealReceiptSession: vi.fn(async (): Promise<string> => 'sealed-completed-receipt'),
+		now: (): Date => new Date('2026-09-11T00:02:30.000Z')
+	};
+}
+
 describe('recipient signed HTTP handler', () => {
 	it('signs with an explicit browserless capability without clearing browser cookies', async () => {
 		const app: RecipientSignedApplicationPort = application(published);
@@ -68,9 +121,13 @@ describe('recipient signed HTTP handler', () => {
 			authorization: `Bearer ${token}`,
 			idempotencyKey: 'sign-cli-1'
 		});
+		const set = vi.fn();
+		cookies.set = set;
+		const options: RecipientCompletedReceiptHandlerOptions = receiptOptions();
 		const response: Response = await createRecipientSignedHandler(
 			() => app,
 			unseal,
+			options,
 			'bearer'
 		)(event);
 		expect(response.status).toBe(200);
@@ -79,6 +136,8 @@ describe('recipient signed HTTP handler', () => {
 		);
 		expect(cookies.get).not.toHaveBeenCalled();
 		expect(deleted).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
+		expect(options.resolveReceiptApplication).not.toHaveBeenCalled();
 		expect(unseal).not.toHaveBeenCalled();
 		expect(JSON.stringify(await response.json())).not.toContain(token);
 	});
@@ -96,6 +155,7 @@ describe('recipient signed HTTP handler', () => {
 		const response: Response = await createRecipientSignedHandler(
 			() => app,
 			async (): Promise<string> => token,
+			undefined,
 			'bearer'
 		)(event);
 		expect(response.status).toBe(404);
@@ -252,6 +312,115 @@ describe('recipient signed HTTP handler', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('idempotency-replayed')).toBe('true');
 		expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+	});
+
+	it.each([
+		['published', published, null],
+		['replayed', { ...published, outcome: 'replayed' } as RecipientSignedResult, 'true']
+	])(
+		'exchanges the used capability for a read-only receipt cookie on a %s sign',
+		async (_label, result: RecipientSignedResult, replayHeader: string | null) => {
+			const options: RecipientCompletedReceiptHandlerOptions = receiptOptions();
+			const { event, deleted, set } = requestEvent({ idempotencyKey: 'sign-1' });
+			const response: Response = await createRecipientSignedHandler(
+				() => application(result),
+				async (): Promise<string> => token,
+				options
+			)(event);
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get('idempotency-replayed')).toBe(replayHeader);
+			expect(options.resolveReceiptApplication).toHaveBeenCalledWith({
+				platform: { env: { DB: {} } }
+			});
+			expect(set).toHaveBeenCalledWith(
+				completedReceiptCookieName(envelopeId),
+				'sealed-completed-receipt',
+				expect.objectContaining({ path: '/', httpOnly: true, sameSite: 'lax' })
+			);
+			expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+		}
+	);
+
+	it('keeps the sign a success when the receipt evidence cannot be proven', async () => {
+		const diagnostic = vi.spyOn(console, 'error').mockImplementation((): void => {});
+		try {
+			const { event, deleted, set } = requestEvent({ idempotencyKey: 'sign-1' });
+			const response: Response = await createRecipientSignedHandler(
+				() => application(published),
+				async (): Promise<string> => token,
+				receiptOptions(null)
+			)(event);
+
+			// The signature is durable: reporting failure here would invite an
+			// irreversible retry. Only the tokenless reload is lost.
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({ signed: { recipientStatus: 'completed' } });
+			expect(set).not.toHaveBeenCalled();
+			expect(deleted).toHaveBeenCalledWith(recipientSessionCookieName(envelopeId), { path: '/' });
+			const logged: string = diagnostic.mock.calls.map(String).join('|');
+			expect(logged).toContain('recipient_completed_receipt_exchange_failed');
+			expect(logged).not.toContain(token);
+		} finally {
+			diagnostic.mockRestore();
+		}
+	});
+
+	it.each([
+		['published', published],
+		['replayed', { ...published, outcome: 'replayed' } as RecipientSignedResult]
+	])(
+		'reports a %s sign as successful when retiring the live cookie itself fails',
+		async (_label, result: RecipientSignedResult) => {
+			const diagnostic = vi.spyOn(console, 'error').mockImplementation((): void => {});
+			try {
+				const { event, deleted, set } = requestEvent({ idempotencyKey: 'sign-1' });
+				deleted.mockImplementation((): never => {
+					throw new Error('cookie serialization failed');
+				});
+
+				const response: Response = await createRecipientSignedHandler(
+					() => application(result),
+					async (): Promise<string> => token,
+					receiptOptions()
+				)(event);
+
+				// A durable signature must never surface as a 503 because a
+				// Set-Cookie deletion failed after the commit.
+				expect(response.status).toBe(200);
+				expect(await response.json()).toMatchObject({ signed: { recipientStatus: 'completed' } });
+				expect(set).toHaveBeenCalledWith(
+					completedReceiptCookieName(envelopeId),
+					'sealed-completed-receipt',
+					expect.anything()
+				);
+				const logged: string = diagnostic.mock.calls.map(String).join('|');
+				expect(logged).toContain('recipient_completed_receipt_session_retirement_failed');
+				expect(logged).not.toMatch(/skr1_|cookie serialization failed/);
+			} finally {
+				diagnostic.mockRestore();
+			}
+		}
+	);
+
+	it('grants no receipt cookie for fail-closed 404, 409, and 503 outcomes', async () => {
+		for (const [outcome, status] of [
+			['not_found', 404],
+			['idempotency_conflict', 409],
+			['integrity_error', 503]
+		] as const) {
+			const options: RecipientCompletedReceiptHandlerOptions = receiptOptions();
+			const { event, deleted, set } = requestEvent({ idempotencyKey: 'sign-1' });
+			const response: Response = await createRecipientSignedHandler(
+				() => application({ outcome }),
+				async (): Promise<string> => token,
+				options
+			)(event);
+			expect(response.status).toBe(status);
+			expect(set).not.toHaveBeenCalled();
+			expect(deleted).not.toHaveBeenCalled();
+			expect(options.resolveReceiptApplication).not.toHaveBeenCalled();
+		}
 	});
 
 	it('preserves the cookie for opaque not_found, context_mismatch, and role_not_actionable outcomes', async () => {

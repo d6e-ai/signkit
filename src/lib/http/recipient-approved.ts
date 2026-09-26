@@ -4,14 +4,15 @@ import type {
 	RecipientApprovedApplicationPort,
 	RecipientApprovedResult
 } from '$lib/application/signing/recipient-approved';
-import {
-	deleteRecipientSessionCookie,
-	readRecipientSessionCookie
-} from '$lib/server/recipient-session';
+import { readRecipientSessionCookie } from '$lib/server/recipient-session';
 import { boundEnvelopeId } from './envelope-binding';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
 import { recipientBearerToken, type RecipientHttpMode } from './recipient-bearer';
+import {
+	exchangeCompletedReceiptCookie,
+	type RecipientCompletedReceiptHandlerOptions
+} from './recipient-completed-receipt';
 
 const MAX_BODY_BYTES: number = 4 * 1024;
 const idSchema: ZodType<string> = signkitIdentifierSchema;
@@ -45,6 +46,7 @@ type JsonBodyResult = { ok: true; value: unknown } | { ok: false; reason: 'inval
 export function createRecipientApprovedHandler(
 	resolveApplication: RecipientApprovedApplicationResolver,
 	unsealSession: RecipientSessionUnsealer,
+	options?: RecipientCompletedReceiptHandlerOptions,
 	mode: RecipientHttpMode = 'browser'
 ): RequestHandler {
 	return async ({ cookies, platform, request, url }): Promise<Response> => {
@@ -100,7 +102,16 @@ export function createRecipientApprovedHandler(
 				expectedRecipientId: parsed.data.recipientId,
 				idempotencyKey: idempotencyKey.data
 			});
-			return resultResponse(result, url.pathname, mode === 'browser' ? cookies : null, envelopeId);
+			return await resultResponse(
+				result,
+				token,
+				envelopeId,
+				idempotencyKey.data,
+				url,
+				platform,
+				mode === 'browser' ? cookies : null,
+				options
+			);
 		} catch {
 			console.error(JSON.stringify({ event: 'recipient_approved_failed' }));
 			return unavailable(url.pathname);
@@ -108,15 +119,38 @@ export function createRecipientApprovedHandler(
 	};
 }
 
-function resultResponse(
+async function resultResponse(
 	result: RecipientApprovedResult,
-	instance: string,
+	token: string,
+	envelopeId: string,
+	idempotencyKey: string,
+	url: URL,
+	platform: Readonly<App.Platform> | undefined,
 	cookies: Cookies | null,
-	envelopeId: string
-): Response {
+	options: RecipientCompletedReceiptHandlerOptions | undefined
+): Promise<Response> {
+	const instance: string = url.pathname;
 	if (result.outcome === 'published' || result.outcome === 'replayed') {
-		// Durable terminal approve: drop only this envelope's live session cookie.
-		if (cookies !== null) clearSession(cookies, envelopeId);
+		// Durable terminal approve: seal this envelope's read-only receipt cookie
+		// when the durable evidence proves it, then drop only this envelope's
+		// live session cookie. A failed exchange costs the recipient the
+		// tokenless reload, never the approval, so the response stays a success.
+		if (cookies !== null) {
+			await exchangeCompletedReceiptCookie({
+				token,
+				committed: {
+					envelopeId,
+					recipientId: result.result.recipientId,
+					action: 'approved',
+					idempotencyKey,
+					completedAt: result.result.approvedAt
+				},
+				url,
+				platform,
+				cookies,
+				options
+			});
+		}
 		const headers: Headers = new Headers(securityHeaders({ 'content-type': 'application/json' }));
 		if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
 		return new Response(
@@ -289,10 +323,6 @@ function unavailable(instance: string): Response {
 		},
 		securityHeaders()
 	);
-}
-
-function clearSession(cookies: Cookies, envelopeId: string): void {
-	deleteRecipientSessionCookie(cookies, envelopeId);
 }
 
 function acceptsJson(request: Request): boolean {
