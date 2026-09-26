@@ -42,6 +42,18 @@ Supported scopes are `envelopes:read`, `drafts:write`, and `envelopes:send`. Key
 
 Recipient pages use envelope-scoped capability tokens and encrypted browser sessions. They do not become instance members and cannot reach the operator API.
 
+### Recipient terminal receipts
+
+A signer or approver who completes their action, and a recipient who declines, both have their capability revoked. The original invitation link and a page reload must still show that recipient what happened, so a revoked capability may be exchanged for a read-only terminal receipt — and for nothing else.
+
+A receipt is authorized only by durable evidence that corroborates itself. The presented capability's hash must match a durable command row for that recipient and the recipient projection; the recipient's status must be the matching terminal state; the recipient's role must match the command's table; `capability_revoked_at` must equal the command's `updated_at`; the envelope's `sent_commit_sha` must equal both the command's and `repository_head`; and the command's audit payload and event hash must re-derive exactly, with the `audit_event` row and its immediate predecessor intact. Where a completion command carried the chained `envelope.completed` event, that event must exist at the next sequence, chain from the action's hash, and re-hash to the stored value. A signer's declared field digests must reproduce the immutable `field_value` rows, each owned by an `envelope_field` of the same type and recipient in the same envelope; signed plaintext values are never read on this path. Recipient status alone never authorizes a receipt, and no client-supplied field is trusted.
+
+A receipt restores no authority. It grants no mutation, and no access to Markdown source, the sent or completed PDF, field values, evidence bundles, or completion artifacts; those keep their own authorizations. It discloses only the envelope id, recipient id, the terminal action and its time, whole-envelope status, and the recipient's locale. A recipient's own completed action and whole-envelope completion are reported as distinct facts, so one recipient finishing never implies the others have.
+
+Each receipt kind has its own envelope-scoped, host-only, `HttpOnly`, `SameSite=Lax` encrypted cookie with its own key-derivation info and authenticated data, so the two cannot be interchanged with each other or with a live recipient session, and there is no cross-envelope fallback. The cookie stores only a locator; the receipt is re-proven from durable evidence on every load. Exchanging a receipt retires a live session cookie only when that cookie seals the same capability, so a concurrent exchange is never destroyed.
+
+Receipts are retained for 30 days from the terminal action and are not reissued or renewed. An expired receipt, a capability that expired without ever being used, a superseded or reissued capability, a voided or expired envelope, and any malformed, tampered, or mismatched evidence or cookie all fail closed to the same generic invalid response as an unknown link. The completed-action receipt's derivation is recorded in [its decision note](decisions/2026-09-26-recipient-completed-action-receipt.md).
+
 Contacts are a human-session-only operator surface. API keys, recipient capabilities, and recipient-session cookies cannot authorize contact reads, search, creation, replacement, or deletion. Presenting a disallowed bearer on the contact surface must not compose with a browser session.
 
 Background drains use dedicated deployment secrets. They cannot be called with a browser session or API key.

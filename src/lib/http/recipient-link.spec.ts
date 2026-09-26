@@ -5,11 +5,19 @@ import type {
 	AuthorizedRecipientDeclinedReceipt,
 	RecipientDeclinedReceiptApplicationPort
 } from '$lib/application/signing/recipient-declined-receipt';
+import type {
+	AuthorizedRecipientCompletedReceipt,
+	RecipientCompletedReceiptApplicationPort
+} from '$lib/application/signing/recipient-completed-receipt';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import {
 	DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
 	declinedReceiptCookieName
 } from '$lib/server/declined-receipt-session';
+import {
+	COMPLETED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
+	completedReceiptCookieName
+} from '$lib/server/completed-receipt-session';
 import {
 	RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS,
 	recipientSessionCookieName
@@ -25,6 +33,7 @@ const envelopeId: string = '01910000-0000-7000-8000-000000000001';
 const otherEnvelopeId: string = '01910000-0000-7000-8000-000000000011';
 const activeCookieName: string = recipientSessionCookieName(envelopeId) as string;
 const declinedCookieName: string = declinedReceiptCookieName(envelopeId) as string;
+const completedCookieName: string = completedReceiptCookieName(envelopeId) as string;
 const otherActiveCookieName: string = recipientSessionCookieName(otherEnvelopeId) as string;
 const context: RecipientSigningContext = {
 	envelopeId,
@@ -119,6 +128,48 @@ function receiptOptions(
 	return {
 		resolveApplication: vi.fn(() => receiptApplication(result)),
 		sealSession: vi.fn(async (): Promise<string> => 'sealed-receipt')
+	};
+}
+
+const completedReceipt: AuthorizedRecipientCompletedReceipt = {
+	receipt: {
+		envelopeId,
+		recipientId: '01910000-0000-7000-8000-000000000002',
+		recipientStatus: 'completed',
+		action: 'signed',
+		completedAt: '2026-09-11T00:02:00.000Z',
+		envelopeStatus: 'in_progress',
+		envelopeCompletedByThisAction: false,
+		locale: 'ja'
+	},
+	locator: {
+		envelopeId,
+		recipientId: '01910000-0000-7000-8000-000000000002',
+		idempotencyKey: 'sign-1',
+		capabilityHash: 'b'.repeat(64),
+		action: 'signed',
+		completedAt: '2026-09-11T00:02:00.000Z',
+		expiresAt: '2026-10-11T00:02:00.000Z'
+	}
+};
+
+function completedReceiptApplication(
+	result: AuthorizedRecipientCompletedReceipt | null = completedReceipt
+): RecipientCompletedReceiptApplicationPort {
+	return {
+		recoverByToken: vi.fn(async (): Promise<AuthorizedRecipientCompletedReceipt | null> => result),
+		resolveLocator: vi.fn(async (): Promise<AuthorizedRecipientCompletedReceipt | null> => result)
+	};
+}
+
+/** Declined evidence is absent, so the completed path is the one under test. */
+function completedReceiptOptions(
+	result: AuthorizedRecipientCompletedReceipt | null = completedReceipt
+): RecipientLinkReceiptOptions {
+	return {
+		...receiptOptions(null),
+		resolveCompletedApplication: vi.fn(() => completedReceiptApplication(result)),
+		sealCompletedSession: vi.fn(async (): Promise<string> => 'sealed-completed-receipt')
 	};
 }
 
@@ -424,5 +475,158 @@ describe('recipient link exchange', () => {
 		expect(response.headers.get('location')).toBe(location);
 		expect(input.cookieDelete).not.toHaveBeenCalled();
 		expect(input.cookieSet).not.toHaveBeenCalled();
+	});
+
+	it('recovers a completed action into its own purpose-separated receipt cookie', async () => {
+		const input: TestEvent = testEvent();
+		const access: RecipientAccessApplicationPort = application(null);
+		const receipts: RecipientLinkReceiptOptions = completedReceiptOptions();
+		const response: Response = await createRecipientLinkHandler(
+			() => access,
+			async (): Promise<string> => 'unused-active-cookie',
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			receipts
+		)(input.event);
+
+		expect(receipts.resolveApplication).toHaveBeenCalledTimes(1);
+		expect(receipts.resolveCompletedApplication).toHaveBeenCalledTimes(1);
+		expect(receipts.sealCompletedSession).toHaveBeenCalledWith({
+			...completedReceipt.locator,
+			version: 1
+		});
+		expect(receipts.sealSession).not.toHaveBeenCalled();
+		expect(input.cookieSet).toHaveBeenCalledWith(
+			completedCookieName,
+			'sealed-completed-receipt',
+			expect.objectContaining({
+				httpOnly: true,
+				sameSite: 'lax',
+				secure: true,
+				maxAge: COMPLETED_RECEIPT_COOKIE_MAX_AGE_SECONDS - 60
+			})
+		);
+		expect(input.cookieSet).not.toHaveBeenCalledWith(
+			declinedCookieName,
+			expect.anything(),
+			expect.anything()
+		);
+		expect(response.headers.get('location')).toBe(`/ja/sign/${envelopeId}`);
+		expect(response.headers.get('location')).not.toContain(token);
+	});
+
+	it('prefers declined evidence and never consults the completed path for it', async () => {
+		const input: TestEvent = testEvent();
+		const receipts: RecipientLinkReceiptOptions = {
+			...receiptOptions(),
+			resolveCompletedApplication: vi.fn(() => completedReceiptApplication()),
+			sealCompletedSession: vi.fn(async (): Promise<string> => 'sealed-completed-receipt')
+		};
+		await createRecipientLinkHandler(
+			() => application(null),
+			undefined,
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			receipts
+		)(input.event);
+
+		expect(receipts.resolveCompletedApplication).not.toHaveBeenCalled();
+		expect(input.cookieSet).toHaveBeenCalledWith(
+			declinedCookieName,
+			'sealed-receipt',
+			expect.anything()
+		);
+		expect(input.jar[completedCookieName]).toBeUndefined();
+	});
+
+	it('clears only an active session holding the same completed capability', async () => {
+		const same: TestEvent = testEvent(token, 'https:', {
+			[activeCookieName]: 'sealed-active-cookie'
+		});
+		const sameOptions: RecipientLinkReceiptOptions = {
+			...completedReceiptOptions(),
+			unsealActiveSession: vi.fn(async (): Promise<string> => token)
+		};
+		await createRecipientLinkHandler(
+			() => application(null),
+			undefined,
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			sameOptions
+		)(same.event);
+		expect(same.cookieDelete).toHaveBeenCalledWith(activeCookieName, { path: '/' });
+
+		const unrelated: TestEvent = testEvent(token, 'https:', {
+			[activeCookieName]: 'other-active-cookie'
+		});
+		const unrelatedOptions: RecipientLinkReceiptOptions = {
+			...completedReceiptOptions(),
+			unsealActiveSession: vi.fn(async (): Promise<string> => `skr1_${'B'.repeat(43)}`)
+		};
+		await createRecipientLinkHandler(
+			() => application(null),
+			undefined,
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			unrelatedOptions
+		)(unrelated.event);
+		expect(unrelated.cookieDelete).not.toHaveBeenCalledWith(activeCookieName, { path: '/' });
+		expect(unrelated.jar[activeCookieName]).toBe('other-active-cookie');
+	});
+
+	it('leaves a completed receipt for another envelope untouched', async () => {
+		const otherCompletedCookieName: string = completedReceiptCookieName(otherEnvelopeId) as string;
+		const input: TestEvent = testEvent(token, 'https:', {
+			[otherCompletedCookieName]: 'other-envelope-receipt'
+		});
+		await createRecipientLinkHandler(
+			() => application(null),
+			undefined,
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			completedReceiptOptions()
+		)(input.event);
+
+		expect(input.cookieDelete).not.toHaveBeenCalledWith(otherCompletedCookieName, { path: '/' });
+		expect(input.jar[otherCompletedCookieName]).toBe('other-envelope-receipt');
+	});
+
+	it.each([
+		['no completed resolver is configured', receiptOptions(null), '/sign?access=invalid'],
+		[
+			'completed persistence is missing',
+			{ ...receiptOptions(null), resolveCompletedApplication: () => null },
+			'/sign?access=unavailable'
+		],
+		['no completed evidence exists', completedReceiptOptions(null), '/sign?access=invalid'],
+		[
+			'the receipt has already expired',
+			completedReceiptOptions({
+				...completedReceipt,
+				locator: { ...completedReceipt.locator, expiresAt: '2026-09-11T00:03:00.000Z' }
+			}),
+			'/sign?access=invalid'
+		],
+		[
+			'the receipt envelope is not a UUIDv7',
+			completedReceiptOptions({
+				...completedReceipt,
+				receipt: { ...completedReceipt.receipt, envelopeId: 'envelope-1' }
+			}),
+			'/sign?access=invalid'
+		]
+	])('returns a generic response when %s', async (_name, receipts, location) => {
+		const input: TestEvent = testEvent();
+		const response: Response = await createRecipientLinkHandler(
+			() => application(null),
+			undefined,
+			() => new Date('2026-09-11T00:03:00.000Z'),
+			false,
+			receipts as RecipientLinkReceiptOptions
+		)(input.event);
+
+		expect(response.headers.get('location')).toBe(location);
+		expect(input.cookieSet).not.toHaveBeenCalled();
+		expect(input.cookieDelete).not.toHaveBeenCalled();
 	});
 });
