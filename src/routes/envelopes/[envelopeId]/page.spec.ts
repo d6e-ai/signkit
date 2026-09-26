@@ -302,13 +302,15 @@ describe('envelope authoring page contracts', () => {
 		);
 	});
 
-	it('keeps placed fields visible and read-only once an envelope is sent, instead of an apparently empty panel', () => {
+	it('keeps placed fields visible and read-only once an envelope is sent or closed, instead of an apparently empty panel', () => {
 		const fieldsTab = source.slice(
 			source.indexOf('<Tabs.Content value="fields"'),
 			source.indexOf('<Tabs.Content value="send"')
 		);
 		expect(fieldsTab).toContain("{#if envelope.status === 'draft'}");
 		expect(fieldsTab).toContain("{:else if envelope.status !== 'ready'}");
+		expect(fieldsTab).toContain('envelope.sentCommitSha === null');
+		expect(fieldsTab).toContain('m.envelope_fields_locked_closed_description()');
 		expect(fieldsTab).toContain('m.envelope_fields_locked_after_send_description()');
 		expect(fieldsTab).toContain('m.envelope_fields_none_placed()');
 		expect(fieldsTab).toContain('recipientName(field.recipientId)');

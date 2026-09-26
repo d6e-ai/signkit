@@ -367,6 +367,7 @@
 	"envelope_fields_published": "{count} fields published.",
 	"envelope_fields_locked_notice": "This envelope already has published fields. Editing published fields isn't supported yet, so new fields can't be added in this revision - that would replace the published set and lose them. Select a published field below to see its exact placement.",
 	"envelope_fields_locked_after_send_description": "Fields are locked because this envelope has already been sent. This shows the field layout as it was published.",
+	"envelope_fields_locked_closed_description": "Fields are locked because this envelope is closed. This shows the field layout as it was published.",
 	"envelope_fields_none_placed": "No fields were placed for this envelope.",
 	"envelope_send_title": "Send",
 	"envelope_send_description": "Sending is irreversible and reserves signing capabilities for every recipient.",

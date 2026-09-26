@@ -367,6 +367,7 @@
 	"envelope_fields_published": "{count}件のフィールドを公開しました。",
 	"envelope_fields_locked_notice": "このエンベロープにはすでに公開済みのフィールドがあります。公開済みフィールドの編集は現在サポートされていないため、このリビジョンでは新しいフィールドを追加できません(追加すると公開済みのセットが置き換えられ、失われます)。下の公開済みフィールドを選択すると、正確な配置を確認できます。",
 	"envelope_fields_locked_after_send_description": "このエンベロープはすでに送信済みのため、フィールドの配置は固定されています。公開時のフィールド配置を表示しています。",
+	"envelope_fields_locked_closed_description": "このエンベロープは終了しているため、フィールドの配置は固定されています。公開時のフィールド配置を表示しています。",
 	"envelope_fields_none_placed": "このエンベロープにはフィールドが配置されていません。",
 	"envelope_send_title": "送信",
 	"envelope_send_description": "送信は取り消せず、すべての受信者に署名権限を確保します。",

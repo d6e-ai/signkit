@@ -2445,15 +2445,17 @@
 			</Tabs.Content>
 
 			<Tabs.Content value="fields" class="flex flex-col gap-4">
-				{#if envelope.status === 'draft' || (envelope.status === 'voided' && envelope.sentCommitSha === null)}
+				{#if envelope.status === 'draft'}
 					<p class="text-sm text-muted-foreground">{m.envelope_fields_requires_ready()}</p>
 				{:else if envelope.status !== 'ready'}
 					<Card.Root>
 						<Card.Header>
 							<Card.Title>{m.envelope_fields_title()}</Card.Title>
-							<Card.Description
-								>{m.envelope_fields_locked_after_send_description()}</Card.Description
-							>
+							<Card.Description>
+								{envelope.sentCommitSha === null
+									? m.envelope_fields_locked_closed_description()
+									: m.envelope_fields_locked_after_send_description()}
+							</Card.Description>
 						</Card.Header>
 						<Card.Content>
 							{#if placedFields.length === 0}

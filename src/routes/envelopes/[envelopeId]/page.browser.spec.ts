@@ -1668,11 +1668,20 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		}
 	};
 
-	function mockLifecycleFetch(): ReturnType<typeof vi.fn> {
+	type LifecycleDetailFixture = Omit<typeof sentDetailWithFields, 'envelope'> & {
+		envelope: Omit<typeof sentEnvelopeWithFields, 'status' | 'sentCommitSha'> & {
+			status: 'sent' | 'voided';
+			sentCommitSha: string | null;
+		};
+	};
+
+	function mockLifecycleFetch(
+		detailOverride: LifecycleDetailFixture = sentDetailWithFields
+	): ReturnType<typeof vi.fn> {
 		return vi.fn().mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
 			const urlStr = String(url);
 			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
-				return jsonResponse(sentDetailWithFields);
+				return jsonResponse(detailOverride);
 			}
 			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
 				return jsonResponse(workspaceWithFieldDocument);
@@ -1699,6 +1708,141 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 					'Field placement is available once this envelope is ready and before it is sent.'
 				)
 			)
+			.not.toBeInTheDocument();
+	});
+
+	it('Fields tab shows neutral closed-envelope guidance and no placed fields for an envelope voided before send', async () => {
+		const voidedBeforeSendDetail = {
+			...sentDetailWithFields,
+			envelope: {
+				...sentEnvelopeWithFields,
+				status: 'voided' as const,
+				sentCommitSha: null
+			},
+			fields: []
+		};
+		vi.stubGlobal('fetch', mockLifecycleFetch(voidedBeforeSendDetail));
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(fieldsPanel.getByText('No fields were placed for this envelope.'))
+			.toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Field placement is available once this envelope is ready and before it is sent.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('Fields tab keeps placed field visible read-only with neutral closed copy when ready envelope is voided before send', async () => {
+		const readyThenVoidedDetail = {
+			...sentDetailWithFields,
+			envelope: {
+				...sentEnvelopeWithFields,
+				status: 'voided' as const,
+				sentCommitSha: null
+			},
+			fields: sentDetailWithFields.fields
+		};
+		vi.stubGlobal('fetch', mockLifecycleFetch(readyThenVoidedDetail));
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
+				)
+			)
+			.toBeVisible();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
+		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Field placement is available once this envelope is ready and before it is sent.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('Fields tab retains existing after-send copy for post-send voided envelope', async () => {
+		const postSendVoidedDetail = {
+			...sentDetailWithFields,
+			envelope: {
+				...sentEnvelopeWithFields,
+				status: 'voided' as const,
+				sentCommitSha: sentEnvelopeWithFields.sentCommitSha
+			},
+			fields: sentDetailWithFields.fields
+		};
+		vi.stubGlobal('fetch', mockLifecycleFetch(postSendVoidedDetail));
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
+		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Field placement is available once this envelope is ready and before it is sent.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
 			.not.toBeInTheDocument();
 	});
 
