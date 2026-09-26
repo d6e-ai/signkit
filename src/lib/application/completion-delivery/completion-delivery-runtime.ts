@@ -62,7 +62,15 @@ export async function resolvePublicCompletionArtifactService(
 		import('$lib/application/envelopes/runtime-postgres'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
-	const objects: ObjectStore = resolveS3ObjectStore({ databaseUrl, ...s3OnlyConfiguration });
+	let objects: ObjectStore;
+	try {
+		objects = resolveS3ObjectStore({ databaseUrl, ...s3OnlyConfiguration });
+	} catch {
+		// Partial or invalid storage configuration (for example, a leftover
+		// S3_FORCE_PATH_STYLE with no other S3 variable set) must resolve to
+		// "not configured" rather than throwing out of this resolver.
+		return null;
+	}
 	return new PublicCompletionArtifactService(
 		new PostgresCompletionDeliveryStore(resolvePostgresSql(databaseUrl)),
 		objects,
