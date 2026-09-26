@@ -91,9 +91,6 @@
 	let delivery = $state<PublicEnvelopeDeliveryStatus | null>(null);
 	let completionStatus = $state<PublicCompletionArtifactStatus | null>(null);
 	let completionStatusError = $state<string | null>(null);
-	let completionDownloadError = $state<string | null>(null);
-	let completionPdfDownloadPending = $state(false);
-	let completionEvidenceDownloadPending = $state<'json' | 'markdown' | null>(null);
 	const completionPdfStatus = $derived(
 		completionStatus?.status === 'published' ? completionStatus.pdfStatus : null
 	);
@@ -267,6 +264,19 @@
 			.replace(/^documents\//, '')
 			.replace(/\.md$/, '')
 			.replaceAll(/[-_]+/g, ' ');
+	}
+
+	function formatDate(value: string): string {
+		return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(
+			new Date(value)
+		);
+	}
+
+	/** Resolves a placed field's document to its sent-set title without the ready-only page map. */
+	function documentSetTitle(documentId: string | null): string | null {
+		if (documentId === null) return null;
+		const leaf = draft?.documentSet?.documents.find((entry) => entry.id === documentId);
+		return leaf?.title ?? null;
 	}
 
 	type AuthoringDocument =
@@ -460,6 +470,16 @@
 		return readyRecipients.find((recipient) => recipient.id === recipientId);
 	}
 
+	async function refreshCompletionStatus(): Promise<void> {
+		completionStatusError = null;
+		try {
+			completionStatus = await client.completionArtifactStatus(envelopeId);
+		} catch {
+			completionStatus = null;
+			completionStatusError = m.envelope_completed_status_unavailable();
+		}
+	}
+
 	async function load(): Promise<void> {
 		loading = true;
 		authRequired = false;
@@ -505,13 +525,7 @@
 				delivery = await client.deliveries(envelopeId).catch(() => null);
 			}
 			if (detail.envelope.status === 'completed') {
-				completionStatusError = null;
-				try {
-					completionStatus = await client.completionArtifactStatus(envelopeId);
-				} catch {
-					completionStatus = null;
-					completionStatusError = m.envelope_completed_status_unavailable();
-				}
+				await refreshCompletionStatus();
 				await refreshPdfSealStatus();
 			}
 		} catch (cause) {
@@ -1247,39 +1261,6 @@
 		link.click();
 		URL.revokeObjectURL(href);
 	}
-
-	async function downloadCompletionPdf(): Promise<void> {
-		if (completionPdfDownloadPending) return;
-		completionPdfDownloadPending = true;
-		completionDownloadError = null;
-		try {
-			const result = await client.completionPdf(envelopeId);
-			const body = new Uint8Array(result.bytes.byteLength);
-			body.set(result.bytes);
-			triggerDownload(body, result.filename, 'application/pdf');
-		} catch (cause) {
-			completionDownloadError =
-				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_completed_download_error();
-		} finally {
-			completionPdfDownloadPending = false;
-		}
-	}
-
-	async function downloadCompletionEvidence(format: 'json' | 'markdown'): Promise<void> {
-		if (completionEvidenceDownloadPending !== null) return;
-		completionEvidenceDownloadPending = format;
-		completionDownloadError = null;
-		try {
-			const result = await client.completionEvidence(envelopeId, format);
-			triggerDownload(result.content, result.filename, result.contentType);
-		} catch (cause) {
-			completionDownloadError =
-				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_completed_download_error();
-		} finally {
-			completionEvidenceDownloadPending = null;
-		}
-	}
-
 	async function refreshPdfSealStatus(): Promise<void> {
 		if (pdfSealStatusPending) return;
 		pdfSealStatusPending = true;
@@ -1489,11 +1470,170 @@
 	{/if}
 {/snippet}
 
+{#snippet completionArtifactSection()}
+	<Card.Root>
+		<Card.Header>
+			<Card.Title>{m.envelope_completed_title()}</Card.Title>
+			<Card.Description>{m.envelope_completed_description()}</Card.Description>
+		</Card.Header>
+		<Card.Content class="flex flex-col gap-4">
+			{#if completionStatusError}
+				<Alert.Root variant="destructive">
+					<IconAlertTriangle />
+					<Alert.Title>{m.envelope_completed_title()}</Alert.Title>
+					<Alert.Description class="flex flex-col gap-3">
+						<p>{completionStatusError}</p>
+						<div>
+							<Button variant="outline" size="sm" onclick={() => void refreshCompletionStatus()}>
+								{m.common_retry()}
+							</Button>
+						</div>
+					</Alert.Description>
+				</Alert.Root>
+			{:else if completionStatus === null}
+				<Skeleton class="h-64 w-full rounded-xl" />
+			{:else if completionStatus.status === 'failed'}
+				<Alert.Root variant="destructive">
+					<IconAlertTriangle />
+					<Alert.Title>{m.envelope_completed_title()}</Alert.Title>
+					<Alert.Description class="flex flex-col gap-3">
+						<p>{m.envelope_completed_status_failed()}</p>
+						<div>
+							<Button variant="outline" size="sm" onclick={() => void refreshCompletionStatus()}>
+								{m.common_retry()}
+							</Button>
+						</div>
+					</Alert.Description>
+				</Alert.Root>
+			{:else if completionStatus.status === 'pending' || completionStatus.status === 'processing'}
+				<p class="text-sm text-muted-foreground">{m.envelope_completed_status_pending()}</p>
+			{:else if completionStatus.status === 'published'}
+				<div class="flex flex-wrap gap-2">
+					{#if completionStatus.pdfStatus === 'published'}
+						<Button
+							variant="outline"
+							href={`/api/v1/envelopes/${envelopeId}/completion-artifact/pdf`}
+							download
+						>
+							<IconFileTypePdf data-icon="inline-start" />
+							{m.envelope_completed_pdf_download()}
+						</Button>
+					{/if}
+					<Button
+						variant="outline"
+						href={`/api/v1/envelopes/${envelopeId}/completion-artifact/evidence?format=json`}
+						download
+					>
+						<IconDownload data-icon="inline-start" />
+						{m.envelope_completed_evidence_json_download()}
+					</Button>
+					<Button
+						variant="outline"
+						href={`/api/v1/envelopes/${envelopeId}/completion-artifact/evidence?format=markdown`}
+						download
+					>
+						<IconDownload data-icon="inline-start" />
+						{m.envelope_completed_evidence_markdown_download()}
+					</Button>
+				</div>
+				{#if completionStatus.pdfStatus === 'published'}
+					<PdfDocumentView
+						src={`/api/v1/envelopes/${envelopeId}/completion-artifact/pdf`}
+						label={m.envelope_completed_pdf_label()}
+						loadingLabel={m.envelope_completed_pdf_loading()}
+						errorTitle={m.envelope_completed_pdf_error_title()}
+						errorDescription={m.envelope_completed_pdf_error_description()}
+						openLabel={m.envelope_completed_pdf_open()}
+					/>
+				{:else}
+					<p class="text-sm text-muted-foreground">
+						{completionStatus.pdfStatus === 'pending'
+							? m.envelope_completed_pdf_pending()
+							: m.envelope_completed_pdf_unavailable()}
+					</p>
+				{/if}
+			{/if}
+		</Card.Content>
+	</Card.Root>
+{/snippet}
+{#snippet sentDocumentsList()}
+	<div class="flex flex-col gap-4">
+		<div class="flex justify-end">
+			<Button variant="outline" disabled={exportPending} onclick={() => void exportDocx()}>
+				{#if exportPending}
+					<Spinner data-icon="inline-start" />
+				{:else}
+					<IconDownload data-icon="inline-start" />
+				{/if}
+				{m.envelope_export_docx()}
+			</Button>
+		</div>
+		{#if exportError}
+			<p class="text-sm font-medium text-destructive" role="alert">{exportError}</p>
+		{/if}
+		{#each sentDocumentViews as view (view.key)}
+			{#if view.kind === 'pdf'}
+				<Card.Root>
+					<Card.Header class="flex-row items-center gap-2">
+						<Card.Title>{view.title}</Card.Title>
+						<Badge variant="secondary">{m.envelope_document_kind_pdf()}</Badge>
+					</Card.Header>
+					<Card.Content class="flex flex-col gap-3">
+						<p class="text-sm text-muted-foreground">
+							{m.envelope_pdf_pages_label({ count: String(view.pageCount) })}
+						</p>
+						<PdfDocumentView
+							src={`/api/v1/envelopes/${envelopeId}/document-pdf?documentId=${encodeURIComponent(view.documentId)}`}
+							label={view.title}
+							expectedPageCount={view.pageCount}
+							loadingLabel={m.envelope_sent_document_loading()}
+							errorTitle={m.envelope_sent_document_error_title()}
+							errorDescription={m.envelope_sent_document_error_description()}
+							openLabel={m.envelope_sent_document_open()}
+						/>
+					</Card.Content>
+				</Card.Root>
+			{:else}
+				<Card.Root>
+					<!-- A document with no readable authored title renders no header at
+					     all, rather than an empty one: an empty header leaves a band of
+					     padding above the text that reads like a layout bug. -->
+					{#if view.title.length > 0}
+						<Card.Header>
+							<Card.Title>{view.title}</Card.Title>
+						</Card.Header>
+					{/if}
+					<Card.Content class={view.title.length > 0 ? undefined : 'pt-6'}>
+						{#if view.content === null}
+							<p class="text-sm font-medium text-destructive" role="alert">
+								{m.envelope_sent_document_content_unavailable()}
+							</p>
+						{:else}
+							{@const rendered = renderRecipientMarkdown(view.content)}
+							<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
+								{#each rendered.nodes as node, nodeIndex (nodeIndex)}
+									{@render renderMarkdownNode(node)}
+								{/each}
+							</div>
+							{#if rendered.hasVisibleUnicodeControls}
+								<p class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
+									{m.envelope_document_unicode_warning()}
+								</p>
+							{/if}
+						{/if}
+					</Card.Content>
+				</Card.Root>
+			{/if}
+		{:else}
+			<p class="text-sm text-muted-foreground">{m.envelope_documents_immutable()}</p>
+		{/each}
+	</div>
+{/snippet}
 <svelte:head>
 	<title>{envelope?.title ?? m.envelope_detail_title()} — {m.app_name()}</title>
 </svelte:head>
 
-<div class="flex w-full flex-col gap-6">
+<div class="flex w-full min-w-0 flex-col gap-6">
 	{#if authRequired}
 		<Card.Root>
 			<Card.Content class="flex flex-col items-center gap-4 py-10 text-center">
@@ -1527,8 +1667,8 @@
 			<Badge variant="secondary" class="w-fit">{statusLabel(envelope.status)}</Badge>
 		</section>
 
-		<Tabs.Root value="documents">
-			<Tabs.List>
+		<Tabs.Root value="documents" class="w-full min-w-0">
+			<Tabs.List class="w-full overflow-x-auto">
 				<Tabs.Trigger value="documents">{m.envelope_tab_documents()}</Tabs.Trigger>
 				<Tabs.Trigger value="recipients">{m.envelope_tab_recipients()}</Tabs.Trigger>
 				<Tabs.Trigger value="fields">{m.envelope_tab_fields()}</Tabs.Trigger>
@@ -1815,78 +1955,23 @@
 							</Button>
 						</Card.Footer>
 					</Card.Root>
-				{:else if draft !== null}
-					<div class="flex flex-col gap-4">
-						<div class="flex justify-end">
-							<Button variant="outline" disabled={exportPending} onclick={() => void exportDocx()}>
-								{#if exportPending}
-									<Spinner data-icon="inline-start" />
-								{:else}
-									<IconDownload data-icon="inline-start" />
-								{/if}
-								{m.envelope_export_docx()}
-							</Button>
+				{:else if envelope.status === 'completed'}
+					{@render completionArtifactSection()}
+					{#if draft !== null}
+						<div class="mt-2 flex flex-col gap-1">
+							<h2 class="text-sm font-medium">{m.envelope_documents_originals_title()}</h2>
+							<p class="text-xs text-muted-foreground">
+								{m.envelope_documents_originals_description()}
+							</p>
 						</div>
-						{#if exportError}
-							<p class="text-sm font-medium text-destructive" role="alert">{exportError}</p>
-						{/if}
-						{#each sentDocumentViews as view (view.key)}
-							{#if view.kind === 'pdf'}
-								<Card.Root>
-									<Card.Header class="flex-row items-center gap-2">
-										<Card.Title>{view.title}</Card.Title>
-										<Badge variant="secondary">{m.envelope_document_kind_pdf()}</Badge>
-									</Card.Header>
-									<Card.Content class="flex flex-col gap-3">
-										<p class="text-sm text-muted-foreground">
-											{m.envelope_pdf_pages_label({ count: String(view.pageCount) })}
-										</p>
-										<PdfDocumentView
-											src={`/api/v1/envelopes/${envelopeId}/document-pdf?documentId=${encodeURIComponent(view.documentId)}`}
-											label={view.title}
-											expectedPageCount={view.pageCount}
-											loadingLabel={m.envelope_sent_document_loading()}
-											errorTitle={m.envelope_sent_document_error_title()}
-											errorDescription={m.envelope_sent_document_error_description()}
-											openLabel={m.envelope_sent_document_open()}
-										/>
-									</Card.Content>
-								</Card.Root>
-							{:else}
-								<Card.Root>
-									<!-- A document with no readable authored title renders no header at
-									     all, rather than an empty one: an empty header leaves a band of
-									     padding above the text that reads like a layout bug. -->
-									{#if view.title.length > 0}
-										<Card.Header>
-											<Card.Title>{view.title}</Card.Title>
-										</Card.Header>
-									{/if}
-									<Card.Content class={view.title.length > 0 ? undefined : 'pt-6'}>
-										{#if view.content === null}
-											<p class="text-sm font-medium text-destructive" role="alert">
-												{m.envelope_sent_document_content_unavailable()}
-											</p>
-										{:else}
-											{@const rendered = renderRecipientMarkdown(view.content)}
-											<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
-												{#each rendered.nodes as node, nodeIndex (nodeIndex)}
-													{@render renderMarkdownNode(node)}
-												{/each}
-											</div>
-											{#if rendered.hasVisibleUnicodeControls}
-												<p class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
-													{m.envelope_document_unicode_warning()}
-												</p>
-											{/if}
-										{/if}
-									</Card.Content>
-								</Card.Root>
-							{/if}
-						{:else}
-							<p class="text-sm text-muted-foreground">{m.envelope_documents_immutable()}</p>
-						{/each}
-					</div>
+						{@render sentDocumentsList()}
+					{:else}
+						<p class="text-sm font-medium text-destructive" role="alert">
+							{sentDocumentsLoadError ?? m.envelope_sent_documents_unavailable()}
+						</p>
+					{/if}
+				{:else if draft !== null}
+					{@render sentDocumentsList()}
 				{:else}
 					<p class="text-sm font-medium text-destructive" role="alert">
 						{sentDocumentsLoadError ?? m.envelope_sent_documents_unavailable()}
@@ -1894,79 +1979,6 @@
 				{/if}
 
 				{#if envelope.status === 'completed'}
-					<Card.Root>
-						<Card.Header>
-							<Card.Title>{m.envelope_completed_title()}</Card.Title>
-							<Card.Description>{m.envelope_completed_description()}</Card.Description>
-						</Card.Header>
-						<Card.Content class="flex flex-col gap-4">
-							{#if completionStatusError}
-								<p class="text-sm font-medium text-destructive" role="alert">
-									{completionStatusError}
-								</p>
-							{:else if completionStatus === null}
-								<Skeleton class="h-9 w-48" />
-							{:else if completionStatus.status === 'failed'}
-								<p class="text-sm text-muted-foreground">{m.envelope_completed_status_failed()}</p>
-							{:else if completionStatus.status === 'pending' || completionStatus.status === 'processing'}
-								<p class="text-sm text-muted-foreground">{m.envelope_completed_status_pending()}</p>
-							{:else if completionStatus.status === 'published'}
-								{#if completionDownloadError}
-									<p class="text-sm font-medium text-destructive" role="alert">
-										{completionDownloadError}
-									</p>
-								{/if}
-								{#if completionStatus.pdfStatus === 'published'}
-									<Button
-										variant="outline"
-										class="w-fit"
-										disabled={completionPdfDownloadPending}
-										onclick={() => void downloadCompletionPdf()}
-									>
-										{#if completionPdfDownloadPending}
-											<Spinner data-icon="inline-start" />
-										{:else}
-											<IconFileTypePdf data-icon="inline-start" />
-										{/if}
-										{m.envelope_completed_pdf_download()}
-									</Button>
-								{:else}
-									<p class="text-sm text-muted-foreground">
-										{completionStatus.pdfStatus === 'pending'
-											? m.envelope_completed_pdf_pending()
-											: m.envelope_completed_pdf_unavailable()}
-									</p>
-								{/if}
-								<div class="flex flex-wrap gap-2">
-									<Button
-										variant="outline"
-										disabled={completionEvidenceDownloadPending !== null}
-										onclick={() => void downloadCompletionEvidence('json')}
-									>
-										{#if completionEvidenceDownloadPending === 'json'}
-											<Spinner data-icon="inline-start" />
-										{:else}
-											<IconDownload data-icon="inline-start" />
-										{/if}
-										{m.envelope_completed_evidence_json_download()}
-									</Button>
-									<Button
-										variant="outline"
-										disabled={completionEvidenceDownloadPending !== null}
-										onclick={() => void downloadCompletionEvidence('markdown')}
-									>
-										{#if completionEvidenceDownloadPending === 'markdown'}
-											<Spinner data-icon="inline-start" />
-										{:else}
-											<IconDownload data-icon="inline-start" />
-										{/if}
-										{m.envelope_completed_evidence_markdown_download()}
-									</Button>
-								</div>
-							{/if}
-						</Card.Content>
-					</Card.Root>
-
 					<Card.Root>
 						<Card.Header>
 							<Card.Title>{m.envelope_pdf_seal_title()}</Card.Title>
@@ -2158,7 +2170,11 @@
 					<Card.Header class="flex-row items-center justify-between gap-3">
 						<div class="min-w-0">
 							<Card.Title>{m.envelope_recipients_title()}</Card.Title>
-							<Card.Description>{m.envelope_recipients_description()}</Card.Description>
+							<Card.Description>
+								{envelope.status === 'draft'
+									? m.envelope_recipients_description()
+									: m.envelope_recipients_description_locked()}
+							</Card.Description>
 						</div>
 						<Button variant="outline" onclick={() => (contactManagementOpen = true)}>
 							<IconAddressBook data-icon="inline-start" />{m.contacts_manage_action()}
@@ -2383,28 +2399,30 @@
 								<p class="text-sm font-medium text-destructive" role="alert">{readyError}</p>
 							{/if}
 						{:else if readyRecipients.length > 0}
-							<Table.Root>
-								<Table.Header>
-									<Table.Row>
-										<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
-										<Table.Head>{m.envelope_recipient_col_status()}</Table.Head>
-									</Table.Row>
-								</Table.Header>
-								<Table.Body>
-									{#each readyRecipients as recipient (recipient.id)}
+							<div class="overflow-x-auto">
+								<Table.Root>
+									<Table.Header>
 										<Table.Row>
-											<Table.Cell>{recipient.email}</Table.Cell>
-											<Table.Cell>{recipient.name}</Table.Cell>
-											<Table.Cell>{recipientRoleLabel(recipient.role)}</Table.Cell>
-											<Table.Cell>{recipientLocaleLabel(recipient.locale)}</Table.Cell>
-											<Table.Cell>{recipientWorkflowStatusLabel(recipient.status)}</Table.Cell>
+											<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_status()}</Table.Head>
 										</Table.Row>
-									{/each}
-								</Table.Body>
-							</Table.Root>
+									</Table.Header>
+									<Table.Body>
+										{#each readyRecipients as recipient (recipient.id)}
+											<Table.Row>
+												<Table.Cell>{recipient.email}</Table.Cell>
+												<Table.Cell>{recipient.name}</Table.Cell>
+												<Table.Cell>{recipientRoleLabel(recipient.role)}</Table.Cell>
+												<Table.Cell>{recipientLocaleLabel(recipient.locale)}</Table.Cell>
+												<Table.Cell>{recipientWorkflowStatusLabel(recipient.status)}</Table.Cell>
+											</Table.Row>
+										{/each}
+									</Table.Body>
+								</Table.Root>
+							</div>
 						{:else}
 							<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
 						{/if}
@@ -2427,8 +2445,48 @@
 			</Tabs.Content>
 
 			<Tabs.Content value="fields" class="flex flex-col gap-4">
-				{#if envelope.status !== 'ready'}
+				{#if envelope.status === 'draft'}
 					<p class="text-sm text-muted-foreground">{m.envelope_fields_requires_ready()}</p>
+				{:else if envelope.status !== 'ready'}
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>{m.envelope_fields_title()}</Card.Title>
+							<Card.Description
+								>{m.envelope_fields_locked_after_send_description()}</Card.Description
+							>
+						</Card.Header>
+						<Card.Content>
+							{#if placedFields.length === 0}
+								<p class="text-sm text-muted-foreground">{m.envelope_fields_none_placed()}</p>
+							{:else}
+								<div class="overflow-x-auto">
+									<Table.Root>
+										<Table.Header>
+											<Table.Row>
+												<Table.Head>{m.envelope_field_col_recipient()}</Table.Head>
+												<Table.Head>{m.envelope_field_col_type()}</Table.Head>
+												<Table.Head>{m.envelope_field_col_document()}</Table.Head>
+												<Table.Head>{m.envelope_field_col_position()}</Table.Head>
+											</Table.Row>
+										</Table.Header>
+										<Table.Body>
+											{#each placedFields as field (field.id)}
+												<Table.Row>
+													<Table.Cell>{recipientName(field.recipientId)}</Table.Cell>
+													<Table.Cell>{fieldTypeLabel(field.fieldType)}</Table.Cell>
+													<Table.Cell>
+														{documentSetTitle(field.documentId) ??
+															m.envelope_field_document_unresolved()}
+													</Table.Cell>
+													<Table.Cell>{field.position}</Table.Cell>
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</div>
+							{/if}
+						</Card.Content>
+					</Card.Root>
 				{:else if signerRecipients().length === 0}
 					<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
 				{:else if documentPages === null}
@@ -2779,37 +2837,39 @@
 							{/if}
 
 							{#if !placementLocked && fieldDrafts.length > 0}
-								<Table.Root>
-									<Table.Header>
-										<Table.Row>
-											<Table.Head>{m.envelope_field_col_label()}</Table.Head>
-											<Table.Head>{m.envelope_field_col_type()}</Table.Head>
-											<Table.Head>{m.envelope_field_col_document()}</Table.Head>
-											<Table.Head>{m.envelope_field_col_position()}</Table.Head>
-											<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
-										</Table.Row>
-									</Table.Header>
-									<Table.Body>
-										{#each fieldDrafts as fieldDraft (fieldDraft.key)}
+								<div class="overflow-x-auto">
+									<Table.Root>
+										<Table.Header>
 											<Table.Row>
-												<Table.Cell>{fieldDraft.label}</Table.Cell>
-												<Table.Cell>{fieldTypeLabel(fieldDraft.fieldType)}</Table.Cell>
-												<Table.Cell>{placedDocumentTitle(fieldDraft.documentId)}</Table.Cell>
-												<Table.Cell>{fieldDraft.position}</Table.Cell>
-												<Table.Cell>
-													<Button
-														size="icon"
-														variant="ghost"
-														aria-label={m.common_remove()}
-														onclick={() => removeFieldDraft(fieldDraft.key)}
-													>
-														<IconTrash />
-													</Button>
-												</Table.Cell>
+												<Table.Head>{m.envelope_field_col_label()}</Table.Head>
+												<Table.Head>{m.envelope_field_col_type()}</Table.Head>
+												<Table.Head>{m.envelope_field_col_document()}</Table.Head>
+												<Table.Head>{m.envelope_field_col_position()}</Table.Head>
+												<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
 											</Table.Row>
-										{/each}
-									</Table.Body>
-								</Table.Root>
+										</Table.Header>
+										<Table.Body>
+											{#each fieldDrafts as fieldDraft (fieldDraft.key)}
+												<Table.Row>
+													<Table.Cell>{fieldDraft.label}</Table.Cell>
+													<Table.Cell>{fieldTypeLabel(fieldDraft.fieldType)}</Table.Cell>
+													<Table.Cell>{placedDocumentTitle(fieldDraft.documentId)}</Table.Cell>
+													<Table.Cell>{fieldDraft.position}</Table.Cell>
+													<Table.Cell>
+														<Button
+															size="icon"
+															variant="ghost"
+															aria-label={m.common_remove()}
+															onclick={() => removeFieldDraft(fieldDraft.key)}
+														>
+															<IconTrash />
+														</Button>
+													</Table.Cell>
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</div>
 							{/if}
 
 							{#if placementError}
@@ -2840,7 +2900,11 @@
 				<Card.Root>
 					<Card.Header>
 						<Card.Title>{m.envelope_send_title()}</Card.Title>
-						<Card.Description>{m.envelope_send_description()}</Card.Description>
+						<Card.Description>
+							{envelope.status === 'ready' || envelope.status === 'draft'
+								? m.envelope_send_description()
+								: m.envelope_send_status_description()}
+						</Card.Description>
 					</Card.Header>
 					<Card.Content class="flex flex-col gap-4">
 						{#if envelope.status === 'ready'}
@@ -2879,41 +2943,62 @@
 									</AlertDialog.Footer>
 								</AlertDialog.Content>
 							</AlertDialog.Root>
-						{:else}
+						{:else if envelope.status === 'draft'}
 							<p class="text-sm text-muted-foreground">{m.envelope_send_requires_ready()}</p>
 						{/if}
 
-						{#if delivery !== null && delivery.deliveries.length > 0}
-							<Table.Root>
-								<Table.Header>
-									<Table.Row>
-										<Table.Head>{m.envelope_delivery_col_recipient()}</Table.Head>
-										<Table.Head>{m.envelope_delivery_col_role()}</Table.Head>
-										<Table.Head>{m.envelope_delivery_col_status()}</Table.Head>
-									</Table.Row>
-								</Table.Header>
-								<Table.Body>
-									{#each delivery.deliveries as item (item.recipientId)}
-										{@const matched = recipientForDelivery(item.recipientId)}
+						{#if delivery != null && delivery.deliveries.length > 0}
+							<div class="overflow-x-auto">
+								<Table.Root>
+									<Table.Header>
 										<Table.Row>
-											<Table.Cell>
-												{#if matched}
-													<div class="flex flex-col">
-														<span>{matched.name}</span>
-														<span class="text-muted-foreground">{matched.email}</span>
-													</div>
-												{/if}
-											</Table.Cell>
-											<Table.Cell>
-												{recipientRoleLabel(matched?.role ?? item.recipientRole)}
-											</Table.Cell>
-											<Table.Cell>
-												<Badge variant="secondary">{deliveryStateLabel(item.status)}</Badge>
-											</Table.Cell>
+											<Table.Head>{m.envelope_delivery_col_recipient()}</Table.Head>
+											<Table.Head>{m.envelope_delivery_col_role()}</Table.Head>
+											<Table.Head>{m.envelope_delivery_col_status()}</Table.Head>
+											<Table.Head>{m.envelope_delivery_col_signing_status()}</Table.Head>
 										</Table.Row>
-									{/each}
-								</Table.Body>
-							</Table.Root>
+									</Table.Header>
+									<Table.Body>
+										{#each delivery.deliveries as item (item.recipientId)}
+											{@const matched = recipientForDelivery(item.recipientId)}
+											<Table.Row>
+												<Table.Cell>
+													{#if matched}
+														<div class="flex flex-col">
+															<span>{matched.name}</span>
+															<span class="text-muted-foreground">{matched.email}</span>
+														</div>
+													{/if}
+												</Table.Cell>
+												<Table.Cell>
+													{recipientRoleLabel(matched?.role ?? item.recipientRole)}
+												</Table.Cell>
+												<Table.Cell>
+													<div class="flex flex-col gap-1">
+														<Badge variant="secondary" class="w-fit"
+															>{deliveryStateLabel(item.status)}</Badge
+														>
+														{#if item.deliveredAt}
+															<span class="text-xs text-muted-foreground">
+																{m.envelope_delivery_delivered_at({
+																	timestamp: formatDate(item.deliveredAt)
+																})}
+															</span>
+														{/if}
+													</div>
+												</Table.Cell>
+												<Table.Cell>
+													{#if matched}
+														<Badge variant="outline" class="w-fit"
+															>{recipientWorkflowStatusLabel(matched.status)}</Badge
+														>
+													{/if}
+												</Table.Cell>
+											</Table.Row>
+										{/each}
+									</Table.Body>
+								</Table.Root>
+							</div>
 						{/if}
 					</Card.Content>
 				</Card.Root>

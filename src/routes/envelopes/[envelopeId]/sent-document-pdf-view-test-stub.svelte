@@ -10,11 +10,13 @@
 	let {
 		src,
 		label,
-		expectedPageCount
+		expectedPageCount,
+		openLabel
 	}: {
 		src: string;
 		label: string;
-		expectedPageCount: number;
+		expectedPageCount?: number;
+		openLabel?: string;
 	} = $props();
 </script>
 
@@ -25,4 +27,8 @@
 	data-src={src}
 	data-label={label}
 	data-page-count={expectedPageCount}
-></div>
+>
+	{#if src && openLabel}
+		<a href={src} target="_blank" rel="noopener">{openLabel}</a>
+	{/if}
+</div>
