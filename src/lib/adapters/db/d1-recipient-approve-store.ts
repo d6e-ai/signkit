@@ -186,7 +186,7 @@ export class D1RecipientApproveStore implements RecipientApproveStore {
 					released_delivery_count, audit_event_id, audit_sequence, previous_audit_hash,
 					audit_event_hash, audit_payload_json, completed_audit_event_id,
 					completed_audit_event_hash, completed_audit_payload_json
-				) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					) VALUES (?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				identity.envelope_id,
