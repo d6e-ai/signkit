@@ -2445,7 +2445,7 @@
 			</Tabs.Content>
 
 			<Tabs.Content value="fields" class="flex flex-col gap-4">
-				{#if envelope.status === 'draft'}
+				{#if envelope.status === 'draft' || (envelope.status === 'voided' && envelope.sentCommitSha === null)}
 					<p class="text-sm text-muted-foreground">{m.envelope_fields_requires_ready()}</p>
 				{:else if envelope.status !== 'ready'}
 					<Card.Root>
