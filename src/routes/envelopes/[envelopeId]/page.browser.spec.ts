@@ -1,7 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { userEvent } from 'vitest/browser';
+import { commands, page as browserPage, userEvent } from 'vitest/browser';
 import EnvelopePage from './+page.svelte';
+import EnvelopePageMobileTestHost from './envelope-page-mobile-test-host.svelte';
+import '../../layout.css';
+
+function toBase64(bytes: Uint8Array): string {
+	let binary = '';
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
+	return Array.from(new Uint8Array(digest))
+		.map((byte) => byte.toString(16).padStart(2, '0'))
+		.join('');
+}
 
 const { ENVELOPE_ID } = vi.hoisted(() => ({
 	ENVELOPE_ID: '01900000-0000-7000-8000-000000000020'
@@ -837,15 +852,14 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
-		await expect.element(screen.getByRole('button', { name: 'Download final PDF' })).toBeVisible();
+		await expect.element(screen.getByRole('link', { name: 'Download final PDF' })).toBeVisible();
 		await expect
-			.element(screen.getByRole('button', { name: 'Download evidence (JSON)' }))
+			.element(screen.getByRole('link', { name: 'Download evidence (JSON)' }))
 			.toBeVisible();
 		await expect
-			.element(screen.getByRole('button', { name: 'Download evidence (Markdown)' }))
+			.element(screen.getByRole('link', { name: 'Download evidence (Markdown)' }))
 			.toBeVisible();
 	});
-
 	it('pending: notes that the final PDF is still being prepared, but evidence stays downloadable', async () => {
 		const mockFetch = mockCompletedFetch(() =>
 			jsonResponse({
@@ -868,10 +882,10 @@ describe('completed envelope shows the completed-artifacts card', () => {
 			.toBeVisible();
 		await expect.element(screen.getByText('The final PDF is still being prepared.')).toBeVisible();
 		await expect
-			.element(screen.getByRole('button', { name: 'Download final PDF' }))
+			.element(screen.getByRole('link', { name: 'Download final PDF' }))
 			.not.toBeInTheDocument();
 		await expect
-			.element(screen.getByRole('button', { name: 'Download evidence (JSON)' }))
+			.element(screen.getByRole('link', { name: 'Download evidence (JSON)' }))
 			.toBeVisible();
 	});
 
@@ -901,7 +915,7 @@ describe('completed envelope shows the completed-artifacts card', () => {
 			)
 			.toBeVisible();
 		await expect
-			.element(screen.getByRole('button', { name: 'Download final PDF' }))
+			.element(screen.getByRole('link', { name: 'Download final PDF' }))
 			.not.toBeInTheDocument();
 	});
 
@@ -1171,6 +1185,195 @@ describe('completed envelope shows the completed-artifacts card', () => {
 			.element(screen.getByRole('button', { name: 'Download sealed PDF' }))
 			.not.toBeInTheDocument();
 	});
+
+	it('published: shows the final PDF as the primary preview, with distinctly labeled originals below it', async () => {
+		const pdfDocumentId = '01900000-0000-7000-8000-000000000310';
+		const workspace = {
+			generation: 1,
+			commitSha: completedEnvelope.repositoryHead,
+			archiveSha256: 'a'.repeat(64),
+			documents: [],
+			documentSet: {
+				schema: 'signkit-document-set-v1',
+				documents: [
+					{
+						id: pdfDocumentId,
+						position: 0,
+						kind: 'pdf' as const,
+						title: 'signkit-sample-agreement-ja',
+						sha256: 'b'.repeat(64),
+						byteSize: 12345,
+						pageCount: 3,
+						pageWidth: 595.28,
+						pageHeight: 841.89
+					}
+				]
+			}
+		};
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'published'
+					}
+				}),
+			(urlStr) =>
+				urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)
+					? jsonResponse(workspace)
+					: undefined
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+		await expect
+			.element(documentsPanel.getByRole('heading', { name: 'Original documents', level: 2 }))
+			.toBeVisible();
+		const stubs = documentsPanel.getByTestId('sent-document-pdf-stub').all();
+		expect(stubs).toHaveLength(2);
+		const sources = stubs.map((stub) => stub.element().getAttribute('data-src'));
+		expect(sources).toContain(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/pdf`);
+		expect(sources).toContain(
+			`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf?documentId=${pdfDocumentId}`
+		);
+		const primarySourceIndex = documentsPanel
+			.element()
+			.innerHTML.indexOf(`data-src="/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/pdf"`);
+		const originalsHeadingIndex = documentsPanel.element().innerHTML.indexOf('Original documents');
+		expect(primarySourceIndex).toBeGreaterThan(-1);
+		expect(primarySourceIndex).toBeLessThan(originalsHeadingIndex);
+
+		const downloadPdfLink = documentsPanel.getByRole('link', { name: 'Download final PDF' });
+		const downloadJsonLink = documentsPanel.getByRole('link', { name: 'Download evidence (JSON)' });
+		const downloadMdLink = documentsPanel.getByRole('link', {
+			name: 'Download evidence (Markdown)'
+		});
+		await expect.element(downloadPdfLink).toBeVisible();
+		await expect.element(downloadJsonLink).toBeVisible();
+		await expect.element(downloadMdLink).toBeVisible();
+
+		const downloadPdfIndex = documentsPanel.element().innerHTML.indexOf('Download final PDF');
+		expect(downloadPdfIndex).toBeLessThan(primarySourceIndex);
+
+		expect(downloadPdfLink.element().getAttribute('href')).toBe(
+			`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/pdf`
+		);
+		expect(downloadPdfLink.element().hasAttribute('download')).toBe(true);
+		expect(downloadJsonLink.element().getAttribute('href')).toBe(
+			`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/evidence?format=json`
+		);
+		expect(downloadJsonLink.element().hasAttribute('download')).toBe(true);
+		expect(downloadMdLink.element().getAttribute('href')).toBe(
+			`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/evidence?format=markdown`
+		);
+		expect(downloadMdLink.element().hasAttribute('download')).toBe(true);
+	});
+
+	it('captures real Chromium download events and byte-exact saved contents for final PDF and JSON evidence', async () => {
+		const pdfBytes = new TextEncoder().encode('%PDF-1.7 actual final completion pdf bytes\n');
+		const jsonBytes = new TextEncoder().encode(
+			JSON.stringify({ schema: 'completion-manifest-v1', envelopeId: ENVELOPE_ID })
+		);
+		const expectedPdfSha256 = await sha256Hex(pdfBytes);
+		const expectedJsonSha256 = await sha256Hex(jsonBytes);
+
+		await commands.startFixtureServer({
+			urlPath: `/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/pdf`,
+			status: 200,
+			headers: {
+				'content-type': 'application/pdf',
+				'content-disposition': 'attachment; filename="completed-agreement.pdf"'
+			},
+			bodyBase64: toBase64(pdfBytes)
+		});
+		await commands.startFixtureServer({
+			urlPath: `/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/evidence?format=json`,
+			status: 200,
+			headers: {
+				'content-type': 'application/json',
+				'content-disposition': 'attachment; filename="completion-evidence.json"'
+			},
+			bodyBase64: toBase64(jsonBytes)
+		});
+
+		const mockFetch = mockCompletedFetch(() =>
+			jsonResponse({
+				completionArtifact: {
+					envelopeId: ENVELOPE_ID,
+					status: 'published',
+					publishedAt: '2026-09-12T00:00:00.000Z',
+					manifestSha256: 'm'.repeat(64),
+					jsonSha256: 'j'.repeat(64),
+					markdownSha256: 'd'.repeat(64),
+					pdfStatus: 'published'
+				}
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+
+		// 1. Download Final PDF
+		const pdfDownloadPromise = commands.captureDownload({ timeoutMs: 10_000 });
+		await documentsPanel.getByRole('link', { name: 'Download final PDF' }).click();
+		const pdfResult = await pdfDownloadPromise;
+		expect(pdfResult.suggestedFilename).toBe('completed-agreement.pdf');
+		expect(pdfResult.byteLength).toBe(pdfBytes.byteLength);
+		expect(pdfResult.sha256).toBe(expectedPdfSha256);
+
+		// 2. Download Evidence (JSON)
+		const jsonDownloadPromise = commands.captureDownload({ timeoutMs: 10_000 });
+		await documentsPanel.getByRole('link', { name: 'Download evidence (JSON)' }).click();
+		const jsonResult = await jsonDownloadPromise;
+		expect(jsonResult.suggestedFilename).toBe('completion-evidence.json');
+		expect(jsonResult.byteLength).toBe(jsonBytes.byteLength);
+		expect(jsonResult.sha256).toBe(expectedJsonSha256);
+
+		await commands.stopFixtureServer();
+	});
+
+	it('failed: lets the sender retry loading completion status instead of leaving it stuck', async () => {
+		let attempt = 0;
+		const mockFetch = mockCompletedFetch(() => {
+			attempt += 1;
+			if (attempt === 1) {
+				return jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'failed',
+						attempts: 10,
+						errorCode: 'completion_artifact_attempts_exhausted',
+						availableAt: null
+					}
+				});
+			}
+			return jsonResponse({
+				completionArtifact: {
+					envelopeId: ENVELOPE_ID,
+					status: 'published',
+					publishedAt: '2026-09-12T00:00:00.000Z',
+					manifestSha256: 'm'.repeat(64),
+					jsonSha256: 'j'.repeat(64),
+					markdownSha256: 'd'.repeat(64),
+					pdfStatus: 'published'
+				}
+			});
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const retryButton = screen.getByRole('button', { name: 'Retry' });
+		await expect.element(retryButton).toBeVisible();
+		await retryButton.click();
+		await expect.element(screen.getByRole('link', { name: 'Download final PDF' })).toBeVisible();
+	});
 });
 
 describe('sent envelope Documents tab renders the pinned document set', () => {
@@ -1319,9 +1522,34 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
 		await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
 		await expect
-			.element(documentsPanel.getByRole('button', { name: 'Download final PDF' }))
+			.element(documentsPanel.getByRole('link', { name: 'Download final PDF' }))
 			.toBeVisible();
 	});
+
+	it.each(['ready', 'sent', 'in_progress', 'declined', 'voided', 'expired'] as const)(
+		'keeps a %s envelope showing the plain original PDF, never the completed-artifact priority treatment',
+		async (status) => {
+			vi.stubGlobal('fetch', mockSentFetch(pdfOnlyDraft, { ...sentEnvelope, status }));
+
+			const screen = await render(EnvelopePage);
+			const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+			await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+			const stubs = documentsPanel.getByTestId('sent-document-pdf-stub').all();
+			expect(stubs).toHaveLength(1);
+			expect(stubs[0]!.element().getAttribute('data-src')).toBe(
+				`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf?documentId=${PDF_DOCUMENT_ID}`
+			);
+			await expect
+				.element(documentsPanel.getByRole('heading', { name: 'Original documents', level: 2 }))
+				.not.toBeInTheDocument();
+			await expect
+				.element(documentsPanel.getByRole('link', { name: 'Download final PDF' }))
+				.not.toBeInTheDocument();
+			await expect
+				.element(documentsPanel.getByRole('link', { name: 'Download evidence (JSON)' }))
+				.not.toBeInTheDocument();
+		}
+	);
 
 	it('shows an explicit error, not a blank pane, when the sent document set cannot be loaded', async () => {
 		const mockFetch = vi
@@ -1351,5 +1579,458 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 		expect(documentsPanel.element().textContent).not.toContain(
 			"This envelope's documents can no longer be edited."
 		);
+	});
+});
+
+describe('lifecycle beyond sent locks fields and reframes recipients and send status', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const FIELD_ID = '01900000-0000-7000-8000-000000000401';
+	const FIELD_DOCUMENT_ID = '01900000-0000-7000-8000-000000000402';
+
+	const sentEnvelopeWithFields = {
+		...readyEnvelope,
+		status: 'sent' as const,
+		sentCommitSha: readyEnvelope.repositoryHead
+	};
+
+	const sentDetailWithFields = {
+		envelope: sentEnvelopeWithFields,
+		recipients: [
+			{
+				id: SIGNER_ID,
+				email: 'signer@example.com',
+				name: 'Dana Recipient',
+				role: 'signer',
+				locale: 'en',
+				routingOrder: 1,
+				status: 'completed'
+			}
+		],
+		readyAuditEventId: READY_AUDIT_ID,
+		fields: [
+			{
+				id: FIELD_ID,
+				recipientId: SIGNER_ID,
+				documentId: FIELD_DOCUMENT_ID,
+				documentPath: null,
+				fieldType: 'signature',
+				required: true,
+				position: 1,
+				geometry: { page: 1, x: 0.1, y: 0.1, width: 0.2, height: 0.05 }
+			}
+		]
+	};
+
+	const workspaceWithFieldDocument = {
+		generation: 1,
+		commitSha: sentEnvelopeWithFields.repositoryHead,
+		archiveSha256: 'a'.repeat(64),
+		documents: [],
+		documentSet: {
+			schema: 'signkit-document-set-v1',
+			documents: [
+				{
+					id: FIELD_DOCUMENT_ID,
+					position: 0,
+					kind: 'pdf' as const,
+					title: 'signkit-sample-agreement-ja',
+					sha256: 'b'.repeat(64),
+					byteSize: 12345,
+					pageCount: 1,
+					pageWidth: 595.28,
+					pageHeight: 841.89
+				}
+			]
+		}
+	};
+
+	const deliveredAt = '2026-09-20T09:30:00.000Z';
+	const deliveriesWithProgress = {
+		delivery: {
+			envelopeId: ENVELOPE_ID,
+			envelopeStatus: 'sent',
+			deliveries: [
+				{
+					recipientId: SIGNER_ID,
+					recipientRole: 'signer',
+					routingOrder: 1,
+					status: 'delivered',
+					attempts: 1,
+					availableAt: null,
+					deliveredAt,
+					updatedAt: deliveredAt,
+					errorCode: null
+				}
+			]
+		}
+	};
+
+	type LifecycleDetailFixture = Omit<typeof sentDetailWithFields, 'envelope'> & {
+		envelope: Omit<typeof sentEnvelopeWithFields, 'status' | 'sentCommitSha'> & {
+			status: 'sent' | 'voided';
+			sentCommitSha: string | null;
+		};
+	};
+
+	function mockLifecycleFetch(
+		detailOverride: LifecycleDetailFixture = sentDetailWithFields
+	): ReturnType<typeof vi.fn> {
+		return vi.fn().mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+			const urlStr = String(url);
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+				return jsonResponse(detailOverride);
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+				return jsonResponse(workspaceWithFieldDocument);
+			}
+			if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+				return jsonResponse(deliveriesWithProgress);
+			}
+			return jsonResponse({});
+		});
+	}
+
+	it('Fields tab keeps the placed field visible and read-only once the envelope is sent', async () => {
+		vi.stubGlobal('fetch', mockLifecycleFetch());
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
+		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Field placement is available once this envelope is ready and before it is sent.'
+				)
+			)
+			.not.toBeInTheDocument();
+	});
+
+	it('Fields tab shows neutral closed-envelope guidance and no placed fields for an envelope voided before send', async () => {
+		const voidedBeforeSendDetail = {
+			...sentDetailWithFields,
+			envelope: {
+				...sentEnvelopeWithFields,
+				status: 'voided' as const,
+				sentCommitSha: null
+			},
+			fields: []
+		};
+		vi.stubGlobal('fetch', mockLifecycleFetch(voidedBeforeSendDetail));
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(fieldsPanel.getByText('No fields were placed for this envelope.'))
+			.toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Field placement is available once this envelope is ready and before it is sent.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('Fields tab keeps placed field visible read-only with neutral closed copy when ready envelope is voided before send', async () => {
+		const readyThenVoidedDetail = {
+			...sentDetailWithFields,
+			envelope: {
+				...sentEnvelopeWithFields,
+				status: 'voided' as const,
+				sentCommitSha: null
+			},
+			fields: sentDetailWithFields.fields
+		};
+		vi.stubGlobal('fetch', mockLifecycleFetch(readyThenVoidedDetail));
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
+				)
+			)
+			.toBeVisible();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
+		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Field placement is available once this envelope is ready and before it is sent.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('Fields tab retains existing after-send copy for post-send voided envelope', async () => {
+		const postSendVoidedDetail = {
+			...sentDetailWithFields,
+			envelope: {
+				...sentEnvelopeWithFields,
+				status: 'voided' as const,
+				sentCommitSha: sentEnvelopeWithFields.sentCommitSha
+			},
+			fields: sentDetailWithFields.fields
+		};
+		vi.stubGlobal('fetch', mockLifecycleFetch(postSendVoidedDetail));
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Fields' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
+		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
+		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect
+			.element(
+				fieldsPanel.getByText(
+					'Field placement is available once this envelope is ready and before it is sent.'
+				)
+			)
+			.not.toBeInTheDocument();
+		await expect
+			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.not.toBeInTheDocument();
+	});
+
+	it('Recipients tab shows response-progress framing, not draft-time readiness guidance, once sent', async () => {
+		vi.stubGlobal('fetch', mockLifecycleFetch());
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Recipients' }).click();
+		const recipientsPanel = screen.getByRole('tabpanel', { name: 'Recipients' });
+		await expect
+			.element(recipientsPanel.getByText("Each recipient's response progress for this envelope."))
+			.toBeVisible();
+		await expect
+			.element(
+				recipientsPanel.getByText(
+					'Declare the complete recipient graph, then mark this envelope ready to freeze it.'
+				)
+			)
+			.not.toBeInTheDocument();
+	});
+
+	it('Send & status tab drops the pre-send instructions and shows delivery and response progress distinctly', async () => {
+		vi.stubGlobal('fetch', mockLifecycleFetch());
+
+		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Send & status' }).click();
+		const sendPanel = screen.getByRole('tabpanel', { name: 'Send & status' });
+		await expect
+			.element(sendPanel.getByText('This envelope must be ready before it can be sent.'))
+			.not.toBeInTheDocument();
+		await expect.element(sendPanel.getByText('Email sent')).toBeVisible();
+		await expect.element(sendPanel.getByText('Completed')).toBeVisible();
+		const expectedDeliveredAt = new Intl.DateTimeFormat('en', {
+			dateStyle: 'medium',
+			timeStyle: 'short'
+		}).format(new Date(deliveredAt));
+		await expect.element(sendPanel.getByText(`Delivered ${expectedDeliveredAt}`)).toBeVisible();
+	});
+});
+
+describe('completed envelope on actual 390x844 mobile viewport with keyboard tab navigation', () => {
+	beforeEach(async () => {
+		vi.restoreAllMocks();
+		await browserPage.viewport(390, 844);
+	});
+
+	afterEach(async () => {
+		await commands.stopFixtureServer();
+		await browserPage.viewport(1280, 800);
+	});
+
+	const completedEnvelope = {
+		...readyEnvelope,
+		status: 'completed' as const,
+		sentCommitSha: '0123456789abcdef0123456789abcdef01234567'
+	};
+
+	const completedDetail = { ...detail, envelope: completedEnvelope };
+
+	const deliveredAt = '2026-09-20T09:30:00.000Z';
+	const deliveriesWithProgress = {
+		delivery: {
+			envelopeId: ENVELOPE_ID,
+			envelopeStatus: 'completed',
+			deliveries: [
+				{
+					recipientId: SIGNER_ID,
+					recipientRole: 'signer',
+					routingOrder: 1,
+					status: 'delivered',
+					attempts: 1,
+					availableAt: null,
+					deliveredAt,
+					updatedAt: deliveredAt,
+					errorCode: null
+				}
+			]
+		}
+	};
+
+	function mockCompletedEnvFetch(): ReturnType<typeof vi.fn> {
+		return vi.fn().mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+			const urlStr = String(url);
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+				return jsonResponse(completedDetail);
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+				return jsonResponse(draft);
+			}
+			if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+				return jsonResponse(deliveriesWithProgress);
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact`)) {
+				return jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'published'
+					}
+				});
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`)) {
+				return jsonResponse({ pdfSeal: { envelopeId: ENVELOPE_ID, status: 'disabled' } });
+			}
+			return jsonResponse({});
+		});
+	}
+
+	it('asserts actual innerWidth=390 and has no page-wide horizontal overflow across Documents, Recipients, Fields, and Send tabs', async () => {
+		expect(window.innerWidth).toBe(390);
+
+		vi.stubGlobal('fetch', mockCompletedEnvFetch());
+
+		const screen = await render(EnvelopePageMobileTestHost);
+		const container = screen.getByTestId('shared-layout-container').element() as HTMLElement;
+		const containerStyle = window.getComputedStyle(container);
+
+		// Verify real app layout CSS is active (Tailwind flex utility computes to display: flex)
+		const flexElement = container.querySelector('.flex') as HTMLElement;
+		expect(flexElement).not.toBeNull();
+		expect(window.getComputedStyle(flexElement).display).toBe('flex');
+
+		// Shared layout container matches the 390px mobile viewport with px-4 (usable inner width 358px)
+		expect(container.clientWidth).toBe(390);
+		expect(containerStyle.paddingLeft).toBe('16px');
+		expect(containerStyle.paddingRight).toBe('16px');
+		const usableInnerWidth =
+			container.clientWidth -
+			parseFloat(containerStyle.paddingLeft) -
+			parseFloat(containerStyle.paddingRight);
+		expect(usableInnerWidth).toBe(358);
+
+		const tabs = ['Documents', 'Recipients', 'Fields', 'Send'] as const;
+		for (const tabName of tabs) {
+			const trigger = screen.getByRole('tab', { name: tabName });
+			await trigger.click();
+			const panel = screen.getByRole('tabpanel', { name: tabName });
+			await expect.element(panel).toBeVisible();
+
+			expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+			expect(document.body.scrollWidth).toBeLessThanOrEqual(390);
+			expect(container.scrollWidth).toBeLessThanOrEqual(390);
+		}
+	});
+
+	it('supports keyboard-only navigation across named tabs and keeps PDF fallback and download controls visible', async () => {
+		expect(window.innerWidth).toBe(390);
+
+		vi.stubGlobal('fetch', mockCompletedEnvFetch());
+
+		const screen = await render(EnvelopePageMobileTestHost);
+
+		await expect.element(screen.getByRole('tabpanel', { name: 'Documents' })).toBeVisible();
+
+		await expect.element(screen.getByRole('link', { name: 'Download final PDF' })).toBeVisible();
+		await expect
+			.element(screen.getByRole('link', { name: 'Download evidence (JSON)' }))
+			.toBeVisible();
+		await expect
+			.element(screen.getByRole('link', { name: 'Download evidence (Markdown)' }))
+			.toBeVisible();
+		await expect.element(screen.getByRole('link', { name: 'Open final PDF' })).toBeVisible();
+
+		const documentsTab = screen.getByRole('tab', { name: 'Documents' });
+		documentsTab.element().focus();
+		expect(document.activeElement).toBe(documentsTab.element());
+
+		await userEvent.keyboard('{ArrowRight}');
+		await expect.element(screen.getByRole('tabpanel', { name: 'Recipients' })).toBeVisible();
+
+		await userEvent.keyboard('{ArrowRight}');
+		await expect.element(screen.getByRole('tabpanel', { name: 'Fields' })).toBeVisible();
+
+		await userEvent.keyboard('{ArrowRight}');
+		await expect.element(screen.getByRole('tabpanel', { name: 'Send' })).toBeVisible();
+
+		await userEvent.keyboard('{ArrowLeft}');
+		await expect.element(screen.getByRole('tabpanel', { name: 'Fields' })).toBeVisible();
+
+		await userEvent.keyboard('{ArrowLeft}');
+		await expect.element(screen.getByRole('tabpanel', { name: 'Recipients' })).toBeVisible();
+
+		await userEvent.keyboard('{ArrowLeft}');
+		await expect.element(screen.getByRole('tabpanel', { name: 'Documents' })).toBeVisible();
+		await expect.element(screen.getByRole('link', { name: 'Download final PDF' })).toBeVisible();
 	});
 });
