@@ -28,3 +28,7 @@ Rationale for early decisions, not normative today, lives in [decisions/](decisi
 ## Reading order
 
 For newcomers: [overview](overview.md) → [envelope-model](envelope-model.md) → [draft-git-repository](draft-git-repository.md) → [persistence](persistence.md) → [identifiers](identifiers.md) → [authorization-and-instance-administration](authorization-and-instance-administration.md) → [recipient-contact-book](recipient-contact-book.md) → [completion-artifacts](completion-artifacts.md).
+
+## Proposed changes
+
+The [design-first refactoring plan](refactoring-plan.md), its [boundary design](refactoring-boundaries.md), and [verification gates](refactoring-verification.md) are proposals dated 2026-10-05, not current normative contracts. Their inspected source baseline and phased migration are recorded in the plan. They do not override the implemented specifications above.
