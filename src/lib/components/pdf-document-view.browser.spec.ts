@@ -38,13 +38,25 @@ test('renders every page of a SignKit-produced PDF and positions overlays on the
 
 		const pages = screen.container.querySelectorAll('[data-pdf-page]');
 		expect(pages).toHaveLength(2);
-		pages.forEach((page: Element, index: number): void => {
+		for (const [index, page] of [...pages].entries()) {
 			expect(page.getAttribute('data-pdf-page')).toBe(String(index + 1));
 			const canvas = page.querySelector('canvas') as HTMLCanvasElement | null;
 			expect(canvas).not.toBeNull();
-			// A real rasterization of a real page, not an empty element.
-			expect(canvas!.width).toBeGreaterThan(0);
-			expect(canvas!.height).toBeGreaterThan(0);
+			// A real rasterization of a real page, not the canvas element's blank
+			// 300x150 default. This catches rendering that races the canvas bindings.
+			await expect
+				.poll((): boolean => {
+					const context = canvas!.getContext('2d');
+					if (context === null || canvas!.width === 300 || canvas!.height === 150) return false;
+					const pixels = context.getImageData(0, 0, canvas!.width, canvas!.height).data;
+					for (let offset = 0; offset < pixels.length; offset += 4) {
+						if (pixels[offset] < 245 || pixels[offset + 1] < 245 || pixels[offset + 2] < 245) {
+							return true;
+						}
+					}
+					return false;
+				})
+				.toBe(true);
 
 			// The overlay for page N is a child of page N's box and is positioned
 			// in unit-square fractions of it, which is what keeps a field box in
@@ -58,7 +70,7 @@ test('renders every page of a SignKit-produced PDF and positions overlays on the
 			expect(overlay.style.top).toBe('20%');
 			expect(overlay.style.width).toBe('30%');
 			expect(overlay.style.height).toBe('6%');
-		});
+		}
 
 		// The fallback link points at the same token-free source.
 		const link = screen.container.querySelector('a[href]') as HTMLAnchorElement;

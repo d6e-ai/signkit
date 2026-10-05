@@ -141,7 +141,7 @@ export class D1RecipientViewStore implements RecipientViewStore {
 					actor_type, actor_id, idempotency_key, request_hash, capability_hash,
 					sent_commit_sha, updated_at, audit_event_id, audit_sequence,
 					previous_audit_hash, audit_event_hash, audit_payload_json
-				) VALUES (?, ?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				) VALUES (?, ?, ?, ?, 'recipient', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				command.envelopeId,

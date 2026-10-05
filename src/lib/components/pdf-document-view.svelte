@@ -25,7 +25,7 @@
 </script>
 
 <script lang="ts">
-	import { onMount, type Snippet } from 'svelte';
+	import { onMount, tick, type Snippet } from 'svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import * as Alert from '$lib/components/ui/alert';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
@@ -131,6 +131,10 @@
 				canvases = descriptors.map((): null => null);
 				onpages?.(descriptors);
 				ready = true;
+				// The page loop and its canvas bindings do not exist until Svelte has
+				// flushed this state change. Without waiting, a fast PDF load can run
+				// the only initial render while every canvas slot is still null.
+				await tick();
 				scheduleRender();
 			} catch {
 				if (!disposed) failed = true;
