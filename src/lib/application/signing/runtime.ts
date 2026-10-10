@@ -10,6 +10,7 @@ import { D1RecipientViewStore } from '$lib/adapters/db/d1-recipient-view-store';
 import { D1EnvelopeSentPdfStore } from '$lib/adapters/db/d1-envelope-sent-pdf-store';
 import { D1EnvelopeSentDocumentStore } from '$lib/adapters/db/d1-envelope-sent-document-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
+import type { ObjectStore } from '$lib/ports/object-store';
 import { RecipientAccessService, type RecipientAccessApplicationPort } from './recipient-access';
 import {
 	RecipientWorkspaceService,
@@ -230,15 +231,41 @@ export async function resolveRecipientSignedApplication(
 ): Promise<RecipientSignedApplicationPort | null> {
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
+		const bucket: R2Bucket | undefined = context.platform.env.OBJECTS;
 		if (database === undefined) return null;
-		return new RecipientSignedApplication(new D1RecipientSignStore(database));
+		return new RecipientSignedApplication(
+			new D1RecipientSignStore(database),
+			undefined,
+			undefined,
+			bucket === undefined ? null : new R2ObjectStore(bucket)
+		);
 	}
 
 	const databaseUrl: string | undefined = env.DATABASE_URL;
 	if (databaseUrl === undefined || databaseUrl.trim().length === 0) return null;
+	// Signing itself needs only PostgreSQL: a deployment with no S3 configured
+	// at all keeps signing, it just has nothing to verify a drawn asset
+	// reference against, so such a reference fails closed as invalid rather
+	// than this resolver refusing to start. A *partial* S3 configuration still
+	// throws, the same as every other S3-backed resolver here.
+	const configuration = objectStorageConfiguration();
+	const hasS3Configuration: boolean =
+		configuration !== null &&
+		[
+			configuration.endpoint,
+			configuration.region,
+			configuration.bucket,
+			configuration.accessKeyId,
+			configuration.secretAccessKey
+		].some((value: string | undefined): boolean => Boolean(value?.trim()));
+	let signatureAssets: ObjectStore | null = null;
+	if (hasS3Configuration && configuration !== null) {
+		const { resolveS3ObjectStore } = await import('$lib/application/drafts/runtime-s3');
+		signatureAssets = resolveS3ObjectStore(configuration);
+	}
 	const { resolvePostgresRecipientSignedApplication } =
 		await import('$lib/application/envelopes/runtime-postgres');
-	return resolvePostgresRecipientSignedApplication(databaseUrl);
+	return resolvePostgresRecipientSignedApplication(databaseUrl, signatureAssets);
 }
 
 export async function resolveSignatureAssetApplication(

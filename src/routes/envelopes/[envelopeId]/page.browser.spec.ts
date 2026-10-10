@@ -1442,6 +1442,77 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		await expect.poll(() => completionStatusGets(mockFetch)).toBeGreaterThan(getsBefore);
 	});
 
+	it('failed: mints a fresh Idempotency-Key for a new exhausted generation after an ambiguous retry failure', async () => {
+		let getCount = 0;
+		const posts: RequestInit[] = [];
+		const mockFetch = mockCompletedFetch(
+			() => {
+				getCount += 1;
+				const generation =
+					getCount <= 1
+						? { attempts: 10, failedAt: '2026-09-12T00:00:00.000Z' }
+						: { attempts: 11, failedAt: '2026-09-12T00:05:00.000Z' };
+				return jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'failed',
+						attempts: generation.attempts,
+						errorCode: 'completion_artifact_build_failed',
+						availableAt: null,
+						failedAt: generation.failedAt,
+						retryEligible: true
+					}
+				});
+			},
+			retryRoute((init: RequestInit | undefined): Response => {
+				posts.push(init as RequestInit);
+				// The first attempt fails ambiguously (a transient 503), which the
+				// client must treat as "may have landed" and keep the same key for
+				// a same-generation retry. The next status read then reports a new
+				// exhausted generation (the old-generation job finished being
+				// requeued elsewhere), so the next reprocess click must not reuse
+				// that stale Idempotency-Key against the new generation's command.
+				if (posts.length === 1) {
+					return new Response(
+						JSON.stringify({
+							type: 'urn:signkit:problem:completion-artifact-retry-unavailable',
+							title: 'Completion artifact retry unavailable',
+							status: 503,
+							detail: 'try again shortly'
+						}),
+						{ status: 503, headers: { 'content-type': 'application/problem+json' } }
+					);
+				}
+				return jsonResponse({
+					requeued: { envelopeId: ENVELOPE_ID, target: 'artifact', outcome: 'requeued' }
+				});
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const reprocess = screen.getByRole('button', { name: 'Reprocess completion' });
+		await expect.element(reprocess).toBeVisible();
+
+		await reprocess.click();
+		await expect.poll(() => posts.length).toBe(1);
+		await expect.poll(() => completionStatusGets(mockFetch)).toBeGreaterThanOrEqual(2);
+		await expect.element(reprocess).not.toBeDisabled();
+
+		await reprocess.click();
+		await expect.poll(() => posts.length).toBe(2);
+
+		const firstKey = new Headers(posts[0].headers).get('idempotency-key');
+		const secondKey = new Headers(posts[1].headers).get('idempotency-key');
+		expect(firstKey).toBeTruthy();
+		expect(secondKey).toBeTruthy();
+		expect(secondKey).not.toBe(firstKey);
+		expect(JSON.parse(String(posts[1].body))).toEqual({
+			expectedAttempts: 11,
+			expectedFailedAt: '2026-09-12T00:05:00.000Z'
+		});
+	});
+
 	it('failed: shows a localized refusal and re-reads status when the generation is stale', async () => {
 		const mockFetch = mockCompletedFetch(
 			() =>

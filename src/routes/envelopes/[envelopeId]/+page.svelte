@@ -96,6 +96,12 @@
 	let completionRetryPending = $state(false);
 	let completionRetryError = $state<string | null>(null);
 	let completionRetryAttempt = $state(createEnvelopeMutationAttempt());
+	// The exhausted generation `completionRetryAttempt`'s cached Idempotency-Key
+	// was minted for. A retry of that same ambiguous command must reuse the
+	// key, but once the observed generation moves on (a newer failure, or a
+	// newer repair attempt), the old key names a different command and must
+	// not be replayed onto it.
+	let completionRetryAttemptGeneration: CompletionRetryCommand | null = null;
 	const completionPdfStatus = $derived(
 		completionStatus?.status === 'published' ? completionStatus.pdfStatus : null
 	);
@@ -549,6 +555,17 @@
 	async function reprocessCompletion(): Promise<void> {
 		const command = completionRetryCommand();
 		if (completionRetryPending || command === null) return;
+		if (
+			completionRetryAttemptGeneration === null ||
+			completionRetryAttemptGeneration.expectedAttempts !== command.expectedAttempts ||
+			completionRetryAttemptGeneration.expectedFailedAt !== command.expectedFailedAt
+		) {
+			// A new generation is not a retry of the last ambiguous command, even
+			// if that command's key is still cached: reusing it here would send a
+			// stale Idempotency-Key against a different command body.
+			completionRetryAttempt.invalidate();
+			completionRetryAttemptGeneration = command;
+		}
 		completionRetryPending = true;
 		completionRetryError = null;
 		try {

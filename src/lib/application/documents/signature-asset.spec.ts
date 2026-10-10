@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { emittedImageStreamBytes } from '$lib/adapters/pdf/pdf-composer';
 import { decodePng } from '$lib/adapters/pdf/png-image';
@@ -9,11 +10,13 @@ import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import {
 	MAX_SIGNATURE_ASSET_BYTES,
 	MAX_SIGNATURE_EMITTED_IMAGE_BYTES,
+	SIGNATURE_ASSET_REF_PREFIX,
 	SignatureAssetApplication,
 	parseSignatureAssetKey,
 	referencedSignatureAssetKeys,
 	signatureAssetKey,
-	signatureAssetRefValueJson
+	signatureAssetRefValueJson,
+	verifySignatureAssetReference
 } from './signature-asset';
 
 const context: RecipientSigningContext = {
@@ -297,6 +300,199 @@ describe('SignatureAssetApplication', () => {
 			pngBytes: pngBytes()
 		});
 		expect(result).toEqual({ outcome: 'integrity_error' });
+	});
+});
+
+describe('verifySignatureAssetReference', () => {
+	const envelopeId: string = context.envelopeId;
+	const recipientId: string = context.recipientId;
+
+	async function seedCanvasSignature(objects: InMemoryObjectStore): Promise<string> {
+		const png: Uint8Array = canvasSignaturePng();
+		const sha256: string = createHash('sha256').update(png).digest('hex');
+		objects.seed(signatureAssetKey(envelopeId, recipientId, sha256), png, sha256);
+		return sha256;
+	}
+
+	it('accepts a signature-field reference to a canvas-upload asset', async () => {
+		const objects = new InMemoryObjectStore();
+		const sha256: string = await seedCanvasSignature(objects);
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`
+		);
+
+		expect(check).toEqual({ outcome: 'ok' });
+	});
+
+	it('accepts an initials-field reference to the same canvas-upload asset', async () => {
+		// Initials and signature fields share the same object store and key
+		// shape; the field type does not change what is verified.
+		const objects = new InMemoryObjectStore();
+		const sha256: string = await seedCanvasSignature(objects);
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`
+		);
+
+		expect(check).toEqual({ outcome: 'ok' });
+	});
+
+	it('rejects a reference to a key that was never stored', async () => {
+		const objects = new InMemoryObjectStore();
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${'a'.repeat(64)}`
+		);
+
+		expect(check).toEqual({ outcome: 'invalid' });
+	});
+
+	it('rejects a malformed reference shape without touching the object store', async () => {
+		const objects: ObjectStore = {
+			head: async () => {
+				throw new Error('must not be called for a malformed reference');
+			},
+			get: async () => {
+				throw new Error('must not be called for a malformed reference');
+			},
+			putImmutable: async () => {
+				throw new Error('unused');
+			},
+			delete: async () => {},
+			list: async () => {
+				throw new Error('unused');
+			},
+			deleteMany: async () => {
+				throw new Error('unused');
+			}
+		};
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${'g'.repeat(64)}`
+		);
+
+		expect(check).toEqual({ outcome: 'invalid' });
+	});
+
+	it("rejects a reference scoped to a different envelope's asset", async () => {
+		const objects = new InMemoryObjectStore();
+		const sha256: string = await seedCanvasSignature(objects);
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			'a-different-envelope',
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`
+		);
+
+		expect(check).toEqual({ outcome: 'invalid' });
+	});
+
+	it("rejects a reference scoped to a different recipient's asset", async () => {
+		const objects = new InMemoryObjectStore();
+		const sha256: string = await seedCanvasSignature(objects);
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			'a-different-recipient',
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`
+		);
+
+		expect(check).toEqual({ outcome: 'invalid' });
+	});
+
+	it('rejects a stored object whose bytes do not hash to the referenced digest', async () => {
+		const objects = new InMemoryObjectStore();
+		const png: Uint8Array = canvasSignaturePng();
+		const claimedSha256: string = 'b'.repeat(64);
+		objects.seed(
+			signatureAssetKey(envelopeId, recipientId, claimedSha256),
+			png,
+			createHash('sha256').update(png).digest('hex')
+		);
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${claimedSha256}`
+		);
+
+		expect(check).toEqual({ outcome: 'invalid' });
+	});
+
+	it('rejects a stored object that oversteps the bounded read', async () => {
+		const objects = new InMemoryObjectStore();
+		const oversized: Uint8Array = new Uint8Array(MAX_SIGNATURE_ASSET_BYTES + 1);
+		const sha256: string = createHash('sha256').update(oversized).digest('hex');
+		objects.seed(signatureAssetKey(envelopeId, recipientId, sha256), oversized, sha256);
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`
+		);
+
+		expect(check).toEqual({ outcome: 'invalid' });
+	});
+
+	it('rejects a stored object that is not a decodable PNG within the signature decode caps', async () => {
+		const objects = new InMemoryObjectStore();
+		const corrupt: Uint8Array = new Uint8Array([1, 2, 3, 4]);
+		const sha256: string = createHash('sha256').update(corrupt).digest('hex');
+		objects.seed(signatureAssetKey(envelopeId, recipientId, sha256), corrupt, sha256);
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`
+		);
+
+		expect(check).toEqual({ outcome: 'invalid' });
+	});
+
+	it('reports a provider failure, not an invalid reference, when the store errors', async () => {
+		const objects: ObjectStore = {
+			head: async () => null,
+			get: async () => {
+				throw new Error('object store unavailable');
+			},
+			putImmutable: async () => {
+				throw new Error('unused');
+			},
+			delete: async () => {},
+			list: async () => {
+				throw new Error('unused');
+			},
+			deleteMany: async () => {
+				throw new Error('unused');
+			}
+		};
+
+		const check = await verifySignatureAssetReference(
+			objects,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${'c'.repeat(64)}`
+		);
+
+		expect(check).toEqual({ outcome: 'provider_error' });
 	});
 });
 
