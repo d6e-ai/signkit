@@ -6,6 +6,7 @@ import {
 	type OrphanCollectorReport
 } from '$lib/application/maintenance/orphan-collector';
 import { maintenanceFailureHeaders } from '$lib/observability/maintenance-failure';
+import { observeMaintenanceBatchResult } from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
@@ -72,6 +73,7 @@ export function createOrphanSweepHandler(
 			);
 		}
 
+		const startedAt: number = Date.now();
 		try {
 			const report: OrphanCollectorReport = await collector.sweep({
 				batchSize: ORPHAN_SWEEP_BATCH_SIZE,
@@ -87,18 +89,19 @@ export function createOrphanSweepHandler(
 				// the race, so this is reported, not treated as a failure.
 				logOrphanSweepEvent('orphan_sweep_checkpoint_conflict');
 			}
-			return Response.json(
-				{
-					scanned: report.scanned,
-					referenced: report.referenced,
-					inGracePeriod: report.inGracePeriod,
-					deleted: report.deleted
-				},
-				{
-					status: 200,
-					headers: { 'cache-control': 'no-store' }
+			const result = {
+				scanned: report.scanned,
+				referenced: report.referenced,
+				inGracePeriod: report.inGracePeriod,
+				deleted: report.deleted
+			};
+			return Response.json(result, {
+				status: 200,
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult('orphan sweep', result, Date.now() - startedAt)
 				}
-			);
+			});
 		} catch (error: unknown) {
 			const failure: OrphanSweepLogContext = orphanSweepLogContext(error);
 			logOrphanSweepError('orphan_sweep_failed', failure);

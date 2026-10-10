@@ -7,6 +7,10 @@ import type {
 	CompletionArtifactPdfRecord,
 	CompletionArtifactPdfStore
 } from '$lib/ports/completion-artifact-pdf-store';
+import type {
+	CompletionArtifactPdfRepairStatusRow,
+	CompletionArtifactPdfRepairStore
+} from '$lib/ports/completion-artifact-pdf-repair-store';
 import {
 	CompletionArtifactStatusService,
 	type PublicCompletionArtifactStatus
@@ -25,6 +29,7 @@ function pdfStore(record: CompletionArtifactPdfRecord | null): CompletionArtifac
 
 function store(row: CompletionArtifactStatusRow | null): CompletionArtifactStore {
 	return {
+		findCompletionArtifactRetry: async () => null,
 		claimPendingCompletionArtifacts: async () => [],
 		readClaimedCompletionArtifact: async () => null,
 		readCompletionEvidence: async () => {
@@ -34,6 +39,9 @@ function store(row: CompletionArtifactStatusRow | null): CompletionArtifactStore
 			throw new Error('unused');
 		},
 		failCompletionArtifact: async () => {
+			throw new Error('unused');
+		},
+		requeueExhaustedCompletionArtifact: async () => {
 			throw new Error('unused');
 		},
 		findCompletionArtifactStatus: async () => row
@@ -50,6 +58,7 @@ function baseRow(
 		attempts: null,
 		lastError: null,
 		availableAt: null,
+		updatedAt: null,
 		published: null,
 		...overrides
 	};
@@ -77,7 +86,12 @@ describe('CompletionArtifactStatusService.find', () => {
 			store(baseRow({ envelopeCompleted: true, jobStatus: null }))
 		);
 		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
-		expect(status).toEqual({ envelopeId: ENVELOPE_ID, status: 'pending', attempts: 0 });
+		expect(status).toEqual({
+			envelopeId: ENVELOPE_ID,
+			status: 'pending',
+			attempts: 0,
+			availableAt: null
+		});
 	});
 
 	it('reports the job attempts once a pending job row exists', async () => {
@@ -85,7 +99,12 @@ describe('CompletionArtifactStatusService.find', () => {
 			store(baseRow({ envelopeCompleted: true, jobStatus: 'pending', attempts: 2 }))
 		);
 		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
-		expect(status).toEqual({ envelopeId: ENVELOPE_ID, status: 'pending', attempts: 2 });
+		expect(status).toEqual({
+			envelopeId: ENVELOPE_ID,
+			status: 'pending',
+			attempts: 2,
+			availableAt: null
+		});
 	});
 
 	it('reports processing with attempts', async () => {
@@ -93,7 +112,12 @@ describe('CompletionArtifactStatusService.find', () => {
 			store(baseRow({ envelopeCompleted: true, jobStatus: 'processing', attempts: 1 }))
 		);
 		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
-		expect(status).toEqual({ envelopeId: ENVELOPE_ID, status: 'processing', attempts: 1 });
+		expect(status).toEqual({
+			envelopeId: ENVELOPE_ID,
+			status: 'processing',
+			attempts: 1,
+			availableAt: null
+		});
 	});
 
 	it('reports failed with a sanitized error code and retry time', async () => {
@@ -104,7 +128,8 @@ describe('CompletionArtifactStatusService.find', () => {
 					jobStatus: 'failed',
 					attempts: 3,
 					lastError: 'completion_artifact_build_failed',
-					availableAt: '2026-09-12T00:05:00.000Z'
+					availableAt: '2026-09-12T00:05:00.000Z',
+					updatedAt: '2026-09-12T00:00:00.000Z'
 				})
 			)
 		);
@@ -114,7 +139,9 @@ describe('CompletionArtifactStatusService.find', () => {
 			status: 'failed',
 			attempts: 3,
 			errorCode: 'completion_artifact_build_failed',
-			availableAt: '2026-09-12T00:05:00.000Z'
+			availableAt: '2026-09-12T00:05:00.000Z',
+			failedAt: '2026-09-12T00:00:00.000Z',
+			retryEligible: false
 		});
 	});
 
@@ -143,7 +170,9 @@ describe('CompletionArtifactStatusService.find', () => {
 			manifestSha256: 'm'.repeat(64),
 			jsonSha256: 'j'.repeat(64),
 			markdownSha256: 'd'.repeat(64),
-			pdfStatus: 'unavailable'
+			pdfStatus: 'unavailable',
+			pdfRepair: null,
+			retryEligible: false
 		});
 	});
 
@@ -151,6 +180,117 @@ describe('CompletionArtifactStatusService.find', () => {
 		const service = new CompletionArtifactStatusService(store(publishedRow()), pdfStore(null));
 		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
 		expect(status).toMatchObject({ status: 'published', pdfStatus: 'pending' });
+	});
+
+	it('reports exhausted transient failures as retry-eligible without exposing leases', async () => {
+		const service = new CompletionArtifactStatusService(
+			store(
+				baseRow({
+					envelopeCompleted: true,
+					jobStatus: 'failed',
+					attempts: 10,
+					lastError: 'completion_artifact_attempts_exhausted',
+					availableAt: '2026-09-12T00:05:00.000Z',
+					updatedAt: '2026-09-12T00:04:00.123456Z'
+				})
+			)
+		);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
+		expect(status).toMatchObject({
+			status: 'failed',
+			retryEligible: true,
+			errorCode: 'completion_artifact_attempts_exhausted',
+			failedAt: '2026-09-12T00:04:00.123456Z'
+		});
+		expect(JSON.stringify(status)).not.toContain('claim');
+	});
+
+	function repairStatusStore(
+		row: CompletionArtifactPdfRepairStatusRow | null
+	): CompletionArtifactPdfRepairStore {
+		return {
+			claimPendingPdfRepairs: vi.fn(),
+			readClaimedPdfRepair: vi.fn(),
+			completePdfRepair: vi.fn(),
+			failPdfRepair: vi.fn(),
+			requeueExhaustedPdfRepair: vi.fn(),
+			findPdfRepairStatus: async () => row
+		};
+	}
+
+	it('reports a failed PDF repair without object keys and with retry eligibility only when exhausted', async () => {
+		const service = new CompletionArtifactStatusService(
+			store(publishedRow()),
+			pdfStore(null),
+			repairStatusStore({
+				envelopeId: ENVELOPE_ID,
+				status: 'failed',
+				attempts: 10,
+				lastError: 'completion_artifact_pdf_repair_attempts_exhausted',
+				availableAt: '2026-09-12T00:05:00.000Z',
+				retryable: false,
+				updatedAt: '2026-09-12T00:05:00.000Z'
+			})
+		);
+		const status: PublicCompletionArtifactStatus | null = await service.find(ENVELOPE_ID);
+		expect(status).toMatchObject({
+			status: 'published',
+			pdfStatus: 'failed',
+			retryEligible: true,
+			pdfRepair: {
+				status: 'failed',
+				attempts: 10,
+				availableAt: null,
+				failedAt: '2026-09-12T00:05:00.000Z'
+			}
+		});
+		expect(JSON.stringify(status)).not.toContain('completion-artifacts/');
+	});
+
+	it('reports a permanent PDF repair failure as failed but never retry-eligible', async () => {
+		const service = new CompletionArtifactStatusService(
+			store(publishedRow()),
+			pdfStore(null),
+			repairStatusStore({
+				envelopeId: ENVELOPE_ID,
+				status: 'failed',
+				attempts: 1,
+				lastError: 'completion_artifact_evidence_invalid',
+				availableAt: '2026-09-12T00:05:00.000Z',
+				retryable: false,
+				updatedAt: '2026-09-12T00:05:00.000Z'
+			})
+		);
+		await expect(service.find(ENVELOPE_ID)).resolves.toMatchObject({
+			pdfStatus: 'failed',
+			retryEligible: false
+		});
+	});
+
+	it('reports a retryable PDF repair failure as pending with its next attempt, not failed', async () => {
+		const service = new CompletionArtifactStatusService(
+			store(publishedRow()),
+			pdfStore(null),
+			repairStatusStore({
+				envelopeId: ENVELOPE_ID,
+				status: 'failed',
+				attempts: 2,
+				lastError: 'completion_artifact_build_failed',
+				availableAt: '2026-09-12T00:06:00.000Z',
+				retryable: true,
+				updatedAt: '2026-09-12T00:05:00.000Z'
+			})
+		);
+		await expect(service.find(ENVELOPE_ID)).resolves.toMatchObject({
+			pdfStatus: 'pending',
+			retryEligible: false,
+			pdfRepair: {
+				status: 'pending',
+				attempts: 2,
+				availableAt: '2026-09-12T00:06:00.000Z',
+				failedAt: null
+			}
+		});
 	});
 
 	it('reports a published PDF status once a PDF record exists, without exposing its object key or digest', async () => {

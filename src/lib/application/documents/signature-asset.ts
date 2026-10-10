@@ -1,4 +1,14 @@
-import { decodePng, isPngSignature, PngDecodeError } from '$lib/adapters/pdf/png-image';
+import { emittedImageStreamBytes } from '$lib/adapters/pdf/pdf-composer';
+import {
+	decodePng,
+	estimatePngDecodeMemory,
+	isPngSignature,
+	MAX_PNG_DIMENSION,
+	MAX_PNG_INFLATE_SCRATCH_BYTES,
+	PngDecodeError,
+	type DecodedPngImage,
+	type PngDecodeMemoryEstimate
+} from '$lib/adapters/pdf/png-image';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
@@ -11,8 +21,43 @@ import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
  */
 export const MAX_SIGNATURE_ASSET_BYTES: number = 64 * 1024;
 
+/**
+ * The signing canvas's raster (`signature-canvas.svelte`: a fixed 600 x 200
+ * backing store, not scaled by device pixel ratio). The decode caps below are
+ * what `png-image.ts` accounts for a PNG of this many pixels at its widest
+ * supported sample format (16-bit RGBA, 8 bytes per pixel).
+ */
+const SIGNATURE_CANVAS_PIXELS: number = 600 * 200;
+
+/** Decoded sample and alpha planes the composer retains per signature: at most 3 + 1 bytes per pixel. */
+export const MAX_SIGNATURE_RETAINED_DECODE_BYTES: number = 4 * SIGNATURE_CANVAS_PIXELS;
+
+/**
+ * Peak decode working set per signature: the compressed copy (at most the
+ * upload cap), inflated scanlines (`(8 * width + 1) * height + 1`), inflater
+ * scratch, unfiltered scanlines (`8 * pixels`), and the retained planes.
+ */
+export const MAX_SIGNATURE_PEAK_DECODE_BYTES: number =
+	MAX_SIGNATURE_ASSET_BYTES +
+	(8 * SIGNATURE_CANVAS_PIXELS + MAX_PNG_DIMENSION + 1) +
+	MAX_PNG_INFLATE_SCRATCH_BYTES +
+	8 * SIGNATURE_CANVAS_PIXELS +
+	MAX_SIGNATURE_RETAINED_DECODE_BYTES;
+
+/**
+ * Bytes one signature may occupy once the executed agreement re-deflates its
+ * planes (`emittedImageStreamBytes`). The upload cap does not bound this:
+ * planes are re-encoded without PNG's predictors. Holding it to the same
+ * 64 KiB means an accepted asset never grows past its own upload cap inside
+ * the agreement, which is what the send-time budget reserves per signature.
+ */
+export const MAX_SIGNATURE_EMITTED_IMAGE_BYTES: number = MAX_SIGNATURE_ASSET_BYTES;
+
 /** `sig:sha256:` (11) + 64 hex chars = 75, well inside the 200-char signature field value budget. */
 export const SIGNATURE_ASSET_REF_PREFIX: string = 'sig:sha256:';
+
+/** The only well-formed shape a `sig:sha256:` field value may take. */
+export const SIGNATURE_ASSET_REF_PATTERN: RegExp = /^sig:sha256:[a-f0-9]{64}$/;
 
 export interface StoreSignatureAssetInput {
 	token: string;
@@ -71,14 +116,12 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 		// Resolve the capability and its route binding before CPU- and
 		// allocation-heavy image decoding. Decoding here, rather than merely
 		// sniffing magic bytes, still guarantees that an accepted asset can be
-		// composited into the executed agreement later.
-		if (!isPngSignature(input.pngBytes)) return { outcome: 'invalid_image' };
-		try {
-			decodePng(input.pngBytes);
-		} catch (error: unknown) {
-			if (error instanceof PngDecodeError) return { outcome: 'invalid_image' };
-			throw error;
-		}
+		// composited into the executed agreement later. The send-time
+		// completion budget reserves decode memory and output bytes per
+		// signature from the caps checked here, so they must hold for every
+		// asset accepted.
+		const validated: ValidatedSignaturePng = validateSignaturePngBytes(input.pngBytes);
+		if (validated.outcome !== 'ok') return { outcome: validated.outcome };
 
 		const sha256: string = await sha256Hex(input.pngBytes);
 		const key: string = signatureAssetKey(context.envelopeId, context.recipientId, sha256);
@@ -94,6 +137,113 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 		}
 		return { outcome: 'stored', assetRef: `${SIGNATURE_ASSET_REF_PREFIX}${sha256}` };
 	}
+}
+
+type ValidatedSignaturePng =
+	{ outcome: 'ok' } | { outcome: 'too_large' } | { outcome: 'invalid_image' };
+
+/** The decode-cap checks `store()` applies to a fresh upload, factored out so {@link verifySignatureAssetReference} can re-apply them to bytes read back from the object store. */
+function validateSignaturePngBytes(bytes: Uint8Array): ValidatedSignaturePng {
+	if (bytes.byteLength === 0 || bytes.byteLength > MAX_SIGNATURE_ASSET_BYTES) {
+		return { outcome: 'too_large' };
+	}
+	if (!isPngSignature(bytes)) return { outcome: 'invalid_image' };
+	let decoded: DecodedPngImage;
+	try {
+		const estimate: PngDecodeMemoryEstimate = estimatePngDecodeMemory(bytes);
+		if (
+			estimate.retainedBytes > MAX_SIGNATURE_RETAINED_DECODE_BYTES ||
+			estimate.peakWorkingBytes > MAX_SIGNATURE_PEAK_DECODE_BYTES
+		) {
+			return { outcome: 'too_large' };
+		}
+		decoded = decodePng(bytes, { maximumWorkingBytes: MAX_SIGNATURE_PEAK_DECODE_BYTES });
+	} catch (error: unknown) {
+		if (error instanceof PngDecodeError) return { outcome: 'invalid_image' };
+		throw error;
+	}
+	if (emittedImageStreamBytes(decoded) > MAX_SIGNATURE_EMITTED_IMAGE_BYTES) {
+		return { outcome: 'too_large' };
+	}
+	return { outcome: 'ok' };
+}
+
+export type SignatureAssetReferenceCheck =
+	{ outcome: 'ok' } | { outcome: 'invalid' } | { outcome: 'provider_error' };
+
+class SignatureAssetOverflowError extends Error {}
+
+/**
+ * Re-proves a `sig:sha256:` field value against the envelope+recipient
+ * scoped object it names. A field value submitted alongside a signing
+ * command is only ever a claim from the recipient's browser; nothing stops a
+ * forged reference from naming a key that was never actually uploaded, or a
+ * sibling envelope/recipient's asset. This reads the named object back with
+ * the same bounded-byte-count, SHA-256, and PNG decode-cap checks `store()`
+ * applies to a fresh upload, so an accepted reference is provably the same
+ * bytes the executed agreement will later composite.
+ *
+ * A thrown/opaque object-store failure returns `provider_error` rather than
+ * `invalid`: a recipient must not have a genuine asset rejected outright
+ * because the store was briefly unavailable.
+ */
+export async function verifySignatureAssetReference(
+	objects: ObjectStore,
+	envelopeId: string,
+	recipientId: string,
+	value: string
+): Promise<SignatureAssetReferenceCheck> {
+	if (!SIGNATURE_ASSET_REF_PATTERN.test(value)) return { outcome: 'invalid' };
+	const sha256: string = value.slice(SIGNATURE_ASSET_REF_PREFIX.length);
+	const key: string = signatureAssetKey(envelopeId, recipientId, sha256);
+
+	let stream: ReadableStream<Uint8Array> | null;
+	try {
+		stream = await objects.get(key);
+	} catch {
+		return { outcome: 'provider_error' };
+	}
+	if (stream === null) return { outcome: 'invalid' };
+
+	let bytes: Uint8Array;
+	try {
+		bytes = await readBoundedSignatureAsset(stream);
+	} catch (error: unknown) {
+		if (error instanceof SignatureAssetOverflowError) return { outcome: 'invalid' };
+		return { outcome: 'provider_error' };
+	}
+
+	if ((await sha256Hex(bytes)) !== sha256) return { outcome: 'invalid' };
+	return validateSignaturePngBytes(bytes).outcome === 'ok'
+		? { outcome: 'ok' }
+		: { outcome: 'invalid' };
+}
+
+async function readBoundedSignatureAsset(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+	const reader: ReadableStreamDefaultReader<Uint8Array> = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let size: number = 0;
+	try {
+		for (;;) {
+			const result: ReadableStreamReadResult<Uint8Array> = await reader.read();
+			if (result.done) break;
+			size += result.value.byteLength;
+			if (size > MAX_SIGNATURE_ASSET_BYTES) {
+				await reader.cancel();
+				throw new SignatureAssetOverflowError();
+			}
+			chunks.push(result.value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes: Uint8Array = new Uint8Array(size);
+	let offset: number = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return bytes;
 }
 
 const SIGNATURE_ASSET_KEY_PATTERN: RegExp =

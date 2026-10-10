@@ -1339,7 +1339,7 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		await commands.stopFixtureServer();
 	});
 
-	it('failed: lets the sender retry loading completion status instead of leaving it stuck', async () => {
+	it('failed: lets the sender refresh completion status with GET instead of leaving it stuck', async () => {
 		let attempt = 0;
 		const mockFetch = mockCompletedFetch(() => {
 			attempt += 1;
@@ -1349,8 +1349,10 @@ describe('completed envelope shows the completed-artifacts card', () => {
 						envelopeId: ENVELOPE_ID,
 						status: 'failed',
 						attempts: 10,
-						errorCode: 'completion_artifact_attempts_exhausted',
-						availableAt: null
+						errorCode: 'completion_artifact_build_failed',
+						availableAt: null,
+						failedAt: '2026-09-12T00:00:00.000Z',
+						retryEligible: false
 					}
 				});
 			}
@@ -1362,17 +1364,263 @@ describe('completed envelope shows the completed-artifacts card', () => {
 					manifestSha256: 'm'.repeat(64),
 					jsonSha256: 'j'.repeat(64),
 					markdownSha256: 'd'.repeat(64),
-					pdfStatus: 'published'
+					pdfStatus: 'published',
+					pdfRepair: null,
+					retryEligible: false
 				}
 			});
 		});
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
-		const retryButton = screen.getByRole('button', { name: 'Retry' });
-		await expect.element(retryButton).toBeVisible();
-		await retryButton.click();
+		const refreshButton = screen.getByRole('button', { name: 'Refresh status' });
+		await expect.element(refreshButton).toBeVisible();
+		expect(screen.getByRole('button', { name: 'Reprocess completion' }).query()).toBeNull();
+		await refreshButton.click();
 		await expect.element(screen.getByRole('link', { name: 'Download final PDF' })).toBeVisible();
+		expect(
+			mockFetch.mock.calls.every(
+				([url, init]) =>
+					!String(url).endsWith(`/completion-artifact/retry`) || init?.method !== 'POST'
+			)
+		).toBe(true);
+	});
+
+	function retryRoute(
+		onPost: (init: RequestInit | undefined) => Response
+	): (urlStr: string, init: RequestInit | undefined) => Response | undefined {
+		return (urlStr: string, init: RequestInit | undefined): Response | undefined =>
+			urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/retry`) &&
+			init?.method === 'POST'
+				? onPost(init)
+				: undefined;
+	}
+
+	function completionStatusGets(mockFetch: ReturnType<typeof mockCompletedFetch>): number {
+		return mockFetch.mock.calls.filter(
+			([url, init]) =>
+				String(url).endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact`) &&
+				init?.method !== 'POST'
+		).length;
+	}
+
+	it('failed: reprocesses the observed exhausted generation with an idempotent POST', async () => {
+		let posted: RequestInit | undefined;
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'failed',
+						attempts: 10,
+						errorCode: 'completion_artifact_attempts_exhausted',
+						availableAt: '2026-09-12T00:00:00.000Z',
+						failedAt: '2026-09-12T00:00:00.000Z',
+						retryEligible: true
+					}
+				}),
+			retryRoute((init: RequestInit | undefined): Response => {
+				posted = init;
+				return jsonResponse({
+					requeued: { envelopeId: ENVELOPE_ID, target: 'artifact', outcome: 'requeued' }
+				});
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const reprocess = screen.getByRole('button', { name: 'Reprocess completion' });
+		await expect.element(reprocess).toBeVisible();
+		const getsBefore: number = completionStatusGets(mockFetch);
+		await reprocess.click();
+		await expect.poll(() => posted?.method).toBe('POST');
+		expect(new Headers(posted?.headers).get('idempotency-key')).toBeTruthy();
+		expect(JSON.parse(String(posted?.body))).toEqual({
+			expectedAttempts: 10,
+			expectedFailedAt: '2026-09-12T00:00:00.000Z'
+		});
+		await expect.poll(() => completionStatusGets(mockFetch)).toBeGreaterThan(getsBefore);
+	});
+
+	it('failed: mints a fresh Idempotency-Key for a new exhausted generation after an ambiguous retry failure', async () => {
+		let getCount = 0;
+		const posts: RequestInit[] = [];
+		const mockFetch = mockCompletedFetch(
+			() => {
+				getCount += 1;
+				const generation =
+					getCount <= 1
+						? { attempts: 10, failedAt: '2026-09-12T00:00:00.000Z' }
+						: { attempts: 11, failedAt: '2026-09-12T00:05:00.000Z' };
+				return jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'failed',
+						attempts: generation.attempts,
+						errorCode: 'completion_artifact_build_failed',
+						availableAt: null,
+						failedAt: generation.failedAt,
+						retryEligible: true
+					}
+				});
+			},
+			retryRoute((init: RequestInit | undefined): Response => {
+				posts.push(init as RequestInit);
+				// The first attempt fails ambiguously (a transient 503), which the
+				// client must treat as "may have landed" and keep the same key for
+				// a same-generation retry. The next status read then reports a new
+				// exhausted generation (the old-generation job finished being
+				// requeued elsewhere), so the next reprocess click must not reuse
+				// that stale Idempotency-Key against the new generation's command.
+				if (posts.length === 1) {
+					return new Response(
+						JSON.stringify({
+							type: 'urn:signkit:problem:completion-artifact-retry-unavailable',
+							title: 'Completion artifact retry unavailable',
+							status: 503,
+							detail: 'try again shortly'
+						}),
+						{ status: 503, headers: { 'content-type': 'application/problem+json' } }
+					);
+				}
+				return jsonResponse({
+					requeued: { envelopeId: ENVELOPE_ID, target: 'artifact', outcome: 'requeued' }
+				});
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const reprocess = screen.getByRole('button', { name: 'Reprocess completion' });
+		await expect.element(reprocess).toBeVisible();
+
+		await reprocess.click();
+		await expect.poll(() => posts.length).toBe(1);
+		await expect.poll(() => completionStatusGets(mockFetch)).toBeGreaterThanOrEqual(2);
+		await expect.element(reprocess).not.toBeDisabled();
+
+		await reprocess.click();
+		await expect.poll(() => posts.length).toBe(2);
+
+		const firstKey = new Headers(posts[0].headers).get('idempotency-key');
+		const secondKey = new Headers(posts[1].headers).get('idempotency-key');
+		expect(firstKey).toBeTruthy();
+		expect(secondKey).toBeTruthy();
+		expect(secondKey).not.toBe(firstKey);
+		expect(JSON.parse(String(posts[1].body))).toEqual({
+			expectedAttempts: 11,
+			expectedFailedAt: '2026-09-12T00:05:00.000Z'
+		});
+	});
+
+	it('failed: shows a localized refusal and re-reads status when the generation is stale', async () => {
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'failed',
+						attempts: 10,
+						errorCode: 'completion_artifact_attempts_exhausted',
+						availableAt: '2026-09-12T00:00:00.000Z',
+						failedAt: '2026-09-12T00:00:00.000Z',
+						retryEligible: true
+					}
+				}),
+			retryRoute(
+				(): Response =>
+					new Response(
+						JSON.stringify({
+							type: 'urn:signkit:problem:completion-artifact-retry-not-eligible',
+							title: 'Completion artifact cannot be retried',
+							status: 409,
+							detail: 'server detail is not shown verbatim'
+						}),
+						{ status: 409, headers: { 'content-type': 'application/problem+json' } }
+					)
+			)
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		const getsBefore: number = completionStatusGets(mockFetch);
+		await screen.getByRole('button', { name: 'Reprocess completion' }).click();
+		await expect.element(screen.getByText(/changed since the status was loaded/)).toBeVisible();
+		expect(screen.getByText('server detail is not shown verbatim').query()).toBeNull();
+		await expect.poll(() => completionStatusGets(mockFetch)).toBeGreaterThan(getsBefore);
+	});
+
+	it('published: reprocesses an exhausted PDF repair with its own generation', async () => {
+		let posted: RequestInit | undefined;
+		const mockFetch = mockCompletedFetch(
+			() =>
+				jsonResponse({
+					completionArtifact: {
+						envelopeId: ENVELOPE_ID,
+						status: 'published',
+						publishedAt: '2026-09-12T00:00:00.000Z',
+						manifestSha256: 'm'.repeat(64),
+						jsonSha256: 'j'.repeat(64),
+						markdownSha256: 'd'.repeat(64),
+						pdfStatus: 'failed',
+						pdfRepair: {
+							status: 'failed',
+							attempts: 10,
+							availableAt: null,
+							failedAt: '2026-09-12T01:00:00.000Z'
+						},
+						retryEligible: true
+					}
+				}),
+			retryRoute((init: RequestInit | undefined): Response => {
+				posted = init;
+				return jsonResponse({
+					requeued: { envelopeId: ENVELOPE_ID, target: 'pdf_repair', outcome: 'requeued' }
+				});
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(
+				screen.getByText('The final PDF could not be generated. Contact support if this continues.')
+			)
+			.toBeVisible();
+		await screen.getByRole('button', { name: 'Reprocess completion' }).click();
+		await expect.poll(() => posted?.method).toBe('POST');
+		expect(JSON.parse(String(posted?.body))).toEqual({
+			expectedAttempts: 10,
+			expectedFailedAt: '2026-09-12T01:00:00.000Z'
+		});
+	});
+
+	it('published: a permanently failed PDF offers refresh but never reprocess', async () => {
+		const mockFetch = mockCompletedFetch(() =>
+			jsonResponse({
+				completionArtifact: {
+					envelopeId: ENVELOPE_ID,
+					status: 'published',
+					publishedAt: '2026-09-12T00:00:00.000Z',
+					manifestSha256: 'm'.repeat(64),
+					jsonSha256: 'j'.repeat(64),
+					markdownSha256: 'd'.repeat(64),
+					pdfStatus: 'failed',
+					pdfRepair: {
+						status: 'failed',
+						attempts: 1,
+						availableAt: null,
+						failedAt: '2026-09-12T01:00:00.000Z'
+					},
+					retryEligible: false
+				}
+			})
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect.element(screen.getByRole('button', { name: 'Refresh status' })).toBeVisible();
+		expect(screen.getByRole('button', { name: 'Reprocess completion' }).query()).toBeNull();
 	});
 });
 

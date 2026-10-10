@@ -209,6 +209,7 @@ describe('PostgresCompletionDeliveryStore.claimPendingDeliveries', () => {
 		expect(selectQuery.text).toContain('FOR UPDATE OF delivery SKIP LOCKED');
 		expect(selectQuery.text).toContain("envelope.status = 'completed'");
 		expect(selectQuery.text).toContain('INNER JOIN completion_artifact artifact');
+		expect(selectQuery.text).toContain('INNER JOIN completion_artifact_pdf pdf');
 		expect(selectQuery.text).toContain("recipient.role IN ('signer', 'approver', 'viewer', 'cc')");
 		expect(selectQuery.text).toContain('delivery.access_revoked_at IS NULL');
 		expect(selectQuery.text).toContain('delivery.access_expires_at > ?::timestamptz');

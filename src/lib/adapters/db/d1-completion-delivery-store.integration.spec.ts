@@ -70,12 +70,84 @@ function seedCompletedEnvelopeWithArtifact(sqlite: DatabaseSync): {
 			'completion-artifacts/v1/org-1/env-1/sha256/${'d'.repeat(64)}.md.gz', '${'d'.repeat(64)}',
 			'commit-1', 0, '01960000-0000-7000-8000-000000000001', 1, '${'e'.repeat(64)}', '2026-09-11T00:03:00.000Z', '01960000-0000-7000-8000-000000000003'
 		);
+		INSERT INTO completion_artifact_pdf (
+			envelope_id, pdf_object_key, pdf_sha256, pdf_byte_size,
+			pdf_manifest_object_key, pdf_manifest_sha256, published_at
+		) VALUES (
+			'${ENVELOPE_ID}', 'completion/example.pdf', '${'a'.repeat(64)}', 128,
+			'completion/pdf-manifest.json.gz', '${'b'.repeat(64)}', '${CLAIMED_AT}'
+		);
 	`);
 
 	return { signerId, approverId, viewerId, ccId, prefillId };
 }
 
 describe('D1CompletionDeliveryStore integration', () => {
+	it('waits for a missing PDF without consuming mail attempts or revoking the grant', async () => {
+		const { database, sqlite } = createFixture();
+		try {
+			const { signerId } = seedCompletedEnvelopeWithArtifact(sqlite);
+			sqlite.prepare('DELETE FROM completion_artifact_pdf WHERE envelope_id = ?').run(ENVELOPE_ID);
+			const store = new D1CompletionDeliveryStore(database);
+			await store.enrollDeliveries([
+				{
+					id: '01940000-0000-7000-8000-000000000099',
+					envelopeId: ENVELOPE_ID,
+					recipientId: signerId,
+					tokenHash: 'c'.repeat(64),
+					accessExpiresAt: '2026-10-12T00:00:00.000Z',
+					sealedToken: 'synthetic-sealed-token',
+					sealingKeyId: 'test-key',
+					sealedTokenSha256: 'd'.repeat(64),
+					availableAt: CLAIMED_AT,
+					createdAt: CLAIMED_AT
+				}
+			]);
+			for (let attempt = 0; attempt < 12; attempt += 1) {
+				const claimedAt = new Date(
+					new Date(CLAIMED_AT).valueOf() + attempt * 30 * 60 * 1000
+				).toISOString();
+				expect(
+					await store.claimPendingDeliveries({
+						claimToken: `waiting-claim-token-${attempt}`,
+						claimedAt,
+						staleBefore: new Date(new Date(claimedAt).valueOf() - 5 * 60 * 1000).toISOString(),
+						limit: 5
+					})
+				).toEqual([]);
+			}
+			expect(
+				sqlite
+					.prepare(
+						'SELECT status, attempts, access_revoked_at, sealed_token FROM completion_delivery_outbox'
+					)
+					.get()
+			).toEqual({
+				status: 'pending',
+				attempts: 0,
+				access_revoked_at: null,
+				sealed_token: 'synthetic-sealed-token'
+			});
+			sqlite
+				.prepare(
+					`INSERT INTO completion_artifact_pdf (
+				envelope_id, pdf_object_key, pdf_sha256, pdf_byte_size, pdf_manifest_object_key, pdf_manifest_sha256, published_at
+			) VALUES (?, 'completion/example.pdf', ?, 128, 'completion/pdf-manifest.json.gz', ?, ?)`
+				)
+				.run(ENVELOPE_ID, 'a'.repeat(64), 'b'.repeat(64), CLAIMED_AT);
+			const claimed = await store.claimPendingDeliveries({
+				claimToken: 'opsfix-pdf-ready-claim',
+				claimedAt: CLAIMED_AT,
+				staleBefore: STALE_BEFORE,
+				limit: 5
+			});
+			expect(claimed).toHaveLength(1);
+			expect(claimed[0].attempts).toBe(1);
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('discovers eligible recipients excluding prefill, unenrolled only, ordered properly', async () => {
 		const { database, sqlite } = createFixture();
 		const store = new D1CompletionDeliveryStore(database);

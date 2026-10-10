@@ -35,7 +35,9 @@ export class PostgresCompletionArtifactPdfStore implements CompletionArtifactPdf
 		const existing: CompletionArtifactPdfRecord | null = await this.readCompletionArtifactPdf(
 			command.envelopeId
 		);
-		if (existing === null) return { outcome: 'artifact_not_found' };
+		if (existing === null) {
+			throw new Error('Completion artifact PDF insert did not persist a pointer');
+		}
 		return existing.pdfObjectKey === command.pdfObjectKey &&
 			existing.pdfSha256 === command.pdfSha256 &&
 			(existing.pdfByteSize === null || existing.pdfByteSize === command.pdfByteSize) &&

@@ -14,6 +14,7 @@ import {
 	FakeSentDocumentPdf,
 	fakeSentDocumentSetArtifact
 } from '$lib/application/documents/sent-document-pdf-test-support';
+import { SendCompletionBudgetError } from './send-completion-budget';
 import { EnvelopeSendApplication } from './send';
 
 const envelope: Envelope = {
@@ -285,6 +286,28 @@ describe('EnvelopeSendApplication', () => {
 		expect(result).toEqual({ outcome: 'document_render_failed' });
 		expect(store.commands).toHaveLength(0);
 		// No capability is minted for an envelope that will not be sent.
+		expect(localSealer.seal).not.toHaveBeenCalled();
+	});
+
+	it('refuses to publish a send whose documents exceed the completion budget', async () => {
+		const store: CapturingStore = new CapturingStore();
+		const localSealer: RecipientCapabilitySealer = { seal: vi.fn() };
+		const overBudget: FakeSentDocumentPdf = new FakeSentDocumentPdf(
+			new SendCompletionBudgetError('too_many_pages', 'too many pages')
+		);
+
+		const result = await new EnvelopeSendApplication(store, localSealer, overBudget).send(
+			actor,
+			envelope.id,
+			{
+				idempotencyKey: 'send-budget',
+				expectedGeneration: 2,
+				expectedReadyAuditEventId: readyEventId
+			}
+		);
+
+		expect(result).toEqual({ outcome: 'send_budget_exceeded' });
+		expect(store.commands).toHaveLength(0);
 		expect(localSealer.seal).not.toHaveBeenCalled();
 	});
 

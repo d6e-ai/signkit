@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { WebhookApplicationPort } from '$lib/application/webhooks/webhook-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import { createWebhookDrainHandler, type WebhookApplicationResolver } from './webhook-drain';
 import { createDrainRequestEvent } from './drain-test-support';
 
@@ -70,5 +71,43 @@ describe('webhook drain HTTP handler', () => {
 		const body = (await response.json()) as { claimed: number; delivered: number };
 		expect(body).toEqual({ claimed: 1, delivered: 1, retried: 0, failed: 0 });
 		expect(JSON.stringify(body)).not.toContain(SECRET);
+	});
+
+	it('marks a healthy batch observed, and logs a failure summary with duration when failed > 0', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const healthyResponse: Response = await createWebhookDrainHandler(
+			() => application(),
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(healthyResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+
+		const failingApp: WebhookApplicationPort = {
+			...application(),
+			drainPendingDeliveries: vi.fn(async () => ({
+				claimed: 2,
+				delivered: 1,
+				retried: 0,
+				failed: 1
+			}))
+		};
+		const failingResponse: Response = await createWebhookDrainHandler(
+			() => failingApp,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(failingResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'webhook drain',
+				claimed: 2,
+				failed: 1
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 });

@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { CompletionArtifactPublicationService } from '$lib/application/completion-artifacts/completion-artifact-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import {
 	createCompletionArtifactDrainHandler,
 	type CompletionArtifactServiceResolver
@@ -108,5 +109,46 @@ describe('completion artifact drain HTTP handler', () => {
 			JSON.stringify({ event: 'completion_artifact_drain_failed', message: 'Error' })
 		);
 		error.mockRestore();
+	});
+
+	it('marks a healthy batch observed, and logs a failure summary when integrityFailed > 0', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const healthyResponse: Response = await createCompletionArtifactDrainHandler(
+			() => service() as unknown as CompletionArtifactPublicationService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(healthyResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+
+		const failing = {
+			publishPendingCompletionArtifacts: vi.fn(async () => ({
+				claimed: 1,
+				published: 0,
+				retryableFailed: 0,
+				permanentlyFailed: 0,
+				integrityFailed: 1,
+				stale: 0,
+				outcomes: [
+					{ envelopeId: 'envelope-1', outcome: 'integrity_failed' as const, errorCode: 'x' }
+				]
+			}))
+		};
+		const failingResponse: Response = await createCompletionArtifactDrainHandler(
+			() => failing as unknown as CompletionArtifactPublicationService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(failingResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'completion artifact drain',
+				integrityFailed: 1
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 });

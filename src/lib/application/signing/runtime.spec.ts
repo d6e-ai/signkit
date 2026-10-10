@@ -3,6 +3,7 @@ import { RecipientAccessService } from './recipient-access';
 import { RecipientApprovedApplication } from './recipient-approved';
 import { RecipientDeclinedApplication } from './recipient-declined';
 import { RecipientDeclinedReceiptApplication } from './recipient-declined-receipt';
+import { RecipientSignedApplication } from './recipient-signed';
 import { RecipientViewedApplication } from './recipient-viewed';
 import { RecipientWorkspaceService } from './recipient-workspace';
 
@@ -15,6 +16,7 @@ import {
 	resolveRecipientApprovedApplication,
 	resolveRecipientDeclinedApplication,
 	resolveRecipientDeclinedReceiptApplication,
+	resolveRecipientSignedApplication,
 	resolveRecipientViewedApplication,
 	resolveRecipientWorkspaceApplication
 } from './runtime';
@@ -226,6 +228,57 @@ describe('resolveRecipientApprovedApplication', () => {
 		privateEnv.DATABASE_URL = 'mysql://signkit:secret@localhost:3306/signkit';
 		await expect(resolveRecipientApprovedApplication({})).rejects.toThrow(
 			'DATABASE_URL must use the postgres or postgresql scheme'
+		);
+	});
+});
+
+describe('resolveRecipientSignedApplication', () => {
+	it('fails closed on a Cloudflare request without D1 instead of falling back to PostgreSQL', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(
+			resolveRecipientSignedApplication({ platform: { env: {} } as App.Platform })
+		).resolves.toBeNull();
+	});
+
+	it('signs from D1 and R2 bound together', async () => {
+		await expect(
+			resolveRecipientSignedApplication({
+				platform: { env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket } } as App.Platform
+			})
+		).resolves.toBeInstanceOf(RecipientSignedApplication);
+	});
+
+	it('still signs from D1 alone when no R2 bucket is bound, since signing itself needs only D1', async () => {
+		await expect(
+			resolveRecipientSignedApplication({
+				platform: { env: { DB: {} as D1Database } } as App.Platform
+			})
+		).resolves.toBeInstanceOf(RecipientSignedApplication);
+	});
+
+	it('returns null without Node PostgreSQL configuration', async () => {
+		await expect(resolveRecipientSignedApplication({})).resolves.toBeNull();
+	});
+
+	it('signs from PostgreSQL alone, with no S3 configured at all, preserving storage independence', async () => {
+		privateEnv.DATABASE_URL = 'postgres://signkit:secret@localhost:5432/signkit';
+		await expect(resolveRecipientSignedApplication({})).resolves.toBeInstanceOf(
+			RecipientSignedApplication
+		);
+	});
+
+	it('constructs the PostgreSQL and S3 runtime from complete configuration', async () => {
+		setCompleteNodeConfiguration();
+		await expect(resolveRecipientSignedApplication({})).resolves.toBeInstanceOf(
+			RecipientSignedApplication
+		);
+	});
+
+	it('rejects partial Node S3 configuration without exposing its values', async () => {
+		privateEnv.DATABASE_URL = 'postgres://sensitive-user:sensitive-password@db/signkit';
+		privateEnv.S3_ENDPOINT = 'https://objects.example.com';
+		await expect(resolveRecipientSignedApplication({})).rejects.toThrow(
+			'S3_REGION is required for S3 draft persistence'
 		);
 	});
 });

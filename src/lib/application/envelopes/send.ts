@@ -5,6 +5,7 @@ import {
 	type Recipient
 } from '$lib/domain/envelope';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
+import { SendCompletionBudgetError } from './send-completion-budget';
 import type {
 	DeliveryManifestEntry,
 	EnvelopeSendStore,
@@ -41,7 +42,8 @@ export type SendEnvelopeResult =
 	| { outcome: 'generation_conflict' }
 	| { outcome: 'audit_conflict' }
 	| { outcome: 'integrity_error' }
-	| { outcome: 'document_render_failed' };
+	| { outcome: 'document_render_failed' }
+	| { outcome: 'send_budget_exceeded' };
 
 export interface EnvelopeSendApplicationPort {
 	send(
@@ -134,7 +136,11 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 		if (revision === null) return { outcome: 'integrity_error' };
 		let sentDocumentSet: SentDocumentSetArtifact;
 		try {
-			sentDocumentSet = await this.#documentPdf.publish(revision);
+			sentDocumentSet = await this.#documentPdf.publish(revision, {
+				title: preparation.envelope.title,
+				fieldGeneration: preparation.envelope.fieldGeneration,
+				recipients: preparation.recipients
+			});
 		} catch (error: unknown) {
 			console.error(
 				JSON.stringify({
@@ -142,6 +148,7 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 					code: error instanceof Error ? error.name : 'unknown'
 				})
 			);
+			if (error instanceof SendCompletionBudgetError) return { outcome: 'send_budget_exceeded' };
 			return { outcome: 'document_render_failed' };
 		}
 

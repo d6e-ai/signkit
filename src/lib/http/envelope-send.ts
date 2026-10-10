@@ -193,6 +193,13 @@ function sendResponse(result: SendEnvelopeResult, instance: string): Response {
 			title: 'Envelope integrity check failed',
 			status: 503,
 			detail: 'The send command could not prove a consistent recipient graph and audit head.'
+		},
+		send_budget_exceeded: {
+			type: 'urn:signkit:problem:send-completion-budget-exceeded',
+			title: 'Envelope exceeds the completion budget',
+			status: 400,
+			detail:
+				'The envelope documents, fields, and the evidence and signatures they will carry would exceed the completed agreement limits, or a field is not placed on a document page. Reduce documents or fields and try again.'
 		}
 	};
 	return problemResponse({ ...problems[result.outcome], instance });

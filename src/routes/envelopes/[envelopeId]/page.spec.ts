@@ -253,13 +253,21 @@ describe('envelope authoring page contracts', () => {
 		expect(card).not.toContain('onclick={() => void downloadCompletionEvidence(');
 	});
 
-	it('gives the failed and unavailable completion states an explicit retry action instead of a dead end', () => {
+	it('refreshes completion status with GET and reprocesses only when retry is eligible', () => {
 		const snippetStart = source.indexOf('{#snippet completionArtifactSection()}');
 		const snippetEnd = source.indexOf('{/snippet}', snippetStart);
 		const snippet = source.slice(snippetStart, snippetEnd);
 		expect(snippet).toContain('completionStatusError');
 		expect(snippet).toContain("completionStatus.status === 'failed'");
-		expect(snippet.match(/refreshCompletionStatus/g)?.length).toBeGreaterThanOrEqual(2);
+		expect(snippet).toContain('m.envelope_completed_refresh_status()');
+		expect(snippet).toContain('m.envelope_completed_reprocess()');
+		expect(snippet).toContain('reprocessCompletion()');
+		expect(snippet).toContain('refreshCompletionStatus');
+		expect(snippet).not.toContain('m.common_retry()');
+		// The POST carries the observed failure generation, never attempts alone.
+		expect(source).toContain('client.retryCompletionArtifact(envelopeId, command');
+		expect(source).toContain('expectedFailedAt: failedAt');
+		expect(source).toContain('expectedFailedAt: repair.failedAt');
 	});
 
 	it('keeps certificate-backed PDF sealing distinct and exposes explicit request and published download actions', () => {

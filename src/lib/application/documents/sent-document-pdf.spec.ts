@@ -18,6 +18,17 @@ import {
 	upsertMarkdownDocument,
 	type DocumentSetManifest
 } from '$lib/domain/document-set';
+import { buildFixturePdf, textPage } from '$lib/adapters/pdf/pdf-fixture-test-support';
+import { MAX_COMPOSED_PDF_PAGES } from '$lib/adapters/pdf/pdf-composer';
+import {
+	computeWorstCaseEvidenceAppendix,
+	SendCompletionBudgetError
+} from '$lib/application/envelopes/send-completion-budget';
+import type { Recipient } from '$lib/domain/envelope';
+import type {
+	CompletionPdfEvidenceStore,
+	CompletionPdfFieldGeometry
+} from '$lib/ports/completion-pdf-evidence-store';
 import {
 	MAX_SENT_PDF_DOCUMENTS,
 	parseSentPdfObjectKey,
@@ -25,7 +36,8 @@ import {
 	SentDocumentPdfService,
 	sentPdfObjectKey,
 	sha256Hex,
-	renderRevisionPdf
+	renderRevisionPdf,
+	type SendCompletionContext
 } from './sent-document-pdf';
 
 const ENVELOPE_ID = '01900000-0000-7000-8000-000000000001';
@@ -39,6 +51,95 @@ const actor: DraftActor = {
 	email: 'author@example.com',
 	type: 'user'
 };
+
+const DEFAULT_RECIPIENTS: readonly Recipient[] = [
+	{
+		id: 'r1',
+		envelopeId: ENVELOPE_ID,
+		email: 'signer@example.com',
+		name: 'Signer',
+		role: 'signer',
+		locale: 'en',
+		routingOrder: 1,
+		status: 'pending'
+	}
+];
+
+function sendContext(recipients: readonly Recipient[] = DEFAULT_RECIPIENTS): SendCompletionContext {
+	return { title: 'Agreement', fieldGeneration: 0, recipients };
+}
+
+class FakeFieldPlacements implements CompletionPdfEvidenceStore {
+	constructor(private readonly fields: readonly CompletionPdfFieldGeometry[] = []) {}
+
+	async readFieldGeometry(): Promise<readonly CompletionPdfFieldGeometry[]> {
+		return this.fields;
+	}
+}
+
+const noFields: FakeFieldPlacements = new FakeFieldPlacements();
+
+/** A valid, distinct multi-page PDF: `label` makes its content (and so its SHA-256) unique. */
+function manyPagePdf(pageCount: number, label: string): Uint8Array {
+	return buildFixturePdf(
+		Array.from({ length: pageCount }, (_unused, index: number) =>
+			textPage(`${label} page ${index}`)
+		)
+	);
+}
+
+async function pinnedPdfOnlyRevision(
+	objects: ObjectStore,
+	repository: DraftRepository,
+	pdfs: readonly { id: string; title: string; bytes: Uint8Array }[]
+): Promise<{ revision: ImmutableDraftRevision; sha256ById: ReadonlyMap<string, string> }> {
+	let manifest: DocumentSetManifest | null = null;
+	const sha256ById: Map<string, string> = new Map();
+	for (const pdf of pdfs) {
+		const sha256: string = await sha256Hex(pdf.bytes);
+		sha256ById.set(pdf.id, sha256);
+		const metadata = parsePdfPageMetadata(pdf.bytes);
+		manifest = appendPdfDocument(
+			manifest,
+			{
+				id: pdf.id,
+				title: pdf.title,
+				sha256,
+				byteSize: pdf.bytes.byteLength,
+				pageCount: metadata.pageCount,
+				pageWidth: metadata.pageWidth,
+				pageHeight: metadata.pageHeight
+			},
+			() => pdf.id
+		);
+		await objects.putImmutable(uploadedPdfObjectKey(ENVELOPE_ID, sha256), {
+			contentType: 'application/pdf',
+			body: pdf.bytes,
+			sha256
+		});
+	}
+	const version: DraftVersion = await repository.commit(
+		null,
+		[{ path: 'document-set.json', content: serializeDocumentSet(manifest as DocumentSetManifest) }],
+		'seed pdf-only bundle',
+		actor
+	);
+	const archiveKey: string = draftArchiveKey(ENVELOPE_ID, version.archiveSha256);
+	await objects.putImmutable(archiveKey, {
+		contentType: 'application/vnd.signkit.git-archive+gzip',
+		body: version.archive,
+		sha256: version.archiveSha256
+	});
+	return {
+		revision: {
+			envelopeId: ENVELOPE_ID,
+			commitSha: version.commitSha,
+			archiveKey,
+			archiveSha256: version.archiveSha256
+		},
+		sha256ById
+	};
+}
 
 function samplePdfBytes(): Uint8Array {
 	return renderAgreementPdf([
@@ -187,9 +288,13 @@ describe('SentDocumentPdfService', () => {
 		const objects: InMemoryObjectStore = new InMemoryObjectStore();
 		const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
 		const seeded = await pinnedMixedRevision(objects, repository);
-		const service: SentDocumentPdfService = new SentDocumentPdfService(objects, repository);
+		const service: SentDocumentPdfService = new SentDocumentPdfService(
+			objects,
+			repository,
+			noFields
+		);
 
-		const artifact = await service.publish(seeded.revision);
+		const artifact = await service.publish(seeded.revision, sendContext());
 
 		expect(artifact.documentCount).toBe(3);
 		expect(artifact.documents.map((document) => document.documentId)).toEqual([
@@ -212,10 +317,14 @@ describe('SentDocumentPdfService', () => {
 		const objects: InMemoryObjectStore = new InMemoryObjectStore();
 		const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
 		const seeded = await pinnedMixedRevision(objects, repository);
-		const service: SentDocumentPdfService = new SentDocumentPdfService(objects, repository);
+		const service: SentDocumentPdfService = new SentDocumentPdfService(
+			objects,
+			repository,
+			noFields
+		);
 
-		const first = await service.publish(seeded.revision);
-		const second = await service.publish(seeded.revision);
+		const first = await service.publish(seeded.revision, sendContext());
+		const second = await service.publish(seeded.revision, sendContext());
 		expect(second).toEqual(first);
 		const markdown = first.documents.filter((document) => document.kind === 'markdown');
 		expect(markdown).toHaveLength(2);
@@ -228,7 +337,10 @@ describe('SentDocumentPdfService', () => {
 		const seeded = await pinnedMixedRevision(objects, repository, { includeUploadedPdf: false });
 
 		await expect(
-			new SentDocumentPdfService(objects, repository).publish(seeded.revision)
+			new SentDocumentPdfService(objects, repository, noFields).publish(
+				seeded.revision,
+				sendContext()
+			)
 		).rejects.toThrow(SentDocumentPdfError);
 	});
 
@@ -269,7 +381,10 @@ describe('SentDocumentPdfService', () => {
 		});
 
 		await expect(
-			new SentDocumentPdfService(hostile, repository).publish(seeded.revision)
+			new SentDocumentPdfService(hostile, repository, noFields).publish(
+				seeded.revision,
+				sendContext()
+			)
 		).rejects.toThrow('provider rejected the write');
 	});
 
@@ -288,4 +403,229 @@ describe('SentDocumentPdfService', () => {
 		expect(rendered.documentId).toBe(seeded.markdownAId);
 		expect((await objects.list({ prefix: 'sent-documents/' })).objects.length).toBe(before);
 	});
+});
+
+/** The exact worst-case evidence appendix page count for a pdf-only set with these recipients. */
+async function measureAppendixPages(
+	pdfLeafCount: number,
+	recipients: readonly Recipient[]
+): Promise<number> {
+	let manifest: DocumentSetManifest | null = null;
+	for (let index: number = 0; index < pdfLeafCount; index += 1) {
+		manifest = appendPdfDocument(
+			manifest,
+			{
+				title: `Agreement ${index}`,
+				sha256: 'a'.repeat(64),
+				byteSize: 1,
+				pageCount: 1,
+				pageWidth: 612,
+				pageHeight: 792
+			},
+			() => `01900000-0000-7000-8000-${(40 + index).toString().padStart(12, '0')}`
+		);
+	}
+	const appendix = computeWorstCaseEvidenceAppendix({
+		envelopeId: ENVELOPE_ID,
+		title: 'Agreement',
+		sentCommitSha: '0'.repeat(40),
+		draftArchiveSha256: '0'.repeat(64),
+		fieldGeneration: 0,
+		documentSetHash: 'b'.repeat(64),
+		documentSet: manifest as DocumentSetManifest,
+		markdown: new Map(),
+		recipients,
+		fields: []
+	});
+	return appendix.pageCount;
+}
+
+describe('SentDocumentPdfService completion budget', () => {
+	const PDF_A_ID = '01900000-0000-7000-8000-000000000031';
+	const PDF_B_ID = '01900000-0000-7000-8000-000000000032';
+	const PDF_C_ID = '01900000-0000-7000-8000-000000000033';
+	const MARKDOWN_BLANK_ID = '01900000-0000-7000-8000-000000000034';
+
+	it(
+		'rejects three distinct, individually valid 400-page PDFs before persisting ' +
+			'any of them, and never reads the documents after the one that tips the budget over',
+		async () => {
+			const objects: InMemoryObjectStore = new InMemoryObjectStore();
+			const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+			const pdfs = [
+				{ id: PDF_A_ID, title: 'Agreement A', bytes: manyPagePdf(400, 'agreement-a') },
+				{ id: PDF_B_ID, title: 'Agreement B', bytes: manyPagePdf(400, 'agreement-b') },
+				{ id: PDF_C_ID, title: 'Agreement C', bytes: manyPagePdf(400, 'agreement-c') }
+			];
+			const seeded = await pinnedPdfOnlyRevision(objects, repository, pdfs);
+			expect(new Set(seeded.sha256ById.values()).size).toBe(3);
+
+			await expect(
+				new SentDocumentPdfService(objects, repository, noFields).publish(
+					seeded.revision,
+					sendContext()
+				)
+			).rejects.toThrowError(expect.objectContaining({ reason: 'too_many_pages' }));
+
+			const bKey: string = uploadedPdfObjectKey(
+				ENVELOPE_ID,
+				seeded.sha256ById.get(PDF_B_ID) as string
+			);
+			const cKey: string = uploadedPdfObjectKey(
+				ENVELOPE_ID,
+				seeded.sha256ById.get(PDF_C_ID) as string
+			);
+			expect(objects.getCallsByKey.get(bKey)).toBeUndefined();
+			expect(objects.getCallsByKey.get(cKey)).toBeUndefined();
+			// The aggregate is proven before any document is persisted as a sent
+			// object: a failed preflight writes nothing, rather than persisting
+			// documents read before the one that tipped the running total over.
+			expect((await objects.list({ prefix: 'sent-documents/' })).objects.length).toBe(0);
+		}
+	);
+
+	it('publishes successfully when the aggregate page total lands exactly on the budget boundary', async () => {
+		const objects: InMemoryObjectStore = new InMemoryObjectStore();
+		const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+		// The exact appendix reservation for this send, measured the same way
+		// the service itself measures it, so the two originals are sized to
+		// land precisely at the shared composer ceiling rather than merely
+		// near it.
+		const appendixPages: number = await measureAppendixPages(2, DEFAULT_RECIPIENTS);
+		const originalsBudget: number = MAX_COMPOSED_PDF_PAGES - appendixPages;
+		const firstPages: number = Math.floor(originalsBudget / 2);
+		const secondPages: number = originalsBudget - firstPages;
+		const pdfs = [
+			{ id: PDF_A_ID, title: 'Agreement A', bytes: manyPagePdf(firstPages, 'boundary-a') },
+			{ id: PDF_B_ID, title: 'Agreement B', bytes: manyPagePdf(secondPages, 'boundary-b') }
+		];
+		const seeded = await pinnedPdfOnlyRevision(objects, repository, pdfs);
+
+		const artifact = await new SentDocumentPdfService(objects, repository, noFields).publish(
+			seeded.revision,
+			sendContext(DEFAULT_RECIPIENTS)
+		);
+
+		expect(artifact.documentCount).toBe(2);
+		const totalPages: number = artifact.documents.reduce(
+			(sum, document) => sum + document.pageCount,
+			0
+		);
+		// The real service measures its own appendix from the real document
+		// set (which now includes the two originals' real titles/digests, not
+		// the placeholders `measureAppendixPages` used), so this asserts the
+		// boundary was reached, not that it landed on the precomputed value
+		// exactly.
+		expect(totalPages).toBe(originalsBudget);
+	});
+
+	it('rejects with the composition reason, not a generic SentDocumentPdfError', async () => {
+		const objects: InMemoryObjectStore = new InMemoryObjectStore();
+		const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+		const pdfs = [
+			{ id: PDF_A_ID, title: 'Agreement A', bytes: manyPagePdf(400, 'wrapper-a') },
+			{ id: PDF_B_ID, title: 'Agreement B', bytes: manyPagePdf(400, 'wrapper-b') }
+		];
+		const seeded = await pinnedPdfOnlyRevision(objects, repository, pdfs);
+
+		await expect(
+			new SentDocumentPdfService(objects, repository, noFields).publish(
+				seeded.revision,
+				sendContext()
+			)
+		).rejects.toBeInstanceOf(SendCompletionBudgetError);
+	});
+
+	it('refuses to send without frozen field placements to prove the budget against', async () => {
+		const objects: InMemoryObjectStore = new InMemoryObjectStore();
+		const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+		const seeded = await pinnedPdfOnlyRevision(objects, repository, [
+			{ id: PDF_A_ID, title: 'Agreement A', bytes: manyPagePdf(1, 'unplaced') }
+		]);
+
+		await expect(
+			new SentDocumentPdfService(objects, repository).publish(seeded.revision, sendContext())
+		).rejects.toThrow(SentDocumentPdfError);
+		expect((await objects.list({ prefix: 'sent-documents/' })).objects.length).toBe(0);
+	});
+
+	it('rejects a field completion could not draw before persisting anything', async () => {
+		const objects: InMemoryObjectStore = new InMemoryObjectStore();
+		const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+		const seeded = await pinnedPdfOnlyRevision(objects, repository, [
+			{ id: PDF_A_ID, title: 'Agreement A', bytes: manyPagePdf(1, 'misplaced') }
+		]);
+		const placements: FakeFieldPlacements = new FakeFieldPlacements([
+			{
+				id: '01900000-0000-7000-8000-000000000041',
+				documentId: PDF_A_ID,
+				documentPath: null,
+				position: 0,
+				recipientId: 'r1',
+				fieldType: 'signature',
+				required: true,
+				geometry: { page: 2, x: 0.1, y: 0.1, width: 0.2, height: 0.1 }
+			}
+		]);
+
+		await expect(
+			new SentDocumentPdfService(objects, repository, placements).publish(
+				seeded.revision,
+				sendContext()
+			)
+		).rejects.toThrowError(expect.objectContaining({ reason: 'invalid_field_placement' }));
+		expect((await objects.list({ prefix: 'sent-documents/' })).objects.length).toBe(0);
+	});
+
+	it(
+		'rejects a send whose Markdown originals are individually tiny but whose raw content ' +
+			'would blow up the evidence appendix, which a page/byte total on the sent PDFs alone ' +
+			'would never have caught',
+		async () => {
+			const objects: InMemoryObjectStore = new InMemoryObjectStore();
+			const repository: IsomorphicGitDraftRepository = new IsomorphicGitDraftRepository();
+			// Collapses to a single short paragraph once rendered as the signing
+			// PDF (CommonMark merges consecutive blank lines), but the evidence
+			// appendix dumps the raw text verbatim, one wrapped line per input
+			// line: tens of thousands of blank lines become tens of thousands of
+			// near-empty appendix lines.
+			const blankLines: string = '\n'.repeat(60_000);
+			const content: string = normalizeMarkdownContent(`# Title\n\n${blankLines}Visible text.\n`);
+			let manifest: DocumentSetManifest | null = null;
+			manifest = upsertMarkdownDocument(
+				manifest,
+				'documents/blank.md',
+				await sha256Hex(new TextEncoder().encode(content)),
+				() => MARKDOWN_BLANK_ID
+			);
+			const version: DraftVersion = await repository.commit(
+				null,
+				[
+					{ path: 'documents/blank.md', content },
+					{ path: 'document-set.json', content: serializeDocumentSet(manifest) }
+				],
+				'seed blank-line bundle',
+				actor
+			);
+			const archiveKey: string = draftArchiveKey(ENVELOPE_ID, version.archiveSha256);
+			await objects.putImmutable(archiveKey, {
+				contentType: 'application/vnd.signkit.git-archive+gzip',
+				body: version.archive,
+				sha256: version.archiveSha256
+			});
+			const revision: ImmutableDraftRevision = {
+				envelopeId: ENVELOPE_ID,
+				commitSha: version.commitSha,
+				archiveKey,
+				archiveSha256: version.archiveSha256
+			};
+
+			await expect(
+				new SentDocumentPdfService(objects, repository, noFields).publish(revision, sendContext())
+			).rejects.toThrowError(expect.objectContaining({ reason: 'too_many_pages' }));
+			// Nothing was persisted: the single sent document would have been
+			// tiny, but the appendix it would carry at completion is not.
+			expect((await objects.list({ prefix: 'sent-documents/' })).objects.length).toBe(0);
+		}
+	);
 });

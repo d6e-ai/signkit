@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { drawnSignaturePng } from '$lib/adapters/pdf/png-image-test-support';
+import {
+	SIGNATURE_ASSET_REF_PREFIX,
+	signatureAssetKey
+} from '$lib/application/documents/signature-asset';
+import type { ObjectStore } from '$lib/ports/object-store';
+import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import type {
 	PublishRecipientSignedCommand,
 	RecipientSignStore,
@@ -498,5 +505,211 @@ describe('RecipientSignedApplication', () => {
 		});
 		expect(storePort.prepareSign).toHaveBeenCalledTimes(3);
 		expect(storePort.publishSign).toHaveBeenCalledTimes(3);
+	});
+
+	describe('drawn signature/initials asset references', () => {
+		function seedAsset(objects: InMemoryObjectStore): string {
+			const png: Uint8Array = drawnSignaturePng();
+			const sha256: string = createHash('sha256').update(png).digest('hex');
+			objects.seed(signatureAssetKey(envelopeId, recipientId, sha256), png, sha256);
+			return sha256;
+		}
+
+		function refusingObjectStore(): ObjectStore {
+			return {
+				head: async () => {
+					throw new Error('must not be called for a replay');
+				},
+				get: async () => {
+					throw new Error('must not be called for a replay');
+				},
+				putImmutable: async () => {
+					throw new Error('unused');
+				},
+				delete: async () => {},
+				list: async () => {
+					throw new Error('unused');
+				},
+				deleteMany: async () => {
+					throw new Error('unused');
+				}
+			};
+		}
+
+		it('accepts a canvas-upload reference for a signature field', async () => {
+			const objects = new InMemoryObjectStore();
+			const sha256: string = seedAsset(objects);
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'signature', required: true }] })
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort, undefined, undefined, objects).sign({
+					...input,
+					values: [{ fieldId, value: `${SIGNATURE_ASSET_REF_PREFIX}${sha256}` }]
+				})
+			).resolves.toMatchObject({ outcome: 'published' });
+		});
+
+		it('accepts a canvas-upload reference for an initials field, bypassing the textual initials cap', async () => {
+			const objects = new InMemoryObjectStore();
+			const sha256: string = seedAsset(objects);
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'initials', required: true }] })
+			]);
+			const ref: string = `${SIGNATURE_ASSET_REF_PREFIX}${sha256}`;
+			expect(ref.length).toBeGreaterThan(20);
+
+			await expect(
+				new RecipientSignedApplication(storePort, undefined, undefined, objects).sign({
+					...input,
+					values: [{ fieldId, value: ref }]
+				})
+			).resolves.toMatchObject({ outcome: 'published' });
+		});
+
+		it('rejects an arbitrary long initials value that is not a well-formed asset reference', async () => {
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'initials', required: true }] })
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort).sign({
+					...input,
+					values: [{ fieldId, value: 'A'.repeat(21) }]
+				})
+			).resolves.toEqual({ outcome: 'invalid_field' });
+			expect(storePort.publishSign).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			['missing', (): string => `${SIGNATURE_ASSET_REF_PREFIX}${'a'.repeat(64)}`],
+			['malformed', (): string => `${SIGNATURE_ASSET_REF_PREFIX}${'g'.repeat(64)}`]
+		])('rejects a %s signature reference before publish', async (_label, value) => {
+			const objects = new InMemoryObjectStore();
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'signature', required: true }] })
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort, undefined, undefined, objects).sign({
+					...input,
+					values: [{ fieldId, value: value() }]
+				})
+			).resolves.toEqual({ outcome: 'invalid_field' });
+			expect(storePort.publishSign).not.toHaveBeenCalled();
+		});
+
+		it('rejects a reference scoped to a different envelope/recipient asset before publish', async () => {
+			const objects = new InMemoryObjectStore();
+			const png: Uint8Array = drawnSignaturePng();
+			const sha256: string = createHash('sha256').update(png).digest('hex');
+			objects.seed(signatureAssetKey('a-different-envelope', recipientId, sha256), png, sha256);
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'signature', required: true }] })
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort, undefined, undefined, objects).sign({
+					...input,
+					values: [{ fieldId, value: `${SIGNATURE_ASSET_REF_PREFIX}${sha256}` }]
+				})
+			).resolves.toEqual({ outcome: 'invalid_field' });
+			expect(storePort.publishSign).not.toHaveBeenCalled();
+		});
+
+		it('rejects a corrupt stored asset before publish', async () => {
+			const objects = new InMemoryObjectStore();
+			const corrupt: Uint8Array = new Uint8Array([1, 2, 3, 4]);
+			const sha256: string = createHash('sha256').update(corrupt).digest('hex');
+			objects.seed(signatureAssetKey(envelopeId, recipientId, sha256), corrupt, sha256);
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'signature', required: true }] })
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort, undefined, undefined, objects).sign({
+					...input,
+					values: [{ fieldId, value: `${SIGNATURE_ASSET_REF_PREFIX}${sha256}` }]
+				})
+			).resolves.toEqual({ outcome: 'invalid_field' });
+			expect(storePort.publishSign).not.toHaveBeenCalled();
+		});
+
+		it('rejects a reference without a wired object store before publish', async () => {
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'signature', required: true }] })
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort).sign({
+					...input,
+					values: [{ fieldId, value: `${SIGNATURE_ASSET_REF_PREFIX}${'a'.repeat(64)}` }]
+				})
+			).resolves.toEqual({ outcome: 'invalid_field' });
+			expect(storePort.publishSign).not.toHaveBeenCalled();
+		});
+
+		it('fails retryably without publishing when the object store errors', async () => {
+			const objects: ObjectStore = {
+				head: async () => null,
+				get: async () => {
+					throw new Error('object store unavailable');
+				},
+				putImmutable: async () => {
+					throw new Error('unused');
+				},
+				delete: async () => {},
+				list: async () => {
+					throw new Error('unused');
+				},
+				deleteMany: async () => {
+					throw new Error('unused');
+				}
+			};
+			const storePort = store([
+				ready({ fields: [{ id: fieldId, fieldType: 'signature', required: true }] })
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort, undefined, undefined, objects).sign({
+					...input,
+					values: [{ fieldId, value: `${SIGNATURE_ASSET_REF_PREFIX}${'a'.repeat(64)}` }]
+				})
+			).resolves.toEqual({ outcome: 'integrity_error' });
+			expect(storePort.publishSign).not.toHaveBeenCalled();
+		});
+
+		it('replays a durable receipt for a drawn signature without rechecking or re-reading the stored asset', async () => {
+			const sha256: string = 'd'.repeat(64);
+			const ref: string = `${SIGNATURE_ASSET_REF_PREFIX}${sha256}`;
+			const receipt = {
+				envelopeId,
+				recipientId,
+				recipientRole: 'signer' as const,
+				routingOrder: 1,
+				sentCommitSha: 'a'.repeat(40),
+				envelopeStatus: 'in_progress' as const,
+				signedAt: '2026-09-11T00:01:00.000Z',
+				auditEventId: 'audit-signed',
+				completedAuditEventId: null,
+				nextRoutingOrder: null
+			};
+			const storePort = store([
+				{
+					outcome: 'existing',
+					reconstructedFingerprint: await expectedFingerprint(ref),
+					result: receipt,
+					storedFields: [{ id: fieldId, fieldType: 'signature' as const, required: false }]
+				}
+			]);
+
+			await expect(
+				new RecipientSignedApplication(storePort, undefined, undefined, refusingObjectStore()).sign(
+					{ ...input, values: [{ fieldId, value: ref }] }
+				)
+			).resolves.toEqual({ outcome: 'replayed', result: receipt });
+			expect(storePort.publishSign).not.toHaveBeenCalled();
+		});
 	});
 });

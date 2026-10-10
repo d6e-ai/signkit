@@ -8,6 +8,12 @@ import {
 	readImmutableDraftRevision,
 	type ImmutableDraftRevision
 } from '$lib/application/drafts/draft-persistence';
+import {
+	computeWorstCaseEvidenceAppendix,
+	SendCompletionBudgetAccumulator,
+	validateSendCompletionBudget,
+	type WorstCaseEvidenceAppendix
+} from '$lib/application/envelopes/send-completion-budget';
 import { uploadedPdfObjectKey } from '$lib/application/documents/uploaded-pdf';
 import {
 	documentSetHash,
@@ -17,7 +23,11 @@ import {
 	type MarkdownDocumentLeaf,
 	type PdfDocumentLeaf
 } from '$lib/domain/document-set';
-import { isMarkdownPath } from '$lib/domain/envelope';
+import { isMarkdownPath, type Recipient } from '$lib/domain/envelope';
+import type {
+	CompletionPdfEvidenceStore,
+	CompletionPdfFieldGeometry
+} from '$lib/ports/completion-pdf-evidence-store';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import {
@@ -72,8 +82,18 @@ export interface RenderedSentDocument extends SentDocumentArtifact {
 	bytes: Uint8Array;
 }
 
+/** Everything about the send that the completion budget preflight needs, beyond the revision's own bytes. */
+export interface SendCompletionContext {
+	title: string;
+	fieldGeneration: number;
+	recipients: readonly Recipient[];
+}
+
 export interface SentDocumentPdfPort {
-	publish(revision: ImmutableDraftRevision): Promise<SentDocumentSetArtifact>;
+	publish(
+		revision: ImmutableDraftRevision,
+		context: SendCompletionContext
+	): Promise<SentDocumentSetArtifact>;
 	renderDocument(
 		revision: ImmutableDraftRevision,
 		documentId: string
@@ -85,9 +105,17 @@ export interface SentDocumentPdfPort {
 }
 
 export class SentDocumentPdfService implements SentDocumentPdfPort {
+	/**
+	 * `fieldPlacements` is required to `publish`: the completion budget is
+	 * proven against the frozen placements, so a service built without them
+	 * can render and list documents but refuses to send. Placements read here
+	 * are the ones the send pins because the send store's audit-head CAS
+	 * rejects the publish if a placement command lands after `prepareSend`.
+	 */
 	constructor(
 		private readonly objects: ObjectStore,
-		private readonly repository: DraftRepository
+		private readonly repository: DraftRepository,
+		private readonly fieldPlacements: CompletionPdfEvidenceStore | null = null
 	) {}
 
 	async listDocuments(revision: ImmutableDraftRevision): Promise<{
@@ -116,13 +144,68 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 		return this.renderLeaf(revision, loaded.markdown, leaf);
 	}
 
-	async publish(revision: ImmutableDraftRevision): Promise<SentDocumentSetArtifact> {
+	async publish(
+		revision: ImmutableDraftRevision,
+		context: SendCompletionContext
+	): Promise<SentDocumentSetArtifact> {
+		if (this.fieldPlacements === null) {
+			throw new SentDocumentPdfError('Sending requires the frozen field placements');
+		}
 		const loaded = await this.loadSet(revision);
-		const documents: SentDocumentArtifact[] = [];
+		const fields: readonly CompletionPdfFieldGeometry[] =
+			await this.fieldPlacements.readFieldGeometry(revision.envelopeId);
+		// The real worst-case evidence appendix for this send: real pinned
+		// documents, recipients, and field placements, run through
+		// completion's own renderer, so the reservation taken out of the
+		// shared composition budget is measured rather than guessed. Entirely
+		// in-memory text work; no object-store read happens here.
+		const appendix: WorstCaseEvidenceAppendix = computeWorstCaseEvidenceAppendix({
+			envelopeId: revision.envelopeId,
+			title: context.title,
+			sentCommitSha: revision.commitSha,
+			draftArchiveSha256: revision.archiveSha256,
+			fieldGeneration: context.fieldGeneration,
+			documentSetHash: loaded.documentSetHash,
+			documentSet: loaded.manifest,
+			markdown: loaded.markdown,
+			recipients: context.recipients,
+			fields
+		});
+		const budget: SendCompletionBudgetAccumulator = new SendCompletionBudgetAccumulator(
+			appendix,
+			fields
+		);
+		const rendered: RenderedSentDocument[] = [];
 		for (const leaf of loaded.manifest.documents) {
-			const rendered: RenderedSentDocument = await this.renderLeaf(revision, loaded.markdown, leaf);
-			await this.persistImmutablePdf(rendered.objectKey, rendered.bytes, rendered.sha256);
-			const { bytes: _bytes, ...artifact } = rendered;
+			// An uploaded PDF's page count and byte size are already pinned in
+			// the document-set manifest, so an oversized aggregate is caught
+			// here before this document's bytes are ever read from the object
+			// store, and before any later document in the set is touched at
+			// all. A Markdown document's rendered size is only known once it
+			// is rendered.
+			if (leaf.kind === 'pdf') budget.add(leaf.pageCount, leaf.byteSize);
+			const document: RenderedSentDocument = await this.renderLeaf(revision, loaded.markdown, leaf);
+			if (leaf.kind === 'markdown') budget.add(document.pageCount, document.byteSize);
+			rendered.push(document);
+		}
+		// Every original has been read and the cheap running total fits; now
+		// prove the executed agreement composes whatever recipients sign,
+		// before any original is persisted as a sent object.
+		validateSendCompletionBudget({
+			originals: rendered.map((document: RenderedSentDocument) => ({
+				documentId: document.documentId,
+				position: document.position,
+				pageCount: document.pageCount,
+				bytes: document.bytes
+			})),
+			appendix,
+			fields
+		});
+
+		const documents: SentDocumentArtifact[] = [];
+		for (const document of rendered) {
+			await this.persistImmutablePdf(document.objectKey, document.bytes, document.sha256);
+			const { bytes: _bytes, ...artifact } = document;
 			void _bytes;
 			documents.push(artifact);
 		}

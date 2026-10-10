@@ -7,16 +7,22 @@ import {
 	type ClaimedCompletionArtifactJob,
 	type CompletionArtifactStatusRow,
 	type CompletionArtifactStore,
+	type CompletionArtifactRetryReplayResult,
 	type CompletionEvidence,
 	type CompletionEvidenceAuditEvent,
 	type CompletionEvidenceField,
 	type CompletionEvidenceRecipient,
+	EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR,
+	type CompletionArtifactPdfMetadata,
 	type FailCompletionArtifactCommand,
 	type FailCompletionArtifactResult,
 	type PublishCompletionArtifactCommand,
 	type PublishCompletionArtifactResult,
 	type PublishedCompletionArtifact,
-	type ReadClaimedCompletionArtifactCommand
+	type ReadClaimedCompletionArtifactCommand,
+	type ReadCompletionEvidenceOptions,
+	type RequeueExhaustedCompletionArtifactCommand,
+	type RequeueExhaustedCompletionArtifactResult
 } from '$lib/ports/completion-artifact-store';
 
 const CLAIM_CANDIDATE_COLUMNS: string = `job.envelope_id AS envelope_id,
@@ -93,6 +99,11 @@ interface PublishCommandRow {
 	previous_audit_hash: string;
 	audit_event_hash: string;
 	audit_payload_json: string;
+	pdf_object_key: string | null;
+	pdf_sha256: string | null;
+	pdf_byte_size: number | null;
+	pdf_manifest_object_key: string | null;
+	pdf_manifest_sha256: string | null;
 }
 
 interface StatusRow {
@@ -102,6 +113,7 @@ interface StatusRow {
 	attempts: number | null;
 	last_error: string | null;
 	available_at: string | null;
+	job_updated_at: string | null;
 	artifact_manifest_sha256: string | null;
 	artifact_json_sha256: string | null;
 	artifact_markdown_sha256: string | null;
@@ -194,7 +206,10 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		return row === null ? null : toClaimedJob(row);
 	}
 
-	async readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence> {
+	async readCompletionEvidence(
+		envelopeId: string,
+		options?: ReadCompletionEvidenceOptions
+	): Promise<CompletionEvidence> {
 		const recipients: D1Result<RecipientEvidenceRow> = await this.#database
 			.prepare(
 				`SELECT recipient.id AS id, recipient.role AS role,
@@ -224,17 +239,31 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 			)
 			.bind(envelopeId)
 			.all<FieldEvidenceRow>();
-		const auditEvents: D1Result<AuditEvidenceRow> = await this.#database
-			.prepare(
-				`SELECT id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash,
-					event_hash, occurred_at, hash_version
-				 FROM audit_event
-				 WHERE envelope_id = ?
-				 ORDER BY sequence ASC
-				 LIMIT ?`
-			)
-			.bind(envelopeId, MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1)
-			.all<AuditEvidenceRow>();
+		const throughSequence: number | undefined = options?.throughSequence;
+		const auditEvents: D1Result<AuditEvidenceRow> =
+			throughSequence === undefined
+				? await this.#database
+						.prepare(
+							`SELECT id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash,
+								event_hash, occurred_at, hash_version
+							 FROM audit_event
+							 WHERE envelope_id = ?
+							 ORDER BY sequence ASC
+							 LIMIT ?`
+						)
+						.bind(envelopeId, MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1)
+						.all<AuditEvidenceRow>()
+				: await this.#database
+						.prepare(
+							`SELECT id, sequence, event_type, actor_type, actor_id, payload_json, previous_hash,
+								event_hash, occurred_at, hash_version
+							 FROM audit_event
+							 WHERE envelope_id = ? AND sequence <= ?
+							 ORDER BY sequence ASC
+							 LIMIT ?`
+						)
+						.bind(envelopeId, throughSequence, MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1)
+						.all<AuditEvidenceRow>();
 
 		return {
 			recipients: recipients.results.map(
@@ -281,8 +310,9 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 					envelope_id, claim_token, sent_commit_sha, field_generation,
 					anchor_audit_event_id, manifest_sha256, json_object_key, json_sha256,
 					markdown_object_key, markdown_sha256, updated_at, audit_event_id, audit_sequence,
-					previous_audit_hash, audit_event_hash, audit_payload_json
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+					previous_audit_hash, audit_event_hash, audit_payload_json,
+					pdf_object_key, pdf_sha256, pdf_byte_size, pdf_manifest_object_key, pdf_manifest_sha256
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 			)
 			.bind(
 				command.envelopeId,
@@ -300,7 +330,12 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 				command.expectedAuditSequence + 1,
 				command.previousAuditHash,
 				command.auditEventHash,
-				command.auditPayloadJson
+				command.auditPayloadJson,
+				command.pdf?.pdfObjectKey ?? null,
+				command.pdf?.pdfSha256 ?? null,
+				command.pdf?.pdfByteSize ?? null,
+				command.pdf?.pdfManifestObjectKey ?? null,
+				command.pdf?.pdfManifestSha256 ?? null
 			);
 		try {
 			await this.#database.batch([statement]);
@@ -411,6 +446,88 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 		return result.meta.changes === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
 	}
 
+	async requeueExhaustedCompletionArtifact(
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<RequeueExhaustedCompletionArtifactResult> {
+		const replay: RequeueExhaustedCompletionArtifactResult | null =
+			await this.#resolveRetry(command);
+		if (replay !== null) return replay;
+		const statement: D1PreparedStatement = this.#database
+			.prepare(
+				`INSERT INTO completion_artifact_retry_command (
+					envelope_id, idempotency_key, expected_attempts, expected_failed_at, requeued_at
+				) VALUES (?, ?, ?, ?, ?)`
+			)
+			.bind(
+				command.envelopeId,
+				command.idempotencyKey,
+				command.expectedAttempts,
+				command.expectedFailedAt,
+				command.requeuedAt
+			);
+		try {
+			await this.#database.batch([statement]);
+			return { outcome: 'requeued' };
+		} catch (error: unknown) {
+			const classified: RequeueExhaustedCompletionArtifactResult | null =
+				await this.#resolveRetry(command);
+			if (classified !== null) return classified;
+			const envelope: { id: string } | null = await this.#database
+				.prepare(`SELECT id FROM envelope WHERE id = ?`)
+				.bind(command.envelopeId)
+				.first<{ id: string }>();
+			if (envelope === null) return { outcome: 'not_found' };
+			if (!(await this.#retryEligible(command))) return { outcome: 'not_eligible' };
+			throw error;
+		}
+	}
+
+	async findCompletionArtifactRetry(
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<CompletionArtifactRetryReplayResult | null> {
+		return this.#resolveRetry(command);
+	}
+
+	async #resolveRetry(
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<CompletionArtifactRetryReplayResult | null> {
+		const row: { expected_attempts: number; expected_failed_at: string } | null =
+			await this.#database
+				.prepare(
+					`SELECT expected_attempts, expected_failed_at
+					 FROM completion_artifact_retry_command
+					 WHERE envelope_id = ? AND idempotency_key = ?`
+				)
+				.bind(command.envelopeId, command.idempotencyKey)
+				.first<{ expected_attempts: number; expected_failed_at: string }>();
+		if (row === null) return null;
+		if (
+			Number(row.expected_attempts) !== command.expectedAttempts ||
+			row.expected_failed_at !== command.expectedFailedAt
+		) {
+			return { outcome: 'conflict' };
+		}
+		return { outcome: 'replayed' };
+	}
+
+	async #retryEligible(command: RequeueExhaustedCompletionArtifactCommand): Promise<boolean> {
+		const eligible: { ok: number } | null = await this.#database
+			.prepare(
+				`SELECT 1 AS ok FROM completion_artifact_job
+				 WHERE envelope_id = ? AND status = 'failed' AND retryable = 0
+					AND claim_token IS NULL AND locked_at IS NULL
+					AND attempts = ? AND updated_at = ? AND last_error = ?`
+			)
+			.bind(
+				command.envelopeId,
+				command.expectedAttempts,
+				command.expectedFailedAt,
+				EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR
+			)
+			.first<{ ok: number }>();
+		return eligible !== null;
+	}
+
 	async findCompletionArtifactStatus(
 		envelopeId: string
 	): Promise<CompletionArtifactStatusRow | null> {
@@ -418,7 +535,7 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 			.prepare(
 				`SELECT envelope.id AS envelope_id, envelope.status AS envelope_status,
 					job.status AS job_status, job.attempts AS attempts, job.last_error AS last_error,
-					job.available_at AS available_at,
+					job.available_at AS available_at, job.updated_at AS job_updated_at,
 					artifact.manifest_sha256 AS artifact_manifest_sha256,
 					artifact.json_sha256 AS artifact_json_sha256,
 					artifact.markdown_sha256 AS artifact_markdown_sha256,
@@ -441,6 +558,7 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 			attempts: row.attempts,
 			lastError: row.last_error,
 			availableAt: row.available_at,
+			updatedAt: row.job_updated_at,
 			published: toPublished(row)
 		};
 	}
@@ -453,7 +571,8 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 				`SELECT envelope_id, sent_commit_sha, field_generation,
 					anchor_audit_event_id, manifest_sha256, json_object_key, json_sha256,
 					markdown_object_key, markdown_sha256, updated_at, audit_event_id, audit_sequence,
-					previous_audit_hash, audit_event_hash, audit_payload_json
+					previous_audit_hash, audit_event_hash, audit_payload_json,
+					pdf_object_key, pdf_sha256, pdf_byte_size, pdf_manifest_object_key, pdf_manifest_sha256
 				 FROM completion_artifact_publish_command
 				 WHERE envelope_id = ?`
 			)
@@ -541,6 +660,29 @@ function sameEvidence(row: PublishCommandRow, key: PublishCompletionArtifactComm
 		row.markdown_sha256 === key.markdownSha256 &&
 		row.audit_event_id === key.auditEventId &&
 		row.audit_event_hash === key.auditEventHash &&
-		row.audit_payload_json === key.auditPayloadJson
+		row.audit_payload_json === key.auditPayloadJson &&
+		samePdfMetadata(row, key.pdf)
+	);
+}
+
+function samePdfMetadata(
+	row: PublishCommandRow,
+	pdf: CompletionArtifactPdfMetadata | null
+): boolean {
+	if (pdf === null) {
+		return (
+			row.pdf_object_key === null &&
+			row.pdf_sha256 === null &&
+			row.pdf_byte_size === null &&
+			row.pdf_manifest_object_key === null &&
+			row.pdf_manifest_sha256 === null
+		);
+	}
+	return (
+		row.pdf_object_key === pdf.pdfObjectKey &&
+		row.pdf_sha256 === pdf.pdfSha256 &&
+		Number(row.pdf_byte_size) === pdf.pdfByteSize &&
+		row.pdf_manifest_object_key === pdf.pdfManifestObjectKey &&
+		row.pdf_manifest_sha256 === pdf.pdfManifestSha256
 	);
 }

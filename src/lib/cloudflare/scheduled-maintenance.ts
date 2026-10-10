@@ -1,4 +1,19 @@
 import { hasHandledMaintenanceFailure } from '$lib/observability/maintenance-failure';
+import {
+	logMaintenanceBatchFailure,
+	logMaintenanceBatchSummaryUnavailable,
+	MAINTENANCE_BATCH_OBSERVED_HEADER,
+	maintenanceBatchHasFailureSignal,
+	readMaintenanceBatchSummary,
+	type MaintenanceBatchBodyResult
+} from '$lib/observability/maintenance-telemetry';
+
+/**
+ * A batch result is a flat object of bounded counts (at most a few dozen
+ * bytes per field); this generously bounds the decode without ever
+ * buffering an unbounded body.
+ */
+const MAX_MAINTENANCE_BATCH_BYTES: number = 64 * 1024;
 
 export interface ScheduledMaintenanceJob {
 	readonly name: string;
@@ -95,8 +110,14 @@ async function runScheduledJob(
 	context: ScheduledMaintenanceContext,
 	job: ScheduledMaintenanceJob
 ): Promise<void> {
+	const startedAt: number = Date.now();
 	if (typeof environment.DELIVERY_WORKER_SECRET !== 'string') {
-		throw new ScheduledMaintenanceFailure('maintenance_secret_unavailable');
+		throw new ScheduledMaintenanceFailure(
+			'maintenance_secret_unavailable',
+			undefined,
+			undefined,
+			Date.now() - startedAt
+		);
 	}
 	let response: Response;
 	try {
@@ -109,10 +130,42 @@ async function runScheduledJob(
 			context
 		);
 	} catch (error: unknown) {
-		throw new ScheduledMaintenanceFailure('maintenance_dispatch_failed', undefined, error);
+		throw new ScheduledMaintenanceFailure(
+			'maintenance_dispatch_failed',
+			undefined,
+			error,
+			Date.now() - startedAt
+		);
 	}
-	if (!response.ok && !hasHandledMaintenanceFailure(response)) {
-		throw new ScheduledMaintenanceFailure('maintenance_http_failed', response.status);
+	if (!response.ok) {
+		if (hasHandledMaintenanceFailure(response)) return;
+		throw new ScheduledMaintenanceFailure(
+			'maintenance_http_failed',
+			response.status,
+			undefined,
+			Date.now() - startedAt
+		);
+	}
+
+	// Every handler this dispatcher calls already logs its own batch outcome
+	// via `observeMaintenanceBatchResult` and marks its response. Decoding the
+	// body here too would risk logging the same batch twice, so this is a
+	// fallback only for a response that was not already observed.
+	if (response.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER) !== null) return;
+
+	const durationMs: number = Date.now() - startedAt;
+	const body: MaintenanceBatchBodyResult = await readMaintenanceBatchSummary(
+		response,
+		MAX_MAINTENANCE_BATCH_BYTES
+	);
+	if (!body.ok) {
+		// A batch result that cannot even be read is itself an operational
+		// signal, not a healthy no-op.
+		logMaintenanceBatchSummaryUnavailable(job.name, durationMs, body.reason);
+		return;
+	}
+	if (maintenanceBatchHasFailureSignal(body.summary)) {
+		logMaintenanceBatchFailure(job.name, body.summary, durationMs);
 	}
 }
 
@@ -126,7 +179,8 @@ function logScheduledMaintenanceFailure(job: ScheduledMaintenanceJob, error: unk
 			event: 'scheduled_maintenance_failed',
 			job: job.name,
 			code: failure.code,
-			...(failure.status === undefined ? {} : { status: failure.status })
+			...(failure.status === undefined ? {} : { status: failure.status }),
+			...(failure.durationMs === undefined ? {} : { durationMs: failure.durationMs })
 		})
 	);
 }
@@ -134,11 +188,13 @@ function logScheduledMaintenanceFailure(job: ScheduledMaintenanceJob, error: unk
 class ScheduledMaintenanceFailure extends Error {
 	readonly code: string;
 	readonly status: number | undefined;
+	readonly durationMs: number | undefined;
 
-	constructor(code: string, status?: number, cause?: unknown) {
+	constructor(code: string, status?: number, cause?: unknown, durationMs?: number) {
 		super(code, { cause });
 		this.name = 'ScheduledMaintenanceFailure';
 		this.code = code;
 		this.status = status;
+		this.durationMs = durationMs;
 	}
 }

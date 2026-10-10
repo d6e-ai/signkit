@@ -1,6 +1,7 @@
 import { WEBHOOK_AUDIT_EVENT_TYPES } from '$lib/domain/audit';
 import { recipientRoles, fieldTypes } from '$lib/domain/envelope';
 import { MAX_SIGNATURE_ASSET_BYTES } from '$lib/application/documents/signature-asset';
+import { MAINTENANCE_BACKLOG_QUEUES } from '$lib/observability/maintenance-backlog';
 
 const UUIDV7: Record<string, unknown> = {
 	type: 'string',
@@ -30,6 +31,47 @@ const PROBLEM: Record<string, unknown> = {
 		}
 	},
 	additionalProperties: true
+};
+
+const MAINTENANCE_HEALTH: Record<string, unknown> = {
+	type: 'object',
+	required: ['queues'],
+	additionalProperties: false,
+	properties: {
+		queues: {
+			type: 'array',
+			minItems: MAINTENANCE_BACKLOG_QUEUES.length,
+			maxItems: MAINTENANCE_BACKLOG_QUEUES.length,
+			items: {
+				type: 'object',
+				required: [
+					'queue',
+					'pendingCount',
+					'oldestPendingAgeSeconds',
+					'oldestOverdueAgeSeconds',
+					'permanentlyFailedCount'
+				],
+				additionalProperties: false,
+				properties: {
+					queue: { type: 'string', enum: [...MAINTENANCE_BACKLOG_QUEUES] },
+					pendingCount: { type: 'integer', minimum: 0 },
+					oldestPendingAgeSeconds: {
+						type: ['integer', 'null'],
+						minimum: 0,
+						description:
+							'Lifetime age since creation, or the immutable audit event for webhooks. Null when empty; retries do not reset it.'
+					},
+					oldestOverdueAgeSeconds: {
+						type: ['integer', 'null'],
+						minimum: 0,
+						description:
+							'Age since availability of the oldest currently due row. Null when no row is due.'
+					},
+					permanentlyFailedCount: { type: 'integer', minimum: 0 }
+				}
+			}
+		}
+	}
 };
 
 const ENVELOPE: Record<string, unknown> = {
@@ -1644,6 +1686,8 @@ export function openApiDocument(): Record<string, unknown> {
 			'/api/v1/envelopes/{envelopeId}/send': {
 				post: op({
 					summary: 'Send a ready envelope',
+					description:
+						'Before publication, validates the whole document set, field placements, evidence appendix, and bounded future signatures against the completion PDF page and byte limits. An over-budget envelope returns 400 urn:signkit:problem:send-completion-budget-exceeded without sending invitations.',
 					operationId: 'sendEnvelope',
 					tags: ['Envelopes'],
 					parameters: [envelopeIdParam, idempotencyHeader],
@@ -1695,6 +1739,56 @@ export function openApiDocument(): Record<string, unknown> {
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [envelopeIdParam],
 					responses: jsonResponse('200', 'Completion artifact status', { type: 'object' })
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/completion-artifact/retry': {
+				post: op({
+					summary: 'Requeue an exhausted transient completion artifact failure',
+					operationId: 'retryEnvelopeCompletionArtifact',
+					description:
+						'Requeues only the exhausted transient failure (`completion_artifact_attempts_exhausted` for an unpublished envelope, `completion_artifact_pdf_repair_attempts_exhausted` for a published envelope whose PDF repair exhausted) that the caller observed in the status read. `expectedAttempts` and `expectedFailedAt` must echo that status (`attempts`/`failedAt`, or `pdfRepair.attempts`/`pdfRepair.failedAt`); a stale generation, integrity or budget failure, or live lease is refused with 409. Does not re-sign, rewrite a published artifact, or reissue already exhausted completion mail.',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['expectedAttempts', 'expectedFailedAt'],
+									additionalProperties: false,
+									properties: {
+										expectedAttempts: {
+											type: 'integer',
+											minimum: 0,
+											maximum: 2_147_483_647
+										},
+										expectedFailedAt: {
+											type: 'string',
+											format: 'date-time',
+											description: 'The failure generation from the completion artifact status.'
+										}
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Requeued or safely replayed',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['requeued'],
+										additionalProperties: false,
+										properties: { requeued: { type: 'object' } }
+									}
+								}
+							}
+						}
+					}
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/pdf-seal': {
@@ -2114,6 +2208,19 @@ export function openApiDocument(): Record<string, unknown> {
 					security: [{ SessionCookie: [] }],
 					parameters: [webhookIdParam],
 					responses: jsonResponse('200', 'Webhook delivery log page', { type: 'object' })
+				})
+			},
+			'/api/v1/system/maintenance/health': {
+				get: op({
+					summary: 'Read durable maintenance backlog health',
+					operationId: 'getMaintenanceHealth',
+					tags: ['System'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					description:
+						'Read-only aggregate counts and lifetime/due ages. Includes completion PDF repair; never exposes individual jobs, payloads, or error messages.',
+					responses: jsonResponse('200', 'Durable backlog snapshot', {
+						$ref: '#/components/schemas/MaintenanceHealth'
+					})
 				})
 			},
 			'/api/v1/system/webhooks/drain': {
@@ -2589,7 +2696,7 @@ export function openApiDocument(): Record<string, unknown> {
 				DeliveryWorkerSecret: {
 					type: 'http',
 					scheme: 'bearer',
-					description: 'Deployment worker secret for drain endpoints.'
+					description: 'Instance maintenance credential for drain, sweep, and health endpoints.'
 				},
 				RecipientCapability: {
 					type: 'http',
@@ -2611,6 +2718,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			schemas: {
 				ProblemDetail: PROBLEM,
+				MaintenanceHealth: MAINTENANCE_HEALTH,
 				Envelope: ENVELOPE,
 				Contact: CONTACT,
 				FieldGeometry: FIELD_GEOMETRY,

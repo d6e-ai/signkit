@@ -190,4 +190,186 @@ describe('Cloudflare scheduled maintenance', () => {
 		});
 		errorSpy.mockRestore();
 	});
+
+	it('does not re-decode or re-log a response the handler already observed', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const fetchHandler: ScheduledWorkerFetch = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ claimed: 3, integrityFailed: 1 }), {
+					status: 200,
+					headers: { 'x-signkit-maintenance-batch-observed': '1' }
+				})
+		);
+		const pending: Promise<unknown>[] = [];
+		const context = {
+			waitUntil(promise: Promise<unknown>): void {
+				pending.push(promise);
+			}
+		};
+
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			PRIMARY_MAINTENANCE_CRON
+		);
+		await Promise.all(pending);
+
+		expect(errorSpy).not.toHaveBeenCalled();
+		errorSpy.mockRestore();
+	});
+
+	it('falls back to its own bounded decode and logs an HTTP 200 batch result with failures exactly once, including duration', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const fetchHandler: ScheduledWorkerFetch = vi.fn(async (request) => {
+			const path: string = new URL(request.url).pathname;
+			if (path === '/api/v1/system/deliveries/drain') {
+				return Response.json({
+					claimed: 3,
+					delivered: 1,
+					retryableFailed: 1,
+					permanentlyFailed: 0,
+					integrityFailed: 1,
+					stale: 0,
+					outcomes: [{ deliveryId: 'delivery-1', outcome: 'delivered' }]
+				});
+			}
+			return new Response(null, { status: 200 });
+		});
+		const pending: Promise<unknown>[] = [];
+		const context = {
+			waitUntil(promise: Promise<unknown>): void {
+				pending.push(promise);
+			}
+		};
+
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			PRIMARY_MAINTENANCE_CRON
+		);
+		await Promise.all(pending);
+
+		expect(errorSpy).toHaveBeenCalledOnce();
+		const logged: Record<string, unknown> = JSON.parse(String(errorSpy.mock.calls[0]?.[0]));
+		expect(logged).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'delivery drain',
+				claimed: 3,
+				delivered: 1,
+				retryableFailed: 1,
+				integrityFailed: 1
+			})
+		);
+		expect(typeof logged.durationMs).toBe('number');
+		expect(logged).not.toHaveProperty('outcomes');
+		errorSpy.mockRestore();
+	});
+
+	it('does not log anything for an empty, healthy batch', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const fetchHandler: ScheduledWorkerFetch = vi.fn(async () =>
+			Response.json({
+				claimed: 0,
+				delivered: 0,
+				retryableFailed: 0,
+				permanentlyFailed: 0,
+				integrityFailed: 0,
+				stale: 0,
+				outcomes: []
+			})
+		);
+		const pending: Promise<unknown>[] = [];
+		const context = {
+			waitUntil(promise: Promise<unknown>): void {
+				pending.push(promise);
+			}
+		};
+
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			PRIMARY_MAINTENANCE_CRON
+		);
+		await Promise.all(pending);
+
+		expect(errorSpy).not.toHaveBeenCalled();
+		errorSpy.mockRestore();
+	});
+
+	it('warns exactly once (not a silent no-op) for a malformed, unmarked batch body', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const fetchHandler: ScheduledWorkerFetch = vi.fn(
+			async () => new Response('not json', { status: 200 })
+		);
+		const pending: Promise<unknown>[] = [];
+		const context = {
+			waitUntil(promise: Promise<unknown>): void {
+				pending.push(promise);
+			}
+		};
+
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			PRIMARY_MAINTENANCE_CRON
+		);
+		const results: PromiseSettledResult<unknown>[] = await Promise.allSettled(pending);
+
+		expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledTimes(PRIMARY_MAINTENANCE_JOBS.length);
+		expect(JSON.parse(String(warnSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_summary_unavailable',
+				reason: 'invalid'
+			})
+		);
+		warnSpy.mockRestore();
+		errorSpy.mockRestore();
+	});
+
+	it('is bounded against an oversized batch body without reading it unbounded, and warns exactly once', async () => {
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const oversized: string = JSON.stringify({
+			claimed: 1,
+			integrityFailed: 1,
+			padding: 'x'.repeat(200_000)
+		});
+		const fetchHandler: ScheduledWorkerFetch = vi.fn(
+			async () => new Response(oversized, { status: 200 })
+		);
+		const pending: Promise<unknown>[] = [];
+		const context = {
+			waitUntil(promise: Promise<unknown>): void {
+				pending.push(promise);
+			}
+		};
+
+		runScheduledMaintenance(
+			fetchHandler,
+			{ DELIVERY_WORKER_SECRET: SECRET },
+			context,
+			PRIMARY_MAINTENANCE_CRON
+		);
+		const results: PromiseSettledResult<unknown>[] = await Promise.allSettled(pending);
+
+		expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalledTimes(PRIMARY_MAINTENANCE_JOBS.length);
+		expect(JSON.parse(String(warnSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_summary_unavailable',
+				reason: 'too_large'
+			})
+		);
+		warnSpy.mockRestore();
+		errorSpy.mockRestore();
+	});
 });

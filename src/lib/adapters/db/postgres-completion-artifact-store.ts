@@ -8,16 +8,22 @@ import {
 	type ClaimedCompletionArtifactJob,
 	type CompletionArtifactStatusRow,
 	type CompletionArtifactStore,
+	type CompletionArtifactRetryReplayResult,
 	type CompletionEvidence,
 	type CompletionEvidenceAuditEvent,
 	type CompletionEvidenceField,
 	type CompletionEvidenceRecipient,
+	EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR,
+	type CompletionArtifactPdfMetadata,
 	type FailCompletionArtifactCommand,
 	type FailCompletionArtifactResult,
 	type PublishCompletionArtifactCommand,
 	type PublishCompletionArtifactResult,
 	type PublishedCompletionArtifact,
-	type ReadClaimedCompletionArtifactCommand
+	type ReadClaimedCompletionArtifactCommand,
+	type ReadCompletionEvidenceOptions,
+	type RequeueExhaustedCompletionArtifactCommand,
+	type RequeueExhaustedCompletionArtifactResult
 } from '$lib/ports/completion-artifact-store';
 
 type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
@@ -104,6 +110,11 @@ interface PublishCommandRow {
 	previousAuditHash: string;
 	auditEventHash: string;
 	auditPayloadJson: string;
+	pdfObjectKey: string | null;
+	pdfSha256: string | null;
+	pdfByteSize: number | string | null;
+	pdfManifestObjectKey: string | null;
+	pdfManifestSha256: string | null;
 }
 
 export class PostgresCompletionArtifactStore implements CompletionArtifactStore {
@@ -211,7 +222,10 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 		return toClaimedJob(row, lockedAt, 0);
 	}
 
-	async readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence> {
+	async readCompletionEvidence(
+		envelopeId: string,
+		options?: ReadCompletionEvidenceOptions
+	): Promise<CompletionEvidence> {
 		const recipients = await this.#sql<RecipientEvidenceRow[]>`
 			SELECT recipient.id, recipient.role, recipient.routing_order AS "routingOrder",
 				recipient.status,
@@ -234,15 +248,28 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 			FROM field_value
 			WHERE envelope_id = ${envelopeId}
 			ORDER BY field_id`;
-		const auditEvents = await this.#sql<AuditEvidenceRow[]>`
-			SELECT id, sequence, event_type AS "eventType", actor_type AS "actorType",
-				actor_id AS "actorId", payload_json AS "payloadJson", previous_hash AS "previousHash",
-				event_hash AS "eventHash", hash_version AS "hashVersion",
-				to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAtPrecise"
-			FROM audit_event
-			WHERE envelope_id = ${envelopeId}
-			ORDER BY sequence ASC
-			LIMIT ${MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1}`;
+		const throughSequence: number | undefined = options?.throughSequence;
+		const auditEvents =
+			throughSequence === undefined
+				? await this.#sql<AuditEvidenceRow[]>`
+					SELECT id, sequence, event_type AS "eventType", actor_type AS "actorType",
+						actor_id AS "actorId", payload_json AS "payloadJson", previous_hash AS "previousHash",
+						event_hash AS "eventHash", hash_version AS "hashVersion",
+						to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAtPrecise"
+					FROM audit_event
+					WHERE envelope_id = ${envelopeId}
+					ORDER BY sequence ASC
+					LIMIT ${MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1}`
+				: await this.#sql<AuditEvidenceRow[]>`
+					SELECT id, sequence, event_type AS "eventType", actor_type AS "actorType",
+						actor_id AS "actorId", payload_json AS "payloadJson", previous_hash AS "previousHash",
+						event_hash AS "eventHash", hash_version AS "hashVersion",
+						to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAtPrecise"
+					FROM audit_event
+					WHERE envelope_id = ${envelopeId}
+						AND sequence <= ${throughSequence}
+					ORDER BY sequence ASC
+					LIMIT ${MAX_COMPLETION_AUDIT_VERIFY_EVENTS + 1}`;
 
 		return {
 			recipients: recipients.map((row: RecipientEvidenceRow): CompletionEvidenceRecipient => ({
@@ -370,12 +397,25 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 							${command.previousAuditHash}, ${command.auditEventHash},
 							${command.updatedAt}::timestamptz
 						)`;
+					if (command.pdf !== null) {
+						await transaction`
+							INSERT INTO completion_artifact_pdf (
+								envelope_id, pdf_object_key, pdf_sha256, pdf_byte_size,
+								pdf_manifest_object_key, pdf_manifest_sha256, published_at
+							) VALUES (
+								${command.envelopeId}, ${command.pdf.pdfObjectKey}, ${command.pdf.pdfSha256},
+								${command.pdf.pdfByteSize}, ${command.pdf.pdfManifestObjectKey},
+								${command.pdf.pdfManifestSha256}, ${command.updatedAt}::timestamptz
+							)`;
+					}
 					await transaction`
 						INSERT INTO completion_artifact_publish_command (
 							envelope_id, claim_token, sent_commit_sha, field_generation,
 							anchor_audit_event_id, manifest_sha256, json_object_key, json_sha256,
 							markdown_object_key, markdown_sha256, updated_at, audit_event_id,
-							audit_sequence, previous_audit_hash, audit_event_hash, audit_payload_json
+							audit_sequence, previous_audit_hash, audit_event_hash, audit_payload_json,
+							pdf_object_key, pdf_sha256, pdf_byte_size, pdf_manifest_object_key,
+							pdf_manifest_sha256
 						) VALUES (
 							${command.envelopeId}, ${command.claimToken},
 							${command.sentCommitSha}, ${command.fieldGeneration},
@@ -384,7 +424,10 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 							${command.markdownSha256}, ${command.updatedAt}::timestamptz,
 							${command.auditEventId}, ${command.expectedAuditSequence + 1},
 							${command.previousAuditHash}, ${command.auditEventHash},
-							${command.auditPayloadJson}
+							${command.auditPayloadJson},
+							${command.pdf?.pdfObjectKey ?? null}, ${command.pdf?.pdfSha256 ?? null},
+							${command.pdf?.pdfByteSize ?? null}, ${command.pdf?.pdfManifestObjectKey ?? null},
+							${command.pdf?.pdfManifestSha256 ?? null}
 						)`;
 					return { outcome: 'published', result: resultFromCommand(command) };
 				}
@@ -422,6 +465,69 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 		return rows.length === 1 ? { outcome: 'failed' } : { outcome: 'stale' };
 	}
 
+	async requeueExhaustedCompletionArtifact(
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<RequeueExhaustedCompletionArtifactResult> {
+		try {
+			return await this.#sql.begin(
+				async (transaction): Promise<RequeueExhaustedCompletionArtifactResult> => {
+					// Lock first, then read the receipt: a concurrent duplicate that
+					// waited on this lock must observe the winner's committed receipt
+					// and replay, rather than fail the already-consumed CAS.
+					const envelopeRows = await transaction<{ id: string }[]>`
+						SELECT id FROM envelope WHERE id = ${command.envelopeId} FOR UPDATE`;
+					if (envelopeRows.length === 0) return { outcome: 'not_found' };
+					const replay: RequeueExhaustedCompletionArtifactResult | null = await this.#resolveRetry(
+						transaction,
+						command
+					);
+					if (replay !== null) return replay;
+					await transaction<{ envelope_id: string }[]>`
+						SELECT envelope_id FROM completion_artifact_job
+						WHERE envelope_id = ${command.envelopeId}
+						FOR UPDATE`;
+					const updated = await transaction<{ envelope_id: string }[]>`
+						UPDATE completion_artifact_job
+						SET status = 'pending', retryable = true, attempts = 0, last_error = NULL,
+							claim_token = NULL, locked_at = NULL,
+							available_at = ${command.requeuedAt}::timestamptz,
+							updated_at = ${command.requeuedAt}::timestamptz
+						WHERE envelope_id = ${command.envelopeId}
+							AND status = 'failed' AND NOT retryable
+							AND claim_token IS NULL AND locked_at IS NULL
+							AND attempts = ${command.expectedAttempts}
+							AND updated_at = ${command.expectedFailedAt}::timestamptz
+							AND last_error = ${EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR}
+						RETURNING envelope_id`;
+					if (updated.length !== 1) return { outcome: 'not_eligible' };
+					await transaction`
+						INSERT INTO completion_artifact_retry_command (
+							envelope_id, idempotency_key, expected_attempts, expected_failed_at,
+							requeued_at
+						) VALUES (
+							${command.envelopeId}, ${command.idempotencyKey},
+							${command.expectedAttempts}, ${command.expectedFailedAt}::timestamptz,
+							${command.requeuedAt}::timestamptz
+						)`;
+					return { outcome: 'requeued' };
+				}
+			);
+		} catch (error: unknown) {
+			const classified: RequeueExhaustedCompletionArtifactResult | null = await this.#resolveRetry(
+				this.#sql,
+				command
+			);
+			if (classified !== null) return classified;
+			throw error;
+		}
+	}
+
+	async findCompletionArtifactRetry(
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<CompletionArtifactRetryReplayResult | null> {
+		return this.#resolveRetry(this.#sql, command);
+	}
+
 	async findCompletionArtifactStatus(
 		envelopeId: string
 	): Promise<CompletionArtifactStatusRow | null> {
@@ -433,6 +539,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				attempts: number | string | null;
 				lastError: string | null;
 				availableAt: Date | string | null;
+				jobUpdatedAt: string | null;
 				manifestSha256: string | null;
 				jsonSha256: string | null;
 				markdownSha256: string | null;
@@ -443,6 +550,7 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 			SELECT envelope.id AS "envelopeId", envelope.status AS "envelopeStatus",
 				job.status AS "jobStatus", job.attempts AS attempts,
 				job.last_error AS "lastError", job.available_at AS "availableAt",
+				to_char(job.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "jobUpdatedAt",
 				artifact.manifest_sha256 AS "manifestSha256", artifact.json_sha256 AS "jsonSha256",
 				artifact.markdown_sha256 AS "markdownSha256", artifact.published_at AS "publishedAt",
 				artifact.audit_event_id AS "auditEventId"
@@ -476,6 +584,8 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 			attempts: row.attempts === null ? null : Number(row.attempts),
 			lastError: row.lastError,
 			availableAt: isoTimestampOrNull(row.availableAt),
+			// Microsecond text, not a millisecond Date: the requeue CAS compares it exactly.
+			updatedAt: row.jobUpdatedAt,
 			published
 		};
 	}
@@ -492,13 +602,35 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				markdown_sha256 AS "markdownSha256", updated_at AS "updatedAt",
 				audit_event_id AS "auditEventId", audit_sequence AS "auditSequence",
 				previous_audit_hash AS "previousAuditHash", audit_event_hash AS "auditEventHash",
-				audit_payload_json AS "auditPayloadJson"
+				audit_payload_json AS "auditPayloadJson",
+				pdf_object_key AS "pdfObjectKey", pdf_sha256 AS "pdfSha256",
+				pdf_byte_size AS "pdfByteSize",
+				pdf_manifest_object_key AS "pdfManifestObjectKey",
+				pdf_manifest_sha256 AS "pdfManifestSha256"
 			FROM completion_artifact_publish_command
 			WHERE envelope_id = ${key.envelopeId}`;
 		const row: PublishCommandRow | undefined = rows[0];
 		if (row === undefined) return null;
 		if (!sameEvidence(row, key)) return { outcome: 'integrity_error' };
 		return { outcome: 'replayed', result: resultFromRow(row) };
+	}
+
+	async #resolveRetry(
+		sql: Sql,
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<CompletionArtifactRetryReplayResult | null> {
+		const rows = await sql<{ expectedAttempts: number | string; sameGeneration: boolean }[]>`
+			SELECT expected_attempts AS "expectedAttempts",
+				expected_failed_at = ${command.expectedFailedAt}::timestamptz AS "sameGeneration"
+			FROM completion_artifact_retry_command
+			WHERE envelope_id = ${command.envelopeId}
+				AND idempotency_key = ${command.idempotencyKey}`;
+		const row: { expectedAttempts: number | string; sameGeneration: boolean } | undefined = rows[0];
+		if (row === undefined) return null;
+		if (Number(row.expectedAttempts) !== command.expectedAttempts || !row.sameGeneration) {
+			return { outcome: 'conflict' };
+		}
+		return { outcome: 'replayed' };
 	}
 }
 
@@ -561,7 +693,30 @@ function sameEvidence(row: PublishCommandRow, key: PublishCompletionArtifactComm
 		row.markdownSha256 === key.markdownSha256 &&
 		row.auditEventId === key.auditEventId &&
 		row.auditEventHash === key.auditEventHash &&
-		row.auditPayloadJson === key.auditPayloadJson
+		row.auditPayloadJson === key.auditPayloadJson &&
+		samePdfMetadata(row, key.pdf)
+	);
+}
+
+function samePdfMetadata(
+	row: PublishCommandRow,
+	pdf: CompletionArtifactPdfMetadata | null
+): boolean {
+	if (pdf === null) {
+		return (
+			row.pdfObjectKey === null &&
+			row.pdfSha256 === null &&
+			row.pdfByteSize === null &&
+			row.pdfManifestObjectKey === null &&
+			row.pdfManifestSha256 === null
+		);
+	}
+	return (
+		row.pdfObjectKey === pdf.pdfObjectKey &&
+		row.pdfSha256 === pdf.pdfSha256 &&
+		Number(row.pdfByteSize) === pdf.pdfByteSize &&
+		row.pdfManifestObjectKey === pdf.pdfManifestObjectKey &&
+		row.pdfManifestSha256 === pdf.pdfManifestSha256
 	);
 }
 

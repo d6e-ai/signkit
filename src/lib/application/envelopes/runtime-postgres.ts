@@ -26,7 +26,10 @@ import {
 	type RecipientAccessApplicationPort
 } from '$lib/application/signing/recipient-access';
 import type { SentDocumentPdfPort } from '$lib/application/documents/sent-document-pdf';
+import { PostgresCompletionPdfEvidenceStore } from '$lib/adapters/db/postgres-completion-pdf-evidence-store';
+import type { CompletionPdfEvidenceStore } from '$lib/ports/completion-pdf-evidence-store';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
+import type { ObjectStore } from '$lib/ports/object-store';
 import {
 	RecipientApprovedApplication,
 	type RecipientApprovedApplicationPort
@@ -112,13 +115,13 @@ export function resolvePostgresEnvelopeFieldApplication(
 export function resolvePostgresEnvelopeSendApplication(
 	databaseUrl: string,
 	sealer: RecipientCapabilitySealer,
-	documentPdf: SentDocumentPdfPort
+	documentPdf: (fieldPlacements: CompletionPdfEvidenceStore) => SentDocumentPdfPort
 ): EnvelopeSendApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
 	return new EnvelopeSendApplication(
 		new PostgresEnvelopeSendStore(resources.sql),
 		sealer,
-		documentPdf
+		documentPdf(new PostgresCompletionPdfEvidenceStore(resources.sql))
 	);
 }
 
@@ -207,10 +210,16 @@ export function resolvePostgresRecipientApprovedApplication(
 }
 
 export function resolvePostgresRecipientSignedApplication(
-	databaseUrl: string
+	databaseUrl: string,
+	signatureAssets: ObjectStore | null = null
 ): RecipientSignedApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
-	return new RecipientSignedApplication(new PostgresRecipientSignStore(resources.sql));
+	return new RecipientSignedApplication(
+		new PostgresRecipientSignStore(resources.sql),
+		undefined,
+		undefined,
+		signatureAssets
+	);
 }
 
 export function resolvePostgresRecipientFieldDeclarationStore(

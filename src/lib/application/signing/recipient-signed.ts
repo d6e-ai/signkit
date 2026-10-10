@@ -1,5 +1,11 @@
+import {
+	SIGNATURE_ASSET_REF_PATTERN,
+	SIGNATURE_ASSET_REF_PREFIX,
+	verifySignatureAssetReference
+} from '$lib/application/documents/signature-asset';
 import { hashAuditEventV3 } from '$lib/domain/audit';
 import type { FieldType } from '$lib/domain/envelope';
+import type { ObjectStore } from '$lib/ports/object-store';
 import type {
 	SignableFieldDeclaration,
 	SignFingerprintValue,
@@ -68,7 +74,14 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 	constructor(
 		private readonly store: RecipientSignStore,
 		private readonly now: () => Date = (): Date => new Date(),
-		private readonly newId: UuidV7Generator = newUuidV7
+		private readonly newId: UuidV7Generator = newUuidV7,
+		/**
+		 * Scoped storage for drawn signature/initials assets. A `sig:sha256:`
+		 * field value is re-verified against it before any publish; `null`
+		 * fails every such reference closed rather than trusting an unverifiable
+		 * claim.
+		 */
+		private readonly signatureAssets: ObjectStore | null = null
 	) {}
 
 	async sign(input: RecipientSignedInput): Promise<RecipientSignedResult> {
@@ -100,6 +113,15 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 			);
 			if (matched.outcome !== 'ok') return matched;
 			const fieldValues: readonly SignedFieldValue[] = matched.fieldValues;
+
+			const assetCheck: RecipientSignedResult | null = await verifySignedAssetReferences(
+				this.signatureAssets,
+				preparation.envelopeId,
+				preparation.recipientId,
+				fieldValues
+			);
+			if (assetCheck !== null) return assetCheck;
+
 			const requestFingerprint: string = await fingerprintFromFieldValues(
 				input,
 				capabilityHash,
@@ -216,6 +238,30 @@ type MatchFailure =
 	| { outcome: 'incomplete_field_set' }
 	| { outcome: 'missing_required_value' };
 
+/**
+ * Validates any drawn signature/initials field value against the object
+ * store it names before the command is allowed to publish. Only runs for a
+ * fresh submission's field values (never for replay, which is proven by the
+ * durable receipt alone and must not re-read or re-upload old assets).
+ */
+async function verifySignedAssetReferences(
+	objects: ObjectStore | null,
+	envelopeId: string,
+	recipientId: string,
+	fieldValues: readonly SignedFieldValue[]
+): Promise<RecipientSignedResult | null> {
+	for (const field of fieldValues) {
+		if (field.fieldType !== 'signature' && field.fieldType !== 'initials') continue;
+		const value: unknown = JSON.parse(field.valueJson);
+		if (typeof value !== 'string' || !value.startsWith(SIGNATURE_ASSET_REF_PREFIX)) continue;
+		if (objects === null) return { outcome: 'invalid_field' };
+		const check = await verifySignatureAssetReference(objects, envelopeId, recipientId, value);
+		if (check.outcome === 'provider_error') return { outcome: 'integrity_error' };
+		if (check.outcome !== 'ok') return { outcome: 'invalid_field' };
+	}
+	return null;
+}
+
 async function replayExisting(
 	preparation: Extract<SignPreparation, { outcome: 'existing' }>,
 	input: RecipientSignedInput,
@@ -320,13 +366,20 @@ function validateFieldValue(
 		if (!DATE_PATTERN.test(trimmed) || !isRealCalendarDate(trimmed)) return null;
 		return trimmed;
 	}
-	const maxLength: number =
-		fieldType === 'signature'
-			? MAX_SIGNATURE_LENGTH
-			: fieldType === 'initials'
-				? MAX_INITIALS_LENGTH
-				: MAX_TEXT_LENGTH;
-	if (trimmed.length > maxLength) return null;
+	if (fieldType === 'signature' || fieldType === 'initials') {
+		// A drawn asset reference is a reserved, well-formed shape (75 chars),
+		// not an arbitrarily long name/initials value: it is only accepted here
+		// by shape, and only accepted as evidence once the object store proves
+		// it, in `verifySignedAssetReferences`.
+		if (trimmed.startsWith(SIGNATURE_ASSET_REF_PREFIX)) {
+			return SIGNATURE_ASSET_REF_PATTERN.test(trimmed) ? trimmed : null;
+		}
+		const maxLength: number =
+			fieldType === 'signature' ? MAX_SIGNATURE_LENGTH : MAX_INITIALS_LENGTH;
+		if (trimmed.length > maxLength) return null;
+		return trimmed;
+	}
+	if (trimmed.length > MAX_TEXT_LENGTH) return null;
 	return trimmed;
 }
 

@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { DeliveryResealSweepService } from '$lib/application/delivery/reseal-sweep-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import {
 	createDeliveryResealSweepHandler,
 	type DeliveryResealSweepServiceResolver
@@ -109,5 +110,41 @@ describe('delivery reseal sweep HTTP handler', () => {
 			JSON.stringify({ event: 'delivery_reseal_sweep_failed', message: 'Error' })
 		);
 		error.mockRestore();
+	});
+
+	it('marks a healthy batch observed, and logs a failure summary when unrecoverable > 0', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const healthyResponse: Response = await createDeliveryResealSweepHandler(
+			() => service() as unknown as DeliveryResealSweepService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(healthyResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+
+		const failing = {
+			resealOutstandingCapabilities: vi.fn(async () => ({
+				discovered: 1,
+				resealed: 0,
+				stale: 0,
+				unrecoverable: 1
+			}))
+		};
+		const failingResponse: Response = await createDeliveryResealSweepHandler(
+			() => failing as unknown as DeliveryResealSweepService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(failingResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'delivery reseal sweep',
+				unrecoverable: 1
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 });

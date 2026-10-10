@@ -3,6 +3,10 @@ import type {
 	CompletionDeliveryResealSweepResult,
 	CompletionDeliveryResealSweepService
 } from '$lib/application/completion-delivery/completion-reseal-sweep-service';
+import {
+	logMaintenanceOperationError,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
@@ -63,12 +67,20 @@ export function createCompletionDeliveryResealSweepHandler(
 			});
 		}
 
+		const startedAt: number = Date.now();
 		try {
 			const result: CompletionDeliveryResealSweepResult =
 				await service.resealOutstandingTokens(RESEAL_SWEEP_BATCH_LIMIT);
 			return Response.json(result, {
 				status: 200,
-				headers: { 'cache-control': 'no-store' }
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult(
+						'completion delivery reseal sweep',
+						result,
+						Date.now() - startedAt
+					)
+				}
 			});
 		} catch (error: unknown) {
 			logResealSweepError('completion_delivery_reseal_sweep_failed', error);
@@ -94,10 +106,5 @@ function unauthorized(instance: string): Response {
 }
 
 function logResealSweepError(event: string, error: unknown): void {
-	console.error(
-		JSON.stringify({
-			event,
-			message: error instanceof Error ? error.name : 'UnknownError'
-		})
-	);
+	logMaintenanceOperationError(event, error);
 }

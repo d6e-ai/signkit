@@ -6,6 +6,7 @@ import { DraftEnvelopeNotFoundError } from '$lib/application/drafts/draft-persis
 import { createApiKeyHttpHandlers } from './api-keys';
 import { createApiKeyRevokeHandler } from './api-key-revoke';
 import { createCompletionArtifactStatusHandler } from './completion-artifact-status';
+import { createCompletionArtifactRetryHandler } from './completion-artifact-retry';
 import { createCompletionEvidenceHandler } from './completion-evidence';
 import { createCompletionPdfHandler } from './completion-pdf';
 import { createDeliveryStatusHandler } from './delivery-status';
@@ -511,6 +512,31 @@ describe('API key mutation surface', () => {
 			}
 		],
 		[
+			'POST /api/v1/envelopes/{envelopeId}/completion-artifact/retry',
+			'envelopes:send',
+			async () => {
+				const retry = vi.fn(async () => ({ outcome: 'not_eligible' as const }));
+				const response: Response = await createCompletionArtifactRetryHandler(() => ({
+					retry
+				}))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/retry`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						body: JSON.stringify({
+							expectedAttempts: 10,
+							expectedFailedAt: '2026-09-12T00:00:00.000Z'
+						}),
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: principal({ scopes: ['envelopes:send'] })
+						}
+					})
+				);
+				return { response, called: retry.mock.calls.length === 1 };
+			}
+		],
+		[
 			'POST /api/v1/envelopes/{envelopeId}/pdf-seal',
 			'envelopes:send',
 			async () => {
@@ -633,6 +659,18 @@ describe('API key mutation surface', () => {
 				createEnvelopeVoidHandler(() => null)(
 					event({
 						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/void`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+					})
+				)
+		],
+		[
+			'POST /api/v1/envelopes/{envelopeId}/completion-artifact/retry',
+			async (): Promise<Response> =>
+				createCompletionArtifactRetryHandler(() => null)(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/retry`,
 						method: 'POST',
 						params: { envelopeId: ENVELOPE_ID },
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }

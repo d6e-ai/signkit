@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { D1CompletionPdfEvidenceStore } from '$lib/adapters/db/d1-completion-pdf-evidence-store';
 import { D1EnvelopeSendStore } from '$lib/adapters/db/d1-envelope-send-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
@@ -6,6 +7,7 @@ import {
 	SentDocumentPdfService,
 	type SentDocumentPdfPort
 } from '$lib/application/documents/sent-document-pdf';
+import type { CompletionPdfEvidenceStore } from '$lib/ports/completion-pdf-evidence-store';
 import { AesGcmRecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import { EnvelopeSendApplication, type EnvelopeSendApplicationPort } from './send';
 
@@ -29,7 +31,8 @@ export async function resolveEnvelopeSendApplication(
 		if (database === undefined || bucket === undefined) return null;
 		const documentPdf: SentDocumentPdfPort = new SentDocumentPdfService(
 			new R2ObjectStore(bucket),
-			new IsomorphicGitDraftRepository()
+			new IsomorphicGitDraftRepository(),
+			new D1CompletionPdfEvidenceStore(database)
 		);
 		return new EnvelopeSendApplication(new D1EnvelopeSendStore(database), sealer, documentPdf);
 	}
@@ -37,19 +40,21 @@ export async function resolveEnvelopeSendApplication(
 	if (databaseUrl !== undefined && databaseUrl.trim().length > 0) {
 		const { resolveS3ObjectStore } = await import('$lib/application/drafts/runtime-s3');
 		const { resolvePostgresEnvelopeSendApplication } = await import('./runtime-postgres');
-		const documentPdf: SentDocumentPdfPort = new SentDocumentPdfService(
-			resolveS3ObjectStore({
-				databaseUrl,
-				endpoint: env.S3_ENDPOINT,
-				region: env.S3_REGION,
-				bucket: env.S3_BUCKET,
-				accessKeyId: env.S3_ACCESS_KEY_ID,
-				secretAccessKey: env.S3_SECRET_ACCESS_KEY,
-				forcePathStyle: env.S3_FORCE_PATH_STYLE
-			}),
-			new IsomorphicGitDraftRepository()
+		const objects = resolveS3ObjectStore({
+			databaseUrl,
+			endpoint: env.S3_ENDPOINT,
+			region: env.S3_REGION,
+			bucket: env.S3_BUCKET,
+			accessKeyId: env.S3_ACCESS_KEY_ID,
+			secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+			forcePathStyle: env.S3_FORCE_PATH_STYLE
+		});
+		return resolvePostgresEnvelopeSendApplication(
+			databaseUrl,
+			sealer,
+			(fieldPlacements: CompletionPdfEvidenceStore): SentDocumentPdfPort =>
+				new SentDocumentPdfService(objects, new IsomorphicGitDraftRepository(), fieldPlacements)
 		);
-		return resolvePostgresEnvelopeSendApplication(databaseUrl, sealer, documentPdf);
 	}
 	return null;
 }
