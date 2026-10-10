@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 const require = createRequire(import.meta.url);
@@ -18,6 +19,7 @@ const databaseId = '11111111-1111-4111-8111-111111111111';
 test('packaged cf returns the resource and remote migration shapes consumed by the installer', async () => {
 	const context = await mkdtemp(join(tmpdir(), 'signkit-cf-contract-'));
 	const requests = [];
+	const database = new DatabaseSync(':memory:');
 	const server = createServer(async (request, response) => {
 		assert.equal(request.headers.authorization, 'Bearer synthetic-cf-contract-token');
 		const url = new URL(request.url, 'http://localhost');
@@ -37,11 +39,27 @@ test('packaged cf returns the resource and remote migration shapes consumed by t
 				result = [{ uuid: databaseId, name: `fixture-page-${url.searchParams.get('page')}` }];
 			}
 		} else if (url.pathname.endsWith('/query')) {
-			const { sql } = JSON.parse(body);
+			const { sql, params = [] } = JSON.parse(body);
+			let rows = [];
+			try {
+				if (/^\s*SELECT\b/i.test(sql)) {
+					rows = database.prepare(sql).all(...params);
+				} else if (params.length > 0) {
+					database.prepare(sql).run(...params);
+				} else {
+					database.exec(sql);
+				}
+			} catch (error) {
+				response.writeHead(400, { 'content-type': 'application/json' });
+				response.end(
+					JSON.stringify({ success: false, errors: [{ message: error.message }], result: null })
+				);
+				return;
+			}
 			result = [
 				{
 					success: true,
-					results: sql.includes('SELECT') ? [{ name: '0001_fixture.sql' }] : [],
+					results: rows,
 					meta: { duration: 0 }
 				}
 			];
@@ -127,21 +145,41 @@ test('packaged cf returns the resource and remote migration shapes consumed by t
 			uuid: databaseId,
 			name: 'fixture'
 		});
-		const query = await run([
+		assert.deepEqual(
+			await run(['d1', 'migrations', 'list', databaseId, '--dir', join(context, 'migrations')]),
+			[{ Name: '0001_fixture.sql' }, { Name: '0002_fixture.sql' }]
+		);
+		const ledgerQuery = [
 			'd1',
 			'query',
 			databaseId,
 			'--sql',
 			'SELECT name FROM d1_migrations ORDER BY id'
-		]);
-		assert.deepEqual(query[0].results, [{ name: '0001_fixture.sql' }]);
-		assert.deepEqual(
-			await run(['d1', 'migrations', 'list', databaseId, '--dir', join(context, 'migrations')]),
-			[{ Name: '0002_fixture.sql' }]
-		);
+		];
+		// Real SQL, starting without a ledger: a missing CREATE in cf's listing
+		// would fail this read instead of being hidden by a canned API response.
+		assert.deepEqual((await run(ledgerQuery))[0].results, []);
 		assert.deepEqual(
 			await run(['d1', 'migrations', 'apply', databaseId, '--dir', join(context, 'migrations')]),
-			[{ name: '0002_fixture.sql', status: '✅' }]
+			[
+				{ name: '0001_fixture.sql', status: '✅' },
+				{ name: '0002_fixture.sql', status: '✅' }
+			]
+		);
+		assert.deepEqual((await run(ledgerQuery))[0].results, [
+			{ name: '0001_fixture.sql' },
+			{ name: '0002_fixture.sql' }
+		]);
+		assert.deepEqual(
+			await run(['d1', 'migrations', 'list', databaseId, '--dir', join(context, 'migrations')]),
+			[]
+		);
+		assert.deepEqual(
+			database
+				.prepare('PRAGMA table_info(d1_migrations)')
+				.all()
+				.map((column) => column.name),
+			['id', 'name', 'applied_at']
 		);
 		assert.ok(
 			requests.some(
@@ -153,6 +191,7 @@ test('packaged cf returns the resource and remote migration shapes consumed by t
 	} finally {
 		server.closeAllConnections();
 		await new Promise((resolve) => server.close(resolve));
+		database.close();
 		await rm(context, { recursive: true, force: true });
 	}
 });
