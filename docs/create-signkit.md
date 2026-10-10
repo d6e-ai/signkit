@@ -11,7 +11,7 @@ npx create-signkit --help
 pnpm dlx create-signkit --help
 ```
 
-The package depends on Wrangler. You do not need this repository or pnpm. Authenticate Wrangler the usual way (`wrangler login`, or `CLOUDFLARE_API_TOKEN` in the environment). Never pass tokens on the command line.
+The package carries the pinned official `cf` CLI and a Wrangler compatibility dependency. You do not need this repository or pnpm; Node.js 22.18 or newer is required. A `CLOUDFLARE_API_TOKEN` in the environment authenticates both tools. With interactive OAuth, cf and Wrangler keep separate sessions: authenticate each with `cf login` and `wrangler login`. Never pass tokens on the command line. See [architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md) for the phased migration boundary.
 
 ## Syntax
 
@@ -128,7 +128,7 @@ Default path: `$XDG_STATE_HOME/create-signkit/state.json` (typically `~/.local/s
 
 ## Distinguishing the CLIs
 
-| CLI              | Package / path       | Talks to                     | Auth                                                |
-| ---------------- | -------------------- | ---------------------------- | --------------------------------------------------- |
-| `create-signkit` | npm `create-signkit` | Cloudflare + GitHub Releases | Wrangler / `CLOUDFLARE_API_TOKEN` (env, never argv) |
-| `signkit`        | `cli/` Rust binary   | SignKit `/api/v1`            | `SIGNKIT_API_KEY` (env or stdin)                    |
+| CLI              | Package / path       | Talks to                     | Auth                                                                   |
+| ---------------- | -------------------- | ---------------------------- | ---------------------------------------------------------------------- |
+| `create-signkit` | npm `create-signkit` | Cloudflare + GitHub Releases | cf + Wrangler compatibility / `CLOUDFLARE_API_TOKEN` (env, never argv) |
+| `signkit`        | `cli/` Rust binary   | SignKit `/api/v1`            | `SIGNKIT_API_KEY` (env or stdin)                                       |

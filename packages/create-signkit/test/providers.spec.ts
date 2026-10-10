@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { runCreateSignkit } from '../src/cli/run.js';
 import {
 	ACCOUNT_ID,
-	FakeWrangler,
+	FakeCloudflareClient,
 	MemoryFileSystem,
 	command,
 	fakeExtractor,
@@ -41,7 +41,7 @@ describe('provider abstraction', () => {
 
 	it('runs the Cloudflare provider when --cloudflare precedes the command', async () => {
 		const fs = new MemoryFileSystem();
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		wrangler.seedReadyWorker();
 		const stdout: string[] = [];
 		const code = await runCreateSignkit({
@@ -51,7 +51,7 @@ describe('provider abstraction', () => {
 			env: { XDG_STATE_HOME: '/xdg/state' },
 			runtime: {
 				fs,
-				wrangler,
+				cloudflare: wrangler,
 				releases: fakeReleases(),
 				extractor: fakeExtractor(fs)
 			}

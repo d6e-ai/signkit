@@ -22,7 +22,7 @@ export interface ProcessRunnerOptions {
 	maxOutputBytes?: number;
 }
 
-const ALLOWED_WRANGLER_ENV = new Set([
+const ALLOWED_CLOUDFLARE_CLI_ENV = new Set([
 	'PATH',
 	'HOME',
 	'USER',
@@ -99,14 +99,19 @@ function isPathFlag(token: string | undefined): boolean {
 	return token !== undefined && PATH_FLAGS.has(token.toLowerCase());
 }
 
-export function filterEnvForWrangler(
+/**
+ * Shared by both the cf CLI runner and the narrow Wrangler fallback: both
+ * resolve the target account from CLOUDFLARE_ACCOUNT_ID, so the allowlist and
+ * injected env stay identical regardless of which binary is invoked.
+ */
+export function filterEnvForCloudflareCli(
 	source: NodeJS.ProcessEnv,
 	accountId: string
 ): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(source)) {
 		if (value === undefined) continue;
-		if (ALLOWED_WRANGLER_ENV.has(key)) {
+		if (ALLOWED_CLOUDFLARE_CLI_ENV.has(key)) {
 			env[key] = value;
 		}
 	}

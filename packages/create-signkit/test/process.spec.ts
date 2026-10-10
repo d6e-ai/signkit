@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
 	assertArgvHasNoSecrets,
 	createNodeProcessRunner,
-	filterEnvForWrangler
+	filterEnvForCloudflareCli
 } from '../src/runtime/process.js';
 import { ACCOUNT_ID } from './helpers.js';
 
 describe('Wrangler child environment allowlist', () => {
 	it('drops unrelated secrets and keeps Cloudflare auth plus OS runtime vars', () => {
-		const env = filterEnvForWrangler(
+		const env = filterEnvForCloudflareCli(
 			{
 				PATH: '/usr/bin',
 				HOME: '/home/operator',

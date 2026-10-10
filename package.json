@@ -30,7 +30,7 @@
 		"test:unit": "vitest --project server --project postgres",
 		"test:browser": "node scripts/test-browser-guard.mjs",
 		"test:node-build": "node scripts/test-node-build.mjs",
-		"test:cloudflare-tooling": "node --test scripts/cloudflare-tooling.test.mjs",
+		"test:cloudflare-tooling": "node --test scripts/cloudflare-tooling.test.mjs scripts/cloudflare-cli-contract.test.mjs",
 		"test:create-signkit": "pnpm --filter create-signkit test",
 		"build:create-signkit": "pnpm --filter create-signkit build",
 		"test": "pnpm run test:unit -- --run && pnpm run test:browser && pnpm run test:create-signkit && pnpm run test:cloudflare-tooling"

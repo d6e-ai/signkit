@@ -32,6 +32,6 @@ Local D1 remains on `wrangler d1 migrations apply --local`. An actual cf beta.14
 
 The managed release installer has a separate Cloudflare command port; its cf-native operations and remaining fallbacks are specified in [create-signkit.md](create-signkit.md). A successful offline build or dry run is not a live deployment or provider acceptance claim.
 
-Verification gates include type generation, application checks, Node/Cloudflare/Vercel builds, environment/config contract tests, release bundle verification, `cf deploy --prebuilt --dry-run`, and real local Wrangler D1 application. Provider resource/provenance tests use mocked commands and do not prove remote account permissions or deployment.
+Verification gates include type generation, application checks, Node/Cloudflare/Vercel builds, environment/config contract tests, release bundle verification, `cf deploy --prebuilt --dry-run`, and real local Wrangler D1 application. An offline protocol test runs the actual pinned cf executable against a synthetic loopback API, with only fake credentials and documented D1 response envelopes, checking resource JSON and noninteractive remote-migration command behavior. This and mocked provider/provenance tests do not prove real account permissions or deployment.
 
 For current upstream behavior, see the official [cf overview](https://developers.cloudflare.com/cf/), [Wrangler migration guide](https://developers.cloudflare.com/cf/wrangler/migrate/), and [project commands](https://developers.cloudflare.com/cf/projects/).

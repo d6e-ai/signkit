@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { generic, preflight, unavailable } from '../../cli/errors.js';
-import { filterEnvForWrangler, type ProcessRunner } from '../../runtime/process.js';
+import { filterEnvForCloudflareCli, type ProcessRunner } from '../../runtime/process.js';
 
 export interface WranglerInvocation {
 	args: string[];
@@ -137,7 +137,7 @@ export function createWranglerClient(options: WranglerClientOptions): WranglerCl
 	const wranglerBin = options.wranglerBin ?? resolveWranglerBin();
 	const nodeExecutable = options.nodeExecutable ?? process.execPath;
 	const invocations: WranglerInvocation[] = [];
-	const childEnv = filterEnvForWrangler(options.env, options.accountId);
+	const childEnv = filterEnvForCloudflareCli(options.env, options.accountId);
 
 	async function run(args: string[], cwd?: string, errorDetail?: 'redacted' | 'hidden') {
 		let discoveryCwd: string | undefined;

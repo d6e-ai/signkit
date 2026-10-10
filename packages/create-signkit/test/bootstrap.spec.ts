@@ -10,7 +10,7 @@ import {
 import {
 	ACCOUNT_ID,
 	FakeHttp,
-	FakeWrangler,
+	FakeCloudflareClient,
 	MemoryFileSystem,
 	PREVIOUS_VERSION,
 	fakeExtractor,
@@ -52,7 +52,7 @@ function sha256Hex(text: string): string {
 }
 
 async function runDeploy(options: {
-	wrangler?: FakeWrangler;
+	wrangler?: FakeCloudflareClient;
 	fs?: MemoryFileSystem;
 	stdinText?: string;
 	argv?: string[];
@@ -62,9 +62,9 @@ async function runDeploy(options: {
 	stdout: string;
 	stderr: string;
 	fs: MemoryFileSystem;
-	wrangler: FakeWrangler;
+	wrangler: FakeCloudflareClient;
 }> {
-	const wrangler = options.wrangler ?? new FakeWrangler();
+	const wrangler = options.wrangler ?? new FakeCloudflareClient();
 	const fs = options.fs ?? new MemoryFileSystem();
 	const stdout: string[] = [];
 	const stderr: string[] = [];
@@ -81,7 +81,7 @@ async function runDeploy(options: {
 		env: { XDG_STATE_HOME: '/xdg/state' },
 		runtime: {
 			fs,
-			wrangler,
+			cloudflare: wrangler,
 			releases: options.releases ?? fakeReleases(),
 			extractor: fakeExtractor(fs),
 			http,
@@ -144,7 +144,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 
 	it('keeps plan read-only: never reads stdin and never creates files', async () => {
 		const fs = new MemoryFileSystem();
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		const stdout: string[] = [];
 		const code = await runCreateSignkit({
 			argv: ['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
@@ -153,7 +153,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 			env: { XDG_STATE_HOME: '/xdg/state' },
 			runtime: {
 				fs,
-				wrangler,
+				cloudflare: wrangler,
 				releases: fakeReleases(),
 				extractor: fakeExtractor(fs),
 				readStdin: async (): Promise<Uint8Array> => {
@@ -186,7 +186,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 
 	it('fails bundle verification before recovery or Cloudflare mutation, then retries cleanly', async () => {
 		const fs = new MemoryFileSystem();
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		const failingReleases = fakeReleases();
 		const prepareBundle = failingReleases.prepareBundle.bind(failingReleases);
 		let downloads = 0;
@@ -218,7 +218,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 
 	it('refuses to reuse a failed bootstrap recovery file for another Worker', async () => {
 		const fs = new MemoryFileSystem();
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		wrangler.createD1 = async (): Promise<never> => {
 			throw new Error('leave recovery before resource creation');
 		};
@@ -244,7 +244,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 	});
 
 	it('never auto-generates recovery for an existing deployment', async () => {
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		wrangler.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await runDeploy({ wrangler, fs });
@@ -256,7 +256,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 	});
 
 	it('never auto-generates recovery or passes secretsFile on upgrade', async () => {
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		wrangler.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await runDeploy({
@@ -274,7 +274,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 	});
 
 	it('uses an existing recovery file to restore missing secrets during upgrade', async () => {
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		wrangler.seedReadyWorker();
 		wrangler.secrets.set('signkit', [
 			'DELIVERY_ENCRYPTION_KEY',
@@ -321,7 +321,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 	});
 
 	it('fails existing deployments with missing secrets when recovery is unavailable', async () => {
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		wrangler.seedReadyWorker();
 		wrangler.secrets.set('signkit', ['DELIVERY_ENCRYPTION_KEY']);
 		const fs = await writeCloudflareState(new MemoryFileSystem());
@@ -335,7 +335,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 
 	it('treats remote Worker versions or secrets with no local state as not pristine', async () => {
 		for (const seed of ['versions', 'secrets'] as const) {
-			const wrangler = new FakeWrangler();
+			const wrangler = new FakeCloudflareClient();
 			if (seed === 'versions') {
 				wrangler.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
 			} else {
@@ -370,7 +370,7 @@ describe('pristine initial deploy recovery lifecycle', () => {
 	});
 
 	it('fails unknown manifest secret types on upgrade before any mutation', async () => {
-		const wrangler = new FakeWrangler();
+		const wrangler = new FakeCloudflareClient();
 		wrangler.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const releases = fakeReleases(

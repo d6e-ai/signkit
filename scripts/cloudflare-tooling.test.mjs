@@ -25,13 +25,17 @@ test('offline build environment omits credentials and runtime secrets', () => {
 		HOME: source.HOME,
 		SIGNKIT_D1_DATABASE_ID: source.SIGNKIT_D1_DATABASE_ID,
 		CI: '1',
-		CLOUDFLARE_SEND_METRICS: 'false',
+		CF_SEND_TELEMETRY: 'false',
+		WRANGLER_SEND_METRICS: 'false',
+		DO_NOT_TRACK: '1',
 		CLOUDFLARE_AUTH_USE_KEYRING: 'false',
 		XDG_CONFIG_HOME: '/private-build/.config'
 	});
 	assert.deepEqual(buildEnvironment({}, '/private-build'), {
 		CI: '1',
-		CLOUDFLARE_SEND_METRICS: 'false',
+		CF_SEND_TELEMETRY: 'false',
+		WRANGLER_SEND_METRICS: 'false',
+		DO_NOT_TRACK: '1',
 		CLOUDFLARE_AUTH_USE_KEYRING: 'false',
 		XDG_CONFIG_HOME: '/private-build/.config'
 	});

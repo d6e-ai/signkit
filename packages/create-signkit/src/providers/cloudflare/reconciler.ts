@@ -46,16 +46,16 @@ import {
 	assertSelectedAccountAuthorized,
 	assertSuccessfulUpload,
 	sortWorkerVersions,
+	type CloudflareClient,
 	type D1Database,
-	type WorkerVersion,
-	type WranglerClient
-} from './wrangler.js';
+	type WorkerVersion
+} from './cloudflare-client.js';
 
 export interface ReconcileRuntime {
 	fs: FileSystem;
 	http: HttpClient;
 	releases: ReleaseResolver;
-	wrangler: WranglerClient;
+	cloudflare: CloudflareClient;
 	extractor: BundleExtractor;
 	now: () => Date;
 	env: NodeJS.ProcessEnv;
@@ -132,8 +132,8 @@ export async function reconcileCloudflare(
 		);
 	}
 	const target = resolveEffectiveConfig(input, existing);
-	assertSelectedAccountAuthorized(await runtime.wrangler.whoami(), target.accountId);
-	const remote = await inspectRemote(runtime.wrangler, target);
+	assertSelectedAccountAuthorized(await runtime.cloudflare.whoami(), target.accountId);
+	const remote = await inspectRemote(runtime.cloudflare, target);
 	assertUpgradeRouteUnchanged(input, existing);
 	const drift = detectDrift(existing, target, remote);
 
@@ -295,14 +295,14 @@ async function deployOrUpgrade(
 					`D1 id ${target.d1} was not found; pass a D1 name to create it, or adopt an existing database`
 				);
 			}
-			current.d1 = await runtime.wrangler.createD1(target.d1);
+			current.d1 = await runtime.cloudflare.createD1(target.d1);
 			mutations.push('create-d1');
 		}
 		if (!current.r2Exists) {
 			if (input.command !== 'deploy' || existing) {
 				throw conflict(`R2 bucket ${target.r2} does not exist`);
 			}
-			await runtime.wrangler.createR2(target.r2);
+			await runtime.cloudflare.createR2(target.r2);
 			current.r2Exists = true;
 			mutations.push('create-r2');
 		}
@@ -332,17 +332,16 @@ async function deployOrUpgrade(
 		mutations.push('d1-export');
 
 		const migrationOptions = {
-			cwd: extracted.root,
-			configPath: extracted.configPath,
-			database: current.d1.name
+			d1Id: current.d1.uuid,
+			migrationsDir: extracted.migrationsDirectory
 		};
-		const migrations = await runtime.wrangler.listMigrations(migrationOptions);
+		const migrations = await runtime.cloudflare.listMigrations(migrationOptions);
 		assertCompatibleSchemaEpoch(existing, release, migrations.applied);
 		const pending = [...migrations.pending];
 		if (pending.length > 0) {
-			await runtime.wrangler.applyMigrations(migrationOptions);
+			await runtime.cloudflare.applyMigrations(migrationOptions);
 			mutations.push('d1-migrations');
-			const remaining = await runtime.wrangler.listMigrations(migrationOptions);
+			const remaining = await runtime.cloudflare.listMigrations(migrationOptions);
 			if (remaining.pending.length > 0) {
 				throw generic(`D1 migrations remain pending after apply: ${remaining.pending.join(', ')}`);
 			}
@@ -362,13 +361,13 @@ async function deployOrUpgrade(
 		};
 		const uploaded = assertSuccessfulUpload(
 			input.command === 'upgrade'
-				? await runtime.wrangler.uploadVersion(deployOptions)
-				: await runtime.wrangler.deploy(deployOptions)
+				? await runtime.cloudflare.uploadVersion(deployOptions)
+				: await runtime.cloudflare.deploy(deployOptions)
 		);
 		assertNewWorkerVersion(uploaded.workerVersionId, previousVersionId);
 		mutations.push(input.command === 'upgrade' ? 'versions-upload' : 'deploy');
 		if (input.command === 'upgrade') {
-			await runtime.wrangler.deployVersion(target.workerName, uploaded.workerVersionId);
+			await runtime.cloudflare.deployVersion(target.workerName, uploaded.workerVersionId);
 			mutations.push('versions-deploy');
 		}
 
@@ -381,7 +380,7 @@ async function deployOrUpgrade(
 		let rollback: RollbackReport | undefined;
 		if (!workerUrl) {
 			rollback = await maybeRollback(
-				runtime.wrangler,
+				runtime.cloudflare,
 				target.workerName,
 				previousVersionId,
 				'HTTPS smoke check skipped: no production origin is known'
@@ -425,7 +424,7 @@ async function deployOrUpgrade(
 		});
 		if (!smoke.ok) {
 			rollback = await maybeRollback(
-				runtime.wrangler,
+				runtime.cloudflare,
 				target.workerName,
 				previousVersionId,
 				smoke.detail
@@ -505,7 +504,7 @@ async function persistD1Backup(
 	await runtime.fs.mkdir(dir, { mode: BACKUP_DIR_MODE });
 	await runtime.fs.chmod(dir, BACKUP_DIR_MODE);
 	const backupPath = await uniqueD1BackupPath(runtime, dir, d1Name);
-	await runtime.wrangler.exportD1(d1Name, backupPath);
+	await runtime.cloudflare.exportD1(d1Name, backupPath);
 	await runtime.fs.chmod(backupPath, BACKUP_FILE_MODE);
 	return backupPath;
 }
@@ -526,7 +525,7 @@ async function uniqueD1BackupPath(
 }
 
 async function maybeRollback(
-	wrangler: WranglerClient,
+	cloudflare: CloudflareClient,
 	workerName: string,
 	previousVersionId: string | undefined,
 	smokeDetail: string
@@ -543,7 +542,7 @@ async function maybeRollback(
 		};
 	}
 	try {
-		await wrangler.rollback(
+		await cloudflare.rollback(
 			workerName,
 			previousVersionId,
 			`${PACKAGE_NAME} smoke check failed; restoring previous Worker version`
@@ -578,14 +577,14 @@ interface RemoteSnapshot {
 }
 
 async function inspectRemote(
-	wrangler: WranglerClient,
+	cloudflare: CloudflareClient,
 	target: EffectiveTarget
 ): Promise<RemoteSnapshot> {
 	const [databases, r2Exists, versions, secretNames] = await Promise.all([
-		wrangler.listD1(),
-		wrangler.r2Exists(target.r2),
-		wrangler.listVersions(target.workerName),
-		wrangler.listSecrets(target.workerName)
+		cloudflare.listD1(),
+		cloudflare.r2Exists(target.r2),
+		cloudflare.listVersions(target.workerName),
+		cloudflare.listSecrets(target.workerName)
 	]);
 	const d1 = databases.find(
 		(database) => database.name === target.d1 || database.uuid === target.d1

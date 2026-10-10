@@ -192,6 +192,9 @@ importers:
 
   packages/create-signkit:
     dependencies:
+      cf:
+        specifier: 1.0.0-beta.14
+        version: 1.0.0-beta.14(@types/node@26.5.1)
       sigstore:
         specifier: 4.1.1
         version: 4.1.1(supports-color@10.2.2)
