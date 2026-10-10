@@ -34,11 +34,13 @@ function service(
 	pdfRecord: CompletionArtifactPdfRecord | null | undefined = undefined
 ) {
 	const store: CompletionArtifactStore = {
+		findCompletionArtifactRetry: async () => null,
 		claimPendingCompletionArtifacts: vi.fn(),
 		readClaimedCompletionArtifact: vi.fn(),
 		readCompletionEvidence: vi.fn(),
 		publishCompletionArtifact: vi.fn(),
 		failCompletionArtifact: vi.fn(),
+		requeueExhaustedCompletionArtifact: vi.fn(),
 		findCompletionArtifactStatus
 	};
 	if (pdfRecord === undefined) {

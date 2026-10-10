@@ -1,12 +1,14 @@
 import { env } from '$env/dynamic/private';
 import { D1CompletionArtifactStore } from '$lib/adapters/db/d1-completion-artifact-store';
 import { D1CompletionArtifactPdfStore } from '$lib/adapters/db/d1-completion-artifact-pdf-store';
+import { D1CompletionArtifactPdfRepairStore } from '$lib/adapters/db/d1-completion-artifact-pdf-repair-store';
 import { D1CompletionPdfEvidenceStore } from '$lib/adapters/db/d1-completion-pdf-evidence-store';
 import { D1EnvelopeSentDocumentStore } from '$lib/adapters/db/d1-envelope-sent-document-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 import type { ObjectStore } from '$lib/ports/object-store';
 import { CompletionArtifactPublicationService } from './completion-artifact-service';
+import { CompletionArtifactRetryService } from './completion-artifact-retry';
 import { CompletionArtifactStatusService } from './completion-artifact-status';
 
 export interface CompletionArtifactRuntimeContext {
@@ -29,7 +31,8 @@ export async function resolveCompletionArtifactPublicationService(
 			undefined,
 			new D1CompletionArtifactPdfStore(database),
 			new D1CompletionPdfEvidenceStore(database),
-			new D1EnvelopeSentDocumentStore(database)
+			new D1EnvelopeSentDocumentStore(database),
+			new D1CompletionArtifactPdfRepairStore(database)
 		);
 	}
 
@@ -51,6 +54,7 @@ export async function resolveCompletionArtifactPublicationService(
 	const [
 		{ PostgresCompletionArtifactStore },
 		{ PostgresCompletionArtifactPdfStore },
+		{ PostgresCompletionArtifactPdfRepairStore },
 		{ PostgresCompletionPdfEvidenceStore },
 		{ PostgresEnvelopeSentDocumentStore },
 		{ resolvePostgresSql },
@@ -58,6 +62,7 @@ export async function resolveCompletionArtifactPublicationService(
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
+		import('$lib/adapters/db/postgres-completion-artifact-pdf-repair-store'),
 		import('$lib/adapters/db/postgres-completion-pdf-evidence-store'),
 		import('$lib/adapters/db/postgres-envelope-sent-document-store'),
 		import('$lib/application/envelopes/runtime-postgres'),
@@ -74,7 +79,8 @@ export async function resolveCompletionArtifactPublicationService(
 		undefined,
 		new PostgresCompletionArtifactPdfStore(sql),
 		new PostgresCompletionPdfEvidenceStore(sql),
-		new PostgresEnvelopeSentDocumentStore(sql)
+		new PostgresEnvelopeSentDocumentStore(sql),
+		new PostgresCompletionArtifactPdfRepairStore(sql)
 	);
 }
 
@@ -86,7 +92,8 @@ export async function resolveCompletionArtifactStatusService(
 		if (database === undefined) return null;
 		return new CompletionArtifactStatusService(
 			new D1CompletionArtifactStore(database),
-			new D1CompletionArtifactPdfStore(database)
+			new D1CompletionArtifactPdfStore(database),
+			new D1CompletionArtifactPdfRepairStore(database)
 		);
 	}
 
@@ -95,16 +102,49 @@ export async function resolveCompletionArtifactStatusService(
 	const [
 		{ PostgresCompletionArtifactStore },
 		{ PostgresCompletionArtifactPdfStore },
+		{ PostgresCompletionArtifactPdfRepairStore },
 		{ resolvePostgresSql }
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
+		import('$lib/adapters/db/postgres-completion-artifact-pdf-repair-store'),
 		import('$lib/application/envelopes/runtime-postgres')
 	]);
 	const sql = resolvePostgresSql(databaseUrl);
 	return new CompletionArtifactStatusService(
 		new PostgresCompletionArtifactStore(sql),
-		new PostgresCompletionArtifactPdfStore(sql)
+		new PostgresCompletionArtifactPdfStore(sql),
+		new PostgresCompletionArtifactPdfRepairStore(sql)
+	);
+}
+
+export async function resolveCompletionArtifactRetryService(
+	context: CompletionArtifactRuntimeContext
+): Promise<CompletionArtifactRetryService | null> {
+	if (context.platform?.env !== undefined) {
+		const database: D1Database | undefined = context.platform.env.DB;
+		if (database === undefined) return null;
+		return new CompletionArtifactRetryService(
+			new D1CompletionArtifactStore(database),
+			new D1CompletionArtifactPdfRepairStore(database)
+		);
+	}
+
+	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
+	if (databaseUrl === undefined) return null;
+	const [
+		{ PostgresCompletionArtifactStore },
+		{ PostgresCompletionArtifactPdfRepairStore },
+		{ resolvePostgresSql }
+	] = await Promise.all([
+		import('$lib/adapters/db/postgres-completion-artifact-store'),
+		import('$lib/adapters/db/postgres-completion-artifact-pdf-repair-store'),
+		import('$lib/application/envelopes/runtime-postgres')
+	]);
+	const sql = resolvePostgresSql(databaseUrl);
+	return new CompletionArtifactRetryService(
+		new PostgresCompletionArtifactStore(sql),
+		new PostgresCompletionArtifactPdfRepairStore(sql)
 	);
 }
 

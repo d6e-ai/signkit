@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { buildVerifiedAuditChain } from '$lib/application/completion-artifacts/audit-chain-test-support';
@@ -9,27 +8,7 @@ import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/dr
 import type { CompletionEvidenceAuditEvent } from '$lib/ports/completion-artifact-store';
 import type { ObjectMetadata, ObjectStore, PutObject } from '$lib/ports/object-store';
 import { D1CompletionArtifactStore } from './d1-completion-artifact-store';
-import { sqliteD1Database } from './sqlite-d1-test-support';
-
-const MIGRATIONS: readonly string[] = [
-	'migrations/d1/0001_core.sql',
-	'migrations/d1/0002_envelope_commands.sql',
-	'migrations/d1/0003_draft_revisions.sql',
-	'migrations/d1/0004_envelope_ready.sql',
-	'migrations/d1/0005_envelope_send.sql',
-	'migrations/d1/0006_recipient_viewed.sql',
-	'migrations/d1/0007_recipient_declined.sql',
-	'migrations/d1/0008_recipient_approved.sql',
-	'migrations/d1/0009_field_placement.sql',
-	'migrations/d1/0010_recipient_signed.sql',
-	'migrations/d1/0011_delivery_outbox_leases.sql',
-	'migrations/d1/0012_delivery_outbox_recipient_scope.sql',
-	'migrations/d1/0013_terminal_delivery_cleanup.sql',
-	'migrations/d1/0014_envelope_voided.sql',
-	'migrations/d1/0015_observer_routing_semantics.sql',
-	'migrations/d1/0016_completion_artifacts.sql',
-	'migrations/d1/0023_audit_hash_v2.sql'
-];
+import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
 
 const ENVELOPE_ID: string = '01920000-0000-7000-8000-000000000001';
 const COMMIT_SHA: string = '0123456789abcdef0123456789abcdef01234567';
@@ -129,7 +108,7 @@ async function fixture(): Promise<{
 	events: CompletionEvidenceAuditEvent[];
 }> {
 	const sqlite: DatabaseSync = new DatabaseSync(':memory:');
-	for (const path of MIGRATIONS) sqlite.exec(readFileSync(path, 'utf8'));
+	applyD1Migrations(sqlite);
 	sqlite.exec(`
 		INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 		VALUES ('user-1','owner','active','2026-09-11T00:00:00.000Z','2026-09-11T00:00:00.000Z');
@@ -292,6 +271,7 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				attempts: null,
 				lastError: null,
 				availableAt: null,
+				updatedAt: null,
 				published: null
 			});
 		} finally {
@@ -355,7 +335,8 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				updatedAt: '2026-09-12T00:00:00.000Z',
 				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
-				auditPayloadJson: '{"manifestSha256":"m"}'
+				auditPayloadJson: '{"manifestSha256":"m"}',
+				pdf: null
 			});
 			expect(published).toMatchObject({ outcome: 'published' });
 			if (published.outcome !== 'published') throw new Error('Expected a fresh publication');
@@ -403,7 +384,8 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				updatedAt: '2026-09-12T00:00:00.000Z',
 				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
-				auditPayloadJson: '{"manifestSha256":"m"}'
+				auditPayloadJson: '{"manifestSha256":"m"}',
+				pdf: null
 			});
 			expect(replay).toEqual({ outcome: 'replayed', result: published.result });
 
@@ -425,7 +407,8 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				updatedAt: '2026-09-12T00:00:00.000Z',
 				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
-				auditPayloadJson: '{"manifestSha256":"m"}'
+				auditPayloadJson: '{"manifestSha256":"m"}',
+				pdf: null
 			});
 			expect(integrityConflict).toEqual({ outcome: 'integrity_error' });
 
@@ -465,7 +448,8 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 				updatedAt: '2026-09-12T00:00:00.000Z',
 				auditEventId: '01960000-0000-7000-8000-000000000005',
 				auditEventHash: 'hash-5',
-				auditPayloadJson: '{}'
+				auditPayloadJson: '{}',
+				pdf: null
 			});
 			expect(result).toEqual({ outcome: 'stale' });
 			const artifactCount = sqlite
@@ -504,7 +488,8 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 					updatedAt: '2026-09-12T00:00:00.000Z',
 					auditEventId: '01960000-0000-7000-8000-000000000005',
 					auditEventHash: 'hash-5',
-					auditPayloadJson: '{"manifestSha256":"m"}'
+					auditPayloadJson: '{"manifestSha256":"m"}',
+					pdf: null
 				})
 			).rejects.toThrow('simulated transient D1 failure');
 

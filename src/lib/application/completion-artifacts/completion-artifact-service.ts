@@ -18,14 +18,18 @@ import type {
 	EnvelopeSentDocumentStore,
 	SentDocumentSetPointer
 } from '$lib/ports/envelope-sent-document-store';
-import type {
-	CompletionArtifactPdfStore,
-	PublishCompletionArtifactPdfCommand
-} from '$lib/ports/completion-artifact-pdf-store';
+import type { CompletionArtifactPdfStore } from '$lib/ports/completion-artifact-pdf-store';
 import type {
 	CompletionPdfEvidenceStore,
 	CompletionPdfFieldGeometry
 } from '$lib/ports/completion-pdf-evidence-store';
+import {
+	boundCompletionArtifactPdfRepairClaimLimit,
+	MAX_COMPLETION_ARTIFACT_PDF_REPAIR_DISCOVERY_BATCH,
+	type ClaimedCompletionArtifactPdfRepair,
+	type CompletionArtifactPdfRepairStore,
+	type FailCompletionArtifactPdfRepairResult
+} from '$lib/ports/completion-artifact-pdf-repair-store';
 import {
 	boundCompletionArtifactClaimLimit,
 	CompletionArtifactBoundExceededError,
@@ -33,6 +37,7 @@ import {
 	MAX_COMPLETION_ARTIFACT_DISCOVERY_BATCH,
 	sanitizeCompletionArtifactErrorCode,
 	type ClaimedCompletionArtifactJob,
+	type CompletionArtifactPdfMetadata,
 	type CompletionArtifactStore,
 	type CompletionEvidence,
 	type CompletionEvidenceAuditEvent,
@@ -67,6 +72,7 @@ import {
 } from './executed-pdf';
 import { assembleExecutedAgreementPdf } from './executed-pdf-assembly';
 import { verifyImmutableObject } from './exact-object-stream';
+import { verifyAuditEventRecord } from './audit-event-integrity';
 
 export const COMPLETION_ARTIFACT_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -102,7 +108,9 @@ export interface CompletionArtifactBatchResult {
  * leased job table (never the hot recipient sign/approve transactions),
  * deterministically rebuilds the canonical manifest from the pinned Git
  * revision plus SQL evidence, persists content-addressed JSON/Markdown gzip
- * artifacts, and publishes the pointer and audit event atomically.
+ * artifacts, and publishes the pointer, optional PDF pointer, receipt, job
+ * transition, and audit event atomically. The same drain then works a bounded
+ * PDF repair batch for envelopes already published without a PDF pointer.
  */
 export class CompletionArtifactPublicationService {
 	readonly #store: CompletionArtifactStore;
@@ -114,6 +122,7 @@ export class CompletionArtifactPublicationService {
 	readonly #pdfStore: CompletionArtifactPdfStore | null;
 	readonly #pdfEvidenceStore: CompletionPdfEvidenceStore | null;
 	readonly #sentDocuments: EnvelopeSentDocumentStore | null;
+	readonly #pdfRepairStore: CompletionArtifactPdfRepairStore | null;
 
 	constructor(
 		store: CompletionArtifactStore,
@@ -125,13 +134,15 @@ export class CompletionArtifactPublicationService {
 		newClaimToken: OpaqueTokenGenerator = newOpaqueToken,
 		newId: UuidV7Generator = newUuidV7,
 		// Optional: when omitted, PDF rendering is skipped entirely and only
-		// the JSON/Markdown manifest (Slice A) is published. PDF generation
-		// is a pure function of already-published evidence, so it is always
-		// safe to backfill later without touching the manifest publication
-		// this constructor's other parameters govern.
+		// the JSON/Markdown manifest (Slice A) is published. When present, the
+		// PDF pointer is published atomically with the manifest. Envelopes
+		// published without one are backfilled by the PDF repair queue, which
+		// runs only when `pdfRepairStore` is also wired and never touches the
+		// manifest publication this constructor's other parameters govern.
 		pdfStore: CompletionArtifactPdfStore | null = null,
 		pdfEvidenceStore: CompletionPdfEvidenceStore | null = null,
-		sentDocuments: EnvelopeSentDocumentStore | null = null
+		sentDocuments: EnvelopeSentDocumentStore | null = null,
+		pdfRepairStore: CompletionArtifactPdfRepairStore | null = null
 	) {
 		this.#store = store;
 		this.#objects = objects;
@@ -142,6 +153,7 @@ export class CompletionArtifactPublicationService {
 		this.#pdfStore = pdfStore;
 		this.#pdfEvidenceStore = pdfEvidenceStore;
 		this.#sentDocuments = sentDocuments;
+		this.#pdfRepairStore = pdfRepairStore;
 	}
 
 	async publishPendingCompletionArtifacts(
@@ -191,7 +203,9 @@ export class CompletionArtifactPublicationService {
 				)
 			);
 		}
-		return summarize(claims.length, outcomes);
+		const repairOutcomes: readonly CompletionArtifactItemOutcome[] =
+			await this.#repairPendingPdfs();
+		return summarize(claims.length + repairOutcomes.length, [...outcomes, ...repairOutcomes]);
 	}
 
 	async #publishClaim(
@@ -303,69 +317,17 @@ export class CompletionArtifactPublicationService {
 				{ envelopeId: claim.envelopeId }
 			);
 
-			let pdfCommand: PublishCompletionArtifactPdfCommand | null = null;
-			if (this.#pdfStore !== null && this.#pdfEvidenceStore !== null) {
-				const fieldGeometry = await this.#pdfEvidenceStore.readFieldGeometry(claim.envelopeId);
-				const pages = buildCompletionPdfPages(manifest, verified.documents, fieldGeometry);
-				const evidenceSummaryPdf = renderCompletionPdf(pages);
-				const executed: ExecutedPdfResult | null = await this.#executeAgreement({
-					claim,
-					documentSet: pinnedDocumentSet,
-					documents: verified.documents,
-					fields: evidence.fields,
-					auditEvents: evidence.auditEvents,
-					fieldGeometry,
-					appendixPdfBytes: evidenceSummaryPdf
-				});
-				const pdfBytes: Uint8Array = executed?.bytes ?? evidenceSummaryPdf;
-				const pdfSha256 = await sha256Hex(pdfBytes);
-				const pdfKey = completionArtifactObjectKey(claim.envelopeId, 'pdf', pdfSha256);
-				await this.#persistImmutable(pdfKey, pdfBytes, pdfSha256, PDF_CONTENT_TYPE);
-
-				const pdfManifest = await buildCompletionPdfManifest({
-					manifest,
-					manifestSha256,
-					pdfBytes,
-					fieldGeometry,
-					artifactKind: executed === null ? 'evidence-summary-v1' : 'executed-agreement-v1',
-					pageCount: executed?.pageCount ?? pages.length,
-					appendixFirstPage: executed?.appendixFirstPage ?? null,
-					...(executed === null
-						? {}
-						: {
-								documentPages: new Map(
-									executed.documents.map((document) => [
-										document.documentId,
-										{ firstPage: document.firstPage, lastPage: document.lastPage }
-									])
-								)
-							})
-				});
-				const pdfManifestJson = canonicalPdfManifestJson(pdfManifest);
-				const pdfManifestGzip = gzipCompletionArtifact(pdfManifestJson);
-				const pdfManifestSha256 = await sha256Hex(pdfManifestGzip);
-				const pdfManifestKey = completionArtifactObjectKey(
-					claim.envelopeId,
-					'pdf-manifest',
-					pdfManifestSha256
-				);
-				await this.#persistImmutable(
-					pdfManifestKey,
-					pdfManifestGzip,
-					pdfManifestSha256,
-					PDF_MANIFEST_CONTENT_TYPE
-				);
-
-				pdfCommand = {
-					envelopeId: claim.envelopeId,
-					pdfObjectKey: pdfKey,
-					pdfSha256,
-					pdfByteSize: pdfBytes.byteLength,
-					pdfManifestObjectKey: pdfManifestKey,
-					pdfManifestSha256,
-					publishedAt: now.toISOString()
-				};
-			}
+			const pdf: CompletionArtifactPdfMetadata | null =
+				this.#pdfStore !== null && this.#pdfEvidenceStore !== null
+					? await this.#composePdfMetadata({
+							claim,
+							evidence,
+							verifiedDocuments: verified.documents,
+							pinnedDocumentSet,
+							manifest,
+							manifestSha256
+						})
+					: null;
 
 			const publish: PublishCompletionArtifactResult = await this.#store.publishCompletionArtifact({
 				envelopeId: claim.envelopeId,
@@ -383,18 +345,10 @@ export class CompletionArtifactPublicationService {
 				updatedAt: now.toISOString(),
 				auditEventId,
 				auditEventHash,
-				auditPayloadJson
+				auditPayloadJson,
+				pdf
 			});
 			if (publish.outcome === 'published' || publish.outcome === 'replayed') {
-				if (this.#pdfStore !== null && pdfCommand !== null) {
-					const pdfResult = await this.#pdfStore.publishCompletionArtifactPdf(pdfCommand);
-					if (
-						pdfResult.outcome === 'integrity_error' ||
-						pdfResult.outcome === 'artifact_not_found'
-					) {
-						throw new CompletionArtifactIntegrityError('Failed to publish completion artifact PDF');
-					}
-				}
 				return { envelopeId: claim.envelopeId, outcome: 'published' };
 			}
 			if (publish.outcome === 'stale') return { envelopeId: claim.envelopeId, outcome: 'stale' };
@@ -504,6 +458,318 @@ export class CompletionArtifactPublicationService {
 		}
 	}
 
+	async #composePdfMetadata(input: {
+		claim: ClaimedCompletionArtifactJob & {
+			sentCommitSha: string;
+			repositoryArchiveKey: string;
+			repositoryArchiveSha256: string;
+		};
+		evidence: CompletionEvidence;
+		verifiedDocuments: readonly DraftDocument[];
+		pinnedDocumentSet: DocumentSetManifest | null;
+		manifest: CompletionManifestV1;
+		manifestSha256: string;
+	}): Promise<CompletionArtifactPdfMetadata> {
+		if (this.#pdfEvidenceStore === null) {
+			throw new CompletionArtifactIntegrityError(
+				'Completion artifact PDF composition requires field geometry evidence'
+			);
+		}
+		const fieldGeometry: readonly CompletionPdfFieldGeometry[] =
+			await this.#pdfEvidenceStore.readFieldGeometry(input.claim.envelopeId);
+		const pages = buildCompletionPdfPages(input.manifest, input.verifiedDocuments, fieldGeometry);
+		const evidenceSummaryPdf: Uint8Array = renderCompletionPdf(pages);
+		const executed: ExecutedPdfResult | null = await this.#executeAgreement({
+			claim: input.claim,
+			documentSet: input.pinnedDocumentSet,
+			documents: input.verifiedDocuments,
+			fields: input.evidence.fields,
+			auditEvents: input.evidence.auditEvents,
+			fieldGeometry,
+			appendixPdfBytes: evidenceSummaryPdf
+		});
+		const pdfBytes: Uint8Array = executed?.bytes ?? evidenceSummaryPdf;
+		const pdfSha256: string = await sha256Hex(pdfBytes);
+		const pdfKey: string = completionArtifactObjectKey(input.claim.envelopeId, 'pdf', pdfSha256);
+		await this.#persistImmutable(pdfKey, pdfBytes, pdfSha256, PDF_CONTENT_TYPE);
+
+		const pdfManifest = await buildCompletionPdfManifest({
+			manifest: input.manifest,
+			manifestSha256: input.manifestSha256,
+			pdfBytes,
+			fieldGeometry,
+			artifactKind: executed === null ? 'evidence-summary-v1' : 'executed-agreement-v1',
+			pageCount: executed?.pageCount ?? pages.length,
+			appendixFirstPage: executed?.appendixFirstPage ?? null,
+			...(executed === null
+				? {}
+				: {
+						documentPages: new Map(
+							executed.documents.map((document) => [
+								document.documentId,
+								{ firstPage: document.firstPage, lastPage: document.lastPage }
+							])
+						)
+					})
+		});
+		const pdfManifestJson: string = canonicalPdfManifestJson(pdfManifest);
+		const pdfManifestGzip: Uint8Array = gzipCompletionArtifact(pdfManifestJson);
+		const pdfManifestSha256: string = await sha256Hex(pdfManifestGzip);
+		const pdfManifestKey: string = completionArtifactObjectKey(
+			input.claim.envelopeId,
+			'pdf-manifest',
+			pdfManifestSha256
+		);
+		await this.#persistImmutable(
+			pdfManifestKey,
+			pdfManifestGzip,
+			pdfManifestSha256,
+			PDF_MANIFEST_CONTENT_TYPE
+		);
+		return {
+			pdfObjectKey: pdfKey,
+			pdfSha256,
+			pdfByteSize: pdfBytes.byteLength,
+			pdfManifestObjectKey: pdfManifestKey,
+			pdfManifestSha256
+		};
+	}
+
+	async #repairPendingPdfs(): Promise<readonly CompletionArtifactItemOutcome[]> {
+		if (
+			this.#pdfStore === null ||
+			this.#pdfEvidenceStore === null ||
+			this.#pdfRepairStore === null
+		) {
+			return [];
+		}
+		const claimedAt: Date = this.#now();
+		const claimToken: string = this.#newClaimToken();
+		let claims: readonly ClaimedCompletionArtifactPdfRepair[];
+		try {
+			claims = await this.#pdfRepairStore.claimPendingPdfRepairs({
+				claimToken,
+				claimedAt: claimedAt.toISOString(),
+				staleBefore: new Date(
+					claimedAt.valueOf() - COMPLETION_ARTIFACT_CLAIM_LEASE_MS
+				).toISOString(),
+				discoveryLimit: MAX_COMPLETION_ARTIFACT_PDF_REPAIR_DISCOVERY_BATCH,
+				claimLimit: boundCompletionArtifactPdfRepairClaimLimit(1)
+			});
+		} catch (error: unknown) {
+			// The primary batch already committed its own outcomes; a repair
+			// queue outage must not discard them. Nothing was claimed, so the
+			// next drain simply tries again.
+			console.error(
+				JSON.stringify({
+					event: 'completion_artifact_pdf_repair_claim_failed',
+					message: error instanceof Error ? error.name : 'UnknownError'
+				})
+			);
+			return [];
+		}
+		const outcomes: CompletionArtifactItemOutcome[] = [];
+		for (const claim of claims) {
+			try {
+				outcomes.push(await this.#repairClaim(claim, claimToken, claimedAt));
+			} catch {
+				// The lease expires and a later drain reclaims it.
+				outcomes.push({
+					envelopeId: claim.envelopeId,
+					outcome: 'retryable_failed',
+					errorCode: 'completion_artifact_store_unavailable'
+				});
+			}
+		}
+		return outcomes;
+	}
+
+	async #repairClaim(
+		claim: ClaimedCompletionArtifactPdfRepair,
+		claimToken: string,
+		now: Date
+	): Promise<CompletionArtifactItemOutcome> {
+		if (this.#pdfRepairStore === null) {
+			return { envelopeId: claim.envelopeId, outcome: 'stale' };
+		}
+		const refreshed: ClaimedCompletionArtifactPdfRepair | null =
+			await this.#pdfRepairStore.readClaimedPdfRepair({
+				envelopeId: claim.envelopeId,
+				claimToken
+			});
+		if (refreshed === null) return { envelopeId: claim.envelopeId, outcome: 'stale' };
+		claim = refreshed;
+
+		try {
+			assertClaimedPointerPresent(claim);
+			if (claim.auditHeadSequence < 2) {
+				throw new CompletionArtifactIntegrityError(
+					'Completion artifact PDF repair is missing its publication audit head'
+				);
+			}
+			const throughSequence: number = claim.auditHeadSequence - 1;
+			const evidence: CompletionEvidence = await this.#store.readCompletionEvidence(
+				claim.envelopeId,
+				{ throughSequence }
+			);
+			const publicationEvidence: CompletionEvidence = await this.#store.readCompletionEvidence(
+				claim.envelopeId,
+				{ throughSequence: claim.auditHeadSequence }
+			);
+			await verifyOriginalPublication(claim, evidence, publicationEvidence);
+			await verifyFieldValueIntegrity(evidence.fields);
+			const verified = await readImmutableDraftRevision(
+				{
+					envelopeId: claim.envelopeId,
+					commitSha: claim.sentCommitSha,
+					archiveKey: claim.repositoryArchiveKey,
+					archiveSha256: claim.repositoryArchiveSha256
+				},
+				this.#objects,
+				this.#repository
+			);
+			let pinnedManifestJson: string | null;
+			try {
+				pinnedManifestJson = await this.#repository.readManifest(
+					verified.archive,
+					claim.sentCommitSha
+				);
+			} catch {
+				throw new DraftIntegrityError('Pinned draft repository failed Git verification');
+			}
+			const pinnedDocumentSet: DocumentSetManifest | null =
+				pinnedManifestJson === null ? null : parsePinnedDocumentSet(pinnedManifestJson);
+			const { documents: manifestDocuments, documentSetHash: pinnedDocumentSetHash } =
+				await completionDocumentsFromRevision(verified.documents, pinnedDocumentSet);
+			const manifest: CompletionManifestV1 = await buildCompletionManifest({
+				envelopeId: claim.envelopeId,
+				title: claim.envelopeTitle,
+				sentCommitSha: claim.sentCommitSha,
+				draftArchiveSha256: claim.repositoryArchiveSha256,
+				fieldGeneration: claim.fieldGeneration,
+				...(pinnedDocumentSetHash === undefined ? {} : { documentSetHash: pinnedDocumentSetHash }),
+				documents: manifestDocuments,
+				recipients: evidence.recipients,
+				fields: evidence.fields,
+				auditEvents: evidence.auditEvents
+			});
+			const manifestJson: string = canonicalManifestJson(manifest);
+			const manifestSha256: string = await sha256TextHex(manifestJson);
+			const jsonGzip: Uint8Array = gzipCompletionArtifact(manifestJson);
+			const jsonSha256: string = await sha256Hex(jsonGzip);
+			const markdown: string = renderCompletionMarkdown(manifest);
+			const markdownGzip: Uint8Array = gzipCompletionArtifact(markdown);
+			const markdownSha256: string = await sha256Hex(markdownGzip);
+			if (
+				manifestSha256 !== claim.manifestSha256 ||
+				jsonSha256 !== claim.jsonSha256 ||
+				markdownSha256 !== claim.markdownSha256
+			) {
+				throw new CompletionArtifactIntegrityError(
+					'Completion artifact PDF repair reproduced different manifest bytes'
+				);
+			}
+			// The published JSON/Markdown objects are never rewritten by repair:
+			// they must already hold exactly the reproduced bytes.
+			await this.#requirePublishedObject(claim.jsonObjectKey, jsonSha256, jsonGzip.byteLength);
+			await this.#requirePublishedObject(
+				claim.markdownObjectKey,
+				markdownSha256,
+				markdownGzip.byteLength
+			);
+			const pdf: CompletionArtifactPdfMetadata = await this.#composePdfMetadata({
+				claim,
+				evidence,
+				verifiedDocuments: verified.documents,
+				pinnedDocumentSet,
+				manifest,
+				manifestSha256
+			});
+			const complete = await this.#pdfRepairStore.completePdfRepair({
+				envelopeId: claim.envelopeId,
+				claimToken,
+				expectedManifestSha256: claim.manifestSha256,
+				pdf,
+				updatedAt: now.toISOString()
+			});
+			if (complete.outcome === 'repaired' || complete.outcome === 'replayed') {
+				return { envelopeId: claim.envelopeId, outcome: 'published' };
+			}
+			if (complete.outcome === 'stale') {
+				return { envelopeId: claim.envelopeId, outcome: 'stale' };
+			}
+			return this.#finishPdfRepairFailure(
+				claim,
+				claimToken,
+				'completion_artifact_integrity_conflict',
+				false,
+				now,
+				'integrity_failed'
+			);
+		} catch (error: unknown) {
+			if (
+				error instanceof CompletionArtifactBoundExceededError ||
+				error instanceof CompletionPdfBoundExceededError
+			) {
+				return this.#finishPdfRepairFailure(
+					claim,
+					claimToken,
+					'completion_artifact_evidence_too_large',
+					false,
+					now,
+					'integrity_failed'
+				);
+			}
+			const integrity: boolean =
+				error instanceof CompletionArtifactIntegrityError || error instanceof DraftIntegrityError;
+			return this.#finishPdfRepairFailure(
+				claim,
+				claimToken,
+				integrity ? 'completion_artifact_evidence_invalid' : 'completion_artifact_build_failed',
+				!integrity,
+				now,
+				integrity ? 'integrity_failed' : 'retryable_failed'
+			);
+		}
+	}
+
+	async #finishPdfRepairFailure(
+		claim: ClaimedCompletionArtifactPdfRepair,
+		claimToken: string,
+		errorCode: string,
+		retryable: boolean,
+		now: Date,
+		outcome: 'retryable_failed' | 'permanently_failed' | 'integrity_failed'
+	): Promise<CompletionArtifactItemOutcome> {
+		if (this.#pdfRepairStore === null) {
+			return { envelopeId: claim.envelopeId, outcome: 'stale' };
+		}
+		const attemptsExhausted: boolean =
+			retryable && claim.attempts >= MAX_COMPLETION_ARTIFACT_ATTEMPTS;
+		const willRetry: boolean = retryable && !attemptsExhausted;
+		const safeCode: string = sanitizeCompletionArtifactErrorCode(
+			attemptsExhausted ? 'completion_artifact_pdf_repair_attempts_exhausted' : errorCode
+		);
+		const failure: FailCompletionArtifactPdfRepairResult = await this.#pdfRepairStore.failPdfRepair(
+			{
+				envelopeId: claim.envelopeId,
+				claimToken,
+				errorCode: safeCode,
+				retryable: willRetry,
+				nextAvailableAt: willRetry
+					? completionArtifactRetryAvailableAt(now, claim.attempts)
+					: now.toISOString(),
+				failedAt: now.toISOString()
+			}
+		);
+		if (failure.outcome === 'stale') return { envelopeId: claim.envelopeId, outcome: 'stale' };
+		return {
+			envelopeId: claim.envelopeId,
+			outcome: attemptsExhausted ? 'permanently_failed' : outcome,
+			errorCode: safeCode
+		};
+	}
+
 	async #persistImmutable(
 		key: string,
 		bytes: Uint8Array,
@@ -544,6 +810,24 @@ export class CompletionArtifactPublicationService {
 				);
 			}
 			throw error;
+		}
+	}
+
+	/**
+	 * A published, DB-referenced object that is absent or differs is
+	 * corruption, not a transient: fail closed. A provider read error still
+	 * propagates and stays retryable.
+	 */
+	async #requirePublishedObject(key: string, sha256: string, size: number): Promise<void> {
+		const outcome: 'missing' | 'verified' | 'mismatched' = await this.#readAndVerify(
+			key,
+			sha256,
+			size
+		);
+		if (outcome !== 'verified') {
+			throw new CompletionArtifactIntegrityError(
+				'Published completion artifact object does not hold the reproduced bytes'
+			);
 		}
 	}
 
@@ -647,9 +931,15 @@ function encodeScopeSegment(value: string): string {
  * integrity error. Format and instance-scope validation still happens in
  * `readImmutableDraftRevision`, unchanged, once presence is established here.
  */
-function assertClaimedPointerPresent(
-	claim: ClaimedCompletionArtifactJob
-): asserts claim is ClaimedCompletionArtifactJob & {
+function assertClaimedPointerPresent<
+	T extends {
+		sentCommitSha: string | null;
+		repositoryArchiveKey: string | null;
+		repositoryArchiveSha256: string | null;
+	}
+>(
+	claim: T
+): asserts claim is T & {
 	sentCommitSha: string;
 	repositoryArchiveKey: string;
 	repositoryArchiveSha256: string;
@@ -661,6 +951,61 @@ function assertClaimedPointerPresent(
 	) {
 		throw new CompletionArtifactIntegrityError(
 			'Claimed completion artifact envelope is missing its repository pointer'
+		);
+	}
+}
+
+async function verifyOriginalPublication(
+	claim: ClaimedCompletionArtifactPdfRepair,
+	prefix: CompletionEvidence,
+	throughPublication: CompletionEvidence
+): Promise<void> {
+	const anchor: CompletionEvidenceAuditEvent | undefined =
+		prefix.auditEvents[prefix.auditEvents.length - 1];
+	if (
+		anchor === undefined ||
+		anchor.id !== claim.anchorAuditEventId ||
+		anchor.sequence !== claim.auditHeadSequence - 1 ||
+		anchor.eventType !== 'envelope.completed'
+	) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion artifact PDF repair evidence prefix is not the original completion anchor'
+		);
+	}
+	const publication: CompletionEvidenceAuditEvent | undefined =
+		throughPublication.auditEvents[throughPublication.auditEvents.length - 1];
+	if (
+		publication === undefined ||
+		publication.id !== claim.auditEventId ||
+		publication.sequence !== claim.auditHeadSequence ||
+		publication.eventHash !== claim.auditHeadEventHash ||
+		publication.eventType !== COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE ||
+		publication.previousHash !== anchor.eventHash
+	) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion artifact PDF repair could not verify the original publication event'
+		);
+	}
+	// Version-aware recompute (canonical payload, actor, timestamp, and hash),
+	// so a publication written under an earlier hash version still verifies.
+	const payload: unknown = await verifyAuditEventRecord(publication, {
+		envelopeId: claim.envelopeId
+	});
+	if (typeof payload !== 'object' || payload === null) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion artifact publication payload is not an object'
+		);
+	}
+	const record: Record<string, unknown> = payload as Record<string, unknown>;
+	if (
+		record.manifestSha256 !== claim.manifestSha256 ||
+		record.jsonSha256 !== claim.jsonSha256 ||
+		record.markdownSha256 !== claim.markdownSha256 ||
+		record.sentCommitSha !== claim.sentCommitSha ||
+		record.fieldGeneration !== claim.fieldGeneration
+	) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion artifact publication payload does not match the stored pointer'
 		);
 	}
 }

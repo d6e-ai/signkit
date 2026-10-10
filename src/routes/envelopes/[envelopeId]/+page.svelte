@@ -93,6 +93,9 @@
 	let delivery = $state<PublicEnvelopeDeliveryStatus | null>(null);
 	let completionStatus = $state<PublicCompletionArtifactStatus | null>(null);
 	let completionStatusError = $state<string | null>(null);
+	let completionRetryPending = $state(false);
+	let completionRetryError = $state<string | null>(null);
+	let completionRetryAttempt = $state(createEnvelopeMutationAttempt());
 	const completionPdfStatus = $derived(
 		completionStatus?.status === 'published' ? completionStatus.pdfStatus : null
 	);
@@ -517,6 +520,53 @@
 			completionStatus = null;
 			completionStatusError = m.envelope_completed_status_unavailable();
 		}
+	}
+
+	interface CompletionRetryCommand {
+		expectedAttempts: number;
+		expectedFailedAt: string;
+	}
+
+	// The exact exhausted generation this page last observed; null when the
+	// status offers no operator retry. Sent back verbatim so a stale page can
+	// never reset a newer job.
+	function completionRetryCommand(): CompletionRetryCommand | null {
+		if (completionStatus?.status === 'failed') {
+			const failedAt = completionStatus.failedAt;
+			if (!completionStatus.retryEligible || failedAt === null) return null;
+			return { expectedAttempts: completionStatus.attempts, expectedFailedAt: failedAt };
+		}
+		if (completionStatus?.status === 'published') {
+			const repair = completionStatus.pdfRepair;
+			if (!completionStatus.retryEligible || repair === null || repair.failedAt === null) {
+				return null;
+			}
+			return { expectedAttempts: repair.attempts, expectedFailedAt: repair.failedAt };
+		}
+		return null;
+	}
+
+	async function reprocessCompletion(): Promise<void> {
+		const command = completionRetryCommand();
+		if (completionRetryPending || command === null) return;
+		completionRetryPending = true;
+		completionRetryError = null;
+		try {
+			await client.retryCompletionArtifact(envelopeId, command, {
+				idempotencyKey: completionRetryAttempt.key()
+			});
+			completionRetryAttempt.succeeded();
+		} catch (cause) {
+			completionRetryAttempt.failed(cause);
+			completionRetryError =
+				cause instanceof EnvelopesApiError && cause.status === 409
+					? m.envelope_completed_reprocess_stale()
+					: m.envelope_completed_reprocess_failed();
+		} finally {
+			completionRetryPending = false;
+		}
+		// Re-read either way: success shows the requeued job, a refusal shows why.
+		await refreshCompletionStatus();
 	}
 
 	async function load(): Promise<void> {
@@ -1606,7 +1656,8 @@
 						<p>{completionStatusError}</p>
 						<div>
 							<Button variant="outline" size="sm" onclick={() => void refreshCompletionStatus()}>
-								{m.common_retry()}
+								<IconRefresh data-icon="inline-start" />
+								{m.envelope_completed_refresh_status()}
 							</Button>
 						</div>
 					</Alert.Description>
@@ -1619,15 +1670,38 @@
 					<Alert.Title>{m.envelope_completed_title()}</Alert.Title>
 					<Alert.Description class="flex flex-col gap-3">
 						<p>{m.envelope_completed_status_failed()}</p>
-						<div>
+						{#if completionRetryError}
+							<p>{completionRetryError}</p>
+						{/if}
+						<div class="flex flex-wrap gap-2">
 							<Button variant="outline" size="sm" onclick={() => void refreshCompletionStatus()}>
-								{m.common_retry()}
+								<IconRefresh data-icon="inline-start" />
+								{m.envelope_completed_refresh_status()}
 							</Button>
+							{#if completionStatus.retryEligible}
+								<Button
+									size="sm"
+									disabled={completionRetryPending}
+									onclick={() => void reprocessCompletion()}
+								>
+									{#if completionRetryPending}
+										<Spinner data-icon="inline-start" />
+									{/if}
+									{m.envelope_completed_reprocess()}
+								</Button>
+							{/if}
 						</div>
 					</Alert.Description>
 				</Alert.Root>
 			{:else if completionStatus.status === 'pending' || completionStatus.status === 'processing'}
 				<p class="text-sm text-muted-foreground">{m.envelope_completed_status_pending()}</p>
+				{#if completionStatus.availableAt}
+					<p class="text-sm text-muted-foreground">
+						{m.envelope_completed_status_pending_scheduled({
+							availableAt: completionStatus.availableAt
+						})}
+					</p>
+				{/if}
 			{:else if completionStatus.status === 'published'}
 				<div class="flex flex-wrap gap-2">
 					{#if completionStatus.pdfStatus === 'published'}
@@ -1670,8 +1744,42 @@
 					<p class="text-sm text-muted-foreground">
 						{completionStatus.pdfStatus === 'pending'
 							? m.envelope_completed_pdf_pending()
-							: m.envelope_completed_pdf_unavailable()}
+							: completionStatus.pdfStatus === 'failed'
+								? m.envelope_completed_pdf_failed()
+								: m.envelope_completed_pdf_unavailable()}
 					</p>
+					{#if completionStatus.pdfStatus === 'pending' && completionStatus.pdfRepair?.availableAt}
+						<p class="text-sm text-muted-foreground">
+							{m.envelope_completed_status_pending_scheduled({
+								availableAt: completionStatus.pdfRepair.availableAt
+							})}
+						</p>
+					{/if}
+					{#if completionStatus.pdfStatus === 'failed'}
+						{#if completionRetryError}
+							<p class="text-sm font-medium text-destructive" role="alert">
+								{completionRetryError}
+							</p>
+						{/if}
+						<div class="flex flex-wrap gap-2">
+							<Button variant="outline" size="sm" onclick={() => void refreshCompletionStatus()}>
+								<IconRefresh data-icon="inline-start" />
+								{m.envelope_completed_refresh_status()}
+							</Button>
+							{#if completionStatus.retryEligible}
+								<Button
+									size="sm"
+									disabled={completionRetryPending}
+									onclick={() => void reprocessCompletion()}
+								>
+									{#if completionRetryPending}
+										<Spinner data-icon="inline-start" />
+									{/if}
+									{m.envelope_completed_reprocess()}
+								</Button>
+							{/if}
+						</div>
+					{/if}
 				{/if}
 			{/if}
 		</Card.Content>

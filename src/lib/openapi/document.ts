@@ -1697,6 +1697,56 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Completion artifact status', { type: 'object' })
 				})
 			},
+			'/api/v1/envelopes/{envelopeId}/completion-artifact/retry': {
+				post: op({
+					summary: 'Requeue an exhausted transient completion artifact failure',
+					operationId: 'retryEnvelopeCompletionArtifact',
+					description:
+						'Requeues only the exhausted transient failure (`completion_artifact_attempts_exhausted` for an unpublished envelope, `completion_artifact_pdf_repair_attempts_exhausted` for a published envelope whose PDF repair exhausted) that the caller observed in the status read. `expectedAttempts` and `expectedFailedAt` must echo that status (`attempts`/`failedAt`, or `pdfRepair.attempts`/`pdfRepair.failedAt`); a stale generation, integrity or budget failure, or live lease is refused with 409. Does not re-sign, rewrite a published artifact, or reissue already exhausted completion mail.',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: ['expectedAttempts', 'expectedFailedAt'],
+									additionalProperties: false,
+									properties: {
+										expectedAttempts: {
+											type: 'integer',
+											minimum: 0,
+											maximum: 2_147_483_647
+										},
+										expectedFailedAt: {
+											type: 'string',
+											format: 'date-time',
+											description: 'The failure generation from the completion artifact status.'
+										}
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Requeued or safely replayed',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['requeued'],
+										additionalProperties: false,
+										properties: { requeued: { type: 'object' } }
+									}
+								}
+							}
+						}
+					}
+				})
+			},
 			'/api/v1/envelopes/{envelopeId}/pdf-seal': {
 				get: op({
 					summary: 'Read certificate-backed PDF seal status',

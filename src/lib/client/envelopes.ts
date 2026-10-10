@@ -816,6 +816,43 @@ export class EnvelopesClient {
 		return data.completionArtifact;
 	}
 
+	/**
+	 * Requeues the exhausted failure generation observed in the latest status
+	 * read. `expectedFailedAt` is that status's `failedAt`, echoed verbatim.
+	 */
+	async retryCompletionArtifact(
+		envelopeId: string,
+		command: { expectedAttempts: number; expectedFailedAt: string },
+		options?: RequestOptions
+	): Promise<{ target: 'artifact' | 'pdf_repair'; replayed: boolean }> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-artifact/retry`
+		);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{
+			requeued: { envelopeId: string; target: 'artifact' | 'pdf_repair'; outcome: string };
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body: JSON.stringify({
+					expectedAttempts: command.expectedAttempts,
+					expectedFailedAt: command.expectedFailedAt
+				})
+			},
+			options?.fetch
+		);
+		return {
+			target: data.requeued.target,
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
 	async completionPdf(
 		envelopeId: string,
 		options?: RequestOptions

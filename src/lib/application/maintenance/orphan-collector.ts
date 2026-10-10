@@ -14,6 +14,23 @@ export const MAX_ORPHAN_SCAN_LIMIT: number = MAX_LIST_OBJECTS_LIMIT;
 export const D1_MAX_BOUND_PARAMETERS: number = 100;
 export const D1_FREE_QUERY_LIMIT: number = 50;
 const D1_REFERENCE_CHUNK_SIZE: number = DEFAULT_ORPHAN_BATCH_SIZE;
+/**
+ * Completion artifact objects are written before their DB pointer lands
+ * (`completion-artifacts/v1/envelopes/<envelopeId>/sha256/...`, where a valid
+ * envelope ID is its own URI segment). While that envelope's primary job is
+ * unpublished, or its manifest is published without a PDF pointer (PDF
+ * repair pending, discovered or not), every object under its prefix is live:
+ * a partial write must survive until publication or repair references it.
+ */
+const COMPLETION_ARTIFACT_KEY_PREFIX: string = 'completion-artifacts/v1/envelopes/';
+const D1_COMPLETION_CANDIDATES: string = `(
+		SELECT value AS key,
+			substr(value, ${COMPLETION_ARTIFACT_KEY_PREFIX.length + 1},
+				instr(substr(value, ${COMPLETION_ARTIFACT_KEY_PREFIX.length + 1}), '/') - 1) AS envelope_id
+		FROM json_each(?1)
+		WHERE value LIKE '${COMPLETION_ARTIFACT_KEY_PREFIX}%'
+			AND instr(substr(value, ${COMPLETION_ARTIFACT_KEY_PREFIX.length + 1}), '/') > 1
+	) candidate`;
 const D1_REFERENCE_QUERIES: readonly string[] = [
 	`SELECT repository_archive_key AS key FROM envelope
 	 WHERE repository_archive_key IN (SELECT value FROM json_each(?1))
@@ -25,7 +42,13 @@ const D1_REFERENCE_QUERIES: readonly string[] = [
 	 WHERE json_object_key IN (SELECT value FROM json_each(?1))
 	 UNION
 	 SELECT markdown_object_key AS key FROM completion_artifact
-	 WHERE markdown_object_key IN (SELECT value FROM json_each(?1))`,
+	 WHERE markdown_object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT candidate.key AS key FROM ${D1_COMPLETION_CANDIDATES}
+	 WHERE EXISTS (
+		SELECT 1 FROM completion_artifact_job job
+		WHERE job.envelope_id = candidate.envelope_id AND job.status <> 'published'
+	 )`,
 	`SELECT pdf_object_key AS key FROM completion_artifact_pdf
 	 WHERE pdf_object_key IN (SELECT value FROM json_each(?1))
 	 UNION
@@ -36,7 +59,17 @@ const D1_REFERENCE_QUERIES: readonly string[] = [
 	 WHERE object_key IN (SELECT value FROM json_each(?1))
 	 UNION
 	 SELECT object_key AS key FROM envelope_uploaded_document
-	 WHERE object_key IN (SELECT value FROM json_each(?1))`,
+	 WHERE object_key IN (SELECT value FROM json_each(?1))
+	 UNION
+	 SELECT candidate.key AS key FROM ${D1_COMPLETION_CANDIDATES}
+	 WHERE EXISTS (
+		SELECT 1 FROM completion_artifact artifact
+		WHERE artifact.envelope_id = candidate.envelope_id
+			AND NOT EXISTS (
+				SELECT 1 FROM completion_artifact_pdf pdf
+				WHERE pdf.envelope_id = artifact.envelope_id
+			)
+	 )`,
 	`SELECT object_key AS key FROM envelope_sent_document
 	 WHERE object_key IN (SELECT value FROM json_each(?1))
 	 UNION
@@ -363,6 +396,24 @@ export class PostgresOrphanReferenceStore implements OrphanReferenceStore {
 				UNION
 				SELECT validation_report_object_key AS key FROM pdf_seal_job
 				WHERE validation_report_object_key = ANY(${chunk})
+				UNION
+				SELECT candidate.key FROM unnest(${chunk}::text[]) AS candidate(key)
+				WHERE candidate.key LIKE ${COMPLETION_ARTIFACT_KEY_PREFIX + '%'}
+					AND (
+						EXISTS (
+							SELECT 1 FROM completion_artifact_job job
+							WHERE job.envelope_id = split_part(candidate.key, '/', 4)
+								AND job.status <> 'published'
+						)
+						OR EXISTS (
+							SELECT 1 FROM completion_artifact artifact
+							WHERE artifact.envelope_id = split_part(candidate.key, '/', 4)
+								AND NOT EXISTS (
+									SELECT 1 FROM completion_artifact_pdf pdf
+									WHERE pdf.envelope_id = artifact.envelope_id
+								)
+						)
+					)
 			`;
 
 			for (const row of rows) {

@@ -26,7 +26,9 @@ import type {
 	PublishCompletionArtifactCommand,
 	PublishCompletionArtifactResult,
 	PublishedCompletionArtifact,
-	ReadClaimedCompletionArtifactCommand
+	ReadClaimedCompletionArtifactCommand,
+	ReadCompletionEvidenceOptions,
+	RequeueExhaustedCompletionArtifactResult
 } from '$lib/ports/completion-artifact-store';
 import type {
 	CompletionArtifactPdfRecord,
@@ -34,6 +36,17 @@ import type {
 	PublishCompletionArtifactPdfCommand,
 	PublishCompletionArtifactPdfResult
 } from '$lib/ports/completion-artifact-pdf-store';
+import type {
+	ClaimedCompletionArtifactPdfRepair,
+	CompleteCompletionArtifactPdfRepairCommand,
+	CompleteCompletionArtifactPdfRepairResult,
+	CompletionArtifactPdfRepairStatusRow,
+	CompletionArtifactPdfRepairStore,
+	FailCompletionArtifactPdfRepairCommand,
+	FailCompletionArtifactPdfRepairResult,
+	ReadClaimedCompletionArtifactPdfRepairCommand,
+	RequeueExhaustedCompletionArtifactPdfRepairResult
+} from '$lib/ports/completion-artifact-pdf-repair-store';
 import type {
 	CompletionPdfEvidenceStore,
 	CompletionPdfFieldGeometry
@@ -51,6 +64,7 @@ import {
 	MAX_COMPLETION_ARTIFACT_ATTEMPTS,
 	type CompletionArtifactBatchResult
 } from './completion-artifact-service';
+import { COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE } from './completion-manifest';
 import { COMPLETION_PDF_MANIFEST_SCHEMA, type CompletionPdfManifestV2 } from './completion-pdf';
 
 const NOW: Date = new Date('2026-09-12T00:00:00.000Z');
@@ -180,10 +194,18 @@ class FakeCompletionArtifactStore implements CompletionArtifactStore {
 		return this.claims.find((claim) => claim.envelopeId === command.envelopeId) ?? null;
 	}
 
-	async readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence> {
+	async readCompletionEvidence(
+		envelopeId: string,
+		options?: ReadCompletionEvidenceOptions
+	): Promise<CompletionEvidence> {
 		const evidence = this.evidenceByEnvelope.get(envelopeId);
 		if (evidence === undefined) throw new Error('Missing evidence fixture');
-		return evidence;
+		if (options?.throughSequence === undefined) return evidence;
+		const throughSequence: number = options.throughSequence;
+		return {
+			...evidence,
+			auditEvents: evidence.auditEvents.filter((event) => event.sequence <= throughSequence)
+		};
 	}
 
 	async publishCompletionArtifact(
@@ -200,7 +222,15 @@ class FakeCompletionArtifactStore implements CompletionArtifactStore {
 		return this.failResult;
 	}
 
+	async requeueExhaustedCompletionArtifact(): Promise<RequeueExhaustedCompletionArtifactResult> {
+		return { outcome: 'not_eligible' };
+	}
+
 	async findCompletionArtifactStatus(): Promise<CompletionArtifactStatusRow | null> {
+		return null;
+	}
+
+	async findCompletionArtifactRetry(): Promise<null> {
 		return null;
 	}
 }
@@ -530,6 +560,7 @@ interface ExecutedScenarioOptions {
 	seedSignatureUnderDigestOf?: Uint8Array;
 	/** Simulates a historical sent rendering that differs from today's renderer output. */
 	sentMarkdownContent?: string;
+	pdfRepairStore?: CompletionArtifactPdfRepairStore;
 }
 
 interface ExecutedScenario {
@@ -665,9 +696,126 @@ async function executedScenario(options: ExecutedScenarioOptions = {}): Promise<
 			undefined,
 			pdfStore,
 			pdfEvidenceStore,
-			new FakeEnvelopeSentDocumentStore(sentDocumentSet)
+			new FakeEnvelopeSentDocumentStore(sentDocumentSet),
+			options.pdfRepairStore ?? null
 		)
 	};
+}
+
+class FakeCompletionArtifactPdfRepairStore implements CompletionArtifactPdfRepairStore {
+	claims: ClaimedCompletionArtifactPdfRepair[] = [];
+	completeCalls: CompleteCompletionArtifactPdfRepairCommand[] = [];
+	failCalls: FailCompletionArtifactPdfRepairCommand[] = [];
+	completeResult: CompleteCompletionArtifactPdfRepairResult = { outcome: 'repaired' };
+
+	async claimPendingPdfRepairs(): Promise<readonly ClaimedCompletionArtifactPdfRepair[]> {
+		return this.claims;
+	}
+
+	async readClaimedPdfRepair(
+		command: ReadClaimedCompletionArtifactPdfRepairCommand
+	): Promise<ClaimedCompletionArtifactPdfRepair | null> {
+		return this.claims.find((claim) => claim.envelopeId === command.envelopeId) ?? null;
+	}
+
+	async completePdfRepair(
+		command: CompleteCompletionArtifactPdfRepairCommand
+	): Promise<CompleteCompletionArtifactPdfRepairResult> {
+		this.completeCalls.push(command);
+		return this.completeResult;
+	}
+
+	async failPdfRepair(
+		command: FailCompletionArtifactPdfRepairCommand
+	): Promise<FailCompletionArtifactPdfRepairResult> {
+		this.failCalls.push(command);
+		return { outcome: 'failed' };
+	}
+
+	async requeueExhaustedPdfRepair(): Promise<RequeueExhaustedCompletionArtifactPdfRepairResult> {
+		return { outcome: 'not_eligible' };
+	}
+
+	async findPdfRepairStatus(): Promise<CompletionArtifactPdfRepairStatusRow | null> {
+		return null;
+	}
+}
+
+/**
+ * Turns a recorded primary publication into the legacy state the repair queue
+ * finds: the manifest, receipt, and publication audit event exist, the PDF
+ * pointer never landed, and a later unrelated audit event has since been
+ * appended after the publication head.
+ */
+function legacyPublishedWithoutPdf(
+	scenario: ExecutedScenario,
+	repair: FakeCompletionArtifactPdfRepairStore,
+	overrides: Partial<ClaimedCompletionArtifactPdfRepair> = {}
+): PublishCompletionArtifactCommand {
+	const publish: PublishCompletionArtifactCommand | undefined = scenario.store.publishCalls[0];
+	const primary: ClaimedCompletionArtifactJob | undefined = scenario.store.claims[0];
+	if (publish === undefined || primary === undefined) {
+		throw new Error('Expected a recorded primary publication');
+	}
+	const evidence: CompletionEvidence | undefined =
+		scenario.store.evidenceByEnvelope.get(ENVELOPE_ID);
+	if (evidence === undefined) throw new Error('Missing evidence fixture');
+	const headSequence: number = publish.expectedAuditSequence + 1;
+	scenario.store.evidenceByEnvelope.set(ENVELOPE_ID, {
+		...evidence,
+		auditEvents: [
+			...evidence.auditEvents,
+			{
+				id: publish.auditEventId,
+				sequence: headSequence,
+				eventType: COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE,
+				actorType: 'system',
+				actorId: 'completion-artifact-worker',
+				payloadJson: publish.auditPayloadJson,
+				previousHash: publish.previousAuditHash,
+				eventHash: publish.auditEventHash,
+				occurredAt: publish.updatedAt,
+				hashVersion: 3
+			},
+			{
+				id: 'event-late-after-publication',
+				sequence: headSequence + 1,
+				eventType: 'envelope.pdf_seal_requested',
+				actorType: 'user',
+				actorId: 'user-1',
+				payloadJson: '{"late":true}',
+				previousHash: publish.auditEventHash,
+				eventHash: 'f'.repeat(64),
+				occurredAt: '2026-09-13T00:00:00.000Z',
+				hashVersion: 3
+			}
+		]
+	});
+	scenario.store.claims = [];
+	repair.claims = [
+		{
+			envelopeId: ENVELOPE_ID,
+			attempts: 1,
+			lockedAt: NOW.toISOString(),
+			envelopeTitle: primary.envelopeTitle,
+			sentCommitSha: primary.sentCommitSha,
+			repositoryArchiveKey: primary.repositoryArchiveKey,
+			repositoryArchiveSha256: primary.repositoryArchiveSha256,
+			fieldGeneration: primary.fieldGeneration,
+			manifestSha256: publish.manifestSha256,
+			jsonObjectKey: publish.jsonObjectKey,
+			jsonSha256: publish.jsonSha256,
+			markdownObjectKey: publish.markdownObjectKey,
+			markdownSha256: publish.markdownSha256,
+			anchorAuditEventId: publish.anchorAuditEventId,
+			auditHeadSequence: headSequence,
+			auditHeadEventHash: publish.auditEventHash,
+			auditEventId: publish.auditEventId,
+			publishedAt: publish.updatedAt,
+			...overrides
+		}
+	];
+	return publish;
 }
 
 async function readObject(objects: InMemoryObjectStore, key: string): Promise<Uint8Array> {
@@ -690,11 +838,23 @@ async function readObject(objects: InMemoryObjectStore, key: string): Promise<Ui
 	return bytes;
 }
 
+function publishedPdf(store: FakeCompletionArtifactStore): {
+	pdfObjectKey: string;
+	pdfSha256: string;
+	pdfManifestObjectKey: string;
+	pdfManifestSha256: string;
+	pdfByteSize: number;
+} {
+	const pdf = store.publishCalls[0]?.pdf;
+	if (pdf === null || pdf === undefined) throw new Error('Expected atomic PDF metadata');
+	return pdf;
+}
+
 async function publishedPdfManifest(
 	objects: InMemoryObjectStore,
-	pdfStore: FakeCompletionArtifactPdfStore
+	pdf: { pdfManifestObjectKey: string }
 ): Promise<CompletionPdfManifestV2> {
-	const gzip: Uint8Array = await readObject(objects, pdfStore.calls[0].pdfManifestObjectKey);
+	const gzip: Uint8Array = await readObject(objects, pdf.pdfManifestObjectKey);
 	return JSON.parse(new TextDecoder().decode(gunzipSync(gzip))) as CompletionPdfManifestV2;
 }
 
@@ -1094,13 +1254,12 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		const result = await service.publishPendingCompletionArtifacts();
 		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
 		expect(store.publishCalls).toHaveLength(1);
-		expect(pdfStore.calls).toHaveLength(1);
-		expect(pdfStore.calls[0]).toMatchObject({
-			envelopeId: ENVELOPE_ID
+		expect(store.publishCalls[0].pdf).toMatchObject({
+			pdfSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+			pdfManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/)
 		});
-		expect(pdfStore.calls[0].pdfSha256).toMatch(/^[a-f0-9]{64}$/);
-		expect(pdfStore.calls[0].pdfManifestSha256).toMatch(/^[a-f0-9]{64}$/);
-		await expect(publishedPdfManifest(objects, pdfStore)).resolves.toMatchObject({
+		expect(pdfStore.calls).toHaveLength(0);
+		await expect(publishedPdfManifest(objects, publishedPdf(store))).resolves.toMatchObject({
 			artifactKind: 'evidence-summary-v1',
 			appendixFirstPage: null
 		});
@@ -1112,8 +1271,8 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		const result = await scenario.service.publishPendingCompletionArtifacts();
 
 		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
-		expect(scenario.pdfStore.calls).toHaveLength(1);
-		const pdfManifest = await publishedPdfManifest(scenario.objects, scenario.pdfStore);
+		expect(scenario.pdfStore.calls).toHaveLength(0);
+		const pdfManifest = await publishedPdfManifest(scenario.objects, publishedPdf(scenario.store));
 		expect(pdfManifest).toMatchObject({
 			artifactKind: 'executed-agreement-v1',
 			schema: COMPLETION_PDF_MANIFEST_SCHEMA
@@ -1128,7 +1287,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		expect(pdfManifest.appendixFirstPage).toBeGreaterThan(1);
 		expect(pdfManifest.pageCount).toBeGreaterThanOrEqual(pdfManifest.appendixFirstPage ?? 0);
 
-		const pdfBytes = await readObject(scenario.objects, scenario.pdfStore.calls[0].pdfObjectKey);
+		const pdfBytes = await readObject(scenario.objects, publishedPdf(scenario.store).pdfObjectKey);
 		expect(await pageTextOf(pdfBytes, 1)).toContain('Agreement body');
 		expect(await pageTextOf(pdfBytes, 1)).toContain('Alex Signer');
 	});
@@ -1139,7 +1298,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		const result = await scenario.service.publishPendingCompletionArtifacts();
 
 		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
-		const pdfBytes = await readObject(scenario.objects, scenario.pdfStore.calls[0].pdfObjectKey);
+		const pdfBytes = await readObject(scenario.objects, publishedPdf(scenario.store).pdfObjectKey);
 		expect(await pageTextOf(pdfBytes, 1)).toContain('Frozen sent rendering');
 		expect(await pageTextOf(pdfBytes, 1)).not.toContain('Agreement body');
 	});
@@ -1155,7 +1314,7 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		const result = await scenario.service.publishPendingCompletionArtifacts();
 
 		expect(result).toMatchObject({ published: 1, integrityFailed: 0 });
-		const pdfBytes = await readObject(scenario.objects, scenario.pdfStore.calls[0].pdfObjectKey);
+		const pdfBytes = await readObject(scenario.objects, publishedPdf(scenario.store).pdfObjectKey);
 		expect(new TextDecoder('latin1').decode(pdfBytes)).toContain('/Subtype /Image');
 	});
 
@@ -1220,9 +1379,9 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 		await first.service.publishPendingCompletionArtifacts();
 		await second.service.publishPendingCompletionArtifacts();
 
-		expect(first.pdfStore.calls[0].pdfSha256).toBe(second.pdfStore.calls[0].pdfSha256);
-		expect(first.pdfStore.calls[0].pdfManifestSha256).toBe(
-			second.pdfStore.calls[0].pdfManifestSha256
+		expect(publishedPdf(first.store).pdfSha256).toBe(publishedPdf(second.store).pdfSha256);
+		expect(publishedPdf(first.store).pdfManifestSha256).toBe(
+			publishedPdf(second.store).pdfManifestSha256
 		);
 	});
 
@@ -1312,5 +1471,116 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 			errorCode: 'completion_artifact_attempts_exhausted',
 			retryable: false
 		});
+	});
+});
+
+describe('CompletionArtifactPublicationService PDF repair', () => {
+	it('rebuilds the original manifest bytes despite later audit events and repairs only the PDF pointer', async () => {
+		const repair = new FakeCompletionArtifactPdfRepairStore();
+		const scenario = await executedScenario({ pdfRepairStore: repair });
+		await scenario.service.publishPendingCompletionArtifacts();
+		const publish = legacyPublishedWithoutPdf(scenario, repair);
+		const jsonPuts: number | undefined = scenario.objects.putCallsByKey.get(publish.jsonObjectKey);
+		const markdownPuts: number | undefined = scenario.objects.putCallsByKey.get(
+			publish.markdownObjectKey
+		);
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ published: 1, integrityFailed: 0, retryableFailed: 0 });
+		expect(repair.failCalls).toHaveLength(0);
+		expect(repair.completeCalls).toHaveLength(1);
+		// Golden equality: the repaired pointer is byte-for-byte what the
+		// original atomic publication would have written.
+		expect(repair.completeCalls[0]).toMatchObject({
+			envelopeId: ENVELOPE_ID,
+			expectedManifestSha256: publish.manifestSha256,
+			pdf: publish.pdf
+		});
+		// No second publication (receipt/audit) and no JSON/Markdown rewrite.
+		expect(scenario.store.publishCalls).toHaveLength(1);
+		expect(scenario.objects.putCallsByKey.get(publish.jsonObjectKey)).toBe(jsonPuts);
+		expect(scenario.objects.putCallsByKey.get(publish.markdownObjectKey)).toBe(markdownPuts);
+	});
+
+	it('fails closed without writing a pointer when a published manifest object is corrupt', async () => {
+		const repair = new FakeCompletionArtifactPdfRepairStore();
+		const scenario = await executedScenario({ pdfRepairStore: repair });
+		await scenario.service.publishPendingCompletionArtifacts();
+		const publish = legacyPublishedWithoutPdf(scenario, repair);
+		const tampered: Uint8Array = new TextEncoder().encode('tampered manifest');
+		await scenario.objects.delete(publish.jsonObjectKey);
+		scenario.objects.seed(publish.jsonObjectKey, tampered, sha256Hex(tampered));
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ published: 0, integrityFailed: 1 });
+		expect(repair.completeCalls).toHaveLength(0);
+		expect(repair.failCalls[0]).toMatchObject({
+			errorCode: 'completion_artifact_evidence_invalid',
+			retryable: false
+		});
+	});
+
+	it('fails closed when the stored pointer does not match the original publication event', async () => {
+		const repair = new FakeCompletionArtifactPdfRepairStore();
+		const scenario = await executedScenario({ pdfRepairStore: repair });
+		await scenario.service.publishPendingCompletionArtifacts();
+		legacyPublishedWithoutPdf(scenario, repair, { manifestSha256: 'e'.repeat(64) });
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+
+		expect(result).toMatchObject({ integrityFailed: 1 });
+		expect(repair.completeCalls).toHaveLength(0);
+		expect(repair.failCalls[0]).toMatchObject({ retryable: false });
+	});
+
+	it('marks a transient repair failure retryable, then exhausts with the exact repair code', async () => {
+		const repair = new FakeCompletionArtifactPdfRepairStore();
+		const scenario = await executedScenario({ pdfRepairStore: repair });
+		await scenario.service.publishPendingCompletionArtifacts();
+		legacyPublishedWithoutPdf(scenario, repair);
+		repair.completePdfRepair = async (): Promise<CompleteCompletionArtifactPdfRepairResult> => {
+			throw new Error('simulated transient provider failure');
+		};
+
+		await expect(scenario.service.publishPendingCompletionArtifacts()).resolves.toMatchObject({
+			retryableFailed: 1
+		});
+		expect(repair.failCalls[0]).toMatchObject({
+			errorCode: 'completion_artifact_build_failed',
+			retryable: true
+		});
+
+		repair.claims = [{ ...repair.claims[0], attempts: MAX_COMPLETION_ARTIFACT_ATTEMPTS }];
+		await expect(scenario.service.publishPendingCompletionArtifacts()).resolves.toMatchObject({
+			permanentlyFailed: 1
+		});
+		expect(repair.failCalls[1]).toMatchObject({
+			errorCode: 'completion_artifact_pdf_repair_attempts_exhausted',
+			retryable: false
+		});
+	});
+
+	it('treats a lost repair lease as stale', async () => {
+		const repair = new FakeCompletionArtifactPdfRepairStore();
+		const scenario = await executedScenario({ pdfRepairStore: repair });
+		await scenario.service.publishPendingCompletionArtifacts();
+		legacyPublishedWithoutPdf(scenario, repair);
+		repair.completeResult = { outcome: 'stale' };
+
+		await expect(scenario.service.publishPendingCompletionArtifacts()).resolves.toMatchObject({
+			stale: 1,
+			published: 0
+		});
+		expect(repair.failCalls).toHaveLength(0);
+	});
+
+	it('does not claim repairs when no repair store is wired', async () => {
+		const scenario = await executedScenario();
+		await scenario.service.publishPendingCompletionArtifacts();
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+		// Only the primary claim (still present in the fake) is reprocessed.
+		expect(result.claimed).toBe(1);
 	});
 });

@@ -259,7 +259,8 @@ describe('GET /api/v1/system/capabilities', () => {
 				'envelopes:send': [
 					'/api/v1/envelopes/{envelopeId}/send',
 					'/api/v1/envelopes/{envelopeId}/void',
-					'/api/v1/envelopes/{envelopeId}/pdf-seal'
+					'/api/v1/envelopes/{envelopeId}/pdf-seal',
+					'/api/v1/envelopes/{envelopeId}/completion-artifact/retry'
 				]
 			},
 			mutations: true,

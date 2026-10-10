@@ -142,6 +142,14 @@ export interface CompletionEvidence {
 	auditEvents: readonly CompletionEvidenceAuditEvent[];
 }
 
+export interface CompletionArtifactPdfMetadata {
+	pdfObjectKey: string;
+	pdfSha256: string;
+	pdfByteSize: number;
+	pdfManifestObjectKey: string;
+	pdfManifestSha256: string;
+}
+
 export interface PublishCompletionArtifactCommand {
 	envelopeId: string;
 	claimToken: string;
@@ -159,6 +167,8 @@ export interface PublishCompletionArtifactCommand {
 	auditEventId: string;
 	auditEventHash: string;
 	auditPayloadJson: string;
+	/** All-or-none PDF pointer; omitted on legacy no-PDF profiles. */
+	pdf: CompletionArtifactPdfMetadata | null;
 }
 
 export interface PublishedCompletionArtifact {
@@ -187,6 +197,38 @@ export interface FailCompletionArtifactCommand {
 
 export type FailCompletionArtifactResult = { outcome: 'failed' } | { outcome: 'stale' };
 
+export const EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR: string =
+	'completion_artifact_attempts_exhausted';
+
+/**
+ * `expectedAttempts` alone is not a generation: a requeue resets attempts to
+ * 0 and a later exhaustion returns them to the same cap. The exact failure
+ * timestamp (`updated_at` written by the exhausting failure) pins the one
+ * failed generation the caller observed, so a stale or duplicate command can
+ * never reset a newer live or failed job.
+ */
+export interface RequeueExhaustedCompletionArtifactCommand {
+	envelopeId: string;
+	idempotencyKey: string;
+	expectedAttempts: number;
+	expectedFailedAt: string;
+	requeuedAt: string;
+}
+
+export type RequeueExhaustedCompletionArtifactResult =
+	| { outcome: 'requeued' }
+	| { outcome: 'replayed' }
+	| { outcome: 'conflict' }
+	| { outcome: 'not_eligible' }
+	| { outcome: 'not_found' };
+
+export type CompletionArtifactRetryReplayResult = { outcome: 'replayed' } | { outcome: 'conflict' };
+
+export interface ReadCompletionEvidenceOptions {
+	/** Inclusive audit sequence cap. Later events must not enter rebuilt evidence. */
+	throughSequence?: number;
+}
+
 export type CompletionArtifactJobStatus = 'pending' | 'processing' | 'published' | 'failed';
 
 export interface CompletionArtifactStatusRow {
@@ -197,6 +239,8 @@ export interface CompletionArtifactStatusRow {
 	attempts: number | null;
 	lastError: string | null;
 	availableAt: string | null;
+	/** Job `updated_at`; for a failed job this is the failure generation. */
+	updatedAt: string | null;
 	published: PublishedCompletionArtifact | null;
 }
 
@@ -207,13 +251,23 @@ export interface CompletionArtifactStore {
 	readClaimedCompletionArtifact(
 		command: ReadClaimedCompletionArtifactCommand
 	): Promise<ClaimedCompletionArtifactJob | null>;
-	readCompletionEvidence(envelopeId: string): Promise<CompletionEvidence>;
+	readCompletionEvidence(
+		envelopeId: string,
+		options?: ReadCompletionEvidenceOptions
+	): Promise<CompletionEvidence>;
 	publishCompletionArtifact(
 		command: PublishCompletionArtifactCommand
 	): Promise<PublishCompletionArtifactResult>;
 	failCompletionArtifact(
 		command: FailCompletionArtifactCommand
 	): Promise<FailCompletionArtifactResult>;
+	requeueExhaustedCompletionArtifact(
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<RequeueExhaustedCompletionArtifactResult>;
+	/** Read the immutable retry receipt before selecting a queue from current state. */
+	findCompletionArtifactRetry(
+		command: RequeueExhaustedCompletionArtifactCommand
+	): Promise<CompletionArtifactRetryReplayResult | null>;
 	findCompletionArtifactStatus(envelopeId: string): Promise<CompletionArtifactStatusRow | null>;
 }
 
