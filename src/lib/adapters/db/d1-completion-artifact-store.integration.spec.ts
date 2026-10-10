@@ -600,6 +600,94 @@ describe('D1CompletionArtifactStore SQLite integration', () => {
 		}
 	});
 
+	it('terminally fails a job whose stale lease was reclaimed past the attempt cap, without expensive work, and still publishes a healthy sibling', async () => {
+		const { database, sqlite } = await fixture();
+		try {
+			// A worker killed mid-composition never calls failCompletionArtifact,
+			// so a crash-looping job's lease just goes stale over and over. Seed
+			// it already at the existing cap of 10 recorded claims, mid-lease,
+			// so the service's own stale reclaim is the 11th: that reclaim must
+			// transition to terminal failure before any evidence/object/PDF work,
+			// while env-1 still publishes in the same drain.
+			sqlite.exec(`
+				INSERT INTO envelope (
+					id, created_by_user_id, title, status, repository_generation, repository_head,
+					repository_archive_key, repository_archive_sha256, sent_commit_sha,
+					field_generation, created_at, updated_at
+				) VALUES (
+					'01920000-0000-7000-8000-0000000000c1','user-1','Crashed Agreement','completed',1,'${COMMIT_SHA}',
+					'${ARCHIVE_KEY}','${ARCHIVE_SHA256}','${COMMIT_SHA}',1,
+					'2026-09-11T00:00:00.000Z','2026-09-11T00:02:00.000Z'
+				);
+				INSERT INTO completion_artifact_job (
+					envelope_id, status, attempts, claim_token, locked_at, available_at, retryable,
+					created_at, updated_at
+				) VALUES (
+					'01920000-0000-7000-8000-0000000000c1','processing',10,'stale-crash-claim-token',
+					'2026-09-11T23:50:00.000Z','2026-09-11T00:00:00.000Z',1,
+					'2026-09-11T00:00:00.000Z','2026-09-11T00:00:00.000Z'
+				);
+			`);
+
+			const store = new D1CompletionArtifactStore(database);
+			const objects = new WorkingObjectStore();
+			objects.seed(ARCHIVE_KEY, ARCHIVE_BYTES);
+			const repository = fixedDraftRepository();
+			const service = new CompletionArtifactPublicationService(
+				store,
+				objects,
+				repository,
+				(): Date => new Date(CLAIMED_AT),
+				(): string => 'claim-token-crash-guard-0001'
+			);
+
+			const result = await service.publishPendingCompletionArtifacts();
+			expect(result).toMatchObject({
+				claimed: 2,
+				published: 1,
+				permanentlyFailed: 1,
+				retryableFailed: 0,
+				integrityFailed: 0,
+				stale: 0
+			});
+
+			const crashedJobRow = sqlite
+				.prepare(
+					`SELECT status, attempts, retryable, last_error, claim_token, locked_at
+					 FROM completion_artifact_job WHERE envelope_id = '01920000-0000-7000-8000-0000000000c1'`
+				)
+				.get() as Record<string, unknown>;
+			expect(crashedJobRow).toEqual({
+				status: 'failed',
+				attempts: 11,
+				retryable: 0,
+				last_error: 'completion_artifact_interrupted_attempts_exhausted',
+				claim_token: null,
+				locked_at: null
+			});
+
+			const healthyJobRow = sqlite
+				.prepare(
+					"SELECT status FROM completion_artifact_job WHERE envelope_id = '01920000-0000-7000-8000-000000000001'"
+				)
+				.get() as Record<string, unknown>;
+			expect(healthyJobRow).toEqual({ status: 'published' });
+
+			// Zero expensive work for the crash-looping row: only the healthy
+			// envelope's archive is fetched once and only its artifacts written.
+			expect(objects.getCallCount).toBe(1);
+			expect([...objects.getCallsByKey.keys()]).toEqual([ARCHIVE_KEY]);
+			expect(objects.getCallsByKey.get(ARCHIVE_KEY)).toBe(1);
+			expect(objects.putCallsByKey.size).toBe(2);
+			for (const key of objects.putCallsByKey.keys()) {
+				expect(key).toContain('/envelopes/01920000-0000-7000-8000-000000000001/');
+				expect(key).not.toContain('0000000000c1');
+			}
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('fails and reports a stale outcome for a lost lease', async () => {
 		const { database, sqlite } = await fixture();
 		try {

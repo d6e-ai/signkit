@@ -2,11 +2,96 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CompletionArtifactPublicationService } from '$lib/application/completion-artifacts/completion-artifact-service';
 import { PostgresCompletionArtifactPdfRepairStore } from './postgres-completion-artifact-pdf-repair-store';
 import { PostgresCompletionArtifactStore } from './postgres-completion-artifact-store';
 import { PostgresOrphanReferenceStore } from '$lib/application/maintenance/orphan-collector';
 import { EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR } from '$lib/ports/completion-artifact-store';
-import { EXHAUSTED_TRANSIENT_COMPLETION_PDF_REPAIR_ERROR } from '$lib/ports/completion-artifact-pdf-repair-store';
+import {
+	EXHAUSTED_TRANSIENT_COMPLETION_PDF_REPAIR_ERROR,
+	INTERRUPTED_COMPLETION_ARTIFACT_PDF_REPAIR_ERROR
+} from '$lib/ports/completion-artifact-pdf-repair-store';
+import type {
+	CompletionArtifactPdfRecord,
+	CompletionArtifactPdfStore,
+	PublishCompletionArtifactPdfResult
+} from '$lib/ports/completion-artifact-pdf-store';
+import type {
+	CompletionPdfEvidenceStore,
+	CompletionPdfFieldGeometry
+} from '$lib/ports/completion-pdf-evidence-store';
+import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
+import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+
+/**
+ * Throws (after counting) on every call: proves a guard short-circuited
+ * before any expensive work, since reaching real composition would hit one
+ * of these and reclassify the failure under the old attempts-exhausted code
+ * instead of the new interrupted-exhaustion one.
+ */
+class UnreachablePdfRepairObjectStore implements ObjectStore {
+	calls: number = 0;
+	async head(): Promise<ObjectMetadata | null> {
+		this.calls += 1;
+		throw new Error('Object store must not be read for a claim already past its attempt cap');
+	}
+	async get(): Promise<ReadableStream<Uint8Array> | null> {
+		this.calls += 1;
+		throw new Error('Object store must not be read for a claim already past its attempt cap');
+	}
+	async putImmutable(): Promise<ObjectMetadata> {
+		this.calls += 1;
+		throw new Error('Object store must not be written for a claim already past its attempt cap');
+	}
+	async delete(): Promise<void> {
+		this.calls += 1;
+	}
+	async list(): Promise<Awaited<ReturnType<ObjectStore['list']>>> {
+		this.calls += 1;
+		throw new Error('unused');
+	}
+	async deleteMany(): Promise<void> {
+		this.calls += 1;
+	}
+}
+
+class UnreachablePdfRepairDraftRepository implements DraftRepository {
+	calls: number = 0;
+	async read(): Promise<readonly DraftDocument[]> {
+		this.calls += 1;
+		throw new Error('Draft repository must not be read for a claim already past its attempt cap');
+	}
+	async readManifest(): Promise<string | null> {
+		this.calls += 1;
+		throw new Error('Draft repository must not be read for a claim already past its attempt cap');
+	}
+	async commit(): Promise<DraftVersion> {
+		this.calls += 1;
+		throw new Error(
+			'Draft repository must not be written for a claim already past its attempt cap'
+		);
+	}
+}
+
+class UnreachablePdfStore implements CompletionArtifactPdfStore {
+	calls: number = 0;
+	async publishCompletionArtifactPdf(): Promise<PublishCompletionArtifactPdfResult> {
+		this.calls += 1;
+		throw new Error('PDF store must not be written for a claim already past its attempt cap');
+	}
+	async readCompletionArtifactPdf(): Promise<CompletionArtifactPdfRecord | null> {
+		this.calls += 1;
+		throw new Error('PDF store must not be read for a claim already past its attempt cap');
+	}
+}
+
+class UnreachablePdfEvidenceStore implements CompletionPdfEvidenceStore {
+	calls: number = 0;
+	async readFieldGeometry(): Promise<readonly CompletionPdfFieldGeometry[]> {
+		this.calls += 1;
+		throw new Error('PDF evidence store must not be read for a claim already past its attempt cap');
+	}
+}
 
 const DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
 const postgresDescribe = DATABASE_URL === undefined ? describe.skip : describe;
@@ -403,6 +488,93 @@ postgresDescribe('Postgres completion artifact PDF repair and atomic publish', (
 			attempts: 0,
 			retryable: true
 		});
+	});
+
+	it('terminally fails a PDF repair whose stale lease was reclaimed past the attempt cap, without expensive work, leaving the published manifest untouched', async () => {
+		if (sql === null) throw new Error('PostgreSQL fixture is not connected');
+		await reset();
+		await seed(true);
+		const repairStore = new PostgresCompletionArtifactPdfRepairStore(sql);
+		await repairStore.claimPendingPdfRepairs({
+			claimToken: 'repair-seed',
+			claimedAt: CLAIMED_AT,
+			staleBefore: STALE_BEFORE,
+			discoveryLimit: 25,
+			claimLimit: 1
+		});
+		// A repair worker killed mid-composition never calls failPdfRepair, so
+		// its lease just goes stale over and over. Land it exactly at the
+		// existing cap of 10 recorded claims, mid-lease, so the service's own
+		// stale reclaim is the 11th.
+		await sql`
+			UPDATE completion_artifact_pdf_repair
+			SET attempts = 10, locked_at = ${'2026-09-11T23:50:00.000Z'}::timestamptz
+			WHERE envelope_id = ${ENVELOPE_ID}`;
+
+		const store = new PostgresCompletionArtifactStore(sql);
+		const objects = new UnreachablePdfRepairObjectStore();
+		const repository = new UnreachablePdfRepairDraftRepository();
+		const pdfStore = new UnreachablePdfStore();
+		const pdfEvidenceStore = new UnreachablePdfEvidenceStore();
+		const service = new CompletionArtifactPublicationService(
+			store,
+			objects,
+			repository,
+			(): Date => new Date(CLAIMED_AT),
+			(): string => 'claim-token-pdf-repair-guard-0001',
+			undefined,
+			pdfStore,
+			pdfEvidenceStore,
+			null,
+			repairStore
+		);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({
+			published: 0,
+			permanentlyFailed: 1,
+			retryableFailed: 0,
+			integrityFailed: 0,
+			stale: 0
+		});
+
+		const repairRow = await sql<
+			{
+				status: string;
+				attempts: number;
+				retryable: boolean;
+				lastError: string | null;
+				claimToken: string | null;
+				lockedAt: Date | null;
+			}[]
+		>`
+			SELECT status, attempts, retryable, last_error AS "lastError",
+				claim_token AS "claimToken", locked_at AS "lockedAt"
+			FROM completion_artifact_pdf_repair WHERE envelope_id = ${ENVELOPE_ID}`;
+		expect(repairRow[0]).toMatchObject({
+			status: 'failed',
+			attempts: 11,
+			retryable: false,
+			lastError: INTERRUPTED_COMPLETION_ARTIFACT_PDF_REPAIR_ERROR,
+			claimToken: null,
+			lockedAt: null
+		});
+
+		// Zero expensive work: none of the object store, draft repository, PDF
+		// store, or PDF evidence store were ever touched.
+		expect(objects.calls).toBe(0);
+		expect(repository.calls).toBe(0);
+		expect(pdfStore.calls).toBe(0);
+		expect(pdfEvidenceStore.calls).toBe(0);
+
+		// The already-published primary manifest and job are untouched, and no
+		// PDF pointer was written.
+		const jobRow = await sql<{ status: string }[]>`
+			SELECT status FROM completion_artifact_job WHERE envelope_id = ${ENVELOPE_ID}`;
+		expect(jobRow[0]).toEqual({ status: 'published' });
+		const pdfCount = await sql<{ count: string }[]>`
+			SELECT COUNT(*)::text AS count FROM completion_artifact_pdf WHERE envelope_id = ${ENVELOPE_ID}`;
+		expect(pdfCount[0].count).toBe('0');
 	});
 
 	it('protects completion objects of unpublished or PDF-pending envelopes from orphan GC', async () => {

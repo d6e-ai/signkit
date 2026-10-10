@@ -201,6 +201,19 @@ export const EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR: string =
 	'completion_artifact_attempts_exhausted';
 
 /**
+ * Recorded when a lease is reclaimed past `MAX_COMPLETION_ARTIFACT_ATTEMPTS`
+ * after one or more claims ended without a recorded outcome. Earlier
+ * attempts may have reported transient failures; an interrupted attempt does
+ * not prove why the worker stopped. Deliberately a different string
+ * than `EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR` so it is excluded
+ * from `requeueExhaustedCompletionArtifact`'s transient-only eligibility
+ * check: an operator must look at a job that never reported why it kept
+ * dying, rather than have it silently requeue forever.
+ */
+export const INTERRUPTED_COMPLETION_ARTIFACT_ERROR: string =
+	'completion_artifact_interrupted_attempts_exhausted';
+
+/**
  * `expectedAttempts` alone is not a generation: a requeue resets attempts to
  * 0 and a later exhaustion returns them to the same cap. The exact failure
  * timestamp (`updated_at` written by the exhausting failure) pins the one

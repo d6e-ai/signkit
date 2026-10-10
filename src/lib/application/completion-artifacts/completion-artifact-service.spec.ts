@@ -1472,6 +1472,52 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 			retryable: false
 		});
 	});
+
+	it('terminally fails a claim whose stale lease was reclaimed past the attempt cap, without reading evidence or touching objects, and still publishes a healthy sibling', async () => {
+		const store = new FakeCompletionArtifactStore();
+		const objects = new InMemoryObjectStore();
+		const healthyClaim = claimWithSeededArchive(objects);
+		const crashedClaim = claim({
+			envelopeId: 'envelope-crashed',
+			attempts: MAX_COMPLETION_ARTIFACT_ATTEMPTS + 1
+		});
+		store.claims = [crashedClaim, healthyClaim];
+		store.evidenceByEnvelope.set(ENVELOPE_ID, await baseEvidence());
+		// Deliberately no evidence fixture for 'envelope-crashed': every prior
+		// claim died before ever reaching failCompletionArtifact, so if the
+		// attempts guard did not fire before readCompletionEvidence, this would
+		// throw a plain Error (retryable), not the interrupted-exhaustion code,
+		// so the assertion below also proves no further work happened for it.
+		const repository = new FixedDraftRepository(SENT_COMMIT_SHA, documents());
+		const service = new CompletionArtifactPublicationService(store, objects, repository, () => NOW);
+
+		const result = await service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({
+			claimed: 2,
+			published: 1,
+			permanentlyFailed: 1,
+			retryableFailed: 0,
+			integrityFailed: 0,
+			stale: 0
+		});
+
+		const crashedFailure = store.failCalls.find((call) => call.envelopeId === 'envelope-crashed');
+		expect(crashedFailure).toMatchObject({
+			errorCode: 'completion_artifact_interrupted_attempts_exhausted',
+			retryable: false
+		});
+		expect(store.failCalls.some((call) => call.envelopeId === ENVELOPE_ID)).toBe(false);
+		expect(store.publishCalls).toHaveLength(1);
+
+		// No object access at all for the crashed row: only the healthy
+		// envelope's archive is read and its artifacts written.
+		expect(objects.putCallsByKey.size).toBe(2);
+		for (const key of objects.putCallsByKey.keys()) {
+			expect(key).toContain(`/envelopes/${ENVELOPE_ID}/`);
+			expect(key).not.toContain('envelope-crashed');
+		}
+		expect(objects.getCalls).toBe(1);
+	});
 });
 
 describe('CompletionArtifactPublicationService PDF repair', () => {
@@ -1558,6 +1604,34 @@ describe('CompletionArtifactPublicationService PDF repair', () => {
 		});
 		expect(repair.failCalls[1]).toMatchObject({
 			errorCode: 'completion_artifact_pdf_repair_attempts_exhausted',
+			retryable: false
+		});
+	});
+
+	it('terminally fails a PDF repair whose stale lease was reclaimed past the attempt cap, without reading evidence or completing a repair', async () => {
+		const repair = new FakeCompletionArtifactPdfRepairStore();
+		const scenario = await executedScenario({ pdfRepairStore: repair });
+		await scenario.service.publishPendingCompletionArtifacts();
+		legacyPublishedWithoutPdf(scenario, repair);
+		// A different envelope with no evidence fixture at all: every prior
+		// repair claim died before ever reaching failPdfRepair, so if the
+		// attempts guard did not fire before readCompletionEvidence, this
+		// would throw a plain Error (retryable), not the interrupted-exhaustion
+		// code, so the assertion below also proves no further work happened.
+		repair.claims = [
+			{
+				...repair.claims[0],
+				envelopeId: 'envelope-crashed',
+				attempts: MAX_COMPLETION_ARTIFACT_ATTEMPTS + 1
+			}
+		];
+
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ permanentlyFailed: 1 });
+		expect(repair.completeCalls).toHaveLength(0);
+		expect(repair.failCalls[0]).toMatchObject({
+			envelopeId: 'envelope-crashed',
+			errorCode: 'completion_artifact_pdf_repair_interrupted_attempts_exhausted',
 			retryable: false
 		});
 	});

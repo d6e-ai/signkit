@@ -5,6 +5,10 @@ export const MAX_COMPLETION_ARTIFACT_PDF_REPAIR_DISCOVERY_BATCH: number = 25;
 export const EXHAUSTED_TRANSIENT_COMPLETION_PDF_REPAIR_ERROR: string =
 	'completion_artifact_pdf_repair_attempts_exhausted';
 
+/** See `INTERRUPTED_COMPLETION_ARTIFACT_ERROR`; the PDF repair queue's own distinct, non-requeue-eligible counterpart. */
+export const INTERRUPTED_COMPLETION_ARTIFACT_PDF_REPAIR_ERROR: string =
+	'completion_artifact_pdf_repair_interrupted_attempts_exhausted';
+
 export type CompletionArtifactPdfRepairJobStatus = 'pending' | 'processing' | 'repaired' | 'failed';
 
 export interface ClaimCompletionArtifactPdfRepairsCommand {

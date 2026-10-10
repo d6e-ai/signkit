@@ -25,6 +25,7 @@ import type {
 } from '$lib/ports/completion-pdf-evidence-store';
 import {
 	boundCompletionArtifactPdfRepairClaimLimit,
+	INTERRUPTED_COMPLETION_ARTIFACT_PDF_REPAIR_ERROR,
 	MAX_COMPLETION_ARTIFACT_PDF_REPAIR_DISCOVERY_BATCH,
 	type ClaimedCompletionArtifactPdfRepair,
 	type CompletionArtifactPdfRepairStore,
@@ -33,6 +34,7 @@ import {
 import {
 	boundCompletionArtifactClaimLimit,
 	CompletionArtifactBoundExceededError,
+	INTERRUPTED_COMPLETION_ARTIFACT_ERROR,
 	MAX_COMPLETION_ARTIFACT_CLAIM_BATCH,
 	MAX_COMPLETION_ARTIFACT_DISCOVERY_BATCH,
 	sanitizeCompletionArtifactErrorCode,
@@ -220,6 +222,24 @@ export class CompletionArtifactPublicationService {
 			});
 		if (refreshed === null) return { envelopeId: claim.envelopeId, outcome: 'stale' };
 		claim = refreshed;
+
+		// A worker can be killed mid-composition (crash, OOM kill, forced
+		// restart) without ever reaching a `failCompletionArtifact` call, so a
+		// stale-lease reclaim keeps incrementing `attempts` with no recorded
+		// failure to stop it. Check the just-refreshed, lease-verified claim's
+		// attempt count before any expensive evidence/object/PDF work: once a
+		// reclaim has already seen the existing cap of recorded claims, this
+		// next one is terminal and must not repeat that work again.
+		if (claim.attempts > MAX_COMPLETION_ARTIFACT_ATTEMPTS) {
+			return this.#finishFailure(
+				claim,
+				claimToken,
+				INTERRUPTED_COMPLETION_ARTIFACT_ERROR,
+				false,
+				now,
+				'permanently_failed'
+			);
+		}
 
 		try {
 			// A completed envelope that is missing (or only partially has) its
@@ -599,6 +619,20 @@ export class CompletionArtifactPublicationService {
 			});
 		if (refreshed === null) return { envelopeId: claim.envelopeId, outcome: 'stale' };
 		claim = refreshed;
+
+		// See the matching guard in `#publishClaim`: a repair worker killed
+		// mid-composition never records a failure either, so this stops the
+		// same stale-lease crash loop before redoing any expensive work.
+		if (claim.attempts > MAX_COMPLETION_ARTIFACT_ATTEMPTS) {
+			return this.#finishPdfRepairFailure(
+				claim,
+				claimToken,
+				INTERRUPTED_COMPLETION_ARTIFACT_PDF_REPAIR_ERROR,
+				false,
+				now,
+				'permanently_failed'
+			);
+		}
 
 		try {
 			assertClaimedPointerPresent(claim);
