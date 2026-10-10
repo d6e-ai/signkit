@@ -16,7 +16,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const require = createRequire(import.meta.url);
 
-/** Only build inputs and platform plumbing may reach the isolated cf process. */
+/**
+ * Only build inputs and platform plumbing may reach the cf process. This is
+ * environment/project-config isolation, not a filesystem sandbox: HOME is not
+ * redefined and Wrangler's legacy home configuration remains readable. cf's own
+ * credential directory is redirected through XDG and its keyring is disabled.
+ */
 export function buildEnvironment(source, context) {
 	const keys = [
 		'PATH',
@@ -33,7 +38,19 @@ export function buildEnvironment(source, context) {
 	];
 	return {
 		...Object.fromEntries(
-			keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]])
+			keys
+				.filter((key) => source[key] !== undefined)
+				.filter((key) => {
+					if (key !== 'HTTP_PROXY' && key !== 'HTTPS_PROXY') return true;
+					try {
+						const value = source[key];
+						const url = new URL(value.includes('://') ? value : `http://${value}`);
+						return url.username === '' && url.password === '';
+					} catch {
+						return false;
+					}
+				})
+				.map((key) => [key, source[key]])
 		),
 		CI: '1',
 		CF_SEND_TELEMETRY: 'false',

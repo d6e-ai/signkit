@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { parse } from 'jsonc-parser';
 import config from '../cloudflare.config.ts';
 import { buildEnvironment, contextConfiguration } from './build-cloudflare-output.mjs';
+import { assertV1WorkerManifest } from './cloudflare-release-contract.mjs';
 
 test('offline build environment omits credentials and runtime secrets', () => {
 	const source = {
@@ -39,6 +40,65 @@ test('offline build environment omits credentials and runtime secrets', () => {
 		CLOUDFLARE_AUTH_USE_KEYRING: 'false',
 		XDG_CONFIG_HOME: '/private-build/.config'
 	});
+});
+
+test('offline build drops malformed and credential-bearing proxy URLs but retains anonymous proxies', () => {
+	for (const value of [
+		'http://fixture-user:fixture-password@proxy.example:8080',
+		'https://fixture-user@proxy.example:8443',
+		'fixture-user:fixture-password@proxy.example:8080',
+		'http://%66ixture-user@proxy.example:8080',
+		'http://[malformed'
+	]) {
+		const env = buildEnvironment({ HTTP_PROXY: value, HTTPS_PROXY: value }, '/private-build');
+		assert.equal(env.HTTP_PROXY, undefined);
+		assert.equal(env.HTTPS_PROXY, undefined);
+	}
+	const env = buildEnvironment(
+		{
+			HTTP_PROXY: 'proxy.example:8080',
+			HTTPS_PROXY: 'https://proxy.example:8443',
+			NO_PROXY: 'localhost,127.0.0.1'
+		},
+		'/private-build'
+	);
+	assert.equal(env.HTTP_PROXY, 'proxy.example:8080');
+	assert.equal(env.HTTPS_PROXY, 'https://proxy.example:8443');
+	assert.equal(env.NO_PROXY, 'localhost,127.0.0.1');
+});
+
+test('v1 release accepts exactly one top-level prebundled ES module', () => {
+	assert.equal(
+		assertV1WorkerManifest({
+			type: 'complete',
+			mainModule: 'cloudflare-worker.js',
+			modules: { 'cloudflare-worker.js': { type: 'esm' } }
+		}),
+		'cloudflare-worker.js'
+	);
+});
+
+test('v1 release refuses incomplete, mismatched, nested, and multi-module manifests', () => {
+	const valid = {
+		type: 'complete',
+		mainModule: 'cloudflare-worker.js',
+		modules: { 'cloudflare-worker.js': { type: 'esm' } }
+	};
+	for (const manifest of [
+		undefined,
+		{},
+		{ ...valid, type: 'inferred' },
+		{ ...valid, mainModule: '../cloudflare-worker.js' },
+		{ ...valid, modules: null },
+		{ ...valid, modules: [] },
+		{ ...valid, modules: {} },
+		{ ...valid, modules: { 'other.js': { type: 'esm' } } },
+		{ ...valid, modules: { 'cloudflare-worker.js': { type: 'commonjs' } } },
+		{ ...valid, modules: { ...valid.modules, 'extra.wasm': { type: 'wasm' } } },
+		{ ...valid, modules: { ...valid.modules, 'extra.js': { type: 'esm' } } }
+	]) {
+		assert.throws(() => assertV1WorkerManifest(manifest), /exactly one top-level prebundled ES/);
+	}
 });
 
 test('isolated context imports both authoritative configs and only overrides build paths', () => {

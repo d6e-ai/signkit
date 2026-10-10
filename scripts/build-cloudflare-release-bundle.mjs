@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { readBuildOutput } from '@cloudflare/build-output-utils';
+import { assertV1WorkerManifest } from './cloudflare-release-contract.mjs';
 
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const REPOSITORY = 'd6e-ai/signkit';
@@ -50,6 +51,7 @@ if (!worker.bundleDir || !worker.assetsDir || !worker.config.manifest) {
 }
 const { compatibilityDate, compatibilityFlags } = worker.config;
 const { env, triggers, observability } = worker.config;
+const workerModule = assertV1WorkerManifest(worker.config.manifest);
 if (
 	env.DB?.type !== 'd1' ||
 	env.OBJECTS?.type !== 'r2' ||
@@ -85,7 +87,6 @@ await cp(worker.assetsDir, join(staging, 'assets'), { recursive: true });
 await cp(migrationsDir, join(staging, 'migrations/d1'), { recursive: true });
 
 const workerFiles = (await readdir(join(staging, 'worker'))).sort();
-const workerModule = worker.config.manifest.mainModule;
 if (!workerFiles.includes(workerModule)) {
 	throw new Error('cf Build Output entrypoint must be a top-level bundled Worker module');
 }
@@ -94,6 +95,7 @@ const workerEntry = `worker/${workerModule}`;
 const wranglerConfig = {
 	name: worker.config.name,
 	main: workerEntry,
+	no_bundle: true,
 	compatibility_date: compatibilityDate,
 	compatibility_flags: compatibilityFlags,
 	keep_vars: true,
