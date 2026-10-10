@@ -7,6 +7,14 @@ import config from '../cloudflare.config.ts';
 import { buildEnvironment, contextConfiguration } from './build-cloudflare-output.mjs';
 import { assertV1WorkerManifest } from './cloudflare-release-contract.mjs';
 
+test('operator and developer guides use the supported nested cf auth command', async () => {
+	for (const path of ['../docs/create-signkit.md', '../docs/development.md']) {
+		const guide = await readFile(new URL(path, import.meta.url), 'utf8');
+		assert.match(guide, /\bcf auth login\b/);
+		assert.doesNotMatch(guide, /\bcf login\b/);
+	}
+});
+
 test('offline build environment omits credentials and runtime secrets', () => {
 	const source = {
 		PATH: '/safe/bin',

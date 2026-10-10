@@ -83,7 +83,7 @@ pnpm exec wrangler d1 migrations apply signkit --config wrangler.jsonc --local -
 
 Binding types are generated, not hand-written; regenerate them whenever `cloudflare.config.ts` bindings change. `prepare` and `check` do this automatically. The beta's pnpm workspace framework detection is isolated by the build wrapper; use `pnpm run build:cloudflare`, not bare `cf build` at this workspace root. See [architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md) for the configuration boundary and the explicit local-D1 fallback.
 
-An intentional source deployment uses `pnpm run deploy:cloudflare` (build plus `cf deploy --prebuilt`). Authenticate cf separately from Wrangler with `pnpm exec cf login`, select `CLOUDFLARE_ACCOUNT_ID` in the environment, and configure bindings/vars/secrets before deploying. `SIGNKIT_D1_DATABASE_ID` optionally pins the `DB` binding at build time. For managed installations and upgrades, prefer the verified release flow in [create-signkit.md](create-signkit.md).
+An intentional source deployment uses `pnpm run deploy:cloudflare` (build plus `cf deploy --prebuilt`). Authenticate cf separately from Wrangler with `pnpm exec cf auth login`, select `CLOUDFLARE_ACCOUNT_ID` in the environment, and configure bindings/vars/secrets before deploying. `SIGNKIT_D1_DATABASE_ID` optionally pins the `DB` binding at build time. For managed installations and upgrades, prefer the verified release flow in [create-signkit.md](create-signkit.md).
 
 ## Migrations
 

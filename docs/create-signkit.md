@@ -11,7 +11,7 @@ npx create-signkit --help
 pnpm dlx create-signkit --help
 ```
 
-The package carries the pinned official `cf` CLI and a Wrangler compatibility dependency. You do not need this repository or pnpm; use a supported Node.js version (`^22.22.2`, `^24.15.0`, or `>=26.0.0`). A `CLOUDFLARE_API_TOKEN` in the environment authenticates both tools. With interactive OAuth, cf and Wrangler keep separate sessions: authenticate each with `cf login` and `wrangler login`. Never pass tokens on the command line. See [architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md) for the phased migration boundary.
+The package carries the pinned official `cf` CLI and a Wrangler compatibility dependency. You do not need this repository or pnpm; use a supported Node.js version (`^22.22.2`, `^24.15.0`, or `>=26.0.0`). A `CLOUDFLARE_API_TOKEN` in the environment authenticates both tools. With interactive OAuth, cf and Wrangler keep separate sessions: authenticate each with `cf auth login` and `wrangler login`. Never pass tokens on the command line. See [architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md) for the phased migration boundary.
 
 ## Syntax
 

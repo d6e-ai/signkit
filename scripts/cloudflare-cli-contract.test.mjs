@@ -119,7 +119,7 @@ test('packaged cf returns the resource and remote migration shapes consumed by t
 			join(context, 'migrations/0002_fixture.sql'),
 			'CREATE TABLE fixture_two(id TEXT);'
 		);
-		async function run(args, expectedCode = 0) {
+		async function run(args, expectedCode = 0, json = true) {
 			return await new Promise((resolve, reject) => {
 				const child = spawn(process.execPath, [cfBin, ...args], {
 					cwd: context,
@@ -150,11 +150,14 @@ test('packaged cf returns the resource and remote migration shapes consumed by t
 							new Error(`cf ${args.join(' ')} exited ${code}, expected ${expectedCode}: ${stderr}`)
 						);
 					} else {
-						resolve(code === 0 ? JSON.parse(stdout) : { stdout, stderr });
+						resolve(code === 0 && json ? JSON.parse(stdout) : { stdout, stderr });
 					}
 				});
 			});
 		}
+		const loginHelp = await run(['auth', 'login', '--help'], 0, false);
+		assert.match(loginHelp.stdout, /cf auth login/);
+		assert.equal(requests.length, 0, 'authentication help must not contact an account API');
 		assert.deepEqual(await run(['accounts', 'list', '--page', '1', '--per-page', '50']), [
 			{ id: accountId, name: 'Synthetic fixture' }
 		]);
