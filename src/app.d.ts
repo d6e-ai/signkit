@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/workers-types" />
+import '../.cloudflare/types/index.d.ts';
 
 import type { ApiKeyPrincipal } from '$lib/ports/api-key-authentication-store';
 import type { VerifiedPrincipal } from '$lib/server/d6e-auth';

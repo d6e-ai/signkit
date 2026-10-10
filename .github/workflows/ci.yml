@@ -71,11 +71,14 @@ jobs:
         name: Build Node Docker image
         run: docker build --tag signkit-ci:${{ github.sha }} .
       - if: matrix.target == 'cloudflare'
-        run: pnpm exec wrangler types --check src/worker-configuration.d.ts
+        run: pnpm run cf:typegen
       - if: matrix.target == 'cloudflare'
-        run: pnpm exec wrangler d1 migrations apply signkit --local
+        name: Apply local D1 migrations (Wrangler compatibility fallback)
+        # cf beta.14 local migrations fail on table rebuilds with SQLITE_LOCKED.
+        # Keep the known-good local D1 runner until the full migration set passes.
+        run: pnpm exec wrangler d1 migrations apply signkit --config wrangler.jsonc --local --persist-to .cloudflare/state
       - if: matrix.target == 'cloudflare'
-        run: pnpm exec wrangler deploy --dry-run
+        run: pnpm exec cf deploy --prebuilt --dry-run
       - if: matrix.target == 'cloudflare'
         run: pnpm run build:create-signkit
       - if: matrix.target == 'cloudflare'

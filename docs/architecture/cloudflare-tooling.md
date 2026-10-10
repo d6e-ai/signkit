@@ -1,0 +1,37 @@
+# Cloudflare tooling
+
+Status: implemented, with explicit beta compatibility boundaries
+
+Last updated: 2026-10-10
+
+## Tool boundary
+
+The official Cloudflare CLI `cf` is pinned to `1.0.0-beta.14` through pnpm. Typed configuration requires Node.js 22.18 or newer. This tooling change does not change SignKit's database schema, application ports, authorization, storage keys, or Node/Vercel deployment profiles.
+
+`cloudflare.config.ts` owns the scheduled Worker's runtime metadata: bindings, compatibility settings, observability, and cron. `wrangler.config.ts` contains only the cf Wrangler build-backend options. SvelteKit remains at the repository root.
+
+The JSONC files are compatibility profiles, not new sources of deployment policy:
+
+- `wrangler.build.jsonc` is the SvelteKit adapter's build profile; the adapter still requires Wrangler-compatible configuration.
+- `wrangler.jsonc` is retained for local D1 migrations and legacy operator commands. Its shared settings are checked against the typed configuration.
+- Release archives retain their v1 `wrangler.jsonc` member for existing installers. It is generated from validated cf Build Output, not used to rebuild the application.
+
+## Build and publication
+
+`pnpm run build:cloudflare` first builds SvelteKit, then packages the scheduled entrypoint through `cf build`. The pinned beta misdetects applications in this pnpm workspace: it cannot select the root SvelteKit application reliably and identifies the CLI package as a separate framework. The build wrapper therefore creates a private temporary tool-only context, imports both root configs, and overrides only entrypoint/assets paths. It neither moves the application nor changes the pnpm workspace graph.
+
+The cf process receives an explicit environment allowlist, no credential variables or application secrets. It builds only; it does not authenticate, provision resources, migrate a remote database, or upload a Worker. Complete Build Output is copied to `.cloudflare/output/v0` before the temporary context is removed. Deployment consumes it with `cf deploy --prebuilt`, avoiding framework detection and preserving the built bundle. Release packaging validates it with the official Build Output reader and retains exact bundle/assets bytes.
+
+The beta has no typed `keep-vars` switch. Upload metadata explicitly preserves existing `plain_text`, `json`, `secret_text`, and `secret_key` bindings, so omitted dashboard variables and existing secrets are not discarded. A source deployment is a lower-level cf workflow: when a D1 binding has only a name, cf may resolve or provision that resource. Set `SIGNKIT_D1_DATABASE_ID` before building to pin an existing database. Managed release installations use the installer's stricter resource identity and adoption checks instead.
+
+`pnpm run cf:typegen` writes `.cloudflare/types/index.d.ts`. `prepare` and `check` regenerate this ignored file before SvelteKit consumes it. Generated runtime types are not committed. An installation using `--ignore-scripts` must run `pnpm run prepare` before building, or `pnpm run check` before type checking.
+
+## Compatibility limits and verification
+
+Local D1 remains on `wrangler d1 migrations apply --local`. An actual cf beta.14 run failed with `SQLITE_LOCKED` on the table rebuild in migration 0045; local migration listing printed its results but did not exit. Wrangler applied all 49 migrations successfully. The adapter/config remains in place until a later pinned cf version applies the full migration set to a fresh local database, proves replay is a no-op, and exits cleanly. No silent fallback to remote D1 is allowed.
+
+The managed release installer has a separate Cloudflare command port; its cf-native operations and remaining fallbacks are specified in [create-signkit.md](create-signkit.md). A successful offline build or dry run is not a live deployment or provider acceptance claim.
+
+Verification gates include type generation, application checks, Node/Cloudflare/Vercel builds, environment/config contract tests, release bundle verification, `cf deploy --prebuilt --dry-run`, and real local Wrangler D1 application. Provider resource/provenance tests use mocked commands and do not prove remote account permissions or deployment.
+
+For current upstream behavior, see the official [cf overview](https://developers.cloudflare.com/cf/), [Wrangler migration guide](https://developers.cloudflare.com/cf/wrangler/migrate/), and [project commands](https://developers.cloudflare.com/cf/projects/).

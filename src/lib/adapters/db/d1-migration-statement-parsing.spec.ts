@@ -170,7 +170,16 @@ describe('D1 migration statement parsing', () => {
 		const disagreements: string[] = [];
 		for (const path of d1MigrationPaths()) {
 			const command: string = migrationCommand(path);
-			const wrangler: readonly string[] = unstable_splitSqlQuery(command);
+			// Newer Wrangler retains harmless surrounding whitespace. Compare after
+			// the remote lexer normalizes it, while rejecting a chunk that contains
+			// multiple executable statements instead of hiding a split regression.
+			const wrangler: readonly string[] = unstable_splitSqlQuery(command).map(
+				(statement: string): string => {
+					const normalized: readonly string[] = splitLikeD1RemoteQuery(statement);
+					expect(normalized).toHaveLength(1);
+					return normalized[0];
+				}
+			);
 			const remote: readonly string[] = splitLikeD1RemoteQuery(command);
 			const diverges: boolean =
 				wrangler.length !== remote.length ||

@@ -4,7 +4,7 @@ Local setup, tests, builds, and what CI enforces. For runtime configuration and 
 
 ## Prerequisites
 
-- Node.js 22 or newer (CI verifies Node 22; the Docker image uses Node 26).
+- Node.js 22.18 or newer (typed cf configuration requires 22.18; CI verifies Node 22; the Docker image uses Node 26).
 - pnpm 11.24.0 (pinned via `packageManager`; Node 26 no longer bundles Corepack).
 - Chromium for the browser test project: `pnpm exec playwright install chromium`.
 - Optional for integration tests and the Node profile: PostgreSQL 18.
@@ -18,7 +18,7 @@ cp .env.example .env
 pnpm run dev
 ```
 
-`pnpm install` runs `prepare`, which compiles Paraglide messages and syncs SvelteKit types. `.env` holds the Node development configuration; every variable is described in [deployment.md](deployment.md#configuration). Cloudflare secrets never belong in `.env` — use Wrangler secret storage, or `.dev.vars` locally, and keep both out of Git.
+`pnpm install` runs `prepare`, which generates cf binding/runtime types, compiles Paraglide messages, and syncs SvelteKit types. `.env` holds the Node development configuration; every variable is described in [deployment.md](deployment.md#configuration). Cloudflare secrets never belong in `.env` — use Worker secret storage, or `.dev.vars` locally, and keep both out of Git. After an installation with `--ignore-scripts`, run `pnpm run prepare` before building.
 
 ## Tests
 
@@ -42,7 +42,7 @@ These suites apply migrations and write data; never aim them at a database you c
 
 ```sh
 pnpm run lint    # prettier --check . && eslint .
-pnpm run check   # Paraglide compile + svelte-kit sync + svelte-check
+pnpm run check   # cf type generation + Paraglide compile + svelte-kit sync + svelte-check
 pnpm run format  # prettier --write .
 ```
 
@@ -52,7 +52,7 @@ pnpm run format  # prettier --write .
 
 ```sh
 pnpm run build:node        # default profile, adapter-node into build/node
-pnpm run build:cloudflare  # adapter-cloudflare, uses wrangler.build.jsonc
+pnpm run build:cloudflare  # SvelteKit adapter + cf Build Output
 pnpm run build:vercel      # adapter-vercel, nodejs22.x
 ```
 
@@ -70,12 +70,18 @@ DATABASE_URL=postgres://signkit:change-me@localhost:5432/signkit pnpm run db:mig
 ## Cloudflare local loop
 
 ```sh
-pnpm run cf:typegen                                   # regenerate src/worker-configuration.d.ts
-pnpm exec wrangler d1 migrations apply signkit --local # apply migrations/d1 to the local D1
-pnpm run deploy:cloudflare                             # build:cloudflare + wrangler deploy
+pnpm run cf:typegen  # regenerate .cloudflare/types/index.d.ts
+pnpm run build:cloudflare
+pnpm exec cf deploy --prebuilt --dry-run  # validates only; does not deploy
+pnpm run test:cloudflare-tooling
+
+# cf beta.14 cannot apply the complete local migration set reliably yet.
+pnpm exec wrangler d1 migrations apply signkit --config wrangler.jsonc --local --persist-to .cloudflare/state
 ```
 
-Binding types are generated, not hand-written; regenerate them whenever `wrangler.jsonc` bindings change.
+Binding types are generated, not hand-written; regenerate them whenever `cloudflare.config.ts` bindings change. `prepare` and `check` do this automatically. The beta's pnpm workspace framework detection is isolated by the build wrapper; use `pnpm run build:cloudflare`, not bare `cf build` at this workspace root. See [architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md) for the configuration boundary and the explicit local-D1 fallback.
+
+An intentional source deployment uses `pnpm run deploy:cloudflare` (build plus `cf deploy --prebuilt`). Authenticate cf separately from Wrangler with `pnpm exec cf login`, select `CLOUDFLARE_ACCOUNT_ID` in the environment, and configure bindings/vars/secrets before deploying. `SIGNKIT_D1_DATABASE_ID` optionally pins the `DB` binding at build time. For managed installations and upgrades, prefer the verified release flow in [create-signkit.md](create-signkit.md).
 
 ## Migrations
 

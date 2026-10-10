@@ -3,15 +3,15 @@
  * Build the GitHub Release assets for create-signkit:
  * a prebundled Cloudflare Worker tarball, a validated manifest, and SHA256SUMS.
  *
- * Requires a prior `pnpm run build:cloudflare` so `.svelte-kit/cloudflare` exists.
- * Does not deploy, and does not need Cloudflare credentials (`wrangler deploy --dry-run`).
+ * Requires a prior `pnpm run build:cloudflare` so cf Build Output exists.
+ * Does not deploy, and does not need Cloudflare credentials.
  */
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile, stat, cp, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
-import { parse as parseJsonc } from 'jsonc-parser';
+import { readBuildOutput } from '@cloudflare/build-output-utils';
 
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const REPOSITORY = 'd6e-ai/signkit';
@@ -41,13 +41,31 @@ if (!/^[0-9a-f]{40}$/.test(commit)) {
 	throw new Error('GITHUB_SHA must be a 40-character commit');
 }
 
-const { compatibilityDate, compatibilityFlags } = readRootWranglerCompat(
-	await readFile(join(ROOT, 'wrangler.jsonc'), 'utf8')
-);
-
-const cloudflareDir = join(ROOT, '.svelte-kit/cloudflare');
+const output = await readBuildOutput(ROOT);
+const worker = output.workers.default;
+if (!worker.bundleDir || !worker.assetsDir || !worker.config.manifest) {
+	throw new Error(
+		'cf Build Output must contain both the scheduled Worker bundle and static assets'
+	);
+}
+const { compatibilityDate, compatibilityFlags } = worker.config;
+const { env, triggers, observability } = worker.config;
+if (
+	env.DB?.type !== 'd1' ||
+	env.OBJECTS?.type !== 'r2' ||
+	env.ASSETS?.type !== 'assets' ||
+	env.EMAIL?.type !== 'send-email' ||
+	Object.entries(env).some(
+		([name, binding]) =>
+			!['DB', 'OBJECTS', 'ASSETS', 'EMAIL'].includes(name) && binding.type !== 'text'
+	) ||
+	triggers?.some((trigger) => trigger.type !== 'scheduled')
+) {
+	throw new Error(
+		'cf runtime metadata cannot be represented by the v1 release compatibility config'
+	);
+}
 const migrationsDir = join(ROOT, 'migrations/d1');
-await stat(cloudflareDir);
 await stat(migrationsDir);
 
 const staging = join(ROOT, '.release/cloudflare-bundle');
@@ -62,41 +80,45 @@ await mkdir(join(staging, 'assets'), { recursive: true });
 await mkdir(join(staging, 'migrations/d1'), { recursive: true });
 await mkdir(outDir, { recursive: true });
 
-const wranglerBin = join(ROOT, 'node_modules/wrangler/bin/wrangler.js');
-await run(process.execPath, [
-	wranglerBin,
-	'deploy',
-	'--dry-run',
-	'--outdir',
-	join(staging, 'worker'),
-	'--keep-vars'
-]);
-
-await cp(cloudflareDir, join(staging, 'assets'), { recursive: true });
+await cp(worker.bundleDir, join(staging, 'worker'), { recursive: true });
+await cp(worker.assetsDir, join(staging, 'assets'), { recursive: true });
 await cp(migrationsDir, join(staging, 'migrations/d1'), { recursive: true });
 
 const workerFiles = (await readdir(join(staging, 'worker'))).sort();
-const workerEntry = workerMain(workerFiles);
+const workerModule = worker.config.manifest.mainModule;
+if (!workerFiles.includes(workerModule)) {
+	throw new Error('cf Build Output entrypoint must be a top-level bundled Worker module');
+}
+const workerEntry = `worker/${workerModule}`;
 
 const wranglerConfig = {
-	name: 'signkit',
+	name: worker.config.name,
 	main: workerEntry,
 	compatibility_date: compatibilityDate,
 	compatibility_flags: compatibilityFlags,
+	keep_vars: true,
+	unsafe: worker.config.unsafe,
 	assets: { directory: 'assets', binding: 'ASSETS' },
 	d1_databases: [
 		{
 			binding: 'DB',
-			database_name: 'signkit',
+			database_name: env.DB.name,
 			database_id: 'REPLACE_AT_DEPLOY',
 			migrations_dir: 'migrations/d1'
 		}
 	],
-	r2_buckets: [{ binding: 'OBJECTS', bucket_name: 'signkit-objects' }],
+	r2_buckets: [{ binding: 'OBJECTS', bucket_name: env.OBJECTS.name }],
 	send_email: [{ name: 'EMAIL' }],
-	vars: { SIGNKIT_MAIL_PROVIDER: 'cloudflare' },
-	triggers: { crons: ['* * * * *'] },
-	observability: { enabled: true, head_sampling_rate: 1 }
+	vars: Object.fromEntries(
+		Object.entries(env)
+			.filter(([, binding]) => binding.type === 'text')
+			.map(([name, binding]) => [name, binding.value])
+	),
+	triggers: { crons: (triggers ?? []).map((trigger) => trigger.schedule) },
+	observability: observability && {
+		enabled: observability.enabled,
+		head_sampling_rate: observability.headSamplingRate
+	}
 };
 await writeFile(join(staging, 'wrangler.jsonc'), `${JSON.stringify(wranglerConfig, null, '\t')}\n`);
 
@@ -167,39 +189,6 @@ await writeFile(
 console.log(`Wrote ${bundlePath}`);
 console.log(`Wrote ${manifestPath}`);
 console.log(`sha256 ${sha256} size ${bundleBytes.byteLength}`);
-
-function workerMain(files) {
-	const names = [...files].sort();
-	if (names.includes('index.js')) return 'worker/index.js';
-	const js = names.filter((name) => name.endsWith('.js'));
-	if (js.length === 1) return `worker/${js[0]}`;
-	if (js.length === 0) {
-		throw new Error('wrangler --dry-run --outdir did not produce a bundled Worker JS entry');
-	}
-	throw new Error(`ambiguous Worker JS entries in dry-run output: ${js.join(', ')}`);
-}
-
-function readRootWranglerCompat(source) {
-	const errors = [];
-	const parsed = parseJsonc(source, errors, { allowTrailingComma: true });
-	if (errors.length > 0) {
-		throw new Error(
-			`failed to parse wrangler.jsonc: ${errors.map((error) => error.message ?? 'parse error').join('; ')}`
-		);
-	}
-	if (!parsed || typeof parsed !== 'object') {
-		throw new Error('wrangler.jsonc must be an object');
-	}
-	const compatibilityDate = parsed.compatibility_date;
-	const compatibilityFlags = parsed.compatibility_flags;
-	if (typeof compatibilityDate !== 'string' || compatibilityDate.length === 0) {
-		throw new Error('wrangler.jsonc is missing compatibility_date');
-	}
-	if (!Array.isArray(compatibilityFlags)) {
-		throw new Error('wrangler.jsonc is missing compatibility_flags');
-	}
-	return { compatibilityDate, compatibilityFlags };
-}
 
 function run(file, argv) {
 	return new Promise((resolve, reject) => {
