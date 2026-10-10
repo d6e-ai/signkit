@@ -3,6 +3,10 @@ import type {
 	CompletionDeliveryBatchResult,
 	CompletionDeliveryService
 } from '$lib/application/completion-delivery/completion-delivery-service';
+import {
+	logMaintenanceOperationError,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
@@ -55,12 +59,20 @@ export function createCompletionDeliveryDrainHandler(
 			});
 		}
 
+		const startedAt: number = Date.now();
 		try {
 			const result: CompletionDeliveryBatchResult =
 				await service.deliverPendingCompletions(DRAIN_BATCH_LIMIT);
 			return Response.json(result, {
 				status: 200,
-				headers: { 'cache-control': 'no-store' }
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult(
+						'completion delivery drain',
+						result,
+						Date.now() - startedAt
+					)
+				}
 			});
 		} catch (error: unknown) {
 			logCompletionDeliveryError('completion_delivery_drain_failed', error);
@@ -86,10 +98,5 @@ function unauthorized(instance: string): Response {
 }
 
 function logCompletionDeliveryError(event: string, error: unknown): void {
-	console.error(
-		JSON.stringify({
-			event,
-			message: error instanceof Error ? error.name : 'UnknownError'
-		})
-	);
+	logMaintenanceOperationError(event, error);
 }

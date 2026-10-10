@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { InvitationDeliveryService } from '$lib/application/delivery/delivery-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import {
 	createDeliveryDrainHandler,
 	type InvitationDeliveryServiceResolver
@@ -80,6 +81,62 @@ describe('delivery drain HTTP handler', () => {
 		expect(resolver).toHaveBeenCalledWith({ platform });
 		expect(app.deliverPendingInvitations).toHaveBeenCalledWith(25);
 		expect(await response.json()).toMatchObject({ claimed: 1, delivered: 1 });
+	});
+
+	it('marks a healthy batch as observed and logs no error', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const resolver: InvitationDeliveryServiceResolver = vi.fn(
+			() => service() as unknown as InvitationDeliveryService
+		);
+		const response: Response = await createDeliveryDrainHandler(
+			resolver,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+
+		expect(response.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
+	});
+
+	it('logs an error-severity batch summary, with duration, when the batch has failures', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const failing = {
+			deliverPendingInvitations: vi.fn(async () => ({
+				claimed: 2,
+				delivered: 1,
+				retryableFailed: 0,
+				permanentlyFailed: 0,
+				integrityFailed: 1,
+				stale: 0,
+				outcomes: [{ deliveryId: 'delivery-1', outcome: 'integrity_failed' as const }]
+			}))
+		};
+		const resolver: InvitationDeliveryServiceResolver = vi.fn(
+			() => failing as unknown as InvitationDeliveryService
+		);
+		const response: Response = await createDeliveryDrainHandler(
+			resolver,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).toHaveBeenCalledOnce();
+		const logged: Record<string, unknown> = JSON.parse(String(errorSpy.mock.calls[0]?.[0]));
+		expect(logged).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'delivery drain',
+				claimed: 2,
+				integrityFailed: 1
+			})
+		);
+		expect(typeof logged.durationMs).toBe('number');
+		expect(logged).not.toHaveProperty('outcomes');
+		errorSpy.mockRestore();
 	});
 
 	it('fails closed when the worker secret or delivery runtime is unavailable', async () => {

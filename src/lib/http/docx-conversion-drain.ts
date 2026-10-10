@@ -3,6 +3,10 @@ import type {
 	DocxConversionBatchResult,
 	DocxConversionService
 } from '$lib/application/documents/docx-conversion-service';
+import {
+	logMaintenanceOperationError,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
@@ -37,11 +41,17 @@ export function createDocxConversionDrainHandler(
 		}
 		if (service === null) return unavailable(url.pathname);
 
+		const startedAt: number = Date.now();
 		try {
 			const result: DocxConversionBatchResult = await service.processPendingBatch({
 				limit: DRAIN_BATCH_LIMIT
 			});
-			return Response.json(result, { headers: { 'cache-control': 'no-store' } });
+			return Response.json(result, {
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult('DOCX conversion drain', result, Date.now() - startedAt)
+				}
+			});
 		} catch (error: unknown) {
 			logFailure('docx_conversion_drain_failed', error);
 			return unavailable(url.pathname);
@@ -70,10 +80,5 @@ function unavailable(instance: string): Response {
 }
 
 function logFailure(event: string, error: unknown): void {
-	console.error(
-		JSON.stringify({
-			event,
-			message: error instanceof Error ? error.name : 'UnknownError'
-		})
-	);
+	logMaintenanceOperationError(event, error);
 }

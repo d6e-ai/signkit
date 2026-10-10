@@ -3,6 +3,10 @@ import type {
 	CompletionArtifactBatchResult,
 	CompletionArtifactPublicationService
 } from '$lib/application/completion-artifacts/completion-artifact-service';
+import {
+	logMaintenanceOperationError,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
@@ -61,12 +65,20 @@ export function createCompletionArtifactDrainHandler(
 			});
 		}
 
+		const startedAt: number = Date.now();
 		try {
 			const result: CompletionArtifactBatchResult =
 				await service.publishPendingCompletionArtifacts(DRAIN_BATCH_LIMIT);
 			return Response.json(result, {
 				status: 200,
-				headers: { 'cache-control': 'no-store' }
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult(
+						'completion artifact drain',
+						result,
+						Date.now() - startedAt
+					)
+				}
 			});
 		} catch (error: unknown) {
 			logCompletionArtifactError('completion_artifact_drain_failed', error);
@@ -92,10 +104,5 @@ function unauthorized(instance: string): Response {
 }
 
 function logCompletionArtifactError(event: string, error: unknown): void {
-	console.error(
-		JSON.stringify({
-			event,
-			message: error instanceof Error ? error.name : 'UnknownError'
-		})
-	);
+	logMaintenanceOperationError(event, error);
 }

@@ -1,6 +1,11 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import type { PdfSealRuntime } from '$lib/application/pdf-seals/pdf-seal-runtime';
 import type { PdfSealDrainResult } from '$lib/application/pdf-seals/pdf-seal-drain-service';
+import {
+	logMaintenanceOperationError,
+	MAINTENANCE_BATCH_OBSERVED_HEADER,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
@@ -35,17 +40,24 @@ export function createPdfSealDrainHandler(
 		// supported disabled state. Scheduled maintenance must remain healthy in
 		// that default state; configured-but-unavailable dependencies throw above.
 		if (runtime === null) {
+			// No batch ran, so there is nothing to summarize; mark the response
+			// observed anyway so the scheduler's fallback decode does not treat
+			// this intentionally empty body as a missing/unreadable batch.
 			return new Response(null, {
 				status: 204,
-				headers: { 'cache-control': 'no-store' }
+				headers: { 'cache-control': 'no-store', [MAINTENANCE_BATCH_OBSERVED_HEADER]: '1' }
 			});
 		}
 
+		const startedAt: number = Date.now();
 		try {
 			const result: PdfSealDrainResult = await runtime.drainService.drain();
 			return Response.json(result, {
 				status: 200,
-				headers: { 'cache-control': 'no-store' }
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult('PDF seal drain', result, Date.now() - startedAt)
+				}
 			});
 		} catch (error: unknown) {
 			logPdfSealError('pdf_seal_drain_failed', error);
@@ -81,10 +93,5 @@ function unavailable(instance: string): Response {
 }
 
 function logPdfSealError(event: string, error: unknown): void {
-	console.error(
-		JSON.stringify({
-			event,
-			message: error instanceof Error ? error.name : 'UnknownError'
-		})
-	);
+	logMaintenanceOperationError(event, error);
 }

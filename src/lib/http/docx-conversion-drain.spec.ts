@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RequestHandler } from '@sveltejs/kit';
 import type { DocxConversionService } from '$lib/application/documents/docx-conversion-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import { createDocxConversionDrainHandler } from './docx-conversion-drain';
 
 const PATHNAME: string = '/api/v1/system/docx-conversions/drain';
@@ -52,5 +53,44 @@ describe('DOCX conversion drain', () => {
 			(): string => SECRET
 		)(event(`Bearer ${SECRET}`));
 		expect(response.status).toBe(503);
+	});
+
+	it('marks a healthy batch observed, and logs a failure summary when failed > 0', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const healthyService = {
+			processPendingBatch: vi
+				.fn()
+				.mockResolvedValue({ claimed: 0, succeeded: 0, failed: 0, stale: 0, items: [] })
+		} as unknown as DocxConversionService;
+		const healthyResponse: Response = await createDocxConversionDrainHandler(
+			(): DocxConversionService => healthyService,
+			(): string => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(healthyResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+
+		const failingService = {
+			processPendingBatch: vi
+				.fn()
+				.mockResolvedValue({ claimed: 2, succeeded: 1, failed: 1, stale: 0, items: [] })
+		} as unknown as DocxConversionService;
+		const failingResponse: Response = await createDocxConversionDrainHandler(
+			(): DocxConversionService => failingService,
+			(): string => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(failingResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'DOCX conversion drain',
+				claimed: 2,
+				failed: 1
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 });

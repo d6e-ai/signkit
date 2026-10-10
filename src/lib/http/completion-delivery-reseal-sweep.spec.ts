@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { CompletionDeliveryResealSweepService } from '$lib/application/completion-delivery/completion-reseal-sweep-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import {
 	createCompletionDeliveryResealSweepHandler,
 	type CompletionDeliveryResealSweepServiceResolver
@@ -103,5 +104,41 @@ describe('completion delivery reseal sweep HTTP handler', () => {
 			JSON.stringify({ event: 'completion_delivery_reseal_sweep_failed', message: 'Error' })
 		);
 		error.mockRestore();
+	});
+
+	it('marks a healthy batch observed, and logs a failure summary when unrecoverable > 0', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const healthyResponse: Response = await createCompletionDeliveryResealSweepHandler(
+			() => service() as unknown as CompletionDeliveryResealSweepService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(healthyResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+
+		const failing = {
+			resealOutstandingTokens: vi.fn(async () => ({
+				discovered: 1,
+				resealed: 0,
+				stale: 0,
+				unrecoverable: 1
+			}))
+		};
+		const failingResponse: Response = await createCompletionDeliveryResealSweepHandler(
+			() => failing as unknown as CompletionDeliveryResealSweepService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(failingResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'completion delivery reseal sweep',
+				unrecoverable: 1
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 });

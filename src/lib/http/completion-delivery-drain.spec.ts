@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { CompletionDeliveryService } from '$lib/application/completion-delivery/completion-delivery-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import {
 	createCompletionDeliveryDrainHandler,
 	type CompletionDeliveryServiceResolver
@@ -118,5 +119,46 @@ describe('completion delivery drain HTTP handler', () => {
 		expect(await response.json()).toMatchObject({
 			type: 'urn:signkit:problem:completion-delivery-service-unavailable'
 		});
+	});
+
+	it('marks a healthy batch observed, and logs a failure summary when retryableFailed > 0', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const healthyResponse: Response = await createCompletionDeliveryDrainHandler(
+			() => mockService() as unknown as CompletionDeliveryService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(healthyResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+
+		const failing = {
+			deliverPendingCompletions: vi.fn(async () => ({
+				discovered: 1,
+				seeded: 1,
+				claimed: 1,
+				delivered: 0,
+				retryableFailed: 1,
+				permanentlyFailed: 0,
+				integrityFailed: 0,
+				stale: 0,
+				outcomes: []
+			}))
+		};
+		const failingResponse: Response = await createCompletionDeliveryDrainHandler(
+			() => failing as unknown as CompletionDeliveryService,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+		expect(failingResponse.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(errorSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_failed',
+				job: 'completion delivery drain',
+				retryableFailed: 1
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 });

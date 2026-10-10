@@ -11,6 +11,7 @@ Operational recovery procedures for SignKit's deployment profiles: D1 (SQL) and 
 | [postgres-backup-restore.md](postgres-backup-restore.md) | Logical and physical/WAL backup, retention, and point-in-time restore for PostgreSQL 18           |
 | [s3-backup-restore.md](s3-backup-restore.md)             | Versioning, cross-account mirroring, and restore for any S3-compatible object store               |
 | [pdf-sealing.md](pdf-sealing.md)                         | Certificate loss/rotation/revocation, provider/TSA/validator outages, and recovery verification   |
+| [maintenance-monitoring.md](maintenance-monitoring.md)   | Scheduled drain/sweep batch telemetry and the read-only maintenance health endpoint               |
 
 The D1/R2 runbooks assume the reader has `wrangler` authenticated against the correct Cloudflare account and the exact resource names for the environment being recovered. The PostgreSQL/S3 runbooks assume the reader has database and bucket credentials for the environment being recovered, and use `psql`/`pg_dump`/`pg_basebackup` and a generic S3-compatible CLI (`aws s3`/`rclone`) rather than any Cloudflare-specific tooling.
 

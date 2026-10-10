@@ -1,5 +1,9 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import type { InstanceInvitationDeliveryService } from '$lib/application/instance-invitations/instance-invitation-delivery-service';
+import {
+	logMaintenanceOperationError,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import {
 	resolveDeliveryWorkerSecret,
@@ -45,18 +49,22 @@ export function createInstanceInvitationDeliveryDrainHandler(
 				instance: url.pathname
 			});
 		}
+		const startedAt: number = Date.now();
 		try {
-			return Response.json(await service.deliverPending(25), {
+			const result = await service.deliverPending(25);
+			return Response.json(result, {
 				status: 200,
-				headers: { 'cache-control': 'no-store' }
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult(
+						'instance invitation delivery drain',
+						result,
+						Date.now() - startedAt
+					)
+				}
 			});
 		} catch (error: unknown) {
-			console.error(
-				JSON.stringify({
-					event: 'instance_invitation_delivery_drain_failed',
-					message: error instanceof Error ? error.name : 'UnknownError'
-				})
-			);
+			logMaintenanceOperationError('instance_invitation_delivery_drain_failed', error);
 			return problemResponse({
 				type: 'urn:signkit:problem:instance-invitation-delivery-failed',
 				title: 'Instance invitation delivery failed',

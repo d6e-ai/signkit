@@ -5,6 +5,7 @@ import {
 	OrphanSweepFailure,
 	type OrphanCollector
 } from '$lib/application/maintenance/orphan-collector';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import {
 	createOrphanSweepHandler,
 	ORPHAN_SWEEP_BATCH_SIZE,
@@ -91,6 +92,31 @@ describe('orphan sweep HTTP handler', () => {
 		expect(ORPHAN_SWEEP_BATCH_SIZE).toBeLessThanOrEqual(ORPHAN_SWEEP_MAX_OBJECTS);
 		expect(ORPHAN_SWEEP_MAX_LIST_PAGES).toBe(1);
 		expect(DEFAULT_ORPHAN_GRACE_PERIOD_MS).toBe(24 * 60 * 60 * 1000);
+		expect(response.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+	});
+
+	it('logs a low-noise completion for a healthy sweep, never an error', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const app = collector();
+		const response: Response = await createOrphanSweepHandler(
+			() => app as unknown as OrphanCollector,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+
+		expect(response.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_completed',
+				job: 'orphan sweep',
+				scanned: 3,
+				deleted: 1
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 
 	it('fails closed when the worker secret or orphan runtime is unavailable', async () => {

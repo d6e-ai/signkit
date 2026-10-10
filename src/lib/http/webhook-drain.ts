@@ -3,6 +3,10 @@ import type {
 	WebhookApplicationPort,
 	WebhookDeliveryBatchResult
 } from '$lib/application/webhooks/webhook-service';
+import {
+	logMaintenanceOperationError,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import {
 	resolveDeliveryWorkerSecret,
@@ -44,12 +48,7 @@ export function createWebhookDrainHandler(
 		try {
 			application = await resolveApplication({ platform });
 		} catch (error: unknown) {
-			console.error(
-				JSON.stringify({
-					event: 'webhook_drain_resolution_failed',
-					message: error instanceof Error ? error.name : 'UnknownError'
-				})
-			);
+			logMaintenanceOperationError('webhook_drain_resolution_failed', error);
 			application = null;
 		}
 		if (application === null) {
@@ -62,20 +61,19 @@ export function createWebhookDrainHandler(
 			});
 		}
 
+		const startedAt: number = Date.now();
 		try {
 			const result: WebhookDeliveryBatchResult =
 				await application.drainPendingDeliveries(DRAIN_BATCH_LIMIT);
 			return Response.json(result, {
 				status: 200,
-				headers: { 'cache-control': 'no-store' }
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult('webhook drain', result, Date.now() - startedAt)
+				}
 			});
 		} catch (error: unknown) {
-			console.error(
-				JSON.stringify({
-					event: 'webhook_drain_failed',
-					message: error instanceof Error ? error.name : 'UnknownError'
-				})
-			);
+			logMaintenanceOperationError('webhook_drain_failed', error);
 			return problemResponse({
 				type: 'urn:signkit:problem:webhook-service-unavailable',
 				title: 'Webhook service unavailable',

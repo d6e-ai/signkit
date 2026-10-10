@@ -3,6 +3,10 @@ import type {
 	InvitationDeliveryBatchResult,
 	InvitationDeliveryService
 } from '$lib/application/delivery/delivery-service';
+import {
+	logMaintenanceOperationError,
+	observeMaintenanceBatchResult
+} from '$lib/observability/maintenance-telemetry';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import {
 	resolveDeliveryWorkerSecret,
@@ -62,12 +66,16 @@ export function createDeliveryDrainHandler(
 			});
 		}
 
+		const startedAt: number = Date.now();
 		try {
 			const result: InvitationDeliveryBatchResult =
 				await service.deliverPendingInvitations(DRAIN_BATCH_LIMIT);
 			return Response.json(result, {
 				status: 200,
-				headers: { 'cache-control': 'no-store' }
+				headers: {
+					'cache-control': 'no-store',
+					...observeMaintenanceBatchResult('delivery drain', result, Date.now() - startedAt)
+				}
 			});
 		} catch (error: unknown) {
 			logDeliveryError('delivery_drain_failed', error);
@@ -93,10 +101,5 @@ function unauthorized(instance: string): Response {
 }
 
 function logDeliveryError(event: string, error: unknown): void {
-	console.error(
-		JSON.stringify({
-			event,
-			message: error instanceof Error ? error.name : 'UnknownError'
-		})
-	);
+	logMaintenanceOperationError(event, error);
 }

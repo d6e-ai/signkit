@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { EnvelopeExpiryDrainService } from '$lib/application/delivery/envelope-expiry-service';
+import { MAINTENANCE_BATCH_OBSERVED_HEADER } from '$lib/observability/maintenance-telemetry';
 import {
 	createEnvelopeExpiryDrainHandler,
 	type EnvelopeExpiryDrainServiceResolver
@@ -103,5 +104,33 @@ describe('envelope expiry drain HTTP handler', () => {
 			JSON.stringify({ event: 'envelope_expiry_drain_failed', message: 'Error' })
 		);
 		error.mockRestore();
+	});
+
+	it('marks a healthy batch observed and logs a low-noise completion, never an error', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation((): void => undefined);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const app = service();
+		const resolver: EnvelopeExpiryDrainServiceResolver = vi.fn(
+			() => app as unknown as EnvelopeExpiryDrainService
+		);
+		const response: Response = await createEnvelopeExpiryDrainHandler(
+			resolver,
+			() => SECRET
+		)(event(`Bearer ${SECRET}`));
+
+		expect(response.headers.get(MAINTENANCE_BATCH_OBSERVED_HEADER)).toBe('1');
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledOnce();
+		expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toEqual(
+			expect.objectContaining({
+				event: 'scheduled_maintenance_batch_completed',
+				job: 'envelope expiry drain',
+				discovered: 1,
+				expired: 1,
+				skipped: 0
+			})
+		);
+		logSpy.mockRestore();
+		errorSpy.mockRestore();
 	});
 });
