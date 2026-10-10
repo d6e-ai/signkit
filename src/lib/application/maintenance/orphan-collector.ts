@@ -552,7 +552,7 @@ function loadD1SignatureFieldValues(database: D1Database): SignatureFieldValueLo
 				 INNER JOIN json_each(?1) AS scope
 					ON field.envelope_id = json_extract(scope.value, '$[0]')
 					AND field.recipient_id = json_extract(scope.value, '$[1]')
-				 WHERE field_type = 'signature'`
+				 WHERE field_type IN ('signature', 'initials')`
 			)
 			.bind(serializedScopes)
 			.all<{
@@ -595,7 +595,7 @@ function loadPostgresSignatureFieldValues(
 			) scope
 				ON fv.envelope_id = scope.envelope_id
 				AND fv.recipient_id = scope.recipient_id
-			WHERE fv.field_type = 'signature'
+			WHERE fv.field_type IN ('signature', 'initials')
 		`;
 		return rows;
 	};

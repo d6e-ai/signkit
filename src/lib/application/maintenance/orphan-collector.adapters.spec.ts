@@ -90,6 +90,40 @@ describe('D1 SQL and R2 binding adapter contract', () => {
 		}
 	});
 
+	it('retains a drawn-initials sig:sha256 asset past the grace period while an unrelated recipient asset is swept', async () => {
+		const sqlite: DatabaseSync = migratedDatabase();
+		const envelopeId: string = '01900000-0000-7000-8000-000000000010';
+		const initialsRecipientId: string = '01900000-0000-7000-8000-000000000011';
+		const orphanRecipientId: string = '01900000-0000-7000-8000-000000000012';
+		const initialsSha256: string = 'ab'.repeat(32);
+		const orphanSha256: string = 'cd'.repeat(32);
+		const initialsAssetKey: string = `signature-assets/v1/envelopes/${envelopeId}/recipients/${initialsRecipientId}/sha256/${initialsSha256}.png`;
+		const orphanAssetKey: string = `signature-assets/v1/envelopes/${envelopeId}/recipients/${orphanRecipientId}/sha256/${orphanSha256}.png`;
+		insertFieldValueAssetReference(sqlite, {
+			envelopeId,
+			recipientId: initialsRecipientId,
+			fieldId: '01900000-0000-7000-8000-000000000013',
+			fieldType: 'initials',
+			sha256: initialsSha256
+		});
+		insertRecipient(sqlite, envelopeId, orphanRecipientId);
+		const database: D1Database = sqliteD1Database(sqlite);
+		const bucket = r2Bucket([initialsAssetKey, orphanAssetKey]);
+
+		try {
+			const report = await new OrphanCollector(
+				new R2ObjectStore(bucket.binding),
+				new D1OrphanReferenceStore(database),
+				() => NOW
+			).sweep();
+
+			expect(report.deletedKeys).toEqual([orphanAssetKey]);
+			expect(bucket.remainingKeys()).toEqual([initialsAssetKey]);
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('classifies an R2 list failure without deleting anything', async () => {
 		const sqlite: DatabaseSync = migratedDatabase();
 		const bucket = r2Bucket([]);
@@ -152,6 +186,90 @@ function insertEnvelopeArchiveReference(sqlite: DatabaseSync, objectKey: string)
 			'Agreement',
 			objectKey,
 			NOW.toISOString(),
+			NOW.toISOString()
+		);
+}
+
+function insertInstanceMemberOnce(sqlite: DatabaseSync): void {
+	const exists = sqlite.prepare(`SELECT 1 FROM instance_member WHERE user_id = 'user-1'`).get();
+	if (exists !== undefined) return;
+	sqlite
+		.prepare(
+			`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
+			 VALUES (?, 'owner', 'active', ?, ?)`
+		)
+		.run('user-1', NOW.toISOString(), NOW.toISOString());
+}
+
+function insertEnvelopeOnce(sqlite: DatabaseSync, envelopeId: string): void {
+	const exists = sqlite.prepare(`SELECT 1 FROM envelope WHERE id = ?`).get(envelopeId);
+	if (exists !== undefined) return;
+	insertInstanceMemberOnce(sqlite);
+	sqlite
+		.prepare(
+			`INSERT INTO envelope (
+				id, created_by_user_id, title, status, repository_generation, created_at, updated_at
+			 ) VALUES (?, 'user-1', 'Agreement', 'completed', 1, ?, ?)`
+		)
+		.run(envelopeId, NOW.toISOString(), NOW.toISOString());
+}
+
+function insertRecipient(sqlite: DatabaseSync, envelopeId: string, recipientId: string): void {
+	insertEnvelopeOnce(sqlite, envelopeId);
+	sqlite
+		.prepare(
+			`INSERT INTO recipient (
+				id, envelope_id, role, routing_order, name, email, locale, status, created_at, updated_at
+			 ) VALUES (?, ?, 'signer', 1, 'Signer', ?, 'en', 'completed', ?, ?)`
+		)
+		.run(
+			recipientId,
+			envelopeId,
+			`${recipientId}@example.test`,
+			NOW.toISOString(),
+			NOW.toISOString()
+		);
+}
+
+function insertFieldValueAssetReference(
+	sqlite: DatabaseSync,
+	options: {
+		envelopeId: string;
+		recipientId: string;
+		fieldId: string;
+		fieldType: 'signature' | 'initials';
+		sha256: string;
+	}
+): void {
+	insertRecipient(sqlite, options.envelopeId, options.recipientId);
+	sqlite
+		.prepare(
+			`INSERT INTO envelope_field (
+				id, envelope_id, recipient_id, document_path, field_type, label, required, position, created_at, updated_at
+			 ) VALUES (?, ?, ?, 'documents/agreement.md', ?, ?, 1, 0, ?, ?)`
+		)
+		.run(
+			options.fieldId,
+			options.envelopeId,
+			options.recipientId,
+			options.fieldType,
+			options.fieldType === 'initials' ? 'Initials' : 'Signature',
+			NOW.toISOString(),
+			NOW.toISOString()
+		);
+	sqlite
+		.prepare(
+			`INSERT INTO field_value (
+				field_id, envelope_id, recipient_id, field_type, value_json, value_sha256, created_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(
+			options.fieldId,
+			options.envelopeId,
+			options.recipientId,
+			options.fieldType,
+			JSON.stringify(`sig:sha256:${options.sha256}`),
+			'c'.repeat(64),
 			NOW.toISOString()
 		);
 }
