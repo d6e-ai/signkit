@@ -8,7 +8,6 @@ bun.lockb
 # Miscellaneous
 /static/
 /src/lib/paraglide/
-/src/worker-configuration.d.ts
 /project.inlang/cache/
 /project.inlang/README.md
 /project.inlang/.meta.json
@@ -29,4 +28,5 @@ bun.lockb
 # create-signkit build output
 /packages/create-signkit/dist/
 /.release/
+/.cloudflare/
 src/lib/adapters/pdf/fonts/document-font.ts

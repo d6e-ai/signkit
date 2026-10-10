@@ -3,7 +3,6 @@ import {
 	createWranglerClient,
 	isMissingWorkerError,
 	parseDeployResult,
-	parseMigrationList,
 	sortWorkerVersions,
 	assertSuccessfulUpload,
 	wranglerFirstDeployArgs,
@@ -15,30 +14,22 @@ import { ACCOUNT_ID, RecordingProcessRunner } from './helpers.js';
 const D1_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const WORKER_VERSION = '22222222-2222-2222-2222-222222222222';
 
-const REAL_PENDING_MIGRATIONS = `Migrations to be applied:
-┌───────────────────────────────────────┬────────┐
-│ Name                                  │ Status │
-├───────────────────────────────────────┼────────┤
-│ 0001_core.sql                         │        │
-├───────────────────────────────────────┼────────┤
-│ 0002_next.sql                         │        │
-└───────────────────────────────────────┴────────┘
-`;
-
-describe('parseMigrationList', () => {
-	it('parses real Wrangler nonempty output by filenames after the section header', () => {
-		expect(parseMigrationList(REAL_PENDING_MIGRATIONS)).toEqual({
-			pending: ['0001_core.sql', '0002_next.sql'],
-			applied: []
+describe('Wrangler compatibility port', () => {
+	it('exposes only active Worker lifecycle and D1 export fallbacks', () => {
+		const wrangler = createWranglerClient({
+			runner: new RecordingProcessRunner(),
+			accountId: ACCOUNT_ID,
+			env: {},
+			wranglerBin: '/opt/wrangler/bin/wrangler.js'
 		});
-	});
-
-	it('parses real Wrangler empty output without inventing applied history', () => {
-		expect(parseMigrationList('No migrations to apply!')).toEqual({ pending: [], applied: [] });
-	});
-
-	it('does not treat filename rows without pending as applied history', () => {
-		expect(parseMigrationList(REAL_PENDING_MIGRATIONS).applied).toEqual([]);
+		expect(Object.keys(wrangler).sort()).toEqual([
+			'deployFirst',
+			'deployTriggers',
+			'exportD1',
+			'invocations',
+			'listVersions',
+			'uploadVersion'
+		]);
 	});
 });
 
@@ -84,25 +75,13 @@ describe('missing Worker classification', () => {
 		expect(isMissingWorkerError('database 10007 rows scanned')).toBe(false);
 	});
 
-	it('treats listSecrets and listVersions fresh-account errors as an empty Worker', async () => {
+	it('treats a listVersions fresh-account error as an empty Worker', async () => {
 		const runner = new RecordingProcessRunner();
-		runner.handler = (request) => {
-			if (request.argv.includes('secret')) {
-				return {
-					code: 1,
-					stdout: '',
-					stderr: 'code: 10007 script_not_found'
-				};
-			}
-			if (request.argv.includes('versions')) {
-				return {
-					code: 1,
-					stdout: '',
-					stderr: '[code: 10006] script_not_found'
-				};
-			}
-			return { code: 0, stdout: '[]', stderr: '' };
-		};
+		runner.handler = () => ({
+			code: 1,
+			stdout: '',
+			stderr: '[code: 10006] script_not_found'
+		});
 		const wrangler = createWranglerClient({
 			runner,
 			accountId: ACCOUNT_ID,
@@ -110,7 +89,6 @@ describe('missing Worker classification', () => {
 			wranglerBin: '/opt/wrangler/bin/wrangler.js',
 			nodeExecutable: '/usr/bin/node'
 		});
-		await expect(wrangler.listSecrets('signkit')).resolves.toEqual([]);
 		await expect(wrangler.listVersions('signkit')).resolves.toEqual([]);
 	});
 
@@ -183,7 +161,7 @@ Aborted. Did not upload a new version.
 			cwd: '/tmp/bundle'
 		});
 	});
-	it('does not classify a broad not-found as a missing Worker for secret listing', async () => {
+	it('does not classify a broad not-found as a missing Worker for version listing', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 1,
@@ -197,7 +175,7 @@ Aborted. Did not upload a new version.
 			wranglerBin: '/opt/wrangler/bin/wrangler.js',
 			nodeExecutable: '/usr/bin/node'
 		});
-		await expect(wrangler.listSecrets('signkit')).rejects.toThrow(/not found/);
+		await expect(wrangler.listVersions('signkit')).rejects.toThrow(/not found/);
 	});
 });
 
@@ -207,7 +185,7 @@ describe('discovery cwd isolation', () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 0,
-			stdout: JSON.stringify([{ uuid: D1_UUID, name: 'signkit' }]),
+			stdout: JSON.stringify([{ id: WORKER_VERSION }]),
 			stderr: ''
 		});
 		const wrangler = createWranglerClient({
@@ -217,7 +195,7 @@ describe('discovery cwd isolation', () => {
 			wranglerBin: '/opt/wrangler/bin/wrangler.js',
 			nodeExecutable: '/usr/bin/node'
 		});
-		await wrangler.listD1();
+		await wrangler.listVersions('signkit');
 		const cwd = runner.requests[0]?.cwd;
 		expect(cwd).toMatch(/create-signkit-wrangler-/);
 		expect(cwd).not.toBe('/opt/wrangler/bin');

@@ -4,7 +4,7 @@ Local setup, tests, builds, and what CI enforces. For runtime configuration and 
 
 ## Prerequisites
 
-- Node.js 22 or newer (CI verifies Node 22; the Docker image uses Node 26).
+- Node.js 22.18 or newer (typed cf configuration requires 22.18; CI verifies Node 22; the Docker image uses Node 26).
 - pnpm 11.24.0 (pinned via `packageManager`; Node 26 no longer bundles Corepack).
 - Chromium for the browser test project: `pnpm exec playwright install chromium`.
 - Optional for integration tests and the Node profile: PostgreSQL 18.
@@ -18,7 +18,7 @@ cp .env.example .env
 pnpm run dev
 ```
 
-`pnpm install` runs `prepare`, which compiles Paraglide messages and syncs SvelteKit types. `.env` holds the Node development configuration; every variable is described in [deployment.md](deployment.md#configuration). Cloudflare secrets never belong in `.env` — use Wrangler secret storage, or `.dev.vars` locally, and keep both out of Git.
+`pnpm install` runs `prepare`, which generates cf binding/runtime types, compiles Paraglide messages, and syncs SvelteKit types. `.env` holds the Node development configuration; every variable is described in [deployment.md](deployment.md#configuration). Cloudflare secrets never belong in `.env` — use Worker secret storage, or `.dev.vars` locally, and keep both out of Git. After an installation with `--ignore-scripts`, run `pnpm run prepare` before building.
 
 ## Tests
 
@@ -44,7 +44,7 @@ CI also runs `scripts/test-cli-recipient-e2e.mjs` against the built Node server,
 
 ```sh
 pnpm run lint    # prettier --check . && eslint .
-pnpm run check   # Paraglide compile + svelte-kit sync + svelte-check
+pnpm run check   # cf type generation + Paraglide compile + svelte-kit sync + svelte-check
 pnpm run format  # prettier --write .
 ```
 
@@ -54,7 +54,7 @@ pnpm run format  # prettier --write .
 
 ```sh
 pnpm run build:node        # default profile, adapter-node into build/node
-pnpm run build:cloudflare  # adapter-cloudflare, uses wrangler.build.jsonc
+pnpm run build:cloudflare  # SvelteKit adapter + cf Build Output
 pnpm run build:vercel      # adapter-vercel, nodejs22.x
 ```
 
@@ -72,12 +72,18 @@ DATABASE_URL=postgres://signkit:change-me@localhost:5432/signkit pnpm run db:mig
 ## Cloudflare local loop
 
 ```sh
-pnpm run cf:typegen                                   # regenerate src/worker-configuration.d.ts
-pnpm exec wrangler d1 migrations apply signkit --local # apply migrations/d1 to the local D1
-pnpm run deploy:cloudflare                             # build:cloudflare + wrangler deploy
+pnpm run cf:typegen  # regenerate .cloudflare/types/index.d.ts
+pnpm run build:cloudflare
+pnpm exec cf deploy --prebuilt --dry-run  # validates only; does not deploy
+pnpm run test:cloudflare-tooling
+
+# cf beta.14 cannot apply the complete local migration set reliably yet.
+pnpm exec wrangler d1 migrations apply signkit --config wrangler.jsonc --local --persist-to .cloudflare/state
 ```
 
-Binding types are generated, not hand-written; regenerate them whenever `wrangler.jsonc` bindings change.
+Binding types are generated, not hand-written; regenerate them whenever `cloudflare.config.ts` bindings change. `prepare` and `check` do this automatically. The beta's pnpm workspace framework detection is isolated by the build wrapper; use `pnpm run build:cloudflare`, not bare `cf build` at this workspace root. See [architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md) for the configuration boundary and the explicit local-D1 fallback.
+
+An intentional source deployment uses `pnpm run deploy:cloudflare` (build plus `cf deploy --prebuilt`). Authenticate cf separately from Wrangler with `pnpm exec cf auth login`, select `CLOUDFLARE_ACCOUNT_ID` in the environment, and configure bindings/vars/secrets before deploying. `SIGNKIT_D1_DATABASE_ID` optionally pins the `DB` binding at build time. For managed installations and upgrades, prefer the verified release flow in [create-signkit.md](create-signkit.md).
 
 ## Migrations
 
@@ -136,7 +142,7 @@ Tests inject HTTP and process layers and must not contact real GitHub or Cloudfl
 `.github/workflows/ci.yml` runs on pull requests and pushes to `main`:
 
 - **validate** — `lint`, `check`, Chromium install, and the full `test` script against a `postgres:18-alpine` service with `POSTGRES_TEST_URL` set, so PostgreSQL integration suites always run in CI.
-- **build** — a matrix over `node`, `cloudflare`, and `vercel`. The Node build additionally runs `test:node-build`; the Cloudflare build checks generated binding types, applies local D1 migrations, runs `wrangler deploy --dry-run`, builds create-signkit, then builds and verifies a synthetic `v0.0.0-ci` release bundle (`SIGNKIT_RELEASE_TAG` overrides `GITHUB_REF_NAME` so the branch name cannot become the tag) and deletes `.release`.
+- **build** — a matrix over `node`, `cloudflare`, and `vercel`. The Node build additionally runs `test:node-build`; the Cloudflare build checks generated binding types, applies local D1 migrations through the scoped Wrangler compatibility path, runs `cf deploy --prebuilt --dry-run`, builds create-signkit, then builds and verifies a synthetic `v0.0.0-ci` release bundle (`SIGNKIT_RELEASE_TAG` overrides `GITHUB_REF_NAME` so the branch name cannot become the tag) and deletes `.release`.
 - **rust-cli** — isolated Rust CI job on Rust 1.88.0 running `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.
 
 Tag workflow `.github/workflows/release-cloudflare-bundle.yml` runs on `v*` tags as a draft-first full release: it enforces tag-equals-version for the root product and Rust CLI while validating the independently versioned `create-signkit` npm package, builds and smoke-checks the Node profile, builds and verifies the Cloudflare bundle, builds the Rust `--locked --release` binary and the Docker image, regenerates a unified `.release/assets/SHA256SUMS`, verifies it, and generates GitHub build-provenance attestations. Assets are uploaded only to a draft; reruns reuse byte-identical existing assets and refuse public releases, metadata drift, unexpected assets, or content mismatches rather than clobbering them. Only then may job `publish-npm` run `npm publish` for create-signkit with the exact npm CLI pinned by root `package.json` and `pnpm-lock.yaml` (OIDC Trusted Publishing only, with no token fallback; pnpm installs and invokes it). Job `publish-release` receives the build job's exact asset SHA-256 inventory, re-downloads the exact remote set and byte-verifies it immediately before marking the draft public, and runs only after `publish-npm` succeeds. Repository immutable releases must also be enabled before pushing the tag; workflow checks do not replace that administrative control. A tag therefore never leaves a public release behind an unpublished npm package, but perfect cross-registry atomicity is impossible and recovery is documented in the workflow header. All named setup and attestation actions are pinned to reviewed full commit SHAs with version comments. `create-signkit` requires online GitHub/Sigstore verification of the exact downloaded Cloudflare bundle before plan output or any deploy/upgrade mutation; manifest SHA-256 remains an integrity check rather than a signature. The npm package's prerelease version selects dist-tag `beta`; stable package versions publish to `latest`. The package has completed its one-time manual first publish, so normal releases use OIDC Trusted Publishing only. See [release-checklist.md](release-checklist.md) for the non-publishing local verification that precedes any tag push.

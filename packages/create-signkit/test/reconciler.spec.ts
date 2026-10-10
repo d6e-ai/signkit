@@ -6,7 +6,7 @@ import {
 	ACCOUNT_ID,
 	D1_ID,
 	FakeHttp,
-	FakeWrangler,
+	FakeCloudflareClient,
 	MemoryFileSystem,
 	PREVIOUS_VERSION,
 	WORKER_VERSION,
@@ -18,7 +18,7 @@ import {
 
 async function run(
 	argv: string[],
-	wrangler: FakeWrangler,
+	cloudflare: FakeCloudflareClient,
 	fs = new MemoryFileSystem(),
 	releases = fakeReleases(),
 	stdinText?: string
@@ -30,7 +30,7 @@ async function run(
 		'https://signkit.example.workers.dev/api/v1/system/capabilities',
 		JSON.stringify({ name: 'signkit', apiVersion: '1' })
 	);
-	wrangler.fs = fs;
+	cloudflare.fs = fs;
 	const code = await runCreateSignkit({
 		argv,
 		stdout: { write: (chunk) => stdout.push(chunk) },
@@ -38,7 +38,7 @@ async function run(
 		env: { XDG_STATE_HOME: '/xdg/state' },
 		runtime: {
 			fs,
-			wrangler,
+			cloudflare,
 			releases,
 			extractor: fakeExtractor(fs),
 			http,
@@ -53,12 +53,12 @@ async function run(
 					: async (): Promise<Uint8Array> => new TextEncoder().encode(stdinText)
 		}
 	});
-	return { code, stdout: stdout.join(''), stderr: stderr.join(''), fs, http, wrangler, releases };
+	return { code, stdout: stdout.join(''), stderr: stderr.join(''), fs, http, cloudflare, releases };
 }
 
 describe('SMTP managed deployment', () => {
 	it('provisions the password only through staged secrets and omits the EMAIL binding', async () => {
-		const wrangler = new FakeWrangler();
+		const cloudflare = new FakeCloudflareClient();
 		const smtpPassword = 'smtp-password-never-print';
 		const result = await run(
 			[
@@ -80,7 +80,7 @@ describe('SMTP managed deployment', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			new MemoryFileSystem(),
 			fakeReleases(),
 			JSON.stringify({
@@ -90,7 +90,7 @@ describe('SMTP managed deployment', () => {
 			})
 		);
 		expect(result.code).toBe(0);
-		const config = JSON.parse(wrangler.lastConfig ?? '{}') as Record<string, unknown>;
+		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as Record<string, unknown>;
 		expect(config).not.toHaveProperty('send_email');
 		expect(config.vars).toMatchObject({
 			SIGNKIT_MAIL_PROVIDER: 'smtp',
@@ -99,8 +99,8 @@ describe('SMTP managed deployment', () => {
 			SIGNKIT_SMTP_SECURE: 'false',
 			SIGNKIT_SMTP_USERNAME: 'relay-user'
 		});
-		expect(wrangler.stagedSecrets).toHaveLength(1);
-		expect(JSON.parse(wrangler.stagedSecrets[0] ?? '{}')).toMatchObject({
+		expect(cloudflare.stagedSecrets).toHaveLength(1);
+		expect(JSON.parse(cloudflare.stagedSecrets[0] ?? '{}')).toMatchObject({
 			SIGNKIT_SMTP_PASSWORD: smtpPassword
 		});
 		const state = await result.fs.readFile('/xdg/state/create-signkit/state.json');
@@ -110,9 +110,9 @@ describe('SMTP managed deployment', () => {
 	});
 
 	it('can switch an existing deployment to SMTP when its password secret is already provisioned', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.secrets.set('signkit', [
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.secrets.set('signkit', [
 			'DELIVERY_ENCRYPTION_KEY',
 			'SESSION_ENCRYPTION_KEY',
 			'DELIVERY_WORKER_SECRET',
@@ -142,12 +142,12 @@ describe('SMTP managed deployment', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
 		expect(result.code).toBe(0);
-		expect(wrangler.stagedSecrets).toEqual([]);
+		expect(cloudflare.stagedSecrets).toEqual([]);
 		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state).toMatchObject({
 			mailProvider: 'smtp',
@@ -175,24 +175,24 @@ const OAUTH_STDIN_JSON = JSON.stringify({
 
 describe('plan is read-only', () => {
 	it('does not create resources, apply migrations, deploy, or write state', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.pendingMigrations = ['0002_next.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.pendingMigrations = ['0002_next.sql'];
 		const fs = new MemoryFileSystem();
 		const releases = fakeReleases();
 		const result = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler,
+			cloudflare,
 			fs,
 			releases
 		);
 		expect(result.code).toBe(0);
 		expect(releases.resolveCalls).toBe(1);
 		expect(releases.downloads).toBe(1);
-		expect(wrangler.calls.some((call) => call.startsWith('create'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('create'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
 		expect(fs.writes).toEqual([]);
 		const parsed = JSON.parse(result.stdout);
 		expect(parsed.mutations).toEqual([]);
@@ -214,9 +214,9 @@ describe('plan is read-only', () => {
 
 describe('deploy, adopt, and upgrade state transitions', () => {
 	it('deploy creates missing D1/R2, applies pending migrations, deploys, and records state', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.versions.set('signkit', []);
-		wrangler.pendingMigrations = ['0001_core.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.versions.set('signkit', []);
+		cloudflare.pendingMigrations = ['0001_core.sql'];
 		const result = await run(
 			[
 				'--cloudflare',
@@ -227,17 +227,17 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			new MemoryFileSystem(),
 			fakeReleases(),
 			OAUTH_STDIN_JSON
 		);
 		expect(result.code).toBe(0);
-		expect(wrangler.calls).toContain('createD1:signkit');
-		expect(wrangler.calls).toContain('createR2:signkit-objects');
-		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(true);
-		expect(wrangler.calls).toContain('deploy:signkit');
-		expect(wrangler.calls).not.toContain('deployTriggers:signkit');
+		expect(cloudflare.calls).toContain('createD1:signkit');
+		expect(cloudflare.calls).toContain('createR2:signkit-objects');
+		expect(cloudflare.calls.some((call) => call.startsWith('applyMigrations'))).toBe(true);
+		expect(cloudflare.calls).toContain('deploy:signkit');
+		expect(cloudflare.calls).not.toContain('deployTriggers:signkit');
 		expect(JSON.parse(result.stdout).mutations).not.toContain('triggers-deploy');
 		const state = JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state).toMatchObject({
@@ -254,20 +254,20 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 	});
 
 	it('adopt records explicit existing resources without deploying or resolving a release', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const releases = fakeReleases();
 		const result = await run(
 			['--cloudflare', 'adopt', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			new MemoryFileSystem(),
 			releases
 		);
 		expect(result.code).toBe(0);
 		expect(releases.resolveCalls).toBe(0);
 		expect(releases.downloads).toBe(0);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 		const parsed = JSON.parse(result.stdout);
 		expect(parsed.version).toBeUndefined();
 		expect(parsed.commit).toBeUndefined();
@@ -281,11 +281,11 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 	});
 
 	it('uses the required first deploy after adopting a Worker with secrets but zero versions', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.d1 = [{ uuid: D1_ID, name: 'signkit' }];
-		wrangler.r2.add('signkit-objects');
-		wrangler.secrets.set('signkit', [...REQUIRED_WORKER_SECRETS]);
-		wrangler.versions.set('signkit', []);
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.d1 = [{ uuid: D1_ID, name: 'signkit' }];
+		cloudflare.r2.add('signkit-objects');
+		cloudflare.secrets.set('signkit', [...REQUIRED_WORKER_SECRETS]);
+		cloudflare.versions.set('signkit', []);
 		const fs = new MemoryFileSystem();
 
 		const adopted = await run(
@@ -303,22 +303,22 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(adopted.code).toBe(0);
 
 		const deployed = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
 		expect(deployed.code).toBe(0);
-		expect(wrangler.calls).toContain('deploy:signkit');
-		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
-		expect(wrangler.calls.some((call) => call.startsWith('deployVersion:'))).toBe(false);
-		expect(wrangler.calls).not.toContain('deployTriggers:signkit');
+		expect(cloudflare.calls).toContain('deploy:signkit');
+		expect(cloudflare.calls).not.toContain('uploadVersion:signkit');
+		expect(cloudflare.calls.some((call) => call.startsWith('deployVersion:'))).toBe(false);
+		expect(cloudflare.calls).not.toContain('deployTriggers:signkit');
 		const output = JSON.parse(deployed.stdout);
 		expect(output.mutations).toContain('deploy');
 		expect(output.plan.find((step: { id: string }) => step.id === 'deploy')).toBeDefined();
@@ -329,34 +329,34 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 	});
 
 	it('refuses no-state upgrade of an existing Worker until adopt records it', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler
+			cloudflare
 		);
 		expect(result.code).toBe(4);
 		expect(result.stdout).toMatch(/adopt the existing Worker/);
-		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
-		expect(wrangler.calls).not.toContain('whoami');
+		expect(cloudflare.calls).not.toContain('uploadVersion:signkit');
+		expect(cloudflare.calls).not.toContain('whoami');
 	});
 
 	it('upgrade requires existing resources and uploads a new Worker version after pending migrations', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.pendingMigrations = ['0002_next.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.pendingMigrations = ['0002_next.sql'];
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
-		expect(wrangler.calls).not.toContain('createR2:signkit-objects');
-		expect(wrangler.calls).toContain('uploadVersion:signkit');
-		expect(wrangler.calls.some((call) => call.startsWith('deployVersion:signkit:'))).toBe(true);
-		expect(wrangler.calls).toContain('deployTriggers:signkit');
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls).not.toContain('createR2:signkit-objects');
+		expect(cloudflare.calls).toContain('uploadVersion:signkit');
+		expect(cloudflare.calls.some((call) => call.startsWith('deployVersion:signkit:'))).toBe(true);
+		expect(cloudflare.calls).toContain('deployTriggers:signkit');
 		expect(JSON.parse(result.stdout).mutations).toEqual(
 			expect.arrayContaining(['versions-upload', 'versions-deploy', 'triggers-deploy'])
 		);
@@ -374,29 +374,29 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 	});
 
 	it('refuses a populated legacy D1 without the release schema epoch', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.appliedMigrations = ['0001_core.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.appliedMigrations = ['0001_core.sql'];
 		const fs = await writeCloudflareState(new MemoryFileSystem(), { schemaEpoch: undefined });
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(4);
 		expect(result.stdout).toMatch(/cannot be upgraded in place/);
 		expect(result.stdout).toMatch(/Recreate the selected D1/);
-		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
+		expect(cloudflare.calls).not.toContain('uploadVersion:signkit');
 	});
 
 	it('accepts a recreated empty D1 and records the current schema epoch', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.pendingMigrations = ['0001_core.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.pendingMigrations = ['0001_core.sql'];
 		const fs = await writeCloudflareState(new MemoryFileSystem(), { schemaEpoch: undefined });
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
@@ -405,17 +405,17 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 	});
 
 	it('refuses upgrade resource overrides until adopt records the intended identity', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
-		wrangler.r2.add('signkit-prod-objects');
-		wrangler.secrets.set('signkit-prod', [
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
+		cloudflare.r2.add('signkit-prod-objects');
+		cloudflare.secrets.set('signkit-prod', [
 			'DELIVERY_ENCRYPTION_KEY',
 			'SESSION_ENCRYPTION_KEY',
 			'DELIVERY_WORKER_SECRET',
 			'D6E_AUTH_CLIENT_ID',
 			'D6E_AUTH_CLIENT_SECRET'
 		]);
-		wrangler.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
+		cloudflare.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const denied = await run(
 			[
@@ -432,12 +432,12 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(denied.code).toBe(4);
 		expect(denied.stdout).toMatch(/drifted/);
-		expect(wrangler.calls).not.toContain('uploadVersion:signkit-prod');
+		expect(cloudflare.calls).not.toContain('uploadVersion:signkit-prod');
 
 		const adopted = await run(
 			[
@@ -454,17 +454,17 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(adopted.code).toBe(0);
 		const upgraded = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(upgraded.code).toBe(0);
-		expect(wrangler.calls).toContain('uploadVersion:signkit-prod');
+		expect(cloudflare.calls).toContain('uploadVersion:signkit-prod');
 		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state.workerName).toBe('signkit-prod');
 		expect(state.d1.name).toBe('signkit-prod-db');
@@ -474,9 +474,9 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 
 describe('drift refusal', () => {
 	it('refuses unexpected remote D1 id changes unless adopt updates local state', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.d1 = [{ uuid: '55555555-5555-5555-5555-555555555555', name: 'signkit' }];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.d1 = [{ uuid: '55555555-5555-5555-5555-555555555555', name: 'signkit' }];
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			'/xdg/state/create-signkit/state.json',
@@ -493,16 +493,16 @@ describe('drift refusal', () => {
 		);
 		const denied = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(denied.code).toBe(4);
 		expect(denied.stdout).toMatch(/drifted/);
-		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
+		expect(cloudflare.calls).not.toContain('uploadVersion:signkit');
 
 		const adopted = await run(
 			['--cloudflare', 'adopt', '--account-id', ACCOUNT_ID, '--d1', 'signkit', '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(adopted.code).toBe(0);
@@ -513,16 +513,16 @@ describe('drift refusal', () => {
 
 describe('migration and deploy ordering', () => {
 	it('exports D1, applies pending migrations, then uploads the Worker', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.pendingMigrations = ['0002_next.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.pendingMigrations = ['0002_next.sql'];
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
-		const order = wrangler.calls.filter((call) =>
+		const order = cloudflare.calls.filter((call) =>
 			[
 				'exportD1',
 				'applyMigrations',
@@ -537,16 +537,17 @@ describe('migration and deploy ordering', () => {
 		expect(order[2]).toMatch(/^uploadVersion:/);
 		expect(order[3]).toMatch(/^deployVersion:/);
 		expect(order[4]).toMatch(/^deployTriggers:/);
-		expect(wrangler.migrationCalls).toHaveLength(3);
-		expect(wrangler.calls.filter((call) => call.startsWith('listMigrations'))).toHaveLength(2);
-		for (const call of wrangler.migrationCalls) {
-			expect(call.cwd).toMatch(/^\/tmp\/create-signkit-/);
-			expect(call.configPath).toBe(`${call.cwd}/wrangler.jsonc`);
-			expect(call.database).toBe('signkit');
+		expect(cloudflare.migrationCalls).toHaveLength(3);
+		expect(cloudflare.calls.filter((call) => call.startsWith('listMigrations'))).toHaveLength(2);
+		for (const call of cloudflare.migrationCalls) {
+			expect(call.d1Id).toBe(D1_ID);
+			expect(call.migrationsDir).toMatch(/migrations\/d1$/);
 		}
-		expect(wrangler.recordedInvocations[0]?.args).toContain('--config');
-		expect(wrangler.recordedInvocations[0]?.cwd).toBe(wrangler.migrationCalls[0]?.cwd);
-		const triggerInvocation = wrangler.recordedInvocations.at(-1);
+		expect(cloudflare.recordedInvocations[0]?.args).toContain('--dir');
+		expect(cloudflare.recordedInvocations[0]?.args).toContain(
+			cloudflare.migrationCalls[0]?.migrationsDir
+		);
+		const triggerInvocation = cloudflare.recordedInvocations.at(-1);
 		expect(triggerInvocation?.args).toEqual([
 			'triggers',
 			'deploy',
@@ -559,13 +560,13 @@ describe('migration and deploy ordering', () => {
 	});
 
 	it('persists the active partial state after trigger deployment fails and skips smoke', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.failTriggerDeploy = true;
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.failTriggerDeploy = true;
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
@@ -577,8 +578,8 @@ describe('migration and deploy ordering', () => {
 		);
 		expect(output.mutations).not.toContain('triggers-deploy');
 		expect(output.rollback).toMatchObject({ attempted: false, workerRolledBack: false });
-		expect(wrangler.calls).toContain(`deployVersion:signkit:${WORKER_VERSION}`);
-		expect(wrangler.calls).toContain('deployTriggers:signkit');
+		expect(cloudflare.calls).toContain(`deployVersion:signkit:${WORKER_VERSION}`);
+		expect(cloudflare.calls).toContain('deployTriggers:signkit');
 		expect(result.http.requests).toEqual([]);
 		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state).toMatchObject({
@@ -598,13 +599,13 @@ describe('migration and deploy ordering', () => {
 	});
 
 	it('uses the same explicit trigger failure state for a non-pristine deploy', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.failTriggerDeploy = true;
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.failTriggerDeploy = true;
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
@@ -629,20 +630,20 @@ describe('migration and deploy ordering', () => {
 	});
 
 	it('clears the trigger marker after a successful retry and uses the active partial version as previous', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.failTriggerDeploy = true;
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.failTriggerDeploy = true;
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const failed = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(failed.code).toBe(1);
 
 		const retryVersion = '44444444-4444-4444-4444-444444444444';
-		wrangler.failTriggerDeploy = false;
-		wrangler.deployResult = {
+		cloudflare.failTriggerDeploy = false;
+		cloudflare.deployResult = {
 			workerVersionId: retryVersion,
 			workerUrl: 'https://signkit.example.workers.dev',
 			stdout: `Uploaded signkit\nVersion ID: ${retryVersion}\nhttps://signkit.example.workers.dev`,
@@ -650,7 +651,7 @@ describe('migration and deploy ordering', () => {
 		};
 		const retried = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
@@ -662,8 +663,8 @@ describe('migration and deploy ordering', () => {
 	});
 
 	it('clears an inherited trigger marker after a successful complete deploy', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem(), {
 			triggerReconciliationRequired: {
 				workerVersionId: PREVIOUS_VERSION,
@@ -675,7 +676,7 @@ describe('migration and deploy ordering', () => {
 
 		const result = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
@@ -687,20 +688,20 @@ describe('migration and deploy ordering', () => {
 	});
 
 	it('keeps the next coherent deploy active after smoke failure and clears trigger uncertainty', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.failTriggerDeploy = true;
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.failTriggerDeploy = true;
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const failed = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(failed.code).toBe(1);
 
 		const nextVersion = '55555555-5555-5555-5555-555555555555';
-		wrangler.failTriggerDeploy = false;
-		wrangler.deployResult = {
+		cloudflare.failTriggerDeploy = false;
+		cloudflare.deployResult = {
 			workerVersionId: nextVersion,
 			workerUrl: 'https://signkit.example.workers.dev',
 			stdout: `Deployed signkit\nVersion ID: ${nextVersion}\nhttps://signkit.example.workers.dev`,
@@ -712,7 +713,7 @@ describe('migration and deploy ordering', () => {
 			fs,
 			http,
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(fs),
 			now: () => new Date('2026-09-15T00:01:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -731,51 +732,51 @@ describe('migration and deploy ordering', () => {
 	});
 
 	it('refuses remaining pending migrations after apply', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.pendingMigrations = ['0002_next.sql'];
-		wrangler.leavePendingAfterApply = true;
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.pendingMigrations = ['0002_next.sql'];
+		cloudflare.leavePendingAfterApply = true;
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(1);
 		expect(result.stdout).toMatch(/remain pending after apply/);
-		expect(wrangler.calls).not.toContain('uploadVersion:signkit');
+		expect(cloudflare.calls).not.toContain('uploadVersion:signkit');
 	});
 
 	it('does not apply migrations during plan', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.pendingMigrations = ['0002_next.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.pendingMigrations = ['0002_next.sql'];
 		await reconcileCloudflare(command({ command: 'plan', yes: false }), {
 			fs: new MemoryFileSystem(),
 			http: new FakeHttp(),
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(new MemoryFileSystem()),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' }
 		});
-		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
 	});
 });
 
 describe('failure state reporting', () => {
 	it('keeps the activated upgrade version and triggers after a failed smoke check', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
-		wrangler.fs = fs;
+		cloudflare.fs = fs;
 		const http = new FakeHttp();
 		http.on('https://signkit.example.workers.dev/api/v1/system/capabilities', 'nope', 500);
 		const result = await reconcileCloudflare(command({ command: 'upgrade' }), {
 			fs,
 			http,
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(fs),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -798,17 +799,17 @@ describe('failure state reporting', () => {
 	});
 
 	it('keeps a complete deploy and its routes and triggers active after a failed smoke check', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const http = new FakeHttp();
 		http.on('https://signkit.example.workers.dev/api/v1/system/capabilities', 'nope', 500);
 		const fs = await writeCloudflareState(new MemoryFileSystem());
-		wrangler.fs = fs;
+		cloudflare.fs = fs;
 		const result = await reconcileCloudflare(command({ command: 'deploy' }), {
 			fs,
 			http,
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(fs),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -823,19 +824,19 @@ describe('failure state reporting', () => {
 		expect(result.rollback?.d1RolledBack).toBe(false);
 		expect(result.message).toMatch(/smoke check failed/i);
 		expect(result.rollback?.guidance).toMatch(/remain active/);
-		expect(wrangler.calls).toContain('uploadVersion:signkit');
-		expect(wrangler.calls).toContain(`deployVersion:signkit:${WORKER_VERSION}`);
-		expect(wrangler.calls).toContain('deployTriggers:signkit');
+		expect(cloudflare.calls).toContain('uploadVersion:signkit');
+		expect(cloudflare.calls).toContain(`deployVersion:signkit:${WORKER_VERSION}`);
+		expect(cloudflare.calls).toContain('deployTriggers:signkit');
 		const state = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state.lastWorkerVersionId).toBe(WORKER_VERSION);
 		expect(state.previousWorkerVersionId).toBe(PREVIOUS_VERSION);
 	});
 
 	it('lists missing secret names and does not upload a Worker', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.d1 = [{ uuid: D1_ID, name: 'signkit' }];
-		wrangler.r2.add('signkit-objects');
-		wrangler.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.d1 = [{ uuid: D1_ID, name: 'signkit' }];
+		cloudflare.r2.add('signkit-objects');
+		cloudflare.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			[
@@ -852,20 +853,20 @@ describe('failure state reporting', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(6);
 		expect(result.stdout).toMatch(/DELIVERY_ENCRYPTION_KEY/);
 		expect(result.stdout).toMatch(/never accepted on argv/);
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 	});
 
 	it('does not create D1 or R2 when required secrets are missing', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.d1 = [{ uuid: D1_ID, name: 'signkit' }];
-		wrangler.r2.add('signkit-objects');
-		wrangler.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.d1 = [{ uuid: D1_ID, name: 'signkit' }];
+		cloudflare.r2.add('signkit-objects');
+		cloudflare.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			[
@@ -877,24 +878,24 @@ describe('failure state reporting', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(6);
 		expect(result.stdout).toMatch(/DELIVERY_ENCRYPTION_KEY/);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
-		expect(wrangler.calls).not.toContain('createR2:signkit-objects');
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls).not.toContain('createR2:signkit-objects');
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 	});
 });
 
 describe('mutating confirmation', () => {
 	it('requires --yes for deploy', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const result = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler
+			cloudflare
 		);
 		expect(result.code).toBe(2);
 		expect(result.stdout).toMatch(/--yes/);
@@ -903,17 +904,17 @@ describe('mutating confirmation', () => {
 
 describe('effective config inheritance', () => {
 	it('inherits omitted worker/D1/R2 from XDG state before remote inspection', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
-		wrangler.r2.add('signkit-prod-objects');
-		wrangler.secrets.set('signkit-prod', [
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
+		cloudflare.r2.add('signkit-prod-objects');
+		cloudflare.secrets.set('signkit-prod', [
 			'DELIVERY_ENCRYPTION_KEY',
 			'SESSION_ENCRYPTION_KEY',
 			'DELIVERY_WORKER_SECRET',
 			'D6E_AUTH_CLIENT_ID',
 			'D6E_AUTH_CLIENT_SECRET'
 		]);
-		wrangler.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
+		cloudflare.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			'/xdg/state/create-signkit/state.json',
@@ -932,28 +933,28 @@ describe('effective config inheritance', () => {
 		);
 		const result = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
-		expect(wrangler.calls.indexOf('whoami')).toBeLessThan(
-			wrangler.calls.indexOf('listVersions:signkit-prod')
+		expect(cloudflare.calls.indexOf('whoami')).toBeLessThan(
+			cloudflare.calls.indexOf('listVersions:signkit-prod')
 		);
-		expect(wrangler.calls).toContain('listVersions:signkit-prod');
-		expect(wrangler.calls).toContain('r2Exists:signkit-prod-objects');
-		expect(wrangler.calls).not.toContain('listVersions:signkit');
-		expect(wrangler.calls).not.toContain('r2Exists:signkit-objects');
+		expect(cloudflare.calls).toContain('listVersions:signkit-prod');
+		expect(cloudflare.calls).toContain('r2Exists:signkit-prod-objects');
+		expect(cloudflare.calls).not.toContain('listVersions:signkit');
+		expect(cloudflare.calls).not.toContain('r2Exists:signkit-objects');
 	});
 });
 
 describe('D1 backup retention', () => {
 	it('persists the D1 export beside XDG state and does not delete it with the temp bundle', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
@@ -976,66 +977,66 @@ describe('D1 backup retention', () => {
 	});
 
 	it('fails closed when chmod of the backups directory fails', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		fs.chmodFailures.add('/xdg/state/create-signkit/backups');
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(1);
 		expect(result.stdout).toMatch(/EPERM chmod/);
-		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
 	});
 });
 
 describe('account authorization', () => {
-	it('refuses when --account-id is absent from wrangler whoami without printing other accounts', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.accounts = [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'other-lab' }];
-		wrangler.seedReadyWorker();
+	it('refuses when --account-id is absent from cloudflare whoami without printing other accounts', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.accounts = [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'other-lab' }];
+		cloudflare.seedReadyWorker();
 		const result = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler
+			cloudflare
 		);
 		expect(result.code).toBe(6);
-		expect(result.stdout).toMatch(/not present in this Wrangler session/);
+		expect(result.stdout).toMatch(/not present in this cf CLI session/);
 		expect(result.stdout).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 		expect(result.stdout).not.toContain('other-lab');
 		expect(result.stdout).not.toContain(ACCOUNT_ID);
-		expect(wrangler.calls).not.toContain('listD1');
+		expect(cloudflare.calls).not.toContain('listD1');
 	});
 });
 
 describe('initial managed deploy vars', () => {
 	it('requires --email-from and a public origin when local state is absent', async () => {
-		const wrangler = new FakeWrangler();
+		const cloudflare = new FakeCloudflareClient();
 		const result = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler
+			cloudflare
 		);
 		expect(result.code).toBe(6);
 		expect(result.stdout).toMatch(/--email-from is required for the initial managed deploy/);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 	});
 
 	it('still requires origin and email flags for a pristine deploy with no state', async () => {
-		const wrangler = new FakeWrangler();
+		const cloudflare = new FakeCloudflareClient();
 		const denied = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler
+			cloudflare
 		);
 		expect(denied.code).toBe(6);
 		expect(denied.stdout).toMatch(/--email-from is required for the initial managed deploy/);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
 
-		const allowedWrangler = new FakeWrangler();
+		const allowedWrangler = new FakeCloudflareClient();
 		const allowed = await run(
 			[
 				'--cloudflare',
@@ -1063,9 +1064,9 @@ describe('initial managed deploy vars', () => {
 
 describe('plan reports drift without mutating', () => {
 	it('returns drift on plan instead of exiting conflict', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.d1 = [{ uuid: '55555555-5555-5555-5555-555555555555', name: 'signkit' }];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.d1 = [{ uuid: '55555555-5555-5555-5555-555555555555', name: 'signkit' }];
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			'/xdg/state/create-signkit/state.json',
@@ -1082,7 +1083,7 @@ describe('plan reports drift without mutating', () => {
 		);
 		const result = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
@@ -1093,8 +1094,8 @@ describe('plan reports drift without mutating', () => {
 
 describe('state provider isolation', () => {
 	it('refuses to inherit non-cloudflare state', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			'/xdg/state/create-signkit/state.json',
@@ -1111,20 +1112,20 @@ describe('state provider isolation', () => {
 		);
 		const result = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(4);
 		expect(result.stdout).toMatch(/provider is not cloudflare/);
-		expect(wrangler.calls).not.toContain('whoami');
-		expect(wrangler.calls).not.toContain('listD1');
+		expect(cloudflare.calls).not.toContain('whoami');
+		expect(cloudflare.calls).not.toContain('listD1');
 	});
 });
 
 describe('adopt state reconciliation markers', () => {
 	it('preserves an unresolved trigger marker when adopting the same target', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const marker = {
 			workerVersionId: WORKER_VERSION,
 			releaseVersion: 'v1.2.3',
@@ -1138,7 +1139,7 @@ describe('adopt state reconciliation markers', () => {
 
 		const result = await run(
 			['--cloudflare', 'adopt', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
@@ -1148,17 +1149,17 @@ describe('adopt state reconciliation markers', () => {
 	});
 
 	it('clears previous version metadata when recording a different identity', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
-		wrangler.r2.add('signkit-prod-objects');
-		wrangler.secrets.set('signkit-prod', [
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
+		cloudflare.r2.add('signkit-prod-objects');
+		cloudflare.secrets.set('signkit-prod', [
 			'DELIVERY_ENCRYPTION_KEY',
 			'SESSION_ENCRYPTION_KEY',
 			'DELIVERY_WORKER_SECRET',
 			'D6E_AUTH_CLIENT_ID',
 			'D6E_AUTH_CLIENT_SECRET'
 		]);
-		wrangler.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
+		cloudflare.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			'/xdg/state/create-signkit/state.json',
@@ -1197,7 +1198,7 @@ describe('adopt state reconciliation markers', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
@@ -1213,15 +1214,15 @@ describe('adopt state reconciliation markers', () => {
 
 describe('takeover and secret-only stub', () => {
 	it('refuses deploy takeover when remote versions exist and local state does not', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.secrets.set('signkit', [
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.secrets.set('signkit', [
 			'DELIVERY_ENCRYPTION_KEY',
 			'SESSION_ENCRYPTION_KEY',
 			'DELIVERY_WORKER_SECRET',
 			'D6E_AUTH_CLIENT_ID',
 			'D6E_AUTH_CLIENT_SECRET'
 		]);
-		wrangler.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
+		cloudflare.versions.set('signkit', [{ id: PREVIOUS_VERSION }]);
 		const result = await run(
 			[
 				'--cloudflare',
@@ -1232,17 +1233,17 @@ describe('takeover and secret-only stub', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			cloudflare
 		);
 		expect(result.code).toBe(4);
 		expect(result.stdout).toMatch(/adopt the existing deployment/);
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
 	});
 
 	it('refuses the secret-only stub case with no published versions', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.secrets.set('signkit', [
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.secrets.set('signkit', [
 			'DELIVERY_ENCRYPTION_KEY',
 			'SESSION_ENCRYPTION_KEY',
 			'DELIVERY_WORKER_SECRET',
@@ -1259,22 +1260,22 @@ describe('takeover and secret-only stub', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			new MemoryFileSystem(),
 			fakeReleases(),
 			OAUTH_STDIN_JSON
 		);
 		expect(result.code).toBe(4);
 		expect(result.stdout).toMatch(/already has stored secrets|adopt the existing deployment/);
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
 	});
 });
 
 describe('upgrade routing flags', () => {
 	it('refuses an explicit --domain that differs from stored state', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			'/xdg/state/create-signkit/state.json',
@@ -1302,7 +1303,7 @@ describe('upgrade routing flags', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(4);
@@ -1310,13 +1311,13 @@ describe('upgrade routing flags', () => {
 	});
 
 	it('reconciles an inherited custom domain from the extracted config with exact trigger args', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem(), {
 			domain: 'sign.example.com',
 			publicOrigin: 'https://sign.example.com'
 		});
-		wrangler.fs = fs;
+		cloudflare.fs = fs;
 		const http = new FakeHttp();
 		http.on(
 			'https://sign.example.com/api/v1/system/capabilities',
@@ -1327,7 +1328,7 @@ describe('upgrade routing flags', () => {
 			fs,
 			http,
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(fs),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -1337,10 +1338,10 @@ describe('upgrade routing flags', () => {
 		});
 
 		expect(result.exitCode).toBe(0);
-		const config = JSON.parse(wrangler.lastConfig ?? '{}') as Record<string, unknown>;
+		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as Record<string, unknown>;
 		expect(config.workers_dev).toBe(false);
 		expect(config.routes).toEqual([{ pattern: 'sign.example.com', custom_domain: true }]);
-		const triggerInvocation = wrangler.recordedInvocations.find(
+		const triggerInvocation = cloudflare.recordedInvocations.find(
 			(invocation) => invocation.args[0] === 'triggers'
 		);
 		expect(triggerInvocation).toMatchObject({
@@ -1360,7 +1361,7 @@ describe('upgrade routing flags', () => {
 
 describe('bootstrap owner email', () => {
 	it('requires --bootstrap-owner-email for a fresh deploy', async () => {
-		const wrangler = new FakeWrangler();
+		const cloudflare = new FakeCloudflareClient();
 		const denied = await run(
 			[
 				'--cloudflare',
@@ -1374,17 +1375,17 @@ describe('bootstrap owner email', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler
+			cloudflare
 		);
 		expect(denied.code).toBe(6);
 		expect(denied.stdout).toMatch(/--bootstrap-owner-email is required/);
-		expect(wrangler.calls).not.toContain('createD1:signkit');
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls).not.toContain('createD1:signkit');
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
 	});
 
 	it('canonicalizes the flag, records it in state, and applies it as a non-secret Worker var', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.versions.set('signkit', []);
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.versions.set('signkit', []);
 		const result = await run(
 			[
 				'--cloudflare',
@@ -1400,7 +1401,7 @@ describe('bootstrap owner email', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			new MemoryFileSystem(),
 			fakeReleases(),
 			OAUTH_STDIN_JSON
@@ -1408,8 +1409,8 @@ describe('bootstrap owner email', () => {
 		expect(result.code).toBe(0);
 		const state = JSON.parse(await result.fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(state.bootstrapOwnerEmail).toBe('owner@example.com');
-		expect(wrangler.lastConfig).toMatch(/"SIGNKIT_BOOTSTRAP_OWNER_EMAIL": "owner@example\.com"/);
-		expect(wrangler.lastConfig).not.toContain('Owner@Example.com');
+		expect(cloudflare.lastConfig).toMatch(/"SIGNKIT_BOOTSTRAP_OWNER_EMAIL": "owner@example\.com"/);
+		expect(cloudflare.lastConfig).not.toContain('Owner@Example.com');
 		// The address is configuration, not a log line: human and JSON output
 		// name the var/flag but never repeat the address.
 		expect(result.stdout).not.toContain('owner@example.com');
@@ -1425,16 +1426,16 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('inherits the recorded address on upgrade so the flag is passed once', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
-		expect(wrangler.calls).toContain('uploadVersion:signkit');
+		expect(cloudflare.calls).toContain('uploadVersion:signkit');
 		expect(result.stdout).not.toContain('owner@example.com');
 		expect(result.stdout).not.toContain('Owner@Example.com');
 		const json = JSON.parse(result.stdout);
@@ -1447,27 +1448,27 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('rejects an adversarially long recorded address before upgrading', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const adversarialAddress = `owner@${'.'.repeat(100_000)}\ninvalid`;
 		const fs = await writeCloudflareState(new MemoryFileSystem(), {
 			bootstrapOwnerEmail: adversarialAddress
 		});
 		const denied = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 
 		expect(denied.code).toBe(6);
 		expect(denied.stdout).toMatch(/--bootstrap-owner-email is required/);
 		expect(denied.stdout).not.toContain(adversarialAddress);
-		expect(wrangler.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
 	});
 
 	it('requires the flag on upgrade when no address is recorded (pre-requirement state)', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			'/xdg/state/create-signkit/state.json',
@@ -1485,12 +1486,12 @@ describe('bootstrap owner email', () => {
 		);
 		const denied = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(denied.code).toBe(6);
 		expect(denied.stdout).toMatch(/--bootstrap-owner-email is required/);
-		expect(wrangler.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
 
 		const allowed = await run(
 			[
@@ -1503,7 +1504,7 @@ describe('bootstrap owner email', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(allowed.code).toBe(0);
@@ -1512,17 +1513,17 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('accepts the flag on adopt without requiring it', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
-		wrangler.r2.add('signkit-prod-objects');
-		wrangler.secrets.set('signkit-prod', [
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.d1 = [{ uuid: '44444444-4444-4444-4444-444444444444', name: 'signkit-prod-db' }];
+		cloudflare.r2.add('signkit-prod-objects');
+		cloudflare.secrets.set('signkit-prod', [
 			'DELIVERY_ENCRYPTION_KEY',
 			'SESSION_ENCRYPTION_KEY',
 			'DELIVERY_WORKER_SECRET',
 			'D6E_AUTH_CLIENT_ID',
 			'D6E_AUTH_CLIENT_SECRET'
 		]);
-		wrangler.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
+		cloudflare.versions.set('signkit-prod', [{ id: PREVIOUS_VERSION }]);
 		const fs = new MemoryFileSystem();
 		const result = await run(
 			[
@@ -1541,7 +1542,7 @@ describe('bootstrap owner email', () => {
 				'--yes',
 				'--json'
 			],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
@@ -1551,11 +1552,11 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('prints conditional bootstrap guidance without echoing email in human deploy output', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.versions.set('signkit', []);
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.versions.set('signkit', []);
 		const result = await run(
 			['--cloudflare', 'deploy', '--account-id', ACCOUNT_ID, ...INITIAL_DEPLOY_FLAGS, '--yes'],
-			wrangler,
+			cloudflare,
 			new MemoryFileSystem(),
 			fakeReleases(),
 			OAUTH_STDIN_JSON
@@ -1572,12 +1573,12 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('prints conditional bootstrap guidance without echoing email in human upgrade output', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
@@ -1592,10 +1593,10 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('prints conditional bootstrap guidance without echoing email in human plan output', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
-		const result = await run(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID], wrangler, fs);
+		const result = await run(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID], cloudflare, fs);
 		expect(result.code).toBe(0);
 		expect(result.stdout).toMatch(/Plan:/);
 		expect(result.stdout).toMatch(/plan only/);
@@ -1610,12 +1611,12 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('includes conditional bootstrap guidance without echoing email in JSON plan output', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		const result = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);
@@ -1631,12 +1632,12 @@ describe('bootstrap owner email', () => {
 	});
 
 	it('prints fail-closed missing bootstrap owner warning in read-only plan output without mutating calls', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = new MemoryFileSystem();
 		const jsonResult = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(jsonResult.code).toBe(0);
@@ -1645,15 +1646,15 @@ describe('bootstrap owner email', () => {
 			'No bootstrap owner email is configured: an uninitialized instance fails closed and cannot be claimed. Pass --bootstrap-owner-email <email> to deploy or upgrade; create-signkit applies it as a non-secret Worker var.'
 		);
 		expect(json.mutations).toEqual([]);
-		expect(wrangler.calls.some((call) => call.startsWith('create'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('create'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
 		expect(fs.writes).toEqual([]);
 
 		const humanResult = await run(
 			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(humanResult.code).toBe(0);
@@ -1662,19 +1663,19 @@ describe('bootstrap owner email', () => {
 		expect(humanResult.stdout).toContain(
 			'No bootstrap owner email is configured: an uninitialized instance fails closed and cannot be claimed. Pass --bootstrap-owner-email <email> to deploy or upgrade; create-signkit applies it as a non-secret Worker var.'
 		);
-		expect(wrangler.calls.some((call) => call.startsWith('create'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('deploy'))).toBe(false);
-		expect(wrangler.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('create'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('applyMigrations'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('deploy'))).toBe(false);
+		expect(cloudflare.calls.some((call) => call.startsWith('exportD1'))).toBe(false);
 		expect(fs.writes).toEqual([]);
 	});
 });
 
 describe('human plan output', () => {
 	it('writes non-JSON plan output to stdout, not stderr', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		const result = await run(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID], wrangler);
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		const result = await run(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID], cloudflare);
 		expect(result.code).toBe(0);
 		expect(result.stdout).toMatch(/Plan:/);
 		expect(result.stdout).toMatch(/plan only/);
@@ -1685,13 +1686,13 @@ describe('human plan output', () => {
 	});
 
 	it('prints drift in human plan output', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.d1 = [{ uuid: '55555555-5555-5555-5555-555555555555', name: 'signkit' }];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.d1 = [{ uuid: '55555555-5555-5555-5555-555555555555', name: 'signkit' }];
 		const fs = await writeCloudflareState(new MemoryFileSystem(), {
 			d1: { name: 'signkit', id: D1_ID }
 		});
-		const result = await run(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID], wrangler, fs);
+		const result = await run(['--cloudflare', 'plan', '--account-id', ACCOUNT_ID], cloudflare, fs);
 		expect(result.code).toBe(0);
 		expect(result.stdout).toMatch(/Drift:/);
 		expect(result.stdout).toMatch(/d1 id/);
@@ -1701,18 +1702,18 @@ describe('human plan output', () => {
 
 describe('applied migrations on smoke failure', () => {
 	it('records newly applied pending migrations on both success and smoke failure', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.pendingMigrations = ['0002_next.sql'];
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.pendingMigrations = ['0002_next.sql'];
 		const fs = await writeCloudflareState(new MemoryFileSystem());
-		wrangler.fs = fs;
+		cloudflare.fs = fs;
 		const http = new FakeHttp();
 		http.on('https://signkit.example.workers.dev/api/v1/system/capabilities', 'nope', 500);
 		const failed = await reconcileCloudflare(command({ command: 'upgrade' }), {
 			fs,
 			http,
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(fs),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -1724,7 +1725,7 @@ describe('applied migrations on smoke failure', () => {
 		const failedState = JSON.parse(await fs.readFile('/xdg/state/create-signkit/state.json'));
 		expect(failedState.appliedMigrations).toEqual(['0002_next.sql']);
 
-		const successWrangler = new FakeWrangler();
+		const successWrangler = new FakeCloudflareClient();
 		successWrangler.seedReadyWorker();
 		successWrangler.pendingMigrations = ['0002_next.sql'];
 		const successFs = await writeCloudflareState(new MemoryFileSystem());
@@ -1738,7 +1739,7 @@ describe('applied migrations on smoke failure', () => {
 			fs: successFs,
 			http: successHttp,
 			releases: fakeReleases(),
-			wrangler: successWrangler,
+			cloudflare: successWrangler,
 			extractor: fakeExtractor(successFs),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -1756,9 +1757,9 @@ describe('applied migrations on smoke failure', () => {
 
 describe('custom-domain smoke', () => {
 	it('does not use workers.dev when the generated custom-domain config disables it', async () => {
-		const wrangler = new FakeWrangler();
+		const cloudflare = new FakeCloudflareClient();
 		const fs = new MemoryFileSystem();
-		wrangler.fs = fs;
+		cloudflare.fs = fs;
 		const http = new FakeHttp();
 		http.on('https://sign.example.com/api/v1/system/capabilities', 'nope', 503);
 		http.on('https://signkit.example.workers.dev/api/v1/system/capabilities', 'healthy', 200);
@@ -1780,7 +1781,7 @@ describe('custom-domain smoke', () => {
 				fs,
 				http,
 				releases: fakeReleases(),
-				wrangler,
+				cloudflare,
 				extractor: fakeExtractor(fs),
 				now: () => new Date('2026-09-15T00:00:00.000Z'),
 				env: { XDG_STATE_HOME: '/xdg/state' },
@@ -1799,21 +1800,21 @@ describe('custom-domain smoke', () => {
 
 describe('production smoke origin', () => {
 	it('fails closed when only a version-preview URL is known', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.deployResult = {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.deployResult = {
 			workerVersionId: WORKER_VERSION,
 			workerUrl: `https://${WORKER_VERSION}-signkit.example.workers.dev`,
 			stdout: `Uploaded\nVersion ID: ${WORKER_VERSION}\nhttps://${WORKER_VERSION}-signkit.example.workers.dev`,
 			aborted: false
 		};
 		const fs = await writeCloudflareState(new MemoryFileSystem(), { publicOrigin: undefined });
-		wrangler.fs = fs;
+		cloudflare.fs = fs;
 		const result = await reconcileCloudflare(command({ command: 'upgrade' }), {
 			fs,
 			http: new FakeHttp(),
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(fs),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -1833,9 +1834,9 @@ describe('production smoke origin', () => {
 	});
 
 	it('keeps a complete deploy active and clears the trigger marker when smoke is skipped', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
-		wrangler.deployResult = {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		cloudflare.deployResult = {
 			workerVersionId: WORKER_VERSION,
 			workerUrl: `https://${WORKER_VERSION}-signkit.example.workers.dev`,
 			stdout: `Deployed\nVersion ID: ${WORKER_VERSION}\nhttps://${WORKER_VERSION}-signkit.example.workers.dev`,
@@ -1849,13 +1850,13 @@ describe('production smoke origin', () => {
 				recordedAt: '2026-09-14T00:00:00.000Z'
 			}
 		});
-		wrangler.fs = fs;
+		cloudflare.fs = fs;
 
 		const result = await reconcileCloudflare(command({ command: 'deploy' }), {
 			fs,
 			http: new FakeHttp(),
 			releases: fakeReleases(),
-			wrangler,
+			cloudflare,
 			extractor: fakeExtractor(fs),
 			now: () => new Date('2026-09-15T00:00:00.000Z'),
 			env: { XDG_STATE_HOME: '/xdg/state' },
@@ -1877,8 +1878,8 @@ describe('production smoke origin', () => {
 
 describe('same-second D1 backup names', () => {
 	it('does not overwrite an existing backup from the same timestamp', async () => {
-		const wrangler = new FakeWrangler();
-		wrangler.seedReadyWorker();
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
 		await fs.writeFile(
 			'/xdg/state/create-signkit/backups/d1-signkit-20260915T000000000Z.sql',
@@ -1886,7 +1887,7 @@ describe('same-second D1 backup names', () => {
 		);
 		const result = await run(
 			['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--yes', '--json'],
-			wrangler,
+			cloudflare,
 			fs
 		);
 		expect(result.code).toBe(0);

@@ -25,9 +25,9 @@ import type {
 	UploadVersionOptions,
 	Whoami,
 	WorkerVersion,
-	WranglerClient,
-	WranglerInvocation
-} from '../src/providers/cloudflare/wrangler.js';
+	CloudflareClient,
+	CloudflareInvocation
+} from '../src/providers/cloudflare/cloudflare-client.js';
 import { sha256Hex } from '../src/release/github.js';
 
 export const ACCOUNT_ID = '0123456789abcdef0123456789abcdef';
@@ -272,7 +272,7 @@ function encodeResponse(
 	return { url, status, headers, body: bytes };
 }
 
-export class FakeWrangler implements WranglerClient {
+export class FakeCloudflareClient implements CloudflareClient {
 	readonly calls: string[] = [];
 	d1: D1Database[] = [];
 	r2 = new Set<string>();
@@ -294,11 +294,11 @@ export class FakeWrangler implements WranglerClient {
 	leavePendingAfterApply = false;
 	lastConfig?: string;
 	readonly migrationCalls: MigrationCommandOptions[] = [];
-	readonly recordedInvocations: WranglerInvocation[] = [];
+	readonly recordedInvocations: CloudflareInvocation[] = [];
 	readonly deployOptions: UploadVersionOptions[] = [];
 	readonly stagedSecrets: string[] = [];
 
-	invocations(): readonly WranglerInvocation[] {
+	invocations(): readonly CloudflareInvocation[] {
 		return this.recordedInvocations;
 	}
 
@@ -327,38 +327,20 @@ export class FakeWrangler implements WranglerClient {
 	}
 
 	async listMigrations(options: MigrationCommandOptions): Promise<MigrationList> {
-		this.calls.push(`listMigrations:${options.database}`);
+		this.calls.push(`listMigrations:${options.d1Id}`);
 		this.migrationCalls.push(options);
 		this.recordedInvocations.push({
-			args: [
-				'd1',
-				'migrations',
-				'list',
-				options.database,
-				'--remote',
-				'--config',
-				options.configPath
-			],
-			cwd: options.cwd,
+			args: ['d1', 'migrations', 'list', options.d1Id, '--dir', options.migrationsDir],
 			env: {}
 		});
 		return { pending: [...this.pendingMigrations], applied: [...this.appliedMigrations] };
 	}
 
 	async applyMigrations(options: MigrationCommandOptions): Promise<string[]> {
-		this.calls.push(`applyMigrations:${options.database}`);
+		this.calls.push(`applyMigrations:${options.d1Id}`);
 		this.migrationCalls.push(options);
 		this.recordedInvocations.push({
-			args: [
-				'd1',
-				'migrations',
-				'apply',
-				options.database,
-				'--remote',
-				'--config',
-				options.configPath
-			],
-			cwd: options.cwd,
+			args: ['d1', 'migrations', 'apply', options.d1Id, '--dir', options.migrationsDir],
 			env: {}
 		});
 		const pending = [...this.pendingMigrations];

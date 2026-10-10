@@ -1,24 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import {
-	createWranglerClient,
-	wranglerFirstDeployArgs,
-	wranglerMigrationArgs,
-	wranglerUploadArgs
-} from '../src/providers/cloudflare/wrangler.js';
-import { filterEnvForWrangler } from '../src/runtime/process.js';
+import { createCloudflareClient } from '../src/providers/cloudflare/cloudflare-client.js';
+import { filterEnvForCloudflareCli } from '../src/runtime/process.js';
 import { runCreateSignkit } from '../src/cli/run.js';
 import { envHasSecretName } from '../src/runtime/process.js';
 import { ACCOUNT_ID, RecordingProcessRunner } from './helpers.js';
 
 describe('command argv and env secrecy', () => {
-	it('passes CLOUDFLARE_ACCOUNT_ID only in the child environment, never on argv', async () => {
+	it('passes CLOUDFLARE_ACCOUNT_ID only in the child environment, never on argv (cf)', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 0,
 			stdout: JSON.stringify([{ uuid: '11111111-1111-1111-1111-111111111111', name: 'signkit' }]),
 			stderr: ''
 		});
-		const wrangler = createWranglerClient({
+		const cloudflare = createCloudflareClient({
 			runner,
 			accountId: ACCOUNT_ID,
 			env: {
@@ -26,17 +21,25 @@ describe('command argv and env secrecy', () => {
 				PATH: '/usr/bin',
 				SECRET_FOO: 'should-not-leak'
 			},
-			wranglerBin: '/opt/wrangler/bin/wrangler.js',
+			cfBin: '/opt/cf/bin/cf',
 			nodeExecutable: '/usr/bin/node'
 		});
-		await wrangler.listD1();
+		await cloudflare.listD1();
 		expect(runner.requests).toHaveLength(1);
 		const request = runner.requests[0]!;
-		expect(request.cwd).toMatch(/create-signkit-wrangler-/);
-		expect(request.cwd).not.toBe('/opt/wrangler/bin');
+		expect(request.cwd).toMatch(/create-signkit-cf-/);
+		expect(request.cwd).not.toBe('/opt/cf/bin');
 		expect(request.argv.join(' ')).not.toContain(ACCOUNT_ID);
 		expect(request.argv.join(' ')).not.toContain('cf-super-secret-token');
-		expect(request.argv).toEqual(['/opt/wrangler/bin/wrangler.js', 'd1', 'list', '--json']);
+		expect(request.argv).toEqual([
+			'/opt/cf/bin/cf',
+			'd1',
+			'list',
+			'--page',
+			'1',
+			'--per-page',
+			'50'
+		]);
 		expect(request.env?.CLOUDFLARE_ACCOUNT_ID).toBe(ACCOUNT_ID);
 		expect(request.env?.CLOUDFLARE_API_TOKEN).toBe('cf-super-secret-token');
 		expect(request.env?.SECRET_FOO).toBeUndefined();
@@ -44,7 +47,7 @@ describe('command argv and env secrecy', () => {
 		expect(envHasSecretName('CLOUDFLARE_ACCOUNT_ID')).toBe(false);
 	});
 
-	it('preserves dashboard vars by passing --keep-vars and never puts secret values on argv', async () => {
+	it('preserves dashboard vars by passing --keep-vars and never puts secret values on argv (Wrangler deploy)', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 0,
@@ -52,14 +55,14 @@ describe('command argv and env secrecy', () => {
 				'Deployed\nVersion ID: 22222222-2222-2222-2222-222222222222\nhttps://signkit.example.workers.dev',
 			stderr: ''
 		});
-		const wrangler = createWranglerClient({
+		const cloudflare = createCloudflareClient({
 			runner,
 			accountId: ACCOUNT_ID,
 			env: { CLOUDFLARE_API_TOKEN: 'cf-super-secret-token' },
 			wranglerBin: '/opt/wrangler/bin/wrangler.js',
 			nodeExecutable: '/usr/bin/node'
 		});
-		await wrangler.deployFirst({
+		await cloudflare.deployFirst({
 			cwd: '/tmp/bundle',
 			configPath: '/tmp/bundle/wrangler.jsonc',
 			workerName: 'signkit',
@@ -67,11 +70,43 @@ describe('command argv and env secrecy', () => {
 			noBundle: true
 		});
 		const argv = runner.requests[0]!.argv;
+		expect(argv[0]).toBe('/opt/wrangler/bin/wrangler.js');
 		expect(argv).toContain('--keep-vars');
 		expect(argv.join(' ')).not.toMatch(/cf-super-secret-token|DELIVERY_ENCRYPTION_KEY=/);
 	});
 
-	it('keeps the custom domain in config instead of duplicating it on deploy argv', async () => {
+	it('passes --secrets-file by path only and never puts secret values on argv (Wrangler deploy)', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = () => ({
+			code: 0,
+			stdout:
+				'Deployed\nVersion ID: 22222222-2222-2222-2222-222222222222\nhttps://signkit.example.workers.dev',
+			stderr: ''
+		});
+		const cloudflare = createCloudflareClient({
+			runner,
+			accountId: ACCOUNT_ID,
+			env: { CLOUDFLARE_API_TOKEN: 'cf-super-secret-token' },
+			wranglerBin: '/opt/wrangler/bin/wrangler.js',
+			nodeExecutable: '/usr/bin/node'
+		});
+		await cloudflare.deployFirst({
+			cwd: '/tmp/bundle',
+			configPath: '/tmp/bundle/wrangler.jsonc',
+			workerName: 'signkit',
+			keepVars: true,
+			noBundle: true,
+			secretsFile: '/xdg/state/create-signkit/recovery/secrets.json'
+		});
+		const argv = runner.requests[0]!.argv;
+		expect(argv).toContain('--secrets-file');
+		expect(argv[argv.indexOf('--secrets-file') + 1]).toBe(
+			'/xdg/state/create-signkit/recovery/secrets.json'
+		);
+		expect(argv.join(' ')).not.toMatch(/cf-super-secret-token|DELIVERY_ENCRYPTION_KEY=/);
+	});
+
+	it('keeps custom-domain routing in config for both Worker upload paths (Wrangler)', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 0,
@@ -79,7 +114,7 @@ describe('command argv and env secrecy', () => {
 				'Uploaded\nVersion ID: 22222222-2222-2222-2222-222222222222\nhttps://signkit.example.workers.dev',
 			stderr: ''
 		});
-		const wrangler = createWranglerClient({
+		const cloudflare = createCloudflareClient({
 			runner,
 			accountId: ACCOUNT_ID,
 			env: { CLOUDFLARE_API_TOKEN: 'cf-super-secret-token' },
@@ -93,7 +128,7 @@ describe('command argv and env secrecy', () => {
 			keepVars: true,
 			noBundle: true
 		};
-		await wrangler.uploadVersion(options);
+		await cloudflare.uploadVersion(options);
 		const uploadArgv = runner.requests[0]!.argv;
 		expect(uploadArgv).toContain('--keep-vars');
 		expect(uploadArgv).toContain('--strict');
@@ -101,47 +136,60 @@ describe('command argv and env secrecy', () => {
 		expect(uploadArgv).toContain('--config');
 		expect(uploadArgv).toContain('--name');
 		expect(uploadArgv).not.toContain('--domain');
-		expect(wranglerUploadArgs(options)).not.toContain('--domain');
-		expect(wranglerFirstDeployArgs(options)).not.toContain('--domain');
-		expect(filterEnvForWrangler({ SECRET_FOO: 'x' }, ACCOUNT_ID).SECRET_FOO).toBeUndefined();
-		await wrangler.deployFirst(options);
+		expect(runner.requests[0]!.cwd).toBe('/tmp/bundle');
+		expect(filterEnvForCloudflareCli({ SECRET_FOO: 'x' }, ACCOUNT_ID).SECRET_FOO).toBeUndefined();
+		await cloudflare.deployFirst(options);
 		expect(runner.requests[1]!.argv).not.toContain('--domain');
 		expect(runner.requests[1]!.cwd).toBe('/tmp/bundle');
 	});
 
-	it('lists and applies D1 migrations with --config and the extracted cwd', async () => {
+	it('lists and applies D1 migrations by database id with an explicit --dir, then reads applied history by cf d1 query (cf)', async () => {
 		const runner = new RecordingProcessRunner();
-		runner.handler = () => ({
-			code: 0,
-			stdout: 'No migrations to apply!',
-			stderr: ''
-		});
-		const wrangler = createWranglerClient({
+		runner.handler = (request) => {
+			if (request.argv.includes('query')) {
+				return { code: 0, stdout: JSON.stringify([{ success: true, results: [] }]), stderr: '' };
+			}
+			return { code: 0, stdout: '[]', stderr: '' };
+		};
+		const cloudflare = createCloudflareClient({
 			runner,
 			accountId: ACCOUNT_ID,
 			env: { CLOUDFLARE_API_TOKEN: 'cf-super-secret-token' },
-			wranglerBin: '/opt/wrangler/bin/wrangler.js',
+			cfBin: '/opt/cf/bin/cf',
 			nodeExecutable: '/usr/bin/node'
 		});
 		const options = {
-			cwd: '/tmp/bundle',
-			configPath: '/tmp/bundle/wrangler.jsonc',
-			database: 'signkit'
+			d1Id: '11111111-1111-1111-1111-111111111111',
+			migrationsDir: '/tmp/bundle/migrations/d1'
 		};
-		await wrangler.listMigrations(options);
-		await wrangler.applyMigrations(options);
-		expect(runner.requests[0]?.cwd).toBe('/tmp/bundle');
-		expect(runner.requests[1]?.cwd).toBe('/tmp/bundle');
+		await cloudflare.listMigrations(options);
+		await cloudflare.applyMigrations(options);
 		expect(runner.requests[0]?.argv).toEqual([
-			'/opt/wrangler/bin/wrangler.js',
-			...wranglerMigrationArgs('list', options)
+			'/opt/cf/bin/cf',
+			'd1',
+			'migrations',
+			'list',
+			options.d1Id,
+			'--dir',
+			options.migrationsDir
 		]);
 		expect(runner.requests[1]?.argv).toEqual([
-			'/opt/wrangler/bin/wrangler.js',
-			...wranglerMigrationArgs('apply', options)
+			'/opt/cf/bin/cf',
+			'd1',
+			'query',
+			options.d1Id,
+			'--sql',
+			'SELECT name FROM d1_migrations ORDER BY id'
 		]);
-		expect(runner.requests[0]?.argv).toContain('--config');
-		expect(runner.requests[0]?.argv).toContain('/tmp/bundle/wrangler.jsonc');
+		expect(runner.requests[2]?.argv).toEqual([
+			'/opt/cf/bin/cf',
+			'd1',
+			'migrations',
+			'apply',
+			options.d1Id,
+			'--dir',
+			options.migrationsDir
+		]);
 	});
 
 	it('rejects CLI flags that would pass secrets on argv', async () => {

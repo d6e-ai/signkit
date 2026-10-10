@@ -21,6 +21,7 @@ These files are the normative architecture, security, and evidence contracts for
 | [agent-contract.md](agent-contract.md)                                                       | Agent/CLI command contract                                                                                | implemented — CLI reads, evidence/PDF download, authoring/send/DOCX mutations, served OpenAPI 3.1, signed retryable webhooks |
 | [documents-localization-open-core.md](documents-localization-open-core.md)                   | DOCX/PDF derivation, localization, open-core licensing boundary                                           | mixed — document flows, optional instance sealing, and download implemented; open-core policy remains                        |
 | [deployment-and-risks.md](deployment-and-risks.md)                                           | Deployment target boundary and the primary risk register                                                  | mixed — Node/Docker and Cloudflare Workers supported (Vercel CI-only); the risk list is policy, not a status claim           |
+| [cloudflare-tooling.md](cloudflare-tooling.md)                                               | Typed cf configuration, build output, generated types, and compatibility boundaries                       | implemented with beta limitations                                                                                            |
 | [create-signkit.md](create-signkit.md)                                                       | create-signkit Cloudflare deployment CLI (not the Rust API CLI)                                           | implemented — first Cloudflare slice                                                                                         |
 
 The recipient-facing agreement rendering — the deterministic PDF an envelope is converted to at send time, how its pointer is pinned, and how it reaches a recipient — is specified in [envelope-model.md](envelope-model.md#sent-agreement-rendering).
@@ -31,3 +32,7 @@ including the [instance PAdES seal and RFC 3161 boundary](decisions/2026-09-23-i
 ## Reading order
 
 For newcomers: [overview](overview.md) → [envelope-model](envelope-model.md) → [draft-git-repository](draft-git-repository.md) → [persistence](persistence.md) → [identifiers](identifiers.md) → [authorization-and-instance-administration](authorization-and-instance-administration.md) → [recipient-contact-book](recipient-contact-book.md) → [completion-artifacts](completion-artifacts.md) → [pdf-sealing](pdf-sealing.md) → [PAdES conformance](pades-conformance.md).
+
+## Proposed changes
+
+The [design-first refactoring plan](refactoring-plan.md), its [boundary design](refactoring-boundaries.md), and [verification gates](refactoring-verification.md) are proposals dated 2026-10-05, not current normative contracts. Their inspected source baseline and phased migration are recorded in the plan. They do not override the implemented specifications above.
