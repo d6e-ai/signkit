@@ -198,6 +198,8 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						ON envelope.id = delivery.envelope_id
 					INNER JOIN completion_artifact artifact
 						ON artifact.envelope_id = delivery.envelope_id
+					INNER JOIN completion_artifact_pdf pdf
+						ON pdf.envelope_id = delivery.envelope_id
 					WHERE (
 							(delivery.status IN ('pending', 'failed') AND delivery.retryable
 								AND delivery.available_at <= ${command.claimedAt}::timestamptz)

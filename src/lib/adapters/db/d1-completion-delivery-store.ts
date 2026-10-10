@@ -48,6 +48,8 @@ const CLAIM_CANDIDATE_JOIN: string = `FROM completion_delivery_outbox delivery
 		ON envelope.id = delivery.envelope_id
 	INNER JOIN completion_artifact artifact
 		ON artifact.envelope_id = delivery.envelope_id
+	INNER JOIN completion_artifact_pdf pdf
+		ON pdf.envelope_id = delivery.envelope_id
 	WHERE (
 			(delivery.status IN ('pending', 'failed') AND delivery.retryable = 1 AND delivery.available_at <= ?)
 			OR (delivery.status = 'processing' AND delivery.locked_at < ?)
