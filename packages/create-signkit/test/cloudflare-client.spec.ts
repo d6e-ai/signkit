@@ -268,19 +268,14 @@ describe('parseD1QueryAppliedNames', () => {
 });
 
 describe('Wrangler-delegated operations', () => {
-	it('runs listSecrets/listVersions through the Wrangler binary, not cf', async () => {
+	it('keeps legacy Worker version listing on Wrangler until cf API parity is verified', async () => {
 		const runner = new RecordingProcessRunner();
-		runner.handler = (request) => {
-			if (request.argv.includes('secret')) {
-				return { code: 0, stdout: JSON.stringify([{ name: 'FOO' }]), stderr: '' };
-			}
-			if (request.argv.includes('versions')) {
-				return { code: 0, stdout: JSON.stringify([{ id: WORKER_VERSION }]), stderr: '' };
-			}
-			return { code: 0, stdout: '[]', stderr: '' };
-		};
+		runner.handler = () => ({
+			code: 0,
+			stdout: JSON.stringify([{ id: WORKER_VERSION }]),
+			stderr: ''
+		});
 		const cloudflare = client(runner);
-		await expect(cloudflare.listSecrets('signkit')).resolves.toEqual(['FOO']);
 		await expect(cloudflare.listVersions('signkit')).resolves.toEqual([{ id: WORKER_VERSION }]);
 		for (const request of runner.requests) {
 			expect(request.argv[0]).toBe(WRANGLER_BIN);
@@ -290,7 +285,7 @@ describe('Wrangler-delegated operations', () => {
 	it('treats listSecrets/listVersions fresh-account errors as an empty Worker', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = (request) => {
-			if (request.argv.includes('secret')) {
+			if (request.argv.includes('secrets')) {
 				return { code: 1, stdout: '', stderr: 'code: 10007 script_not_found' };
 			}
 			if (request.argv.includes('versions')) {
@@ -325,9 +320,20 @@ describe('Wrangler-delegated operations', () => {
 		expect(runner.requests[0]?.argv).toContain('deploy');
 	});
 
-	it('publishes the exact Worker version then reconciles triggers through Wrangler', async () => {
+	it('publishes traffic through cf then reconciles triggers through Wrangler', async () => {
 		const runner = new RecordingProcessRunner();
-		runner.handler = () => ({ code: 0, stdout: `Version ID: ${WORKER_VERSION}\n`, stderr: '' });
+		runner.handler = (request) => ({
+			code: 0,
+			stdout:
+				request.argv[0] === CF_BIN
+					? JSON.stringify({
+							id: '33333333-3333-3333-3333-333333333333',
+							strategy: 'percentage',
+							versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+						})
+					: '',
+			stderr: ''
+		});
 		const cloudflare = client(runner);
 		await cloudflare.deployVersion('signkit', WORKER_VERSION);
 		await cloudflare.deployTriggers({
@@ -335,17 +341,17 @@ describe('Wrangler-delegated operations', () => {
 			configPath: '/tmp/bundle/wrangler.jsonc',
 			workerName: 'signkit'
 		});
-		for (const request of runner.requests) {
-			expect(request.argv[0]).toBe(WRANGLER_BIN);
-		}
 		expect(runner.requests[0]?.argv).toEqual([
-			WRANGLER_BIN,
-			'versions',
-			'deploy',
-			`${WORKER_VERSION}@100`,
-			'--name',
+			CF_BIN,
+			'workers',
+			'deployments',
+			'create',
+			'--worker',
 			'signkit',
-			'--yes'
+			'--strategy',
+			'percentage',
+			'--versions',
+			JSON.stringify([{ version_id: WORKER_VERSION, percentage: 100 }])
 		]);
 		expect(runner.requests[1]?.argv).toEqual([
 			WRANGLER_BIN,
@@ -374,6 +380,114 @@ describe('Wrangler-delegated operations', () => {
 			'--skip-confirmation'
 		]);
 	});
+});
+
+describe('cf Worker administration', () => {
+	it('accepts an explicitly empty successful secret list without inventing secrets', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = () => ({ code: 0, stdout: '[]', stderr: '' });
+		await expect(client(runner).listSecrets('signkit')).resolves.toEqual([]);
+		expect(runner.requests).toHaveLength(1);
+		expect(runner.requests[0]?.argv[0]).toBe(CF_BIN);
+	});
+
+	it('reads only secret names from cf with explicit Worker identity and isolated cwd', async () => {
+		const { access } = await import('node:fs/promises');
+		const runner = new RecordingProcessRunner();
+		runner.handler = () => ({
+			code: 0,
+			stdout: JSON.stringify([{ name: 'SESSION_ENCRYPTION_KEY', type: 'secret_text' }]),
+			stderr: ''
+		});
+		await expect(client(runner).listSecrets('signkit')).resolves.toEqual([
+			'SESSION_ENCRYPTION_KEY'
+		]);
+		const request = runner.requests[0]!;
+		expect(request.argv).toEqual([CF_BIN, 'workers', 'secrets', 'list', '--worker', 'signkit']);
+		expect(request.cwd).toMatch(/create-signkit-cf-/);
+		await expect(access(request.cwd!)).rejects.toThrow();
+	});
+
+	it.each(
+		[
+			{},
+			{ success: false, result: [] },
+			[null],
+			[{ name: '' }],
+			[{ name: 'DUPLICATE' }, { name: 'DUPLICATE' }],
+			Array.from({ length: 1001 }, (_, index) => ({ name: `KEY_${index}` }))
+		].map((output) => ({ output }))
+	)(
+		'rejects malformed secret-name metadata instead of inventing a pristine Worker (%#)',
+		async ({ output }) => {
+			const runner = new RecordingProcessRunner();
+			runner.handler = () => ({ code: 0, stdout: JSON.stringify(output), stderr: '' });
+			await expect(client(runner).listSecrets('signkit')).rejects.toThrow(
+				/malformed|oversized|duplicate/
+			);
+		}
+	);
+
+	it.each(['generic resource not found', 'account not found', 'error 10007', 'permission denied'])(
+		'does not treat an unrelated cf failure as a missing Worker (%s)',
+		async (stderr) => {
+			const runner = new RecordingProcessRunner();
+			runner.handler = () => ({ code: 1, stdout: '', stderr });
+			await expect(client(runner).listSecrets('signkit')).rejects.toThrow(/failed/);
+		}
+	);
+
+	it('rejects invalid version identity before invoking cf', async () => {
+		const runner = new RecordingProcessRunner();
+		await expect(client(runner).deployVersion('signkit', 'invalid-version')).rejects.toThrow(
+			/valid Worker version id/
+		);
+		expect(runner.requests).toEqual([]);
+	});
+
+	it.each([
+		{},
+		{ id: WORKER_VERSION, strategy: 'percentage', versions: [] },
+		{
+			id: 'not-a-deployment-id',
+			strategy: 'percentage',
+			versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+		},
+		{
+			id: WORKER_VERSION,
+			strategy: 'percentage',
+			versions: [{ version_id: D1_UUID, percentage: 100 }]
+		},
+		{
+			id: WORKER_VERSION,
+			strategy: 'percentage',
+			versions: [{ version_id: WORKER_VERSION, percentage: 50 }]
+		},
+		{
+			id: WORKER_VERSION,
+			strategy: 'percentage',
+			versions: [{ version_id: WORKER_VERSION, percentage: '100' }]
+		},
+		{
+			id: WORKER_VERSION,
+			strategy: 'percentage',
+			versions: [
+				{ version_id: WORKER_VERSION, percentage: 100 },
+				{ version_id: D1_UUID, percentage: 100 }
+			]
+		}
+	])(
+		'refuses a cf response that does not confirm the exact version at all traffic (%#)',
+		async (output) => {
+			const runner = new RecordingProcessRunner();
+			runner.handler = () => ({ code: 0, stdout: JSON.stringify(output), stderr: '' });
+			await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).rejects.toThrow(
+				/exact requested version at 100%/
+			);
+			expect(runner.requests[0]?.argv).not.toContain('--bypass-deployment-checks');
+			expect(runner.requests[0]?.argv).not.toContain('--provision');
+		}
+	);
 });
 
 describe('missing Worker classification', () => {

@@ -12,6 +12,8 @@ const require = createRequire(import.meta.url);
 const cfBin = join(dirname(require.resolve('cf/package.json')), 'bin/cf');
 const accountId = '00000000000000000000000000000000';
 const databaseId = '11111111-1111-4111-8111-111111111111';
+const workerVersionId = '22222222-2222-4222-8222-222222222222';
+const deploymentId = '33333333-3333-4333-8333-333333333333';
 
 // The real pinned cf executable talks ONLY to this synthetic local API. No
 // account credential or parent environment is inherited. These are CLI contract
@@ -38,6 +40,27 @@ test('packaged cf returns the resource and remote migration shapes consumed by t
 				assert.equal(url.searchParams.get('per_page'), '50');
 				result = [{ uuid: databaseId, name: `fixture-page-${url.searchParams.get('page')}` }];
 			}
+		} else if (url.pathname.endsWith('/workers/scripts/fixture/secrets')) {
+			result = [{ name: 'DELIVERY_ENCRYPTION_KEY', type: 'secret_text' }];
+		} else if (url.pathname.endsWith('/workers/scripts/missing/secrets')) {
+			response.writeHead(404, { 'content-type': 'application/json' });
+			response.end(
+				JSON.stringify({
+					success: false,
+					errors: [{ code: 10007, message: 'script_not_found' }],
+					result: null
+				})
+			);
+			return;
+		} else if (url.pathname.endsWith('/workers/scripts/fixture/deployments')) {
+			assert.equal(request.method, 'POST');
+			assert.equal(url.searchParams.has('force'), false);
+			const deployment = JSON.parse(body);
+			assert.deepEqual(deployment, {
+				strategy: 'percentage',
+				versions: [{ version_id: workerVersionId, percentage: 100 }]
+			});
+			result = { id: deploymentId, ...deployment };
 		} else if (url.pathname.endsWith('/query')) {
 			const { sql, params = [] } = JSON.parse(body);
 			let rows = [];
@@ -145,6 +168,29 @@ test('packaged cf returns the resource and remote migration shapes consumed by t
 			uuid: databaseId,
 			name: 'fixture'
 		});
+		assert.deepEqual(await run(['workers', 'secrets', 'list', '--worker', 'fixture']), [
+			{ name: 'DELIVERY_ENCRYPTION_KEY', type: 'secret_text' }
+		]);
+		const missingWorker = await run(['workers', 'secrets', 'list', '--worker', 'missing'], 1);
+		assert.match(missingWorker.stderr + missingWorker.stdout, /script_not_found/);
+		assert.deepEqual(
+			await run([
+				'workers',
+				'deployments',
+				'create',
+				'--worker',
+				'fixture',
+				'--strategy',
+				'percentage',
+				'--versions',
+				JSON.stringify([{ version_id: workerVersionId, percentage: 100 }])
+			]),
+			{
+				id: deploymentId,
+				strategy: 'percentage',
+				versions: [{ version_id: workerVersionId, percentage: 100 }]
+			}
+		);
 		assert.deepEqual(
 			await run(['d1', 'migrations', 'list', databaseId, '--dir', join(context, 'migrations')]),
 			[{ Name: '0001_fixture.sql' }, { Name: '0002_fixture.sql' }]

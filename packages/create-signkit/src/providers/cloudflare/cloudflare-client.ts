@@ -25,13 +25,16 @@ export type { DeployResult, TriggerDeployOptions, UploadVersionOptions, WorkerVe
  * The installed `cf` CLI (1.0.0-beta.14) runs: whoami (`accounts list`),
  * listD1/createD1 (`d1 list`/`d1 create`), D1 remote migrations
  * (`d1 migrations list`/`apply` for pending, `d1 query` for applied
- * history), and R2 (`r2 buckets get`/`create`).
+ * history), R2 (`r2 buckets get`/`create`), secret-name inspection, and exact
+ * version traffic publication (`workers deployments create`).
  *
- * Worker lifecycle operations and D1 export retain the Wrangler compatibility
- * client. The authenticated v1 archive contains Wrangler configuration, not cf
+ * Worker version inspection, uploads, trigger reconciliation, and D1 export
+ * retain the Wrangler compatibility client. The authenticated v1 archive
+ * contains Wrangler configuration, not cf
  * Build Output. Native upload must first prove equivalent no-rebundle, strict
- * override, retained-var, secret-file, and partial-failure recovery behavior before replacing
- * that path. See docs/architecture/create-signkit.md for the next-phase gate.
+ * override, retained-var, secret-file, and partial-failure recovery behavior
+ * before replacing that path. See docs/architecture/create-signkit.md for the
+ * next-phase gate.
  */
 export interface CloudflareClient {
 	whoami(): Promise<Whoami>;
@@ -249,7 +252,26 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
 			await run(['r2', 'buckets', 'create', '--name', name]);
 		},
 		async listSecrets(workerName) {
-			return wrangler.listSecrets(workerName);
+			try {
+				const result = await run(['workers', 'secrets', 'list', '--worker', workerName]);
+				const rows = parseJsonValue(result.stdout, 'cf workers secrets list');
+				if (!Array.isArray(rows) || rows.length > 1000) {
+					throw generic('cf workers secrets list returned a malformed or oversized list');
+				}
+				const names = new Set<string>();
+				for (const row of rows) {
+					const name = asObject(row).name;
+					if (typeof name !== 'string' || name.length === 0 || names.has(name)) {
+						throw generic('cf workers secrets list returned a malformed or duplicate name');
+					}
+					names.add(name);
+				}
+				return [...names];
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (isMissingWorkerError(message)) return [];
+				throw error;
+			}
 		},
 		async listVersions(workerName) {
 			return wrangler.listVersions(workerName);
@@ -261,7 +283,31 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
 			return wrangler.uploadVersion(options);
 		},
 		async deployVersion(workerName, versionId) {
-			await wrangler.deployVersion(workerName, versionId);
+			if (!isUuid(versionId)) throw generic('a valid Worker version id is required');
+			const result = await run([
+				'workers',
+				'deployments',
+				'create',
+				'--worker',
+				workerName,
+				'--strategy',
+				'percentage',
+				'--versions',
+				JSON.stringify([{ version_id: versionId, percentage: 100 }])
+			]);
+			const deployment = asObject(parseJsonValue(result.stdout, 'cf workers deployments create'));
+			const versions = deployment.versions;
+			const selected =
+				Array.isArray(versions) && versions.length === 1 ? asObject(versions[0]) : {};
+			if (
+				!isUuid(deployment.id) ||
+				deployment.strategy !== 'percentage' ||
+				typeof selected.version_id !== 'string' ||
+				selected.version_id.toLowerCase() !== versionId.toLowerCase() ||
+				selected.percentage !== 100
+			) {
+				throw generic('cf Worker deployment did not confirm the exact requested version at 100%');
+			}
 		},
 		async deployTriggers(options) {
 			await wrangler.deployTriggers(options);
@@ -371,4 +417,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function optionalString(value: unknown): string | undefined {
 	return typeof value === 'string' ? value : undefined;
+}
+
+function isUuid(value: unknown): value is string {
+	return (
+		typeof value === 'string' &&
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+	);
 }

@@ -13,11 +13,9 @@ export interface WranglerInvocation {
 
 export interface WranglerClient {
 	exportD1(name: string, outputPath: string): Promise<void>;
-	listSecrets(workerName: string): Promise<string[]>;
 	listVersions(workerName: string): Promise<WorkerVersion[]>;
 	deployFirst(options: UploadVersionOptions): Promise<DeployResult>;
 	uploadVersion(options: UploadVersionOptions): Promise<DeployResult>;
-	deployVersion(workerName: string, versionId: string): Promise<void>;
 	deployTriggers(options: TriggerDeployOptions): Promise<void>;
 	invocations(): readonly WranglerInvocation[];
 }
@@ -131,27 +129,6 @@ export function createWranglerClient(options: WranglerClientOptions): WranglerCl
 		async exportD1(name, outputPath) {
 			await run(['d1', 'export', name, '--remote', '--output', outputPath, '--skip-confirmation']);
 		},
-		async listSecrets(workerName) {
-			try {
-				const result = await run(['secret', 'list', '--name', workerName, '--format', 'json']);
-				const parsed = parseJson(result.stdout);
-				if (!Array.isArray(parsed)) {
-					return [];
-				}
-				return parsed
-					.map((row) => {
-						const record = asObject(row);
-						return typeof record.name === 'string' ? record.name : '';
-					})
-					.filter(Boolean);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				if (isMissingWorkerError(message)) {
-					return [];
-				}
-				throw error;
-			}
-		},
 		async listVersions(workerName) {
 			try {
 				const result = await run(['versions', 'list', '--name', workerName, '--json']);
@@ -187,9 +164,6 @@ export function createWranglerClient(options: WranglerClientOptions): WranglerCl
 			const args = wranglerFirstDeployArgs(options);
 			const result = await run(['deploy', ...args], options.cwd);
 			return assertSuccessfulUpload(parseDeployResult(result.stdout, result.stderr));
-		},
-		async deployVersion(workerName, versionId) {
-			await run(['versions', 'deploy', `${versionId}@100`, '--name', workerName, '--yes']);
 		},
 		async deployTriggers(options) {
 			await run(wranglerTriggerDeployArgs(options), options.cwd);
