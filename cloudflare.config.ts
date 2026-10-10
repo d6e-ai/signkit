@@ -20,6 +20,9 @@ export default defineConfig({
 		triggers: [
 			triggers.scheduled({
 				schedule: '* * * * *'
+			}),
+			triggers.scheduled({
+				schedule: '*/5 * * * *'
 			})
 		],
 		env: {

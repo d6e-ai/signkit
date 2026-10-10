@@ -55,7 +55,22 @@ export class NodemailerSmtpMailSender implements MailSender {
 				from: { address: message.from.email, name: message.from.name },
 				subject: message.subject,
 				text: message.text,
-				html: message.html
+				html: message.html,
+				...(message.attachment === undefined
+					? {}
+					: {
+							attachments: [
+								{
+									filename: message.attachment.filename,
+									contentType: message.attachment.contentType,
+									content: Buffer.from(
+										message.attachment.content.buffer,
+										message.attachment.content.byteOffset,
+										message.attachment.content.byteLength
+									)
+								}
+							]
+						})
 			});
 		} catch (error: unknown) {
 			throw new MailDeliveryError(smtpErrorCode(error), smtpErrorRetryable(error, message.to));

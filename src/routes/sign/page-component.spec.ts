@@ -124,8 +124,8 @@ describe('recipient signing page', () => {
 	});
 
 	it.each([
-		['invalid', 'This signing link is not active'],
-		['unavailable', 'Signing access is temporarily unavailable']
+		['invalid', 'This link is not active'],
+		['unavailable', 'Access is temporarily unavailable']
 	] as const)('renders the %s state without document content', (state, expected) => {
 		const data: PageData = { state } as PageData;
 		const { body } = render(SignPage, { props: { data } });
@@ -234,6 +234,111 @@ describe('recipient signing page', () => {
 		expect(body).toContain('Approve agreement');
 		expect(body).not.toContain('Your signature');
 		expect(body).not.toContain('Sign and complete');
+	});
+
+	it('proves approver role and approve/decline controls coexist with neutral access explanation and no sign controls', () => {
+		const { body } = render(SignPage, {
+			props: {
+				data: activeData({
+					role: 'approver',
+					recipientStatus: 'viewed',
+					fields: [signatureField]
+				})
+			}
+		});
+
+		// Approver role and neutral access explanation
+		expect(body).toContain('Approver');
+		expect(body).toContain(
+			'Your private link is active. Access is checked again whenever this page is opened.'
+		);
+		expect(body).not.toContain('private signing link');
+
+		// Neutral generic document review copy
+		expect(body).toContain('Review every document included in this request.');
+		expect(body).not.toContain('signing request');
+
+		// Approve and decline controls coexist for an actionable approver
+		expect(body).toContain('Approve agreement');
+		expect(body).toContain('Decline request');
+
+		// No sign controls, field completion section, or signer instructions
+		expect(body).not.toContain('Sign and complete');
+		expect(body).not.toContain('Fields to complete');
+		expect(body).not.toContain('Your signature');
+		expect(body).not.toContain('JavaScript is required to submit and record your signature.');
+	});
+
+	it('provides role-neutral shared access, document review, and failure copy in both locales', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		// Shared recipient access explanation is role-neutral
+		expect(en.signing_access_description).toBe(
+			'Your private link is active. Access is checked again whenever this page is opened.'
+		);
+		expect(ja.signing_access_description).toBe(
+			'専用リンクが有効です。この画面を開くたびにアクセス権を再確認します。'
+		);
+		expect(en.signing_access_description).not.toMatch(/signing link/i);
+		expect(ja.signing_access_description).not.toContain('署名リンク');
+
+		// Generic document review description is role-neutral
+		expect(en.signing_documents_description).toBe(
+			'Review every document included in this request.'
+		);
+		expect(ja.signing_documents_description).toBe(
+			'この依頼に含まれるすべての文書を確認してください。'
+		);
+		expect(en.signing_documents_description).not.toMatch(/signing request/i);
+		expect(ja.signing_documents_description).not.toContain('署名依頼');
+
+		// Invalid and unavailable states are role-neutral
+		expect(en.signing_invalid_title).toBe('This link is not active');
+		expect(ja.signing_invalid_title).toBe('このリンクは現在利用できません');
+		expect(en.signing_invalid_title).not.toMatch(/signing/i);
+		expect(ja.signing_invalid_title).not.toContain('署名');
+
+		expect(en.signing_unavailable_title).toBe('Access is temporarily unavailable');
+		expect(ja.signing_unavailable_title).toBe('この画面を一時的に利用できません');
+		expect(en.signing_unavailable_title).not.toMatch(/signing/i);
+		expect(ja.signing_unavailable_title).not.toContain('署名');
+
+		expect(en.signing_unavailable_description).toBe(
+			'Please wait a moment and open the link again. No action was recorded.'
+		);
+		expect(ja.signing_unavailable_description).toBe(
+			'少し待ってから、もう一度リンクを開いてください。操作は記録されていません。'
+		);
+		expect(en.signing_unavailable_description).not.toMatch(/signing/i);
+		expect(ja.signing_unavailable_description).not.toContain('署名');
+
+		// Non-signer decline/approval failures are role-neutral
+		expect(en.signing_decline_failed).toBe(
+			'Could not decline the request. This link is no longer active.'
+		);
+		expect(ja.signing_decline_failed).toBe('依頼を辞退できませんでした。このリンクは無効です。');
+		expect(en.signing_decline_failed).not.toMatch(/signing link/i);
+		expect(ja.signing_decline_failed).not.toContain('署名リンク');
+
+		expect(en.signing_approve_failed).toBe(
+			'Could not approve the agreement. This link is no longer active.'
+		);
+		expect(ja.signing_approve_failed).toBe('契約書を承認できませんでした。このリンクは無効です。');
+		expect(en.signing_approve_failed).not.toMatch(/signing link/i);
+		expect(ja.signing_approve_failed).not.toContain('署名リンク');
+
+		// Genuine signer-only failure wording remains specific and unchanged
+		expect(en.signing_sign_validation_failed).toBe(
+			'Review your entries and try again. Your signing link is still active.'
+		);
+		expect(ja.signing_sign_validation_failed).toBe(
+			'入力内容を確認して、もう一度お試しください。署名リンクは引き続き有効です。'
+		);
+		expect(en.signing_sign_failed).toBe(
+			'Could not record your signature. This signing link is no longer active.'
+		);
+		expect(ja.signing_sign_failed).toBe('署名を記録できませんでした。この署名リンクは無効です。');
 	});
 
 	it('provides localized signing copy without claiming a cryptographic seal', async () => {

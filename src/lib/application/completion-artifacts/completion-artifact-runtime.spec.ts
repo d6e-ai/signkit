@@ -60,6 +60,19 @@ describe('resolveCompletionArtifactStatusService', () => {
 		const service = await resolveCompletionArtifactStatusService({});
 		expect(service).toBeInstanceOf(CompletionArtifactStatusService);
 	});
+
+	it('constructs a status service from a native D1 binding', async () => {
+		const platform = { env: { DB: {} as D1Database } } as App.Platform;
+
+		const service = await resolveCompletionArtifactStatusService({ platform });
+		expect(service).toBeInstanceOf(CompletionArtifactStatusService);
+	});
+
+	it('returns null when the Cloudflare platform has no DB binding', async () => {
+		const platform = { env: {} } as App.Platform;
+
+		await expect(resolveCompletionArtifactStatusService({ platform })).resolves.toBeNull();
+	});
 });
 
 function setCompleteNodeConfiguration(): void {

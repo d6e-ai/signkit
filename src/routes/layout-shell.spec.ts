@@ -34,8 +34,8 @@ describe('application layout shell', () => {
 		expect(source).not.toMatch(/rounded-2xl|shadow-sm/);
 	});
 
-	it('matches the ai-gateway inset shell exactly: min-w-0 and nothing else', () => {
-		expect(source).toContain('<Sidebar.Inset class="min-w-0">');
+	it('matches the ai-gateway inset shell: min-w-0 plus aria-busy while navigating', () => {
+		expect(source).toContain('<Sidebar.Inset class="min-w-0" aria-busy={navigationPending}>');
 	});
 
 	it('keeps authenticated header and page content on the same px-4 horizontal grid with a shared container', () => {
@@ -63,11 +63,17 @@ describe('application layout shell', () => {
 		expect(between).not.toMatch(/bg-border|<Sidebar\.Separator/);
 	});
 
-	it('renders the route-aware breadcrumb and swaps it for a spinner while navigating', () => {
+	it('keeps the route-aware breadcrumb visible and owns loading on a root overlay', () => {
 		expect(source).toContain('import AppBreadcrumbs from ');
-		expect(source).toMatch(/navigating\.to\s*!==\s*null/);
-		expect(source).toMatch(/\{#if navigationPending\}\s*<Spinner/);
+		expect(source).toContain('import NavigationProgress from ');
 		expect(source).toContain('<AppBreadcrumbs />');
+		expect(source).toContain('<NavigationProgress />');
+		expect(source).not.toMatch(/\{#if navigationPending\}\s*<Spinner/);
+		const progress: string = readFileSync('src/lib/components/navigation-progress.svelte', 'utf8');
+		expect(progress).toMatch(/navigating\.to\s*!==\s*null/);
+		expect(progress).toContain('top-16');
+		expect(progress).toContain('m.nav_loading()');
+		expect(progress).toContain('aria-hidden="true"');
 	});
 
 	it('never shows a header sign-in action, since anonymous callers are redirected server-side', () => {

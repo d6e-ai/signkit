@@ -101,8 +101,28 @@ function byteLength(value: string): number {
 	return new TextEncoder().encode(value).byteLength;
 }
 
+/**
+ * PDF literal strings are byte sequences, not UTF-8 text: `TextEncoder`
+ * would otherwise split every WinAnsi character above U+007E (already
+ * verified renderable by {@link toPdfSafeText}) into multiple UTF-8 bytes,
+ * which WinAnsiEncoding then renders as multiple mojibake glyphs instead of
+ * the single intended one. WinAnsiEncoding's 0xA0-0xFF range is identical to
+ * the Unicode code points it represents, so each such character is emitted
+ * as a PDF octal escape (`\ddd`) for that single byte value, keeping the
+ * whole content stream ASCII and therefore safe to run through
+ * `TextEncoder` unchanged.
+ */
 function escapePdfLiteral(value: string): string {
-	return value.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)');
+	let result: string = '';
+	for (const character of value) {
+		if (character === '\\' || character === '(' || character === ')') {
+			result += `\\${character}`;
+			continue;
+		}
+		const codePoint: number = character.codePointAt(0) ?? 0;
+		result += codePoint > 0x7e ? `\\${codePoint.toString(8).padStart(3, '0')}` : character;
+	}
+	return result;
 }
 
 /**

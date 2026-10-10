@@ -1,16 +1,18 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import {
-	DEFAULT_ORPHAN_BATCH_SIZE,
 	MAX_ORPHAN_SCAN_LIMIT,
+	OrphanSweepFailure,
 	type OrphanCollector,
 	type OrphanCollectorReport
 } from '$lib/application/maintenance/orphan-collector';
+import { maintenanceFailureHeaders } from '$lib/observability/maintenance-failure';
 import { parseBearerSecret, secretsEqual } from '$lib/security/bearer-secret';
 import { resolveDeliveryWorkerSecret, type DeliveryWorkerSecretResolver } from './delivery-drain';
 import { problemResponse } from './problem';
 
-export const ORPHAN_SWEEP_BATCH_SIZE: number = DEFAULT_ORPHAN_BATCH_SIZE;
+export const ORPHAN_SWEEP_BATCH_SIZE: number = MAX_ORPHAN_SCAN_LIMIT;
 export const ORPHAN_SWEEP_MAX_OBJECTS: number = MAX_ORPHAN_SCAN_LIMIT;
+export const ORPHAN_SWEEP_MAX_LIST_PAGES: number = 1;
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
@@ -46,26 +48,35 @@ export function createOrphanSweepHandler(
 		if (!(await secretsEqual(presentedSecret, expectedSecret))) return unauthorized(url.pathname);
 
 		let collector: OrphanCollector | null;
+		let resolutionFailed: boolean = false;
 		try {
 			collector = await resolveCollector({ platform });
-		} catch (error: unknown) {
-			logOrphanSweepError('orphan_sweep_resolution_failed', error);
+		} catch {
+			logOrphanSweepError('orphan_sweep_resolution_failed', {
+				code: 'runtime_resolution_failed',
+				operation: 'runtime_resolution'
+			});
+			resolutionFailed = true;
 			collector = null;
 		}
 		if (collector === null) {
-			return problemResponse({
-				type: 'urn:signkit:problem:orphan-sweep-unavailable',
-				title: 'Orphan sweep unavailable',
-				status: 503,
-				detail: 'Object storage and its SQL reference store must be configured.',
-				instance: url.pathname
-			});
+			return problemResponse(
+				{
+					type: 'urn:signkit:problem:orphan-sweep-unavailable',
+					title: 'Orphan sweep unavailable',
+					status: 503,
+					detail: 'Object storage and its SQL reference store must be configured.',
+					instance: url.pathname
+				},
+				resolutionFailed ? maintenanceFailureHeaders('runtime_resolution_failed') : undefined
+			);
 		}
 
 		try {
 			const report: OrphanCollectorReport = await collector.sweep({
 				batchSize: ORPHAN_SWEEP_BATCH_SIZE,
-				maxObjectsToScan: ORPHAN_SWEEP_MAX_OBJECTS
+				maxObjectsToScan: ORPHAN_SWEEP_MAX_OBJECTS,
+				maxListPages: ORPHAN_SWEEP_MAX_LIST_PAGES
 			});
 			if (report.checkpointConflict) {
 				// A concurrent sweep already advanced the checkpoint past this run's
@@ -89,14 +100,18 @@ export function createOrphanSweepHandler(
 				}
 			);
 		} catch (error: unknown) {
-			logOrphanSweepError('orphan_sweep_failed', error);
-			return problemResponse({
-				type: 'urn:signkit:problem:orphan-sweep-service-unavailable',
-				title: 'Orphan sweep unavailable',
-				status: 503,
-				detail: 'The orphan sweep batch could not be processed.',
-				instance: url.pathname
-			});
+			const failure: OrphanSweepLogContext = orphanSweepLogContext(error);
+			logOrphanSweepError('orphan_sweep_failed', failure);
+			return problemResponse(
+				{
+					type: 'urn:signkit:problem:orphan-sweep-service-unavailable',
+					title: 'Orphan sweep unavailable',
+					status: 503,
+					detail: 'The orphan sweep batch could not be processed.',
+					instance: url.pathname
+				},
+				maintenanceFailureHeaders(failure.code)
+			);
 		}
 	};
 }
@@ -111,11 +126,24 @@ function unauthorized(instance: string): Response {
 	});
 }
 
-function logOrphanSweepError(event: string, error: unknown): void {
+interface OrphanSweepLogContext {
+	readonly code: string;
+	readonly operation: string;
+}
+
+function orphanSweepLogContext(error: unknown): OrphanSweepLogContext {
+	if (error instanceof OrphanSweepFailure) {
+		return { code: error.code, operation: error.operation };
+	}
+	return { code: 'unexpected_failure', operation: 'unknown' };
+}
+
+function logOrphanSweepError(event: string, context: OrphanSweepLogContext): void {
 	console.error(
 		JSON.stringify({
 			event,
-			message: error instanceof Error ? error.name : 'UnknownError'
+			code: context.code,
+			operation: context.operation
 		})
 	);
 }

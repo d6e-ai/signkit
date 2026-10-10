@@ -9,14 +9,15 @@ import {
 	createWranglerClient,
 	isMissingWorkerError,
 	sortWorkerVersions,
-	type DeployOptions,
 	type DeployResult,
+	type TriggerDeployOptions,
+	type UploadVersionOptions,
 	type WorkerVersion,
 	type WranglerClient
 } from './wrangler.js';
 
 export { assertSuccessfulUpload, isMissingWorkerError, sortWorkerVersions };
-export type { DeployOptions, DeployResult, WorkerVersion };
+export type { DeployResult, TriggerDeployOptions, UploadVersionOptions, WorkerVersion };
 
 /**
  * CLI-neutral port consumed by the reconciler.
@@ -29,7 +30,7 @@ export type { DeployOptions, DeployResult, WorkerVersion };
  * Worker lifecycle operations and D1 export retain the Wrangler compatibility
  * client. The authenticated v1 archive contains Wrangler configuration, not cf
  * Build Output. Native upload must first prove equivalent no-rebundle, strict
- * override, retained-var, secret-file, and rollback behavior before replacing
+ * override, retained-var, secret-file, and partial-failure recovery behavior before replacing
  * that path. See docs/architecture/create-signkit.md for the next-phase gate.
  */
 export interface CloudflareClient {
@@ -43,10 +44,10 @@ export interface CloudflareClient {
 	createR2(name: string): Promise<void>;
 	listSecrets(workerName: string): Promise<string[]>;
 	listVersions(workerName: string): Promise<WorkerVersion[]>;
-	deploy(options: DeployOptions): Promise<DeployResult>;
-	uploadVersion(options: DeployOptions): Promise<DeployResult>;
+	deployFirst(options: UploadVersionOptions): Promise<DeployResult>;
+	uploadVersion(options: UploadVersionOptions): Promise<DeployResult>;
 	deployVersion(workerName: string, versionId: string): Promise<void>;
-	rollback(workerName: string, versionId: string, message: string): Promise<void>;
+	deployTriggers(options: TriggerDeployOptions): Promise<void>;
 	invocations(): readonly CloudflareInvocation[];
 }
 
@@ -253,8 +254,8 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
 		async listVersions(workerName) {
 			return wrangler.listVersions(workerName);
 		},
-		async deploy(options) {
-			return wrangler.deploy(options);
+		async deployFirst(options) {
+			return wrangler.deployFirst(options);
 		},
 		async uploadVersion(options) {
 			return wrangler.uploadVersion(options);
@@ -262,8 +263,8 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
 		async deployVersion(workerName, versionId) {
 			await wrangler.deployVersion(workerName, versionId);
 		},
-		async rollback(workerName, versionId, message) {
-			await wrangler.rollback(workerName, versionId, message);
+		async deployTriggers(options) {
+			await wrangler.deployTriggers(options);
 		}
 	};
 }

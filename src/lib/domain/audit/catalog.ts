@@ -8,6 +8,7 @@ export const DRAFT_REVISION_EVENT_TYPE: string = 'draft.revision_created';
 export const COMPLETION_AUDIT_ANCHOR_EVENT_TYPE: string = 'envelope.completed';
 export const COMPLETION_ARTIFACT_PUBLISHED_EVENT_TYPE: string =
 	'envelope.completion_artifact_published';
+export const PDF_SEAL_PUBLISHED_EVENT_TYPE: string = 'envelope.pdf_seal_published';
 
 /**
  * Registry of durable envelope audit events and the actor types a truthful
@@ -30,6 +31,8 @@ export const AUDIT_EVENT_CATALOG: Readonly<
 	'recipient.declined': { actorTypes: ['recipient'] },
 	'envelope.completed': { actorTypes: ['recipient'] },
 	'envelope.completion_artifact_published': { actorTypes: ['system'] },
+	// D1 0051 / Postgres 0047. Atomic PDF seal publication; system actor only.
+	'envelope.pdf_seal_published': { actorTypes: ['system'] },
 	// D1 0036 / Postgres 0034. HTTP reissue is session-only (user); agent is
 	// catalogued for hashes so a later agent writer cannot mint an invisible actor.
 	'recipient.capability_reissued': { actorTypes: ['user', 'agent'] },

@@ -49,7 +49,10 @@ describe('GET /api/v1/openapi.json', () => {
 			'/api/v1/webhooks/{webhookId}/revoke',
 			'/api/v1/system/webhooks/drain',
 			'/api/v1/system/objects/orphan-sweep',
-			'/api/v1/instance/invitations/accept'
+			'/api/v1/instance/invitations/accept',
+			'/api/v1/envelopes/{envelopeId}/revisions',
+			'/api/v1/envelopes/{envelopeId}/revisions/diff',
+			'/api/v1/envelopes/{envelopeId}/revisions/{revisionRef}'
 		]) {
 			expect(paths[path]).toBeDefined();
 		}
@@ -77,10 +80,24 @@ describe('GET /api/v1/openapi.json', () => {
 
 		const serialized = JSON.stringify(document);
 		expect(serialized).not.toContain('repositoryArchiveKey');
+		expect(serialized).not.toContain('archiveKey');
 		expect(serialized).not.toContain('DELIVERY_WORKER_SECRET');
 		expect(serialized).not.toContain('skwh1_');
 		expect(serialized).not.toContain('SESSION_ENCRYPTION_KEY');
 		expect(serialized).not.toContain('CLOUDFLARE_EMAIL_API_TOKEN');
+
+		const revisionHistorySchema = (
+			document.components as {
+				schemas: {
+					DraftRevisionHistoryPage: { additionalProperties: boolean };
+					DraftExactRevision: { additionalProperties: boolean };
+					RevisionDiff: { additionalProperties: boolean };
+				};
+			}
+		).schemas;
+		expect(revisionHistorySchema.DraftRevisionHistoryPage.additionalProperties).toBe(false);
+		expect(revisionHistorySchema.DraftExactRevision.additionalProperties).toBe(false);
+		expect(revisionHistorySchema.RevisionDiff.additionalProperties).toBe(false);
 
 		const envelopeSchema = (
 			document.components as {

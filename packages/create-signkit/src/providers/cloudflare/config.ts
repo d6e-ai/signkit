@@ -58,6 +58,8 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 	const config = {
 		name: input.workerName,
 		main: input.main,
+		workers_dev: !input.domain,
+		...(input.domain ? { routes: [{ pattern: input.domain, custom_domain: true as const }] } : {}),
 		compatibility_date: input.manifest.worker.compatibilityDate,
 		compatibility_flags: input.manifest.worker.compatibilityFlags,
 		assets: {
@@ -88,7 +90,7 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 				...(input.mailProvider === 'smtp' && input.smtpUsername ? [SMTP_PASSWORD_SECRET] : [])
 			]
 		},
-		triggers: { crons: ['* * * * *'] },
+		triggers: { crons: ['* * * * *', '*/5 * * * *'] },
 		observability: { enabled: true, head_sampling_rate: 1 }
 	};
 	return `${JSON.stringify(config, null, '\t')}\n`;

@@ -13,7 +13,8 @@ import type {
 	DraftDocument,
 	DraftEdit,
 	DraftRepository,
-	DraftVersion
+	DraftVersion,
+	VerifiedDraftRevisionSnapshot
 } from '$lib/ports/draft-repository';
 import { MemoryFs, type ArchivedFile } from './memory-fs';
 
@@ -97,6 +98,99 @@ export class IsomorphicGitDraftRepository implements DraftRepository {
 		);
 		if (typeof content !== 'string') throw new Error('Document set was not decoded as text');
 		return content;
+	}
+
+	async readCommitMessage(
+		archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<string | null> {
+		if (archive === null) {
+			if (expectedCommitSha !== null) throw new Error('Empty draft has an unexpected Git head');
+			return null;
+		}
+		if (expectedCommitSha === null) throw new Error('Persisted draft is missing its Git head');
+		const fs: MemoryFs = await restore(archive);
+		const client = fs.asClient();
+		const actualCommitSha: string = await git.resolveRef({
+			fs: client,
+			dir: DIRECTORY,
+			ref: 'HEAD'
+		});
+		if (actualCommitSha !== expectedCommitSha) {
+			throw new Error('Draft repository HEAD does not match its database pointer');
+		}
+		const status = await git.statusMatrix({ fs: client, dir: DIRECTORY });
+		if (status.some(([, head, workdir, stage]) => head !== 1 || workdir !== 1 || stage !== 1)) {
+			throw new Error('Draft repository contains uncommitted content');
+		}
+		const commit = await git.readCommit({
+			fs: client,
+			dir: DIRECTORY,
+			oid: expectedCommitSha
+		});
+		return extractCleanCommitMessage(commit.commit.message);
+	}
+
+	async readRevisionSnapshot(
+		archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<VerifiedDraftRevisionSnapshot | null> {
+		if (archive === null) {
+			if (expectedCommitSha !== null) throw new Error('Empty draft has an unexpected Git head');
+			return null;
+		}
+		if (expectedCommitSha === null) throw new Error('Persisted draft is missing its Git head');
+		const fs: MemoryFs = await restore(archive);
+		const client = fs.asClient();
+		const actualCommitSha: string = await git.resolveRef({
+			fs: client,
+			dir: DIRECTORY,
+			ref: 'HEAD'
+		});
+		if (actualCommitSha !== expectedCommitSha) {
+			throw new Error('Draft repository HEAD does not match its database pointer');
+		}
+		const status = await git.statusMatrix({ fs: client, dir: DIRECTORY });
+		if (status.some(([, head, workdir, stage]) => head !== 1 || workdir !== 1 || stage !== 1)) {
+			throw new Error('Draft repository contains uncommitted content');
+		}
+		const commit = await git.readCommit({
+			fs: client,
+			dir: DIRECTORY,
+			oid: expectedCommitSha
+		});
+		const paths: string[] = await git.listFiles({ fs: client, dir: DIRECTORY });
+		let manifest: string | null = null;
+		if (paths.includes(DOCUMENT_SET_MANIFEST_PATH)) {
+			const manifestContent = await fs.promises.readFile(
+				`${DIRECTORY}/${DOCUMENT_SET_MANIFEST_PATH}`,
+				'utf8'
+			);
+			if (typeof manifestContent !== 'string') {
+				throw new Error('Document set was not decoded as text');
+			}
+			manifest = manifestContent;
+		}
+		const documents: DraftDocument[] = [];
+		for (const path of paths.sort()) {
+			assertDraftTrackedPath(path);
+			if (isDocumentSetManifestPath(path)) continue;
+			if (!isMarkdownPath(path)) {
+				throw new Error('Draft repository contains an unrecognized path');
+			}
+			const content: Uint8Array | string = await fs.promises.readFile(
+				`${DIRECTORY}/${path}`,
+				'utf8'
+			);
+			if (typeof content !== 'string') throw new Error('Draft document was not decoded as text');
+			documents.push({ path, content });
+		}
+		return {
+			commitSha: actualCommitSha,
+			message: extractCleanCommitMessage(commit.commit.message),
+			documents,
+			manifest
+		};
 	}
 
 	async commit(
@@ -264,4 +358,13 @@ async function gunzipBounded(archive: Uint8Array): Promise<Uint8Array> {
 async function sha256(bytes: Uint8Array): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', Uint8Array.from(bytes));
 	return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function extractCleanCommitMessage(rawMessage: string): string {
+	const trimmed = rawMessage.trim();
+	const trailerIndex = trimmed.indexOf('\n\nActor-Type:');
+	if (trailerIndex >= 0) {
+		return trimmed.slice(0, trailerIndex).trim();
+	}
+	return trimmed;
 }

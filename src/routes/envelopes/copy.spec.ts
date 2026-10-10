@@ -85,4 +85,19 @@ describe('envelope list product copy', () => {
 			expect(copy).not.toMatch(/automatic|automatically|自動/);
 		}
 	});
+
+	it('never claims PAdES or legal certification for completed-agreement downloads', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		for (const [key, value] of [...Object.entries(en), ...Object.entries(ja)]) {
+			if (!key.startsWith('envelope_completed_') && !key.startsWith('completion_receipt_')) {
+				continue;
+			}
+			expect(`${key}:${value}`).not.toMatch(/PAdES/i);
+			expect(`${key}:${value}`).not.toMatch(/legal(ly)? certif/i);
+			expect(`${key}:${value}`).not.toMatch(/法的.{0,4}証明/);
+			expect(`${key}:${value}`).not.toMatch(/認証局/);
+		}
+	});
 });

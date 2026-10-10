@@ -1,8 +1,10 @@
 use crate::args::{
     EnvelopeCommitArgs, EnvelopeCreateArgs, EnvelopeDocumentOrderArgs, EnvelopeEvidenceArgs,
     EnvelopeExportDocxArgs, EnvelopeFieldsArgs, EnvelopeIdArg, EnvelopeImportDocxArgs,
-    EnvelopeListArgs, EnvelopePdfArgs, EnvelopeReadyArgs, EnvelopeSendArgs, EnvelopeUploadPdfArgs,
-    EnvelopeVoidArgs, EnvelopesSubcommand, EvidenceFormat,
+    EnvelopeListArgs, EnvelopePdfArgs, EnvelopePdfSealDownloadArgs, EnvelopePdfSealRequestArgs,
+    EnvelopeReadyArgs, EnvelopeRevisionArgs, EnvelopeRevisionDiffArgs, EnvelopeRevisionsArgs,
+    EnvelopeSendArgs, EnvelopeUploadPdfArgs, EnvelopeVoidArgs, EnvelopesSubcommand, EvidenceFormat,
+    RevisionDiffFormatArg,
 };
 use crate::client::{BinaryGetSpec, SignKitClient};
 use crate::error::CliError;
@@ -14,11 +16,145 @@ use crate::output::print_success;
 use crate::types::{
     is_valid_uuid_v7, ArtifactDownloadReceipt, CompletionArtifactResponse, DeliveryStatusResponse,
     DocumentOrderRequest, DocxExportReceipt, DraftCommitRequest, DraftCommitResponse,
-    DraftWorkspaceSnapshot, EnvelopeCreateRequest, EnvelopeCreateResponse, EnvelopeGetResponse,
-    EnvelopeListPage, PlaceFieldsRequest, PlaceFieldsResponse, ReadyEnvelopeRequest,
-    ReadyEnvelopeResponse, SendEnvelopeRequest, SendEnvelopeResponse, VoidEnvelopeRequest,
-    VoidEnvelopeResponse,
+    DraftExactRevision, DraftRevisionHistoryPage, DraftWorkspaceSnapshot, EnvelopeCreateRequest,
+    EnvelopeCreateResponse, EnvelopeGetResponse, EnvelopeListPage, PdfSealRequestResponse,
+    PdfSealStatusResponse, PlaceFieldsRequest, PlaceFieldsResponse, ReadyEnvelopeRequest,
+    ReadyEnvelopeResponse, RequestPdfSealBody, RevisionDiffResponse, SendEnvelopeRequest,
+    SendEnvelopeResponse, VoidEnvelopeRequest, VoidEnvelopeResponse,
 };
+
+pub fn is_offline(subcommand: &EnvelopesSubcommand) -> bool {
+    match subcommand {
+        EnvelopesSubcommand::Commit(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Ready(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Fields(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Send(args) => args.example || args.validate_only,
+        EnvelopesSubcommand::Void(args) => args.example || args.validate_only,
+        _ => false,
+    }
+}
+
+pub fn execute_offline(
+    subcommand: &EnvelopesSubcommand,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    match subcommand {
+        EnvelopesSubcommand::Commit(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_COMMIT_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                let receipt = crate::validation::validate_commit_payload(
+                    &object,
+                    args.envelope_id.as_deref(),
+                )?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Ready(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_READY_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                let receipt = crate::validation::validate_ready_payload(
+                    &object,
+                    args.envelope_id.as_deref(),
+                )?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Fields(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_FIELDS_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                overlay_u64(
+                    &mut object,
+                    "expectedFieldGeneration",
+                    args.expected_field_generation,
+                );
+                let receipt = crate::validation::validate_fields_payload(
+                    &object,
+                    args.envelope_id.as_deref(),
+                )?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Send(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_SEND_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                overlay_string(
+                    &mut object,
+                    "expectedReadyAuditEventId",
+                    args.expected_ready_audit_event_id.as_deref(),
+                );
+                let receipt =
+                    crate::validation::validate_send_payload(&object, args.envelope_id.as_deref())?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        EnvelopesSubcommand::Void(args) => {
+            if args.example {
+                crate::validation::print_example(
+                    crate::validation::EXAMPLE_VOID_JSON,
+                    raw,
+                    pretty,
+                )?;
+                return Ok(());
+            }
+            if args.validate_only {
+                let mut object = read_json_object(&args.file)?;
+                overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+                overlay_string(
+                    &mut object,
+                    "expectedStatus",
+                    args.expected_status.as_deref(),
+                );
+                let receipt =
+                    crate::validation::validate_void_payload(&object, args.envelope_id.as_deref())?;
+                print_success(&receipt, raw, pretty)?;
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 pub async fn execute(
     client: &SignKitClient,
@@ -26,6 +162,9 @@ pub async fn execute(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
+    if is_offline(&subcommand) {
+        return execute_offline(&subcommand, raw, pretty);
+    }
     match subcommand {
         EnvelopesSubcommand::List(args) => list_envelopes(client, args, raw, pretty).await,
         EnvelopesSubcommand::Get(args) => get_envelope(client, args, raw, pretty).await,
@@ -46,6 +185,18 @@ pub async fn execute(
         }
         EnvelopesSubcommand::Evidence(args) => download_evidence(client, args, raw, pretty).await,
         EnvelopesSubcommand::Pdf(args) => download_pdf(client, args, raw, pretty).await,
+        EnvelopesSubcommand::PdfSealRequest(args) => {
+            request_pdf_seal(client, args, raw, pretty).await
+        }
+        EnvelopesSubcommand::PdfSealStatus(args) => {
+            get_pdf_seal_status(client, args, raw, pretty).await
+        }
+        EnvelopesSubcommand::PdfSealDownload(args) => {
+            download_pdf_seal(client, args, raw, pretty).await
+        }
+        EnvelopesSubcommand::Revisions(args) => list_revisions(client, args, raw, pretty).await,
+        EnvelopesSubcommand::Revision(args) => get_revision(client, args, raw, pretty).await,
+        EnvelopesSubcommand::RevisionDiff(args) => diff_revisions(client, args, raw, pretty).await,
     }
 }
 
@@ -181,9 +332,18 @@ async fn commit_draft(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    let _receipt = crate::validation::validate_commit_payload(&object, Some(envelope_id))?;
     let request: DraftCommitRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
@@ -191,7 +351,7 @@ async fn commit_draft(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/draft/commits", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/draft/commits");
     let resp: DraftCommitResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -203,9 +363,18 @@ async fn ready_envelope(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
+    let _receipt = crate::validation::validate_ready_payload(&object, Some(envelope_id))?;
     let request: ReadyEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
         CliError::usage(format!(
@@ -213,7 +382,7 @@ async fn ready_envelope(
         ))
     })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/ready", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/ready");
     let resp: ReadyEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -225,7 +394,15 @@ async fn place_fields(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
     overlay_u64(
@@ -233,6 +410,7 @@ async fn place_fields(
         "expectedFieldGeneration",
         args.expected_field_generation,
     );
+    let _receipt = crate::validation::validate_fields_payload(&object, Some(envelope_id))?;
     let request: PlaceFieldsRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
@@ -240,7 +418,7 @@ async fn place_fields(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/fields", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/fields");
     let resp: PlaceFieldsResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -252,7 +430,15 @@ async fn send_envelope(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
     overlay_string(
@@ -260,19 +446,15 @@ async fn send_envelope(
         "expectedReadyAuditEventId",
         args.expected_ready_audit_event_id.as_deref(),
     );
+    let _receipt = crate::validation::validate_send_payload(&object, Some(envelope_id))?;
     let request: SendEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
                 "Send JSON did not match the required schema: {err}"
             ))
         })?;
-    if !is_valid_uuid_v7(&request.expected_ready_audit_event_id) {
-        return Err(CliError::usage(
-            "expectedReadyAuditEventId must be a canonical lowercase RFC 9562 UUIDv7.",
-        ));
-    }
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/send", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/send");
     let resp: SendEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -284,7 +466,15 @@ async fn void_envelope(
     raw: bool,
     pretty: bool,
 ) -> Result<(), CliError> {
-    validate_envelope_id(&args.envelope_id)?;
+    let envelope_id = match args.envelope_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return Err(CliError::usage(
+                "Envelope ID is required. Specify ENVELOPE_ID as a positional argument.",
+            ));
+        }
+    };
+    validate_envelope_id(envelope_id)?;
     let mut object = read_json_object(&args.file)?;
     overlay_u64(&mut object, "expectedGeneration", args.expected_generation);
     overlay_string(
@@ -292,6 +482,7 @@ async fn void_envelope(
         "expectedStatus",
         args.expected_status.as_deref(),
     );
+    let _receipt = crate::validation::validate_void_payload(&object, Some(envelope_id))?;
     let request: VoidEnvelopeRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {
             CliError::usage(format!(
@@ -299,7 +490,7 @@ async fn void_envelope(
             ))
         })?;
     let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
-    let path = format!("/api/v1/envelopes/{}/void", args.envelope_id);
+    let path = format!("/api/v1/envelopes/{envelope_id}/void");
     let resp: VoidEnvelopeResponse = client.post(&path, &request, &idempotency_key, true).await?;
     print_success(&resp, raw, pretty)?;
     Ok(())
@@ -568,6 +759,63 @@ async fn download_pdf(
     Ok(())
 }
 
+async fn request_pdf_seal(
+    client: &SignKitClient,
+    args: EnvelopePdfSealRequestArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let request = RequestPdfSealBody {
+        requested_profile: args.profile.as_str().to_string(),
+    };
+    let idempotency_key = resolve_idempotency_key(args.idempotency_key.as_deref())?;
+    let path = format!("/api/v1/envelopes/{}/pdf-seal", args.envelope_id);
+    let resp: PdfSealRequestResponse = client.post(&path, &request, &idempotency_key, true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn get_pdf_seal_status(
+    client: &SignKitClient,
+    args: EnvelopeIdArg,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    let path = format!("/api/v1/envelopes/{}/pdf-seal", args.envelope_id);
+    let resp: PdfSealStatusResponse = client.get(&path, &[], true).await?;
+    print_success(&resp, raw, pretty)?;
+    Ok(())
+}
+
+async fn download_pdf_seal(
+    client: &SignKitClient,
+    args: EnvelopePdfSealDownloadArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if args.output.is_empty() || args.output == "-" {
+        return Err(CliError::usage(
+            "Provide a regular file path with --output; sealed agreement bytes are never written to stdout.",
+        ));
+    }
+    let path = format!("/api/v1/envelopes/{}/pdf-seal/pdf", args.envelope_id);
+    let resp = client
+        .get_bytes(&path, &[], true, BinaryGetSpec::SEALED_PDF)
+        .await?;
+    write_output_bytes(&args.output, &resp.bytes)?;
+    let receipt = ArtifactDownloadReceipt {
+        path: args.output,
+        bytes: resp.bytes.len() as u64,
+        format: "pdf".to_string(),
+        content_type: resp.content_type,
+    };
+    print_success(&receipt, raw, pretty)?;
+    Ok(())
+}
+
 /// Validates that an envelope ID is a canonical lowercase RFC 9562 UUIDv7.
 fn validate_envelope_id(id: &str) -> Result<(), CliError> {
     if !is_valid_uuid_v7(id) {
@@ -575,5 +823,138 @@ fn validate_envelope_id(id: &str) -> Result<(), CliError> {
             "Invalid envelope ID '{id}'. Envelope IDs must be canonical lowercase RFC 9562 UUIDv7."
         )));
     }
+    Ok(())
+}
+
+/// Validates that a revision reference is an integer generation or a
+/// 40-character hexadecimal Git commit SHA, matching the server's schema.
+fn validate_revision_ref(revision_ref: &str) -> Result<(), CliError> {
+    let is_commit_sha =
+        revision_ref.len() == 40 && revision_ref.bytes().all(|b| b.is_ascii_hexdigit());
+    let is_generation = !is_commit_sha
+        && !revision_ref.is_empty()
+        && revision_ref.len() <= 10
+        && revision_ref.bytes().all(|b| b.is_ascii_digit())
+        && revision_ref
+            .parse::<u64>()
+            .is_ok_and(|generation| generation <= 2_147_483_647);
+    if !is_generation && !is_commit_sha {
+        return Err(CliError::usage(format!(
+            "Invalid revision reference '{revision_ref}'. Must be an integer generation or a 40-character hexadecimal commit SHA."
+        )));
+    }
+    Ok(())
+}
+
+async fn list_revisions(
+    client: &SignKitClient,
+    args: EnvelopeRevisionsArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+
+    let limit = args.limit.unwrap_or(50);
+    if !(1..=100).contains(&limit) {
+        return Err(CliError::usage(format!(
+            "Limit must be between 1 and 100, received {limit}."
+        )));
+    }
+
+    let limit_str = limit.to_string();
+    let mut query_params: Vec<(&str, &str)> = vec![("limit", &limit_str)];
+    let cursor_str = args.cursor.map(|c| c.to_string());
+    if let Some(ref cursor) = cursor_str {
+        query_params.push(("cursor", cursor.as_str()));
+    }
+
+    let path = format!("/api/v1/envelopes/{}/revisions", args.envelope_id);
+    let page: DraftRevisionHistoryPage = client.get(&path, &query_params, true).await?;
+    print_success(&page, raw, pretty)?;
+    Ok(())
+}
+
+async fn get_revision(
+    client: &SignKitClient,
+    args: EnvelopeRevisionArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    validate_revision_ref(&args.revision_ref)?;
+    if let Some(ref path) = args.path {
+        if path.trim().is_empty() || path.encode_utf16().count() > 240 {
+            return Err(CliError::usage(
+                "--path must contain 1-240 characters when provided.",
+            ));
+        }
+    }
+
+    let path = format!(
+        "/api/v1/envelopes/{}/revisions/{}",
+        args.envelope_id, args.revision_ref
+    );
+    let mut query_params: Vec<(&str, &str)> = Vec::new();
+    if let Some(ref document_path) = args.path {
+        query_params.push(("path", document_path.as_str()));
+    }
+
+    let revision: DraftExactRevision = client.get(&path, &query_params, true).await?;
+    print_success(&revision, raw, pretty)?;
+    Ok(())
+}
+
+async fn diff_revisions(
+    client: &SignKitClient,
+    args: EnvelopeRevisionDiffArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    validate_envelope_id(&args.envelope_id)?;
+    if let Some(ref base) = args.base {
+        validate_revision_ref(base)?;
+    }
+    if let Some(ref head) = args.head {
+        validate_revision_ref(head)?;
+    }
+
+    let format_str = args.format.as_str();
+    let include_unified_str = args.include_unified.unwrap_or(true).to_string();
+    let mut query_params: Vec<(&str, &str)> = vec![
+        ("format", format_str),
+        ("includeUnified", include_unified_str.as_str()),
+    ];
+    if let Some(ref base) = args.base {
+        query_params.push(("base", base.as_str()));
+    }
+    if let Some(ref head) = args.head {
+        query_params.push(("head", head.as_str()));
+    }
+
+    let path = format!("/api/v1/envelopes/{}/revisions/diff", args.envelope_id);
+
+    // The server ignores content negotiation and always returns `text/plain`
+    // once `format` is `text` or `unified`, regardless of the Accept header.
+    if matches!(
+        args.format,
+        RevisionDiffFormatArg::Text | RevisionDiffFormatArg::Unified
+    ) {
+        let resp = client
+            .get_bytes(
+                &path,
+                &query_params,
+                true,
+                BinaryGetSpec::REVISION_DIFF_TEXT,
+            )
+            .await?;
+        let text = String::from_utf8(resp.bytes).map_err(|err| {
+            CliError::usage(format!("Server returned non-UTF-8 diff text: {err}"))
+        })?;
+        print!("{text}");
+        return Ok(());
+    }
+
+    let diff: RevisionDiffResponse = client.get(&path, &query_params, true).await?;
+    print_success(&diff, raw, pretty)?;
     Ok(())
 }

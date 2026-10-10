@@ -5,6 +5,7 @@ import type {
 	DraftMutationStore,
 	DraftRevisionKey,
 	DraftRevisionPreparation,
+	PersistedDraftRevisionLocator,
 	PublishedDraftRevision,
 	PublishDraftRevisionCommand,
 	PublishDraftRevisionResult
@@ -68,6 +69,7 @@ describe('DraftPersistenceService', () => {
 		expect(JSON.parse(envelopes.lastPublication?.auditPayloadJson ?? '{}')).toEqual({
 			generation: 1,
 			commitSha: committed.commitSha,
+			message: 'Create agreement',
 			archiveSha256: committed.archiveSha256,
 			changedPaths: ['documents/agreement.md', 'document-set.json'],
 			provenance: { automationRunId: null, externalId: null },
@@ -554,6 +556,18 @@ class MemoryEnvelopeStore implements DraftMutationStore {
 	async transition(): Promise<boolean> {
 		return false;
 	}
+
+	async listDraftRevisionLocators(): Promise<PersistedDraftRevisionLocator[]> {
+		return [];
+	}
+
+	async findDraftRevisionLocatorByGeneration(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
+	}
+
+	async findDraftRevisionLocatorByCommit(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
+	}
 }
 
 class SequencedEnvelopeStore implements DraftMutationStore {
@@ -582,6 +596,18 @@ class SequencedEnvelopeStore implements DraftMutationStore {
 
 	async publishDraftRevision(): Promise<PublishDraftRevisionResult> {
 		throw new Error('Unexpected draft publication');
+	}
+
+	async listDraftRevisionLocators(): Promise<PersistedDraftRevisionLocator[]> {
+		return [];
+	}
+
+	async findDraftRevisionLocatorByGeneration(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
+	}
+
+	async findDraftRevisionLocatorByCommit(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
 	}
 }
 

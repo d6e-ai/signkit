@@ -7,6 +7,7 @@ import type {
 	DraftMutationStore,
 	DraftRevisionKey,
 	DraftRevisionPreparation,
+	PersistedDraftRevisionLocator,
 	PublishDraftRevisionCommand,
 	PublishDraftRevisionResult,
 	PublishedDraftRevision
@@ -185,6 +186,18 @@ class MemoryEnvelopeStore implements DraftMutationStore {
 
 	async transition(): Promise<boolean> {
 		return false;
+	}
+
+	async listDraftRevisionLocators(): Promise<PersistedDraftRevisionLocator[]> {
+		return [];
+	}
+
+	async findDraftRevisionLocatorByGeneration(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
+	}
+
+	async findDraftRevisionLocatorByCommit(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
 	}
 }
 

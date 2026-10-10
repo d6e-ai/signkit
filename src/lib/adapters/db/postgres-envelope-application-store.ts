@@ -23,6 +23,7 @@ import type {
 	DraftMutationStore,
 	DraftRevisionKey,
 	DraftRevisionPreparation,
+	PersistedDraftRevisionLocator,
 	PublishDraftRevisionCommand,
 	PublishDraftRevisionResult,
 	PublishedDraftRevision
@@ -329,6 +330,96 @@ export class PostgresEnvelopeApplicationStore
 			readyAuditEventId,
 			fields: fieldRows.map(fromPostgresFieldRow)
 		};
+	}
+
+	async listDraftRevisionLocators(
+		envelopeId: string,
+		options?: { limit?: number; cursor?: number }
+	): Promise<readonly PersistedDraftRevisionLocator[]> {
+		// The persistence service requests the public limit (max 100) plus one
+		// extra row to detect truncation; cap one above that so the extra row
+		// is never silently dropped back down to the public max.
+		const limit = Math.max(1, Math.min(options?.limit ?? 50, 101));
+		const cursor = options?.cursor;
+		const rows =
+			cursor !== undefined
+				? await this.applicationSql<PostgresDraftRevisionLocatorRow[]>`
+				SELECT
+					envelope_id AS "envelopeId",
+					resulting_generation AS "resultingGeneration",
+					commit_sha AS "commitSha",
+					archive_key AS "archiveKey",
+					archive_sha256 AS "archiveSha256",
+					updated_at AS "updatedAt",
+					actor_type AS "actorType",
+					actor_id AS "actorId",
+					audit_payload_json AS "auditPayloadJson"
+				FROM draft_revision_command
+				WHERE envelope_id = ${envelopeId} AND resulting_generation < ${cursor}
+				ORDER BY resulting_generation DESC
+				LIMIT ${limit}
+			`
+				: await this.applicationSql<PostgresDraftRevisionLocatorRow[]>`
+				SELECT
+					envelope_id AS "envelopeId",
+					resulting_generation AS "resultingGeneration",
+					commit_sha AS "commitSha",
+					archive_key AS "archiveKey",
+					archive_sha256 AS "archiveSha256",
+					updated_at AS "updatedAt",
+					actor_type AS "actorType",
+					actor_id AS "actorId",
+					audit_payload_json AS "auditPayloadJson"
+				FROM draft_revision_command
+				WHERE envelope_id = ${envelopeId}
+				ORDER BY resulting_generation DESC
+				LIMIT ${limit}
+			`;
+		return rows.map(fromPostgresDraftRevisionLocatorRow);
+	}
+
+	async findDraftRevisionLocatorByGeneration(
+		envelopeId: string,
+		generation: number
+	): Promise<PersistedDraftRevisionLocator | null> {
+		const rows = await this.applicationSql<PostgresDraftRevisionLocatorRow[]>`
+			SELECT
+				envelope_id AS "envelopeId",
+				resulting_generation AS "resultingGeneration",
+				commit_sha AS "commitSha",
+				archive_key AS "archiveKey",
+				archive_sha256 AS "archiveSha256",
+				updated_at AS "updatedAt",
+				actor_type AS "actorType",
+				actor_id AS "actorId",
+				audit_payload_json AS "auditPayloadJson"
+			FROM draft_revision_command
+			WHERE envelope_id = ${envelopeId} AND resulting_generation = ${generation}
+			LIMIT 1
+		`;
+		return rows.length > 0 ? fromPostgresDraftRevisionLocatorRow(rows[0]) : null;
+	}
+
+	async findDraftRevisionLocatorByCommit(
+		envelopeId: string,
+		commitSha: string
+	): Promise<PersistedDraftRevisionLocator | null> {
+		const rows = await this.applicationSql<PostgresDraftRevisionLocatorRow[]>`
+			SELECT
+				envelope_id AS "envelopeId",
+				resulting_generation AS "resultingGeneration",
+				commit_sha AS "commitSha",
+				archive_key AS "archiveKey",
+				archive_sha256 AS "archiveSha256",
+				updated_at AS "updatedAt",
+				actor_type AS "actorType",
+				actor_id AS "actorId",
+				audit_payload_json AS "auditPayloadJson"
+			FROM draft_revision_command
+			WHERE envelope_id = ${envelopeId} AND commit_sha = ${commitSha}
+			LIMIT 1
+		`;
+		return rows.length > 0 ? fromPostgresDraftRevisionLocatorRow(rows[0]) : null;
 	}
 
 	async prepareDraftRevision(
@@ -828,4 +919,32 @@ function postgresGeometryFromColumns(
 		return null;
 	}
 	return { page, x, y, width, height };
+}
+
+interface PostgresDraftRevisionLocatorRow {
+	envelopeId: string;
+	resultingGeneration: number;
+	commitSha: string;
+	archiveKey: string;
+	archiveSha256: string;
+	updatedAt: Date | string;
+	actorType: string;
+	actorId: string;
+	auditPayloadJson: string;
+}
+
+function fromPostgresDraftRevisionLocatorRow(
+	row: PostgresDraftRevisionLocatorRow
+): PersistedDraftRevisionLocator {
+	return {
+		envelopeId: row.envelopeId,
+		generation: row.resultingGeneration,
+		commitSha: row.commitSha,
+		archiveKey: row.archiveKey,
+		archiveSha256: row.archiveSha256,
+		updatedAt: timestamp(row.updatedAt),
+		actorType: row.actorType as 'user' | 'agent' | 'system',
+		actorId: row.actorId,
+		auditPayloadJson: row.auditPayloadJson
+	};
 }

@@ -32,6 +32,11 @@ import {
 	InvalidCompletionDeliveryConfigError,
 	type CompletionTokenCryptor
 } from './completion-delivery-service';
+import {
+	MissingCompletionPdfAttachmentReader,
+	type CompletionPdfAttachmentOutcome,
+	type CompletionPdfAttachmentReaderPort
+} from './completion-pdf-attachment-reader';
 
 const NOW: Date = new Date('2026-09-12T00:00:00.000Z');
 const ORIGIN: string = 'https://signkit.example';
@@ -179,6 +184,26 @@ class FakeMail implements MailSender {
 	}
 }
 
+class FakePdfAttachmentReader implements CompletionPdfAttachmentReaderPort {
+	readonly envelopeIds: string[] = [];
+	outcome: CompletionPdfAttachmentOutcome;
+
+	constructor(
+		outcome: CompletionPdfAttachmentOutcome = {
+			outcome: 'attached',
+			bytes: Uint8Array.from([0x25, 0x50, 0x44, 0x46]),
+			byteSize: 4
+		}
+	) {
+		this.outcome = outcome;
+	}
+
+	async read(envelopeId: string): Promise<CompletionPdfAttachmentOutcome> {
+		this.envelopeIds.push(envelopeId);
+		return this.outcome;
+	}
+}
+
 class TrackingMail extends FakeMail {
 	active: number = 0;
 	maximumActive: number = 0;
@@ -197,7 +222,8 @@ function service(
 	store: FakeStore,
 	cryptor: CompletionTokenCryptor,
 	mail: FakeMail,
-	newClaimToken: () => string = (): string => CLAIM_TOKEN
+	newClaimToken: () => string = (): string => CLAIM_TOKEN,
+	pdfAttachmentReader: CompletionPdfAttachmentReaderPort | null = new FakePdfAttachmentReader()
 ): CompletionDeliveryService {
 	return new CompletionDeliveryService(
 		store,
@@ -206,7 +232,9 @@ function service(
 		ORIGIN,
 		SENDER,
 		(): Date => NOW,
-		newClaimToken
+		newClaimToken,
+		undefined,
+		pdfAttachmentReader
 	);
 }
 
@@ -434,14 +462,14 @@ describe('CompletionDeliveryService', () => {
 			expect(msg.text).toContain(
 				'"NDA "Special" & <Offer> 2026" has been completed by all participants.'
 			);
-			expect(msg.text).toContain(`https://signkit.example/c/${token}`);
+			expect(msg.text).toContain(`https://signkit.example/c/${token}/view`);
 
 			// HTML escaping checks
 			expect(msg.html).toContain('lang="en"');
 			expect(msg.html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
 			expect(msg.html).toContain('O&#39;Connor');
 			expect(msg.html).toContain('NDA &quot;Special&quot; &amp; &lt;Offer&gt; 2026');
-			expect(msg.html).toContain(`href="https://signkit.example/c/${token}"`);
+			expect(msg.html).toContain(`href="https://signkit.example/c/${token}/view"`);
 			expect(msg.html).toContain('View completed documents');
 			expect(msg.html).not.toContain('<script>');
 		});
@@ -465,14 +493,14 @@ describe('CompletionDeliveryService', () => {
 			expect(msg.subject).toBe('「業務委託契約書 <甲乙> & "覚書"」の手続きが完了しました');
 			expect(msg.text).toContain('佐藤 <次郎> & "顧問" 様');
 			expect(msg.text).toContain('「業務委託契約書 <甲乙> & "覚書"」の手続きが完了しました。');
-			expect(msg.text).toContain(`https://signkit.example/c/${token}`);
+			expect(msg.text).toContain(`https://signkit.example/ja/c/${token}/view`);
 
 			// HTML escaping checks
 			expect(msg.html).toContain('lang="ja"');
 			expect(msg.html).toContain('&lt;次郎&gt;');
 			expect(msg.html).toContain('&quot;顧問&quot;');
 			expect(msg.html).toContain('業務委託契約書 &lt;甲乙&gt; &amp; &quot;覚書&quot;');
-			expect(msg.html).toContain(`href="https://signkit.example/c/${token}"`);
+			expect(msg.html).toContain(`href="https://signkit.example/ja/c/${token}/view"`);
 			expect(msg.html).toContain('完了した契約書を開く');
 			expect(msg.html).not.toContain('合意書');
 			expect(msg.text).not.toContain('合意書');
@@ -812,6 +840,219 @@ describe('CompletionDeliveryService', () => {
 		});
 	});
 
+	describe('published completion PDF attachment', () => {
+		it('sends the completed PDF as a byte-preserving attachment with attached copy when verified', async () => {
+			const { claim, token } = await eligibleClaim();
+			const store: FakeStore = new FakeStore();
+			store.rows = [claim];
+			const cryptor: FakeCryptor = new FakeCryptor(token);
+			const mail: FakeMail = new FakeMail();
+			const reader = new FakePdfAttachmentReader();
+			const bytes: Uint8Array<ArrayBuffer> = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0xff, 0x00]);
+			reader.outcome = { outcome: 'attached', bytes, byteSize: bytes.byteLength };
+
+			const result = await service(
+				store,
+				cryptor,
+				mail,
+				undefined,
+				reader
+			).deliverPendingCompletions();
+
+			expect(result.outcomes).toEqual([{ deliveryId: 'delivery-1', outcome: 'delivered' }]);
+			expect(reader.envelopeIds).toEqual(['envelope-1']);
+			expect(mail.messages).toHaveLength(1);
+			expect(mail.messages[0].attachment).toEqual({
+				filename: 'signkit-completed-envelope-1.pdf',
+				contentType: 'application/pdf',
+				content: bytes
+			});
+			expect(mail.messages[0].text).toContain(
+				'The completed PDF is attached to this email for your records.'
+			);
+		});
+
+		it('treats a PDF that has not been published yet as a retryable delivery failure, never a silent link-only send', async () => {
+			const { claim, token } = await eligibleClaim({ attempts: 2 });
+			const store: FakeStore = new FakeStore();
+			store.rows = [claim];
+			const cryptor: FakeCryptor = new FakeCryptor(token);
+			const mail: FakeMail = new FakeMail();
+			const reader = new FakePdfAttachmentReader();
+			reader.outcome = { outcome: 'unpublished' };
+
+			const result = await service(
+				store,
+				cryptor,
+				mail,
+				undefined,
+				reader
+			).deliverPendingCompletions();
+
+			expect(result.outcomes).toEqual([
+				{
+					deliveryId: 'delivery-1',
+					outcome: 'retryable_failed',
+					errorCode: 'completion_pdf_not_yet_published'
+				}
+			]);
+			expect(store.failures[0]).toMatchObject({
+				retryable: true,
+				errorCode: 'completion_pdf_not_yet_published',
+				nextAvailableAt: completionDeliveryRetryAvailableAt(NOW, 2)
+			});
+			expect(mail.messages).toHaveLength(0);
+		});
+
+		it('sends no attachment and fallback copy when the published PDF exceeds the mail attachment budget', async () => {
+			const { claim, token } = await eligibleClaim();
+			const store: FakeStore = new FakeStore();
+			store.rows = [claim];
+			const cryptor: FakeCryptor = new FakeCryptor(token);
+			const mail: FakeMail = new FakeMail();
+			const reader = new FakePdfAttachmentReader();
+			reader.outcome = { outcome: 'oversize', byteSize: 4 * 1024 * 1024 };
+
+			const result = await service(
+				store,
+				cryptor,
+				mail,
+				undefined,
+				reader
+			).deliverPendingCompletions();
+
+			expect(result.outcomes).toEqual([{ deliveryId: 'delivery-1', outcome: 'delivered' }]);
+			expect(mail.messages[0].attachment).toBeUndefined();
+			expect(mail.messages[0].text).toContain(
+				'Due to its file size, the completed PDF is not attached to this email.'
+			);
+		});
+
+		it('treats a transient PDF/object read failure as a retryable delivery failure, never a silent link-only send', async () => {
+			const { claim, token } = await eligibleClaim({ attempts: 2 });
+			const store: FakeStore = new FakeStore();
+			store.rows = [claim];
+			const cryptor: FakeCryptor = new FakeCryptor(token);
+			const mail: FakeMail = new FakeMail();
+			const reader = new FakePdfAttachmentReader();
+			reader.outcome = { outcome: 'retryable_error', errorCode: 'completion_pdf_object_missing' };
+
+			const result = await service(
+				store,
+				cryptor,
+				mail,
+				undefined,
+				reader
+			).deliverPendingCompletions();
+
+			expect(result.outcomes).toEqual([
+				{
+					deliveryId: 'delivery-1',
+					outcome: 'retryable_failed',
+					errorCode: 'completion_pdf_object_missing'
+				}
+			]);
+			expect(store.failures[0]).toMatchObject({
+				retryable: true,
+				errorCode: 'completion_pdf_object_missing',
+				nextAvailableAt: completionDeliveryRetryAvailableAt(NOW, 2)
+			});
+			expect(mail.messages).toHaveLength(0);
+		});
+
+		it('fails closed as a non-retryable integrity failure on digest/key/size mismatch, never a silent link-only send', async () => {
+			const { claim, token } = await eligibleClaim();
+			const store: FakeStore = new FakeStore();
+			store.rows = [claim];
+			const cryptor: FakeCryptor = new FakeCryptor(token);
+			const mail: FakeMail = new FakeMail();
+			const reader = new FakePdfAttachmentReader();
+			reader.outcome = { outcome: 'integrity_error', errorCode: 'completion_pdf_digest_mismatch' };
+
+			const result = await service(
+				store,
+				cryptor,
+				mail,
+				undefined,
+				reader
+			).deliverPendingCompletions();
+
+			expect(result.outcomes).toEqual([
+				{
+					deliveryId: 'delivery-1',
+					outcome: 'integrity_failed',
+					errorCode: 'completion_pdf_digest_mismatch'
+				}
+			]);
+			expect(store.failures[0]).toMatchObject({
+				retryable: false,
+				errorCode: 'completion_pdf_digest_mismatch'
+			});
+			expect(mail.messages).toHaveLength(0);
+		});
+
+		it('treats a null attachment reader as a retryable failure, never a silent link-only send', async () => {
+			const { claim, token } = await eligibleClaim({ attempts: 2 });
+			const store: FakeStore = new FakeStore();
+			store.rows = [claim];
+			const cryptor: FakeCryptor = new FakeCryptor(token);
+			const mail: FakeMail = new FakeMail();
+
+			const result = await service(
+				store,
+				cryptor,
+				mail,
+				undefined,
+				null
+			).deliverPendingCompletions();
+
+			expect(result.outcomes).toEqual([
+				{
+					deliveryId: 'delivery-1',
+					outcome: 'retryable_failed',
+					errorCode: 'completion_pdf_storage_not_configured'
+				}
+			]);
+			expect(store.failures[0]).toMatchObject({
+				retryable: true,
+				errorCode: 'completion_pdf_storage_not_configured',
+				nextAvailableAt: completionDeliveryRetryAvailableAt(NOW, 2)
+			});
+			expect(mail.messages).toHaveLength(0);
+		});
+
+		it('treats a missing production attachment reader (no object storage configured) as a retryable delivery failure, never a silent link-only send', async () => {
+			const { claim, token } = await eligibleClaim({ attempts: 2 });
+			const store: FakeStore = new FakeStore();
+			store.rows = [claim];
+			const cryptor: FakeCryptor = new FakeCryptor(token);
+			const mail: FakeMail = new FakeMail();
+			const reader = new MissingCompletionPdfAttachmentReader();
+
+			const result = await service(
+				store,
+				cryptor,
+				mail,
+				undefined,
+				reader
+			).deliverPendingCompletions();
+
+			expect(result.outcomes).toEqual([
+				{
+					deliveryId: 'delivery-1',
+					outcome: 'retryable_failed',
+					errorCode: 'completion_pdf_storage_not_configured'
+				}
+			]);
+			expect(store.failures[0]).toMatchObject({
+				retryable: true,
+				errorCode: 'completion_pdf_storage_not_configured',
+				nextAvailableAt: completionDeliveryRetryAvailableAt(NOW, 2)
+			});
+			expect(mail.messages).toHaveLength(0);
+		});
+	});
+
 	describe('stable token reclaim', () => {
 		it('preserves the original sealed token across retries and delivers the same token upon recovery', async () => {
 			const issued = await issueCompletionToken();
@@ -845,8 +1086,10 @@ describe('CompletionDeliveryService', () => {
 				integrityFailed: 0
 			});
 			expect(mail.messages).toHaveLength(1);
-			expect(mail.messages[0].text).toContain(`https://signkit.example/c/${issued.token}`);
-			expect(mail.messages[0].html).toContain(`href="https://signkit.example/c/${issued.token}"`);
+			expect(mail.messages[0].text).toContain(`https://signkit.example/c/${issued.token}/view`);
+			expect(mail.messages[0].html).toContain(
+				`href="https://signkit.example/c/${issued.token}/view"`
+			);
 			expect(store.completions).toHaveLength(1);
 			expect(store.completions[0]).toMatchObject({
 				deliveryId: 'delivery-1',

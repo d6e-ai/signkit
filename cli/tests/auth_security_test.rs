@@ -219,7 +219,7 @@ async fn test_remaining_4xx_map_to_exit_code_7() {
 
     assert_eq!(run_cli(cli).await, ExitCode::ValidationError);
 
-    // Status 429 Too Many Requests -> exit code 7
+    // Status 429 Too Many Requests -> exit code 8
     let mock_server2 = common::start_mock_server().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/envelopes"))
@@ -238,7 +238,7 @@ async fn test_remaining_4xx_map_to_exit_code_7() {
         "list",
     ]);
 
-    assert_eq!(run_cli(cli2).await, ExitCode::ValidationError);
+    assert_eq!(run_cli(cli2).await, ExitCode::RateLimitedError);
 }
 
 #[tokio::test]
@@ -309,7 +309,7 @@ async fn test_no_redirects_policy_refuses_redirect() {
     ]);
 
     let exit_code = run_cli(cli).await;
-    assert_eq!(exit_code, ExitCode::ForbiddenError);
+    assert_eq!(exit_code, ExitCode::RedirectRefusedError);
 }
 
 #[tokio::test]
@@ -338,7 +338,7 @@ async fn test_request_timeout() {
     ]);
 
     let exit_code = run_cli(cli).await;
-    assert_eq!(exit_code, ExitCode::UnavailableError);
+    assert_eq!(exit_code, ExitCode::TimeoutError);
 }
 
 #[tokio::test]
@@ -387,13 +387,13 @@ async fn test_non_json_error_body_multibyte_truncation_no_panic_or_leak() {
         .mount(&mock_server)
         .await;
 
-    // 1. Binary execution regression test: verify exit code 8, no panic, no secret leakage
+    // 1. Binary execution regression test: verify exit code 9, no panic, no secret leakage
     let mut cmd = Command::cargo_bin("signkit").unwrap();
     let assert = cmd
         .args(["--base-url", &mock_server.uri(), "envelopes", "list"])
         .env("SIGNKIT_API_KEY", common::TEST_API_KEY)
         .assert()
-        .code(8)
+        .code(9)
         .stdout(predicate::str::is_empty());
 
     let stderr_str = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
@@ -415,7 +415,7 @@ async fn test_non_json_error_body_multibyte_truncation_no_panic_or_leak() {
     let detail = problem["detail"].as_str().expect("detail must be a string");
     assert_eq!(detail, format!("{}...", "X".repeat(499)));
 
-    // 2. In-process execution: verify run_cli returns ExitCode::UnavailableError
+    // 2. In-process execution: verify run_cli returns ExitCode::ServerUnavailableError
     let _env = common::EnvScope::new(&[("SIGNKIT_API_KEY", Some(common::TEST_API_KEY))]).await;
     let cli = Cli::parse_from([
         "signkit",
@@ -426,5 +426,5 @@ async fn test_non_json_error_body_multibyte_truncation_no_panic_or_leak() {
     ]);
 
     let exit_code = run_cli(cli).await;
-    assert_eq!(exit_code, ExitCode::UnavailableError);
+    assert_eq!(exit_code, ExitCode::ServerUnavailableError);
 }

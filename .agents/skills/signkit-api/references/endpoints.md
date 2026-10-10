@@ -9,11 +9,16 @@
 
 | Scope | Endpoints |
 | --- | --- |
-| `envelopes:read` | envelope list/detail, draft read, DOCX export, delivery status, completion status/evidence/PDF |
+| `envelopes:read` | envelope list/detail, draft read, DOCX export, delivery status, completion status/evidence/PDF, PDF seal status and sealed PDF download |
 | `drafts:write` | create envelope, commit draft, import DOCX, upload/reorder documents, ready, place fields |
-| `envelopes:send` | send and void |
+| `envelopes:send` | send, void, and explicitly request a PDF seal |
 
 All routes are rooted at `/api/v1/envelopes`. Path templates are discoverable from the capability document and OpenAPI description.
+
+After `pdfSeal.status` becomes `published`, download the independently validated sealed bytes from
+`GET /api/v1/envelopes/{envelopeId}/pdf-seal/pdf`. A not-yet-published seal returns an RFC 9457
+`404`; integrity or storage failure returns `503`. The response is private, non-cacheable
+`application/pdf` and never reveals object-store coordinates.
 
 ## Human-session administration
 
@@ -21,7 +26,9 @@ All routes are rooted at `/api/v1/envelopes`. Path templates are discoverable fr
 
 ## Recipient surface
 
-`/api/v1/signing/**` uses recipient capability or encrypted recipient-session authority. `/s/{capability}` exchanges the link for a browser session and redirects to `/{locale}/sign/{envelopeId}`.
+`/api/v1/signing/**` and `/sign/**` serve the browser signing flow, with same-origin encrypted recipient-session authority for mutations and PDF reads. `/s/{capability}` exchanges an invitation link for that browser session and redirects to `/{locale}/sign/{envelopeId}`.
+
+Non-browser clients use `/api/v1/recipient/context`, `/documents`, `/documents/{envelopeId}.pdf`, `/viewed`, `/sign`, `/approve`, and `/decline` with the recipient's own `Authorization: Bearer skr1_...` header. These endpoints reject ambient `Cookie` and `Origin` headers and never accept an instance-member API key. Mutations require `Idempotency-Key`; signing also requires the current `expectedFieldGeneration` and the recipient's own assigned field values. Do not treat capability possession as consent to a decision.
 
 ## Common problem families
 

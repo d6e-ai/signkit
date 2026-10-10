@@ -6,15 +6,26 @@ import type {
 	AuthorizedRecipientDeclinedReceipt
 } from './recipient-declined-receipt';
 import type { RecipientDeclinedReceiptLocator } from '$lib/ports/recipient-declined-receipt-store';
+import type { RecipientCompletedReceipt } from './recipient-completed-receipt';
+import type {
+	RecipientCompletedReceiptApplicationPort,
+	AuthorizedRecipientCompletedReceipt
+} from './recipient-completed-receipt';
+import type { RecipientCompletedReceiptLocator } from '$lib/ports/recipient-completed-receipt-store';
 import { DraftIntegrityError } from '$lib/application/drafts/draft-persistence';
 import {
 	isDeclinedReceiptExpired,
 	type DeclinedReceiptSessionLocator
 } from '$lib/server/declined-receipt-session';
+import {
+	isCompletedReceiptExpired,
+	type CompletedReceiptSessionLocator
+} from '$lib/server/completed-receipt-session';
 
 export type RecipientPageState =
 	| ({ state: 'active' } & RecipientWorkspace)
 	| ({ state: 'declined' } & RecipientDeclinedReceipt)
+	| ({ state: 'completed' } & RecipientCompletedReceipt)
 	| { state: 'invalid' }
 	| { state: 'unavailable' };
 
@@ -23,6 +34,7 @@ interface RecipientPageContext {
 	envelopeId: string;
 	cookie: string | null;
 	recoverDeclined?: (token: string, at: Date) => Promise<RecipientDeclinedReceipt | null>;
+	recoverCompleted?: (token: string, at: Date) => Promise<RecipientCompletedReceipt | null>;
 	platform?: Readonly<App.Platform>;
 }
 
@@ -49,6 +61,24 @@ type DeclinedReceiptSessionUnsealer = (
 	cookie: string,
 	envelopeId: string
 ) => Promise<DeclinedReceiptSessionLocator | null>;
+
+interface CompletedReceiptPageContext {
+	envelopeId: string;
+	cookie: string | null;
+	platform?: Readonly<App.Platform>;
+}
+
+type CompletedReceiptApplicationResolver = (context: {
+	platform?: Readonly<App.Platform>;
+}) =>
+	| RecipientCompletedReceiptApplicationPort
+	| null
+	| Promise<RecipientCompletedReceiptApplicationPort | null>;
+
+type CompletedReceiptSessionUnsealer = (
+	cookie: string,
+	envelopeId: string
+) => Promise<CompletedReceiptSessionLocator | null>;
 
 export async function resolveRecipientPage(
 	context: RecipientPageContext,
@@ -78,6 +108,20 @@ export async function resolveRecipientPage(
 				return { state: 'invalid' };
 			}
 			return { state: 'declined', ...declined };
+		}
+		// Decline and completion are mutually exclusive terminal states for one
+		// recipient, so this only runs when no declined evidence exists. It is what
+		// makes a reload safe after the recipient's own action revoked the
+		// capability the live session cookie still holds.
+		const completed: RecipientCompletedReceipt | null =
+			context.recoverCompleted === undefined
+				? null
+				: await context.recoverCompleted(token, resolvedAt);
+		if (completed !== null) {
+			if (completed.envelopeId !== context.envelopeId) {
+				return { state: 'invalid' };
+			}
+			return { state: 'completed', ...completed };
 		}
 
 		const application: RecipientWorkspaceApplicationPort | null = await resolveApplication({
@@ -151,6 +195,60 @@ export async function resolveDeclinedReceiptPage(
 		return { state: 'declined', ...authorized.receipt };
 	} catch {
 		console.error(JSON.stringify({ event: 'recipient_declined_receipt_page_resolution_failed' }));
+		return { state: 'unavailable' };
+	}
+}
+
+/**
+ * Resolves a tokenless reload from the envelope-bound completed-receipt cookie
+ * alone. The cookie carries only a locator; the receipt itself is re-proven
+ * from durable evidence on every load, and a stale, foreign, or expired locator
+ * is the same generic invalid response as an unknown envelope.
+ */
+export async function resolveCompletedReceiptPage(
+	context: CompletedReceiptPageContext,
+	resolveApplication: CompletedReceiptApplicationResolver,
+	unsealSession: CompletedReceiptSessionUnsealer,
+	now: () => Date = (): Date => new Date()
+): Promise<RecipientPageState> {
+	if (context.cookie === null) return { state: 'invalid' };
+
+	try {
+		const locator: CompletedReceiptSessionLocator | null = await unsealSession(
+			context.cookie,
+			context.envelopeId
+		);
+		const resolvedAt: Date = now();
+		if (
+			locator === null ||
+			locator.envelopeId !== context.envelopeId ||
+			isCompletedReceiptExpired(locator, resolvedAt)
+		) {
+			return { state: 'invalid' };
+		}
+		const application: RecipientCompletedReceiptApplicationPort | null = await resolveApplication({
+			platform: context.platform
+		});
+		if (application === null) return { state: 'unavailable' };
+		const receiptLocator: RecipientCompletedReceiptLocator = {
+			envelopeId: locator.envelopeId,
+			recipientId: locator.recipientId,
+			idempotencyKey: locator.idempotencyKey,
+			capabilityHash: locator.capabilityHash,
+			action: locator.action,
+			completedAt: locator.completedAt,
+			expiresAt: locator.expiresAt
+		};
+		const authorized: AuthorizedRecipientCompletedReceipt | null = await application.resolveLocator(
+			receiptLocator,
+			resolvedAt
+		);
+		if (authorized === null || authorized.receipt.envelopeId !== context.envelopeId) {
+			return { state: 'invalid' };
+		}
+		return { state: 'completed', ...authorized.receipt };
+	} catch {
+		console.error(JSON.stringify({ event: 'recipient_completed_receipt_page_resolution_failed' }));
 		return { state: 'unavailable' };
 	}
 }

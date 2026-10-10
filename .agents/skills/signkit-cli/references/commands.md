@@ -7,7 +7,7 @@
 3. `base_url` and `timeout_secs` in `config.toml`
 4. built-in defaults
 
-Credentials are accepted only through `SIGNKIT_API_KEY` or `--api-key-stdin`.
+Sender API keys are accepted only through `SIGNKIT_API_KEY` or `--api-key-stdin`. Recipient invitation capabilities are separate and accepted only through `SIGNKIT_RECIPIENT_CAPABILITY` or `--recipient-capability-stdin`.
 
 ## Read commands
 
@@ -20,6 +20,8 @@ signkit envelopes deliveries <envelope-id>
 signkit envelopes completion-artifact <envelope-id>
 signkit envelopes evidence <envelope-id> --format json --output evidence.json
 signkit envelopes pdf <envelope-id> --output agreement.pdf
+signkit envelopes pdf-seal-status <envelope-id>
+signkit envelopes pdf-seal-download <envelope-id> --output sealed-agreement.pdf
 ```
 
 ## Mutation commands
@@ -34,12 +36,33 @@ signkit envelopes ready <envelope-id> --file ready.json
 signkit envelopes fields <envelope-id> --file fields.json
 signkit envelopes send <envelope-id> --file send.json
 signkit envelopes void <envelope-id> --file void.json
+signkit envelopes pdf-seal-request <envelope-id> --profile pades-b-b --idempotency-key <opaque-key>
 ```
 
 An omitted idempotency key is generated as UUIDv4. Reuse the same key only when retrying the same logical mutation.
 
 `upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. It requires `--expected-generation`; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). `document-order` accepts JSON with `expectedGeneration` and 1-20 unique UUIDv7 `documentIds`; the IDs are the complete retained set, so omitting an existing ID removes it from the draft.
 
+`pdf-seal-request` asks the instance to produce a PAdES seal for the published executed agreement PDF (requires `envelopes:send`). `--profile` must be `pades-b-b` or `pades-b-t` and must match the profile the instance is configured for, or the request fails with a 409 conflict. `pdf-seal-status` reads job status (`disabled`, `not_requested`, `pending`, `processing`, `failed`, or `published`, with profile, attempt, and validation detail once available). `pdf-seal-download` downloads the published, validated sealed PDF once status is `published`; it requires a regular output path and never writes agreement bytes to stdout. It 404s with a distinct problem type before publication.
+
+## Recipient commands
+
+The recipient must provide their own invitation capability and explicitly authorize each action. A sender API key is not recipient authority. Never supply `--consent` on an agent's own initiative.
+
+```sh
+signkit recipient context
+signkit recipient documents
+signkit recipient pdf <envelope-id> --document-id <document-id> --output agreement.pdf
+signkit recipient viewed --file viewed.json --consent
+signkit recipient sign --file sign.json --consent
+signkit recipient approve --file approve.json --consent
+signkit recipient decline --file decline.json --consent
+```
+
+`signkit recipient sign --example` and `--validate-only --file sign.json` are offline and need no credential or consent. Signing payloads use the IDs and `fieldGeneration` returned by `documents`; the server revalidates the assigned fields and current recipient capability. All mutations require an idempotency key. For automation, pass an explicit `--idempotency-key` and retain it for an exact retry after a timeout; a fresh key cannot replay a completed recipient action. The PDF is the pinned sent document and must be saved to a regular output file, never stdout.
+
 ## Exit codes
 
-`0` success; `2` usage; `3` authentication; `4` authorization; `5` not found; `6` conflict; `7` other client error; `8` rate limit; `9` server unavailable; `10` network; `11` timeout; `12` redirect refused.
+`0` success; `1` internal or JSON error; `2` usage; `3` authentication; `4` authorization; `5` not found; `6` conflict; `7` other client error; `8` rate limited (HTTP 429); `9` server unavailable (HTTP 5xx); `10` network failure; `11` timeout; `12` redirect refused.
+
+Scripts written against v0.1.x must not treat `8` as generic server failure: `8` is rate limited, `9` is server unavailable, `10` is transport failure, `11` is timeout, and `12` is redirect refused. Stderr always carries the original RFC 9457 HTTP `status` independently of the process code.

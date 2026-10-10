@@ -77,13 +77,13 @@ export function createCompletionPdfHandler(
 				});
 			}
 
-			return new Response(pdf.stream, {
+			return new Response(pdfResponseBody(pdf.bytes), {
 				status: 200,
 				headers: {
 					'content-type': 'application/pdf',
-					'cache-control': 'public, max-age=31536000, immutable',
+					'cache-control': 'private, no-store',
 					etag: `"${pdf.sha256}"`,
-					'content-disposition': `inline; filename="completion-${envelopeId.data}.pdf"`,
+					'content-disposition': `attachment; filename="completion-${envelopeId.data}.pdf"`,
 					'x-content-type-options': 'nosniff'
 				}
 			});
@@ -107,4 +107,8 @@ function unavailable(instance: string): Response {
 		detail: 'Completion PDF could not be read.',
 		instance
 	});
+}
+
+function pdfResponseBody(bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+	return bytes;
 }

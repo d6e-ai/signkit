@@ -2,9 +2,14 @@ import type { DraftPath, FieldGeometry, FieldType, RecipientRole } from '$lib/do
 import type { DocumentSetManifest } from '$lib/domain/document-set';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
 import type { PublicEnvelopeDeliveryStatus } from '$lib/application/delivery/delivery-status';
+import type { PublicCompletionArtifactStatus } from '$lib/application/completion-artifacts/completion-artifact-status';
+import type { PublicPdfSealStatus } from '$lib/application/pdf-seals/pdf-seal-api';
+import type { PdfSealProfile } from '$lib/ports/pdf-seal-provider';
 
 export type Envelope = PublicEnvelope;
 export type { FieldGeometry, FieldType, RecipientRole, PublicEnvelopeDeliveryStatus };
+export type { PublicCompletionArtifactStatus };
+export type { PdfSealProfile, PublicPdfSealStatus };
 
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -46,6 +51,49 @@ export class EnvelopesApiError extends Error {
 }
 
 export type IdempotencyKeyGenerator = () => string;
+
+export class EnvelopeMutationAttempt {
+	private readonly newIdempotencyKey: IdempotencyKeyGenerator;
+	private currentKey: string | null = null;
+
+	constructor(newIdempotencyKey: IdempotencyKeyGenerator = defaultNewIdempotencyKey) {
+		this.newIdempotencyKey = newIdempotencyKey;
+	}
+
+	key(): string {
+		this.currentKey ??= this.newIdempotencyKey();
+		return this.currentKey;
+	}
+
+	succeeded(): void {
+		this.currentKey = null;
+	}
+
+	failed(cause: unknown): void {
+		if (!isAmbiguousEnvelopeMutationFailure(cause)) this.currentKey = null;
+	}
+
+	invalidate(): void {
+		this.currentKey = null;
+	}
+}
+
+export function createEnvelopeMutationAttempt(
+	newIdempotencyKey?: IdempotencyKeyGenerator
+): EnvelopeMutationAttempt {
+	return new EnvelopeMutationAttempt(newIdempotencyKey);
+}
+
+export function isAmbiguousEnvelopeMutationFailure(cause: unknown): boolean {
+	if (!(cause instanceof EnvelopesApiError)) return true;
+	const { type: problemType, status } = cause;
+	return (
+		problemType === 'urn:signkit:problem:invalid-response-json' ||
+		status === 408 ||
+		status === 429 ||
+		status >= 500
+	);
+}
 
 export function defaultNewIdempotencyKey(): string {
 	const source: Crypto | undefined = globalThis.crypto;
@@ -226,6 +274,25 @@ export interface VoidEnvelopeResponse {
 		voidedAt: string;
 		revokedCapabilityCount: number;
 		auditEventId: string;
+	};
+	replayed: boolean;
+}
+
+export interface ReissueRecipientCapabilityResponse {
+	reissued: {
+		envelopeId: string;
+		recipientId: string;
+		reissuedAt: string;
+	};
+	replayed: boolean;
+}
+
+export interface RequestPdfSealResponse {
+	pdfSeal: {
+		envelopeId: string;
+		jobId: string;
+		requestedProfile: PdfSealProfile;
+		requestedAt: string;
 	};
 	replayed: boolean;
 }
@@ -646,6 +713,55 @@ export class EnvelopesClient {
 		};
 	}
 
+	async reissueRecipientCapability(
+		envelopeId: string,
+		recipientId: string,
+		options?: RequestOptions
+	): Promise<ReissueRecipientCapabilityResponse> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/recipients/${encodeURIComponent(recipientId)}/reissue`
+		);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{
+			reissued?: ReissueRecipientCapabilityResponse['reissued'];
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body: JSON.stringify({})
+			},
+			options?.fetch
+		);
+		const receipt = data?.reissued;
+		if (
+			receipt?.envelopeId !== envelopeId ||
+			receipt?.recipientId !== recipientId ||
+			typeof receipt?.reissuedAt !== 'string' ||
+			!Number.isFinite(Date.parse(receipt.reissuedAt))
+		) {
+			throw new EnvelopesApiError({
+				status: 502,
+				type: 'urn:signkit:problem:invalid-response-json',
+				title: 'Invalid invitation replacement receipt',
+				detail: 'The response did not confirm the selected envelope and recipient.',
+				instance: url
+			});
+		}
+		return {
+			reissued: {
+				envelopeId: receipt.envelopeId,
+				recipientId: receipt.recipientId,
+				reissuedAt: receipt.reissuedAt
+			},
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
 	async voidEnvelope(
 		envelopeId: string,
 		input: VoidEnvelopeInput,
@@ -684,6 +800,128 @@ export class EnvelopesClient {
 		);
 		return data.delivery;
 	}
+
+	async completionArtifactStatus(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<PublicCompletionArtifactStatus> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-artifact`
+		);
+		const { data } = await this.request<{ completionArtifact: PublicCompletionArtifactStatus }>(
+			url,
+			{ method: 'GET', headers: { accept: 'application/json, application/problem+json' } },
+			options?.fetch
+		);
+		return data.completionArtifact;
+	}
+
+	async completionPdf(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<{ bytes: Uint8Array; filename: string }> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-artifact/pdf`
+		);
+		const fetchFn = this.resolveFetch(options?.fetch);
+		const response = await fetchFn(url, {
+			credentials: 'same-origin',
+			method: 'GET',
+			headers: { accept: 'application/pdf, application/problem+json' }
+		});
+		if (!response.ok) throw await this.parseErrorResponse(response, url);
+		const buffer = await response.arrayBuffer();
+		return {
+			bytes: new Uint8Array(buffer),
+			filename: contentDispositionFilename(response) ?? `completion-${envelopeId}.pdf`
+		};
+	}
+
+	async completionEvidence(
+		envelopeId: string,
+		format: 'json' | 'markdown',
+		options?: RequestOptions
+	): Promise<{ content: string; filename: string; contentType: string }> {
+		const url = `${this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-artifact/evidence`
+		)}?format=${format}`;
+		const fetchFn = this.resolveFetch(options?.fetch);
+		const response = await fetchFn(url, {
+			credentials: 'same-origin',
+			method: 'GET',
+			headers: {
+				accept: `${format === 'markdown' ? 'text/markdown' : 'application/json'}, application/problem+json`
+			}
+		});
+		if (!response.ok) throw await this.parseErrorResponse(response, url);
+		const content = await response.text();
+		const defaultFilename = `completion-evidence-${envelopeId}.${format === 'markdown' ? 'md' : 'json'}`;
+		return {
+			content,
+			filename: contentDispositionFilename(response) ?? defaultFilename,
+			contentType: response.headers.get('content-type') ?? 'application/octet-stream'
+		};
+	}
+
+	async pdfSealStatus(envelopeId: string, options?: RequestOptions): Promise<PublicPdfSealStatus> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/pdf-seal`);
+		const { data } = await this.request<{ pdfSeal: PublicPdfSealStatus }>(
+			url,
+			{ method: 'GET', headers: { accept: 'application/json, application/problem+json' } },
+			options?.fetch
+		);
+		return data.pdfSeal;
+	}
+
+	async requestPdfSeal(
+		envelopeId: string,
+		requestedProfile: PdfSealProfile,
+		options?: RequestOptions
+	): Promise<RequestPdfSealResponse> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/pdf-seal`);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{ pdfSeal: RequestPdfSealResponse['pdfSeal'] }>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body: JSON.stringify({ requestedProfile })
+			},
+			options?.fetch
+		);
+		return {
+			pdfSeal: data.pdfSeal,
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
+	async sealedPdf(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<{ bytes: Uint8Array; filename: string }> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/pdf-seal/pdf`);
+		const fetchFn = this.resolveFetch(options?.fetch);
+		const response = await fetchFn(url, {
+			credentials: 'same-origin',
+			method: 'GET',
+			headers: { accept: 'application/pdf, application/problem+json' }
+		});
+		if (!response.ok) throw await this.parseErrorResponse(response, url);
+		const buffer = await response.arrayBuffer();
+		return {
+			bytes: new Uint8Array(buffer),
+			filename: contentDispositionFilename(response) ?? `sealed-agreement-${envelopeId}.pdf`
+		};
+	}
+}
+
+function contentDispositionFilename(response: Response): string | null {
+	const disposition = response.headers.get('content-disposition');
+	return disposition?.match(/filename="([^"]+)"/)?.[1] ?? null;
 }
 
 export function createEnvelopesClient(options?: EnvelopesClientOptions): EnvelopesClient {

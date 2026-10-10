@@ -5,7 +5,8 @@ import {
 	parseDeployResult,
 	sortWorkerVersions,
 	assertSuccessfulUpload,
-	wranglerDeployArgs,
+	wranglerFirstDeployArgs,
+	wranglerTriggerDeployArgs,
 	wranglerUploadArgs
 } from '../src/providers/cloudflare/wrangler.js';
 import { ACCOUNT_ID, RecordingProcessRunner } from './helpers.js';
@@ -22,13 +23,13 @@ describe('Wrangler compatibility port', () => {
 			wranglerBin: '/opt/wrangler/bin/wrangler.js'
 		});
 		expect(Object.keys(wrangler).sort()).toEqual([
-			'deploy',
+			'deployFirst',
+			'deployTriggers',
 			'deployVersion',
 			'exportD1',
 			'invocations',
 			'listSecrets',
 			'listVersions',
-			'rollback',
 			'uploadVersion'
 		]);
 	});
@@ -106,7 +107,7 @@ describe('missing Worker classification', () => {
 		await expect(wrangler.listVersions('signkit')).resolves.toEqual([]);
 	});
 
-	it('treats createWranglerClient deploy abort output as a hard failure', async () => {
+	it('treats createWranglerClient first-deploy abort output as a hard failure', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 0,
@@ -124,7 +125,7 @@ Aborted. Did not upload a new version.
 			nodeExecutable: '/usr/bin/node'
 		});
 		await expect(
-			wrangler.deploy({
+			wrangler.deployFirst({
 				cwd: '/tmp/bundle',
 				configPath: '/tmp/bundle/wrangler.jsonc',
 				workerName: 'signkit',
@@ -132,6 +133,48 @@ Aborted. Did not upload a new version.
 				noBundle: true
 			})
 		).rejects.toThrow(/aborted|did not upload/i);
+	});
+
+	it('runs the required first deploy with exact config, secrets, and cwd arguments', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = () => ({
+			code: 0,
+			stdout:
+				'Deployed\nVersion ID: 22222222-2222-2222-2222-222222222222\nhttps://signkit.example.workers.dev',
+			stderr: ''
+		});
+		const wrangler = createWranglerClient({
+			runner,
+			accountId: ACCOUNT_ID,
+			env: { PATH: '/usr/bin' },
+			wranglerBin: '/opt/wrangler/bin/wrangler.js',
+			nodeExecutable: '/usr/bin/node'
+		});
+		await wrangler.deployFirst({
+			cwd: '/tmp/bundle',
+			configPath: '/tmp/bundle/wrangler.jsonc',
+			workerName: 'signkit',
+			keepVars: true,
+			noBundle: true,
+			secretsFile: '/tmp/private/secrets.json'
+		});
+
+		expect(runner.requests[0]).toMatchObject({
+			argv: [
+				'/opt/wrangler/bin/wrangler.js',
+				'deploy',
+				'--config',
+				'/tmp/bundle/wrangler.jsonc',
+				'--name',
+				'signkit',
+				'--secrets-file',
+				'/tmp/private/secrets.json',
+				'--keep-vars',
+				'--strict',
+				'--no-bundle'
+			],
+			cwd: '/tmp/bundle'
+		});
 	});
 	it('does not classify a broad not-found as a missing Worker for secret listing', async () => {
 		const runner = new RecordingProcessRunner();
@@ -202,10 +245,10 @@ describe('secrets file args', () => {
 
 	it('omits --secrets-file when no secrets file is configured', async () => {
 		expect(wranglerUploadArgs(base)).not.toContain('--secrets-file');
-		expect(wranglerDeployArgs(base)).not.toContain('--secrets-file');
+		expect(wranglerFirstDeployArgs(base)).not.toContain('--secrets-file');
 	});
 
-	it('passes --secrets-file with its path to upload and deploy', async () => {
+	it('passes --secrets-file with its path to version upload and required first deploy', async () => {
 		const options = { ...base, secretsFile: '/xdg/state/create-signkit/recovery.json' };
 		expect(wranglerUploadArgs(options)).toEqual([
 			'--config',
@@ -218,11 +261,78 @@ describe('secrets file args', () => {
 			'--strict',
 			'--no-bundle'
 		]);
-		const deployArgs = wranglerDeployArgs({ ...options, domain: 'sign.example.com' });
-		expect(deployArgs).toContain('--secrets-file');
-		expect(deployArgs.indexOf('--secrets-file') + 1).toBe(
-			deployArgs.indexOf('/xdg/state/create-signkit/recovery.json')
+		expect(wranglerFirstDeployArgs(options)).toEqual([
+			'--config',
+			'/tmp/bundle/wrangler.jsonc',
+			'--name',
+			'signkit',
+			'--secrets-file',
+			'/xdg/state/create-signkit/recovery.json',
+			'--keep-vars',
+			'--strict',
+			'--no-bundle'
+		]);
+	});
+});
+
+describe('trigger deployment', () => {
+	const options = {
+		cwd: '/tmp/bundle',
+		configPath: '/tmp/bundle/wrangler.jsonc',
+		workerName: 'signkit'
+	};
+
+	it('builds exact config-scoped trigger deployment arguments', () => {
+		expect(wranglerTriggerDeployArgs(options)).toEqual([
+			'triggers',
+			'deploy',
+			'--config',
+			'/tmp/bundle/wrangler.jsonc',
+			'--name',
+			'signkit'
+		]);
+	});
+
+	it('runs trigger deployment from the extracted release cwd', async () => {
+		const runner = new RecordingProcessRunner();
+		const wrangler = createWranglerClient({
+			runner,
+			accountId: ACCOUNT_ID,
+			env: { PATH: '/usr/bin' },
+			wranglerBin: '/opt/wrangler/bin/wrangler.js',
+			nodeExecutable: '/usr/bin/node'
+		});
+
+		await wrangler.deployTriggers(options);
+
+		expect(runner.requests).toHaveLength(1);
+		expect(runner.requests[0]).toMatchObject({
+			argv: [
+				'/opt/wrangler/bin/wrangler.js',
+				'triggers',
+				'deploy',
+				'--config',
+				'/tmp/bundle/wrangler.jsonc',
+				'--name',
+				'signkit'
+			],
+			cwd: '/tmp/bundle'
+		});
+	});
+
+	it('propagates Wrangler trigger deployment failures', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = () => ({ code: 1, stdout: '', stderr: 'route update rejected' });
+		const wrangler = createWranglerClient({
+			runner,
+			accountId: ACCOUNT_ID,
+			env: { PATH: '/usr/bin' },
+			wranglerBin: '/opt/wrangler/bin/wrangler.js',
+			nodeExecutable: '/usr/bin/node'
+		});
+
+		await expect(wrangler.deployTriggers(options)).rejects.toThrow(
+			/wrangler triggers failed[\s\S]*route update rejected/
 		);
-		expect(deployArgs).toContain('--domain');
 	});
 });

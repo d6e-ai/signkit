@@ -4,11 +4,10 @@
 	import AppBreadcrumbs from '$lib/components/app-breadcrumbs.svelte';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import LanguageSwitch from '$lib/components/language-switch.svelte';
+	import NavigationProgress from '$lib/components/navigation-progress.svelte';
 	import ThemeSwitch from '$lib/components/theme-switch.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar';
-	import { Spinner } from '$lib/components/ui/spinner';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import favicon from '$lib/assets/favicon.svg';
 	import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 	import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
 	import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
@@ -26,7 +25,7 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
+	<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 	<title>{m.app_name()}</title>
 	<meta name="description" content="Electronic signature workspace." />
 </svelte:head>
@@ -44,7 +43,7 @@
 			<header class="border-b bg-background/90 backdrop-blur-xl">
 				<div class="container mx-auto flex h-16 w-full items-center px-4 sm:px-6">
 					<a href="/" class="font-semibold tracking-tight">{m.app_name()}</a>
-					<div class="ml-auto flex items-center gap-1">
+					<div class="ml-auto flex shrink-0 items-center gap-1">
 						<ThemeSwitch />
 						<LanguageSwitch />
 					</div>
@@ -61,17 +60,13 @@
 				email={data.email ?? null}
 				instanceMemberRole={data.instanceMemberRole ?? null}
 			/>
-			<Sidebar.Inset class="min-w-0">
+			<Sidebar.Inset class="min-w-0" aria-busy={navigationPending}>
 				<header
 					class="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl"
 				>
 					<Sidebar.Trigger />
-					{#if navigationPending}
-						<Spinner aria-label={m.nav_loading()} />
-					{:else}
-						<AppBreadcrumbs />
-					{/if}
-					<div class="ml-auto flex min-w-0 items-center gap-1">
+					<AppBreadcrumbs />
+					<div class="ml-auto flex shrink-0 items-center gap-1">
 						<ThemeSwitch />
 						<LanguageSwitch />
 					</div>
@@ -80,4 +75,5 @@
 			</Sidebar.Inset>
 		</Sidebar.Provider>
 	{/if}
+	<NavigationProgress />
 </Tooltip.Provider>

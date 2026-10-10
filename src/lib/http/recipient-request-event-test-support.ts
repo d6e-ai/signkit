@@ -8,6 +8,7 @@ export interface RecipientRequestEventInput {
 	/** The valid command body for this endpoint, used unless `body` overrides it. */
 	defaultBody: unknown;
 	origin?: string | null;
+	authorization?: string;
 	idempotencyKey?: string;
 	body?: unknown;
 	cookie?: string;
@@ -34,6 +35,9 @@ export function createRecipientRequestEvent(
 	}
 	if (input.idempotencyKey !== undefined) {
 		headers.set('idempotency-key', input.idempotencyKey);
+	}
+	if (input.authorization !== undefined) {
+		headers.set('authorization', input.authorization);
 	}
 	const deleted = vi.fn();
 	const cookie: string | undefined = input.cookie ?? 'sealed-session';

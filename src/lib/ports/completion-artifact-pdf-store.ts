@@ -2,14 +2,19 @@ export interface PublishCompletionArtifactPdfCommand {
 	envelopeId: string;
 	pdfObjectKey: string;
 	pdfSha256: string;
+	pdfByteSize: number;
 	pdfManifestObjectKey: string;
 	pdfManifestSha256: string;
 	publishedAt: string;
 }
 
 export interface CompletionArtifactPdfRecord {
+	/** The row's own persisted envelope ID, never the caller's requested ID — lets a reader verify the two agree. */
+	envelopeId: string;
 	pdfObjectKey: string;
 	pdfSha256: string;
+	/** Null only for rows created before the authoritative-size migration. */
+	pdfByteSize: number | null;
 	pdfManifestObjectKey: string;
 	pdfManifestSha256: string;
 	publishedAt: string;

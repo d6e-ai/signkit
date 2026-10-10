@@ -485,6 +485,65 @@ describe('D1EnvelopeApplicationStore', () => {
 		expect(sql).not.toContain('capability_hash');
 		expect(sql).not.toContain('label');
 	});
+
+	it('lists draft revision locators bounded by limit and cursor', async () => {
+		const fake = createFakeD1({
+			allResults: [
+				[
+					draftCommandRow(),
+					{
+						...draftCommandRow(),
+						resulting_generation: 2,
+						commit_sha: '2'.repeat(40),
+						archive_sha256: '2'.repeat(64)
+					}
+				]
+			]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		const locators = await store.listDraftRevisionLocators(command.envelopeId, { limit: 10 });
+		expect(locators).toHaveLength(2);
+		expect(locators[0].generation).toBe(1);
+		expect(locators[0].commitSha).toBe(draftCommand.commitSha);
+		expect(locators[0].archiveKey).toBe(draftCommand.archiveKey);
+		expect(locators[0].archiveSha256).toBe(draftCommand.archiveSha256);
+
+		const sql = fake.prepared.map((record) => record.sql).join('\n');
+		expect(sql).toContain('FROM draft_revision_command');
+		expect(sql).toContain('ORDER BY resulting_generation DESC');
+	});
+
+	it('does not clamp the truncation-detection limit back down to the public max', async () => {
+		const fake = createFakeD1({ allResults: [[]] });
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		// DraftPersistenceService.listRevisions requests the public max (100)
+		// plus one extra row to detect truncation; the store must forward 101,
+		// not clamp it back to 100, or truncation at exactly 100 revisions
+		// would never be reported.
+		await store.listDraftRevisionLocators(command.envelopeId, { limit: 101 });
+
+		expect(fake.prepared[0].bindings).toContain(101);
+	});
+
+	it('finds draft revision locator by generation and by commit', async () => {
+		const fake = createFakeD1({
+			firstResults: [draftCommandRow(), draftCommandRow()]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		const byGen = await store.findDraftRevisionLocatorByGeneration(command.envelopeId, 1);
+		expect(byGen).not.toBeNull();
+		expect(byGen?.generation).toBe(1);
+
+		const byCommit = await store.findDraftRevisionLocatorByCommit(
+			command.envelopeId,
+			draftCommand.commitSha
+		);
+		expect(byCommit).not.toBeNull();
+		expect(byCommit?.commitSha).toBe(draftCommand.commitSha);
+	});
 });
 
 const draftCommand: PublishDraftRevisionCommand = {

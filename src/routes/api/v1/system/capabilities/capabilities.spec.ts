@@ -39,6 +39,9 @@ interface CapabilitiesResponse {
 		archive: string;
 		trackedFiles: string[];
 		commitEndpoint: string;
+		revisionListEndpoint: string;
+		revisionReadEndpoint: string;
+		revisionDiffEndpoint: string;
 		docxImportEndpoint: string;
 		docxExportEndpoint: string;
 		concurrency: string;
@@ -124,6 +127,16 @@ interface CapabilitiesResponse {
 		tokenFormat: string;
 		grantRetentionDays: number;
 	};
+	pdfSeal: {
+		statusEndpoint: string;
+		requestEndpoint: string;
+		downloadEndpoint: string;
+		workerEndpoint: string;
+		discovery: string;
+		supportedProfiles: string[];
+		publication: string;
+		privateKeyCustody: string;
+	};
 	publicCompletionArtifact: {
 		apiEndpoint: string;
 		linkEndpoint: string;
@@ -157,6 +170,11 @@ describe('GET /api/v1/system/capabilities', () => {
 		expect(data.name).toBe('SignKit');
 		expect(data.apiVersion).toBe('v1');
 		expect(data.runtime).toBe('node');
+		expect(data.draftHistory).toMatchObject({
+			revisionListEndpoint: '/api/v1/envelopes/{envelopeId}/revisions',
+			revisionReadEndpoint: '/api/v1/envelopes/{envelopeId}/revisions/{revisionRef}',
+			revisionDiffEndpoint: '/api/v1/envelopes/{envelopeId}/revisions/diff'
+		});
 
 		// Completion artifact capabilities
 		expect(data.completionArtifact).toMatchObject({
@@ -165,6 +183,16 @@ describe('GET /api/v1/system/capabilities', () => {
 			workerAuthentication: 'bearer-secret',
 			ccDelivery: 'supported',
 			publicArtifactGrants: 'supported'
+		});
+		expect(data.pdfSeal).toMatchObject({
+			statusEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+			requestEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+			downloadEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
+			workerEndpoint: '/api/v1/system/pdf-seals/drain',
+			discovery: 'explicit-request-only',
+			supportedProfiles: ['pades-b-b', 'pades-b-t'],
+			publication: 'independently-validated-atomic',
+			privateKeyCustody: 'external-provider'
 		});
 
 		// Completion delivery capabilities
@@ -205,9 +233,14 @@ describe('GET /api/v1/system/capabilities', () => {
 				'/api/v1/envelopes',
 				'/api/v1/envelopes/{envelopeId}',
 				'/api/v1/envelopes/{envelopeId}/draft',
+				'/api/v1/envelopes/{envelopeId}/revisions',
+				'/api/v1/envelopes/{envelopeId}/revisions/{revisionRef}',
+				'/api/v1/envelopes/{envelopeId}/revisions/diff',
 				'/api/v1/envelopes/{envelopeId}/docx',
 				'/api/v1/envelopes/{envelopeId}/deliveries',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact',
+				'/api/v1/envelopes/{envelopeId}/pdf-seal',
+				'/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
 				'/api/v1/envelopes/{envelopeId}/evidence',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence',
 				'/api/v1/envelopes/{envelopeId}/pdf',
@@ -225,7 +258,8 @@ describe('GET /api/v1/system/capabilities', () => {
 				],
 				'envelopes:send': [
 					'/api/v1/envelopes/{envelopeId}/send',
-					'/api/v1/envelopes/{envelopeId}/void'
+					'/api/v1/envelopes/{envelopeId}/void',
+					'/api/v1/envelopes/{envelopeId}/pdf-seal'
 				]
 			},
 			mutations: true,

@@ -55,6 +55,85 @@ describe('XDG state', () => {
 		expect(loaded?.bootstrapOwnerEmail).toBe('owner@example.com');
 	});
 
+	it('loads legacy state without a trigger reconciliation marker', () => {
+		const state = parseState(
+			JSON.stringify({
+				schemaVersion: 1,
+				provider: 'cloudflare',
+				accountId: ACCOUNT_ID,
+				workerName: 'signkit',
+				d1: { name: 'signkit', id: '11111111-1111-1111-1111-111111111111' },
+				r2: { name: 'signkit-objects' },
+				channel: 'stable',
+				updatedAt: '2026-09-15T00:00:00.000Z'
+			})
+		);
+
+		expect(state.triggerReconciliationRequired).toBeUndefined();
+	});
+
+	it('validates and round-trips the non-secret trigger reconciliation marker', async () => {
+		const fs = new MemoryFileSystem();
+		const store = createStateStore(fs, '/xdg/state/create-signkit/state.json');
+		const marker = {
+			workerVersionId: '22222222-2222-2222-2222-222222222222',
+			releaseVersion: 'v1.2.3',
+			releaseCommit: '0123456789abcdef0123456789abcdef01234567',
+			recordedAt: '2026-09-15T00:00:00.000Z'
+		};
+		await store.save({
+			schemaVersion: 1,
+			provider: 'cloudflare',
+			accountId: ACCOUNT_ID,
+			workerName: 'signkit',
+			d1: { name: 'signkit', id: '11111111-1111-1111-1111-111111111111' },
+			r2: { name: 'signkit-objects' },
+			channel: 'stable',
+			updatedAt: '2026-09-15T00:00:00.000Z',
+			triggerReconciliationRequired: marker
+		});
+
+		expect((await store.load())?.triggerReconciliationRequired).toEqual(marker);
+	});
+
+	it('refuses malformed trigger reconciliation markers', () => {
+		const base = {
+			schemaVersion: 1,
+			provider: 'cloudflare',
+			accountId: ACCOUNT_ID,
+			workerName: 'signkit',
+			d1: { name: 'signkit', id: '11111111-1111-1111-1111-111111111111' },
+			r2: { name: 'signkit-objects' },
+			channel: 'stable',
+			updatedAt: '2026-09-15T00:00:00.000Z'
+		};
+
+		expect(() =>
+			parseState(
+				JSON.stringify({
+					...base,
+					triggerReconciliationRequired: {
+						workerVersionId: 'not-a-version',
+						releaseVersion: 'v1.2.3',
+						recordedAt: '2026-09-15T00:00:00.000Z'
+					}
+				})
+			)
+		).toThrow(/workerVersionId is invalid/);
+		expect(() =>
+			parseState(
+				JSON.stringify({
+					...base,
+					triggerReconciliationRequired: {
+						workerVersionId: '22222222-2222-2222-2222-222222222222',
+						releaseVersion: 'v1.2.3',
+						recordedAt: 'not-a-date'
+					}
+				})
+			)
+		).toThrow(/recordedAt is invalid/);
+	});
+
 	it('includes milliseconds in D1 backup names', () => {
 		expect(d1BackupFileName('signkit', new Date('2026-09-15T00:00:00.123Z'))).toBe(
 			'd1-signkit-20260915T000000123Z.sql'

@@ -21,6 +21,10 @@ const FORBIDDEN_SECRET_KEYS: &[&str] = &[
     "bearer",
     "auth_token",
     "signkit_api_key",
+    "recipient_capability",
+    "recipientcapability",
+    "recipient-capability",
+    "signkit_recipient_capability",
 ];
 
 /// Validates that an API key matches `^signkit_[A-Za-z0-9_-]{43}$`.
@@ -32,6 +36,19 @@ pub fn is_valid_api_key(key: &str) -> bool {
         return false;
     }
     key[8..]
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Validates that a recipient capability token matches `^skr1_[A-Za-z0-9_-]{43}$`.
+pub fn is_valid_recipient_capability(token: &str) -> bool {
+    if token.len() != 48 {
+        return false;
+    }
+    if !token.starts_with("skr1_") {
+        return false;
+    }
+    token[5..]
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
@@ -56,6 +73,28 @@ impl fmt::Debug for SecretApiKey {
     }
 }
 
+/// A wrapper around the recipient capability token secret that strictly
+/// redacts its value in `Debug` output. Distinct from `SecretApiKey` so a
+/// sender API key can never be substituted for a recipient capability.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretRecipientCapability(String);
+
+impl SecretRecipientCapability {
+    pub fn new(secret: String) -> Self {
+        Self(secret)
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretRecipientCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
 /// Non-secret configuration schema loaded from disk.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignKitConfigFile {
@@ -69,6 +108,7 @@ pub struct SignKitConfigFile {
 pub struct ResolvedConfig {
     pub base_url: url::Url,
     pub api_key: Option<SecretApiKey>,
+    pub recipient_capability: Option<SecretRecipientCapability>,
     pub timeout_secs: u64,
 }
 
@@ -88,6 +128,28 @@ impl ResolvedConfig {
             }
             None => Err(CliError::usage(
                 "API key is required for this operation. Provide it via the SIGNKIT_API_KEY environment variable or securely via --api-key-stdin. Storing keys in flags or config files is prohibited.",
+            )),
+        }
+    }
+
+    /// Require that a recipient capability token is configured from environment
+    /// or secure stdin and matches the exact required format
+    /// `^skr1_[A-Za-z0-9_-]{43}$`. Never falls back to the sender API key: a
+    /// recipient capability authorizes only the recipient it was issued to,
+    /// and a sender key must never substitute for it.
+    pub fn require_recipient_capability(&self) -> Result<&str, CliError> {
+        match &self.recipient_capability {
+            Some(token) => {
+                let secret = token.expose_secret();
+                if !is_valid_recipient_capability(secret) {
+                    return Err(CliError::usage(
+                        "Invalid recipient capability format. Recipient capability tokens must start with 'skr1_' followed by 43 base64url characters (^skr1_[A-Za-z0-9_-]{43}$).",
+                    ));
+                }
+                Ok(secret)
+            }
+            None => Err(CliError::usage(
+                "A recipient capability token is required for this operation. Provide it via the SIGNKIT_RECIPIENT_CAPABILITY environment variable or securely via --recipient-capability-stdin. The sender SIGNKIT_API_KEY never authorizes recipient commands. Storing this token in flags or config files is prohibited.",
             )),
         }
     }
@@ -216,11 +278,32 @@ pub fn read_api_key_from_stdin() -> Result<String, CliError> {
     Ok(trimmed)
 }
 
+/// Reads the recipient capability token securely from standard input with a
+/// bounded maximum size (1024 bytes).
+pub fn read_recipient_capability_from_stdin() -> Result<String, CliError> {
+    let mut buffer = String::new();
+    io::stdin()
+        .take(1024)
+        .read_to_string(&mut buffer)
+        .map_err(|e| CliError::Usage {
+            detail: format!("Failed to read recipient capability from stdin: {e}"),
+            errors: None,
+        })?;
+    let trimmed = buffer.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(CliError::usage(
+            "Recipient capability provided via stdin was empty. An active recipient capability token is required.",
+        ));
+    }
+    Ok(trimmed)
+}
+
 /// Resolves the full configuration by combining CLI flags, environment variables,
 /// and non-secret config file according to strict precedence rules.
 pub fn resolve_config(
     flag_base_url: Option<String>,
     flag_api_key_stdin: bool,
+    flag_recipient_capability_stdin: bool,
     flag_config_path: Option<&Path>,
     flag_timeout_secs: Option<u64>,
 ) -> Result<ResolvedConfig, CliError> {
@@ -264,6 +347,19 @@ pub fn resolve_config(
 
     let api_key = api_key.map(SecretApiKey::new);
 
+    // 2b. Recipient capability resolution (stdin > env only, never flags,
+    // never config, and never derived from the sender API key above).
+    let recipient_capability = if flag_recipient_capability_stdin {
+        Some(read_recipient_capability_from_stdin()?)
+    } else {
+        env::var("SIGNKIT_RECIPIENT_CAPABILITY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let recipient_capability = recipient_capability.map(SecretRecipientCapability::new);
+
     // 3. Timeout resolution (reject timeout == 0)
     let timeout_secs = if let Some(t) = flag_timeout_secs {
         t
@@ -288,6 +384,7 @@ pub fn resolve_config(
     Ok(ResolvedConfig {
         base_url,
         api_key,
+        recipient_capability,
         timeout_secs,
     })
 }

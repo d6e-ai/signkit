@@ -22,11 +22,14 @@ describe('locale exclusions', () => {
 describe('session exclusions', () => {
 	it('keeps recipient capability routes independent from d6e-auth browser sessions', () => {
 		expect(isSessionExcludedPath('/api/v1/signing/context')).toBe(true);
+		expect(isSessionExcludedPath('/api/v1/recipient/context')).toBe(true);
 		expect(isSessionExcludedPath('/s/capability')).toBe(true);
 		expect(isSessionExcludedPath('/sign')).toBe(true);
 		expect(isSessionExcludedPath('/ja/sign')).toBe(true);
 		expect(isSessionExcludedPath('/sign/01910000-0000-7000-8000-000000000001')).toBe(true);
 		expect(isSessionExcludedPath('/en/sign/01910000-0000-7000-8000-000000000001')).toBe(true);
+		expect(isSessionExcludedPath('/c/skca1_token')).toBe(true);
+		expect(isSessionExcludedPath('/ja/c/skca1_token/view')).toBe(true);
 		expect(isSessionExcludedPath('/api/v1/envelopes')).toBe(false);
 		expect(isSessionExcludedPath('/signature')).toBe(false);
 	});

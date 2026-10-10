@@ -1,5 +1,8 @@
 import type { Envelope } from '$lib/domain/envelope';
 import type { EnvelopeStore } from './envelope-store';
+import type { DraftRevisionStore, PersistedDraftRevisionLocator } from './draft-revision-store';
+
+export type { DraftRevisionStore, PersistedDraftRevisionLocator };
 
 export interface DraftRevisionKey {
 	envelopeId: string;
@@ -60,7 +63,7 @@ export type PublishDraftRevisionResult =
  * Durable command boundary for draft changes. Implementations atomically
  * publish the envelope pointer, idempotency result, and audit event.
  */
-export interface DraftMutationStore extends EnvelopeStore {
+export interface DraftMutationStore extends EnvelopeStore, DraftRevisionStore {
 	prepareDraftRevision(
 		key: DraftRevisionKey,
 		expectedGeneration: number

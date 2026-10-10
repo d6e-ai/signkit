@@ -6,6 +6,12 @@ export interface MailAddress {
 	name: string;
 }
 
+export interface MailAttachment {
+	filename: string;
+	contentType: string;
+	content: Uint8Array;
+}
+
 export interface MailMessage {
 	to: string;
 	from: MailAddress;
@@ -13,6 +19,8 @@ export interface MailMessage {
 	text: string;
 	html: string;
 	deliveryKey: string;
+	/** Optional immutable attachment (for example, the published completion PDF). */
+	attachment?: MailAttachment;
 }
 
 export type MailSendReceipt =

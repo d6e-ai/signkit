@@ -28,7 +28,7 @@ The beta has no typed `keep-vars` switch. Upload metadata explicitly preserves e
 
 ## Compatibility limits and verification
 
-Local D1 remains on `wrangler d1 migrations apply --local`. An actual cf beta.14 run failed with `SQLITE_LOCKED` on the table rebuild in migration 0045; local migration listing printed its results but did not exit. Wrangler applied all 49 migrations successfully. The adapter/config remains in place until a later pinned cf version applies the full migration set to a fresh local database, proves replay is a no-op, and exits cleanly. No silent fallback to remote D1 is allowed.
+Local D1 remains on `wrangler d1 migrations apply --local`. An actual cf beta.14 run on the pre-integration local baseline failed with `SQLITE_LOCKED` on the table rebuild in migration 0045; local migration listing printed its results but did not exit. Wrangler has also applied the full current migration set to a fresh local database, followed by a no-pending-migrations check. The adapter/config remains in place until a pinned cf version passes those same full-schema and clean-exit gates. No silent fallback to remote D1 is allowed.
 
 The managed release installer has a separate Cloudflare command port; its cf-native operations and remaining fallbacks are specified in [create-signkit.md](create-signkit.md). A successful offline build or dry run is not a live deployment or provider acceptance claim.
 
@@ -39,7 +39,7 @@ Verification gates include type generation, application checks, Node/Cloudflare/
 Remove each Wrangler path in the same change that migrates its final caller. Delete unused implementations, helpers, types, tests, operator instructions, configuration, and direct dependencies together; do not retain a second implementation for already migrated operations. Account discovery, D1 create/list/migrations, and R2 inspection/creation now have only cf implementations in the installer.
 
 - Retire the local D1 fallback after cf passes the full fresh-database migration set, no-op replay, and clean-exit checks described above.
-- Retire managed Worker and D1 export fallbacks after their replacement passes the install/upgrade/backup/rollback gates in [create-signkit.md](create-signkit.md).
+- Retire managed Worker and D1 export fallbacks after their replacement passes the install/upgrade/backup/partial-failure reconciliation gates in [create-signkit.md](create-signkit.md). The active lifecycle publishes versions and reconciles routes/Cron Triggers; obsolete Worker-only rollback code is removed.
 - Remove root Wrangler configuration and dependencies only when the SvelteKit adapter, cf build backend, local D1 commands, and test imports no longer require them. Keep historical ADRs and already published release archives unchanged.
 
 For current upstream behavior, see the official [cf overview](https://developers.cloudflare.com/cf/), [Wrangler migration guide](https://developers.cloudflare.com/cf/wrangler/migrate/), and [project commands](https://developers.cloudflare.com/cf/projects/).

@@ -93,8 +93,8 @@ describe('envelope authoring page contracts', () => {
 	});
 
 	it('omits a document card header entirely when the document has no title', () => {
-		expect(source).toContain('{#if title.length > 0}');
-		expect(source).toContain("class={title.length > 0 ? undefined : 'pt-6'}");
+		expect(source).toContain('{#if view.title.length > 0}');
+		expect(source).toContain("class={view.title.length > 0 ? undefined : 'pt-6'}");
 	});
 
 	it('keeps keyed each blocks and does not render raw HTML', () => {
@@ -115,6 +115,31 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('locale: draftItem.locale');
 		expect(source).toContain("getLocale() === 'ja' ? 'ja' : 'en'");
 		expect(source).not.toMatch(/<select[\s>]/);
+	});
+
+	it('gates Ready on every identity field and never submits on a blocked keyboard attempt', () => {
+		expect(source).toContain('disabled={recipientDrafts.length === 0 ||');
+		expect(source).toContain('recipientsHaveInvalidIdentity}');
+		expect(source).toContain('onclick={attemptMarkReady}');
+		expect(source).toContain(
+			'if (recipientDrafts.length === 0 || recipientsHaveInvalidIdentity) return;'
+		);
+		expect(source).toContain('!isValidRecipientName(normalizeRecipientName(draftItem.name))');
+		expect(source).toContain('!isValidRecipientEmail(normalizeRecipientEmail(draftItem.email))');
+		expect(source).toContain(
+			'recipientNameTouched[draftItem.key] === true || recipientValidationAttempted'
+		);
+		expect(source).toContain(
+			'recipientEmailTouched[draftItem.key] === true || recipientValidationAttempted'
+		);
+		expect(source).toContain('aria-invalid={recipientNameErrorVisible(draftItem)}');
+		expect(source).toContain('aria-invalid={recipientEmailErrorVisible(draftItem)}');
+		expect(source).toContain('m.envelope_recipient_name_required()');
+		expect(source).toContain('m.envelope_recipient_email_invalid()');
+		expect(source).toContain(
+			"if (recipientEmailInvalid(draftItem)) return { key: draftItem.key, field: 'email' };"
+		);
+		expect(source).toContain('event.isComposing || event.keyCode === 229');
 	});
 
 	it('reuses contacts without copying workflow authority and only saves them explicitly', () => {
@@ -179,5 +204,134 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain("case 'delivered':");
 		expect(source).toContain("case 'failed':");
 		expect(source).toContain('envelope_delivery_status_pending');
+	});
+
+	it('presents the completed artifact as the primary preview, ahead of the distinguished original documents', () => {
+		const snippetStart = source.indexOf('{#snippet completionArtifactSection()}');
+		const snippetEnd = source.indexOf('{/snippet}', snippetStart);
+		expect(snippetStart).toBeGreaterThan(-1);
+		const snippet = source.slice(snippetStart, snippetEnd);
+		expect(snippet).toContain('m.envelope_completed_title()');
+		expect(snippet).toContain('m.envelope_completed_description()');
+		expect(snippet).toContain('/completion-artifact/pdf');
+		expect(snippet).toContain('<PdfDocumentView');
+		expect(source).toContain('client.completionArtifactStatus(envelopeId)');
+		expect(source).not.toContain('client.completionPdf(');
+		expect(source).not.toContain('client.completionEvidence(');
+
+		const documentsTab = source.slice(
+			source.indexOf('<Tabs.Content value="documents"'),
+			source.indexOf('<Tabs.Content value="recipients"')
+		);
+		expect(documentsTab).toContain("{:else if envelope.status === 'completed'}");
+		expect(documentsTab).toContain('{@render completionArtifactSection()}');
+		expect(documentsTab).toContain('m.envelope_documents_originals_title()');
+		expect(documentsTab.indexOf('{@render completionArtifactSection()}')).toBeLessThan(
+			documentsTab.indexOf('m.envelope_documents_originals_title()')
+		);
+		expect(documentsTab.indexOf('m.envelope_documents_originals_title()')).toBeLessThan(
+			documentsTab.indexOf('{@render sentDocumentsList()}')
+		);
+	});
+
+	it('uses native session-authorized download links (not a blob/fetch dance) for the final PDF and evidence', () => {
+		const cardStart = source.indexOf('{#snippet completionArtifactSection()}');
+		const cardEnd = source.indexOf('{/snippet}', cardStart);
+		const card = source.slice(cardStart, cardEnd);
+		expect(card).toContain('href={`/api/v1/envelopes/${envelopeId}/completion-artifact/pdf`}');
+		expect(card).toContain(
+			'href={`/api/v1/envelopes/${envelopeId}/completion-artifact/evidence?format=json`}'
+		);
+		expect(card).toContain(
+			'href={`/api/v1/envelopes/${envelopeId}/completion-artifact/evidence?format=markdown`}'
+		);
+		expect(card.match(/\n\s*download\n/g)?.length).toBe(3);
+		expect(card.indexOf('m.envelope_completed_pdf_download()')).toBeLessThan(
+			card.indexOf('<PdfDocumentView')
+		);
+		expect(card).not.toContain('onclick={() => void downloadCompletionPdf()}');
+		expect(card).not.toContain('onclick={() => void downloadCompletionEvidence(');
+	});
+
+	it('gives the failed and unavailable completion states an explicit retry action instead of a dead end', () => {
+		const snippetStart = source.indexOf('{#snippet completionArtifactSection()}');
+		const snippetEnd = source.indexOf('{/snippet}', snippetStart);
+		const snippet = source.slice(snippetStart, snippetEnd);
+		expect(snippet).toContain('completionStatusError');
+		expect(snippet).toContain("completionStatus.status === 'failed'");
+		expect(snippet.match(/refreshCompletionStatus/g)?.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it('keeps certificate-backed PDF sealing distinct and exposes explicit request and published download actions', () => {
+		const documentsTab = source.slice(
+			source.indexOf('<Tabs.Content value="documents"'),
+			source.indexOf('<Tabs.Content value="recipients"')
+		);
+		expect(documentsTab).toContain('m.envelope_pdf_seal_title()');
+		expect(documentsTab.indexOf('{@render completionArtifactSection()}')).toBeLessThan(
+			documentsTab.indexOf('m.envelope_pdf_seal_title()')
+		);
+		expect(source).toContain('client.pdfSealStatus(envelopeId)');
+		expect(source).toContain('client.requestPdfSeal(envelopeId, requestedPdfSealProfile)');
+		expect(source).toContain("completionPdfStatus !== 'published'");
+		expect(source).toContain("completionStatus?.status === 'failed'");
+		expect(source).toContain("completionStatus?.status === 'pending'");
+		expect(source).toContain("completionStatus?.status === 'processing'");
+		expect(source).toContain('client.sealedPdf(envelopeId)');
+		expect(source).toContain(
+			"pdfSealStatus?.status === 'not_requested' && completionPdfStatus === 'published'"
+		);
+		expect(source).toContain("pdfSealStatus?.status === 'published'");
+		expect(source).toContain('m.envelope_pdf_seal_status_disabled()');
+		expect(source).toContain('m.envelope_pdf_seal_status_processing()');
+		expect(source).toContain('m.envelope_pdf_seal_status_failed_retryable()');
+		expect(source).toContain('m.envelope_pdf_seal_validation_badge()');
+		expect(source).toContain('m.envelope_pdf_seal_timestamp_present()');
+		expect(source).toContain('<Field.FieldGroup>');
+		expect(source).toContain('<Card.Footer>');
+		expect(source).toContain('<Spinner data-icon="inline-start" />');
+	});
+
+	it('shows the recipient graph description only while still draft, and a progress-focused description once locked', () => {
+		const recipientsTab = source.slice(
+			source.indexOf('<Tabs.Content value="recipients"'),
+			source.indexOf('<Tabs.Content value="fields"')
+		);
+		expect(recipientsTab).toContain(
+			"envelope.status === 'draft'\n\t\t\t\t\t\t\t\t\t? m.envelope_recipients_description()\n\t\t\t\t\t\t\t\t\t: m.envelope_recipients_description_locked()"
+		);
+	});
+
+	it('keeps placed fields visible and read-only once an envelope is sent or closed, instead of an apparently empty panel', () => {
+		const fieldsTab = source.slice(
+			source.indexOf('<Tabs.Content value="fields"'),
+			source.indexOf('<Tabs.Content value="send"')
+		);
+		expect(fieldsTab).toContain("{#if envelope.status === 'draft'}");
+		expect(fieldsTab).toContain("{:else if envelope.status !== 'ready'}");
+		expect(fieldsTab).toContain('envelope.sentCommitSha === null');
+		expect(fieldsTab).toContain('m.envelope_fields_locked_closed_description()');
+		expect(fieldsTab).toContain('m.envelope_fields_locked_after_send_description()');
+		expect(fieldsTab).toContain('m.envelope_fields_none_placed()');
+		expect(fieldsTab).toContain('recipientName(field.recipientId)');
+		expect(fieldsTab).toContain('documentSetTitle(field.documentId)');
+		expect(fieldsTab.indexOf("{#if envelope.status === 'draft'}")).toBeLessThan(
+			fieldsTab.indexOf("{:else if envelope.status !== 'ready'}")
+		);
+	});
+
+	it('replaces stale pre-send guidance in Send & status once the envelope has moved past ready, and separates delivery from response progress', () => {
+		const sendTab = source.slice(source.indexOf('<Tabs.Content value="send"'));
+		expect(sendTab).toContain('m.envelope_send_status_description()');
+		expect(sendTab).toContain("{:else if envelope.status === 'draft'}");
+		expect(sendTab).toContain('m.envelope_delivery_col_signing_status()');
+		expect(sendTab).toContain('recipientWorkflowStatusLabel(matched.status)');
+		expect(sendTab).toContain('m.envelope_delivery_delivered_at({');
+		expect(sendTab).toContain('formatDate(item.deliveredAt)');
+	});
+
+	it('formats delivery timestamps with the shared locale-aware date formatter', () => {
+		expect(source).toContain('function formatDate(value: string): string {');
+		expect(source).toContain("dateStyle: 'medium', timeStyle: 'short'");
 	});
 });

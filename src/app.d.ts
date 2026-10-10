@@ -93,6 +93,16 @@ declare global {
 				SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
 				SIGNKIT_BOOTSTRAP_OWNER_EMAIL?: string;
 				SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP?: string;
+				PDF_SEAL_PROFILE?: string;
+				PDF_SEAL_PROVIDER_URL?: string;
+				PDF_SEAL_PROVIDER_TOKEN?: string;
+				PDF_SEAL_VALIDATOR_URL?: string;
+				PDF_SEAL_VALIDATOR_TOKEN?: string;
+				PDF_SEAL_SIGNER_CERTIFICATE_SHA256?: string;
+				PDF_SEAL_POLICY_ID?: string;
+				PDF_SEAL_VALIDATION_POLICY_ID?: string;
+				PDF_SEAL_TSA_POLICY_ID?: string;
+				PDF_SEAL_TSA_TRUST_BUNDLE_SHA256?: string;
 			};
 			context?: { waitUntil(promise: Promise<unknown>): void };
 			caches?: CacheStorage;

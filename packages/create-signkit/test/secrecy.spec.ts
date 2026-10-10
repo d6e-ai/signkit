@@ -62,7 +62,7 @@ describe('command argv and env secrecy', () => {
 			wranglerBin: '/opt/wrangler/bin/wrangler.js',
 			nodeExecutable: '/usr/bin/node'
 		});
-		await cloudflare.deploy({
+		await cloudflare.deployFirst({
 			cwd: '/tmp/bundle',
 			configPath: '/tmp/bundle/wrangler.jsonc',
 			workerName: 'signkit',
@@ -90,7 +90,7 @@ describe('command argv and env secrecy', () => {
 			wranglerBin: '/opt/wrangler/bin/wrangler.js',
 			nodeExecutable: '/usr/bin/node'
 		});
-		await cloudflare.deploy({
+		await cloudflare.deployFirst({
 			cwd: '/tmp/bundle',
 			configPath: '/tmp/bundle/wrangler.jsonc',
 			workerName: 'signkit',
@@ -106,7 +106,7 @@ describe('command argv and env secrecy', () => {
 		expect(argv.join(' ')).not.toMatch(/cf-super-secret-token|DELIVERY_ENCRYPTION_KEY=/);
 	});
 
-	it('does not pass --domain to versions upload, but does to deploy (Wrangler)', async () => {
+	it('keeps custom-domain routing in config for both Worker upload paths (Wrangler)', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 0,
@@ -125,7 +125,6 @@ describe('command argv and env secrecy', () => {
 			cwd: '/tmp/bundle',
 			configPath: '/tmp/bundle/wrangler.jsonc',
 			workerName: 'signkit',
-			domain: 'sign.example.com',
 			keepVars: true,
 			noBundle: true
 		};
@@ -139,8 +138,8 @@ describe('command argv and env secrecy', () => {
 		expect(uploadArgv).not.toContain('--domain');
 		expect(runner.requests[0]!.cwd).toBe('/tmp/bundle');
 		expect(filterEnvForCloudflareCli({ SECRET_FOO: 'x' }, ACCOUNT_ID).SECRET_FOO).toBeUndefined();
-		await cloudflare.deploy(options);
-		expect(runner.requests[1]!.argv).toContain('--domain');
+		await cloudflare.deployFirst(options);
+		expect(runner.requests[1]!.argv).not.toContain('--domain');
 		expect(runner.requests[1]!.cwd).toBe('/tmp/bundle');
 	});
 

@@ -2,6 +2,7 @@ import type { Cookies } from '@sveltejs/kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecipientWorkspace } from '$lib/application/signing/recipient-workspace';
 import { declinedReceiptCookieName } from '$lib/server/declined-receipt-session';
+import { completedReceiptCookieName } from '$lib/server/completed-receipt-session';
 import { recipientSessionCookieName } from '$lib/server/recipient-session';
 
 const envelopeA: string = '01910000-0000-7000-8000-000000000001';
@@ -39,8 +40,10 @@ const workspaceFor = (envelopeId: string): RecipientWorkspace => ({
 
 const resolveWorkspace = vi.fn();
 const resolveDeclined = vi.fn();
+const resolveCompleted = vi.fn();
 const unsealActive = vi.fn();
 const unsealDeclined = vi.fn();
+const unsealCompleted = vi.fn();
 
 vi.mock('$lib/application/signing/runtime', () => ({
 	resolveRecipientWorkspaceApplication: () => ({
@@ -49,6 +52,10 @@ vi.mock('$lib/application/signing/runtime', () => ({
 	resolveRecipientDeclinedReceiptApplication: () => ({
 		recoverByToken: resolveDeclined,
 		resolveLocator: resolveDeclined
+	}),
+	resolveRecipientCompletedReceiptApplication: () => ({
+		recoverByToken: resolveCompleted,
+		resolveLocator: resolveCompleted
 	})
 }));
 
@@ -71,6 +78,18 @@ vi.mock('$lib/server/declined-receipt-session', async () => {
 		unsealDeclinedReceiptSession: (cookie: string, envelopeId: string) =>
 			unsealDeclined(cookie, envelopeId),
 		sealDeclinedReceiptSession: async () => 'sealed-declined-receipt'
+	};
+});
+
+vi.mock('$lib/server/completed-receipt-session', async () => {
+	const actual = await vi.importActual<typeof import('$lib/server/completed-receipt-session')>(
+		'$lib/server/completed-receipt-session'
+	);
+	return {
+		...actual,
+		unsealCompletedReceiptSession: (cookie: string, envelopeId: string) =>
+			unsealCompleted(cookie, envelopeId),
+		sealCompletedReceiptSession: async () => 'sealed-completed-receipt'
 	};
 });
 
@@ -113,9 +132,12 @@ describe('envelope-scoped signing page load', () => {
 	beforeEach((): void => {
 		resolveWorkspace.mockReset();
 		resolveDeclined.mockReset();
+		resolveCompleted.mockReset();
 		unsealActive.mockReset();
 		unsealDeclined.mockReset();
+		unsealCompleted.mockReset();
 		resolveDeclined.mockResolvedValue(null);
+		resolveCompleted.mockResolvedValue(null);
 	});
 
 	it('reloads from the envelope-scoped cookie without exposing a capability token', async () => {
@@ -278,5 +300,107 @@ describe('envelope-scoped signing page load', () => {
 		expect(page).toEqual({ state: 'invalid' });
 		expect(input.deleted).toEqual([]);
 		expect(input.store[declinedName]).toBe('newer-receipt');
+	});
+
+	it('exchanges a live session whose capability its own signature revoked for a receipt', async () => {
+		const completedName: string = completedReceiptCookieName(envelopeA) as string;
+		unsealActive.mockResolvedValue(`skr1_${'A'.repeat(43)}`);
+		resolveWorkspace.mockResolvedValue(null);
+		resolveCompleted.mockResolvedValue({
+			receipt: {
+				envelopeId: envelopeA,
+				recipientId: '01910000-0000-7000-8000-000000000002',
+				recipientStatus: 'completed',
+				action: 'signed',
+				completedAt: '2026-09-11T00:02:00.000Z',
+				envelopeStatus: 'in_progress',
+				envelopeCompletedByThisAction: false,
+				locale: 'en'
+			},
+			locator: {
+				envelopeId: envelopeA,
+				recipientId: '01910000-0000-7000-8000-000000000002',
+				idempotencyKey: 'sign-1',
+				capabilityHash: 'b'.repeat(64),
+				action: 'signed',
+				completedAt: '2026-09-11T00:02:00.000Z',
+				expiresAt: '2026-10-11T00:02:00.000Z'
+			}
+		});
+		const input = event(envelopeA, { [cookieA]: 'sealed-a' });
+
+		const page = await load(input as never);
+
+		expect(page).toMatchObject({
+			state: 'completed',
+			envelopeId: envelopeA,
+			action: 'signed',
+			envelopeStatus: 'in_progress',
+			envelopeCompletedByThisAction: false
+		});
+		expect(input.store[completedName]).toBe('sealed-completed-receipt');
+		expect(input.store[declinedReceiptCookieName(envelopeA) as string]).toBeUndefined();
+		expect(input.deleted).toEqual([]);
+		expect(JSON.stringify(page)).not.toMatch(/skr1_|capabilityHash/);
+	});
+
+	it('reloads tokenlessly from the completed receipt cookie alone', async () => {
+		const completedName: string = completedReceiptCookieName(envelopeA) as string;
+		unsealCompleted.mockResolvedValue({
+			version: 1,
+			envelopeId: envelopeA,
+			recipientId: '01910000-0000-7000-8000-000000000002',
+			idempotencyKey: 'approve-1',
+			capabilityHash: 'b'.repeat(64),
+			action: 'approved',
+			completedAt: '2026-09-11T00:02:00.000Z',
+			expiresAt: '2026-10-11T00:02:00.000Z'
+		});
+		resolveCompleted.mockResolvedValue({
+			receipt: {
+				envelopeId: envelopeA,
+				recipientId: '01910000-0000-7000-8000-000000000002',
+				recipientStatus: 'completed',
+				action: 'approved',
+				completedAt: '2026-09-11T00:02:00.000Z',
+				envelopeStatus: 'completed',
+				envelopeCompletedByThisAction: true,
+				locale: 'en'
+			},
+			locator: {
+				envelopeId: envelopeA,
+				recipientId: '01910000-0000-7000-8000-000000000002',
+				idempotencyKey: 'approve-1',
+				capabilityHash: 'b'.repeat(64),
+				action: 'approved',
+				completedAt: '2026-09-11T00:02:00.000Z',
+				expiresAt: '2026-10-11T00:02:00.000Z'
+			}
+		});
+		const input = event(envelopeA, { [completedName]: 'sealed-completed' });
+
+		const page = await load(input as never);
+
+		expect(unsealActive).not.toHaveBeenCalled();
+		expect(unsealCompleted).toHaveBeenCalledWith('sealed-completed', envelopeA);
+		expect(page).toMatchObject({
+			state: 'completed',
+			action: 'approved',
+			envelopeStatus: 'completed',
+			envelopeCompletedByThisAction: true
+		});
+		expect(input.deleted).toEqual([]);
+	});
+
+	it('does not read another envelope’s completed receipt cookie', async () => {
+		const otherCompletedName: string = completedReceiptCookieName(envelopeB) as string;
+		const input = event(envelopeA, { [otherCompletedName]: 'sealed-completed-b' });
+
+		const page = await load(input as never);
+
+		expect(page).toEqual({ state: 'invalid' });
+		expect(unsealCompleted).not.toHaveBeenCalled();
+		expect(input.deleted).toEqual([]);
+		expect(input.store[otherCompletedName]).toBe('sealed-completed-b');
 	});
 });

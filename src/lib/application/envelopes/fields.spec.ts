@@ -7,6 +7,7 @@ import {
 import type {
 	DraftMutationStore,
 	DraftRevisionPreparation,
+	PersistedDraftRevisionLocator,
 	PublishDraftRevisionResult
 } from '$lib/ports/draft-mutation-store';
 import type { DraftDocument, DraftRepository, DraftVersion } from '$lib/ports/draft-repository';
@@ -67,6 +68,18 @@ class FixedEnvelopeStore implements DraftMutationStore {
 
 	async publishDraftRevision(): Promise<PublishDraftRevisionResult> {
 		throw new Error('Unexpected draft publication');
+	}
+
+	async listDraftRevisionLocators(): Promise<PersistedDraftRevisionLocator[]> {
+		return [];
+	}
+
+	async findDraftRevisionLocatorByGeneration(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
+	}
+
+	async findDraftRevisionLocatorByCommit(): Promise<PersistedDraftRevisionLocator | null> {
+		return null;
 	}
 }
 

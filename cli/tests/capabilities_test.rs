@@ -114,5 +114,5 @@ async fn test_capabilities_service_unavailable() {
     let cli = Cli::parse_from(["signkit", "--base-url", &mock_server.uri(), "capabilities"]);
 
     let exit_code = run_cli(cli).await;
-    assert_eq!(exit_code, ExitCode::UnavailableError);
+    assert_eq!(exit_code, ExitCode::ServerUnavailableError);
 }

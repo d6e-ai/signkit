@@ -12,6 +12,7 @@ import {
 import { PdfObjectReader, type PdfPageNode } from '$lib/adapters/pdf/pdf-object-reader';
 import { SIGNATURE_ASSET_REF_PREFIX } from '$lib/application/documents/signature-asset';
 import type { FieldType } from '$lib/domain/envelope';
+import { MAX_PUBLISHED_COMPLETION_PDF_BYTES } from './completion-pdf-limits';
 
 /**
  * Builds the executed agreement: the immutable sent document set, in document
@@ -31,7 +32,7 @@ import type { FieldType } from '$lib/domain/envelope';
 export const MAX_EXECUTED_PDF_DOCUMENTS: number = 20;
 export const MAX_EXECUTED_PDF_FIELDS: number = 200;
 export const MAX_EXECUTED_PDF_PAGES: number = 800;
-export const MAX_EXECUTED_PDF_BYTES: number = 32 * 1024 * 1024;
+export const MAX_EXECUTED_PDF_BYTES: number = MAX_PUBLISHED_COMPLETION_PDF_BYTES;
 
 const INK = { red: 0.05, green: 0.06, blue: 0.1 };
 /** Cap so a short value in a tall box does not render as absurdly large type. */

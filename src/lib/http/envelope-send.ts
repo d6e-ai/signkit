@@ -17,7 +17,7 @@ const idempotencyKeySchema: ZodType<string> = z
 	.min(1)
 	.max(200)
 	.regex(/^[\x21-\x7E]+$/, 'Idempotency-Key must contain visible ASCII characters only');
-const sendSchema = z
+export const sendSchema = z
 	.object({
 		expectedGeneration: z.number().int().min(1).max(2_147_483_647),
 		expectedReadyAuditEventId: signkitIdentifierSchema

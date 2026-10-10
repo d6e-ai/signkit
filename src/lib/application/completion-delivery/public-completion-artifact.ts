@@ -5,20 +5,29 @@ import {
 	MAX_MANIFEST_SOURCE_BYTES,
 	sha256Hex
 } from '$lib/application/completion-artifacts/completion-manifest';
+import { MAX_PUBLISHED_COMPLETION_PDF_BYTES } from '$lib/application/completion-artifacts/completion-pdf-limits';
+import {
+	ExactObjectStreamError,
+	readExactObjectStream
+} from '$lib/application/completion-artifacts/exact-object-stream';
 import type {
 	CompletionArtifactLocator,
 	CompletionDeliveryStore
 } from '$lib/ports/completion-delivery-store';
-import type { ObjectStore } from '$lib/ports/object-store';
+import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import type { CompletionArtifactPdfStore } from '$lib/ports/completion-artifact-pdf-store';
-import { MAX_COMPLETION_PDF_BYTES } from '$lib/application/completion-artifacts/completion-pdf';
 import { hashCompletionToken, isCompletionToken } from '$lib/security/completion-token';
 
 export type PublicCompletionArtifactFormat = 'json' | 'markdown' | 'pdf';
 
 export interface PublicCompletionArtifact {
-	content: string | Uint8Array;
+	content: string | Uint8Array<ArrayBuffer>;
 	contentType: string;
+}
+
+/** Key-free, digest-free presence signal for the receipt landing page. */
+export interface PublicCompletionReceiptStatus {
+	pdfAvailable: boolean;
 }
 
 export class PublicCompletionArtifactNotFoundError extends Error {
@@ -100,6 +109,26 @@ export class PublicCompletionArtifactService {
 			if (pdfRecord.pdfObjectKey !== expectedPdfKey) {
 				throw new PublicCompletionArtifactIntegrityError();
 			}
+			let metadata: ObjectMetadata | null;
+			try {
+				metadata = await this.#objects.head(expectedPdfKey);
+			} catch (error: unknown) {
+				throwIfPublicCompletionError(error);
+				throw new PublicCompletionArtifactStorageError();
+			}
+			if (metadata === null) {
+				throw new PublicCompletionArtifactIntegrityError();
+			}
+			if (
+				metadata.key !== expectedPdfKey ||
+				metadata.sha256 !== pdfRecord.pdfSha256 ||
+				!Number.isSafeInteger(metadata.size) ||
+				metadata.size <= 0 ||
+				metadata.size > MAX_PUBLISHED_COMPLETION_PDF_BYTES
+			) {
+				throw new PublicCompletionArtifactIntegrityError();
+			}
+
 			let stream: ReadableStream<Uint8Array> | null;
 			try {
 				stream = await this.#objects.get(expectedPdfKey);
@@ -110,10 +139,13 @@ export class PublicCompletionArtifactService {
 			if (stream === null) {
 				throw new PublicCompletionArtifactIntegrityError();
 			}
-			let pdfBytes: Uint8Array;
+			let pdfBytes: Uint8Array<ArrayBuffer>;
 			try {
-				pdfBytes = await readStreamBounded(stream, MAX_COMPLETION_PDF_BYTES);
+				pdfBytes = await readExactObjectStream(stream, metadata.size);
 			} catch (error: unknown) {
+				if (error instanceof ExactObjectStreamError) {
+					throw new PublicCompletionArtifactIntegrityError();
+				}
 				throwIfPublicCompletionError(error);
 				throw new PublicCompletionArtifactStorageError();
 			}
@@ -145,6 +177,35 @@ export class PublicCompletionArtifactService {
 			return { content, contentType: JSON_CONTENT_TYPE };
 		}
 		return { content, contentType: MARKDOWN_CONTENT_TYPE };
+	}
+
+	/**
+	 * A cheap, grant-scoped presence check for the receipt landing page: two
+	 * durable-store reads, no object storage access, no digest or object key
+	 * on the result. `pdfAvailable` is `false` both when this deployment has
+	 * no PDF store configured and when the PDF has not been published yet —
+	 * the receipt page collapses both into the same "not yet" copy.
+	 */
+	async status(rawToken: string, now: Date = new Date()): Promise<PublicCompletionReceiptStatus> {
+		if (!isCompletionToken(rawToken)) {
+			throw new PublicCompletionArtifactNotFoundError();
+		}
+		const tokenHash: string = await hashCompletionToken(rawToken);
+		const locator: CompletionArtifactLocator | null = await this.#resolveLocator(tokenHash, now);
+		if (locator === null) {
+			throw new PublicCompletionArtifactNotFoundError();
+		}
+		let pdfAvailable = false;
+		if (this.#pdfStore !== null) {
+			try {
+				pdfAvailable =
+					(await this.#pdfStore.readCompletionArtifactPdf(locator.envelopeId)) !== null;
+			} catch (error: unknown) {
+				throwIfPublicCompletionError(error);
+				throw new PublicCompletionArtifactStorageError();
+			}
+		}
+		return { pdfAvailable };
 	}
 
 	async #resolveLocator(tokenHash: string, now: Date): Promise<CompletionArtifactLocator | null> {

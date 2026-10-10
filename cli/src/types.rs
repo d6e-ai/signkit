@@ -980,22 +980,32 @@ pub struct ReadyEnvelopeResponse {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldGeometry {
+    pub page: u32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldPlacement {
     #[serde(rename = "recipientId")]
     pub recipient_id: String,
-    #[serde(rename = "documentPath")]
-    pub document_path: String,
+    #[serde(rename = "documentId")]
+    pub document_id: String,
     #[serde(rename = "fieldType")]
     pub field_type: String,
     pub label: String,
     pub required: bool,
     pub position: u32,
+    pub geometry: FieldGeometry,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlaceFieldsRequest {
     #[serde(rename = "expectedGeneration")]
     pub expected_generation: u64,
@@ -1098,6 +1108,865 @@ pub struct PublishedVoidedEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoidEnvelopeResponse {
     pub voided: PublishedVoidedEnvelope,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Request body for `POST /api/v1/envelopes/{envelopeId}/pdf-seal`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RequestPdfSealBody {
+    #[serde(rename = "requestedProfile")]
+    pub requested_profile: String,
+}
+
+/// PDF seal job accepted (or replayed) by `POST /api/v1/envelopes/{envelopeId}/pdf-seal`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestedPdfSeal {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "jobId")]
+    pub job_id: String,
+    #[serde(rename = "requestedProfile")]
+    pub requested_profile: String,
+    #[serde(rename = "requestedAt")]
+    pub requested_at: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `POST /api/v1/envelopes/{envelopeId}/pdf-seal`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PdfSealRequestResponse {
+    #[serde(rename = "pdfSeal")]
+    pub pdf_seal: RequestedPdfSeal,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// PDF seal status. Extensible for unknown future status variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicPdfSealStatus {
+    Disabled {
+        envelope_id: String,
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    NotRequested {
+        envelope_id: String,
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Pending {
+        envelope_id: String,
+        requested_profile: String,
+        attempts: u32,
+        requested_at: String,
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Processing {
+        envelope_id: String,
+        requested_profile: String,
+        attempts: u32,
+        requested_at: String,
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Failed {
+        envelope_id: String,
+        requested_profile: String,
+        attempts: u32,
+        retryable: bool,
+        error_code: String,
+        requested_at: String,
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Published {
+        envelope_id: String,
+        requested_profile: String,
+        achieved_profile: String,
+        signer_certificate_sha256: String,
+        sealed_sha256: String,
+        sealed_byte_size: u64,
+        validation_report_sha256: String,
+        validated_at: String,
+        published_at: String,
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+    Other {
+        status: String,
+        extra: BTreeMap<String, serde_json::Value>,
+    },
+}
+
+impl Serialize for PublicPdfSealStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        fn extra_entries<'a>(
+            extra: &'a BTreeMap<String, serde_json::Value>,
+            known: &'a [&'static str],
+        ) -> impl Iterator<Item = (&'a String, &'a serde_json::Value)> {
+            extra
+                .iter()
+                .filter(move |(k, _)| !known.contains(&k.as_str()))
+        }
+
+        match self {
+            Self::Disabled { envelope_id, extra } => {
+                let known = ["status", "envelopeId"];
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "disabled")?;
+                map.serialize_entry("envelopeId", envelope_id)?;
+                for (k, v) in extra_entries(extra, &known) {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+            Self::NotRequested { envelope_id, extra } => {
+                let known = ["status", "envelopeId"];
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "not_requested")?;
+                map.serialize_entry("envelopeId", envelope_id)?;
+                for (k, v) in extra_entries(extra, &known) {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+            Self::Pending {
+                envelope_id,
+                requested_profile,
+                attempts,
+                requested_at,
+                extra,
+            } => {
+                let known = [
+                    "status",
+                    "envelopeId",
+                    "requestedProfile",
+                    "attempts",
+                    "requestedAt",
+                ];
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "pending")?;
+                map.serialize_entry("envelopeId", envelope_id)?;
+                map.serialize_entry("requestedProfile", requested_profile)?;
+                map.serialize_entry("attempts", attempts)?;
+                map.serialize_entry("requestedAt", requested_at)?;
+                for (k, v) in extra_entries(extra, &known) {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+            Self::Processing {
+                envelope_id,
+                requested_profile,
+                attempts,
+                requested_at,
+                extra,
+            } => {
+                let known = [
+                    "status",
+                    "envelopeId",
+                    "requestedProfile",
+                    "attempts",
+                    "requestedAt",
+                ];
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "processing")?;
+                map.serialize_entry("envelopeId", envelope_id)?;
+                map.serialize_entry("requestedProfile", requested_profile)?;
+                map.serialize_entry("attempts", attempts)?;
+                map.serialize_entry("requestedAt", requested_at)?;
+                for (k, v) in extra_entries(extra, &known) {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+            Self::Failed {
+                envelope_id,
+                requested_profile,
+                attempts,
+                retryable,
+                error_code,
+                requested_at,
+                extra,
+            } => {
+                let known = [
+                    "status",
+                    "envelopeId",
+                    "requestedProfile",
+                    "attempts",
+                    "retryable",
+                    "errorCode",
+                    "requestedAt",
+                ];
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "failed")?;
+                map.serialize_entry("envelopeId", envelope_id)?;
+                map.serialize_entry("requestedProfile", requested_profile)?;
+                map.serialize_entry("attempts", attempts)?;
+                map.serialize_entry("retryable", retryable)?;
+                map.serialize_entry("errorCode", error_code)?;
+                map.serialize_entry("requestedAt", requested_at)?;
+                for (k, v) in extra_entries(extra, &known) {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+            Self::Published {
+                envelope_id,
+                requested_profile,
+                achieved_profile,
+                signer_certificate_sha256,
+                sealed_sha256,
+                sealed_byte_size,
+                validation_report_sha256,
+                validated_at,
+                published_at,
+                extra,
+            } => {
+                let known = [
+                    "status",
+                    "envelopeId",
+                    "requestedProfile",
+                    "achievedProfile",
+                    "signerCertificateSha256",
+                    "sealedSha256",
+                    "sealedByteSize",
+                    "validationReportSha256",
+                    "validatedAt",
+                    "publishedAt",
+                ];
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", "published")?;
+                map.serialize_entry("envelopeId", envelope_id)?;
+                map.serialize_entry("requestedProfile", requested_profile)?;
+                map.serialize_entry("achievedProfile", achieved_profile)?;
+                map.serialize_entry("signerCertificateSha256", signer_certificate_sha256)?;
+                map.serialize_entry("sealedSha256", sealed_sha256)?;
+                map.serialize_entry("sealedByteSize", sealed_byte_size)?;
+                map.serialize_entry("validationReportSha256", validation_report_sha256)?;
+                map.serialize_entry("validatedAt", validated_at)?;
+                map.serialize_entry("publishedAt", published_at)?;
+                for (k, v) in extra_entries(extra, &known) {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+            Self::Other { status, extra } => {
+                let known = ["status"];
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("status", status)?;
+                for (k, v) in extra_entries(extra, &known) {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicPdfSealStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct PdfSealStatusVisitor;
+
+        impl<'de> Visitor<'de> for PdfSealStatusVisitor {
+            type Value = PublicPdfSealStatus;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a PDF seal status object with a status field")
+            }
+
+            fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut raw_map = BTreeMap::<String, serde_json::Value>::new();
+                while let Some((k, v)) = access.next_entry::<String, serde_json::Value>()? {
+                    raw_map.insert(k, v);
+                }
+
+                let status_val = raw_map
+                    .remove("status")
+                    .ok_or_else(|| de::Error::missing_field("status"))?;
+                let status_str = status_val
+                    .as_str()
+                    .ok_or_else(|| de::Error::custom("status must be a string"))?;
+
+                fn require_str(
+                    raw_map: &mut BTreeMap<String, serde_json::Value>,
+                    key: &str,
+                ) -> Result<String, String> {
+                    raw_map
+                        .remove(key)
+                        .and_then(|v| v.as_str().map(String::from))
+                        .ok_or_else(|| key.to_string())
+                }
+
+                match status_str {
+                    "disabled" => {
+                        let envelope_id = require_str(&mut raw_map, "envelopeId")
+                            .map_err(|_| de::Error::missing_field("envelopeId"))?;
+                        Ok(PublicPdfSealStatus::Disabled {
+                            envelope_id,
+                            extra: raw_map,
+                        })
+                    }
+                    "not_requested" => {
+                        let envelope_id = require_str(&mut raw_map, "envelopeId")
+                            .map_err(|_| de::Error::missing_field("envelopeId"))?;
+                        Ok(PublicPdfSealStatus::NotRequested {
+                            envelope_id,
+                            extra: raw_map,
+                        })
+                    }
+                    "pending" | "processing" => {
+                        let envelope_id = require_str(&mut raw_map, "envelopeId")
+                            .map_err(|_| de::Error::missing_field("envelopeId"))?;
+                        let requested_profile = require_str(&mut raw_map, "requestedProfile")
+                            .map_err(|_| de::Error::missing_field("requestedProfile"))?;
+                        let attempts = raw_map
+                            .remove("attempts")
+                            .and_then(|v| v.as_u64())
+                            .map(|u| u as u32)
+                            .ok_or_else(|| de::Error::missing_field("attempts"))?;
+                        let requested_at = require_str(&mut raw_map, "requestedAt")
+                            .map_err(|_| de::Error::missing_field("requestedAt"))?;
+                        if status_str == "pending" {
+                            Ok(PublicPdfSealStatus::Pending {
+                                envelope_id,
+                                requested_profile,
+                                attempts,
+                                requested_at,
+                                extra: raw_map,
+                            })
+                        } else {
+                            Ok(PublicPdfSealStatus::Processing {
+                                envelope_id,
+                                requested_profile,
+                                attempts,
+                                requested_at,
+                                extra: raw_map,
+                            })
+                        }
+                    }
+                    "failed" => {
+                        let envelope_id = require_str(&mut raw_map, "envelopeId")
+                            .map_err(|_| de::Error::missing_field("envelopeId"))?;
+                        let requested_profile = require_str(&mut raw_map, "requestedProfile")
+                            .map_err(|_| de::Error::missing_field("requestedProfile"))?;
+                        let attempts = raw_map
+                            .remove("attempts")
+                            .and_then(|v| v.as_u64())
+                            .map(|u| u as u32)
+                            .ok_or_else(|| de::Error::missing_field("attempts"))?;
+                        let retryable = raw_map
+                            .remove("retryable")
+                            .and_then(|v| v.as_bool())
+                            .ok_or_else(|| de::Error::missing_field("retryable"))?;
+                        let error_code = require_str(&mut raw_map, "errorCode")
+                            .map_err(|_| de::Error::missing_field("errorCode"))?;
+                        let requested_at = require_str(&mut raw_map, "requestedAt")
+                            .map_err(|_| de::Error::missing_field("requestedAt"))?;
+                        Ok(PublicPdfSealStatus::Failed {
+                            envelope_id,
+                            requested_profile,
+                            attempts,
+                            retryable,
+                            error_code,
+                            requested_at,
+                            extra: raw_map,
+                        })
+                    }
+                    "published" => {
+                        let envelope_id = require_str(&mut raw_map, "envelopeId")
+                            .map_err(|_| de::Error::missing_field("envelopeId"))?;
+                        let requested_profile = require_str(&mut raw_map, "requestedProfile")
+                            .map_err(|_| de::Error::missing_field("requestedProfile"))?;
+                        let achieved_profile = require_str(&mut raw_map, "achievedProfile")
+                            .map_err(|_| de::Error::missing_field("achievedProfile"))?;
+                        let signer_certificate_sha256 =
+                            require_str(&mut raw_map, "signerCertificateSha256")
+                                .map_err(|_| de::Error::missing_field("signerCertificateSha256"))?;
+                        let sealed_sha256 = require_str(&mut raw_map, "sealedSha256")
+                            .map_err(|_| de::Error::missing_field("sealedSha256"))?;
+                        let sealed_byte_size = raw_map
+                            .remove("sealedByteSize")
+                            .and_then(|v| v.as_u64())
+                            .ok_or_else(|| de::Error::missing_field("sealedByteSize"))?;
+                        let validation_report_sha256 =
+                            require_str(&mut raw_map, "validationReportSha256")
+                                .map_err(|_| de::Error::missing_field("validationReportSha256"))?;
+                        let validated_at = require_str(&mut raw_map, "validatedAt")
+                            .map_err(|_| de::Error::missing_field("validatedAt"))?;
+                        let published_at = require_str(&mut raw_map, "publishedAt")
+                            .map_err(|_| de::Error::missing_field("publishedAt"))?;
+                        Ok(PublicPdfSealStatus::Published {
+                            envelope_id,
+                            requested_profile,
+                            achieved_profile,
+                            signer_certificate_sha256,
+                            sealed_sha256,
+                            sealed_byte_size,
+                            validation_report_sha256,
+                            validated_at,
+                            published_at,
+                            extra: raw_map,
+                        })
+                    }
+                    other => Ok(PublicPdfSealStatus::Other {
+                        status: other.to_string(),
+                        extra: raw_map,
+                    }),
+                }
+            }
+        }
+
+        deserializer.deserialize_map(PdfSealStatusVisitor)
+    }
+}
+
+/// Response payload from `GET /api/v1/envelopes/{envelopeId}/pdf-seal`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PdfSealStatusResponse {
+    #[serde(rename = "pdfSeal")]
+    pub pdf_seal: PublicPdfSealStatus,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// OpenAPI 3.1 specification document representation returned by `GET /api/v1/openapi.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiDocument {
+    pub openapi: String,
+    pub info: OpenApiInfo,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<OpenApiServer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<OpenApiTag>,
+    #[serde(default)]
+    pub paths: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<OpenApiComponents>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiInfo {
+    pub title: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiServer {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiTag {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenApiComponents {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, serde_json::Value>,
+    #[serde(
+        rename = "securitySchemes",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub security_schemes: BTreeMap<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Stable receipt returned when inputs are safely validated locally via `--validate-only`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationReceipt {
+    pub valid: bool,
+    pub command: String,
+    #[serde(rename = "envelopeId", skip_serializing_if = "Option::is_none")]
+    pub envelope_id: Option<String>,
+    #[serde(rename = "expectedGeneration", skip_serializing_if = "Option::is_none")]
+    pub expected_generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// A single revision history entry within a `DraftRevisionHistoryPage`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftRevisionMetadata {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    pub timestamp: String,
+    pub message: String,
+    #[serde(rename = "actorType")]
+    pub actor_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<DraftCommitProvenance>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/envelopes/{envelopeId}/revisions`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftRevisionHistoryPage {
+    pub revisions: Vec<DraftRevisionMetadata>,
+    pub truncated: bool,
+    #[serde(rename = "nextCursor")]
+    pub next_cursor: Option<u64>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/envelopes/{envelopeId}/revisions/{revisionRef}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftExactRevision {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: String,
+    #[serde(rename = "archiveSha256")]
+    pub archive_sha256: String,
+    pub timestamp: String,
+    pub message: String,
+    #[serde(rename = "actorType")]
+    pub actor_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<DraftCommitProvenance>,
+    /// The single selected document, present only when the `path` query was specified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document: Option<DraftDocument>,
+    pub documents: Vec<DraftDocument>,
+    #[serde(rename = "documentSet")]
+    pub document_set: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Per-document title diff within a `DocumentChange`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentTitleDiff {
+    pub current: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    pub changed: bool,
+}
+
+/// Per-document position diff within a `DocumentChange`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentPositionDiff {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<u32>,
+    pub changed: bool,
+}
+
+/// Per-document content diff within a `DocumentChange`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentContentDiff {
+    pub changed: bool,
+    #[serde(rename = "previousSha256", skip_serializing_if = "Option::is_none")]
+    pub previous_sha256: Option<String>,
+    #[serde(rename = "currentSha256", skip_serializing_if = "Option::is_none")]
+    pub current_sha256: Option<String>,
+    #[serde(rename = "unifiedDiff", skip_serializing_if = "Option::is_none")]
+    pub unified_diff: Option<String>,
+    pub additions: u32,
+    pub deletions: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+}
+
+/// PDF-specific details within a `DocumentChange`, present only for PDF documents.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentPdfDetailsDiff {
+    #[serde(rename = "previousByteSize", skip_serializing_if = "Option::is_none")]
+    pub previous_byte_size: Option<u64>,
+    #[serde(rename = "currentByteSize", skip_serializing_if = "Option::is_none")]
+    pub current_byte_size: Option<u64>,
+    #[serde(rename = "previousPageCount", skip_serializing_if = "Option::is_none")]
+    pub previous_page_count: Option<u32>,
+    #[serde(rename = "currentPageCount", skip_serializing_if = "Option::is_none")]
+    pub current_page_count: Option<u32>,
+    #[serde(rename = "previousPageWidth", skip_serializing_if = "Option::is_none")]
+    pub previous_page_width: Option<f64>,
+    #[serde(rename = "currentPageWidth", skip_serializing_if = "Option::is_none")]
+    pub current_page_width: Option<f64>,
+    #[serde(rename = "previousPageHeight", skip_serializing_if = "Option::is_none")]
+    pub previous_page_height: Option<f64>,
+    #[serde(rename = "currentPageHeight", skip_serializing_if = "Option::is_none")]
+    pub current_page_height: Option<f64>,
+}
+
+/// One document's change entry within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentChange {
+    #[serde(rename = "documentId")]
+    pub document_id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(rename = "previousPath", skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    #[serde(rename = "pathChanged")]
+    pub path_changed: bool,
+    #[serde(rename = "changeType")]
+    pub change_type: String,
+    pub addition: bool,
+    pub removal: bool,
+    #[serde(rename = "titleChanged")]
+    pub title_changed: bool,
+    #[serde(rename = "orderChanged")]
+    pub order_changed: bool,
+    #[serde(rename = "contentChanged")]
+    pub content_changed: bool,
+    pub title: DocumentTitleDiff,
+    pub position: DocumentPositionDiff,
+    pub content: DocumentContentDiff,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pdf: Option<DocumentPdfDetailsDiff>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Aggregate counts within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionDiffSummary {
+    #[serde(rename = "documentsAdded")]
+    pub documents_added: u32,
+    #[serde(rename = "documentsRemoved")]
+    pub documents_removed: u32,
+    #[serde(rename = "documentsModified")]
+    pub documents_modified: u32,
+    #[serde(rename = "documentsReordered")]
+    pub documents_reordered: u32,
+    #[serde(rename = "titlesChanged")]
+    pub titles_changed: u32,
+    #[serde(rename = "totalChanges")]
+    pub total_changes: u32,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Base revision locator within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionDiffBase {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Head revision locator within a `RevisionDiffResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionDiffHead {
+    pub generation: u64,
+    #[serde(rename = "commitSha")]
+    pub commit_sha: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// JSON response payload from `GET /api/v1/envelopes/{envelopeId}/revisions/diff` (format=json).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevisionDiffResponse {
+    pub schema: String,
+    pub base: RevisionDiffBase,
+    pub head: RevisionDiffHead,
+    pub summary: RevisionDiffSummary,
+    pub changes: Vec<DocumentChange>,
+    #[serde(rename = "unifiedText")]
+    pub unified_text: String,
+    pub truncated: bool,
+    #[serde(
+        rename = "truncationReason",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub truncation_reason: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Public recipient signing context, shared shape for both the standalone
+/// context response and the `access` field of the documents response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientContext {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+    #[serde(rename = "recipientName")]
+    pub recipient_name: String,
+    pub role: String,
+    pub locale: String,
+    #[serde(rename = "recipientStatus")]
+    pub recipient_status: String,
+    #[serde(rename = "envelopeTitle")]
+    pub envelope_title: String,
+    #[serde(rename = "envelopeStatus")]
+    pub envelope_status: EnvelopeStatus,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/recipient/context`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientContextResponse {
+    pub access: RecipientContext,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// One sent document within a `RecipientDocumentsResponse`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientSentDocument {
+    #[serde(rename = "documentId")]
+    pub document_id: String,
+    pub position: u32,
+    pub title: String,
+    pub kind: String,
+    #[serde(rename = "pageCount")]
+    pub page_count: u32,
+    #[serde(rename = "pageWidth")]
+    pub page_width: f64,
+    #[serde(rename = "pageHeight")]
+    pub page_height: f64,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// A field the recipient must complete, positioned on one sent document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientPlacedField {
+    pub id: String,
+    #[serde(rename = "documentId")]
+    pub document_id: Option<String>,
+    #[serde(rename = "fieldType")]
+    pub field_type: String,
+    pub label: String,
+    pub required: bool,
+    pub geometry: FieldGeometry,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `GET /api/v1/recipient/documents`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientDocumentsResponse {
+    pub access: RecipientContext,
+    pub documents: Vec<RecipientSentDocument>,
+    pub source: String,
+    pub fields: Vec<RecipientPlacedField>,
+    #[serde(rename = "fieldGeneration")]
+    pub field_generation: u64,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Request body shared by `POST /api/v1/recipient/viewed|approve|decline`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientSimpleActionRequest {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+}
+
+/// Result entity shared by the `viewed`, `approved`, and `declined` response wrappers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientActionResult {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+    #[serde(rename = "recipientStatus")]
+    pub recipient_status: String,
+    #[serde(rename = "envelopeStatus")]
+    pub envelope_status: EnvelopeStatus,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `POST /api/v1/recipient/viewed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientViewedResponse {
+    pub viewed: RecipientActionResult,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `POST /api/v1/recipient/approve`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientApproveResponse {
+    pub approved: RecipientActionResult,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Response payload from `POST /api/v1/recipient/decline`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientDeclineResponse {
+    pub declined: RecipientActionResult,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// A single field value submitted with a `POST /api/v1/recipient/sign` command.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RecipientFieldValue {
+    Text(String),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientSignFieldValue {
+    #[serde(rename = "fieldId")]
+    pub field_id: String,
+    pub value: RecipientFieldValue,
+}
+
+/// Request body for `POST /api/v1/recipient/sign`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecipientSignRequest {
+    #[serde(rename = "envelopeId")]
+    pub envelope_id: String,
+    #[serde(rename = "recipientId")]
+    pub recipient_id: String,
+    #[serde(rename = "expectedFieldGeneration")]
+    pub expected_field_generation: u64,
+    pub values: Vec<RecipientSignFieldValue>,
+}
+
+/// Response payload from `POST /api/v1/recipient/sign`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientSignResponse {
+    pub signed: RecipientActionResult,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -1236,6 +2105,73 @@ mod tests {
         let future_re = serde_json::to_string(&future).unwrap();
         let future_back: PublicCompletionArtifactStatus = serde_json::from_str(&future_re).unwrap();
         assert_eq!(future, future_back);
+    }
+
+    #[test]
+    fn test_pdf_seal_status_preserves_all_variants_and_unknown_status() {
+        let disabled: PublicPdfSealStatus = serde_json::from_str(
+            r#"{"status":"disabled","envelopeId":"0191b26f-4000-7000-8000-000000000001"}"#,
+        )
+        .unwrap();
+        assert!(matches!(disabled, PublicPdfSealStatus::Disabled { .. }));
+        let disabled_re = serde_json::to_string(&disabled).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PublicPdfSealStatus>(&disabled_re).unwrap(),
+            disabled
+        );
+
+        let published_json = format!(
+            r#"{{
+                "status": "published",
+                "envelopeId": "0191b26f-4000-7000-8000-000000000001",
+                "requestedProfile": "pades-b-b",
+                "achievedProfile": "pades-b-b",
+                "signerCertificateSha256": "{sha}",
+                "sealedSha256": "{sha}",
+                "sealedByteSize": 4096,
+                "validationReportSha256": "{sha}",
+                "validatedAt": "2026-09-13T10:05:00Z",
+                "publishedAt": "2026-09-13T10:06:00Z",
+                "futureField": "preserved"
+            }}"#,
+            sha = "a".repeat(64)
+        );
+        let published: PublicPdfSealStatus = serde_json::from_str(&published_json).unwrap();
+        match &published {
+            PublicPdfSealStatus::Published {
+                sealed_byte_size,
+                extra,
+                ..
+            } => {
+                assert_eq!(*sealed_byte_size, 4096);
+                assert_eq!(
+                    extra.get("futureField"),
+                    Some(&serde_json::json!("preserved"))
+                );
+            }
+            _ => panic!("Expected Published"),
+        }
+        let published_re = serde_json::to_string(&published).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PublicPdfSealStatus>(&published_re).unwrap(),
+            published
+        );
+
+        // Future/unknown status variant round-trips via Other.
+        let future_json = r#"{"status":"reconciling","envelopeId":"0191b26f-4000-7000-8000-000000000001","stage":2}"#;
+        let future: PublicPdfSealStatus = serde_json::from_str(future_json).unwrap();
+        match &future {
+            PublicPdfSealStatus::Other { status, extra } => {
+                assert_eq!(status, "reconciling");
+                assert_eq!(extra.get("stage"), Some(&serde_json::json!(2)));
+            }
+            _ => panic!("Expected Other"),
+        }
+        let future_re = serde_json::to_string(&future).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PublicPdfSealStatus>(&future_re).unwrap(),
+            future
+        );
     }
 
     #[test]

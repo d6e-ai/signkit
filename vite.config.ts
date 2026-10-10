@@ -6,6 +6,13 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import { sveltekit } from '@sveltejs/kit/vite';
+import {
+	attemptCaptureDownload,
+	captureDownload,
+	startFixtureServer,
+	stopFixtureServer,
+	testDownloadMiddleware
+} from './src/lib/testing/browser-download-commands.ts';
 
 // Vitest browser mode's `vitest:browser:esm-injector` plugin (from
 // @vitest/mocker) rewrites every dynamic import() as
@@ -44,6 +51,7 @@ function deploymentAdapter() {
 
 export default defineConfig({
 	plugins: [
+		...(process.env.VITEST ? [testDownloadMiddleware()] : []),
 		tailwindcss(),
 		sveltekit({
 			compilerOptions: {
@@ -149,8 +157,17 @@ export default defineConfig({
 					browser: {
 						enabled: true,
 						headless: true,
-						provider: playwright(),
-						instances: [{ browser: 'chromium' }]
+						provider: playwright({ contextOptions: { acceptDownloads: true } }),
+						instances: [{ browser: 'chromium' }],
+						// Node-side helpers for the one suite that needs a real Playwright
+						// `download` event (a same-origin `<a download>` click bypasses the
+						// `fetch()` mocks every other browser spec uses).
+						commands: {
+							startFixtureServer,
+							stopFixtureServer,
+							captureDownload,
+							attemptCaptureDownload
+						}
 					}
 				}
 			}

@@ -29,6 +29,18 @@ export interface DraftVersion {
 	paths: readonly string[];
 }
 
+export interface VerifiedCommitDetails {
+	commitSha: string;
+	message: string;
+}
+
+export interface VerifiedDraftRevisionSnapshot {
+	commitSha: string;
+	message: string;
+	documents: readonly DraftDocument[];
+	manifest: string | null;
+}
+
 export interface DraftRepository {
 	read(
 		archive: Uint8Array | null,
@@ -38,6 +50,14 @@ export interface DraftRepository {
 		archive: Uint8Array | null,
 		expectedCommitSha: string | null
 	): Promise<string | null>;
+	readCommitMessage?(
+		archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<string | null>;
+	readRevisionSnapshot?(
+		archive: Uint8Array | null,
+		expectedCommitSha: string | null
+	): Promise<VerifiedDraftRevisionSnapshot | null>;
 	commit(
 		archive: Uint8Array | null,
 		edits: readonly DraftEdit[],

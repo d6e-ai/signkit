@@ -5,6 +5,7 @@ import type {
 } from '$lib/application/signing/recipient-sent-pdf';
 import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { readRecipientSessionCookie } from '$lib/server/recipient-session';
+import { recipientBearerToken, type RecipientHttpMode } from './recipient-bearer';
 
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
@@ -20,15 +21,13 @@ export type RecipientSessionUnsealer = (
 ) => Promise<string | null>;
 
 /**
- * Serves the sent agreement PDF to the browser that already holds an active
- * recipient session for the envelope named in the path.
+ * Serves the sent agreement PDF to a browser with an active recipient session,
+ * or to a separate browserless route with an explicit recipient capability.
  *
- * Authority comes only from the sealed, http-only session cookie bound to
- * that envelope ID. No token appears in the URL, in page data, or anywhere
- * JavaScript can read it, so the address of this document is not a bearer
- * credential and cannot leak through history, referrers, logs, or a shared
- * link. A path/cookie mismatch, a missing session, or a non-UUIDv7 path
- * segment fails closed as an opaque 404.
+ * The browser route uses only the sealed, http-only session cookie. The CLI
+ * route uses only the explicit bearer header and refuses ambient Cookie or
+ * Origin headers. No token appears in either URL. A mismatched or inactive
+ * credential and a non-UUIDv7 path fail closed as an opaque 404.
  *
  * The response is deliberately uninformative on failure: an inactive,
  * expired, revoked, or absent session is indistinguishable from a path that
@@ -38,25 +37,30 @@ export type RecipientSessionUnsealer = (
  */
 export function createRecipientSentPdfHandler(
 	resolveApplication: RecipientSentPdfApplicationResolver,
-	unsealSession: RecipientSessionUnsealer
+	unsealSession: RecipientSessionUnsealer,
+	mode: RecipientHttpMode = 'browser'
 ): RequestHandler {
-	return async ({ cookies, params, platform, request }): Promise<Response> => {
+	return async ({ cookies, params, platform, request, url }): Promise<Response> => {
 		if (request.method !== 'GET' && request.method !== 'HEAD') return notFound();
 
 		const envelopeId: string | undefined = params.envelopeId;
 		if (envelopeId === undefined || !isUuidV7(envelopeId)) return notFound();
-		const documentId: string | undefined = params.documentId;
+		const documentId: string | undefined =
+			mode === 'bearer' ? (url.searchParams.get('documentId') ?? undefined) : params.documentId;
 		if (documentId !== undefined && !isUuidV7(documentId)) return notFound();
 
-		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
-		if (sealed === undefined) return notFound();
-
 		let token: string | null;
-		try {
-			token = await unsealSession(sealed, envelopeId);
-		} catch {
-			console.error(JSON.stringify({ event: 'recipient_sent_pdf_session_failed' }));
-			return unavailable();
+		if (mode === 'bearer') {
+			token = recipientBearerToken(request);
+		} else {
+			const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
+			if (sealed === undefined) return notFound();
+			try {
+				token = await unsealSession(sealed, envelopeId);
+			} catch {
+				console.error(JSON.stringify({ event: 'recipient_sent_pdf_session_failed' }));
+				return unavailable();
+			}
 		}
 		if (token === null) return notFound();
 
@@ -79,7 +83,7 @@ export function createRecipientSentPdfHandler(
 		if (result.outcome === 'not_found') return notFound();
 		if (result.outcome === 'unavailable') return unavailable();
 
-		const headers: Headers = securityHeaders();
+		const headers: Headers = securityHeaders(mode);
 		headers.set('content-type', 'application/pdf');
 		headers.set('content-length', String(result.byteSize));
 		// A generic filename: the envelope title and the recipient's name are
@@ -100,14 +104,14 @@ function bodyOf(bytes: Uint8Array): BodyInit {
 	return copy;
 }
 
-function securityHeaders(): Headers {
+function securityHeaders(mode: RecipientHttpMode = 'browser'): Headers {
 	return new Headers({
 		// Private and uncacheable: a shared cache must never be able to hand
 		// this document to the next person through the same proxy.
 		'cache-control': 'private, no-store, max-age=0, must-revalidate',
 		pragma: 'no-cache',
 		'referrer-policy': 'no-referrer',
-		vary: 'Cookie',
+		vary: mode === 'bearer' ? 'Authorization' : 'Cookie',
 		'x-content-type-options': 'nosniff',
 		// Nothing frames this response. The signing page fetches the bytes and
 		// draws them to a canvas itself, so no origin -- including this one --

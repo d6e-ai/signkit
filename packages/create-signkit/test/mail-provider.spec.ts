@@ -28,6 +28,7 @@ describe('Cloudflare mail provider selection', () => {
 		) as Record<string, unknown>;
 		expect(config.send_email).toEqual([{ name: 'EMAIL' }]);
 		expect(config.vars).toMatchObject({ SIGNKIT_MAIL_PROVIDER: 'cloudflare' });
+		expect(config.triggers).toEqual({ crons: ['* * * * *', '*/5 * * * *'] });
 	});
 
 	it('renders bounded SMTP vars without an EMAIL binding and requires only the password secret', () => {
@@ -144,5 +145,29 @@ describe('Cloudflare mail provider selection', () => {
 			true
 		);
 		expect(secret.SIGNKIT_SMTP_PASSWORD).toBe(' exact password bytes ');
+	});
+});
+
+describe('Cloudflare routes', () => {
+	it('keeps workers.dev enabled when no custom domain is configured', () => {
+		const config = JSON.parse(
+			renderWranglerConfig({ ...baseConfig, mailProvider: 'cloudflare' })
+		) as Record<string, unknown>;
+
+		expect(config.workers_dev).toBe(true);
+		expect(config).not.toHaveProperty('routes');
+	});
+
+	it('renders a custom-domain route and explicitly disables workers.dev', () => {
+		const config = JSON.parse(
+			renderWranglerConfig({
+				...baseConfig,
+				mailProvider: 'cloudflare',
+				domain: 'sign.example.com'
+			})
+		) as Record<string, unknown>;
+
+		expect(config.workers_dev).toBe(false);
+		expect(config.routes).toEqual([{ pattern: 'sign.example.com', custom_domain: true }]);
 	});
 });

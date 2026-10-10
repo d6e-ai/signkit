@@ -117,11 +117,9 @@ function extractBearerToken(authorization: string | null): string | null {
 	return match?.[1] ?? null;
 }
 
-function artifactResponseBody(content: string | Uint8Array): BodyInit {
+function artifactResponseBody(content: string | Uint8Array<ArrayBuffer>): BodyInit {
 	if (typeof content === 'string') return content;
-	const body: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(content.byteLength));
-	body.set(content);
-	return body;
+	return content;
 }
 
 function publicCompletionHeaders(contentType: string): Headers {

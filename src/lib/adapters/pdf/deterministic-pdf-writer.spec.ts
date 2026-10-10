@@ -45,6 +45,62 @@ describe('renderDeterministicTextPdf', () => {
 		const text: string = new TextDecoder('latin1').decode(bytes);
 		expect(text).toContain('/Count 1');
 	});
+
+	it('encodes WinAnsi accented characters as single-byte PDF octal escapes, not raw UTF-8', () => {
+		const bytes: Uint8Array = renderDeterministicTextPdf([['café vs café in Zürich']]);
+		const text: string = new TextDecoder('latin1').decode(bytes);
+		// 0x00E9 (é) is WinAnsi/Latin-1 byte 0xE9, i.e. octal 351; 0x00FC (ü) is 0xFC, octal 374.
+		expect(text).toContain('caf\\351 in Z\\374rich');
+		// The historical bug encoded each accented character as its two-byte
+		// UTF-8 sequence (0xC3 0xA9 for é) instead of one WinAnsi byte.
+		const utf8OfE: Uint8Array = new TextEncoder().encode('é');
+		expect(containsSubsequence(bytes, utf8OfE)).toBe(false);
+	});
+
+	it('round-trips an accented literal through PDF literal-string escape rules to its WinAnsi byte value', () => {
+		// Callers always pass text through toPdfSafeText first (see completion-pdf.ts); it
+		// replaces "—" (em dash), which is outside the writer's declared WinAnsi/Latin-1
+		// contract, with the unsupported-character placeholder before it ever reaches here.
+		const line: string = toPdfSafeText('Résumé — naïve');
+		const bytes: Uint8Array = renderDeterministicTextPdf([[line]]);
+		const text: string = new TextDecoder('latin1').decode(bytes);
+		const literal: string = extractFirstLiteral(text);
+		const decodedBytes: number[] = decodePdfLiteral(literal);
+		expect(decodedBytes).toEqual([...line].map((c) => c.codePointAt(0)));
+	});
+
+	it('keeps ASCII literal escaping intact alongside octal-escaped accented characters', () => {
+		const bytes: Uint8Array = renderDeterministicTextPdf([['(café) and \\ done']]);
+		const text: string = new TextDecoder('latin1').decode(bytes);
+		expect(text).toContain('\\(caf\\351\\) and \\\\ done');
+	});
+
+	it('keeps the content stream /Length accurate when the stream contains octal escapes', () => {
+		const bytes: Uint8Array = renderDeterministicTextPdf([['café in Zürich, naïve résumé']]);
+		const text: string = new TextDecoder('latin1').decode(bytes);
+		const match: RegExpMatchArray | null = text.match(
+			/<< \/Length (\d+) >>\nstream\n([\s\S]*?)\nendstream/
+		);
+		expect(match).not.toBeNull();
+		const [, declaredLength, stream] = match as RegExpMatchArray;
+		expect(new TextEncoder().encode(stream).byteLength).toBe(Number(declaredLength));
+	});
+
+	it('keeps xref offsets pointing at the correct object even with octal-escaped content', () => {
+		const bytes: Uint8Array = renderDeterministicTextPdf([['café title'], ['Zürich office']]);
+		const text: string = new TextDecoder('latin1').decode(bytes);
+		const xrefMatch: RegExpMatchArray | null = text.match(/xref\n0 (\d+)\n([\s\S]*?)\ntrailer/);
+		expect(xrefMatch).not.toBeNull();
+		const [, , entriesBlock] = xrefMatch as RegExpMatchArray;
+		const entries: string[] = entriesBlock.split('\n').slice(1); // drop the free-list head entry
+		for (let index: number = 0; index < entries.length; index += 1) {
+			const offset: number = Number(entries[index].slice(0, 10));
+			const objectNumber: number = index + 1;
+			expect(text.slice(offset, offset + `${objectNumber} 0 obj`.length)).toBe(
+				`${objectNumber} 0 obj`
+			);
+		}
+	});
 });
 
 describe('toPdfSafeText', () => {
@@ -62,6 +118,50 @@ describe('toPdfSafeText', () => {
 		expect(toPdfSafeText(original)).toHaveLength(original.length);
 	});
 });
+
+/** Extracts the byte content of the first `(...) Tj` literal in a decoded content stream. */
+function extractFirstLiteral(text: string): string {
+	const match: RegExpMatchArray | null = text.match(/\(((?:\\.|[^()\\])*)\) Tj/);
+	if (match === null) throw new Error('no literal string found');
+	return match[1];
+}
+
+/** Minimal PDF literal-string decoder (ISO 32000-1 §7.3.4.2) for octal escapes and the three escaped delimiters. */
+function decodePdfLiteral(literal: string): number[] {
+	const bytes: number[] = [];
+	for (let index: number = 0; index < literal.length; index += 1) {
+		const character: string = literal[index];
+		if (character !== '\\') {
+			bytes.push(character.codePointAt(0) ?? 0);
+			continue;
+		}
+		const next: string = literal[index + 1];
+		if (next === '\\' || next === '(' || next === ')') {
+			bytes.push(next.codePointAt(0) ?? 0);
+			index += 1;
+			continue;
+		}
+		const octal: string = literal.slice(index + 1, index + 4);
+		bytes.push(Number.parseInt(octal, 8));
+		index += 3;
+	}
+	return bytes;
+}
+
+function containsSubsequence(haystack: Uint8Array, needle: Uint8Array): boolean {
+	if (needle.length === 0) return true;
+	for (let start: number = 0; start <= haystack.length - needle.length; start += 1) {
+		let matches: boolean = true;
+		for (let offset: number = 0; offset < needle.length; offset += 1) {
+			if (haystack[start + offset] !== needle[offset]) {
+				matches = false;
+				break;
+			}
+		}
+		if (matches) return true;
+	}
+	return false;
+}
 
 describe('wrapPlainTextLines', () => {
 	it('wraps on whitespace without dropping or reordering non-whitespace characters', () => {

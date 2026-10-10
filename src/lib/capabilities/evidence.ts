@@ -12,6 +12,18 @@ export const evidenceCapabilities = {
 		ccDelivery: 'supported',
 		publicArtifactGrants: 'supported'
 	},
+	pdfSeal: {
+		statusEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+		requestEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal',
+		downloadEndpoint: '/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
+		workerEndpoint: '/api/v1/system/pdf-seals/drain',
+		workerAuthentication: 'bearer-secret',
+		authentication: 'instance-session-or-api-key',
+		discovery: 'explicit-request-only',
+		supportedProfiles: ['pades-b-b', 'pades-b-t'],
+		publication: 'independently-validated-atomic',
+		privateKeyCustody: 'external-provider'
+	},
 	completionDelivery: {
 		workerEndpoint: '/api/v1/system/completion-deliveries/drain',
 		workerAuthentication: 'bearer-secret',

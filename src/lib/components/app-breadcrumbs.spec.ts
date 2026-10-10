@@ -6,12 +6,12 @@ describe('app breadcrumbs', () => {
 
 	it('uses the installed shadcn breadcrumb component, not hand-rolled markup', () => {
 		expect(source).toContain("from '$lib/components/ui/breadcrumb'");
-		expect(source).toContain('<Breadcrumb.Root>');
-		expect(source).toContain('<Breadcrumb.List>');
-		expect(source).toContain('<Breadcrumb.Item>');
+		expect(source).toContain('<Breadcrumb.Root');
+		expect(source).toContain('<Breadcrumb.List');
+		expect(source).toContain('<Breadcrumb.Item');
 		expect(source).toContain('<Breadcrumb.Link');
 		expect(source).toContain('<Breadcrumb.Separator');
-		expect(source).toContain('<Breadcrumb.Page>');
+		expect(source).toContain('<Breadcrumb.Page');
 	});
 
 	it('is route-aware across the primary nav destinations', () => {
@@ -30,7 +30,9 @@ describe('app breadcrumbs', () => {
 	});
 
 	it('anchors the first crumb on the SignKit brand linking home', () => {
-		expect(source).toMatch(/<Breadcrumb\.Link href=\{localizeHref\('\/'\)\}>\{m\.app_name\(\)\}/);
+		expect(source).toMatch(
+			/<Breadcrumb\.Link\b[^>]*href=\{localizeHref\('\/'\)\}[^>]*>\{m\.app_name\(\)\}/
+		);
 	});
 
 	it('never references the removed /inbox, /templates, /contacts, or /automation routes', () => {
@@ -60,7 +62,7 @@ describe('app breadcrumbs', () => {
 		// /settings is only a redirector (non-member accept flow, role-based
 		// handoff), not a stable page, so a caller already on a child route
 		// must not be offered it as a navigation target.
-		const pageCount = source.match(/<Breadcrumb\.Page>/g) ?? [];
+		const pageCount = source.match(/<Breadcrumb\.Page\b/g) ?? [];
 		expect(pageCount.length).toBeGreaterThanOrEqual(2);
 		expect(source).not.toMatch(/<Breadcrumb\.Link[^>]*\/settings/);
 		expect(source).not.toMatch(/href=\{localizeHref\('\/settings'\)\}/);

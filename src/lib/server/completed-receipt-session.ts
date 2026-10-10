@@ -1,0 +1,240 @@
+import { env } from '$env/dynamic/private';
+import { isUuidV7 } from '$lib/ids/uuid-v7';
+import { AesGcmSealingKeyring, decodeBase64SealingKey } from '$lib/security/sealing-keyring';
+
+export interface CompletedReceiptSessionLocator {
+	version: 1;
+	envelopeId: string;
+	recipientId: string;
+	idempotencyKey: string;
+	capabilityHash: string;
+	action: 'signed' | 'approved';
+	completedAt: string;
+	expiresAt: string;
+}
+
+export const COMPLETED_RECEIPT_COOKIE_PREFIX: string = 'signkit_completed_receipt_';
+export const COMPLETED_RECEIPT_COOKIE_PATH: string = '/';
+export const COMPLETED_RECEIPT_COOKIE_MAX_AGE_SECONDS: number = 60 * 60 * 24 * 30;
+export const COMPLETED_RECEIPT_COOKIE_MAX_LENGTH: number = 1024;
+
+export function completedReceiptCookieName(envelopeId: string): string | null {
+	if (!isUuidV7(envelopeId)) return null;
+	return `${COMPLETED_RECEIPT_COOKIE_PREFIX}${envelopeId}`;
+}
+
+export function readCompletedReceiptCookie(
+	cookies: { get(name: string): string | undefined },
+	envelopeId: string
+): string | undefined {
+	const name: string | null = completedReceiptCookieName(envelopeId);
+	if (name === null) return undefined;
+	return cookies.get(name);
+}
+
+export const COMPLETED_RECEIPT_COOKIE_OPTIONS = {
+	path: COMPLETED_RECEIPT_COOKIE_PATH,
+	httpOnly: true,
+	sameSite: 'lax',
+	secure: true,
+	maxAge: COMPLETED_RECEIPT_COOKIE_MAX_AGE_SECONDS
+} as const;
+
+const IV_BYTES: number = 12;
+const TAG_BYTES: number = 16;
+const KEY_ID_HEX_LENGTH: number = 16;
+const IDEMPOTENCY_KEY_PATTERN: RegExp = /^[\x21-\x7e]{1,200}$/;
+const SHA256_HEX_PATTERN: RegExp = /^[0-9a-f]{64}$/;
+const LOCATOR_KEYS: readonly string[] = [
+	'action',
+	'capabilityHash',
+	'completedAt',
+	'envelopeId',
+	'expiresAt',
+	'idempotencyKey',
+	'recipientId',
+	'version'
+];
+// A distinct AAD prefix and HKDF info keep this cookie unusable as a declined
+// receipt and vice versa, even though both derive from the same master secret.
+const AAD_PREFIX: string = 'signkit:completed-receipt-cookie:v1:';
+const HKDF_SALT: Uint8Array<ArrayBuffer> = utf8('signkit:session-key-derivation:v1');
+const HKDF_INFO: Uint8Array<ArrayBuffer> = utf8('signkit:completed-receipt-key:v1');
+const ENV_VAR_NAME: string = 'SESSION_ENCRYPTION_KEY';
+
+export async function sealCompletedReceiptSession(
+	locator: CompletedReceiptSessionLocator
+): Promise<string> {
+	if (!isCompletedReceiptSessionLocator(locator))
+		throw new Error('Invalid completed receipt locator');
+	const aad: Uint8Array<ArrayBuffer> | null = completedReceiptAad(locator.envelopeId);
+	if (aad === null) throw new Error('Invalid completed receipt locator');
+
+	const keyring: AesGcmSealingKeyring = await completedReceiptKeyring();
+	const plaintext: Uint8Array<ArrayBuffer> = utf8(JSON.stringify(locator));
+	const sealed = await keyring.sealWithActive(plaintext, aad);
+	const keyIdBytes: Uint8Array<ArrayBuffer> = utf8(sealed.keyId);
+	if (keyIdBytes.byteLength !== KEY_ID_HEX_LENGTH)
+		throw new Error('Unexpected sealing key ID length');
+	const combined: Uint8Array<ArrayBuffer> = new Uint8Array(
+		new ArrayBuffer(keyIdBytes.byteLength + sealed.iv.byteLength + sealed.ciphertext.byteLength)
+	);
+	combined.set(keyIdBytes, 0);
+	combined.set(sealed.iv, keyIdBytes.byteLength);
+	combined.set(sealed.ciphertext, keyIdBytes.byteLength + sealed.iv.byteLength);
+
+	const cookie: string = base64UrlEncode(combined);
+	if (cookie.length > COMPLETED_RECEIPT_COOKIE_MAX_LENGTH)
+		throw new Error('Completed receipt cookie exceeds the maximum length');
+	return cookie;
+}
+
+export async function unsealCompletedReceiptSession(
+	cookie: string,
+	envelopeId: string
+): Promise<CompletedReceiptSessionLocator | null> {
+	const aad: Uint8Array<ArrayBuffer> | null = completedReceiptAad(envelopeId);
+	if (aad === null) return null;
+	if (cookie.length === 0 || cookie.length > COMPLETED_RECEIPT_COOKIE_MAX_LENGTH) return null;
+
+	let combined: Uint8Array<ArrayBuffer>;
+	try {
+		combined = base64UrlDecode(cookie);
+		if (combined.byteLength <= KEY_ID_HEX_LENGTH + IV_BYTES + TAG_BYTES) return null;
+	} catch {
+		return null;
+	}
+
+	const keyId: string = new TextDecoder('ascii').decode(combined.slice(0, KEY_ID_HEX_LENGTH));
+	const iv: Uint8Array<ArrayBuffer> = combined.slice(
+		KEY_ID_HEX_LENGTH,
+		KEY_ID_HEX_LENGTH + IV_BYTES
+	);
+	const ciphertext: Uint8Array<ArrayBuffer> = combined.slice(KEY_ID_HEX_LENGTH + IV_BYTES);
+	const keyring: AesGcmSealingKeyring = await completedReceiptKeyring();
+	try {
+		const plaintext: Uint8Array = await keyring.openWithKeyId(keyId, iv, ciphertext, aad);
+		const decoded: string = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
+		const candidate: unknown = JSON.parse(decoded);
+		if (!isCompletedReceiptSessionLocator(candidate)) return null;
+		return candidate.envelopeId === envelopeId ? candidate : null;
+	} catch {
+		return null;
+	}
+}
+
+export function isCompletedReceiptExpired(
+	locator: CompletedReceiptSessionLocator,
+	now: Date = new Date()
+): boolean {
+	return Date.parse(locator.expiresAt) <= now.valueOf();
+}
+
+export function isCompletedReceiptSessionLocator(
+	value: unknown
+): value is CompletedReceiptSessionLocator {
+	if (!isRecord(value)) return false;
+	const keys: string[] = Object.keys(value).sort();
+	if (keys.length !== LOCATOR_KEYS.length) return false;
+	for (let index: number = 0; index < LOCATOR_KEYS.length; index += 1) {
+		if (keys[index] !== LOCATOR_KEYS[index]) return false;
+	}
+
+	if (value.version !== 1) return false;
+	if (!isUuidV7String(value.envelopeId)) return false;
+	if (!isUuidV7String(value.recipientId)) return false;
+	if (value.action !== 'signed' && value.action !== 'approved') return false;
+	if (typeof value.idempotencyKey !== 'string') return false;
+	if (!IDEMPOTENCY_KEY_PATTERN.test(value.idempotencyKey)) return false;
+	if (typeof value.capabilityHash !== 'string') return false;
+	if (!SHA256_HEX_PATTERN.test(value.capabilityHash)) return false;
+	if (typeof value.completedAt !== 'string' || !isCanonicalIsoTimestamp(value.completedAt))
+		return false;
+	if (typeof value.expiresAt !== 'string' || !isCanonicalIsoTimestamp(value.expiresAt))
+		return false;
+	return Date.parse(value.expiresAt) > Date.parse(value.completedAt);
+}
+
+async function completedReceiptKeyring(): Promise<AesGcmSealingKeyring> {
+	const activeMaster: Uint8Array<ArrayBuffer> = decodeBase64SealingKey(
+		requiredEnv(ENV_VAR_NAME, env.SESSION_ENCRYPTION_KEY),
+		ENV_VAR_NAME
+	);
+	const previousEncoded: string | undefined = optionalEnv(env.SESSION_ENCRYPTION_KEY_PREVIOUS);
+	const activeSubkey: Uint8Array<ArrayBuffer> = await deriveSubkey(activeMaster);
+	const previousSubkey: Uint8Array<ArrayBuffer> | null =
+		previousEncoded === undefined
+			? null
+			: await deriveSubkey(decodeBase64SealingKey(previousEncoded, `${ENV_VAR_NAME}_PREVIOUS`));
+	return new AesGcmSealingKeyring(activeSubkey, previousSubkey);
+}
+
+async function deriveSubkey(
+	masterKeyBytes: Uint8Array<ArrayBuffer>
+): Promise<Uint8Array<ArrayBuffer>> {
+	const masterKey: CryptoKey = await crypto.subtle.importKey('raw', masterKeyBytes, 'HKDF', false, [
+		'deriveBits'
+	]);
+	const derived: ArrayBuffer = await crypto.subtle.deriveBits(
+		{ name: 'HKDF', hash: 'SHA-256', salt: HKDF_SALT, info: HKDF_INFO },
+		masterKey,
+		256
+	);
+	return new Uint8Array(derived);
+}
+
+function requiredEnv(name: string, value: string | undefined): string {
+	if (value === undefined || value.trim().length === 0) throw new Error(`${name} is not set`);
+	return value;
+}
+
+function optionalEnv(value: string | undefined): string | undefined {
+	if (value === undefined || value.trim().length === 0) return undefined;
+	return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function completedReceiptAad(envelopeId: string): Uint8Array<ArrayBuffer> | null {
+	if (!isUuidV7(envelopeId)) return null;
+	return utf8(`${AAD_PREFIX}${envelopeId}`);
+}
+
+function isUuidV7String(value: unknown): value is string {
+	return typeof value === 'string' && isUuidV7(value);
+}
+
+function isCanonicalIsoTimestamp(value: string): boolean {
+	const milliseconds: number = Date.parse(value);
+	return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value;
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+	let binary: string = '';
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+function base64UrlDecode(encoded: string): Uint8Array<ArrayBuffer> {
+	if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error('Invalid completed receipt encoding');
+	const padding: string = '='.repeat((4 - (encoded.length % 4)) % 4);
+	const base64: string = encoded.replaceAll('-', '+').replaceAll('_', '/') + padding;
+	return base64Decode(base64);
+}
+
+function base64Decode(encoded: string): Uint8Array<ArrayBuffer> {
+	const binary: string = atob(encoded);
+	const bytes: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(binary.length));
+	for (let index: number = 0; index < binary.length; index += 1)
+		bytes[index] = binary.charCodeAt(index);
+	return bytes;
+}
+
+function utf8(value: string): Uint8Array<ArrayBuffer> {
+	const encoded: Uint8Array = new TextEncoder().encode(value);
+	const bytes: Uint8Array<ArrayBuffer> = new Uint8Array(new ArrayBuffer(encoded.byteLength));
+	bytes.set(encoded);
+	return bytes;
+}

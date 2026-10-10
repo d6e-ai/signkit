@@ -1,0 +1,13 @@
+[project]
+name = "signkit-pades-conformance"
+version = "0.0.0"
+description = "CI-only PAdES conformance fixtures for SignKit"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "cryptography==50.0.1",
+  "pyhanko[etsi]==0.37.0",
+  "pyhanko-cli==0.5.0",
+]
+
+[tool.uv]
+package = false

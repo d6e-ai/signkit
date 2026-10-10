@@ -87,8 +87,9 @@ export function createCompletionEvidenceHandler(
 				status: 200,
 				headers: {
 					'content-type': evidence.contentType,
-					'cache-control': 'private, no-cache',
+					'cache-control': 'private, no-store',
 					etag: `"${evidence.digest}"`,
+					'content-disposition': `attachment; filename="completion-evidence-${envelopeId.data}.${format === 'markdown' ? 'md' : 'json'}"`,
 					'x-content-type-options': 'nosniff'
 				}
 			});

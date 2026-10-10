@@ -19,7 +19,19 @@ export class CloudflareBindingMailSender implements MailSender {
 				from: { email: message.from.email, name: message.from.name },
 				subject: message.subject,
 				text: message.text,
-				html: message.html
+				html: message.html,
+				...(message.attachment === undefined
+					? {}
+					: {
+							attachments: [
+								{
+									disposition: 'attachment',
+									filename: message.attachment.filename,
+									type: message.attachment.contentType,
+									content: toArrayBuffer(message.attachment.content)
+								}
+							]
+						})
 			});
 			return { outcome: 'accepted', providerMessageId: result.messageId };
 		} catch (error: unknown) {
@@ -76,7 +88,18 @@ export class CloudflareRestMailSender implements MailSender {
 					from: { address: message.from.email, name: message.from.name },
 					subject: message.subject,
 					text: message.text,
-					html: message.html
+					html: message.html,
+					...(message.attachment === undefined
+						? {}
+						: {
+								attachments: [
+									{
+										filename: message.attachment.filename,
+										type: message.attachment.contentType,
+										content: base64Encode(message.attachment.content)
+									}
+								]
+							})
 				})
 			});
 		} catch {
@@ -132,4 +155,28 @@ async function parseRestEnvelope(response: Response): Promise<CloudflareRestEnve
 function stringArray(value: unknown): readonly string[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter((entry: unknown): entry is string => typeof entry === 'string');
+}
+
+/**
+ * Copies into a right-sized `ArrayBuffer` rather than returning `bytes.buffer`
+ * directly, since a `Uint8Array` view (for example, one produced by
+ * `subarray`) can share a larger backing buffer whose bounds do not match its
+ * own `byteOffset`/`byteLength`.
+ */
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	const copy = new Uint8Array(bytes.byteLength);
+	copy.set(bytes);
+	return copy.buffer;
+}
+
+const BASE64_CHUNK_SIZE: number = 0x8000;
+
+/** Chunked to avoid a call-stack blowout from `String.fromCharCode(...bytes)` on a large PDF. */
+function base64Encode(bytes: Uint8Array): string {
+	let binary: string = '';
+	for (let offset: number = 0; offset < bytes.byteLength; offset += BASE64_CHUNK_SIZE) {
+		const chunk: Uint8Array = bytes.subarray(offset, offset + BASE64_CHUNK_SIZE);
+		binary += String.fromCharCode(...chunk);
+	}
+	return btoa(binary);
 }

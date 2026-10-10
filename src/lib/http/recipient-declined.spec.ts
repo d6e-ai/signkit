@@ -100,6 +100,30 @@ function receiptOptions(
 }
 
 describe('recipient declined HTTP handler', () => {
+	it('returns a browserless decline receipt without setting or clearing cookies', async () => {
+		const app: RecipientDeclinedApplicationPort = application(published);
+		const { event, cookies, deleted } = createRecipientRequestEvent({
+			pathname: '/api/v1/recipient/decline',
+			defaultBody: { envelopeId, recipientId },
+			origin: null,
+			authorization: `Bearer ${token}`,
+			idempotencyKey: 'decline-cli-1'
+		});
+		cookies.set = vi.fn();
+		const response: Response = await createRecipientDeclinedHandler(
+			() => app,
+			async (): Promise<string> => token,
+			undefined,
+			'bearer'
+		)(event);
+		expect(response.status).toBe(200);
+		expect(app.decline).toHaveBeenCalledWith(expect.objectContaining({ token }));
+		expect(cookies.get).not.toHaveBeenCalled();
+		expect(cookies.set).not.toHaveBeenCalled();
+		expect(deleted).not.toHaveBeenCalled();
+		expect(JSON.stringify(await response.json())).not.toContain(token);
+	});
+
 	it('rejects cross-origin and origin-less POSTs before reading the cookie', async () => {
 		for (const origin of ['https://attacker.example', null]) {
 			const { event } = requestEvent({ origin, idempotencyKey: 'decline-1' });

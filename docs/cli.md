@@ -26,8 +26,9 @@ Precedence is flags, environment, config, then defaults. Relevant values are:
 - `--timeout` or `SIGNKIT_TIMEOUT_SECS`
 - `--config` or `SIGNKIT_CONFIG`
 - `SIGNKIT_API_KEY`, or `--api-key-stdin` for secret input
+- For `recipient` commands only: `SIGNKIT_RECIPIENT_CAPABILITY`, or `--recipient-capability-stdin`
 
-API keys are never accepted as command-line values or config-file fields. The CLI rejects secret-looking config keys recursively. It never follows HTTP redirects, so credentials cannot be forwarded to another origin.
+Neither credential is accepted as a command-line value or config-file field. The CLI rejects secret-looking config keys recursively. It never follows HTTP redirects, so credentials cannot be forwarded to another origin. A sender API key cannot authorize any `recipient` command; the recipient's own invitation capability is required. When reading the capability from stdin, supply action JSON with `--file PATH`, not from the same stdin stream.
 
 There is no tenant flag or selector. The key's active local owner and scopes determine its authority.
 
@@ -44,6 +45,7 @@ Use `--raw` for the API body and `--pretty` for formatted JSON. Errors are RFC 9
 ## Commands
 
 ```sh
+signkit openapi
 signkit capabilities
 signkit envelopes list --limit 25
 signkit envelopes get <envelope-id>
@@ -52,6 +54,132 @@ signkit envelopes deliveries <envelope-id>
 signkit envelopes completion-artifact <envelope-id>
 signkit envelopes evidence <envelope-id> --format json --output evidence.json
 signkit envelopes pdf <envelope-id> --output agreement.pdf
+signkit envelopes pdf-seal-status <envelope-id>
+signkit envelopes pdf-seal-download <envelope-id> --output sealed-agreement.pdf
+```
+
+### OpenAPI Specification
+
+Retrieve the OpenAPI 3.1 specification document without credentials:
+
+```sh
+signkit openapi
+signkit openapi --raw
+```
+
+### Mutation Discovery and Offline Validation
+
+Mutation commands support discovering canonical request schemas and performing offline local validation:
+
+- `--example`: Prints the canonical JSON request payload template for schema discovery and agent authoring.
+- `--validate-only`: Safely validates request payloads locally offline without issuing any network requests. Guarantees no network calls can occur, and does not require `--base-url` or `SIGNKIT_API_KEY`.
+
+```sh
+# Discover canonical request schemas
+signkit envelopes commit --example
+signkit envelopes ready --example
+signkit envelopes fields --example
+signkit envelopes send --example
+signkit envelopes void --example
+
+# Offline validation without network credentials
+signkit envelopes commit --validate-only --file commit.json
+signkit envelopes ready --validate-only --file ready.json
+signkit envelopes fields --validate-only --file fields.json
+signkit envelopes send --validate-only --file send.json
+signkit envelopes void --validate-only --file void.json
+
+# Pipe canonical example directly to offline validator
+signkit envelopes commit --example | signkit envelopes commit --validate-only
+```
+
+#### Mutation Request Payloads
+
+**1. Draft Commit (`envelopes commit`)**
+
+```json
+{
+	"expectedGeneration": 0,
+	"message": "Initial agreement draft",
+	"edits": [
+		{
+			"path": "documents/agreement.md",
+			"content": "# Mutual Non-Disclosure Agreement\n\nThis agreement is entered into..."
+		}
+	],
+	"provenance": {
+		"automationRunId": "run-2026-09-24-001",
+		"externalId": "workflow-step-1"
+	}
+}
+```
+
+**2. Ready (`envelopes ready`)**
+
+```json
+{
+	"expectedGeneration": 1,
+	"recipients": [
+		{
+			"email": "signer@example.com",
+			"name": "Jane Doe",
+			"role": "signer",
+			"locale": "en",
+			"routingOrder": 1
+		},
+		{
+			"email": "approver@example.com",
+			"name": "John Smith",
+			"role": "approver",
+			"locale": "en",
+			"routingOrder": 2
+		}
+	]
+}
+```
+
+**3. Fields Placement (`envelopes fields`)**
+
+```json
+{
+	"expectedGeneration": 1,
+	"expectedFieldGeneration": 0,
+	"fields": [
+		{
+			"recipientId": "0191eb70-6523-74b2-b7b5-2fa75bb6d001",
+			"documentId": "0191eb70-6523-74b2-b7b5-2fa75bb6d002",
+			"fieldType": "signature",
+			"label": "Signer Signature",
+			"required": true,
+			"position": 0,
+			"geometry": {
+				"page": 1,
+				"x": 0.1,
+				"y": 0.7,
+				"width": 0.25,
+				"height": 0.05
+			}
+		}
+	]
+}
+```
+
+**4. Send (`envelopes send`)**
+
+```json
+{
+	"expectedGeneration": 1,
+	"expectedReadyAuditEventId": "0191eb70-6523-74b2-b7b5-2fa75bb6d003"
+}
+```
+
+**5. Void (`envelopes void`)**
+
+```json
+{
+	"expectedStatus": "sent",
+	"expectedGeneration": 1
+}
 ```
 
 Authoring and lifecycle commands:
@@ -67,11 +195,42 @@ signkit envelopes ready <envelope-id> --file ready.json
 signkit envelopes fields <envelope-id> --file fields.json
 signkit envelopes send <envelope-id> --file send.json
 signkit envelopes void <envelope-id> --file void.json
+signkit envelopes pdf-seal-request <envelope-id> --profile pades-b-t --idempotency-key <opaque-key>
 ```
 
 When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope ids and cursors are validated as UUIDv7 before any network request.
 
 `upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. `--expected-generation` is required; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). The JSON supplied to `document-order` must contain `expectedGeneration` and 1-20 unique UUIDv7 `documentIds` in the desired order. The list is the complete retained set: omit an existing document ID to remove it from the draft.
+
+`pdf-seal-request` explicitly requests the instance's configured `pades-b-b` or `pades-b-t` profile for an already-published completion PDF. `pdf-seal-status` reports the durable job and validation state. `pdf-seal-download` is available only after independent validation and atomic publication; it requires a regular output file and never writes agreement bytes to stdout.
+
+## Recipient review and decisions
+
+These commands belong to the recipient, not the sender. The recipient must obtain the capability from their own invitation and deliberately authorize the specific action and field values. Possession of a token does not itself give an agent permission to sign, approve, or decline silently. See the [browserless recipient decision](architecture/decisions/2026-09-25-browserless-recipient-capability.md).
+
+Use a dedicated secret environment variable or `--recipient-capability-stdin` without putting the token into shell arguments, JSON payloads, URLs, logs, or persisted CLI configuration. The CLI sends it only as an authorization header to `/api/v1/recipient/**`. Browser cookies and a sender API key are never composed with it.
+
+```sh
+signkit recipient context
+signkit recipient documents
+signkit recipient pdf <envelope-id> --document-id <document-id> --output agreement.pdf
+signkit recipient viewed --file viewed.json --consent
+signkit recipient sign --file sign.json --consent
+signkit recipient approve --file approve.json --consent
+signkit recipient decline --file decline.json --consent
+```
+
+`context` and `documents` reveal only the active recipient's pinned agreement metadata, their own placed fields, and `fieldGeneration`. Download and review the PDF before deciding. For older single-document envelopes, omit `--document-id`; for document-set envelopes, provide the ID returned by `documents`. Recipient PDF downloads require a regular output file; no agreement bytes are written to stdout.
+
+Action payloads use UUIDv7 IDs from the recipient context. `viewed`, `approve`, and `decline` each accept `{ "envelopeId": "…", "recipientId": "…" }`. Signing additionally requires the `expectedFieldGeneration` from `documents` and exactly one `{ "fieldId": "…", "value": "…" }` (or boolean checkbox value) for every assigned field. The server rechecks field ownership, types, required values, generation, role, routing, expiry, and revocation. Every action gets an idempotency key. For automation, pass an explicit `--idempotency-key` and retain it for an exact retry, especially after a timeout: a newly generated key cannot recover the original receipt once signing has completed. Never reuse the key for a different decision or payload.
+
+```sh
+signkit recipient sign --example
+signkit recipient sign --validate-only --file sign.json
+signkit recipient approve --validate-only --file approve.json
+```
+
+Validation and examples are offline and non-mutating, with no credentials required. The `--consent` flag is required only for a real viewed/sign/approve/decline submission and is an attestation of the recipient's contemporaneous authorization for that particular action. After a terminal action, the sender can observe completion and download published evidence through their separate `envelopes:read` API-key authority.
 
 ## Exit codes
 
@@ -92,3 +251,7 @@ When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope
 | `12` | redirect refused                |
 
 The CLI preserves unknown API fields so newer servers remain inspectable by older clients.
+
+## Compatibility
+
+Scripts written against v0.1.x must treat exit codes `8` (formerly any server/network/timeout failure) as stale. The stable automation contract is `0`–`12` as tabulated above: `8` now means rate limited (HTTP 429) with retry-after semantics, `9` means server unavailable (HTTP 5xx, retryable with backoff), `10` means transport failure (retryable), `11` means timeout (retryable), and `12` means redirect refused (do not retry against another origin). The RFC 9457 `status` field on stderr always carries the original HTTP status independently of the process exit code.

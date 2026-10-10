@@ -5,6 +5,10 @@ import type {
 	AuthorizedRecipientDeclinedReceipt,
 	RecipientDeclinedReceiptApplicationPort
 } from '$lib/application/signing/recipient-declined-receipt';
+import type {
+	AuthorizedRecipientCompletedReceipt,
+	RecipientCompletedReceiptApplicationPort
+} from '$lib/application/signing/recipient-completed-receipt';
 import { isUuidV7 } from '$lib/ids/uuid-v7';
 import { isRecipientCapability } from '$lib/security/recipient-capability';
 import {
@@ -14,6 +18,13 @@ import {
 	declinedReceiptCookieName,
 	sealDeclinedReceiptSession
 } from '$lib/server/declined-receipt-session';
+import {
+	COMPLETED_RECEIPT_COOKIE_MAX_AGE_SECONDS,
+	COMPLETED_RECEIPT_COOKIE_OPTIONS,
+	type CompletedReceiptSessionLocator,
+	completedReceiptCookieName,
+	sealCompletedReceiptSession
+} from '$lib/server/completed-receipt-session';
 import {
 	RECIPIENT_SESSION_COOKIE_MAX_AGE_SECONDS,
 	RECIPIENT_SESSION_COOKIE_OPTIONS,
@@ -45,14 +56,27 @@ export type RecipientDeclinedReceiptApplicationResolver = (
 	| null
 	| Promise<RecipientDeclinedReceiptApplicationPort | null>;
 
+export type RecipientCompletedReceiptApplicationResolver = (
+	context: ResolverContext
+) =>
+	| RecipientCompletedReceiptApplicationPort
+	| null
+	| Promise<RecipientCompletedReceiptApplicationPort | null>;
+
 export type DeclinedReceiptSessionSealer = (
 	locator: DeclinedReceiptSessionLocator
+) => Promise<string>;
+
+export type CompletedReceiptSessionSealer = (
+	locator: CompletedReceiptSessionLocator
 ) => Promise<string>;
 
 export interface RecipientLinkReceiptOptions {
 	resolveApplication: RecipientDeclinedReceiptApplicationResolver;
 	sealSession?: DeclinedReceiptSessionSealer;
 	unsealActiveSession?: RecipientSessionUnsealer;
+	resolveCompletedApplication?: RecipientCompletedReceiptApplicationResolver;
+	sealCompletedSession?: CompletedReceiptSessionSealer;
 }
 
 export function createRecipientLinkHandler(
@@ -74,7 +98,7 @@ export function createRecipientLinkHandler(
 			const accessedAt: Date = now();
 			const context = await application.resolve(token, accessedAt.toISOString());
 			if (context === null) {
-				return await exchangeDeclinedReceipt(
+				return await exchangeTerminalReceipt(
 					token,
 					accessedAt,
 					url,
@@ -111,7 +135,14 @@ export function createRecipientLinkHandler(
 	};
 }
 
-async function exchangeDeclinedReceipt(
+/**
+ * A capability the access application will no longer resolve is either revoked
+ * by this recipient's own terminal action or genuinely unusable. Declined
+ * evidence is tried first — it is the pre-existing behavior and the two command
+ * tables are mutually exclusive for one recipient — then completed evidence.
+ * Anything else stays the generic invalid response.
+ */
+async function exchangeTerminalReceipt(
 	token: string,
 	accessedAt: Date,
 	url: URL,
@@ -128,7 +159,17 @@ async function exchangeDeclinedReceipt(
 		token,
 		accessedAt
 	);
-	if (authorized === null) return cleanRedirect(url, 'invalid');
+	if (authorized === null) {
+		return await exchangeCompletedReceipt(
+			token,
+			accessedAt,
+			url,
+			platform,
+			cookies,
+			allowInsecureLocalDevelopment,
+			options
+		);
+	}
 	if (!isUuidV7(authorized.receipt.envelopeId)) return cleanRedirect(url, 'invalid');
 	const remainingSeconds: number = remainingReceiptSeconds(
 		authorized.locator.expiresAt,
@@ -149,27 +190,87 @@ async function exchangeDeclinedReceipt(
 		secure: !isInsecureLocalDevelopment(url, allowInsecureLocalDevelopment),
 		maxAge: remainingSeconds
 	});
-	const activeCookie: string | undefined = readRecipientSessionCookie(cookies, locator.envelopeId);
-	if (activeCookie !== undefined) {
-		const unsealActive: RecipientSessionUnsealer =
-			options.unsealActiveSession ?? unsealRecipientSession;
-		try {
-			if ((await unsealActive(activeCookie, locator.envelopeId)) === token) {
-				// Same-token exchange only: a different live cookie for this
-				// envelope is left untouched, so a concurrent /s cannot be wiped.
-				deleteRecipientSessionCookie(cookies, locator.envelopeId);
-			}
-		} catch {
-			// A declined link must never destroy an unreadable or unrelated live session.
-		}
-	}
+	await retireSameTokenSession(token, locator.envelopeId, cookies, options);
 	return redirectResponse(`/${authorized.receipt.locale}/sign/${locator.envelopeId}`);
+}
+
+async function exchangeCompletedReceipt(
+	token: string,
+	accessedAt: Date,
+	url: URL,
+	platform: Readonly<App.Platform> | undefined,
+	cookies: Cookies,
+	allowInsecureLocalDevelopment: boolean,
+	options: RecipientLinkReceiptOptions
+): Promise<Response> {
+	if (options.resolveCompletedApplication === undefined) return cleanRedirect(url, 'invalid');
+	const application: RecipientCompletedReceiptApplicationPort | null =
+		await options.resolveCompletedApplication({ platform });
+	if (application === null) return cleanRedirect(url, 'unavailable');
+	const authorized: AuthorizedRecipientCompletedReceipt | null = await application.recoverByToken(
+		token,
+		accessedAt
+	);
+	if (authorized === null) return cleanRedirect(url, 'invalid');
+	if (!isUuidV7(authorized.receipt.envelopeId)) return cleanRedirect(url, 'invalid');
+	const remainingSeconds: number = remainingCompletedReceiptSeconds(
+		authorized.locator.expiresAt,
+		accessedAt
+	);
+	if (remainingSeconds <= 0) return cleanRedirect(url, 'invalid');
+	const locator: CompletedReceiptSessionLocator = {
+		...authorized.locator,
+		version: 1
+	};
+	if (locator.envelopeId !== authorized.receipt.envelopeId) return cleanRedirect(url, 'invalid');
+	const receiptCookieName: string | null = completedReceiptCookieName(locator.envelopeId);
+	if (receiptCookieName === null) return cleanRedirect(url, 'invalid');
+	const seal: CompletedReceiptSessionSealer =
+		options.sealCompletedSession ?? sealCompletedReceiptSession;
+	const sealed: string = await seal(locator);
+	cookies.set(receiptCookieName, sealed, {
+		...COMPLETED_RECEIPT_COOKIE_OPTIONS,
+		secure: !isInsecureLocalDevelopment(url, allowInsecureLocalDevelopment),
+		maxAge: remainingSeconds
+	});
+	await retireSameTokenSession(token, locator.envelopeId, cookies, options);
+	return redirectResponse(`/${authorized.receipt.locale}/sign/${locator.envelopeId}`);
+}
+
+/**
+ * Drops the live session cookie only when it seals this exact token. A different
+ * live cookie for the same envelope is left untouched, so a concurrent `/s`
+ * exchange cannot be wiped, and an unreadable cookie is never destroyed.
+ */
+async function retireSameTokenSession(
+	token: string,
+	envelopeId: string,
+	cookies: Cookies,
+	options: RecipientLinkReceiptOptions
+): Promise<void> {
+	const activeCookie: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
+	if (activeCookie === undefined) return;
+	const unsealActive: RecipientSessionUnsealer =
+		options.unsealActiveSession ?? unsealRecipientSession;
+	try {
+		if ((await unsealActive(activeCookie, envelopeId)) === token) {
+			deleteRecipientSessionCookie(cookies, envelopeId);
+		}
+	} catch {
+		// A terminal link must never destroy an unreadable or unrelated live session.
+	}
 }
 
 function remainingReceiptSeconds(expiresAt: string, now: Date): number {
 	const remainingSeconds: number = Math.floor((Date.parse(expiresAt) - now.valueOf()) / 1000);
 	if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return 0;
 	return Math.min(remainingSeconds, DECLINED_RECEIPT_COOKIE_MAX_AGE_SECONDS);
+}
+
+function remainingCompletedReceiptSeconds(expiresAt: string, now: Date): number {
+	const remainingSeconds: number = Math.floor((Date.parse(expiresAt) - now.valueOf()) / 1000);
+	if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return 0;
+	return Math.min(remainingSeconds, COMPLETED_RECEIPT_COOKIE_MAX_AGE_SECONDS);
 }
 
 function isInsecureLocalDevelopment(url: URL, allowed: boolean): boolean {

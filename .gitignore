@@ -8,6 +8,7 @@ node_modules
 .cloudflare
 /.svelte-kit
 /build
+static/pdfjs/
 src/lib/paraglide
 project.inlang/cache/
 
@@ -32,6 +33,11 @@ vite.config.ts.timestamp-*
 # Rust
 target/
 cli/target/
+
+# Python tooling
+.venv/
+__pycache__/
+*.pyc
 
 # create-signkit
 packages/create-signkit/dist/

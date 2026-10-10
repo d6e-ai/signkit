@@ -51,6 +51,80 @@ describe('NodemailerSmtpMailSender', () => {
 		});
 	});
 
+	interface SentMailOptions {
+		attachments?: { filename: string; contentType: string; content: Buffer }[];
+	}
+
+	it('passes an attachment through as a byte-preserving Buffer with its content type', async () => {
+		const sendMail = vi.fn(async () => ({
+			accepted: [message.to],
+			rejected: [],
+			messageId: '<abc123@smtp.example.com>'
+		}));
+		const sender = senderWith({ sendMail } as unknown as SmtpTransporter);
+		const content: Uint8Array = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0xff, 0x00]);
+
+		await sender.send({
+			...message,
+			attachment: {
+				filename: 'signkit-completed-envelope.pdf',
+				contentType: 'application/pdf',
+				content
+			}
+		});
+
+		expect(sendMail).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attachments: [
+					expect.objectContaining({
+						filename: 'signkit-completed-envelope.pdf',
+						contentType: 'application/pdf'
+					})
+				]
+			})
+		);
+		const sentOptions = sendMail.mock.calls[0] as unknown as [SentMailOptions];
+		const sentAttachment = sentOptions[0].attachments?.[0];
+		expect(Buffer.isBuffer(sentAttachment?.content)).toBe(true);
+		expect(Uint8Array.from(sentAttachment?.content ?? [])).toEqual(content);
+	});
+
+	it('preserves attachment bytes when the source array is a view into a larger buffer', async () => {
+		const sendMail = vi.fn(async () => ({
+			accepted: [message.to],
+			rejected: [],
+			messageId: '<abc123@smtp.example.com>'
+		}));
+		const sender = senderWith({ sendMail } as unknown as SmtpTransporter);
+		const backing = new Uint8Array([0xaa, 0x01, 0x02, 0x03, 0x04, 0xbb]);
+		const view = backing.subarray(1, 5);
+
+		await sender.send({
+			...message,
+			attachment: { filename: 'view.pdf', contentType: 'application/pdf', content: view }
+		});
+
+		const sentOptions = sendMail.mock.calls[0] as unknown as [SentMailOptions];
+		const sentAttachment = sentOptions[0].attachments?.[0];
+		expect(Uint8Array.from(sentAttachment?.content ?? [])).toEqual(
+			Uint8Array.from([0x01, 0x02, 0x03, 0x04])
+		);
+	});
+
+	it('sends no attachments field when the message has no attachment', async () => {
+		const sendMail = vi.fn(async () => ({
+			accepted: [message.to],
+			rejected: [],
+			messageId: '<abc123@smtp.example.com>'
+		}));
+		const sender = senderWith({ sendMail } as unknown as SmtpTransporter);
+
+		await sender.send(message);
+
+		const sentOptions = sendMail.mock.calls[0] as unknown as [SentMailOptions];
+		expect(sentOptions[0]).not.toHaveProperty('attachments');
+	});
+
 	it('treats a resolved empty accepted list as retryable, since it proves no permanent rejection', async () => {
 		const sendMail = vi.fn(async () => ({
 			accepted: [],

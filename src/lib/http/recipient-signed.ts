@@ -5,13 +5,15 @@ import {
 	type RecipientSignedApplicationPort,
 	type RecipientSignedResult
 } from '$lib/application/signing/recipient-signed';
-import {
-	deleteRecipientSessionCookie,
-	readRecipientSessionCookie
-} from '$lib/server/recipient-session';
+import { readRecipientSessionCookie } from '$lib/server/recipient-session';
 import { boundEnvelopeId } from './envelope-binding';
 import { signkitIdentifierSchema } from './identifier-schema';
 import { problemResponse } from './problem';
+import { recipientBearerToken, type RecipientHttpMode } from './recipient-bearer';
+import {
+	exchangeCompletedReceiptCookie,
+	type RecipientCompletedReceiptHandlerOptions
+} from './recipient-completed-receipt';
 
 const MAX_VALUES: number = 50;
 const MAX_VALUE_CHARS: number = 4000;
@@ -60,10 +62,15 @@ type JsonBodyResult = { ok: true; value: unknown } | { ok: false; reason: 'inval
 
 export function createRecipientSignedHandler(
 	resolveApplication: RecipientSignedApplicationResolver,
-	unsealSession: RecipientSessionUnsealer
+	unsealSession: RecipientSessionUnsealer,
+	options?: RecipientCompletedReceiptHandlerOptions,
+	mode: RecipientHttpMode = 'browser'
 ): RequestHandler {
 	return async ({ cookies, platform, request, url }): Promise<Response> => {
-		if (request.headers.get('origin') !== url.origin) return crossOriginDenied(url.pathname);
+		if (mode === 'browser' && request.headers.get('origin') !== url.origin)
+			return crossOriginDenied(url.pathname);
+		const explicitToken: string | null = mode === 'bearer' ? recipientBearerToken(request) : null;
+		if (mode === 'bearer' && explicitToken === null) return accessNotFound(url.pathname);
 
 		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
 		if (!idempotencyKey.success) return idempotencyRequired(url.pathname);
@@ -81,15 +88,18 @@ export function createRecipientSignedHandler(
 		);
 		if (envelopeId === null) return invalidCommand(url.pathname);
 
-		const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
-		if (sealed === undefined) return accessNotFound(url.pathname);
-
 		let token: string | null;
-		try {
-			token = await unsealSession(sealed, envelopeId);
-		} catch {
-			console.error(JSON.stringify({ event: 'recipient_signed_session_failed' }));
-			return unavailable(url.pathname);
+		if (mode === 'bearer') {
+			token = explicitToken;
+		} else {
+			const sealed: string | undefined = readRecipientSessionCookie(cookies, envelopeId);
+			if (sealed === undefined) return accessNotFound(url.pathname);
+			try {
+				token = await unsealSession(sealed, envelopeId);
+			} catch {
+				console.error(JSON.stringify({ event: 'recipient_signed_session_failed' }));
+				return unavailable(url.pathname);
+			}
 		}
 		if (token === null) return accessNotFound(url.pathname);
 
@@ -111,7 +121,16 @@ export function createRecipientSignedHandler(
 				idempotencyKey: idempotencyKey.data,
 				values: parsed.data.values
 			});
-			return resultResponse(result, url.pathname, cookies, envelopeId);
+			return await resultResponse(
+				result,
+				token,
+				envelopeId,
+				idempotencyKey.data,
+				url,
+				platform,
+				mode === 'browser' ? cookies : null,
+				options
+			);
 		} catch (error: unknown) {
 			if (error instanceof InvalidSignInputError) return invalidCommand(url.pathname);
 			console.error(JSON.stringify({ event: 'recipient_signed_failed' }));
@@ -120,15 +139,38 @@ export function createRecipientSignedHandler(
 	};
 }
 
-function resultResponse(
+async function resultResponse(
 	result: RecipientSignedResult,
-	instance: string,
-	cookies: Cookies,
-	envelopeId: string
-): Response {
+	token: string,
+	envelopeId: string,
+	idempotencyKey: string,
+	url: URL,
+	platform: Readonly<App.Platform> | undefined,
+	cookies: Cookies | null,
+	options: RecipientCompletedReceiptHandlerOptions | undefined
+): Promise<Response> {
+	const instance: string = url.pathname;
 	if (result.outcome === 'published' || result.outcome === 'replayed') {
-		// Durable terminal sign: drop only this envelope's live session cookie.
-		clearSession(cookies, envelopeId);
+		// Durable terminal sign: seal this envelope's read-only receipt cookie
+		// when the durable evidence proves it, then drop only this envelope's
+		// live session cookie. A failed exchange costs the recipient the
+		// tokenless reload, never the signature, so the response stays a success.
+		if (cookies !== null) {
+			await exchangeCompletedReceiptCookie({
+				token,
+				committed: {
+					envelopeId,
+					recipientId: result.result.recipientId,
+					action: 'signed',
+					idempotencyKey,
+					completedAt: result.result.signedAt
+				},
+				url,
+				platform,
+				cookies,
+				options
+			});
+		}
 		const headers: Headers = new Headers(securityHeaders({ 'content-type': 'application/json' }));
 		if (result.outcome === 'replayed') headers.set('idempotency-replayed', 'true');
 		return new Response(
@@ -351,10 +393,6 @@ function unavailable(instance: string): Response {
 		},
 		securityHeaders()
 	);
-}
-
-function clearSession(cookies: Cookies, envelopeId: string): void {
-	deleteRecipientSessionCookie(cookies, envelopeId);
 }
 
 function acceptsJson(request: Request): boolean {

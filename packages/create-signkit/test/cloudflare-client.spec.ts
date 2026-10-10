@@ -303,7 +303,7 @@ describe('Wrangler-delegated operations', () => {
 		await expect(cloudflare.listVersions('signkit')).resolves.toEqual([]);
 	});
 
-	it('runs deploy/uploadVersion through Wrangler and accepts only a labelled Worker Version ID', async () => {
+	it('runs first deploy and version upload through Wrangler and accepts only a labelled Worker Version ID', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({
 			code: 0,
@@ -312,7 +312,7 @@ describe('Wrangler-delegated operations', () => {
 		});
 		const cloudflare = client(runner);
 		const result = assertSuccessfulUpload(
-			await cloudflare.deploy({
+			await cloudflare.deployFirst({
 				cwd: '/tmp/bundle',
 				configPath: '/tmp/bundle/wrangler.jsonc',
 				workerName: 'signkit',
@@ -325,12 +325,16 @@ describe('Wrangler-delegated operations', () => {
 		expect(runner.requests[0]?.argv).toContain('deploy');
 	});
 
-	it('runs deployVersion/rollback through Wrangler `versions deploy`/`rollback`', async () => {
+	it('publishes the exact Worker version then reconciles triggers through Wrangler', async () => {
 		const runner = new RecordingProcessRunner();
 		runner.handler = () => ({ code: 0, stdout: `Version ID: ${WORKER_VERSION}\n`, stderr: '' });
 		const cloudflare = client(runner);
 		await cloudflare.deployVersion('signkit', WORKER_VERSION);
-		await cloudflare.rollback('signkit', WORKER_VERSION, 'restoring previous Worker version');
+		await cloudflare.deployTriggers({
+			cwd: '/tmp/bundle',
+			configPath: '/tmp/bundle/wrangler.jsonc',
+			workerName: 'signkit'
+		});
 		for (const request of runner.requests) {
 			expect(request.argv[0]).toBe(WRANGLER_BIN);
 		}
@@ -345,14 +349,14 @@ describe('Wrangler-delegated operations', () => {
 		]);
 		expect(runner.requests[1]?.argv).toEqual([
 			WRANGLER_BIN,
-			'rollback',
-			WORKER_VERSION,
+			'triggers',
+			'deploy',
+			'--config',
+			'/tmp/bundle/wrangler.jsonc',
 			'--name',
-			'signkit',
-			'--yes',
-			'--message',
-			'restoring previous Worker version'
+			'signkit'
 		]);
+		expect(runner.requests[1]?.cwd).toBe('/tmp/bundle');
 	});
 
 	it('runs exportD1 through Wrangler `d1 export`', async () => {
