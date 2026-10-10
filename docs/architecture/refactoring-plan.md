@@ -97,16 +97,16 @@ SignKitを別のアーキテクチャに作り直す必要はない。現在の�
 
 各段階は独立して検証・レビューできる変更に分ける。PRの単位は責務とリスクで決め、ファイル数では決めない。
 
-| 段階 | 内容                           | 完了を判断する成果                                                                                                                                                | 主な依存                             |
-| ---- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| R0   | 現行契約の固定                 | readyの両DB契約テスト、旧receiptのgolden、依存違反の明示的baseline、実Workers/D1/R2のE2E gapの明示                                                                | なし                                 |
-| R1   | readyを最初の縦切りにする      | 正規化・receipt・監査生成の単一化、両DBのrow mapping、HTTPまでの同じ結果                                                                                          | R0                                   |
-| R2   | composition rootと権限の境界   | readyでcompositionを試し、operator/recipient/systemを明示化、App/env/具体providerへの依存をapplicationから外す                                                    | R1                                   |
-| R3   | 文書・成果物の正本を早期に固定 | Draft/Sent/Completed/Sealedの検証済み型、immutable writer/atomic DB publisher/legacy修復経路の区別、signature-asset retention (#219) は別behavior sliceとして外す | R2                                   |
-| R4   | コマンドとルーティングの抽出   | void → fields → send、view/reissue/expiry、最後にsign/approveの共通ルーティング判断、declineは妥当な範囲で統合                                                    | 対象ごとのR0相当の契約テスト、R2、R3 |
-| R5   | durable jobの共通契約          | 共通lease/失敗contract、capped backoff、機能別error分類、host非依存job入口。既存の個別observability/requeueを一般化                                               | R2、対象のR3/R4                      |
-| R6   | API/UI/CLIの契約と状態         | wire schemaの単一責任、既存recipient CLI/validate-onlyを含むRust適合fixture、受信者controller、送信者read model                                                   | R1から着手可能。対象のR3/R4と合流    |
-| R7   | 整理を完了する                 | 旧経路・不要fallbackの除去、依存ルールのerror化、upgrade/E2E/仕様の整合                                                                                           | R3–R6                                |
+| 段階 | 内容                           | 完了を判断する成果                                                                                                                                    | 主な依存                                  |
+| ---- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| R0   | 現行契約の固定                 | readyの両DB契約テスト、旧receiptのgolden、依存違反の明示的baseline、実Workers/D1/R2のE2E gapの明示                                                    | なし                                      |
+| R1   | readyを最初の縦切りにする      | 正規化・receipt・監査生成の単一化、両DBのrow mapping、HTTPまでの同じ結果                                                                              | ready対象のR0だけ                         |
+| R2   | composition rootと権限の境界   | readyでcompositionを試し、operator/recipient/systemを明示化、App/env/具体providerへの依存をapplicationから外す                                        | R1                                        |
+| R3   | 文書・成果物の正本を早期に固定 | Draft/Sent/Completed/Sealedの検証済み型、検証/不変保存/操作固有DB公開/legacy修復と資源契約。対象のWorkers E2E・CPU/メモリゲート合格。#219は別挙動変更 | R2、成果物/send対象のR0とWorkersゲート    |
+| R4   | コマンドとルーティングの抽出   | void → fields → send、view/reissue/expiry、最後にsign/approveの共通ルーティング判断、declineは妥当な範囲で統合                                        | 対象のR0/R2/R3。sendはWorkersゲートも必須 |
+| R5   | durable jobの共通契約          | 共通lease/失敗contract、capped backoff、機能別error分類、host非依存job入口。既存の個別observability/requeueを一般化                                   | R2、対象のR3/R4                           |
+| R6   | API/UI/CLIの契約と状態         | wire schemaの単一責任、既存recipient CLI/validate-onlyを含むRust適合fixture、受信者controller、送信者read model                                       | R1から着手可能。対象のR3/R4と合流         |
+| R7   | 整理を完了する                 | 旧経路・不要fallbackの除去、依存ルールのerror化、upgrade/E2E/仕様の整合                                                                               | R3–R6                                     |
 
 R3をR4より先に置くのは、完了成果物とsealの正本を先に固定しないと、R4のvoid/send/sign/approve
 ルーティングや後続のPAdES seal監査が、どのPDF・どの監査範囲を正本とするかで割れるため。

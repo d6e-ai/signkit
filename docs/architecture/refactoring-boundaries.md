@@ -46,7 +46,11 @@ PDF/PNG/DOCXの純粋なアルゴリズムを一つずつinterface化する必�
 | RecipientAuthority | 既存の受信者link/cookieからcapabilityを検証する入口                           | そのenvelope/recipientの閲覧・辞退・承認・署名だけ。監査はrecipient |
 | SystemAuthority    | 保護されたmaintenance入口・内部scheduler                                      | 指定されたjob操作だけ。監査はsystem                                 |
 
-`auditActorOf(authority)` のような明示的変換を用意し、`actorType ?? 'user'` をなくす。
+`auditActorOf(authority)` のような明示的変換を用意する。移行入口では、現行の省略入力を
+`actorType ?? 'user'` と同じuserへ写す互換変換を保ち、既存のAPIキーのagent記録も維持する。
+省略入力を新たに拒否したり、監査actorを変更したりしない。既存の全呼出しを明示型へ移し、
+同じ入力の監査/receiptが変わらないことを確認してから、core内の暗黙既定を除く。
+必要な旧入口の互換変換は残し、attributionを変える判断は別の挙動変更として扱う。
 名前・メールなど表示情報を、権限を証明する値として使わない。
 連絡先は作成者のuserスコープ、インスタンスメンバー管理はローカル管理権限のまま。
 
