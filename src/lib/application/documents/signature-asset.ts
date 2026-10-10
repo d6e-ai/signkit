@@ -1,4 +1,14 @@
-import { decodePng, isPngSignature, PngDecodeError } from '$lib/adapters/pdf/png-image';
+import { emittedImageStreamBytes } from '$lib/adapters/pdf/pdf-composer';
+import {
+	decodePng,
+	estimatePngDecodeMemory,
+	isPngSignature,
+	MAX_PNG_DIMENSION,
+	MAX_PNG_INFLATE_SCRATCH_BYTES,
+	PngDecodeError,
+	type DecodedPngImage,
+	type PngDecodeMemoryEstimate
+} from '$lib/adapters/pdf/png-image';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
@@ -10,6 +20,38 @@ import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
  * fast to fetch when an operator reviews a completed envelope.
  */
 export const MAX_SIGNATURE_ASSET_BYTES: number = 64 * 1024;
+
+/**
+ * The signing canvas's raster (`signature-canvas.svelte`: a fixed 600 x 200
+ * backing store, not scaled by device pixel ratio). The decode caps below are
+ * what `png-image.ts` accounts for a PNG of this many pixels at its widest
+ * supported sample format (16-bit RGBA, 8 bytes per pixel).
+ */
+const SIGNATURE_CANVAS_PIXELS: number = 600 * 200;
+
+/** Decoded sample and alpha planes the composer retains per signature: at most 3 + 1 bytes per pixel. */
+export const MAX_SIGNATURE_RETAINED_DECODE_BYTES: number = 4 * SIGNATURE_CANVAS_PIXELS;
+
+/**
+ * Peak decode working set per signature: the compressed copy (at most the
+ * upload cap), inflated scanlines (`(8 * width + 1) * height + 1`), inflater
+ * scratch, unfiltered scanlines (`8 * pixels`), and the retained planes.
+ */
+export const MAX_SIGNATURE_PEAK_DECODE_BYTES: number =
+	MAX_SIGNATURE_ASSET_BYTES +
+	(8 * SIGNATURE_CANVAS_PIXELS + MAX_PNG_DIMENSION + 1) +
+	MAX_PNG_INFLATE_SCRATCH_BYTES +
+	8 * SIGNATURE_CANVAS_PIXELS +
+	MAX_SIGNATURE_RETAINED_DECODE_BYTES;
+
+/**
+ * Bytes one signature may occupy once the executed agreement re-deflates its
+ * planes (`emittedImageStreamBytes`). The upload cap does not bound this:
+ * planes are re-encoded without PNG's predictors. Holding it to the same
+ * 64 KiB means an accepted asset never grows past its own upload cap inside
+ * the agreement, which is what the send-time budget reserves per signature.
+ */
+export const MAX_SIGNATURE_EMITTED_IMAGE_BYTES: number = MAX_SIGNATURE_ASSET_BYTES;
 
 /** `sig:sha256:` (11) + 64 hex chars = 75, well inside the 200-char signature field value budget. */
 export const SIGNATURE_ASSET_REF_PREFIX: string = 'sig:sha256:';
@@ -71,13 +113,27 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 		// Resolve the capability and its route binding before CPU- and
 		// allocation-heavy image decoding. Decoding here, rather than merely
 		// sniffing magic bytes, still guarantees that an accepted asset can be
-		// composited into the executed agreement later.
+		// composited into the executed agreement later. The send-time
+		// completion budget reserves decode memory and output bytes per
+		// signature from the caps checked here, so they must hold for every
+		// asset accepted.
 		if (!isPngSignature(input.pngBytes)) return { outcome: 'invalid_image' };
+		let decoded: DecodedPngImage;
 		try {
-			decodePng(input.pngBytes);
+			const estimate: PngDecodeMemoryEstimate = estimatePngDecodeMemory(input.pngBytes);
+			if (
+				estimate.retainedBytes > MAX_SIGNATURE_RETAINED_DECODE_BYTES ||
+				estimate.peakWorkingBytes > MAX_SIGNATURE_PEAK_DECODE_BYTES
+			) {
+				return { outcome: 'too_large' };
+			}
+			decoded = decodePng(input.pngBytes, { maximumWorkingBytes: MAX_SIGNATURE_PEAK_DECODE_BYTES });
 		} catch (error: unknown) {
 			if (error instanceof PngDecodeError) return { outcome: 'invalid_image' };
 			throw error;
+		}
+		if (emittedImageStreamBytes(decoded) > MAX_SIGNATURE_EMITTED_IMAGE_BYTES) {
+			return { outcome: 'too_large' };
 		}
 
 		const sha256: string = await sha256Hex(input.pngBytes);

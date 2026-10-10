@@ -86,7 +86,8 @@ describe('envelope send HTTP handler', () => {
 		['not_ready', 409, 'urn:signkit:problem:envelope-not-ready'],
 		['generation_conflict', 409, 'urn:signkit:problem:draft-generation-conflict'],
 		['audit_conflict', 409, 'urn:signkit:problem:audit-head-conflict'],
-		['integrity_error', 503, 'urn:signkit:problem:send-integrity-error']
+		['integrity_error', 503, 'urn:signkit:problem:send-integrity-error'],
+		['send_budget_exceeded', 400, 'urn:signkit:problem:send-completion-budget-exceeded']
 	] as const)('maps %s to a problem', async (outcome, status, type) => {
 		const response: Response = await createEnvelopeSendHandler(() => application({ outcome }))(
 			event({ body: body(), headers: { 'idempotency-key': 'send-1' } })

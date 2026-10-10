@@ -1,3 +1,8 @@
+import {
+	MAX_COMPOSED_PDF_INPUT_BYTES,
+	MAX_COMPOSED_PDF_PAGES
+} from '$lib/adapters/pdf/pdf-composer';
+import { PdfObjectReader, PdfPageMetadataError } from '$lib/adapters/pdf/pdf-object-reader';
 import { MAX_SENT_PDF_BYTES, sentPdfObjectKey } from '$lib/application/documents/sent-document-pdf';
 import {
 	MAX_SIGNATURE_ASSET_BYTES,
@@ -23,6 +28,7 @@ import type { ObjectStore } from '$lib/ports/object-store';
 import { verifyCompletionAuditChain } from './audit-event-integrity';
 import {
 	buildExecutedPdf,
+	ExecutedPdfBoundExceededError,
 	ExecutedPdfIntegrityError,
 	parseExecutedFieldValue,
 	type ExecutedFieldValue,
@@ -62,6 +68,7 @@ export async function assembleExecutedAgreementPdf(
 	input: AssembleExecutedAgreementInput
 ): Promise<ExecutedPdfResult> {
 	await attestExecutedAgreementSources(input);
+	assertAggregateWithinCompositionBudget(input);
 	const documents: ExecutedPdfDocument[] = [];
 	for (const pointer of input.sentDocumentSet.documents) {
 		documents.push(await executedDocument(input, pointer));
@@ -113,6 +120,43 @@ export async function assembleExecutedAgreementPdf(
 		fields,
 		appendixPdfBytes: input.appendixPdfBytes
 	});
+}
+
+/**
+ * Proves the aggregate fits the composer's shared page and input-byte
+ * ceiling (`pdf-composer.ts`) using only the sent-document pointers' already
+ * hash-chain-attested page count and byte size, plus the real, already
+ * generated evidence appendix — before a single original document's bytes
+ * are read from the object store. The send-time preflight
+ * (`send-completion-budget.ts`) is what keeps a new send from ever reaching
+ * this state; this is the completion-side backstop for anything sent before
+ * that preflight existed, or through a path that bypassed it.
+ */
+function assertAggregateWithinCompositionBudget(input: AssembleExecutedAgreementInput): void {
+	let appendixPageCount: number;
+	try {
+		appendixPageCount = new PdfObjectReader(input.appendixPdfBytes).pages().length;
+	} catch (error: unknown) {
+		if (error instanceof PdfPageMetadataError) {
+			throw new ExecutedPdfIntegrityError(
+				'invalid_document',
+				'The evidence appendix could not be read as a PDF',
+				{ cause: error }
+			);
+		}
+		throw error;
+	}
+	let totalPages: number = appendixPageCount;
+	let totalBytes: number = input.appendixPdfBytes.byteLength;
+	for (const pointer of input.sentDocumentSet.documents) {
+		totalPages += pointer.pageCount;
+		totalBytes += pointer.byteSize;
+	}
+	if (totalPages > MAX_COMPOSED_PDF_PAGES || totalBytes > MAX_COMPOSED_PDF_INPUT_BYTES) {
+		throw new ExecutedPdfBoundExceededError(
+			'The sent document set and evidence appendix exceed the executed agreement composition budget'
+		);
+	}
 }
 
 async function executedDocument(

@@ -1,7 +1,9 @@
+import { unzlibSync } from 'fflate';
 import { documentFont } from './document-font';
 import {
 	decodePng,
 	estimatePngDecodeMemory,
+	MAX_PNG_DIMENSION,
 	PngDecodeError,
 	type DecodedPngImage,
 	type PngDecodeMemoryEstimate
@@ -64,8 +66,16 @@ export const MAX_COMPOSED_PDF_IMAGES: number = 64;
  */
 export const MAX_COMPOSED_PDF_IMAGE_WORKING_SET_BYTES: number = 64 * 1024 * 1024;
 export const MAX_COMPOSED_PDF_OVERLAY_OPERATIONS: number = 4_000;
-export const MAX_COMPOSED_PDF_TEXT_LENGTH: number = 512;
+/**
+ * UTF-16 code units per text run: the longest field value the signing API
+ * accepts (`recipient-signed.ts` text fields), so no accepted value can fail
+ * composition after it was signed.
+ */
+export const MAX_COMPOSED_PDF_TEXT_LENGTH: number = 4_000;
 const MAX_COPY_DEPTH: number = 48;
+const OVERLAY_FONT_NAME: string = 'ZenKakuGothicNew-Regular';
+/** Type0 font, CIDFontType2 descendant, descriptor, FontFile2, ToUnicode. */
+const OVERLAY_FONT_OBJECT_COUNT: number = 5;
 
 export type PdfCompositionReason =
 	| 'too_many_sources'
@@ -154,6 +164,13 @@ export interface ComposePdfInput {
 	maxOutputBytes?: number;
 	/** Optional stricter ceiling, primarily useful for constrained runtimes and tests. */
 	maxImageWorkingSetBytes?: number;
+	/**
+	 * Budget dry runs only: reserves this many `null` objects where the overlay
+	 * font and image objects are numbered, so a probe composed without them
+	 * still numbers and counts every other object at least as high as the real
+	 * composition will (see {@link overlayReservedObjectCount}).
+	 */
+	reservedObjectCount?: number;
 }
 
 export interface ComposePdfResult {
@@ -228,6 +245,11 @@ export function composePdf(input: ComposePdfInput): ComposePdfResult {
 	const writer: ObjectWriter = new ObjectWriter();
 	const catalogId: number = writer.reserve();
 	const pagesId: number = writer.reserve();
+	const reservedObjectCount: number = input.reservedObjectCount ?? 0;
+	if (!Number.isSafeInteger(reservedObjectCount) || reservedObjectCount < 0) {
+		throw fail('object_budget_exceeded', 'Reserved object count is invalid');
+	}
+	for (let index: number = 0; index < reservedObjectCount; index += 1) writer.reserve();
 
 	let fontId: number | null = null;
 	let glyphIdMap: ReadonlyMap<number, number> = new Map();
@@ -243,7 +265,7 @@ export function composePdf(input: ComposePdfInput): ComposePdfResult {
 			shaper.font,
 			shaped.usedGlyphs.keys(),
 			shaped.usedGlyphs,
-			'ZenKakuGothicNew-Regular'
+			OVERLAY_FONT_NAME
 		);
 		for (const { id, object } of buildFontObjects(built.program, ids)) writer.set(id, object);
 		fontId = ids.font;
@@ -529,21 +551,48 @@ function emitImage(writer: ObjectWriter, image: DecodedPngImage): number {
 	if (image.alpha !== null) {
 		const mask: Uint8Array = deflatePdfStream(image.alpha);
 		softMaskId = writer.append({
-			body:
-				`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
-				`/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${mask.byteLength} >>`,
+			body: softMaskBody(image.width, image.height, mask.byteLength),
 			stream: mask
 		});
 	}
 	const samples: Uint8Array = deflatePdfStream(image.samples);
 	return writer.append({
-		body:
-			`<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
-			`/ColorSpace ${image.colorSpace === 'gray' ? '/DeviceGray' : '/DeviceRGB'} ` +
-			`/BitsPerComponent 8 /Filter /FlateDecode /Length ${samples.byteLength}` +
-			(softMaskId === null ? ' >>' : ` /SMask ${softMaskId} 0 R >>`),
+		body: imageBody(image.width, image.height, image.colorSpace, samples.byteLength, softMaskId),
 		stream: samples
 	});
+}
+
+function softMaskBody(width: number, height: number, length: number): string {
+	return (
+		`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} ` +
+		`/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${length} >>`
+	);
+}
+
+function imageBody(
+	width: number,
+	height: number,
+	colorSpace: DecodedPngImage['colorSpace'],
+	length: number,
+	softMaskId: number | null
+): string {
+	return (
+		`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} ` +
+		`/ColorSpace ${colorSpace === 'gray' ? '/DeviceGray' : '/DeviceRGB'} ` +
+		`/BitsPerComponent 8 /Filter /FlateDecode /Length ${length}` +
+		(softMaskId === null ? ' >>' : ` /SMask ${softMaskId} 0 R >>`)
+	);
+}
+
+/**
+ * Exact byte length of the sample and soft-mask streams `composePdf` emits
+ * for one decoded image. A PNG's own size does not bound this: the composer
+ * re-deflates raw planes without PNG's scanline predictors, so callers that
+ * must bound future output (signature upload) measure it directly.
+ */
+export function emittedImageStreamBytes(image: DecodedPngImage): number {
+	const samples: number = deflatePdfStream(image.samples).byteLength;
+	return image.alpha === null ? samples : samples + deflatePdfStream(image.alpha).byteLength;
 }
 
 interface PageResourceNames {
@@ -897,4 +946,225 @@ function escapeName(name: string): string {
 
 function fail(reason: PdfCompositionReason, message: string): PdfCompositionError {
 	return new PdfCompositionError(reason, message);
+}
+
+/**
+ * Upper bound on `deflatePdfStream(bytes).byteLength` for any `rawBytes`-long
+ * input, whatever its content: fflate 0.8 writes the zlib stream into one
+ * buffer of exactly `2 + n + 5 * (1 + ceil(n / 7000)) + 4` bytes and returns
+ * a prefix of it (stored blocks are its fallback whenever compression would
+ * be larger). `pdf-composer.spec.ts` re-checks this against incompressible
+ * input so a dependency upgrade that changes it fails loudly.
+ */
+export function maxDeflatedPdfStreamBytes(rawBytes: number): number {
+	return 2 + rawBytes + 5 * (1 + Math.ceil(rawBytes / 7000)) + 4;
+}
+
+/**
+ * The most an overlay operation can contribute, for a budget computed before
+ * its values exist. `maxLength` is in UTF-16 code units, the same unit
+ * `MAX_COMPOSED_PDF_TEXT_LENGTH` limits.
+ */
+export type OverlayOperationBound =
+	{ kind: 'text'; maxLength: number } | { kind: 'image' } | { kind: 'polyline'; points: number };
+
+export interface OverlayBudgetPage {
+	reader: PdfObjectReader;
+	page: PdfPageNode;
+	operations: readonly OverlayOperationBound[];
+	/** Upper bound on the magnitude of every numeric operand the operations will carry. */
+	maxOperandMagnitude: number;
+}
+
+export interface OverlayBudgetInput {
+	pages: readonly OverlayBudgetPage[];
+	/** Upper bound on distinct images across the whole composition. */
+	imageCount: number;
+	/** Upper bound on one image's {@link emittedImageStreamBytes}. */
+	maxImageStreamBytes: number;
+}
+
+/**
+ * Objects a budget dry run must reserve (`ComposePdfInput.reservedObjectCount`)
+ * so that adding the overlay font and images can only lower, never raise,
+ * every other object's number and the total object count.
+ */
+export function overlayReservedObjectCount(hasText: boolean, imageCount: number): number {
+	return (hasText ? OVERLAY_FONT_OBJECT_COUNT : 0) + imageCount * 2;
+}
+
+/**
+ * Upper bound on how many bytes drawing `input`'s overlays adds to a
+ * composition of the same sources made without overlays or images but with
+ * {@link overlayReservedObjectCount} objects reserved.
+ *
+ * Against such a dry run the overlaid composition differs only in: the
+ * reserved `null` objects becoming the font and image objects; each overlaid
+ * page's content stream growing from an empty deflate to its operations; each
+ * overlaid page's `/Resources` gaining font and image entries; and the
+ * `startxref` value gaining digits. Object numbering, the copied source graph,
+ * and every page without overlays are byte-identical. Each term below mirrors
+ * the serialization it bounds in this file and in `pdf-writer-primitives.ts`.
+ */
+export function overlayOutputReserve(input: OverlayBudgetInput): number {
+	const objectIdDigits: number = String(MAX_COMPOSED_PDF_OBJECTS).length;
+	// `/Name 12345 0 R`, plus its separating space.
+	const referenceEntry = (nameLength: number): number => 1 + nameLength + 1 + objectIdDigits + 5;
+	let hasText: boolean = false;
+	let total: number = 0;
+	for (const entry of input.pages) {
+		if (entry.operations.length === 0) continue;
+		const number: number = operandLengthBound(entry.maxOperandMagnitude);
+		const resolved: PdfValue | null =
+			entry.page.resources === null ? null : entry.reader.resolve(entry.page.resources);
+		const prefix: string = uniquePrefix(isDict(resolved) ? resolved : null, entry.reader);
+		const fontName: number = escapeName(`${prefix}F`).length;
+		const imageOperations: number = entry.operations.filter(
+			(operation: OverlayOperationBound): boolean => operation.kind === 'image'
+		).length;
+		const imageName: number = escapeName(`${prefix}I${Math.max(0, imageOperations - 1)}`).length;
+		// Every line is counted with a trailing newline, one more than `join('\n')` emits.
+		let content: number =
+			`q\n${displayToUserMatrix(entry.page.mediaBox, entry.page.rotate).map(formatNumber).join(' ')} cm\nQ\n`
+				.length;
+		let pageHasText: boolean = false;
+		for (const operation of entry.operations) {
+			if (operation.kind === 'text') {
+				if (operation.maxLength > MAX_COMPOSED_PDF_TEXT_LENGTH) {
+					throw fail('invalid_overlay', 'An overlay text bound exceeds the supported length');
+				}
+				pageHasText = true;
+				// BT / r g b rg / /F s Tf / 1 0 0 1 x y Tm / <hex> Tj / ET; four hex digits per code point.
+				content += 6 * number + fontName + 4 * operation.maxLength + 37;
+			} else if (operation.kind === 'image') {
+				// q / w 0 0 h x y cm / /I Do / Q
+				content += 4 * number + imageName + 20;
+			} else {
+				// q / r g b RG / w w 1 J 1 j / per point: x y m|l / S / Q
+				content += 4 * number + 23 + operation.points * (2 * number + 4);
+			}
+		}
+		const stream: number = maxDeflatedPdfStreamBytes(content);
+		total += stream + String(stream).length;
+		if (pageHasText) {
+			hasText = true;
+			total += '/Font << '.length + referenceEntry(fontName) + ' >> '.length;
+		}
+		if (imageOperations > 0) {
+			total += '/XObject << '.length + imageOperations * referenceEntry(imageName) + ' >> '.length;
+		}
+	}
+	if (hasText) total += overlayFontObjectsBound();
+	if (input.imageCount > 0) {
+		const imageStream: number = input.maxImageStreamBytes;
+		const largestImageBody: number = Math.max(
+			imageBody(MAX_PNG_DIMENSION, MAX_PNG_DIMENSION, 'gray', imageStream, MAX_COMPOSED_PDF_OBJECTS)
+				.length,
+			imageBody(MAX_PNG_DIMENSION, MAX_PNG_DIMENSION, 'rgb', imageStream, MAX_COMPOSED_PDF_OBJECTS)
+				.length
+		);
+		const perImage: number =
+			largestImageBody +
+			softMaskBody(MAX_PNG_DIMENSION, MAX_PNG_DIMENSION, imageStream).length +
+			2 * STREAM_FRAMING_BYTES +
+			imageStream;
+		total += input.imageCount * perImage;
+	}
+	// `startxref` is the only trailer value that grows with the body.
+	return total + String(Number.MAX_SAFE_INTEGER).length;
+}
+
+/** `stream\n` and `\nendstream\n` around each stream object's bytes. */
+const STREAM_FRAMING_BYTES: number = 'stream\n'.length + '\nendstream\n'.length;
+
+/**
+ * `formatNumber` rounds to three decimals and prints the shortest round-trip
+ * form, so an operand of magnitude at most `magnitude` prints in at most a
+ * sign, its integer digits, a point, and three decimals.
+ */
+function operandLengthBound(magnitude: number): number {
+	if (!Number.isFinite(magnitude) || magnitude < 0 || magnitude >= 1e15) {
+		throw fail('invalid_overlay', 'An overlay operand bound is outside the supported range');
+	}
+	return 1 + String(Math.floor(magnitude) + 1).length + 1 + 3;
+}
+
+let overlayFontBoundCache: number | null = null;
+
+/**
+ * Upper bound on the five overlay font objects for *any* glyph subset of the
+ * bundled face, derived from the face itself rather than from today's text:
+ *
+ * - FontFile2: every subset table but `cmap` is a monotone function of the
+ *   glyph set (glyph data, `loca`, `hmtx`) or fixed, so the all-glyph subset
+ *   bounds them; a subset `cmap` has at most one 12-byte group per mapped
+ *   code point, so adding 12 bytes per code point the full `cmap` maps
+ *   bounds it too.
+ * - ToUnicode: the fixed CMap text plus one `<gid> <utf16>` line (at most 18
+ *   bytes) per glyph and one `n beginbfchar`/`endbfchar` pair per 100.
+ * - Dictionaries: measured from a real one-glyph build with five-digit
+ *   object numbers, plus a worst-case one-glyph-per-run `/W` array and the
+ *   stream `/Length` digits.
+ */
+function overlayFontObjectsBound(): number {
+	if (overlayFontBoundCache !== null) return overlayFontBoundCache;
+	const font: TrueTypeFont = documentFont();
+	const glyphs: number = font.numGlyphs;
+	const full: Uint8Array = font.subset(
+		Array.from({ length: glyphs }, (_unused: unknown, glyphId: number): number => glyphId)
+	).font;
+	const programBound: number = full.byteLength + 12 * sfntCmapCodePointCount(full);
+
+	const minimal = buildFontProgram(font, [], new Map(), OVERLAY_FONT_NAME);
+	const ids = {
+		font: MAX_COMPOSED_PDF_OBJECTS - 4,
+		descendantFont: MAX_COMPOSED_PDF_OBJECTS - 3,
+		descriptor: MAX_COMPOSED_PDF_OBJECTS - 2,
+		fontFile: MAX_COMPOSED_PDF_OBJECTS - 1,
+		toUnicode: MAX_COMPOSED_PDF_OBJECTS
+	};
+	let bodies: number = 0;
+	let toUnicodeFixed: number = 0;
+	for (const { id, object } of buildFontObjects(minimal.program, ids)) {
+		bodies += object.body.length;
+		if (id === ids.toUnicode && object.stream !== undefined) {
+			toUnicodeFixed = unzlibSync(object.stream).byteLength;
+		}
+	}
+	const toUnicodeBound: number = toUnicodeFixed + 18 * glyphs + 26 * Math.ceil(glyphs / 100);
+	const widthDigits: number = String(Math.round((0xffff * 1000) / font.metrics.unitsPerEm)).length;
+	// `${start} [${width}]` and a separating space, per glyph.
+	const widthArray: number = glyphs * (String(glyphs).length + widthDigits + 4);
+	const program: number = maxDeflatedPdfStreamBytes(programBound);
+	const toUnicode: number = maxDeflatedPdfStreamBytes(toUnicodeBound);
+	overlayFontBoundCache =
+		bodies +
+		widthArray +
+		String(program).length +
+		String(programBound).length +
+		String(toUnicode).length +
+		program +
+		toUnicode +
+		2 * STREAM_FRAMING_BYTES;
+	return overlayFontBoundCache;
+}
+
+/** Code points mapped by the single format-12 `cmap` subtable `TrueTypeFont#subset` writes. */
+function sfntCmapCodePointCount(sfnt: Uint8Array): number {
+	const view: DataView = new DataView(sfnt.buffer, sfnt.byteOffset, sfnt.byteLength);
+	const tableCount: number = view.getUint16(4);
+	for (let index: number = 0; index < tableCount; index += 1) {
+		const record: number = 12 + index * 16;
+		if (String.fromCharCode(...sfnt.subarray(record, record + 4)) !== 'cmap') continue;
+		const subtable: number =
+			view.getUint32(record + 8) + view.getUint32(view.getUint32(record + 8) + 8);
+		const groups: number = view.getUint32(subtable + 12);
+		let codePoints: number = 0;
+		for (let group: number = 0; group < groups; group += 1) {
+			const offset: number = subtable + 16 + group * 12;
+			codePoints += view.getUint32(offset + 4) - view.getUint32(offset) + 1;
+		}
+		return codePoints;
+	}
+	throw new Error('Subset font has no cmap table');
 }

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { emittedImageStreamBytes } from '$lib/adapters/pdf/pdf-composer';
+import { decodePng } from '$lib/adapters/pdf/png-image';
 import { drawnSignaturePng, encodeTestPng } from '$lib/adapters/pdf/png-image-test-support';
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
@@ -6,6 +8,7 @@ import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
 import {
 	MAX_SIGNATURE_ASSET_BYTES,
+	MAX_SIGNATURE_EMITTED_IMAGE_BYTES,
 	SignatureAssetApplication,
 	parseSignatureAssetKey,
 	referencedSignatureAssetKeys,
@@ -32,6 +35,48 @@ const context: RecipientSigningContext = {
 
 function pngBytes(): Uint8Array {
 	return drawnSignaturePng();
+}
+
+/**
+ * What `signature-canvas.svelte` uploads: its 600 x 200 backing store as
+ * unpremultiplied RGBA, transparent everywhere but a few anti-aliased 2.5 px
+ * strokes in #111827.
+ */
+function canvasSignaturePng(): Uint8Array {
+	const width: number = 600;
+	const height: number = 200;
+	const samples: Uint8Array = new Uint8Array(width * height * 4);
+	const strokes: readonly ((x: number) => number)[] = [
+		(x: number): number => 100 + 55 * Math.sin(x / 37) + 18 * Math.sin(x / 7),
+		(x: number): number => 120 + 30 * Math.cos(x / 23) - 25 * Math.sin(x / 11),
+		(x: number): number => 70 + 40 * Math.sin(x / 15 + 1)
+	];
+	for (let x: number = 20; x < width - 20; x += 1) {
+		for (const stroke of strokes) {
+			const center: number = stroke(x);
+			for (let y: number = Math.floor(center - 3); y <= Math.ceil(center + 3); y += 1) {
+				if (y < 0 || y >= height) continue;
+				const coverage: number = Math.min(1, Math.max(0, 1.75 - Math.abs(y - center)));
+				const offset: number = (y * width + x) * 4;
+				const alpha: number = Math.max(samples[offset + 3], Math.round(coverage * 255));
+				if (alpha === 0) continue;
+				samples.set([17, 24, 39, alpha], offset);
+			}
+		}
+	}
+	return encodeTestPng({ width, height, colorType: 6, samples, filterType: 1 });
+}
+
+function xorshift(seed: number): () => number {
+	let state: number = seed >>> 0 || 1;
+	return (): number => {
+		state ^= state << 13;
+		state >>>= 0;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		state >>>= 0;
+		return state;
+	};
 }
 
 class FakeAccess implements RecipientAccessApplicationPort {
@@ -102,6 +147,71 @@ describe('SignatureAssetApplication', () => {
 		});
 
 		expect(result).toEqual({ outcome: 'invalid_image' });
+		expect(objects.size).toBe(0);
+	});
+
+	it('accepts a drawn signature shaped like the signing canvas export', async () => {
+		const objects = new InMemoryObjectStore();
+		const png: Uint8Array = canvasSignaturePng();
+		const result = await new SignatureAssetApplication(new FakeAccess(), objects).store({
+			token: 'token',
+			expectedEnvelopeId: context.envelopeId,
+			expectedRecipientId: context.recipientId,
+			pngBytes: png
+		});
+
+		expect(result.outcome).toBe('stored');
+		expect(emittedImageStreamBytes(decodePng(png))).toBeLessThanOrEqual(
+			MAX_SIGNATURE_EMITTED_IMAGE_BYTES
+		);
+	});
+
+	it('rejects a small PNG whose planes the agreement would re-deflate past the cap', async () => {
+		const objects = new InMemoryObjectStore();
+		// Sixteen random palette colors at four bits a pixel: the PNG stays
+		// under its cap, but the composer re-deflates three bytes of RGB per pixel.
+		const next: () => number = xorshift(7);
+		const packed: Uint8Array = new Uint8Array((600 * 200) / 2);
+		for (let index: number = 0; index < packed.length; index += 1) packed[index] = next() & 0xff;
+		const palette: Uint8Array = new Uint8Array(16 * 3);
+		for (let index: number = 0; index < palette.length; index += 1) palette[index] = next() & 0xff;
+		const png: Uint8Array = encodeTestPng({
+			width: 600,
+			height: 200,
+			colorType: 3,
+			bitDepth: 4,
+			samples: packed,
+			palette
+		});
+		expect(png.byteLength).toBeLessThanOrEqual(MAX_SIGNATURE_ASSET_BYTES);
+		expect(emittedImageStreamBytes(decodePng(png))).toBeGreaterThan(
+			MAX_SIGNATURE_EMITTED_IMAGE_BYTES
+		);
+
+		const result = await new SignatureAssetApplication(new FakeAccess(), objects).store({
+			token: 'token',
+			expectedEnvelopeId: context.envelopeId,
+			expectedRecipientId: context.recipientId,
+			pngBytes: png
+		});
+
+		expect(result).toEqual({ outcome: 'too_large' });
+		expect(objects.size).toBe(0);
+	});
+
+	it('rejects a small PNG whose decoded planes exceed the canvas raster', async () => {
+		const objects = new InMemoryObjectStore();
+		const png: Uint8Array = drawnSignaturePng(2000, 1000);
+		expect(png.byteLength).toBeLessThanOrEqual(MAX_SIGNATURE_ASSET_BYTES);
+
+		const result = await new SignatureAssetApplication(new FakeAccess(), objects).store({
+			token: 'token',
+			expectedEnvelopeId: context.envelopeId,
+			expectedRecipientId: context.recipientId,
+			pngBytes: png
+		});
+
+		expect(result).toEqual({ outcome: 'too_large' });
 		expect(objects.size).toBe(0);
 	});
 

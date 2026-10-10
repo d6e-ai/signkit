@@ -1,6 +1,7 @@
 import type { ImmutableDraftRevision } from '$lib/application/drafts/draft-persistence';
 import {
 	sentPdfObjectKey,
+	type SendCompletionContext,
 	type SentDocumentArtifact,
 	type SentDocumentPdfPort,
 	type SentDocumentSetArtifact,
@@ -89,7 +90,11 @@ export class FakeSentDocumentPdf implements SentDocumentPdfPort {
 
 	constructor(private readonly failure: Error | null = null) {}
 
-	async publish(revision: ImmutableDraftRevision): Promise<SentDocumentSetArtifact> {
+	async publish(
+		revision: ImmutableDraftRevision,
+		_context: SendCompletionContext
+	): Promise<SentDocumentSetArtifact> {
+		void _context;
 		if (this.failure !== null) throw this.failure;
 		this.published.push(revision);
 		return fakeSentDocumentSetArtifact(revision.envelopeId);

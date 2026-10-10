@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 import { renderAgreementPdf } from './agreement-pdf';
+import { documentFont } from './document-font';
 import {
 	composePdf,
 	displayToUserMatrix,
 	displayedSize,
+	emittedImageStreamBytes,
 	fitOverlayTextSize,
+	MAX_COMPOSED_PDF_OBJECTS,
+	MAX_COMPOSED_PDF_TEXT_LENGTH,
+	maxDeflatedPdfStreamBytes,
 	measureOverlayText,
+	overlayOutputReserve,
+	overlayReservedObjectCount,
 	PdfCompositionError,
 	type ComposePdfInput,
 	type ComposePdfResult,
@@ -15,7 +22,9 @@ import {
 import { buildFixturePdf, textPage } from './pdf-fixture-test-support';
 import { PdfObjectReader } from './pdf-object-reader';
 import { parsePdfPageMetadata } from './pdf-page-metadata';
+import { deflatePdfStream } from './pdf-writer-primitives';
 import {
+	decodePng,
 	estimatePngDecodeMemory,
 	MAX_PNG_DIMENSION,
 	MAX_PNG_PIXELS,
@@ -310,6 +319,217 @@ describe('composePdf', () => {
 
 	it('rejects an empty source list', () => {
 		expect(() => composePdf({ sources: [] })).toThrowError(PdfCompositionError);
+	});
+});
+
+describe('overlay budget', () => {
+	/** A rotated, offset page whose resource names force a longer overlay prefix (`SKX`). */
+	function collidingRotatedPdf(): Uint8Array {
+		const bytes: Uint8Array = rotatedPdf(90);
+		// Same length, so every offset in the fixture's xref stays valid.
+		return new TextEncoder().encode(new TextDecoder().decode(bytes).replaceAll('/F1', '/SK'));
+	}
+
+	function randomBytes(length: number, seed: number): Uint8Array {
+		let state: number = seed;
+		const bytes: Uint8Array = new Uint8Array(length);
+		for (let index: number = 0; index < length; index += 1) {
+			state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
+			bytes[index] = state >>> 24;
+		}
+		return bytes;
+	}
+
+	it('bounds any zlib stream the PDF writer can emit for a given input length', () => {
+		for (const length of [0, 1, 6_999, 7_000, 7_001, 200_000]) {
+			expect(deflatePdfStream(randomBytes(length, length + 1)).byteLength).toBeLessThanOrEqual(
+				maxDeflatedPdfStreamBytes(length)
+			);
+		}
+	});
+
+	it('counts reserved dry-run objects against the object budget', () => {
+		expect(() =>
+			composePdf({
+				sources: [{ bytes: markdownPdf('Body.') }],
+				reservedObjectCount: MAX_COMPOSED_PDF_OBJECTS
+			})
+		).toThrowError(expect.objectContaining({ reason: 'object_budget_exceeded' }));
+	});
+
+	it('bounds what worst-case operations add to a dry run with their objects reserved', () => {
+		const source: Uint8Array = collidingRotatedPdf();
+		const png: Uint8Array = drawnSignaturePng(600, 200);
+		const far: number = -998.123;
+		const ink = { red: 0.123, green: 0.456, blue: 0.789 };
+		const operations: OverlayOperation[] = [
+			{
+				kind: 'text',
+				x: far,
+				baseline: far,
+				size: far,
+				color: ink,
+				text: Array.from({ length: MAX_COMPOSED_PDF_TEXT_LENGTH }, (_unused, index: number) =>
+					String.fromCodePoint(0x4e00 + index)
+				).join('')
+			},
+			{ kind: 'image', imageId: 'signature', x: far, y: far, width: far, height: far },
+			{
+				kind: 'polyline',
+				points: [
+					[far, far],
+					[far, far],
+					[far, far]
+				],
+				stroke: ink,
+				lineWidth: far
+			}
+		];
+		const reader: PdfObjectReader = new PdfObjectReader(source);
+		const reserve: number = overlayOutputReserve({
+			pages: [
+				{
+					reader,
+					page: reader.pages()[0],
+					operations: [
+						{ kind: 'text', maxLength: MAX_COMPOSED_PDF_TEXT_LENGTH },
+						{ kind: 'image' },
+						{ kind: 'polyline', points: 3 }
+					],
+					maxOperandMagnitude: 999
+				}
+			],
+			imageCount: 1,
+			maxImageStreamBytes: emittedImageStreamBytes(decodePng(png))
+		});
+
+		const dry: ComposePdfResult = composePdf({
+			sources: [{ bytes: source }],
+			reservedObjectCount: overlayReservedObjectCount(true, 1)
+		});
+		const real: ComposePdfResult = composePdf({
+			sources: [{ bytes: source, overlays: new Map([[0, operations]]) }],
+			images: [{ id: 'signature', pngBytes: png }]
+		});
+
+		expect(new TextDecoder().decode(real.bytes)).toContain('/SKXF');
+		expect(real.bytes.byteLength).toBeLessThanOrEqual(dry.bytes.byteLength + reserve);
+	});
+
+	/**
+	 * Exactly `length` UTF-16 units of what the signing normalizer lets
+	 * through: CJK, PDF string delimiters, astral emoji, a lone surrogate,
+	 * and characters the face does not map.
+	 */
+	function mixedSignableText(length: number): string {
+		const pieces: readonly string[] = [
+			'契',
+			'\\',
+			'(',
+			')',
+			'😀',
+			'\ud800',
+			'é',
+			'<',
+			'>',
+			'\u{e0001}'
+		];
+		let value: string = '';
+		for (let index: number = 0; value.length < length; index += 1) {
+			const piece: string = pieces[index % pieces.length];
+			value += value.length + piece.length <= length ? piece : 'a';
+		}
+		return value;
+	}
+
+	it('composes a maximum-length mixed text run within its reserve and rejects a longer one', () => {
+		const source: Uint8Array = markdownPdf('Body.');
+		const value: string = mixedSignableText(MAX_COMPOSED_PDF_TEXT_LENGTH);
+		expect(value.length).toBe(MAX_COMPOSED_PDF_TEXT_LENGTH);
+		const reader: PdfObjectReader = new PdfObjectReader(source);
+		const reserve: number = overlayOutputReserve({
+			pages: [
+				{
+					reader,
+					page: reader.pages()[0],
+					operations: [{ kind: 'text', maxLength: MAX_COMPOSED_PDF_TEXT_LENGTH }],
+					maxOperandMagnitude: 999
+				}
+			],
+			imageCount: 0,
+			maxImageStreamBytes: 0
+		});
+		const dry: ComposePdfResult = composePdf({
+			sources: [{ bytes: source }],
+			reservedObjectCount: overlayReservedObjectCount(true, 0)
+		});
+		const real: ComposePdfResult = composePdf({
+			sources: [{ bytes: source, overlays: new Map([[0, [text({ text: value })]]]) }]
+		});
+		expect(real.bytes.byteLength).toBeLessThanOrEqual(dry.bytes.byteLength + reserve);
+
+		expect(() =>
+			composePdf({
+				sources: [{ bytes: source, overlays: new Map([[0, [text({ text: `${value}a` })]]]) }]
+			})
+		).toThrowError(expect.objectContaining({ reason: 'invalid_overlay' }));
+		expect(() =>
+			overlayOutputReserve({
+				pages: [
+					{
+						reader,
+						page: reader.pages()[0],
+						operations: [{ kind: 'text', maxLength: MAX_COMPOSED_PDF_TEXT_LENGTH + 1 }],
+						maxOperandMagnitude: 999
+					}
+				],
+				imageCount: 0,
+				maxImageStreamBytes: 0
+			})
+		).toThrowError(expect.objectContaining({ reason: 'invalid_overlay' }));
+	});
+
+	it('bounds the overlay font even when text uses every glyph the face maps', () => {
+		const font = documentFont();
+		const seen: Set<number> = new Set();
+		const characters: string[] = [];
+		for (let codePoint: number = 0x20; codePoint <= 0x3ffff; codePoint += 1) {
+			if (codePoint >= 0xd800 && codePoint <= 0xdfff) continue;
+			const glyphId: number = font.glyphIdForCodePoint(codePoint);
+			if (glyphId === 0 || seen.has(glyphId)) continue;
+			seen.add(glyphId);
+			characters.push(String.fromCodePoint(codePoint));
+		}
+		// Supplementary-plane characters are two UTF-16 units; 256 per run keeps every run legal.
+		const runs: string[] = [];
+		for (let start: number = 0; start < characters.length; start += 256) {
+			runs.push(characters.slice(start, start + 256).join(''));
+		}
+		const operations: OverlayOperation[] = runs.map((run: string) => text({ text: run }));
+		const source: Uint8Array = markdownPdf('Body.');
+		const reader: PdfObjectReader = new PdfObjectReader(source);
+		const reserve: number = overlayOutputReserve({
+			pages: [
+				{
+					reader,
+					page: reader.pages()[0],
+					operations: runs.map(() => ({ kind: 'text' as const, maxLength: 512 })),
+					maxOperandMagnitude: 999
+				}
+			],
+			imageCount: 0,
+			maxImageStreamBytes: 0
+		});
+
+		const dry: ComposePdfResult = composePdf({
+			sources: [{ bytes: source }],
+			reservedObjectCount: overlayReservedObjectCount(true, 0)
+		});
+		const real: ComposePdfResult = composePdf({
+			sources: [{ bytes: source, overlays: new Map([[0, operations]]) }]
+		});
+
+		expect(real.bytes.byteLength).toBeLessThanOrEqual(dry.bytes.byteLength + reserve);
 	});
 });
 

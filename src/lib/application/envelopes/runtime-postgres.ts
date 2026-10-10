@@ -26,6 +26,8 @@ import {
 	type RecipientAccessApplicationPort
 } from '$lib/application/signing/recipient-access';
 import type { SentDocumentPdfPort } from '$lib/application/documents/sent-document-pdf';
+import { PostgresCompletionPdfEvidenceStore } from '$lib/adapters/db/postgres-completion-pdf-evidence-store';
+import type { CompletionPdfEvidenceStore } from '$lib/ports/completion-pdf-evidence-store';
 import type { RecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import {
 	RecipientApprovedApplication,
@@ -112,13 +114,13 @@ export function resolvePostgresEnvelopeFieldApplication(
 export function resolvePostgresEnvelopeSendApplication(
 	databaseUrl: string,
 	sealer: RecipientCapabilitySealer,
-	documentPdf: SentDocumentPdfPort
+	documentPdf: (fieldPlacements: CompletionPdfEvidenceStore) => SentDocumentPdfPort
 ): EnvelopeSendApplicationPort {
 	const resources: PostgresRuntimeResources = resolvePostgresResources(databaseUrl);
 	return new EnvelopeSendApplication(
 		new PostgresEnvelopeSendStore(resources.sql),
 		sealer,
-		documentPdf
+		documentPdf(new PostgresCompletionPdfEvidenceStore(resources.sql))
 	);
 }
 
