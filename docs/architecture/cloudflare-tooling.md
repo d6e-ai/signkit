@@ -34,4 +34,12 @@ The managed release installer has a separate Cloudflare command port; its cf-nat
 
 Verification gates include type generation, application checks, Node/Cloudflare/Vercel builds, environment/config contract tests, release bundle verification, `cf deploy --prebuilt --dry-run`, and real local Wrangler D1 application. An offline protocol test runs the actual pinned cf executable against a synthetic loopback API, with only fake credentials and documented D1 response envelopes, checking resource JSON and noninteractive remote-migration command behavior. Its SQLite-backed query fixture starts without a migration ledger, executes cf's emitted SQL, and checks ledger creation, applied names, and the post-apply empty pending list. It is not a Cloudflare-hosted D1 test; this and mocked provider/provenance tests do not prove real account permissions or deployment.
 
+## Retiring compatibility paths
+
+Remove each Wrangler path in the same change that migrates its final caller. Delete unused implementations, helpers, types, tests, operator instructions, configuration, and direct dependencies together; do not retain a second implementation for already migrated operations. Account discovery, D1 create/list/migrations, and R2 inspection/creation now have only cf implementations in the installer.
+
+- Retire the local D1 fallback after cf passes the full fresh-database migration set, no-op replay, and clean-exit checks described above.
+- Retire managed Worker and D1 export fallbacks after their replacement passes the install/upgrade/backup/rollback gates in [create-signkit.md](create-signkit.md).
+- Remove root Wrangler configuration and dependencies only when the SvelteKit adapter, cf build backend, local D1 commands, and test imports no longer require them. Keep historical ADRs and already published release archives unchanged.
+
 For current upstream behavior, see the official [cf overview](https://developers.cloudflare.com/cf/), [Wrangler migration guide](https://developers.cloudflare.com/cf/wrangler/migrate/), and [project commands](https://developers.cloudflare.com/cf/projects/).
