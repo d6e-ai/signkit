@@ -49,6 +49,13 @@ const POSTGRES_BACKLOG_QUERY: string = `
 		SUM(CASE WHEN status = 'failed' AND NOT retryable THEN 1 ELSE 0 END)::int
 	FROM completion_artifact_job
 	UNION ALL
+	SELECT 'completion_artifact_pdf_repair',
+		SUM(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable) THEN 1 ELSE 0 END)::int,
+		MIN(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable) THEN created_at ELSE NULL END),
+		MIN(CASE WHEN (status IN ('pending','processing') OR (status = 'failed' AND retryable)) AND available_at <= $1 THEN available_at ELSE NULL END),
+		SUM(CASE WHEN status = 'failed' AND NOT retryable THEN 1 ELSE 0 END)::int
+	FROM completion_artifact_pdf_repair
+	UNION ALL
 	SELECT 'docx_conversion',
 		SUM(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable) THEN 1 ELSE 0 END)::int,
 		MIN(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable) THEN created_at ELSE NULL END),

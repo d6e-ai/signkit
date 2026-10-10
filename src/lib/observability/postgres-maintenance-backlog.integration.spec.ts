@@ -184,10 +184,16 @@ postgresDescribe('PostgresMaintenanceBacklog', () => {
 			)
 		`;
 
+		await client`
+			INSERT INTO completion_artifact_pdf_repair (
+				envelope_id, status, claim_token, attempts, available_at, locked_at,
+				retryable, last_error, created_at, updated_at
+			) VALUES (${envelopeId}, 'pending', NULL, 0, ${T0}::timestamptz, NULL, true, NULL, ${T0}::timestamptz, ${T0}::timestamptz)
+		`;
 		return { envelopeId, recipientId };
 	}
 
-	it('executes the real UNION ALL query across all seven queue tables with one pending row each', async () => {
+	it('executes the real UNION ALL query across all eight queue tables with one pending row each', async () => {
 		if (sql === null) throw new Error('PostgreSQL unavailable');
 		await seedBaseFixture(sql);
 
@@ -196,7 +202,7 @@ postgresDescribe('PostgresMaintenanceBacklog', () => {
 			now
 		);
 
-		expect(snapshot).toHaveLength(7);
+		expect(snapshot).toHaveLength(8);
 		for (const row of snapshot) {
 			expect(row.pendingCount).toBe(1);
 			expect(row.oldestPendingAgeSeconds).toBe(0);
@@ -222,7 +228,7 @@ postgresDescribe('PostgresMaintenanceBacklog', () => {
 				sql
 			).snapshot(new Date(T0));
 
-			expect(snapshot).toHaveLength(7);
+			expect(snapshot).toHaveLength(8);
 			for (const row of snapshot) {
 				expect(row.pendingCount).toBe(0);
 				expect(row.oldestPendingAgeSeconds).toBeNull();

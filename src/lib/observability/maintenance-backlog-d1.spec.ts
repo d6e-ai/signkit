@@ -55,7 +55,7 @@ describe('D1MaintenanceBacklog', () => {
 				permanentlyFailedCount: 0
 			}
 		]);
-		expect(bound).toEqual(new Array(7).fill(now.toISOString()));
+		expect(bound).toEqual(new Array(8).fill(now.toISOString()));
 	});
 
 	it('throws rather than reporting a corrupted non-null timestamp as a healthy null age', async () => {

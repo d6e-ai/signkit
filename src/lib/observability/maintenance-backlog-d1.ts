@@ -57,6 +57,13 @@ const D1_BACKLOG_QUERY: string = `
 		SUM(CASE WHEN status = 'failed' AND retryable = 0 THEN 1 ELSE 0 END)
 	FROM completion_artifact_job
 	UNION ALL
+	SELECT 'completion_artifact_pdf_repair',
+		SUM(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable = 1) THEN 1 ELSE 0 END),
+		MIN(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable = 1) THEN created_at ELSE NULL END),
+		MIN(CASE WHEN (status IN ('pending','processing') OR (status = 'failed' AND retryable = 1)) AND available_at <= ? THEN available_at ELSE NULL END),
+		SUM(CASE WHEN status = 'failed' AND retryable = 0 THEN 1 ELSE 0 END)
+	FROM completion_artifact_pdf_repair
+	UNION ALL
 	SELECT 'docx_conversion',
 		SUM(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable = 1) THEN 1 ELSE 0 END),
 		MIN(CASE WHEN status IN ('pending','processing') OR (status = 'failed' AND retryable = 1) THEN created_at ELSE NULL END),
@@ -87,7 +94,7 @@ export class D1MaintenanceBacklog implements MaintenanceBacklogPort {
 		const nowIso: string = now.toISOString();
 		const result: D1Result<D1BacklogRow> = await this.database
 			.prepare(D1_BACKLOG_QUERY)
-			.bind(nowIso, nowIso, nowIso, nowIso, nowIso, nowIso, nowIso)
+			.bind(nowIso, nowIso, nowIso, nowIso, nowIso, nowIso, nowIso, nowIso)
 			.all<D1BacklogRow>();
 		return result.results.map((row: D1BacklogRow) => ({
 			queue: row.queue,

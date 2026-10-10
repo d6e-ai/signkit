@@ -24,6 +24,7 @@ describe('GET /api/v1/openapi.json', () => {
 		const paths = document.paths as Record<string, unknown>;
 		for (const path of [
 			'/api/v1/system/capabilities',
+			'/api/v1/system/maintenance/health',
 			'/api/v1/openapi.json',
 			'/api/v1/contacts',
 			'/api/v1/contacts/search',
@@ -78,6 +79,30 @@ describe('GET /api/v1/openapi.json', () => {
 		expect(components.schemas.Contact.properties.version.maximum).toBe(2_147_483_647);
 		expect(components.schemas.Contact.properties).not.toHaveProperty('ownerUserId');
 		expect(components.schemas.Contact.properties).not.toHaveProperty('organizationId');
+
+		const health = paths['/api/v1/system/maintenance/health'] as {
+			get: { security: unknown; responses: Record<string, unknown> };
+		};
+		expect(health.get.security).toEqual([{ DeliveryWorkerSecret: [] }]);
+		const healthSchema = (document.components as { schemas: Record<string, unknown> }).schemas
+			.MaintenanceHealth;
+		expect(healthSchema).toMatchObject({
+			additionalProperties: false,
+			properties: {
+				queues: {
+					minItems: 8,
+					maxItems: 8,
+					items: {
+						additionalProperties: false,
+						properties: {
+							queue: { enum: expect.arrayContaining(['completion_artifact_pdf_repair']) }
+						}
+					}
+				}
+			}
+		});
+		const send = paths['/api/v1/envelopes/{envelopeId}/send'] as { post: { description: string } };
+		expect(send.post.description).toContain('urn:signkit:problem:send-completion-budget-exceeded');
 
 		const serialized = JSON.stringify(document);
 		expect(serialized).not.toContain('repositoryArchiveKey');

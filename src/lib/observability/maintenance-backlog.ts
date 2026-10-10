@@ -8,6 +8,7 @@ export const MAINTENANCE_BACKLOG_QUEUES = [
 	'instance_invitation_delivery',
 	'completion_delivery',
 	'completion_artifact',
+	'completion_artifact_pdf_repair',
 	'docx_conversion',
 	'pdf_seal',
 	'webhook_delivery'

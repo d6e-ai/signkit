@@ -91,7 +91,8 @@ Response shape:
 ```
 
 - `queue` is one of `delivery`, `instance_invitation_delivery`,
-  `completion_delivery`, `completion_artifact`, `docx_conversion`, `pdf_seal`,
+  `completion_delivery`, `completion_artifact`, `completion_artifact_pdf_repair`,
+  `docx_conversion`, `pdf_seal`,
   `webhook_delivery`.
 - `pendingCount` counts rows still actionable: pending, currently claimed
   (`processing`), or failed-but-retryable — including a retry delayed into the

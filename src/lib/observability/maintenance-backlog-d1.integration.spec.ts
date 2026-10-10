@@ -157,11 +157,17 @@ function baseFixture(): Fixture {
 		);
 	`);
 
+	sqlite.exec(`
+		INSERT INTO completion_artifact_pdf_repair (
+			envelope_id, status, claim_token, attempts, available_at, locked_at,
+			retryable, last_error, created_at, updated_at
+		) VALUES ('${envelopeId}', 'pending', NULL, 0, '${T0}', NULL, 1, NULL, '${T0}', '${T0}');
+	`);
 	return { sqlite, database: sqliteD1Database(sqlite), envelopeId, recipientId };
 }
 
 describe('D1MaintenanceBacklog SQLite integration', () => {
-	it('executes the real UNION ALL query across all seven queue tables with one pending row each', async () => {
+	it('executes the real UNION ALL query across all eight queue tables with one pending row each', async () => {
 		const fixture: Fixture = baseFixture();
 		try {
 			const now: Date = new Date(T0);
@@ -169,7 +175,7 @@ describe('D1MaintenanceBacklog SQLite integration', () => {
 				fixture.database
 			).snapshot(now);
 
-			expect(snapshot).toHaveLength(7);
+			expect(snapshot).toHaveLength(8);
 			for (const row of snapshot) {
 				expect(row.pendingCount).toBe(1);
 				expect(row.oldestPendingAgeSeconds).toBe(0);
@@ -179,6 +185,7 @@ describe('D1MaintenanceBacklog SQLite integration', () => {
 			expect(snapshot.map((row) => row.queue).toSorted()).toEqual(
 				[
 					'completion_artifact',
+					'completion_artifact_pdf_repair',
 					'completion_delivery',
 					'delivery',
 					'docx_conversion',
@@ -200,7 +207,7 @@ describe('D1MaintenanceBacklog SQLite integration', () => {
 				sqliteD1Database(sqlite)
 			).snapshot(new Date(T0));
 
-			expect(snapshot).toHaveLength(7);
+			expect(snapshot).toHaveLength(8);
 			for (const row of snapshot) {
 				expect(row.pendingCount).toBe(0);
 				expect(row.oldestPendingAgeSeconds).toBeNull();

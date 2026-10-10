@@ -1,6 +1,7 @@
 import { WEBHOOK_AUDIT_EVENT_TYPES } from '$lib/domain/audit';
 import { recipientRoles, fieldTypes } from '$lib/domain/envelope';
 import { MAX_SIGNATURE_ASSET_BYTES } from '$lib/application/documents/signature-asset';
+import { MAINTENANCE_BACKLOG_QUEUES } from '$lib/observability/maintenance-backlog';
 
 const UUIDV7: Record<string, unknown> = {
 	type: 'string',
@@ -30,6 +31,47 @@ const PROBLEM: Record<string, unknown> = {
 		}
 	},
 	additionalProperties: true
+};
+
+const MAINTENANCE_HEALTH: Record<string, unknown> = {
+	type: 'object',
+	required: ['queues'],
+	additionalProperties: false,
+	properties: {
+		queues: {
+			type: 'array',
+			minItems: MAINTENANCE_BACKLOG_QUEUES.length,
+			maxItems: MAINTENANCE_BACKLOG_QUEUES.length,
+			items: {
+				type: 'object',
+				required: [
+					'queue',
+					'pendingCount',
+					'oldestPendingAgeSeconds',
+					'oldestOverdueAgeSeconds',
+					'permanentlyFailedCount'
+				],
+				additionalProperties: false,
+				properties: {
+					queue: { type: 'string', enum: [...MAINTENANCE_BACKLOG_QUEUES] },
+					pendingCount: { type: 'integer', minimum: 0 },
+					oldestPendingAgeSeconds: {
+						type: ['integer', 'null'],
+						minimum: 0,
+						description:
+							'Lifetime age since creation, or the immutable audit event for webhooks. Null when empty; retries do not reset it.'
+					},
+					oldestOverdueAgeSeconds: {
+						type: ['integer', 'null'],
+						minimum: 0,
+						description:
+							'Age since availability of the oldest currently due row. Null when no row is due.'
+					},
+					permanentlyFailedCount: { type: 'integer', minimum: 0 }
+				}
+			}
+		}
+	}
 };
 
 const ENVELOPE: Record<string, unknown> = {
@@ -1644,6 +1686,8 @@ export function openApiDocument(): Record<string, unknown> {
 			'/api/v1/envelopes/{envelopeId}/send': {
 				post: op({
 					summary: 'Send a ready envelope',
+					description:
+						'Before publication, validates the whole document set, field placements, evidence appendix, and bounded future signatures against the completion PDF page and byte limits. An over-budget envelope returns 400 urn:signkit:problem:send-completion-budget-exceeded without sending invitations.',
 					operationId: 'sendEnvelope',
 					tags: ['Envelopes'],
 					parameters: [envelopeIdParam, idempotencyHeader],
@@ -2166,6 +2210,19 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Webhook delivery log page', { type: 'object' })
 				})
 			},
+			'/api/v1/system/maintenance/health': {
+				get: op({
+					summary: 'Read durable maintenance backlog health',
+					operationId: 'getMaintenanceHealth',
+					tags: ['System'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					description:
+						'Read-only aggregate counts and lifetime/due ages. Includes completion PDF repair; never exposes individual jobs, payloads, or error messages.',
+					responses: jsonResponse('200', 'Durable backlog snapshot', {
+						$ref: '#/components/schemas/MaintenanceHealth'
+					})
+				})
+			},
 			'/api/v1/system/webhooks/drain': {
 				post: op({
 					summary: 'Drain pending webhook deliveries',
@@ -2639,7 +2696,7 @@ export function openApiDocument(): Record<string, unknown> {
 				DeliveryWorkerSecret: {
 					type: 'http',
 					scheme: 'bearer',
-					description: 'Deployment worker secret for drain endpoints.'
+					description: 'Instance maintenance credential for drain, sweep, and health endpoints.'
 				},
 				RecipientCapability: {
 					type: 'http',
@@ -2661,6 +2718,7 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			schemas: {
 				ProblemDetail: PROBLEM,
+				MaintenanceHealth: MAINTENANCE_HEALTH,
 				Envelope: ENVELOPE,
 				Contact: CONTACT,
 				FieldGeometry: FIELD_GEOMETRY,
