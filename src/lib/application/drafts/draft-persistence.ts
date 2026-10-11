@@ -40,6 +40,7 @@ import type {
 } from '$lib/ports/draft-repository';
 import type { EnvelopeUploadedDocumentStore } from '$lib/ports/envelope-uploaded-document-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { readBoundedObjectStream } from '$lib/ports/bounded-object-stream';
 
 const ARCHIVE_CONTENT_TYPE = 'application/vnd.signkit.git-archive+gzip';
 const MAX_ARCHIVE_BYTES = 12 * 1024 * 1024;
@@ -1090,7 +1091,11 @@ export class DraftPersistenceService {
 	private async readVerifiedArchive(key: string, expectedSha256: string): Promise<Uint8Array> {
 		const stream = await this.objects.get(key);
 		if (!stream) throw new DraftIntegrityError('Draft repository archive is missing');
-		const archive = await readStreamBounded(stream, MAX_ARCHIVE_BYTES);
+		const archive = await readBoundedObjectStream(
+			stream,
+			MAX_ARCHIVE_BYTES,
+			() => new DraftIntegrityError('Draft repository archive exceeds the size limit')
+		);
 		const actualSha256 = await sha256Hex(archive);
 		if (actualSha256 !== expectedSha256) {
 			throw new DraftIntegrityError('Draft repository archive failed SHA-256 verification');
@@ -1119,7 +1124,11 @@ export async function readImmutableDraftRevision(
 	}
 	const stream: ReadableStream<Uint8Array> | null = await objects.get(revision.archiveKey);
 	if (stream === null) throw new DraftIntegrityError('Pinned draft repository archive is missing');
-	const archive: Uint8Array = await readStreamBounded(stream, MAX_ARCHIVE_BYTES);
+	const archive: Uint8Array = await readBoundedObjectStream(
+		stream,
+		MAX_ARCHIVE_BYTES,
+		() => new DraftIntegrityError('Draft repository archive exceeds the size limit')
+	);
 	const actualSha256: string = await sha256Hex(archive);
 	if (actualSha256 !== revision.archiveSha256) {
 		throw new DraftIntegrityError('Pinned draft repository archive failed SHA-256 verification');
@@ -1341,39 +1350,6 @@ function assertStoredMetadata(
 	if (metadata.key !== key || metadata.size !== size || metadata.sha256 !== sha256) {
 		throw new DraftIntegrityError('Object store did not confirm the immutable draft archive');
 	}
-}
-
-async function readStreamBounded(
-	stream: ReadableStream<Uint8Array>,
-	maximumBytes: number
-): Promise<Uint8Array> {
-	const reader = stream.getReader();
-	const chunks: Uint8Array[] = [];
-	let size = 0;
-
-	try {
-		while (true) {
-			const result = await reader.read();
-			if (result.done) break;
-			const chunk = result.value;
-			size += chunk.byteLength;
-			if (size > maximumBytes) {
-				await reader.cancel('Draft repository archive exceeds the size limit');
-				throw new DraftIntegrityError('Draft repository archive exceeds the size limit');
-			}
-			chunks.push(chunk);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-
-	const bytes = new Uint8Array(size);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {

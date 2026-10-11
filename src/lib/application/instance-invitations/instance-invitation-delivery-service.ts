@@ -20,12 +20,14 @@ import { sha256Hex } from '$lib/security/sealing-keyring';
 import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import { sanitizeDeliveryErrorCode } from '$lib/ports/delivery-outbox-store';
 import { renderInstanceInvitationMail } from './instance-invitation-email';
+import { cappedExponentialBackoffAvailableAt } from '$lib/ports/capped-exponential-backoff';
 
 export const INSTANCE_INVITATION_DELIVERY_LEASE_MS: number = 5 * 60 * 1000;
 export const INSTANCE_INVITATION_DELIVERY_MAX_ATTEMPTS: number =
 	MAX_INSTANCE_INVITATION_DELIVERY_ATTEMPTS;
 const RETRY_BASE_MS: number = 30_000;
 const RETRY_MAX_MS: number = 6 * 60 * 60 * 1000;
+const RETRY_EXPONENT_CAP: number = 10;
 const CONCURRENCY: number = 5;
 
 export interface InstanceInvitationDeliverySenderConfig {
@@ -257,10 +259,13 @@ export class InstanceInvitationDeliveryService {
 }
 
 function retryAt(now: Date, attempts: number): string {
-	const exponent: number = Math.min(Math.max(1, attempts) - 1, 10);
-	return new Date(
-		now.valueOf() + Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** exponent)
-	).toISOString();
+	return cappedExponentialBackoffAvailableAt(
+		now,
+		attempts,
+		RETRY_BASE_MS,
+		RETRY_MAX_MS,
+		RETRY_EXPONENT_CAP
+	);
 }
 
 function assertPublicHttpsOrigin(origin: string): string {

@@ -11,6 +11,9 @@ export const WEBHOOK_MAX_PAYLOAD_BYTES: number = 32 * 1024;
 export const WEBHOOK_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const WEBHOOK_MAX_ATTEMPTS: number = 10;
 export const WEBHOOK_RETRY_BASE_DELAY_MS: number = 30_000;
+/** Exponent doublings cap: `2 ** 5 = 32`, so {@link WEBHOOK_RETRY_MAX_DELAY_MS} is reached after 6 failures. */
+export const WEBHOOK_RETRY_EXPONENT_CAP: number = 5;
+export const WEBHOOK_RETRY_MAX_DELAY_MS: number = WEBHOOK_RETRY_BASE_DELAY_MS * 32;
 export const MAX_WEBHOOK_CLAIM_BATCH: number = 25;
 
 export async function hashWebhookSecret(secret: string): Promise<string> {

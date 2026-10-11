@@ -75,11 +75,13 @@ import {
 import { assembleExecutedAgreementPdf } from './executed-pdf-assembly';
 import { verifyImmutableObject } from './exact-object-stream';
 import { verifyAuditEventRecord } from './audit-event-integrity';
+import { cappedExponentialBackoffAvailableAt } from '$lib/ports/capped-exponential-backoff';
 
 export const COMPLETION_ARTIFACT_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS: number = 30_000;
 export const COMPLETION_ARTIFACT_RETRY_MAX_DELAY_MS: number = 6 * 60 * 60 * 1000;
 export const MAX_COMPLETION_ARTIFACT_ATTEMPTS: number = 10;
+const COMPLETION_ARTIFACT_RETRY_EXPONENT_CAP: number = 10;
 const COMPLETION_ARTIFACT_CONCURRENCY: number = 3;
 const JSON_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+json.gz';
 const MARKDOWN_CONTENT_TYPE: string = 'application/vnd.signkit.completion-manifest+markdown.gz';
@@ -907,13 +909,13 @@ export class CompletionArtifactPublicationService {
 }
 
 export function completionArtifactRetryAvailableAt(now: Date, attempts: number): string {
-	const safeAttempts: number = Math.max(1, attempts);
-	const exponent: number = Math.min(safeAttempts - 1, 10);
-	const delayMs: number = Math.min(
+	return cappedExponentialBackoffAvailableAt(
+		now,
+		attempts,
+		COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS,
 		COMPLETION_ARTIFACT_RETRY_MAX_DELAY_MS,
-		COMPLETION_ARTIFACT_RETRY_BASE_DELAY_MS * 2 ** exponent
+		COMPLETION_ARTIFACT_RETRY_EXPONENT_CAP
 	);
-	return new Date(now.valueOf() + delayMs).toISOString();
 }
 
 export function completionArtifactObjectKey(

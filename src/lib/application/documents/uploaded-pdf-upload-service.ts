@@ -20,6 +20,7 @@ import {
 import { sha256Hex } from '$lib/application/documents/sent-document-pdf';
 import type { DraftActor } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { readBoundedObjectStream } from '$lib/ports/bounded-object-stream';
 import type {
 	EnvelopeUploadedDocumentStore,
 	InsertUploadedDocumentResult
@@ -149,7 +150,12 @@ export class UploadedPdfUploadService {
 			if (stream === null) throw error;
 			let body: Uint8Array;
 			try {
-				body = await readStreamBounded(stream, bytes.byteLength);
+				body = await readBoundedObjectStream(
+					stream,
+					bytes.byteLength,
+					() =>
+						new UploadedPdfUploadError('integrity_error', 'Uploaded PDF exceeds its pinned size')
+				);
 			} catch {
 				throw error;
 			}
@@ -172,34 +178,4 @@ function titleFromUpload(title: string | undefined, filename: string | undefined
 	const source: string = (title ?? filename ?? 'document').trim().replace(/\.pdf$/i, '');
 	if (source.length === 0) return 'document';
 	return source.slice(0, 200);
-}
-
-async function readStreamBounded(
-	stream: ReadableStream<Uint8Array>,
-	maximumBytes: number
-): Promise<Uint8Array> {
-	const reader = stream.getReader();
-	const chunks: Uint8Array[] = [];
-	let size: number = 0;
-	try {
-		for (;;) {
-			const result = await reader.read();
-			if (result.done) break;
-			size += result.value.byteLength;
-			if (size > maximumBytes) {
-				await reader.cancel('uploaded PDF exceeds its pinned size');
-				throw new UploadedPdfUploadError('integrity_error', 'Uploaded PDF exceeds its pinned size');
-			}
-			chunks.push(result.value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	const bytes: Uint8Array = new Uint8Array(size);
-	let offset: number = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
 }

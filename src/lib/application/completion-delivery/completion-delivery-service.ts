@@ -43,12 +43,14 @@ import {
 	type CompletionPdfAttachmentOutcome,
 	type CompletionPdfAttachmentReaderPort
 } from './completion-pdf-attachment-reader';
+import { cappedExponentialBackoffAvailableAt } from '$lib/ports/capped-exponential-backoff';
 
 export const COMPLETION_DELIVERY_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const COMPLETION_DELIVERY_RETRY_BASE_DELAY_MS: number = 30_000;
 export const COMPLETION_DELIVERY_RETRY_MAX_DELAY_MS: number = 6 * 60 * 60 * 1000;
 export const MAX_COMPLETION_DELIVERY_ATTEMPTS: number = 10;
 export const COMPLETION_DELIVERY_CONCURRENCY: number = 5;
+const COMPLETION_DELIVERY_RETRY_EXPONENT_CAP: number = 10;
 
 const ELIGIBLE_RECIPIENT_ROLES = new Set<EligibleRecipientRole>([
 	'signer',
@@ -503,13 +505,13 @@ export class CompletionDeliveryService {
 }
 
 export function completionDeliveryRetryAvailableAt(now: Date, attempts: number): string {
-	const safeAttempts: number = Math.max(1, attempts);
-	const exponent: number = Math.min(safeAttempts - 1, 10);
-	const delayMs: number = Math.min(
+	return cappedExponentialBackoffAvailableAt(
+		now,
+		attempts,
+		COMPLETION_DELIVERY_RETRY_BASE_DELAY_MS,
 		COMPLETION_DELIVERY_RETRY_MAX_DELAY_MS,
-		COMPLETION_DELIVERY_RETRY_BASE_DELAY_MS * 2 ** exponent
+		COMPLETION_DELIVERY_RETRY_EXPONENT_CAP
 	);
-	return new Date(now.valueOf() + delayMs).toISOString();
 }
 
 function summarize(

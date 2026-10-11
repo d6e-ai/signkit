@@ -30,6 +30,7 @@ import type {
 } from '$lib/ports/completion-pdf-evidence-store';
 import type { DraftDocument, DraftRepository } from '$lib/ports/draft-repository';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import { readBoundedObjectStream } from '$lib/ports/bounded-object-stream';
 import {
 	RecipientMarkdownRenderError,
 	renderRecipientMarkdown
@@ -317,7 +318,11 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 			if (stream === null) throw error;
 			let body: Uint8Array;
 			try {
-				body = await readStreamBounded(stream, bytes.byteLength);
+				body = await readBoundedObjectStream(
+					stream,
+					bytes.byteLength,
+					() => new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size')
+				);
 			} catch {
 				throw error;
 			}
@@ -363,7 +368,11 @@ async function renderUploadedLeaf(
 	}
 	let bytes: Uint8Array;
 	try {
-		bytes = await readStreamBounded(stream, MAX_SENT_PDF_BYTES);
+		bytes = await readBoundedObjectStream(
+			stream,
+			MAX_SENT_PDF_BYTES,
+			() => new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size')
+		);
 	} catch (error: unknown) {
 		if (error instanceof SentDocumentPdfError) throw error;
 		throw new SentDocumentPdfError('Uploaded agreement PDF could not be read');
@@ -533,34 +542,4 @@ export function sentAuditDocuments(
 			pageCount: document.pageCount
 		})
 	);
-}
-
-async function readStreamBounded(
-	stream: ReadableStream<Uint8Array>,
-	maximumBytes: number
-): Promise<Uint8Array> {
-	const reader = stream.getReader();
-	const chunks: Uint8Array[] = [];
-	let size: number = 0;
-	try {
-		for (;;) {
-			const result = await reader.read();
-			if (result.done) break;
-			size += result.value.byteLength;
-			if (size > maximumBytes) {
-				await reader.cancel('sent agreement PDF exceeds its pinned size');
-				throw new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size');
-			}
-			chunks.push(result.value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	const bytes: Uint8Array = new Uint8Array(size);
-	let offset: number = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
 }
