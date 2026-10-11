@@ -1094,7 +1094,8 @@ export class DraftPersistenceService {
 		const archive = await readBoundedObjectStream(
 			stream,
 			MAX_ARCHIVE_BYTES,
-			() => new DraftIntegrityError('Draft repository archive exceeds the size limit')
+			() => new DraftIntegrityError('Draft repository archive exceeds the size limit'),
+			'Draft repository archive exceeds the size limit'
 		);
 		const actualSha256 = await sha256Hex(archive);
 		if (actualSha256 !== expectedSha256) {
@@ -1127,7 +1128,8 @@ export async function readImmutableDraftRevision(
 	const archive: Uint8Array = await readBoundedObjectStream(
 		stream,
 		MAX_ARCHIVE_BYTES,
-		() => new DraftIntegrityError('Draft repository archive exceeds the size limit')
+		() => new DraftIntegrityError('Draft repository archive exceeds the size limit'),
+		'Draft repository archive exceeds the size limit'
 	);
 	const actualSha256: string = await sha256Hex(archive);
 	if (actualSha256 !== revision.archiveSha256) {

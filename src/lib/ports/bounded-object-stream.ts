@@ -6,12 +6,13 @@
  * only a ceiling, so a shorter-than-ceiling stream is returned as-is for the
  * caller to apply its own exact size/hash check. `onOverflow` builds the
  * caller's own error so each call site keeps its existing error type and
- * message.
+ * message. Cancellation reasons and cancellation failures remain caller-owned.
  */
 export async function readBoundedObjectStream(
 	stream: ReadableStream<Uint8Array>,
 	maximumBytes: number,
-	onOverflow: () => Error
+	onOverflow: () => Error,
+	cancelReason: string
 ): Promise<Uint8Array> {
 	const reader: ReadableStreamDefaultReader<Uint8Array> = stream.getReader();
 	const chunks: Uint8Array[] = [];
@@ -22,11 +23,7 @@ export async function readBoundedObjectStream(
 			if (result.done) break;
 			size += result.value.byteLength;
 			if (size > maximumBytes) {
-				try {
-					await reader.cancel('Object stream exceeded its maximum byte limit');
-				} catch {
-					// The size failure remains authoritative when provider cancellation fails.
-				}
+				await reader.cancel(cancelReason);
 				throw onOverflow();
 			}
 			chunks.push(result.value);

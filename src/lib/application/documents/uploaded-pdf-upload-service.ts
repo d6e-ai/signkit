@@ -154,7 +154,8 @@ export class UploadedPdfUploadService {
 					stream,
 					bytes.byteLength,
 					() =>
-						new UploadedPdfUploadError('integrity_error', 'Uploaded PDF exceeds its pinned size')
+						new UploadedPdfUploadError('integrity_error', 'Uploaded PDF exceeds its pinned size'),
+					'uploaded PDF exceeds its pinned size'
 				);
 			} catch {
 				throw error;

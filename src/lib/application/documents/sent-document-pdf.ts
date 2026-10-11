@@ -321,7 +321,8 @@ export class SentDocumentPdfService implements SentDocumentPdfPort {
 				body = await readBoundedObjectStream(
 					stream,
 					bytes.byteLength,
-					() => new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size')
+					() => new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size'),
+					'sent agreement PDF exceeds its pinned size'
 				);
 			} catch {
 				throw error;
@@ -371,7 +372,8 @@ async function renderUploadedLeaf(
 		bytes = await readBoundedObjectStream(
 			stream,
 			MAX_SENT_PDF_BYTES,
-			() => new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size')
+			() => new SentDocumentPdfError('Sent agreement PDF exceeds its pinned size'),
+			'sent agreement PDF exceeds its pinned size'
 		);
 	} catch (error: unknown) {
 		if (error instanceof SentDocumentPdfError) throw error;

@@ -318,7 +318,8 @@ export class DocxConversionService {
 		const bytes: Uint8Array = await readBoundedObjectStream(
 			stream,
 			job.result.byteSize,
-			() => new DraftIntegrityError('Stream exceeded maximum byte limit')
+			() => new DraftIntegrityError('Stream exceeded maximum byte limit'),
+			'Stream exceeded maximum byte limit'
 		);
 		if (
 			bytes.byteLength !== job.result.byteSize ||
@@ -391,7 +392,8 @@ export class DocxConversionService {
 			const bytes: Uint8Array = await readBoundedObjectStream(
 				stream,
 				claim.job.sourceByteSize,
-				() => new DraftIntegrityError('Stream exceeded maximum byte limit')
+				() => new DraftIntegrityError('Stream exceeded maximum byte limit'),
+				'Stream exceeded maximum byte limit'
 			);
 			if (bytes.byteLength !== claim.job.sourceByteSize) {
 				throw new DraftIntegrityError('Source DOCX byte size mismatch');
@@ -622,7 +624,8 @@ export class DocxConversionService {
 			const retrieved = await readBoundedObjectStream(
 				stream,
 				bytes.byteLength,
-				() => new DraftIntegrityError('Stream exceeded maximum byte limit')
+				() => new DraftIntegrityError('Stream exceeded maximum byte limit'),
+				'Stream exceeded maximum byte limit'
 			);
 			if (retrieved.byteLength !== bytes.byteLength || (await sha256Hex(retrieved)) !== sha256) {
 				throw error;
