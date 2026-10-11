@@ -1,8 +1,14 @@
 import type { ObjectStore } from '$lib/ports/object-store';
 import { MAX_LIST_OBJECTS_LIMIT } from '$lib/ports/object-store';
+import type {
+	RetireSignatureAssetResult,
+	SignatureAssetLedger,
+	SignatureAssetScope
+} from '$lib/ports/signature-asset-ledger';
 import {
 	parseSignatureAssetKey,
 	referencedSignatureAssetKeys,
+	signatureAssetKey,
 	type ParsedSignatureAssetKey
 } from '$lib/application/documents/signature-asset';
 import type { D1Database } from '@cloudflare/workers-types';
@@ -13,6 +19,8 @@ export const DEFAULT_ORPHAN_BATCH_SIZE: number = 100;
 export const MAX_ORPHAN_SCAN_LIMIT: number = MAX_LIST_OBJECTS_LIMIT;
 export const D1_MAX_BOUND_PARAMETERS: number = 100;
 export const D1_FREE_QUERY_LIMIT: number = 50;
+/** Abandoned `pending` signature-asset registrations examined per sweep. */
+export const MAX_ABANDONED_SIGNATURE_REGISTRATIONS: number = 25;
 const D1_REFERENCE_CHUNK_SIZE: number = DEFAULT_ORPHAN_BATCH_SIZE;
 /**
  * Completion artifact objects are written before their DB pointer lands
@@ -91,11 +99,17 @@ export type OrphanSweepFailureCode =
 	| 'checkpoint_read_failed'
 	| 'object_list_failed'
 	| 'reference_lookup_failed'
+	| 'signature_retirement_failed'
 	| 'object_delete_failed'
 	| 'checkpoint_write_failed';
 
 export type OrphanSweepOperation =
-	'checkpoint_read' | 'object_list' | 'reference_lookup' | 'object_delete' | 'checkpoint_write';
+	| 'checkpoint_read'
+	| 'object_list'
+	| 'reference_lookup'
+	| 'signature_retirement'
+	| 'object_delete'
+	| 'checkpoint_write';
 
 export class OrphanSweepFailure extends Error {
 	readonly code: OrphanSweepFailureCode;
@@ -131,6 +145,11 @@ export interface OrphanCollectorReport {
 	inGracePeriod: number;
 	deleted: number;
 	deletedKeys: readonly string[];
+	/**
+	 * Abandoned `pending` signature-asset registrations (no object was ever
+	 * stored) retired this sweep, or that would be retired under `dryRun`.
+	 */
+	retiredPendingRegistrations: number;
 	nextStartAfter: string;
 	/**
 	 * True when a durable checkpoint was wired but another writer already
@@ -156,17 +175,25 @@ export class OrphanCollector {
 	readonly #references: OrphanReferenceStore;
 	readonly #now: () => Date;
 	readonly #checkpoint: OrphanSweepCheckpointStore | null;
+	readonly #signatureLedger: SignatureAssetLedger | null;
 
+	/**
+	 * `signatureLedger` is required to collect drawn signature/initials assets
+	 * at all: without it an unreferenced `signature-assets/` object is always
+	 * retained, because deleting it could race a concurrent fresh signing.
+	 */
 	constructor(
 		objects: ObjectStore,
 		references: OrphanReferenceStore,
 		now: () => Date = (): Date => new Date(),
-		checkpoint: OrphanSweepCheckpointStore | null = null
+		checkpoint: OrphanSweepCheckpointStore | null = null,
+		signatureLedger: SignatureAssetLedger | null = null
 	) {
 		this.#objects = objects;
 		this.#references = references;
 		this.#now = now;
 		this.#checkpoint = checkpoint;
+		this.#signatureLedger = signatureLedger;
 	}
 
 	async sweep(options: OrphanCollectorOptions = {}): Promise<OrphanCollectorReport> {
@@ -185,6 +212,8 @@ export class OrphanCollector {
 		const maxListPages = Math.max(1, Math.floor(options.maxListPages ?? Number.MAX_SAFE_INTEGER));
 		const dryRun = options.dryRun ?? false;
 		const nowTime = this.#now().getTime();
+		const nowIso: string = new Date(nowTime).toISOString();
+		const touchedBefore: string = new Date(nowTime - gracePeriodMs).toISOString();
 		const resume = await runOrphanSweepOperation(
 			'checkpoint_read_failed',
 			'checkpoint_read',
@@ -242,21 +271,46 @@ export class OrphanCollector {
 				referencedCount += referencedKeys.size;
 
 				const orphans = candidates.filter((k) => !referencedKeys.has(k));
-				if (orphans.length > 0) {
+				const deletable: string[] = [];
+				for (const key of orphans) {
+					const asset: ParsedSignatureAssetKey | null = parseSignatureAssetKey(key);
+					if (asset === null) {
+						deletable.push(key);
+						continue;
+					}
+					// Commit the one-way retirement before any delete, so a fresh
+					// signing either already touched/bound the row (retained here) or
+					// can never bind this exact key afterwards.
+					const retirable: boolean = await runOrphanSweepOperation(
+						'signature_retirement_failed',
+						'signature_retirement',
+						async (): Promise<boolean> =>
+							this.#retireSignatureAsset(asset, nowIso, touchedBefore, dryRun)
+					);
+					if (retirable) deletable.push(key);
+					else referencedCount += 1;
+				}
+				if (deletable.length > 0) {
 					if (!dryRun) {
 						await runOrphanSweepOperation(
 							'object_delete_failed',
 							'object_delete',
-							async (): Promise<void> => this.#objects.deleteMany(orphans)
+							async (): Promise<void> => this.#objects.deleteMany(deletable)
 						);
 					}
-					deletedKeys.push(...orphans);
+					deletedKeys.push(...deletable);
 				}
 			}
 
 			hasMore = listed.truncated && listed.cursor !== undefined;
 			cursor = listed.cursor;
 		}
+
+		const retiredPendingRegistrations: number = await runOrphanSweepOperation(
+			'signature_retirement_failed',
+			'signature_retirement',
+			async (): Promise<number> => this.#retireAbandonedRegistrations(nowIso, touchedBefore, dryRun)
+		);
 
 		const nextStartAfter = hasMore && lastKey.length > 0 ? lastKey : '';
 		let checkpointConflict = false;
@@ -277,9 +331,60 @@ export class OrphanCollector {
 			inGracePeriod: inGracePeriodCount,
 			deleted: deletedKeys.length,
 			deletedKeys,
+			retiredPendingRegistrations,
 			nextStartAfter,
 			checkpointConflict
 		};
+	}
+
+	/** True when this unreferenced signature asset's object may be deleted. Never writes under `dryRun`. */
+	async #retireSignatureAsset(
+		asset: ParsedSignatureAssetKey,
+		nowIso: string,
+		touchedBefore: string,
+		dryRun: boolean
+	): Promise<boolean> {
+		const ledger: SignatureAssetLedger | null = this.#signatureLedger;
+		if (ledger === null) return false;
+		const scope: SignatureAssetScope = {
+			envelopeId: asset.envelopeId,
+			recipientId: asset.recipientId,
+			sha256: asset.sha256
+		};
+		if (dryRun) return await ledger.previewRetirement(scope, touchedBefore);
+		const state: RetireSignatureAssetResult = await ledger.retireOrphan(
+			scope,
+			nowIso,
+			touchedBefore
+		);
+		return state === 'retired' || state === 'unowned';
+	}
+
+	/**
+	 * Bounded, DB-driven cleanup of `pending` registrations whose upload never
+	 * stored an object (a crash between registration and put). A registration
+	 * whose object exists is left to the object listing above.
+	 */
+	async #retireAbandonedRegistrations(
+		nowIso: string,
+		touchedBefore: string,
+		dryRun: boolean
+	): Promise<number> {
+		const ledger: SignatureAssetLedger | null = this.#signatureLedger;
+		if (ledger === null) return 0;
+		const pending: readonly SignatureAssetScope[] = await ledger.listPendingBefore(
+			touchedBefore,
+			MAX_ABANDONED_SIGNATURE_REGISTRATIONS
+		);
+		let retired: number = 0;
+		for (const scope of pending) {
+			const key: string = signatureAssetKey(scope.envelopeId, scope.recipientId, scope.sha256);
+			if ((await this.#objects.head(key)) !== null) continue;
+			if (dryRun || (await ledger.retireAbandonedPending(scope, touchedBefore, nowIso))) {
+				retired += 1;
+			}
+		}
+		return retired;
 	}
 
 	async #resumeAfter(

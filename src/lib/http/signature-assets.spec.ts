@@ -133,6 +133,7 @@ describe('signature asset HTTP handler', () => {
 		['context_mismatch', 404],
 		['too_large', 413],
 		['invalid_image', 400],
+		['expired', 409],
 		['integrity_error', 503]
 	] as const)(
 		'maps %s to status %i without deleting the session cookie',
@@ -144,6 +145,18 @@ describe('signature asset HTTP handler', () => {
 			expect(deleted).not.toHaveBeenCalled();
 		}
 	);
+
+	it('names a retired upload with its own problem type', async () => {
+		const { event } = buildEvent({});
+		const response = await createSignatureAssetHandler(
+			() => application({ outcome: 'expired' }),
+			unseal
+		)(event);
+		expect(await response.json()).toMatchObject({
+			type: 'urn:signkit:problem:signature-asset-expired',
+			status: 409
+		});
+	});
 
 	it('does not delete a cookie when a stale upload fails after a newer same-envelope session was set', async () => {
 		const cookieName: string = recipientSessionCookieName(envelopeId) as string;

@@ -278,6 +278,19 @@ async function resultResponse(
 			securityHeaders({ 'retry-after': '1' })
 		);
 	}
+	if (result.outcome === 'signature_asset_expired') {
+		return problemResponse(
+			{
+				type: 'urn:signkit:problem:recipient-signed-signature-asset-expired',
+				title: 'Signature image expired',
+				status: 409,
+				detail:
+					'A drawn signature or initials image expired before signing was recorded. Draw it again and resubmit.',
+				instance
+			},
+			securityHeaders()
+		);
+	}
 	return problemResponse(
 		{
 			type: 'urn:signkit:problem:recipient-signed-integrity-error',

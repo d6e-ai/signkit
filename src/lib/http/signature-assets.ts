@@ -91,7 +91,22 @@ function resultResponse(result: StoreSignatureAssetResult, instance: string): Re
 	}
 	if (result.outcome === 'too_large') return bodyTooLarge(instance);
 	if (result.outcome === 'invalid_image') return invalidCommand(instance);
+	if (result.outcome === 'expired') return assetExpired(instance);
 	return unavailable(instance);
+}
+
+/** The exact bytes were retired by the orphan sweep and can never be reused; upload fresh bytes. */
+function assetExpired(instance: string): Response {
+	return problemResponse(
+		{
+			type: 'urn:signkit:problem:signature-asset-expired',
+			title: 'Signature asset expired',
+			status: 409,
+			detail: 'These exact signature image bytes expired and cannot be reused. Upload a new image.',
+			instance
+		},
+		securityHeaders()
+	);
 }
 
 function accessNotFound(instance: string): Response {

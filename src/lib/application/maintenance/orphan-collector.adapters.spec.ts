@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it, vi } from 'vitest';
 import type { D1Database } from '@cloudflare/workers-types';
 import { sqliteD1Database, applyD1Migrations } from '$lib/adapters/db/sqlite-d1-test-support';
+import { D1SignatureAssetLedger } from '$lib/adapters/db/d1-signature-asset-ledger';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import {
 	D1_MAX_BOUND_PARAMETERS,
@@ -114,11 +115,41 @@ describe('D1 SQL and R2 binding adapter contract', () => {
 			const report = await new OrphanCollector(
 				new R2ObjectStore(bucket.binding),
 				new D1OrphanReferenceStore(database),
-				() => NOW
+				() => NOW,
+				null,
+				new D1SignatureAssetLedger(database)
 			).sweep();
 
 			expect(report.deletedKeys).toEqual([orphanAssetKey]);
 			expect(bucket.remainingKeys()).toEqual([initialsAssetKey]);
+			// The legacy orphan was tombstoned before deletion; the referenced one bound.
+			expect(
+				sqlite
+					.prepare('SELECT recipient_id, state FROM signature_asset ORDER BY recipient_id')
+					.all()
+					.map((row) => ({ ...row }))
+			).toEqual([
+				{ recipient_id: initialsRecipientId, state: 'bound' },
+				{ recipient_id: orphanRecipientId, state: 'retired' }
+			]);
+		} finally {
+			sqlite.close();
+		}
+	});
+
+	it('never deletes a signature asset when no retention ledger is wired', async () => {
+		const sqlite: DatabaseSync = migratedDatabase();
+		const orphanAssetKey: string = `signature-assets/v1/envelopes/01900000-0000-7000-8000-000000000010/recipients/01900000-0000-7000-8000-000000000012/sha256/${'cd'.repeat(32)}.png`;
+		const bucket = r2Bucket([orphanAssetKey, 'drafts/orphan.git.gz']);
+		try {
+			const report = await new OrphanCollector(
+				new R2ObjectStore(bucket.binding),
+				new D1OrphanReferenceStore(sqliteD1Database(sqlite)),
+				() => NOW
+			).sweep();
+
+			expect(report.deletedKeys).toEqual(['drafts/orphan.git.gz']);
+			expect(bucket.remainingKeys()).toEqual([orphanAssetKey]);
 		} finally {
 			sqlite.close();
 		}

@@ -205,4 +205,52 @@ describe('recipient sign client controller', () => {
 			expect(JSON.parse(String(fetch.mock.calls[1][1]?.body)).values).toEqual(corrected);
 		}
 	);
+
+	it('resets the cached asset and key only on an explicit retired-asset refusal', async () => {
+		const drawn = [{ fieldId, value: `sig:sha256:${'a'.repeat(64)}` }];
+		const redrawn = [{ fieldId, value: `sig:sha256:${'b'.repeat(64)}` }];
+		const expired = (): Response =>
+			new Response(
+				JSON.stringify({
+					type: 'urn:signkit:problem:recipient-signed-signature-asset-expired',
+					status: 409
+				}),
+				{ status: 409, headers: { 'content-type': 'application/problem+json' } }
+			);
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValueOnce(new Response('{}', { status: 503 }))
+			.mockResolvedValueOnce(expired())
+			.mockResolvedValueOnce(successResponse());
+		const keys: string[] = ['first-key', 'redrawn-key'];
+		const onSignatureAssetExpired = vi.fn();
+		const controller = createRecipientSignController({
+			...base,
+			fetch,
+			newIdempotencyKey: () => keys.shift() ?? 'unexpected-key',
+			onSignatureAssetExpired
+		});
+
+		// Ambiguous failure: the original reference and key are preserved.
+		await controller.confirmSign(drawn);
+		expect(controller.getStatus()).toBe('transient_failure');
+		expect(onSignatureAssetExpired).not.toHaveBeenCalled();
+		await controller.confirmSign(redrawn);
+		expect(controller.getStatus()).toBe('validation_failure');
+		expect(onSignatureAssetExpired).toHaveBeenCalledTimes(1);
+		expect(controller.getIdempotencyKey()).toBeNull();
+		await controller.confirmSign(redrawn);
+
+		expect(controller.getStatus()).toBe('success');
+		expect(
+			fetch.mock.calls.map((call) => [
+				(call[1]?.headers as Record<string, string>)['idempotency-key'],
+				JSON.parse(String(call[1]?.body)).values
+			])
+		).toEqual([
+			['first-key', drawn],
+			['first-key', drawn],
+			['redrawn-key', redrawn]
+		]);
+	});
 });

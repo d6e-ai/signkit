@@ -20,12 +20,32 @@ import {
 type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
 
 const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
+const SIGNATURE_ASSET_VALUE_JSON_PATTERN: RegExp = /^"sig:sha256:([a-f0-9]{64})"$/;
 
 class SignedPublicationIntegrityError extends Error {
 	constructor() {
 		super('Recipient signed publication integrity check failed');
 		this.name = 'SignedPublicationIntegrityError';
 	}
+}
+
+/** Rolls the publication back: a referenced drawn asset is already retired. */
+class SignatureAssetRetiredError extends Error {
+	constructor() {
+		super('Referenced signature asset is retired');
+		this.name = 'SignatureAssetRetiredError';
+	}
+}
+
+/** Distinct, sorted scoped asset hashes named by `sig:sha256:` signature/initials values. */
+function signatureAssetHashes(fieldValues: readonly SignedFieldValue[]): readonly string[] {
+	const hashes: Set<string> = new Set<string>();
+	for (const field of fieldValues) {
+		if (field.fieldType !== 'signature' && field.fieldType !== 'initials') continue;
+		const match: RegExpExecArray | null = SIGNATURE_ASSET_VALUE_JSON_PATTERN.exec(field.valueJson);
+		if (match !== null) hashes.add(match[1]);
+	}
+	return [...hashes].sort();
 }
 
 interface RecipientEnvelopeRow {
@@ -373,6 +393,28 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 					return { outcome: 'audit_conflict' };
 				}
 
+				// Bind every referenced drawn asset's exact scoped ledger row before
+				// any other write. The upsert locks each row, so an orphan sweep's
+				// retirement either committed first (seen below; the transaction
+				// rolls back) or now waits and then sees `bound`.
+				const assetHashes: readonly string[] = signatureAssetHashes(command.fieldValues);
+				if (assetHashes.length > 0) {
+					await transaction`
+							INSERT INTO signature_asset (envelope_id, recipient_id, sha256, state, created_at, bound_at)
+							SELECT ${actor.envelopeId}, ${actor.id}, hash, 'bound',
+								${command.updatedAt}::timestamptz, ${command.updatedAt}::timestamptz
+							FROM unnest(${assetHashes as string[]}::text[]) AS hash
+							ON CONFLICT (envelope_id, recipient_id, sha256) DO UPDATE SET
+								state = 'bound', bound_at = EXCLUDED.bound_at, pending_touched_at = NULL
+							WHERE signature_asset.state = 'pending'`;
+					const retired = await transaction<{ sha256: string }[]>`
+							SELECT sha256 FROM signature_asset
+							WHERE envelope_id = ${actor.envelopeId} AND recipient_id = ${actor.id}
+								AND sha256 = ANY(${assetHashes as string[]}::text[]) AND state = 'retired'
+							FOR UPDATE`;
+					if (retired.length > 0) throw new SignatureAssetRetiredError();
+				}
+
 				const completedRows = await transaction<{ id: string }[]>`
 						UPDATE recipient
 						SET status = 'completed', capability_revoked_at = ${command.updatedAt},
@@ -543,11 +585,38 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 		} catch (error: unknown) {
 			const classified: PublishRecipientSignedResult | null = await this.#classifyFailure(command);
 			if (classified !== null) return classified;
+			// Classify from the ledger row itself (covers the explicit check above
+			// and the `field_value` trigger), never from provider error text.
+			if (
+				error instanceof SignatureAssetRetiredError ||
+				(await this.#referencesRetiredAsset(
+					identity.envelopeId,
+					identity.recipientId,
+					command.fieldValues
+				))
+			) {
+				return { outcome: 'signature_asset_expired' };
+			}
 			if (error instanceof SignedPublicationIntegrityError) {
 				return { outcome: 'integrity_error' };
 			}
 			throw error;
 		}
+	}
+
+	async #referencesRetiredAsset(
+		envelopeId: string,
+		recipientId: string,
+		fieldValues: readonly SignedFieldValue[]
+	): Promise<boolean> {
+		const hashes: readonly string[] = signatureAssetHashes(fieldValues);
+		if (hashes.length === 0) return false;
+		const rows = await this.#sql<{ sha256: string }[]>`
+			SELECT sha256 FROM signature_asset
+			WHERE envelope_id = ${envelopeId} AND recipient_id = ${recipientId}
+				AND sha256 = ANY(${hashes as string[]}::text[]) AND state = 'retired'
+			LIMIT 1`;
+		return rows.length > 0;
 	}
 
 	async #readByCapabilityHash(

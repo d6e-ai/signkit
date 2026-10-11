@@ -10,7 +10,10 @@
 	import { cn } from '$lib/utils';
 	import {
 		draftFromCommitted,
+		isProblemOfType,
 		isSignatureAssetRef,
+		SIGNATURE_ASSET_EXPIRED_PROBLEM,
+		withUploadNonce,
 		type SignatureDraft,
 		type SignatureMode
 	} from './signature-draft';
@@ -169,9 +172,29 @@
 		drawing = false;
 	}
 
+	function postSignatureBytes(bytes: Uint8Array<ArrayBuffer>): Promise<Response> {
+		return fetch(
+			`/api/v1/signing/signature-assets?envelopeId=${encodeURIComponent(envelopeId)}&recipientId=${encodeURIComponent(recipientId)}`,
+			{
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'content-type': 'image/png' },
+				body: bytes
+			}
+		);
+	}
+
+	function randomNonce(): string {
+		return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte: number): string =>
+			byte.toString(16).padStart(2, '0')
+		).join('');
+	}
+
 	/**
-	 * Uploads the current canvas exactly once and returns the asset reference,
-	 * or null when the attempt failed or was invalidated while in flight.
+	 * Uploads the current canvas and returns the asset reference, or null when
+	 * the attempt failed or was invalidated while in flight. Only an explicit
+	 * "these exact bytes expired" refusal is retried, once, with the same
+	 * picture carrying a fresh nonce chunk (and so a fresh content hash).
 	 */
 	async function uploadDrawing(token: number): Promise<string | null> {
 		if (!canvasElement) return null;
@@ -181,15 +204,13 @@
 			);
 			if (!blob) throw new Error('canvas produced no image data');
 			const bytes = new Uint8Array(await blob.arrayBuffer());
-			const response = await fetch(
-				`/api/v1/signing/signature-assets?envelopeId=${encodeURIComponent(envelopeId)}&recipientId=${encodeURIComponent(recipientId)}`,
-				{
-					method: 'POST',
-					credentials: 'same-origin',
-					headers: { 'content-type': 'image/png' },
-					body: bytes
-				}
-			);
+			let response = await postSignatureBytes(bytes);
+			if (await isProblemOfType(response, SIGNATURE_ASSET_EXPIRED_PROBLEM)) {
+				if (token !== uploadToken || !open) return null;
+				const fresh: Uint8Array<ArrayBuffer> | null = withUploadNonce(bytes, randomNonce());
+				if (!fresh) throw new Error('canvas produced an unexpected PNG layout');
+				response = await postSignatureBytes(fresh);
+			}
 			if (!response.ok) throw new Error(`upload failed with status ${response.status}`);
 			const data = (await response.json()) as { assetRef: string };
 			if (token !== uploadToken || !open) return null;

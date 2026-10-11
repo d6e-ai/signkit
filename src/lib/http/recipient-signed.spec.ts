@@ -443,6 +443,7 @@ describe('recipient signed HTTP handler', () => {
 		[{ outcome: 'missing_required_value' } as const, 400],
 		[{ outcome: 'audit_conflict' } as const, 409],
 		[{ outcome: 'delivery_in_flight' } as const, 409],
+		[{ outcome: 'signature_asset_expired' } as const, 409],
 		[{ outcome: 'integrity_error' } as const, 503]
 	])('maps %j to a fixed RFC 9457 response', async (result, status) => {
 		const { event, deleted } = requestEvent({ idempotencyKey: 'sign-1' });
@@ -453,6 +454,18 @@ describe('recipient signed HTTP handler', () => {
 		expect(response.status).toBe(status);
 		expect(response.headers.get('content-type')).toContain('application/problem+json');
 		expect(deleted).not.toHaveBeenCalled();
+	});
+
+	it('names a retired drawn asset with its own problem type and no Retry-After', async () => {
+		const response = await createRecipientSignedHandler(
+			() => application({ outcome: 'signature_asset_expired' }),
+			async (): Promise<string> => token
+		)(requestEvent({ idempotencyKey: 'sign-1' }).event);
+		expect(response.headers.get('retry-after')).toBeNull();
+		expect(await response.json()).toMatchObject({
+			type: 'urn:signkit:problem:recipient-signed-signature-asset-expired',
+			status: 409
+		});
 	});
 
 	it('sets Retry-After only for retryable terminal conflicts', async () => {

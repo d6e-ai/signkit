@@ -1,4 +1,6 @@
 <script lang="ts" module>
+	import { isProblemOfType, SIGNED_ASSET_EXPIRED_PROBLEM } from '$lib/components/signature-draft';
+
 	export interface RecipientViewOptions {
 		envelopeId: string;
 		recipientId: string;
@@ -531,6 +533,12 @@
 		onSuccess?: (info?: { replayed: boolean; receipt?: RecipientSignReceipt }) => void;
 		onTransientFailure?: () => void;
 		onTerminalFailure?: () => void;
+		/**
+		 * The server explicitly refused a submitted drawn asset as retired. Only
+		 * this resets the cached asset references; an ambiguous network failure
+		 * keeps the original values and Idempotency-Key for a safe retry.
+		 */
+		onSignatureAssetExpired?: () => void;
 	}
 
 	export interface RecipientSignController {
@@ -555,7 +563,8 @@
 		onStatusChange,
 		onSuccess,
 		onTransientFailure,
-		onTerminalFailure
+		onTerminalFailure,
+		onSignatureAssetExpired
 	}: RecipientSignOptions): RecipientSignController {
 		let status: RecipientSignStatus = 'idle';
 		let inFlight = false;
@@ -627,6 +636,17 @@
 					submittedValues = null;
 					status = 'validation_failure';
 					onStatusChange?.('validation_failure');
+					return;
+				}
+
+				if (await isProblemOfType(response, SIGNED_ASSET_EXPIRED_PROBLEM)) {
+					// Nothing was recorded. The next attempt carries a re-drawn asset,
+					// so it is a different command and needs a new key.
+					idempotencyKey = null;
+					submittedValues = null;
+					status = 'validation_failure';
+					onStatusChange?.('validation_failure');
+					onSignatureAssetExpired?.();
 					return;
 				}
 
@@ -795,6 +815,8 @@
 	let approveController: RecipientApproveController | null = null;
 
 	let signStatus = $state<RecipientSignStatus>('idle');
+	/** Set by an explicit retired-asset refusal; cleared when the next attempt starts. */
+	let signatureAssetExpired = $state(false);
 	let signPending = $state(false);
 	let isSigned = $state(false);
 	let signDialogOpen = $state(false);
@@ -968,6 +990,7 @@
 		signStatus = status;
 		signPending = status === 'pending';
 		if (status === 'pending') {
+			signatureAssetExpired = false;
 			liveMessage = m.signing_sign_pending();
 		} else if (status === 'success') {
 			isSigned = true;
@@ -996,8 +1019,18 @@
 				viewRecorded || data.access.recipientStatus === 'viewed'
 					? 'viewed'
 					: data.access.recipientStatus,
-			onStatusChange: handleSignStatus
+			onStatusChange: handleSignStatus,
+			onSignatureAssetExpired: handleSignatureAssetExpired
 		});
+	}
+
+	/** Clears only drawn asset references so those fields must be drawn again; typed values stay. */
+	function handleSignatureAssetExpired(): void {
+		for (const [fieldId, value] of Object.entries(fieldValues)) {
+			if (typeof value === 'string' && isSignatureAssetRef(value)) fieldValues[fieldId] = '';
+		}
+		signatureAssetExpired = true;
+		liveMessage = m.signing_sign_signature_expired();
 	}
 
 	function hasMissingRequiredField(): boolean {
@@ -1529,7 +1562,9 @@
 								</ul>
 								{#if signStatus === 'validation_failure'}
 									<p class="text-sm font-medium text-destructive" role="alert">
-										{m.signing_sign_validation_failed()}
+										{signatureAssetExpired
+											? m.signing_sign_signature_expired()
+											: m.signing_sign_validation_failed()}
 									</p>
 								{/if}
 							</Card.Content>
