@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-10-11
+
+### Added
+
+- Let operators explicitly replace expired completion-access links and requeue exhausted completion emails, with audited, idempotent recovery and actionable delivery-failure details ([#218](https://github.com/d6e-ai/signkit/issues/218)). Existing contracts are never automatically resent.
+
+### Changed
+
+- Publish `create-signkit` 0.1.8 with the pinned official cf CLI for Cloudflare account/resource discovery, D1 migrations, secret-name inspection, and version activation. Worker uploads, trigger reconciliation, and D1 exports retain the verified Wrangler compatibility path.
+- Complete the four-part minimal refactoring: shared ready/sign/approve operation contracts, neutral runtime dependencies, bounded-stream/backoff primitives, and browser/Rust CLI HTTP problem handling ([#223](https://github.com/d6e-ai/signkit/pull/223), [#224](https://github.com/d6e-ai/signkit/pull/224), [#225](https://github.com/d6e-ai/signkit/pull/225), [#226](https://github.com/d6e-ai/signkit/pull/226)). Authorization, database publication, public API, audit hashes, and document formats remain unchanged.
+
+### Fixed
+
+- Recover interrupted completion-PDF publication, reject document sets beyond completion limits before sending, report maintenance failures, and distinguish status refresh from explicit recovery ([#217](https://github.com/d6e-ai/signkit/pull/217)).
+- Protect in-flight signature assets from orphan collection and bound D1 sweep statements so collection continues to advance ([#219](https://github.com/d6e-ai/signkit/issues/219)).
+
+### Security
+
+- Known residual risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md), including jurisdiction-dependent e-signature requirements. The optional PAdES B-B/B-T instance seal is not a recipient certificate signature or a claim of advanced or qualified status; Vercel remains CI-only. The refactoring verification does not establish full Workers product E2E or large-PDF Worker resource limits.
+
 ## [0.1.14] - 2026-09-26
 
 ### Added

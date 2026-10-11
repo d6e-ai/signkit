@@ -1,6 +1,6 @@
 # 全体を対象にした最小限のリファクタリング計画
 
-Status: implemented in PR stack — 4つの差分は実装済み・レビュー中。未マージ。[実施記録](refactoring-implementation.md) に全体の点検結果と検証を置く。
+Status: merged — 4つの差分は #223 → #224 → #225 → #226 の順にマージ済み。[実施記録](refactoring-implementation.md) に全体の点検結果と検証を置く。
 
 作成日: 2026-10-05。2026-10-11に全体対象の軽量版へ再編。
 調査基準: 手元のHEAD `189cc55996a041dec9cc89e5bf67648623c8daf8`。

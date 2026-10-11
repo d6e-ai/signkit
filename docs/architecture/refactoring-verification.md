@@ -1,6 +1,6 @@
 # 最小限のリファクタリングの検証
 
-Status: implementation verified in PR stack — [全体対象の軽量計画](refactoring-plan.md) の検証条件。実行した検証と未充足の範囲は [実施記録](refactoring-implementation.md) に区別して記録する。未マージ。
+Status: merged and verified — [全体対象の軽量計画](refactoring-plan.md) の検証条件。実行した検証と未充足の範囲は [実施記録](refactoring-implementation.md) に区別して記録する。4本ともマージ済み。
 
 作成日: 2026-10-05。2026-10-11に差分中心のゲートへ再編。調査基準は計画に記した手元のHEAD。
 
