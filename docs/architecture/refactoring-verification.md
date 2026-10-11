@@ -1,6 +1,6 @@
 # 最小限のリファクタリングの検証
 
-Status: planned — [全体対象の軽量計画](refactoring-plan.md) の検証条件。検証実施済みを示すものではない。
+Status: implementation verified in PR stack — [全体対象の軽量計画](refactoring-plan.md) の検証条件。実行した検証と未充足の範囲は [実施記録](refactoring-implementation.md) に区別して記録する。未マージ。
 
 作成日: 2026-10-05。2026-10-11に差分中心のゲートへ再編。調査基準は計画に記した手元のHEAD。
 
@@ -119,4 +119,4 @@ SQL/schema/API/保存形式の変更は本計画に含まない。必要なら�
 既存のschema/保存形式を維持し、切り戻し単位は移行した操作/helper/runtime入口とする。
 戻した実装でも確定済みreceiptとオブジェクトが読めることを固定fixtureで確認する。
 互換reader・必要なfallback・過去のfixtureは、未使用の根拠なしに削除しない。
-本計画作成は実装・テスト実行・デプロイの完了ではない。
+計画の合意、差分の検証、マージ、リリース、デプロイは別の状態として扱う。
