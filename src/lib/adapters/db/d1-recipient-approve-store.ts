@@ -1,4 +1,9 @@
-import { isPostSendInvitationRecipientRole, type RecipientRole } from '$lib/domain/envelope';
+import { validStoredRecipientApprovedReceipt } from '$lib/domain/commands/recipient-approve';
+import {
+	commandMatchesRecipientDecisionRouting,
+	recipientDecisionRoutingSnapshot
+} from '$lib/domain/commands/recipient-decision-routing';
+import type { RecipientRole } from '$lib/domain/envelope';
 import type {
 	ApproveAuditHead,
 	ApproveCommandKey,
@@ -9,9 +14,6 @@ import type {
 	PublishedRecipientApproved,
 	RecipientApproveStore
 } from '$lib/ports/recipient-approve-store';
-import { hashStoredAuditEvent } from '$lib/domain/audit';
-
-const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
 
 interface RecipientEnvelopeRow {
 	envelope_id: string;
@@ -459,76 +461,23 @@ function routingAfterActor(
 	actorRoutingOrder: number,
 	recipients: readonly RoutingRecipientRow[]
 ): ApproveRoutingSnapshot {
-	const remainingActionable: RoutingRecipientRow[] = recipients.filter(
-		(recipient: RoutingRecipientRow): boolean =>
-			recipient.id !== actorId &&
-			(recipient.role === 'signer' || recipient.role === 'approver') &&
-			recipient.status !== 'completed'
+	return recipientDecisionRoutingSnapshot(
+		actorId,
+		actorRoutingOrder,
+		recipients.map((recipient: RoutingRecipientRow) => ({
+			id: recipient.id,
+			role: recipient.role,
+			status: recipient.status,
+			routingOrder: recipient.routing_order
+		}))
 	);
-	const laterOrders: number[] = remainingActionable
-		.filter(
-			(recipient: RoutingRecipientRow): boolean => recipient.routing_order > actorRoutingOrder
-		)
-		.map((recipient: RoutingRecipientRow): number => recipient.routing_order);
-	const nextRoutingOrder: number | null =
-		laterOrders.length === 0 ? null : Math.min(...laterOrders);
-	return {
-		currentGroupOutstanding: remainingActionable.filter(
-			(recipient: RoutingRecipientRow): boolean => recipient.routing_order === actorRoutingOrder
-		).length,
-		remainingActionableOutstanding: remainingActionable.length,
-		nextRoutingOrder,
-		nextGroupCount:
-			nextRoutingOrder === null
-				? 0
-				: recipients.filter(
-						(recipient: RoutingRecipientRow): boolean =>
-							recipient.id !== actorId &&
-							isPostSendInvitationRecipientRole(recipient.role) &&
-							recipient.status !== 'completed' &&
-							recipient.routing_order === nextRoutingOrder
-					).length
-	};
 }
 
 function commandMatchesRouting(
 	command: PublishRecipientApprovedCommand,
 	routing: ApproveRoutingSnapshot
 ): boolean {
-	const shouldComplete: boolean = routing.remainingActionableOutstanding === 0;
-	const shouldRelease: boolean =
-		!shouldComplete && routing.currentGroupOutstanding === 0 && routing.nextRoutingOrder !== null;
-	if (shouldComplete) {
-		return (
-			command.completedAuditEventId !== null &&
-			command.completedAuditEventHash !== null &&
-			command.completedAuditPayloadJson !== null &&
-			command.nextRoutingOrder === null &&
-			command.nextCapabilityExpiresAt === null &&
-			command.releasedDeliveryCount === 0
-		);
-	}
-	if (shouldRelease) {
-		return (
-			command.completedAuditEventId === null &&
-			command.completedAuditEventHash === null &&
-			command.completedAuditPayloadJson === null &&
-			command.nextRoutingOrder === routing.nextRoutingOrder &&
-			command.nextCapabilityExpiresAt !== null &&
-			new Date(command.nextCapabilityExpiresAt).getTime() > new Date(command.updatedAt).getTime() &&
-			new Date(command.nextCapabilityExpiresAt).getTime() <=
-				new Date(command.updatedAt).getTime() + MAX_RELEASE_TTL_MS &&
-			command.releasedDeliveryCount === routing.nextGroupCount
-		);
-	}
-	return (
-		command.completedAuditEventId === null &&
-		command.completedAuditEventHash === null &&
-		command.completedAuditPayloadJson === null &&
-		command.nextRoutingOrder === null &&
-		command.nextCapabilityExpiresAt === null &&
-		command.releasedDeliveryCount === 0
-	);
+	return commandMatchesRecipientDecisionRouting(command, routing);
 }
 
 function validAuditEvidence(row: ApprovedCommandRow): boolean {
@@ -566,88 +515,29 @@ function validAuditEvidence(row: ApprovedCommandRow): boolean {
 }
 
 async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
-	const requestHash: string = await sha256(
-		JSON.stringify({
-			envelopeId: row.envelope_id,
-			recipientId: row.recipient_id,
-			capabilityHash: row.capability_hash
-		})
-	);
-	const auditPayloadValue = {
+	return validStoredRecipientApprovedReceipt({
+		envelopeId: row.envelope_id,
 		recipientId: row.recipient_id,
-		role: row.recipient_role,
+		recipientRole: row.recipient_role,
 		routingOrder: row.routing_order,
 		sentCommitSha: row.sent_commit_sha,
-		approvedAt: row.updated_at
-	};
-	const auditPayload: string = JSON.stringify(auditPayloadValue);
-	const auditEventHash: string = await hashStoredAuditEvent(
-		{
-			hashVersion: row.evidence_hash_version,
-			sequence: row.audit_sequence,
-			eventType: 'recipient.approved',
-			actorType: row.actor_type,
-			actorId: row.recipient_id,
-			occurredAt: row.updated_at,
-			payload: auditPayloadValue,
-			previousHash: row.previous_audit_hash
-		},
-		{ envelopeId: row.envelope_id }
-	);
-	if (
-		requestHash !== row.request_hash ||
-		auditPayload !== row.audit_payload_json ||
-		auditEventHash !== row.audit_event_hash
-	) {
-		return false;
-	}
-	if (row.completed_audit_event_id !== null) {
-		if (
-			row.next_routing_order !== null ||
-			row.next_capability_expires_at !== null ||
-			row.released_delivery_count !== 0 ||
-			row.completed_audit_event_hash === null ||
-			row.completed_audit_payload_json === null
-		) {
-			return false;
-		}
-		const completedPayloadValue = {
-			sentCommitSha: row.sent_commit_sha,
-			completedAt: row.updated_at
-		};
-		const completedPayload: string = JSON.stringify(completedPayloadValue);
-		const completedEventHash: string = await hashStoredAuditEvent(
-			{
-				hashVersion: row.completed_evidence_hash_version,
-				sequence: row.audit_sequence + 1,
-				eventType: 'envelope.completed',
-				actorType: row.actor_type,
-				actorId: row.recipient_id,
-				occurredAt: row.updated_at,
-				payload: completedPayloadValue,
-				previousHash: row.audit_event_hash
-			},
-			{ envelopeId: row.envelope_id }
-		);
-		return (
-			completedPayload === row.completed_audit_payload_json &&
-			completedEventHash === row.completed_audit_event_hash
-		);
-	}
-	if (row.next_routing_order !== null) {
-		return (
-			row.next_capability_expires_at !== null &&
-			row.released_delivery_count > 0 &&
-			row.completed_audit_event_hash === null &&
-			row.completed_audit_payload_json === null
-		);
-	}
-	return (
-		row.next_capability_expires_at === null &&
-		row.released_delivery_count === 0 &&
-		row.completed_audit_event_hash === null &&
-		row.completed_audit_payload_json === null
-	);
+		capabilityHash: row.capability_hash,
+		requestHash: row.request_hash,
+		auditPayloadJson: row.audit_payload_json,
+		auditEventHash: row.audit_event_hash,
+		previousAuditHash: row.previous_audit_hash,
+		auditSequence: row.audit_sequence,
+		actorType: row.actor_type,
+		occurredAt: row.updated_at,
+		evidenceHashVersion: row.evidence_hash_version,
+		completedAuditEventId: row.completed_audit_event_id,
+		completedAuditEventHash: row.completed_audit_event_hash,
+		completedAuditPayloadJson: row.completed_audit_payload_json,
+		completedEvidenceHashVersion: row.completed_evidence_hash_version,
+		nextRoutingOrder: row.next_routing_order,
+		nextCapabilityExpiresAt: row.next_capability_expires_at,
+		releasedDeliveryCount: row.released_delivery_count
+	});
 }
 
 function resultFromCommand(command: PublishRecipientApprovedCommand): PublishedRecipientApproved {
@@ -683,14 +573,4 @@ function resultFromRow(row: ApprovedCommandRow): PublishedRecipientApproved {
 function publishFromPreparation(preparation: ApprovePreparation): PublishRecipientApprovedResult {
 	if (preparation.outcome === 'ready') return { outcome: 'integrity_error' };
 	return preparation;
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

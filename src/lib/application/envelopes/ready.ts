@@ -1,17 +1,17 @@
 import { hashAuditEventV3 } from '$lib/domain/audit';
 import {
-	isValidRecipientEmail,
-	isValidRecipientName,
-	normalizeRecipientEmail,
-	normalizeRecipientName
-} from '$lib/domain/recipient-identity';
+	canonicalizeReadyRecipients,
+	fingerprintReadyRequest,
+	readyAuditPayloadJson,
+	type ReadyCanonicalRecipient
+} from '$lib/domain/commands/ready';
+import { isValidRecipientEmail, isValidRecipientName } from '$lib/domain/recipient-identity';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	isActionableRecipientRole,
 	recipientRoles,
 	type Envelope,
-	type Recipient,
-	type RecipientRole
+	type Recipient
 } from '$lib/domain/envelope';
 import type {
 	EnvelopeReadyStore,
@@ -23,13 +23,7 @@ import type {
 import type { EnvelopeRequestActor } from './model';
 import { envelopeActorType } from './model';
 
-export interface ReadyRecipientInput {
-	email: string;
-	name: string;
-	role: RecipientRole;
-	locale: 'en' | 'ja';
-	routingOrder: number;
-}
+export type ReadyRecipientInput = ReadyCanonicalRecipient;
 
 export interface ReadyEnvelopeInput {
 	idempotencyKey: string;
@@ -76,15 +70,14 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 		envelopeId: string,
 		input: ReadyEnvelopeInput
 	): Promise<ReadyEnvelopeResult> {
-		const canonicalRecipients: readonly ReadyRecipientInput[] = canonicalizeRecipients(
+		const canonicalRecipients: readonly ReadyRecipientInput[] = canonicalizeReadyRecipients(
 			input.recipients
 		);
 		assertReadyInput(input.expectedGeneration, canonicalRecipients);
-		const canonicalRequest: string = JSON.stringify({
+		const requestFingerprint: string = await fingerprintReadyRequest({
 			expectedGeneration: input.expectedGeneration,
 			recipients: canonicalRecipients
 		});
-		const requestFingerprint: string = await sha256(canonicalRequest);
 		const actorType: 'user' | 'agent' = envelopeActorType(actor);
 		const key = {
 			envelopeId,
@@ -117,8 +110,8 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 			})
 		);
 		const auditEventId: string = this.#newId();
-		const auditPayloadJson: string = JSON.stringify({
-			commitSha: preparation.envelope.repositoryHead,
+		const auditPayloadJson: string = readyAuditPayloadJson({
+			commitSha: requiredHead(preparation.envelope),
 			generation: preparation.envelope.repositoryGeneration,
 			recipients: recipients.map((recipient: Recipient) => ({
 				id: recipient.id,
@@ -224,35 +217,8 @@ function assertReadyInput(
 	}
 }
 
-function canonicalizeRecipients(
-	recipients: readonly ReadyRecipientInput[]
-): readonly ReadyRecipientInput[] {
-	return recipients
-		.map((recipient: ReadyRecipientInput): ReadyRecipientInput => ({
-			email: normalizeRecipientEmail(recipient.email),
-			name: normalizeRecipientName(recipient.name),
-			role: recipient.role,
-			locale: recipient.locale,
-			routingOrder: recipient.routingOrder
-		}))
-		.sort(
-			(left: ReadyRecipientInput, right: ReadyRecipientInput): number =>
-				left.routingOrder - right.routingOrder ||
-				left.email.localeCompare(right.email) ||
-				left.role.localeCompare(right.role)
-		);
-}
-
 function requiredHead(envelope: Envelope): string {
 	if (envelope.repositoryHead === null)
 		throw new Error('Ready preparation returned an empty draft');
 	return envelope.repositoryHead;
-}
-
-async function sha256(value: string): Promise<string> {
-	const bytes: Uint8Array<ArrayBuffer> = new TextEncoder().encode(value);
-	const digest: ArrayBuffer = await crypto.subtle.digest('SHA-256', bytes);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

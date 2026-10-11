@@ -1,4 +1,9 @@
 import postgres from 'postgres';
+import { validStoredRecipientApprovedReceipt } from '$lib/domain/commands/recipient-approve';
+import {
+	commandMatchesRecipientDecisionRouting,
+	recipientDecisionRoutingSnapshot
+} from '$lib/domain/commands/recipient-decision-routing';
 import type { RecipientRole } from '$lib/domain/envelope';
 import type {
 	ApproveAuditHead,
@@ -10,11 +15,8 @@ import type {
 	PublishedRecipientApproved,
 	RecipientApproveStore
 } from '$lib/ports/recipient-approve-store';
-import { hashStoredAuditEvent } from '$lib/domain/audit';
 
 type Sql = ReturnType<typeof postgres> | postgres.TransactionSql;
-
-const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
 
 class ApprovedPublicationIntegrityError extends Error {
 	constructor() {
@@ -756,78 +758,23 @@ function routingAfterActor(
 	actorRoutingOrder: number,
 	recipients: readonly RoutingRecipientRow[]
 ): ApproveRoutingSnapshot {
-	const remainingActionable: RoutingRecipientRow[] = recipients.filter(
-		(recipient: RoutingRecipientRow): boolean =>
-			recipient.id !== actorId &&
-			(recipient.role === 'signer' || recipient.role === 'approver') &&
-			recipient.status !== 'completed'
+	return recipientDecisionRoutingSnapshot(
+		actorId,
+		actorRoutingOrder,
+		recipients.map((recipient: RoutingRecipientRow) => ({
+			id: recipient.id,
+			role: recipient.role,
+			status: recipient.status,
+			routingOrder: recipient.routingOrder
+		}))
 	);
-	const laterOrders: number[] = remainingActionable
-		.filter((recipient: RoutingRecipientRow): boolean => recipient.routingOrder > actorRoutingOrder)
-		.map((recipient: RoutingRecipientRow): number => recipient.routingOrder);
-	const nextRoutingOrder: number | null =
-		laterOrders.length === 0 ? null : Math.min(...laterOrders);
-	return {
-		currentGroupOutstanding: remainingActionable.filter(
-			(recipient: RoutingRecipientRow): boolean => recipient.routingOrder === actorRoutingOrder
-		).length,
-		remainingActionableOutstanding: remainingActionable.length,
-		nextRoutingOrder,
-		nextGroupCount:
-			nextRoutingOrder === null
-				? 0
-				: recipients.filter(
-						(recipient: RoutingRecipientRow): boolean =>
-							recipient.id !== actorId &&
-							isDeliveryRole(recipient.role) &&
-							recipient.status !== 'completed' &&
-							recipient.routingOrder === nextRoutingOrder
-					).length
-	};
-}
-
-function isDeliveryRole(role: RecipientRole): boolean {
-	return role === 'signer' || role === 'approver' || role === 'viewer';
 }
 
 function commandMatchesRouting(
 	command: PublishRecipientApprovedCommand,
 	routing: ApproveRoutingSnapshot
 ): boolean {
-	const shouldComplete: boolean = routing.remainingActionableOutstanding === 0;
-	const shouldRelease: boolean =
-		!shouldComplete && routing.currentGroupOutstanding === 0 && routing.nextRoutingOrder !== null;
-	if (shouldComplete) {
-		return (
-			command.completedAuditEventId !== null &&
-			command.completedAuditEventHash !== null &&
-			command.completedAuditPayloadJson !== null &&
-			command.nextRoutingOrder === null &&
-			command.nextCapabilityExpiresAt === null &&
-			command.releasedDeliveryCount === 0
-		);
-	}
-	if (shouldRelease) {
-		return (
-			command.completedAuditEventId === null &&
-			command.completedAuditEventHash === null &&
-			command.completedAuditPayloadJson === null &&
-			command.nextRoutingOrder === routing.nextRoutingOrder &&
-			command.nextCapabilityExpiresAt !== null &&
-			new Date(command.nextCapabilityExpiresAt).getTime() > new Date(command.updatedAt).getTime() &&
-			new Date(command.nextCapabilityExpiresAt).getTime() <=
-				new Date(command.updatedAt).getTime() + MAX_RELEASE_TTL_MS &&
-			command.releasedDeliveryCount === routing.nextGroupCount
-		);
-	}
-	return (
-		command.completedAuditEventId === null &&
-		command.completedAuditEventHash === null &&
-		command.completedAuditPayloadJson === null &&
-		command.nextRoutingOrder === null &&
-		command.nextCapabilityExpiresAt === null &&
-		command.releasedDeliveryCount === 0
-	);
+	return commandMatchesRecipientDecisionRouting(command, routing);
 }
 
 function validAuditEvidence(row: ApprovedCommandRow): boolean {
@@ -865,89 +812,30 @@ function validAuditEvidence(row: ApprovedCommandRow): boolean {
 }
 
 async function validStoredReceipt(row: ApprovedCommandRow): Promise<boolean> {
-	const requestHash: string = await sha256(
-		JSON.stringify({
-			envelopeId: row.envelopeId,
-			recipientId: row.recipientId,
-			capabilityHash: row.capabilityHash
-		})
-	);
-	const approvedAt: string = isoTimestamp(row.updatedAt);
-	const auditPayloadValue = {
+	return validStoredRecipientApprovedReceipt({
+		envelopeId: row.envelopeId,
 		recipientId: row.recipientId,
-		role: row.recipientRole,
+		recipientRole: row.recipientRole,
 		routingOrder: Number(row.routingOrder),
 		sentCommitSha: row.sentCommitSha,
-		approvedAt
-	};
-	const auditPayload: string = JSON.stringify(auditPayloadValue);
-	const auditEventHash: string = await hashStoredAuditEvent(
-		{
-			hashVersion: row.evidenceHashVersion,
-			sequence: Number(row.auditSequence),
-			eventType: 'recipient.approved',
-			actorType: row.actorType,
-			actorId: row.recipientId,
-			occurredAt: approvedAt,
-			payload: auditPayloadValue,
-			previousHash: row.previousAuditHash
-		},
-		{ envelopeId: row.envelopeId }
-	);
-	if (
-		requestHash !== row.requestHash ||
-		auditPayload !== row.auditPayloadJson ||
-		auditEventHash !== row.auditEventHash
-	) {
-		return false;
-	}
-	if (row.completedAuditEventId !== null) {
-		if (
-			row.nextRoutingOrder !== null ||
-			row.nextCapabilityExpiresAt !== null ||
-			Number(row.releasedDeliveryCount) !== 0 ||
-			row.completedAuditEventHash === null ||
-			row.completedAuditPayloadJson === null
-		) {
-			return false;
-		}
-		const completedPayloadValue = {
-			sentCommitSha: row.sentCommitSha,
-			completedAt: approvedAt
-		};
-		const completedPayload: string = JSON.stringify(completedPayloadValue);
-		const completedEventHash: string = await hashStoredAuditEvent(
-			{
-				hashVersion: row.completedEvidenceHashVersion,
-				sequence: Number(row.auditSequence) + 1,
-				eventType: 'envelope.completed',
-				actorType: row.actorType,
-				actorId: row.recipientId,
-				occurredAt: approvedAt,
-				payload: completedPayloadValue,
-				previousHash: row.auditEventHash
-			},
-			{ envelopeId: row.envelopeId }
-		);
-		return (
-			completedPayload === row.completedAuditPayloadJson &&
-			completedEventHash === row.completedAuditEventHash
-		);
-	}
-	if (row.nextRoutingOrder !== null) {
-		return (
-			row.nextCapabilityExpiresAt !== null &&
-			Number(row.releasedDeliveryCount) > 0 &&
-			row.completedAuditEventHash === null &&
-			row.completedAuditPayloadJson === null
-		);
-	}
-	return (
-		row.nextCapabilityExpiresAt === null &&
-		Number(row.releasedDeliveryCount) === 0 &&
-		row.completedAuditEventHash === null &&
-		row.completedAuditPayloadJson === null
-	);
+		capabilityHash: row.capabilityHash,
+		requestHash: row.requestHash,
+		auditPayloadJson: row.auditPayloadJson,
+		auditEventHash: row.auditEventHash,
+		previousAuditHash: row.previousAuditHash,
+		auditSequence: Number(row.auditSequence),
+		actorType: row.actorType,
+		occurredAt: isoTimestamp(row.updatedAt),
+		evidenceHashVersion: row.evidenceHashVersion,
+		completedAuditEventId: row.completedAuditEventId,
+		completedAuditEventHash: row.completedAuditEventHash,
+		completedAuditPayloadJson: row.completedAuditPayloadJson,
+		completedEvidenceHashVersion: row.completedEvidenceHashVersion,
+		nextRoutingOrder: row.nextRoutingOrder === null ? null : Number(row.nextRoutingOrder),
+		nextCapabilityExpiresAt:
+			row.nextCapabilityExpiresAt === null ? null : isoTimestamp(row.nextCapabilityExpiresAt),
+		releasedDeliveryCount: Number(row.releasedDeliveryCount)
+	});
 }
 
 function resultFromCommand(command: PublishRecipientApprovedCommand): PublishedRecipientApproved {
@@ -991,14 +879,4 @@ function isoTimestamp(value: Date | string): string {
 
 function sameTimestamp(left: Date | string | null, right: Date | string): boolean {
 	return left !== null && isoTimestamp(left) === isoTimestamp(right);
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

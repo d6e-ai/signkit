@@ -1,4 +1,15 @@
 import { hashAuditEventV3 } from '$lib/domain/audit';
+import {
+	envelopeCompletedAuditPayload,
+	envelopeCompletedAuditPayloadJson,
+	nextRoutingCapabilityExpiresAt,
+	planRecipientDecisionRouting,
+	type RecipientDecisionPlan
+} from '$lib/domain/commands/recipient-decision-routing';
+import {
+	fingerprintRecipientApproveRequest,
+	recipientApprovedAuditPayloadJson
+} from '$lib/domain/commands/recipient-approve';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	ApproveCommandKey,
@@ -12,7 +23,6 @@ import type {
 import { hashRecipientCapability } from '$lib/security/recipient-capability';
 
 const MAX_AUDIT_ATTEMPTS: number = 3;
-const NEXT_ROUTING_CAPABILITY_TTL_MS: number = 14 * 24 * 60 * 60 * 1000;
 
 export interface RecipientApprovedInput {
 	token: string;
@@ -44,13 +54,11 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 
 	async approve(input: RecipientApprovedInput): Promise<RecipientApprovedResult> {
 		const capabilityHash: string = await hashRecipientCapability(input.token);
-		const requestFingerprint: string = await sha256(
-			JSON.stringify({
-				envelopeId: input.expectedEnvelopeId,
-				recipientId: input.expectedRecipientId,
-				capabilityHash
-			})
-		);
+		const requestFingerprint: string = await fingerprintRecipientApproveRequest({
+			envelopeId: input.expectedEnvelopeId,
+			recipientId: input.expectedRecipientId,
+			capabilityHash
+		});
 		const key: ApproveCommandKey = {
 			capabilityHash,
 			expectedEnvelopeId: input.expectedEnvelopeId,
@@ -68,7 +76,7 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 			// evidence, not by re-deriving this identifier, so each attempt mints a
 			// fresh one.
 			const auditEventId: string = this.newId();
-			const auditPayloadJson: string = JSON.stringify({
+			const auditPayloadJson: string = recipientApprovedAuditPayloadJson({
 				recipientId: preparation.recipientId,
 				role: preparation.recipientRole,
 				routingOrder: preparation.routingOrder,
@@ -89,11 +97,7 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 			);
 
 			const routing: ApproveRoutingSnapshot = preparation.routing;
-			const shouldComplete: boolean = routing.remainingActionableOutstanding === 0;
-			const shouldRelease: boolean =
-				!shouldComplete &&
-				routing.currentGroupOutstanding === 0 &&
-				routing.nextRoutingOrder !== null;
+			const plan: RecipientDecisionPlan = planRecipientDecisionRouting(routing);
 
 			let completedAuditEventId: string | null = null;
 			let completedAuditEventHash: string | null = null;
@@ -102,13 +106,16 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 			let nextCapabilityExpiresAt: string | null = null;
 			let releasedDeliveryCount: number = 0;
 
-			if (shouldComplete) {
+			if (plan.kind === 'complete') {
 				completedAuditEventId = this.newId();
-				const completedPayloadValue = {
-					sentCommitSha: preparation.sentCommitSha,
-					completedAt: approvedAt
-				};
-				completedAuditPayloadJson = JSON.stringify(completedPayloadValue);
+				const completedPayloadValue = envelopeCompletedAuditPayload(
+					preparation.sentCommitSha,
+					approvedAt
+				);
+				completedAuditPayloadJson = envelopeCompletedAuditPayloadJson(
+					preparation.sentCommitSha,
+					approvedAt
+				);
 				completedAuditEventHash = await hashAuditEventV3(
 					{
 						sequence: preparation.auditHead.sequence + 2,
@@ -121,12 +128,10 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 					},
 					{ envelopeId: preparation.envelopeId }
 				);
-			} else if (shouldRelease) {
-				nextRoutingOrder = routing.nextRoutingOrder;
-				nextCapabilityExpiresAt = new Date(
-					Date.parse(approvedAt) + NEXT_ROUTING_CAPABILITY_TTL_MS
-				).toISOString();
-				releasedDeliveryCount = routing.nextGroupCount;
+			} else if (plan.kind === 'release') {
+				nextRoutingOrder = plan.nextRoutingOrder;
+				nextCapabilityExpiresAt = nextRoutingCapabilityExpiresAt(approvedAt);
+				releasedDeliveryCount = plan.releasedDeliveryCount;
 			}
 
 			const command: PublishRecipientApprovedCommand = {
@@ -154,14 +159,4 @@ export class RecipientApprovedApplication implements RecipientApprovedApplicatio
 
 		return { outcome: 'audit_conflict' };
 	}
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

@@ -4,13 +4,24 @@ import {
 	verifySignatureAssetReference,
 	type SignatureAssetReferenceCheck
 } from '$lib/application/documents/signature-asset';
-import { hashAuditEventV3 } from '$lib/domain/audit';
+import { hashAuditEventV3, sha256TextHex } from '$lib/domain/audit';
+import {
+	envelopeCompletedAuditPayload,
+	envelopeCompletedAuditPayloadJson,
+	nextRoutingCapabilityExpiresAt,
+	planRecipientDecisionRouting,
+	type RecipientDecisionPlan
+} from '$lib/domain/commands/recipient-decision-routing';
+import {
+	fingerprintRecipientSignRequest,
+	recipientSignedAuditPayloadJson,
+	type SignFingerprintValue
+} from '$lib/domain/commands/recipient-sign';
 import type { FieldType } from '$lib/domain/envelope';
 import type { ObjectStore } from '$lib/ports/object-store';
 import type { SignatureAssetLedger } from '$lib/ports/signature-asset-ledger';
 import type {
 	SignableFieldDeclaration,
-	SignFingerprintValue,
 	SignLookupKey,
 	SignPreparation,
 	SignRoutingSnapshot,
@@ -20,12 +31,10 @@ import type {
 	PublishedRecipientSigned,
 	RecipientSignStore
 } from '$lib/ports/recipient-sign-store';
-import { canonicalRecipientSignFingerprint } from '$lib/ports/recipient-sign-store';
 import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import { hashRecipientCapability } from '$lib/security/recipient-capability';
 
 const MAX_AUDIT_ATTEMPTS: number = 3;
-const NEXT_ROUTING_CAPABILITY_TTL_MS: number = 14 * 24 * 60 * 60 * 1000;
 const MAX_FIELD_COUNT: number = 50;
 const MAX_SIGNATURE_LENGTH: number = 200;
 const MAX_INITIALS_LENGTH: number = 20;
@@ -144,7 +153,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 			// its audit evidence, not by re-deriving this identifier, so each
 			// attempt mints a fresh one.
 			const auditEventId: string = this.newId();
-			const auditPayloadJson: string = JSON.stringify({
+			const auditPayloadJson: string = recipientSignedAuditPayloadJson({
 				recipientId: preparation.recipientId,
 				role: 'signer',
 				routingOrder: preparation.routingOrder,
@@ -170,11 +179,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 			);
 
 			const routing: SignRoutingSnapshot = preparation.routing;
-			const shouldComplete: boolean = routing.remainingActionableOutstanding === 0;
-			const shouldRelease: boolean =
-				!shouldComplete &&
-				routing.currentGroupOutstanding === 0 &&
-				routing.nextRoutingOrder !== null;
+			const plan: RecipientDecisionPlan = planRecipientDecisionRouting(routing);
 
 			let completedAuditEventId: string | null = null;
 			let completedAuditEventHash: string | null = null;
@@ -183,13 +188,16 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 			let nextCapabilityExpiresAt: string | null = null;
 			let releasedDeliveryCount: number = 0;
 
-			if (shouldComplete) {
+			if (plan.kind === 'complete') {
 				completedAuditEventId = this.newId();
-				const completedPayloadValue = {
-					sentCommitSha: preparation.sentCommitSha,
-					completedAt: signedAt
-				};
-				completedAuditPayloadJson = JSON.stringify(completedPayloadValue);
+				const completedPayloadValue = envelopeCompletedAuditPayload(
+					preparation.sentCommitSha,
+					signedAt
+				);
+				completedAuditPayloadJson = envelopeCompletedAuditPayloadJson(
+					preparation.sentCommitSha,
+					signedAt
+				);
 				completedAuditEventHash = await hashAuditEventV3(
 					{
 						sequence: preparation.auditHead.sequence + 2,
@@ -202,12 +210,10 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 					},
 					{ envelopeId: preparation.envelopeId }
 				);
-			} else if (shouldRelease) {
-				nextRoutingOrder = routing.nextRoutingOrder;
-				nextCapabilityExpiresAt = new Date(
-					Date.parse(signedAt) + NEXT_ROUTING_CAPABILITY_TTL_MS
-				).toISOString();
-				releasedDeliveryCount = routing.nextGroupCount;
+			} else if (plan.kind === 'release') {
+				nextRoutingOrder = plan.nextRoutingOrder;
+				nextCapabilityExpiresAt = nextRoutingCapabilityExpiresAt(signedAt);
+				releasedDeliveryCount = plan.releasedDeliveryCount;
 			}
 
 			const command: PublishRecipientSignedCommand = {
@@ -320,15 +326,13 @@ async function fingerprintFromFieldValues(
 		}
 		values.push({ fieldId: field.fieldId, value: parsed });
 	}
-	return sha256(
-		canonicalRecipientSignFingerprint({
-			envelopeId: input.expectedEnvelopeId,
-			recipientId: input.expectedRecipientId,
-			capabilityHash,
-			expectedFieldGeneration: input.expectedFieldGeneration,
-			values
-		})
-	);
+	return fingerprintRecipientSignRequest({
+		envelopeId: input.expectedEnvelopeId,
+		recipientId: input.expectedRecipientId,
+		capabilityHash,
+		expectedFieldGeneration: input.expectedFieldGeneration,
+		values
+	});
 }
 
 async function matchFieldValues(
@@ -365,7 +369,7 @@ async function matchFieldValues(
 			fieldId: field.id,
 			fieldType: field.fieldType,
 			valueJson,
-			valueSha256: await sha256(valueJson)
+			valueSha256: await sha256TextHex(valueJson)
 		});
 	}
 	values.sort((left: SignedFieldValue, right: SignedFieldValue): number =>
@@ -471,14 +475,4 @@ function hasControlCharacter(value: string): boolean {
 		if (code <= 0x1f || code === 0x7f) return true;
 	}
 	return false;
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

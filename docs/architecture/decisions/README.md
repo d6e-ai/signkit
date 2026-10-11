@@ -2,6 +2,7 @@
 
 Dated notes recording the rationale behind choices made in [../](../README.md) at the time they were made. They are historical context, not normative: the current normative contract always lives in the architecture spec files, and a decision note never overrides them.
 
+- [2026-10-11-minimal-repository-wide-refactoring.md](./2026-10-11-minimal-repository-wide-refactoring.md) — replaces the R0–R7 proposal with four minimal, repository-wide PR groups, preserving current behavior and change-specific verification.
 - [2026-10-11-completion-access-reissue.md](./2026-10-11-completion-access-reissue.md) — explicit, audited successor grants for terminal completion delivery without reviving old access or rewriting completion evidence.
 - [2026-10-11-signature-asset-retention-ledger.md](./2026-10-11-signature-asset-retention-ledger.md) — one-way binding/retirement protects drawn signature bytes from publication/garbage-collection races.
 - [2026-10-10-cloudflare-cli-migration.md](./2026-10-10-cloudflare-cli-migration.md) — cf owns build output and typed runtime configuration; local D1 remains a verified Wrangler compatibility fallback.

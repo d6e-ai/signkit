@@ -1,12 +1,13 @@
 import {
-	isPostSendInvitationRecipientRole,
-	type FieldType,
-	type RecipientRole
-} from '$lib/domain/envelope';
-import { hashStoredAuditEvent } from '$lib/domain/audit';
+	commandMatchesRecipientDecisionRouting,
+	recipientDecisionRoutingSnapshot
+} from '$lib/domain/commands/recipient-decision-routing';
 import {
-	canonicalRecipientSignFingerprint,
-	fingerprintValuesFromStored,
+	reconstructRecipientSignFingerprint,
+	validStoredRecipientSignedReceipt
+} from '$lib/domain/commands/recipient-sign';
+import type { FieldType, RecipientRole } from '$lib/domain/envelope';
+import {
 	type SignAuditHead,
 	type SignLookupKey,
 	type SignPreparation,
@@ -19,8 +20,6 @@ import {
 	type PublishedRecipientSigned,
 	type RecipientSignStore
 } from '$lib/ports/recipient-sign-store';
-
-const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
 const SIGNATURE_ASSET_VALUE_JSON_PATTERN: RegExp = /^"sig:sha256:([a-f0-9]{64})"$/;
 
 interface RecipientEnvelopeRow {
@@ -621,76 +620,23 @@ function routingAfterActor(
 	actorRoutingOrder: number,
 	recipients: readonly RoutingRecipientRow[]
 ): SignRoutingSnapshot {
-	const remainingActionable: RoutingRecipientRow[] = recipients.filter(
-		(recipient: RoutingRecipientRow): boolean =>
-			recipient.id !== actorId &&
-			(recipient.role === 'signer' || recipient.role === 'approver') &&
-			recipient.status !== 'completed'
+	return recipientDecisionRoutingSnapshot(
+		actorId,
+		actorRoutingOrder,
+		recipients.map((recipient: RoutingRecipientRow) => ({
+			id: recipient.id,
+			role: recipient.role,
+			status: recipient.status,
+			routingOrder: recipient.routing_order
+		}))
 	);
-	const laterOrders: number[] = remainingActionable
-		.filter(
-			(recipient: RoutingRecipientRow): boolean => recipient.routing_order > actorRoutingOrder
-		)
-		.map((recipient: RoutingRecipientRow): number => recipient.routing_order);
-	const nextRoutingOrder: number | null =
-		laterOrders.length === 0 ? null : Math.min(...laterOrders);
-	return {
-		currentGroupOutstanding: remainingActionable.filter(
-			(recipient: RoutingRecipientRow): boolean => recipient.routing_order === actorRoutingOrder
-		).length,
-		remainingActionableOutstanding: remainingActionable.length,
-		nextRoutingOrder,
-		nextGroupCount:
-			nextRoutingOrder === null
-				? 0
-				: recipients.filter(
-						(recipient: RoutingRecipientRow): boolean =>
-							recipient.id !== actorId &&
-							isPostSendInvitationRecipientRole(recipient.role) &&
-							recipient.status !== 'completed' &&
-							recipient.routing_order === nextRoutingOrder
-					).length
-	};
 }
 
 function commandMatchesRouting(
 	command: PublishRecipientSignedCommand,
 	routing: SignRoutingSnapshot
 ): boolean {
-	const shouldComplete: boolean = routing.remainingActionableOutstanding === 0;
-	const shouldRelease: boolean =
-		!shouldComplete && routing.currentGroupOutstanding === 0 && routing.nextRoutingOrder !== null;
-	if (shouldComplete) {
-		return (
-			command.completedAuditEventId !== null &&
-			command.completedAuditEventHash !== null &&
-			command.completedAuditPayloadJson !== null &&
-			command.nextRoutingOrder === null &&
-			command.nextCapabilityExpiresAt === null &&
-			command.releasedDeliveryCount === 0
-		);
-	}
-	if (shouldRelease) {
-		return (
-			command.completedAuditEventId === null &&
-			command.completedAuditEventHash === null &&
-			command.completedAuditPayloadJson === null &&
-			command.nextRoutingOrder === routing.nextRoutingOrder &&
-			command.nextCapabilityExpiresAt !== null &&
-			new Date(command.nextCapabilityExpiresAt).getTime() > new Date(command.updatedAt).getTime() &&
-			new Date(command.nextCapabilityExpiresAt).getTime() <=
-				new Date(command.updatedAt).getTime() + MAX_RELEASE_TTL_MS &&
-			command.releasedDeliveryCount === routing.nextGroupCount
-		);
-	}
-	return (
-		command.completedAuditEventId === null &&
-		command.completedAuditEventHash === null &&
-		command.completedAuditPayloadJson === null &&
-		command.nextRoutingOrder === null &&
-		command.nextCapabilityExpiresAt === null &&
-		command.releasedDeliveryCount === 0
-	);
+	return commandMatchesRecipientDecisionRouting(command, routing);
 }
 
 function validAuditEvidence(row: SignedCommandRow): boolean {
@@ -755,117 +701,52 @@ async function reconstructedFingerprint(
 	row: SignedCommandRow,
 	stored: readonly StoredSignValue[]
 ): Promise<string | null> {
-	if (stored.length !== row.field_count) return null;
-	for (const value of stored) {
-		const digest: string = await sha256(value.valueJson);
-		if (digest !== value.valueSha256) return null;
-	}
-	const values = fingerprintValuesFromStored(stored);
-	if (values === null) return null;
-	return sha256(
-		canonicalRecipientSignFingerprint({
-			envelopeId: row.envelope_id,
-			recipientId: row.recipient_id,
-			capabilityHash: row.capability_hash,
-			expectedFieldGeneration: row.expected_field_generation,
-			values
-		})
-	);
+	return reconstructRecipientSignFingerprint({
+		envelopeId: row.envelope_id,
+		recipientId: row.recipient_id,
+		capabilityHash: row.capability_hash,
+		expectedFieldGeneration: row.expected_field_generation,
+		fieldCount: row.field_count,
+		stored
+	});
 }
 
 async function validStoredReceipt(
 	row: SignedCommandRow,
 	stored: readonly StoredSignValue[],
-	reconstructedFingerprint: string
+	reconstructed: string
 ): Promise<boolean> {
-	if (reconstructedFingerprint !== row.request_hash) return false;
 	const fields: readonly EvidenceField[] | null = parseEvidenceFields(row.field_values_json);
-	if (fields === null || fields.length !== row.field_count || fields.length !== stored.length) {
-		return false;
-	}
-	const digestById: Map<string, string> = new Map(
-		stored.map((value: StoredSignValue): [string, string] => [value.fieldId, value.valueSha256])
-	);
-	for (const field of fields) {
-		if (digestById.get(field.id) !== field.valueSha256) return false;
-	}
-
-	const auditPayloadValue = {
+	if (fields === null) return false;
+	return validStoredRecipientSignedReceipt({
+		envelopeId: row.envelope_id,
 		recipientId: row.recipient_id,
-		role: row.recipient_role,
+		recipientRole: row.recipient_role,
 		routingOrder: row.routing_order,
 		sentCommitSha: row.sent_commit_sha,
-		fields: fields.map((field: EvidenceField) => ({
-			id: field.id,
-			fieldType: field.fieldType,
-			valueSha256: field.valueSha256
+		requestHash: row.request_hash,
+		reconstructedFingerprint: reconstructed,
+		auditPayloadJson: row.audit_payload_json,
+		auditEventHash: row.audit_event_hash,
+		previousAuditHash: row.previous_audit_hash,
+		auditSequence: row.audit_sequence,
+		actorType: row.actor_type,
+		occurredAt: row.updated_at,
+		evidenceHashVersion: row.evidence_hash_version,
+		storedValueDigests: stored.map((value: StoredSignValue) => ({
+			fieldId: value.fieldId,
+			valueSha256: value.valueSha256
 		})),
-		signedAt: row.updated_at
-	};
-	const auditPayload: string = JSON.stringify(auditPayloadValue);
-	const auditEventHash: string = await hashStoredAuditEvent(
-		{
-			hashVersion: row.evidence_hash_version,
-			sequence: row.audit_sequence,
-			eventType: 'recipient.signed',
-			actorType: row.actor_type,
-			actorId: row.recipient_id,
-			occurredAt: row.updated_at,
-			payload: auditPayloadValue,
-			previousHash: row.previous_audit_hash
-		},
-		{ envelopeId: row.envelope_id }
-	);
-	if (auditPayload !== row.audit_payload_json || auditEventHash !== row.audit_event_hash) {
-		return false;
-	}
-	if (row.completed_audit_event_id !== null) {
-		if (
-			row.next_routing_order !== null ||
-			row.next_capability_expires_at !== null ||
-			row.released_delivery_count !== 0 ||
-			row.completed_audit_event_hash === null ||
-			row.completed_audit_payload_json === null
-		) {
-			return false;
-		}
-		const completedPayloadValue = {
-			sentCommitSha: row.sent_commit_sha,
-			completedAt: row.updated_at
-		};
-		const completedPayload: string = JSON.stringify(completedPayloadValue);
-		const completedEventHash: string = await hashStoredAuditEvent(
-			{
-				hashVersion: row.completed_evidence_hash_version,
-				sequence: row.audit_sequence + 1,
-				eventType: 'envelope.completed',
-				actorType: row.actor_type,
-				actorId: row.recipient_id,
-				occurredAt: row.updated_at,
-				payload: completedPayloadValue,
-				previousHash: row.audit_event_hash
-			},
-			{ envelopeId: row.envelope_id }
-		);
-		return (
-			completedPayload === row.completed_audit_payload_json &&
-			completedEventHash === row.completed_audit_event_hash
-		);
-	}
-	if (row.next_routing_order !== null) {
-		return (
-			row.next_capability_expires_at !== null &&
-			row.released_delivery_count > 0 &&
-			row.completed_audit_event_hash === null &&
-			row.completed_audit_payload_json === null
-		);
-	}
-	return (
-		row.next_capability_expires_at === null &&
-		row.released_delivery_count === 0 &&
-		row.completed_audit_event_hash === null &&
-		row.completed_audit_payload_json === null
-	);
+		evidenceFields: fields,
+		fieldCount: row.field_count,
+		completedAuditEventId: row.completed_audit_event_id,
+		completedAuditEventHash: row.completed_audit_event_hash,
+		completedAuditPayloadJson: row.completed_audit_payload_json,
+		completedEvidenceHashVersion: row.completed_evidence_hash_version,
+		nextRoutingOrder: row.next_routing_order,
+		nextCapabilityExpiresAt: row.next_capability_expires_at,
+		releasedDeliveryCount: row.released_delivery_count
+	});
 }
 
 function resultFromCommand(command: PublishRecipientSignedCommand): PublishedRecipientSigned {
@@ -914,14 +795,4 @@ function signatureAssetHashes(fieldValues: readonly SignedFieldValue[]): string[
 		if (match !== null) hashes.push(match[1]);
 	}
 	return hashes;
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }

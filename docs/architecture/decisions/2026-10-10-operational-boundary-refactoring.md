@@ -4,6 +4,9 @@ Date: 2026-10-10
 
 Status: proposed — 実装の採用決定ではない
 
+計画範囲は[2026-10-11の全体対象・軽量版](./2026-10-11-minimal-repository-wide-refactoring.md)に置き換えられた。
+以下のR0〜R7と当時の基準コミットは履歴であり、現在の実施範囲は最新の計画に従う。
+
 ## Context
 
 [2026-10-05の設計優先リファクタリング](./2026-10-05-design-first-refactoring.md) 以降、確認

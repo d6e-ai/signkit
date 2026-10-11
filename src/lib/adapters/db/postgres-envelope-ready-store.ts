@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { validStoredReadyReceipt } from '$lib/domain/commands/ready';
 import type { Envelope, Recipient, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
 import type {
 	EnvelopeReadyStore,
@@ -280,36 +281,15 @@ async function validStoredReceipt(
 	row: ReadyCommandRow,
 	recipients: readonly Recipient[]
 ): Promise<boolean> {
-	if (
-		recipients.some(
-			(recipient: Recipient): boolean =>
-				recipient.envelopeId !== row.envelopeId || recipient.status !== 'pending'
-		)
-	) {
-		return false;
-	}
-	const canonicalRequest: string = JSON.stringify({
-		expectedGeneration: row.expectedGeneration,
-		recipients: recipients.map((recipient: Recipient) => ({
-			email: recipient.email,
-			name: recipient.name,
-			role: recipient.role,
-			locale: recipient.locale,
-			routingOrder: recipient.routingOrder
-		}))
-	});
-	const expectedAuditPayload: string = JSON.stringify({
-		commitSha: row.commitSha,
-		generation: row.expectedGeneration,
-		recipients: recipients.map((recipient: Recipient) => ({
-			id: recipient.id,
-			role: recipient.role,
-			routingOrder: recipient.routingOrder
-		}))
-	});
-	return (
-		(await sha256(canonicalRequest)) === row.requestHash &&
-		expectedAuditPayload === row.auditPayloadJson
+	return validStoredReadyReceipt(
+		{
+			envelopeId: row.envelopeId,
+			expectedGeneration: row.expectedGeneration,
+			commitSha: row.commitSha,
+			requestHash: row.requestHash,
+			auditPayloadJson: row.auditPayloadJson
+		},
+		recipients
 	);
 }
 
@@ -360,16 +340,6 @@ function isoTimestamp(value: Date | string): string {
 function sameTimestamp(left: Date | string | null, right: Date | string): boolean {
 	if (left === null) return false;
 	return isoTimestamp(left) === isoTimestamp(right);
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }
 
 function resultFromCommand(command: PublishReadyEnvelopeCommand): PublishedReadyEnvelope {
