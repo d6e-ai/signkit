@@ -42,7 +42,7 @@ export async function resolveInvitationDeliveryService(
 	if (databaseUrl === undefined || mailSender === null) return null;
 	const [{ PostgresDeliveryOutboxStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-delivery-outbox-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	return new InvitationDeliveryService(
 		new PostgresDeliveryOutboxStore(resolvePostgresSql(databaseUrl)),
@@ -79,7 +79,7 @@ export async function resolveDeliveryResealSweepService(
 	if (databaseUrl === undefined) return null;
 	const [{ PostgresDeliveryOutboxStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-delivery-outbox-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	return new DeliveryResealSweepService(
 		new PostgresDeliveryOutboxStore(resolvePostgresSql(databaseUrl)),
@@ -101,7 +101,7 @@ export async function resolveDeliveryStatusService(
 	if (databaseUrl === undefined) return null;
 	const [{ PostgresDeliveryStatusStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-delivery-status-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	return new DeliveryStatusService(
 		new PostgresDeliveryStatusStore(resolvePostgresSql(databaseUrl))

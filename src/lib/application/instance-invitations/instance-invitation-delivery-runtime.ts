@@ -1,6 +1,6 @@
 import { env } from '$env/dynamic/private';
 import { resolveNodeMailSender, resolveWorkerMailSender } from '$lib/application/mail/mail-runtime';
-import { resolvePostgresSql } from '$lib/application/envelopes/runtime-postgres';
+import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
 import type { MailSender } from '$lib/ports/mail-sender';
 import { AesGcmInstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
 import { InstanceInvitationDeliveryService } from './instance-invitation-delivery-service';

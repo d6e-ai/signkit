@@ -6,20 +6,25 @@ import type { DraftRepository } from '$lib/ports/draft-repository';
 import type { EnvelopeStore } from '$lib/ports/envelope-store';
 import type { ObjectStore } from '$lib/ports/object-store';
 
-export interface DocxExportRuntimeContext {
+export interface EnvelopeDocumentDependenciesRuntimeContext {
 	platform?: Readonly<App.Platform>;
 }
 
-export interface EnvelopeDocxExportDependencies {
+export interface EnvelopeDocumentDependencies {
 	envelopes: Pick<EnvelopeStore, 'findEnvelope'>;
 	objects: ObjectStore;
 	repository: DraftRepository;
 }
 
-/** Resolve commit-pinned DOCX export only when durable stores are configured. */
-export async function resolveEnvelopeDocxExport(
-	context: DocxExportRuntimeContext
-): Promise<EnvelopeDocxExportDependencies | null> {
+/**
+ * Feature-neutral commit-pinned document dependencies: the envelope pointer,
+ * object store, and Git repository that any document-reading feature needs,
+ * resolved only when durable stores are configured. No feature's envelope
+ * application is constructed here.
+ */
+export async function resolveEnvelopeDocumentDependencies(
+	context: EnvelopeDocumentDependenciesRuntimeContext
+): Promise<EnvelopeDocumentDependencies | null> {
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
 		const bucket: R2Bucket | undefined = context.platform.env.OBJECTS;
@@ -44,11 +49,11 @@ export async function resolveEnvelopeDocxExport(
 		return null;
 	}
 
-	const { resolvePostgresEnvelopeStore } =
-		await import('$lib/application/envelopes/runtime-postgres');
+	const { PostgresEnvelopeStore } = await import('$lib/adapters/db/postgres-envelope-store');
+	const { resolvePostgresSql } = await import('./postgres-sql-runtime');
 	const { resolveS3ObjectStore } = await import('$lib/application/drafts/runtime-s3');
 	return {
-		envelopes: resolvePostgresEnvelopeStore(configuration.databaseUrl as string),
+		envelopes: new PostgresEnvelopeStore(resolvePostgresSql(configuration.databaseUrl as string)),
 		objects: resolveS3ObjectStore(configuration),
 		repository: new IsomorphicGitDraftRepository()
 	};

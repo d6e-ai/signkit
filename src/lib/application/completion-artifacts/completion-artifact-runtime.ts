@@ -65,7 +65,7 @@ export async function resolveCompletionArtifactPublicationService(
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-repair-store'),
 		import('$lib/adapters/db/postgres-completion-pdf-evidence-store'),
 		import('$lib/adapters/db/postgres-envelope-sent-document-store'),
-		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/runtime/postgres-sql-runtime'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
 	const sql = resolvePostgresSql(databaseUrl);
@@ -108,7 +108,7 @@ export async function resolveCompletionArtifactStatusService(
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-repair-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	const sql = resolvePostgresSql(databaseUrl);
 	return new CompletionArtifactStatusService(
@@ -139,7 +139,7 @@ export async function resolveCompletionArtifactRetryService(
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-repair-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	const sql = resolvePostgresSql(databaseUrl);
 	return new CompletionArtifactRetryService(
@@ -186,7 +186,7 @@ export async function resolveCompletionEvidenceService(
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
-		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/runtime/postgres-sql-runtime'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
 	const sql = resolvePostgresSql(databaseUrl);

@@ -59,7 +59,7 @@ export async function resolvePublicCompletionArtifactService(
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-delivery-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
-		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/runtime/postgres-sql-runtime'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
 	let objects: ObjectStore;
@@ -117,7 +117,7 @@ export async function resolveCompletionDeliveryService(
 	if (databaseUrl === undefined || mailSender === null) return null;
 	const [{ PostgresCompletionDeliveryStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-delivery-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	const pdfAttachmentReader: CompletionPdfAttachmentReaderPort =
 		await resolveNodeCompletionPdfAttachmentReader(databaseUrl);
@@ -182,7 +182,7 @@ async function resolveNodeCompletionPdfAttachmentReader(
 		{ resolveS3ObjectStore }
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
-		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/runtime/postgres-sql-runtime'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
 	let objects: ObjectStore;
@@ -226,7 +226,7 @@ export async function resolveCompletionDeliveryResealSweepService(
 	if (databaseUrl === undefined) return null;
 	const [{ PostgresCompletionDeliveryStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-completion-delivery-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	return new CompletionDeliveryResealSweepService(
 		new PostgresCompletionDeliveryStore(resolvePostgresSql(databaseUrl)),

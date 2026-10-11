@@ -23,7 +23,7 @@ export async function resolveMaintenanceBacklogPort(
 	if (databaseUrl === undefined) return null;
 	const [{ PostgresMaintenanceBacklog }, { resolvePostgresSql }] = await Promise.all([
 		import('./maintenance-backlog-postgres'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	return new PostgresMaintenanceBacklog(resolvePostgresSql(databaseUrl));
 }
