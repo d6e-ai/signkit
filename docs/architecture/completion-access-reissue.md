@@ -82,12 +82,38 @@ already-replayed request never pays for that IO.
 Both accept either a SignKit API key with the listed scope or an operator session cookie, matching
 every other envelope-management endpoint's dual-authority pattern.
 
-## What is not built yet
+## Operator UI
 
-The sender-facing confirmation UI (a shadcn `AlertDialog` surfacing the current failure and
-explaining that old access stays revoked while new access lasts 30 days) is not implemented in this
-slice -- only the API, stores, migrations, and their tests. The CLI does not expose this command
-either. Both are optional follow-up work, not required for the backend recovery path to function.
+The completed-envelope Documents tab reads `completion-deliveries` (token/key-free) alongside the
+existing completion-artifact status whenever the envelope is `completed`, and renders each
+recipient's current generation, status, and access expiry. A recipient whose current generation is
+`failed` and `eligibleForReissue` gets a "Grant new access" action; a `failed` row that is not yet
+eligible (still within its own retry budget) shows the action disabled with an explanation instead of
+hiding it. Confirming opens a shadcn `AlertDialog` that states plainly that the new link lasts 30 days
+and the old link stays revoked and unusable -- it never implies the old grant is restored.
+
+The page sends back the exact `expectedDeliveryId`/`expectedAttempts`/`expectedFailedAt`/`expectedErrorCode`
+tuple it last observed for that row, captured when the dialog opened, never a value re-read at confirm
+time. The mutation attempt (and its `Idempotency-Key`) is keyed by that exhausted generation's own
+delivery ID, so an ambiguous network failure, cancel-and-reopen, or disconnect-and-retry replays the
+same key and body; a newer exhausted generation is a different delivery ID and therefore always a
+fresh key, never a reused one. A successful response reports the request as accepted and queued for
+delivery, not delivered -- the drain sends asynchronously, and this command never invokes `MailSender`
+itself, so a page reload or a completion-artifact PDF repair happening to run around the same time
+can never by itself enqueue mail. On success the page re-reads `completion-deliveries`; a failed
+re-read shows a separate warning alongside the success notice without implying the grant failed.
+
+The client allowlists the receipt (envelope, recipient, delivery, generation, expiry, timestamp) and
+validates it structurally before trusting it, exactly like the existing recipient-capability-reissue
+client. The system capabilities endpoint (`GET /api/v1/system/capabilities`) advertises both endpoints
+under `completionAccessReissue`, and the `envelopes:read`/`envelopes:send` API-key scope lists include
+them, so an agent integrator can discover this surface the same way it discovers every other endpoint.
+
+## What is not built
+
+The Rust CLI does not expose this command; it remains an operator-UI/API-only surface, matching how
+capability reissue and other session-oriented recovery commands are deliberately not exposed to the
+CLI (see `docs/architecture/agent-contract.md`).
 
 ## Verification
 
@@ -97,5 +123,25 @@ cover verification outcomes and the service's replay/eligibility/retry orchestra
 `postgres-completion-access-reissue.integration.spec.ts` (real PostgreSQL, skipped without
 `POSTGRES_TEST_URL`) exercise the actual migrated schema and triggers/transactions end to end: publish,
 safe replay, changed-body conflict, stale generation, an unexhausted predecessor, an unknown
-predecessor, and a write-time artifact-digest mismatch. `route-parity.spec.ts` and
-`mutation-schema-drift.spec.ts` keep the OpenAPI document honest against the shipped handlers.
+predecessor, a write-time artifact-digest mismatch, an audit-head race that aborts and rolls back the
+whole write with no partial outbox/audit/command row, and receipt replay continuing correctly after
+the successor's own ciphertext is resealed under a rotated key and later itself exhausts and is
+scrubbed. `completion-access-reissue.spec.ts` and `completion-access-reissue-status.spec.ts` cover the
+HTTP layer: session/API-key authorization and scope (including a read-only key forbidden to mutate and
+an inactive/suspended member), strict body and `Idempotency-Key` requirements, and every outcome's
+problem response. `completion-delivery-service.reissue-generation.spec.ts` drains a reissued
+generation through the real `NodemailerSmtpMailSender` and Cloudflare binding/REST `MailSender`
+adapters (not the generic test double used elsewhere), proving only the new grant's token ever reaches
+a provider and that a real provider failure fails closed on that generation alone -- the drain has no
+notion of a predecessor to revive. `page.completion-access-reissue.browser.spec.ts` exercises the
+actual rendered UI: visibility/disabled states, the confirmation dialog's wording, idempotency-key and
+CAS-tuple preservation across an ambiguous failure, 409-outcome-specific messaging, and the
+queued-not-delivered success wording with a distinct post-success refresh-failure warning.
+`route-parity.spec.ts` and `mutation-schema-drift.spec.ts` keep the OpenAPI document honest against the
+shipped handlers.
+
+PostgreSQL integration coverage above is written and type-checked but was not executed against a live
+PostgreSQL instance in the environment this slice was built in, which denied shell access to any
+command embedding a database connection string; the equivalent D1 (node:sqlite) suite, which needed no
+such string, did run and pass. Re-run `postgres-completion-access-reissue.integration.spec.ts` with
+`POSTGRES_TEST_URL` set before relying on this coverage.

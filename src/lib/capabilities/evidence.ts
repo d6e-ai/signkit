@@ -37,6 +37,16 @@ export const evidenceCapabilities = {
 		tokenFormat: 'skca1',
 		grantRetentionDays: 30
 	},
+	completionAccessReissue: {
+		statusEndpoint: '/api/v1/envelopes/{envelopeId}/completion-deliveries',
+		reissueEndpoint:
+			'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue',
+		authentication: 'instance-session-or-api-key',
+		discovery: 'explicit-confirmation-only',
+		semantics: 'append-only-successor-never-revives-predecessor',
+		artifactReverification: 'independent-object-storage-digest-recheck',
+		grantRetentionDays: 30
+	},
 	publicCompletionArtifact: {
 		apiEndpoint: '/api/v1/completion-artifacts',
 		linkEndpoint: '/c/{token}',

@@ -127,6 +127,15 @@ interface CapabilitiesResponse {
 		tokenFormat: string;
 		grantRetentionDays: number;
 	};
+	completionAccessReissue: {
+		statusEndpoint: string;
+		reissueEndpoint: string;
+		authentication: string;
+		discovery: string;
+		semantics: string;
+		artifactReverification: string;
+		grantRetentionDays: number;
+	};
 	pdfSeal: {
 		statusEndpoint: string;
 		requestEndpoint: string;
@@ -210,6 +219,18 @@ describe('GET /api/v1/system/capabilities', () => {
 			grantRetentionDays: 30
 		});
 
+		// Completion access reissue capabilities
+		expect(data.completionAccessReissue).toEqual({
+			statusEndpoint: '/api/v1/envelopes/{envelopeId}/completion-deliveries',
+			reissueEndpoint:
+				'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue',
+			authentication: 'instance-session-or-api-key',
+			discovery: 'explicit-confirmation-only',
+			semantics: 'append-only-successor-never-revives-predecessor',
+			artifactReverification: 'independent-object-storage-digest-recheck',
+			grantRetentionDays: 30
+		});
+
 		// Public completion artifact capabilities
 		expect(data.completionArtifact.artifacts).toEqual(['json', 'markdown', 'pdf']);
 		expect(data.publicCompletionArtifact).toEqual({
@@ -238,6 +259,7 @@ describe('GET /api/v1/system/capabilities', () => {
 				'/api/v1/envelopes/{envelopeId}/revisions/diff',
 				'/api/v1/envelopes/{envelopeId}/docx',
 				'/api/v1/envelopes/{envelopeId}/deliveries',
+				'/api/v1/envelopes/{envelopeId}/completion-deliveries',
 				'/api/v1/envelopes/{envelopeId}/completion-artifact',
 				'/api/v1/envelopes/{envelopeId}/pdf-seal',
 				'/api/v1/envelopes/{envelopeId}/pdf-seal/pdf',
@@ -260,7 +282,8 @@ describe('GET /api/v1/system/capabilities', () => {
 					'/api/v1/envelopes/{envelopeId}/send',
 					'/api/v1/envelopes/{envelopeId}/void',
 					'/api/v1/envelopes/{envelopeId}/pdf-seal',
-					'/api/v1/envelopes/{envelopeId}/completion-artifact/retry'
+					'/api/v1/envelopes/{envelopeId}/completion-artifact/retry',
+					'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue'
 				]
 			},
 			mutations: true,

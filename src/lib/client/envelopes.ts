@@ -5,11 +5,13 @@ import type { PublicEnvelopeDeliveryStatus } from '$lib/application/delivery/del
 import type { PublicCompletionArtifactStatus } from '$lib/application/completion-artifacts/completion-artifact-status';
 import type { PublicPdfSealStatus } from '$lib/application/pdf-seals/pdf-seal-api';
 import type { PdfSealProfile } from '$lib/ports/pdf-seal-provider';
+import type { CurrentCompletionDeliveryRow } from '$lib/ports/completion-access-reissue-row';
 
 export type Envelope = PublicEnvelope;
 export type { FieldGeometry, FieldType, RecipientRole, PublicEnvelopeDeliveryStatus };
 export type { PublicCompletionArtifactStatus };
 export type { PdfSealProfile, PublicPdfSealStatus };
+export type { CurrentCompletionDeliveryRow };
 
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -282,6 +284,30 @@ export interface ReissueRecipientCapabilityResponse {
 	reissued: {
 		envelopeId: string;
 		recipientId: string;
+		reissuedAt: string;
+	};
+	replayed: boolean;
+}
+
+/**
+ * The exact exhausted generation the caller observed from
+ * `completionDeliveries`, echoed back verbatim. The server refuses a stale
+ * or ambiguous tuple rather than reissuing the wrong generation.
+ */
+export interface ReissueCompletionAccessInput {
+	expectedDeliveryId: string;
+	expectedAttempts: number;
+	expectedFailedAt: string;
+	expectedErrorCode: string;
+}
+
+export interface ReissueCompletionAccessResponse {
+	completionAccessReissue: {
+		envelopeId: string;
+		recipientId: string;
+		deliveryId: string;
+		generation: number;
+		accessExpiresAt: string;
 		reissuedAt: string;
 	};
 	replayed: boolean;
@@ -952,6 +978,101 @@ export class EnvelopesClient {
 		return {
 			bytes: new Uint8Array(buffer),
 			filename: contentDispositionFilename(response) ?? `sealed-agreement-${envelopeId}.pdf`
+		};
+	}
+
+	/**
+	 * Read-only, token/key-free view of each recipient's current completion
+	 * delivery generation. Never a raw or sealed token, a claim lease, or any
+	 * other grant material.
+	 */
+	async completionDeliveries(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<readonly CurrentCompletionDeliveryRow[]> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/completion-deliveries`
+		);
+		const { data } = await this.request<{
+			completionDeliveries: readonly CurrentCompletionDeliveryRow[];
+		}>(
+			url,
+			{ method: 'GET', headers: { accept: 'application/json, application/problem+json' } },
+			options?.fetch
+		);
+		return data.completionDeliveries;
+	}
+
+	/**
+	 * Explicit, operator-confirmed recovery for one terminal exhausted
+	 * completion delivery. `input` must be the exact exhausted generation this
+	 * page last observed through `completionDeliveries`; the server refuses a
+	 * stale or ambiguous tuple rather than silently reissuing the wrong
+	 * generation. This only enqueues a fresh, bounded-expiry delivery -- it
+	 * never sends mail itself.
+	 */
+	async reissueCompletionAccess(
+		envelopeId: string,
+		recipientId: string,
+		input: ReissueCompletionAccessInput,
+		options?: RequestOptions
+	): Promise<ReissueCompletionAccessResponse> {
+		const url = this.buildUrl(
+			`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/recipients/${encodeURIComponent(recipientId)}/completion-access/reissue`
+		);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{
+			completionAccessReissue?: ReissueCompletionAccessResponse['completionAccessReissue'];
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body: JSON.stringify({
+					grantAccess: true,
+					expectedDeliveryId: input.expectedDeliveryId,
+					expectedAttempts: input.expectedAttempts,
+					expectedFailedAt: input.expectedFailedAt,
+					expectedErrorCode: input.expectedErrorCode
+				})
+			},
+			options?.fetch
+		);
+		const receipt = data?.completionAccessReissue;
+		if (
+			receipt?.envelopeId !== envelopeId ||
+			receipt?.recipientId !== recipientId ||
+			typeof receipt?.deliveryId !== 'string' ||
+			receipt.deliveryId.length === 0 ||
+			typeof receipt?.generation !== 'number' ||
+			!Number.isInteger(receipt.generation) ||
+			typeof receipt?.accessExpiresAt !== 'string' ||
+			!Number.isFinite(Date.parse(receipt.accessExpiresAt)) ||
+			typeof receipt?.reissuedAt !== 'string' ||
+			!Number.isFinite(Date.parse(receipt.reissuedAt))
+		) {
+			throw new EnvelopesApiError({
+				status: 502,
+				type: 'urn:signkit:problem:invalid-response-json',
+				title: 'Invalid completion access reissue receipt',
+				detail: 'The response did not confirm the selected envelope and recipient.',
+				instance: url
+			});
+		}
+		return {
+			completionAccessReissue: {
+				envelopeId: receipt.envelopeId,
+				recipientId: receipt.recipientId,
+				deliveryId: receipt.deliveryId,
+				generation: receipt.generation,
+				accessExpiresAt: receipt.accessExpiresAt,
+				reissuedAt: receipt.reissuedAt
+			},
+			replayed: response.headers.get('idempotency-replayed') === 'true'
 		};
 	}
 }

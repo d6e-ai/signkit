@@ -50,8 +50,14 @@ PostgreSQL transaction both encode the same predicates) rather than a single sha
 consistent with how every other D1/PostgreSQL command pair in this codebase is built, since D1 has no
 real multi-statement transaction with row locks to share logic with.
 
-The sender-facing confirmation UI and CLI exposure are deliberately out of scope for this decision;
-the backend recovery path does not depend on either existing.
+The completed-envelope Documents tab now surfaces this recovery directly: a token/key-free read of
+each recipient's current generation, a "Grant new access" action gated on the server's own
+`eligibleForReissue` bit, and an `AlertDialog` that states the new link lasts 30 days and the old one
+stays revoked. It mints and preserves one `Idempotency-Key` per exhausted generation (keyed by that
+generation's own delivery ID, which is itself CAS-stable) across ambiguous retries, and reports
+acceptance/queuing rather than delivery, since the drain sends asynchronously and this command never
+calls `MailSender`. CLI exposure remains deliberately out of scope, matching every other
+session-oriented recovery command (`docs/architecture/agent-contract.md`).
 
 ## Alternatives considered
 

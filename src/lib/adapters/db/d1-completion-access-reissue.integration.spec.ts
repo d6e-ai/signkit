@@ -334,4 +334,108 @@ describe('D1CompletionAccessReissueStore integration', () => {
 			.get(VIEWER_ID) as { n: number };
 		expect(rows.n).toBe(1);
 	});
+
+	it('aborts and rolls back the whole write when a concurrent audit event moved the head before publish', async () => {
+		const { database, sqlite } = createFixture();
+		seedCompletedEnvelope(sqlite);
+		const store = new D1CompletionAccessReissueStore(database);
+
+		const key = keyFor('idemp-8', 'hash-h');
+		const prep = await store.prepareReissue(key, expected());
+		expect(prep.outcome).toBe('ready');
+		if (prep.outcome !== 'ready') return;
+		const staleAuditHead = {
+			sequence: prep.auditHead!.sequence,
+			eventHash: prep.auditHead!.eventHash
+		};
+
+		// A concurrent, unrelated audit event lands on this envelope between this
+		// process's prepare read and its publish write.
+		sqlite.exec(`
+			INSERT INTO audit_event (
+				id, envelope_id, sequence, event_type, actor_type, actor_id,
+				payload_json, previous_hash, event_hash, occurred_at
+			) VALUES (
+				'01970000-0000-7000-8000-000000000029', '${ENVELOPE_ID}', 2, 'envelope.voided', 'user', '${USER_ID}',
+				'{}', '${staleAuditHead.eventHash}', '${'c'.repeat(64)}', '2026-09-13T11:59:00.000Z'
+			);
+		`);
+
+		const command = commandFor(key, '01970000-0000-7000-8000-000000000044', {
+			expectedAuditSequence: staleAuditHead.sequence,
+			previousAuditHash: staleAuditHead.eventHash
+		});
+		const published = await store.publishReissue(command);
+		expect(published.outcome).toBe('integrity_error');
+
+		const outboxRows = sqlite
+			.prepare('SELECT COUNT(*) AS n FROM completion_delivery_outbox WHERE recipient_id = ?')
+			.get(SIGNER_ID) as { n: number };
+		expect(outboxRows.n).toBe(1);
+		const auditRows = sqlite
+			.prepare('SELECT COUNT(*) AS n FROM audit_event WHERE envelope_id = ?')
+			.get(ENVELOPE_ID) as { n: number };
+		expect(auditRows.n).toBe(2);
+		const commandRows = sqlite
+			.prepare(
+				'SELECT COUNT(*) AS n FROM completion_access_reissue_command WHERE idempotency_key = ?'
+			)
+			.get('idemp-8') as { n: number };
+		expect(commandRows.n).toBe(0);
+
+		// The now-current audit head accepts a fresh publish of the same command key.
+		const retried = await store.publishReissue(
+			commandFor(key, '01970000-0000-7000-8000-000000000044', {
+				expectedAuditSequence: 2,
+				previousAuditHash: 'c'.repeat(64)
+			})
+		);
+		expect(retried.outcome).toBe('published');
+	});
+
+	it('continues replaying the original receipt after the successor is resealed under a rotated key and later scrubbed', async () => {
+		const { database, sqlite } = createFixture();
+		seedCompletedEnvelope(sqlite);
+		const store = new D1CompletionAccessReissueStore(database);
+
+		const key = keyFor('idemp-9', 'hash-i');
+		const prep = await store.prepareReissue(key, expected());
+		expect(prep.outcome).toBe('ready');
+		if (prep.outcome !== 'ready') return;
+		const newDeliveryId = '01970000-0000-7000-8000-000000000045';
+		const published = await store.publishReissue(
+			commandFor(key, newDeliveryId, {
+				expectedAuditSequence: prep.auditHead!.sequence,
+				previousAuditHash: prep.auditHead!.eventHash
+			})
+		);
+		expect(published.outcome).toBe('published');
+
+		// Simulate the bounded reseal sweep rotating the successor's ciphertext
+		// under a newer key, independent of this command's own receipt row.
+		sqlite.exec(`
+			UPDATE completion_delivery_outbox
+			SET sealed_token = 'skcd1_resealed-under-key-2', sealing_key_id = 'key-2',
+				sealed_token_sha256 = '${'d'.repeat(64)}'
+			WHERE id = '${newDeliveryId}';
+		`);
+		const replayAfterReseal = await store.prepareReissue(key, expected());
+		expect(replayAfterReseal.outcome).toBe('replayed');
+		if (replayAfterReseal.outcome !== 'replayed') return;
+		expect(replayAfterReseal.result?.deliveryId).toBe(newDeliveryId);
+
+		// Simulate the successor itself later exhausting and being scrubbed.
+		sqlite.exec(`
+			UPDATE completion_delivery_outbox
+			SET status = 'failed', retryable = 0, access_revoked_at = '2026-10-13T00:00:00.000Z',
+				sealed_token = NULL, attempts = 10, last_error = 'completion_delivery_attempts_exhausted'
+			WHERE id = '${newDeliveryId}';
+		`);
+		const replayAfterScrub = await store.prepareReissue(key, expected());
+		expect(replayAfterScrub.outcome).toBe('replayed');
+		if (replayAfterScrub.outcome !== 'replayed') return;
+		expect(replayAfterScrub.result?.deliveryId).toBe(newDeliveryId);
+		expect(replayAfterScrub.result?.generation).toBe(1);
+		expect(replayAfterScrub.result?.accessExpiresAt).toBe(published.result?.accessExpiresAt);
+	});
 });

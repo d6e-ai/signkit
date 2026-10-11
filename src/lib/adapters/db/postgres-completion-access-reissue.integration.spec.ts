@@ -274,4 +274,143 @@ liveDescribe('PostgresCompletionAccessReissueStore integration', () => {
 		const stale = await store.prepareReissue(staleKey, expected());
 		expect(stale.outcome).toBe('stale_generation');
 	});
+
+	it('aborts the whole write when a concurrent audit event moved the head before publish, without partial rows', async () => {
+		if (sql === null) throw new Error('PostgreSQL unavailable');
+		const { envelopeId, signerId, predecessorId } = await seedCompletedEnvelope();
+		const store = new PostgresCompletionAccessReissueStore(sql);
+		const key: ReissueCommandKey = {
+			envelopeId,
+			recipientId: signerId,
+			predecessorDeliveryId: predecessorId,
+			actorType: 'user',
+			actorId: newUuidV7(),
+			idempotencyKey: 'idemp-pg-5',
+			requestHash: 'hash-pg-5'
+		};
+		const prep = await store.prepareReissue(key, expected());
+		if (prep.outcome !== 'ready') throw new Error('expected ready');
+		const staleAuditHead = {
+			sequence: prep.auditHead!.sequence,
+			eventHash: prep.auditHead!.eventHash
+		};
+
+		// A concurrent, unrelated audit event lands on this envelope between this
+		// process's prepare read and its publish write.
+		const racingEventId: string = newUuidV7();
+		await sql`INSERT INTO audit_event (id, envelope_id, sequence, event_type, actor_type,
+			actor_id, payload_json, previous_hash, event_hash, occurred_at)
+			VALUES (${racingEventId}, ${envelopeId}, 2, 'envelope.voided', 'user', ${newUuidV7()}, '{}',
+				${staleAuditHead.eventHash}, ${'c'.repeat(64)}, '2026-09-13T11:59:00.000Z'::timestamptz)`;
+
+		const newDeliveryId: string = newUuidV7();
+		const published = await store.publishReissue({
+			...key,
+			...expected(),
+			newDeliveryId,
+			newTokenHash: newUuidV7().replaceAll('-', '').padEnd(64, '9'),
+			newAccessExpiresAt: '2026-10-11T12:00:00.000Z',
+			sealedToken: 'skcd1_new-sealed-blob',
+			sealingKeyId: 'key-1',
+			sealedTokenSha256: '7'.repeat(64),
+			reissuedAt: '2026-09-13T12:00:00.000Z',
+			expectedAuditSequence: staleAuditHead.sequence,
+			previousAuditHash: staleAuditHead.eventHash,
+			auditEventId: newUuidV7(),
+			auditEventHash: '9'.repeat(64),
+			auditPayloadJson: '{}',
+			expectedJsonSha256: JSON_SHA256,
+			expectedMarkdownSha256: MARKDOWN_SHA256,
+			expectedPdfSha256: PDF_SHA256
+		});
+		expect(published.outcome).toBe('integrity_error');
+
+		const outboxRows = await sql<{ n: string }[]>`SELECT COUNT(*)::text AS n
+			FROM completion_delivery_outbox WHERE recipient_id = ${signerId}`;
+		expect(outboxRows[0].n).toBe('1');
+		const auditRows = await sql<{ n: string }[]>`SELECT COUNT(*)::text AS n
+			FROM audit_event WHERE envelope_id = ${envelopeId}`;
+		expect(auditRows[0].n).toBe('2');
+		const commandRows = await sql<{ n: string }[]>`SELECT COUNT(*)::text AS n
+			FROM completion_access_reissue_command WHERE idempotency_key = 'idemp-pg-5'`;
+		expect(commandRows[0].n).toBe('0');
+
+		const retried = await store.publishReissue({
+			...key,
+			...expected(),
+			newDeliveryId,
+			newTokenHash: newUuidV7().replaceAll('-', '').padEnd(64, '9'),
+			newAccessExpiresAt: '2026-10-11T12:00:00.000Z',
+			sealedToken: 'skcd1_new-sealed-blob',
+			sealingKeyId: 'key-1',
+			sealedTokenSha256: '7'.repeat(64),
+			reissuedAt: '2026-09-13T12:00:00.000Z',
+			expectedAuditSequence: 2,
+			previousAuditHash: 'c'.repeat(64),
+			auditEventId: newUuidV7(),
+			auditEventHash: '8'.repeat(64),
+			auditPayloadJson: '{}',
+			expectedJsonSha256: JSON_SHA256,
+			expectedMarkdownSha256: MARKDOWN_SHA256,
+			expectedPdfSha256: PDF_SHA256
+		});
+		expect(retried.outcome).toBe('published');
+	});
+
+	it('continues replaying the original receipt after the successor is resealed under a rotated key and later scrubbed', async () => {
+		if (sql === null) throw new Error('PostgreSQL unavailable');
+		const { envelopeId, signerId, predecessorId } = await seedCompletedEnvelope();
+		const store = new PostgresCompletionAccessReissueStore(sql);
+		const key: ReissueCommandKey = {
+			envelopeId,
+			recipientId: signerId,
+			predecessorDeliveryId: predecessorId,
+			actorType: 'user',
+			actorId: newUuidV7(),
+			idempotencyKey: 'idemp-pg-6',
+			requestHash: 'hash-pg-6'
+		};
+		const prep = await store.prepareReissue(key, expected());
+		if (prep.outcome !== 'ready') throw new Error('expected ready');
+		const newDeliveryId: string = newUuidV7();
+		const published = await store.publishReissue({
+			...key,
+			...expected(),
+			newDeliveryId,
+			newTokenHash: newUuidV7().replaceAll('-', '').padEnd(64, '7'),
+			newAccessExpiresAt: '2026-10-11T12:00:00.000Z',
+			sealedToken: 'skcd1_new-sealed-blob',
+			sealingKeyId: 'key-1',
+			sealedTokenSha256: '7'.repeat(64),
+			reissuedAt: '2026-09-13T12:00:00.000Z',
+			expectedAuditSequence: prep.auditHead!.sequence,
+			previousAuditHash: prep.auditHead!.eventHash,
+			auditEventId: newUuidV7(),
+			auditEventHash: '9'.repeat(64),
+			auditPayloadJson: '{}',
+			expectedJsonSha256: JSON_SHA256,
+			expectedMarkdownSha256: MARKDOWN_SHA256,
+			expectedPdfSha256: PDF_SHA256
+		});
+		expect(published.outcome).toBe('published');
+
+		await sql`UPDATE completion_delivery_outbox
+			SET sealed_token = 'skcd1_resealed-under-key-2', sealing_key_id = 'key-2',
+				sealed_token_sha256 = ${'d'.repeat(64)}
+			WHERE id = ${newDeliveryId}`;
+		const replayAfterReseal = await store.prepareReissue(key, expected());
+		expect(replayAfterReseal.outcome).toBe('replayed');
+		if (replayAfterReseal.outcome !== 'replayed') return;
+		expect(replayAfterReseal.result?.deliveryId).toBe(newDeliveryId);
+
+		await sql`UPDATE completion_delivery_outbox
+			SET status = 'failed', retryable = false, access_revoked_at = '2026-10-13T00:00:00.000Z'::timestamptz,
+				sealed_token = NULL, attempts = 10, last_error = 'completion_delivery_attempts_exhausted'
+			WHERE id = ${newDeliveryId}`;
+		const replayAfterScrub = await store.prepareReissue(key, expected());
+		expect(replayAfterScrub.outcome).toBe('replayed');
+		if (replayAfterScrub.outcome !== 'replayed') return;
+		expect(replayAfterScrub.result?.deliveryId).toBe(newDeliveryId);
+		expect(replayAfterScrub.result?.generation).toBe(1);
+	});
 });
