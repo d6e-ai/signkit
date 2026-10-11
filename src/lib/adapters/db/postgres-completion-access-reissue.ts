@@ -33,6 +33,7 @@ interface CurrentDeliveryRow {
 	deliveredAt: Date | string | null;
 	failedAt: Date | string | null;
 	errorCode: string | null;
+	failureCauseCode: string | null;
 	retryable: boolean;
 	claimToken: string | null;
 	lockedAt: Date | string | null;
@@ -83,7 +84,10 @@ export class PostgresCompletionAccessReissueStore implements CompletionAccessRei
 
 	async listCurrentDeliveries(
 		envelopeId: string
-	): Promise<readonly CurrentCompletionDeliveryRow[]> {
+	): Promise<readonly CurrentCompletionDeliveryRow[] | null> {
+		const envelope = await this.#sql<{ present: number }[]>`
+			SELECT 1 AS present FROM envelope WHERE id = ${envelopeId} LIMIT 1`;
+		if (envelope.length === 0) return null;
 		const rows = await this.#sql<CurrentDeliveryRow[]>`
 			SELECT delivery.id AS "deliveryId", delivery.recipient_id AS "recipientId",
 				recipient.role AS "recipientRole", delivery.generation AS "generation",
@@ -92,7 +96,8 @@ export class PostgresCompletionAccessReissueStore implements CompletionAccessRei
 				delivery.access_revoked_at AS "accessRevokedAt",
 				delivery.delivered_at AS "deliveredAt",
 				CASE WHEN delivery.status = 'failed' THEN delivery.updated_at END AS "failedAt",
-				delivery.last_error AS "errorCode", delivery.retryable AS "retryable",
+				delivery.last_error AS "errorCode",
+				delivery.failure_cause_code AS "failureCauseCode", delivery.retryable AS "retryable",
 				delivery.claim_token AS "claimToken", delivery.locked_at AS "lockedAt",
 				delivery.sealed_token AS "sealedToken"
 			FROM completion_delivery_outbox delivery
@@ -448,6 +453,7 @@ function toCurrentCompletionDeliveryRow(row: CurrentDeliveryRow): CurrentComplet
 		deliveredAt: row.deliveredAt === null ? null : isoTimestamp(row.deliveredAt),
 		failedAt: row.failedAt === null ? null : isoTimestamp(row.failedAt),
 		errorCode: row.errorCode,
+		failureCauseCode: row.failureCauseCode,
 		eligibleForReissue:
 			row.status === 'failed' &&
 			!row.retryable &&

@@ -61,7 +61,10 @@ export type ReissueCompletionAccessResult =
 	| { outcome: 'integrity_error' };
 
 export interface CompletionAccessReissueApplicationPort {
-	listCurrentDeliveries(envelopeId: string): Promise<readonly CurrentCompletionDeliveryRow[]>;
+	/** `null` when no envelope with this ID exists; see {@link CompletionAccessReissueStore.listCurrentDeliveries}. */
+	listCurrentDeliveries(
+		envelopeId: string
+	): Promise<readonly CurrentCompletionDeliveryRow[] | null>;
 	reissue(
 		actor: CompletionAccessReissueActor,
 		input: ReissueCompletionAccessInput
@@ -103,7 +106,7 @@ export class CompletionAccessReissueService implements CompletionAccessReissueAp
 
 	async listCurrentDeliveries(
 		envelopeId: string
-	): Promise<readonly CurrentCompletionDeliveryRow[]> {
+	): Promise<readonly CurrentCompletionDeliveryRow[] | null> {
 		return await this.#store.listCurrentDeliveries(envelopeId);
 	}
 

@@ -27,8 +27,11 @@ export type CompletionAccessReissueStatusServiceResolver = (
  * Instance-authorized, explicit-allowlist read of each recipient's current
  * completion delivery generation: delivery and recipient IDs, generation,
  * status, attempts, expiry/revocation timestamps, the sanitized failure
- * error code, and whether that generation is eligible for reissue. Never a
- * raw or sealed token, a claim lease, or any other grant material.
+ * error code, the terminal failure cause code, and whether that generation
+ * is eligible for reissue. Never a raw or sealed token, a claim lease, or
+ * any other grant material. A missing envelope is a 404; an existing
+ * envelope with no completion deliveries yet is a 200 with an empty array --
+ * the two are never conflated.
  */
 export function createCompletionAccessReissueStatusHandler(
 	resolveService: CompletionAccessReissueStatusServiceResolver
@@ -62,8 +65,9 @@ export function createCompletionAccessReissueStatusHandler(
 		if (service === null) return unavailable(url.pathname);
 
 		try {
-			const deliveries: readonly CurrentCompletionDeliveryRow[] =
+			const deliveries: readonly CurrentCompletionDeliveryRow[] | null =
 				await service.listCurrentDeliveries(envelopeId.data);
+			if (deliveries === null) return envelopeNotFound(url.pathname);
 			return Response.json(
 				{
 					completionDeliveries: deliveries.map(
@@ -79,6 +83,7 @@ export function createCompletionAccessReissueStatusHandler(
 							deliveredAt: row.deliveredAt,
 							failedAt: row.failedAt,
 							errorCode: row.errorCode,
+							failureCauseCode: row.failureCauseCode,
 							eligibleForReissue: row.eligibleForReissue
 						})
 					)
@@ -90,6 +95,16 @@ export function createCompletionAccessReissueStatusHandler(
 			return unavailable(url.pathname);
 		}
 	};
+}
+
+function envelopeNotFound(instance: string): Response {
+	return problemResponse({
+		type: 'urn:signkit:problem:envelope-not-found',
+		title: 'Envelope not found',
+		status: 404,
+		detail: 'No envelope with this ID was found.',
+		instance
+	});
 }
 
 function unavailable(instance: string): Response {

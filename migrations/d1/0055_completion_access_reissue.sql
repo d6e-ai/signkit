@@ -59,6 +59,27 @@ CREATE TABLE completion_delivery_outbox_new (
   CONSTRAINT completion_delivery_generation_predecessor CHECK (
     (generation = 0 AND predecessor_delivery_id IS NULL) OR
     (generation > 0 AND predecessor_delivery_id IS NOT NULL)
+  ),
+  -- Bounds every newly stored `failure_cause_code` to the exact shape the
+  -- application layer already requires of it
+  -- (`sanitizeCompletionDeliveryErrorCode` / `COMPLETION_DELIVERY_ERROR_CODE_PATTERN`
+  -- in completion-delivery-store.ts), including the same sensitive-token-prefix
+  -- exclusion -- never a fixed enum, since mail-provider-sourced codes are
+  -- legitimately open-ended. A row written before this column existed is
+  -- NULL and stays exempt: this bounds newly stored values only, never
+  -- reinterprets history.
+  CONSTRAINT completion_delivery_failure_cause_code_check CHECK (
+    failure_cause_code IS NULL OR (
+      length(failure_cause_code) BETWEEN 2 AND 65
+      AND substr(failure_cause_code, 1, 1) GLOB '[a-z]'
+      AND failure_cause_code NOT GLOB '*[^a-z0-9_]*'
+      AND failure_cause_code NOT GLOB 'skca1_*'
+      AND failure_cause_code NOT GLOB 'skcd1_*'
+      AND failure_cause_code NOT GLOB 'skr1_*'
+      AND failure_cause_code NOT GLOB 'skdc1_*'
+      AND failure_cause_code NOT GLOB 'ski1_*'
+      AND failure_cause_code NOT GLOB 'skiod1_*'
+    )
   )
 );
 

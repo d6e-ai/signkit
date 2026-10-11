@@ -167,7 +167,9 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						sealed_token = NULL,
 						access_revoked_at = COALESCE(delivery.access_revoked_at, ${command.claimedAt}::timestamptz),
 						available_at = COALESCE(delivery.available_at, ${command.claimedAt}::timestamptz),
-						last_error = 'delivery_not_eligible', updated_at = ${command.claimedAt}::timestamptz
+						last_error = 'delivery_not_eligible',
+						failure_cause_code = 'delivery_not_eligible',
+						updated_at = ${command.claimedAt}::timestamptz
 					FROM terminal_candidates candidate
 					WHERE candidate.id = delivery.id`;
 

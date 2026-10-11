@@ -98,7 +98,7 @@ UPDATE completion_delivery_outbox
 	SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = 0,
 		sealed_token = NULL, access_revoked_at = COALESCE(access_revoked_at, ?),
 		available_at = COALESCE(available_at, ?),
-		last_error = 'delivery_not_eligible', updated_at = ?
+		last_error = 'delivery_not_eligible', failure_cause_code = 'delivery_not_eligible', updated_at = ?
 	WHERE rowid IN (SELECT rowid FROM terminal_candidates)`;
 
 const RESOLVE_ARTIFACT_LOCATOR_QUERY: string = `SELECT artifact.envelope_id AS envelope_id,

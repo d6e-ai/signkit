@@ -98,7 +98,11 @@ export class CompletionAccessReissueArtifactVerifier {
 			published.markdownSha256
 		);
 		if (markdown.outcome !== 'verified') return markdown;
-		const pdf: ObjectVerification = await this.#verifyPdfObject(envelopeId, pdfRecord.pdfSha256);
+		const pdf: ObjectVerification = await this.#verifyPdfObject(
+			envelopeId,
+			pdfRecord.pdfSha256,
+			pdfRecord.pdfObjectKey
+		);
 		if (pdf.outcome !== 'verified') return pdf;
 
 		return {
@@ -111,6 +115,24 @@ export class CompletionAccessReissueArtifactVerifier {
 		};
 	}
 
+	/**
+	 * No equivalent `storedKey` parameter exists for the JSON/Markdown leg
+	 * below: `PublishedCompletionArtifact` (from `findCompletionArtifactStatus`)
+	 * carries only the digests, never `json_object_key`/`markdown_object_key`.
+	 * That omission is safe rather than a gap -- every writer of those columns
+	 * (`CompletionArtifactService`'s publish path; there is no update path,
+	 * `completion_artifact` is insert-only for a given envelope) derives the
+	 * stored key from the row's own digest with this exact
+	 * `completionArtifactObjectKey` function in the same statement that
+	 * persists the digest, so the two can never diverge. `completion_artifact_pdf`
+	 * is different: its repair path can replace the pointer independently of
+	 * the original publish, so `pdfObjectKey` is re-checked here the same way
+	 * every other PDF-serving reader (`CompletionPdfAttachmentReader`,
+	 * `PublicCompletionArtifactService`, `CompletionEvidenceService.readPdf`)
+	 * already does -- the exhausted envelope's PDF must still be verified at
+	 * its actual recorded pointer, not merely at wherever its digest would
+	 * canonically resolve to.
+	 */
 	async #verifyGzipObject(
 		envelopeId: string,
 		format: 'json' | 'markdown',
@@ -141,11 +163,18 @@ export class CompletionAccessReissueArtifactVerifier {
 		return await this.#readAndVerifyDigest(key, metadata.size, digest, format);
 	}
 
-	async #verifyPdfObject(envelopeId: string, digest: string): Promise<ObjectVerification> {
+	async #verifyPdfObject(
+		envelopeId: string,
+		digest: string,
+		storedKey: string
+	): Promise<ObjectVerification> {
 		if (!SHA256_PATTERN.test(digest)) {
 			return { outcome: 'integrity_error', errorCode: 'completion_pdf_digest_invalid' };
 		}
 		const key: string = completionArtifactObjectKey(envelopeId, 'pdf', digest);
+		if (storedKey !== key) {
+			return { outcome: 'integrity_error', errorCode: 'completion_pdf_key_mismatch' };
+		}
 		let metadata: ObjectMetadata | null;
 		try {
 			metadata = await this.#objects.head(key);

@@ -87,7 +87,15 @@ export interface PublishCompletionAccessReissueCommand
 }
 
 export interface CompletionAccessReissueStore {
-	listCurrentDeliveries(envelopeId: string): Promise<readonly CurrentCompletionDeliveryRow[]>;
+	/**
+	 * `null` when no envelope with this ID exists at all -- the caller surfaces
+	 * that as 404. A non-null (possibly empty) array means the envelope exists;
+	 * an empty array is a normal 200 for an envelope with no completion
+	 * deliveries yet.
+	 */
+	listCurrentDeliveries(
+		envelopeId: string
+	): Promise<readonly CurrentCompletionDeliveryRow[] | null>;
 	prepareReissue(
 		key: ReissueCommandKey,
 		expected: ExpectedPredecessorGeneration

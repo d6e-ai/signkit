@@ -30,6 +30,7 @@ interface CurrentDeliveryRawRow {
 	delivered_at: string | null;
 	failed_at: string | null;
 	error_code: string | null;
+	failure_cause_code: string | null;
 	retryable: number;
 	claim_token: string | null;
 	locked_at: string | null;
@@ -54,7 +55,8 @@ const LIST_CURRENT_DELIVERIES_QUERY: string = `SELECT delivery.id AS delivery_id
 	delivery.attempts AS attempts, delivery.access_expires_at AS access_expires_at,
 	delivery.access_revoked_at AS access_revoked_at, delivery.delivered_at AS delivered_at,
 	CASE WHEN delivery.status = 'failed' THEN delivery.updated_at END AS failed_at,
-	delivery.last_error AS error_code, delivery.retryable AS retryable,
+	delivery.last_error AS error_code, delivery.failure_cause_code AS failure_cause_code,
+	delivery.retryable AS retryable,
 	delivery.claim_token AS claim_token, delivery.locked_at AS locked_at,
 	delivery.sealed_token AS sealed_token
 	FROM completion_delivery_outbox delivery
@@ -67,6 +69,8 @@ const LIST_CURRENT_DELIVERIES_QUERY: string = `SELECT delivery.id AS delivery_id
 				AND successor.recipient_id = delivery.recipient_id
 		)
 	ORDER BY recipient.routing_order ASC, recipient.id ASC`;
+
+const ENVELOPE_EXISTS_QUERY: string = `SELECT 1 AS present FROM envelope WHERE id = ? LIMIT 1`;
 
 const ELIGIBILITY_QUERY: string = `SELECT
 	envelope.status AS envelope_status, recipient.role AS recipient_role,
@@ -128,7 +132,12 @@ export class D1CompletionAccessReissueStore implements CompletionAccessReissueSt
 
 	async listCurrentDeliveries(
 		envelopeId: string
-	): Promise<readonly CurrentCompletionDeliveryRow[]> {
+	): Promise<readonly CurrentCompletionDeliveryRow[] | null> {
+		const envelope: { present: number } | null = await this.#database
+			.prepare(ENVELOPE_EXISTS_QUERY)
+			.bind(envelopeId)
+			.first<{ present: number }>();
+		if (envelope === null) return null;
 		const result = await this.#database
 			.prepare(LIST_CURRENT_DELIVERIES_QUERY)
 			.bind(envelopeId)
@@ -329,6 +338,7 @@ function toCurrentCompletionDeliveryRow(row: CurrentDeliveryRawRow): CurrentComp
 		deliveredAt: row.delivered_at,
 		failedAt: row.failed_at,
 		errorCode: row.error_code,
+		failureCauseCode: row.failure_cause_code,
 		eligibleForReissue:
 			row.status === 'failed' &&
 			row.retryable === 0 &&

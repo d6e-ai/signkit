@@ -31,6 +31,26 @@ ALTER TABLE completion_delivery_outbox
     (generation > 0 AND predecessor_delivery_id IS NOT NULL)
   );
 
+-- Bounds every newly stored `failure_cause_code` to the exact shape the
+-- application layer already requires of it (`sanitizeCompletionDeliveryErrorCode`
+-- / `COMPLETION_DELIVERY_ERROR_CODE_PATTERN` in completion-delivery-store.ts),
+-- including the same sensitive-token-prefix exclusion -- never a fixed
+-- enum, since mail-provider-sourced codes are legitimately open-ended. A row
+-- written before this column existed is NULL and stays exempt: this bounds
+-- newly stored values only, never reinterprets history.
+ALTER TABLE completion_delivery_outbox
+  ADD CONSTRAINT completion_delivery_outbox_failure_cause_code_check CHECK (
+    failure_cause_code IS NULL OR (
+      failure_cause_code ~ '^[a-z][a-z0-9_]{1,64}$' AND
+      left(failure_cause_code, 6) <> 'skca1_' AND
+      left(failure_cause_code, 6) <> 'skcd1_' AND
+      left(failure_cause_code, 5) <> 'skr1_' AND
+      left(failure_cause_code, 6) <> 'skdc1_' AND
+      left(failure_cause_code, 5) <> 'ski1_' AND
+      left(failure_cause_code, 7) <> 'skiod1_'
+    )
+  );
+
 CREATE INDEX completion_delivery_outbox_current_generation
   ON completion_delivery_outbox(envelope_id, recipient_id, generation DESC);
 

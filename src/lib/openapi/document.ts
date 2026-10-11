@@ -591,6 +591,94 @@ const JSON_BODY: Record<string, unknown> = {
 	content: { 'application/json': { schema: { type: 'object' } } }
 };
 
+// The exact UTC-only accepted subset the server echoes back and re-parses
+// (see `expectedFailedAtSchema` in completion-access-reissue.ts): millisecond
+// (D1) or microsecond (PostgreSQL) fractional-second precision, never
+// dropped, never any other timezone offset.
+const COMPLETION_FAILED_AT_PATTERN: string =
+	'^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$';
+
+const CURRENT_COMPLETION_DELIVERY_ITEM: Record<string, unknown> = {
+	type: 'object',
+	required: [
+		'deliveryId',
+		'recipientId',
+		'recipientRole',
+		'generation',
+		'status',
+		'attempts',
+		'accessExpiresAt',
+		'accessRevokedAt',
+		'deliveredAt',
+		'failedAt',
+		'errorCode',
+		'failureCauseCode',
+		'eligibleForReissue'
+	],
+	additionalProperties: false,
+	properties: {
+		deliveryId: UUIDV7,
+		recipientId: UUIDV7,
+		recipientRole: { type: 'string', enum: ['signer', 'approver', 'viewer', 'cc'] },
+		generation: { type: 'integer', minimum: 0 },
+		status: { type: 'string', enum: ['pending', 'processing', 'delivered', 'failed'] },
+		attempts: { type: 'integer', minimum: 0 },
+		accessExpiresAt: { type: 'string', format: 'date-time' },
+		accessRevokedAt: { type: ['string', 'null'], format: 'date-time' },
+		deliveredAt: { type: ['string', 'null'], format: 'date-time' },
+		failedAt: {
+			type: ['string', 'null'],
+			format: 'date-time',
+			pattern: COMPLETION_FAILED_AT_PATTERN
+		},
+		errorCode: { type: ['string', 'null'], pattern: '^[a-z][a-z0-9_]{1,64}$' },
+		failureCauseCode: {
+			type: ['string', 'null'],
+			pattern: '^[a-z][a-z0-9_]{1,64}$',
+			description:
+				'The real cause of a terminal exhaustion, preserved separately from the generic errorCode attempts-exhaustion can overwrite it with. Null while this generation has not terminally failed, and also null (genuinely unknown, never inferred) for a row written before this field existed.'
+		},
+		eligibleForReissue: { type: 'boolean' }
+	}
+};
+
+const COMPLETION_DELIVERIES_RESPONSE: Record<string, unknown> = {
+	type: 'object',
+	required: ['completionDeliveries'],
+	additionalProperties: false,
+	properties: {
+		completionDeliveries: { type: 'array', items: CURRENT_COMPLETION_DELIVERY_ITEM }
+	}
+};
+
+const COMPLETION_ACCESS_REISSUE_RECEIPT: Record<string, unknown> = {
+	type: 'object',
+	required: [
+		'envelopeId',
+		'recipientId',
+		'deliveryId',
+		'generation',
+		'accessExpiresAt',
+		'reissuedAt'
+	],
+	additionalProperties: false,
+	properties: {
+		envelopeId: UUIDV7,
+		recipientId: UUIDV7,
+		deliveryId: UUIDV7,
+		generation: { type: 'integer', minimum: 1 },
+		accessExpiresAt: { type: 'string', format: 'date-time' },
+		reissuedAt: { type: 'string', format: 'date-time' }
+	}
+};
+
+const COMPLETION_ACCESS_REISSUE_RESPONSE: Record<string, unknown> = {
+	type: 'object',
+	required: ['completionAccessReissue'],
+	additionalProperties: false,
+	properties: { completionAccessReissue: COMPLETION_ACCESS_REISSUE_RECEIPT }
+};
+
 const PROBLEM_RESPONSES: Record<string, unknown> = {
 	'400': {
 		description: 'Validation failed',
@@ -1796,17 +1884,27 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: "Read each recipient's current completion delivery generation",
 					operationId: 'getEnvelopeCompletionDeliveries',
 					description:
-						'Safe current-generation read: delivery and recipient IDs, generation, status, attempts, expiry/revocation timestamps, the sanitized failure error code, and whether that generation is eligible for reissue. Never a raw or sealed token, a claim lease, or any other grant material.',
+						'Safe current-generation read: delivery and recipient IDs, generation, status, attempts, expiry/revocation timestamps, the sanitized failure error code, the terminal failure cause code, and whether that generation is eligible for reissue. Never a raw or sealed token, a claim lease, or any other grant material. A missing envelope is 404; an existing envelope with no completion deliveries yet is a 200 with an empty array.',
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [envelopeIdParam],
-					responses: jsonResponse('200', 'Current completion delivery generations', {
-						type: 'object',
-						required: ['completionDeliveries'],
-						additionalProperties: false,
-						properties: {
-							completionDeliveries: { type: 'array', items: { type: 'object' } }
+					responses: {
+						'200': {
+							description: 'Current completion delivery generations',
+							content: {
+								'application/json': {
+									schema: { $ref: '#/components/schemas/CompletionDeliveriesResponse' }
+								}
+							}
+						},
+						'404': {
+							description: 'Envelope not found',
+							content: {
+								'application/problem+json': {
+									schema: { $ref: '#/components/schemas/ProblemDetail' }
+								}
+							}
 						}
-					})
+					}
 				})
 			},
 			'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue': {
@@ -1842,6 +1940,7 @@ export function openApiDocument(): Record<string, unknown> {
 										expectedFailedAt: {
 											type: 'string',
 											format: 'date-time',
+											pattern: COMPLETION_FAILED_AT_PATTERN,
 											description:
 												'The failedAt value from GET .../completion-deliveries for this generation.'
 										},
@@ -1862,12 +1961,15 @@ export function openApiDocument(): Record<string, unknown> {
 							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
 							content: {
 								'application/json': {
-									schema: {
-										type: 'object',
-										required: ['completionAccessReissue'],
-										additionalProperties: false,
-										properties: { completionAccessReissue: { type: 'object' } }
-									}
+									schema: { $ref: '#/components/schemas/CompletionAccessReissueResponse' }
+								}
+							}
+						},
+						'404': {
+							description: 'Envelope, recipient, or delivery not found',
+							content: {
+								'application/problem+json': {
+									schema: { $ref: '#/components/schemas/ProblemDetail' }
 								}
 							}
 						}
@@ -2825,7 +2927,11 @@ export function openApiDocument(): Record<string, unknown> {
 				DraftRevisionItem: DRAFT_REVISION_ITEM,
 				DraftRevisionHistoryPage: DRAFT_REVISION_HISTORY_PAGE,
 				DraftExactRevision: DRAFT_EXACT_REVISION,
-				RevisionDiff: REVISION_DIFF
+				RevisionDiff: REVISION_DIFF,
+				CurrentCompletionDeliveryItem: CURRENT_COMPLETION_DELIVERY_ITEM,
+				CompletionDeliveriesResponse: COMPLETION_DELIVERIES_RESPONSE,
+				CompletionAccessReissueReceipt: COMPLETION_ACCESS_REISSUE_RECEIPT,
+				CompletionAccessReissueResponse: COMPLETION_ACCESS_REISSUE_RESPONSE
 			}
 		}
 	};
