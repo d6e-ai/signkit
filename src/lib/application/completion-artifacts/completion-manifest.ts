@@ -354,7 +354,10 @@ interface ReadyRecipientDeclaration {
  * declared by the latest `envelope.ready` event before send. Reopen and
  * re-ready may append earlier ready events; the send payload's
  * `readyAuditEventId` must name that latest ready event, and no
- * `envelope.reopened` may follow it before send.
+ * `envelope.reopened` may follow it before send. A historical send payload
+ * without `readyAuditEventId` is accepted only in the pre-reopen shape —
+ * exactly one `envelope.ready` and no `envelope.reopened` — where that sole
+ * ready event is the only anchor the send could have pinned.
  */
 function verifyRecipientRosterMatchesReadyEvent(
 	auditEvents: readonly CompletionEvidenceAuditEvent[],
@@ -403,11 +406,25 @@ function verifyRecipientRosterMatchesReadyEvent(
 			);
 		}
 		const sentPayload: unknown = payloadsByEventId.get(sentEvent.id);
-		if (
-			typeof sentPayload !== 'object' ||
-			sentPayload === null ||
-			(sentPayload as Record<string, unknown>).readyAuditEventId !== latestReady.id
-		) {
+		if (typeof sentPayload !== 'object' || sentPayload === null || Array.isArray(sentPayload)) {
+			throw new CompletionArtifactIntegrityError(
+				'envelope.sent audit trail does not anchor the latest envelope.ready event'
+			);
+		}
+		const anchoredReadyId: unknown = (sentPayload as Record<string, unknown>).readyAuditEventId;
+		if (anchoredReadyId === undefined) {
+			if (
+				readyEvents.length !== 1 ||
+				auditEvents.some(
+					(event: CompletionEvidenceAuditEvent): boolean =>
+						event.eventType === REOPENED_EVENT_TYPE
+				)
+			) {
+				throw new CompletionArtifactIntegrityError(
+					'envelope.sent audit trail does not name the envelope.ready event it anchors'
+				);
+			}
+		} else if (anchoredReadyId !== latestReady.id) {
 			throw new CompletionArtifactIntegrityError(
 				'envelope.sent audit trail does not anchor the latest envelope.ready event'
 			);
