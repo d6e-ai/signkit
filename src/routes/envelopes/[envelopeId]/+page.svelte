@@ -117,7 +117,7 @@
 
 	// Completion access reissue: a token/key-free read of each recipient's
 	// current completion-mail delivery generation, plus explicit recovery for
-	// one that permanently exhausted. Reissuing never revives the exhausted
+	// one that terminally failed. Reissuing never revives the failed
 	// row -- it only appends a fresh, bounded-expiry successor.
 	let completionDeliveries = $state<readonly CurrentCompletionDeliveryRow[] | null>(null);
 	let completionDeliveriesError = $state<string | null>(null);
@@ -134,8 +134,8 @@
 	let completionAccessReissueError = $state<string | null>(null);
 	let completionAccessReissueSuccessMessage = $state<string | null>(null);
 	let completionAccessReissueRefreshWarning = $state<string | null>(null);
-	// Keyed by the exact exhausted generation's own delivery ID: a newer
-	// exhausted generation is always a different delivery ID, so this never
+	// Keyed by the exact terminal generation's own delivery ID: a newer
+	// terminal generation is always a different delivery ID, so this never
 	// needs separate generation tracking the way the single-job completion
 	// artifact retry above does.
 	const completionAccessReissueAttempts = new SvelteMap<string, EnvelopeMutationAttempt>();

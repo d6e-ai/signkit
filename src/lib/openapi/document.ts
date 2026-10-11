@@ -636,7 +636,7 @@ const CURRENT_COMPLETION_DELIVERY_ITEM: Record<string, unknown> = {
 			type: ['string', 'null'],
 			pattern: '^[a-z][a-z0-9_]{1,64}$',
 			description:
-				'The real cause of a terminal exhaustion, preserved separately from the generic errorCode attempts-exhaustion can overwrite it with. Null while this generation has not terminally failed, and also null (genuinely unknown, never inferred) for a row written before this field existed.'
+				'The recorded cause of a terminal failure, preserved separately from the generic errorCode that attempts-exhaustion can overwrite it with. Null while this generation has not terminally failed, and also null (genuinely unknown, never inferred) for a row written before this field existed.'
 		},
 		eligibleForReissue: { type: 'boolean' }
 	}
@@ -1909,10 +1909,10 @@ export function openApiDocument(): Record<string, unknown> {
 			},
 			'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue': {
 				post: op({
-					summary: 'Reissue completion access for one exhausted completion delivery',
+					summary: 'Reissue completion access for one terminal failed completion delivery',
 					operationId: 'reissueEnvelopeRecipientCompletionAccess',
 					description:
-						'Explicit, operator-confirmed recovery for one terminal exhausted completion delivery, authorized AFTER the completion manifest and PDF are independently re-verified against actual object storage bytes. Never revives the exhausted predecessor -- its status, attempts, error, revocation, and expiry stay exactly as the exhausting failure wrote them -- it only appends a fresh, bounded 30-day successor chained to it. grantAccess: true and the full expected-generation tuple (expectedDeliveryId, expectedAttempts, expectedFailedAt, expectedErrorCode) must match the current exhausted generation observed from GET .../completion-deliveries exactly; a stale or ambiguous confirmation is refused with 409.',
+						'Explicit, operator-confirmed recovery for one terminal failed completion delivery, after the completion manifest and PDF are independently re-verified against actual object storage bytes. The latest failed delivery must be nonretryable, revoked, token-scrubbed, and unleased; permanent rejection and expired-grant cleanup can also qualify, without a fixed exhaustion count. Never revives the predecessor -- its status, attempts, error, revocation, and expiry remain unchanged -- it only appends a fresh 30-day successor. grantAccess: true and the full expected-generation tuple (expectedDeliveryId, expectedAttempts, expectedFailedAt, expectedErrorCode) must match the generation observed from GET .../completion-deliveries exactly; a stale or ambiguous confirmation is refused with 409.',
 					tags: ['Envelopes', 'Completion artifacts'],
 					parameters: [envelopeIdParam, recipientIdParam, idempotencyHeader],
 					requestBody: {
