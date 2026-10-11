@@ -1,0 +1,60 @@
+[
+	{
+		"name": "validation with extension",
+		"httpStatus": 422,
+		"path": "/api/v1/envelopes",
+		"body": {
+			"type": "urn:signkit:problem:validation",
+			"title": "Invalid request",
+			"status": 422,
+			"detail": "The request body is invalid.",
+			"instance": "/api/v1/envelopes",
+			"errors": [{ "path": "$.title", "message": "A title is required." }],
+			"requestId": "synthetic-request"
+		},
+		"expected": {
+			"type": "urn:signkit:problem:validation",
+			"title": "Invalid request",
+			"status": 422,
+			"detail": "The request body is invalid.",
+			"instance": "/api/v1/envelopes",
+			"errors": [{ "path": "$.title", "message": "A title is required." }]
+		}
+	},
+	{
+		"name": "missing status and instance",
+		"httpStatus": 503,
+		"path": "/api/v1/contacts",
+		"body": {
+			"type": "urn:signkit:problem:unavailable",
+			"title": "Unavailable",
+			"detail": "Try again later."
+		},
+		"expected": {
+			"type": "urn:signkit:problem:unavailable",
+			"title": "Unavailable",
+			"status": 503,
+			"detail": "Try again later.",
+			"instance": "/api/v1/contacts"
+		}
+	},
+	{
+		"name": "server problem status is preserved",
+		"httpStatus": 422,
+		"path": "/api/v1/envelopes",
+		"body": {
+			"type": "urn:signkit:problem:conflict",
+			"title": "Conflict",
+			"status": 409,
+			"detail": "The generation changed.",
+			"instance": "/api/v1/envelopes"
+		},
+		"expected": {
+			"type": "urn:signkit:problem:conflict",
+			"title": "Conflict",
+			"status": 409,
+			"detail": "The generation changed.",
+			"instance": "/api/v1/envelopes"
+		}
+	}
+]

@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::de::DeserializeOwned;
+use std::borrow::Cow;
 use std::time::Duration;
 
 use crate::config::ResolvedConfig;
@@ -15,6 +16,115 @@ pub const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 pub struct BinaryGetSpec {
     pub accept: &'static str,
     pub max_bytes: usize,
+}
+
+#[cfg(test)]
+mod problem_contract_tests {
+    use super::SignKitClient;
+    use crate::error::CliError;
+    use crate::types::ProblemDetail;
+    use serde::Deserialize;
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProblemFixture {
+        name: String,
+        http_status: u16,
+        path: String,
+        body: BTreeMap<String, Value>,
+        expected: BTreeMap<String, Value>,
+    }
+
+    fn take_problem(error: CliError) -> ProblemDetail {
+        match error {
+            CliError::ServerProblem(problem) => *problem,
+            other => panic!("expected a server problem, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn browser_and_cli_share_problem_wire_fixtures() {
+        let fixtures: Vec<ProblemFixture> =
+            serde_json::from_str(include_str!("../tests/fixtures/http-problems.json")).unwrap();
+        for fixture in fixtures {
+            let bytes: Vec<u8> = serde_json::to_vec(&fixture.body).unwrap();
+            let problem: ProblemDetail =
+                take_problem(SignKitClient::problem_from_bytes_with_title(
+                    &fixture.path,
+                    fixture.http_status,
+                    &bytes,
+                    "HTTP Error",
+                ));
+            let actual: Value = serde_json::to_value(&problem).unwrap();
+            for (field, expected) in fixture.expected {
+                assert_eq!(actual[&field], expected, "{}: {field}", fixture.name);
+            }
+            // The CLI deliberately retains unknown fields; browser UI parsing
+            // consumes only its known fields. Do not unify these policies.
+            assert_eq!(
+                problem.extra.get("requestId"),
+                fixture.body.get("requestId")
+            );
+        }
+    }
+
+    #[test]
+    fn json_and_binary_paths_keep_their_own_fallback_titles() {
+        for bytes in [b"{}".as_slice(), b"not JSON".as_slice()] {
+            let json_problem: ProblemDetail =
+                take_problem(SignKitClient::problem_from_bytes_with_title(
+                    "/api/v1/envelopes",
+                    502,
+                    bytes,
+                    "Bad Gateway",
+                ));
+            let binary_problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
+                "/api/v1/envelopes",
+                502,
+                bytes,
+            ));
+            assert_eq!(json_problem.title, "Bad Gateway");
+            assert_eq!(binary_problem.title, "HTTP Error");
+            assert_eq!(json_problem.status, 502);
+            assert_eq!(binary_problem.status, 502);
+            assert_eq!(json_problem.instance, "/api/v1/envelopes");
+            assert_eq!(binary_problem.instance, "/api/v1/envelopes");
+        }
+        let problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
+            "/api/v1/envelopes",
+            503,
+            br#"{"status":0,"title":"","instance":"","type":"urn:custom"}"#,
+        ));
+        assert_eq!(problem.status, 503);
+        assert_eq!(problem.r#type, "urn:custom");
+    }
+
+    #[test]
+    fn proxy_details_preserve_whitespace_and_utf8_safe_500_byte_bound() {
+        let cases: Vec<(Vec<u8>, String)> = vec![
+            (
+                b"  \n".to_vec(),
+                "HTTP request returned status 502".to_string(),
+            ),
+            (b" short ".to_vec(), " short ".to_string()),
+            (vec![b'x'; 500], "x".repeat(500)),
+            (
+                format!("{}🦀extra", "x".repeat(499)).into_bytes(),
+                format!("{}...", "x".repeat(499)),
+            ),
+            (vec![0xff], "�".to_string()),
+        ];
+        for (bytes, expected) in cases {
+            let problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
+                "/api/v1/envelopes",
+                502,
+                &bytes,
+            ));
+            assert_eq!(problem.detail, expected);
+        }
+    }
 }
 
 impl BinaryGetSpec {
@@ -145,58 +255,12 @@ impl SignKitClient {
             let data: T = serde_json::from_slice(&bytes).map_err(CliError::Json)?;
             Ok(data)
         } else {
-            // Attempt to parse RFC 9457 problem detail; preserves partial problem documents
-            // and any existing server `type` and extension fields intact.
-            if let Ok(mut problem) = serde_json::from_slice::<ProblemDetail>(&bytes) {
-                if problem.status == 0 {
-                    problem.status = status.as_u16();
-                }
-                if problem.title.is_empty() {
-                    problem.title = status
-                        .canonical_reason()
-                        .unwrap_or("HTTP Error")
-                        .to_string();
-                }
-                if problem.instance.is_empty() {
-                    problem.instance = path.to_string();
-                }
-                return Err(CliError::server_problem(problem));
-            }
-
-            // Fallback: synthesize RFC 9457 problem document only for non-JSON or proxy errors
-            let detail_text = String::from_utf8_lossy(&bytes);
-            let detail = if detail_text.trim().is_empty() {
-                format!("HTTP request returned status {}", status.as_u16())
-            } else {
-                // Truncate detail if excessively long, backing off to the nearest
-                // char boundary so the slice never lands inside a multi-byte
-                // UTF-8 sequence.
-                let max_len = 500;
-                if detail_text.len() > max_len {
-                    let mut end = max_len;
-                    while end > 0 && !detail_text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    format!("{}...", &detail_text[..end])
-                } else {
-                    detail_text.to_string()
-                }
-            };
-
-            let title = status
-                .canonical_reason()
-                .unwrap_or("HTTP Error")
-                .to_string();
-            let problem = ProblemDetail {
-                r#type: format!("urn:signkit:problem:http-{}", status.as_u16()),
-                title,
-                status: status.as_u16(),
-                detail,
-                instance: path.to_string(),
-                errors: None,
-                extra: Default::default(),
-            };
-            Err(CliError::server_problem(problem))
+            Err(Self::problem_from_bytes_with_title(
+                path,
+                status.as_u16(),
+                &bytes,
+                status.canonical_reason().unwrap_or("HTTP Error"),
+            ))
         }
     }
 
@@ -270,52 +334,12 @@ impl SignKitClient {
             let data: T = serde_json::from_slice(&bytes).map_err(CliError::Json)?;
             Ok(data)
         } else {
-            if let Ok(mut problem) = serde_json::from_slice::<ProblemDetail>(&bytes) {
-                if problem.status == 0 {
-                    problem.status = status.as_u16();
-                }
-                if problem.title.is_empty() {
-                    problem.title = status
-                        .canonical_reason()
-                        .unwrap_or("HTTP Error")
-                        .to_string();
-                }
-                if problem.instance.is_empty() {
-                    problem.instance = path.to_string();
-                }
-                return Err(CliError::server_problem(problem));
-            }
-
-            let detail_text = String::from_utf8_lossy(&bytes);
-            let detail = if detail_text.trim().is_empty() {
-                format!("HTTP request returned status {}", status.as_u16())
-            } else {
-                let max_len = 500;
-                if detail_text.len() > max_len {
-                    let mut end = max_len;
-                    while end > 0 && !detail_text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    format!("{}...", &detail_text[..end])
-                } else {
-                    detail_text.to_string()
-                }
-            };
-
-            let title = status
-                .canonical_reason()
-                .unwrap_or("HTTP Error")
-                .to_string();
-            let problem = ProblemDetail {
-                r#type: format!("urn:signkit:problem:http-{}", status.as_u16()),
-                title,
-                status: status.as_u16(),
-                detail,
-                instance: path.to_string(),
-                errors: None,
-                extra: Default::default(),
-            };
-            Err(CliError::server_problem(problem))
+            Err(Self::problem_from_bytes_with_title(
+                path,
+                status.as_u16(),
+                &bytes,
+                status.canonical_reason().unwrap_or("HTTP Error"),
+            ))
         }
     }
 
@@ -832,25 +856,38 @@ impl SignKitClient {
     }
 
     fn problem_from_bytes(path: &str, status: u16, bytes: &[u8]) -> CliError {
+        Self::problem_from_bytes_with_title(path, status, bytes, "HTTP Error")
+    }
+
+    /// Shared RFC 9457 problem parsing for both JSON and binary response
+    /// paths. `default_title` lets GET/POST prefer the canonical HTTP reason
+    /// phrase while every binary/recipient path keeps the literal "HTTP
+    /// Error" default `problem_from_bytes` always used.
+    fn problem_from_bytes_with_title(
+        path: &str,
+        status: u16,
+        bytes: &[u8],
+        default_title: &str,
+    ) -> CliError {
         if let Ok(mut problem) = serde_json::from_slice::<ProblemDetail>(bytes) {
             if problem.status == 0 {
                 problem.status = status;
             }
             if problem.title.is_empty() {
-                problem.title = "HTTP Error".to_string();
+                problem.title = default_title.to_string();
             }
             if problem.instance.is_empty() {
                 problem.instance = path.to_string();
             }
             return CliError::server_problem(problem);
         }
-        let detail_text = String::from_utf8_lossy(bytes);
-        let detail = if detail_text.trim().is_empty() {
+        let detail_text: Cow<'_, str> = String::from_utf8_lossy(bytes);
+        let detail: String = if detail_text.trim().is_empty() {
             format!("HTTP request returned status {status}")
         } else {
-            let max_len = 500;
+            let max_len: usize = 500;
             if detail_text.len() > max_len {
-                let mut end = max_len;
+                let mut end: usize = max_len;
                 while end > 0 && !detail_text.is_char_boundary(end) {
                     end -= 1;
                 }
@@ -861,7 +898,7 @@ impl SignKitClient {
         };
         CliError::server_problem(ProblemDetail {
             r#type: format!("urn:signkit:problem:http-{status}"),
-            title: "HTTP Error".to_string(),
+            title: default_title.to_string(),
             status,
             detail,
             instance: path.to_string(),

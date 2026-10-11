@@ -98,7 +98,7 @@ describe('recipient document rendering', () => {
 
 	it('keeps approval capability-bound and client-driven', () => {
 		const source: string = readFileSync('src/routes/sign/[envelopeId]/+page.svelte', 'utf8');
-		expect(source).toContain("fetchFn('/api/v1/signing/approve'");
+		expect(source).toMatch(/postSigningAction\(\s*fetchFn,\s*'\/api\/v1\/signing\/approve'/);
 		expect(source).toContain("credentials: 'same-origin'");
 		expect(source).toContain("'idempotency-key': idempotencyKey");
 		expect(source).toContain("data.access.role === 'approver'");
@@ -109,7 +109,7 @@ describe('recipient document rendering', () => {
 
 	it('keeps signing capability-bound and client-driven with expectedFieldGeneration', () => {
 		const source: string = readFileSync('src/routes/sign/[envelopeId]/+page.svelte', 'utf8');
-		expect(source).toContain("fetchFn('/api/v1/signing/sign'");
+		expect(source).toMatch(/postSigningAction\(\s*fetchFn,\s*'\/api\/v1\/signing\/sign'/);
 		expect(source).toContain('expectedFieldGeneration');
 		expect(source).toContain("data.access.role === 'signer'");
 		expect(source).toContain('signing_sign_no_js_explanation');
