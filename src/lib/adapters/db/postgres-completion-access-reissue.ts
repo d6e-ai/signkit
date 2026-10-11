@@ -324,7 +324,7 @@ export class PostgresCompletionAccessReissueStore implements CompletionAccessRei
 			predecessor.claimToken === null &&
 			predecessor.lockedAt === null;
 		if (!exhausted) {
-			return { outcome: 'not_eligible', notEligibleReason: 'predecessor_not_exhausted' };
+			return { outcome: 'not_eligible', notEligibleReason: 'predecessor_not_terminal' };
 		}
 
 		if (

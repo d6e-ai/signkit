@@ -1,15 +1,15 @@
 # Completion access reissue
 
 `POST /api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue` grants one
-recipient a fresh completion-mail access delivery after their prior delivery permanently exhausted
-retries (for example, while the completion PDF repaired, or because of a transient mail-provider
-outage). It is explicit recovery, never automatic retry: the caller must observe the exact exhausted
+recipient a fresh completion-mail access delivery after their prior delivery terminally failed
+(for example, after exhausting retries while the completion PDF repaired or during a mail-provider
+outage). It is explicit recovery, never automatic retry: the caller must observe the exact failed
 generation first, from `GET /api/v1/envelopes/{envelopeId}/completion-deliveries`, and echo it back.
 
 ## Append-only successor chain
 
-A reissue never mutates the exhausted predecessor row in `completion_delivery_outbox` -- its status,
-attempts, last error, revocation, and scrubbed token stay exactly as the exhausting failure wrote
+A reissue never mutates the terminal predecessor row in `completion_delivery_outbox` -- its status,
+attempts, last error, revocation, and scrubbed token stay exactly as the original failure wrote
 them. It only appends a new row chained to it by `predecessor_delivery_id`, one `generation` higher.
 The "current" generation for a recipient is therefore always "no successor yet, or the newest one."
 This mirrors the append-only design of `recipient_capability_reissue` (the analogous recovery for
@@ -19,8 +19,14 @@ Eligibility for reissue is narrow and durable-evidence-only: the envelope must s
 the recipient must still hold a completion-delivery-eligible role, and the predecessor must be the
 exact generation the caller observed -- `failed`, non-retryable, already revoked, already token-scrubbed,
 unleased, and matching the caller's `expectedAttempts`/`expectedFailedAt`/`expectedErrorCode` tuple. A
-predecessor that never exhausted (`not_eligible: predecessor_not_exhausted`) or one a concurrent
+predecessor that is still retryable (`not_eligible: predecessor_not_terminal`) or one a concurrent
 reissue or repair already superseded (`stale_generation`) is refused with 409, never silently revived.
+
+Eligibility deliberately covers all terminal failures, not only a fixed attempt count or an
+exhaustion error code: permanent recipient rejection and expired-grant cleanup also qualify when
+all the predicates above hold. The operator must resolve the underlying cause before confirming;
+reissue does not correct an address or fix a mail provider. An expired predecessor is not renewed:
+its revocation and expiry remain unchanged, and the successor gets its own fresh expiry.
 
 ## Artifact re-verification, not pointer trust
 
@@ -31,6 +37,9 @@ reads the exact attested size, and recomputes the digest over the real bytes. `C
 is not reused for the PDF leg: it intentionally stops at `MAX_COMPLETION_MAIL_ATTACHMENT_PDF_BYTES`
 (3 MiB) without hashing a larger PDF, since it exists only to decide whether a PDF can be mailed as an
 attachment. A reissue must verify the full published PDF, bounded at the publication-time limit (32 MiB).
+The independently repairable PDF pointer must also equal that digest's canonical object key;
+a wrong stored pointer is rejected before storage is read. JSON and Markdown are insert-only
+publication records and their serving readers derive the same canonical keys from the digests.
 
 The exact digests this process observed are carried into the publish command and rechecked again, at
 write time, against the current `completion_artifact` / `completion_artifact_pdf` rows -- never against
@@ -51,7 +60,11 @@ actually checked.
 - **PostgreSQL**: `PostgresCompletionAccessReissueStore` runs the same predicates inside one
   transaction, locking the envelope row first and then the predecessor row -- matching the
   lock ordering every other envelope-audit writer in this codebase uses, so a concurrent repair or
-  reissue serializes correctly instead of racing.
+  reissue serializes correctly instead of racing. The durable receipt is resolved again after
+  acquiring that lock, before returning an eligibility failure, so a same-key request queued behind
+  its original publication replays instead of spuriously returning a stale-generation conflict.
+  Failure classification uses durable receipt/CAS/audit evidence, not provider error text; an
+  unexpected database error with an unchanged audit head is rethrown, not disguised as a race.
 
 Both stores issue a new `skca1_` token through the existing `AesGcmCompletionTokenSealer` and a
 30-day expiry via `computeCompletionAccessExpiry`, reusing the same primitives completion delivery's
@@ -72,9 +85,10 @@ already-replayed request never pays for that IO.
 ## API surface
 
 - `GET /api/v1/envelopes/{envelopeId}/completion-deliveries` (`envelopes:read`): each recipient's
-  current generation, status, attempts, expiry/revocation timestamps, the sanitized failure error
-  code, and whether that generation is eligible for reissue. Never a token, sealed ciphertext, or
-  claim lease.
+  current generation, status, attempts, expiry/revocation timestamps, `errorCode`, the separate
+  nullable `failureCauseCode`, and whether that generation is eligible for reissue. Never a token,
+  sealed ciphertext, object key, or claim lease. An unknown envelope is 404; an existing envelope
+  with no completion deliveries returns an empty list.
 - `POST /api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue`
   (`envelopes:send`, or any active instance session member): the explicit recovery command described
   above.
@@ -82,11 +96,18 @@ already-replayed request never pays for that IO.
 Both accept either a SignKit API key with the listed scope or an operator session cookie, matching
 every other envelope-management endpoint's dual-authority pattern.
 
+`failureCauseCode` preserves a bounded, sanitized cause when a new terminal failure would otherwise
+replace `errorCode` with `delivery_attempts_exhausted`. The automatic expiry/ineligibility cleanup
+records `delivery_not_eligible` for future failures. Historical rows whose causes were overwritten
+remain `null` (unknown); no migration guesses a cause from the exhaustion classification. SQL
+constraints enforce the same safe code shape and sensitive-token-prefix exclusions as the writer.
+
 ## Operator UI
 
 The completed-envelope Documents tab reads `completion-deliveries` (token/key-free) alongside the
 existing completion-artifact status whenever the envelope is `completed`, and renders each
-recipient's current generation, status, and access expiry. A recipient whose current generation is
+recipient's current generation, status, recorded failure cause (or explicitly unknown), and access
+expiry. A recipient whose current generation is
 `failed` and `eligibleForReissue` gets a "Grant new access" action; a `failed` row that is not yet
 eligible (still within its own retry budget) shows the action disabled with an explanation instead of
 hiding it. Confirming opens a shadcn `AlertDialog` that states plainly that the new link lasts 30 days
@@ -94,9 +115,9 @@ and the old link stays revoked and unusable -- it never implies the old grant is
 
 The page sends back the exact `expectedDeliveryId`/`expectedAttempts`/`expectedFailedAt`/`expectedErrorCode`
 tuple it last observed for that row, captured when the dialog opened, never a value re-read at confirm
-time. The mutation attempt (and its `Idempotency-Key`) is keyed by that exhausted generation's own
+time. The mutation attempt (and its `Idempotency-Key`) is keyed by that terminal generation's own
 delivery ID, so an ambiguous network failure, cancel-and-reopen, or disconnect-and-retry replays the
-same key and body; a newer exhausted generation is a different delivery ID and therefore always a
+same key and body; a newer terminal generation is a different delivery ID and therefore always a
 fresh key, never a reused one. A successful response reports the request as accepted and queued for
 delivery, not delivered -- the drain sends asynchronously, and this command never invokes `MailSender`
 itself, so a page reload or a completion-artifact PDF repair happening to run around the same time
@@ -122,7 +143,7 @@ cover verification outcomes and the service's replay/eligibility/retry orchestra
 `d1-completion-access-reissue.integration.spec.ts` (node:sqlite) and
 `postgres-completion-access-reissue.integration.spec.ts` (real PostgreSQL, skipped without
 `POSTGRES_TEST_URL`) exercise the actual migrated schema and triggers/transactions end to end: publish,
-safe replay, changed-body conflict, stale generation, an unexhausted predecessor, an unknown
+safe replay, changed-body conflict, stale generation, a still-retryable predecessor, an unknown
 predecessor, a write-time artifact-digest mismatch, an audit-head race that aborts and rolls back the
 whole write with no partial outbox/audit/command row, and receipt replay continuing correctly after
 the successor's own ciphertext is resealed under a rotated key and later itself exhausts and is
@@ -140,8 +161,16 @@ queued-not-delivered success wording with a distinct post-success refresh-failur
 `route-parity.spec.ts` and `mutation-schema-drift.spec.ts` keep the OpenAPI document honest against the
 shipped handlers.
 
-PostgreSQL integration coverage above is written and type-checked but was not executed against a live
-PostgreSQL instance in the environment this slice was built in, which denied shell access to any
-command embedding a database connection string; the equivalent D1 (node:sqlite) suite, which needed no
-such string, did run and pass. Re-run `postgres-completion-access-reissue.integration.spec.ts` with
-`POSTGRES_TEST_URL` set before relying on this coverage.
+`postgres-completion-access-reissue-concurrency.integration.spec.ts` uses real PostgreSQL lock waits
+to force two same-key and distinct-key publications into the same window. The separate audit-integrity
+suite checks the post-completion chain and webhook subscription catalog while preserving the anchored
+completion proof byte-for-byte. Contract/pointer/failure-cause specs cover concrete OpenAPI response
+shapes, timestamp precision, unknown-envelope reads, wrong PDF pointers, historical unknown causes,
+and bounded future failure codes.
+
+The PostgreSQL suites require `POSTGRES_TEST_URL`; a skipped suite is not evidence of PostgreSQL
+behavior. The repository's node:sqlite D1 suites are migration/SQL harnesses, not actual D1 runtime
+coverage. The parent validation additionally exercises migration upgrade, atomic publication,
+rollback, and receipt replay in disposable local workerd D1. These local checks do not prove live
+Workers resource limits, authenticated product E2E, or real email delivery: provider tests use mocked
+SMTP transports and Cloudflare bindings/REST responses, and no live recipients are contacted.

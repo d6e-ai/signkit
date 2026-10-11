@@ -43,7 +43,7 @@ export type ReissueOutcome =
 export type PublishReissueOutcome = 'published' | Exclude<ReissueOutcome, 'ready'>;
 
 export type NotEligibleReason =
-	'envelope_not_completed' | 'recipient_not_eligible' | 'predecessor_not_exhausted';
+	'envelope_not_completed' | 'recipient_not_eligible' | 'predecessor_not_terminal';
 
 export interface CompletionAccessReissuePreparationOutcome {
 	outcome: ReissueOutcome;

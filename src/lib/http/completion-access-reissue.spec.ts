@@ -327,7 +327,7 @@ describe('completion access reissue HTTP handler', () => {
 	it.each([
 		'envelope_not_completed',
 		'recipient_not_eligible',
-		'predecessor_not_exhausted'
+		'predecessor_not_terminal'
 	] as const)('returns 409 not-eligible for reason %s', async (reason) => {
 		const reissue = vi.fn(async (): Promise<ReissueCompletionAccessResult> => ({
 			outcome: 'not_eligible',

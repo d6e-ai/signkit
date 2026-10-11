@@ -286,7 +286,44 @@ describe('D1CompletionAccessReissueStore integration', () => {
 		expect(stale.outcome).toBe('stale_generation');
 	});
 
-	it('rejects a predecessor that has not yet exhausted', async () => {
+	it.each([
+		['mail_recipient_rejected', 1],
+		['delivery_not_eligible', 0]
+	] as const)(
+		'reissues terminal %s without requiring retry exhaustion',
+		async (errorCode, attempts) => {
+			const { database, sqlite } = createFixture();
+			seedCompletedEnvelope(sqlite);
+			sqlite
+				.prepare(
+					`UPDATE completion_delivery_outbox SET attempts = ?, last_error = ?,
+			failure_cause_code = ?, access_expires_at = '2026-09-12T00:00:00.000Z' WHERE id = ?`
+				)
+				.run(attempts, errorCode, errorCode, PREDECESSOR_ID);
+			const before = sqlite
+				.prepare('SELECT * FROM completion_delivery_outbox WHERE id = ?')
+				.get(PREDECESSOR_ID);
+			const store = new D1CompletionAccessReissueStore(database);
+			const key = keyFor('terminal-policy', 'terminal-policy-hash');
+			const observed = { ...expected(), expectedAttempts: attempts, expectedErrorCode: errorCode };
+			const prep = await store.prepareReissue(key, observed);
+			expect(prep.outcome).toBe('ready');
+			if (prep.outcome !== 'ready') return;
+			const published = await store.publishReissue(
+				commandFor(key, '01970000-0000-7000-8000-000000000055', {
+					...observed,
+					expectedAuditSequence: prep.auditHead!.sequence,
+					previousAuditHash: prep.auditHead!.eventHash
+				})
+			);
+			expect(published.outcome).toBe('published');
+			expect(
+				sqlite.prepare('SELECT * FROM completion_delivery_outbox WHERE id = ?').get(PREDECESSOR_ID)
+			).toEqual(before);
+		}
+	);
+
+	it('rejects a predecessor that is not yet terminal', async () => {
 		const { database, sqlite } = createFixture();
 		seedCompletedEnvelope(sqlite);
 		const store = new D1CompletionAccessReissueStore(database);
@@ -299,7 +336,7 @@ describe('D1CompletionAccessReissueStore integration', () => {
 		});
 		expect(prep.outcome).toBe('not_eligible');
 		if (prep.outcome !== 'not_eligible') return;
-		expect(prep.notEligibleReason).toBe('predecessor_not_exhausted');
+		expect(prep.notEligibleReason).toBe('predecessor_not_terminal');
 	});
 
 	it('reports not_found for an unknown predecessor delivery', async () => {

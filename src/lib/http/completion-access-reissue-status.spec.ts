@@ -56,6 +56,7 @@ function row(overrides: Partial<CurrentCompletionDeliveryRow> = {}): CurrentComp
 		deliveredAt: null,
 		failedAt: '2026-10-10T00:04:00.000Z',
 		errorCode: 'completion_delivery_attempts_exhausted',
+		failureCauseCode: null,
 		eligibleForReissue: true,
 		...overrides
 	};

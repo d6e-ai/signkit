@@ -290,7 +290,7 @@ export interface ReissueRecipientCapabilityResponse {
 }
 
 /**
- * The exact exhausted generation the caller observed from
+ * The exact terminal generation the caller observed from
  * `completionDeliveries`, echoed back verbatim. The server refuses a stale
  * or ambiguous tuple rather than reissuing the wrong generation.
  */
@@ -1004,8 +1004,8 @@ export class EnvelopesClient {
 	}
 
 	/**
-	 * Explicit, operator-confirmed recovery for one terminal exhausted
-	 * completion delivery. `input` must be the exact exhausted generation this
+	 * Explicit, operator-confirmed recovery for one terminal failed
+	 * completion delivery. `input` must be the exact failed generation this
 	 * page last observed through `completionDeliveries`; the server refuses a
 	 * stale or ambiguous tuple rather than silently reissuing the wrong
 	 * generation. This only enqueues a fresh, bounded-expiry delivery -- it

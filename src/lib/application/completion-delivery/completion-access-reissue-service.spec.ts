@@ -122,14 +122,14 @@ describe('CompletionAccessReissueService', () => {
 		const store = fakeStore({
 			prepareReissue: vi.fn(async (): Promise<CompletionAccessReissuePreparationOutcome> => ({
 				outcome: 'not_eligible',
-				notEligibleReason: 'predecessor_not_exhausted'
+				notEligibleReason: 'predecessor_not_terminal'
 			}))
 		});
 		const verifier = fakeVerifier();
 		const sealer = fakeSealer();
 		const service = new CompletionAccessReissueService(store, verifier as never, sealer, () => NOW);
 		const result = await service.reissue(ACTOR, baseInput());
-		expect(result).toEqual({ outcome: 'not_eligible', reason: 'predecessor_not_exhausted' });
+		expect(result).toEqual({ outcome: 'not_eligible', reason: 'predecessor_not_terminal' });
 		expect(verifier.verify).not.toHaveBeenCalled();
 		expect(sealer.seal).not.toHaveBeenCalled();
 		expect(store.publishReissue).not.toHaveBeenCalled();

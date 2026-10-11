@@ -175,7 +175,7 @@ export class D1CompletionAccessReissueStore implements CompletionAccessReissueSt
 			row.claim_token === null &&
 			row.locked_at === null;
 		if (!exhausted) {
-			return { outcome: 'not_eligible', notEligibleReason: 'predecessor_not_exhausted' };
+			return { outcome: 'not_eligible', notEligibleReason: 'predecessor_not_terminal' };
 		}
 		if (
 			row.attempts !== expected.expectedAttempts ||

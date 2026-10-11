@@ -93,6 +93,7 @@ interface CompletionDeliveryRow {
 	deliveredAt: string | null;
 	failedAt: string | null;
 	errorCode: string | null;
+	failureCauseCode: string | null;
 	eligibleForReissue: boolean;
 }
 
@@ -114,6 +115,7 @@ function exhaustedRow(
 		deliveredAt: null,
 		failedAt: FAILED_AT,
 		errorCode: ERROR_CODE,
+		failureCauseCode: 'mail_delivery_failed',
 		eligibleForReissue: true,
 		...overrides
 	};
@@ -266,6 +268,24 @@ describe('completion access reissue action', () => {
 					.element(panel.getByText(m.envelope_completion_access_still_retrying()))
 					.toBeVisible();
 			}
+		}
+	);
+
+	it.each(['mail_delivery_failed', null] as const)(
+		'shows the recorded failure cause %s without inferring a historical cause from exhaustion',
+		async (failureCauseCode) => {
+			const { fetchMock } = buildFetch({
+				recipients: [
+					{ id: SIGNER_ID, email: 'dana@example.com', name: 'Dana Recipient', role: 'signer' }
+				],
+				deliveries: [exhaustedRow(SIGNER_ID, 'signer', { failureCauseCode })]
+			});
+			const { panel } = await openDocumentsTab(fetchMock);
+			const label =
+				failureCauseCode === null
+					? m.envelope_completion_access_cause_unknown()
+					: m.envelope_completion_access_cause({ code: failureCauseCode });
+			await expect.element(panel.getByText(label)).toBeVisible();
 		}
 	);
 

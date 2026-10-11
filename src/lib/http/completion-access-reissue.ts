@@ -62,10 +62,10 @@ export type CompletionAccessReissueServiceResolver = (
 ) => CompletionAccessReissuePort | null | Promise<CompletionAccessReissuePort | null>;
 
 /**
- * Explicit, operator-confirmed recovery for one terminal exhausted completion
- * delivery -- never revives the exhausted predecessor, only appends a fresh,
+ * Explicit, operator-confirmed recovery for one terminal failed completion
+ * delivery -- never revives the terminal predecessor, only appends a fresh,
  * bounded-expiry successor chained to it. `grantAccess: true` and the full
- * expected-generation tuple must be present and match the current exhausted
+ * expected-generation tuple must be present and match the current failed
  * generation exactly, so a stale or ambiguous confirmation screen can never
  * silently reissue the wrong generation.
  */

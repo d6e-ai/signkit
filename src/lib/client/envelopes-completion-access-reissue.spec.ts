@@ -53,6 +53,7 @@ describe('completion deliveries read', () => {
 				deliveredAt: null,
 				failedAt: command.expectedFailedAt,
 				errorCode: command.expectedErrorCode,
+				failureCauseCode: 'mail_delivery_failed',
 				eligibleForReissue: true
 			}
 		];

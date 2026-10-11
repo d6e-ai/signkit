@@ -2041,6 +2041,13 @@
 										<Badge variant={completionDeliveryStatusBadgeVariant(row.status)}>
 											{completionDeliveryStatusLabel(row.status)}
 										</Badge>
+										{#if row.status === 'failed'}
+											<p class="mt-1 text-xs text-muted-foreground">
+												{row.failureCauseCode == null
+													? m.envelope_completion_access_cause_unknown()
+													: m.envelope_completion_access_cause({ code: row.failureCauseCode })}
+											</p>
+										{/if}
 									</Table.Cell>
 									<Table.Cell>
 										{row.accessRevokedAt === null ? formatDate(row.accessExpiresAt) : '—'}

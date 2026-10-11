@@ -178,6 +178,58 @@ liveDescribe('PostgresCompletionAccessReissueStore integration', () => {
 		expect(replay.result?.deliveryId).toBe(newDeliveryId);
 	});
 
+	it.each([
+		['mail_recipient_rejected', 1],
+		['delivery_not_eligible', 0]
+	] as const)(
+		'reissues terminal %s without requiring retry exhaustion',
+		async (errorCode, attempts) => {
+			if (sql === null) throw new Error('PostgreSQL unavailable');
+			const { envelopeId, signerId, predecessorId } = await seedCompletedEnvelope();
+			await sql`UPDATE completion_delivery_outbox SET attempts = ${attempts},
+			last_error = ${errorCode}, failure_cause_code = ${errorCode} WHERE id = ${predecessorId}`;
+			const before =
+				await sql`SELECT * FROM completion_delivery_outbox WHERE id = ${predecessorId}`;
+			const store = new PostgresCompletionAccessReissueStore(sql);
+			const key: ReissueCommandKey = {
+				envelopeId,
+				recipientId: signerId,
+				predecessorDeliveryId: predecessorId,
+				actorType: 'user',
+				actorId: newUuidV7(),
+				idempotencyKey: newUuidV7(),
+				requestHash: 'terminal-policy'
+			};
+			const observed = { ...expected(), expectedAttempts: attempts, expectedErrorCode: errorCode };
+			const prep = await store.prepareReissue(key, observed);
+			expect(prep.outcome).toBe('ready');
+			if (prep.outcome !== 'ready') return;
+			const command: PublishCompletionAccessReissueCommand = {
+				...key,
+				...observed,
+				newDeliveryId: newUuidV7(),
+				newTokenHash: 'f'.repeat(64),
+				newAccessExpiresAt: '2026-10-13T12:00:00.000Z',
+				sealedToken: 'skcd1_new-sealed-blob',
+				sealingKeyId: 'key-1',
+				sealedTokenSha256: '7'.repeat(64),
+				reissuedAt: FAILED_AT,
+				expectedAuditSequence: prep.auditHead!.sequence,
+				previousAuditHash: prep.auditHead!.eventHash,
+				auditEventId: newUuidV7(),
+				auditEventHash: '9'.repeat(64),
+				auditPayloadJson: JSON.stringify({ recipientId: signerId }),
+				expectedJsonSha256: JSON_SHA256,
+				expectedMarkdownSha256: MARKDOWN_SHA256,
+				expectedPdfSha256: PDF_SHA256
+			};
+			expect((await store.publishReissue(command)).outcome).toBe('published');
+			expect(
+				await sql`SELECT * FROM completion_delivery_outbox WHERE id = ${predecessorId}`
+			).toEqual(before);
+		}
+	);
+
 	it('rejects publication when the completion PDF digest no longer matches at write time', async () => {
 		if (sql === null) throw new Error('PostgreSQL unavailable');
 		const { envelopeId, approverId, approverDeliveryId } = await seedCompletedEnvelope();

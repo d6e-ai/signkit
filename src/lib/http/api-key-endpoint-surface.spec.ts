@@ -567,7 +567,7 @@ describe('API key mutation surface', () => {
 			async () => {
 				const reissue = vi.fn(async () => ({
 					outcome: 'not_eligible' as const,
-					reason: 'predecessor_not_exhausted' as const
+					reason: 'predecessor_not_terminal' as const
 				}));
 				const response: Response = await createCompletionAccessReissueHandler(() => ({
 					reissue

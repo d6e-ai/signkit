@@ -1,4 +1,4 @@
-# Explicit recovery for exhausted completion-mail delivery
+# Explicit recovery for terminal completion-mail delivery
 
 Date: 2026-10-11
 Status: Accepted
@@ -25,6 +25,13 @@ recipient access; the only recourse was a manual database write.
   `grantAccess: true`. There is no "reissue whatever is currently failed" command: a stale or
   ambiguous view of the delivery history can never silently reissue the wrong generation, and a
   concurrent second reissue or repair is caught as `stale_generation`.
+- Use terminal state, not an exhaustion counter, as the eligibility boundary. The latest failed
+  delivery must be non-retryable, revoked, token-scrubbed, unleased, and match the observed tuple.
+  This includes exhausted retries, permanent rejection, and expired-grant cleanup. The operator
+  resolves the underlying cause; reissue never restores the old grant or edits recipient identity.
+- Preserve a bounded failure cause separately from the generic exhaustion classification for new
+  terminal failures. Historical lost causes remain unknown; never reconstruct them from other
+  fields. The operator status API/UI exposes that distinction without tokens or provider messages.
 - Independently re-verify the completion manifest and PDF against actual object storage bytes
   immediately before granting new access, rather than trusting the `completion_artifact` /
   `completion_artifact_pdf` database pointers. The existing `CompletionPdfAttachmentReader` cannot be
@@ -34,7 +41,8 @@ recipient access; the only recourse was a manual database write.
   the artifact digests this process just verified) and performs the insert/scrub/audit in the same
   statement; PostgreSQL runs the same predicates and writes inside one transaction, locking the
   envelope before the predecessor row, matching this codebase's existing lock ordering for
-  envelope-audit writers.
+  envelope-audit writers. Same-key requests waiting on that lock resolve the committed receipt
+  before eligibility, so serialization does not turn an idempotent replay into a stale conflict.
 - Never invoke `MailSender` from the reissue path. It only enqueues the new generation; the existing
   retryable drain claims and mails it exactly as any other pending delivery.
 
