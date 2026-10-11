@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-10-11
+
+### Fixed
+
+- Publish `create-signkit` 0.1.9 with authoritative active-deployment confirmation after Cloudflare version activation. Successful upgrades no longer depend on the create response echoing traffic details; the exact requested version, deployment identity, and 100% traffic are checked before reconciling triggers and recording success.
+
 ## [0.1.15] - 2026-10-11
 
 ### Added

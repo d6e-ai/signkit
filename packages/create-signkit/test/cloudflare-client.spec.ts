@@ -11,6 +11,7 @@ import { ACCOUNT_ID, RecordingProcessRunner } from './helpers.js';
 
 const D1_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const WORKER_VERSION = '22222222-2222-2222-2222-222222222222';
+const DEPLOYMENT_ID = '33333333-3333-3333-3333-333333333333';
 const CF_BIN = '/opt/cf/bin/cf';
 const WRANGLER_BIN = '/opt/wrangler/bin/wrangler.js';
 
@@ -322,18 +323,25 @@ describe('Wrangler-delegated operations', () => {
 
 	it('publishes traffic through cf then reconciles triggers through Wrangler', async () => {
 		const runner = new RecordingProcessRunner();
-		runner.handler = (request) => ({
-			code: 0,
-			stdout:
-				request.argv[0] === CF_BIN
-					? JSON.stringify({
-							id: '33333333-3333-3333-3333-333333333333',
-							strategy: 'percentage',
-							versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
-						})
-					: '',
-			stderr: ''
-		});
+		runner.handler = (request) => {
+			if (request.argv[0] !== CF_BIN) return { code: 0, stdout: '', stderr: '' };
+			if (request.argv.includes('list')) {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						deployments: [
+							{
+								id: DEPLOYMENT_ID,
+								strategy: 'percentage',
+								versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+							}
+						]
+					}),
+					stderr: ''
+				};
+			}
+			return { code: 0, stdout: JSON.stringify({ id: DEPLOYMENT_ID }), stderr: '' };
+		};
 		const cloudflare = client(runner);
 		await cloudflare.deployVersion('signkit', WORKER_VERSION);
 		await cloudflare.deployTriggers({
@@ -354,6 +362,14 @@ describe('Wrangler-delegated operations', () => {
 			JSON.stringify([{ version_id: WORKER_VERSION, percentage: 100 }])
 		]);
 		expect(runner.requests[1]?.argv).toEqual([
+			CF_BIN,
+			'workers',
+			'deployments',
+			'list',
+			'--worker',
+			'signkit'
+		]);
+		expect(runner.requests[2]?.argv).toEqual([
 			WRANGLER_BIN,
 			'triggers',
 			'deploy',
@@ -362,7 +378,7 @@ describe('Wrangler-delegated operations', () => {
 			'--name',
 			'signkit'
 		]);
-		expect(runner.requests[1]?.cwd).toBe('/tmp/bundle');
+		expect(runner.requests[2]?.cwd).toBe('/tmp/bundle');
 	});
 
 	it('runs exportD1 through Wrangler `d1 export`', async () => {
@@ -444,50 +460,239 @@ describe('cf Worker administration', () => {
 		);
 		expect(runner.requests).toEqual([]);
 	});
+});
+
+describe('cf Worker deployment publication', () => {
+	it('confirms traffic from the deployments list readback, not the POST echo', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = (request) => {
+			if (request.argv.includes('list')) {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						deployments: [
+							{
+								id: DEPLOYMENT_ID,
+								strategy: 'percentage',
+								versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+							}
+						]
+					}),
+					stderr: ''
+				};
+			}
+			// A minimal create reply is not a substitute for active traffic readback.
+			return { code: 0, stdout: JSON.stringify({ id: DEPLOYMENT_ID }), stderr: '' };
+		};
+		await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).resolves.toBeUndefined();
+		expect(runner.requests).toHaveLength(2);
+		expect(runner.requests[1]?.argv).toEqual([
+			CF_BIN,
+			'workers',
+			'deployments',
+			'list',
+			'--worker',
+			'signkit'
+		]);
+	});
+
+	it('accepts a {success,result} envelope for both the create and list responses', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = (request) => {
+			if (request.argv.includes('list')) {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						success: true,
+						result: {
+							deployments: [
+								{
+									id: DEPLOYMENT_ID,
+									strategy: 'percentage',
+									versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+								}
+							]
+						}
+					}),
+					stderr: ''
+				};
+			}
+			return {
+				code: 0,
+				stdout: JSON.stringify({ success: true, result: { id: DEPLOYMENT_ID } }),
+				stderr: ''
+			};
+		};
+		await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).resolves.toBeUndefined();
+	});
+
+	it('never adds deployment-check bypass or provisioning flags to the create command', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = (request) => {
+			if (request.argv.includes('list')) {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						deployments: [
+							{
+								id: DEPLOYMENT_ID,
+								strategy: 'percentage',
+								versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+							}
+						]
+					}),
+					stderr: ''
+				};
+			}
+			return { code: 0, stdout: JSON.stringify({ id: DEPLOYMENT_ID }), stderr: '' };
+		};
+		await client(runner).deployVersion('signkit', WORKER_VERSION);
+		expect(runner.requests[0]?.argv).not.toContain('--bypass-deployment-checks');
+		expect(runner.requests[0]?.argv).not.toContain('--provision');
+	});
 
 	it.each([
-		{},
-		{ id: WORKER_VERSION, strategy: 'percentage', versions: [] },
 		{
-			id: 'not-a-deployment-id',
-			strategy: 'percentage',
-			versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+			name: 'an explicit success:false error envelope',
+			output: { success: false },
+			error: /unsuccessful response/
 		},
 		{
-			id: WORKER_VERSION,
-			strategy: 'percentage',
-			versions: [{ version_id: D1_UUID, percentage: 100 }]
+			name: 'a JSON array instead of an object',
+			output: [{ id: DEPLOYMENT_ID }],
+			error: /expected a JSON object/
+		},
+		{ name: 'an object with no id', output: {}, error: /did not return a valid deployment id/ },
+		{
+			name: 'a non-UUID id',
+			output: { id: 'not-a-uuid' },
+			error: /did not return a valid deployment id/
 		},
 		{
-			id: WORKER_VERSION,
-			strategy: 'percentage',
-			versions: [{ version_id: WORKER_VERSION, percentage: 50 }]
-		},
-		{
-			id: WORKER_VERSION,
-			strategy: 'percentage',
-			versions: [{ version_id: WORKER_VERSION, percentage: '100' }]
-		},
-		{
-			id: WORKER_VERSION,
-			strategy: 'percentage',
-			versions: [
-				{ version_id: WORKER_VERSION, percentage: 100 },
-				{ version_id: D1_UUID, percentage: 100 }
-			]
+			name: 'a successful envelope without a result object',
+			output: { success: true },
+			error: /without a result object/
 		}
-	])(
-		'refuses a cf response that does not confirm the exact version at all traffic (%#)',
-		async (output) => {
-			const runner = new RecordingProcessRunner();
-			runner.handler = () => ({ code: 0, stdout: JSON.stringify(output), stderr: '' });
-			await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).rejects.toThrow(
-				/exact requested version at 100%/
-			);
-			expect(runner.requests[0]?.argv).not.toContain('--bypass-deployment-checks');
-			expect(runner.requests[0]?.argv).not.toContain('--provision');
+	])('rejects a create (POST) response that is $name', async ({ output, error }) => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = () => ({ code: 0, stdout: JSON.stringify(output), stderr: '' });
+		await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).rejects.toThrow(error);
+		expect(runner.requests).toHaveLength(1);
+	});
+
+	it('rejects malformed create (POST) JSON without silently ignoring it', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = () => ({ code: 0, stdout: 'not json', stderr: '' });
+		await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).rejects.toThrow(
+			/expected JSON output/
+		);
+		expect(runner.requests).toHaveLength(1);
+	});
+
+	it.each([
+		{
+			name: 'an explicit success:false error envelope',
+			output: { success: false },
+			error: /unsuccessful response/
+		},
+		{ name: 'a JSON array instead of an object', output: [], error: /expected a JSON object/ },
+		{ name: 'a missing deployments array', output: {}, error: /did not return any deployments/ },
+		{
+			name: 'an empty deployments array',
+			output: { deployments: [] },
+			error: /did not return any deployments/
+		},
+		{
+			name: 'a stale deployment id that does not match the one just created',
+			output: {
+				deployments: [
+					{
+						id: D1_UUID,
+						strategy: 'percentage',
+						versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+					}
+				]
+			},
+			error: /exact requested version at 100%/
+		},
+		{
+			name: 'the wrong version id',
+			output: {
+				deployments: [
+					{
+						id: DEPLOYMENT_ID,
+						strategy: 'percentage',
+						versions: [{ version_id: D1_UUID, percentage: 100 }]
+					}
+				]
+			},
+			error: /exact requested version at 100%/
+		},
+		{
+			name: 'split traffic across two versions',
+			output: {
+				deployments: [
+					{
+						id: DEPLOYMENT_ID,
+						strategy: 'percentage',
+						versions: [
+							{ version_id: WORKER_VERSION, percentage: 50 },
+							{ version_id: D1_UUID, percentage: 50 }
+						]
+					}
+				]
+			},
+			error: /exact requested version at 100%/
+		},
+		{
+			name: 'a non-numeric percentage',
+			output: {
+				deployments: [
+					{
+						id: DEPLOYMENT_ID,
+						strategy: 'percentage',
+						versions: [{ version_id: WORKER_VERSION, percentage: '100' }]
+					}
+				]
+			},
+			error: /exact requested version at 100%/
+		},
+		{
+			name: 'a non-percentage strategy',
+			output: {
+				deployments: [
+					{
+						id: DEPLOYMENT_ID,
+						strategy: 'rolling',
+						versions: [{ version_id: WORKER_VERSION, percentage: 100 }]
+					}
+				]
+			},
+			error: /exact requested version at 100%/
 		}
-	);
+	])('rejects a deployments list readback with $name', async ({ output, error }) => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = (request) => {
+			if (request.argv.includes('list')) {
+				return { code: 0, stdout: JSON.stringify(output), stderr: '' };
+			}
+			return { code: 0, stdout: JSON.stringify({ id: DEPLOYMENT_ID }), stderr: '' };
+		};
+		await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).rejects.toThrow(error);
+	});
+
+	it('rejects malformed deployments list JSON without silently ignoring it', async () => {
+		const runner = new RecordingProcessRunner();
+		runner.handler = (request) => {
+			if (request.argv.includes('list')) {
+				return { code: 0, stdout: 'not json', stderr: '' };
+			}
+			return { code: 0, stdout: JSON.stringify({ id: DEPLOYMENT_ID }), stderr: '' };
+		};
+		await expect(client(runner).deployVersion('signkit', WORKER_VERSION)).rejects.toThrow(
+			/expected JSON output/
+		);
+	});
 });
 
 describe('missing Worker classification', () => {

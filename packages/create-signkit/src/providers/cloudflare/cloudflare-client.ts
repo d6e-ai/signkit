@@ -284,7 +284,7 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
 		},
 		async deployVersion(workerName, versionId) {
 			if (!isUuid(versionId)) throw generic('a valid Worker version id is required');
-			const result = await run([
+			const createResult = await run([
 				'workers',
 				'deployments',
 				'create',
@@ -295,13 +295,21 @@ export function createCloudflareClient(options: CloudflareClientOptions): Cloudf
 				'--versions',
 				JSON.stringify([{ version_id: versionId, percentage: 100 }])
 			]);
-			const deployment = asObject(parseJsonValue(result.stdout, 'cf workers deployments create'));
-			const versions = deployment.versions;
+			const createId = extractCfDeploymentCreateId(
+				createResult.stdout,
+				'cf workers deployments create'
+			);
+			const listResult = await run(['workers', 'deployments', 'list', '--worker', workerName]);
+			const active = parseCfActiveDeployment(listResult.stdout, 'cf workers deployments list');
+			const versions = active.versions;
 			const selected =
-				Array.isArray(versions) && versions.length === 1 ? asObject(versions[0]) : {};
+				Array.isArray(versions) && versions.length === 1 ? asObject(versions[0]) : undefined;
 			if (
-				!isUuid(deployment.id) ||
-				deployment.strategy !== 'percentage' ||
+				typeof active.id !== 'string' ||
+				!isUuid(active.id) ||
+				active.id.toLowerCase() !== createId.toLowerCase() ||
+				active.strategy !== 'percentage' ||
+				!selected ||
 				typeof selected.version_id !== 'string' ||
 				selected.version_id.toLowerCase() !== versionId.toLowerCase() ||
 				selected.percentage !== 100
@@ -383,6 +391,69 @@ function parseJsonValue(stdout: string, label: string): unknown {
 	} catch {
 		throw generic(`failed to parse JSON output from ${label}`);
 	}
+}
+
+/**
+ * Shared Cloudflare API envelope unwrap. `success` is only ever trusted when
+ * it is the literal boolean `true`; anything else (including an absent
+ * `success` key, meaning the response is the bare resource rather than an
+ * envelope) is handled by the caller, and an explicit non-`true` value is a
+ * hard failure rather than a shape we fall back to interpreting directly.
+ */
+function unwrapCfEnvelope(record: Record<string, unknown>, label: string): Record<string, unknown> {
+	if (!('success' in record)) return record;
+	if (record.success !== true) {
+		throw generic(`${label} reported an unsuccessful response`);
+	}
+	if (!isObject(record.result)) {
+		throw generic(`${label} returned a successful envelope without a result object`);
+	}
+	return record.result;
+}
+
+/**
+ * Carry only the required deployment id from the create response into the
+ * authoritative traffic readback. Successful API envelopes are accepted;
+ * malformed replies, error envelopes, and missing/non-UUID ids fail closed.
+ */
+function extractCfDeploymentCreateId(stdout: string, label: string): string {
+	const parsed = parseJsonValue(stdout, label);
+	if (!isObject(parsed)) {
+		throw generic(`expected a JSON object from ${label}`);
+	}
+	const unwrapped = unwrapCfEnvelope(parsed, label);
+	const id = unwrapped.id;
+	if (typeof id !== 'string' || !isUuid(id)) {
+		throw generic(`${label} did not return a valid deployment id`);
+	}
+	return id;
+}
+
+/**
+ * Traffic confirmation is read back from `cf workers deployments list`,
+ * whose verified beta14 shape is
+ * `{deployments:[{id,strategy,versions:[{version_id,percentage}]}]}` with
+ * the active deployment first; a `{success,result}` envelope wrapping that
+ * same shape is also accepted. This readback is the sole source of truth
+ * for whether traffic actually moved — any error envelope, non-object
+ * payload, or missing/non-array/empty `deployments` fails closed rather
+ * than assuming the requested version went live.
+ */
+function parseCfActiveDeployment(stdout: string, label: string): Record<string, unknown> {
+	const parsed = parseJsonValue(stdout, label);
+	if (!isObject(parsed)) {
+		throw generic(`expected a JSON object from ${label}`);
+	}
+	const unwrapped = unwrapCfEnvelope(parsed, label);
+	const deployments = unwrapped.deployments;
+	if (!Array.isArray(deployments) || deployments.length === 0) {
+		throw generic(`${label} did not return any deployments`);
+	}
+	const active = deployments[0];
+	if (!isObject(active)) {
+		throw generic(`${label} returned a malformed deployment`);
+	}
+	return active;
 }
 
 function parseJsonArray(stdout: string, label: string): unknown[] {
