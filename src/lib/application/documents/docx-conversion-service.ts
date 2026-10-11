@@ -29,6 +29,8 @@ import {
 } from '$lib/adapters/documents/docx-import';
 import { DocxExportError } from '$lib/adapters/documents/docx-export';
 import { DocumentSetError } from '$lib/domain/document-set';
+import { cappedExponentialBackoffAvailableAt } from '$lib/ports/capped-exponential-backoff';
+import { readBoundedObjectStream } from '$lib/ports/bounded-object-stream';
 
 export const DOCX_MIME_TYPE: string =
 	'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -36,6 +38,7 @@ export const DOCX_CONVERSION_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const DOCX_CONVERSION_RETRY_BASE_DELAY_MS: number = 30_000;
 export const DOCX_CONVERSION_RETRY_MAX_DELAY_MS: number = 6 * 60 * 60 * 1000;
 export const MAX_DOCX_CONVERSION_ATTEMPTS: number = 5;
+const DOCX_CONVERSION_RETRY_EXPONENT_CAP: number = 10;
 
 export function docxImportSourceObjectKey(envelopeId: string, sha256: string): string {
 	return `docx-conversions/v1/envelopes/${encodeScopeSegment(envelopeId)}/imports/${sha256}.docx`;
@@ -55,10 +58,13 @@ export function docxConversionRetryAvailableAt(
 	baseDelayMs: number = DOCX_CONVERSION_RETRY_BASE_DELAY_MS,
 	maxDelayMs: number = DOCX_CONVERSION_RETRY_MAX_DELAY_MS
 ): string {
-	const safeAttempts: number = Math.max(1, attempts);
-	const exponent: number = Math.min(safeAttempts - 1, 10);
-	const delayMs: number = Math.min(maxDelayMs, baseDelayMs * 2 ** exponent);
-	return new Date(now.valueOf() + delayMs).toISOString();
+	return cappedExponentialBackoffAvailableAt(
+		now,
+		attempts,
+		baseDelayMs,
+		maxDelayMs,
+		DOCX_CONVERSION_RETRY_EXPONENT_CAP
+	);
 }
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -70,36 +76,6 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 export async function sha256String(value: string): Promise<string> {
 	return sha256Hex(new TextEncoder().encode(value));
-}
-
-async function readStreamBounded(
-	stream: ReadableStream<Uint8Array>,
-	maximumBytes: number
-): Promise<Uint8Array> {
-	const reader = stream.getReader();
-	const chunks: Uint8Array[] = [];
-	let size: number = 0;
-	try {
-		for (;;) {
-			const result = await reader.read();
-			if (result.done) break;
-			size += result.value.byteLength;
-			if (size > maximumBytes) {
-				await reader.cancel('Stream exceeded maximum byte limit');
-				throw new DraftIntegrityError('Stream exceeded maximum byte limit');
-			}
-			chunks.push(result.value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	const bytes: Uint8Array = new Uint8Array(size);
-	let offset: number = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
 }
 
 export interface EnqueueDocxImportInput {
@@ -339,7 +315,12 @@ export class DocxConversionService {
 		if (stream === null) {
 			throw new DraftIntegrityError('Published DOCX export object is missing');
 		}
-		const bytes: Uint8Array = await readStreamBounded(stream, job.result.byteSize);
+		const bytes: Uint8Array = await readBoundedObjectStream(
+			stream,
+			job.result.byteSize,
+			() => new DraftIntegrityError('Stream exceeded maximum byte limit'),
+			'Stream exceeded maximum byte limit'
+		);
 		if (
 			bytes.byteLength !== job.result.byteSize ||
 			(await sha256Hex(bytes)) !== job.result.sha256
@@ -408,7 +389,12 @@ export class DocxConversionService {
 			if (stream === null) {
 				throw new DraftIntegrityError('Source DOCX object not found in ObjectStore');
 			}
-			const bytes: Uint8Array = await readStreamBounded(stream, claim.job.sourceByteSize);
+			const bytes: Uint8Array = await readBoundedObjectStream(
+				stream,
+				claim.job.sourceByteSize,
+				() => new DraftIntegrityError('Stream exceeded maximum byte limit'),
+				'Stream exceeded maximum byte limit'
+			);
 			if (bytes.byteLength !== claim.job.sourceByteSize) {
 				throw new DraftIntegrityError('Source DOCX byte size mismatch');
 			}
@@ -635,7 +621,12 @@ export class DocxConversionService {
 			}
 			const stream = await this.#objects.get(key);
 			if (stream === null) throw error;
-			const retrieved = await readStreamBounded(stream, bytes.byteLength);
+			const retrieved = await readBoundedObjectStream(
+				stream,
+				bytes.byteLength,
+				() => new DraftIntegrityError('Stream exceeded maximum byte limit'),
+				'Stream exceeded maximum byte limit'
+			);
 			if (retrieved.byteLength !== bytes.byteLength || (await sha256Hex(retrieved)) !== sha256) {
 				throw error;
 			}

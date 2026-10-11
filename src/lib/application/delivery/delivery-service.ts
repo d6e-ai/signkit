@@ -22,6 +22,9 @@ import {
 	renderInvitationMail,
 	type TransactionalMailCopy
 } from '$lib/application/mail/transactional-email';
+import { cappedExponentialBackoffAvailableAt } from '$lib/ports/capped-exponential-backoff';
+
+const INVITATION_RETRY_EXPONENT_CAP: number = 10;
 
 export const INVITATION_CLAIM_LEASE_MS: number = 5 * 60 * 1000;
 export const INVITATION_RETRY_BASE_DELAY_MS: number = 30_000;
@@ -327,13 +330,13 @@ export class InvitationDeliveryService {
 }
 
 export function invitationRetryAvailableAt(now: Date, attempts: number): string {
-	const safeAttempts: number = Math.max(1, attempts);
-	const exponent: number = Math.min(safeAttempts - 1, 10);
-	const delayMs: number = Math.min(
+	return cappedExponentialBackoffAvailableAt(
+		now,
+		attempts,
+		INVITATION_RETRY_BASE_DELAY_MS,
 		INVITATION_RETRY_MAX_DELAY_MS,
-		INVITATION_RETRY_BASE_DELAY_MS * 2 ** exponent
+		INVITATION_RETRY_EXPONENT_CAP
 	);
-	return new Date(now.valueOf() + delayMs).toISOString();
 }
 
 function summarize(

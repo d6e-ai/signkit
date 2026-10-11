@@ -18,10 +18,13 @@ import {
 	WEBHOOK_MAX_PAYLOAD_BYTES,
 	WEBHOOK_MAX_URL_LENGTH,
 	WEBHOOK_RETRY_BASE_DELAY_MS,
+	WEBHOOK_RETRY_EXPONENT_CAP,
+	WEBHOOK_RETRY_MAX_DELAY_MS,
 	canonicalizeWebhookEvents,
 	issueWebhookSecret,
 	signWebhookPayload
 } from '$lib/security/webhook';
+import { cappedExponentialBackoffMs } from '$lib/ports/capped-exponential-backoff';
 import {
 	WebhookTargetRejectedError,
 	assertWebhookHttpsUrl,
@@ -352,8 +355,12 @@ export class WebhookApplication implements WebhookApplicationPort {
 				return 'delivered';
 			}
 			const retryable: boolean = result.retryable && row.attempts < WEBHOOK_MAX_ATTEMPTS;
-			const delayMs: number =
-				WEBHOOK_RETRY_BASE_DELAY_MS * Math.min(2 ** Math.max(row.attempts - 1, 0), 32);
+			const delayMs: number = cappedExponentialBackoffMs(
+				row.attempts,
+				WEBHOOK_RETRY_BASE_DELAY_MS,
+				WEBHOOK_RETRY_MAX_DELAY_MS,
+				WEBHOOK_RETRY_EXPONENT_CAP
+			);
 			await this.#store.failDelivery({
 				endpointId: row.endpointId,
 				auditEventId: row.auditEventId,
