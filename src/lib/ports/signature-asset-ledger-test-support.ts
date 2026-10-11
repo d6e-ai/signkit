@@ -1,11 +1,11 @@
 import type {
 	RegisterSignatureAssetResult,
-	RetireSignatureAssetResult,
 	SignatureAssetFreshnessResult,
 	SignatureAssetLedger,
 	SignatureAssetScope,
 	SignatureAssetState
 } from './signature-asset-ledger';
+import { assertSignatureLedgerBatch } from './signature-asset-ledger';
 
 export const PENDING: SignatureAssetState = `pending`;
 export const BOUND: SignatureAssetState = `bound`;
@@ -29,6 +29,8 @@ function scopeKey(scope: SignatureAssetScope): string {
  */
 export class InMemorySignatureAssetLedger implements SignatureAssetLedger {
 	private readonly rows = new Map<string, LedgerRow>();
+	/** Test assertion: the `now` of the most recent `retireOrphans` call, if any. */
+	lastRetirementAt: string | null = null;
 
 	async registerPending(
 		scope: SignatureAssetScope,
@@ -55,11 +57,19 @@ export class InMemorySignatureAssetLedger implements SignatureAssetLedger {
 		return existing.state;
 	}
 
-	async retireOrphan(
-		scope: SignatureAssetScope,
+	async retireOrphans(
+		scopes: readonly SignatureAssetScope[],
 		now: string,
 		touchedBefore: string
-	): Promise<RetireSignatureAssetResult> {
+	): Promise<readonly SignatureAssetState[]> {
+		assertSignatureLedgerBatch(scopes);
+		this.lastRetirementAt = now;
+		return scopes.map((scope: SignatureAssetScope): SignatureAssetState =>
+			this.retireOne(scope, touchedBefore)
+		);
+	}
+
+	private retireOne(scope: SignatureAssetScope, touchedBefore: string): SignatureAssetState {
 		const key: string = scopeKey(scope);
 		const existing: LedgerRow | undefined = this.rows.get(key);
 		if (existing === undefined) {
@@ -73,12 +83,18 @@ export class InMemorySignatureAssetLedger implements SignatureAssetLedger {
 		return existing.state;
 	}
 
-	async previewRetirement(scope: SignatureAssetScope, touchedBefore: string): Promise<boolean> {
-		const existing: LedgerRow | undefined = this.rows.get(scopeKey(scope));
-		if (existing === undefined) return true;
-		if (existing.state === RETIRED) return true;
-		if (existing.state === BOUND) return false;
-		return (existing.pendingTouchedAt ?? ``) <= touchedBefore;
+	async previewRetirements(
+		scopes: readonly SignatureAssetScope[],
+		touchedBefore: string
+	): Promise<readonly boolean[]> {
+		assertSignatureLedgerBatch(scopes);
+		return scopes.map((scope: SignatureAssetScope): boolean => {
+			const existing: LedgerRow | undefined = this.rows.get(scopeKey(scope));
+			if (existing === undefined) return true;
+			if (existing.state === RETIRED) return true;
+			if (existing.state === BOUND) return false;
+			return (existing.pendingTouchedAt ?? ``) <= touchedBefore;
+		});
 	}
 
 	async listPendingBefore(
@@ -95,17 +111,21 @@ export class InMemorySignatureAssetLedger implements SignatureAssetLedger {
 		return entries.slice(0, limit).map((row: LedgerRow): SignatureAssetScope => row.scope);
 	}
 
-	async retireAbandonedPending(
-		scope: SignatureAssetScope,
+	async retireAbandonedRegistrations(
+		scopes: readonly SignatureAssetScope[],
 		touchedBefore: string
-	): Promise<boolean> {
-		const existing: LedgerRow | undefined = this.rows.get(scopeKey(scope));
-		if (existing === undefined) return false;
-		if (existing.state !== PENDING) return false;
-		if ((existing.pendingTouchedAt ?? ``) > touchedBefore) return false;
-		existing.state = RETIRED;
-		existing.pendingTouchedAt = null;
-		return true;
+	): Promise<number> {
+		assertSignatureLedgerBatch(scopes);
+		let retired: number = 0;
+		for (const scope of scopes) {
+			const existing: LedgerRow | undefined = this.rows.get(scopeKey(scope));
+			if (existing === undefined || existing.state !== PENDING) continue;
+			if ((existing.pendingTouchedAt ?? ``) > touchedBefore) continue;
+			existing.state = RETIRED;
+			existing.pendingTouchedAt = null;
+			retired += 1;
+		}
+		return retired;
 	}
 
 	/** Test double of the publish-time bind: false (nothing written) when the scope is retired. */

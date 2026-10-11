@@ -16,13 +16,12 @@ export type RegisterSignatureAssetResult = 'ok' | 'retired';
 export type SignatureAssetFreshnessResult = SignatureAssetState | 'missing';
 
 /**
- * Outcome of an orphan retirement attempt: the scope's durable state after
- * the attempt. `retired` is the only state whose object may be deleted, and
- * it is always backed by a committed one-way tombstone -- also for a legacy
- * object whose recipient no longer exists, so an owner created or restored
- * later can never re-register, reuse, or bind that exact key.
+ * Most scopes one bulk sweep call ({@link SignatureAssetLedger.retireOrphans},
+ * `previewRetirements`, `retireAbandonedRegistrations`) accepts. Each such
+ * call is a constant number of database statements regardless of its size up
+ * to this cap, so a caller with a per-invocation statement quota can budget it.
  */
-export type RetireSignatureAssetResult = SignatureAssetState;
+export const SIGNATURE_LEDGER_BATCH_SIZE: number = 100;
 
 /** Scoped by (envelope, recipient, sha256). pending exists from upload until a signed field value binds it (bound, permanent) or the orphan sweep retires it (retired, permanent). */
 export interface SignatureAssetLedger {
@@ -31,29 +30,45 @@ export interface SignatureAssetLedger {
 	/** Touches pending retention for a fresh sign submission; never resurrects retired. missing covers a forged ref or a pre-ledger legacy asset. */
 	checkFresh(scope: SignatureAssetScope, now: string): Promise<SignatureAssetFreshnessResult>;
 	/**
-	 * Orphan sweep's sole retirement entry point for a scoped key already
-	 * proven unreferenced. The database re-checks the exact scoped field_value
-	 * reference in the same statement/transaction. Pending touched after
-	 * touchedBefore stays pending (pending touch wins); bound never retires; a
-	 * missing row (legacy, pre-ledger, even with no live owner) is inserted
-	 * atomically as bound when a field value names it, otherwise as a retired
-	 * tombstone; already-retired is idempotent for retry after a crash or
-	 * delete ambiguity. Live (pending/bound) rows always require the exact
-	 * scoped owner; tombstones do not.
+	 * Orphan sweep's sole retirement entry point for distinct scoped keys
+	 * already proven unreferenced (at most {@link SIGNATURE_LEDGER_BATCH_SIZE}).
+	 * Returns each scope's durable state after the attempt, in input order;
+	 * `retired` is the only state whose object may be deleted, and it is always
+	 * backed by a committed one-way tombstone.
+	 *
+	 * Per scope, the database re-checks the exact scoped field_value reference
+	 * in the same statement/transaction. Pending touched after touchedBefore
+	 * stays pending (pending touch wins); bound never retires; a missing row
+	 * (legacy, pre-ledger, even with no live owner) is inserted atomically as
+	 * bound when a field value names it, otherwise as a retired tombstone;
+	 * already-retired is idempotent for retry after a crash or delete
+	 * ambiguity. Live (pending/bound) rows always require the exact scoped
+	 * owner; tombstones do not, so an owner created or restored later can never
+	 * re-register, reuse, or bind a retired key.
 	 */
-	retireOrphan(
-		scope: SignatureAssetScope,
+	retireOrphans(
+		scopes: readonly SignatureAssetScope[],
 		now: string,
 		touchedBefore: string
-	): Promise<RetireSignatureAssetResult>;
-	/** Read-only dry-run counterpart of {@link retireOrphan}: true when a real sweep would retire (or already retired) this scope. */
-	previewRetirement(scope: SignatureAssetScope, touchedBefore: string): Promise<boolean>;
+	): Promise<readonly SignatureAssetState[]>;
+	/** Read-only dry-run counterpart of {@link retireOrphans}: per scope, in input order, true when a real sweep would retire (or already retired) it. */
+	previewRetirements(
+		scopes: readonly SignatureAssetScope[],
+		touchedBefore: string
+	): Promise<readonly boolean[]>;
 	/** Bounded, oldest-first page of pending scopes last touched before touchedBefore. */
 	listPendingBefore(touchedBefore: string, limit: number): Promise<readonly SignatureAssetScope[]>;
-	/** Retires exactly this scope only while still pending and not touched at or after touchedBefore. */
-	retireAbandonedPending(
-		scope: SignatureAssetScope,
+	/** Retires exactly these scopes, each only while still pending and not touched after touchedBefore. Returns how many it retired. */
+	retireAbandonedRegistrations(
+		scopes: readonly SignatureAssetScope[],
 		touchedBefore: string,
 		now: string
-	): Promise<boolean>;
+	): Promise<number>;
+}
+
+/** Throws when a bulk call exceeds {@link SIGNATURE_LEDGER_BATCH_SIZE}, keeping its statement cost bounded. */
+export function assertSignatureLedgerBatch(scopes: readonly SignatureAssetScope[]): void {
+	if (scopes.length > SIGNATURE_LEDGER_BATCH_SIZE) {
+		throw new RangeError(`at most ${SIGNATURE_LEDGER_BATCH_SIZE} scopes per ledger call`);
+	}
 }

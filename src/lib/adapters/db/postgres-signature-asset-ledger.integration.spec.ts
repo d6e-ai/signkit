@@ -278,15 +278,15 @@ postgresDescribe('PostgreSQL signature asset retention', () => {
 					ON CONFLICT (envelope_id, recipient_id, sha256) DO UPDATE SET
 						state = 'bound', bound_at = EXCLUDED.bound_at, pending_touched_at = NULL
 					WHERE signature_asset.state = 'pending'`;
-				const retirement = ledger.retireOrphan(
-					asset.scope,
+				const retirement = ledger.retireOrphans(
+					[asset.scope],
 					RETENTION_NOW.toISOString(),
 					'2026-09-23T02:00:00.000Z'
 				);
 				await untilLockWait();
 				await binder`COMMIT`;
 
-				expect(await retirement).toBe('bound');
+				expect(await retirement).toEqual(['bound']);
 			} finally {
 				binder.release();
 			}

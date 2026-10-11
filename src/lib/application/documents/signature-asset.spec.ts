@@ -593,7 +593,9 @@ describe('SignatureAssetApplication retention ledger', () => {
 				assetRef: `${SIGNATURE_ASSET_REF_PREFIX}${scope.sha256}`
 			});
 			// The re-upload refreshed retention, so a sweep at the old cutoff loses.
-			expect(await ledger.retireOrphan(scope, NOW, '2026-09-10T00:00:00.000Z')).toBe('pending');
+			expect(await ledger.retireOrphans([scope], NOW, '2026-09-10T00:00:00.000Z')).toEqual([
+				'pending'
+			]);
 		}
 	);
 
@@ -689,7 +691,9 @@ describe('verifySignatureAssetReference retention ledger', () => {
 		);
 
 		expect(check).toEqual({ outcome: 'ok' });
-		expect(await ledger.retireOrphan(scope, NOW, '2026-09-18T00:00:00.000Z')).toBe('pending');
+		expect(await ledger.retireOrphans([scope], NOW, '2026-09-18T00:00:00.000Z')).toEqual([
+			'pending'
+		]);
 	});
 
 	it('still verifies a legacy asset with no ledger row by its bytes', async () => {

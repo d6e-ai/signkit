@@ -16,6 +16,7 @@ If the migration is applied but old application code is still serving, uploads k
 - The sweep now retires before it deletes. A provider failure during the delete leaves the row `retired` and the object present. The sweep then reports `object_delete_failed`, and the next sweep deletes the object. No manual action is needed.
 - `signature_retirement_failed` means the database step failed. Nothing was deleted for that batch.
 - `retiredPendingRegistrations` on the collector report counts abandoned uploads that never stored an object. Each sweep examines at most 25.
+- On D1, each sweep runs at most 40 statements. That leaves 10 of the Free plan's 50 queries per invocation for the rest of the request; the scheduled orphan sweep runs in its own cron invocation. Each sweep therefore processes at most 600 keys and checkpoints after the last one, so a large bucket is collected over several 5-minute runs. A full pass takes about `object count / 600` sweeps.
 - Recipients whose cached drawn signature was retired see "expired" and are asked to draw again. The browser retries an upload refusal once automatically.
 
 ## Tombstones

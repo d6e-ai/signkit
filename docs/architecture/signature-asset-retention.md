@@ -35,10 +35,22 @@ Replay is proven from the durable receipt only and never touches assets or the l
 
 Orphan sweep (`OrphanCollector.sweep`):
 
-1. Aged, unreferenced `signature-assets/` keys go through `retireOrphan(scope, now, now - grace)`, and only `retired` results are deleted. Retirement, which may be a tombstone for a key whose owner no longer exists, commits before `deleteMany`.
+1. Aged, unreferenced `signature-assets/` keys go through `retireOrphans(scopes, now, now - grace)` in chunks of at most 100, and only `retired` results are deleted. Retirement, which may be a tombstone for a key whose owner no longer exists, commits before that chunk's `deleteMany`.
 2. If the delete fails, the sweep throws before advancing the checkpoint, so the next sweep re-lists the key and deletes it, because retirement is idempotent.
-3. Abandoned registrations go through `listPendingBefore` (bounded at 25) and then `head`. When the object is absent, `retireAbandonedPending` runs, guarded by the same cutoff.
-4. `dryRun` uses `previewRetirement` and counts abandoned registrations without writing.
+3. Abandoned registrations go through `listPendingBefore` (bounded at 25) and then `head`. Those whose object is absent are retired by one `retireAbandonedRegistrations` call, guarded by the same cutoff.
+4. `dryRun` uses `previewRetirements` and counts abandoned registrations without writing.
+
+## D1 statement budget
+
+D1 counts every statement, batched or not, against its per-invocation query limit: 50 on Free and 1,000 on Paid. Ledger sweep calls are therefore bulk. Each one takes at most 100 scopes and runs a constant number of statements. `retireOrphans` runs 2, while `previewRetirements`, `listPendingBefore`, and `retireAbandonedRegistrations` run 1 each. An empty batch runs none.
+
+On D1 the collector runs under `D1_ORPHAN_SWEEP_STATEMENT_BUDGET`:
+
+- At most 40 statements per sweep, leaving 10 for the rest of the invocation.
+- Fixed overhead of 4 statements: checkpoint read and write, plus the pending listing and bulk retirement of abandoned registrations.
+- Up to 6 statements per 100-key chunk: 4 for the reference lookup and 2 for the bulk retirement or preview.
+
+Each list page holds only as many keys as the remaining budget can fully process, so one route sweep handles at most 600 keys. The checkpoint then resumes immediately after the last processed key, and the next sweep continues from there. A delete failure still throws before the checkpoint write, so the same keys are retried, at the same per-chunk cost even when they are already retired. PostgreSQL runs without a statement budget.
 
 ## Ordering argument
 

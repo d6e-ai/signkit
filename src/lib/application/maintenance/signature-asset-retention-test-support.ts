@@ -394,10 +394,74 @@ export function defineSignatureRetentionScenarios(harness: () => RetentionHarnes
 		const retired: SignatureAssetScope = { ...asset.scope, sha256: '7'.repeat(64) };
 		await h.ledger.registerPending(retired, RETENTION_AGED_AT);
 		expect(
-			await h.ledger.retireAbandonedPending(retired, RETENTION_AGED_AT, RETENTION_NOW.toISOString())
-		).toBe(true);
+			await h.ledger.retireAbandonedRegistrations(
+				[retired],
+				RETENTION_AGED_AT,
+				RETENTION_NOW.toISOString()
+			)
+		).toBe(1);
 		await expect(h.forceState(retired, 'pending')).rejects.toThrow();
 		await expect(h.forceState(retired, 'bound')).rejects.toThrow();
+	});
+
+	it('decides a mixed bulk retirement per scope, in input order, and caps the batch size', async () => {
+		const h: RetentionHarness = harness();
+		const token: string = await h.seed('signature');
+		const asset: RetentionAsset = retentionAsset();
+		const objects = new AgedObjectStore();
+		objects.seed(asset.key, asset.png, asset.scope.sha256);
+		await h.ledger.registerPending(asset.scope, RETENTION_AGED_AT);
+		expect((await signer(h, objects).sign(signInput(token, asset.ref))).outcome).toBe('published');
+		const at = (sha256: string): SignatureAssetScope => ({ ...asset.scope, sha256 });
+		const agedPending: SignatureAssetScope = at('a1'.repeat(32));
+		const freshPending: SignatureAssetScope = at('b2'.repeat(32));
+		const alreadyRetired: SignatureAssetScope = at('c3'.repeat(32));
+		const legacy: SignatureAssetScope = at('d4'.repeat(32));
+		const unowned: SignatureAssetScope = {
+			envelopeId: RETENTION_OTHER_ENVELOPE_ID,
+			recipientId: '01920019-0000-7000-8000-0000000001fd',
+			sha256: 'e5'.repeat(32)
+		};
+		await h.ledger.registerPending(agedPending, RETENTION_AGED_AT);
+		await h.ledger.registerPending(freshPending, RETENTION_NOW.toISOString());
+		await h.ledger.registerPending(alreadyRetired, RETENTION_AGED_AT);
+		await h.ledger.retireAbandonedRegistrations(
+			[alreadyRetired],
+			RETENTION_AGED_AT,
+			RETENTION_NOW.toISOString()
+		);
+		const batch: SignatureAssetScope[] = [
+			freshPending,
+			asset.scope,
+			legacy,
+			alreadyRetired,
+			unowned,
+			agedPending
+		];
+		const cutoff: string = '2026-09-23T02:00:00.000Z';
+
+		expect(await h.ledger.previewRetirements(batch, cutoff)).toEqual([
+			false,
+			false,
+			true,
+			true,
+			true,
+			true
+		]);
+		expect(await h.ledger.retireOrphans(batch, RETENTION_NOW.toISOString(), cutoff)).toEqual([
+			'pending',
+			'bound',
+			'retired',
+			'retired',
+			'retired',
+			'retired'
+		]);
+		const oversized: SignatureAssetScope[] = Array.from({ length: 101 }, (_, index) =>
+			at(index.toString(16).padStart(64, '9'))
+		);
+		await expect(
+			h.ledger.retireOrphans(oversized, RETENTION_NOW.toISOString(), cutoff)
+		).rejects.toThrow(RangeError);
 	});
 
 	it('tombstones and collects an unreferenced legacy object whose recipient no longer exists', async () => {

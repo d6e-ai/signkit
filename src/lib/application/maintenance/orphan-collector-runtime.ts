@@ -2,6 +2,7 @@ import { env } from '$env/dynamic/private';
 import { D1SignatureAssetLedger } from '$lib/adapters/db/d1-signature-asset-ledger';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import {
+	D1_ORPHAN_SWEEP_STATEMENT_BUDGET,
 	D1OrphanReferenceStore,
 	D1OrphanSweepCheckpointStore,
 	OrphanCollector,
@@ -26,7 +27,8 @@ export async function resolveOrphanCollector(
 			new D1OrphanReferenceStore(database),
 			(): Date => new Date(),
 			new D1OrphanSweepCheckpointStore(database),
-			new D1SignatureAssetLedger(database)
+			new D1SignatureAssetLedger(database),
+			D1_ORPHAN_SWEEP_STATEMENT_BUDGET
 		);
 	}
 
