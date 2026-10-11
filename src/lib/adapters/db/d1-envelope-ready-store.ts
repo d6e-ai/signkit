@@ -1,3 +1,4 @@
+import { validStoredReadyReceipt } from '$lib/domain/commands/ready';
 import type { Envelope, Recipient, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
 import type {
 	EnvelopeReadyStore,
@@ -240,36 +241,15 @@ async function validStoredReceipt(
 	row: ReadyCommandRow,
 	recipients: readonly Recipient[]
 ): Promise<boolean> {
-	if (
-		recipients.some(
-			(recipient: Recipient): boolean =>
-				recipient.envelopeId !== row.envelope_id || recipient.status !== 'pending'
-		)
-	) {
-		return false;
-	}
-	const canonicalRequest: string = JSON.stringify({
-		expectedGeneration: row.expected_generation,
-		recipients: recipients.map((recipient: Recipient) => ({
-			email: recipient.email,
-			name: recipient.name,
-			role: recipient.role,
-			locale: recipient.locale,
-			routingOrder: recipient.routingOrder
-		}))
-	});
-	const expectedAuditPayload: string = JSON.stringify({
-		commitSha: row.commit_sha,
-		generation: row.expected_generation,
-		recipients: recipients.map((recipient: Recipient) => ({
-			id: recipient.id,
-			role: recipient.role,
-			routingOrder: recipient.routingOrder
-		}))
-	});
-	return (
-		(await sha256(canonicalRequest)) === row.request_hash &&
-		expectedAuditPayload === row.audit_payload_json
+	return validStoredReadyReceipt(
+		{
+			envelopeId: row.envelope_id,
+			expectedGeneration: row.expected_generation,
+			commitSha: row.commit_sha,
+			requestHash: row.request_hash,
+			auditPayloadJson: row.audit_payload_json
+		},
+		recipients
 	);
 }
 
@@ -311,16 +291,6 @@ function isRecipientRole(value: unknown): value is RecipientRole {
 
 function isRecipientStatus(value: unknown): value is RecipientStatus {
 	return ['pending', 'viewed', 'completed', 'declined'].includes(String(value));
-}
-
-async function sha256(value: string): Promise<string> {
-	const digest: ArrayBuffer = await crypto.subtle.digest(
-		'SHA-256',
-		new TextEncoder().encode(value)
-	);
-	return Array.from(new Uint8Array(digest), (byte: number): string =>
-		byte.toString(16).padStart(2, '0')
-	).join('');
 }
 
 function resultFromCommand(command: PublishReadyEnvelopeCommand): PublishedReadyEnvelope {

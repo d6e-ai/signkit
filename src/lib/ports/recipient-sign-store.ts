@@ -1,5 +1,10 @@
 import type { FieldType } from '$lib/domain/envelope';
 
+export {
+	canonicalRecipientSignFingerprint,
+	fingerprintValuesFromStored
+} from '$lib/domain/commands/recipient-sign';
+
 export interface SignLookupKey {
 	capabilityHash: string;
 	expectedEnvelopeId: string;
@@ -22,53 +27,6 @@ export interface StoredSignValue {
 	fieldType: FieldType;
 	valueJson: string;
 	valueSha256: string;
-}
-
-/**
- * Canonical JSON for the signing request fingerprint. Value order is sorted
- * by field ID so equivalent submissions hash identically, and the payload
- * uses already-normalized values so durable replay can reconstruct the same
- * digest from stored `field_value.value_json` rows.
- */
-export function canonicalRecipientSignFingerprint(input: {
-	envelopeId: string;
-	recipientId: string;
-	capabilityHash: string;
-	expectedFieldGeneration: number;
-	values: readonly SignFingerprintValue[];
-}): string {
-	const values: SignFingerprintValue[] = [...input.values]
-		.map((entry: SignFingerprintValue): SignFingerprintValue => ({
-			fieldId: entry.fieldId,
-			value: entry.value
-		}))
-		.sort((left: SignFingerprintValue, right: SignFingerprintValue): number =>
-			left.fieldId < right.fieldId ? -1 : left.fieldId > right.fieldId ? 1 : 0
-		);
-	return JSON.stringify({
-		envelopeId: input.envelopeId,
-		recipientId: input.recipientId,
-		capabilityHash: input.capabilityHash,
-		expectedFieldGeneration: input.expectedFieldGeneration,
-		values
-	});
-}
-
-export function fingerprintValuesFromStored(
-	stored: readonly StoredSignValue[]
-): readonly SignFingerprintValue[] | null {
-	const values: SignFingerprintValue[] = [];
-	for (const row of stored) {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(row.valueJson) as unknown;
-		} catch {
-			return null;
-		}
-		if (typeof parsed !== 'string' && typeof parsed !== 'boolean') return null;
-		values.push({ fieldId: row.fieldId, value: parsed });
-	}
-	return values;
 }
 
 export interface SignAuditHead {

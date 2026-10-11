@@ -74,7 +74,7 @@ describe('EnvelopeReadyApplication', () => {
 			actorType: 'user',
 			actorId: actor.id,
 			idempotencyKey: 'ready-1',
-			requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/)
+			requestFingerprint: 'a0d2aa87421965381dde60394b9d69ff990315623848326eb99b77e291b7925e'
 		});
 		expect(store.commands[0].recipients).toMatchObject([
 			{ email: 'a@example.com', name: 'Alice', role: 'signer', routingOrder: 1 },
