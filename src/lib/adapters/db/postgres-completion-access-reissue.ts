@@ -132,14 +132,17 @@ export class PostgresCompletionAccessReissueStore implements CompletionAccessRei
 					// this envelope's audit chain (artifact publication/repair, other
 					// reissues) takes the same envelope-first lock, so holding it here
 					// serializes against a concurrent repair or a racing duplicate.
+					const preparation: CompletionAccessReissuePreparationOutcome =
+						await this.#evaluateEligibility(transaction, command, command, true);
+					// The receipt is resolved only once the envelope lock is held: a
+					// same-key duplicate that queued on that lock behind the winning
+					// call must see the winner's committed receipt and replay it,
+					// never fall through to the successor it left behind (stale).
 					const replay: ReissueReplayOutcome | null = await this.#resolveCommand(
 						transaction,
 						command
 					);
 					if (replay !== null) return replay;
-
-					const preparation: CompletionAccessReissuePreparationOutcome =
-						await this.#evaluateEligibility(transaction, command, command, true);
 					if (preparation.outcome !== 'ready') {
 						return publishOutcomeFromPreparation(preparation);
 					}
@@ -226,15 +229,56 @@ export class PostgresCompletionAccessReissueStore implements CompletionAccessRei
 			);
 		} catch (error: unknown) {
 			// Never classified from provider-specific error text -- only from
-			// durable evidence read back below (a concurrent duplicate that raced
-			// this one to a unique-constraint violation, for example, is a replay).
-			const classified: ReissueReplayOutcome | null = await this.#resolveCommand(
-				this.#sql,
-				command
-			);
+			// durable evidence read back below. Anything that evidence does not
+			// prove is rethrown unchanged.
+			let classified: PublishCompletionAccessReissueOutcome | null;
+			try {
+				classified = await this.#classifyPublishFailure(command);
+			} catch {
+				throw error;
+			}
 			if (classified !== null) return classified;
 			throw error;
 		}
+	}
+
+	/**
+	 * Reads back what a failed publication left behind, under the envelope
+	 * row lock: every audit insert's foreign-key check share-locks that row,
+	 * so an in-flight audit writer has committed or rolled back before the
+	 * head is read. A committed receipt for this key (a concurrent duplicate
+	 * that won the race) is a replay or an idempotency conflict. An audit
+	 * head that has moved past the one this command chained onto proves a
+	 * concurrent audit writer took the slot, so the command can never commit
+	 * as built: a retryable `integrity_error`, re-prepared from the new head
+	 * by the service. With the head unchanged, nothing is proven and the
+	 * caller rethrows the original error.
+	 */
+	async #classifyPublishFailure(
+		command: PublishCompletionAccessReissueCommand
+	): Promise<PublishCompletionAccessReissueOutcome | null> {
+		return await this.#sql.begin(
+			async (transaction): Promise<PublishCompletionAccessReissueOutcome | null> => {
+				await this.#readEnvelopeStatus(transaction, command.envelopeId, true);
+				const replay: ReissueReplayOutcome | null = await this.#resolveCommand(
+					transaction,
+					command
+				);
+				if (replay !== null) return replay;
+				const head: ReissueAuditHead | null = await this.#readAuditHead(
+					transaction,
+					command.envelopeId
+				);
+				if (
+					head !== null &&
+					(head.sequence !== command.expectedAuditSequence ||
+						head.eventHash !== command.previousAuditHash)
+				) {
+					return { outcome: 'integrity_error' };
+				}
+				return null;
+			}
+		);
 	}
 
 	async #evaluateEligibility(
