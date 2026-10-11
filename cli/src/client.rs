@@ -18,115 +18,6 @@ pub struct BinaryGetSpec {
     pub max_bytes: usize,
 }
 
-#[cfg(test)]
-mod problem_contract_tests {
-    use super::SignKitClient;
-    use crate::error::CliError;
-    use crate::types::ProblemDetail;
-    use serde::Deserialize;
-    use serde_json::Value;
-    use std::collections::BTreeMap;
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ProblemFixture {
-        name: String,
-        http_status: u16,
-        path: String,
-        body: BTreeMap<String, Value>,
-        expected: BTreeMap<String, Value>,
-    }
-
-    fn take_problem(error: CliError) -> ProblemDetail {
-        match error {
-            CliError::ServerProblem(problem) => *problem,
-            other => panic!("expected a server problem, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn browser_and_cli_share_problem_wire_fixtures() {
-        let fixtures: Vec<ProblemFixture> =
-            serde_json::from_str(include_str!("../tests/fixtures/http-problems.json")).unwrap();
-        for fixture in fixtures {
-            let bytes: Vec<u8> = serde_json::to_vec(&fixture.body).unwrap();
-            let problem: ProblemDetail =
-                take_problem(SignKitClient::problem_from_bytes_with_title(
-                    &fixture.path,
-                    fixture.http_status,
-                    &bytes,
-                    "HTTP Error",
-                ));
-            let actual: Value = serde_json::to_value(&problem).unwrap();
-            for (field, expected) in fixture.expected {
-                assert_eq!(actual[&field], expected, "{}: {field}", fixture.name);
-            }
-            // The CLI deliberately retains unknown fields; browser UI parsing
-            // consumes only its known fields. Do not unify these policies.
-            assert_eq!(
-                problem.extra.get("requestId"),
-                fixture.body.get("requestId")
-            );
-        }
-    }
-
-    #[test]
-    fn json_and_binary_paths_keep_their_own_fallback_titles() {
-        for bytes in [b"{}".as_slice(), b"not JSON".as_slice()] {
-            let json_problem: ProblemDetail =
-                take_problem(SignKitClient::problem_from_bytes_with_title(
-                    "/api/v1/envelopes",
-                    502,
-                    bytes,
-                    "Bad Gateway",
-                ));
-            let binary_problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
-                "/api/v1/envelopes",
-                502,
-                bytes,
-            ));
-            assert_eq!(json_problem.title, "Bad Gateway");
-            assert_eq!(binary_problem.title, "HTTP Error");
-            assert_eq!(json_problem.status, 502);
-            assert_eq!(binary_problem.status, 502);
-            assert_eq!(json_problem.instance, "/api/v1/envelopes");
-            assert_eq!(binary_problem.instance, "/api/v1/envelopes");
-        }
-        let problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
-            "/api/v1/envelopes",
-            503,
-            br#"{"status":0,"title":"","instance":"","type":"urn:custom"}"#,
-        ));
-        assert_eq!(problem.status, 503);
-        assert_eq!(problem.r#type, "urn:custom");
-    }
-
-    #[test]
-    fn proxy_details_preserve_whitespace_and_utf8_safe_500_byte_bound() {
-        let cases: Vec<(Vec<u8>, String)> = vec![
-            (
-                b"  \n".to_vec(),
-                "HTTP request returned status 502".to_string(),
-            ),
-            (b" short ".to_vec(), " short ".to_string()),
-            (vec![b'x'; 500], "x".repeat(500)),
-            (
-                format!("{}🦀extra", "x".repeat(499)).into_bytes(),
-                format!("{}...", "x".repeat(499)),
-            ),
-            (vec![0xff], "�".to_string()),
-        ];
-        for (bytes, expected) in cases {
-            let problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
-                "/api/v1/envelopes",
-                502,
-                &bytes,
-            ));
-            assert_eq!(problem.detail, expected);
-        }
-    }
-}
-
 impl BinaryGetSpec {
     pub const DOCX: Self = Self {
         accept: "application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/problem+json",
@@ -944,5 +835,114 @@ impl SignKitClient {
         }
 
         Ok(buffer)
+    }
+}
+
+#[cfg(test)]
+mod problem_contract_tests {
+    use super::SignKitClient;
+    use crate::error::CliError;
+    use crate::types::ProblemDetail;
+    use serde::Deserialize;
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProblemFixture {
+        name: String,
+        http_status: u16,
+        path: String,
+        body: BTreeMap<String, Value>,
+        expected: BTreeMap<String, Value>,
+    }
+
+    fn take_problem(error: CliError) -> ProblemDetail {
+        match error {
+            CliError::ServerProblem(problem) => *problem,
+            other => panic!("expected a server problem, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn browser_and_cli_share_problem_wire_fixtures() {
+        let fixtures: Vec<ProblemFixture> =
+            serde_json::from_str(include_str!("../tests/fixtures/http-problems.json")).unwrap();
+        for fixture in fixtures {
+            let bytes: Vec<u8> = serde_json::to_vec(&fixture.body).unwrap();
+            let problem: ProblemDetail =
+                take_problem(SignKitClient::problem_from_bytes_with_title(
+                    &fixture.path,
+                    fixture.http_status,
+                    &bytes,
+                    "HTTP Error",
+                ));
+            let actual: Value = serde_json::to_value(&problem).unwrap();
+            for (field, expected) in fixture.expected {
+                assert_eq!(actual[&field], expected, "{}: {field}", fixture.name);
+            }
+            // The CLI deliberately retains unknown fields; browser UI parsing
+            // consumes only its known fields. Do not unify these policies.
+            assert_eq!(
+                problem.extra.get("requestId"),
+                fixture.body.get("requestId")
+            );
+        }
+    }
+
+    #[test]
+    fn json_and_binary_paths_keep_their_own_fallback_titles() {
+        for bytes in [b"{}".as_slice(), b"not JSON".as_slice()] {
+            let json_problem: ProblemDetail =
+                take_problem(SignKitClient::problem_from_bytes_with_title(
+                    "/api/v1/envelopes",
+                    502,
+                    bytes,
+                    "Bad Gateway",
+                ));
+            let binary_problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
+                "/api/v1/envelopes",
+                502,
+                bytes,
+            ));
+            assert_eq!(json_problem.title, "Bad Gateway");
+            assert_eq!(binary_problem.title, "HTTP Error");
+            assert_eq!(json_problem.status, 502);
+            assert_eq!(binary_problem.status, 502);
+            assert_eq!(json_problem.instance, "/api/v1/envelopes");
+            assert_eq!(binary_problem.instance, "/api/v1/envelopes");
+        }
+        let problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
+            "/api/v1/envelopes",
+            503,
+            br#"{"status":0,"title":"","instance":"","type":"urn:custom"}"#,
+        ));
+        assert_eq!(problem.status, 503);
+        assert_eq!(problem.r#type, "urn:custom");
+    }
+
+    #[test]
+    fn proxy_details_preserve_whitespace_and_utf8_safe_500_byte_bound() {
+        let cases: Vec<(Vec<u8>, String)> = vec![
+            (
+                b"  \n".to_vec(),
+                "HTTP request returned status 502".to_string(),
+            ),
+            (b" short ".to_vec(), " short ".to_string()),
+            (vec![b'x'; 500], "x".repeat(500)),
+            (
+                format!("{}🦀extra", "x".repeat(499)).into_bytes(),
+                format!("{}...", "x".repeat(499)),
+            ),
+            (vec![0xff], "�".to_string()),
+        ];
+        for (bytes, expected) in cases {
+            let problem: ProblemDetail = take_problem(SignKitClient::problem_from_bytes(
+                "/api/v1/envelopes",
+                502,
+                &bytes,
+            ));
+            assert_eq!(problem.detail, expected);
+        }
     }
 }
