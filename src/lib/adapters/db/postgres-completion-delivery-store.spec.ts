@@ -167,7 +167,7 @@ describe('PostgresCompletionDeliveryStore.enrollDeliveries', () => {
 		expect(scripted.beginCalls).toBe(1);
 		expect(scripted.transactionQueries).toHaveLength(2);
 		expect(scripted.transactionQueries[0].text).toContain(
-			'ON CONFLICT (envelope_id, recipient_id) DO NOTHING'
+			'ON CONFLICT (envelope_id, recipient_id, generation) DO NOTHING'
 		);
 		expect(scripted.transactionQueries[0].text).toContain("'pending'");
 		expect(scripted.transactionQueries[0].text).toContain('true');
@@ -395,6 +395,30 @@ describe('PostgresCompletionDeliveryStore.failDelivery', () => {
 			baseFailCommand.failedAt,
 			baseFailCommand.nextAvailableAt,
 			baseFailCommand.errorCode,
+			null,
+			baseFailCommand.failedAt,
+			baseFailCommand.deliveryId,
+			baseFailCommand.claimToken
+		]);
+	});
+
+	it('persists the real failure cause separately from the (possibly exhaustion-overwritten) last_error', async () => {
+		const scripted = new ScriptedPostgres([[{ id: 'delivery-1' }]]);
+		const store = new PostgresCompletionDeliveryStore(scripted.client());
+		await store.failDelivery({
+			...baseFailCommand,
+			retryable: false,
+			errorCode: 'completion_delivery_attempts_exhausted',
+			failureCauseCode: 'smtp_temporary_failure'
+		});
+
+		const query = scripted.directQueries[0];
+		expect(query.text).toContain('failure_cause_code =');
+		expect(query.values).toEqual([
+			baseFailCommand.failedAt,
+			baseFailCommand.nextAvailableAt,
+			'completion_delivery_attempts_exhausted',
+			'smtp_temporary_failure',
 			baseFailCommand.failedAt,
 			baseFailCommand.deliveryId,
 			baseFailCommand.claimToken

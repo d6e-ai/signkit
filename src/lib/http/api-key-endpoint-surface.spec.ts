@@ -5,6 +5,8 @@ import type { ApiKeyScope } from '$lib/security/api-key';
 import { DraftEnvelopeNotFoundError } from '$lib/application/drafts/draft-persistence';
 import { createApiKeyHttpHandlers } from './api-keys';
 import { createApiKeyRevokeHandler } from './api-key-revoke';
+import { createCompletionAccessReissueHandler } from './completion-access-reissue';
+import { createCompletionAccessReissueStatusHandler } from './completion-access-reissue-status';
 import { createCompletionArtifactStatusHandler } from './completion-artifact-status';
 import { createCompletionArtifactRetryHandler } from './completion-artifact-retry';
 import { createCompletionEvidenceHandler } from './completion-evidence';
@@ -230,6 +232,28 @@ function deliveriesCase(): ReadCase {
 	};
 }
 
+function completionDeliveriesCase(): ReadCase {
+	return {
+		name: 'GET /api/v1/envelopes/{envelopeId}/completion-deliveries',
+		pathname: `/api/v1/envelopes/${ENVELOPE_ID}/completion-deliveries`,
+		params: { envelopeId: ENVELOPE_ID },
+		invoke: async (apiKeyAuthentication) => {
+			const listCurrentDeliveries = vi.fn(async () => []);
+			const handler: RequestHandler = createCompletionAccessReissueStatusHandler(() => ({
+				listCurrentDeliveries
+			}));
+			const response: Response = await handler(
+				event({
+					pathname: `/api/v1/envelopes/${ENVELOPE_ID}/completion-deliveries`,
+					params: { envelopeId: ENVELOPE_ID },
+					apiKeyAuthentication
+				})
+			);
+			return { response, reachedService: listCurrentDeliveries.mock.calls.length === 1 };
+		}
+	};
+}
+
 function completionArtifactCase(): ReadCase {
 	return {
 		name: 'GET /api/v1/envelopes/{envelopeId}/completion-artifact',
@@ -347,6 +371,7 @@ const READ_CASES: readonly ReadCase[] = [
 	draftGetCase(),
 	docxGetCase(),
 	deliveriesCase(),
+	completionDeliveriesCase(),
 	completionArtifactCase(),
 	pdfSealStatusCase(),
 	pdfSealDownloadCase(),
@@ -537,6 +562,37 @@ describe('API key mutation surface', () => {
 			}
 		],
 		[
+			'POST /api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue',
+			'envelopes:send',
+			async () => {
+				const reissue = vi.fn(async () => ({
+					outcome: 'not_eligible' as const,
+					reason: 'predecessor_not_terminal' as const
+				}));
+				const response: Response = await createCompletionAccessReissueHandler(() => ({
+					reissue
+				}))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/recipients/${KEY_ID}/completion-access/reissue`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID, recipientId: KEY_ID },
+						body: JSON.stringify({
+							grantAccess: true,
+							expectedDeliveryId: ENVELOPE_ID,
+							expectedAttempts: 10,
+							expectedFailedAt: '2026-09-12T00:00:00.000Z',
+							expectedErrorCode: 'completion_delivery_attempts_exhausted'
+						}),
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: principal({ scopes: ['envelopes:send'] })
+						}
+					})
+				);
+				return { response, called: reissue.mock.calls.length === 1 };
+			}
+		],
+		[
 			'POST /api/v1/envelopes/{envelopeId}/pdf-seal',
 			'envelopes:send',
 			async () => {
@@ -673,6 +729,18 @@ describe('API key mutation surface', () => {
 						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/retry`,
 						method: 'POST',
 						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+					})
+				)
+		],
+		[
+			'POST /api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue',
+			async (): Promise<Response> =>
+				createCompletionAccessReissueHandler(() => null)(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/recipients/${KEY_ID}/completion-access/reissue`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID, recipientId: KEY_ID },
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
 					})
 				)

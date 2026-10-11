@@ -45,6 +45,7 @@
 		createEnvelopeMutationAttempt,
 		type EnvelopeMutationAttempt,
 		EnvelopesApiError,
+		type CurrentCompletionDeliveryRow,
 		type DraftWorkspaceResponse,
 		type Envelope,
 		type FieldGeometry,
@@ -113,6 +114,31 @@
 	let pdfSealRequestPending = $state(false);
 	let pdfSealDownloadPending = $state(false);
 	let requestedPdfSealProfile = $state<PdfSealProfile>('pades-b-t');
+
+	// Completion access reissue: a token/key-free read of each recipient's
+	// current completion-mail delivery generation, plus explicit recovery for
+	// one that terminally failed. Reissuing never revives the failed
+	// row -- it only appends a fresh, bounded-expiry successor.
+	let completionDeliveries = $state<readonly CurrentCompletionDeliveryRow[] | null>(null);
+	let completionDeliveriesError = $state<string | null>(null);
+	interface CompletionAccessReissueTarget {
+		recipientId: string;
+		recipientName: string;
+		expectedDeliveryId: string;
+		expectedAttempts: number;
+		expectedFailedAt: string;
+		expectedErrorCode: string;
+	}
+	let completionAccessReissueTarget = $state<CompletionAccessReissueTarget | null>(null);
+	let completionAccessReissuePending = $state(false);
+	let completionAccessReissueError = $state<string | null>(null);
+	let completionAccessReissueSuccessMessage = $state<string | null>(null);
+	let completionAccessReissueRefreshWarning = $state<string | null>(null);
+	// Keyed by the exact terminal generation's own delivery ID: a newer
+	// terminal generation is always a different delivery ID, so this never
+	// needs separate generation tracking the way the single-job completion
+	// artifact retry above does.
+	const completionAccessReissueAttempts = new SvelteMap<string, EnvelopeMutationAttempt>();
 
 	// Documents editor state.
 	let editedContent = $state<Record<string, string>>({});
@@ -586,6 +612,158 @@
 		await refreshCompletionStatus();
 	}
 
+	async function refreshCompletionDeliveries(): Promise<void> {
+		completionDeliveriesError = null;
+		try {
+			const result = await client.completionDeliveries(envelopeId);
+			if (!Array.isArray(result)) throw new Error('malformed completion-deliveries response');
+			completionDeliveries = result;
+		} catch {
+			completionDeliveries = null;
+			completionDeliveriesError = m.envelope_completion_access_unavailable();
+		}
+	}
+
+	function recipientDisplayName(recipientId: string): string {
+		return (
+			readyRecipients.find((recipient) => recipient.id === recipientId)?.name ??
+			recipientId.slice(0, 8)
+		);
+	}
+
+	function completionDeliveryStatusLabel(status: CurrentCompletionDeliveryRow['status']): string {
+		switch (status) {
+			case 'pending':
+				return m.envelope_completion_access_status_pending();
+			case 'processing':
+				return m.envelope_completion_access_status_processing();
+			case 'delivered':
+				return m.envelope_completion_access_status_delivered();
+			case 'failed':
+				return m.envelope_completion_access_status_failed();
+		}
+	}
+
+	function completionDeliveryStatusBadgeVariant(
+		status: CurrentCompletionDeliveryRow['status']
+	): 'secondary' | 'destructive' | 'outline' {
+		if (status === 'delivered') return 'secondary';
+		if (status === 'failed') return 'destructive';
+		return 'outline';
+	}
+
+	/** Only a terminal failed generation ever offers the action, eligible or not. */
+	function completionAccessReissueVisible(row: CurrentCompletionDeliveryRow): boolean {
+		return row.status === 'failed';
+	}
+
+	function completionAccessReissueDisabledReason(row: CurrentCompletionDeliveryRow): string | null {
+		if (row.eligibleForReissue) return null;
+		return m.envelope_completion_access_still_retrying();
+	}
+
+	function completionAccessReissueAttemptFor(deliveryId: string): EnvelopeMutationAttempt {
+		let attempt = completionAccessReissueAttempts.get(deliveryId);
+		if (attempt === undefined) {
+			attempt = createEnvelopeMutationAttempt();
+			completionAccessReissueAttempts.set(deliveryId, attempt);
+		}
+		return attempt;
+	}
+
+	function chooseCompletionAccessReissueTarget(row: CurrentCompletionDeliveryRow): void {
+		if (
+			completionAccessReissuePending ||
+			!completionAccessReissueVisible(row) ||
+			completionAccessReissueDisabledReason(row) !== null ||
+			row.failedAt === null ||
+			row.errorCode === null
+		) {
+			return;
+		}
+		completionAccessReissueError = null;
+		completionAccessReissueSuccessMessage = null;
+		completionAccessReissueRefreshWarning = null;
+		completionAccessReissueTarget = {
+			recipientId: row.recipientId,
+			recipientName: recipientDisplayName(row.recipientId),
+			expectedDeliveryId: row.deliveryId,
+			expectedAttempts: row.attempts,
+			expectedFailedAt: row.failedAt,
+			expectedErrorCode: row.errorCode
+		};
+	}
+
+	function closeCompletionAccessReissueDialog(): void {
+		if (completionAccessReissuePending) return;
+		completionAccessReissueError = null;
+		completionAccessReissueTarget = null;
+	}
+
+	async function confirmCompletionAccessReissue(): Promise<void> {
+		if (completionAccessReissuePending || completionAccessReissueTarget === null) return;
+		const target = completionAccessReissueTarget;
+		const attempt = completionAccessReissueAttemptFor(target.expectedDeliveryId);
+		const idempotencyKey = attempt.key();
+		completionAccessReissuePending = true;
+		completionAccessReissueError = null;
+		try {
+			await client.reissueCompletionAccess(
+				envelopeId,
+				target.recipientId,
+				{
+					expectedDeliveryId: target.expectedDeliveryId,
+					expectedAttempts: target.expectedAttempts,
+					expectedFailedAt: target.expectedFailedAt,
+					expectedErrorCode: target.expectedErrorCode
+				},
+				{ idempotencyKey }
+			);
+			attempt.succeeded();
+			completionAccessReissueSuccessMessage = m.envelope_completion_access_success({
+				name: target.recipientName
+			});
+			completionAccessReissueRefreshWarning = null;
+			completionAccessReissueTarget = null;
+			try {
+				const result = await client.completionDeliveries(envelopeId);
+				if (!Array.isArray(result)) throw new Error('malformed completion-deliveries response');
+				completionDeliveries = result;
+			} catch {
+				completionAccessReissueRefreshWarning = m.envelope_completion_access_refresh_failed();
+			}
+		} catch (cause) {
+			attempt.failed(cause);
+			if (
+				cause instanceof EnvelopesApiError &&
+				cause.type === 'urn:signkit:problem:completion-access-reissue-not-eligible'
+			) {
+				completionAccessReissueError = m.envelope_completion_access_not_eligible();
+			} else if (
+				cause instanceof EnvelopesApiError &&
+				cause.type === 'urn:signkit:problem:completion-access-reissue-stale-generation'
+			) {
+				completionAccessReissueError = m.envelope_completion_access_stale();
+			} else if (
+				cause instanceof EnvelopesApiError &&
+				cause.type === 'urn:signkit:problem:idempotency-key-conflict'
+			) {
+				completionAccessReissueError = m.envelope_completion_access_conflict();
+			} else if (
+				cause instanceof EnvelopesApiError &&
+				cause.type === 'urn:signkit:problem:completion-access-reissue-artifact-unavailable'
+			) {
+				completionAccessReissueError = m.envelope_completion_access_artifact_unavailable();
+			} else if (cause instanceof EnvelopesApiError && cause.status === 403) {
+				completionAccessReissueError = m.envelope_completion_access_forbidden();
+			} else {
+				completionAccessReissueError = m.envelope_completion_access_unavailable_action();
+			}
+		} finally {
+			completionAccessReissuePending = false;
+		}
+	}
+
 	async function load(): Promise<void> {
 		loading = true;
 		authRequired = false;
@@ -633,6 +811,7 @@
 			if (detail.envelope.status === 'completed') {
 				await refreshCompletionStatus();
 				await refreshPdfSealStatus();
+				await refreshCompletionDeliveries();
 			}
 		} catch (cause) {
 			if (cause instanceof EnvelopesApiError && cause.status === 401) {
@@ -1802,6 +1981,162 @@
 		</Card.Content>
 	</Card.Root>
 {/snippet}
+{#snippet completionAccessReissueSection()}
+	<Card.Root>
+		<Card.Header>
+			<Card.Title>{m.envelope_completion_access_title()}</Card.Title>
+			<Card.Description>{m.envelope_completion_access_description()}</Card.Description>
+		</Card.Header>
+		<Card.Content class="flex flex-col gap-4">
+			{#if completionAccessReissueSuccessMessage}
+				<Alert.Root>
+					<Alert.Description>{completionAccessReissueSuccessMessage}</Alert.Description>
+				</Alert.Root>
+			{/if}
+			{#if completionAccessReissueRefreshWarning}
+				<Alert.Root variant="destructive">
+					<IconAlertTriangle />
+					<Alert.Description>{completionAccessReissueRefreshWarning}</Alert.Description>
+				</Alert.Root>
+			{/if}
+			{#if completionDeliveriesError}
+				<Alert.Root variant="destructive">
+					<IconAlertTriangle />
+					<Alert.Description class="flex flex-col gap-3">
+						<p>{completionDeliveriesError}</p>
+						<div>
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={() => void refreshCompletionDeliveries()}
+							>
+								<IconRefresh data-icon="inline-start" />
+								{m.envelope_completion_access_refresh()}
+							</Button>
+						</div>
+					</Alert.Description>
+				</Alert.Root>
+			{:else if completionDeliveries === null}
+				<Skeleton class="h-24 w-full rounded-xl" />
+			{:else if completionDeliveries.length === 0}
+				<p class="text-sm text-muted-foreground">{m.envelope_completion_access_empty()}</p>
+			{:else}
+				<div class="overflow-x-auto">
+					<Table.Root>
+						<Table.Header>
+							<Table.Row>
+								<Table.Head>{m.envelope_completion_access_col_recipient()}</Table.Head>
+								<Table.Head>{m.envelope_completion_access_col_status()}</Table.Head>
+								<Table.Head>{m.envelope_completion_access_col_expires()}</Table.Head>
+								<Table.Head class="text-right"
+									>{m.envelope_completion_access_col_actions()}</Table.Head
+								>
+							</Table.Row>
+						</Table.Header>
+						<Table.Body>
+							{#each completionDeliveries as row (row.deliveryId)}
+								<Table.Row>
+									<Table.Cell>{recipientDisplayName(row.recipientId)}</Table.Cell>
+									<Table.Cell>
+										<Badge variant={completionDeliveryStatusBadgeVariant(row.status)}>
+											{completionDeliveryStatusLabel(row.status)}
+										</Badge>
+										{#if row.status === 'failed'}
+											<p class="mt-1 text-xs text-muted-foreground">
+												{row.failureCauseCode == null
+													? m.envelope_completion_access_cause_unknown()
+													: m.envelope_completion_access_cause({ code: row.failureCauseCode })}
+											</p>
+										{/if}
+									</Table.Cell>
+									<Table.Cell>
+										{row.accessRevokedAt === null ? formatDate(row.accessExpiresAt) : '—'}
+									</Table.Cell>
+									<Table.Cell class="text-right">
+										{#if completionAccessReissueVisible(row)}
+											{@const disabledReason = completionAccessReissueDisabledReason(row)}
+											<Button
+												size="sm"
+												variant="outline"
+												aria-label={m.envelope_completion_access_action_aria({
+													name: recipientDisplayName(row.recipientId)
+												})}
+												title={disabledReason ?? undefined}
+												aria-describedby={disabledReason !== null
+													? `completion-access-disabled-${row.deliveryId}`
+													: undefined}
+												disabled={completionAccessReissuePending || disabledReason !== null}
+												onclick={() => chooseCompletionAccessReissueTarget(row)}
+											>
+												{m.envelope_completion_access_action()}
+											</Button>
+											{#if disabledReason !== null}
+												<p
+													id={`completion-access-disabled-${row.deliveryId}`}
+													class="mt-1 text-xs text-muted-foreground"
+												>
+													{disabledReason}
+												</p>
+											{/if}
+										{/if}
+									</Table.Cell>
+								</Table.Row>
+							{/each}
+						</Table.Body>
+					</Table.Root>
+				</div>
+			{/if}
+		</Card.Content>
+	</Card.Root>
+	<AlertDialog.Root
+		bind:open={
+			() => completionAccessReissueTarget !== null,
+			(open) => {
+				if (!open) closeCompletionAccessReissueDialog();
+			}
+		}
+	>
+		{#if completionAccessReissueTarget !== null}
+			<AlertDialog.Content
+				escapeKeydownBehavior={completionAccessReissuePending ? 'ignore' : 'close'}
+			>
+				<AlertDialog.Header>
+					<AlertDialog.Title>
+						{m.envelope_completion_access_dialog_title({
+							name: completionAccessReissueTarget.recipientName
+						})}
+					</AlertDialog.Title>
+					<AlertDialog.Description>
+						{m.envelope_completion_access_dialog_description()}
+					</AlertDialog.Description>
+				</AlertDialog.Header>
+				{#if completionAccessReissueError}
+					<p class="text-sm font-medium text-destructive" role="alert">
+						{completionAccessReissueError}
+					</p>
+				{/if}
+				<AlertDialog.Footer>
+					<AlertDialog.Cancel
+						disabled={completionAccessReissuePending}
+						onclick={closeCompletionAccessReissueDialog}
+					>
+						{m.common_cancel()}
+					</AlertDialog.Cancel>
+					<AlertDialog.Action
+						disabled={completionAccessReissuePending}
+						onclick={(event) => {
+							event.preventDefault();
+							void confirmCompletionAccessReissue();
+						}}
+					>
+						{#if completionAccessReissuePending}<Spinner data-icon="inline-start" />{/if}
+						{m.envelope_completion_access_dialog_confirm()}
+					</AlertDialog.Action>
+				</AlertDialog.Footer>
+			</AlertDialog.Content>
+		{/if}
+	</AlertDialog.Root>
+{/snippet}
 {#snippet sentDocumentsList()}
 	<div class="flex flex-col gap-4">
 		<div class="flex justify-end">
@@ -2203,6 +2538,7 @@
 					</Card.Root>
 				{:else if envelope.status === 'completed'}
 					{@render completionArtifactSection()}
+					{@render completionAccessReissueSection()}
 					{#if draft !== null}
 						<div class="mt-2 flex flex-col gap-1">
 							<h2 class="text-sm font-medium">{m.envelope_documents_originals_title()}</h2>

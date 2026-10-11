@@ -123,7 +123,7 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						${item.sealedTokenSha256}, ${item.availableAt}::timestamptz, 0, NULL, NULL,
 						NULL, NULL, NULL, true, ${item.createdAt}::timestamptz, ${item.createdAt}::timestamptz
 					)
-					ON CONFLICT (envelope_id, recipient_id) DO NOTHING
+				ON CONFLICT (envelope_id, recipient_id, generation) DO NOTHING
 					RETURNING id`;
 				insertedCount += rows.length;
 			}
@@ -167,7 +167,9 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						sealed_token = NULL,
 						access_revoked_at = COALESCE(delivery.access_revoked_at, ${command.claimedAt}::timestamptz),
 						available_at = COALESCE(delivery.available_at, ${command.claimedAt}::timestamptz),
-						last_error = 'delivery_not_eligible', updated_at = ${command.claimedAt}::timestamptz
+						last_error = 'delivery_not_eligible',
+						failure_cause_code = 'delivery_not_eligible',
+						updated_at = ${command.claimedAt}::timestamptz
 					FROM terminal_candidates candidate
 					WHERE candidate.id = delivery.id`;
 
@@ -313,7 +315,9 @@ export class PostgresCompletionDeliveryStore implements CompletionDeliveryStore 
 						sealed_token = NULL,
 						access_revoked_at = COALESCE(access_revoked_at, ${command.failedAt}::timestamptz),
 						available_at = ${command.nextAvailableAt}::timestamptz,
-						last_error = ${command.errorCode}, updated_at = ${command.failedAt}::timestamptz
+						last_error = ${command.errorCode},
+						failure_cause_code = ${command.failureCauseCode ?? null},
+						updated_at = ${command.failedAt}::timestamptz
 					WHERE id = ${command.deliveryId}
 						AND status = 'processing' AND claim_token = ${command.claimToken}
 					RETURNING id`;

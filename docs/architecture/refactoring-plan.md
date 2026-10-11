@@ -2,11 +2,12 @@
 
 Status: proposed — 現行仕様ではなく、実装着手前の提案
 
-作成日: 2026-10-05。2026-10-10に基準コミットを更新。
+作成日: 2026-10-05。2026-10-11に基準コミットを更新。
 
-調査基準: 手元の最新ソースコミット `4f9267217bd236e361ba10860e76d6aa001de9b9`。#217 「fix:
-recover completion PDFs and enforce safe send limits」マージ後で、GitHub main・root local
-HEADと一致する。
+調査基準: 手元の最新ソースコミット `fd002586024763283bfca3c3bf4644335052f2f1`。
+#217・#219のマージ後を起点に、#218の明示的な完了アクセス再発行を実装したローカルHEAD。
+この文書更新時点では#218のPRレビュー・CI・マージは別の確認事項であり、GitHub mainと
+同一とは扱わない。
 
 この基準には、受信者Rust CLI (送信者キーとは別のcapability bearer + 操作と同時の
 `--consent`) 、オフラインの `--validate-only`、Node/PostgreSQL/S3での実サーバー送信者・受信者
@@ -17,11 +18,13 @@ provider/validator/job/API/CLI/UI/downloadとdual-validator CI) が既にある�
 instance層シールのままである。Vercelは依然CI-only/実験的。
 実Workers/D1/R2でのPRODUCT E2Eと、大きいPDFに対するWorker CPU/メモリの限界検証は、今も
 欠けている。SQLite harnessのD1テストは実D1の証明にならない。#217の作業で加えたローカル
-workerd上のD1 trigger fault-cut確認は、これより狭い範囲で、PRODUCT E2Eの代わりにならない。
+workerd上のD1 trigger fault-cut確認、#219のD1/R2・PostgreSQL/S3の署名asset競合検証、
+#218のD1移行・原子的再発行・rollback確認は、これより狭い範囲で、PRODUCT E2Eの代わりに
+ならない。D1の50 statement上限を再現したラッパー試験も、live WorkerのCPU/メモリ検証ではない。
 
-この基準と同じソースの#217最終差分では、統合server + 実PostgreSQL suite、ブラウザsuite、
-check/lintをローカルで通し、GitHub CIは全jobとCodeQLがgreenだった。これは今後のPR群のacceptance gate
-に、ここでの正確なテスト件数を固定する意味ではない。
+#217・#219の最終差分では、統合server + 実PostgreSQL suite、ブラウザsuite、check/lint、
+GitHub CI全jobとCodeQLを確認した。#218も同じローカル検証とPR確認を必要とする。
+これは今後のPR群のacceptance gateに、ここでの正確なテスト件数を固定する意味ではない。
 
 ## 結論
 
@@ -64,18 +67,19 @@ SignKitを別のアーキテクチャに作り直す必要はない。現在の�
 | 文書プレビューがDOCX exportのruntimeを借り、公開処理にGit読取・PDF生成・保存の責務が集まる                                                 | [envelope-document-pdf-runtime](../../src/lib/application/documents/envelope-document-pdf-runtime.ts)、`sent-document-pdf.ts`                         | 正本の読取、表現の生成、不変バイトの保存、DB公開を別の責任にする      |
 | オブジェクトの保存結果が不明な場合の再読取・ハッシュ検証が、下書きや完了成果物に分散する。orphan collectorには既存ポートとDB実装が同居する | [draft-persistence](../../src/lib/application/drafts/draft-persistence.ts)、`completion-artifact-service.ts`、`orphan-collector.ts`                   | 検証済みバイトと不変保存の契約を揃え、参照調査の既存境界を独立させる  |
 | 受信者ページが閲覧・辞退・承認・署名の再試行とreceipt検証をそれぞれ持つ                                                                    | [sign page](../../src/routes/sign/[envelopeId]/+page.svelte)                                                                                          | transportの再試行と操作固有の状態を分ける。署名の明示的意思を維持する |
-| HTTPのZod schema、OpenAPI、Rustのrequest型と一部の入力検証が別管理。route-parityはあるが、mutation schema drift専用specはない              | [OpenAPI](../../src/lib/openapi/document.ts)、[CLI入力処理](../../cli/src/commands/envelopes.rs)、`cli/src/commands/recipient.rs`、`cli/src/types.rs` | wire契約の責任者と、言語をまたぐ同じ入出力の適合テストを用意する      |
+| HTTPのZod schema、OpenAPI、Rustのrequest型と一部の入力検証が別管理。route-parityとmutation schema driftのspecは既にある                    | [OpenAPI](../../src/lib/openapi/document.ts)、[CLI入力処理](../../cli/src/commands/envelopes.rs)、`cli/src/commands/recipient.rs`、`cli/src/types.rs` | 既存specを残し、wire契約の責任者と言語をまたぐ適合fixtureを揃える     |
 
 #217までの作業で、primary manifest+PDFのDB公開の原子化、legacy PDF修復、送信前admissionの
 保守的な予約、キュー観測、generation CASによる安全なrequeue、mail送信条件の厳格化など、確認
 された不具合とマージ阻害要因への挙動修正は既に本体へ入っている。これらは運用上の修正であり、
 本計画のどの段階の完了成果物としても数えない。
-残存するふるまい変更は別issueで追跡する：[#218](https://github.com/d6e-ai/signkit/issues/218)
-(失効/scrub/revoke済み完了メールの明示的re-issue) 、
-[#219](https://github.com/d6e-ai/signkit/issues/219)
-(24時間超の未参照uploadに対するasset retentionとGCの競合調整) 。単純な
-直前re-checkは競合を縮小するが解消しない。これらにはdeterministicなbarrier fault testを
-用意し、挙動保存のextractionへ黙って混ぜない。
+この基準では[#219](https://github.com/d6e-ai/signkit/issues/219) の一方向の署名asset ledger
+(pending → bound または retired) とDB公開/GCの競合調整が本体へ入り、
+[#218](https://github.com/d6e-ai/signkit/issues/218) のterminal完了配送に対する明示的re-issueも
+実装した。新しいgrant・後続outbox・receipt・監査は原子的に公開し、古い失効済みgrantと
+証跡を変更しない。これらは別の挙動修正であり、R0〜R6の構造移行を達成したとは数えない。
+deterministicなbarrier fault test、履歴を保つreplay、旧失敗原因を推測しない読取を、今後の
+extractionが保持する既存契約として固定する。
 
 ## 3. 到達したい責務の境界
 
@@ -97,16 +101,16 @@ SignKitを別のアーキテクチャに作り直す必要はない。現在の�
 
 各段階は独立して検証・レビューできる変更に分ける。PRの単位は責務とリスクで決め、ファイル数では決めない。
 
-| 段階 | 内容                           | 完了を判断する成果                                                                                                                                    | 主な依存                                  |
-| ---- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| R0   | 現行契約の固定                 | readyの両DB契約テスト、旧receiptのgolden、依存違反の明示的baseline、実Workers/D1/R2のE2E gapの明示                                                    | なし                                      |
-| R1   | readyを最初の縦切りにする      | 正規化・receipt・監査生成の単一化、両DBのrow mapping、HTTPまでの同じ結果                                                                              | ready対象のR0だけ                         |
-| R2   | composition rootと権限の境界   | readyでcompositionを試し、operator/recipient/systemを明示化、App/env/具体providerへの依存をapplicationから外す                                        | R1                                        |
-| R3   | 文書・成果物の正本を早期に固定 | Draft/Sent/Completed/Sealedの検証済み型、検証/不変保存/操作固有DB公開/legacy修復と資源契約。対象のWorkers E2E・CPU/メモリゲート合格。#219は別挙動変更 | R2、成果物/send対象のR0とWorkersゲート    |
-| R4   | コマンドとルーティングの抽出   | void → fields → send、view/reissue/expiry、最後にsign/approveの共通ルーティング判断、declineは妥当な範囲で統合                                        | 対象のR0/R2/R3。sendはWorkersゲートも必須 |
-| R5   | durable jobの共通契約          | 共通lease/失敗contract、capped backoff、機能別error分類、host非依存job入口。既存の個別observability/requeueを一般化                                   | R2、対象のR3/R4                           |
-| R6   | API/UI/CLIの契約と状態         | wire schemaの単一責任、既存recipient CLI/validate-onlyを含むRust適合fixture、受信者controller、送信者read model                                       | R1から着手可能。対象のR3/R4と合流         |
-| R7   | 整理を完了する                 | 旧経路・不要fallbackの除去、依存ルールのerror化、upgrade/E2E/仕様の整合                                                                               | R3–R6                                     |
+| 段階 | 内容                           | 完了を判断する成果                                                                                                                                                    | 主な依存                                  |
+| ---- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| R0   | 現行契約の固定                 | readyの両DB契約テスト、旧receiptのgolden、依存違反の明示的baseline、実Workers/D1/R2のE2E gapの明示                                                                    | なし                                      |
+| R1   | readyを最初の縦切りにする      | 正規化・receipt・監査生成の単一化、両DBのrow mapping、HTTPまでの同じ結果                                                                                              | ready対象のR0だけ                         |
+| R2   | composition rootと権限の境界   | readyでcompositionを試し、operator/recipient/systemを明示化、App/env/具体providerへの依存をapplicationから外す                                                        | R1                                        |
+| R3   | 文書・成果物の正本を早期に固定 | Draft/Sent/Completed/Sealedの検証済み型、検証/不変保存/操作固有DB公開/legacy修復と資源契約。署名asset ledgerの不可逆性を保持。対象のWorkers E2E・CPU/メモリゲート合格 | R2、成果物/send対象のR0とWorkersゲート    |
+| R4   | コマンドとルーティングの抽出   | void → fields → send、view/reissue/expiry、最後にsign/approveの共通ルーティング判断、declineは妥当な範囲で統合                                                        | 対象のR0/R2/R3。sendはWorkersゲートも必須 |
+| R5   | durable jobの共通契約          | 共通lease/失敗contract、capped backoff、機能別error分類、host非依存job入口。既存の個別observability/requeueを一般化                                                   | R2、対象のR3/R4                           |
+| R6   | API/UI/CLIの契約と状態         | wire schemaの単一責任、既存recipient CLI/validate-onlyを含むRust適合fixture、受信者controller、送信者read model                                                       | R1から着手可能。対象のR3/R4と合流         |
+| R7   | 整理を完了する                 | 旧経路・不要fallbackの除去、依存ルールのerror化、upgrade/E2E/仕様の整合                                                                                               | R3–R6                                     |
 
 R3をR4より先に置くのは、完了成果物とsealの正本を先に固定しないと、R4のvoid/send/sign/approve
 ルーティングや後続のPAdES seal監査が、どのPDF・どの監査範囲を正本とするかで割れるため。
@@ -145,8 +149,8 @@ Workers実行ゲートが揃うまで完了扱いしない。
 - schema変更が本当に必要になった場合だけforward migrationを追加。リリース済みmigrationの書換えやデータ初期化を前提にしない。
 - legacy単一PDFなど既存形式の読取は明示的な互換入口に隔離する。利用状況と移行方法を確認せず削除しない。
 - legacy修復に使う過去のgzip/Markdown形式を読むgolden/versioned readerを、R3で修復経路を触る前に用意する。
-- #218・#219のdeterministic barrier fault testは、対象のPRより先に用意し、挙動保存のextractionとの差分比較に使う。
-- 基準コミットはGitHub mainの最新マージ済みHEADと一致する。実装時も手元のHEADと差分を確認し、リモートへの同期を勝手な前提にしない。
+- #218・#219で追加したdeterministic barrier fault testを残し、挙動保存のextractionの回帰ゲートに使う。
+- 実装時は手元のHEADとGitHub mainの差分を確認する。未マージ修正を捨てず、リモートとの同期を勝手な前提にしない。
 
 ## 6. 今回やらないこと
 
@@ -156,8 +160,8 @@ microservices、全面的なevent sourcing、ORMへの置換、汎用Unit of Wor
 Rustの全面code generationは最初から採用しない。まず共有fixtureで契約のずれを検出する。
 
 未完了の製品課題は別扱いとする。revision/diff APIの拡張、証明書に紐づく受信者本人の適格署名、
-Vercelの実運用対応、native Blob、enterprise機能を、既存コードの整理と混ぜない。#218・#219の挙動変更も、本
-計画のbehavior-preserving extractionとは別のsliceとして扱う。
+Vercelの実運用対応、native Blob、enterprise機能を、既存コードの整理と混ぜない。#218・#219の
+挙動修正も、本計画のbehavior-preserving extractionの完了成果には数えない。
 将来追加しやすい境界は用意するが、それらの機能の完成を本計画の成果として数えない。
 一方、Workers/D1/R2のE2EとWorker CPU/メモリの検証は、対象の成果物/送信経路を移す際の
 未充足ゲートとして扱う。既存の静的容量テストだけで実行可能性まで確認済みとはしない。

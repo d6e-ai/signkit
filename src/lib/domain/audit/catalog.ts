@@ -37,7 +37,11 @@ export const AUDIT_EVENT_CATALOG: Readonly<
 	// catalogued for hashes so a later agent writer cannot mint an invisible actor.
 	'recipient.capability_reissued': { actorTypes: ['user', 'agent'] },
 	// D1 0034. System expiry drain; webhook-subscribable like other catalog events.
-	'envelope.expired': { actorTypes: ['system'] }
+	'envelope.expired': { actorTypes: ['system'] },
+	// D1 0055 / Postgres 0051. Completion access reissue after exhausted mail;
+	// session callers stamp `user` and API-key callers `agent`. Appended after
+	// the completion anchor, so artifacts already anchored are unaffected.
+	'recipient.completion_access_reissued': { actorTypes: ['user', 'agent'] }
 };
 
 export const WEBHOOK_AUDIT_EVENT_TYPES: readonly string[] = Object.freeze(

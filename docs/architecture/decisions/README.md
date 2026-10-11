@@ -2,6 +2,8 @@
 
 Dated notes recording the rationale behind choices made in [../](../README.md) at the time they were made. They are historical context, not normative: the current normative contract always lives in the architecture spec files, and a decision note never overrides them.
 
+- [2026-10-11-completion-access-reissue.md](./2026-10-11-completion-access-reissue.md) — explicit, audited successor grants for terminal completion delivery without reviving old access or rewriting completion evidence.
+- [2026-10-11-signature-asset-retention-ledger.md](./2026-10-11-signature-asset-retention-ledger.md) — one-way binding/retirement protects drawn signature bytes from publication/garbage-collection races.
 - [2026-10-10-cloudflare-cli-migration.md](./2026-10-10-cloudflare-cli-migration.md) — cf owns build output and typed runtime configuration; local D1 remains a verified Wrangler compatibility fallback.
 - [2026-10-10-operational-boundary-refactoring.md](./2026-10-10-operational-boundary-refactoring.md) — re-baselines the 2026-10-05 design-first refactoring proposal on post-#217 `main`, swaps the artifact-lifecycle and command/routing phase order, and tracks #218/#219 as separate behavior slices.
 
