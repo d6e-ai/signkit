@@ -11,6 +11,13 @@
 -- object, so a crash between that commit and the delete is retried from the
 -- object listing, and the exact scoped key a delayed delete could still land
 -- on is never resurrected by a fresh `pending` registration.
+--
+-- A `retired` tombstone must be insertable for ANY canonical key the sweep
+-- deletes, including a legacy object whose recipient no longer exists, so an
+-- owner created or restored later can never re-register that exact key. The
+-- ownership foreign key therefore binds the generated `owner_*` columns,
+-- which equal the scope for live (`pending`/`bound`) rows and are NULL only
+-- for tombstones (MATCH SIMPLE skips an all-NULL key).
 CREATE TABLE signature_asset (
   envelope_id text NOT NULL,
   recipient_id text NOT NULL,
@@ -20,10 +27,14 @@ CREATE TABLE signature_asset (
   pending_touched_at timestamptz,
   bound_at timestamptz,
   retired_at timestamptz,
+  owner_envelope_id text
+    GENERATED ALWAYS AS (CASE WHEN state <> 'retired' THEN envelope_id END) STORED,
+  owner_recipient_id text
+    GENERATED ALWAYS AS (CASE WHEN state <> 'retired' THEN recipient_id END) STORED,
   PRIMARY KEY (envelope_id, recipient_id, sha256),
-  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
-  -- Exact scoped ownership: the recipient must belong to this envelope.
-  FOREIGN KEY (envelope_id, recipient_id) REFERENCES recipient(envelope_id, id),
+  -- Exact scoped ownership of live rows: the recipient must belong to this envelope.
+  CONSTRAINT signature_asset_live_owner
+    FOREIGN KEY (owner_envelope_id, owner_recipient_id) REFERENCES recipient(envelope_id, id),
   CONSTRAINT signature_asset_sha256_hex CHECK (sha256 ~ '^[0-9a-f]{64}$'),
   CONSTRAINT signature_asset_state_timestamps CHECK (
     (state = 'pending' AND pending_touched_at IS NOT NULL AND bound_at IS NULL AND retired_at IS NULL) OR

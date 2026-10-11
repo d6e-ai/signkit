@@ -1,5 +1,5 @@
 import type { Cookies } from '@sveltejs/kit';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecipientWorkspace } from '$lib/application/signing/recipient-workspace';
 import { declinedReceiptCookieName } from '$lib/server/declined-receipt-session';
 import { completedReceiptCookieName } from '$lib/server/completed-receipt-session';
@@ -128,8 +128,17 @@ function event(envelopeId: string, cookieMap: Record<string, string> = {}) {
 	};
 }
 
+/**
+ * Receipt fixtures below are minted at 2026-09-11T00:02Z and expire 30 days
+ * later. Pin only `Date` just after minting so expiry is decided by the
+ * fixtures, not the wall clock (timers and promises stay real).
+ */
+const FIXTURE_NOW: Date = new Date('2026-09-11T00:03:00.000Z');
+
 describe('envelope-scoped signing page load', () => {
 	beforeEach((): void => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(FIXTURE_NOW);
 		resolveWorkspace.mockReset();
 		resolveDeclined.mockReset();
 		resolveCompleted.mockReset();
@@ -138,6 +147,10 @@ describe('envelope-scoped signing page load', () => {
 		unsealCompleted.mockReset();
 		resolveDeclined.mockResolvedValue(null);
 		resolveCompleted.mockResolvedValue(null);
+	});
+
+	afterEach((): void => {
+		vi.useRealTimers();
 	});
 
 	it('reloads from the envelope-scoped cookie without exposing a capability token', async () => {
@@ -342,6 +355,50 @@ describe('envelope-scoped signing page load', () => {
 		expect(input.store[declinedReceiptCookieName(envelopeA) as string]).toBeUndefined();
 		expect(input.deleted).toEqual([]);
 		expect(JSON.stringify(page)).not.toMatch(/skr1_|capabilityHash/);
+	});
+
+	it('fails closed for a completed receipt cookie past its 30-day expiry', async () => {
+		const completedName: string = completedReceiptCookieName(envelopeA) as string;
+		unsealCompleted.mockResolvedValue({
+			version: 1,
+			envelopeId: envelopeA,
+			recipientId: '01910000-0000-7000-8000-000000000002',
+			idempotencyKey: 'approve-1',
+			capabilityHash: 'b'.repeat(64),
+			action: 'approved',
+			completedAt: '2026-09-11T00:02:00.000Z',
+			expiresAt: '2026-10-11T00:02:00.000Z'
+		});
+		resolveCompleted.mockResolvedValue({
+			receipt: {
+				envelopeId: envelopeA,
+				recipientId: '01910000-0000-7000-8000-000000000002',
+				recipientStatus: 'completed',
+				action: 'approved',
+				completedAt: '2026-09-11T00:02:00.000Z',
+				envelopeStatus: 'completed',
+				envelopeCompletedByThisAction: true,
+				locale: 'en'
+			},
+			locator: {
+				envelopeId: envelopeA,
+				recipientId: '01910000-0000-7000-8000-000000000002',
+				idempotencyKey: 'approve-1',
+				capabilityHash: 'b'.repeat(64),
+				action: 'approved',
+				completedAt: '2026-09-11T00:02:00.000Z',
+				expiresAt: '2026-10-11T00:02:00.000Z'
+			}
+		});
+		const input = event(envelopeA, { [completedName]: 'sealed-completed' });
+
+		// The same receipt one millisecond past its 30-day expiry fails closed.
+		vi.setSystemTime(new Date('2026-10-11T00:02:00.001Z'));
+		const expired = await load(input as never);
+		expect(expired).toMatchObject({ state: 'invalid' });
+
+		vi.setSystemTime(FIXTURE_NOW);
+		expect(await load(input as never)).toMatchObject({ state: 'completed', action: 'approved' });
 	});
 
 	it('reloads tokenlessly from the completed receipt cookie alone', async () => {

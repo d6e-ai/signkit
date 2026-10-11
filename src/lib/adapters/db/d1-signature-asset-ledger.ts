@@ -17,8 +17,6 @@ const D1_SCOPED_REFERENCE: string = `SELECT 1 FROM field_value
 	 WHERE envelope_id = ?1 AND recipient_id = ?2
 	   AND field_type IN ('signature', 'initials') AND value_json = ?6`;
 
-const D1_SCOPED_OWNER: string = `SELECT 1 FROM recipient WHERE id = ?2 AND envelope_id = ?1`;
-
 interface StateRow {
 	state: SignatureAssetState;
 }
@@ -79,9 +77,11 @@ export class D1SignatureAssetLedger implements SignatureAssetLedger {
 	): Promise<RetireSignatureAssetResult> {
 		// One atomic statement: a missing row is inserted as bound when an exact
 		// scoped field value already names it (legacy backfill) and retired
-		// otherwise; an existing row retires only while still pending, untouched
-		// since touchedBefore, and unreferenced. `WHERE true` disambiguates the
-		// upsert from a join, as SQLite requires for INSERT ... SELECT.
+		// otherwise -- including when its recipient no longer exists, since a
+		// tombstone needs no live owner; an existing row retires only while still
+		// pending, untouched since touchedBefore, and unreferenced. `WHERE true`
+		// disambiguates the upsert from a join, as SQLite requires for
+		// INSERT ... SELECT.
 		await this.database
 			.prepare(
 				`INSERT INTO signature_asset (envelope_id, recipient_id, sha256, state, created_at, bound_at, retired_at)
@@ -90,7 +90,7 @@ export class D1SignatureAssetLedger implements SignatureAssetLedger {
 				   ?4,
 				   CASE WHEN EXISTS (${D1_SCOPED_REFERENCE}) THEN ?4 ELSE NULL END,
 				   CASE WHEN EXISTS (${D1_SCOPED_REFERENCE}) THEN NULL ELSE ?4 END
-				 WHERE EXISTS (${D1_SCOPED_OWNER})
+				 WHERE true
 				 ON CONFLICT (envelope_id, recipient_id, sha256) DO UPDATE SET
 				   state = '${RETIRED}', retired_at = ?4, pending_touched_at = NULL
 				 WHERE signature_asset.state = '${PENDING}'
@@ -107,7 +107,8 @@ export class D1SignatureAssetLedger implements SignatureAssetLedger {
 			)
 			.run();
 		const state: SignatureAssetState | null = await this.readState(scope);
-		return state ?? `unowned`;
+		if (state === null) throw new Error('signature asset retirement left no ledger row');
+		return state;
 	}
 
 	async previewRetirement(scope: SignatureAssetScope, touchedBefore: string): Promise<boolean> {

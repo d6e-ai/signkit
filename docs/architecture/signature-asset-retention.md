@@ -14,7 +14,7 @@ How drawn signature and initials assets survive concurrent orphan collection. Th
 
 Both dialects enforce the following in the database:
 
-- The recipient must belong to the envelope. D1 uses a trigger; PostgreSQL uses a composite FK.
+- A live (`pending`/`bound`) row's recipient must belong to its envelope. D1 uses a trigger; PostgreSQL uses a composite FK on generated `owner_*` columns that are NULL only for tombstones. A `retired` tombstone needs no live parent.
 - Only `pending` rows may change. Scope columns are immutable.
 - Inserting a `field_value` that names a `retired` row aborts the write, and naming a `pending` or missing row binds it.
 
@@ -35,7 +35,7 @@ Replay is proven from the durable receipt only and never touches assets or the l
 
 Orphan sweep (`OrphanCollector.sweep`):
 
-1. Aged, unreferenced `signature-assets/` keys go through `retireOrphan(scope, now, now - grace)`, and only `retired` or `unowned` results are deleted. Retirement commits before `deleteMany`.
+1. Aged, unreferenced `signature-assets/` keys go through `retireOrphan(scope, now, now - grace)`, and only `retired` results are deleted. Retirement, which may be a tombstone for a key whose owner no longer exists, commits before `deleteMany`.
 2. If the delete fails, the sweep throws before advancing the checkpoint, so the next sweep re-lists the key and deletes it, because retirement is idempotent.
 3. Abandoned registrations go through `listPendingBefore` (bounded at 25) and then `head`. When the object is absent, `retireAbandonedPending` runs, guarded by the same cutoff.
 4. `dryRun` uses `previewRetirement` and counts abandoned registrations without writing.

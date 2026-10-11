@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { drawnSignaturePng } from '$lib/adapters/pdf/png-image-test-support';
-import { signatureAssetKey } from '$lib/application/documents/signature-asset';
+import {
+	SignatureAssetApplication,
+	signatureAssetKey
+} from '$lib/application/documents/signature-asset';
 import {
 	RecipientSignedApplication,
 	type RecipientSignedInput,
@@ -63,6 +66,8 @@ export interface RetentionHarness {
 export class AgedObjectStore extends InMemoryObjectStore {
 	readonly uploadedAt = new Map<string, string>();
 	deleteFailures: 'none' | 'before_delete' | 'after_delete' = 'none';
+	/** Barrier run after the sweep has decided (and committed) a deletion, before it lands. */
+	beforeDelete: (keys: readonly string[]) => Promise<void> = async (): Promise<void> => undefined;
 
 	async list(options: ListObjectsOptions = {}): Promise<ListObjectsResult> {
 		const listed: ListObjectsResult = await super.list(options);
@@ -76,6 +81,9 @@ export class AgedObjectStore extends InMemoryObjectStore {
 	}
 
 	async deleteMany(keys: readonly string[]): Promise<void> {
+		const barrier = this.beforeDelete;
+		this.beforeDelete = async (): Promise<void> => undefined;
+		await barrier(keys);
 		const failure = this.deleteFailures;
 		this.deleteFailures = 'none';
 		if (failure === 'before_delete') throw new Error('provider unavailable');
@@ -358,16 +366,18 @@ export function defineSignatureRetentionScenarios(harness: () => RetentionHarnes
 	it('rejects a ledger row whose recipient belongs to a different envelope', async () => {
 		const h: RetentionHarness = harness();
 		await h.seed('signature');
-		await expect(
-			h.ledger.registerPending(
-				{
-					envelopeId: RETENTION_ENVELOPE_ID,
-					recipientId: RETENTION_OTHER_RECIPIENT_ID,
-					sha256: '6'.repeat(64)
-				},
-				RETENTION_NOW.toISOString()
-			)
-		).rejects.toThrow();
+		for (const recipientId of [
+			RETENTION_OTHER_RECIPIENT_ID,
+			'01920019-0000-7000-8000-0000000001fe'
+		]) {
+			await expect(
+				h.ledger.registerPending(
+					{ envelopeId: RETENTION_ENVELOPE_ID, recipientId, sha256: '6'.repeat(64) },
+					RETENTION_NOW.toISOString()
+				)
+			).rejects.toThrow();
+		}
+		expect(await h.ledgerSnapshot()).toBe('[]');
 	});
 
 	it('enforces bound and retired as final states in the database', async () => {
@@ -390,19 +400,81 @@ export function defineSignatureRetentionScenarios(harness: () => RetentionHarnes
 		await expect(h.forceState(retired, 'bound')).rejects.toThrow();
 	});
 
-	it('collects an unreferenced legacy object whose recipient no longer exists without a tombstone', async () => {
+	it('tombstones and collects an unreferenced legacy object whose recipient no longer exists', async () => {
 		const h: RetentionHarness = harness();
 		await h.seed('signature');
-		const key: string = signatureAssetKey(
-			RETENTION_OTHER_ENVELOPE_ID,
-			'01920019-0000-7000-8000-0000000001ff',
-			'8'.repeat(64)
-		);
+		const scope: SignatureAssetScope = {
+			envelopeId: RETENTION_OTHER_ENVELOPE_ID,
+			recipientId: '01920019-0000-7000-8000-0000000001ff',
+			sha256: '8'.repeat(64)
+		};
+		const key: string = signatureAssetKey(scope.envelopeId, scope.recipientId, scope.sha256);
 		const objects = new AgedObjectStore();
 		objects.seed(key, new Uint8Array([1]));
-		const before: string = await h.ledgerSnapshot();
 
 		expect((await collector(h, objects).sweep()).deletedKeys).toEqual([key]);
-		expect(await h.ledgerSnapshot()).toBe(before);
+		expect(objects.size).toBe(0);
+		expect(await h.ledger.checkFresh(scope, RETENTION_NOW.toISOString())).toBe('retired');
+	});
+
+	it('keeps a missing-owner key retired when its owner appears while the deletion is in flight', async () => {
+		const h: RetentionHarness = harness();
+		const asset: RetentionAsset = retentionAsset();
+		const objects = new AgedObjectStore();
+		objects.seed(asset.key, asset.png, asset.scope.sha256);
+		let token: string = '';
+		let raced: { register: string; upload: string; sign: string } | null = null;
+		// The sweep selects the key while no envelope or recipient exists yet,
+		// commits retirement, and then -- before its delete lands -- a valid
+		// owner is created and immediately registers, re-uploads, and signs
+		// with the exact same scoped bytes.
+		objects.beforeDelete = async (keys: readonly string[]): Promise<void> => {
+			expect(keys).toEqual([asset.key]);
+			token = await h.seed('signature');
+			const register = await h.ledger.registerPending(asset.scope, RETENTION_NOW.toISOString());
+			const upload = await new SignatureAssetApplication(
+				{
+					resolve: async () => ({
+						envelopeId: RETENTION_ENVELOPE_ID,
+						recipientId: RETENTION_SIGNER_ID,
+						recipientName: 'Alice',
+						recipientLocale: 'en',
+						recipientRole: 'signer',
+						recipientStatus: 'viewed',
+						envelopeTitle: 'Agreement',
+						envelopeStatus: 'in_progress',
+						expiresAt: RETENTION_CAPABILITY_EXPIRES_AT,
+						sentRevision: {
+							commitSha: '0123456789abcdef0123456789abcdef01234567',
+							archiveKey: 'archives/retention.git.gz',
+							archiveSha256: 'a'.repeat(64)
+						}
+					})
+				},
+				objects,
+				h.ledger,
+				(): Date => RETENTION_NOW
+			).store({
+				token,
+				expectedEnvelopeId: RETENTION_ENVELOPE_ID,
+				expectedRecipientId: RETENTION_SIGNER_ID,
+				pngBytes: asset.png
+			});
+			const sign = await signer(h, objects).sign(signInput(token, asset.ref));
+			raced = { register, upload: upload.outcome, sign: sign.outcome };
+		};
+
+		const report: OrphanCollectorReport = await collector(h, objects).sweep();
+
+		expect(raced).toEqual({
+			register: 'retired',
+			upload: 'expired',
+			sign: 'signature_asset_expired'
+		});
+		expect(report.deletedKeys).toEqual([asset.key]);
+		expect(objects.size).toBe(0);
+		expect(objects.putCalls).toBe(0);
+		expect(await h.publishedRows()).toEqual({ fieldValues: 0, receipts: 0 });
+		expect(await h.ledger.checkFresh(asset.scope, RETENTION_NOW.toISOString())).toBe('retired');
 	});
 }

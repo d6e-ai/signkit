@@ -7,6 +7,13 @@
 -- object, so a crash between that commit and the delete is retried from the
 -- object listing, and the exact scoped key a delayed delete could still land
 -- on is never resurrected by a fresh `pending` registration.
+--
+-- There are deliberately no foreign keys to envelope/recipient: a `retired`
+-- tombstone must be insertable for ANY canonical key the sweep deletes,
+-- including a legacy object whose recipient no longer exists, so that an
+-- owner created or restored later can never re-register that exact key.
+-- Exact ownership of live (`pending`/`bound`) rows is enforced by the
+-- `signature_asset_scoped_owner` trigger below instead.
 CREATE TABLE signature_asset (
   envelope_id TEXT NOT NULL,
   recipient_id TEXT NOT NULL,
@@ -17,8 +24,6 @@ CREATE TABLE signature_asset (
   bound_at TEXT,
   retired_at TEXT,
   PRIMARY KEY (envelope_id, recipient_id, sha256),
-  FOREIGN KEY (envelope_id) REFERENCES envelope(id),
-  FOREIGN KEY (recipient_id) REFERENCES recipient(id),
   CONSTRAINT signature_asset_sha256_hex CHECK (
     length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'
   ),
@@ -33,11 +38,14 @@ CREATE INDEX signature_asset_pending_touched
   ON signature_asset(pending_touched_at)
   WHERE state = 'pending';
 
--- Exact scoped ownership: a ledger row may only name a recipient that belongs
--- to the same envelope, mirroring the PostgreSQL composite foreign key.
+-- Exact scoped ownership for live rows: a `pending` or `bound` row may only
+-- name a recipient that belongs to the same envelope, mirroring the
+-- PostgreSQL composite foreign key. A `retired` tombstone needs no live owner.
+-- Scope columns are immutable and `retired` is final, so a row can never
+-- become live after insertion without passing this check.
 CREATE TRIGGER signature_asset_scoped_owner
 BEFORE INSERT ON signature_asset
-WHEN NOT EXISTS (
+WHEN NEW.state <> 'retired' AND NOT EXISTS (
   SELECT 1 FROM recipient
   WHERE id = NEW.recipient_id AND envelope_id = NEW.envelope_id
 )

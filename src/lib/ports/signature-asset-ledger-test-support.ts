@@ -24,12 +24,11 @@ function scopeKey(scope: SignatureAssetScope): string {
 /**
  * Faithful in-memory `SignatureAssetLedger` double, mirroring the upsert
  * guards the D1/PostgreSQL adapters enforce in the database. `bindForPublish`
- * stands in for the store's atomic publish-time bind, and `markUnowned`
- * simulates a scope whose recipient no longer exists.
+ * stands in for the store's atomic publish-time bind. Ownership of live rows
+ * is not modeled here; the D1/PostgreSQL integration specs cover it.
  */
 export class InMemorySignatureAssetLedger implements SignatureAssetLedger {
 	private readonly rows = new Map<string, LedgerRow>();
-	private readonly unowned = new Set<string>();
 
 	async registerPending(
 		scope: SignatureAssetScope,
@@ -64,7 +63,6 @@ export class InMemorySignatureAssetLedger implements SignatureAssetLedger {
 		const key: string = scopeKey(scope);
 		const existing: LedgerRow | undefined = this.rows.get(key);
 		if (existing === undefined) {
-			if (this.unowned.has(key)) return `unowned`;
 			this.rows.set(key, { scope, state: RETIRED, pendingTouchedAt: null });
 			return RETIRED;
 		}
@@ -117,11 +115,6 @@ export class InMemorySignatureAssetLedger implements SignatureAssetLedger {
 		if (existing?.state === RETIRED) return false;
 		this.rows.set(key, { scope, state: BOUND, pendingTouchedAt: null });
 		return true;
-	}
-
-	/** Test setup: the scope's recipient no longer exists, so no tombstone can be inserted. */
-	markUnowned(scope: SignatureAssetScope): void {
-		this.unowned.add(scopeKey(scope));
 	}
 
 	/** Test setup: seeds a scope directly into a given state, bypassing the guarded transitions above. */

@@ -69,24 +69,24 @@ export class PostgresSignatureAssetLedger implements SignatureAssetLedger {
 					FOR UPDATE
 				`;
 				if (locked.length === 0) {
-					// Legacy, pre-ledger object. A concurrent insert of the same
-					// scope makes this DO NOTHING; the re-read then reports it.
+					// Legacy, pre-ledger object (its recipient may no longer exist:
+					// a tombstone needs no live owner, a bound row does). A
+					// concurrent insert of the same scope makes this DO NOTHING;
+					// the re-read then reports it.
 					await transaction`
 						INSERT INTO signature_asset (envelope_id, recipient_id, sha256, state, created_at, bound_at, retired_at)
-						SELECT owner.envelope_id, owner.id, ${scope.sha256},
+						SELECT ${scope.envelopeId}, ${scope.recipientId}, ${scope.sha256},
 							CASE WHEN reference.live THEN ${BOUND} ELSE ${RETIRED} END,
 							${now}::timestamptz,
 							CASE WHEN reference.live THEN ${now}::timestamptz END,
 							CASE WHEN reference.live THEN NULL ELSE ${now}::timestamptz END
-						FROM recipient owner
-						CROSS JOIN LATERAL (
+						FROM (
 							SELECT EXISTS (
 								SELECT 1 FROM field_value
-								WHERE envelope_id = owner.envelope_id AND recipient_id = owner.id
+								WHERE envelope_id = ${scope.envelopeId} AND recipient_id = ${scope.recipientId}
 									AND field_type IN ('signature', 'initials') AND value_json = ${valueJson}
 							) AS live
 						) reference
-						WHERE owner.envelope_id = ${scope.envelopeId} AND owner.id = ${scope.recipientId}
 						ON CONFLICT (envelope_id, recipient_id, sha256) DO NOTHING
 					`;
 				} else if (locked[0].state === PENDING) {
@@ -104,7 +104,8 @@ export class PostgresSignatureAssetLedger implements SignatureAssetLedger {
 					`;
 				}
 				const state: SignatureAssetState | null = await readState(transaction, scope);
-				return state ?? `unowned`;
+				if (state === null) throw new Error('signature asset retirement left no ledger row');
+				return state;
 			}
 		);
 	}

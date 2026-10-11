@@ -337,7 +337,10 @@ export class OrphanCollector {
 		};
 	}
 
-	/** True when this unreferenced signature asset's object may be deleted. Never writes under `dryRun`. */
+	/**
+	 * True only once a durable one-way tombstone for this exact scoped key is
+	 * committed (or, under `dryRun`, would be). Never writes under `dryRun`.
+	 */
 	async #retireSignatureAsset(
 		asset: ParsedSignatureAssetKey,
 		nowIso: string,
@@ -357,7 +360,7 @@ export class OrphanCollector {
 			nowIso,
 			touchedBefore
 		);
-		return state === 'retired' || state === 'unowned';
+		return state === 'retired';
 	}
 
 	/**

@@ -22,6 +22,8 @@ If the migration is applied but old application code is still serving, uploads k
 
 `retired` rows are permanent and are not purged automatically. Do not delete them by hand. Deleting one lets the same bytes be registered and bound again while a delayed delete for that key could still be in flight.
 
+Tombstones intentionally have no foreign keys. A `retired` row may name an envelope or recipient that does not exist, for example a legacy object whose recipient was removed. Such rows are expected, are not corruption, and must not be "cleaned up" by joining against `recipient`. Restoring or recreating a recipient with the same IDs does not reopen its retired keys; that recipient must upload new bytes.
+
 ## Diagnostics
 
 All queries are read-only.
