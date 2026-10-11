@@ -23,7 +23,7 @@ export async function resolvePdfSealApiRuntime(
 		if (databaseUrl === undefined) return null;
 		const [adapter, postgresRuntime] = await Promise.all([
 			import('$lib/adapters/db/postgres-pdf-seal-request-store'),
-			import('$lib/application/envelopes/runtime-postgres')
+			import('$lib/application/runtime/postgres-sql-runtime')
 		]);
 		store = new adapter.PostgresPdfSealRequestStore(
 			postgresRuntime.resolvePostgresSql(databaseUrl)

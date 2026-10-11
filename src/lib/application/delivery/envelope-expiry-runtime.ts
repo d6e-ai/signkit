@@ -19,7 +19,7 @@ export async function resolveEnvelopeExpiryDrainService(
 	if (databaseUrl === undefined) return null;
 	const [{ PostgresEnvelopeExpiryStore }, { resolvePostgresSql }] = await Promise.all([
 		import('$lib/adapters/db/postgres-envelope-expiry-store'),
-		import('$lib/application/envelopes/runtime-postgres')
+		import('$lib/application/runtime/postgres-sql-runtime')
 	]);
 	return new EnvelopeExpiryDrainService(
 		new PostgresEnvelopeExpiryStore(resolvePostgresSql(databaseUrl))

@@ -48,11 +48,13 @@ export async function resolveDocxConversionService(
 	}
 	const [
 		{ PostgresDocxConversionStore },
-		{ resolvePostgresEnvelopeStore, resolvePostgresSql },
+		{ resolvePostgresEnvelopeStore },
+		{ resolvePostgresSql },
 		{ resolveS3ObjectStore }
 	] = await Promise.all([
 		import('$lib/adapters/db/postgres-docx-conversion-store'),
 		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/runtime/postgres-sql-runtime'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
 	const objects: ObjectStore = resolveS3ObjectStore(configuration);

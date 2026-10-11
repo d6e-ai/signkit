@@ -1,5 +1,5 @@
 import { PostgresWebhookStore } from '$lib/adapters/db/postgres-webhook-store';
-import { resolvePostgresSql } from '$lib/application/envelopes/runtime-postgres';
+import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
 import type { WebhookSigningSecretSealer } from '$lib/security/webhook-signing-secret';
 import {
 	WebhookApplication,

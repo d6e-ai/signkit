@@ -80,7 +80,7 @@ export async function resolveCompletionAccessReissueApplication(
 		import('$lib/adapters/db/postgres-completion-access-reissue'),
 		import('$lib/adapters/db/postgres-completion-artifact-store'),
 		import('$lib/adapters/db/postgres-completion-artifact-pdf-store'),
-		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/runtime/postgres-sql-runtime'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
 	let objects: ObjectStore;

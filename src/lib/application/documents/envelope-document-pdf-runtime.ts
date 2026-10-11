@@ -1,4 +1,4 @@
-import { resolveEnvelopeDocxExport } from './docx-export-runtime';
+import { resolveEnvelopeDocumentDependencies } from '$lib/application/runtime/envelope-document-dependencies-runtime';
 import {
 	EnvelopeDocumentPdfService,
 	type EnvelopeDocumentPdfApplicationPort
@@ -10,15 +10,15 @@ export interface EnvelopeDocumentPdfRuntimeContext {
 }
 
 /**
- * Reuses the commit-pinned export dependencies: rendering the placement PDF
- * needs exactly the same envelope pointer, object store, and Git repository
- * that DOCX export already resolves, and sharing them keeps one answer to
- * "which durable stores is this deployment actually configured with".
+ * Rendering the placement PDF needs the envelope pointer, object store, and
+ * Git repository shared by every commit-pinned document feature, resolved
+ * from the feature-neutral entry point rather than another feature's
+ * runtime.
  */
 export async function resolveEnvelopeDocumentPdfApplication(
 	context: EnvelopeDocumentPdfRuntimeContext
 ): Promise<EnvelopeDocumentPdfApplicationPort | null> {
-	const dependencies = await resolveEnvelopeDocxExport(context);
+	const dependencies = await resolveEnvelopeDocumentDependencies(context);
 	if (dependencies === null) return null;
 	return new EnvelopeDocumentPdfService(
 		dependencies.envelopes,

@@ -1,5 +1,5 @@
 import { PostgresInstanceStore } from '$lib/adapters/db/postgres-instance-store';
-import { resolvePostgresSql } from '$lib/application/envelopes/runtime-postgres';
+import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
 import {
 	InstanceInvitationApplication,
 	type InstanceInvitationApplicationPort

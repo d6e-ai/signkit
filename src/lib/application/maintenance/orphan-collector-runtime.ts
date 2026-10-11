@@ -48,7 +48,7 @@ export async function resolveOrphanCollector(
 	const [{ resolveS3ObjectStore }, { resolvePostgresSql }, { PostgresSignatureAssetLedger }] =
 		await Promise.all([
 			import('$lib/application/drafts/runtime-s3'),
-			import('$lib/application/envelopes/runtime-postgres'),
+			import('$lib/application/runtime/postgres-sql-runtime'),
 			import('$lib/adapters/db/postgres-signature-asset-ledger')
 		]);
 	// Resolve object storage first so incomplete S3 configuration fails closed

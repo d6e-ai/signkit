@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
 import type { DraftPersistenceService } from '$lib/application/drafts/draft-persistence';
 import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-envelope-application-store';
 import { PostgresEnvelopeFieldStore } from '$lib/adapters/db/postgres-envelope-field-store';
@@ -63,7 +64,6 @@ import { EnvelopeVoidApplication, type EnvelopeVoidApplicationPort } from './voi
 import { EnvelopeApplication } from './service';
 
 interface PostgresRuntimeResources {
-	databaseUrl: string;
 	store: PostgresEnvelopeApplicationStore;
 	application: EnvelopeApplicationPort;
 	readyApplication: EnvelopeReadyApplicationPort;
@@ -237,32 +237,16 @@ export function resolvePostgresRecipientFieldDeclarationStore(
 	return new PostgresRecipientFieldDeclarationStore(resources.sql);
 }
 
-/**
- * Reuse the process-local pool for independently composed application services.
- * The SQL client carries no request or tenant state.
- */
-export function resolvePostgresSql(databaseUrl: string): ReturnType<typeof postgres> {
-	return resolvePostgresResources(databaseUrl).sql;
-}
-
 function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources {
-	const normalizedDatabaseUrl: string = databaseUrl.trim();
-	assertPostgresUrl(normalizedDatabaseUrl);
+	// resolvePostgresSql owns URL validation, the pool singleton, and the
+	// warm-process URL-change guard; this function only adds the heavier
+	// envelope-specific application graph on top of that shared sql client.
+	const sql: ReturnType<typeof postgres> = resolvePostgresSql(databaseUrl);
 
 	if (cachedResources !== null) {
-		if (cachedResources.databaseUrl !== normalizedDatabaseUrl) {
-			// Silently switching databases in a warm process risks crossing deployment
-			// boundaries and leaks the old pool. A restart is required instead.
-			throw new Error('Database configuration changed after runtime initialization');
-		}
 		return cachedResources;
 	}
 
-	const sql: ReturnType<typeof postgres> = postgres(normalizedDatabaseUrl, {
-		connect_timeout: 10,
-		idle_timeout: 20,
-		max: 5
-	});
 	const store: PostgresEnvelopeApplicationStore = new PostgresEnvelopeApplicationStore(sql);
 	const application: EnvelopeApplicationPort = new EnvelopeApplication(store);
 	const readyApplication: EnvelopeReadyApplicationPort = new EnvelopeReadyApplication(
@@ -273,7 +257,6 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 		new PostgresRecipientAccessStore(sql)
 	);
 	cachedResources = {
-		databaseUrl: normalizedDatabaseUrl,
 		store,
 		application,
 		readyApplication,
@@ -282,18 +265,4 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 		sql
 	};
 	return cachedResources;
-}
-
-function assertPostgresUrl(databaseUrl: string): void {
-	if (databaseUrl.length === 0) throw new Error('DATABASE_URL is required');
-
-	let url: URL;
-	try {
-		url = new URL(databaseUrl);
-	} catch {
-		throw new Error('DATABASE_URL must be a valid PostgreSQL URL');
-	}
-	if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') {
-		throw new Error('DATABASE_URL must use the postgres or postgresql scheme');
-	}
 }

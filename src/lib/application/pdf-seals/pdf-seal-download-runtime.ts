@@ -27,7 +27,7 @@ export async function resolvePdfSealDownloadApplication(
 	const [requestAdapter, publicationAdapter, postgresRuntime, s3Runtime] = await Promise.all([
 		import('$lib/adapters/db/postgres-pdf-seal-request-store'),
 		import('$lib/adapters/db/postgres-pdf-seal-publication-store'),
-		import('$lib/application/envelopes/runtime-postgres'),
+		import('$lib/application/runtime/postgres-sql-runtime'),
 		import('$lib/application/drafts/runtime-s3')
 	]);
 	const sql = postgresRuntime.resolvePostgresSql(databaseUrl);

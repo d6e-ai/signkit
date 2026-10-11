@@ -1,5 +1,5 @@
 import { PostgresApiKeyAuthenticationStore } from '$lib/adapters/db/postgres-api-key-authentication-store';
-import { resolvePostgresSql } from '$lib/application/envelopes/runtime-postgres';
+import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
 import {
 	ApiKeyAuthenticationApplication,
 	type ApiKeyAuthenticationPort
