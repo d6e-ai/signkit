@@ -1,5 +1,6 @@
 <script lang="ts" module>
 	import { isProblemOfType, SIGNED_ASSET_EXPIRED_PROBLEM } from '$lib/components/signature-draft';
+	import { defaultNewIdempotencyKey } from '$lib/client/http-problem';
 
 	export interface RecipientViewOptions {
 		envelopeId: string;
@@ -22,17 +23,6 @@
 			addEventListener: (type: string, listener: (event?: unknown) => void) => void;
 			removeEventListener: (type: string, listener: (event?: unknown) => void) => void;
 		};
-	}
-
-	// An Idempotency-Key is opaque request material that the server never
-	// parses, not a SignKit identifier: UUIDv4 is simply the recommended
-	// concrete format for it, and it must never become a UUIDv7.
-	function defaultNewIdempotencyKey(): string {
-		const source: Crypto | undefined = globalThis.crypto;
-		if (source === undefined || typeof source.randomUUID !== 'function') {
-			throw new Error('crypto.randomUUID() is required to mint an Idempotency-Key');
-		}
-		return source.randomUUID();
 	}
 
 	export function initRecipientViewed({
@@ -72,19 +62,13 @@
 
 			inFlight = true;
 			try {
-				const response = await fetchFn('/api/v1/signing/viewed', {
-					method: 'POST',
-					credentials: 'same-origin',
-					headers: {
-						'content-type': 'application/json',
-						'idempotency-key': idempotencyKey
-					},
-					body: JSON.stringify({
-						envelopeId,
-						recipientId
-					}),
-					signal: abortController.signal
-				});
+				const response = await postSigningAction(
+					fetchFn,
+					'/api/v1/signing/viewed',
+					{ envelopeId, recipientId },
+					idempotencyKey,
+					abortController.signal
+				);
 
 				if (response.ok) {
 					isTerminal = true;
@@ -147,6 +131,30 @@
 		if (response.status < 400 || response.status >= 500) return false;
 		if (response.status === 408 || response.status === 429) return false;
 		return response.status !== 409 || !response.headers.has('retry-after');
+	}
+
+	/**
+	 * POSTs a recipient signing action with the standard JSON content-type,
+	 * idempotency key, and same-origin credentials. Each caller supplies its
+	 * own body shape and interprets the raw `Response` itself.
+	 */
+	function postSigningAction(
+		fetchFn: typeof fetch,
+		path: string,
+		body: Record<string, unknown>,
+		idempotencyKey: string,
+		signal: AbortSignal
+	): Promise<Response> {
+		return fetchFn(path, {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: {
+				'content-type': 'application/json',
+				'idempotency-key': idempotencyKey
+			},
+			body: JSON.stringify(body),
+			signal
+		});
 	}
 
 	export type RecipientDeclineStatus =
@@ -214,19 +222,13 @@
 			onStatusChange?.('pending');
 
 			try {
-				const response = await fetchFn('/api/v1/signing/decline', {
-					method: 'POST',
-					credentials: 'same-origin',
-					headers: {
-						'content-type': 'application/json',
-						'idempotency-key': idempotencyKey
-					},
-					body: JSON.stringify({
-						envelopeId,
-						recipientId
-					}),
-					signal: abortController.signal
-				});
+				const response = await postSigningAction(
+					fetchFn,
+					'/api/v1/signing/decline',
+					{ envelopeId, recipientId },
+					idempotencyKey,
+					abortController.signal
+				);
 
 				if (
 					response.status === 200 &&
@@ -278,34 +280,25 @@
 		expectedEnvelopeId: string,
 		expectedRecipientId: string
 	): Promise<boolean> {
-		let body: unknown;
-		try {
-			body = await response.json();
-		} catch {
-			return false;
-		}
-		if (!isRecord(body) || !hasExactKeys(body, ['declined'])) return false;
-		const declined: unknown = body.declined;
-		if (
-			!isRecord(declined) ||
-			!hasExactKeys(declined, [
-				'declinedAt',
-				'envelopeId',
-				'envelopeStatus',
-				'recipientId',
-				'recipientStatus'
-			])
-		) {
-			return false;
-		}
-		return (
-			declined.envelopeId === expectedEnvelopeId &&
-			declined.recipientId === expectedRecipientId &&
-			declined.recipientStatus === 'declined' &&
-			declined.envelopeStatus === 'declined' &&
-			typeof declined.declinedAt === 'string' &&
-			Number.isFinite(new Date(declined.declinedAt).getTime())
+		const declined = await parseRecipientActionReceipt(
+			response,
+			expectedEnvelopeId,
+			expectedRecipientId,
+			{
+				wrapperKey: 'declined',
+				nestedKeys: [
+					'declinedAt',
+					'envelopeId',
+					'envelopeStatus',
+					'recipientId',
+					'recipientStatus'
+				],
+				timestampKey: 'declinedAt',
+				expectedRecipientStatus: 'declined',
+				expectedEnvelopeStatuses: ['declined']
+			}
 		);
+		return declined !== null;
 	}
 
 	export type RecipientApproveStatus =
@@ -388,19 +381,13 @@
 			onStatusChange?.('pending');
 
 			try {
-				const response = await fetchFn('/api/v1/signing/approve', {
-					method: 'POST',
-					credentials: 'same-origin',
-					headers: {
-						'content-type': 'application/json',
-						'idempotency-key': idempotencyKey
-					},
-					body: JSON.stringify({
-						envelopeId,
-						recipientId
-					}),
-					signal: abortController.signal
-				});
+				const response = await postSigningAction(
+					fetchFn,
+					'/api/v1/signing/approve',
+					{ envelopeId, recipientId },
+					idempotencyKey,
+					abortController.signal
+				);
 
 				if (response.status === 200) {
 					const validated = await validateApprovedReceipt(response, envelopeId, recipientId);
@@ -455,44 +442,32 @@
 		expectedEnvelopeId: string,
 		expectedRecipientId: string
 	): Promise<RecipientApproveReceipt | null> {
-		if (response.status !== 200) return null;
-		let body: unknown;
-		try {
-			body = await response.json();
-		} catch {
-			return null;
-		}
-		if (!isRecord(body) || !hasExactKeys(body, ['approved'])) return null;
-		const approved: unknown = body.approved;
-		if (
-			!isRecord(approved) ||
-			!hasExactKeys(approved, [
-				'approvedAt',
-				'envelopeId',
-				'envelopeStatus',
-				'recipientId',
-				'recipientStatus'
-			])
-		) {
-			return null;
-		}
-		if (
-			approved.envelopeId !== expectedEnvelopeId ||
-			approved.recipientId !== expectedRecipientId ||
-			typeof approved.approvedAt !== 'string' ||
-			!Number.isFinite(new Date(approved.approvedAt).getTime()) ||
-			approved.recipientStatus !== 'completed' ||
-			!(approved.envelopeStatus === 'completed' || approved.envelopeStatus === 'in_progress')
-		) {
-			return null;
-		}
+		const approved = await parseRecipientActionReceipt(
+			response,
+			expectedEnvelopeId,
+			expectedRecipientId,
+			{
+				wrapperKey: 'approved',
+				nestedKeys: [
+					'approvedAt',
+					'envelopeId',
+					'envelopeStatus',
+					'recipientId',
+					'recipientStatus'
+				],
+				timestampKey: 'approvedAt',
+				expectedRecipientStatus: 'completed',
+				expectedEnvelopeStatuses: ['completed', 'in_progress']
+			}
+		);
+		if (approved === null) return null;
 		const replayed = response.headers?.get?.('idempotency-replayed') === 'true';
 		return {
 			envelopeId: approved.envelopeId,
 			recipientId: approved.recipientId,
 			recipientStatus: approved.recipientStatus,
 			envelopeStatus: approved.envelopeStatus,
-			approvedAt: approved.approvedAt,
+			approvedAt: approved.timestamp,
 			...(replayed ? { replayed: true } : {})
 		};
 	}
@@ -602,21 +577,13 @@
 			onStatusChange?.('pending');
 
 			try {
-				const response = await fetchFn('/api/v1/signing/sign', {
-					method: 'POST',
-					credentials: 'same-origin',
-					headers: {
-						'content-type': 'application/json',
-						'idempotency-key': idempotencyKey
-					},
-					body: JSON.stringify({
-						envelopeId,
-						recipientId,
-						expectedFieldGeneration,
-						values: submittedValues
-					}),
-					signal: abortController.signal
-				});
+				const response = await postSigningAction(
+					fetchFn,
+					'/api/v1/signing/sign',
+					{ envelopeId, recipientId, expectedFieldGeneration, values: submittedValues },
+					idempotencyKey,
+					abortController.signal
+				);
 
 				if (response.status === 200) {
 					const validated = await validateSignedReceipt(response, envelopeId, recipientId);
@@ -690,44 +657,26 @@
 		expectedEnvelopeId: string,
 		expectedRecipientId: string
 	): Promise<RecipientSignReceipt | null> {
-		if (response.status !== 200) return null;
-		let body: unknown;
-		try {
-			body = await response.json();
-		} catch {
-			return null;
-		}
-		if (!isRecord(body) || !hasExactKeys(body, ['signed'])) return null;
-		const signed: unknown = body.signed;
-		if (
-			!isRecord(signed) ||
-			!hasExactKeys(signed, [
-				'envelopeId',
-				'envelopeStatus',
-				'recipientId',
-				'recipientStatus',
-				'signedAt'
-			])
-		) {
-			return null;
-		}
-		if (
-			signed.envelopeId !== expectedEnvelopeId ||
-			signed.recipientId !== expectedRecipientId ||
-			typeof signed.signedAt !== 'string' ||
-			!Number.isFinite(new Date(signed.signedAt).getTime()) ||
-			signed.recipientStatus !== 'completed' ||
-			!(signed.envelopeStatus === 'completed' || signed.envelopeStatus === 'in_progress')
-		) {
-			return null;
-		}
+		const signed = await parseRecipientActionReceipt(
+			response,
+			expectedEnvelopeId,
+			expectedRecipientId,
+			{
+				wrapperKey: 'signed',
+				nestedKeys: ['envelopeId', 'envelopeStatus', 'recipientId', 'recipientStatus', 'signedAt'],
+				timestampKey: 'signedAt',
+				expectedRecipientStatus: 'completed',
+				expectedEnvelopeStatuses: ['completed', 'in_progress']
+			}
+		);
+		if (signed === null) return null;
 		const replayed = response.headers?.get?.('idempotency-replayed') === 'true';
 		return {
 			envelopeId: signed.envelopeId,
 			recipientId: signed.recipientId,
 			recipientStatus: signed.recipientStatus,
 			envelopeStatus: signed.envelopeStatus,
-			signedAt: signed.signedAt,
+			signedAt: signed.timestamp,
 			...(replayed ? { replayed: true } : {})
 		};
 	}
@@ -739,6 +688,65 @@
 	function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
 		const keys: string[] = Object.keys(value).sort();
 		return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+	}
+
+	interface RecipientActionReceiptShape {
+		readonly wrapperKey: string;
+		readonly nestedKeys: readonly string[];
+		readonly timestampKey: string;
+		readonly expectedRecipientStatus: string;
+		readonly expectedEnvelopeStatuses: readonly string[];
+	}
+
+	interface ValidatedRecipientActionReceipt {
+		readonly envelopeId: string;
+		readonly recipientId: string;
+		readonly recipientStatus: string;
+		readonly envelopeStatus: string;
+		readonly timestamp: string;
+	}
+
+	/**
+	 * Shared exact-key/context/timestamp/status check for a recipient action
+	 * receipt. Each operation keeps its own wrapper key, timestamp field name,
+	 * and expected status values; this only verifies the shape and that the
+	 * envelope/recipient context matches what was requested.
+	 */
+	async function parseRecipientActionReceipt(
+		response: Response,
+		expectedEnvelopeId: string,
+		expectedRecipientId: string,
+		shape: RecipientActionReceiptShape
+	): Promise<ValidatedRecipientActionReceipt | null> {
+		if (response.status !== 200) return null;
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			return null;
+		}
+		if (!isRecord(body) || !hasExactKeys(body, [shape.wrapperKey])) return null;
+		const nested: unknown = body[shape.wrapperKey];
+		if (!isRecord(nested) || !hasExactKeys(nested, shape.nestedKeys)) return null;
+		const timestamp = nested[shape.timestampKey];
+		if (
+			nested.envelopeId !== expectedEnvelopeId ||
+			nested.recipientId !== expectedRecipientId ||
+			typeof timestamp !== 'string' ||
+			!Number.isFinite(new Date(timestamp).getTime()) ||
+			nested.recipientStatus !== shape.expectedRecipientStatus ||
+			typeof nested.envelopeStatus !== 'string' ||
+			!shape.expectedEnvelopeStatuses.includes(nested.envelopeStatus)
+		) {
+			return null;
+		}
+		return {
+			envelopeId: expectedEnvelopeId,
+			recipientId: expectedRecipientId,
+			recipientStatus: shape.expectedRecipientStatus,
+			envelopeStatus: nested.envelopeStatus,
+			timestamp
+		};
 	}
 </script>
 

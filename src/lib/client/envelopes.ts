@@ -6,28 +6,25 @@ import type { PublicCompletionArtifactStatus } from '$lib/application/completion
 import type { PublicPdfSealStatus } from '$lib/application/pdf-seals/pdf-seal-api';
 import type { PdfSealProfile } from '$lib/ports/pdf-seal-provider';
 import type { CurrentCompletionDeliveryRow } from '$lib/ports/completion-access-reissue-row';
+import {
+	defaultNewIdempotencyKey,
+	parseProblemResponse,
+	requestJson,
+	type Problem,
+	type ProblemValidationError
+} from './http-problem';
 
 export type Envelope = PublicEnvelope;
 export type { FieldGeometry, FieldType, RecipientRole, PublicEnvelopeDeliveryStatus };
 export type { PublicCompletionArtifactStatus };
 export type { PdfSealProfile, PublicPdfSealStatus };
 export type { CurrentCompletionDeliveryRow };
+export type { ProblemValidationError };
+export { defaultNewIdempotencyKey };
 
 const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
-export interface ProblemValidationError {
-	readonly path: string;
-	readonly message: string;
-}
-
-export interface EnvelopesProblem {
-	readonly status: number;
-	readonly type: string;
-	readonly title: string;
-	readonly detail: string;
-	readonly instance?: string;
-	readonly errors?: readonly ProblemValidationError[];
-}
+export type EnvelopesProblem = Problem;
 
 export class EnvelopesApiError extends Error {
 	readonly status: number;
@@ -95,14 +92,6 @@ export function isAmbiguousEnvelopeMutationFailure(cause: unknown): boolean {
 		status === 429 ||
 		status >= 500
 	);
-}
-
-export function defaultNewIdempotencyKey(): string {
-	const source: Crypto | undefined = globalThis.crypto;
-	if (source === undefined || typeof source.randomUUID !== 'function') {
-		throw new Error('crypto.randomUUID() is required to mint an Idempotency-Key');
-	}
-	return source.randomUUID();
 }
 
 export interface RequestOptions {
@@ -369,61 +358,8 @@ export class EnvelopesClient {
 		response: Response,
 		defaultInstance: string
 	): Promise<EnvelopesApiError> {
-		const isReplayed = response.headers.get('idempotency-replayed') === 'true';
-		let problem: EnvelopesProblem | null = null;
-		const contentType = response.headers.get('content-type') ?? '';
-
-		if (contentType.includes('json')) {
-			try {
-				const data = (await response.json()) as Record<string, unknown>;
-				if (data && typeof data === 'object') {
-					const type =
-						typeof data.type === 'string'
-							? data.type
-							: `urn:signkit:problem:http-${response.status}`;
-					const title =
-						typeof data.title === 'string' ? data.title : response.statusText || 'Error';
-					const detail =
-						typeof data.detail === 'string'
-							? data.detail
-							: `Request failed with status ${response.status}`;
-					const instance = typeof data.instance === 'string' ? data.instance : defaultInstance;
-					let errors: ProblemValidationError[] | undefined;
-					if (Array.isArray(data.errors)) {
-						errors = data.errors
-							.filter(
-								(e: unknown): e is Record<string, unknown> => typeof e === 'object' && e !== null
-							)
-							.map((e: Record<string, unknown>) => ({
-								path: typeof e.path === 'string' ? e.path : '$',
-								message: typeof e.message === 'string' ? e.message : 'Validation error'
-							}));
-					}
-					problem = {
-						status: typeof data.status === 'number' ? data.status : response.status,
-						type,
-						title,
-						detail,
-						instance,
-						...(errors && errors.length > 0 ? { errors } : {})
-					};
-				}
-			} catch {
-				problem = null;
-			}
-		}
-
-		if (!problem) {
-			problem = {
-				status: response.status,
-				type: `urn:signkit:problem:http-${response.status}`,
-				title: response.statusText || 'Error',
-				detail: `Request failed with status ${response.status}`,
-				instance: defaultInstance
-			};
-		}
-
-		return new EnvelopesApiError(problem, isReplayed);
+		const problem = await parseProblemResponse(response, defaultInstance);
+		return new EnvelopesApiError(problem, response.headers.get('idempotency-replayed') === 'true');
 	}
 
 	private async request<T>(
@@ -431,21 +367,12 @@ export class EnvelopesClient {
 		init: RequestInit,
 		customFetch?: typeof globalThis.fetch
 	): Promise<{ data: T; response: Response }> {
-		const fetchFn = this.resolveFetch(customFetch);
-		const response = await fetchFn(path, { credentials: 'same-origin', ...init });
-		if (!response.ok) throw await this.parseErrorResponse(response, path);
-		try {
-			const data = (await response.json()) as T;
-			return { data, response };
-		} catch {
-			throw new EnvelopesApiError({
-				status: response.status,
-				type: 'urn:signkit:problem:invalid-response-json',
-				title: 'Invalid response JSON',
-				detail: 'The response body could not be parsed as JSON.',
-				instance: path
-			});
-		}
+		return requestJson<T>(
+			this.resolveFetch(customFetch),
+			path,
+			init,
+			(problem, replayed) => new EnvelopesApiError(problem, replayed)
+		);
 	}
 
 	async create(title: string, options?: RequestOptions): Promise<CreateEnvelopeResponse> {

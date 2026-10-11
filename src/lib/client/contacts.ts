@@ -1,3 +1,11 @@
+import {
+	defaultNewIdempotencyKey as defaultNewContactIdempotencyKey,
+	requestJson,
+	type Problem,
+	type ProblemValidationError
+} from './http-problem';
+export { defaultNewContactIdempotencyKey };
+
 export type ContactLocale = 'en' | 'ja';
 
 export interface Contact {
@@ -34,19 +42,9 @@ export interface UpdateContactInput extends SaveContactInput {
 	expectedVersion: number;
 }
 
-export interface ContactProblemValidationError {
-	readonly path: string;
-	readonly message: string;
-}
+export type ContactProblemValidationError = ProblemValidationError;
 
-export interface ContactProblem {
-	readonly status: number;
-	readonly type: string;
-	readonly title: string;
-	readonly detail: string;
-	readonly instance?: string;
-	readonly errors?: readonly ContactProblemValidationError[];
-}
+export type ContactProblem = Problem;
 
 export class ContactsApiError extends Error {
 	readonly status: number;
@@ -90,14 +88,6 @@ export interface SaveContactResponse {
 export interface DeleteContactResponse {
 	deleted: { id: string; deletedAt: string };
 	replayed: boolean;
-}
-
-export function defaultNewContactIdempotencyKey(): string {
-	const source: Crypto | undefined = globalThis.crypto;
-	if (source === undefined || typeof source.randomUUID !== 'function') {
-		throw new Error('crypto.randomUUID() is required to mint an Idempotency-Key');
-	}
-	return source.randomUUID();
 }
 
 /**
@@ -179,80 +169,17 @@ export class ContactsClient {
 		return query.length > 0 ? `${url}?${query}` : url;
 	}
 
-	private async parseErrorResponse(
-		response: Response,
-		instance: string
-	): Promise<ContactsApiError> {
-		const replayed: boolean = response.headers.get('idempotency-replayed') === 'true';
-		const contentType: string = response.headers.get('content-type') ?? '';
-		if (contentType.includes('json')) {
-			try {
-				const data: Record<string, unknown> = (await response.json()) as Record<string, unknown>;
-				const errors: ContactProblemValidationError[] | undefined = Array.isArray(data.errors)
-					? data.errors
-							.filter(
-								(error: unknown): error is Record<string, unknown> =>
-									typeof error === 'object' && error !== null
-							)
-							.map((error: Record<string, unknown>) => ({
-								path: typeof error.path === 'string' ? error.path : '$',
-								message: typeof error.message === 'string' ? error.message : 'Validation error'
-							}))
-					: undefined;
-				return new ContactsApiError(
-					{
-						status: typeof data.status === 'number' ? data.status : response.status,
-						type:
-							typeof data.type === 'string'
-								? data.type
-								: `urn:signkit:problem:http-${response.status}`,
-						title: typeof data.title === 'string' ? data.title : response.statusText || 'Error',
-						detail:
-							typeof data.detail === 'string'
-								? data.detail
-								: `Request failed with status ${response.status}`,
-						instance: typeof data.instance === 'string' ? data.instance : instance,
-						...(errors && errors.length > 0 ? { errors } : {})
-					},
-					replayed
-				);
-			} catch {
-				// Fall through to the bounded generic problem below.
-			}
-		}
-		return new ContactsApiError(
-			{
-				status: response.status,
-				type: `urn:signkit:problem:http-${response.status}`,
-				title: response.statusText || 'Error',
-				detail: `Request failed with status ${response.status}`,
-				instance
-			},
-			replayed
-		);
-	}
-
 	private async request<T>(
 		path: string,
 		init: RequestInit,
 		customFetch?: typeof globalThis.fetch
 	): Promise<{ data: T; response: Response }> {
-		const response: Response = await this.resolveFetch(customFetch)(path, {
-			credentials: 'same-origin',
-			...init
-		});
-		if (!response.ok) throw await this.parseErrorResponse(response, path);
-		try {
-			return { data: (await response.json()) as T, response };
-		} catch {
-			throw new ContactsApiError({
-				status: response.status,
-				type: 'urn:signkit:problem:invalid-response-json',
-				title: 'Invalid response JSON',
-				detail: 'The response body could not be parsed as JSON.',
-				instance: path
-			});
-		}
+		return requestJson<T>(
+			this.resolveFetch(customFetch),
+			path,
+			init,
+			(problem, replayed) => new ContactsApiError(problem, replayed)
+		);
 	}
 
 	async list(

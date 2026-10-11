@@ -1,6 +1,6 @@
 # 全体を対象にした最小限のリファクタリング計画
 
-Status: planned — 計画範囲は合意済み。実装の完了を示すものではない。
+Status: implemented in PR stack — 4つの差分は実装済み・レビュー中。未マージ。[実施記録](refactoring-implementation.md) に全体の点検結果と検証を置く。
 
 作成日: 2026-10-05。2026-10-11に全体対象の軽量版へ再編。
 調査基準: 手元のHEAD `189cc55996a041dec9cc89e5bf67648623c8daf8`。
@@ -22,6 +22,7 @@ PR数は上限ではなく、独立した高リスク変更が残る場合は分
 
 - [今回整える責務と変えない境界](refactoring-boundaries.md)
 - [差分に応じた検証と完了条件](refactoring-verification.md)
+- [PRスタック・点検結果・検証の実施記録](refactoring-implementation.md)
 - [全体対象の軽量版を選ぶADR](decisions/2026-10-11-minimal-repository-wide-refactoring.md)
 
 ## 2. 全体を点検する範囲
