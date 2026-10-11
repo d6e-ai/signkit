@@ -1,15 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { D1EnvelopeStore } from '$lib/adapters/db/d1-envelope-store';
+import { PostgresEnvelopeStore } from '$lib/adapters/db/postgres-envelope-store';
 import { IsomorphicGitDraftRepository } from '$lib/history/isomorphic-git-repository';
 
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
+const envelopeApplicationConstructed = vi.hoisted(() => vi.fn());
 
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
+vi.mock('$lib/adapters/db/postgres-envelope-application-store', async (importOriginal) => {
+	const original =
+		await importOriginal<typeof import('$lib/adapters/db/postgres-envelope-application-store')>();
+	return {
+		...original,
+		PostgresEnvelopeApplicationStore: class extends original.PostgresEnvelopeApplicationStore {
+			constructor(
+				...args: ConstructorParameters<typeof original.PostgresEnvelopeApplicationStore>
+			) {
+				super(...args);
+				envelopeApplicationConstructed();
+			}
+		}
+	};
+});
 
 import { resolveEnvelopeDocumentDependencies } from './envelope-document-dependencies-runtime';
 
 afterEach((): void => {
 	for (const key of Object.keys(privateEnv)) delete privateEnv[key];
+	envelopeApplicationConstructed.mockClear();
 });
 
 describe('resolveEnvelopeDocumentDependencies', () => {
@@ -49,7 +67,9 @@ describe('resolveEnvelopeDocumentDependencies', () => {
 
 		const dependencies = await resolveEnvelopeDocumentDependencies({});
 		expect(dependencies).not.toBeNull();
+		expect(dependencies?.envelopes).toBeInstanceOf(PostgresEnvelopeStore);
 		expect(dependencies?.repository).toBeInstanceOf(IsomorphicGitDraftRepository);
+		expect(envelopeApplicationConstructed).not.toHaveBeenCalled();
 	});
 
 	it('never imports the DOCX export feature to resolve shared document dependencies', async () => {

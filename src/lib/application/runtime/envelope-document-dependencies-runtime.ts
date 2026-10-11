@@ -49,12 +49,11 @@ export async function resolveEnvelopeDocumentDependencies(
 		return null;
 	}
 
-	const [{ resolvePostgresEnvelopeStore }, { resolveS3ObjectStore }] = await Promise.all([
-		import('$lib/application/envelopes/runtime-postgres'),
-		import('$lib/application/drafts/runtime-s3')
-	]);
+	const { PostgresEnvelopeStore } = await import('$lib/adapters/db/postgres-envelope-store');
+	const { resolvePostgresSql } = await import('./postgres-sql-runtime');
+	const { resolveS3ObjectStore } = await import('$lib/application/drafts/runtime-s3');
 	return {
-		envelopes: resolvePostgresEnvelopeStore(configuration.databaseUrl as string),
+		envelopes: new PostgresEnvelopeStore(resolvePostgresSql(configuration.databaseUrl as string)),
 		objects: resolveS3ObjectStore(configuration),
 		repository: new IsomorphicGitDraftRepository()
 	};
