@@ -487,7 +487,11 @@ export class CompletionDeliveryService {
 			nextAvailableAt: willRetry
 				? completionDeliveryRetryAvailableAt(now, claim.attempts)
 				: now.toISOString(),
-			failedAt: now.toISOString()
+			failedAt: now.toISOString(),
+			// Preserved only when this failure is terminal: the generic
+			// `delivery_attempts_exhausted` written to `last_error` above would
+			// otherwise be the only record, losing the real cause.
+			...(willRetry ? {} : { failureCauseCode: sanitizeCompletionDeliveryErrorCode(errorCode) })
 		});
 		if (failure.outcome === 'stale') return { deliveryId: claim.deliveryId, outcome: 'stale' };
 		return {

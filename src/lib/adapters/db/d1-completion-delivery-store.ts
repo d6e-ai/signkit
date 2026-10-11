@@ -221,7 +221,7 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 						?, ?, 0, NULL, NULL,
 						NULL, NULL, NULL, 1, ?, ?
 					)
-					ON CONFLICT (envelope_id, recipient_id) DO NOTHING`
+					ON CONFLICT (envelope_id, recipient_id, generation) DO NOTHING`
 				)
 				.bind(
 					item.id,
@@ -354,13 +354,14 @@ export class D1CompletionDeliveryStore implements CompletionDeliveryStore {
 						`UPDATE completion_delivery_outbox
 						 SET status = 'failed', claim_token = NULL, locked_at = NULL, retryable = 0,
 							sealed_token = NULL, access_revoked_at = COALESCE(access_revoked_at, ?),
-							available_at = ?, last_error = ?, updated_at = ?
+							available_at = ?, last_error = ?, failure_cause_code = ?, updated_at = ?
 						 WHERE id = ? AND status = 'processing' AND claim_token = ?`
 					)
 					.bind(
 						command.failedAt,
 						command.nextAvailableAt,
 						command.errorCode,
+						command.failureCauseCode ?? null,
 						command.failedAt,
 						command.deliveryId,
 						command.claimToken

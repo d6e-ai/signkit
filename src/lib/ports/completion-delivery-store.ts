@@ -82,6 +82,13 @@ export interface FailCompletionDeliveryCommand {
 	retryable: boolean;
 	nextAvailableAt: string;
 	failedAt: string;
+	/**
+	 * The real cause of this failure, preserved separately from the
+	 * (possibly generic, exhaustion-overwritten) `errorCode` written to
+	 * `last_error`. Only meaningful, and only ever set, when this failure is
+	 * terminal (`retryable: false`).
+	 */
+	failureCauseCode?: string;
 }
 
 export type FailCompletionDeliveryResult = { outcome: 'failed' } | { outcome: 'stale' };

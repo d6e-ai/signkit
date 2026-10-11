@@ -1791,6 +1791,89 @@ export function openApiDocument(): Record<string, unknown> {
 					}
 				})
 			},
+			'/api/v1/envelopes/{envelopeId}/completion-deliveries': {
+				get: op({
+					summary: "Read each recipient's current completion delivery generation",
+					operationId: 'getEnvelopeCompletionDeliveries',
+					description:
+						'Safe current-generation read: delivery and recipient IDs, generation, status, attempts, expiry/revocation timestamps, the sanitized failure error code, and whether that generation is eligible for reissue. Never a raw or sealed token, a claim lease, or any other grant material.',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [envelopeIdParam],
+					responses: jsonResponse('200', 'Current completion delivery generations', {
+						type: 'object',
+						required: ['completionDeliveries'],
+						additionalProperties: false,
+						properties: {
+							completionDeliveries: { type: 'array', items: { type: 'object' } }
+						}
+					})
+				})
+			},
+			'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/completion-access/reissue': {
+				post: op({
+					summary: 'Reissue completion access for one exhausted completion delivery',
+					operationId: 'reissueEnvelopeRecipientCompletionAccess',
+					description:
+						'Explicit, operator-confirmed recovery for one terminal exhausted completion delivery, authorized AFTER the completion manifest and PDF are independently re-verified against actual object storage bytes. Never revives the exhausted predecessor -- its status, attempts, error, revocation, and expiry stay exactly as the exhausting failure wrote them -- it only appends a fresh, bounded 30-day successor chained to it. grantAccess: true and the full expected-generation tuple (expectedDeliveryId, expectedAttempts, expectedFailedAt, expectedErrorCode) must match the current exhausted generation observed from GET .../completion-deliveries exactly; a stale or ambiguous confirmation is refused with 409.',
+					tags: ['Envelopes', 'Completion artifacts'],
+					parameters: [envelopeIdParam, recipientIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									required: [
+										'grantAccess',
+										'expectedDeliveryId',
+										'expectedAttempts',
+										'expectedFailedAt',
+										'expectedErrorCode'
+									],
+									additionalProperties: false,
+									properties: {
+										grantAccess: { type: 'boolean', const: true },
+										expectedDeliveryId: UUIDV7,
+										expectedAttempts: {
+											type: 'integer',
+											minimum: 0,
+											maximum: 2_147_483_647
+										},
+										expectedFailedAt: {
+											type: 'string',
+											format: 'date-time',
+											description:
+												'The failedAt value from GET .../completion-deliveries for this generation.'
+										},
+										expectedErrorCode: {
+											type: 'string',
+											pattern: '^[a-z][a-z0-9_]{1,64}$',
+											description:
+												'The errorCode value from GET .../completion-deliveries for this generation.'
+										}
+									}
+								}
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Published or safely replayed completion access reissue',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: {
+										type: 'object',
+										required: ['completionAccessReissue'],
+										additionalProperties: false,
+										properties: { completionAccessReissue: { type: 'object' } }
+									}
+								}
+							}
+						}
+					}
+				})
+			},
 			'/api/v1/envelopes/{envelopeId}/pdf-seal': {
 				get: op({
 					summary: 'Read certificate-backed PDF seal status',
