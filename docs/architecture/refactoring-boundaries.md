@@ -1,6 +1,6 @@
 # 最小限のリファクタリングで整える責務
 
-Status: implemented in PR stack — [全体対象の軽量計画](refactoring-plan.md) の責務詳細。未マージ。具体的な変更と残した責務は [実施記録](refactoring-implementation.md) に置く。
+Status: merged — [全体対象の軽量計画](refactoring-plan.md) の責務詳細。4本ともマージ済み。具体的な変更と残した責務は [実施記録](refactoring-implementation.md) に置く。
 
 作成日: 2026-10-05。2026-10-11に軽量範囲へ再編。調査基準は計画に記した手元のHEAD。
 以下は責務の説明であり、新しいパッケージ・型体系を必須にするものではない。

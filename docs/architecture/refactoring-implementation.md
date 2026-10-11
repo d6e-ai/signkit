@@ -2,7 +2,7 @@
 
 Date: 2026-10-11
 
-Status: implemented in PR stack — #223 → #224 → #225 → #226でレビュー中。未マージ。リリース・デプロイは含まない。
+Status: merged — #223 → #224 → #225 → #226 の順にマージ済み。リリース・デプロイはこの実施記録とは別の運用作業。
 
 [計画](refactoring-plan.md) の対象一覧に対する、変更と変更しなかった理由の記録。
 起点は手元の `189cc55996a041dec9cc89e5bf67648623c8daf8`。未コミットだった計画を先にコミットした。
@@ -17,7 +17,7 @@ Status: implemented in PR stack — #223 → #224 → #225 → #226でレビュ�
 | [3 / #225](https://github.com/d6e-ai/signkit/pull/225) | bounded streamとcapped backoffの小さな共通処理  | `ports/bounded-object-stream.ts` と `ports/capped-exponential-backoff.ts`。上限・エラー・cancel reason・job状態は呼出し元が所有 |
 | [4 / #226](https://github.com/d6e-ai/signkit/pull/226) | UI/API/CLIと仕上げ                              | `client/http-problem.ts` とrecipientの通信/receipt検証。操作状態と曖昧な結果の分類は各callerが所有                              |
 
-後続PRのbaseは直前のブランチ。1 → 2 → 3 → 4の順でレビューする。
+後続PRのbaseはレビュー中は直前のブランチとし、先行PRのマージ後に `main` へ変更して1 → 2 → 3 → 4の順にマージした。
 DB schema、SQL/bind/trigger/lock順、公開API、監査hash version、Git・PDFの保存形式は変更していない。
 
 ## 全体の点検結果
@@ -61,7 +61,7 @@ DB schema、SQL/bind/trigger/lock順、公開API、監査hash version、Git・PD
 
 lint対象から無関係な未追跡 `output/`・`tmp/` を除外し、既存のvendored/generated除外も維持する。
 レビューはsource比較であり、子エージェントの報告をテスト実行の証拠にはしない。
-#223・#224・#225のCIは全7ジョブ成功。#226の最終headはCIで確認する。
+#223・#224・#225・#226 の最終headは、いずれもCIの全7ジョブ成功を確認した。
 Bugbotの自動レビュー本文を確認し、現時点で取得した4本のreviewコメントに指摘はない。
 
 ## 残る検証と範囲外
