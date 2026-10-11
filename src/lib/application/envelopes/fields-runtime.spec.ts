@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { EnvelopeFieldApplication } from './fields';
+import { EnvelopeAuthoringFieldsRead, EnvelopeFieldApplication } from './fields';
 
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 const resolveDraftPersistenceService = vi.hoisted(() => vi.fn());
@@ -7,7 +7,10 @@ const resolveDraftPersistenceService = vi.hoisted(() => vi.fn());
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 vi.mock('$lib/application/drafts/runtime', () => ({ resolveDraftPersistenceService }));
 
-import { resolveEnvelopeFieldApplication } from './fields-runtime';
+import {
+	resolveEnvelopeAuthoringFieldsRead,
+	resolveEnvelopeFieldApplication
+} from './fields-runtime';
 
 afterEach((): void => {
 	for (const key of Object.keys(privateEnv)) delete privateEnv[key];
@@ -56,5 +59,27 @@ describe('resolveEnvelopeFieldApplication', () => {
 		});
 		expect(application).toBeInstanceOf(EnvelopeFieldApplication);
 		expect(resolveDraftPersistenceService).toHaveBeenCalledOnce();
+	});
+});
+
+describe('resolveEnvelopeAuthoringFieldsRead', () => {
+	it('fails closed on a Cloudflare request without D1 and does not require draft persistence', async () => {
+		const platform = { env: { OBJECTS: {} as R2Bucket } } as App.Platform;
+		await expect(
+			resolveEnvelopeAuthoringFieldsRead({ locals: {} as App.Locals, platform })
+		).resolves.toBeNull();
+		expect(resolveDraftPersistenceService).not.toHaveBeenCalled();
+	});
+
+	it('uses D1 without resolving Git draft persistence', async () => {
+		const platform = {
+			env: { DB: {} as D1Database, OBJECTS: {} as R2Bucket }
+		} as App.Platform;
+		const read = await resolveEnvelopeAuthoringFieldsRead({
+			locals: {} as App.Locals,
+			platform
+		});
+		expect(read).toBeInstanceOf(EnvelopeAuthoringFieldsRead);
+		expect(resolveDraftPersistenceService).not.toHaveBeenCalled();
 	});
 });

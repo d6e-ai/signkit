@@ -218,6 +218,53 @@ const ENVELOPE_FIELD: Record<string, unknown> = {
 	additionalProperties: false
 };
 
+const AUTHORING_ENVELOPE_FIELD: Record<string, unknown> = {
+	type: 'object',
+	description:
+		'Complete authoring field definition including the stored label. Exposed only on GET /api/v1/envelopes/{envelopeId}/fields with drafts:write.',
+	required: [
+		'id',
+		'recipientId',
+		'documentId',
+		'documentPath',
+		'fieldType',
+		'label',
+		'required',
+		'position',
+		'geometry'
+	],
+	properties: {
+		id: UUIDV7,
+		recipientId: UUIDV7,
+		documentId: { anyOf: [UUIDV7, { type: 'null' }] },
+		documentPath: { type: ['string', 'null'] },
+		fieldType: { type: 'string', enum: [...fieldTypes] },
+		label: { type: 'string' },
+		required: { type: 'boolean' },
+		position: { type: 'integer', minimum: 0, maximum: 100000 },
+		geometry: {
+			anyOf: [{ $ref: '#/components/schemas/FieldGeometry' }, { type: 'null' }]
+		}
+	},
+	additionalProperties: false
+};
+
+const AUTHORING_FIELDS_RESPONSE: Record<string, unknown> = {
+	type: 'object',
+	required: ['envelopeId', 'generation', 'fieldGeneration', 'commitSha', 'fields'],
+	additionalProperties: false,
+	properties: {
+		envelopeId: UUIDV7,
+		generation: { type: 'integer', minimum: 0 },
+		fieldGeneration: { type: 'integer', minimum: 0 },
+		commitSha: { type: ['string', 'null'] },
+		fields: {
+			type: 'array',
+			items: { $ref: '#/components/schemas/AuthoringEnvelopeField' }
+		}
+	}
+};
+
 const MARKDOWN_DOCUMENT_LEAF: Record<string, unknown> = {
 	type: 'object',
 	required: ['id', 'position', 'kind', 'title', 'path', 'contentSha256'],
@@ -420,6 +467,46 @@ const READY_ENVELOPE_RECEIPT: Record<string, unknown> = {
 			},
 			additionalProperties: false
 		}
+	},
+	additionalProperties: false
+};
+
+const REOPEN_ENVELOPE_REQUEST: Record<string, unknown> = {
+	type: 'object',
+	required: ['expectedGeneration', 'expectedFieldGeneration', 'expectedReadyAuditEventId'],
+	additionalProperties: false,
+	properties: {
+		expectedGeneration: { type: 'integer', minimum: 1, maximum: 2_147_483_647 },
+		expectedFieldGeneration: { type: 'integer', minimum: 0, maximum: 2_147_483_646 },
+		expectedReadyAuditEventId: UUIDV7
+	}
+};
+
+const REOPEN_ENVELOPE_RECEIPT: Record<string, unknown> = {
+	type: 'object',
+	required: ['reopened', 'replayed'],
+	properties: {
+		reopened: {
+			type: 'object',
+			required: [
+				'envelopeId',
+				'status',
+				'generation',
+				'fieldGeneration',
+				'updatedAt',
+				'auditEventId'
+			],
+			properties: {
+				envelopeId: UUIDV7,
+				status: { type: 'string', enum: ['draft'] },
+				generation: { type: 'integer', minimum: 1 },
+				fieldGeneration: { type: 'integer', minimum: 0 },
+				updatedAt: { type: 'string', format: 'date-time' },
+				auditEventId: UUIDV7
+			},
+			additionalProperties: false
+		},
+		replayed: { type: 'boolean' }
 	},
 	additionalProperties: false
 };
@@ -1752,7 +1839,47 @@ export function openApiDocument(): Record<string, unknown> {
 					})
 				})
 			},
+			'/api/v1/envelopes/{envelopeId}/reopen': {
+				post: op({
+					summary: 'Return a ready envelope to draft',
+					description:
+						'Deletes signature placements, increments fieldGeneration, and keeps recipients and the Git revision. Requires the latest envelope.ready audit event. Send refuses any earlier ready anchor after reopen or a later ready.',
+					operationId: 'reopenEnvelope',
+					tags: ['Envelopes'],
+					parameters: [envelopeIdParam, idempotencyHeader],
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/ReopenEnvelopeRequest' }
+							}
+						}
+					},
+					responses: {
+						'200': {
+							description: 'Reopened or safely replayed',
+							headers: { 'Idempotency-Replayed': idempotencyReplayedHeader },
+							content: {
+								'application/json': {
+									schema: { $ref: '#/components/schemas/ReopenEnvelopeReceipt' }
+								}
+							}
+						}
+					}
+				})
+			},
 			'/api/v1/envelopes/{envelopeId}/fields': {
+				get: op({
+					summary: 'Read complete authoring field definitions',
+					description:
+						'drafts:write only. Returns stored labels, required flags, and nullable document/geometry fields. Public envelope detail and placement receipts remain label-free.',
+					operationId: 'getEnvelopeAuthoringFields',
+					tags: ['Envelopes'],
+					parameters: [envelopeIdParam],
+					responses: jsonResponse('200', 'Authoring field set', {
+						$ref: '#/components/schemas/AuthoringFieldsResponse'
+					})
+				}),
 				post: op({
 					summary: 'Place fields on a ready envelope',
 					operationId: 'placeEnvelopeFields',
@@ -2909,6 +3036,8 @@ export function openApiDocument(): Record<string, unknown> {
 				FieldGeometry: FIELD_GEOMETRY,
 				EnvelopeRecipient: ENVELOPE_RECIPIENT,
 				EnvelopeField: ENVELOPE_FIELD,
+				AuthoringEnvelopeField: AUTHORING_ENVELOPE_FIELD,
+				AuthoringFieldsResponse: AUTHORING_FIELDS_RESPONSE,
 				MarkdownDocumentLeaf: MARKDOWN_DOCUMENT_LEAF,
 				PdfDocumentLeaf: PDF_DOCUMENT_LEAF,
 				DocumentSetLeaf: DOCUMENT_SET_LEAF,
@@ -2918,6 +3047,8 @@ export function openApiDocument(): Record<string, unknown> {
 				DraftRevisionReceipt: DRAFT_REVISION_RECEIPT,
 				ReadyEnvelopeRequest: READY_ENVELOPE_REQUEST,
 				ReadyEnvelopeReceipt: READY_ENVELOPE_RECEIPT,
+				ReopenEnvelopeRequest: REOPEN_ENVELOPE_REQUEST,
+				ReopenEnvelopeReceipt: REOPEN_ENVELOPE_RECEIPT,
 				PlaceFieldsRequest: PLACE_FIELDS_REQUEST,
 				PlaceFieldsReceipt: PLACE_FIELDS_RECEIPT,
 				SendEnvelopeRequest: SEND_ENVELOPE_REQUEST,

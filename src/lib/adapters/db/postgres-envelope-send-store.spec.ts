@@ -154,6 +154,7 @@ describe('PostgresEnvelopeSendStore', () => {
 			text: expect.stringContaining('FROM envelope_ready_command ready'),
 			values: ['env-1', 2, 'commit-2', 'ready-audit']
 		});
+		expect(database.queries[3]?.text).toContain('envelope.reopened');
 	});
 
 	it('fails closed when the supplied ready event is not anchored to the current revision', async () => {

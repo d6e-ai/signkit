@@ -97,7 +97,7 @@ async function auditEventsWithSent(
 		actorType: 'user',
 		actorId: 'user-1',
 		occurredAt: '2026-09-12T00:00:00.000Z',
-		payload
+		payload: { readyAuditEventId: 'audit-event-ready', ...payload }
 	});
 	return buildVerifiedAuditChain(CONTEXT, steps);
 }
@@ -425,6 +425,179 @@ describe('buildCompletionManifest', () => {
 		recipients[1] = { ...recipients[1], routingOrder: 2 };
 		await expect(buildCompletionManifest(await baseInput({ recipients }))).rejects.toThrow(
 			CompletionArtifactIntegrityError
+		);
+	});
+
+	it('matches recipients to the latest envelope.ready before send after a reopen', async () => {
+		const firstRecipients = [{ id: 'recipient-old', role: 'signer', routingOrder: 1 }];
+		const latestRecipients = [
+			{ id: 'recipient-b', role: 'signer', routingOrder: 1 },
+			{ id: 'recipient-a', role: 'viewer', routingOrder: 1 }
+		];
+		const events = await buildVerifiedAuditChain(CONTEXT, [
+			{
+				id: 'audit-event-1',
+				eventType: 'envelope.created',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:00.000Z',
+				payload: { title: 'Agreement' }
+			},
+			{
+				id: 'audit-event-ready-1',
+				eventType: 'envelope.ready',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:10.000Z',
+				payload: { commitSha: SENT_COMMIT_SHA, generation: 1, recipients: firstRecipients }
+			},
+			{
+				id: 'audit-event-reopened',
+				eventType: 'envelope.reopened',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:20.000Z',
+				payload: {
+					commitSha: SENT_COMMIT_SHA,
+					generation: 1,
+					fieldGeneration: 1,
+					readyAuditEventId: 'audit-event-ready-1'
+				}
+			},
+			{
+				id: 'audit-event-ready',
+				eventType: 'envelope.ready',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-11T00:00:00.000Z',
+				payload: { commitSha: SENT_COMMIT_SHA, generation: 1, recipients: latestRecipients }
+			},
+			{
+				id: 'audit-event-sent',
+				eventType: 'envelope.sent',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-12T00:00:00.000Z',
+				payload: { commitSha: SENT_COMMIT_SHA, readyAuditEventId: 'audit-event-ready' }
+			},
+			{
+				id: 'audit-event-2',
+				eventType: 'recipient.signed',
+				actorType: 'recipient',
+				actorId: 'recipient-b',
+				occurredAt: '2026-09-13T00:00:00.000Z',
+				payload: {
+					recipientId: 'recipient-b',
+					role: 'signer',
+					routingOrder: 1,
+					sentCommitSha: SENT_COMMIT_SHA,
+					fields: [
+						{ id: 'field-b', fieldType: 'signature', valueSha256: FIELD_B_SHA256 },
+						{ id: 'field-a', fieldType: 'date', valueSha256: FIELD_A_SHA256 }
+					],
+					signedAt: '2026-09-13T00:00:00.000Z'
+				}
+			},
+			{
+				id: 'audit-event-3',
+				eventType: 'envelope.completed',
+				actorType: 'recipient',
+				actorId: 'recipient-b',
+				occurredAt: '2026-09-14T00:00:00.000Z',
+				payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: '2026-09-14T00:00:00.000Z' }
+			}
+		]);
+		await expect(
+			buildCompletionManifest(await baseInput({ auditEvents: events }))
+		).resolves.toEqual(
+			expect.objectContaining({
+				recipients: expect.arrayContaining([
+					expect.objectContaining({ id: 'recipient-b', role: 'signer' })
+				])
+			})
+		);
+	});
+
+	it('rejects a send that still names an envelope.ready superseded by reopen', async () => {
+		const latestRecipients = [
+			{ id: 'recipient-b', role: 'signer', routingOrder: 1 },
+			{ id: 'recipient-a', role: 'viewer', routingOrder: 1 }
+		];
+		const events = await buildVerifiedAuditChain(CONTEXT, [
+			{
+				id: 'audit-event-1',
+				eventType: 'envelope.created',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:00.000Z',
+				payload: { title: 'Agreement' }
+			},
+			{
+				id: 'audit-event-ready-1',
+				eventType: 'envelope.ready',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:10.000Z',
+				payload: { commitSha: SENT_COMMIT_SHA, generation: 1, recipients: latestRecipients }
+			},
+			{
+				id: 'audit-event-reopened',
+				eventType: 'envelope.reopened',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-10T00:00:20.000Z',
+				payload: {
+					commitSha: SENT_COMMIT_SHA,
+					generation: 1,
+					fieldGeneration: 1,
+					readyAuditEventId: 'audit-event-ready-1'
+				}
+			},
+			{
+				id: 'audit-event-ready',
+				eventType: 'envelope.ready',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-11T00:00:00.000Z',
+				payload: { commitSha: SENT_COMMIT_SHA, generation: 1, recipients: latestRecipients }
+			},
+			{
+				id: 'audit-event-sent',
+				eventType: 'envelope.sent',
+				actorType: 'user',
+				actorId: 'user-1',
+				occurredAt: '2026-09-12T00:00:00.000Z',
+				payload: { commitSha: SENT_COMMIT_SHA, readyAuditEventId: 'audit-event-ready-1' }
+			},
+			{
+				id: 'audit-event-2',
+				eventType: 'recipient.signed',
+				actorType: 'recipient',
+				actorId: 'recipient-b',
+				occurredAt: '2026-09-13T00:00:00.000Z',
+				payload: {
+					recipientId: 'recipient-b',
+					role: 'signer',
+					routingOrder: 1,
+					sentCommitSha: SENT_COMMIT_SHA,
+					fields: [
+						{ id: 'field-b', fieldType: 'signature', valueSha256: FIELD_B_SHA256 },
+						{ id: 'field-a', fieldType: 'date', valueSha256: FIELD_A_SHA256 }
+					],
+					signedAt: '2026-09-13T00:00:00.000Z'
+				}
+			},
+			{
+				id: 'audit-event-3',
+				eventType: 'envelope.completed',
+				actorType: 'recipient',
+				actorId: 'recipient-b',
+				occurredAt: '2026-09-14T00:00:00.000Z',
+				payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: '2026-09-14T00:00:00.000Z' }
+			}
+		]);
+		await expect(buildCompletionManifest(await baseInput({ auditEvents: events }))).rejects.toThrow(
+			/does not anchor the latest envelope\.ready event/
 		);
 	});
 

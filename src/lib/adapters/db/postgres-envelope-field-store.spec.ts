@@ -1,7 +1,10 @@
 import postgres from 'postgres';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
+import {
+	AuthoringFieldsIntegrityError,
+	type PublishFieldPlacementCommand
+} from '$lib/ports/envelope-field-store';
 import { PostgresEnvelopeFieldStore } from './postgres-envelope-field-store';
 
 interface RecordedQuery {
@@ -221,5 +224,127 @@ describe('PostgresEnvelopeFieldStore', () => {
 			result: { auditEventId: command.auditEventId }
 		});
 		expect(database.transactionQueries).toHaveLength(2);
+	});
+
+	it('reads authoring fields from a single envelope LEFT JOIN snapshot', async () => {
+		const database = new ScriptedPostgres([
+			[
+				{
+					repositoryGeneration: 2,
+					fieldGeneration: 3,
+					repositoryHead: command.expectedCommitSha,
+					id: command.fields[0].id,
+					recipientId: command.fields[0].recipientId,
+					documentId: command.fields[0].documentId,
+					documentPath: null,
+					fieldType: 'signature',
+					label: 'Signature',
+					required: true,
+					position: 1,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
+				}
+			]
+		]);
+		const snapshot = await new PostgresEnvelopeFieldStore(database.client()).readAuthoringFields(
+			command.envelopeId
+		);
+		expect(snapshot).toMatchObject({
+			generation: 2,
+			fieldGeneration: 3,
+			fields: [{ label: 'Signature', geometry: null }]
+		});
+		expect(database.directQueries[0]?.text).toContain('LEFT JOIN envelope_field');
+	});
+
+	it('returns an empty field set from the LEFT JOIN sentinel at the current fieldGeneration', async () => {
+		const database = new ScriptedPostgres([
+			[
+				{
+					repositoryGeneration: 1,
+					fieldGeneration: 4,
+					repositoryHead: command.expectedCommitSha,
+					id: null,
+					recipientId: null,
+					documentId: null,
+					documentPath: null,
+					fieldType: null,
+					label: null,
+					required: null,
+					position: null,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
+				}
+			]
+		]);
+		await expect(
+			new PostgresEnvelopeFieldStore(database.client()).readAuthoringFields(command.envelopeId)
+		).resolves.toEqual({
+			envelopeId: command.envelopeId,
+			generation: 1,
+			fieldGeneration: 4,
+			commitSha: command.expectedCommitSha,
+			fields: []
+		});
+	});
+
+	it('rejects invalid field types and partial geometry instead of returning a subset', async () => {
+		const invalid = new ScriptedPostgres([
+			[
+				{
+					repositoryGeneration: 1,
+					fieldGeneration: 1,
+					repositoryHead: command.expectedCommitSha,
+					id: command.fields[0].id,
+					recipientId: command.fields[0].recipientId,
+					documentId: command.fields[0].documentId,
+					documentPath: null,
+					fieldType: 'stamp',
+					label: 'Signature',
+					required: true,
+					position: 1,
+					page: 1,
+					x: null,
+					y: 0.1,
+					width: 0.2,
+					height: 0.05
+				}
+			]
+		]);
+		await expect(
+			new PostgresEnvelopeFieldStore(invalid.client()).readAuthoringFields(command.envelopeId)
+		).rejects.toBeInstanceOf(AuthoringFieldsIntegrityError);
+
+		const emptyLabel = new ScriptedPostgres([
+			[
+				{
+					repositoryGeneration: 1,
+					fieldGeneration: 1,
+					repositoryHead: command.expectedCommitSha,
+					id: command.fields[0].id,
+					recipientId: command.fields[0].recipientId,
+					documentId: command.fields[0].documentId,
+					documentPath: null,
+					fieldType: 'signature',
+					label: '',
+					required: true,
+					position: 1,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
+				}
+			]
+		]);
+		await expect(
+			new PostgresEnvelopeFieldStore(emptyLabel.client()).readAuthoringFields(command.envelopeId)
+		).rejects.toBeInstanceOf(AuthoringFieldsIntegrityError);
 	});
 });

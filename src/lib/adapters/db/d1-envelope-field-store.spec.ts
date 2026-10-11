@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import type { PublishFieldPlacementCommand } from '$lib/ports/envelope-field-store';
+import {
+	AuthoringFieldsIntegrityError,
+	type PublishFieldPlacementCommand
+} from '$lib/ports/envelope-field-store';
 import { D1EnvelopeFieldStore } from './d1-envelope-field-store';
 
 interface RecordedStatement {
@@ -202,5 +205,155 @@ describe('D1EnvelopeFieldStore', () => {
 		await expect(tampered.prepareFieldPlacement(command, 1, 0)).resolves.toEqual({
 			outcome: 'integrity_error'
 		});
+	});
+
+	it('reads authoring fields from a single envelope LEFT JOIN snapshot', async () => {
+		const fake = fakeD1([
+			[
+				{
+					repository_generation: 2,
+					field_generation: 3,
+					repository_head: command.expectedCommitSha,
+					id: command.fields[0].id,
+					recipient_id: command.fields[0].recipientId,
+					document_id: command.fields[0].documentId,
+					document_path: null,
+					field_type: 'signature',
+					label: 'Signature',
+					required: 1,
+					position: 1,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
+				}
+			]
+		]);
+		const snapshot = await new D1EnvelopeFieldStore(fake.database).readAuthoringFields(
+			command.envelopeId
+		);
+		expect(snapshot).toMatchObject({
+			generation: 2,
+			fieldGeneration: 3,
+			commitSha: command.expectedCommitSha,
+			fields: [{ id: command.fields[0].id, label: 'Signature', geometry: null }]
+		});
+		expect(fake.prepared).toHaveLength(1);
+		expect(fake.prepared[0].sql).toContain('LEFT JOIN envelope_field');
+	});
+
+	it('returns an empty field set from the LEFT JOIN sentinel without borrowing a stale generation', async () => {
+		const fake = fakeD1([
+			[
+				{
+					repository_generation: 1,
+					field_generation: 4,
+					repository_head: command.expectedCommitSha,
+					id: null,
+					recipient_id: null,
+					document_id: null,
+					document_path: null,
+					field_type: null,
+					label: null,
+					required: null,
+					position: null,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
+				}
+			]
+		]);
+		await expect(
+			new D1EnvelopeFieldStore(fake.database).readAuthoringFields(command.envelopeId)
+		).resolves.toEqual({
+			envelopeId: command.envelopeId,
+			generation: 1,
+			fieldGeneration: 4,
+			commitSha: command.expectedCommitSha,
+			fields: []
+		});
+	});
+
+	it('rejects invalid field types, labels, and partial geometry instead of returning a subset', async () => {
+		const invalidType = fakeD1([
+			[
+				{
+					repository_generation: 1,
+					field_generation: 1,
+					repository_head: command.expectedCommitSha,
+					id: command.fields[0].id,
+					recipient_id: command.fields[0].recipientId,
+					document_id: command.fields[0].documentId,
+					document_path: null,
+					field_type: 'stamp',
+					label: 'Signature',
+					required: 1,
+					position: 1,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
+				}
+			]
+		]);
+		await expect(
+			new D1EnvelopeFieldStore(invalidType.database).readAuthoringFields(command.envelopeId)
+		).rejects.toBeInstanceOf(AuthoringFieldsIntegrityError);
+
+		const partialGeometry = fakeD1([
+			[
+				{
+					repository_generation: 1,
+					field_generation: 1,
+					repository_head: command.expectedCommitSha,
+					id: command.fields[0].id,
+					recipient_id: command.fields[0].recipientId,
+					document_id: command.fields[0].documentId,
+					document_path: null,
+					field_type: 'signature',
+					label: 'Signature',
+					required: 1,
+					position: 1,
+					page: 1,
+					x: null,
+					y: 0.1,
+					width: 0.2,
+					height: 0.05
+				}
+			]
+		]);
+		await expect(
+			new D1EnvelopeFieldStore(partialGeometry.database).readAuthoringFields(command.envelopeId)
+		).rejects.toBeInstanceOf(AuthoringFieldsIntegrityError);
+
+		const emptyLabel = fakeD1([
+			[
+				{
+					repository_generation: 1,
+					field_generation: 1,
+					repository_head: command.expectedCommitSha,
+					id: command.fields[0].id,
+					recipient_id: command.fields[0].recipientId,
+					document_id: command.fields[0].documentId,
+					document_path: null,
+					field_type: 'signature',
+					label: '',
+					required: 1,
+					position: 1,
+					page: null,
+					x: null,
+					y: null,
+					width: null,
+					height: null
+				}
+			]
+		]);
+		await expect(
+			new D1EnvelopeFieldStore(emptyLabel.database).readAuthoringFields(command.envelopeId)
+		).rejects.toBeInstanceOf(AuthoringFieldsIntegrityError);
 	});
 });

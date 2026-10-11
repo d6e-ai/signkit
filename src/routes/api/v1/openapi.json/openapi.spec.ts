@@ -34,6 +34,7 @@ describe('GET /api/v1/openapi.json', () => {
 			'/api/v1/envelopes/{envelopeId}/draft/docx',
 			'/api/v1/envelopes/{envelopeId}/docx',
 			'/api/v1/envelopes/{envelopeId}/ready',
+			'/api/v1/envelopes/{envelopeId}/reopen',
 			'/api/v1/envelopes/{envelopeId}/fields',
 			'/api/v1/envelopes/{envelopeId}/send',
 			'/api/v1/envelopes/{envelopeId}/void',

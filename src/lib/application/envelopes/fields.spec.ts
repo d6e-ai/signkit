@@ -210,6 +210,10 @@ class CapturingStore implements EnvelopeFieldStore {
 		};
 	}
 
+	async readAuthoringFields(): Promise<null> {
+		return null;
+	}
+
 	async publishFieldPlacement(command: PublishFieldPlacementCommand) {
 		this.commands.push(command);
 		return {
@@ -490,6 +494,7 @@ describe('EnvelopeFieldApplication', () => {
 			prepareFieldPlacement: vi.fn(async (): Promise<FieldPlacementPreparation> => ({
 				outcome: 'field_generation_conflict'
 			})),
+			readAuthoringFields: vi.fn(async () => null),
 			publishFieldPlacement: vi.fn()
 		};
 		const result = await new EnvelopeFieldApplication(store, drafts).place(actor, envelopeId, {

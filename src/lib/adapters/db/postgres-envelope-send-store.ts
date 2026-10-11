@@ -402,6 +402,12 @@ export class PostgresEnvelopeSendStore implements EnvelopeSendStore {
 				AND ready.expected_generation = ${expectedGeneration}
 				AND ready.commit_sha = ${expectedCommitSha}
 				AND ready.audit_event_id = ${expectedReadyAuditEventId}
+				AND NOT EXISTS (
+					SELECT 1 FROM audit_event later
+					WHERE later.envelope_id = ready.envelope_id
+						AND later.sequence > ready.audit_sequence
+						AND later.event_type IN ('envelope.ready', 'envelope.reopened')
+				)
 			LIMIT 1
 		`;
 		const row: ReadyAuditAnchorRow | undefined = rows[0];

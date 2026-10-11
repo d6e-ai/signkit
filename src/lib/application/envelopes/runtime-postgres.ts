@@ -4,6 +4,7 @@ import type { DraftPersistenceService } from '$lib/application/drafts/draft-pers
 import { PostgresEnvelopeApplicationStore } from '$lib/adapters/db/postgres-envelope-application-store';
 import { PostgresEnvelopeFieldStore } from '$lib/adapters/db/postgres-envelope-field-store';
 import { PostgresEnvelopeReadyStore } from '$lib/adapters/db/postgres-envelope-ready-store';
+import { PostgresEnvelopeReopenStore } from '$lib/adapters/db/postgres-envelope-reopen-store';
 import { PostgresEnvelopeSendStore } from '$lib/adapters/db/postgres-envelope-send-store';
 import { PostgresEnvelopeVoidStore } from '$lib/adapters/db/postgres-envelope-void-store';
 import { PostgresEnvelopeSentPdfStore } from '$lib/adapters/db/postgres-envelope-sent-pdf-store';
@@ -57,8 +58,14 @@ import {
 	type RecipientViewedApplicationPort
 } from '$lib/application/signing/recipient-viewed';
 import type { EnvelopeApplicationPort } from './model';
-import { EnvelopeFieldApplication, type EnvelopeFieldApplicationPort } from './fields';
+import {
+	EnvelopeAuthoringFieldsRead,
+	EnvelopeFieldApplication,
+	type EnvelopeAuthoringFieldsReadPort,
+	type EnvelopeFieldApplicationPort
+} from './fields';
 import { EnvelopeReadyApplication, type EnvelopeReadyApplicationPort } from './ready';
+import { EnvelopeReopenApplication, type EnvelopeReopenApplicationPort } from './reopen';
 import { EnvelopeSendApplication, type EnvelopeSendApplicationPort } from './send';
 import { EnvelopeVoidApplication, type EnvelopeVoidApplicationPort } from './void';
 import { EnvelopeApplication } from './service';
@@ -67,7 +74,9 @@ interface PostgresRuntimeResources {
 	store: PostgresEnvelopeApplicationStore;
 	application: EnvelopeApplicationPort;
 	readyApplication: EnvelopeReadyApplicationPort;
+	reopenApplication: EnvelopeReopenApplicationPort;
 	fieldStore: PostgresEnvelopeFieldStore;
+	authoringFieldsRead: EnvelopeAuthoringFieldsReadPort;
 	recipientAccessApplication: RecipientAccessApplicationPort;
 	sql: ReturnType<typeof postgres>;
 }
@@ -97,6 +106,18 @@ export function resolvePostgresEnvelopeReadyApplication(
 	databaseUrl: string
 ): EnvelopeReadyApplicationPort {
 	return resolvePostgresResources(databaseUrl).readyApplication;
+}
+
+export function resolvePostgresEnvelopeReopenApplication(
+	databaseUrl: string
+): EnvelopeReopenApplicationPort {
+	return resolvePostgresResources(databaseUrl).reopenApplication;
+}
+
+export function resolvePostgresEnvelopeAuthoringFieldsRead(
+	databaseUrl: string
+): EnvelopeAuthoringFieldsReadPort {
+	return resolvePostgresResources(databaseUrl).authoringFieldsRead;
 }
 
 /**
@@ -252,7 +273,13 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 	const readyApplication: EnvelopeReadyApplicationPort = new EnvelopeReadyApplication(
 		new PostgresEnvelopeReadyStore(sql)
 	);
+	const reopenApplication: EnvelopeReopenApplicationPort = new EnvelopeReopenApplication(
+		new PostgresEnvelopeReopenStore(sql)
+	);
 	const fieldStore: PostgresEnvelopeFieldStore = new PostgresEnvelopeFieldStore(sql);
+	const authoringFieldsRead: EnvelopeAuthoringFieldsReadPort = new EnvelopeAuthoringFieldsRead(
+		fieldStore
+	);
 	const recipientAccessApplication: RecipientAccessApplicationPort = new RecipientAccessService(
 		new PostgresRecipientAccessStore(sql)
 	);
@@ -260,7 +287,9 @@ function resolvePostgresResources(databaseUrl: string): PostgresRuntimeResources
 		store,
 		application,
 		readyApplication,
+		reopenApplication,
 		fieldStore,
+		authoringFieldsRead,
 		recipientAccessApplication,
 		sql
 	};

@@ -34,6 +34,7 @@ export const integrationCapabilities = {
 				'/api/v1/envelopes/{envelopeId}/documents/pdf',
 				'/api/v1/envelopes/{envelopeId}/documents/order',
 				'/api/v1/envelopes/{envelopeId}/ready',
+				'/api/v1/envelopes/{envelopeId}/reopen',
 				'/api/v1/envelopes/{envelopeId}/fields'
 			],
 			'envelopes:send': [
