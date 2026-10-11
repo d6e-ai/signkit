@@ -1,157 +1,122 @@
-# リファクタリングの検証と移行ゲート
+# 最小限のリファクタリングの検証
 
-Status: proposed — [計画](refactoring-plan.md) の検証詳細
+Status: planned — [全体対象の軽量計画](refactoring-plan.md) の検証条件。検証実施済みを示すものではない。
 
-作成日: 2026-10-05。2026-10-10に[計画](refactoring-plan.md)の基準コミット更新へ合わせて見直した。調査基準は計画に記したローカルソースコミット。
+作成日: 2026-10-05。2026-10-11に差分中心のゲートへ再編。調査基準は計画に記した手元のHEAD。
 
-## 1. テストを何の証拠にするか
+## 1. 既存テストを活かす
 
-テスト数ではなく、方針・DBの原子性・wire契約・実際の利用経路のどこを証明するかで分ける。
+全体を点検するが、全機能のテストを新しいframeworkへ移さない。
+既存のunit/integration/browser/Rust、route-parity、mutation schema drift、adapter buildを残す。
+各PR内で対象の現行出力を先に固定し、欠けたケースだけ補ってから抽出する。
+テスト追加だけの全体R0や、readyだけの先行3 PRを必須にしない。
 
-| 層                              | 証明すること                                                  | fixtureと実装                                                 |
-| ------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
-| Pure policy                     | 正規化、routing、監査計画、境界値、エラー分類                 | 小さい決定的な入力。時計とIDを注入                            |
-| Store contract                  | 同じ入力の結果、receipt、replay、state/audit/outboxの全体整合 | 同じテスト本体をD1/PostgreSQL adapter factoryで実行           |
-| Engine / Object / Mail contract | 実バイト、上限、不変保存、配信providerの結果分類              | 既存R2/S3、SMTP/Cloudflareの各実装と適切なfake/test endpoint  |
-| HTTP contract                   | 認可、body上限、schema、Problem、公開レスポンス、cookieの作用 | 実handler + 正常/異常fixture。業務判定をfixture側へ複製しない |
-| Browser component               | 操作、表示、pending/retry、PDF canvas、dialog、download event | 安定したclient境界をmockし、実ブラウザの挙動を確認            |
-| Product E2E                     | sender/recipientの経路がDB・storage・jobへ繋がる              | disposableな実backend。DB値を直接変更して成功扱いしない       |
-| Upgrade / release smoke         | 過去状態からの移行、ホスト構成、buildと公開契約               | サポートする前リリースからのfixture、各targetのbuild          |
+| 変更                                     | 必要な証拠                                                                             |
+| ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| 純粋な正規化・fingerprint・監査・receipt | リファクタリング前の固定入力/バイト、正常・再送・競合・改ざんの同じ結果                |
+| DBアダプターから共通契約を利用           | D1と実PostgreSQLの関連spec、row mapping・receipt・部分失敗・同時実行の維持             |
+| runtimeの入口/生成を変更                 | 呼出し元の依存検査、設定・遅延生成のテスト、対象handler/jobの実runtime確認             |
+| バイト検証・不確実な保存確認             | 実バイト、上限、nonzero-offset view、missing/mismatch/provider failure/曖昧なputの違い |
+| backoff等の計算                          | 固定時計、境界値、attempt上限、jitterの範囲、既存lease/stateを変更していない差分確認   |
+| UIの通信/receipt/retry                   | browserのpending・曖昧な結果・同じbody/key・明示的同意・cookie副作用                   |
+| HTTP/OpenAPI/Rust入力                    | 変更した契約のpositive/negative fixture、既存CLIテストと実サーバーE2E                  |
 
-既存のunit/integration/browser/Rustテストを廃棄して一気に書き直さない。
-共有するのは**契約の入力と期待値**。SQL、receipt builder、期待監査payloadをテストへコピーして同じ誤りを再実装しない。
+固定fixtureは合成データを使う。実インスタンスの契約書、ユーザー、credential、account情報を入れない。
+期待fingerprint/監査JSON/hash/receiptを実装と同じbuilderで生成して比較するだけにしない。
+JSONのkey順や旧receiptのバイト差を新しいsnapshotで隠さない。
+既存のSQL/rollbackテストをpure helperテストで置き換えない。
 
-## 2. 最初のready契約
+## 2. コマンドと権限の回帰条件
 
-shared contractを、D1のSQLite harnessと実PostgreSQLで同じassertionとして動かす。
-さらにD1 runtimeのbatch/trigger挙動はローカルWorkers経路で確認する。SQLite mockだけをD1本体の証明にしない。
-#217の作業で、ある一つのjob queueについてローカルworkerd上のD1 triggerをfault-cutする確認が
-既に入ったが、対象も操作も狭い。readyの共有契約は、この手法をreadyのD1 batch/trigger全体へ広げる。
+readyで共有する契約は、D1とPostgreSQLで同じ入力と期待値を使う。
+setup/row mappingはDB別に残し、全Storeの共通テスト基盤への移行は要求しない。
 
-最低限、以下を含める。
+- 正常publishに状態・全recipient・receipt・監査が揃う。
+- 同じキー/正規化入力は、最初に確定したID・時刻・結果を返す。
+- 別bodyでのキー再利用、古い世代/状態/audit head、壊れたreceiptは現行と同じ失敗になる。
+- 同じキー/別キーの同時実行で勝者一つと矛盾しない結果になり、途中失敗が部分更新を残さない。
+- APIキーのagent attributionと省略actorの互換動作を維持する。
+- 受信者のrole/capabilityと送信者のlocal membership/API scopeを混同しない。
+- 公開レスポンス/監査へ新たな秘密・内部キー・不要な個人情報を追加しない。
 
-- 正常publishでは、ready状態、全recipient、command receipt、監査eventが揃う。
-- 同じキー・同じ正規化入力は、最初に確定したID・時刻・監査eventのreplayになる。
-- 同じキー・別の意味の入力は競合となり、追加行を作らない。
-- 古いgeneration、別状態、別audit head、壊れたreceiptでは部分更新を残さない。
-- 同じキーの競合と別キーの同時publishでは、勝者一つと矛盾しない敗者結果になる。
-- recipient挿入やaudit appendなど途中の失敗を注入しても、公開境界全体がrollbackする。
-- 名前・メール・token・内部オブジェクトキーを公開receiptや監査へ追加しない。
-- APIキーによる操作はagentとして記録され、キー所有者と監査actorを取り違えない。
+sign/approveのrouting抽出では、同じ完全なsnapshotに対する次group/完了/監査の出力を固定する。
+viewer/cc/prefill、複数routing order、最後のdecision、field generation、同時decisionを含める。
+署名値やrole固有の拒否は各操作に残ることを確認する。
+元のDB guard・lock順・triggerを保ち、共通計算が永続化時の再確認の代わりにならないことを確認する。
 
-golden fixtureはリファクタリング前のコードから作った合成データを固定する。
-fingerprint、audit payload JSON、event hash、receiptを正確なバイトで比較し、機械的な「新しいsnapshotに更新」で差異を隠さない。
-実インスタンスのユーザー・契約書・credential・account情報は使わない。
+触っていない操作へ機械的に新しいgoldenやshared store suiteを追加しない。
+操作の公開条件・SQL・schemaを変更する必要が見つかったら、軽量範囲から分離する。
 
-## 3. 全コマンドへ広げる方法
+## 3. 文書・job・UIの維持条件
 
-テスト本体をDBごとにコピーしない。operationごとの契約を用意し、setup/teardownとrow読取のadapterだけをDB別にする。
-失敗時にはoperation・scenario・backend・結果を安全に表示する。
+対象を抽出する際は、関連する既存fault/barrier/legacy specを回帰ゲートに使う。
 
-| 操作群                          | 必須の固有シナリオ                                                                                                                                   |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| draft / upload / document order | 原本PDFバイト不変、manifest一致、世代CAS、storage保存後のDB公開失敗、過去revision読取、legacy修復向けの過去gzip/Markdown形式を読むversioned reader   |
-| fields / send                   | 文書ごとのpage座標、field generation、ready anchor、送信文書セットと監査・outboxの同時公開                                                           |
-| view / reissue                  | capability失効、lineage continuation、別タブcookie競合、配信中lease、未解放groupを解放しない                                                         |
-| sign / approve                  | role、明示的意思、必要field、競合、次group解放、最後のdecisionによる完了、監査event順序、署名image再検証後の再描画UX (stale/incompatibleな場合)      |
-| decline / void / expiry         | terminal状態、capability停止、outboxの安全な停止、配信中の競合、監査整合                                                                             |
-| completion                      | 固定証拠の検証、改ざん/過大サイズ/一時障害の区別、lease喪失、再開、公開receipt、後から追加されたPAdES seal等の監査と組み合わせたPostgreSQL修復テスト |
-| invitation / contacts / API key | local membership、ownerスコープ、失効、mail intent、PIIを含まないreceipt・log                                                                        |
+- 実バイトのscope/digest/size/manifest照合と、不確実なput後の再読取を省略しない。
+- 送信時の原本・固定PDF・文書順序・document-set hash・座標を変えない。
+- 完了manifest/PDF/receipt/auditの原子的公開、旧PDF修復の元anchor・旧gzip/Markdown readerを維持する。
+- admission/composerの入力/出力・ページ・text/font/image予約・証跡末尾・backstopを維持する。
+- #219のbind/retire競合、不可逆ledger、checkpointのbarrier testを残す。
+- lease所有・上限到達・未知の中断・一時障害・整合性/容量エラーを区別したままにする。
+- PDF待ちで送信attemptを消費せず、失敗件数・滞留・永久失敗の観測を維持する。
+- #218の新grant/outbox/receipt/audit、旧grant失効、失敗世代CASと同じキーの再送を維持する。
+- GETの状態更新は再処理せず、UIの再送から新しいgrantやjobを自動生成しない。
+- 署名/承認/辞退の明示的同意、画像の確定、同じattemptのbody/key、cookieとreceiptを維持する。
 
-Fake storeは純粋なサービス調整のテストに使えるが、rollbackやSQL制約の証明には使わない。
-PostgreSQLの共用テストDBによる直列化は当面維持し、専用schema/DBによる隔離を実証してから並列化する。
-ブラウザspecのmodule mock共有も同様に、隔離を作る前に並列化しない。
+計算の共通化では、適用前後の呼出し回数、I/O順序、上限、例外の意味を確認する。
+既存のbrowserテストのmockだけで、実際のPDF描画やメール配送を証明したとしない。
+Rustのローカルvalidate-onlyは、サーバー側の認可や状態判定を代替しない。
+strictなmutation入力と、将来のfieldを許容するread応答も混同しない。
 
-成果物を抽出する前に、R0のfault/golden契約として以下を固定する。
+## 4. 実行環境と実経路
 
-- オブジェクト保存後、manifest/PDF pointer/監査/receiptの各公開途中で停止しても、DBは全体でrollbackする。保存結果不明の再読取と同じreceiptのreplayを含む。
-- PDF未公開のlegacy状態から、元の完了anchorとJSON/Markdownのdigestを維持して修復する。後続監査がある場合もD1/実PostgreSQLで確認し、旧gzip/Markdownのgoldenを新しいsnapshotで置き換えない。
-- 複数PDFの合計ページ、証跡末尾、入力/出力容量、将来のtext/font/image予約が上限内/外の両方で一致する。拒否は送信PDF・招待の公開より前、完了時のbackstopは維持する。
-- 既知の一時障害の上限到達、lease切れ、原因不明の中断、整合性/容量エラーを区別する。中断上限で重い処理を再実行せず、後続の正常jobが進む。
-- PDF待ちの完了メールはattemptを消費しない。参照済み署名/initialsは正しいscopeだけで保持する。#218/#219の再発行・削除競合は別の挙動変更のbarrier testにする。
-- HTTP 200のbatchでも失敗件数がログに出る。8キューのlifetime/overdueと永久失敗を検知し、不正な集計値を正常と報告しない。
-- GETの状態更新は再処理しない。POSTの世代CAS、同じcommandの曖昧な結果からの同じキーでの再送、別世代の新しいキー、公開後のdurable replayをAPIとUIで確認する。
+基準コミットにはNode/PostgreSQL/S3の実サーバー送信者・受信者CLI E2E
+(`scripts/test-cli-recipient-e2e.mjs` とCI job) がある。この経路を再利用し、
+同じ目的の新しいtest clientや全providerの組合せ試験を作らない。
+既存のローカルworkerdのD1 fault-cut・D1/R2署名asset競合・D1再発行の確認は、
+それぞれ狭い検証であり、Workers製品E2Eや負荷試験の証明ではない。
 
-## 4. API・CLI・ブラウザの一致
+| 差分の種類                                                       | 実経路の条件                                                                                                                   |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 純粋な計算の抽出、I/O・上限・実行順序不変                        | 固定fixture、関連integrationと既存E2E/CIを維持。無関係な製品負荷試験を追加の前提にしない                                       |
+| runtime生成/設定/binding/接続入口の変更                          | 実Nodeと対象のローカルworkerd/D1/R2で、変更したhandler/jobの設定・binding解決・最小操作を確認。buildだけで動作確認済みとしない |
+| D1のreceipt/rowを扱う判断の変更                                  | SQLite harnessの関連specに加え、対象D1 batch/trigger/rollback/replayを実workerd上で確認                                        |
+| renderer、バッファ保持、I/O回数・順序、公開/ジョブ実行方式の変更 | 今回の範囲外へ分離。対象のWorkers/D1/R2製品経路と、上限付近のCPU/メモリ予算の実証を必須にする                                  |
+| provider送信や署名UIの挙動変更                                   | 別の挙動変更として、disposableな配送先/実ブラウザで対象の副作用と成果物を確認                                                  |
 
-同じ契約fixtureを、HTTP validator、OpenAPIのschema適合、対応する送信者・受信者Rust CLIのpayload読込・request型へ入力する。
-正しい入力だけでなく、unknown key、UUID形式、配列数、string長、整数上限、field generation、recipient roleなどの拒否例を共有する。
-JSON Schemaで表せない正規化・role間の意味的条件は、domain側のテストとして区別する。
-定数の一致だけでなく、入力のshape・serializationとサーバーの受け付ける/拒否する結果を確認する。
-CLIがローカルで検証する範囲とサーバーへ委ねる範囲を明示する。既存の拒否条件を強める変更は、挙動を変えない抽出と分けてレビューする。
-既存の`--validate-only`はオフラインのローカル検証であり、サーバーへの実送信を伴わない。契約
-fixtureは、ローカル検証で防ぐ範囲とサーバーが最終判定する範囲を別々に確認する。
+Workers/D1/R2のready → send → recipient decision → completionを通す製品E2Eと、
+大容量PDFのWorker CPU/メモリ限界検証は、基準時点で未充足のまま残る。
+軽量計画の完了を、それらの検証完了や全入力の実行可能性の証明と混同しない。
+未充足の項目には根拠・必要な試験・今回の変更との関係を残す。
+重い経路を実際に変えるなら、上のゲートを避けるために「helperの抽出」と呼び替えない。
 
-署名・承認・辞退・閲覧・再発行・contacts・jobのHTTP/OpenAPI契約も対象に広げる。
-既存の受信者Rust CLIのローカル検証範囲は、サーバー側の最終判定を代替しない。
-public PDFの固定404/503やcookieの副作用は、JSON Problemの一般化に巻き込まず個別に確認する。
+ホスト/DB/storage/mailの全組合せを掛け算しない。
+providerの関連契約とsupported compositionのsmoke、代表E2Eを利用する。
+Vercelは既存のbuild/CI-onlyの位置付けを維持し、実運用対応を今回の成果に数えない。
+live配送、実インスタンス、production deploymentには別の明示的な指示が必要。
 
-既存の送信者・受信者Rust CLIには実サーバーE2E (`scripts/test-cli-recipient-e2e.mjs`とCI job)
-がある。既存のwiremockテストはCLIの通信・redirect拒否・secret非表示の検証に残し、この実サー
-バーE2Eを実handlerとの結合の証拠として扱う。一つのE2EでOAuth・メール配信まで証明したとしない。
+## 5. PRごとのゲート
 
-追加する実経路は最小限にする。
+1. 対象機能・確認した重複/依存・維持する出力・今回触らない責務を明記する。
+2. 抽出前の固定fixtureと関連回帰テスト、D1/実PostgreSQLの必要なspecを通す。
+3. 監査/receipt/文書のバイトと、旧receipt/legacy readerの結果が変わらない。
+4. role・actor・scope・consent・cookie、job/GC/再発行の既存競合対策を維持する。
+5. 対象のimport/call siteを点検し、新しい逆依存や具体SDKの業務層への漏れがない。
+6. 同じ操作を旧/新経路で二重実行しない。不要になった委譲・重複だけを除く。
+7. 差分に応じた実経路を確認し、結果をmock/SQLite/build/実runtime/製品E2Eに分けて報告する。
+8. 関連テストに加え、既存のcheck/lint、adapter build、CIと独立レビューを確認する。
 
-1. Node/PostgreSQL/S3: 既存の`scripts/test-cli-recipient-e2e.mjs`が送信者・受信者Rust CLIで
-   実サーバーのcreate/commit/ready/send/署名/完了を既に確認している。この経路を各段階の共有
-   契約fixtureの実証先として使い、新しいtest clientを重複させない。
-2. Workers/D1/R2: 同じ合成契約と既存のHTTP経路で、ready → send → recipient decision →
-   completion publicationを通す。実Workers/D1/R2のPRODUCT E2Eは未充足であり、
-   ローカルworkerdのD1 fault-cut確認だけでは代用にならない。大きいPDFに対するWorker CPU/
-   メモリの限界検証もここに含める。
-3. Browser: 日本語PDF、複数文書、配置、署名dialog、完了PDF表示、実download eventを確認する。
-4. Mail: disposableなSMTP受信先で本文locale・HTML・完了PDF添付を確認。Cloudflare providerの実配送は認可された検証を別に行う。
+dependency checkerを新設する場合も、今回整えた入口と新規違反の検出に限定する。
+全既存違反のallowlist廃止や、全applicationのplatform非依存化を追加の完了条件にしない。
+SQL/schema/API/保存形式の変更は本計画に含まない。必要なら別提案とupgrade検証を用意する。
 
-このE2Eのためだけに新しい受信者権限種別を追加しない。既存の受信者Rust CLI/cookie経路を通し、
-追加機能は別のsliceで扱う。
+## 6. 全体の完了と切り戻し
 
-D1/PostgreSQL × 全storage × 全mail × 全UI/CLIを掛け算しない。
-providerはポートの契約とsupported compositionごとのsmoke、DBはshared store contract、利用経路は少数の代表E2Eで検証する。
-ただし相互作用が問題になるWorkers上のSMTPなど、既知のruntime固有経路は個別のゲートを持つ。
-Vercelは現状のbuild/CI smokeと、別の機能課題である実運用対応を分ける。
+[計画の対象一覧](refactoring-plan.md#2-全体を点検する範囲)の各行に、
+根拠、対応済み/変更不要/別課題と残る理由、検証結果を残す。
+今回共通化すると選んだ処理の単一責任と、別機能runtimeの借用解消を確認する。
+未調査や未検証を完了扱いしない。
 
-R3/R4で成果物・sendを移す前に、Workersの設定上の実行予算を明示し、上限に近い複数PDF、
-Unicode text、署名画像、証跡末尾を含む代表ケースのCPU/メモリを実測する。静的容量の合格と
-runtimeの合格は別のゲート。予算を満たせず非同期化や許容範囲の変更が必要なら、挙動変更として
-別設計にし、抽出に紛れ込ませない。
-
-## 5. 各PRの完了ゲート
-
-1. 対象の責務・不変条件・変えないwire/保存形式をPRに明記する。
-2. 対象のpure policy、shared store contract、HTTPと既存UI/CLIの関連テストを通す。
-3. fingerprint・監査・receipt・文書バイトのgoldenが意図せず変わっていない。
-4. 旧receiptとlegacy読取経路が、新実装でも必要な期間動く。
-5. 新しい逆向きimport、暗黙actor、provider固有型が業務層へ増えていない。
-6. 一つの操作は旧経路または新経路の片方を使い、二重publishしない。
-7. SQLやschemaを変える場合は、freshだけでなくサポート対象の旧状態からupgradeを確認する。
-8. 機能移行の完了後に、薄い委譲・不要fallback・旧fixtureを除去し、specを更新する。
-
-依存ルールは最初に既存違反の明示的allowlistを作り、新規違反を拒否する。
-全移行が終わった時点でallowlistをなくし、domain/application/portsからenv・HTTP・platform SDK・具体DB/object/mail実装への依存をerrorにする。
-pure document engineなど許可する内部境界は明示し、単に別名の `utils` へ違反を隠さない。
-
-## 6. 移行と切り戻し
-
-R0–R3の初期sliceはSQL/migration/保存形式を変えず、旧リリースのreceiptが読める状態で進める。
-必要なschema拡張はexpand → reader対応 → writer切替 → 利用確認 → contract、の順に独立して扱う。
-既に適用されたD1/PostgreSQL migrationは変更しない。
-初期化や実インスタンスの削除をテストの代わりにしない。
-
-切り戻しの単位は移行したoperation。schema/保存形式が同じ段階なら、ひとつ前の実装へ戻しても確定済みreceipt・オブジェクトを読めることを確認する。
-format変更後のrollback互換性は、変更前に別の判断として明記する。
-機密情報のない失敗コードとoperation/jobのtraceで、新旧の挙動を追えるようにする。
-
-実インスタンスへのデプロイや破壊的変更は、この計画作成には含まない。
-実ブラウザでの保存ファイルやメールpreviewなど未確認の受入条件は、HTTP 200やバイト取得だけで完了扱いしない。
-
-## 7. 計画全体の完了条件
-
-- 狙った業務方針の正規化・receipt・監査・routingの実装に、責任者が一つある。
-- DBの原子的条件は共有契約に適合し、競合・部分失敗で壊れない。
-- applicationをSvelteKit/platform envなしで組み立て、契約テストできる。
-- Draft/Sent/Completed/Sealedの参照を区別し、検証済み入力だけから成果物を公開する。
-- UI/CLIの操作が同じcommand/queryへ繋がり、署名者の権限・意思を守る。
-- durable jobをhost非依存で実行でき、再開・失敗分類・lease喪失を検証できる。
-- 旧経路の整理とarchitecture specの更新を終え、提案と現行仕様の違いが明確である。
-
-この文書を置いたことや、ファイルを分け終えたことだけでは、どの条件も達成したと扱わない。
+既存のschema/保存形式を維持し、切り戻し単位は移行した操作/helper/runtime入口とする。
+戻した実装でも確定済みreceiptとオブジェクトが読めることを固定fixtureで確認する。
+互換reader・必要なfallback・過去のfixtureは、未使用の根拠なしに削除しない。
+本計画作成は実装・テスト実行・デプロイの完了ではない。
