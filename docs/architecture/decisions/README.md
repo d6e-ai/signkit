@@ -3,6 +3,7 @@
 Dated notes recording the rationale behind choices made in [../](../README.md) at the time they were made. They are historical context, not normative: the current normative contract always lives in the architecture spec files, and a decision note never overrides them.
 
 - [2026-10-10-cloudflare-cli-migration.md](./2026-10-10-cloudflare-cli-migration.md) — cf owns build output and typed runtime configuration; local D1 remains a verified Wrangler compatibility fallback.
+- [2026-10-10-operational-boundary-refactoring.md](./2026-10-10-operational-boundary-refactoring.md) — re-baselines the 2026-10-05 design-first refactoring proposal on post-#217 `main`, swaps the artifact-lifecycle and command/routing phase order, and tracks #218/#219 as separate behavior slices.
 
 - [2026-09-15-ordered-multi-document-pdf-upload.md](./2026-09-15-ordered-multi-document-pdf-upload.md) — envelopes are ordered mixed Markdown/PDF document sets with a Merkle `documentSetHash`.
 - [2026-09-15-executed-agreement-pdf.md](./2026-09-15-executed-agreement-pdf.md) — the completion PDF is the executed agreement with signed values drawn at frozen geometry, not an evidence summary.

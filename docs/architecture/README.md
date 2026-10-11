@@ -35,4 +35,4 @@ For newcomers: [overview](overview.md) â†’ [envelope-model](envelope-model.md) â
 
 ## Proposed changes
 
-The [design-first refactoring plan](refactoring-plan.md), its [boundary design](refactoring-boundaries.md), and [verification gates](refactoring-verification.md) are proposals dated 2026-10-05, not current normative contracts. Their inspected source baseline and phased migration are recorded in the plan. They do not override the implemented specifications above.
+The [design-first refactoring plan](refactoring-plan.md), its [boundary design](refactoring-boundaries.md), and [verification gates](refactoring-verification.md) are proposals originally dated 2026-10-05 and re-baselined 2026-10-10 against local commit `4f9267217bd236e361ba10860e76d6aa001de9b9` (post-#217). Their inspected source baseline and phased migration are recorded in the plan; see the [2026-10-10 reconciliation ADR](decisions/2026-10-10-operational-boundary-refactoring.md). They do not override the implemented specifications above.
