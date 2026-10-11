@@ -21,6 +21,7 @@ import {
 } from '$lib/ports/recipient-sign-store';
 
 const MAX_RELEASE_TTL_MS: number = 15 * 24 * 60 * 60 * 1000;
+const SIGNATURE_ASSET_VALUE_JSON_PATTERN: RegExp = /^"sig:sha256:([a-f0-9]{64})"$/;
 
 interface RecipientEnvelopeRow {
 	envelope_id: string;
@@ -277,8 +278,39 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		} catch (error: unknown) {
 			const classified: PublishRecipientSignedResult | null = await this.#classifyFailure(command);
 			if (classified !== null) return classified;
+			// The `field_value_bind_signature_asset` trigger aborts the batch when
+			// a referenced asset is retired. Classify from the ledger row itself,
+			// never from the provider's error text.
+			if (
+				await this.#referencesRetiredAsset(
+					identity.envelope_id,
+					identity.recipient_id,
+					command.fieldValues
+				)
+			) {
+				return { outcome: 'signature_asset_expired' };
+			}
 			throw error;
 		}
+	}
+
+	async #referencesRetiredAsset(
+		envelopeId: string,
+		recipientId: string,
+		fieldValues: readonly SignedFieldValue[]
+	): Promise<boolean> {
+		const hashes: string[] = signatureAssetHashes(fieldValues);
+		if (hashes.length === 0) return false;
+		const row: { present: number } | null = await this.#database
+			.prepare(
+				`SELECT 1 AS present FROM signature_asset
+				 WHERE envelope_id = ? AND recipient_id = ? AND state = 'retired'
+					AND sha256 IN (SELECT value FROM json_each(?))
+				 LIMIT 1`
+			)
+			.bind(envelopeId, recipientId, JSON.stringify(hashes))
+			.first<{ present: number }>();
+		return row !== null;
 	}
 
 	async #readByCapabilityHash(capabilityHash: string): Promise<RecipientEnvelopeRow | null> {
@@ -871,6 +903,17 @@ function publishFromPreparation(preparation: SignPreparation): PublishRecipientS
 		return { outcome: 'integrity_error' };
 	}
 	return preparation;
+}
+
+/** The scoped asset hashes named by `sig:sha256:` signature/initials values. */
+function signatureAssetHashes(fieldValues: readonly SignedFieldValue[]): string[] {
+	const hashes: string[] = [];
+	for (const field of fieldValues) {
+		if (field.fieldType !== 'signature' && field.fieldType !== 'initials') continue;
+		const match: RegExpExecArray | null = SIGNATURE_ASSET_VALUE_JSON_PATTERN.exec(field.valueJson);
+		if (match !== null) hashes.push(match[1]);
+	}
+	return hashes;
 }
 
 async function sha256(value: string): Promise<string> {

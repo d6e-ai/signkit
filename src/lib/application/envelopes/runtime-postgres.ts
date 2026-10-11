@@ -15,6 +15,7 @@ import { PostgresRecipientDeclineStore } from '$lib/adapters/db/postgres-recipie
 import { PostgresRecipientDeclinedReceiptStore } from '$lib/adapters/db/postgres-recipient-declined-receipt-store';
 import { PostgresRecipientCompletedReceiptStore } from '$lib/adapters/db/postgres-recipient-completed-receipt-store';
 import { PostgresRecipientSignStore } from '$lib/adapters/db/postgres-recipient-sign-store';
+import { PostgresSignatureAssetLedger } from '$lib/adapters/db/postgres-signature-asset-ledger';
 import { PostgresRecipientViewStore } from '$lib/adapters/db/postgres-recipient-view-store';
 import { PostgresRecipientCapabilityReissueStore } from '$lib/adapters/db/postgres-recipient-capability-reissue-store';
 import {
@@ -218,8 +219,15 @@ export function resolvePostgresRecipientSignedApplication(
 		new PostgresRecipientSignStore(resources.sql),
 		undefined,
 		undefined,
-		signatureAssets
+		signatureAssets,
+		signatureAssets === null ? null : new PostgresSignatureAssetLedger(resources.sql)
 	);
+}
+
+export function resolvePostgresSignatureAssetLedger(
+	databaseUrl: string
+): PostgresSignatureAssetLedger {
+	return new PostgresSignatureAssetLedger(resolvePostgresResources(databaseUrl).sql);
 }
 
 export function resolvePostgresRecipientFieldDeclarationStore(

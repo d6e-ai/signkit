@@ -7,6 +7,7 @@ import { D1RecipientCompletedReceiptStore } from '$lib/adapters/db/d1-recipient-
 import { D1RecipientFieldDeclarationStore } from '$lib/adapters/db/d1-recipient-field-declaration-store';
 import { D1RecipientSignStore } from '$lib/adapters/db/d1-recipient-sign-store';
 import { D1RecipientViewStore } from '$lib/adapters/db/d1-recipient-view-store';
+import { D1SignatureAssetLedger } from '$lib/adapters/db/d1-signature-asset-ledger';
 import { D1EnvelopeSentPdfStore } from '$lib/adapters/db/d1-envelope-sent-pdf-store';
 import { D1EnvelopeSentDocumentStore } from '$lib/adapters/db/d1-envelope-sent-document-store';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
@@ -237,7 +238,8 @@ export async function resolveRecipientSignedApplication(
 			new D1RecipientSignStore(database),
 			undefined,
 			undefined,
-			bucket === undefined ? null : new R2ObjectStore(bucket)
+			bucket === undefined ? null : new R2ObjectStore(bucket),
+			bucket === undefined ? null : new D1SignatureAssetLedger(database)
 		);
 	}
 
@@ -277,7 +279,8 @@ export async function resolveSignatureAssetApplication(
 		if (database === undefined || bucket === undefined) return null;
 		return new SignatureAssetApplication(
 			new RecipientAccessService(new D1RecipientAccessStore(database)),
-			new R2ObjectStore(bucket)
+			new R2ObjectStore(bucket),
+			new D1SignatureAssetLedger(database)
 		);
 	}
 
@@ -294,10 +297,13 @@ export async function resolveSignatureAssetApplication(
 		return null;
 	}
 	const { resolveS3ObjectStore } = await import('$lib/application/drafts/runtime-s3');
-	const { resolvePostgresRecipientAccessApplication } =
+	const { resolvePostgresRecipientAccessApplication, resolvePostgresSignatureAssetLedger } =
 		await import('$lib/application/envelopes/runtime-postgres');
+	const objects: ObjectStore = resolveS3ObjectStore(configuration);
+	const databaseUrl: string = configuration.databaseUrl as string;
 	return new SignatureAssetApplication(
-		await resolvePostgresRecipientAccessApplication(configuration.databaseUrl as string),
-		resolveS3ObjectStore(configuration)
+		resolvePostgresRecipientAccessApplication(databaseUrl),
+		objects,
+		resolvePostgresSignatureAssetLedger(databaseUrl)
 	);
 }

@@ -173,7 +173,12 @@ export interface PublishRecipientSignedCommand extends SignCommandKey {
 export type PublishRecipientSignedResult =
 	| { outcome: 'published'; result: PublishedRecipientSigned }
 	| Exclude<SignPreparation, { outcome: 'ready' | 'existing' }>
-	| { outcome: 'invalid_field' };
+	| { outcome: 'invalid_field' }
+	/**
+	 * A `sig:sha256:` field value names an exact scoped asset the orphan sweep
+	 * already retired. Nothing was written; the signer must supply fresh bytes.
+	 */
+	| { outcome: 'signature_asset_expired' };
 
 /**
  * Durable command boundary for recipient signing completion. Implementations
@@ -182,6 +187,10 @@ export type PublishRecipientSignedResult =
  * release the next routing group or complete the envelope (reusing the
  * recipient.approved behavior), and append recipient.signed plus an optional
  * chained envelope.completed event.
+ *
+ * Within that same atomic unit, every `sig:sha256:` signature/initials value
+ * binds its exact (envelope, recipient, sha256) retention-ledger row, and a
+ * retired row aborts the whole publication as `signature_asset_expired`.
  *
  * `prepareSign` does not take a request fingerprint: values are normalized
  * after field declarations are loaded, then the fingerprint is computed from

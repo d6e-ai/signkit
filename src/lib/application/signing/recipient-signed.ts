@@ -1,11 +1,13 @@
 import {
 	SIGNATURE_ASSET_REF_PATTERN,
 	SIGNATURE_ASSET_REF_PREFIX,
-	verifySignatureAssetReference
+	verifySignatureAssetReference,
+	type SignatureAssetReferenceCheck
 } from '$lib/application/documents/signature-asset';
 import { hashAuditEventV3 } from '$lib/domain/audit';
 import type { FieldType } from '$lib/domain/envelope';
 import type { ObjectStore } from '$lib/ports/object-store';
+import type { SignatureAssetLedger } from '$lib/ports/signature-asset-ledger';
 import type {
 	SignableFieldDeclaration,
 	SignFingerprintValue,
@@ -57,6 +59,7 @@ export type RecipientSignedResult =
 	| { outcome: 'missing_required_value' }
 	| { outcome: 'audit_conflict' }
 	| { outcome: 'delivery_in_flight' }
+	| { outcome: 'signature_asset_expired' }
 	| { outcome: 'integrity_error' };
 
 export interface RecipientSignedApplicationPort {
@@ -81,7 +84,14 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 		 * fails every such reference closed rather than trusting an unverifiable
 		 * claim.
 		 */
-		private readonly signatureAssets: ObjectStore | null = null
+		private readonly signatureAssets: ObjectStore | null = null,
+		/**
+		 * Scoped retention ledger for those assets. Each referenced asset's
+		 * `pending` row is touched before it is read back, so a concurrent orphan
+		 * sweep cannot retire it mid-submission; publication itself re-checks and
+		 * binds the row atomically in the store regardless.
+		 */
+		private readonly signatureLedger: SignatureAssetLedger | null = null
 	) {}
 
 	async sign(input: RecipientSignedInput): Promise<RecipientSignedResult> {
@@ -116,9 +126,11 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 
 			const assetCheck: RecipientSignedResult | null = await verifySignedAssetReferences(
 				this.signatureAssets,
+				this.signatureLedger,
 				preparation.envelopeId,
 				preparation.recipientId,
-				fieldValues
+				fieldValues,
+				signedAt
 			);
 			if (assetCheck !== null) return assetCheck;
 
@@ -243,20 +255,32 @@ type MatchFailure =
  * store it names before the command is allowed to publish. Only runs for a
  * fresh submission's field values (never for replay, which is proven by the
  * durable receipt alone and must not re-read or re-upload old assets).
+ * A retired asset is reported distinctly so the client resets only that
+ * cached reference instead of treating it as a malformed value.
  */
 async function verifySignedAssetReferences(
 	objects: ObjectStore | null,
+	ledger: SignatureAssetLedger | null,
 	envelopeId: string,
 	recipientId: string,
-	fieldValues: readonly SignedFieldValue[]
+	fieldValues: readonly SignedFieldValue[],
+	now: string
 ): Promise<RecipientSignedResult | null> {
 	for (const field of fieldValues) {
 		if (field.fieldType !== 'signature' && field.fieldType !== 'initials') continue;
 		const value: unknown = JSON.parse(field.valueJson);
 		if (typeof value !== 'string' || !value.startsWith(SIGNATURE_ASSET_REF_PREFIX)) continue;
 		if (objects === null) return { outcome: 'invalid_field' };
-		const check = await verifySignatureAssetReference(objects, envelopeId, recipientId, value);
+		const check: SignatureAssetReferenceCheck = await verifySignatureAssetReference(
+			objects,
+			ledger,
+			envelopeId,
+			recipientId,
+			value,
+			now
+		);
 		if (check.outcome === 'provider_error') return { outcome: 'integrity_error' };
+		if (check.outcome === 'expired') return { outcome: 'signature_asset_expired' };
 		if (check.outcome !== 'ok') return { outcome: 'invalid_field' };
 	}
 	return null;

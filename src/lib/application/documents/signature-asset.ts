@@ -12,6 +12,12 @@ import {
 import type { RecipientAccessApplicationPort } from '$lib/application/signing/recipient-access';
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
+import type {
+	RegisterSignatureAssetResult,
+	SignatureAssetFreshnessResult,
+	SignatureAssetLedger,
+	SignatureAssetScope
+} from '$lib/ports/signature-asset-ledger';
 
 /**
  * Bounded raster budget for a drawn signature. Large enough for a compressed
@@ -66,7 +72,15 @@ export interface StoreSignatureAssetInput {
 	pngBytes: Uint8Array;
 }
 
+/**
+ * The exact scoped key was retired by the orphan sweep. Retirement is
+ * permanent, so the same immutable bytes can never be accepted again; the
+ * client must upload fresh bytes (a new content hash) instead.
+ */
+export type ExpiredSignatureAssetOutcome = { outcome: 'expired' };
+
 export type StoreSignatureAssetResult =
+	| ExpiredSignatureAssetOutcome
 	| { outcome: 'stored'; assetRef: string }
 	| { outcome: 'not_found' }
 	| { outcome: 'context_mismatch' }
@@ -87,13 +101,18 @@ export interface SignatureAssetApplicationPort {
  * command's field-value contract is required.
  *
  * Content addressing makes this operation naturally idempotent: re-uploading
- * identical bytes writes the same immutable key, so no separate replay ledger
- * is needed the way stateful commands require one.
+ * identical bytes names the same immutable key. Both R2 and S3 reject a second
+ * immutable put, so an existing object is reused only once its bytes are read
+ * back and proven to hash to that key. Before any put, the scoped retention
+ * ledger registers (or refreshes) a `pending` row so the orphan sweep cannot
+ * retire the key while this upload is in flight, and a key the sweep already
+ * retired is refused instead of resurrected.
  */
 export class SignatureAssetApplication implements SignatureAssetApplicationPort {
 	constructor(
 		private readonly access: RecipientAccessApplicationPort,
 		private readonly objects: ObjectStore,
+		private readonly ledger: SignatureAssetLedger,
 		private readonly now: () => Date = (): Date => new Date()
 	) {}
 
@@ -125,6 +144,17 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 
 		const sha256: string = await sha256Hex(input.pngBytes);
 		const key: string = signatureAssetKey(context.envelopeId, context.recipientId, sha256);
+		const scope: SignatureAssetScope = {
+			envelopeId: context.envelopeId,
+			recipientId: context.recipientId,
+			sha256
+		};
+		const registered: RegisterSignatureAssetResult = await this.ledger.registerPending(
+			scope,
+			this.now().toISOString()
+		);
+		if (registered === 'retired') return { outcome: 'expired' };
+		const assetRef: string = `${SIGNATURE_ASSET_REF_PREFIX}${sha256}`;
 		try {
 			const stored: ObjectMetadata = await this.objects.putImmutable(key, {
 				contentType: 'image/png',
@@ -132,10 +162,30 @@ export class SignatureAssetApplication implements SignatureAssetApplicationPort 
 				sha256
 			});
 			if (stored.key !== key || stored.sha256 !== sha256) return { outcome: 'integrity_error' };
+			return { outcome: 'stored', assetRef };
 		} catch {
-			return { outcome: 'integrity_error' };
+			// The put may have been refused as a duplicate, or may have landed
+			// with its response lost. Classify from evidence -- the stored bytes
+			// -- rather than from provider-specific error text.
+			return (await storedObjectMatches(this.objects, key, sha256))
+				? { outcome: 'stored', assetRef }
+				: { outcome: 'integrity_error' };
 		}
-		return { outcome: 'stored', assetRef: `${SIGNATURE_ASSET_REF_PREFIX}${sha256}` };
+	}
+}
+
+async function storedObjectMatches(
+	objects: ObjectStore,
+	key: string,
+	sha256: string
+): Promise<boolean> {
+	try {
+		const stream: ReadableStream<Uint8Array> | null = await objects.get(key);
+		if (stream === null) return false;
+		const bytes: Uint8Array = await readBoundedSignatureAsset(stream);
+		return (await sha256Hex(bytes)) === sha256;
+	} catch {
+		return false;
 	}
 }
 
@@ -169,7 +219,10 @@ function validateSignaturePngBytes(bytes: Uint8Array): ValidatedSignaturePng {
 }
 
 export type SignatureAssetReferenceCheck =
-	{ outcome: 'ok' } | { outcome: 'invalid' } | { outcome: 'provider_error' };
+	| ExpiredSignatureAssetOutcome
+	| { outcome: 'ok' }
+	| { outcome: 'invalid' }
+	| { outcome: 'provider_error' };
 
 class SignatureAssetOverflowError extends Error {}
 
@@ -186,16 +239,34 @@ class SignatureAssetOverflowError extends Error {}
  * A thrown/opaque object-store failure returns `provider_error` rather than
  * `invalid`: a recipient must not have a genuine asset rejected outright
  * because the store was briefly unavailable.
+ *
+ * Before any read, the scoped ledger row is touched (`pending` retention is
+ * refreshed to `now`), so an orphan sweep racing this submission either
+ * already retired the key -- reported here as `expired` -- or can no longer
+ * retire it. A `missing` row (a legacy pre-ledger asset or a forged ref) is
+ * left to the object read below and to the database bind at publish, which
+ * grandfathers a legacy asset in as `bound` or rejects a retired one.
  */
 export async function verifySignatureAssetReference(
 	objects: ObjectStore,
+	ledger: SignatureAssetLedger | null,
 	envelopeId: string,
 	recipientId: string,
-	value: string
+	value: string,
+	now: string
 ): Promise<SignatureAssetReferenceCheck> {
 	if (!SIGNATURE_ASSET_REF_PATTERN.test(value)) return { outcome: 'invalid' };
 	const sha256: string = value.slice(SIGNATURE_ASSET_REF_PREFIX.length);
 	const key: string = signatureAssetKey(envelopeId, recipientId, sha256);
+	if (ledger !== null) {
+		let freshness: SignatureAssetFreshnessResult;
+		try {
+			freshness = await ledger.checkFresh({ envelopeId, recipientId, sha256 }, now);
+		} catch {
+			return { outcome: 'provider_error' };
+		}
+		if (freshness === 'retired') return { outcome: 'expired' };
+	}
 
 	let stream: ReadableStream<Uint8Array> | null;
 	try {

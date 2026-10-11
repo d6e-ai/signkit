@@ -1,6 +1,8 @@
 import { env } from '$env/dynamic/private';
+import { D1SignatureAssetLedger } from '$lib/adapters/db/d1-signature-asset-ledger';
 import { R2ObjectStore } from '$lib/adapters/object/r2';
 import {
+	D1_ORPHAN_SWEEP_STATEMENT_BUDGET,
 	D1OrphanReferenceStore,
 	D1OrphanSweepCheckpointStore,
 	OrphanCollector,
@@ -24,7 +26,9 @@ export async function resolveOrphanCollector(
 			new R2ObjectStore(bucket),
 			new D1OrphanReferenceStore(database),
 			(): Date => new Date(),
-			new D1OrphanSweepCheckpointStore(database)
+			new D1OrphanSweepCheckpointStore(database),
+			new D1SignatureAssetLedger(database),
+			D1_ORPHAN_SWEEP_STATEMENT_BUDGET
 		);
 	}
 
@@ -41,10 +45,12 @@ export async function resolveOrphanCollector(
 		return null;
 	}
 
-	const [{ resolveS3ObjectStore }, { resolvePostgresSql }] = await Promise.all([
-		import('$lib/application/drafts/runtime-s3'),
-		import('$lib/application/envelopes/runtime-postgres')
-	]);
+	const [{ resolveS3ObjectStore }, { resolvePostgresSql }, { PostgresSignatureAssetLedger }] =
+		await Promise.all([
+			import('$lib/application/drafts/runtime-s3'),
+			import('$lib/application/envelopes/runtime-postgres'),
+			import('$lib/adapters/db/postgres-signature-asset-ledger')
+		]);
 	// Resolve object storage first so incomplete S3 configuration fails closed
 	// without opening a process-local Postgres pool.
 	const objectStore = resolveS3ObjectStore(configuration);
@@ -53,6 +59,7 @@ export async function resolveOrphanCollector(
 		objectStore,
 		new PostgresOrphanReferenceStore(sql),
 		(): Date => new Date(),
-		new PostgresOrphanSweepCheckpointStore(sql)
+		new PostgresOrphanSweepCheckpointStore(sql),
+		new PostgresSignatureAssetLedger(sql)
 	);
 }

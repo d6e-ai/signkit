@@ -3,6 +3,7 @@ import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ListObjectsResult, ObjectStore } from '$lib/ports/object-store';
 import { newUuidV7 } from '$lib/ids/uuid-v7';
+import { PostgresSignatureAssetLedger } from '$lib/adapters/db/postgres-signature-asset-ledger';
 import { OrphanCollector, PostgresOrphanReferenceStore } from './orphan-collector';
 
 /**
@@ -175,11 +176,22 @@ postgresDescribe('PostgresOrphanReferenceStore signature asset references', () =
 		const report = await new OrphanCollector(
 			objects,
 			new PostgresOrphanReferenceStore(sql),
-			() => NOW
+			() => NOW,
+			null,
+			new PostgresSignatureAssetLedger(sql)
 		).sweep();
 
 		expect(report.deletedKeys).toEqual([orphanAssetKey]);
 		expect(deleteManyMock).toHaveBeenCalledWith([orphanAssetKey]);
 		expect(keys).toEqual([initialsAssetKey]);
+		// The field_value trigger bound the live asset; the legacy orphan was tombstoned first.
+		const states = await sql<{ recipientId: string; state: string }[]>`
+			SELECT recipient_id AS "recipientId", state FROM signature_asset ORDER BY recipient_id`;
+		expect(
+			states.map((row) => ({ ...row })).sort((a, b) => a.state.localeCompare(b.state))
+		).toEqual([
+			{ recipientId: initialsRecipientId, state: 'bound' },
+			{ recipientId: orphanRecipientId, state: 'retired' }
+		]);
 	});
 });

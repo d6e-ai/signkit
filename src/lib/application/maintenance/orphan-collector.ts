@@ -1,8 +1,16 @@
 import type { ObjectStore } from '$lib/ports/object-store';
 import { MAX_LIST_OBJECTS_LIMIT } from '$lib/ports/object-store';
 import {
+	SIGNATURE_LEDGER_BATCH_SIZE,
+	type SignatureAssetLedger,
+	type SignatureAssetScope,
+	type SignatureAssetState
+} from '$lib/ports/signature-asset-ledger';
+import { D1_SIGNATURE_LEDGER_STATEMENTS } from '$lib/adapters/db/d1-signature-asset-ledger';
+import {
 	parseSignatureAssetKey,
 	referencedSignatureAssetKeys,
+	signatureAssetKey,
 	type ParsedSignatureAssetKey
 } from '$lib/application/documents/signature-asset';
 import type { D1Database } from '@cloudflare/workers-types';
@@ -13,7 +21,18 @@ export const DEFAULT_ORPHAN_BATCH_SIZE: number = 100;
 export const MAX_ORPHAN_SCAN_LIMIT: number = MAX_LIST_OBJECTS_LIMIT;
 export const D1_MAX_BOUND_PARAMETERS: number = 100;
 export const D1_FREE_QUERY_LIMIT: number = 50;
+/** Abandoned `pending` signature-asset registrations examined per sweep. */
+export const MAX_ABANDONED_SIGNATURE_REGISTRATIONS: number = 25;
 const D1_REFERENCE_CHUNK_SIZE: number = DEFAULT_ORPHAN_BATCH_SIZE;
+/**
+ * Candidate keys handed to one reference lookup and one bulk ledger call.
+ * Matching the D1 reference store's internal chunk and the ledger batch cap
+ * makes each chunk a fixed, budgetable number of database statements.
+ */
+export const ORPHAN_SWEEP_CHUNK_SIZE: number = Math.min(
+	D1_REFERENCE_CHUNK_SIZE,
+	SIGNATURE_LEDGER_BATCH_SIZE
+);
 /**
  * Completion artifact objects are written before their DB pointer lands
  * (`completion-artifacts/v1/envelopes/<envelopeId>/sha256/...`, where a valid
@@ -87,15 +106,67 @@ const D1_REFERENCE_QUERIES: readonly string[] = [
 	 WHERE validation_report_object_key IN (SELECT value FROM json_each(?1))`
 ];
 
+/**
+ * Worst-case database statements a sweep may execute, for stores whose
+ * provider caps statements per invocation. Every count is an upper bound on
+ * statements actually executed (batched statements count individually).
+ */
+export interface OrphanSweepStatementBudget {
+	/** Total statements one `sweep` call may execute. */
+	readonly maxStatements: number;
+	/** One reference lookup of up to `ORPHAN_SWEEP_CHUNK_SIZE` keys. */
+	readonly referenceLookup: number;
+	/** One bulk signature retirement or dry-run preview of up to `ORPHAN_SWEEP_CHUNK_SIZE` scopes. */
+	readonly signatureRetirement: number;
+	/** The abandoned-registration pass: one pending listing plus one bulk retirement. */
+	readonly abandonedRegistrations: number;
+	/** Each of the checkpoint read and the checkpoint write. */
+	readonly checkpoint: number;
+}
+
+/**
+ * Statements left for the rest of the invocation. The orphan-sweep route
+ * itself issues none before the collector runs (worker-secret auth is not a
+ * D1 read and the cron request carries no session cookie); this headroom
+ * covers request hooks for a caller that also presents a session cookie.
+ */
+export const D1_ORPHAN_SWEEP_RESERVED_STATEMENTS: number = 10;
+
+/**
+ * D1 Free allows 50 queries per Worker invocation; the scheduled orphan sweep
+ * runs in its own cron invocation. With a checkpoint and ledger wired this
+ * fixes the overhead at 4 statements and each 100-key chunk at 6, so one
+ * sweep processes at most 600 listed keys and resumes from its checkpoint.
+ */
+export const D1_ORPHAN_SWEEP_STATEMENT_BUDGET: OrphanSweepStatementBudget = {
+	maxStatements: D1_FREE_QUERY_LIMIT - D1_ORPHAN_SWEEP_RESERVED_STATEMENTS,
+	// Each batched reference query, plus the signature field_value load.
+	referenceLookup: D1_REFERENCE_QUERIES.length + 1,
+	signatureRetirement: Math.max(
+		D1_SIGNATURE_LEDGER_STATEMENTS.retireOrphans,
+		D1_SIGNATURE_LEDGER_STATEMENTS.previewRetirements
+	),
+	abandonedRegistrations:
+		D1_SIGNATURE_LEDGER_STATEMENTS.listPendingBefore +
+		D1_SIGNATURE_LEDGER_STATEMENTS.retireAbandonedRegistrations,
+	checkpoint: 1
+};
+
 export type OrphanSweepFailureCode =
 	| 'checkpoint_read_failed'
 	| 'object_list_failed'
 	| 'reference_lookup_failed'
+	| 'signature_retirement_failed'
 	| 'object_delete_failed'
 	| 'checkpoint_write_failed';
 
 export type OrphanSweepOperation =
-	'checkpoint_read' | 'object_list' | 'reference_lookup' | 'object_delete' | 'checkpoint_write';
+	| 'checkpoint_read'
+	| 'object_list'
+	| 'reference_lookup'
+	| 'signature_retirement'
+	| 'object_delete'
+	| 'checkpoint_write';
 
 export class OrphanSweepFailure extends Error {
 	readonly code: OrphanSweepFailureCode;
@@ -131,6 +202,11 @@ export interface OrphanCollectorReport {
 	inGracePeriod: number;
 	deleted: number;
 	deletedKeys: readonly string[];
+	/**
+	 * Abandoned `pending` signature-asset registrations (no object was ever
+	 * stored) retired this sweep, or that would be retired under `dryRun`.
+	 */
+	retiredPendingRegistrations: number;
 	nextStartAfter: string;
 	/**
 	 * True when a durable checkpoint was wired but another writer already
@@ -156,17 +232,58 @@ export class OrphanCollector {
 	readonly #references: OrphanReferenceStore;
 	readonly #now: () => Date;
 	readonly #checkpoint: OrphanSweepCheckpointStore | null;
+	readonly #signatureLedger: SignatureAssetLedger | null;
+	readonly #budget: OrphanSweepStatementBudget | null;
 
+	/**
+	 * `signatureLedger` is required to collect drawn signature/initials assets
+	 * at all: without it an unreferenced `signature-assets/` object is always
+	 * retained, because deleting it could race a concurrent fresh signing.
+	 *
+	 * `statementBudget` bounds every sweep's database statements (null:
+	 * unbounded). Each list page is sized so every listed key can be fully
+	 * processed within the remaining budget, and the checkpoint then resumes
+	 * exactly after the last processed key.
+	 */
 	constructor(
 		objects: ObjectStore,
 		references: OrphanReferenceStore,
 		now: () => Date = (): Date => new Date(),
-		checkpoint: OrphanSweepCheckpointStore | null = null
+		checkpoint: OrphanSweepCheckpointStore | null = null,
+		signatureLedger: SignatureAssetLedger | null = null,
+		statementBudget: OrphanSweepStatementBudget | null = null
 	) {
 		this.#objects = objects;
 		this.#references = references;
 		this.#now = now;
 		this.#checkpoint = checkpoint;
+		this.#signatureLedger = signatureLedger;
+		this.#budget = statementBudget;
+		if (
+			statementBudget !== null &&
+			this.#fixedStatements() + this.#chunkStatements() > statementBudget.maxStatements
+		) {
+			throw new RangeError('orphan sweep statement budget cannot cover a single chunk');
+		}
+	}
+
+	/** Statements a sweep spends outside list pages: checkpoint read/write and the abandoned pass. */
+	#fixedStatements(): number {
+		const budget: OrphanSweepStatementBudget | null = this.#budget;
+		if (budget === null) return 0;
+		return (
+			(this.#checkpoint === null ? 0 : 2 * budget.checkpoint) +
+			(this.#signatureLedger === null ? 0 : budget.abandonedRegistrations)
+		);
+	}
+
+	/** Worst-case statements to fully process one chunk of listed keys. */
+	#chunkStatements(): number {
+		const budget: OrphanSweepStatementBudget | null = this.#budget;
+		if (budget === null) return 0;
+		return (
+			budget.referenceLookup + (this.#signatureLedger === null ? 0 : budget.signatureRetirement)
+		);
 	}
 
 	async sweep(options: OrphanCollectorOptions = {}): Promise<OrphanCollectorReport> {
@@ -185,6 +302,8 @@ export class OrphanCollector {
 		const maxListPages = Math.max(1, Math.floor(options.maxListPages ?? Number.MAX_SAFE_INTEGER));
 		const dryRun = options.dryRun ?? false;
 		const nowTime = this.#now().getTime();
+		const nowIso: string = new Date(nowTime).toISOString();
+		const touchedBefore: string = new Date(nowTime - gracePeriodMs).toISOString();
 		const resume = await runOrphanSweepOperation(
 			'checkpoint_read_failed',
 			'checkpoint_read',
@@ -202,9 +321,21 @@ export class OrphanCollector {
 		let hasMore = true;
 		let lastKey = startAfter ?? '';
 		let listedPages = 0;
+		const budget: OrphanSweepStatementBudget | null = this.#budget;
+		const pageStatementBudget: number =
+			budget === null ? Number.POSITIVE_INFINITY : budget.maxStatements - this.#fixedStatements();
+		let pageStatements: number = 0;
 
 		while (hasMore && scanned < maxScan && listedPages < maxListPages) {
-			const limit = Math.min(batchSize, maxScan - scanned);
+			// List only what this sweep can fully process. When the budget is
+			// spent, `hasMore` stays true and the checkpoint resumes after the
+			// last processed key, so the next sweep continues from there.
+			const limit = Math.min(
+				batchSize,
+				maxScan - scanned,
+				this.#affordableKeys(pageStatementBudget - pageStatements)
+			);
+			if (limit < 1) break;
 			const listed = await runOrphanSweepOperation('object_list_failed', 'object_list', async () =>
 				this.#objects.list({
 					prefix: options.prefix,
@@ -233,30 +364,66 @@ export class OrphanCollector {
 				candidates.push(obj.key);
 			}
 
-			if (candidates.length > 0) {
+			for (let offset: number = 0; offset < candidates.length; offset += ORPHAN_SWEEP_CHUNK_SIZE) {
+				const chunk: string[] = candidates.slice(offset, offset + ORPHAN_SWEEP_CHUNK_SIZE);
+				pageStatements += budget?.referenceLookup ?? 0;
 				const referencedKeys = await runOrphanSweepOperation(
 					'reference_lookup_failed',
 					'reference_lookup',
-					async (): Promise<Set<string>> => this.#references.filterReferencedKeys(candidates)
+					async (): Promise<Set<string>> => this.#references.filterReferencedKeys(chunk)
 				);
 				referencedCount += referencedKeys.size;
 
-				const orphans = candidates.filter((k) => !referencedKeys.has(k));
-				if (orphans.length > 0) {
+				const deletable: string[] = [];
+				const signatureOrphans: { key: string; scope: SignatureAssetScope }[] = [];
+				for (const key of chunk) {
+					if (referencedKeys.has(key)) continue;
+					const asset: ParsedSignatureAssetKey | null = parseSignatureAssetKey(key);
+					if (asset === null) deletable.push(key);
+					else signatureOrphans.push({ key, scope: asset });
+				}
+				if (signatureOrphans.length > 0) {
+					if (this.#signatureLedger !== null) pageStatements += budget?.signatureRetirement ?? 0;
+					// Commit the one-way retirements before any delete, so a fresh
+					// signing either already touched/bound a row (retained here) or
+					// can never bind that exact key afterwards.
+					const retirable: readonly boolean[] = await runOrphanSweepOperation(
+						'signature_retirement_failed',
+						'signature_retirement',
+						async (): Promise<readonly boolean[]> =>
+							this.#retireSignatureAssets(
+								signatureOrphans.map((orphan) => orphan.scope),
+								nowIso,
+								touchedBefore,
+								dryRun
+							)
+					);
+					signatureOrphans.forEach((orphan, index: number): void => {
+						if (retirable[index]) deletable.push(orphan.key);
+						else referencedCount += 1;
+					});
+				}
+				if (deletable.length > 0) {
 					if (!dryRun) {
 						await runOrphanSweepOperation(
 							'object_delete_failed',
 							'object_delete',
-							async (): Promise<void> => this.#objects.deleteMany(orphans)
+							async (): Promise<void> => this.#objects.deleteMany(deletable)
 						);
 					}
-					deletedKeys.push(...orphans);
+					deletedKeys.push(...deletable);
 				}
 			}
 
 			hasMore = listed.truncated && listed.cursor !== undefined;
 			cursor = listed.cursor;
 		}
+
+		const retiredPendingRegistrations: number = await runOrphanSweepOperation(
+			'signature_retirement_failed',
+			'signature_retirement',
+			async (): Promise<number> => this.#retireAbandonedRegistrations(nowIso, touchedBefore, dryRun)
+		);
 
 		const nextStartAfter = hasMore && lastKey.length > 0 ? lastKey : '';
 		let checkpointConflict = false;
@@ -277,9 +444,62 @@ export class OrphanCollector {
 			inGracePeriod: inGracePeriodCount,
 			deleted: deletedKeys.length,
 			deletedKeys,
+			retiredPendingRegistrations,
 			nextStartAfter,
 			checkpointConflict
 		};
+	}
+
+	/** Keys a list page may hold so that every one of them can be fully processed. */
+	#affordableKeys(remainingStatements: number): number {
+		if (this.#budget === null) return Number.POSITIVE_INFINITY;
+		return Math.floor(remainingStatements / this.#chunkStatements()) * ORPHAN_SWEEP_CHUNK_SIZE;
+	}
+
+	/**
+	 * Per scope, true only once a durable one-way tombstone for that exact key
+	 * is committed (or, under `dryRun`, would be). Never writes under `dryRun`.
+	 */
+	async #retireSignatureAssets(
+		scopes: readonly SignatureAssetScope[],
+		nowIso: string,
+		touchedBefore: string,
+		dryRun: boolean
+	): Promise<readonly boolean[]> {
+		const ledger: SignatureAssetLedger | null = this.#signatureLedger;
+		if (ledger === null) return scopes.map((): boolean => false);
+		if (dryRun) return await ledger.previewRetirements(scopes, touchedBefore);
+		const states: readonly SignatureAssetState[] = await ledger.retireOrphans(
+			scopes,
+			nowIso,
+			touchedBefore
+		);
+		return states.map((state: SignatureAssetState): boolean => state === 'retired');
+	}
+
+	/**
+	 * Bounded, DB-driven cleanup of `pending` registrations whose upload never
+	 * stored an object (a crash between registration and put). A registration
+	 * whose object exists is left to the object listing above.
+	 */
+	async #retireAbandonedRegistrations(
+		nowIso: string,
+		touchedBefore: string,
+		dryRun: boolean
+	): Promise<number> {
+		const ledger: SignatureAssetLedger | null = this.#signatureLedger;
+		if (ledger === null) return 0;
+		const pending: readonly SignatureAssetScope[] = await ledger.listPendingBefore(
+			touchedBefore,
+			MAX_ABANDONED_SIGNATURE_REGISTRATIONS
+		);
+		const abandoned: SignatureAssetScope[] = [];
+		for (const scope of pending) {
+			const key: string = signatureAssetKey(scope.envelopeId, scope.recipientId, scope.sha256);
+			if ((await this.#objects.head(key)) === null) abandoned.push(scope);
+		}
+		if (dryRun) return abandoned.length;
+		return await ledger.retireAbandonedRegistrations(abandoned, touchedBefore, nowIso);
 	}
 
 	async #resumeAfter(

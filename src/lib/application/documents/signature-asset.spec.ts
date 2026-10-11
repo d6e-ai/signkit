@@ -7,17 +7,38 @@ import type { RecipientAccessApplicationPort } from '$lib/application/signing/re
 import type { RecipientSigningContext } from '$lib/ports/recipient-access-store';
 import type { ObjectMetadata, ObjectStore } from '$lib/ports/object-store';
 import { InMemoryObjectStore } from '$lib/ports/object-store-test-support';
+import { InMemorySignatureAssetLedger } from '$lib/ports/signature-asset-ledger-test-support';
 import {
 	MAX_SIGNATURE_ASSET_BYTES,
 	MAX_SIGNATURE_EMITTED_IMAGE_BYTES,
 	SIGNATURE_ASSET_REF_PREFIX,
-	SignatureAssetApplication,
+	SignatureAssetApplication as LedgeredSignatureAssetApplication,
 	parseSignatureAssetKey,
 	referencedSignatureAssetKeys,
 	signatureAssetKey,
 	signatureAssetRefValueJson,
-	verifySignatureAssetReference
+	verifySignatureAssetReference as verifyLedgeredReference,
+	type SignatureAssetReferenceCheck
 } from './signature-asset';
+
+const NOW: string = '2026-09-19T00:00:00.000Z';
+
+/** Upload validation cases below are ledger-agnostic: each gets a fresh, empty ledger. */
+class SignatureAssetApplication extends LedgeredSignatureAssetApplication {
+	constructor(access: RecipientAccessApplicationPort, objects: ObjectStore) {
+		super(access, objects, new InMemorySignatureAssetLedger());
+	}
+}
+
+/** Reference validation cases below exercise the object read alone (no ledger wired). */
+function verifySignatureAssetReference(
+	objects: ObjectStore,
+	envelopeId: string,
+	recipientId: string,
+	value: string
+): Promise<SignatureAssetReferenceCheck> {
+	return verifyLedgeredReference(objects, null, envelopeId, recipientId, value, NOW);
+}
 
 const context: RecipientSigningContext = {
 	envelopeId: '01900000-0000-7000-8000-000000000001',
@@ -492,6 +513,216 @@ describe('verifySignatureAssetReference', () => {
 			`${SIGNATURE_ASSET_REF_PREFIX}${'c'.repeat(64)}`
 		);
 
+		expect(check).toEqual({ outcome: 'provider_error' });
+	});
+});
+
+describe('SignatureAssetApplication retention ledger', () => {
+	function storeInput(png: Uint8Array) {
+		return {
+			token: 'token',
+			expectedEnvelopeId: context.envelopeId,
+			expectedRecipientId: context.recipientId,
+			pngBytes: png
+		};
+	}
+
+	function scopeFor(png: Uint8Array) {
+		return {
+			envelopeId: context.envelopeId,
+			recipientId: context.recipientId,
+			sha256: createHash('sha256').update(png).digest('hex')
+		};
+	}
+
+	it('registers the scoped pending row before the immutable put', async () => {
+		const order: string[] = [];
+		const ledger = new InMemorySignatureAssetLedger();
+		const register = ledger.registerPending.bind(ledger);
+		ledger.registerPending = async (scope, now) => {
+			order.push('register');
+			return await register(scope, now);
+		};
+		const objects = new InMemoryObjectStore();
+		const put = objects.putImmutable.bind(objects);
+		objects.putImmutable = async (key, object) => {
+			order.push('put');
+			return await put(key, object);
+		};
+		const png: Uint8Array = pngBytes();
+
+		const result = await new LedgeredSignatureAssetApplication(
+			new FakeAccess(),
+			objects,
+			ledger,
+			() => new Date(NOW)
+		).store(storeInput(png));
+
+		expect(result.outcome).toBe('stored');
+		expect(order).toEqual(['register', 'put']);
+		expect(ledger.stateOf(scopeFor(png))).toBe('pending');
+	});
+
+	it.each([
+		['R2 (onlyIf etagDoesNotMatch returns null)', 'Object already exists'],
+		['S3 (If-None-Match: * returns 412)', 'PreconditionFailed']
+	])(
+		'reuses an existing object with matching bytes when %s rejects the duplicate put',
+		async (_provider: string, message: string) => {
+			const png: Uint8Array = pngBytes();
+			const scope = scopeFor(png);
+			const objects = new InMemoryObjectStore();
+			objects.seed(signatureAssetKey(scope.envelopeId, scope.recipientId, scope.sha256), png);
+			const put = objects.putImmutable.bind(objects);
+			objects.putImmutable = async (key, object) => {
+				await put(key, object).catch((): void => undefined);
+				throw new Error(message);
+			};
+			const ledger = new InMemorySignatureAssetLedger();
+			ledger.seed(scope, 'pending', '2026-09-01T00:00:00.000Z');
+
+			const result = await new LedgeredSignatureAssetApplication(
+				new FakeAccess(),
+				objects,
+				ledger,
+				() => new Date(NOW)
+			).store(storeInput(png));
+
+			expect(result).toEqual({
+				outcome: 'stored',
+				assetRef: `${SIGNATURE_ASSET_REF_PREFIX}${scope.sha256}`
+			});
+			// The re-upload refreshed retention, so a sweep at the old cutoff loses.
+			expect(await ledger.retireOrphans([scope], NOW, '2026-09-10T00:00:00.000Z')).toEqual([
+				'pending'
+			]);
+		}
+	);
+
+	it('recovers a put whose confirmation was lost by reading the bytes back', async () => {
+		const objects = new InMemoryObjectStore();
+		objects.throwAfterNextPut = true;
+		const result = await new LedgeredSignatureAssetApplication(
+			new FakeAccess(),
+			objects,
+			new InMemorySignatureAssetLedger()
+		).store(storeInput(pngBytes()));
+		expect(result.outcome).toBe('stored');
+	});
+
+	it('refuses to reuse an existing object whose bytes do not match the key', async () => {
+		const png: Uint8Array = pngBytes();
+		const scope = scopeFor(png);
+		const objects = new InMemoryObjectStore();
+		objects.seed(
+			signatureAssetKey(scope.envelopeId, scope.recipientId, scope.sha256),
+			new Uint8Array([1, 2, 3])
+		);
+		const result = await new LedgeredSignatureAssetApplication(
+			new FakeAccess(),
+			objects,
+			new InMemorySignatureAssetLedger()
+		).store(storeInput(png));
+		expect(result).toEqual({ outcome: 'integrity_error' });
+	});
+
+	it('refuses a retired scope as expired without writing or resurrecting it', async () => {
+		const png: Uint8Array = pngBytes();
+		const scope = scopeFor(png);
+		const ledger = new InMemorySignatureAssetLedger();
+		ledger.seed(scope, 'retired');
+		const objects = new InMemoryObjectStore();
+
+		const result = await new LedgeredSignatureAssetApplication(
+			new FakeAccess(),
+			objects,
+			ledger
+		).store(storeInput(png));
+
+		expect(result).toEqual({ outcome: 'expired' });
+		expect(objects.putCalls).toBe(0);
+		expect(ledger.stateOf(scope)).toBe('retired');
+	});
+});
+
+describe('verifySignatureAssetReference retention ledger', () => {
+	const envelopeId: string = context.envelopeId;
+	const recipientId: string = context.recipientId;
+
+	function seeded(): { objects: InMemoryObjectStore; sha256: string } {
+		const objects = new InMemoryObjectStore();
+		const png: Uint8Array = canvasSignaturePng();
+		const sha256: string = createHash('sha256').update(png).digest('hex');
+		objects.seed(signatureAssetKey(envelopeId, recipientId, sha256), png, sha256);
+		return { objects, sha256 };
+	}
+
+	it('reports a retired scope as expired without reading the object', async () => {
+		const { objects, sha256 } = seeded();
+		const ledger = new InMemorySignatureAssetLedger();
+		ledger.seed({ envelopeId, recipientId, sha256 }, 'retired');
+
+		const check = await verifyLedgeredReference(
+			objects,
+			ledger,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`,
+			NOW
+		);
+
+		expect(check).toEqual({ outcome: 'expired' });
+		expect(objects.getCalls).toBe(0);
+	});
+
+	it('touches a pending scope before validating, so an older sweep cutoff cannot retire it', async () => {
+		const { objects, sha256 } = seeded();
+		const ledger = new InMemorySignatureAssetLedger();
+		const scope = { envelopeId, recipientId, sha256 };
+		ledger.seed(scope, 'pending', '2026-09-01T00:00:00.000Z');
+
+		const check = await verifyLedgeredReference(
+			objects,
+			ledger,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`,
+			NOW
+		);
+
+		expect(check).toEqual({ outcome: 'ok' });
+		expect(await ledger.retireOrphans([scope], NOW, '2026-09-18T00:00:00.000Z')).toEqual([
+			'pending'
+		]);
+	});
+
+	it('still verifies a legacy asset with no ledger row by its bytes', async () => {
+		const { objects, sha256 } = seeded();
+		const check = await verifyLedgeredReference(
+			objects,
+			new InMemorySignatureAssetLedger(),
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`,
+			NOW
+		);
+		expect(check).toEqual({ outcome: 'ok' });
+	});
+
+	it('reports a ledger failure as a provider error, not an invalid reference', async () => {
+		const { objects, sha256 } = seeded();
+		const ledger = new InMemorySignatureAssetLedger();
+		ledger.checkFresh = async () => {
+			throw new Error('database unavailable');
+		};
+		const check = await verifyLedgeredReference(
+			objects,
+			ledger,
+			envelopeId,
+			recipientId,
+			`${SIGNATURE_ASSET_REF_PREFIX}${sha256}`,
+			NOW
+		);
 		expect(check).toEqual({ outcome: 'provider_error' });
 	});
 });

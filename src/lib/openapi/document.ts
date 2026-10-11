@@ -2628,7 +2628,7 @@ export function openApiDocument(): Record<string, unknown> {
 					],
 					requestBody: {
 						required: true,
-						description: `Same-origin image/png body, at most ${MAX_SIGNATURE_ASSET_BYTES} bytes. Content-addressed; no Idempotency-Key.`,
+						description: `Same-origin image/png body, at most ${MAX_SIGNATURE_ASSET_BYTES} bytes. Content-addressed; no Idempotency-Key. Bytes whose scoped key the orphan sweep already retired are refused with 409 urn:signkit:problem:signature-asset-expired; upload fresh bytes instead.`,
 						content: {
 							'image/png': {
 								schema: { type: 'string', format: 'binary' }
