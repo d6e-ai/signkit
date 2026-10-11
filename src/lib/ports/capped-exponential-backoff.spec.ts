@@ -58,6 +58,20 @@ describe('cappedExponentialBackoffMs', () => {
 			baseDelayMs * 32
 		);
 	});
+
+	it('preserves fractional and nonfinite input without adding validation or rounding', () => {
+		expect(cappedExponentialBackoffMs(1.5, baseDelayMs, maxDelayMs, exponentCap)).toBe(
+			42426.406871192856
+		);
+		expect(cappedExponentialBackoffMs(-Infinity, baseDelayMs, maxDelayMs, exponentCap)).toBe(
+			baseDelayMs
+		);
+		expect(cappedExponentialBackoffMs(Infinity, baseDelayMs, maxDelayMs, exponentCap)).toBe(
+			maxDelayMs
+		);
+		expect(cappedExponentialBackoffMs(NaN, baseDelayMs, maxDelayMs, exponentCap)).toBeNaN();
+		expect(cappedExponentialBackoffMs(6.5, baseDelayMs, baseDelayMs * 32, 5)).toBe(960_000);
+	});
 });
 
 it('offsets the given instant by the computed delay', () => {

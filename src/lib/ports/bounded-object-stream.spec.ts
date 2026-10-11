@@ -102,3 +102,31 @@ it('preserves a provider read failure and releases its reader', async () => {
 	).rejects.toBe(providerFailure);
 	expect(stream.locked).toBe(false);
 });
+
+it('returns an empty owned buffer from an empty stream', async () => {
+	const result = await readBoundedObjectStream(streamOfChunks([]), 0, () => new Error(), 'empty');
+	expect(result.byteLength).toBe(0);
+});
+
+it('copies offset views that land exactly on the ceiling', async () => {
+	const chunk = new Uint8Array([90, 1, 2, 3, 91]).subarray(1, 4);
+	const result = await readBoundedObjectStream(
+		streamOfChunks([chunk]),
+		3,
+		() => new Error(),
+		'offset'
+	);
+	expect(Array.from(result)).toEqual([1, 2, 3]);
+});
+
+it('rejects overflow on a later chunk without returning a partial buffer', async () => {
+	const overflow = new Error('later overflow');
+	await expect(
+		readBoundedObjectStream(
+			streamOfChunks([new Uint8Array([1]), new Uint8Array([2, 3])]),
+			2,
+			() => overflow,
+			'later overflow'
+		)
+	).rejects.toBe(overflow);
+});
