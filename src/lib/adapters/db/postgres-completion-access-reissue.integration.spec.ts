@@ -208,7 +208,7 @@ liveDescribe('PostgresCompletionAccessReissueStore integration', () => {
 				...key,
 				...observed,
 				newDeliveryId: newUuidV7(),
-				newTokenHash: 'f'.repeat(64),
+				newTokenHash: newUuidV7().replaceAll('-', '').repeat(2),
 				newAccessExpiresAt: '2026-10-13T12:00:00.000Z',
 				sealedToken: 'skcd1_new-sealed-blob',
 				sealingKeyId: 'key-1',
