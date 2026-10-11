@@ -92,9 +92,12 @@ const deliveries = {
 	delivery: { envelopeId: ENVELOPE_ID, envelopeStatus: 'ready', deliveries: [] }
 };
 
-function detailWith(fields: readonly unknown[]): Record<string, unknown> {
+function detailWith(
+	fields: readonly unknown[],
+	envelope: typeof readyEnvelope = readyEnvelope
+): Record<string, unknown> {
 	return {
-		envelope: readyEnvelope,
+		envelope,
 		recipients: [
 			{
 				id: SIGNER_ID,
@@ -153,10 +156,18 @@ interface MockFetchOptions {
 }
 
 function buildMockFetch(options: MockFetchOptions = {}): ReturnType<typeof vi.fn> {
+	let fieldGeneration = readyEnvelope.fieldGeneration;
+	let currentFields: Record<string, unknown>[] = (options.fields ?? []).map((field) => ({
+		...(field as Record<string, unknown>),
+		label:
+			typeof (field as { label?: unknown }).label === 'string'
+				? (field as { label: string }).label
+				: 'Sign here'
+	}));
 	return vi.fn().mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
 		const urlStr = String(url);
 		if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
-			return jsonResponse(detailWith(options.fields ?? []));
+			return jsonResponse(detailWith(currentFields, { ...readyEnvelope, fieldGeneration }));
 		}
 		if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
 			return jsonResponse(draft);
@@ -175,17 +186,44 @@ function buildMockFetch(options: MockFetchOptions = {}): ReturnType<typeof vi.fn
 			});
 		}
 		if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/fields`) && init?.method === 'POST') {
-			if (options.onPlaceFields) return options.onPlaceFields(parseBody(init));
+			const body = parseBody(init);
+			const submitted = body?.fields as Record<string, unknown>[];
+			const response = options.onPlaceFields
+				? options.onPlaceFields(body)
+				: jsonResponse({
+						fields: {
+							envelopeId: ENVELOPE_ID,
+							generation: 1,
+							fieldGeneration: fieldGeneration + 1,
+							commitSha: draft.commitSha,
+							fields: submitted.map((field, index) => ({
+								...field,
+								id: `01900000-0000-7000-8000-${String(500 + index).padStart(12, '0')}`,
+								documentPath: field.documentId === DOCUMENT_ID ? 'documents/agreement.md' : null
+							})),
+							updatedAt: '2026-09-22T00:00:00.000Z',
+							auditEventId: '01900000-0000-7000-8000-000000000900'
+						}
+					});
+			if (response.ok) {
+				const receipt = (await response.clone().json()) as {
+					fields: { fieldGeneration: number; fields: Record<string, unknown>[] };
+				};
+				fieldGeneration = receipt.fields.fieldGeneration;
+				currentFields = receipt.fields.fields.map((field, index) => ({
+					...field,
+					label: submitted[index]?.label ?? 'Sign here'
+				}));
+			}
+			return response;
+		}
+		if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/fields`)) {
 			return jsonResponse({
-				fields: {
-					envelopeId: ENVELOPE_ID,
-					generation: 1,
-					fieldGeneration: 1,
-					commitSha: draft.commitSha,
-					fields: [],
-					updatedAt: '2026-09-22T00:00:00.000Z',
-					auditEventId: '01900000-0000-7000-8000-000000000900'
-				}
+				envelopeId: ENVELOPE_ID,
+				generation: readyEnvelope.repositoryGeneration,
+				fieldGeneration,
+				commitSha: readyEnvelope.repositoryHead,
+				fields: currentFields
 			});
 		}
 		return jsonResponse({});
@@ -205,7 +243,7 @@ async function openFieldsTab(mockFetch: ReturnType<typeof vi.fn>) {
 	await expect
 		.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 		.toBeVisible();
-	await screen.getByRole('tab', { name: 'Fields' }).click();
+	await screen.getByRole('tab', { name: 'Signature positions' }).click();
 	await expect.element(screen.getByText('Field placement')).toBeVisible();
 	return screen;
 }
@@ -363,8 +401,8 @@ describe('keyboard field placement', () => {
 		await addField(screen);
 		await userEvent.keyboard('{ArrowRight}');
 
-		await screen.getByRole('button', { name: 'Publish field set' }).click();
-		await expect.element(screen.getByText('1 fields published.')).toBeVisible();
+		await screen.getByRole('button', { name: 'Save signature positions' }).click();
+		await expect.element(screen.getByText('1 signature positions saved.')).toBeVisible();
 
 		expect(publishedBody).toBeDefined();
 		expect(publishedBody?.expectedGeneration).toBe(1);
@@ -372,6 +410,11 @@ describe('keyboard field placement', () => {
 		const fields = publishedBody?.fields as readonly Record<string, unknown>[];
 		expect(fields).toHaveLength(1);
 		expect(fields[0].recipientId).toBe(SIGNER_ID);
+		await expect
+			.element(screen.getByRole('button', { name: 'Save signature positions' }))
+			.toBeVisible();
+		await screen.getByRole('button', { name: 'Continue to review' }).click();
+		await expect.element(screen.getByRole('button', { name: 'Send envelope' })).toBeEnabled();
 		expect(fields[0].documentId).toBe(DOCUMENT_ID);
 		expect(fields[0].fieldType).toBe('signature');
 		expect(fields[0].required).toBe(true);
@@ -392,13 +435,36 @@ describe('published fields protect against partial-replacement data loss', () =>
 		documentId: DOCUMENT_ID,
 		documentPath: 'documents/agreement.md',
 		fieldType: 'signature',
+		label: 'Sign here',
 		required: true,
 		position: 1,
 		geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.06 }
 	};
 
-	it('renders persisted fields at their exact stored geometry, keyboard selectable after remount, read-only, and blocks new/partial placement', async () => {
-		const mockFetch = buildMockFetch({ fields: [publishedField] });
+	it('hydrates persisted fields with their stored labels and keeps them editable', async () => {
+		let publishedBody: Record<string, unknown> | undefined;
+		const mockFetch = buildMockFetch({
+			fields: [publishedField],
+			onPlaceFields: (body) => {
+				publishedBody = body;
+				return jsonResponse({
+					fields: {
+						envelopeId: ENVELOPE_ID,
+						generation: 1,
+						fieldGeneration: 1,
+						commitSha: draft.commitSha,
+						fields: [
+							{
+								...publishedField,
+								geometry: { page: 1, x: 0.105, y: 0.2, width: 0.3, height: 0.06 }
+							}
+						],
+						updatedAt: '2026-09-22T00:00:00.000Z',
+						auditEventId: '01900000-0000-7000-8000-000000000901'
+					}
+				});
+			}
+		});
 		vi.stubGlobal('fetch', mockFetch);
 
 		const first = await render(EnvelopePage);
@@ -411,51 +477,35 @@ describe('published fields protect against partial-replacement data loss', () =>
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
-		await screen.getByRole('tab', { name: 'Fields' }).click();
+		await screen.getByRole('tab', { name: 'Signature positions' }).click();
 
-		// Locked notice explains why, in place of the recipient/type creation form.
-		await expect.element(screen.getByText(/already has published fields/i)).toBeVisible();
-		expect(screen.container.querySelector('#field-recipient')).toBeNull();
-		expect(screen.container.querySelector('#field-add-page')).toBeNull();
-		expect(screen.container.textContent).not.toContain('Publish field set');
+		expect(screen.container.querySelector('#field-recipient')).not.toBeNull();
+		await expect
+			.element(screen.getByRole('button', { name: 'Save signature positions' }))
+			.toBeVisible();
+		await expect.element(screen.getByRole('cell', { name: 'Sign here' })).toBeVisible();
 
-		// Exact persisted geometry, rendered as a real focusable button.
 		const box = screen.container.querySelector(
-			'[aria-label="Signature for Signer on page 1"]'
+			'[aria-label="Sign here for Signer on page 1"]'
 		) as HTMLElement | null;
 		expect(box).not.toBeNull();
-		expect(box?.tagName).toBe('BUTTON');
 		expect(percent(box, 'left')).toBeCloseTo(10, 5);
 		expect(percent(box, 'top')).toBeCloseTo(20, 5);
 		expect(percent(box, 'width')).toBeCloseTo(30, 5);
 		expect(percent(box, 'height')).toBeCloseTo(6, 5);
-		// No pointer-drag resize handle on a read-only box.
-		expect(box?.querySelector('[role="presentation"]')).toBeNull();
+		expect(box?.querySelector('[role="presentation"]')).not.toBeNull();
 
 		box?.focus();
 		expect(document.activeElement).toBe(box);
-		await userEvent.keyboard('{Enter}');
-		await expect.poll(() => box?.getAttribute('aria-pressed')).toBe('true');
-
-		// The geometry FieldSet mirrors the exact stored value but is disabled.
-		const pageInput = screen.container.querySelector('#selected-field-page') as HTMLInputElement;
-		const leftInput = screen.container.querySelector('#selected-field-left') as HTMLInputElement;
-		expect(pageInput.disabled).toBe(true);
-		expect(leftInput.disabled).toBe(true);
-		expect(Number(leftInput.value)).toBeCloseTo(10, 5);
-		await expect.element(screen.getByText(/already published and can't be edited/i)).toBeVisible();
-
-		// Read-only: arrow keys on the focused, selected box do not mutate it.
 		await userEvent.keyboard('{ArrowRight}');
-		expect(percent(box, 'left')).toBeCloseTo(10, 5);
+		expect(percent(box, 'left')).toBeCloseTo(10.5, 5);
 
-		// No POST to /fields is ever issued - there is no UI path left to trigger one.
-		expect(
-			mockFetch.mock.calls.some(
-				(call: unknown[]) =>
-					String(call[0]).includes(`/api/v1/envelopes/${ENVELOPE_ID}/fields`) &&
-					(call[1] as RequestInit | undefined)?.method === 'POST'
-			)
-		).toBe(false);
+		await screen.getByRole('button', { name: 'Save signature positions' }).click();
+		await expect.poll(() => publishedBody !== undefined).toBe(true);
+		const fields = publishedBody?.fields as readonly Record<string, unknown>[];
+		expect(fields).toHaveLength(1);
+		expect(fields[0].label).toBe('Sign here');
+		expect(fields[0].required).toBe(true);
+		expect(fields[0].recipientId).toBe(SIGNER_ID);
 	});
 });

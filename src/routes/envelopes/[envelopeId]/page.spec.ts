@@ -4,6 +4,20 @@ import { describe, expect, it } from 'vitest';
 describe('envelope authoring page contracts', () => {
 	const source: string = readFileSync('src/routes/envelopes/[envelopeId]/+page.svelte', 'utf8');
 
+	it('loads complete authoring fields before replace-all and confirms reopen before returning to draft', () => {
+		expect(source).toContain('client.authoringFields(envelopeId)');
+		expect(source).toContain('acceptAuthoringFields');
+		expect(source).toContain('placedFields');
+		expect(source).toContain('client.reopenEnvelope');
+		expect(source).toContain('openReopenDialog');
+		expect(source).toContain('m.envelope_reopen_dialog_title()');
+		expect(source).not.toContain('reopen-anchor-probe');
+		expect(source).toContain('m.envelope_workflow_step({');
+		expect(source).toContain('m.envelope_review_title()');
+		expect(source).toContain('beforeunload');
+		expect(source).toContain('beforeNavigate');
+	});
+
 	it('recovers send readiness and recipients from the durable envelope detail read', () => {
 		expect(source).toContain('client.getDetail(envelopeId)');
 		expect(source).toContain('readyAuditEventId = detail.readyAuditEventId');
@@ -117,12 +131,13 @@ describe('envelope authoring page contracts', () => {
 		expect(source).not.toMatch(/<select[\s>]/);
 	});
 
-	it('gates Ready on every identity field and never submits on a blocked keyboard attempt', () => {
-		expect(source).toContain('disabled={recipientDrafts.length === 0 ||');
-		expect(source).toContain('recipientsHaveInvalidIdentity}');
-		expect(source).toContain('onclick={attemptMarkReady}');
+	it('gates continuing from recipients on every identity field and never submits on a blocked keyboard attempt', () => {
+		expect(source).toContain('recipientDrafts.length === 0 || recipientsHaveInvalidIdentity');
+		expect(/onclick=\{workspaceTab === 'recipients'\s*\?\s*attemptMarkReady/.test(source)).toBe(
+			true
+		);
 		expect(source).toContain(
-			'if (recipientDrafts.length === 0 || recipientsHaveInvalidIdentity) return;'
+			'if (recipientDrafts.length === 0 || recipientsHaveInvalidIdentity) return false;'
 		);
 		expect(source).toContain('!isValidRecipientName(normalizeRecipientName(draftItem.name))');
 		expect(source).toContain('!isValidRecipientEmail(normalizeRecipientEmail(draftItem.email))');
@@ -300,14 +315,17 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('<Spinner data-icon="inline-start" />');
 	});
 
-	it('shows the recipient graph description only while still draft, and a progress-focused description once locked', () => {
+	it('uses a recipient form while draft and saved response statuses thereafter', () => {
 		const recipientsTab = source.slice(
 			source.indexOf('<Tabs.Content value="recipients"'),
 			source.indexOf('<Tabs.Content value="fields"')
 		);
-		expect(recipientsTab).toContain(
-			"envelope.status === 'draft'\n\t\t\t\t\t\t\t\t\t? m.envelope_recipients_description()\n\t\t\t\t\t\t\t\t\t: m.envelope_recipients_description_locked()"
-		);
+		expect(recipientsTab).toContain("{#if envelope.status === 'draft'}");
+		expect(recipientsTab).toContain('<Field.FieldSet disabled={documentMutationPending}>');
+		expect(recipientsTab).toContain('{:else if readyRecipients.length > 0}');
+		expect(recipientsTab).toContain('recipientWorkflowStatusLabel(recipient.status)');
+		expect(recipientsTab).not.toContain('m.envelope_recipients_description()');
+		expect(recipientsTab).not.toContain('m.envelope_recipients_description_locked()');
 	});
 
 	it('keeps placed fields visible and read-only once an envelope is sent or closed, instead of an apparently empty panel', () => {

@@ -228,6 +228,26 @@ export interface PlaceFieldsResponse {
 	replayed: boolean;
 }
 
+export interface AuthoringFieldResponse {
+	id: string;
+	recipientId: string;
+	documentId: string | null;
+	documentPath: DraftPath | null;
+	fieldType: FieldType;
+	label: string;
+	required: boolean;
+	position: number;
+	geometry: FieldGeometry | null;
+}
+
+export interface AuthoringFieldsResponse {
+	envelopeId: string;
+	generation: number;
+	fieldGeneration: number;
+	commitSha: string | null;
+	fields: readonly AuthoringFieldResponse[];
+}
+
 export interface SendEnvelopeInput {
 	expectedGeneration: number;
 	expectedReadyAuditEventId: string;
@@ -250,6 +270,24 @@ export interface SendEnvelopeResponse {
 }
 
 export type VoidableEnvelopeStatus = 'draft' | 'ready' | 'sent' | 'in_progress';
+
+export interface ReopenEnvelopeInput {
+	expectedGeneration: number;
+	expectedFieldGeneration: number;
+	expectedReadyAuditEventId: string;
+}
+
+export interface ReopenEnvelopeResponse {
+	reopened: {
+		envelopeId: string;
+		status: 'draft';
+		generation: number;
+		fieldGeneration: number;
+		updatedAt: string;
+		auditEventId: string;
+	};
+	replayed: boolean;
+}
 
 export interface VoidEnvelopeInput {
 	expectedStatus: VoidableEnvelopeStatus;
@@ -614,6 +652,29 @@ export class EnvelopesClient {
 		};
 	}
 
+	async authoringFields(
+		envelopeId: string,
+		options?: RequestOptions
+	): Promise<AuthoringFieldsResponse> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/fields`);
+		const { data } = await this.request<unknown>(
+			url,
+			{ method: 'GET', headers: { accept: 'application/json, application/problem+json' } },
+			options?.fetch
+		);
+		const parsed = asAuthoringFieldsResponse(data, envelopeId);
+		if (parsed === null) {
+			throw new EnvelopesApiError({
+				status: 502,
+				type: 'urn:signkit:problem:invalid-response-json',
+				title: 'Invalid authoring field set',
+				detail: 'The response did not include a complete field set for this envelope.',
+				instance: url
+			});
+		}
+		return parsed;
+	}
+
 	async placeFields(
 		envelopeId: string,
 		input: PlaceFieldsInput,
@@ -636,6 +697,66 @@ export class EnvelopesClient {
 		);
 		return {
 			fields: data.fields,
+			replayed: response.headers.get('idempotency-replayed') === 'true'
+		};
+	}
+
+	async reopenEnvelope(
+		envelopeId: string,
+		input: ReopenEnvelopeInput,
+		options?: RequestOptions
+	): Promise<ReopenEnvelopeResponse> {
+		const url = this.buildUrl(`/api/v1/envelopes/${encodeURIComponent(envelopeId)}/reopen`);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{
+			reopened?: ReopenEnvelopeResponse['reopened'];
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey
+				},
+				body: JSON.stringify({
+					expectedGeneration: input.expectedGeneration,
+					expectedFieldGeneration: input.expectedFieldGeneration,
+					expectedReadyAuditEventId: input.expectedReadyAuditEventId
+				})
+			},
+			options?.fetch
+		);
+		const receipt = data?.reopened;
+		if (
+			receipt?.envelopeId !== envelopeId ||
+			receipt?.status !== 'draft' ||
+			typeof receipt?.generation !== 'number' ||
+			!Number.isInteger(receipt.generation) ||
+			typeof receipt?.fieldGeneration !== 'number' ||
+			!Number.isInteger(receipt.fieldGeneration) ||
+			typeof receipt?.updatedAt !== 'string' ||
+			!Number.isFinite(Date.parse(receipt.updatedAt)) ||
+			typeof receipt?.auditEventId !== 'string' ||
+			receipt.auditEventId.length === 0
+		) {
+			throw new EnvelopesApiError({
+				status: 502,
+				type: 'urn:signkit:problem:invalid-response-json',
+				title: 'Invalid reopen receipt',
+				detail: 'The response did not confirm that this envelope returned to draft.',
+				instance: url
+			});
+		}
+		return {
+			reopened: {
+				envelopeId: receipt.envelopeId,
+				status: 'draft',
+				generation: receipt.generation,
+				fieldGeneration: receipt.fieldGeneration,
+				updatedAt: receipt.updatedAt,
+				auditEventId: receipt.auditEventId
+			},
 			replayed: response.headers.get('idempotency-replayed') === 'true'
 		};
 	}
@@ -1002,6 +1123,80 @@ export class EnvelopesClient {
 			replayed: response.headers.get('idempotency-replayed') === 'true'
 		};
 	}
+}
+
+function asAuthoringFieldsResponse(
+	data: unknown,
+	envelopeId: string
+): AuthoringFieldsResponse | null {
+	if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+	const record = data as Record<string, unknown>;
+	if (record.envelopeId !== envelopeId) return null;
+	if (typeof record.generation !== 'number' || !Number.isInteger(record.generation)) return null;
+	if (typeof record.fieldGeneration !== 'number' || !Number.isInteger(record.fieldGeneration)) {
+		return null;
+	}
+	if (record.commitSha !== null && typeof record.commitSha !== 'string') return null;
+	if (!Array.isArray(record.fields)) return null;
+	const fields: AuthoringFieldResponse[] = [];
+	for (const item of record.fields) {
+		const field = asAuthoringField(item);
+		if (field === null) return null;
+		fields.push(field);
+	}
+	return {
+		envelopeId: record.envelopeId,
+		generation: record.generation,
+		fieldGeneration: record.fieldGeneration,
+		commitSha: record.commitSha,
+		fields
+	};
+}
+
+function asAuthoringField(data: unknown): AuthoringFieldResponse | null {
+	if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+	const field = data as Record<string, unknown>;
+	if (typeof field.id !== 'string' || field.id.length === 0) return null;
+	if (typeof field.recipientId !== 'string' || field.recipientId.length === 0) return null;
+	if (typeof field.fieldType !== 'string' || field.fieldType.length === 0) return null;
+	if (typeof field.label !== 'string') return null;
+	if (typeof field.required !== 'boolean') return null;
+	if (
+		typeof field.position !== 'number' ||
+		!Number.isInteger(field.position) ||
+		field.position < 0
+	) {
+		return null;
+	}
+	if (
+		field.documentId !== undefined &&
+		field.documentId !== null &&
+		typeof field.documentId !== 'string'
+	) {
+		return null;
+	}
+	if (
+		field.documentPath !== undefined &&
+		field.documentPath !== null &&
+		typeof field.documentPath !== 'string'
+	) {
+		return null;
+	}
+	const documentPath =
+		typeof field.documentPath === 'string'
+			? (field.documentPath as AuthoringFieldResponse['documentPath'])
+			: null;
+	return {
+		id: field.id,
+		recipientId: field.recipientId,
+		documentId: typeof field.documentId === 'string' ? field.documentId : null,
+		documentPath,
+		fieldType: field.fieldType as AuthoringFieldResponse['fieldType'],
+		label: field.label,
+		required: field.required,
+		position: field.position,
+		geometry: (field.geometry ?? null) as AuthoringFieldResponse['geometry']
+	};
 }
 
 function contentDispositionFilename(response: Response): string | null {

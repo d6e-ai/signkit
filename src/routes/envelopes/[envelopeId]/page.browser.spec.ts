@@ -5,6 +5,10 @@ import EnvelopePage from './+page.svelte';
 import EnvelopePageMobileTestHost from './envelope-page-mobile-test-host.svelte';
 import '../../layout.css';
 
+beforeEach(async () => {
+	await browserPage.viewport(1280, 800);
+});
+
 function toBase64(bytes: Uint8Array): string {
 	let binary = '';
 	for (const byte of bytes) binary += String.fromCharCode(byte);
@@ -68,6 +72,28 @@ const readyEnvelope = {
 	fieldGeneration: 0,
 	createdAt: '2026-09-11T00:00:00.000Z',
 	updatedAt: '2026-09-11T00:00:00.000Z'
+};
+
+function authoringFieldsResponse(fields: readonly unknown[] = []): Response {
+	return jsonResponse({
+		envelopeId: ENVELOPE_ID,
+		generation: readyEnvelope.repositoryGeneration,
+		fieldGeneration: readyEnvelope.fieldGeneration,
+		commitSha: readyEnvelope.repositoryHead,
+		fields
+	});
+}
+
+const authoringSignatureField = {
+	id: '01900000-0000-7000-8000-000000000500',
+	recipientId: SIGNER_ID,
+	documentId: DOCUMENT_ID,
+	documentPath: 'documents/agreement.md',
+	fieldType: 'signature',
+	label: 'Sign here',
+	required: true,
+	position: 1,
+	geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
 };
 
 const detail = {
@@ -159,13 +185,30 @@ describe('envelope authoring page remounts durable send state', () => {
 			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
 				const urlStr = String(url);
 				if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
-					return jsonResponse(detail);
+					return jsonResponse({
+						...detail,
+						fields: [
+							{
+								id: authoringSignatureField.id,
+								recipientId: authoringSignatureField.recipientId,
+								documentId: authoringSignatureField.documentId,
+								documentPath: authoringSignatureField.documentPath,
+								fieldType: authoringSignatureField.fieldType,
+								required: authoringSignatureField.required,
+								position: authoringSignatureField.position,
+								geometry: authoringSignatureField.geometry
+							}
+						]
+					});
 				}
 				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
 					return jsonResponse(draft);
 				}
 				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
 					return jsonResponse(deliveries);
+				}
+				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/fields`) && init?.method !== 'POST') {
+					return authoringFieldsResponse([authoringSignatureField]);
 				}
 				if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/send`) && init?.method === 'POST') {
 					sendBody = parseBody(init);
@@ -201,7 +244,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await screen.getByRole('tab', { name: 'Send & status' }).click();
 		await expect.element(screen.getByRole('button', { name: 'Send envelope' })).toBeVisible();
 		await screen.getByRole('button', { name: 'Send envelope' }).click();
-		await screen.getByRole('alertdialog').getByRole('button', { name: 'Send envelope' }).click();
+		expect(screen.container.querySelector('[role="alertdialog"]')).toBeNull();
 
 		expect(sendBody).toEqual({
 			expectedGeneration: 1,
@@ -254,6 +297,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
+		await screen.getByRole('button', { name: 'Advanced details' }).click();
 		await expect.element(screen.getByText('Revision 1')).toBeVisible();
 		await screen.getByRole('tab', { name: 'Recipients' }).click();
 		const recipientsPanel = screen.getByRole('tabpanel', { name: 'Recipients' });
@@ -299,7 +343,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await screen.getByRole('button', { name: 'Add recipient' }).click();
 		const languageSelect = screen.getByLabelText('Language');
 		await expect.element(screen.getByLabelText('Role')).toBeVisible();
-		await expect.element(screen.getByRole('cell', { name: 'Order' })).toBeVisible();
+		await expect.element(screen.getByLabelText('Order')).toBeVisible();
 		await expect.element(languageSelect).toBeVisible();
 		await expect.element(languageSelect).toHaveTextContent('English');
 		await languageSelect.click();
@@ -543,7 +587,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
-		await screen.getByRole('tab', { name: 'Fields' }).click();
+		await screen.getByRole('tab', { name: 'Signature positions' }).click();
 		expect(screen.container.textContent).not.toContain('Field placement');
 
 		releasePages(pageMapResponse());
@@ -579,7 +623,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
-		await screen.getByRole('tab', { name: 'Fields' }).click();
+		await screen.getByRole('tab', { name: 'Signature positions' }).click();
 		await expect.element(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
 		expect(screen.container.textContent).not.toContain('Field placement');
 	});
@@ -613,7 +657,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		).toBe(false);
 	});
 
-	it('keeps Mark ready disabled and shows an inline error for a blank recipient name (mouse)', async () => {
+	it('explains a blank recipient name on click without submitting (mouse)', async () => {
 		let readyCalled = false;
 		const mockFetch = vi
 			.fn()
@@ -645,27 +689,35 @@ describe('envelope authoring page remounts durable send state', () => {
 		await screen.getByRole('tab', { name: 'Recipients' }).click();
 		await screen.getByRole('button', { name: 'Add recipient' }).click();
 		await screen.getByLabelText('Email').fill('signer@example.com');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 		expect(screen.container.textContent).not.toContain(NAME_REQUIRED_MESSAGE);
 
-		// Leaving the still-blank name field shows the inline error.
-		await screen.getByLabelText('Name').click();
-		await screen.getByLabelText('Email').click();
+		// The enabled next action explains the problem and focuses its input.
+		await screen.getByRole('button', { name: 'Choose signature positions' }).click();
+		await expect.element(screen.getByLabelText('Name')).toHaveFocus();
 		await expect.element(screen.getByText(NAME_REQUIRED_MESSAGE)).toBeVisible();
 		await expect.element(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 
 		// A whitespace-only name is treated the same as blank.
 		await screen.getByLabelText('Name').fill('   ');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 
 		await screen.getByLabelText('Name').fill('Signer Example');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeEnabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 		expect(screen.container.textContent).not.toContain(NAME_REQUIRED_MESSAGE);
 		expect(readyCalled).toBe(false);
 	});
 
-	it('keeps Mark ready disabled and shows an inline error for a blank or malformed recipient email (mouse)', async () => {
+	it('explains a blank or malformed recipient email on click without submitting (mouse)', async () => {
 		let readyCalled = false;
 		const mockFetch = vi
 			.fn()
@@ -697,32 +749,43 @@ describe('envelope authoring page remounts durable send state', () => {
 		await screen.getByRole('tab', { name: 'Recipients' }).click();
 		await screen.getByRole('button', { name: 'Add recipient' }).click();
 		await screen.getByLabelText('Name').fill('Signer Example');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 		expect(screen.container.textContent).not.toContain(EMAIL_INVALID_MESSAGE);
 
-		// Leaving the still-blank email field shows the inline error.
-		await screen.getByLabelText('Email').click();
-		await screen.getByLabelText('Name').click();
+		await screen.getByRole('button', { name: 'Choose signature positions' }).click();
+		await expect.element(screen.getByLabelText('Email')).toHaveFocus();
 		await expect.element(screen.getByText(EMAIL_INVALID_MESSAGE)).toBeVisible();
 		await expect.element(screen.getByLabelText('Email')).toHaveAttribute('aria-invalid', 'true');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 
 		// A malformed address is rejected by the same predicate the server uses.
 		await screen.getByLabelText('Email').fill('not-an-email');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 		await expect.element(screen.getByText(EMAIL_INVALID_MESSAGE)).toBeVisible();
 
 		// Structurally malformed domains must not pass the client while the API rejects them.
 		await screen.getByLabelText('Email').fill('signer@example..com');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 		await expect.element(screen.getByText(EMAIL_INVALID_MESSAGE)).toBeVisible();
 
 		// A whitespace-only email is treated the same as blank.
 		await screen.getByLabelText('Email').fill('   ');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 
 		await screen.getByLabelText('Email').fill('signer@example.com');
-		await expect.element(screen.getByRole('button', { name: 'Mark ready' })).toBeEnabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Choose signature positions' }))
+			.toBeEnabled();
 		expect(screen.container.textContent).not.toContain(EMAIL_INVALID_MESSAGE);
 		expect(readyCalled).toBe(false);
 	});
@@ -1945,8 +2008,8 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		vi.stubGlobal('fetch', mockLifecycleFetch());
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Fields' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+		await screen.getByRole('tab', { name: 'Signature positions' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
 		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
 		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
 		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
@@ -1972,8 +2035,8 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		vi.stubGlobal('fetch', mockLifecycleFetch(voidedBeforeSendDetail));
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Fields' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+		await screen.getByRole('tab', { name: 'Signature positions' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
 
 		await expect
 			.element(
@@ -2000,7 +2063,7 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 			)
 			.not.toBeInTheDocument();
 		await expect
-			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.element(fieldsPanel.getByRole('button', { name: 'Save signature positions' }))
 			.not.toBeInTheDocument();
 	});
 
@@ -2017,8 +2080,8 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		vi.stubGlobal('fetch', mockLifecycleFetch(readyThenVoidedDetail));
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Fields' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+		await screen.getByRole('tab', { name: 'Signature positions' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
 
 		await expect
 			.element(
@@ -2045,7 +2108,7 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 			)
 			.not.toBeInTheDocument();
 		await expect
-			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.element(fieldsPanel.getByRole('button', { name: 'Save signature positions' }))
 			.not.toBeInTheDocument();
 	});
 
@@ -2062,8 +2125,8 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		vi.stubGlobal('fetch', mockLifecycleFetch(postSendVoidedDetail));
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Fields' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Fields' });
+		await screen.getByRole('tab', { name: 'Signature positions' }).click();
+		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
 
 		await expect
 			.element(
@@ -2090,7 +2153,7 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 			)
 			.not.toBeInTheDocument();
 		await expect
-			.element(fieldsPanel.getByRole('button', { name: 'Publish field set' }))
+			.element(fieldsPanel.getByRole('button', { name: 'Save signature positions' }))
 			.not.toBeInTheDocument();
 	});
 
@@ -2100,9 +2163,14 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		const screen = await render(EnvelopePage);
 		await screen.getByRole('tab', { name: 'Recipients' }).click();
 		const recipientsPanel = screen.getByRole('tabpanel', { name: 'Recipients' });
+		await expect.element(recipientsPanel.getByText('Status', { exact: true })).toBeVisible();
 		await expect
-			.element(recipientsPanel.getByText("Each recipient's response progress for this envelope."))
+			.element(recipientsPanel.getByRole('cell', { name: 'Dana Recipient' }))
 			.toBeVisible();
+		await expect.element(recipientsPanel.getByRole('cell', { name: 'Completed' })).toBeVisible();
+		await expect
+			.element(recipientsPanel.getByRole('button', { name: 'Choose signature positions' }))
+			.not.toBeInTheDocument();
 		await expect
 			.element(
 				recipientsPanel.getByText(
@@ -2227,7 +2295,7 @@ describe('completed envelope on actual 390x844 mobile viewport with keyboard tab
 			parseFloat(containerStyle.paddingRight);
 		expect(usableInnerWidth).toBe(358);
 
-		const tabs = ['Documents', 'Recipients', 'Fields', 'Send'] as const;
+		const tabs = ['Documents', 'Recipients', 'Signature positions', 'Send'] as const;
 		for (const tabName of tabs) {
 			const trigger = screen.getByRole('tab', { name: tabName });
 			await trigger.click();
@@ -2266,13 +2334,17 @@ describe('completed envelope on actual 390x844 mobile viewport with keyboard tab
 		await expect.element(screen.getByRole('tabpanel', { name: 'Recipients' })).toBeVisible();
 
 		await userEvent.keyboard('{ArrowRight}');
-		await expect.element(screen.getByRole('tabpanel', { name: 'Fields' })).toBeVisible();
+		await expect
+			.element(screen.getByRole('tabpanel', { name: 'Signature positions' }))
+			.toBeVisible();
 
 		await userEvent.keyboard('{ArrowRight}');
 		await expect.element(screen.getByRole('tabpanel', { name: 'Send' })).toBeVisible();
 
 		await userEvent.keyboard('{ArrowLeft}');
-		await expect.element(screen.getByRole('tabpanel', { name: 'Fields' })).toBeVisible();
+		await expect
+			.element(screen.getByRole('tabpanel', { name: 'Signature positions' }))
+			.toBeVisible();
 
 		await userEvent.keyboard('{ArrowLeft}');
 		await expect.element(screen.getByRole('tabpanel', { name: 'Recipients' })).toBeVisible();

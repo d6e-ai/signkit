@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
@@ -15,6 +16,8 @@
 	import IconAddressBook from '@tabler/icons-svelte/icons/address-book';
 	import IconCertificate from '@tabler/icons-svelte/icons/certificate';
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
+	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import IconChevronRight from '@tabler/icons-svelte/icons/chevron-right';
 	import ContactCombobox from '$lib/components/contacts/contact-combobox.svelte';
 	import ContactManagementDialog from '$lib/components/contacts/contact-management-dialog.svelte';
 	import {
@@ -40,6 +43,7 @@
 	import * as Table from '$lib/components/ui/table';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import * as Collapsible from '$lib/components/ui/collapsible';
 	import {
 		createEnvelopesClient,
 		createEnvelopeMutationAttempt,
@@ -81,6 +85,20 @@
 		refreshDocumentPageMap,
 		refreshDocumentPageMapAfterReload
 	} from './document-page-map';
+	import {
+		acceptAuthoringFields,
+		parseAuthoringFieldsResponse,
+		type AuthoringFieldRecord
+	} from './authoring-fields';
+	import {
+		isAuthoringStatus,
+		previousAuthoringTab,
+		sendBlockReason,
+		signersMissingPlacements,
+		tabAfterRecipients,
+		type AuthoringTab,
+		type SendBlockReason
+	} from './authoring-workflow';
 
 	const client = createEnvelopesClient();
 	const contactsClient = createContactsClient();
@@ -164,6 +182,8 @@
 		contactSaveAttempt: ContactMutationAttempt;
 	}
 	let recipientDrafts = $state<RecipientDraft[]>([]);
+	let recipientDraftsInitialized = $state(false);
+	let recipientDraftsBaseline = $state('[]');
 	let contactManagementOpen = $state(false);
 	let contactSavePending = $state<Record<string, boolean>>({});
 	let contactSaveError = $state<Record<string, string | null>>({});
@@ -192,27 +212,39 @@
 	interface FieldDraft {
 		key: string;
 		recipientId: string;
-		documentId: string;
+		documentId: string | null;
 		fieldType: FieldType;
 		label: string;
 		required: boolean;
 		position: number;
-		/** Always set: a draft is only ever created by dropping a box on a page. */
-		geometry: FieldGeometry;
+		geometry: FieldGeometry | null;
 	}
 	let fieldDrafts = $state<FieldDraft[]>([]);
+	let fieldDraftsDirty = $state(false);
+	let authoringFieldsLoading = $state(false);
+	let authoringFieldsError = $state<string | null>(null);
+	let authoringFieldsHydrated = $state(false);
+	let fieldsPublishedMessage = $state<string | null>(null);
+	let fieldsPublishAttempt = $state(createEnvelopeMutationAttempt());
+	let workspaceTab = $state<AuthoringTab>('documents');
+	/**
+	 * The exact publish payload (and observed field generation) the cached
+	 * Idempotency-Key was minted for. A retry of that same ambiguous command
+	 * reuses it, but an edited field set or a newer observed generation names
+	 * a different command and must mint a fresh key rather than replaying a
+	 * stale one.
+	 */
+	let fieldsPublishAttemptSignature: string | null = null;
 	let placementPending = $state(false);
 	let placementError = $state<string | null>(null);
 	let placedFields = $state<readonly PublicEnvelopeFieldResponse[]>([]);
 	/**
-	 * Placement replaces the entire field set, and the public read model omits
-	 * labels, so a persisted field can never be safely folded back into a
-	 * republishable draft. Once any field is persisted, further placement is
-	 * fully locked in this revision rather than risking a partial-set publish
-	 * that silently deletes everything already there.
+	 * Placement replaces the entire field set. Editing is only safe once the
+	 * complete current set has been hydrated from the dedicated authoring read
+	 * (which, unlike the public projection, includes labels) and confirmed to
+	 * match the current revision - never from a partial or stale read.
 	 */
-	const placementLocked = $derived(placedFields.length > 0);
-	let selectedPublishedFieldId = $state<string | null>(null);
+	const placementLocked = $derived(!authoringFieldsHydrated);
 	let keyboardAddPage = $state(1);
 	let geometryAnnouncement = $state('');
 	let newField = $state<{
@@ -240,6 +272,9 @@
 	let pdfUploadPending = $state(false);
 	let pdfUploadError = $state<string | null>(null);
 	let documentOrderPending = $state(false);
+	const documentMutationPending = $derived(
+		commitPending || readyPending || importPending || pdfUploadPending || documentOrderPending
+	);
 	let documentOrderError = $state<string | null>(null);
 	let removeDocumentId = $state<string | null>(null);
 	let removeDialogOpen = $state(false);
@@ -268,8 +303,18 @@
 	let sendError = $state<string | null>(null);
 	let voidPending = $state(false);
 	let voidError = $state<string | null>(null);
-	let sendDialogOpen = $state(false);
 	let voidDialogOpen = $state(false);
+
+	// Reopen correction: sends a ready envelope back to draft so documents or
+	// recipients can be fixed. Signature positions must be placed again, so
+	// this is always an explicit, confirmed operator action - never implied by
+	// merely visiting or remounting a step.
+	let reopenDialogOpen = $state(false);
+	let reopenPending = $state(false);
+	let reopenError = $state<string | null>(null);
+	let reopenAttempt = $state(createEnvelopeMutationAttempt());
+	let reopenAttemptSignature: string | null = null;
+	let reopenTargetTab = $state<AuthoringTab | null>(null);
 
 	interface ReissueTarget {
 		id: string;
@@ -435,12 +480,17 @@
 		activeDocPath = null;
 	}
 
+	const activeSavedDocument = $derived(
+		authoringDocuments.find((entry) => entry.key === activeDocumentKey && entry.source === 'set')
+	);
+
 	function authoringDocumentTitle(entry: AuthoringDocument): string {
 		if (entry.source === 'pending') return documentTitle(entry.path);
 		return entry.leaf.title;
 	}
 
-	function placedDocumentTitle(documentId: string): string {
+	function placedDocumentTitle(documentId: string | null): string {
+		if (documentId === null) return m.envelope_field_document_unresolved();
 		const fromPages = documentPages?.documents.find((entry) => entry.documentId === documentId);
 		if (fromPages !== undefined) return fromPages.title;
 		return documentId.slice(0, 8);
@@ -799,11 +849,20 @@
 				});
 			}
 			if (
-				detail.recipients.some((recipient) => recipient.role === 'signer') &&
-				newField.recipientId === ''
+				!detail.recipients.some(
+					(recipient) => recipient.role === 'signer' && recipient.id === newField.recipientId
+				)
 			) {
 				const firstSigner = detail.recipients.find((recipient) => recipient.role === 'signer');
-				if (firstSigner) newField = { ...newField, recipientId: firstSigner.id };
+				newField = { ...newField, recipientId: firstSigner?.id ?? '' };
+			}
+			if (
+				selectedPlacementDocumentId !== null &&
+				!draft?.documentSet?.documents.some(
+					(document) => document.id === selectedPlacementDocumentId
+				)
+			) {
+				selectedPlacementDocumentId = null;
 			}
 			if (detail.envelope.status !== 'draft') {
 				delivery = await client.deliveries(envelopeId).catch(() => null);
@@ -813,6 +872,8 @@
 				await refreshPdfSealStatus();
 				await refreshCompletionDeliveries();
 			}
+			await hydrateAuthoringFields();
+			if (detail.envelope.status === 'draft') seedRecipientDraftsFromReady();
 		} catch (cause) {
 			if (cause instanceof EnvelopesApiError && cause.status === 401) {
 				authRequired = true;
@@ -830,8 +891,87 @@
 		dirtyPaths.add(path);
 	}
 
-	async function commitChanges(): Promise<void> {
-		if (draft === null || dirtyPaths.size === 0 || commitPending) return;
+	function fieldDraftFromAuthoringRecord(record: AuthoringFieldRecord): FieldDraft {
+		return {
+			key: record.id,
+			recipientId: record.recipientId,
+			documentId: record.documentId,
+			fieldType: record.fieldType,
+			label: record.label,
+			required: record.required,
+			position: record.position,
+			geometry: record.geometry
+		};
+	}
+
+	function publishableFieldDrafts(): FieldDraft[] {
+		return fieldDrafts.filter(
+			(draftItem) => draftItem.documentId !== null && draftItem.geometry !== null
+		);
+	}
+
+	/**
+	 * The dedicated authoring read of the complete current field set,
+	 * including labels the public detail projection omits. Only once this
+	 * hydrates and is confirmed to match the envelope's current revision does
+	 * editing (adding, moving, or removing a field) unlock - a failed or
+	 * stale read keeps controls locked with retry guidance rather than risking
+	 * a later replace-all that silently drops something never seen.
+	 */
+	async function hydrateAuthoringFields(): Promise<void> {
+		if (envelope === null || envelope.status !== 'ready') {
+			authoringFieldsHydrated = false;
+			authoringFieldsError = null;
+			if (!fieldDraftsDirty) {
+				fieldDrafts = [];
+			}
+			return;
+		}
+		authoringFieldsLoading = true;
+		authoringFieldsError = null;
+		try {
+			const response = await client.authoringFields(envelopeId);
+			const parsed = parseAuthoringFieldsResponse(response);
+			const records =
+				parsed === null
+					? null
+					: acceptAuthoringFields(
+							parsed,
+							envelopeId,
+							{
+								generation: envelope.repositoryGeneration,
+								fieldGeneration: envelope.fieldGeneration,
+								commitSha: envelope.repositoryHead
+							},
+							placedFields,
+							{
+								recipientIds: new Set(readyRecipients.map((recipient) => recipient.id)),
+								documentIds: new Set(
+									(draft?.documentSet?.documents ?? []).map((document) => document.id)
+								)
+							}
+						);
+			if (records === null) {
+				authoringFieldsHydrated = false;
+				authoringFieldsError = m.envelope_fields_hydrate_error();
+				return;
+			}
+			if (!fieldDraftsDirty) {
+				fieldDrafts = records.map(fieldDraftFromAuthoringRecord);
+			}
+			authoringFieldsHydrated = true;
+		} catch {
+			authoringFieldsHydrated = false;
+			authoringFieldsError = m.envelope_fields_hydrate_error();
+		} finally {
+			authoringFieldsLoading = false;
+		}
+	}
+
+	async function commitChanges(): Promise<boolean> {
+		if (authRequired || loadError !== null) return false;
+		if (draft === null || dirtyPaths.size === 0) return true;
+		if (commitPending) return false;
 		commitPending = true;
 		commitError = null;
 		try {
@@ -860,28 +1000,64 @@
 			dirtyPaths.clear();
 			documentPages = invalidateDocumentPageMap();
 			await load();
+			if (authRequired || loadError !== null) {
+				commitError = loadError ?? m.envelope_documents_save_failed();
+				return false;
+			}
+			return true;
 		} catch (cause) {
 			commitError =
-				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_commit_unavailable();
+				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_documents_save_failed();
+			return false;
 		} finally {
 			commitPending = false;
 		}
 	}
 
 	function addRecipientDraft(): void {
-		recipientDrafts = [
-			...recipientDrafts,
-			{
-				key: crypto.randomUUID(),
-				email: '',
-				name: '',
-				role: 'signer',
-				locale: getLocale() === 'ja' ? 'ja' : 'en',
-				routingOrder: recipientDrafts.length + 1,
-				savedContact: null,
-				contactSaveAttempt: createContactMutationAttempt()
-			}
-		];
+		if (documentMutationPending) return;
+		recipientDrafts = [...recipientDrafts, newRecipientDraftRow()];
+	}
+
+	function newRecipientDraftRow(): RecipientDraft {
+		const key = crypto.randomUUID();
+		const row = { key } as RecipientDraft;
+		row.email = '';
+		row.name = '';
+		row.role = 'signer';
+		row.locale = getLocale() === 'ja' ? 'ja' : 'en';
+		row.routingOrder = recipientDrafts.length + 1;
+		row.savedContact = null;
+		row.contactSaveAttempt = createContactMutationAttempt();
+		return row;
+	}
+
+	function seedRecipientDraftsFromReady(): void {
+		if (recipientDraftsInitialized) return;
+		recipientDrafts = readyRecipients.map((recipient) => ({
+			key: recipient.id,
+			email: recipient.email,
+			name: recipient.name,
+			role: recipient.role,
+			locale: recipient.locale,
+			routingOrder: recipient.routingOrder,
+			savedContact: null,
+			contactSaveAttempt: createContactMutationAttempt()
+		}));
+		recipientDraftsBaseline = recipientDraftSignature();
+		recipientDraftsInitialized = true;
+	}
+
+	function recipientDraftSignature(): string {
+		return JSON.stringify(
+			recipientDrafts.map(({ email, name, role, locale, routingOrder }) => ({
+				email,
+				name,
+				role,
+				locale,
+				routingOrder
+			}))
+		);
 	}
 
 	function removeRecipientDraft(key: string): void {
@@ -953,14 +1129,24 @@
 	 * directly to move focus to the first invalid field instead of silently
 	 * doing nothing.
 	 */
-	function attemptMarkReady(): void {
+	async function attemptMarkReady(): Promise<void> {
+		if (documentMutationPending) return;
+		if (envelope?.status === 'ready') {
+			await continueFromRecipients();
+			return;
+		}
+		if (envelope?.status !== 'draft') return;
+		if (recipientDrafts.length === 0) {
+			addRecipientDraft();
+			await tick();
+		}
 		recipientValidationAttempted = true;
 		const invalidField = firstInvalidRecipientField();
 		if (invalidField !== undefined) {
 			focusRecipientField(invalidField);
 			return;
 		}
-		void markReady();
+		await continueFromRecipients();
 	}
 
 	function handleRecipientRowKeydown(event: KeyboardEvent): void {
@@ -1040,12 +1226,15 @@
 		}
 	}
 
-	async function markReady(): Promise<void> {
-		if (envelope === null || draft === null || readyPending) return;
-		if (recipientDrafts.length === 0 || recipientsHaveInvalidIdentity) return;
+	async function markReady(): Promise<boolean> {
+		if (envelope === null || draft === null || readyPending) return false;
+		if (recipientDrafts.length === 0 || recipientsHaveInvalidIdentity) return false;
 		readyPending = true;
 		readyError = null;
 		try {
+			// Tabs may bypass the document step's Next action. Never discard
+			// unsaved document edits in the ready command's subsequent reload.
+			if (!(await commitChanges())) return false;
 			const recipients: ReadyRecipientInput[] = recipientDrafts.map((draftItem) => ({
 				email: draftItem.email.trim(),
 				name: draftItem.name.trim(),
@@ -1059,13 +1248,24 @@
 			});
 			readyRecipients = result.ready.recipients;
 			readyAuditEventId = result.ready.auditEventId;
+			recipientDraftsBaseline = recipientDraftSignature();
 			await reloadAuthoringSurface();
+			return true;
 		} catch (cause) {
 			readyError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_ready_unavailable();
+			return false;
 		} finally {
 			readyPending = false;
 		}
+	}
+
+	async function continueFromRecipients(): Promise<void> {
+		if (envelope?.status === 'draft') {
+			const saved = await markReady();
+			if (!saved) return;
+		}
+		workspaceTab = tabAfterRecipients(signerRecipients().length > 0);
 	}
 
 	function signerRecipients(): readonly ReadyRecipientPublic[] {
@@ -1183,6 +1383,7 @@
 
 	function addFieldAt(page: number, x: number, y: number): void {
 		if (placementLocked) return;
+		fieldDraftsDirty = true;
 		const documentId = documentIdForPlacement();
 		if (newField.recipientId === '' || documentId === null) return;
 		const key = crypto.randomUUID();
@@ -1208,7 +1409,6 @@
 			}
 		];
 		selectedFieldKey = key;
-		selectedPublishedFieldId = null;
 		newField = { ...newField, label: '' };
 		announceGeometry(label, geometry);
 	}
@@ -1251,11 +1451,12 @@
 	}
 
 	function updateGeometry(key: string, next: FieldGeometry): void {
+		fieldDraftsDirty = true;
 		fieldDrafts = fieldDrafts.map((draftItem) =>
 			draftItem.key === key ? { ...draftItem, geometry: clampGeometry(next) } : draftItem
 		);
 		const updated = fieldDrafts.find((draftItem) => draftItem.key === key);
-		if (updated) announceGeometry(updated.label, updated.geometry);
+		if (updated?.geometry) announceGeometry(updated.label, updated.geometry);
 	}
 
 	function geometryOf(key: string): FieldGeometry | null {
@@ -1269,33 +1470,21 @@
 		editable: boolean;
 	}
 
-	/**
-	 * Backs the Page/Left/Top/Width/Height FieldSet. Resolves to whichever of
-	 * the two mutually exclusive selections (a mutable draft, or a read-only
-	 * persisted field) is active, so the panel has one source regardless of
-	 * which kind of box the operator focused.
-	 */
+	/** Backs the Page/Left/Top/Width/Height FieldSet for the currently focused box. */
 	const selectedFieldPanel = $derived.by((): SelectedFieldGeometryPanel | null => {
 		const activeDocumentId = documentIdForPlacement();
 		if (selectedFieldKey !== null) {
 			const draftItem = fieldDrafts.find((item) => item.key === selectedFieldKey);
-			if (draftItem !== undefined && draftItem.documentId === activeDocumentId) {
+			if (
+				draftItem !== undefined &&
+				draftItem.documentId === activeDocumentId &&
+				draftItem.geometry !== null
+			) {
 				return {
 					key: draftItem.key,
 					label: draftItem.label,
 					geometry: draftItem.geometry,
-					editable: true
-				};
-			}
-		}
-		if (selectedPublishedFieldId !== null) {
-			const field = placedFields.find((item) => item.id === selectedPublishedFieldId);
-			if (field !== undefined && field.documentId === activeDocumentId && field.geometry !== null) {
-				return {
-					key: field.id,
-					label: fieldTypeLabel(field.fieldType),
-					geometry: field.geometry,
-					editable: false
+					editable: !placementLocked
 				};
 			}
 		}
@@ -1319,11 +1508,6 @@
 		updateSelectedGeometry({ [field]: percent / 100 } as Partial<FieldGeometry>);
 	}
 
-	function togglePublishedFieldSelection(id: string): void {
-		selectedPublishedFieldId = selectedPublishedFieldId === id ? null : id;
-		selectedFieldKey = null;
-	}
-
 	function startDrag(event: PointerEvent, key: string, mode: 'move' | 'resize'): void {
 		const target = event.currentTarget as HTMLElement;
 		const page = target.closest('[data-pdf-page]');
@@ -1335,7 +1519,6 @@
 		event.stopPropagation();
 		target.setPointerCapture(event.pointerId);
 		selectedFieldKey = key;
-		selectedPublishedFieldId = null;
 		dragState = {
 			key,
 			mode,
@@ -1405,37 +1588,65 @@
 	}
 
 	function removeFieldDraft(key: string): void {
+		fieldDraftsDirty = true;
 		fieldDrafts = fieldDrafts
 			.filter((draftItem) => draftItem.key !== key)
 			.map((draftItem, index) => ({ ...draftItem, position: index + 1 }));
 		if (selectedFieldKey === key) selectedFieldKey = null;
 	}
 
-	async function publishFields(): Promise<void> {
-		if (placementLocked) return;
-		if (envelope === null || draft === null || fieldDrafts.length === 0 || placementPending) return;
+	async function publishFields(): Promise<boolean> {
+		if (placementLocked) return false;
+		if (envelope === null || draft === null || placementPending) return false;
+		const completeDrafts = publishableFieldDrafts();
+		if (fieldDrafts.length === 0) {
+			placementError = m.envelope_fields_removed_all_warning();
+			return false;
+		}
+		if (completeDrafts.length === 0 || completeDrafts.length !== fieldDrafts.length) {
+			placementError = m.envelope_fields_incomplete_geometry();
+			return false;
+		}
 		placementPending = true;
 		placementError = null;
+		fieldsPublishedMessage = null;
+		const payload = {
+			expectedGeneration: draft.generation,
+			expectedFieldGeneration: envelope.fieldGeneration,
+			fields: completeDrafts.map((draftItem) => ({
+				recipientId: draftItem.recipientId,
+				documentId: draftItem.documentId as string,
+				fieldType: draftItem.fieldType,
+				label: draftItem.label,
+				required: draftItem.required,
+				position: draftItem.position,
+				geometry: draftItem.geometry as FieldGeometry
+			}))
+		};
+		const signature = JSON.stringify(payload);
+		if (fieldsPublishAttemptSignature !== signature) {
+			fieldsPublishAttempt.invalidate();
+			fieldsPublishAttemptSignature = signature;
+		}
 		try {
-			const result = await client.placeFields(envelopeId, {
-				expectedGeneration: draft.generation,
-				expectedFieldGeneration: envelope.fieldGeneration,
-				fields: fieldDrafts.map((draftItem) => ({
-					recipientId: draftItem.recipientId,
-					documentId: draftItem.documentId,
-					fieldType: draftItem.fieldType,
-					label: draftItem.label,
-					required: draftItem.required,
-					position: draftItem.position,
-					geometry: draftItem.geometry
-				}))
+			const result = await client.placeFields(envelopeId, payload, {
+				idempotencyKey: fieldsPublishAttempt.key()
 			});
-			placedFields = result.fields.fields;
+			fieldsPublishAttempt.succeeded();
+			fieldsPublishAttemptSignature = null;
 			envelope = { ...envelope, fieldGeneration: result.fields.fieldGeneration };
-			fieldDrafts = [];
+			placedFields = result.fields.fields;
+			fieldDraftsDirty = false;
+			fieldsPublishedMessage = m.envelope_fields_published({
+				count: String(completeDrafts.length)
+			});
+			await hydrateAuthoringFields();
+			return true;
 		} catch (cause) {
+			fieldsPublishAttempt.failed(cause);
 			placementError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_fields_unavailable();
+			return false;
 		} finally {
 			placementPending = false;
 		}
@@ -1443,6 +1654,10 @@
 
 	async function sendEnvelope(): Promise<void> {
 		if (envelope === null || draft === null || sendPending) return;
+		if (currentSendBlock !== null) {
+			sendError = sendBlockMessage(currentSendBlock);
+			return;
+		}
 		if (readyAuditEventId === null) {
 			sendError = m.envelope_send_missing_ready_audit();
 			return;
@@ -1454,7 +1669,6 @@
 				expectedGeneration: draft.generation,
 				expectedReadyAuditEventId: readyAuditEventId
 			});
-			sendDialogOpen = false;
 			await reloadAuthoringSurface();
 		} catch (cause) {
 			sendError = cause instanceof EnvelopesApiError ? cause.detail : m.envelope_send_unavailable();
@@ -1464,7 +1678,7 @@
 	}
 
 	async function importDocx(file: File | null): Promise<void> {
-		if (file === null || draft === null || importPending) return;
+		if (file === null || draft === null || documentMutationPending) return;
 		const sourceName = file.name.replace(/\.docx$/i, '');
 		const slug = sourceName
 			.trim()
@@ -1475,6 +1689,7 @@
 		importPending = true;
 		importError = null;
 		try {
+			if (!(await commitChanges())) return;
 			await client.importDocx(envelopeId, {
 				expectedGeneration: draft.generation,
 				targetPath,
@@ -1593,10 +1808,11 @@
 	}
 
 	async function uploadPdf(file: File | null): Promise<void> {
-		if (file === null || draft === null || pdfUploadPending) return;
+		if (file === null || draft === null || documentMutationPending) return;
 		pdfUploadPending = true;
 		pdfUploadError = null;
 		try {
+			if (!(await commitChanges())) return;
 			await client.uploadPdf(envelopeId, {
 				expectedGeneration: draft.generation,
 				file,
@@ -1611,19 +1827,26 @@
 		}
 	}
 
-	async function persistDocumentOrder(documentIds: readonly string[]): Promise<void> {
-		if (draft === null || documentOrderPending) return;
+	async function persistDocumentOrder(documentIds: readonly string[]): Promise<boolean> {
+		if (draft === null || documentMutationPending) return false;
+		const previousDocumentIds = new Set(committedDocumentIds());
 		documentOrderPending = true;
 		documentOrderError = null;
 		try {
+			if (!(await commitChanges())) return false;
+			// Saving a pending text document can add a new manifest member.
+			// Preserve it, without restoring documents intentionally removed.
+			const addedDocumentIds = committedDocumentIds().filter((id) => !previousDocumentIds.has(id));
 			await client.orderDocuments(envelopeId, {
 				expectedGeneration: draft.generation,
-				documentIds
+				documentIds: [...documentIds, ...addedDocumentIds]
 			});
 			await reloadAuthoringSurface();
+			return true;
 		} catch (cause) {
 			documentOrderError =
 				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_document_order_unavailable();
+			return false;
 		} finally {
 			documentOrderPending = false;
 		}
@@ -1656,7 +1879,7 @@
 		const removedId = removeDocumentId;
 		removeDocumentId = null;
 		removeDialogOpen = false;
-		await persistDocumentOrder(remaining);
+		if (!(await persistDocumentOrder(remaining))) return;
 		if (activeDocumentKey === `set:${removedId}`) {
 			activeDocumentKey = remaining[0] !== undefined ? `set:${remaining[0]}` : null;
 			activeDocPath = null;
@@ -1689,6 +1912,73 @@
 			voidError = cause instanceof EnvelopesApiError ? cause.detail : m.envelope_void_unavailable();
 		} finally {
 			voidPending = false;
+		}
+	}
+
+	function reopenErrorMessage(cause: unknown): string {
+		if (!(cause instanceof EnvelopesApiError)) return m.envelope_reopen_unavailable();
+		if (
+			cause.status === 409 ||
+			cause.type === 'urn:signkit:problem:draft-generation-conflict' ||
+			cause.type === 'urn:signkit:problem:field-generation-conflict'
+		) {
+			return m.envelope_reopen_conflict();
+		}
+		if (
+			cause.type === 'urn:signkit:problem:envelope-not-ready' ||
+			cause.type === 'urn:signkit:problem:envelope-reopen-not-eligible' ||
+			cause.status === 404
+		) {
+			return m.envelope_reopen_not_eligible();
+		}
+		return cause.detail || m.envelope_reopen_unavailable();
+	}
+
+	function openReopenDialog(targetTab: AuthoringTab | null = null): void {
+		if (envelope?.status !== 'ready' || reopenPending) return;
+		reopenError = null;
+		reopenTargetTab = targetTab;
+		reopenDialogOpen = true;
+	}
+
+	async function confirmReopen(): Promise<void> {
+		if (envelope === null || draft === null || readyAuditEventId === null || reopenPending) return;
+		const payload = {
+			expectedGeneration: draft.generation,
+			expectedFieldGeneration: envelope.fieldGeneration,
+			expectedReadyAuditEventId: readyAuditEventId
+		};
+		const signature = JSON.stringify(payload);
+		if (reopenAttemptSignature !== signature) {
+			reopenAttempt.invalidate();
+			reopenAttemptSignature = signature;
+		}
+		reopenPending = true;
+		reopenError = null;
+		try {
+			await client.reopenEnvelope(envelopeId, payload, {
+				idempotencyKey: reopenAttempt.key()
+			});
+			reopenAttempt.succeeded();
+			reopenAttemptSignature = null;
+			reopenDialogOpen = false;
+			fieldDrafts = [];
+			fieldDraftsDirty = false;
+			fieldsPublishedMessage = null;
+			authoringFieldsHydrated = false;
+			selectedFieldKey = null;
+			recipientDrafts = [];
+			recipientDraftsInitialized = false;
+			const nextTab = reopenTargetTab;
+			reopenTargetTab = null;
+			await reloadAuthoringSurface();
+			seedRecipientDraftsFromReady();
+			if (nextTab !== null) workspaceTab = nextTab;
+		} catch (cause) {
+			reopenAttempt.failed(cause);
+			reopenError = reopenErrorMessage(cause);
+		} finally {
+			reopenPending = false;
 		}
 	}
 
@@ -1800,19 +2090,137 @@
 		);
 	}
 
-	function publishedOnPage(page: number): readonly PublicEnvelopeFieldResponse[] {
-		const documentId = documentIdForPlacement();
-		return placedFields.filter(
-			(field) => field.documentId === documentId && field.geometry?.page === page
-		);
-	}
-
 	function recipientName(recipientId: string): string {
 		return readyRecipients.find((recipient) => recipient.id === recipientId)?.name ?? recipientId;
 	}
 
+	const hasAuthoringDocuments = $derived(
+		(draft?.documentSet?.documents.length ?? 0) > 0 || Object.keys(editedContent).length > 0
+	);
+	const hasUnsavedRecipients = $derived(
+		envelope?.status === 'draft' &&
+			recipientDraftsInitialized &&
+			recipientDraftSignature() !== recipientDraftsBaseline
+	);
+	const hasUnsavedAuthoringWork = $derived(
+		dirtyPaths.size > 0 || fieldDraftsDirty || hasUnsavedRecipients
+	);
+	const missingSignerIds = $derived(
+		signersMissingPlacements(signerRecipients(), publishableFieldDrafts())
+	);
+	const hasIncompleteGeometry = $derived(
+		fieldDrafts.some((draftItem) => draftItem.documentId === null || draftItem.geometry === null)
+	);
+	const currentSendBlock = $derived(
+		sendBlockReason({
+			status: envelope?.status,
+			hasUnsavedDocuments: dirtyPaths.size > 0,
+			hasUnsavedFields: fieldDraftsDirty,
+			fieldsHydrated: authoringFieldsHydrated,
+			hasSigners: signerRecipients().length > 0,
+			missingSignerIds
+		})
+	);
+	const showAuthoringGuide = $derived(isAuthoringStatus(envelope?.status));
+
+	function workflowStepLabel(tab: AuthoringTab): string {
+		switch (tab) {
+			case 'documents':
+				return m.envelope_tab_documents();
+			case 'recipients':
+				return m.envelope_tab_recipients();
+			case 'fields':
+				return m.envelope_tab_fields();
+			case 'send':
+				return m.envelope_review_title();
+		}
+	}
+
+	function nextActionLabel(): string {
+		if (workspaceTab === 'documents') return m.envelope_workflow_next_recipients();
+		if (workspaceTab === 'recipients') {
+			return signerRecipients().length > 0 ||
+				recipientDrafts.some((draftItem) => draftItem.role === 'signer')
+				? m.envelope_mark_ready()
+				: m.envelope_workflow_next_review_approvals();
+		}
+		if (workspaceTab === 'fields') return m.envelope_workflow_next_review();
+		return m.envelope_workflow_next_review();
+	}
+
+	function sendBlockMessage(reason: SendBlockReason): string | null {
+		switch (reason) {
+			case 'not-ready':
+				return m.envelope_send_requires_ready();
+			case 'unsaved-documents':
+				return m.envelope_send_blocked_unsaved_documents();
+			case 'unsaved-fields':
+				return m.envelope_send_blocked_unsaved_fields();
+			case 'hydration-locked':
+				return m.envelope_send_blocked_hydration();
+			case 'missing-placement':
+				return m.envelope_send_blocked_missing_placement();
+			default:
+				return null;
+		}
+	}
+
+	async function goNextAuthoringStep(): Promise<void> {
+		if (workspaceTab === 'documents') {
+			if (!hasAuthoringDocuments) {
+				commitError = m.envelope_documents_need_document();
+				return;
+			}
+			const saved = await commitChanges();
+			if (!saved) return;
+			workspaceTab = 'recipients';
+			return;
+		}
+		if (workspaceTab === 'recipients') {
+			await continueFromRecipients();
+			return;
+		}
+		if (workspaceTab === 'fields') {
+			if (signerRecipients().length === 0) {
+				workspaceTab = 'send';
+				return;
+			}
+			if (!authoringFieldsHydrated) return;
+			if (missingSignerIds.length > 0) {
+				placementError = m.envelope_review_placement_missing();
+				return;
+			}
+			if (fieldDraftsDirty) {
+				const published = await publishFields();
+				if (!published) return;
+			}
+			workspaceTab = 'send';
+		}
+	}
+
+	function goPreviousAuthoringStep(): void {
+		const previous = previousAuthoringTab(workspaceTab);
+		if (previous === null) return;
+		workspaceTab = previous;
+	}
+
 	onMount(() => {
+		const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+			if (!hasUnsavedAuthoringWork) return;
+			event.preventDefault();
+			event.returnValue = '';
+		};
+		window.addEventListener('beforeunload', onBeforeUnload);
 		void reloadAuthoringSurface();
+		return () => window.removeEventListener('beforeunload', onBeforeUnload);
+	});
+
+	beforeNavigate((navigation) => {
+		if (!hasUnsavedAuthoringWork) return;
+		// Full-page navigation already uses the native beforeunload guard.
+		if (navigation.willUnload) return;
+		if (typeof window === 'undefined') return;
+		if (!window.confirm(m.envelope_unsaved_leave())) navigation.cancel();
 	});
 
 	$effect(() => {
@@ -2241,14 +2649,46 @@
 		<section class="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
 			<div class="min-w-0">
 				<h1 class="truncate text-2xl font-semibold tracking-tight">{envelope.title}</h1>
-				<p class="mt-1 text-xs text-muted-foreground">
-					{m.envelope_generation_label({ generation: String(envelope.repositoryGeneration) })}
-				</p>
+				<Collapsible.Root class="mt-1">
+					<Collapsible.Trigger class="text-xs text-muted-foreground">
+						{m.envelope_advanced_details()}
+					</Collapsible.Trigger>
+					<Collapsible.Content>
+						<p class="mt-1 text-xs text-muted-foreground">
+							{m.envelope_generation_label({ generation: String(envelope.repositoryGeneration) })}
+						</p>
+					</Collapsible.Content>
+				</Collapsible.Root>
 			</div>
-			<Badge variant="secondary" class="w-fit">{statusLabel(envelope.status)}</Badge>
+			<div class="flex flex-wrap items-center gap-2">
+				<Badge variant="secondary" class="w-fit">{statusLabel(envelope.status)}</Badge>
+				{#if envelope.status === 'ready'}
+					<Button variant="outline" size="sm" onclick={() => openReopenDialog()}>
+						{m.envelope_reopen_action()}
+					</Button>
+				{/if}
+			</div>
 		</section>
 
-		<Tabs.Root value="documents" class="w-full min-w-0">
+		{#if showAuthoringGuide}
+			<p class="text-sm text-muted-foreground" aria-live="polite">
+				{m.envelope_workflow_step({
+					current: String(
+						workspaceTab === 'documents'
+							? 1
+							: workspaceTab === 'recipients'
+								? 2
+								: workspaceTab === 'fields'
+									? 3
+									: 4
+					),
+					total: '4',
+					name: workflowStepLabel(workspaceTab)
+				})}
+			</p>
+		{/if}
+
+		<Tabs.Root bind:value={workspaceTab} class="w-full min-w-0">
 			<Tabs.List class="w-full overflow-x-auto">
 				<Tabs.Trigger value="documents">{m.envelope_tab_documents()}</Tabs.Trigger>
 				<Tabs.Trigger value="recipients">{m.envelope_tab_recipients()}</Tabs.Trigger>
@@ -2259,14 +2699,14 @@
 			<Tabs.Content value="documents" class="flex flex-col gap-4">
 				{#if envelope.status === 'draft'}
 					<Card.Root>
-						<Card.Header class="flex-row items-center justify-between gap-3">
+						<Card.Header class="flex flex-wrap items-center justify-between gap-3">
 							<div class="min-w-0">
 								<Card.Title>{m.envelope_documents_title()}</Card.Title>
 								<Card.Description>{m.envelope_documents_description()}</Card.Description>
 							</div>
 							<Button
 								variant="outline"
-								disabled={importPending || pdfUploadPending || draft === null}
+								disabled={documentMutationPending || draft === null}
 								onclick={() => (addDocumentDialogOpen = true)}
 							>
 								{#if importPending || pdfUploadPending}
@@ -2356,7 +2796,7 @@
 												<Button
 													size="sm"
 													variant="ghost"
-													disabled={documentOrderPending || index === 0}
+													disabled={documentMutationPending || index === 0}
 													onclick={() => void moveCommittedDocument(entry.leaf.id, -1)}
 												>
 													<IconChevronUp />
@@ -2365,7 +2805,7 @@
 												<Button
 													size="sm"
 													variant="ghost"
-													disabled={documentOrderPending ||
+													disabled={documentMutationPending ||
 														index >= committedDocumentIds().length - 1}
 													onclick={() => void moveCommittedDocument(entry.leaf.id, 1)}
 												>
@@ -2375,7 +2815,7 @@
 												<Button
 													size="sm"
 													variant="ghost"
-													disabled={documentOrderPending || committedDocumentIds().length < 2}
+													disabled={documentMutationPending || committedDocumentIds().length < 2}
 													onclick={() => {
 														removeDocumentId = entry.leaf.id;
 														removeDialogOpen = true;
@@ -2398,6 +2838,21 @@
 									{/each}
 								</div>
 
+								{#if activeSavedDocument?.source === 'set' && (activeDocPath === null || !dirtyPaths.has(activeDocPath))}
+									{#key `${activeSavedDocument.leaf.id}:${draft?.generation ?? 0}`}
+										<PdfDocumentView
+											src={`/api/v1/envelopes/${envelopeId}/document-pdf?documentId=${encodeURIComponent(activeSavedDocument.leaf.id)}`}
+											label={activeSavedDocument.leaf.title}
+											expectedPageCount={activeSavedDocument.leaf.kind === 'pdf'
+												? activeSavedDocument.leaf.pageCount
+												: 1}
+											loadingLabel={m.signing_document_loading()}
+											errorTitle={m.signing_document_error_title()}
+											errorDescription={m.signing_document_error_description()}
+											openLabel={m.signing_document_open()}
+										/>
+									{/key}
+								{/if}
 								{#if activePdfLeaf !== null && activePdfLeaf.kind === 'pdf'}
 									<div class="rounded-2xl border p-4">
 										<div class="flex items-center gap-2">
@@ -2407,69 +2862,94 @@
 										<p class="mt-2 text-sm text-muted-foreground">
 											{m.envelope_pdf_pages_label({ count: String(activePdfLeaf.pageCount) })}
 										</p>
-										<p class="mt-1 font-mono text-xs text-muted-foreground">
-											{m.envelope_pdf_digest_label({
-												digest: `${activePdfLeaf.sha256.slice(0, 12)}…`
-											})}
-										</p>
+										<Collapsible.Root class="mt-1">
+											<Collapsible.Trigger class="text-xs text-muted-foreground">
+												{m.envelope_advanced_details()}
+											</Collapsible.Trigger>
+											<Collapsible.Content>
+												<p class="mt-1 font-mono text-xs text-muted-foreground">
+													{m.envelope_pdf_digest_label({
+														digest: `${activePdfLeaf.sha256.slice(0, 12)}…`
+													})}
+												</p>
+											</Collapsible.Content>
+										</Collapsible.Root>
 									</div>
 								{:else if activeDocPath !== null}
-									<div class="grid gap-4 lg:grid-cols-2">
-										<Field.Field>
-											<Field.FieldLabel for="doc-editor"
-												>{m.envelope_editor_label()}</Field.FieldLabel
-											>
-											<Textarea
-												id="doc-editor"
-												class="min-h-72 font-mono text-sm"
-												value={editedContent[activeDocPath]}
-												oninput={(event) =>
-													activeDocPath && updateContent(activeDocPath, event.currentTarget.value)}
-											/>
-										</Field.Field>
-										<div>
-											<div class="mb-2 flex items-center justify-between">
-												<span class="text-sm font-medium">{m.envelope_preview_label()}</span>
-												<div class="flex gap-1">
-													<Button
-														size="sm"
-														variant={previewMode === 'formatted' ? 'default' : 'ghost'}
-														onclick={() => (previewMode = 'formatted')}
+									<Collapsible.Root open={activeSavedDocument === undefined}>
+										<Collapsible.Trigger>
+											{#snippet child({ props })}
+												<Button {...props} variant="outline"
+													>{m.envelope_document_edit_text()}</Button
+												>
+											{/snippet}
+										</Collapsible.Trigger>
+										<Collapsible.Content class="pt-4">
+											<div class="grid gap-4 lg:grid-cols-2">
+												<Field.Field>
+													<Field.FieldLabel for="doc-editor"
+														>{m.envelope_editor_label()}</Field.FieldLabel
 													>
-														{m.signing_document_formatted_view()}
-													</Button>
-													<Button
-														size="sm"
-														variant={previewMode === 'source' ? 'default' : 'ghost'}
-														onclick={() => (previewMode = 'source')}
-													>
-														{m.signing_document_source_view()}
-													</Button>
+													<Textarea
+														id="doc-editor"
+														disabled={documentMutationPending}
+														class="min-h-72 font-mono text-sm"
+														value={editedContent[activeDocPath]}
+														oninput={(event) =>
+															activeDocPath &&
+															updateContent(activeDocPath, event.currentTarget.value)}
+													/>
+												</Field.Field>
+												<div>
+													<div class="mb-2 flex items-center justify-between">
+														<span class="text-sm font-medium">{m.envelope_preview_label()}</span>
+														<div class="flex gap-1">
+															<Button
+																size="sm"
+																variant={previewMode === 'formatted' ? 'default' : 'ghost'}
+																onclick={() => (previewMode = 'formatted')}
+															>
+																{m.signing_document_formatted_view()}
+															</Button>
+															<Button
+																size="sm"
+																variant={previewMode === 'source' ? 'default' : 'ghost'}
+																onclick={() => (previewMode = 'source')}
+															>
+																{m.signing_document_source_view()}
+															</Button>
+														</div>
+													</div>
+													<div class="min-h-72 rounded-2xl border p-4">
+														{#if previewMode === 'source'}
+															<pre
+																class="text-sm [overflow-wrap:anywhere] whitespace-pre-wrap">{editedContent[
+																	activeDocPath
+																]}</pre>
+														{:else if preview !== null}
+															<div
+																class="prose max-w-none prose-neutral dark:prose-invert"
+																dir="auto"
+															>
+																{#each preview.nodes as node, nodeIndex (nodeIndex)}
+																	{@render renderMarkdownNode(node)}
+																{/each}
+															</div>
+															<!-- Shown only when the document actually contains them, and
+													     shown here because this is where an author can still fix it. -->
+															{#if preview.hasVisibleUnicodeControls}
+																<p
+																	class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300"
+																>
+																	{m.envelope_document_unicode_warning()}
+																</p>
+															{/if}
+														{/if}
+													</div>
 												</div>
 											</div>
-											<div class="min-h-72 rounded-2xl border p-4">
-												{#if previewMode === 'source'}
-													<pre
-														class="text-sm [overflow-wrap:anywhere] whitespace-pre-wrap">{editedContent[
-															activeDocPath
-														]}</pre>
-												{:else if preview !== null}
-													<div class="prose max-w-none prose-neutral dark:prose-invert" dir="auto">
-														{#each preview.nodes as node, nodeIndex (nodeIndex)}
-															{@render renderMarkdownNode(node)}
-														{/each}
-													</div>
-													<!-- Shown only when the document actually contains them, and
-													     shown here because this is where an author can still fix it. -->
-													{#if preview.hasVisibleUnicodeControls}
-														<p class="mt-3 text-xs font-medium text-amber-700 dark:text-amber-300">
-															{m.envelope_document_unicode_warning()}
-														</p>
-													{/if}
-												{/if}
-											</div>
-										</div>
-									</div>
+										</Collapsible.Content>
+									</Collapsible.Root>
 								{/if}
 							{/if}
 
@@ -2530,7 +3010,11 @@
 								{/if}
 								{m.envelope_export_docx()}
 							</Button>
-							<Button disabled={dirtyPaths.size === 0 || commitPending} onclick={commitChanges}>
+							<Button
+								variant="outline"
+								disabled={dirtyPaths.size === 0 || documentMutationPending}
+								onclick={commitChanges}
+							>
 								{#if commitPending}<Spinner data-icon="inline-start" />{/if}
 								{m.envelope_commit_action({ count: String(dirtyPaths.size) })}
 							</Button>
@@ -2760,14 +3244,9 @@
 					</Alert.Root>
 				{/if}
 				<Card.Root>
-					<Card.Header class="flex-row items-center justify-between gap-3">
+					<Card.Header class="flex flex-wrap items-center justify-between gap-3">
 						<div class="min-w-0">
 							<Card.Title>{m.envelope_recipients_title()}</Card.Title>
-							<Card.Description>
-								{envelope.status === 'draft'
-									? m.envelope_recipients_description()
-									: m.envelope_recipients_description_locked()}
-							</Card.Description>
 						</div>
 						<Button variant="outline" onclick={() => (contactManagementOpen = true)}>
 							<IconAddressBook data-icon="inline-start" />{m.contacts_manage_action()}
@@ -2776,220 +3255,206 @@
 					<Card.Content class="flex flex-col gap-4">
 						{#if envelope.status === 'draft'}
 							<Field.FieldGroup>
-								<div class="overflow-x-auto">
-									<Table.Root>
-										<Table.Header>
-											<Table.Row>
-												<Table.Head>{m.contacts_search_results()}</Table.Head>
-												<Table.Head>{m.envelope_recipient_col_email()}</Table.Head>
-												<Table.Head>{m.envelope_recipient_col_name()}</Table.Head>
-												<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
-												<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
-												<Table.Head>{m.envelope_recipient_col_order()}</Table.Head>
-												<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
-											</Table.Row>
-										</Table.Header>
-										<Table.Body>
-											{#each recipientDrafts as draftItem (draftItem.key)}
-												<Table.Row>
-													<Table.Cell>
-														<Field.Field>
-															<Field.FieldTitle class="sr-only">
-																{m.contacts_choose_action()}
-															</Field.FieldTitle>
-															<ContactCombobox
-																label={m.contacts_choose_action()}
-																onSelect={(contact) =>
-																	applyContactToRecipient(draftItem.key, contact)}
-															/>
-														</Field.Field>
-													</Table.Cell>
-													<Table.Cell>
-														<Field.Field data-invalid={recipientEmailErrorVisible(draftItem)}>
-															<Field.FieldLabel
-																class="contents"
-																for={`recipient-email-${draftItem.key}`}
-															>
-																<span class="sr-only">{m.envelope_recipient_col_email()}</span>
-															</Field.FieldLabel>
-															<Input
-																id={`recipient-email-${draftItem.key}`}
-																type="email"
-																maxlength={320}
-																bind:value={draftItem.email}
-																aria-invalid={recipientEmailErrorVisible(draftItem)}
-																aria-describedby={recipientEmailErrorVisible(draftItem)
-																	? `recipient-email-error-${draftItem.key}`
-																	: undefined}
-																oninput={() => markRecipientContactChanged(draftItem)}
-																onblur={() => markRecipientEmailTouched(draftItem.key)}
-																onkeydown={handleRecipientRowKeydown}
-															/>
-															{#if recipientEmailErrorVisible(draftItem)}
-																<Field.FieldError id={`recipient-email-error-${draftItem.key}`}>
-																	{m.envelope_recipient_email_invalid()}
-																</Field.FieldError>
-															{/if}
-														</Field.Field>
-													</Table.Cell>
-													<Table.Cell>
-														<Field.Field data-invalid={recipientNameErrorVisible(draftItem)}>
-															<Field.FieldLabel
-																class="contents"
-																for={`recipient-name-${draftItem.key}`}
-															>
-																<span class="sr-only">{m.envelope_recipient_col_name()}</span>
-															</Field.FieldLabel>
-															<Input
-																id={`recipient-name-${draftItem.key}`}
-																maxlength={200}
-																bind:value={draftItem.name}
-																aria-invalid={recipientNameErrorVisible(draftItem)}
-																aria-describedby={recipientNameErrorVisible(draftItem)
-																	? `recipient-name-error-${draftItem.key}`
-																	: undefined}
-																oninput={() => markRecipientContactChanged(draftItem)}
-																onblur={() => markRecipientNameTouched(draftItem.key)}
-																onkeydown={handleRecipientRowKeydown}
-															/>
-															{#if recipientNameErrorVisible(draftItem)}
-																<Field.FieldError id={`recipient-name-error-${draftItem.key}`}>
-																	{m.envelope_recipient_name_required()}
-																</Field.FieldError>
-															{/if}
-														</Field.Field>
-													</Table.Cell>
-													<Table.Cell>
-														<Field.Field>
-															<Field.FieldLabel
-																class="contents"
-																for={`recipient-role-${draftItem.key}`}
-															>
-																<span class="sr-only">{m.envelope_recipient_col_role()}</span>
-															</Field.FieldLabel>
-															<Select.Root type="single" bind:value={draftItem.role}>
-																<Select.Trigger
-																	id={`recipient-role-${draftItem.key}`}
-																	class="w-full"
-																	aria-label={m.envelope_recipient_col_role()}
-																>
-																	{recipientRoleLabel(draftItem.role)}
-																</Select.Trigger>
-																<Select.Content>
-																	<Select.Group>
-																		<Select.Item value="signer" label={m.signing_role_signer()}>
-																			{m.signing_role_signer()}
-																		</Select.Item>
-																		<Select.Item value="approver" label={m.signing_role_approver()}>
-																			{m.signing_role_approver()}
-																		</Select.Item>
-																		<Select.Item value="viewer" label={m.signing_role_viewer()}>
-																			{m.signing_role_viewer()}
-																		</Select.Item>
-																		<Select.Item value="cc" label={m.envelope_role_cc()}>
-																			{m.envelope_role_cc()}
-																		</Select.Item>
-																	</Select.Group>
-																</Select.Content>
-															</Select.Root>
-														</Field.Field>
-													</Table.Cell>
-													<Table.Cell>
-														<Field.Field>
-															<Field.FieldLabel
-																class="contents"
-																for={`recipient-locale-${draftItem.key}`}
-															>
-																<span class="sr-only">{m.envelope_recipient_col_locale()}</span>
-															</Field.FieldLabel>
-															<Select.Root
-																type="single"
-																bind:value={draftItem.locale}
-																onValueChange={() => markRecipientContactChanged(draftItem)}
-															>
-																<Select.Trigger
-																	id={`recipient-locale-${draftItem.key}`}
-																	class="w-full"
-																	aria-label={m.envelope_recipient_col_locale()}
-																>
-																	{recipientLocaleLabel(draftItem.locale)}
-																</Select.Trigger>
-																<Select.Content>
-																	<Select.Group>
-																		<Select.Item value="en" label="English">English</Select.Item>
-																		<Select.Item value="ja" label="日本語">日本語</Select.Item>
-																	</Select.Group>
-																</Select.Content>
-															</Select.Root>
-														</Field.Field>
-													</Table.Cell>
-													<Table.Cell>
-														<Field.Field>
-															<Field.FieldLabel
-																class="contents"
-																for={`recipient-order-${draftItem.key}`}
-															>
-																<span class="sr-only">{m.envelope_recipient_col_order()}</span>
-															</Field.FieldLabel>
-															<Input
-																id={`recipient-order-${draftItem.key}`}
-																type="number"
-																min="1"
-																max="1000"
-																value={draftItem.routingOrder}
-																oninput={(event) => {
-																	const parsed = Number(event.currentTarget.value);
-																	if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
-																}}
-																class="w-20"
-															/>
-														</Field.Field>
-													</Table.Cell>
-													<Table.Cell>
-														<div class="flex items-center justify-end gap-1">
-															<Button
-																size="sm"
-																variant="outline"
-																disabled={contactSavePending[draftItem.key] ||
-																	!draftItem.email.trim() ||
-																	!draftItem.name.trim()}
-																onclick={() => void saveRecipientToContacts(draftItem)}
-															>
-																{#if contactSavePending[draftItem.key]}
-																	<Spinner data-icon="inline-start" />
-																{:else}
-																	<IconAddressBook data-icon="inline-start" />
-																{/if}
-																{contactSaveSucceeded[draftItem.key]
-																	? m.contacts_saved()
-																	: m.contacts_save_recipient_action()}
-															</Button>
-															<Button
-																size="icon"
-																variant="ghost"
-																aria-label={m.common_remove()}
-																onclick={() => removeRecipientDraft(draftItem.key)}
-															>
-																<IconTrash />
-															</Button>
-														</div>
-														{#if contactSaveError[draftItem.key]}
-															<p class="mt-1 text-xs text-destructive" role="alert">
-																{contactSaveError[draftItem.key]}
-															</p>
-														{/if}
-													</Table.Cell>
-												</Table.Row>
-											{/each}
-										</Table.Body>
-									</Table.Root>
-								</div>
-								<Button variant="outline" onclick={addRecipientDraft} class="w-fit">
+								{#each recipientDrafts as draftItem, index (draftItem.key)}
+									<Field.FieldSet disabled={documentMutationPending}>
+										<Field.FieldLegend variant="label"
+											>{m.envelope_recipient_legend({
+												number: String(index + 1)
+											})}</Field.FieldLegend
+										>
+										<Field.FieldGroup class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+											<Field.Field>
+												<Field.FieldTitle>
+													{m.contacts_choose_action()}
+												</Field.FieldTitle>
+												<ContactCombobox
+													label={m.contacts_choose_action()}
+													onSelect={(contact) => applyContactToRecipient(draftItem.key, contact)}
+												/>
+											</Field.Field>
+
+											<Field.Field data-invalid={recipientEmailErrorVisible(draftItem)}>
+												<Field.FieldLabel for={`recipient-email-${draftItem.key}`}>
+													{m.envelope_recipient_col_email()}
+												</Field.FieldLabel>
+												<Input
+													id={`recipient-email-${draftItem.key}`}
+													type="email"
+													maxlength={320}
+													bind:value={draftItem.email}
+													aria-invalid={recipientEmailErrorVisible(draftItem)}
+													aria-describedby={recipientEmailErrorVisible(draftItem)
+														? `recipient-email-error-${draftItem.key}`
+														: undefined}
+													oninput={() => markRecipientContactChanged(draftItem)}
+													onblur={() => markRecipientEmailTouched(draftItem.key)}
+													onkeydown={handleRecipientRowKeydown}
+												/>
+												{#if recipientEmailErrorVisible(draftItem)}
+													<Field.FieldError id={`recipient-email-error-${draftItem.key}`}>
+														{m.envelope_recipient_email_invalid()}
+													</Field.FieldError>
+												{/if}
+											</Field.Field>
+
+											<Field.Field data-invalid={recipientNameErrorVisible(draftItem)}>
+												<Field.FieldLabel for={`recipient-name-${draftItem.key}`}>
+													{m.envelope_recipient_col_name()}
+												</Field.FieldLabel>
+												<Input
+													id={`recipient-name-${draftItem.key}`}
+													maxlength={200}
+													bind:value={draftItem.name}
+													aria-invalid={recipientNameErrorVisible(draftItem)}
+													aria-describedby={recipientNameErrorVisible(draftItem)
+														? `recipient-name-error-${draftItem.key}`
+														: undefined}
+													oninput={() => markRecipientContactChanged(draftItem)}
+													onblur={() => markRecipientNameTouched(draftItem.key)}
+													onkeydown={handleRecipientRowKeydown}
+												/>
+												{#if recipientNameErrorVisible(draftItem)}
+													<Field.FieldError id={`recipient-name-error-${draftItem.key}`}>
+														{m.envelope_recipient_name_required()}
+													</Field.FieldError>
+												{/if}
+											</Field.Field>
+
+											<Field.Field>
+												<Field.FieldLabel for={`recipient-role-${draftItem.key}`}>
+													{m.envelope_recipient_col_role()}
+												</Field.FieldLabel>
+												<Select.Root type="single" bind:value={draftItem.role}>
+													<Select.Trigger
+														id={`recipient-role-${draftItem.key}`}
+														class="w-full"
+														aria-label={m.envelope_recipient_col_role()}
+													>
+														{recipientRoleLabel(draftItem.role)}
+													</Select.Trigger>
+													<Select.Content>
+														<Select.Group>
+															<Select.Item value="signer" label={m.signing_role_signer()}>
+																{m.signing_role_signer()}
+															</Select.Item>
+															<Select.Item value="approver" label={m.signing_role_approver()}>
+																{m.signing_role_approver()}
+															</Select.Item>
+															<Select.Item value="viewer" label={m.signing_role_viewer()}>
+																{m.signing_role_viewer()}
+															</Select.Item>
+															<Select.Item value="cc" label={m.envelope_role_cc()}>
+																{m.envelope_role_cc()}
+															</Select.Item>
+														</Select.Group>
+													</Select.Content>
+												</Select.Root>
+											</Field.Field>
+
+											<Field.Field>
+												<Field.FieldLabel for={`recipient-locale-${draftItem.key}`}>
+													{m.envelope_recipient_col_locale()}
+												</Field.FieldLabel>
+												<Select.Root
+													type="single"
+													bind:value={draftItem.locale}
+													onValueChange={() => markRecipientContactChanged(draftItem)}
+												>
+													<Select.Trigger
+														id={`recipient-locale-${draftItem.key}`}
+														class="w-full"
+														aria-label={m.envelope_recipient_col_locale()}
+													>
+														{recipientLocaleLabel(draftItem.locale)}
+													</Select.Trigger>
+													<Select.Content>
+														<Select.Group>
+															<Select.Item value="en" label="English">English</Select.Item>
+															<Select.Item value="ja" label="日本語">日本語</Select.Item>
+														</Select.Group>
+													</Select.Content>
+												</Select.Root>
+											</Field.Field>
+
+											<Field.Field>
+												<Field.FieldLabel for={`recipient-order-${draftItem.key}`}>
+													{m.envelope_recipient_col_order()}
+												</Field.FieldLabel>
+												<Input
+													id={`recipient-order-${draftItem.key}`}
+													type="number"
+													min="1"
+													max="1000"
+													value={draftItem.routingOrder}
+													oninput={(event) => {
+														const parsed = Number(event.currentTarget.value);
+														if (Number.isFinite(parsed)) draftItem.routingOrder = parsed;
+													}}
+													class="w-20"
+												/>
+											</Field.Field>
+
+											<div class="flex items-center justify-end gap-1">
+												<Button
+													size="sm"
+													variant="outline"
+													disabled={contactSavePending[draftItem.key] ||
+														!draftItem.email.trim() ||
+														!draftItem.name.trim()}
+													onclick={() => void saveRecipientToContacts(draftItem)}
+												>
+													{#if contactSavePending[draftItem.key]}
+														<Spinner data-icon="inline-start" />
+													{:else}
+														<IconAddressBook data-icon="inline-start" />
+													{/if}
+													{contactSaveSucceeded[draftItem.key]
+														? m.contacts_saved()
+														: m.contacts_save_recipient_action()}
+												</Button>
+												<Button
+													size="icon"
+													variant="ghost"
+													aria-label={m.common_remove()}
+													onclick={() => removeRecipientDraft(draftItem.key)}
+												>
+													<IconTrash />
+												</Button>
+											</div>
+											{#if contactSaveError[draftItem.key]}
+												<p class="mt-1 text-xs text-destructive" role="alert">
+													{contactSaveError[draftItem.key]}
+												</p>
+											{/if}
+										</Field.FieldGroup>
+									</Field.FieldSet>
+								{/each}
+
+								<Button
+									variant="outline"
+									onclick={addRecipientDraft}
+									class="w-fit"
+									disabled={documentMutationPending}
+								>
 									<IconPlus data-icon="inline-start" />{m.envelope_add_recipient()}
 								</Button>
 							</Field.FieldGroup>
 							{#if readyError}
 								<p class="text-sm font-medium text-destructive" role="alert">{readyError}</p>
+							{/if}
+							{#if commitError}
+								<Alert.Root variant="destructive">
+									<Alert.Description class="flex flex-col gap-2">
+										<p>{commitError}</p>
+										<Button
+											variant="outline"
+											class="w-fit"
+											onclick={() => (workspaceTab = 'documents')}
+										>
+											{m.envelope_review_edit_documents()}
+										</Button>
+									</Alert.Description>
+								</Alert.Root>
 							{/if}
 						{:else if readyRecipients.length > 0}
 							<div class="overflow-x-auto">
@@ -3047,19 +3512,6 @@
 							<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
 						{/if}
 					</Card.Content>
-					{#if envelope.status === 'draft'}
-						<Card.Footer class="justify-end border-t bg-muted/20 py-4">
-							<Button
-								disabled={recipientDrafts.length === 0 ||
-									readyPending ||
-									recipientsHaveInvalidIdentity}
-								onclick={attemptMarkReady}
-							>
-								{#if readyPending}<Spinner data-icon="inline-start" />{/if}
-								{m.envelope_mark_ready()}
-							</Button>
-						</Card.Footer>
-					{/if}
 				</Card.Root>
 				<ContactManagementDialog bind:open={contactManagementOpen} />
 				<AlertDialog.Root
@@ -3149,7 +3601,7 @@
 						</Card.Content>
 					</Card.Root>
 				{:else if signerRecipients().length === 0}
-					<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
+					<p class="text-sm text-muted-foreground">{m.envelope_fields_no_signers()}</p>
 				{:else if documentPages === null}
 					{#if documentPagesLoading}
 						<Skeleton class="h-64 w-full rounded-2xl" />
@@ -3172,10 +3624,25 @@
 							<Card.Description>{m.envelope_fields_description()}</Card.Description>
 						</Card.Header>
 						<Card.Content class="flex flex-col gap-4">
-							{#if placementLocked}
-								<p class="text-sm text-muted-foreground" role="status">
-									{m.envelope_fields_locked_notice()}
-								</p>
+							{#if authoringFieldsLoading}
+								<Skeleton class="h-24 w-full rounded-xl" />
+							{:else if authoringFieldsError}
+								<Alert.Root variant="destructive">
+									<IconAlertTriangle />
+									<Alert.Description class="flex flex-col gap-3">
+										<p>{authoringFieldsError}</p>
+										<div>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => void hydrateAuthoringFields()}
+											>
+												<IconRefresh data-icon="inline-start" />
+												{m.envelope_fields_hydrate_retry()}
+											</Button>
+										</div>
+									</Alert.Description>
+								</Alert.Root>
 							{:else}
 								<Field.FieldGroup class="grid gap-3 sm:grid-cols-2">
 									<Field.Field>
@@ -3243,6 +3710,24 @@
 								</Field.FieldGroup>
 							{/if}
 
+							{#if !placementLocked && hasIncompleteGeometry}
+								<Alert.Root>
+									<IconAlertTriangle />
+									<Alert.Description class="flex flex-col gap-3">
+										<p>{m.envelope_fields_incomplete_geometry()}</p>
+										<div>
+											<Button
+												variant="outline"
+												size="sm"
+												onclick={() => openReopenDialog('fields')}
+											>
+												{m.envelope_reopen_action()}
+											</Button>
+										</div>
+									</Alert.Description>
+								</Alert.Root>
+							{/if}
+
 							<div class="flex flex-col gap-3">
 								<div>
 									<p class="text-sm font-medium">{m.envelope_placement_title()}</p>
@@ -3299,7 +3784,6 @@
 													: 'outline'}
 												onclick={() => {
 													selectedFieldKey = null;
-													selectedPublishedFieldId = null;
 													keyboardAddPage = 1;
 													selectedPlacementDocumentId = document.documentId;
 													void loadDocumentPages();
@@ -3334,31 +3818,6 @@
 												aria-label={m.envelope_field_geometry_page_aria()}
 												onclick={(event) => handlePageClick(event, page.pageNumber)}
 											>
-												{#each publishedOnPage(page.pageNumber) as field (field.id)}
-													{#if field.geometry}
-														<button
-															type="button"
-															id={`field-box-${field.id}`}
-															aria-label={m.envelope_placement_box_label({
-																label: fieldTypeLabel(field.fieldType),
-																recipient: recipientName(field.recipientId),
-																page: String(field.geometry.page)
-															})}
-															aria-pressed={selectedPublishedFieldId === field.id}
-															class="absolute rounded border-2 border-dashed border-muted-foreground/60 bg-muted/40 text-[10px] text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-															class:ring-2={selectedPublishedFieldId === field.id}
-															style={`left:${field.geometry.x * 100}%;top:${field.geometry.y * 100}%;width:${field.geometry.width * 100}%;height:${field.geometry.height * 100}%;`}
-															onclick={(event) => {
-																event.stopPropagation();
-																togglePublishedFieldSelection(field.id);
-															}}
-														>
-															<span class="block truncate px-1">
-																{fieldTypeLabel(field.fieldType)}
-															</span>
-														</button>
-													{/if}
-												{/each}
 												{#each draftsOnPage(page.pageNumber) as fieldDraft (fieldDraft.key)}
 													{#if fieldDraft.geometry}
 														<button
@@ -3380,7 +3839,6 @@
 															onkeydown={(event) => handleFieldKeydown(event, fieldDraft.key)}
 															onfocus={() => {
 																selectedFieldKey = fieldDraft.key;
-																selectedPublishedFieldId = null;
 															}}
 															onclick={(event) => event.stopPropagation()}
 														>
@@ -3533,18 +3991,22 @@
 								</div>
 							{/if}
 
+							{#if fieldsPublishedMessage}
+								<p class="text-sm text-muted-foreground" role="status">{fieldsPublishedMessage}</p>
+							{/if}
 							{#if placementError}
 								<p class="text-sm font-medium text-destructive" role="alert">{placementError}</p>
 							{/if}
-							{#if placedFields.length > 0}
+							{#if !placementLocked && fieldDraftsDirty && fieldDrafts.length === 0}
 								<p class="text-sm text-muted-foreground">
-									{m.envelope_fields_published({ count: String(placedFields.length) })}
+									{m.envelope_fields_removed_all_warning()}
 								</p>
 							{/if}
 						</Card.Content>
 						{#if !placementLocked}
 							<Card.Footer class="justify-end border-t bg-muted/20 py-4">
 								<Button
+									variant="outline"
 									disabled={fieldDrafts.length === 0 || placementPending}
 									onclick={() => void publishFields()}
 								>
@@ -3558,111 +4020,214 @@
 			</Tabs.Content>
 
 			<Tabs.Content value="send" class="flex flex-col gap-4">
-				<Card.Root>
-					<Card.Header>
-						<Card.Title>{m.envelope_send_title()}</Card.Title>
-						<Card.Description>
-							{envelope.status === 'ready' || envelope.status === 'draft'
-								? m.envelope_send_description()
-								: m.envelope_send_status_description()}
-						</Card.Description>
-					</Card.Header>
-					<Card.Content class="flex flex-col gap-4">
-						{#if envelope.status === 'ready'}
+				{#if envelope.status === 'ready' || envelope.status === 'draft'}
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>{m.envelope_review_title()}</Card.Title>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-4">
+							<div class="flex flex-col gap-2">
+								<div class="flex flex-wrap items-center justify-between gap-2">
+									<p class="text-sm font-medium">{m.envelope_review_documents()}</p>
+									{#if envelope.status === 'ready'}
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => openReopenDialog('documents')}
+										>
+											{m.envelope_review_edit_documents()}
+										</Button>
+									{:else}
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => (workspaceTab = 'documents')}
+										>
+											{m.envelope_review_edit_documents()}
+										</Button>
+									{/if}
+								</div>
+								{#if authoringDocuments.length === 0}
+									<p class="text-sm text-muted-foreground">{m.envelope_documents_empty()}</p>
+								{:else}
+									<ul class="flex flex-col gap-1">
+										{#each authoringDocuments as document (document.key)}
+											<li class="text-sm">
+												{document.source === 'set'
+													? document.leaf.title
+													: documentTitle(document.path)}
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+							<div class="flex flex-col gap-2">
+								<div class="flex flex-wrap items-center justify-between gap-2">
+									<p class="text-sm font-medium">{m.envelope_review_recipients()}</p>
+									{#if envelope.status === 'ready'}
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => openReopenDialog('recipients')}
+										>
+											{m.envelope_review_edit_recipients()}
+										</Button>
+									{:else}
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => (workspaceTab = 'recipients')}
+										>
+											{m.envelope_review_edit_recipients()}
+										</Button>
+									{/if}
+								</div>
+								{#if envelope.status === 'draft' && recipientDrafts.length === 0}
+									<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
+								{:else if envelope.status === 'draft'}
+									<ul class="flex flex-col gap-2">
+										{#each recipientDrafts as person (person.key)}
+											<li class="flex flex-col text-sm">
+												<span>{person.name} · {person.email}</span>
+												<span class="text-muted-foreground">
+													{recipientRoleLabel(person.role)} · {m.envelope_review_language()}: {recipientLocaleLabel(
+														person.locale
+													)}
+												</span>
+											</li>
+										{/each}
+									</ul>
+								{:else if readyRecipients.length === 0}
+									<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
+								{:else}
+									<ul class="flex flex-col gap-2">
+										{#each readyRecipients as person (person.id)}
+											<li class="flex flex-col text-sm">
+												<span>{person.name} · {person.email}</span>
+												<span class="text-muted-foreground">
+													{recipientRoleLabel(person.role)} · {m.envelope_review_language()}: {recipientLocaleLabel(
+														person.locale
+													)}
+												</span>
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+							<div class="flex flex-col gap-2">
+								<div class="flex flex-wrap items-center justify-between gap-2">
+									<p class="text-sm font-medium">{m.envelope_review_placement()}</p>
+									{#if envelope.status === 'ready' && signerRecipients().length > 0}
+										<Button variant="outline" size="sm" onclick={() => (workspaceTab = 'fields')}>
+											{m.envelope_review_edit_placement()}
+										</Button>
+									{/if}
+								</div>
+								<p class="text-sm text-muted-foreground">
+									{envelope.status === 'draft'
+										? m.envelope_fields_requires_ready()
+										: signerRecipients().length === 0
+											? m.envelope_review_placement_approvals()
+											: missingSignerIds.length === 0 && authoringFieldsHydrated
+												? m.envelope_review_placement_ready()
+												: m.envelope_review_placement_missing()}
+								</p>
+							</div>
+						</Card.Content>
+						<Card.Footer class="flex-col items-stretch gap-3">
 							{#if sendError}
 								<p class="text-sm font-medium text-destructive" role="alert">{sendError}</p>
 							{/if}
-							<AlertDialog.Root bind:open={sendDialogOpen}>
-								<AlertDialog.Trigger>
-									{#snippet child({ props })}
-										<Button {...props} class="w-fit">
-											<IconSend data-icon="inline-start" />{m.envelope_send_action()}
-										</Button>
-									{/snippet}
-								</AlertDialog.Trigger>
-								<AlertDialog.Content>
-									<AlertDialog.Header>
-										<AlertDialog.Title>{m.envelope_send_dialog_title()}</AlertDialog.Title>
-										<AlertDialog.Description>
-											{m.envelope_send_dialog_description()}
-										</AlertDialog.Description>
-									</AlertDialog.Header>
-									<AlertDialog.Footer>
-										<AlertDialog.Cancel disabled={sendPending}
-											>{m.common_cancel()}</AlertDialog.Cancel
-										>
-										<AlertDialog.Action
-											disabled={sendPending}
-											onclick={async (event) => {
-												event.preventDefault();
-												await sendEnvelope();
-											}}
-										>
-											{#if sendPending}<Spinner data-icon="inline-start" />{/if}
-											{m.envelope_send_action()}
-										</AlertDialog.Action>
-									</AlertDialog.Footer>
-								</AlertDialog.Content>
-							</AlertDialog.Root>
-						{:else if envelope.status === 'draft'}
-							<p class="text-sm text-muted-foreground">{m.envelope_send_requires_ready()}</p>
-						{/if}
-
-						{#if delivery != null && delivery.deliveries.length > 0}
-							<div class="overflow-x-auto">
-								<Table.Root>
-									<Table.Header>
-										<Table.Row>
-											<Table.Head>{m.envelope_delivery_col_recipient()}</Table.Head>
-											<Table.Head>{m.envelope_delivery_col_role()}</Table.Head>
-											<Table.Head>{m.envelope_delivery_col_status()}</Table.Head>
-											<Table.Head>{m.envelope_delivery_col_signing_status()}</Table.Head>
-										</Table.Row>
-									</Table.Header>
-									<Table.Body>
-										{#each delivery.deliveries as item (item)}
-											{@const matched = recipientForDelivery(item.recipientId)}
+							{#if envelope.status === 'ready'}
+								{#if currentSendBlock !== null}
+									<p class="text-sm text-muted-foreground" role="status">
+										{sendBlockMessage(currentSendBlock)}
+									</p>
+								{/if}
+								<p class="text-sm text-muted-foreground">{m.envelope_send_description()}</p>
+								<Button
+									class="w-fit self-end"
+									disabled={sendPending || currentSendBlock !== null}
+									onclick={() => void sendEnvelope()}
+								>
+									{#if sendPending}<Spinner data-icon="inline-start" />{:else}<IconSend
+											data-icon="inline-start"
+										/>{/if}
+									{m.envelope_send_action()}
+								</Button>
+							{:else}
+								<Button class="w-fit self-end" onclick={() => (workspaceTab = 'recipients')}>
+									{m.envelope_workflow_next_recipients()}
+								</Button>
+							{/if}
+						</Card.Footer>
+					</Card.Root>
+				{/if}
+				{#if !showAuthoringGuide}
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>{m.envelope_send_title()}</Card.Title>
+							<Card.Description>
+								{m.envelope_send_status_description()}
+							</Card.Description>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-4">
+							{#if delivery != null && delivery.deliveries.length > 0}
+								<div class="overflow-x-auto">
+									<Table.Root>
+										<Table.Header>
 											<Table.Row>
-												<Table.Cell>
-													{#if matched}
-														<div class="flex flex-col">
-															<span>{matched.name}</span>
-															<span class="text-muted-foreground">{matched.email}</span>
-														</div>
-													{/if}
-												</Table.Cell>
-												<Table.Cell>
-													{recipientRoleLabel(matched?.role ?? item.recipientRole)}
-												</Table.Cell>
-												<Table.Cell>
-													<div class="flex flex-col gap-1">
-														<Badge variant="secondary" class="w-fit"
-															>{deliveryStateLabel(item.status)}</Badge
-														>
-														{#if item.deliveredAt}
-															<span class="text-xs text-muted-foreground">
-																{m.envelope_delivery_delivered_at({
-																	timestamp: formatDate(item.deliveredAt)
-																})}
-															</span>
-														{/if}
-													</div>
-												</Table.Cell>
-												<Table.Cell>
-													{#if matched}
-														<Badge variant="outline" class="w-fit"
-															>{recipientWorkflowStatusLabel(matched.status)}</Badge
-														>
-													{/if}
-												</Table.Cell>
+												<Table.Head>{m.envelope_delivery_col_recipient()}</Table.Head>
+												<Table.Head>{m.envelope_delivery_col_role()}</Table.Head>
+												<Table.Head>{m.envelope_delivery_col_status()}</Table.Head>
+												<Table.Head>{m.envelope_delivery_col_signing_status()}</Table.Head>
 											</Table.Row>
-										{/each}
-									</Table.Body>
-								</Table.Root>
-							</div>
-						{/if}
-					</Card.Content>
-				</Card.Root>
+										</Table.Header>
+										<Table.Body>
+											{#each delivery.deliveries as item (item)}
+												{@const matched = recipientForDelivery(item.recipientId)}
+												<Table.Row>
+													<Table.Cell>
+														{#if matched}
+															<div class="flex flex-col">
+																<span>{matched.name}</span>
+																<span class="text-muted-foreground">{matched.email}</span>
+															</div>
+														{/if}
+													</Table.Cell>
+													<Table.Cell>
+														{recipientRoleLabel(matched?.role ?? item.recipientRole)}
+													</Table.Cell>
+													<Table.Cell>
+														<div class="flex flex-col gap-1">
+															<Badge variant="secondary" class="w-fit"
+																>{deliveryStateLabel(item.status)}</Badge
+															>
+															{#if item.deliveredAt}
+																<span class="text-xs text-muted-foreground">
+																	{m.envelope_delivery_delivered_at({
+																		timestamp: formatDate(item.deliveredAt)
+																	})}
+																</span>
+															{/if}
+														</div>
+													</Table.Cell>
+													<Table.Cell>
+														{#if matched}
+															<Badge variant="outline" class="w-fit"
+																>{recipientWorkflowStatusLabel(matched.status)}</Badge
+															>
+														{/if}
+													</Table.Cell>
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</div>
+							{/if}
+						</Card.Content>
+					</Card.Root>
+				{/if}
 
 				{#if isVoidable}
 					<Card.Root class="border-destructive/30">
@@ -3712,5 +4277,59 @@
 				{/if}
 			</Tabs.Content>
 		</Tabs.Root>
+
+		{#if showAuthoringGuide}
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				<Button
+					variant="outline"
+					disabled={workspaceTab === 'documents' || documentMutationPending || placementPending}
+					onclick={goPreviousAuthoringStep}
+				>
+					<IconChevronLeft data-icon="inline-start" />
+					{m.envelope_workflow_back()}
+				</Button>
+				{#if workspaceTab !== 'send'}
+					<Button
+						disabled={documentMutationPending || placementPending}
+						onclick={workspaceTab === 'recipients'
+							? attemptMarkReady
+							: () => void goNextAuthoringStep()}
+					>
+						{#if commitPending || readyPending || placementPending}
+							<Spinner data-icon="inline-start" />
+						{/if}
+						{nextActionLabel()}
+						<IconChevronRight data-icon="inline-end" />
+					</Button>
+				{/if}
+			</div>
+		{/if}
+
+		<AlertDialog.Root bind:open={reopenDialogOpen}>
+			<AlertDialog.Content>
+				<AlertDialog.Header>
+					<AlertDialog.Title>{m.envelope_reopen_dialog_title()}</AlertDialog.Title>
+					<AlertDialog.Description>
+						{m.envelope_reopen_dialog_description()}
+					</AlertDialog.Description>
+				</AlertDialog.Header>
+				{#if reopenError}
+					<p class="text-sm font-medium text-destructive" role="alert">{reopenError}</p>
+				{/if}
+				<AlertDialog.Footer>
+					<AlertDialog.Cancel disabled={reopenPending}>{m.common_cancel()}</AlertDialog.Cancel>
+					<AlertDialog.Action
+						disabled={reopenPending}
+						onclick={(event) => {
+							event.preventDefault();
+							void confirmReopen();
+						}}
+					>
+						{#if reopenPending}<Spinner data-icon="inline-start" />{/if}
+						{m.envelope_reopen_dialog_confirm()}
+					</AlertDialog.Action>
+				</AlertDialog.Footer>
+			</AlertDialog.Content>
+		</AlertDialog.Root>
 	{/if}
 </div>
