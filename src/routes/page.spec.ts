@@ -7,7 +7,7 @@ import type {
 } from '$lib/application/dashboard/model';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
 import * as m from '$lib/paraglide/messages';
-import DashboardPage from './+page.svelte';
+import DashboardPage from './dashboard-page-tooltip-harness.svelte';
 
 const { BASE_URL } = vi.hoisted(() => ({ BASE_URL: 'https://signkit.example' }));
 

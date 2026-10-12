@@ -1,18 +1,20 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
+	import EyeIcon from '@lucide/svelte/icons/eye';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
-	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconFileText from '@tabler/icons-svelte/icons/file-text';
 	import * as Alert from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
+	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import * as Empty from '$lib/components/ui/empty';
 	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
 	import * as Table from '$lib/components/ui/table';
 	import { tabsListVariants } from '$lib/components/ui/tabs';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type {
 		DashboardCounts,
 		DashboardItem,
@@ -21,6 +23,7 @@
 	import type { EnvelopeStatus } from '$lib/domain/envelope';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale, localizeHref } from '$lib/paraglide/runtime';
+	import type { Component } from 'svelte';
 	import type { PageData } from './$types';
 
 	interface WorklistError {
@@ -85,14 +88,16 @@
 				: 'secondary';
 
 	// The status badge already names draft/ready/completed/declined/expired/
-	// voided -- this only ever adds a second line for the two *active*
-	// statuses, where there is real information the badge alone can't carry
-	// (whose turn it is, or how far along a multi-signer envelope is). It
-	// never implies a terminal envelope is still progressing, and never
-	// changes an envelope's real signing authority or where the row links to.
+	// voided, and the "action required" badge covers the caller's own turn --
+	// this only ever adds a second line for the two *active* statuses when
+	// no action is required, where there is real information neither badge
+	// alone can carry (whose turn it is, or how far along a multi-signer
+	// envelope is). It never implies a terminal envelope is still
+	// progressing, and never changes an envelope's real signing authority or
+	// where the row links to.
 	const secondaryStatusText = (item: DashboardItem): string | null => {
 		if (item.envelope.status !== 'sent' && item.envelope.status !== 'in_progress') return null;
-		if (item.actionRequired) return m.dashboard_row_action_required_label();
+		if (item.actionRequired) return null;
 		if (item.nextRecipient !== null) {
 			return m.dashboard_row_waiting_on({
 				name: item.nextRecipient.name || item.nextRecipient.email
@@ -116,7 +121,12 @@
 			? m.dashboard_row_action_continue()
 			: m.dashboard_row_action_open();
 
-	// A table full of identical "Open"/"Continue editing" links reads the
+	// Eye for a read-only open, Pencil for an editable draft/ready -- same
+	// draft/ready split the accessible name and tooltip text already use.
+	const rowActionIcon = (status: EnvelopeStatus): Component =>
+		status === 'draft' || status === 'ready' ? PencilIcon : EyeIcon;
+
+	// A table full of identical "Open"/"Edit" links reads the
 	// same to a screen reader; the accessible name must carry which
 	// agreement each one opens.
 	const rowActionAccessibleName = (item: DashboardItem): string =>
@@ -301,12 +311,17 @@
 					{#each data.worklist.items as item (item.envelope.id)}
 						<Table.Row>
 							<Table.Cell class="min-w-0 font-medium [overflow-wrap:anywhere] whitespace-normal">
-								<a
-									href={localizeHref(`/envelopes/${item.envelope.id}`)}
-									class="[overflow-wrap:anywhere] hover:underline"
-								>
-									{item.envelope.title}
-								</a>
+								<div class="flex flex-col gap-1">
+									<a
+										href={localizeHref(`/envelopes/${item.envelope.id}`)}
+										class="[overflow-wrap:anywhere] hover:underline"
+									>
+										{item.envelope.title}
+									</a>
+									{#if item.actionRequired}
+										<Badge class="w-fit">{m.dashboard_row_action_required_badge()}</Badge>
+									{/if}
+								</div>
 							</Table.Cell>
 							<Table.Cell class="min-w-0 [overflow-wrap:anywhere] whitespace-normal">
 								{#if item.recipient}
@@ -336,15 +351,22 @@
 								{formatDate(item.envelope.updatedAt)}
 							</Table.Cell>
 							<Table.Cell class="text-right">
-								<Button
-									href={localizeHref(`/envelopes/${item.envelope.id}`)}
-									variant="outline"
-									size="sm"
-									aria-label={rowActionAccessibleName(item)}
-								>
-									{rowActionLabel(item.envelope.status)}
-									<IconArrowRight data-icon="inline-end" />
-								</Button>
+								<Tooltip.Root>
+									<Tooltip.Trigger>
+										{#snippet child({ props })}
+											{@const Icon = rowActionIcon(item.envelope.status)}
+											<a
+												{...props}
+												href={localizeHref(`/envelopes/${item.envelope.id}`)}
+												aria-label={rowActionAccessibleName(item)}
+												class={buttonVariants({ variant: 'outline', size: 'icon' })}
+											>
+												<Icon />
+											</a>
+										{/snippet}
+									</Tooltip.Trigger>
+									<Tooltip.Content>{rowActionLabel(item.envelope.status)}</Tooltip.Content>
+								</Tooltip.Root>
 							</Table.Cell>
 						</Table.Row>
 					{/each}
@@ -357,12 +379,17 @@
 				{#each data.worklist.items as item (item.envelope.id)}
 					<li class="flex min-w-0 flex-col gap-3 p-4">
 						<div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
-							<a
-								href={localizeHref(`/envelopes/${item.envelope.id}`)}
-								class="min-w-0 flex-1 font-medium break-words hover:underline"
-							>
-								{item.envelope.title}
-							</a>
+							<div class="flex min-w-0 flex-1 flex-col gap-1">
+								<a
+									href={localizeHref(`/envelopes/${item.envelope.id}`)}
+									class="min-w-0 font-medium break-words hover:underline"
+								>
+									{item.envelope.title}
+								</a>
+								{#if item.actionRequired}
+									<Badge class="w-fit">{m.dashboard_row_action_required_badge()}</Badge>
+								{/if}
+							</div>
 							<Badge variant={statusVariant(item.envelope.status)} class="shrink-0">
 								{statusLabel(item.envelope.status)}
 							</Badge>
@@ -388,15 +415,22 @@
 							<span class="text-xs text-muted-foreground">
 								{formatDate(item.envelope.updatedAt)}
 							</span>
-							<Button
-								href={localizeHref(`/envelopes/${item.envelope.id}`)}
-								variant="outline"
-								size="sm"
-								aria-label={rowActionAccessibleName(item)}
-							>
-								{rowActionLabel(item.envelope.status)}
-								<IconArrowRight data-icon="inline-end" />
-							</Button>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									{#snippet child({ props })}
+										{@const Icon = rowActionIcon(item.envelope.status)}
+										<a
+											{...props}
+											href={localizeHref(`/envelopes/${item.envelope.id}`)}
+											aria-label={rowActionAccessibleName(item)}
+											class={buttonVariants({ variant: 'outline', size: 'icon', class: 'size-11' })}
+										>
+											<Icon />
+										</a>
+									{/snippet}
+								</Tooltip.Trigger>
+								<Tooltip.Content>{rowActionLabel(item.envelope.status)}</Tooltip.Content>
+							</Tooltip.Root>
 						</div>
 					</li>
 				{/each}

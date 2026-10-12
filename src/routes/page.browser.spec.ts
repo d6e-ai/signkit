@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from 'vitest-browser-svelte';
+import { render as renderComponent } from 'vitest-browser-svelte';
 import { page as browserPage, userEvent } from 'vitest/browser';
 import * as m from '$lib/paraglide/messages';
 import type {
@@ -8,6 +8,7 @@ import type {
 	DashboardQuery
 } from '$lib/application/dashboard/model';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
+import * as Tooltip from '$lib/components/ui/tooltip';
 import DashboardPage from './+page.svelte';
 import './layout.css';
 
@@ -29,6 +30,16 @@ vi.mock('$app/state', () => ({
 async function setMockedUrl(search: string): Promise<void> {
 	const { page: mockedPage } = await import('$app/state');
 	(mockedPage as { url: URL }).url = new URL(`${BASE_URL}/${search}`);
+}
+
+// The root layout wraps every real page in a single Tooltip.Provider; this
+// standalone component test renders `+page.svelte` directly, so it needs
+// the same provider as a faithful test harness, not a page-level change.
+function render(
+	...args: Parameters<typeof renderComponent<typeof DashboardPage>>
+): ReturnType<typeof renderComponent<typeof DashboardPage, typeof Tooltip.Provider>> {
+	const [Component, options] = args;
+	return renderComponent(Component, options, { wrapper: Tooltip.Provider });
 }
 
 function envelope(
@@ -326,10 +337,123 @@ describe('dashboard worklist page in browser', () => {
 		});
 
 		await expect
-			.element(screen.getByRole('link', { name: /Continue editing Unique Draft Title/ }))
+			.element(screen.getByRole('link', { name: /Edit Unique Draft Title/ }))
 			.toBeVisible();
 		await expect
 			.element(screen.getByRole('link', { name: /Open Unique Sent Title/ }))
+			.toBeVisible();
+	});
+
+	it('shows the "Action required" badge beneath the title only for rows where actionRequired is true', async () => {
+		const needsMe = envelope({
+			id: '01900000-0000-7000-8000-000000000050',
+			title: 'Needs my signature now',
+			status: 'sent'
+		});
+		const waitingOnOther = envelope({
+			id: '01900000-0000-7000-8000-000000000051',
+			title: 'Waiting on someone else',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						items: [
+							item({ envelope: needsMe, actionRequired: true }),
+							item({
+								envelope: waitingOnOther,
+								actionRequired: false,
+								nextRecipient: { name: 'Other Signer', email: 'other@example.com' }
+							})
+						]
+					})
+				})
+			}
+		});
+
+		const row = screen.container.querySelector('tr:has(a[href*="000050"])') as HTMLElement;
+		await expect
+			.element(screen.getByText(m.dashboard_row_action_required_badge()).first())
+			.toBeVisible();
+		expect(row?.textContent).toContain(m.dashboard_row_action_required_badge());
+		const titleCell = row.querySelector('td');
+		expect(titleCell?.querySelector('[data-slot="badge"]')?.textContent).toBe(
+			m.dashboard_row_action_required_badge()
+		);
+		expect(row.querySelectorAll('td')[2]?.textContent).not.toContain(
+			m.dashboard_row_action_required_badge()
+		);
+
+		const otherRow = screen.container.querySelector('tr:has(a[href*="000051"])') as HTMLElement;
+		expect(otherRow?.textContent).not.toContain(m.dashboard_row_action_required_badge());
+		await expect
+			.element(screen.getByText(m.dashboard_row_waiting_on({ name: 'Other Signer' })).first())
+			.toBeVisible();
+	});
+
+	it('gives each row action exactly one decorative icon and no visible "Open"/"Edit" text', async () => {
+		const draft = envelope({
+			id: '01900000-0000-7000-8000-000000000052',
+			title: 'Draft needing a pencil icon',
+			status: 'draft'
+		});
+		const sent = envelope({
+			id: '01900000-0000-7000-8000-000000000053',
+			title: 'Sent needing an eye icon',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({ items: [item({ envelope: draft }), item({ envelope: sent })] })
+				})
+			}
+		});
+
+		const continueAction = screen.getByRole('link', {
+			name: /Edit Draft needing a pencil icon/
+		});
+		const openAction = screen.getByRole('link', { name: /Open Sent needing an eye icon/ });
+		await expect.element(continueAction).toBeVisible();
+		await expect.element(openAction).toBeVisible();
+
+		expect(continueAction.element().textContent?.trim()).toBe('');
+		expect(openAction.element().textContent?.trim()).toBe('');
+
+		for (const action of [continueAction, openAction]) {
+			const icons = action.element().querySelectorAll('svg');
+			expect(icons.length).toBe(1);
+			expect(icons[0]?.getAttribute('aria-hidden')).toBe('true');
+		}
+
+		expect(screen.getByText(m.dashboard_row_action_continue(), { exact: true }).query()).toBeNull();
+		expect(screen.getByText(m.dashboard_row_action_open(), { exact: true }).query()).toBeNull();
+	});
+
+	it('reveals the row action tooltip on hover and keeps it reachable on keyboard focus', async () => {
+		const sent = envelope({
+			id: '01900000-0000-7000-8000-000000000054',
+			title: 'Tooltip target agreement',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklist: worklist({ items: [item({ envelope: sent })] }) }) }
+		});
+
+		const action = screen.getByRole('link', { name: /Open Tooltip target agreement/ });
+		await expect.element(action).toBeVisible();
+		expect(screen.getByText(m.dashboard_row_action_open(), { exact: true }).query()).toBeNull();
+
+		await userEvent.hover(action.element() as HTMLElement);
+		await expect
+			.element(screen.getByText(m.dashboard_row_action_open(), { exact: true }))
+			.toBeVisible();
+		await userEvent.unhover(action.element() as HTMLElement);
+
+		(action.element() as HTMLElement).focus();
+		await expect
+			.element(screen.getByText(m.dashboard_row_action_open(), { exact: true }))
 			.toBeVisible();
 	});
 
@@ -590,6 +714,37 @@ describe('dashboard worklist page in browser', () => {
 		const rect = mobileAction.getBoundingClientRect();
 		expect(rect.left).toBeGreaterThanOrEqual(0);
 		expect(rect.right).toBeLessThanOrEqual(390 + 1);
+		expect(rect.width).toBeGreaterThanOrEqual(44);
+		expect(rect.height).toBeGreaterThanOrEqual(44);
+	});
+
+	it('shows the Action required badge on the mobile card beneath the title at 390px', async () => {
+		await browserPage.viewport(390, 844);
+		const needsMe = envelope({
+			id: '01900000-0000-7000-8000-000000000055',
+			title: 'Mobile action required agreement',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({ items: [item({ envelope: needsMe, actionRequired: true })] })
+				})
+			}
+		});
+
+		const mobileList = screen.container.querySelector('ul');
+		expect(mobileList).not.toBeNull();
+		expect(mobileList!.textContent).toContain(m.dashboard_row_action_required_badge());
+		const badge = Array.from(mobileList!.querySelectorAll('[data-slot="badge"]')).find(
+			(el) => el.textContent === m.dashboard_row_action_required_badge()
+		);
+		expect(badge).toBeDefined();
+		const titleLink = mobileList!.querySelector('a');
+		expect(badge?.parentElement).toBe(titleLink?.parentElement);
+		expect(badge!.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+			titleLink!.getBoundingClientRect().bottom
+		);
 	});
 
 	it('keeps long Japanese title/recipient text within the 390px layout without horizontal scrolling', async () => {
