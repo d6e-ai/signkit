@@ -6,6 +6,7 @@ import type {
 	DashboardQuery
 } from '$lib/application/dashboard/model';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
+import * as m from '$lib/paraglide/messages';
 import DashboardPage from './+page.svelte';
 
 const { BASE_URL } = vi.hoisted(() => ({ BASE_URL: 'https://signkit.example' }));
@@ -285,7 +286,7 @@ describe('dashboard worklist page SSR', () => {
 				})
 			}
 		});
-		expect(body).toContain('link in the email sent to the recipient');
+		expect(body).toContain(m.dashboard_action_required_hint());
 	});
 
 	it('shows a first-page link only once a cursor is present in the query, alongside next-page', async () => {
