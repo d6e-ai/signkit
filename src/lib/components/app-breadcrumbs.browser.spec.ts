@@ -20,10 +20,10 @@ describe('app breadcrumbs on a settings child route', () => {
 		const screen = await render(AppBreadcrumbs);
 
 		await expect.element(screen.getByText('SignKit')).toBeVisible();
-		// The intermediate "Instance administration" crumb must be a Page
+		// The intermediate "Workspace management" crumb must be a Page
 		// (current-section label), never a link back to /settings, which is
 		// only a redirector and not a stable page.
-		const settingsCrumb = screen.getByText('Instance administration');
+		const settingsCrumb = screen.getByText('Workspace management');
 		await expect.element(settingsCrumb).toBeVisible();
 		expect(settingsCrumb.element().closest('a')).toBeNull();
 		expect(settingsCrumb.element().tagName.toLowerCase()).not.toBe('a');

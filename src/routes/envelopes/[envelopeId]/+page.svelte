@@ -2649,16 +2649,6 @@
 		<section class="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
 			<div class="min-w-0">
 				<h1 class="truncate text-2xl font-semibold tracking-tight">{envelope.title}</h1>
-				<Collapsible.Root class="mt-1">
-					<Collapsible.Trigger class="text-xs text-muted-foreground">
-						{m.envelope_advanced_details()}
-					</Collapsible.Trigger>
-					<Collapsible.Content>
-						<p class="mt-1 text-xs text-muted-foreground">
-							{m.envelope_generation_label({ generation: String(envelope.repositoryGeneration) })}
-						</p>
-					</Collapsible.Content>
-				</Collapsible.Root>
 			</div>
 			<div class="flex flex-wrap items-center gap-2">
 				<Badge variant="secondary" class="w-fit">{statusLabel(envelope.status)}</Badge>

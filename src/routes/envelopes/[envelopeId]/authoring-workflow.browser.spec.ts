@@ -235,6 +235,16 @@ function editableDraftFixture(
 }
 
 describe('guided sender workflow', () => {
+	it('shows the contract title without a technical disclosure beneath it', async () => {
+		const { mockFetch } = editableDraftFixture();
+		vi.stubGlobal('fetch', mockFetch);
+		const screen = await render(EnvelopePage);
+		const title = screen.getByRole('heading', { level: 1, name: 'Agreement' });
+
+		await expect.element(title).toBeVisible();
+		expect(title.element().parentElement?.textContent?.trim()).toBe('Agreement');
+	});
+
 	it('prevents recipient edits during a request and unlocks them after a failure', async () => {
 		let resumeReady: (() => void) | undefined;
 		const pauseReady = new Promise<void>((resolve) => {

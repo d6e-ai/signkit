@@ -294,11 +294,9 @@ describe('envelope authoring page remounts durable send state', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
-		await expect
-			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
-			.toBeVisible();
-		await screen.getByRole('button', { name: 'Advanced details' }).click();
-		await expect.element(screen.getByText('Revision 1')).toBeVisible();
+		const title = screen.getByRole('heading', { name: 'Agreement', level: 1 }).first();
+		await expect.element(title).toBeVisible();
+		expect(title.element().parentElement?.textContent?.trim()).toBe('Agreement');
 		await screen.getByRole('tab', { name: 'Recipients' }).click();
 		const recipientsPanel = screen.getByRole('tabpanel', { name: 'Recipients' });
 		await expect.element(recipientsPanel.getByText('Language')).toBeVisible();
