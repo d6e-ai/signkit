@@ -8,6 +8,7 @@ import { isSettingsSurfacePath } from '$lib/navigation/settings-surface';
 import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
 import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
 import { localizeHref } from '$lib/paraglide/runtime';
+import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 
 /**
  * Central page-access gate for every non-recipient browser page.
@@ -51,6 +52,7 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 
 	const email: string = locals.principal.email;
 	const name: string = locals.principal.name;
+	const callerId: string = locals.principal.subject;
 
 	let application: InstanceApplicationPort | null;
 	try {
@@ -71,7 +73,9 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 
 	let context: InstanceCallerContext;
 	try {
-		context = await application.getCurrentMember({ id: locals.principal.subject });
+		context = await getRequestCallerContext(locals, callerId, () =>
+			application.getCurrentMember({ id: callerId })
+		);
 	} catch {
 		error(503, 'Instance membership could not be resolved.');
 	}

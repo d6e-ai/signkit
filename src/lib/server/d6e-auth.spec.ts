@@ -5,8 +5,22 @@ const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
 import { authorizeUrl, D6eAuthRejectedError, refresh, verifyAccessToken } from './d6e-auth';
+import { mockFetchRouter } from './d6e-auth-jwks-test-support';
 
-const BASE_URL: string = 'https://auth.example';
+let baseUrlCounter: number = 0;
+
+/**
+ * A fresh, never-before-used origin. The module-global JWKS resolver cache in
+ * `d6e-auth.ts` is keyed by this URL, so giving every test (and every
+ * simulated configuration change within a test) its own origin keeps them
+ * from observing each other's cached resolvers.
+ */
+function nextBaseUrl(): string {
+	baseUrlCounter += 1;
+	return `https://auth-${baseUrlCounter}.example`;
+}
+
+let BASE_URL: string = nextBaseUrl();
 const CLIENT_ID: string = 'client-1';
 const KID: string = 'test-key';
 
@@ -20,6 +34,7 @@ beforeAll(async (): Promise<void> => {
 });
 
 beforeEach((): void => {
+	BASE_URL = nextBaseUrl();
 	privateEnv.D6E_AUTH_BASE_URL = BASE_URL;
 	privateEnv.D6E_AUTH_CLIENT_ID = CLIENT_ID;
 	privateEnv.D6E_AUTH_CLIENT_SECRET = 'secret';
@@ -181,6 +196,157 @@ describe('verifyAccessToken', () => {
 
 		const error: unknown = await verifyAccessToken(token).catch((caught: unknown) => caught);
 		expect(error).not.toBeInstanceOf(D6eAuthRejectedError);
+	});
+});
+
+describe('verifyAccessToken: remote JWKS resolver reuse', () => {
+	function jwksJson(keys: Record<string, unknown>[]): () => Response {
+		return () => new Response(JSON.stringify({ keys }), { status: 200 });
+	}
+
+	it('reuses the cached resolver across calls instead of refetching the JWKS every time', async () => {
+		const jwksUrl: string = `${BASE_URL}/.well-known/jwks.json`;
+		const calls = mockFetchRouter(new Map([[jwksUrl, jwksJson([publicJwk])]]));
+		const token: string = await signToken({ email: 'user@example.com' });
+
+		await verifyAccessToken(token);
+		await verifyAccessToken(token);
+
+		expect(calls.get(jwksUrl)).toBe(1);
+	});
+
+	it('fetches and verifies against an independent key set for a different configured JWKS URL, never sharing cached keys across origins', async () => {
+		const firstUrl: string = `${BASE_URL}/.well-known/jwks.json`;
+		const otherBaseUrl: string = nextBaseUrl();
+		const otherUrl: string = `${otherBaseUrl}/.well-known/jwks.json`;
+		const otherPair = await generateKeyPair('RS256', { extractable: true });
+		const otherJwk = {
+			...(await exportJWK(otherPair.publicKey)),
+			kid: KID,
+			alg: 'RS256',
+			use: 'sig'
+		};
+		const calls = mockFetchRouter(
+			new Map([
+				[firstUrl, jwksJson([publicJwk])],
+				[otherUrl, jwksJson([otherJwk])]
+			])
+		);
+
+		const tokenForFirst: string = await signToken({ email: 'user@example.com' });
+		await expect(verifyAccessToken(tokenForFirst)).resolves.toMatchObject({ subject: 'user-1' });
+
+		privateEnv.D6E_AUTH_BASE_URL = otherBaseUrl;
+		const tokenForOther: string = await signToken(
+			{ email: 'other@example.com' },
+			{ key: otherPair.privateKey }
+		);
+		await expect(verifyAccessToken(tokenForOther)).resolves.toMatchObject({
+			email: 'other@example.com'
+		});
+		expect(calls.get(firstUrl)).toBe(1);
+		expect(calls.get(otherUrl)).toBe(1);
+
+		// Switching back must reuse the first origin's untouched cache entry, not
+		// refetch, and a token valid under the first origin's key must never
+		// verify against the second origin's cached keys or vice versa.
+		privateEnv.D6E_AUTH_BASE_URL = BASE_URL;
+		await expect(verifyAccessToken(tokenForFirst)).resolves.toMatchObject({ subject: 'user-1' });
+		await expect(verifyAccessToken(tokenForOther)).rejects.toBeInstanceOf(D6eAuthRejectedError);
+		expect(calls.get(firstUrl)).toBe(1);
+	});
+
+	it('evicts the oldest configured JWKS URL once more than the bounded number of origins have been used', async () => {
+		const MAX_REMOTE_JWKS_SETS: number = 8;
+		const firstUrl: string = `${BASE_URL}/.well-known/jwks.json`;
+		const routes = new Map<string, () => Response>([[firstUrl, jwksJson([publicJwk])]]);
+		const calls = mockFetchRouter(routes);
+		const firstToken: string = await signToken({ email: 'user@example.com' });
+		await verifyAccessToken(firstToken);
+		expect(calls.get(firstUrl)).toBe(1);
+
+		for (let i = 0; i < MAX_REMOTE_JWKS_SETS; i += 1) {
+			const otherBaseUrl: string = nextBaseUrl();
+			const otherUrl: string = `${otherBaseUrl}/.well-known/jwks.json`;
+			const pair = await generateKeyPair('RS256', { extractable: true });
+			const jwk = { ...(await exportJWK(pair.publicKey)), kid: KID, alg: 'RS256', use: 'sig' };
+			routes.set(otherUrl, jwksJson([jwk]));
+			privateEnv.D6E_AUTH_BASE_URL = otherBaseUrl;
+			const token: string = await signToken(
+				{ email: 'user@example.com' },
+				{ key: pair.privateKey }
+			);
+			await verifyAccessToken(token);
+		}
+
+		// The first (now oldest) origin was pushed out of the bounded cache, so
+		// using it again must refetch rather than reuse a stale instance.
+		privateEnv.D6E_AUTH_BASE_URL = BASE_URL;
+		await verifyAccessToken(firstToken);
+		expect(calls.get(firstUrl)).toBe(2);
+	});
+
+	it('retries on the next call after a failed JWKS fetch instead of staying poisoned', async () => {
+		const jwksUrl: string = `${BASE_URL}/.well-known/jwks.json`;
+		let succeed: boolean = false;
+		const calls = mockFetchRouter(
+			new Map([
+				[
+					jwksUrl,
+					() =>
+						succeed ? jwksJson([publicJwk])() : new Response(JSON.stringify({}), { status: 503 })
+				]
+			])
+		);
+		const token: string = await signToken({ email: 'user@example.com' });
+
+		const firstError: unknown = await verifyAccessToken(token).catch((caught: unknown) => caught);
+		expect(firstError).not.toBeInstanceOf(D6eAuthRejectedError);
+		expect(calls.get(jwksUrl)).toBe(1);
+
+		succeed = true;
+		await expect(verifyAccessToken(token)).resolves.toMatchObject({ subject: 'user-1' });
+		expect(calls.get(jwksUrl)).toBe(2);
+	});
+
+	it('rejects a rotated key while cooling down, then accepts it once the cooldown has elapsed', async () => {
+		const jwksUrl: string = `${BASE_URL}/.well-known/jwks.json`;
+		const rotatedPair = await generateKeyPair('RS256', { extractable: true });
+		const rotatedKid: string = 'rotated-key';
+		const rotatedJwk = {
+			...(await exportJWK(rotatedPair.publicKey)),
+			kid: rotatedKid,
+			alg: 'RS256',
+			use: 'sig'
+		};
+		let rotated: boolean = false;
+		const calls = mockFetchRouter(
+			new Map([[jwksUrl, () => jwksJson(rotated ? [rotatedJwk] : [publicJwk])()]])
+		);
+
+		const originalToken: string = await signToken({ email: 'user@example.com' });
+		await expect(verifyAccessToken(originalToken)).resolves.toMatchObject({ subject: 'user-1' });
+		expect(calls.get(jwksUrl)).toBe(1);
+
+		rotated = true;
+		const rotatedToken: string = await signToken(
+			{ email: 'rotated@example.com' },
+			{ key: rotatedPair.privateKey, kid: rotatedKid }
+		);
+
+		await expect(verifyAccessToken(rotatedToken)).rejects.toBeInstanceOf(D6eAuthRejectedError);
+		expect(calls.get(jwksUrl)).toBe(1);
+
+		vi.useFakeTimers();
+		try {
+			await vi.advanceTimersByTimeAsync(30_001);
+			await expect(verifyAccessToken(rotatedToken)).resolves.toMatchObject({
+				email: 'rotated@example.com'
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(calls.get(jwksUrl)).toBe(2);
 	});
 });
 
