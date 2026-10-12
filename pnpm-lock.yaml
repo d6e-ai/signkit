@@ -139,8 +139,8 @@ importers:
         specifier: ^3.3.1
         version: 3.3.1
       npm:
-        specifier: 12.0.2
-        version: 12.0.2
+        specifier: 12.2.0
+        version: 12.2.0
       playwright:
         specifier: ^1.63.0
         version: 1.63.0
@@ -3047,9 +3047,10 @@ packages:
     resolution: {integrity: sha512-ieGu42u/Qsa4TFktmaKEwM6MQH0pOWnaB3htzh0JRtx84+Mebc0cbZYN5bC+6WTZ4+77xrL9Pn5m7CV6VIkV7A==}
     engines: {node: ^18.17.0 || >=20.5.0}
 
-  npm@12.0.2:
-    resolution: {integrity: sha512-uIXokLlBj6FpNUTQX1PmT5pz7BlIN9QlixX+zdaSNHsd0qUXsbDLr50xzY6Sw7cJVr0uzHKDOle0swmPW/p5Qw==}
+  npm@12.2.0:
+    resolution: {integrity: sha512-ZsJjKpTnlmSXOLLXiU1xDCzC4Wlok4IwZmh/aw2KUuXytU7q6qMv/cUT7MoeSf95Slwuw/lRXYefGzGCspHPNQ==}
     engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
+    hasBin: true
     bundledDependencies:
       - '@isaacs/string-locale-compare'
       - '@npmcli/arborist'
@@ -6641,7 +6642,7 @@ snapshots:
     dependencies:
       abbrev: 3.0.1
 
-  npm@12.0.2: {}
+  npm@12.2.0: {}
 
   obug@2.2.1: {}
 
