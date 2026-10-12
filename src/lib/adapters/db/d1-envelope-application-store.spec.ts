@@ -59,8 +59,20 @@ function envelopeRow(
 	};
 }
 
-function d1Rows<T>(rows: readonly T[]): D1Result<T> {
-	return { success: true, results: [...rows], meta: { changes: 0 } } as unknown as D1Result<T>;
+function d1Rows<T>(rows: readonly T[], changes: number = 0): D1Result<T> {
+	return {
+		success: true,
+		results: [...rows],
+		meta: {
+			changes,
+			duration: 0,
+			size_after: 0,
+			rows_read: rows.length,
+			rows_written: changes,
+			last_row_id: 0,
+			changed_db: changes > 0
+		}
+	};
 }
 
 function recipientRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -165,9 +177,7 @@ function createFakeD1(options: FakeD1Options = {}): FakeD1 {
 			if (next === undefined) throw new Error('Missing scripted batch result.');
 			return next;
 		}
-		return statements.map(
-			(): D1Result => ({ success: true, results: [], meta: { changes: 1 } }) as D1Result
-		);
+		return statements.map((): D1Result => d1Rows([], 1));
 	});
 	const database = { prepare, batch } as unknown as D1Database;
 	return { batches, database, prepared, batch, rpcCalls };
