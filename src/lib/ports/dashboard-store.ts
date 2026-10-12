@@ -1,4 +1,5 @@
 import type { DashboardPage, DashboardQuery } from '$lib/application/dashboard/model';
+import type { DashboardCursorPosition } from '$lib/application/dashboard/cursor';
 
 export const DEFAULT_DASHBOARD_LIMIT: number = 25;
 export const MAX_DASHBOARD_LIMIT: number = 100;
@@ -19,10 +20,14 @@ export interface DashboardActor {
 /**
  * Store-level query. `query` is `null` rather than an empty string so every
  * adapter branches on presence once, at the SQL level, instead of each
- * re-deriving "no search" from an empty string.
+ * re-deriving "no search" from an empty string. `cursor` is already decoded
+ * into the exact `(updatedAt, id)` keyset position: the store never looks up
+ * a cursor's anchor row, so a since-mutated or deleted anchor cannot shift
+ * or empty the page.
  */
-export interface DashboardStoreQuery extends Omit<DashboardQuery, 'query'> {
+export interface DashboardStoreQuery extends Omit<DashboardQuery, 'query' | 'cursor'> {
 	query: string | null;
+	cursor: DashboardCursorPosition | null;
 }
 
 /**

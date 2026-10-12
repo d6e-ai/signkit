@@ -1,5 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { normalizeRecipientEmail } from '$lib/domain/recipient-identity';
+import type { EnvelopeStatus, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
+import { decodeDashboardCursor, encodeDashboardCursor } from '$lib/application/dashboard/cursor';
 import type { DashboardActor, DashboardStoreQuery } from '$lib/ports/dashboard-store';
 import { D1DashboardStore } from './d1-dashboard-store';
 import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
@@ -20,21 +23,20 @@ interface RecipientFixture {
 	id: string;
 	email: string;
 	name: string;
-	role: 'signer' | 'approver' | 'viewer' | 'cc';
+	role: RecipientRole;
 	routingOrder: number;
-	status: 'pending' | 'viewed' | 'completed' | 'declined';
+	status: RecipientStatus;
 }
 
 interface EnvelopeFixture {
 	id: string;
-	status:
-		'draft' | 'ready' | 'sent' | 'in_progress' | 'completed' | 'declined' | 'expired' | 'voided';
+	status: EnvelopeStatus;
 	title: string;
 	updatedAtOffsetSeconds: number;
 	recipients: readonly RecipientFixture[];
 }
 
-function createFixtureDatabase(envelopes: readonly EnvelopeFixture[]): D1Database {
+function createFixtureSqlite(envelopes: readonly EnvelopeFixture[]): DatabaseSync {
 	const sqlite = new DatabaseSync(':memory:');
 	applyD1Migrations(sqlite);
 	sqlite
@@ -74,7 +76,11 @@ function createFixtureDatabase(envelopes: readonly EnvelopeFixture[]): D1Databas
 				);
 		}
 	}
-	return sqliteD1Database(sqlite);
+	return sqlite;
+}
+
+function createFixtureDatabase(envelopes: readonly EnvelopeFixture[]): D1Database {
+	return sqliteD1Database(createFixtureSqlite(envelopes));
 }
 
 function query(overrides: Partial<DashboardStoreQuery> = {}): DashboardStoreQuery {
@@ -82,6 +88,32 @@ function query(overrides: Partial<DashboardStoreQuery> = {}): DashboardStoreQuer
 }
 
 describe('D1DashboardStore', () => {
+	it('preserves exact non-ASCII title and recipient-name searches without JavaScript/SQLite folding mismatches', async () => {
+		const database = createFixtureDatabase([
+			{
+				id: uuid(999),
+				status: 'draft',
+				title: 'Überprüfung 契約書',
+				updatedAtOffsetSeconds: 1,
+				recipients: [
+					{
+						id: uuid(9991),
+						email: 'elodie@example.com',
+						name: 'Élodie',
+						role: 'signer',
+						routingOrder: 1,
+						status: 'pending'
+					}
+				]
+			}
+		]);
+		const store = new D1DashboardStore(database);
+		for (const text of ['Überprüfung', 'Élodie', '契約書']) {
+			const page = await store.readDashboard(CALLER, query({ query: text }));
+			expect(page.items.map((item) => item.envelope.id)).toEqual([uuid(999)]);
+		}
+	});
+
 	it('classifies action_required only for the caller holding the active turn, and waiting otherwise', async () => {
 		const database = createFixtureDatabase([
 			{
@@ -167,6 +199,39 @@ describe('D1DashboardStore', () => {
 		const page = await store.readDashboard(CALLER, query());
 		expect(page.items[0]?.actionRequired).toBe(false);
 		expect(page.items[0]?.nextRecipient).toEqual({ name: 'First', email: 'first@example.com' });
+	});
+
+	it('resolves a declined earlier recipient so the next outstanding group becomes active, matching domain routing policy', async () => {
+		const database = createFixtureDatabase([
+			{
+				id: uuid(30),
+				status: 'sent',
+				title: 'Declined predecessor',
+				updatedAtOffsetSeconds: 10,
+				recipients: [
+					{
+						id: uuid(3001),
+						email: 'declined@example.com',
+						name: 'Declined',
+						role: 'signer',
+						routingOrder: 1,
+						status: 'declined'
+					},
+					{
+						id: uuid(3002),
+						email: CALLER.email,
+						name: 'Caller',
+						role: 'approver',
+						routingOrder: 2,
+						status: 'pending'
+					}
+				]
+			}
+		]);
+		const store = new D1DashboardStore(database);
+		const page = await store.readDashboard(CALLER, query({ view: 'action_required' }));
+		expect(page.items.map((item) => item.envelope.id)).toEqual([uuid(30)]);
+		expect(page.items[0]?.nextRecipient).toEqual({ name: 'Caller', email: CALLER.email });
 	});
 
 	it('includes every parallel recipient at the active routing order for action_required', async () => {
@@ -393,7 +458,83 @@ describe('D1DashboardStore', () => {
 		expect(filtered.counts.drafts).toBe(2);
 	});
 
-	it('paginates with a stable updatedAt-desc,id-desc cursor, even when updatedAt ties', async () => {
+	it('scopes completedRecipientCount and actionableRecipientCount to signer/approver only, counting true signed and approved cases and excluding cc', async () => {
+		const database = createFixtureDatabase([
+			{
+				id: uuid(40),
+				status: 'completed',
+				title: 'Mixed progress',
+				updatedAtOffsetSeconds: 1,
+				recipients: [
+					{
+						id: uuid(4001),
+						email: 'signer@example.com',
+						name: 'Signer',
+						role: 'signer',
+						routingOrder: 1,
+						status: 'completed'
+					},
+					{
+						id: uuid(4002),
+						email: 'approver@example.com',
+						name: 'Approver',
+						role: 'approver',
+						routingOrder: 2,
+						status: 'completed'
+					},
+					{
+						id: uuid(4003),
+						email: 'cc@example.com',
+						name: 'CC',
+						role: 'cc',
+						routingOrder: 1,
+						status: 'pending'
+					},
+					{
+						id: uuid(4004),
+						email: 'viewer@example.com',
+						name: 'Viewer',
+						role: 'viewer',
+						routingOrder: 1,
+						status: 'pending'
+					}
+				]
+			}
+		]);
+		const store = new D1DashboardStore(database);
+		const page = await store.readDashboard(CALLER, query());
+		const item = page.items[0];
+		expect(item?.recipientCount).toBe(4);
+		expect(item?.actionableRecipientCount).toBe(2);
+		expect(item?.completedRecipientCount).toBe(2);
+	});
+
+	it('never counts a cc or viewer recipient toward completedRecipientCount even if only those roles are present', async () => {
+		const database = createFixtureDatabase([
+			{
+				id: uuid(41),
+				status: 'sent',
+				title: 'No actionable recipients',
+				updatedAtOffsetSeconds: 1,
+				recipients: [
+					{
+						id: uuid(4101),
+						email: 'cc@example.com',
+						name: 'CC',
+						role: 'cc',
+						routingOrder: 1,
+						status: 'pending'
+					}
+				]
+			}
+		]);
+		const store = new D1DashboardStore(database);
+		const page = await store.readDashboard(CALLER, query());
+		expect(page.items[0]?.completedRecipientCount).toBe(0);
+		expect(page.items[0]?.actionableRecipientCount).toBe(0);
+	});
+
+	it('paginates with a stable updatedAt-desc,id-desc opaque cursor, even when updatedAt ties', async () => {
 		const envelopes: EnvelopeFixture[] = Array.from({ length: 5 }, (_, index) => ({
 			id: uuid(100 + index),
 			status: 'draft' as const,
@@ -407,20 +548,81 @@ describe('D1DashboardStore', () => {
 
 		const firstPage = await store.readDashboard(CALLER, query({ limit: 2 }));
 		expect(firstPage.items.map((i) => i.envelope.id)).toEqual(expectedOrder.slice(0, 2));
-		expect(firstPage.nextCursor).toBe(expectedOrder[1]);
+		expect(firstPage.nextCursor).not.toBeNull();
+
+		const decoded = decodeDashboardCursor(firstPage.nextCursor as string, {
+			view: 'all',
+			query: null
+		});
+		expect(decoded.ok).toBe(true);
+		if (decoded.ok) expect(decoded.value.id).toBe(expectedOrder[1]);
 
 		const secondPage = await store.readDashboard(
 			CALLER,
-			query({ limit: 2, cursor: firstPage.nextCursor })
+			query({ limit: 2, cursor: decoded.ok ? decoded.value : null })
 		);
 		expect(secondPage.items.map((i) => i.envelope.id)).toEqual(expectedOrder.slice(2, 4));
 
+		const secondDecoded = decodeDashboardCursor(secondPage.nextCursor as string, {
+			view: 'all',
+			query: null
+		});
 		const thirdPage = await store.readDashboard(
 			CALLER,
-			query({ limit: 2, cursor: secondPage.nextCursor })
+			query({ limit: 2, cursor: secondDecoded.ok ? secondDecoded.value : null })
 		);
 		expect(thirdPage.items.map((i) => i.envelope.id)).toEqual(expectedOrder.slice(4, 5));
 		expect(thirdPage.nextCursor).toBeNull();
+	});
+
+	it('is unaffected by a cursor anchored to an envelope that no longer exists, unlike a live row-id lookup', async () => {
+		const database = createFixtureDatabase([
+			{
+				id: uuid(51),
+				status: 'draft',
+				title: 'Before anchor',
+				updatedAtOffsetSeconds: 3,
+				recipients: []
+			}
+		]);
+		const store = new D1DashboardStore(database);
+		// `uuid(50)` is never inserted: this models a cursor minted while its
+		// anchor envelope existed, then the anchor was deleted before the next
+		// page was requested. Because the cursor carries the keyset position
+		// itself rather than an id to look up, the deleted anchor changes
+		// nothing about the page boundary.
+		const cursor = encodeDashboardCursor('all', null, { updatedAt: isoAt(5), id: uuid(50) });
+		const decoded = decodeDashboardCursor(cursor, { view: 'all', query: null });
+		expect(decoded.ok).toBe(true);
+		if (!decoded.ok) throw new Error('unreachable');
+		const page = await store.readDashboard(CALLER, query({ cursor: decoded.value }));
+		expect(page.items.map((i) => i.envelope.id)).toEqual([uuid(51)]);
+	});
+
+	it('rejects a cursor minted under a different view or search text as a context mismatch', () => {
+		const cursor = encodeDashboardCursor('drafts', 'foo', {
+			updatedAt: isoAt(1),
+			id: uuid(60)
+		});
+		expect(decodeDashboardCursor(cursor, { view: 'all', query: 'foo' })).toEqual({
+			ok: false,
+			reason: 'context_mismatch'
+		});
+		expect(decodeDashboardCursor(cursor, { view: 'drafts', query: 'bar' })).toEqual({
+			ok: false,
+			reason: 'context_mismatch'
+		});
+		expect(decodeDashboardCursor(cursor, { view: 'drafts', query: 'foo' })).toEqual({
+			ok: true,
+			value: { updatedAt: isoAt(1), id: uuid(60) }
+		});
+	});
+
+	it('rejects a malformed, truncated, or non-UUID cursor', () => {
+		expect(decodeDashboardCursor('not-base64url!!', { view: 'all', query: null }).ok).toBe(false);
+		expect(decodeDashboardCursor('', { view: 'all', query: null }).ok).toBe(false);
+		const badId = encodeDashboardCursor('all', null, { updatedAt: isoAt(1), id: 'not-a-uuid' });
+		expect(decodeDashboardCursor(badId, { view: 'all', query: null }).ok).toBe(false);
 	});
 
 	it('scales to over 100 envelopes with counts and pagination independent of row volume', async () => {
@@ -441,6 +643,29 @@ describe('D1DashboardStore', () => {
 		expect(page.counts.drafts).toBe(140 - completedCount);
 	});
 
+	it('issues exactly one batch of two statements regardless of row volume', async () => {
+		const envelopes: EnvelopeFixture[] = Array.from({ length: 120 }, (_, index) => ({
+			id: uuid(2000 + index),
+			status: 'draft' as const,
+			title: `Row ${index}`,
+			updatedAtOffsetSeconds: index,
+			recipients: []
+		}));
+		const database = createFixtureDatabase(envelopes);
+		const batchSpy = database.batch.bind(database);
+		let callCount: number = 0;
+		let lastStatementCount: number = 0;
+		database.batch = (async (statements: D1PreparedStatement[]) => {
+			callCount += 1;
+			lastStatementCount = statements.length;
+			return batchSpy(statements);
+		}) as typeof database.batch;
+		const store = new D1DashboardStore(database);
+		await store.readDashboard(CALLER, query({ limit: 25 }));
+		expect(callCount).toBe(1);
+		expect(lastStatementCount).toBe(2);
+	});
+
 	it('handles case differences between the caller session email and the stored recipient email', async () => {
 		const database = createFixtureDatabase([
 			{
@@ -451,7 +676,7 @@ describe('D1DashboardStore', () => {
 				recipients: [
 					{
 						id: uuid(2101),
-						email: 'caller@example.com',
+						email: normalizeRecipientEmail('Caller@Example.com'),
 						name: 'Caller',
 						role: 'signer',
 						routingOrder: 1,
@@ -461,7 +686,139 @@ describe('D1DashboardStore', () => {
 			}
 		]);
 		const store = new D1DashboardStore(database);
-		const page = await store.readDashboard({ email: 'CALLER@EXAMPLE.COM' }, query());
-		expect(page.items[0]?.actionRequired).toBe(false);
+		// The store compares exactly whatever email it is given; normalization
+		// is `DashboardApplication`'s responsibility, exercised in
+		// `dashboard-service.spec.ts`. A caller already normalized matches;
+		// one that is not, does not.
+		const normalized = await store.readDashboard(
+			{ email: normalizeRecipientEmail('CALLER@EXAMPLE.COM') },
+			query()
+		);
+		expect(normalized.items[0]?.actionRequired).toBe(true);
+
+		const unnormalized = await store.readDashboard({ email: 'CALLER@EXAMPLE.COM' }, query());
+		expect(unnormalized.items[0]?.actionRequired).toBe(false);
+	});
+
+	it('throws instead of returning a fabricated zero when the batch does not complete successfully', async () => {
+		const database = createFixtureDatabase([]);
+		const originalBatch = database.batch.bind(database);
+		database.batch = (async () => [
+			{ success: false, results: [], meta: {} },
+			{ success: false, results: [], meta: {} }
+		]) as unknown as typeof database.batch;
+		const store = new D1DashboardStore(database);
+		await expect(store.readDashboard(CALLER, query())).rejects.toThrow();
+		database.batch = originalBatch;
+	});
+
+	it('throws instead of returning a fabricated zero when the counts row is missing or malformed', async () => {
+		const database = createFixtureDatabase([]);
+		const originalBatch = database.batch.bind(database);
+		database.batch = (async (statements: D1PreparedStatement[]) => {
+			const real = await originalBatch(statements);
+			return [{ success: true, results: [], meta: {} }, real[1]];
+		}) as typeof database.batch;
+		const store = new D1DashboardStore(database);
+		await expect(store.readDashboard(CALLER, query())).rejects.toThrow();
+		database.batch = originalBatch;
+	});
+
+	it('proves a genuinely empty instance returns real zero counts, not a swallowed failure', async () => {
+		const database = createFixtureDatabase([]);
+		const store = new D1DashboardStore(database);
+		const page = await store.readDashboard(CALLER, query());
+		expect(page.items).toHaveLength(0);
+		expect(page.counts).toEqual({ all: 0, actionRequired: 0, waiting: 0, drafts: 0, completed: 0 });
+	});
+
+	it('restricts every recipient CTE to an indexed per-envelope-id search over page_envelopes, never a bare scan of the whole recipient table (EXPLAIN QUERY PLAN evidence)', async () => {
+		const sqlite = createFixtureSqlite([
+			{
+				id: uuid(900),
+				status: 'draft',
+				title: 'Page row',
+				updatedAtOffsetSeconds: 10,
+				recipients: []
+			}
+		]);
+		const database = sqliteD1Database(sqlite);
+		let rowsSql: string | null = null;
+		const originalPrepare = database.prepare.bind(database);
+		database.prepare = ((sql: string) => {
+			if (sql.includes('page_envelopes')) rowsSql = sql;
+			return originalPrepare(sql);
+		}) as typeof database.prepare;
+		const store = new D1DashboardStore(database);
+		await store.readDashboard(CALLER, query());
+		database.prepare = originalPrepare;
+
+		expect(rowsSql).not.toBeNull();
+		const plan = sqlite.prepare(`EXPLAIN QUERY PLAN ${rowsSql}`).all() as { detail: string }[];
+		const details: string[] = plan.map((row) => row.detail);
+
+		// No step may be a bare, unindexed scan of the whole `recipient`
+		// table: every reference to `recipient` must be an indexed search
+		// correlated to a specific `envelope_id`, which is only possible once
+		// `page_envelopes` has already bounded the candidate set.
+		expect(details.some((detail) => /^SCAN recipient\b/.test(detail))).toBe(false);
+		const recipientSearches: string[] = details.filter((detail) =>
+			detail.includes('SEARCH recipient')
+		);
+		expect(recipientSearches.length).toBeGreaterThan(0);
+		for (const detail of recipientSearches) {
+			expect(detail).toMatch(/USING (COVERING )?INDEX .*\(envelope_id=\?\)/);
+		}
+	});
+
+	it('keeps first-recipient/next-actionable/progress aggregation correct and bounded to the page even with a large volume of off-page historical recipients', async () => {
+		const pageEnvelope: EnvelopeFixture = {
+			id: uuid(910),
+			status: 'sent',
+			title: 'In page',
+			updatedAtOffsetSeconds: 1000,
+			recipients: [
+				{
+					id: uuid(9101),
+					email: CALLER.email,
+					name: 'Caller',
+					role: 'signer',
+					routingOrder: 1,
+					status: 'pending'
+				}
+			]
+		};
+		// 40 old, terminal envelopes sorting well below the page, each with 50
+		// recipients (2,000 off-page recipient rows): large enough that an
+		// unbounded whole-table window would be easy to distinguish from a
+		// page-bounded one, both in correctness and in timing.
+		const historical: EnvelopeFixture[] = Array.from({ length: 40 }, (_, envelopeIndex) => ({
+			id: uuid(1000 + envelopeIndex),
+			status: 'completed' as const,
+			title: `Historical ${envelopeIndex}`,
+			updatedAtOffsetSeconds: envelopeIndex,
+			recipients: Array.from({ length: 50 }, (_, recipientIndex) => ({
+				id: uuid(20000 + envelopeIndex * 50 + recipientIndex),
+				email: `historical-${envelopeIndex}-${recipientIndex}@example.com`,
+				name: `Historical Recipient ${envelopeIndex}-${recipientIndex}`,
+				role: 'signer' as const,
+				routingOrder: 1,
+				status: 'completed' as const
+			}))
+		}));
+		const database = createFixtureDatabase([pageEnvelope, ...historical]);
+		const store = new D1DashboardStore(database);
+
+		const startedAt: number = performance.now();
+		const page = await store.readDashboard(CALLER, query({ limit: 1 }));
+		const elapsedMs: number = performance.now() - startedAt;
+
+		expect(page.items.map((item) => item.envelope.id)).toEqual([uuid(910)]);
+		expect(page.items[0]?.recipientCount).toBe(1);
+		expect(page.items[0]?.actionRequired).toBe(true);
+		expect(page.items[0]?.nextRecipient).toEqual({ name: 'Caller', email: CALLER.email });
+		// Generous but meaningful: page-bounded recipient work is independent
+		// of the 2,000 off-page recipient rows, so this stays fast regardless.
+		expect(elapsedMs).toBeLessThan(500);
 	});
 });

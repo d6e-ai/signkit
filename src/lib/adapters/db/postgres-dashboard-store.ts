@@ -1,6 +1,10 @@
 import postgres from 'postgres';
 import { toPublicEnvelope } from '$lib/application/envelopes/model';
 import type { Envelope, EnvelopeStatus } from '$lib/domain/envelope';
+import {
+	encodeDashboardCursor,
+	type DashboardCursorPosition
+} from '$lib/application/dashboard/cursor';
 import type {
 	DashboardCounts,
 	DashboardItem,
@@ -29,6 +33,19 @@ interface DashboardRow {
 	fieldGeneration: number;
 	createdAt: Date | string;
 	updatedAt: Date | string;
+	/**
+	 * Microsecond-precision UTC ordering key, formatted in SQL
+	 * (`to_char(... AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')`),
+	 * never derived from `updatedAt` in JS: the `postgres` driver maps
+	 * `timestamptz` to a JS `Date`, and `Date#toISOString()` truncates to
+	 * millisecond precision. Two distinct rows sharing a millisecond but
+	 * differing only in sub-millisecond precision would otherwise collapse
+	 * to the same cursor tie-break value, letting the keyset cursor skip a
+	 * row. This field is used only to mint the opaque cursor; the public
+	 * `updatedAt` field above is unaffected and keeps its existing display
+	 * precision.
+	 */
+	updatedAtOrdering: string;
 	recipientCount: number;
 	completedRecipientCount: number;
 	actionableRecipientCount: number;
@@ -47,74 +64,77 @@ interface CountsRow {
 	waitingCount: number;
 }
 
-const NEXT_ACTIONABLE_CTE: string = `next_actionable AS (
-	SELECT envelope_id, email, name, routing_order,
-		ROW_NUMBER() OVER (PARTITION BY envelope_id ORDER BY routing_order ASC, id ASC) AS rn
-	FROM recipient
-	WHERE role IN ('signer','approver') AND status IN ('pending','viewed')
-)`;
-
-const FIRST_RECIPIENT_CTE: string = `first_recipient AS (
-	SELECT envelope_id, email, name,
-		ROW_NUMBER() OVER (PARTITION BY envelope_id ORDER BY routing_order ASC, id ASC) AS rn
-	FROM recipient
-)`;
-
-const RECIPIENT_AGG_CTE: string = `recipient_agg AS (
-	SELECT envelope_id,
-		COUNT(*) AS recipient_count,
-		SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
-		SUM(CASE WHEN role IN ('signer','approver') THEN 1 ELSE 0 END) AS actionable_count
-	FROM recipient
-	GROUP BY envelope_id
-)`;
-
 /**
  * True exactly when some recipient sharing the active turn's routing order
- * (the lowest routing order among outstanding signer/approver recipients,
- * surfaced by `na.routing_order`) is the caller. Checking every recipient at
- * that routing order -- not merely the single `na` row, which breaks ties by
- * id for display -- is what keeps a parallel co-signer's own turn from being
- * missed.
+ * (the lowest routing order among this envelope's outstanding signer/approver
+ * recipients) is the caller. Checking every recipient at that routing order --
+ * not merely whichever one happens to be displayed as `nextRecipient` -- is
+ * what keeps a parallel co-signer's own turn from being missed.
+ *
+ * Deliberately a correlated-per-envelope subquery, not a `ROW_NUMBER()`
+ * window over the whole recipient table: every caller of this predicate --
+ * the counts query, the page bucket filter, and the final `actionRequired`
+ * column -- only ever evaluates it for one already-identified envelope at a
+ * time, so it never windows or groups recipients across envelopes outside
+ * whatever set is already being considered.
  */
-function activeTurnExists(sql: Sql, callerEmail: string): Fragment {
+function activeTurnExists(sql: Sql, envelopeAlias: string, callerEmail: string): Fragment {
 	return sql`EXISTS (
 		SELECT 1 FROM recipient r
-		WHERE r.envelope_id = e.id
+		WHERE r.envelope_id = ${sql.unsafe(`${envelopeAlias}.id`)}
 			AND r.role IN ('signer','approver')
 			AND r.status IN ('pending','viewed')
-			AND r.routing_order = na.routing_order
+			AND r.routing_order = (
+				SELECT MIN(r2.routing_order) FROM recipient r2
+				WHERE r2.envelope_id = ${sql.unsafe(`${envelopeAlias}.id`)}
+					AND r2.role IN ('signer','approver')
+					AND r2.status IN ('pending','viewed')
+			)
 			AND r.email = ${callerEmail}
 	)`;
 }
 
-function bucketFilter(sql: Sql, view: DashboardView, callerEmail: string): Fragment {
+function bucketFilter(
+	sql: Sql,
+	envelopeAlias: string,
+	view: DashboardView,
+	callerEmail: string
+): Fragment {
 	switch (view) {
 		case 'all':
 			return sql``;
 		case 'drafts':
-			return sql`AND e.status IN ('draft','ready')`;
+			return sql`AND ${sql.unsafe(`${envelopeAlias}.status`)} IN ('draft','ready')`;
 		case 'completed':
-			return sql`AND e.status = 'completed'`;
+			return sql`AND ${sql.unsafe(`${envelopeAlias}.status`)} = 'completed'`;
 		case 'action_required':
-			return sql`AND e.status IN ('sent','in_progress') AND ${activeTurnExists(sql, callerEmail)}`;
+			return sql`AND ${sql.unsafe(`${envelopeAlias}.status`)} IN ('sent','in_progress') AND ${activeTurnExists(sql, envelopeAlias, callerEmail)}`;
 		case 'waiting':
-			return sql`AND e.status IN ('sent','in_progress') AND NOT ${activeTurnExists(sql, callerEmail)}`;
+			return sql`AND ${sql.unsafe(`${envelopeAlias}.status`)} IN ('sent','in_progress') AND NOT ${activeTurnExists(sql, envelopeAlias, callerEmail)}`;
 	}
 }
 
-function queryFilter(sql: Sql, pattern: string | null): Fragment {
+function queryFilter(sql: Sql, envelopeAlias: string, pattern: string | null): Fragment {
 	if (pattern === null) return sql``;
-	return sql`AND (LOWER(e.title) LIKE ${pattern} ESCAPE '\\' OR EXISTS (
+	return sql`AND (LOWER(${sql.unsafe(`${envelopeAlias}.title`)}) LIKE LOWER(${pattern}) ESCAPE '\\' OR EXISTS (
 		SELECT 1 FROM recipient r2
-		WHERE r2.envelope_id = e.id
-			AND (LOWER(r2.name) LIKE ${pattern} ESCAPE '\\' OR r2.email LIKE ${pattern} ESCAPE '\\')
+		WHERE r2.envelope_id = ${sql.unsafe(`${envelopeAlias}.id`)}
+			AND (LOWER(r2.name) LIKE LOWER(${pattern}) ESCAPE '\\' OR LOWER(r2.email) LIKE LOWER(${pattern}) ESCAPE '\\')
 	))`;
 }
 
-function cursorFilter(sql: Sql, cursor: { updatedAt: Date | string; id: string } | null): Fragment {
+/** Decoded keyset position: never a database lookup, so a mutated or deleted anchor cannot shift the page. */
+function cursorFilter(
+	sql: Sql,
+	envelopeAlias: string,
+	cursor: DashboardCursorPosition | null
+): Fragment {
 	if (cursor === null) return sql``;
-	return sql`AND (e.updated_at < ${cursor.updatedAt} OR (e.updated_at = ${cursor.updatedAt} AND e.id < ${cursor.id}))`;
+	// Bind as text first so the driver's Date serializer cannot truncate
+	// microseconds. PostgreSQL parses the validated UTC `Z` timestamp itself,
+	// independently of the connection's TimeZone setting.
+	const boundary: Fragment = sql`${cursor.updatedAt}::text::timestamptz`;
+	return sql`AND (${sql.unsafe(`${envelopeAlias}.updated_at`)} < ${boundary} OR (${sql.unsafe(`${envelopeAlias}.updated_at`)} = ${boundary} AND ${sql.unsafe(`${envelopeAlias}.id`)} < ${cursor.id}))`;
 }
 
 function escapeLike(value: string): string {
@@ -158,13 +178,27 @@ function fromRow(row: DashboardRow): DashboardItem {
 	};
 }
 
-function toCounts(row: CountsRow | undefined): DashboardCounts {
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function requireCounts(row: CountsRow | undefined): DashboardCounts {
+	if (
+		row === undefined ||
+		!isFiniteNumber(row.allCount) ||
+		!isFiniteNumber(row.draftsCount) ||
+		!isFiniteNumber(row.completedCount) ||
+		!isFiniteNumber(row.actionRequiredCount) ||
+		!isFiniteNumber(row.waitingCount)
+	) {
+		throw new Error('Dashboard counts query returned a malformed or missing row.');
+	}
 	return {
-		all: row?.allCount ?? 0,
-		actionRequired: row?.actionRequiredCount ?? 0,
-		waiting: row?.waitingCount ?? 0,
-		drafts: row?.draftsCount ?? 0,
-		completed: row?.completedCount ?? 0
+		all: row.allCount,
+		actionRequired: row.actionRequiredCount,
+		waiting: row.waitingCount,
+		drafts: row.draftsCount,
+		completed: row.completedCount
 	};
 }
 
@@ -172,74 +206,137 @@ export class PostgresDashboardStore implements DashboardStore {
 	constructor(private readonly sql: ReturnType<typeof postgres>) {}
 
 	async readDashboard(actor: DashboardActor, query: DashboardStoreQuery): Promise<DashboardPage> {
-		const pattern: string | null =
-			query.query === null ? null : `%${escapeLike(query.query)}%`.toLowerCase();
+		const pattern: string | null = query.query === null ? null : `%${escapeLike(query.query)}%`;
 
 		return await this.sql.begin(async (tx): Promise<DashboardPage> => {
 			const txSql: Sql = tx;
+			// Plain `BEGIN` is READ COMMITTED: each statement in this
+			// transaction would otherwise see its own fresh snapshot, so a
+			// concurrent write landing between the counts query and the rows
+			// query could make them disagree about which envelopes exist.
+			// REPEATABLE READ takes one snapshot for the whole transaction, and
+			// READ ONLY documents (and enforces) that this transaction never
+			// writes.
+			await txSql.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+
+			// Whole-instance badge counts are an intentionally independent
+			// aggregate: they must reflect every envelope regardless of the
+			// current page, search text, or cursor, so this statement always
+			// scans the whole `envelope` table once. The active-turn predicate
+			// it uses for `action_required`/`waiting` is a correlated
+			// per-envelope lookup (`activeTurnExists`), not a table-wide
+			// window, so it never aggregates or windows recipients across
+			// envelopes outside the one row currently being summed --
+			// including historical or terminal envelopes, whose recipients
+			// this predicate never even reaches since it only runs for rows
+			// already matched to `sent`/`in_progress`.
 			const [countsRow] = await txSql<CountsRow[]>`
-				WITH ${txSql.unsafe(NEXT_ACTIONABLE_CTE)}
 				SELECT
 					COUNT(*)::int AS "allCount",
 					COALESCE(SUM(CASE WHEN e.status IN ('draft','ready') THEN 1 ELSE 0 END), 0)::int AS "draftsCount",
 					COALESCE(SUM(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END), 0)::int AS "completedCount",
-					COALESCE(SUM(CASE WHEN e.status IN ('sent','in_progress') AND ${activeTurnExists(txSql, actor.email)} THEN 1 ELSE 0 END), 0)::int AS "actionRequiredCount",
-					COALESCE(SUM(CASE WHEN e.status IN ('sent','in_progress') AND NOT ${activeTurnExists(txSql, actor.email)} THEN 1 ELSE 0 END), 0)::int AS "waitingCount"
+					COALESCE(SUM(CASE WHEN e.status IN ('sent','in_progress') AND ${activeTurnExists(txSql, 'e', actor.email)} THEN 1 ELSE 0 END), 0)::int AS "actionRequiredCount",
+					COALESCE(SUM(CASE WHEN e.status IN ('sent','in_progress') AND NOT ${activeTurnExists(txSql, 'e', actor.email)} THEN 1 ELSE 0 END), 0)::int AS "waitingCount"
 				FROM envelope e
-				LEFT JOIN next_actionable na ON na.envelope_id = e.id AND na.rn = 1
 			`;
+			const counts: DashboardCounts = requireCounts(countsRow);
 
-			let cursor: { updatedAt: Date | string; id: string } | null = null;
-			if (query.cursor !== null) {
-				const cursorRows = await txSql<{ updatedAt: Date | string; id: string }[]>`
-					SELECT updated_at AS "updatedAt", id FROM envelope WHERE id = ${query.cursor} LIMIT 1
-				`;
-				if (cursorRows[0] === undefined) {
-					return { items: [], nextCursor: null, counts: toCounts(countsRow) };
-				}
-				cursor = cursorRows[0];
-			}
-
+			// The page of rows is selected first -- ordered, filtered by view,
+			// search, and cursor, limited to `limit + 1` -- before any
+			// recipient aggregate runs. Every recipient lookup below is a
+			// `LATERAL` join correlated to one `page_envelopes` row at a time
+			// (never an `envelope_id IN (SELECT ...)` form): PostgreSQL's
+			// planner is free to execute an `IN (subquery)` as a hash join
+			// that still sequentially scans the *whole* recipient table, even
+			// though the result is correctly filtered afterward, so this is
+			// what actually bounds execution -- not merely the result set --
+			// to this page's envelopes, confirmed by `EXPLAIN` in
+			// `postgres-dashboard-store.integration.spec.ts`. Each `LATERAL`
+			// subquery is itself `WHERE recipient.envelope_id = pe.id`, which
+			// the existing `recipient_envelope_route`/`recipient_envelope_role_status`
+			// indexes (both leading with `envelope_id`) answer directly, so
+			// this never touches a terminal/historical envelope's recipients
+			// outside the page.
 			const fetchLimit: number = query.limit + 1;
 			const rows = await txSql<DashboardRow[]>`
-				WITH ${txSql.unsafe(NEXT_ACTIONABLE_CTE)},
-					${txSql.unsafe(FIRST_RECIPIENT_CTE)},
-					${txSql.unsafe(RECIPIENT_AGG_CTE)}
+				WITH page_envelopes AS (
+					SELECT
+						e.id,
+						e.created_by_user_id AS "createdByUserId",
+						e.title,
+						e.status,
+						e.repository_generation AS "repositoryGeneration",
+						e.repository_head AS "repositoryHead",
+						e.repository_archive_sha256 AS "repositoryArchiveSha256",
+						e.sent_commit_sha AS "sentCommitSha",
+						e.field_generation AS "fieldGeneration",
+						e.created_at AS "createdAt",
+						e.updated_at AS "updatedAt",
+						to_char(e.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || 'Z' AS "updatedAtOrdering"
+					FROM envelope e
+					WHERE 1 = 1
+						${bucketFilter(txSql, 'e', query.view, actor.email)}
+						${queryFilter(txSql, 'e', pattern)}
+						${cursorFilter(txSql, 'e', query.cursor)}
+					ORDER BY e.updated_at DESC, e.id DESC
+					LIMIT ${fetchLimit}
+				)
 				SELECT
-					e.id,
-					e.created_by_user_id AS "createdByUserId",
-					e.title,
-					e.status,
-					e.repository_generation AS "repositoryGeneration",
-					e.repository_head AS "repositoryHead",
-					e.repository_archive_sha256 AS "repositoryArchiveSha256",
-					e.sent_commit_sha AS "sentCommitSha",
-					e.field_generation AS "fieldGeneration",
-					e.created_at AS "createdAt",
-					e.updated_at AS "updatedAt",
-					COALESCE(ra.recipient_count, 0)::int AS "recipientCount",
-					COALESCE(ra.completed_count, 0)::int AS "completedRecipientCount",
-					COALESCE(ra.actionable_count, 0)::int AS "actionableRecipientCount",
+					pe.id,
+					pe."createdByUserId",
+					pe.title,
+					pe.status,
+					pe."repositoryGeneration",
+					pe."repositoryHead",
+					pe."repositoryArchiveSha256",
+					pe."sentCommitSha",
+					pe."fieldGeneration",
+					pe."createdAt",
+					pe."updatedAt",
+					pe."updatedAtOrdering",
+					COALESCE(agg.recipient_count, 0)::int AS "recipientCount",
+					COALESCE(agg.completed_count, 0)::int AS "completedRecipientCount",
+					COALESCE(agg.actionable_count, 0)::int AS "actionableRecipientCount",
 					fr.email AS "recipientEmail", fr.name AS "recipientName",
 					na.email AS "nextEmail", na.name AS "nextName",
-					(e.status IN ('sent','in_progress') AND ${activeTurnExists(txSql, actor.email)}) AS "actionRequired"
-				FROM envelope e
-				LEFT JOIN recipient_agg ra ON ra.envelope_id = e.id
-				LEFT JOIN first_recipient fr ON fr.envelope_id = e.id AND fr.rn = 1
-				LEFT JOIN next_actionable na ON na.envelope_id = e.id AND na.rn = 1
-				WHERE 1 = 1
-					${bucketFilter(txSql, query.view, actor.email)}
-					${queryFilter(txSql, pattern)}
-					${cursorFilter(txSql, cursor)}
-				ORDER BY e.updated_at DESC, e.id DESC
-				LIMIT ${fetchLimit}
+					(pe.status IN ('sent','in_progress') AND ${activeTurnExists(txSql, 'pe', actor.email)}) AS "actionRequired"
+				FROM page_envelopes pe
+				LEFT JOIN LATERAL (
+					SELECT
+						COUNT(*) AS recipient_count,
+						SUM(CASE WHEN role IN ('signer','approver') AND status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+						SUM(CASE WHEN role IN ('signer','approver') THEN 1 ELSE 0 END) AS actionable_count
+					FROM recipient r
+					WHERE r.envelope_id = pe.id
+				) agg ON true
+				LEFT JOIN LATERAL (
+					SELECT email, name FROM recipient r2
+					WHERE r2.envelope_id = pe.id
+					ORDER BY r2.routing_order ASC, r2.id ASC
+					LIMIT 1
+				) fr ON true
+				LEFT JOIN LATERAL (
+					SELECT email, name FROM recipient r3
+					WHERE r3.envelope_id = pe.id
+						AND r3.role IN ('signer','approver') AND r3.status IN ('pending','viewed')
+					ORDER BY r3.routing_order ASC, r3.id ASC
+					LIMIT 1
+				) na ON true
+				ORDER BY pe."updatedAt" DESC, pe.id DESC
 			`;
 			const hasNextPage: boolean = rows.length > query.limit;
 			const pageRows: DashboardRow[] = hasNextPage ? rows.slice(0, query.limit) : rows;
+			const lastRow = pageRows.at(-1);
 			return {
 				items: pageRows.map(fromRow),
-				nextCursor: hasNextPage ? (pageRows.at(-1)?.id ?? null) : null,
-				counts: toCounts(countsRow)
+				nextCursor:
+					hasNextPage && lastRow !== undefined
+						? encodeDashboardCursor(query.view, query.query, {
+								updatedAt: lastRow.updatedAtOrdering,
+								id: lastRow.id
+							})
+						: null,
+				counts
 			};
 		});
 	}

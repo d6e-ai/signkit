@@ -19,7 +19,7 @@ the HTTP API and from the home page's SSR render.
 - A dedicated `DashboardStore` port (`src/lib/ports/dashboard-store.ts`) with
   one method, `readDashboard`, rather than growing
   `EnvelopeApplicationPort`. `D1DashboardStore` and `PostgresDashboardStore`
-  each compute counts and the page of rows from CTEs in a single consistent
+  each compute counts and the page of rows in a single consistent
   snapshot (one D1 `batch()`, one PostgreSQL transaction) -- never a query
   per envelope.
 - "Active turn" is derived purely from `routing_order` and recipient
@@ -37,13 +37,14 @@ the HTTP API and from the home page's SSR render.
   derives session-only instance authorization and validates the bounded
   query on every call. The SSR loader queries the application layer
   directly; it never performs an HTTP self-fetch against the API route.
-- Authorization and store-resolution failures are reported as a tagged
-  failure outcome, never folded into an empty `DashboardPage`. `+page.server.ts`
-  returns `worklist: null` together with a populated `worklistError`
-  precisely when the read failed, so the UI can distinguish "nothing in your
-  worklist" from "the worklist could not be read right now."
-- Search is literal and case-insensitive against the envelope title and
-  every recipient's name/email, with `%`, `_`, `\` escaped before binding.
+- Failures are tagged, never folded into an empty `DashboardPage`. The SSR
+  loader redirects or fails closed for authorization/validation failures;
+  only a storage failure renders `worklist: null` with `worklistError` so the
+  UI can offer a retry without showing false zero counts.
+- Search is literal against the title and every recipient's name/email,
+  with `%`, `_`, `\` escaped before binding and folding applied inside each
+  database. ASCII case-insensitive matching is shared; Unicode case-folding
+  parity remains a [tracked follow-up](https://github.com/d6e-ai/signkit/issues/236).
   Pagination uses a stable `updated_at DESC, id DESC` keyset cursor so tied
   timestamps still produce a deterministic page boundary.
 - Caller-email normalization happens once, in the `DashboardApplication`
@@ -51,14 +52,15 @@ the HTTP API and from the home page's SSR render.
   whatever email they are given exactly, case-sensitively.
 - New forward-only migrations add `envelope(updated_at DESC, id DESC)` and
   `recipient(envelope_id, role, status)` indexes (D1 `0058`, PostgreSQL
-  `0054`) rather than reusing the existing status-leading or
-  routing-order-leading indexes, neither of which can serve this access
-  pattern.
+  `0054`). The new envelope index supports unfiltered updated-time ordering;
+  the recipient index supports role/status predicates. Existing
+  `(envelope_id, routing_order, id)` indexes still serve first/next-recipient
+  lookups.
 
 ## Consequences
 
 The worklist can answer "what needs me" for an instance with hundreds of
-envelopes in two bounded queries, with whole-instance badge counts that never
+envelopes in two read statements with a bounded row page, with whole-instance badge counts that never
 drift from the filtered row count's underlying data. Authorization logic for
 this feature lives in exactly one place even though it is called from two
 routing surfaces. A caller whose identity cannot be verified, or whose store

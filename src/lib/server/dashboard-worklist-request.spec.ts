@@ -39,6 +39,7 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(401);
+		expect(outcome.kind).toBe('authorization');
 		expect(resolveDashboardApplication).not.toHaveBeenCalled();
 	});
 
@@ -52,6 +53,7 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(403);
+		expect(outcome.kind).toBe('authorization');
 	});
 
 	it('rejects a suspended member with 403', async () => {
@@ -64,6 +66,7 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(403);
+		expect(outcome.kind).toBe('authorization');
 	});
 
 	it('fails closed with 503 when identity is unavailable', async () => {
@@ -76,6 +79,7 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(503);
+		expect(outcome.kind).toBe('authorization');
 	});
 
 	it('rejects an API-key-only request with 403, never falling through to a cookie session', async () => {
@@ -95,6 +99,7 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(403);
+		expect(outcome.kind).toBe('authorization');
 		expect(resolveDashboardApplication).not.toHaveBeenCalled();
 	});
 
@@ -109,6 +114,7 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(503);
+		expect(outcome.kind).toBe('store');
 	});
 
 	it('rejects an unknown query parameter', async () => {
@@ -121,6 +127,7 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(400);
+		expect(outcome.kind).toBe('validation');
 		expect(resolveDashboardApplication).not.toHaveBeenCalled();
 	});
 
@@ -136,16 +143,18 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.response.status).toBe(400);
 	});
 
-	it('rejects an unrecognized cursor shape', async () => {
+	it('rejects a cursor containing characters outside the base64url alphabet at the HTTP boundary', async () => {
 		const outcome = await resolveDashboardWorklist(
 			instanceScopedLocals('active'),
 			undefined,
 			'/api/v1/dashboard',
-			new URLSearchParams('cursor=not-a-uuid')
+			new URLSearchParams('cursor=not a valid cursor!')
 		);
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(400);
+		expect(outcome.kind).toBe('validation');
+		expect(resolveDashboardApplication).not.toHaveBeenCalled();
 	});
 
 	it('rejects a limit outside the bounded range', async () => {
@@ -218,5 +227,81 @@ describe('resolveDashboardWorklist', () => {
 		expect(outcome.outcome).toBe('error');
 		if (outcome.outcome !== 'error') throw new Error('unreachable');
 		expect(outcome.response.status).toBe(502);
+		expect(outcome.kind).toBe('store');
+	});
+
+	it('authorizes before parsing the query: an anonymous caller with a malformed query still gets 401, not 400', async () => {
+		const outcome = await resolveDashboardWorklist(
+			instanceScopedLocals('anonymous'),
+			undefined,
+			'/api/v1/dashboard',
+			new URLSearchParams('limit=not-a-number&bogus=1&cursor=not-a-uuid')
+		);
+		expect(outcome.outcome).toBe('error');
+		if (outcome.outcome !== 'error') throw new Error('unreachable');
+		expect(outcome.response.status).toBe(401);
+		expect(outcome.kind).toBe('authorization');
+	});
+
+	it('authorizes before parsing the query: a non-member with a malformed query still gets 403, not 400', async () => {
+		const outcome = await resolveDashboardWorklist(
+			instanceScopedLocals('no_membership'),
+			undefined,
+			'/api/v1/dashboard',
+			new URLSearchParams('view=not-a-real-view')
+		);
+		expect(outcome.outcome).toBe('error');
+		if (outcome.outcome !== 'error') throw new Error('unreachable');
+		expect(outcome.response.status).toBe(403);
+	});
+
+	it('rejects __proto__ and constructor as query parameter keys without polluting Object.prototype', async () => {
+		const protoBefore = Object.getPrototypeOf({});
+		const outcome = await resolveDashboardWorklist(
+			instanceScopedLocals('active'),
+			undefined,
+			'/api/v1/dashboard',
+			new URLSearchParams('__proto__=x&constructor=y')
+		);
+		expect(outcome.outcome).toBe('error');
+		if (outcome.outcome !== 'error') throw new Error('unreachable');
+		expect(outcome.response.status).toBe(400);
+		expect(outcome.kind).toBe('validation');
+		expect(Object.getPrototypeOf({})).toBe(protoBefore);
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+	});
+
+	it('maps InvalidDashboardCursorError (malformed) from the application layer to a 400 validation failure, not 502', async () => {
+		const { InvalidDashboardCursorError } =
+			await import('$lib/application/dashboard/dashboard-service');
+		const read = vi.fn().mockRejectedValue(new InvalidDashboardCursorError('malformed'));
+		resolveDashboardApplication.mockResolvedValueOnce({ read });
+		const outcome = await resolveDashboardWorklist(
+			instanceScopedLocals('active'),
+			undefined,
+			'/api/v1/dashboard',
+			new URLSearchParams('cursor=abcDEF123-_')
+		);
+		expect(outcome.outcome).toBe('error');
+		if (outcome.outcome !== 'error') throw new Error('unreachable');
+		expect(outcome.response.status).toBe(400);
+		expect(outcome.kind).toBe('validation');
+	});
+
+	it('maps InvalidDashboardCursorError (context_mismatch) from the application layer to a 400 validation failure', async () => {
+		const { InvalidDashboardCursorError } =
+			await import('$lib/application/dashboard/dashboard-service');
+		const read = vi.fn().mockRejectedValue(new InvalidDashboardCursorError('context_mismatch'));
+		resolveDashboardApplication.mockResolvedValueOnce({ read });
+		const outcome = await resolveDashboardWorklist(
+			instanceScopedLocals('active'),
+			undefined,
+			'/api/v1/dashboard',
+			new URLSearchParams('view=completed&cursor=abcDEF123-_')
+		);
+		expect(outcome.outcome).toBe('error');
+		if (outcome.outcome !== 'error') throw new Error('unreachable');
+		expect(outcome.response.status).toBe(400);
+		expect(outcome.kind).toBe('validation');
 	});
 });
