@@ -7,6 +7,7 @@
 	import * as Alert from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card';
 	import * as Empty from '$lib/components/ui/empty';
 	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
@@ -259,6 +260,8 @@
 				{#if data.worklist === null || data.worklist.counts.all === 0}
 					<Empty.Title>{m.dashboard_empty_workspace_title()}</Empty.Title>
 					<Empty.Description>{m.dashboard_empty_workspace_description()}</Empty.Description>
+				{:else if data.worklistQuery.cursor !== null}
+					<Empty.Title>{m.dashboard_empty_page_title()}</Empty.Title>
 				{:else if data.worklistQuery.query !== ''}
 					<Empty.Title>{m.dashboard_empty_search_title()}</Empty.Title>
 					<Empty.Description>{m.dashboard_empty_search_description()}</Empty.Description>
@@ -268,7 +271,9 @@
 				{/if}
 			</Empty.Header>
 			<Empty.Content>
-				{#if data.worklist !== null && data.worklist.counts.all > 0 && data.worklistQuery.query !== ''}
+				{#if data.worklist !== null && data.worklist.counts.all > 0 && data.worklistQuery.cursor !== null}
+					<Button variant="outline" href={firstPageHref()}>{m.dashboard_pagination_first()}</Button>
+				{:else if data.worklist !== null && data.worklist.counts.all > 0 && data.worklistQuery.query !== ''}
 					<Button variant="outline" href={clearSearchHref()}>{m.dashboard_clear_search()}</Button>
 				{:else if data.worklist !== null && data.worklist.counts.all > 0 && data.worklistQuery.view !== 'all'}
 					<Button variant="outline" href={viewHref('all')}>{m.dashboard_tab_all()}</Button>
@@ -280,7 +285,8 @@
 			</Empty.Content>
 		</Empty.Root>
 	{:else}
-		<div class="overflow-x-auto rounded-xl border">
+		<!-- Keep the action visible on phones/tablets; both layouts share the same status helpers. -->
+		<div class="hidden overflow-x-auto rounded-xl border lg:block">
 			<Table.Root>
 				<Table.Header>
 					<Table.Row>
@@ -294,14 +300,17 @@
 				<Table.Body>
 					{#each data.worklist.items as item (item.envelope.id)}
 						<Table.Row>
-							<Table.Cell class="font-medium">
-								<a href={localizeHref(`/envelopes/${item.envelope.id}`)} class="hover:underline">
+							<Table.Cell class="min-w-0 font-medium [overflow-wrap:anywhere] whitespace-normal">
+								<a
+									href={localizeHref(`/envelopes/${item.envelope.id}`)}
+									class="[overflow-wrap:anywhere] hover:underline"
+								>
 									{item.envelope.title}
 								</a>
 							</Table.Cell>
-							<Table.Cell>
+							<Table.Cell class="min-w-0 [overflow-wrap:anywhere] whitespace-normal">
 								{#if item.recipient}
-									<div class="flex flex-col">
+									<div class="flex flex-col [overflow-wrap:anywhere]">
 										<span>{item.recipient.name || item.recipient.email}</span>
 										{#if recipientExtraCount(item) > 0}
 											<span class="text-xs text-muted-foreground">
@@ -313,7 +322,7 @@
 									<span class="text-muted-foreground">{m.dashboard_row_no_recipients()}</span>
 								{/if}
 							</Table.Cell>
-							<Table.Cell>
+							<Table.Cell class="[overflow-wrap:anywhere] whitespace-normal">
 								<div class="flex flex-col gap-1">
 									<Badge variant={statusVariant(item.envelope.status)}>
 										{statusLabel(item.envelope.status)}
@@ -342,6 +351,57 @@
 				</Table.Body>
 			</Table.Root>
 		</div>
+
+		<Card.Root class="gap-0 overflow-hidden py-0 lg:hidden">
+			<ul class="divide-y">
+				{#each data.worklist.items as item (item.envelope.id)}
+					<li class="flex min-w-0 flex-col gap-3 p-4">
+						<div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
+							<a
+								href={localizeHref(`/envelopes/${item.envelope.id}`)}
+								class="min-w-0 flex-1 font-medium break-words hover:underline"
+							>
+								{item.envelope.title}
+							</a>
+							<Badge variant={statusVariant(item.envelope.status)} class="shrink-0">
+								{statusLabel(item.envelope.status)}
+							</Badge>
+						</div>
+						{#if secondaryStatusText(item)}
+							<p class="min-w-0 text-xs break-words text-muted-foreground">
+								{secondaryStatusText(item)}
+							</p>
+						{/if}
+						<div class="min-w-0 text-sm break-words text-muted-foreground">
+							{#if item.recipient}
+								<span>{item.recipient.name || item.recipient.email}</span>
+								{#if recipientExtraCount(item) > 0}
+									<span class="ml-1 text-xs">
+										{m.dashboard_row_recipient_more({ count: recipientExtraCount(item) })}
+									</span>
+								{/if}
+							{:else}
+								<span>{m.dashboard_row_no_recipients()}</span>
+							{/if}
+						</div>
+						<div class="flex flex-wrap items-center justify-between gap-2">
+							<span class="text-xs text-muted-foreground">
+								{formatDate(item.envelope.updatedAt)}
+							</span>
+							<Button
+								href={localizeHref(`/envelopes/${item.envelope.id}`)}
+								variant="outline"
+								size="sm"
+								aria-label={rowActionAccessibleName(item)}
+							>
+								{rowActionLabel(item.envelope.status)}
+								<IconArrowRight data-icon="inline-end" />
+							</Button>
+						</div>
+					</li>
+				{/each}
+			</ul>
+		</Card.Root>
 
 		{#if data.worklistQuery.cursor !== null || data.worklist.nextCursor}
 			<div class="flex items-center justify-center gap-2">

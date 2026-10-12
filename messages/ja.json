@@ -25,6 +25,7 @@
 	"dashboard_empty_workspace_title": "最初の契約書を送信しましょう",
 	"dashboard_empty_workspace_description": "作成した契約書がここに表示されます。",
 	"dashboard_empty_view_title": "現在ここには何もありません",
+	"dashboard_empty_page_title": "このページに契約書はありません",
 	"dashboard_empty_view_description": "「すべて」に切り替えると全ての契約書を確認できます。",
 	"dashboard_empty_search_title": "検索に一致する契約書がありません",
 	"dashboard_empty_search_description": "別のキーワードで検索するか、検索条件をクリアしてください。",

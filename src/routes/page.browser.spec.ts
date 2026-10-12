@@ -9,6 +9,7 @@ import type {
 } from '$lib/application/dashboard/model';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
 import DashboardPage from './+page.svelte';
+import './layout.css';
 
 const { BASE_URL } = vi.hoisted(() => ({ BASE_URL: 'https://signkit.example' }));
 
@@ -94,7 +95,7 @@ describe('dashboard worklist page in browser', () => {
 			props: { data: pageData({ worklist: worklist({ items: [item({ envelope: nda })] }) }) }
 		});
 
-		await expect.element(screen.getByText('NDA with Acme')).toBeVisible();
+		await expect.element(screen.getByText('NDA with Acme').first()).toBeVisible();
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
@@ -302,7 +303,7 @@ describe('dashboard worklist page in browser', () => {
 		expect(screen.getByText('まだ送信されていません').query()).toBeNull();
 		expect(screen.getByText('Not sent yet').query()).toBeNull();
 		expect(screen.getByText('0/0').query()).toBeNull();
-		await expect.element(screen.getByText('1/2 completed')).toBeVisible();
+		await expect.element(screen.getByText('1/2 completed').first()).toBeVisible();
 	});
 
 	it('gives every row action an accessible, agreement-specific name', async () => {
@@ -371,7 +372,7 @@ describe('dashboard worklist page in browser', () => {
 			props: { data: pageData({ worklist: worklist({ items: [item({ envelope: voided })] }) }) }
 		});
 
-		await expect.element(screen.getByText('Voided agreement')).toBeVisible();
+		await expect.element(screen.getByText('Voided agreement').first()).toBeVisible();
 	});
 
 	it('accepts an opaque, non-UUID cursor string and renders first-page/next-page links from the real query state', async () => {
@@ -430,13 +431,13 @@ describe('dashboard worklist page in browser', () => {
 		const screen = await render(DashboardPage, {
 			props: { data: pageData({ worklist: worklist({ items: [item({ envelope: first })] }) }) }
 		});
-		await expect.element(screen.getByText('First page agreement')).toBeVisible();
+		await expect.element(screen.getByText('First page agreement').first()).toBeVisible();
 
 		await screen.rerender({
 			data: pageData({ worklist: worklist({ items: [item({ envelope: second })] }) })
 		});
 
-		await expect.element(screen.getByText('Second page agreement')).toBeVisible();
+		await expect.element(screen.getByText('Second page agreement').first()).toBeVisible();
 		expect(screen.getByText('First page agreement').query()).toBeNull();
 	});
 
@@ -458,7 +459,7 @@ describe('dashboard worklist page in browser', () => {
 		expect(document.activeElement?.tagName.toLowerCase()).toBe('a');
 	});
 
-	it('keeps the page within the viewport width at 390px with long title/recipient/email and large counts', async () => {
+	it('keeps every row readable and the action reachable at 390px with long title/recipient/email and large counts, no horizontal scrolling', async () => {
 		await browserPage.viewport(390, 844);
 		const long = envelope({
 			id: '01900000-0000-7000-8000-000000000040',
@@ -498,9 +499,189 @@ describe('dashboard worklist page in browser', () => {
 			}
 		});
 
-		await expect.element(screen.getByText(long.title)).toBeVisible();
+		// The mobile stacked list (not the hidden desktop table) is the one
+		// actually laid out at this width, and it must not need its own
+		// horizontal scroll either -- "no full-page overflow" alone would miss
+		// a container that scrolls sideways while the page itself does not.
+		const mobileList = screen.container.querySelector('ul');
+		expect(mobileList).not.toBeNull();
+		expect(mobileList!.textContent).toContain(long.title);
 		expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
 			document.documentElement.clientWidth + 1
 		);
+		expect(mobileList!.scrollWidth).toBeLessThanOrEqual(mobileList!.clientWidth + 1);
+
+		const desktopTableWrapper = screen.container
+			.querySelector('table')
+			?.closest('[class*="lg:block"]');
+		expect(desktopTableWrapper).not.toBeNull();
+		expect(getComputedStyle(desktopTableWrapper!).display).toBe('none');
+
+		// The row's own action is reachable without any horizontal swipe: its
+		// full bounding box sits inside the 390px viewport. `getByRole`
+		// (unlike `getByText`) excludes the CSS-hidden desktop table from the
+		// accessibility tree, so exactly one accessible match remains here --
+		// the mobile list's own action link.
+		const actionLink = screen.getByRole('link', {
+			name: /Open A Very Long Master Services Agreement Title/
+		});
+		await expect.element(actionLink).toBeVisible();
+		const rect = actionLink.element().getBoundingClientRect();
+		expect(rect.left).toBeGreaterThanOrEqual(0);
+		expect(rect.right).toBeLessThanOrEqual(390 + 1);
+	});
+
+	it('wraps a single unbroken long token (no spaces) in title/recipient/email without widening either layout at 390px', async () => {
+		await browserPage.viewport(390, 844);
+		const unbroken = envelope({
+			id: '01900000-0000-7000-8000-000000000041',
+			title: 'A'.repeat(120),
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						items: [
+							item({
+								envelope: unbroken,
+								recipient: { name: 'B'.repeat(80), email: `${'c'.repeat(80)}@example.com` },
+								recipientCount: 1,
+								actionableRecipientCount: 1,
+								nextRecipient: { name: 'B'.repeat(80), email: `${'c'.repeat(80)}@example.com` }
+							})
+						]
+					})
+				})
+			}
+		});
+
+		const mobileList = screen.container.querySelector('ul');
+		expect(mobileList).not.toBeNull();
+		expect(mobileList!.textContent).toContain(unbroken.title);
+		expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+			document.documentElement.clientWidth + 1
+		);
+		expect(mobileList!.scrollWidth).toBeLessThanOrEqual(mobileList!.clientWidth + 1);
+
+		const actionLink = screen.getByRole('link', { name: /^Open A{120}/ });
+		await expect.element(actionLink).toBeVisible();
+		const rect = actionLink.element().getBoundingClientRect();
+		expect(rect.right).toBeLessThanOrEqual(390 + 1);
+	});
+
+	it('keeps the row action keyboard-focusable and within the 390px viewport', async () => {
+		await browserPage.viewport(390, 844);
+		const sent = envelope({
+			id: '01900000-0000-7000-8000-000000000042',
+			title: 'Keyboard reachable at narrow width',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklist: worklist({ items: [item({ envelope: sent })] }) }) }
+		});
+
+		const actionLink = screen.getByRole('link', {
+			name: /Open Keyboard reachable at narrow width/
+		});
+		const mobileAction = actionLink.element() as HTMLElement;
+		mobileAction.focus();
+		expect(document.activeElement).toBe(mobileAction);
+		const rect = mobileAction.getBoundingClientRect();
+		expect(rect.left).toBeGreaterThanOrEqual(0);
+		expect(rect.right).toBeLessThanOrEqual(390 + 1);
+	});
+
+	it('keeps long Japanese title/recipient text within the 390px layout without horizontal scrolling', async () => {
+		await browserPage.viewport(390, 844);
+		const ja = envelope({
+			id: '01900000-0000-7000-8000-000000000043',
+			title: '基本契約書 (マスターサービスアグリーメント) の長いタイトルの例としてここに記載します',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						items: [
+							item({
+								envelope: ja,
+								recipient: {
+									name: '担当者の氏名がとても長い場合の表示確認用サンプル',
+									email: 'tanaka.taro@example.co.jp'
+								},
+								recipientCount: 1,
+								actionableRecipientCount: 1,
+								nextRecipient: {
+									name: '担当者の氏名がとても長い場合の表示確認用サンプル',
+									email: 'tanaka.taro@example.co.jp'
+								}
+							})
+						]
+					})
+				})
+			}
+		});
+
+		const mobileList = screen.container.querySelector('ul');
+		expect(mobileList).not.toBeNull();
+		expect(mobileList!.textContent).toContain(ja.title);
+		expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+			document.documentElement.clientWidth + 1
+		);
+		expect(mobileList!.scrollWidth).toBeLessThanOrEqual(mobileList!.clientWidth + 1);
+	});
+
+	it('keeps long unbroken desktop titles and recipients inside the table container with a visible row action', async () => {
+		await browserPage.viewport(1440, 900);
+		const contract = envelope({
+			id: '01900000-0000-7000-8000-000000000044',
+			title: 'A'.repeat(180),
+			status: 'in_progress'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						items: [
+							item({
+								envelope: contract,
+								recipient: { name: 'B'.repeat(160), email: `${'c'.repeat(80)}@example.com` },
+								nextRecipient: { name: 'D'.repeat(160), email: 'next@example.com' }
+							})
+						]
+					})
+				})
+			}
+		});
+		const table = screen.container.querySelector('table')!;
+		const container = table.closest('[data-slot="table-container"]')!;
+		expect(getComputedStyle(table.closest('[class*="lg:block"]')!).display).not.toBe('none');
+		expect(container.scrollWidth).toBeLessThanOrEqual(container.clientWidth + 1);
+		const action = screen.getByRole('link', { name: /^Open A{180}$/ }).element();
+		const rect = action.getBoundingClientRect();
+		const bounds = container.getBoundingClientRect();
+		expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
+		expect(rect.right).toBeLessThanOrEqual(bounds.right + 1);
+	});
+
+	it('offers the first page when a continuation becomes empty instead of asking the user to create a contract', async () => {
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						items: [],
+						counts: { all: 5, actionRequired: 0, waiting: 0, drafts: 5, completed: 0 }
+					}),
+					worklistQuery: worklistQuery({ cursor: 'opaque-continuation' })
+				})
+			}
+		});
+		await expect.element(screen.getByText(m.dashboard_empty_page_title())).toBeVisible();
+		const first = screen.getByRole('link', { name: m.dashboard_pagination_first() });
+		await expect.element(first).toBeVisible();
+		expect(
+			new URL(first.element().getAttribute('href')!, BASE_URL).searchParams.has('cursor')
+		).toBe(false);
 	});
 });

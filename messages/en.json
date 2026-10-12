@@ -25,6 +25,7 @@
 	"dashboard_empty_workspace_title": "Send your first contract",
 	"dashboard_empty_workspace_description": "Contracts you create will appear here.",
 	"dashboard_empty_view_title": "Nothing here right now",
+	"dashboard_empty_page_title": "No contracts on this page",
 	"dashboard_empty_view_description": "Switch to All to see every agreement.",
 	"dashboard_empty_search_title": "No matches for your search",
 	"dashboard_empty_search_description": "Try a different search, or clear it to see this view.",
