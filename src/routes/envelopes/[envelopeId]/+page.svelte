@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
@@ -110,6 +110,28 @@
 	let envelope = $state<Envelope | null>(null);
 	let draft = $state<DraftWorkspaceResponse | null>(null);
 	let delivery = $state<PublicEnvelopeDeliveryStatus | null>(null);
+	// Guards the three independent completion reads below (status, PDF seal,
+	// completion deliveries) against a slow call from an earlier `load()`
+	// overwriting state a newer `load()` has already written: each read
+	// captures this value when it starts and discards its result if the
+	// component has since been destroyed or a newer generation has begun.
+	let completionReadsGeneration = 0;
+	// Identifies the most recently started PDF-seal-status read, separately
+	// from the UI-facing `pdfSealStatusPending` flag. Every refresh supersedes
+	// whatever read is still in flight -- even one the same `load()` started --
+	// instead of being skipped in its favor: the refresh that follows a seal
+	// request must observe the post-request status, and an earlier read that
+	// lands after it must not overwrite that with the pre-request one. Only the
+	// latest read clears the pending indicator, so a superseded or stale call
+	// finishing first never hides the read that is still outstanding.
+	let latestPdfSealStatusRead = 0;
+	let destroyed = false;
+	onDestroy(() => {
+		destroyed = true;
+	});
+	function isStaleCompletionRead(generation: number): boolean {
+		return destroyed || generation !== completionReadsGeneration;
+	}
 	let completionStatus = $state<PublicCompletionArtifactStatus | null>(null);
 	let completionStatusError = $state<string | null>(null);
 	let completionRetryPending = $state(false);
@@ -595,10 +617,14 @@
 	}
 
 	async function refreshCompletionStatus(): Promise<void> {
-		completionStatusError = null;
+		const generation = completionReadsGeneration;
 		try {
-			completionStatus = await client.completionArtifactStatus(envelopeId);
+			const result = await client.completionArtifactStatus(envelopeId);
+			if (isStaleCompletionRead(generation)) return;
+			completionStatus = result;
+			completionStatusError = null;
 		} catch {
+			if (isStaleCompletionRead(generation)) return;
 			completionStatus = null;
 			completionStatusError = m.envelope_completed_status_unavailable();
 		}
@@ -663,12 +689,15 @@
 	}
 
 	async function refreshCompletionDeliveries(): Promise<void> {
+		const generation = completionReadsGeneration;
 		completionDeliveriesError = null;
 		try {
 			const result = await client.completionDeliveries(envelopeId);
 			if (!Array.isArray(result)) throw new Error('malformed completion-deliveries response');
+			if (isStaleCompletionRead(generation)) return;
 			completionDeliveries = result;
 		} catch {
+			if (isStaleCompletionRead(generation)) return;
 			completionDeliveries = null;
 			completionDeliveriesError = m.envelope_completion_access_unavailable();
 		}
@@ -818,6 +847,25 @@
 		loading = true;
 		authRequired = false;
 		loadError = null;
+		// Every `load()` attempt invalidates whatever the completion-status
+		// waterfall was doing before it, regardless of whether this attempt
+		// succeeds, fails, or even reaches a completed envelope -- otherwise a
+		// slow read kicked off by an earlier successful load could still land
+		// after a *failed* reload, writing into a page that is now showing an
+		// error.
+		completionReadsGeneration += 1;
+		// The generation guard only drops writes still in flight; whatever the
+		// earlier reads already wrote must go too. `loading` no longer waits on
+		// this load's own reads, so a leftover completion status, seal status,
+		// delivery list, or error would otherwise render -- and drive actions
+		// such as the seal request -- against this load's envelope until those
+		// reads settle.
+		completionStatus = null;
+		completionStatusError = null;
+		pdfSealStatus = null;
+		pdfSealStatusError = null;
+		completionDeliveries = null;
+		completionDeliveriesError = null;
 		try {
 			const detail = await client.getDetail(envelopeId);
 			envelope = detail.envelope;
@@ -868,9 +916,15 @@
 				delivery = await client.deliveries(envelopeId).catch(() => null);
 			}
 			if (detail.envelope.status === 'completed') {
-				await refreshCompletionStatus();
-				await refreshPdfSealStatus();
-				await refreshCompletionDeliveries();
+				// Independent, non-blocking reads: the primary view (and `loading`)
+				// must not wait on these optional, sometimes-slow status surfaces,
+				// and none of the three should block another -- each renders its
+				// own loading/error state once it settles.
+				void Promise.all([
+					refreshCompletionStatus(),
+					refreshPdfSealStatus(),
+					refreshCompletionDeliveries()
+				]);
 			}
 			await hydrateAuthoringFields();
 			if (detail.envelope.status === 'draft') seedRecipientDraftsFromReady();
@@ -1762,16 +1816,23 @@
 		URL.revokeObjectURL(href);
 	}
 	async function refreshPdfSealStatus(): Promise<void> {
-		if (pdfSealStatusPending) return;
+		const generation = completionReadsGeneration;
+		latestPdfSealStatusRead += 1;
+		const read = latestPdfSealStatusRead;
+		const isSuperseded = (): boolean =>
+			isStaleCompletionRead(generation) || read !== latestPdfSealStatusRead;
 		pdfSealStatusPending = true;
 		pdfSealStatusError = null;
 		try {
-			pdfSealStatus = await client.pdfSealStatus(envelopeId);
+			const result = await client.pdfSealStatus(envelopeId);
+			if (isSuperseded()) return;
+			pdfSealStatus = result;
 		} catch {
+			if (isSuperseded()) return;
 			pdfSealStatus = null;
 			pdfSealStatusError = m.envelope_pdf_seal_status_unavailable();
 		} finally {
-			pdfSealStatusPending = false;
+			if (read === latestPdfSealStatusRead) pdfSealStatusPending = false;
 		}
 	}
 

@@ -336,6 +336,91 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 		);
 	});
 
+	it('documents the dashboard worklist as session-only, with bounded query parameters and a public, archive-key-free response', () => {
+		const document = openApiDocument();
+		const get = pathItem(document, '/api/v1/dashboard').get;
+
+		// Session-only authority: never an API-key fallback.
+		expect(get.security).toEqual([{ SessionCookie: [] }]);
+		expect(get.security).not.toEqual(expect.arrayContaining([{ SignKitApiKey: [] }]));
+
+		const parameters = get.parameters as Array<{
+			name: string;
+			in: string;
+			required?: boolean;
+			schema?: Record<string, unknown>;
+		}>;
+		expect(parameters.map((parameter) => parameter.name).sort()).toEqual([
+			'cursor',
+			'limit',
+			'q',
+			'view'
+		]);
+		// No caller/email parameter is ever advertised: the caller is always
+		// the authenticated session.
+		expect(parameters.some((parameter) => /email|caller|user/i.test(parameter.name))).toBe(false);
+
+		const view = parameters.find((parameter) => parameter.name === 'view');
+		expect(view?.schema).toMatchObject({
+			enum: ['all', 'action_required', 'waiting', 'drafts', 'completed'],
+			default: 'all'
+		});
+		const q = parameters.find((parameter) => parameter.name === 'q');
+		expect(q?.schema).toMatchObject({ type: 'string', maxLength: 200 });
+		const cursor = parameters.find((parameter) => parameter.name === 'cursor');
+		expect(cursor?.required).toBeFalsy();
+		expect(cursor?.schema).toMatchObject({ pattern: '^[A-Za-z0-9_-]{1,2000}$' });
+		const limit = parameters.find((parameter) => parameter.name === 'limit');
+		expect(limit?.schema).toMatchObject({ type: 'integer', minimum: 1, maximum: 100, default: 25 });
+
+		const responses = get.responses as Record<string, { content?: Record<string, unknown> }>;
+		for (const status of ['400', '401', '403', '502', '503']) {
+			expect(responses[status]?.content).toHaveProperty('application/problem+json');
+		}
+
+		const pageSchema = (
+			responses['200'] as { content: { 'application/json': { schema: { $ref: string } } } }
+		).content['application/json'].schema;
+		expect(pageSchema).toEqual({ $ref: '#/components/schemas/DashboardPage' });
+
+		const schemas = (document.components as { schemas: Record<string, Record<string, unknown>> })
+			.schemas;
+		expect(schemas.DashboardPage.required).toEqual(['items', 'nextCursor', 'counts']);
+		expect(schemas.DashboardPage.additionalProperties).toBe(false);
+		expect(schemas.DashboardCounts.required).toEqual([
+			'all',
+			'actionRequired',
+			'waiting',
+			'drafts',
+			'completed'
+		]);
+
+		const dashboardItem = schemas.DashboardItem;
+		expect(dashboardItem.additionalProperties).toBe(false);
+		expect(dashboardItem.required).toEqual(
+			expect.arrayContaining([
+				'envelope',
+				'recipient',
+				'recipientCount',
+				'completedRecipientCount',
+				'actionableRecipientCount',
+				'nextRecipient',
+				'actionRequired'
+			])
+		);
+		const itemProperties = dashboardItem.properties as Record<string, { type?: string }>;
+		expect(itemProperties.envelope).toEqual({ $ref: '#/components/schemas/Envelope' });
+		expect(itemProperties.actionRequired.type).toBe('boolean');
+
+		// The envelope projection embedded in the worklist is the same public
+		// shape used elsewhere, which never carries the internal archive key.
+		expect(JSON.stringify(document)).not.toContain('repositoryArchiveKey');
+
+		const recipientSummary = schemas.DashboardRecipientSummary;
+		expect(recipientSummary.additionalProperties).toBe(false);
+		expect(recipientSummary.required).toEqual(['name', 'email']);
+	});
+
 	it('documents public completion PDF format and opaque non-RFC9457 failures', () => {
 		const document = openApiDocument();
 		const get = pathItem(document, '/api/v1/completion-artifacts').get;

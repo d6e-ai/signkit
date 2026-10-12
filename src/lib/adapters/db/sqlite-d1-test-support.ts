@@ -86,7 +86,7 @@ class SqliteD1Database {
 			for (const statement of statements) {
 				const sqliteStatement: SqliteD1Statement = statement as unknown as SqliteD1Statement;
 				results.push(
-					sqliteStatement.sql.trimStart().startsWith('SELECT')
+					/^(SELECT|WITH)\b/i.test(sqliteStatement.sql.trimStart())
 						? await sqliteStatement.all<T>()
 						: ((await sqliteStatement.run()) as D1Result<T>)
 				);
