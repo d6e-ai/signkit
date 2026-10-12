@@ -8,14 +8,13 @@ import { isSettingsSurfacePath } from '$lib/navigation/settings-surface';
 import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
 import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
 import { localizeHref } from '$lib/paraglide/runtime';
+import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 
 /**
  * Central page-access gate for every non-recipient browser page.
  *
- * `locals.principal` is null for both `anonymous` and `unavailable` identity
- * states (hooks.server.ts only ever assigns it after identity verification),
- * so it is the single narrowing check for
- * TypeScript, but the two states are not equivalent: `anonymous` redirects to
+ * An unavailable identity or member read fails closed, even when identity
+ * verification already populated `locals.principal`. An anonymous caller redirects to
  * sign-in, while `unavailable` means a session exists but identity could not
  * be verified -- redirecting that case into `/auth/login` would either loop
  * back through the same failing d6e-auth call or silently treat a verification
@@ -41,16 +40,17 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 	if (isRecipientSurfacePath(url.pathname)) return {};
 	if (isSignedOutSurfacePath(url.pathname)) return {};
 
+	if (locals.identityState === 'unavailable') {
+		error(503, 'Identity could not be verified.');
+	}
 	if (locals.principal === null) {
-		if (locals.identityState === 'unavailable') {
-			error(503, 'Identity could not be verified.');
-		}
 		const returnTo: string = `${url.pathname}${url.search}`;
 		redirect(302, localizeHref(`/auth/login?return=${encodeURIComponent(returnTo)}`));
 	}
 
 	const email: string = locals.principal.email;
 	const name: string = locals.principal.name;
+	const callerId: string = locals.principal.subject;
 
 	let application: InstanceApplicationPort | null;
 	try {
@@ -71,7 +71,9 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 
 	let context: InstanceCallerContext;
 	try {
-		context = await application.getCurrentMember({ id: locals.principal.subject });
+		context = await getRequestCallerContext(locals, callerId, () =>
+			application.getCurrentMember({ id: callerId })
+		);
 	} catch {
 		error(503, 'Instance membership could not be resolved.');
 	}

@@ -1,5 +1,11 @@
 import { env } from '$env/dynamic/private';
-import { createRemoteJWKSet, errors as joseErrors, jwtVerify, type JWTPayload } from 'jose';
+import {
+	createRemoteJWKSet,
+	errors as joseErrors,
+	jwtVerify,
+	type JWTPayload,
+	type RemoteJWKSet
+} from 'jose';
 
 /**
  * The provider explicitly rejected a credential -- an expired, revoked, or
@@ -84,6 +90,39 @@ function configuration() {
 	return { baseUrl: validatedBaseUrl(rawBaseUrl), clientId, clientSecret };
 }
 
+/** Bounds memory under a misconfigured or rotating-origin deployment. */
+const MAX_REMOTE_JWKS_SETS: number = 8;
+
+/**
+ * Module-global cache of jose remote JWKS resolvers, keyed by the JWKS URL
+ * derived from the validated `D6E_AUTH_BASE_URL`. Only public signature
+ * verification material -- and jose's cooldown/rotation/retry bookkeeping
+ * around it -- lives here, never anything token-, principal-, or
+ * request-specific. Reusing the resolver instance across calls (instead of
+ * calling `createRemoteJWKSet` fresh every time) preserves its warm key cache
+ * and cooldown window. jose keeps fetch lifetimes runtime-aware: on Workers,
+ * concurrent cold requests do not share a request-bound pending fetch. A
+ * configuration change to a different JWKS URL gets its own entry and never
+ * shares keys with another origin.
+ */
+const remoteJwksSets: Map<string, RemoteJWKSet> = new Map();
+
+function remoteJwksSetFor(jwksUrl: string): RemoteJWKSet {
+	const cached: RemoteJWKSet | undefined = remoteJwksSets.get(jwksUrl);
+	if (cached !== undefined) {
+		remoteJwksSets.delete(jwksUrl);
+		remoteJwksSets.set(jwksUrl, cached);
+		return cached;
+	}
+	const created: RemoteJWKSet = createRemoteJWKSet(new URL(jwksUrl));
+	remoteJwksSets.set(jwksUrl, created);
+	if (remoteJwksSets.size > MAX_REMOTE_JWKS_SETS) {
+		const oldestKey: string | undefined = remoteJwksSets.keys().next().value;
+		if (oldestKey !== undefined) remoteJwksSets.delete(oldestKey);
+	}
+	return created;
+}
+
 export function authorizeUrl(redirectUri: string, state: string): string {
 	const { baseUrl, clientId } = configuration();
 	const url = new URL(`${baseUrl}/auth/login`);
@@ -136,7 +175,7 @@ async function tokenRequest(parameters: Record<string, string>): Promise<TokenSe
 
 export async function verifyAccessToken(token: string): Promise<VerifiedPrincipal> {
 	const { baseUrl, clientId } = configuration();
-	const jwks = createRemoteJWKSet(new URL(`${baseUrl}/.well-known/jwks.json`));
+	const jwks = remoteJwksSetFor(`${baseUrl}/.well-known/jwks.json`);
 	try {
 		const { payload } = await jwtVerify(token, jwks, {
 			algorithms: ['RS256'],

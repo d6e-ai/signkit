@@ -12,6 +12,7 @@ import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { hasAuthorizationHeader, parseBearerApiKey } from '$lib/security/api-key';
 import { D6eAuthRejectedError, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
 import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key-authentication';
+import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 import {
 	SESSION_COOKIE,
 	SESSION_COOKIE_OPTIONS,
@@ -179,6 +180,7 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 };
 
 export const handleSession: Handle = async ({ event, resolve }) => {
+	event.locals.requestCallerContexts = undefined;
 	event.locals.principal = null;
 	event.locals.instanceMembership = null;
 	event.locals.bootstrapped = false;
@@ -234,7 +236,9 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 			event.locals.identityState = 'unavailable';
 			return resolve(event);
 		}
-		const caller = await application.getCurrentMember({ id: session.principal.subject });
+		const caller = await getRequestCallerContext(event.locals, session.principal.subject, () =>
+			application.getCurrentMember({ id: session.principal.subject })
+		);
 		event.locals.principal = session.principal;
 		event.locals.bootstrapped = caller.bootstrapped;
 		if (caller.member === null) {

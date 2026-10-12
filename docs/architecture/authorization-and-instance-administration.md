@@ -15,6 +15,10 @@ Every operator request rechecks the local member:
 - `member` can use the ordinary envelope surface.
 - suspended or missing members are denied.
 
+The hook and root layout share that member read only within the current request, keyed by the authenticated caller. Each new request reads membership again. Missing persistence remains unavailable; it never establishes that the instance is empty. Mutation-time authorization guards and API-key ownership checks remain independent of this read snapshot.
+
+Remote JWKS resolvers are retained in a bounded, URL-specific cache of public verification keys. Tokens, principals, membership, and authorization decisions are never cached across requests. Token validation and key rotation remain jose's responsibility. See the [read-path performance decision](decisions/2026-10-12-read-path-performance.md).
+
 The first verified user may claim the empty instance only when their email matches `SIGNKIT_BOOTSTRAP_OWNER_EMAIL`. The local-development exception is opt-in and loopback-only. Bootstrap is atomic and creates the first active owner.
 
 Invitations bind a verified email address to a future d6e-auth subject. Acceptance requires the signed-in verified email to match, and creates or reactivates the local member in one transaction.

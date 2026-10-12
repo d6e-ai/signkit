@@ -1,11 +1,11 @@
-import type { Envelope, EnvelopeStatus } from '$lib/domain/envelope';
+import { envelopeStatuses, type Envelope, type EnvelopeStatus } from '$lib/domain/envelope';
 import type { DraftPointerUpdate, EnvelopeStore } from '$lib/ports/envelope-store';
 
-interface EnvelopeRow {
+export interface D1EnvelopeRow {
 	id: string;
 	created_by_user_id: string;
 	title: string;
-	status: EnvelopeStatus;
+	status: string;
 	repository_generation: number;
 	repository_head: string | null;
 	repository_archive_key: string | null;
@@ -16,15 +16,17 @@ interface EnvelopeRow {
 	updated_at: string;
 }
 
+export const D1_ENVELOPE_BY_ID_SQL: string = 'SELECT * FROM envelope WHERE id = ? LIMIT 1';
+
 export class D1EnvelopeStore implements EnvelopeStore {
 	constructor(private readonly database: D1Database) {}
 
 	async findEnvelope(envelopeId: string): Promise<Envelope | null> {
 		const row = await this.database
-			.prepare('SELECT * FROM envelope WHERE id = ? LIMIT 1')
+			.prepare(D1_ENVELOPE_BY_ID_SQL)
 			.bind(envelopeId)
-			.first<EnvelopeRow>();
-		return row ? fromRow(row) : null;
+			.first<D1EnvelopeRow>();
+		return row === null ? null : d1EnvelopeFromRow(row);
 	}
 
 	async compareAndSetDraftPointer(
@@ -62,12 +64,31 @@ export class D1EnvelopeStore implements EnvelopeStore {
 	}
 }
 
-function fromRow(row: EnvelopeRow): Envelope {
+export function d1EnvelopeFromRow(row: D1EnvelopeRow): Envelope {
+	const status: EnvelopeStatus | null = envelopeStatusFromRow(row.status);
+	if (
+		typeof row.id !== 'string' ||
+		row.id.length === 0 ||
+		typeof row.created_by_user_id !== 'string' ||
+		row.created_by_user_id.length === 0 ||
+		typeof row.title !== 'string' ||
+		typeof row.created_at !== 'string' ||
+		row.created_at.length === 0 ||
+		typeof row.updated_at !== 'string' ||
+		row.updated_at.length === 0 ||
+		status === null ||
+		!Number.isSafeInteger(row.repository_generation) ||
+		row.repository_generation < 0 ||
+		!Number.isSafeInteger(row.field_generation) ||
+		row.field_generation < 0
+	) {
+		throw new Error('Stored envelope row is corrupted.');
+	}
 	return {
 		id: row.id,
 		createdByUserId: row.created_by_user_id,
 		title: row.title,
-		status: row.status,
+		status,
 		repositoryGeneration: row.repository_generation,
 		repositoryHead: row.repository_head,
 		repositoryArchiveKey: row.repository_archive_key,
@@ -77,4 +98,11 @@ function fromRow(row: EnvelopeRow): Envelope {
 		createdAt: row.created_at,
 		updatedAt: row.updated_at
 	};
+}
+
+function envelopeStatusFromRow(value: string): EnvelopeStatus | null {
+	for (const status of envelopeStatuses) {
+		if (status === value) return status;
+	}
+	return null;
 }

@@ -25,6 +25,7 @@ vi.mock('$lib/application/instance/instance-runtime', () => ({
 }));
 
 const { handleSession } = await import('./hooks.server');
+const { load: loadLayout } = await import('./routes/+layout.server');
 const { D6eAuthRejectedError } = await import('$lib/server/d6e-auth');
 const { SESSION_COOKIE, seal } = await import('$lib/server/session');
 
@@ -97,6 +98,18 @@ async function run(cookies: CookieJar): Promise<App.Locals> {
 		resolve: async (): Promise<Response> => new Response('ok')
 	} as unknown as Parameters<typeof handleSession>[0]);
 	return evt.locals;
+}
+
+async function runPage(cookies: CookieJar, pathname: string = '/envelopes'): Promise<Response> {
+	const evt: RequestEvent = event(cookies);
+	evt.url.pathname = pathname;
+	return handleSession({
+		event: evt,
+		resolve: async (resolved): Promise<Response> => {
+			const data = await loadLayout(resolved as Parameters<typeof loadLayout>[0]);
+			return Response.json(data);
+		}
+	});
 }
 
 beforeEach((): void => {
@@ -250,5 +263,43 @@ describe('handleSession: distinguishing rejection from provider outage', () => {
 		expect(locals.identityState).toBe('unavailable');
 		expect(cookies.deletedNames).toEqual([]);
 		expect(cookies.has(SESSION_COOKIE)).toBe(true);
+	});
+});
+
+describe('hook and root layout membership snapshot', () => {
+	it('resolves membership once through the real hook and layout without serializing the cache', async () => {
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
+		const response = await runPage(cookies);
+		expect(await response.json()).toEqual({
+			email: PRINCIPAL.email,
+			name: PRINCIPAL.name,
+			instanceMemberRole: 'owner'
+		});
+		expect(getCurrentMember).toHaveBeenCalledExactlyOnceWith({ id: PRINCIPAL.subject });
+	});
+
+	it('reads membership again on the next request and denies a newly suspended member', async () => {
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
+		await runPage(cookies);
+		getCurrentMember.mockResolvedValue({
+			bootstrapped: true,
+			member: { ...DEFAULT_CALLER_CONTEXT.member!, status: 'suspended' }
+		});
+		await expect(runPage(cookies)).rejects.toMatchObject({
+			status: 302,
+			location: expect.stringMatching(/\/settings$/)
+		});
+		expect(getCurrentMember).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not retry unavailable persistence in the layout or grant setup access', async () => {
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		resolveInstanceApplication.mockResolvedValueOnce(null);
+		const cookies: CookieJar = cookieJar({ [SESSION_COOKIE]: await sealedSession() });
+		await expect(runPage(cookies, '/setup')).rejects.toMatchObject({ status: 503 });
+		expect(resolveInstanceApplication).toHaveBeenCalledTimes(1);
+		expect(getCurrentMember).not.toHaveBeenCalled();
 	});
 });

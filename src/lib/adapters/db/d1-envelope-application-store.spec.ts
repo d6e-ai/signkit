@@ -15,11 +15,13 @@ interface FakeD1 {
 	database: D1Database;
 	prepared: StatementRecord[];
 	batch: ReturnType<typeof vi.fn>;
+	rpcCalls: string[];
 }
 
 interface FakeD1Options {
 	allResults?: readonly (readonly unknown[])[];
 	batchError?: Error;
+	batchResults?: readonly (readonly D1Result[])[];
 	firstResults?: readonly unknown[];
 	runError?: Error;
 }
@@ -57,11 +59,78 @@ function envelopeRow(
 	};
 }
 
+function d1Rows<T>(rows: readonly T[], changes: number = 0): D1Result<T> {
+	return {
+		success: true,
+		results: [...rows],
+		meta: {
+			changes,
+			duration: 0,
+			size_after: 0,
+			rows_read: rows.length,
+			rows_written: changes,
+			last_row_id: 0,
+			changed_db: changes > 0
+		}
+	};
+}
+
+function recipientRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		id: '01900000-0000-7000-8000-000000000021',
+		email: 'signer@example.com',
+		name: 'Signer',
+		role: 'signer',
+		locale: 'en',
+		routing_order: 1,
+		status: 'pending',
+		...overrides
+	};
+}
+
+function fieldRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		id: '01900000-0000-7000-8000-000000000022',
+		recipient_id: '01900000-0000-7000-8000-000000000021',
+		document_id: null,
+		document_path: 'documents/agreement.md',
+		field_type: 'signature',
+		required: 1,
+		position: 1,
+		page: 1,
+		x: 0.1,
+		y: 0.2,
+		width: 0.3,
+		height: 0.05,
+		...overrides
+	};
+}
+
+function detailBatchResults(options: {
+	envelope?: Record<string, unknown> | null;
+	recipients?: readonly Record<string, unknown>[];
+	ready?: { id: string } | null;
+	fields?: readonly Record<string, unknown>[];
+}): D1Result[] {
+	const envelope: Record<string, unknown> | null | undefined = options.envelope;
+	const ready: { id: string } | null | undefined = options.ready;
+	return [
+		d1Rows(envelope === undefined || envelope === null ? [] : [envelope]),
+		d1Rows(options.recipients ?? []),
+		d1Rows(ready === undefined || ready === null ? [] : [ready]),
+		d1Rows(options.fields ?? [])
+	];
+}
+
 function createFakeD1(options: FakeD1Options = {}): FakeD1 {
 	const firstResults: unknown[] = [...(options.firstResults ?? [])];
 	const allResults: (readonly unknown[])[] = [...(options.allResults ?? [])];
+	const batchResults: D1Result[][] = [...(options.batchResults ?? [])].map(
+		(results: readonly D1Result[]): D1Result[] => [...results]
+	);
 	const prepared: StatementRecord[] = [];
 	const batches: StatementRecord[][] = [];
+	const rpcCalls: string[] = [];
 
 	const prepare = vi.fn((sql: string): D1PreparedStatement => {
 		const record: StatementRecord = {
@@ -74,11 +143,16 @@ function createFakeD1(options: FakeD1Options = {}): FakeD1 {
 				record.bindings = bindings;
 				return statement;
 			},
-			first: async (): Promise<unknown | null> => firstResults.shift() ?? null,
-			all: async (): Promise<{ results: readonly unknown[] }> => ({
-				results: allResults.shift() ?? []
-			}),
+			first: async (): Promise<unknown | null> => {
+				rpcCalls.push('first');
+				return firstResults.shift() ?? null;
+			},
+			all: async (): Promise<{ results: readonly unknown[] }> => {
+				rpcCalls.push('all');
+				return { results: allResults.shift() ?? [] };
+			},
 			run: async (): Promise<{ meta: { changes: number } }> => {
+				rpcCalls.push('run');
 				if (options.runError !== undefined) throw options.runError;
 				return { meta: { changes: 1 } };
 			}
@@ -98,10 +172,15 @@ function createFakeD1(options: FakeD1Options = {}): FakeD1 {
 			})
 		);
 		if (options.batchError !== undefined) throw options.batchError;
-		return [];
+		if (batchResults.length > 0) {
+			const next: D1Result[] | undefined = batchResults.shift();
+			if (next === undefined) throw new Error('Missing scripted batch result.');
+			return next;
+		}
+		return statements.map((): D1Result => d1Rows([], 1));
 	});
 	const database = { prepare, batch } as unknown as D1Database;
-	return { batches, database, prepared, batch };
+	return { batches, database, prepared, batch, rpcCalls };
 }
 
 describe('D1EnvelopeApplicationStore', () => {
@@ -427,34 +506,13 @@ describe('D1EnvelopeApplicationStore', () => {
 			field_generation: 1
 		};
 		const fake: FakeD1 = createFakeD1({
-			firstResults: [readyEnvelope, { id: '01900000-0000-7000-8000-000000000033' }],
-			allResults: [
-				[
-					{
-						id: '01900000-0000-7000-8000-000000000021',
-						email: 'signer@example.com',
-						name: 'Signer',
-						role: 'signer',
-						locale: 'en',
-						routing_order: 1,
-						status: 'pending'
-					}
-				],
-				[
-					{
-						id: '01900000-0000-7000-8000-000000000022',
-						recipient_id: '01900000-0000-7000-8000-000000000021',
-						document_path: 'documents/agreement.md',
-						field_type: 'signature',
-						required: 1,
-						position: 1,
-						page: 1,
-						x: 0.1,
-						y: 0.2,
-						width: 0.3,
-						height: 0.05
-					}
-				]
+			batchResults: [
+				detailBatchResults({
+					envelope: readyEnvelope,
+					recipients: [recipientRow()],
+					ready: { id: '01900000-0000-7000-8000-000000000033' },
+					fields: [fieldRow()]
+				})
 			]
 		});
 		const store = new D1EnvelopeApplicationStore(fake.database);
@@ -478,12 +536,183 @@ describe('D1EnvelopeApplicationStore', () => {
 			geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
 		});
 		expect(JSON.stringify(detail)).not.toContain('capability');
+		expect(fake.batch).toHaveBeenCalledOnce();
+		expect(fake.batches[0]).toHaveLength(4);
+		expect(fake.rpcCalls).toEqual([]);
 		const sql = fake.prepared.map((record) => record.sql).join('\n');
 		expect(sql).toContain('FROM recipient');
 		expect(sql).toContain("event_type = 'envelope.ready'");
 		expect(sql).toContain('FROM envelope_field');
 		expect(sql).not.toContain('capability_hash');
 		expect(sql).not.toContain('label');
+	});
+
+	it('returns null for a missing envelope from the same four-statement batch', async () => {
+		const fake: FakeD1 = createFakeD1({
+			batchResults: [
+				detailBatchResults({
+					envelope: null,
+					recipients: [recipientRow()],
+					ready: { id: '01900000-0000-7000-8000-000000000033' },
+					fields: [fieldRow()]
+				})
+			]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		await expect(store.readDetail(command.envelopeId)).resolves.toBeNull();
+		expect(fake.batch).toHaveBeenCalledOnce();
+		expect(fake.batches[0]).toHaveLength(4);
+		expect(fake.rpcCalls).toEqual([]);
+	});
+
+	it('fails closed when the envelope row is malformed', async () => {
+		const fake: FakeD1 = createFakeD1({
+			batchResults: [
+				detailBatchResults({
+					envelope: { ...envelopeRow(command.envelopeId), status: 'not-a-status' },
+					recipients: [],
+					ready: null,
+					fields: []
+				})
+			]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+
+		await expect(store.readDetail(command.envelopeId)).rejects.toThrow(
+			/Stored envelope row is corrupted/
+		);
+		expect(fake.rpcCalls).toEqual([]);
+	});
+
+	it('fails closed when a recipient or field row is malformed', async () => {
+		const recipientFake: FakeD1 = createFakeD1({
+			batchResults: [
+				detailBatchResults({
+					envelope: envelopeRow(command.envelopeId),
+					recipients: [{ ...recipientRow(), role: 'not-a-role' }],
+					ready: null,
+					fields: []
+				})
+			]
+		});
+		await expect(
+			new D1EnvelopeApplicationStore(recipientFake.database).readDetail(command.envelopeId)
+		).rejects.toThrow(/Stored envelope recipient row is corrupted/);
+
+		const fieldFake: FakeD1 = createFakeD1({
+			batchResults: [
+				detailBatchResults({
+					envelope: envelopeRow(command.envelopeId),
+					recipients: [],
+					ready: null,
+					fields: [{ ...fieldRow(), field_type: 'not-a-field' }]
+				})
+			]
+		});
+		await expect(
+			new D1EnvelopeApplicationStore(fieldFake.database).readDetail(command.envelopeId)
+		).rejects.toThrow(/Stored envelope field row is corrupted/);
+	});
+
+	it('ignores a stale ready audit for drafts and uses the latest ready event otherwise', async () => {
+		const staleReady: { id: string } = { id: '01900000-0000-7000-8000-000000000033' };
+		const draftFake: FakeD1 = createFakeD1({
+			batchResults: [
+				detailBatchResults({
+					envelope: envelopeRow(command.envelopeId),
+					recipients: [recipientRow()],
+					ready: staleReady,
+					fields: [fieldRow()]
+				})
+			]
+		});
+		const draftDetail = await new D1EnvelopeApplicationStore(draftFake.database).readDetail(
+			command.envelopeId
+		);
+		expect(draftDetail?.envelope.status).toBe('draft');
+		expect(draftDetail?.readyAuditEventId).toBeNull();
+		expect(draftFake.batch).toHaveBeenCalledOnce();
+		expect(draftFake.rpcCalls).toEqual([]);
+
+		const readyFake: FakeD1 = createFakeD1({
+			batchResults: [
+				detailBatchResults({
+					envelope: { ...envelopeRow(command.envelopeId), status: 'sent' },
+					recipients: [recipientRow()],
+					ready: staleReady,
+					fields: [fieldRow()]
+				})
+			]
+		});
+		const sentDetail = await new D1EnvelopeApplicationStore(readyFake.database).readDetail(
+			command.envelopeId
+		);
+		expect(sentDetail?.envelope.status).toBe('sent');
+		expect(sentDetail?.readyAuditEventId).toBe(staleReady.id);
+	});
+
+	it.each(['ready', 'sent', 'in_progress', 'completed', 'declined', 'expired', 'voided'] as const)(
+		'returns the latest ready audit for %s envelopes from the same batch',
+		async (status) => {
+			const fake: FakeD1 = createFakeD1({
+				batchResults: [
+					detailBatchResults({
+						envelope: { ...envelopeRow(command.envelopeId), status },
+						recipients: [],
+						ready: { id: '01900000-0000-7000-8000-000000000044' },
+						fields: []
+					})
+				]
+			});
+			const detail = await new D1EnvelopeApplicationStore(fake.database).readDetail(
+				command.envelopeId
+			);
+			expect(detail?.envelope.status).toBe(status);
+			expect(detail?.readyAuditEventId).toBe('01900000-0000-7000-8000-000000000044');
+			expect(fake.batch).toHaveBeenCalledOnce();
+			expect(fake.rpcCalls).toEqual([]);
+		}
+	);
+
+	it('uses one batched snapshot rather than sequential RPCs that can tear (fake D1, not deployed timing)', async () => {
+		const snapshotFields: readonly Record<string, unknown>[] = [
+			fieldRow({ id: '01900000-0000-7000-8000-000000000022', position: 0 }),
+			fieldRow({
+				id: '01900000-0000-7000-8000-000000000023',
+				document_id: '01900000-0000-7000-8000-000000000021',
+				document_path: null,
+				position: 1
+			})
+		];
+		const fake: FakeD1 = createFakeD1({
+			batchResults: [
+				detailBatchResults({
+					envelope: { ...envelopeRow(command.envelopeId), status: 'ready' },
+					recipients: [recipientRow()],
+					ready: { id: '01900000-0000-7000-8000-000000000033' },
+					fields: snapshotFields
+				})
+			],
+			firstResults: [envelopeRow(command.envelopeId)]
+		});
+		const store = new D1EnvelopeApplicationStore(fake.database);
+		const detail = await store.readDetail(command.envelopeId);
+
+		expect(detail?.fields).toHaveLength(2);
+		expect(fake.batch).toHaveBeenCalledOnce();
+		expect(fake.batches[0].map((record: StatementRecord): string => record.sql)).toEqual([
+			expect.stringContaining('FROM envelope'),
+			expect.stringContaining('FROM recipient'),
+			expect.stringContaining("event_type = 'envelope.ready'"),
+			expect.stringContaining('FROM envelope_field')
+		]);
+		expect(fake.rpcCalls).toEqual([]);
+		expect(
+			fake.prepared.every(
+				(record: StatementRecord): boolean => record.bindings[0] === command.envelopeId
+			)
+		).toBe(true);
 	});
 
 	it('lists draft revision locators bounded by limit and cursor', async () => {
