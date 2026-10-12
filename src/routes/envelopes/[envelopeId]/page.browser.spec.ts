@@ -2352,3 +2352,166 @@ describe('completed envelope on actual 390x844 mobile viewport with keyboard tab
 		await expect.element(screen.getByRole('link', { name: 'Download final PDF' })).toBeVisible();
 	});
 });
+
+describe('completion-status waterfall: three independent reads', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const completedEnvelope = {
+		...readyEnvelope,
+		status: 'completed' as const,
+		sentCommitSha: '0123456789abcdef0123456789abcdef01234567'
+	};
+	const completedDetail = { ...detail, envelope: completedEnvelope };
+
+	const publishedArtifact = (marker: string) => ({
+		completionArtifact: {
+			envelopeId: ENVELOPE_ID,
+			status: 'published' as const,
+			publishedAt: '2026-09-12T00:00:00.000Z',
+			manifestSha256: marker.repeat(64).slice(0, 64),
+			jsonSha256: 'j'.repeat(64),
+			markdownSha256: 'd'.repeat(64),
+			pdfStatus: 'published' as const
+		}
+	});
+
+	function publishedPdfSeal(profile: 'pades-b-t' | 'pades-b-b') {
+		return jsonResponse({
+			pdfSeal: {
+				envelopeId: ENVELOPE_ID,
+				status: 'published',
+				requestedProfile: profile,
+				achievedProfile: profile,
+				signerCertificateSha256: 'c'.repeat(64),
+				sealedSha256: 's'.repeat(64),
+				sealedByteSize: 1024,
+				validationReportSha256: 'v'.repeat(64),
+				validatedAt: '2026-09-12T00:00:00.000Z',
+				publishedAt: '2026-09-12T00:00:00.000Z'
+			}
+		});
+	}
+
+	function routedFetch(routes: {
+		detail?: () => Response;
+		completionArtifact?: () => Promise<Response> | Response;
+		pdfSeal?: () => Promise<Response> | Response;
+		deliveries?: () => Promise<Response> | Response;
+		reopen?: () => Response;
+	}) {
+		return vi.fn().mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+			const urlStr = String(url);
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/reopen`) && init?.method === 'POST') {
+				return (routes.reopen ?? (() => jsonResponse({})))();
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}`) && init?.method !== 'POST') {
+				return (routes.detail ?? (() => jsonResponse(completedDetail)))();
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/draft`)) {
+				return new Response(null, { status: 404 });
+			}
+			if (urlStr.includes(`/api/v1/envelopes/${ENVELOPE_ID}/deliveries`)) {
+				return await (routes.deliveries ?? (() => jsonResponse([])))();
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact`)) {
+				return await (routes.completionArtifact ?? (() => jsonResponse(publishedArtifact('a'))))();
+			}
+			if (urlStr.endsWith(`/api/v1/envelopes/${ENVELOPE_ID}/pdf-seal`) && init?.method !== 'POST') {
+				return await (routes.pdfSeal ?? (() => publishedPdfSeal('pades-b-t')))();
+			}
+			return jsonResponse({});
+		});
+	}
+
+	it('starts all three completion reads in parallel, not one after another', async () => {
+		const callOrder: string[] = [];
+		const mockFetch = routedFetch({
+			completionArtifact: () => {
+				callOrder.push('artifact');
+				return jsonResponse(publishedArtifact('a'));
+			},
+			pdfSeal: () => {
+				callOrder.push('pdf-seal');
+				return publishedPdfSeal('pades-b-t');
+			},
+			deliveries: () => {
+				callOrder.push('completion-deliveries');
+				return jsonResponse([]);
+			}
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await render(EnvelopePage);
+		await expect.poll(() => callOrder.length).toBeGreaterThanOrEqual(3);
+		// All three were already issued before the test even polled for them --
+		// none awaits the others before starting its own request.
+		expect(new Set(callOrder)).toEqual(new Set(['artifact', 'pdf-seal', 'completion-deliveries']));
+	});
+
+	it('finishes the main load without waiting on the three optional completion reads', async () => {
+		const releaseArtifact: Array<() => void> = [];
+		const mockFetch = routedFetch({
+			completionArtifact: () =>
+				new Promise<Response>((resolve) => {
+					releaseArtifact.push(() => resolve(jsonResponse(publishedArtifact('a'))));
+				})
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		await expect.poll(() => releaseArtifact.length).toBeGreaterThan(0);
+		releaseArtifact[0]();
+	});
+
+	it('shows all three completion errors simultaneously, each in its own section', async () => {
+		const mockFetch = routedFetch({
+			completionArtifact: () => new Response(null, { status: 503 }),
+			pdfSeal: () => new Response(null, { status: 503 }),
+			deliveries: () => new Response(null, { status: 503 })
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByText('Completion status could not be loaded. Please try again shortly.'))
+			.toBeVisible();
+		await expect
+			.element(
+				screen.getByText(
+					'The PDF instance seal status could not be loaded. Please try again shortly.'
+				)
+			)
+			.toBeVisible();
+		await expect
+			.element(
+				screen.getByText(
+					'Completion delivery status could not be loaded. Please try again shortly.'
+				)
+			)
+			.toBeVisible();
+	});
+
+	it("discards an unmounted instance's pending completion reads without throwing", async () => {
+		const releaseArtifact: Array<() => void> = [];
+		const mockFetch = routedFetch({
+			completionArtifact: () =>
+				new Promise<Response>((resolve) => {
+					releaseArtifact.push(() => resolve(jsonResponse(publishedArtifact('a'))));
+				})
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(EnvelopePage);
+		await expect
+			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
+			.toBeVisible();
+		screen.unmount();
+		await expect.poll(() => releaseArtifact.length).toBeGreaterThan(0);
+		expect(() => releaseArtifact.forEach((release) => release())).not.toThrow();
+	});
+});

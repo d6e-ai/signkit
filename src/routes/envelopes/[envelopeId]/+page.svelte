@@ -116,6 +116,13 @@
 	// captures this value when it starts and discards its result if the
 	// component has since been destroyed or a newer generation has begun.
 	let completionReadsGeneration = 0;
+	// Tracks which generation currently has an in-flight PDF-seal-status
+	// fetch, separately from the UI-facing `pdfSealStatusPending` flag: a
+	// stale call finishing after a newer `load()` has already started must
+	// not clear the pending indicator the newer call set, and the newer
+	// call's own guard must never be blocked by an old generation's
+	// still-in-flight request.
+	let pdfSealStatusInFlightGeneration: number | null = null;
 	let destroyed = false;
 	onDestroy(() => {
 		destroyed = true;
@@ -838,6 +845,13 @@
 		loading = true;
 		authRequired = false;
 		loadError = null;
+		// Every `load()` attempt invalidates whatever the completion-status
+		// waterfall was doing before it, regardless of whether this attempt
+		// succeeds, fails, or even reaches a completed envelope -- otherwise a
+		// slow read kicked off by an earlier successful load could still land
+		// after a *failed* reload, writing into a page that is now showing an
+		// error.
+		completionReadsGeneration += 1;
 		try {
 			const detail = await client.getDetail(envelopeId);
 			envelope = detail.envelope;
@@ -892,7 +906,6 @@
 				// must not wait on these optional, sometimes-slow status surfaces,
 				// and none of the three should block another -- each renders its
 				// own loading/error state once it settles.
-				completionReadsGeneration += 1;
 				void Promise.all([
 					refreshCompletionStatus(),
 					refreshPdfSealStatus(),
@@ -1789,8 +1802,9 @@
 		URL.revokeObjectURL(href);
 	}
 	async function refreshPdfSealStatus(): Promise<void> {
-		if (pdfSealStatusPending) return;
 		const generation = completionReadsGeneration;
+		if (pdfSealStatusInFlightGeneration === generation) return;
+		pdfSealStatusInFlightGeneration = generation;
 		pdfSealStatusPending = true;
 		pdfSealStatusError = null;
 		try {
@@ -1802,7 +1816,10 @@
 			pdfSealStatus = null;
 			pdfSealStatusError = m.envelope_pdf_seal_status_unavailable();
 		} finally {
-			pdfSealStatusPending = false;
+			if (pdfSealStatusInFlightGeneration === generation) {
+				pdfSealStatusInFlightGeneration = null;
+				pdfSealStatusPending = false;
+			}
 		}
 	}
 

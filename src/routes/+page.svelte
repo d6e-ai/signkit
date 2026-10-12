@@ -11,7 +11,7 @@
 	import * as Field from '$lib/components/ui/field';
 	import { Input } from '$lib/components/ui/input';
 	import * as Table from '$lib/components/ui/table';
-	import * as Tabs from '$lib/components/ui/tabs';
+	import { tabsListVariants } from '$lib/components/ui/tabs';
 	import type {
 		DashboardCounts,
 		DashboardItem,
@@ -21,6 +21,11 @@
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale, localizeHref } from '$lib/paraglide/runtime';
 	import type { PageData } from './$types';
+
+	interface WorklistError {
+		status: number;
+		message: string;
+	}
 
 	let { data }: { data: PageData } = $props();
 
@@ -78,28 +83,30 @@
 				? 'outline'
 				: 'secondary';
 
-	// Never a sign/approve shortcut: `actionRequired` only ever changes which
-	// of these labels is shown, never an envelope's real signing authority or
-	// where the row links to.
-	const progressLabel = (item: DashboardItem): string =>
-		item.envelope.status === 'draft' || item.envelope.status === 'ready'
-			? m.dashboard_row_not_sent()
-			: item.actionRequired
-				? m.dashboard_row_action_required_label()
-				: (item.envelope.status === 'sent' || item.envelope.status === 'in_progress') &&
-					  item.nextRecipient !== null
-					? m.dashboard_row_waiting_on({
-							name: item.nextRecipient.name || item.nextRecipient.email
-						})
-					: m.dashboard_row_progress({
-							// Completion progress counts only recipients whose turn
-							// actually matters to the outcome (signers/approvers), never
-							// CC'd recipients -- `recipientCount` includes CC and would
-							// otherwise understate progress on a fully-actionable
-							// envelope.
-							completed: item.completedRecipientCount,
-							total: item.actionableRecipientCount
-						});
+	// The status badge already names draft/ready/completed/declined/expired/
+	// voided -- this only ever adds a second line for the two *active*
+	// statuses, where there is real information the badge alone can't carry
+	// (whose turn it is, or how far along a multi-signer envelope is). It
+	// never implies a terminal envelope is still progressing, and never
+	// changes an envelope's real signing authority or where the row links to.
+	const secondaryStatusText = (item: DashboardItem): string | null => {
+		if (item.envelope.status !== 'sent' && item.envelope.status !== 'in_progress') return null;
+		if (item.actionRequired) return m.dashboard_row_action_required_label();
+		if (item.nextRecipient !== null) {
+			return m.dashboard_row_waiting_on({
+				name: item.nextRecipient.name || item.nextRecipient.email
+			});
+		}
+		// Every actionable recipient already has their own turn tracked above;
+		// an envelope with zero actionable (signer/approver) recipients has no
+		// meaningful "N/M completed" to show, so render nothing rather than a
+		// fabricated "0/0".
+		if (item.actionableRecipientCount === 0) return null;
+		return m.dashboard_row_progress({
+			completed: item.completedRecipientCount,
+			total: item.actionableRecipientCount
+		});
+	};
 
 	const recipientExtraCount = (item: DashboardItem): number => Math.max(item.recipientCount - 1, 0);
 
@@ -108,15 +115,26 @@
 			? m.dashboard_row_action_continue()
 			: m.dashboard_row_action_open();
 
+	// A table full of identical "Open"/"Continue editing" links reads the
+	// same to a screen reader; the accessible name must carry which
+	// agreement each one opens.
+	const rowActionAccessibleName = (item: DashboardItem): string =>
+		item.envelope.status === 'draft' || item.envelope.status === 'ready'
+			? m.dashboard_row_action_continue_named({ title: item.envelope.title })
+			: m.dashboard_row_action_open_named({ title: item.envelope.title });
+
 	function formatDate(value: string): string {
 		return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(
 			new Date(value)
 		);
 	}
 
-	// Tab/search/pagination links all derive from the current URL so that
-	// switching views or paging is a real navigation (back/forward and
-	// bookmarking work, and SSR `load` supplies the data -- no client fetch).
+	// Tab/search/pagination links all derive from the current query state so
+	// that switching views, searching, or paging is a real navigation (back/
+	// forward and bookmarking work, and SSR `load` supplies the data -- no
+	// client fetch). Every override is explicit about view/q rather than
+	// relying on them already being present in the ambient URL, so a link is
+	// correct even if built from data alone.
 	function buildHref(overrides: {
 		view?: DashboardView;
 		q?: string;
@@ -138,6 +156,31 @@
 		}
 		return localizeHref(`${url.pathname}${url.search}`);
 	}
+
+	function viewHref(view: DashboardView): string {
+		return buildHref({ view, q: data.worklistQuery.query });
+	}
+
+	function clearSearchHref(): string {
+		return buildHref({ view: data.worklistQuery.view, q: '' });
+	}
+
+	function firstPageHref(): string {
+		return buildHref({ view: data.worklistQuery.view, q: data.worklistQuery.query, cursor: null });
+	}
+
+	function nextPageHref(cursor: string): string {
+		return buildHref({ view: data.worklistQuery.view, q: data.worklistQuery.query, cursor });
+	}
+
+	// The backend's own problem detail is an English API string not meant for
+	// end users in either locale; only the HTTP status is trustworthy enough
+	// to localize into user-facing copy.
+	function worklistErrorDescription(error: WorklistError): string {
+		return error.status === 503
+			? m.dashboard_error_description_unavailable()
+			: m.dashboard_error_description_generic();
+	}
 </script>
 
 <svelte:head>
@@ -152,28 +195,35 @@
 		</Button>
 	</section>
 
-	<div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-		<Tabs.Root value={data.worklistQuery.view} class="w-full sm:w-auto">
-			<Tabs.List variant="line" class="w-full overflow-x-auto sm:w-auto">
-				{#each dashboardViews as view (view)}
-					<a
-						href={buildHref({ view, q: data.worklistQuery.query })}
-						aria-current={data.worklistQuery.view === view ? 'page' : undefined}
-						data-active={data.worklistQuery.view === view ? '' : undefined}
-						class="relative inline-flex h-[calc(100%_-_1px)] flex-1 items-center justify-center gap-2 rounded-full border border-transparent px-3 py-1 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring data-active:bg-background data-active:text-foreground"
-					>
-						{viewTabLabel(view)}
-						{#if data.worklist}
-							<Badge variant="secondary">{viewTabCount(view, data.worklist.counts)}</Badge>
-						{/if}
-					</a>
-				{/each}
-			</Tabs.List>
-		</Tabs.Root>
+	<nav
+		aria-label={m.dashboard_views_nav_label()}
+		class={tabsListVariants({ variant: 'line', class: 'h-auto w-full flex-wrap overflow-x-auto' })}
+	>
+		{#each dashboardViews as view (view)}
+			<Button
+				href={viewHref(view)}
+				variant={data.worklistQuery.view === view ? 'secondary' : 'ghost'}
+				size="sm"
+				aria-current={data.worklistQuery.view === view ? 'page' : undefined}
+			>
+				{viewTabLabel(view)}
+				{#if data.worklist}
+					<Badge variant={data.worklistQuery.view === view ? 'default' : 'secondary'}>
+						{viewTabCount(view, data.worklist.counts)}
+					</Badge>
+				{/if}
+			</Button>
+		{/each}
+	</nav>
 
-		<form method="GET" action={localizeHref(page.url.pathname)} class="flex items-end gap-2">
-			<input type="hidden" name="view" value={data.worklistQuery.view} />
-			<Field.Field class="w-full sm:w-64">
+	<form
+		method="GET"
+		action={localizeHref(page.url.pathname)}
+		class="flex flex-wrap items-end gap-2"
+	>
+		<input type="hidden" name="view" value={data.worklistQuery.view} />
+		<Field.FieldGroup class="min-w-48 flex-1 sm:w-96 sm:flex-none">
+			<Field.Field>
 				<Field.FieldLabel for="dashboard-search">{m.dashboard_search_label()}</Field.FieldLabel>
 				<Input
 					id="dashboard-search"
@@ -183,16 +233,20 @@
 					value={data.worklistQuery.query}
 				/>
 			</Field.Field>
-			<Button type="submit" variant="outline">{m.dashboard_search_submit()}</Button>
-		</form>
-	</div>
+		</Field.FieldGroup>
+		<Button type="submit" variant="outline">{m.dashboard_search_submit()}</Button>
+	</form>
+
+	{#if data.worklistQuery.view === 'action_required' && data.worklist && data.worklist.items.length > 0}
+		<p class="text-sm text-muted-foreground">{m.dashboard_action_required_hint()}</p>
+	{/if}
 
 	{#if data.worklistError}
 		<Alert.Root variant="destructive">
 			<IconAlertTriangle />
 			<Alert.Title>{m.dashboard_error_title()}</Alert.Title>
 			<Alert.Description class="flex flex-col gap-3">
-				<p>{data.worklistError.message}</p>
+				<p>{worklistErrorDescription(data.worklistError)}</p>
 				<Button variant="outline" class="w-fit" onclick={() => void invalidateAll()}>
 					{m.common_retry()}
 				</Button>
@@ -202,9 +256,28 @@
 		<Empty.Root>
 			<Empty.Header>
 				<Empty.Media variant="icon"><IconFileText /></Empty.Media>
-				<Empty.Title>{m.dashboard_empty_title()}</Empty.Title>
-				<Empty.Description>{m.dashboard_empty_description()}</Empty.Description>
+				{#if data.worklist === null || data.worklist.counts.all === 0}
+					<Empty.Title>{m.dashboard_empty_workspace_title()}</Empty.Title>
+					<Empty.Description>{m.dashboard_empty_workspace_description()}</Empty.Description>
+				{:else if data.worklistQuery.query !== ''}
+					<Empty.Title>{m.dashboard_empty_search_title()}</Empty.Title>
+					<Empty.Description>{m.dashboard_empty_search_description()}</Empty.Description>
+				{:else}
+					<Empty.Title>{m.dashboard_empty_view_title()}</Empty.Title>
+					<Empty.Description>{m.dashboard_empty_view_description()}</Empty.Description>
+				{/if}
 			</Empty.Header>
+			<Empty.Content>
+				{#if data.worklist !== null && data.worklist.counts.all > 0 && data.worklistQuery.query !== ''}
+					<Button variant="outline" href={clearSearchHref()}>{m.dashboard_clear_search()}</Button>
+				{:else if data.worklist !== null && data.worklist.counts.all > 0 && data.worklistQuery.view !== 'all'}
+					<Button variant="outline" href={viewHref('all')}>{m.dashboard_tab_all()}</Button>
+				{:else}
+					<Button href={localizeHref('/envelopes/new')}>
+						<IconFileText data-icon="inline-start" />{m.dashboard_send_contract()}
+					</Button>
+				{/if}
+			</Empty.Content>
 		</Empty.Root>
 	{:else}
 		<div class="overflow-x-auto rounded-xl border">
@@ -221,11 +294,8 @@
 				<Table.Body>
 					{#each data.worklist.items as item (item.envelope.id)}
 						<Table.Row>
-							<Table.Cell class="max-w-64 font-medium">
-								<a
-									href={localizeHref(`/envelopes/${item.envelope.id}`)}
-									class="truncate hover:underline"
-								>
+							<Table.Cell class="font-medium">
+								<a href={localizeHref(`/envelopes/${item.envelope.id}`)} class="hover:underline">
 									{item.envelope.title}
 								</a>
 							</Table.Cell>
@@ -248,7 +318,9 @@
 									<Badge variant={statusVariant(item.envelope.status)}>
 										{statusLabel(item.envelope.status)}
 									</Badge>
-									<span class="text-xs text-muted-foreground">{progressLabel(item)}</span>
+									{#if secondaryStatusText(item)}
+										<span class="text-xs text-muted-foreground">{secondaryStatusText(item)}</span>
+									{/if}
 								</div>
 							</Table.Cell>
 							<Table.Cell class="text-muted-foreground">
@@ -259,6 +331,7 @@
 									href={localizeHref(`/envelopes/${item.envelope.id}`)}
 									variant="outline"
 									size="sm"
+									aria-label={rowActionAccessibleName(item)}
 								>
 									{rowActionLabel(item.envelope.status)}
 									<IconArrowRight data-icon="inline-end" />
@@ -270,18 +343,16 @@
 			</Table.Root>
 		</div>
 
-		{#if data.worklist.nextCursor}
-			<div class="flex justify-center">
-				<Button
-					variant="outline"
-					href={buildHref({
-						view: data.worklistQuery.view,
-						q: data.worklistQuery.query,
-						cursor: data.worklist.nextCursor
-					})}
-				>
-					{m.dashboard_pagination_next()}
-				</Button>
+		{#if data.worklistQuery.cursor !== null || data.worklist.nextCursor}
+			<div class="flex items-center justify-center gap-2">
+				{#if data.worklistQuery.cursor !== null}
+					<Button variant="outline" href={firstPageHref()}>{m.dashboard_pagination_first()}</Button>
+				{/if}
+				{#if data.worklist.nextCursor}
+					<Button variant="outline" href={nextPageHref(data.worklist.nextCursor)}>
+						{m.dashboard_pagination_next()}
+					</Button>
+				{/if}
 			</div>
 		{/if}
 	{/if}
