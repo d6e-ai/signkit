@@ -416,8 +416,7 @@ function verifyRecipientRosterMatchesReadyEvent(
 			if (
 				readyEvents.length !== 1 ||
 				auditEvents.some(
-					(event: CompletionEvidenceAuditEvent): boolean =>
-						event.eventType === REOPENED_EVENT_TYPE
+					(event: CompletionEvidenceAuditEvent): boolean => event.eventType === REOPENED_EVENT_TYPE
 				)
 			) {
 				throw new CompletionArtifactIntegrityError(
