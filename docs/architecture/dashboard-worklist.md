@@ -4,6 +4,11 @@ Issue #233 replaces the dashboard's client-side detail-fetch waterfall with
 a server-rendered contract worklist. This document covers the read model,
 the HTTP surface, and the SSR loader.
 
+`GET /api/v1/system/capabilities` advertises this feature as
+`dashboardWorklist`, with its session-only read endpoint and supported views.
+It explicitly rejects API-key authentication in the discovery contract, just
+as the route does at runtime; the bearer-key read endpoint list is unchanged.
+
 ## Contract
 
 `src/lib/application/dashboard/model.ts` is the shared contract between the

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-10-12
+
+### Added
+
+- A server-rendered contract worklist with title/recipient search, status views, bounded pages, and whole-instance counts. Action-required badges and icon-only actions with localized tooltips work on desktop and mobile ([#233](https://github.com/d6e-ai/signkit/issues/233), [#237](https://github.com/d6e-ai/signkit/pull/237)).
+- Advertise the worklist read endpoint as session-only in system capabilities; it is not added to the API-key surface.
+
+### Changed
+
+- Simplify sender authoring/review wording and workspace-management navigation while keeping the shared Luma layout ([#229](https://github.com/d6e-ai/signkit/pull/229)).
+- Reuse request-local authorization work and bound D1 list/summary reads with additive D1 and PostgreSQL indexes ([#235](https://github.com/d6e-ai/signkit/pull/235)).
+
+### Fixed
+
+- Load independent completion, seal, and delivery details in parallel without blocking the contract page. Clear previous completion state and supersede older seal-status reads after a seal request ([#237](https://github.com/d6e-ai/signkit/pull/237)).
+- Retain completion verification compatibility for historical sends without a recorded ready-event identifier ([#229](https://github.com/d6e-ai/signkit/pull/229)).
+
+### Security
+
+- Worklist action flags are informational and never grant signing authority. No shared authorization cache is introduced. Known deployment risks remain documented in [docs/architecture/deployment-and-risks.md](docs/architecture/deployment-and-risks.md); Vercel remains CI-only. Portable cross-case Unicode search remains tracked separately in [#236](https://github.com/d6e-ai/signkit/issues/236).
+
 ## [0.1.16] - 2026-10-11
 
 ### Fixed

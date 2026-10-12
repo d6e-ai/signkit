@@ -11,6 +11,14 @@ function createEvent(platform?: App.Platform): RequestEvent {
 }
 
 interface CapabilitiesResponse {
+	dashboardWorklist: {
+		status: string;
+		readEndpoint: string;
+		authentication: string;
+		apiKeyAuthentication: boolean;
+		pagination: string;
+		views: string[];
+	};
 	apiKeyAuthentication: {
 		scheme: string;
 		tokenPrefix: string;
@@ -241,6 +249,16 @@ describe('GET /api/v1/system/capabilities', () => {
 			tokenPrefix: 'skca1',
 			cookies: false
 		});
+
+		expect(data.dashboardWorklist).toEqual({
+			status: 'supported',
+			readEndpoint: '/api/v1/dashboard',
+			authentication: 'instance-session',
+			apiKeyAuthentication: false,
+			pagination: 'keyset-cursor',
+			views: ['all', 'action_required', 'waiting', 'drafts', 'completed']
+		});
+		expect(data.apiKeyAuthentication.readEndpoints).not.toContain('/api/v1/dashboard');
 
 		// API key bearer authentication capabilities. The owner-membership requirement
 		// and exact live scope set are advertised for agent integrators.
