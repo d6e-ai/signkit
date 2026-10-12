@@ -32,6 +32,15 @@ describe('audit event catalog', () => {
 		expect(isAllowedActorType('envelope.pdf_seal_published', 'user')).toBe(false);
 	});
 
+	it('exposes envelope reopen on the webhook surface with operator actors', () => {
+		expect(isAuditEventType('envelope.reopened')).toBe(true);
+		expect(WEBHOOK_AUDIT_EVENT_TYPES).toContain('envelope.reopened');
+		expect(AUDIT_EVENT_CATALOG['envelope.reopened']?.actorTypes).toEqual(['user', 'agent']);
+		expect(isAllowedActorType('envelope.reopened', 'user')).toBe(true);
+		expect(isAllowedActorType('envelope.reopened', 'agent')).toBe(true);
+		expect(isAllowedActorType('envelope.reopened', 'system')).toBe(false);
+	});
+
 	it('keeps webhook event types in catalog key order without duplicates', () => {
 		expect(WEBHOOK_AUDIT_EVENT_TYPES).toEqual(Object.keys(AUDIT_EVENT_CATALOG));
 		expect(new Set(WEBHOOK_AUDIT_EVENT_TYPES).size).toBe(WEBHOOK_AUDIT_EVENT_TYPES.length);

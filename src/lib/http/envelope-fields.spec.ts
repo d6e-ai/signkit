@@ -5,10 +5,13 @@ import type {
 	PlaceFieldsResult
 } from '$lib/application/envelopes/fields';
 import { InvalidFieldPlacementError } from '$lib/application/envelopes/fields';
+import { AuthoringFieldsIntegrityError } from '$lib/ports/envelope-field-store';
 import {
+	createEnvelopeAuthoringFieldsHandler,
 	createEnvelopeFieldsHandler,
 	type EnvelopeFieldApplicationResolver
 } from './envelope-fields';
+import type { EnvelopeAuthoringFieldsReadPort } from '$lib/application/envelopes/fields';
 import { createHttpRequestEvent, instanceScopedLocals } from './http-handler-test-support';
 
 const envelopeId: string = '01900000-0000-7000-8000-000000000001';
@@ -362,5 +365,93 @@ describe('envelope fields HTTP handler', () => {
 			})
 		);
 		expect(response.status).toBe(400);
+	});
+});
+
+describe('envelope authoring fields GET handler', () => {
+	it('authorizes drafts:write before resolving the store', async () => {
+		const resolver = vi.fn(() => null);
+		const response: Response = await createEnvelopeAuthoringFieldsHandler(resolver)(
+			createHttpRequestEvent({
+				pathname: `/api/v1/envelopes/${envelopeId}/fields`,
+				method: 'GET',
+				locals: locals('anonymous'),
+				params: { envelopeId }
+			})
+		);
+		expect(response.status).toBe(401);
+		expect(resolver).not.toHaveBeenCalled();
+	});
+
+	it('returns stored labels only on this dedicated surface', async () => {
+		const snapshot = {
+			envelopeId,
+			generation: 2,
+			fieldGeneration: 1,
+			commitSha: '0123456789abcdef0123456789abcdef01234567',
+			fields: [
+				{
+					id: '01900000-0000-7000-8000-000000000031',
+					recipientId,
+					documentId: '01900000-0000-7000-8000-000000000021',
+					documentPath: null,
+					fieldType: 'signature' as const,
+					label: 'Sign here',
+					required: true,
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 }
+				}
+			]
+		};
+		const read: EnvelopeAuthoringFieldsReadPort = {
+			readAuthoringFields: vi.fn(async () => snapshot)
+		};
+		const response: Response = await createEnvelopeAuthoringFieldsHandler(() => read)(
+			createHttpRequestEvent({
+				pathname: `/api/v1/envelopes/${envelopeId}/fields`,
+				method: 'GET',
+				locals: locals(),
+				params: { envelopeId }
+			})
+		);
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as typeof snapshot;
+		expect(body).toEqual(snapshot);
+		expect(JSON.stringify(body)).toContain('Sign here');
+	});
+
+	it('returns 404 when the envelope is missing', async () => {
+		const read: EnvelopeAuthoringFieldsReadPort = {
+			readAuthoringFields: vi.fn(async () => null)
+		};
+		const response: Response = await createEnvelopeAuthoringFieldsHandler(() => read)(
+			createHttpRequestEvent({
+				pathname: `/api/v1/envelopes/${envelopeId}/fields`,
+				method: 'GET',
+				locals: locals(),
+				params: { envelopeId }
+			})
+		);
+		expect(response.status).toBe(404);
+	});
+
+	it('maps a corrupt authoring snapshot to integrity unavailable', async () => {
+		const read: EnvelopeAuthoringFieldsReadPort = {
+			readAuthoringFields: vi.fn(async () => {
+				throw new AuthoringFieldsIntegrityError('Authoring field row is incomplete or invalid');
+			})
+		};
+		const response: Response = await createEnvelopeAuthoringFieldsHandler(() => read)(
+			createHttpRequestEvent({
+				pathname: `/api/v1/envelopes/${envelopeId}/fields`,
+				method: 'GET',
+				locals: locals(),
+				params: { envelopeId }
+			})
+		);
+		expect(response.status).toBe(503);
+		expect(await response.json()).toMatchObject({
+			type: 'urn:signkit:problem:authoring-fields-integrity-error'
+		});
 	});
 });

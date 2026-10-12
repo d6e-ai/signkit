@@ -45,8 +45,12 @@ import {
  * objects frozen by the send transaction, never re-rendered from Markdown.
  * Their SQL pointers are reconciled with both the pinned Git document set and
  * the hash-chained `envelope.sent` event before each object is bounded-read and
- * re-hashed. Field placement rows are likewise reconciled exactly with the
- * hash-chained `envelope.fields_placed` event before any geometry is used.
+ * re-hashed. Field placement rows are reconciled with the latest pre-send
+ * `envelope.fields_placed` after any `envelope.reopened` boundary; an empty
+ * current set is accepted only when that reopen payload matches its own
+ * immediately prior ready (readyAuditEventId, commitSha, generation) and
+ * fieldGeneration equals the current empty projection. A later document
+ * revision before re-ready/send is attested by send, not by the clearing reopen.
  */
 
 export interface AssembleExecutedAgreementInput {
@@ -326,25 +330,44 @@ function attestFieldPlacements(
 	payloadsByEventId: ReadonlyMap<string, unknown>,
 	sentEvent: CompletionEvidenceAuditEvent
 ): void {
-	const placementEvents: readonly CompletionEvidenceAuditEvent[] = input.auditEvents.filter(
-		(event: CompletionEvidenceAuditEvent): boolean => event.eventType === 'envelope.fields_placed'
-	);
-	if (placementEvents.length === 0) {
-		if (input.fieldGeneration === 0 && input.fieldGeometry.length === 0) return;
-		throw new ExecutedPdfIntegrityError(
-			'missing_geometry',
-			'Field placement audit history is missing for a non-empty field projection'
-		);
-	}
 	if (
-		placementEvents.some(
-			(event: CompletionEvidenceAuditEvent): boolean => event.sequence > sentEvent.sequence
+		input.auditEvents.some(
+			(event: CompletionEvidenceAuditEvent): boolean =>
+				event.eventType === 'envelope.fields_placed' && event.sequence > sentEvent.sequence
 		)
 	) {
 		throw new ExecutedPdfIntegrityError(
 			'missing_geometry',
 			'Field placement audit history occurs after send'
 		);
+	}
+	const reopenBoundary: CompletionEvidenceAuditEvent | null = latestEventBefore(
+		input.auditEvents,
+		'envelope.reopened',
+		sentEvent.sequence
+	);
+	const placementEvents: readonly CompletionEvidenceAuditEvent[] = input.auditEvents.filter(
+		(event: CompletionEvidenceAuditEvent): boolean =>
+			event.eventType === 'envelope.fields_placed' &&
+			event.sequence < sentEvent.sequence &&
+			(reopenBoundary === null || event.sequence > reopenBoundary.sequence)
+	);
+	if (placementEvents.length === 0) {
+		if (input.fieldGeometry.length !== 0) {
+			throw new ExecutedPdfIntegrityError(
+				'missing_geometry',
+				'Field placement audit history is missing for a non-empty field projection'
+			);
+		}
+		if (reopenBoundary === null) {
+			if (input.fieldGeneration === 0) return;
+			throw new ExecutedPdfIntegrityError(
+				'missing_geometry',
+				'Empty field projection is missing a verified reopen clear for this sent revision'
+			);
+		}
+		attestReopenClearedFields(input, payloadsByEventId, reopenBoundary, sentEvent);
+		return;
 	}
 	const placementEvent: CompletionEvidenceAuditEvent = placementEvents.reduce(
 		(
@@ -398,6 +421,106 @@ function attestFieldPlacements(
 		}
 		seenRows.add(row.id);
 	}
+}
+
+function attestReopenClearedFields(
+	input: AssembleExecutedAgreementInput,
+	payloadsByEventId: ReadonlyMap<string, unknown>,
+	reopenEvent: CompletionEvidenceAuditEvent,
+	sentEvent: CompletionEvidenceAuditEvent
+): void {
+	const payload: Record<string, unknown> = requireRecord(
+		payloadsByEventId.get(reopenEvent.id),
+		'Attested reopen payload is missing'
+	);
+	const latestReady: CompletionEvidenceAuditEvent | null = latestEventBefore(
+		input.auditEvents,
+		'envelope.ready',
+		sentEvent.sequence
+	);
+	if (latestReady === null || latestReady.sequence <= reopenEvent.sequence) {
+		throw new ExecutedPdfIntegrityError(
+			'missing_geometry',
+			'Empty field projection is missing a ready event after the verified reopen clear'
+		);
+	}
+	if (typeof payload.readyAuditEventId !== 'string' || payload.readyAuditEventId.length === 0) {
+		throw new ExecutedPdfIntegrityError(
+			'missing_geometry',
+			'Verified reopen clear is missing its prior ready anchor'
+		);
+	}
+	const namedReady: CompletionEvidenceAuditEvent | null = eventById(
+		input.auditEvents,
+		payload.readyAuditEventId
+	);
+	const priorReady: CompletionEvidenceAuditEvent | null = latestEventBefore(
+		input.auditEvents,
+		'envelope.ready',
+		reopenEvent.sequence
+	);
+	if (
+		namedReady === null ||
+		namedReady.eventType !== 'envelope.ready' ||
+		namedReady.sequence >= reopenEvent.sequence ||
+		priorReady === null ||
+		namedReady.id !== priorReady.id
+	) {
+		throw new ExecutedPdfIntegrityError(
+			'missing_geometry',
+			'Verified reopen clear does not name its immediately prior ready'
+		);
+	}
+	const priorReadyPayload: Record<string, unknown> = requireRecord(
+		payloadsByEventId.get(priorReady.id),
+		'Attested prior ready payload is missing'
+	);
+	if (
+		typeof payload.commitSha !== 'string' ||
+		typeof priorReadyPayload.commitSha !== 'string' ||
+		payload.commitSha !== priorReadyPayload.commitSha ||
+		!Number.isSafeInteger(payload.generation) ||
+		(payload.generation as number) < 1 ||
+		!Number.isSafeInteger(priorReadyPayload.generation) ||
+		payload.generation !== priorReadyPayload.generation ||
+		!Number.isSafeInteger(payload.fieldGeneration) ||
+		(payload.fieldGeneration as number) < 1 ||
+		payload.fieldGeneration !== input.fieldGeneration
+	) {
+		throw new ExecutedPdfIntegrityError(
+			'missing_geometry',
+			'Verified reopen clear does not match its prior ready or current empty projection'
+		);
+	}
+}
+
+function eventById(
+	events: readonly CompletionEvidenceAuditEvent[],
+	id: string
+): CompletionEvidenceAuditEvent | null {
+	return (
+		events.find((candidate: CompletionEvidenceAuditEvent): boolean => candidate.id === id) ?? null
+	);
+}
+
+function latestEventBefore(
+	events: readonly CompletionEvidenceAuditEvent[],
+	eventType: string,
+	beforeSequence: number
+): CompletionEvidenceAuditEvent | null {
+	return events.reduce<CompletionEvidenceAuditEvent | null>(
+		(
+			current: CompletionEvidenceAuditEvent | null,
+			candidate: CompletionEvidenceAuditEvent
+		): CompletionEvidenceAuditEvent | null => {
+			if (candidate.eventType !== eventType || candidate.sequence >= beforeSequence) {
+				return current;
+			}
+			if (current === null || candidate.sequence > current.sequence) return candidate;
+			return current;
+		},
+		null
+	);
 }
 
 function parseSentDocuments(value: unknown): readonly SentAuditDocumentDeclaration[] {

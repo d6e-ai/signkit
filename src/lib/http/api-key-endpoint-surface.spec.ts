@@ -15,9 +15,13 @@ import { createDeliveryStatusHandler } from './delivery-status';
 import { createDraftHttpHandlers } from './drafts';
 import { createDocxExportHandler } from './docx-export';
 import { createDocxImportHandler } from './docx-import';
-import { createEnvelopeFieldsHandler } from './envelope-fields';
+import {
+	createEnvelopeAuthoringFieldsHandler,
+	createEnvelopeFieldsHandler
+} from './envelope-fields';
 import { createEnvelopeHttpHandlers } from './envelopes';
 import { createEnvelopeReadyHandler } from './envelope-ready';
+import { createEnvelopeReopenHandler } from './envelope-reopen';
 import { createEnvelopeSendHandler } from './envelope-send';
 import { createEnvelopeVoidHandler } from './envelope-void';
 import { createPdfSealRequestHandler, createPdfSealStatusHandler } from './pdf-seal';
@@ -514,6 +518,51 @@ describe('API key mutation surface', () => {
 			}
 		],
 		[
+			'POST /api/v1/envelopes/{envelopeId}/reopen',
+			'drafts:write',
+			async () => {
+				const reopen = vi.fn(async () => ({ outcome: 'integrity_error' as const }));
+				const response: Response = await createEnvelopeReopenHandler(() => ({ reopen }))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/reopen`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						body: JSON.stringify({
+							expectedGeneration: 1,
+							expectedFieldGeneration: 0,
+							expectedReadyAuditEventId: ENVELOPE_ID
+						}),
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: principal({ scopes: ['drafts:write'] })
+						}
+					})
+				);
+				return { response, called: reopen.mock.calls.length === 1 };
+			}
+		],
+		[
+			'GET /api/v1/envelopes/{envelopeId}/fields',
+			'drafts:write',
+			async () => {
+				const readAuthoringFields = vi.fn(async () => null);
+				const response: Response = await createEnvelopeAuthoringFieldsHandler(() => ({
+					readAuthoringFields
+				}))(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/fields`,
+						method: 'GET',
+						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: {
+							state: 'authenticated',
+							principal: principal({ scopes: ['drafts:write'] })
+						}
+					})
+				);
+				return { response, called: readAuthoringFields.mock.calls.length === 1 };
+			}
+		],
+		[
 			'POST /api/v1/envelopes/{envelopeId}/send',
 			'envelopes:send',
 			async () => {
@@ -680,6 +729,30 @@ describe('API key mutation surface', () => {
 					event({
 						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/ready`,
 						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+					})
+				)
+		],
+		[
+			'POST /api/v1/envelopes/{envelopeId}/reopen',
+			async (): Promise<Response> =>
+				createEnvelopeReopenHandler(() => null)(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/reopen`,
+						method: 'POST',
+						params: { envelopeId: ENVELOPE_ID },
+						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
+					})
+				)
+		],
+		[
+			'GET /api/v1/envelopes/{envelopeId}/fields',
+			async (): Promise<Response> =>
+				createEnvelopeAuthoringFieldsHandler(() => null)(
+					event({
+						pathname: `/api/v1/envelopes/${ENVELOPE_ID}/fields`,
+						method: 'GET',
 						params: { envelopeId: ENVELOPE_ID },
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
 					})

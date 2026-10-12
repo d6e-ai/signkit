@@ -427,7 +427,7 @@ async function evidenceWithSent(
 			actorType: 'user',
 			actorId: 'user-1',
 			occurredAt: '2026-09-10T00:00:40.000Z',
-			payload: sentPayload
+			payload: { readyAuditEventId: 'event-ready', ...sentPayload }
 		},
 		{
 			id: 'event-2',
@@ -501,7 +501,11 @@ async function agentAuthoredEvidence(): Promise<CompletionEvidence> {
 			actorType: 'agent',
 			actorId: 'api-key-1',
 			occurredAt: '2026-09-10T00:00:50.000Z',
-			payload: { commitSha: SENT_COMMIT_SHA, generation: 1 }
+			payload: {
+				commitSha: SENT_COMMIT_SHA,
+				generation: 1,
+				readyAuditEventId: 'event-ready'
+			}
 		},
 		{
 			id: 'event-2',
@@ -698,6 +702,208 @@ async function executedScenario(options: ExecutedScenarioOptions = {}): Promise<
 			pdfEvidenceStore,
 			new FakeEnvelopeSentDocumentStore(sentDocumentSet),
 			options.pdfRepairStore ?? null
+		)
+	};
+}
+
+async function approvalOnlyReopenScenario(
+	reopenFieldGeneration: number,
+	includePriorPlacement: boolean = true,
+	priorReady: { commitSha: string; generation: number } | null = null
+): Promise<ExecutedScenario> {
+	const priorRevision: { commitSha: string; generation: number } = priorReady ?? {
+		commitSha: SENT_COMMIT_SHA,
+		generation: 1
+	};
+	const finalGeneration: number = priorReady === null ? 1 : priorReady.generation + 1;
+	const store = new FakeCompletionArtifactStore();
+	const objects = new InMemoryObjectStore();
+	store.claims = [claimWithSeededArchive(objects, { fieldGeneration: 1 })];
+	const manifest = upsertMarkdownDocument(
+		null,
+		'documents/agreement.md',
+		sha256Hex(new TextEncoder().encode('Agreement body')),
+		() => MARKDOWN_DOCUMENT_ID
+	);
+	const renderedSentPdf = renderRevisionPdf([
+		{ path: 'documents/agreement.md', content: 'Agreement body' }
+	]);
+	const sentPdfSha256: string = sha256Hex(renderedSentPdf.bytes);
+	const sentPdfKey: string = sentPdfObjectKey(ENVELOPE_ID, sentPdfSha256);
+	objects.seed(sentPdfKey, renderedSentPdf.bytes, sentPdfSha256);
+	const leaf = manifest.documents[0];
+	const sentDocumentSet: SentDocumentSetPointer = {
+		envelopeId: ENVELOPE_ID,
+		commitSha: SENT_COMMIT_SHA,
+		documentSetHash: await documentSetHash(manifest),
+		documentCount: 1,
+		documents: [
+			{
+				envelopeId: ENVELOPE_ID,
+				commitSha: SENT_COMMIT_SHA,
+				documentId: leaf.id,
+				position: leaf.position,
+				kind: leaf.kind,
+				title: leaf.title,
+				objectKey: sentPdfKey,
+				sha256: sentPdfSha256,
+				byteSize: renderedSentPdf.bytes.byteLength,
+				pageCount: renderedSentPdf.pageCount,
+				pageWidth: renderedSentPdf.pageWidth,
+				pageHeight: renderedSentPdf.pageHeight,
+				createdAt: '2026-09-10T00:00:40.000Z'
+			}
+		],
+		createdAt: '2026-09-10T00:00:40.000Z'
+	};
+	const sentPayload = {
+		commitSha: SENT_COMMIT_SHA,
+		readyAuditEventId: 'event-ready',
+		documentSetHash: sentDocumentSet.documentSetHash,
+		documentCount: 1,
+		documents: [
+			{
+				id: leaf.id,
+				sha256: sentPdfSha256,
+				byteSize: renderedSentPdf.bytes.byteLength,
+				pageCount: renderedSentPdf.pageCount
+			}
+		]
+	};
+	const auditEvents = await buildVerifiedAuditChain({ envelopeId: ENVELOPE_ID }, [
+		{
+			id: 'event-1',
+			eventType: 'envelope.created',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:00.000Z',
+			payload: { title: 'Agreement' }
+		},
+		{
+			id: 'event-ready-1',
+			eventType: 'envelope.ready',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:20.000Z',
+			payload: {
+				commitSha: priorRevision.commitSha,
+				generation: priorRevision.generation,
+				recipients: [{ id: 'recipient-1', role: 'approver', routingOrder: 1 }]
+			}
+		},
+		...(includePriorPlacement
+			? [
+					{
+						id: 'event-fields',
+						eventType: 'envelope.fields_placed',
+						actorType: 'user',
+						actorId: 'user-1',
+						occurredAt: '2026-09-10T00:00:25.000Z',
+						payload: {
+							commitSha: priorRevision.commitSha,
+							generation: priorRevision.generation,
+							fieldGeneration: 1,
+							fields: [
+								{
+									id: 'field-1',
+									recipientId: 'recipient-1',
+									documentId: MARKDOWN_DOCUMENT_ID,
+									documentPath: null,
+									fieldType: 'signature',
+									required: true,
+									position: 0,
+									geometry: FIELD_GEOMETRY
+								}
+							]
+						}
+					}
+				]
+			: []),
+		{
+			id: 'event-reopened',
+			eventType: 'envelope.reopened',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:30.000Z',
+			payload: {
+				commitSha: priorRevision.commitSha,
+				generation: priorRevision.generation,
+				fieldGeneration: reopenFieldGeneration,
+				readyAuditEventId: 'event-ready-1'
+			}
+		},
+		{
+			id: 'event-ready',
+			eventType: 'envelope.ready',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:35.000Z',
+			payload: {
+				commitSha: SENT_COMMIT_SHA,
+				generation: finalGeneration,
+				recipients: [{ id: 'recipient-1', role: 'approver', routingOrder: 1 }]
+			}
+		},
+		{
+			id: 'event-sent',
+			eventType: 'envelope.sent',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:40.000Z',
+			payload: sentPayload
+		},
+		{
+			id: 'event-2',
+			eventType: 'recipient.approved',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: SIGNED_AT,
+			payload: {
+				recipientId: 'recipient-1',
+				role: 'approver',
+				routingOrder: 1,
+				sentCommitSha: SENT_COMMIT_SHA,
+				signedAt: SIGNED_AT
+			}
+		},
+		{
+			id: 'event-3',
+			eventType: 'envelope.completed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: COMPLETED_AT,
+			payload: { sentCommitSha: SENT_COMMIT_SHA, completedAt: COMPLETED_AT }
+		}
+	]);
+	store.evidenceByEnvelope.set(ENVELOPE_ID, {
+		recipients: [
+			{
+				id: 'recipient-1',
+				role: 'approver',
+				routingOrder: 1,
+				status: 'completed',
+				decisionEventId: 'event-2',
+				decisionOccurredAt: SIGNED_AT
+			}
+		],
+		fields: [],
+		auditEvents
+	});
+	const pdfStore = new FakeCompletionArtifactPdfStore();
+	return {
+		store,
+		objects,
+		pdfStore,
+		service: new CompletionArtifactPublicationService(
+			store,
+			objects,
+			new FixedDraftRepository(SENT_COMMIT_SHA, documents(), serializeDocumentSet(manifest)),
+			() => NOW,
+			() => 'claim-token-reopen-approval',
+			undefined,
+			pdfStore,
+			new FakeCompletionPdfEvidenceStore([]),
+			new FakeEnvelopeSentDocumentStore(sentDocumentSet)
 		)
 	};
 }
@@ -1263,6 +1469,33 @@ describe('CompletionArtifactPublicationService.publishPendingCompletionArtifacts
 			artifactKind: 'evidence-summary-v1',
 			appendixFirstPage: null
 		});
+	});
+
+	it('publishes an approval-only envelope whose fields were cleared by a verified reopen', async () => {
+		const scenario = await approvalOnlyReopenScenario(1);
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
+	});
+
+	it('publishes an approval-only envelope reopened without any prior field placement', async () => {
+		const scenario = await approvalOnlyReopenScenario(1, false);
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
+	});
+
+	it('publishes an approval-only envelope after reopen then a new document revision', async () => {
+		const scenario = await approvalOnlyReopenScenario(1, true, {
+			commitSha: 'c'.repeat(40),
+			generation: 1
+		});
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ claimed: 1, published: 1, integrityFailed: 0 });
+	});
+
+	it('fails closed when the reopen clear names a different fieldGeneration than the claim', async () => {
+		const scenario = await approvalOnlyReopenScenario(2);
+		const result = await scenario.service.publishPendingCompletionArtifacts();
+		expect(result).toMatchObject({ claimed: 1, published: 0, integrityFailed: 1 });
 	});
 
 	it('publishes the executed agreement with the signed values drawn on the sent documents', async () => {

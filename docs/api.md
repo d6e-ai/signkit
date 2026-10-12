@@ -54,6 +54,8 @@ The `signkit openapi` CLI command retrieves this document for schema discovery.
 | `POST` | `/api/v1/envelopes/{envelopeId}/documents/pdf`        | Add an uploaded PDF                   | `drafts:write`   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/documents/order`      | Reorder or remove documents           | `drafts:write`   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/ready`                | Validate recipients and pin readiness | `drafts:write`   |
+| `POST` | `/api/v1/envelopes/{envelopeId}/reopen`               | Return a ready envelope to draft      | `drafts:write`   |
+| `GET`  | `/api/v1/envelopes/{envelopeId}/fields`               | Read complete authoring field set     | `drafts:write`   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/fields`               | Place recipient fields                | `drafts:write`   |
 | `POST` | `/api/v1/envelopes/{envelopeId}/send`                 | Send a ready envelope                 | `envelopes:send` |
 | `POST` | `/api/v1/envelopes/{envelopeId}/void`                 | Void an active envelope               | `envelopes:send` |

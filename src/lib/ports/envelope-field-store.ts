@@ -36,6 +36,22 @@ export interface PublicEnvelopeField {
 	geometry: FieldGeometry | null;
 }
 
+/**
+ * Full authoring field definition. Labels can carry PII and are returned only
+ * on the dedicated drafts:write GET /fields surface.
+ */
+export interface AuthoringEnvelopeField extends PublicEnvelopeField {
+	label: string;
+}
+
+export interface AuthoringFieldsSnapshot {
+	envelopeId: string;
+	generation: number;
+	fieldGeneration: number;
+	commitSha: string | null;
+	fields: readonly AuthoringEnvelopeField[];
+}
+
 export interface PublishedFieldPlacement {
 	envelopeId: string;
 	generation: number;
@@ -85,6 +101,13 @@ export type PublishFieldPlacementResult =
  * atomically recheck generation/head/state, replace the complete field
  * projection, bump field_generation, and append the audit event.
  */
+export class AuthoringFieldsIntegrityError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'AuthoringFieldsIntegrityError';
+	}
+}
+
 export interface EnvelopeFieldStore {
 	prepareFieldPlacement(
 		key: FieldCommandKey,
@@ -94,4 +117,5 @@ export interface EnvelopeFieldStore {
 	publishFieldPlacement(
 		command: PublishFieldPlacementCommand
 	): Promise<PublishFieldPlacementResult>;
+	readAuthoringFields(envelopeId: string): Promise<AuthoringFieldsSnapshot | null>;
 }

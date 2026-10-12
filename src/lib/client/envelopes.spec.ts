@@ -402,6 +402,127 @@ describe('EnvelopesClient', () => {
 		expect(JSON.parse(init?.body as string)).toEqual({ requestedProfile: 'pades-b-t' });
 	});
 
+	it('reads the complete authoring field set for the current revision', async () => {
+		const fields = {
+			envelopeId: envelope.id,
+			generation: 1,
+			fieldGeneration: 2,
+			commitSha: 'a'.repeat(40),
+			fields: [
+				{
+					id: '01900000-0000-7000-8000-000000000010',
+					recipientId: '01900000-0000-7000-8000-000000000011',
+					documentId: '01900000-0000-7000-8000-000000000012',
+					documentPath: 'documents/agreement.md',
+					fieldType: 'signature',
+					label: 'Sign here',
+					required: true,
+					position: 1,
+					geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
+				}
+			]
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(fields));
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.authoringFields(envelope.id)).resolves.toEqual(fields);
+		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/fields`);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET' });
+	});
+
+	it('rejects a truncated authoring field set instead of hydrating it', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ envelopeId: envelope.id, fields: null })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.authoringFields(envelope.id)).rejects.toMatchObject({
+			status: 502,
+			type: 'urn:signkit:problem:invalid-response-json'
+		});
+	});
+
+	it('rejects a malformed authoring field instead of hydrating the well-formed prefix', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({
+				envelopeId: envelope.id,
+				generation: 1,
+				fieldGeneration: 2,
+				commitSha: null,
+				fields: [
+					{
+						id: '01900000-0000-7000-8000-000000000010',
+						recipientId: '01900000-0000-7000-8000-000000000011',
+						documentId: null,
+						documentPath: null,
+						fieldType: 'signature',
+						label: 'Sign here',
+						required: true,
+						position: 1,
+						geometry: null
+					},
+					{ id: '01900000-0000-7000-8000-000000000012' }
+				]
+			})
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(client.authoringFields(envelope.id)).rejects.toMatchObject({
+			status: 502,
+			type: 'urn:signkit:problem:invalid-response-json'
+		});
+	});
+
+	it('reopens a ready envelope with a request-bound Idempotency-Key', async () => {
+		const reopened = {
+			envelopeId: envelope.id,
+			status: 'draft' as const,
+			generation: 2,
+			fieldGeneration: 3,
+			updatedAt: '2026-10-11T00:00:00.000Z',
+			auditEventId: '01900000-0000-7000-8000-000000000077'
+		};
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ reopened }, 200, { 'idempotency-replayed': 'true' })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+		const input = {
+			expectedGeneration: 1,
+			expectedFieldGeneration: 2,
+			expectedReadyAuditEventId: '01900000-0000-7000-8000-000000000099'
+		};
+
+		await expect(
+			client.reopenEnvelope(envelope.id, input, { idempotencyKey: 'reopen-attempt-1' })
+		).resolves.toEqual({ reopened, replayed: true });
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe(`/api/v1/envelopes/${envelope.id}/reopen`);
+		expect(init?.method).toBe('POST');
+		expect(init?.headers).toMatchObject({
+			'content-type': 'application/json',
+			'idempotency-key': 'reopen-attempt-1'
+		});
+		expect(JSON.parse(init?.body as string)).toEqual(input);
+	});
+
+	it('rejects an incomplete reopen receipt', async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+			mockJsonResponse({ reopened: { envelopeId: envelope.id, status: 'ready' } })
+		);
+		const client = createEnvelopesClient({ fetch: fetchMock });
+
+		await expect(
+			client.reopenEnvelope(envelope.id, {
+				expectedGeneration: 1,
+				expectedFieldGeneration: 0,
+				expectedReadyAuditEventId: '01900000-0000-7000-8000-000000000099'
+			})
+		).rejects.toMatchObject({
+			status: 502,
+			type: 'urn:signkit:problem:invalid-response-json'
+		});
+	});
+
 	it('downloads an independently validated sealed PDF', async () => {
 		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
 		const fetchMock = vi.fn<typeof globalThis.fetch>(

@@ -86,6 +86,29 @@ describe('envelope list product copy', () => {
 		}
 	});
 
+	it('names guided sending in ordinary language, never Ready or graph jargon', async () => {
+		const en = (await import('../../../messages/en.json')).default;
+		const ja = (await import('../../../messages/ja.json')).default;
+
+		expect(en.envelope_mark_ready).toBe('Choose signature positions');
+		expect(ja.envelope_mark_ready).toBe('署名位置を選ぶ');
+		expect(en.envelope_workflow_next_recipients).toMatch(/recipient/i);
+		expect(en.envelope_review_title).toMatch(/review/i);
+		expect(en.envelope_reopen_dialog_description).toMatch(
+			/signature positions will need to be placed again/i
+		);
+		expect(en.envelope_fields_incomplete_geometry).toMatch(/reopen to place them again/i);
+		expect(en.envelope_mark_ready).not.toMatch(/ready/i);
+		expect(en.envelope_workflow_next_recipients).not.toMatch(/ready|graph/i);
+		expect(en.envelope_review_description).not.toMatch(/ready|graph|PAdES|digest/i);
+		expect(ja.envelope_mark_ready).not.toMatch(/準備完了/);
+		expect(ja.envelope_reopen_dialog_description).toMatch(/署名位置は設定し直す/);
+		expect(en.envelope_workflow_next_review).not.toMatch(/send/i);
+		expect(ja.envelope_workflow_next_review).not.toMatch(/送信/);
+		expect(en.envelope_publish_fields).toBe('Save signature positions');
+		expect(ja.envelope_publish_fields).toBe('署名位置を保存');
+	});
+
 	it('never claims PAdES or legal certification for completed-agreement downloads', async () => {
 		const en = (await import('../../../messages/en.json')).default;
 		const ja = (await import('../../../messages/ja.json')).default;

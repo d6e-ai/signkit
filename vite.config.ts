@@ -106,6 +106,8 @@ export default defineConfig({
 			'@tabler/icons-svelte/icons/address-book',
 			'@tabler/icons-svelte/icons/alert-triangle',
 			'@tabler/icons-svelte/icons/ban',
+			'@tabler/icons-svelte/icons/chevron-left',
+			'@tabler/icons-svelte/icons/chevron-right',
 			'@tabler/icons-svelte/icons/download',
 			'@tabler/icons-svelte/icons/file-type-docx',
 			'@tabler/icons-svelte/icons/file-type-pdf',

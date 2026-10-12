@@ -22,6 +22,7 @@ export const AUDIT_EVENT_CATALOG: Readonly<
 	'envelope.created': { actorTypes: ['user', 'agent'] },
 	'draft.revision_created': { actorTypes: ['user', 'agent', 'system'] },
 	'envelope.ready': { actorTypes: ['user', 'agent'] },
+	'envelope.reopened': { actorTypes: ['user', 'agent'] },
 	'envelope.fields_placed': { actorTypes: ['user', 'agent'] },
 	'envelope.sent': { actorTypes: ['user', 'agent'] },
 	'envelope.voided': { actorTypes: ['user', 'agent'] },

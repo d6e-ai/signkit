@@ -2,10 +2,15 @@ import type { RequestHandler } from '@sveltejs/kit';
 import { z, type ZodIssue, type ZodType } from 'zod';
 import { fieldTypes } from '$lib/domain/envelope';
 import type {
+	EnvelopeAuthoringFieldsReadPort,
 	EnvelopeFieldApplicationPort,
 	PlaceFieldsInput,
 	PlaceFieldsResult
 } from '$lib/application/envelopes/fields';
+import {
+	AuthoringFieldsIntegrityError,
+	type AuthoringFieldsSnapshot
+} from '$lib/ports/envelope-field-store';
 import { InvalidFieldPlacementError } from '$lib/application/envelopes/fields';
 import type { EnvelopeRequestActor } from '$lib/application/envelopes/model';
 import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
@@ -92,6 +97,10 @@ interface ResolverContext {
 export type EnvelopeFieldApplicationResolver = (
 	context: ResolverContext
 ) => EnvelopeFieldApplicationPort | null | Promise<EnvelopeFieldApplicationPort | null>;
+
+export type EnvelopeAuthoringFieldsReadResolver = (
+	context: ResolverContext
+) => EnvelopeAuthoringFieldsReadPort | null | Promise<EnvelopeAuthoringFieldsReadPort | null>;
 
 type JsonBodyResult = { ok: true; value: unknown } | { ok: false; reason: 'invalid' | 'too_large' };
 
@@ -223,6 +232,92 @@ export function createEnvelopeFieldsHandler(
 				title: 'Envelope service unavailable',
 				status: 503,
 				detail: 'The field placement command could not be completed.',
+				instance: url.pathname
+			});
+		}
+	};
+}
+
+export function createEnvelopeAuthoringFieldsHandler(
+	resolveApplication: EnvelopeAuthoringFieldsReadResolver
+): RequestHandler {
+	return async ({ locals, params, platform, url }): Promise<Response> => {
+		const authorized: AuthorizedApiActor | Response = authorizeScopedInstanceRequest(
+			locals,
+			url.pathname,
+			'drafts:write'
+		);
+		if (authorized instanceof Response) return authorized;
+
+		const envelopeId = envelopeIdSchema.safeParse(params.envelopeId);
+		if (!envelopeId.success) {
+			return validationProblem(
+				url.pathname,
+				'The envelope ID must be a UUID.',
+				envelopeId.error.issues
+			);
+		}
+
+		let application: EnvelopeAuthoringFieldsReadPort | null;
+		try {
+			application = await resolveApplication({ locals, platform });
+		} catch (error: unknown) {
+			console.error(
+				JSON.stringify({
+					event: 'envelope_authoring_fields_resolution_failed',
+					message: errorMessage(error)
+				})
+			);
+			application = null;
+		}
+		if (application === null) {
+			return problemResponse({
+				type: 'urn:signkit:problem:persistence-unavailable',
+				title: 'Envelope persistence unavailable',
+				status: 503,
+				detail: 'The durable envelope store is not configured for this deployment.',
+				instance: url.pathname
+			});
+		}
+
+		try {
+			const snapshot: AuthoringFieldsSnapshot | null = await application.readAuthoringFields(
+				envelopeId.data
+			);
+			if (snapshot === null) {
+				return problemResponse({
+					type: 'urn:signkit:problem:envelope-not-found',
+					title: 'Envelope not found',
+					status: 404,
+					detail: 'No envelope was found.',
+					instance: url.pathname
+				});
+			}
+			return new Response(JSON.stringify(snapshot), {
+				status: 200,
+				headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
+			});
+		} catch (error: unknown) {
+			console.error(
+				JSON.stringify({
+					event: 'envelope_authoring_fields_failed',
+					message: errorMessage(error)
+				})
+			);
+			if (error instanceof AuthoringFieldsIntegrityError) {
+				return problemResponse({
+					type: 'urn:signkit:problem:authoring-fields-integrity-error',
+					title: 'Envelope integrity check failed',
+					status: 503,
+					detail: 'The authoring field set could not be read coherently.',
+					instance: url.pathname
+				});
+			}
+			return problemResponse({
+				type: 'urn:signkit:problem:service-unavailable',
+				title: 'Envelope service unavailable',
+				status: 503,
+				detail: 'The envelope operation could not be completed.',
 				instance: url.pathname
 			});
 		}

@@ -2,14 +2,15 @@
 
 Status: normative draft
 
-Last updated: 2026-09-23
+Last updated: 2026-10-11
 
 These files are the normative architecture, security, and evidence contracts for SignKit. Together they win over [`../api.md`](../api.md), [`../cli.md`](../cli.md), [`../create-signkit.md`](../create-signkit.md), [`../deployment.md`](../deployment.md), and [`../development.md`](../development.md) on any disagreement; those documents summarize what is implemented today and link back into these sections. No individual file below restates that precedence.
 
 | File                                                                                         | Covers                                                                                                    | Status                                                                                                                       |
 | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | [overview.md](overview.md)                                                                   | Product boundary and layered architecture                                                                 | policy                                                                                                                       |
-| [envelope-model.md](envelope-model.md)                                                       | Envelope state machine, roles, ready/send/fields commands                                                 | implemented                                                                                                                  |
+| [envelope-model.md](envelope-model.md)                                                       | Envelope state machine, roles, ready/reopen/send/fields commands                                          | implemented                                                                                                                  |
+| [sender-workflow.md](sender-workflow.md)                                                     | Guided preparation, inline validation, corrections, input preservation, and final send review             | implemented                                                                                                                  |
 | [draft-git-repository.md](draft-git-repository.md)                                           | Git-backed Markdown draft storage                                                                         | implemented                                                                                                                  |
 | [persistence.md](persistence.md)                                                             | Database/object profiles, tenancy rules                                                                   | implemented                                                                                                                  |
 | [identifiers.md](identifiers.md)                                                             | UUIDv7 identifier minting and validation                                                                  | implemented                                                                                                                  |

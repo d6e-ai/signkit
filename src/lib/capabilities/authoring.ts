@@ -23,9 +23,23 @@ export const authoringCapabilities = {
 		concurrency: 'expected-generation',
 		idempotency: 'required'
 	},
+	reopen: {
+		endpoint: '/api/v1/envelopes/{envelopeId}/reopen',
+		concurrency: 'expected-generation-field-generation-and-latest-ready-audit-event',
+		preserves: ['recipients', 'repository-head', 'repository-generation'],
+		clears: ['fields'],
+		increments: 'field-generation',
+		idempotency: 'required'
+	},
+	authoringFields: {
+		readEndpoint: '/api/v1/envelopes/{envelopeId}/fields',
+		replaceEndpoint: '/api/v1/envelopes/{envelopeId}/fields',
+		authentication: 'drafts:write',
+		labels: 'authoring-get-only'
+	},
 	sending: {
 		endpoint: '/api/v1/envelopes/{envelopeId}/send',
-		concurrency: 'expected-generation-and-ready-audit-event',
+		concurrency: 'expected-generation-and-latest-ready-audit-event',
 		delivery: 'durable-outbox',
 		idempotency: 'required'
 	},

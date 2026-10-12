@@ -3,17 +3,21 @@ import type {
 	EnvelopeField,
 	FieldGeometry,
 	FieldType,
+	MarkdownPath,
 	Recipient
 } from '$lib/domain/envelope';
-import type {
-	EnvelopeFieldStore,
-	FieldAuditHead,
-	FieldCommandKey,
-	FieldPlacementPreparation,
-	PublicEnvelopeField,
-	PublishFieldPlacementCommand,
-	PublishFieldPlacementResult,
-	PublishedFieldPlacement
+import {
+	AuthoringFieldsIntegrityError,
+	type AuthoringEnvelopeField,
+	type AuthoringFieldsSnapshot,
+	type EnvelopeFieldStore,
+	type FieldAuditHead,
+	type FieldCommandKey,
+	type FieldPlacementPreparation,
+	type PublicEnvelopeField,
+	type PublishFieldPlacementCommand,
+	type PublishFieldPlacementResult,
+	type PublishedFieldPlacement
 } from '$lib/ports/envelope-field-store';
 import { D1EnvelopeStore } from './d1-envelope-store';
 
@@ -57,6 +61,36 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 	constructor(database: D1Database) {
 		this.#database = database;
 		this.#envelopes = new D1EnvelopeStore(database);
+	}
+
+	async readAuthoringFields(envelopeId: string): Promise<AuthoringFieldsSnapshot | null> {
+		const result = await this.#database
+			.prepare(
+				`SELECT envelope.repository_generation AS repository_generation,
+				        envelope.field_generation AS field_generation,
+				        envelope.repository_head AS repository_head,
+				        envelope_field.id AS id,
+				        envelope_field.recipient_id AS recipient_id,
+				        envelope_field.document_id AS document_id,
+				        envelope_field.document_path AS document_path,
+				        envelope_field.field_type AS field_type,
+				        envelope_field.label AS label,
+				        envelope_field.required AS required,
+				        envelope_field.position AS position,
+				        envelope_field.page AS page,
+				        envelope_field.x AS x,
+				        envelope_field.y AS y,
+				        envelope_field.width AS width,
+				        envelope_field.height AS height
+				 FROM envelope
+				 LEFT JOIN envelope_field ON envelope_field.envelope_id = envelope.id
+				 WHERE envelope.id = ?
+				 ORDER BY COALESCE(envelope_field.document_id, envelope_field.document_path) ASC,
+				          envelope_field.position ASC, envelope_field.id ASC`
+			)
+			.bind(envelopeId)
+			.all<AuthoringJoinRow>();
+		return snapshotFromJoinRows(envelopeId, result.results);
 	}
 
 	async prepareFieldPlacement(
@@ -387,6 +421,127 @@ function isFieldGeometryOrNull(value: unknown): value is FieldGeometry | null {
 
 function isFieldType(value: unknown): value is FieldType {
 	return ['signature', 'initials', 'text', 'date', 'checkbox'].includes(String(value));
+}
+
+interface AuthoringJoinRow {
+	repository_generation: number;
+	field_generation: number;
+	repository_head: string | null;
+	id: string | null;
+	recipient_id: string | null;
+	document_id: string | null;
+	document_path: string | null;
+	field_type: string | null;
+	label: string | null;
+	required: number | boolean | null;
+	position: number | null;
+	page: number | null;
+	x: number | null;
+	y: number | null;
+	width: number | null;
+	height: number | null;
+}
+
+function snapshotFromJoinRows(
+	envelopeId: string,
+	rows: readonly AuthoringJoinRow[]
+): AuthoringFieldsSnapshot | null {
+	const first: AuthoringJoinRow | undefined = rows[0];
+	if (first === undefined) return null;
+	if (!Number.isSafeInteger(first.repository_generation) || first.repository_generation < 0) {
+		throw new AuthoringFieldsIntegrityError('Authoring envelope generation is corrupt');
+	}
+	if (!Number.isSafeInteger(first.field_generation) || first.field_generation < 0) {
+		throw new AuthoringFieldsIntegrityError('Authoring field generation is corrupt');
+	}
+	const fields: AuthoringEnvelopeField[] = [];
+	for (const row of rows) {
+		if (row.field_generation !== first.field_generation) {
+			throw new AuthoringFieldsIntegrityError('Authoring field generation is not coherent');
+		}
+		if (row.id === null) {
+			if (fields.length > 0) {
+				throw new AuthoringFieldsIntegrityError(
+					'Authoring field snapshot mixed empty and placed rows'
+				);
+			}
+			continue;
+		}
+		fields.push(authoringFieldFromJoinRow(row));
+	}
+	return {
+		envelopeId,
+		generation: first.repository_generation,
+		fieldGeneration: first.field_generation,
+		commitSha: first.repository_head,
+		fields
+	};
+}
+
+function authoringFieldFromJoinRow(row: AuthoringJoinRow): AuthoringEnvelopeField {
+	if (
+		typeof row.id !== 'string' ||
+		typeof row.recipient_id !== 'string' ||
+		!isFieldType(row.field_type) ||
+		typeof row.label !== 'string' ||
+		row.label.length === 0 ||
+		typeof row.position !== 'number' ||
+		!Number.isSafeInteger(row.position)
+	) {
+		throw new AuthoringFieldsIntegrityError('Authoring field row is incomplete or invalid');
+	}
+	const required: boolean | null =
+		row.required === true || row.required === 1
+			? true
+			: row.required === false || row.required === 0
+				? false
+				: null;
+	if (required === null) {
+		throw new AuthoringFieldsIntegrityError('Authoring field row is incomplete or invalid');
+	}
+	if (row.document_id !== null && typeof row.document_id !== 'string') {
+		throw new AuthoringFieldsIntegrityError('Authoring field row is incomplete or invalid');
+	}
+	if (row.document_path !== null && typeof row.document_path !== 'string') {
+		throw new AuthoringFieldsIntegrityError('Authoring field row is incomplete or invalid');
+	}
+	return {
+		id: row.id,
+		recipientId: row.recipient_id,
+		documentId: row.document_id,
+		documentPath: row.document_path as MarkdownPath | null,
+		fieldType: row.field_type,
+		label: row.label,
+		required,
+		position: row.position,
+		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height)
+	};
+}
+
+function geometryFromColumns(
+	page: number | null,
+	x: number | null,
+	y: number | null,
+	width: number | null,
+	height: number | null
+): FieldGeometry | null {
+	const present: number =
+		(page === null ? 0 : 1) +
+		(x === null ? 0 : 1) +
+		(y === null ? 0 : 1) +
+		(width === null ? 0 : 1) +
+		(height === null ? 0 : 1);
+	if (present === 0) return null;
+	if (present !== 5) {
+		throw new AuthoringFieldsIntegrityError('Authoring field geometry is incomplete');
+	}
+	return {
+		page: page as number,
+		x: x as number,
+		y: y as number,
+		width: width as number,
+		height: height as number
+	};
 }
 
 function toPublicField(field: EnvelopeField): PublicEnvelopeField {

@@ -32,6 +32,7 @@ const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 const GIT_SHA_PATTERN: RegExp = /^[a-f0-9]{40}$/;
 const PUBLISHED_EVENT_TYPE: string = 'envelope.completion_artifact_published';
 const READY_EVENT_TYPE: string = 'envelope.ready';
+const REOPENED_EVENT_TYPE: string = 'envelope.reopened';
 const SENT_EVENT_TYPE: string = 'envelope.sent';
 const SIGNED_EVENT_TYPE: string = 'recipient.signed';
 const APPROVED_EVENT_TYPE: string = 'recipient.approved';
@@ -350,8 +351,13 @@ interface ReadyRecipientDeclaration {
  * row inserted, deleted, or given a substituted role/routing order would
  * otherwise slip past chain verification undetected. This requires the
  * complete recipient set to equal — exactly — the `payload.recipients`
- * declared by the envelope's one `envelope.ready` event, which is the only
- * point in the workflow that ever declares the recipient graph.
+ * declared by the latest `envelope.ready` event before send. Reopen and
+ * re-ready may append earlier ready events; the send payload's
+ * `readyAuditEventId` must name that latest ready event, and no
+ * `envelope.reopened` may follow it before send. A historical send payload
+ * without `readyAuditEventId` is accepted only in the pre-reopen shape —
+ * exactly one `envelope.ready` and no `envelope.reopened` — where that sole
+ * ready event is the only anchor the send could have pinned.
  */
 function verifyRecipientRosterMatchesReadyEvent(
 	auditEvents: readonly CompletionEvidenceAuditEvent[],
@@ -361,13 +367,74 @@ function verifyRecipientRosterMatchesReadyEvent(
 	const readyEvents: readonly CompletionEvidenceAuditEvent[] = auditEvents.filter(
 		(event: CompletionEvidenceAuditEvent): boolean => event.eventType === READY_EVENT_TYPE
 	);
-	if (readyEvents.length !== 1) {
+	if (readyEvents.length < 1) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion audit trail must contain an envelope.ready event'
+		);
+	}
+	const latestReady: CompletionEvidenceAuditEvent = readyEvents.reduce(
+		(
+			current: CompletionEvidenceAuditEvent,
+			candidate: CompletionEvidenceAuditEvent
+		): CompletionEvidenceAuditEvent => (candidate.sequence > current.sequence ? candidate : current)
+	);
+	const sentEvents: readonly CompletionEvidenceAuditEvent[] = auditEvents.filter(
+		(event: CompletionEvidenceAuditEvent): boolean => event.eventType === SENT_EVENT_TYPE
+	);
+	if (sentEvents.length > 1) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion evidence has more than one envelope.sent event'
+		);
+	}
+	const sentEvent: CompletionEvidenceAuditEvent | undefined = sentEvents[0];
+	if (sentEvent !== undefined) {
+		if (latestReady.sequence >= sentEvent.sequence) {
+			throw new CompletionArtifactIntegrityError(
+				'Latest envelope.ready event is not an earlier send anchor'
+			);
+		}
+		if (
+			auditEvents.some(
+				(event: CompletionEvidenceAuditEvent): boolean =>
+					(event.eventType === READY_EVENT_TYPE || event.eventType === REOPENED_EVENT_TYPE) &&
+					event.sequence > latestReady.sequence &&
+					event.sequence < sentEvent.sequence
+			)
+		) {
+			throw new CompletionArtifactIntegrityError(
+				'Latest envelope.ready event was superseded before send'
+			);
+		}
+		const sentPayload: unknown = payloadsByEventId.get(sentEvent.id);
+		if (typeof sentPayload !== 'object' || sentPayload === null || Array.isArray(sentPayload)) {
+			throw new CompletionArtifactIntegrityError(
+				'envelope.sent audit trail does not anchor the latest envelope.ready event'
+			);
+		}
+		const anchoredReadyId: unknown = (sentPayload as Record<string, unknown>).readyAuditEventId;
+		if (anchoredReadyId === undefined) {
+			if (
+				readyEvents.length !== 1 ||
+				auditEvents.some(
+					(event: CompletionEvidenceAuditEvent): boolean => event.eventType === REOPENED_EVENT_TYPE
+				)
+			) {
+				throw new CompletionArtifactIntegrityError(
+					'envelope.sent audit trail does not name the envelope.ready event it anchors'
+				);
+			}
+		} else if (anchoredReadyId !== latestReady.id) {
+			throw new CompletionArtifactIntegrityError(
+				'envelope.sent audit trail does not anchor the latest envelope.ready event'
+			);
+		}
+	} else if (readyEvents.length !== 1) {
 		throw new CompletionArtifactIntegrityError(
 			'Completion audit trail must contain exactly one envelope.ready event'
 		);
 	}
 	const declared: readonly ReadyRecipientDeclaration[] = extractReadyRecipientDeclarations(
-		payloadsByEventId.get(readyEvents[0].id)
+		payloadsByEventId.get(latestReady.id)
 	);
 	const declaredById = new Map<string, ReadyRecipientDeclaration>();
 	for (const entry of declared) {

@@ -11,6 +11,7 @@ import type {
 } from '$lib/application/drafts/draft-persistence';
 import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
+	AuthoringFieldsSnapshot,
 	EnvelopeFieldStore,
 	FieldPlacementPreparation,
 	PublishFieldPlacementCommand,
@@ -73,6 +74,22 @@ export interface EnvelopeFieldApplicationPort {
 		envelopeId: string,
 		input: PlaceFieldsInput
 	): Promise<PlaceFieldsResult>;
+}
+
+export interface EnvelopeAuthoringFieldsReadPort {
+	readAuthoringFields(envelopeId: string): Promise<AuthoringFieldsSnapshot | null>;
+}
+
+export class EnvelopeAuthoringFieldsRead implements EnvelopeAuthoringFieldsReadPort {
+	readonly #store: EnvelopeFieldStore;
+
+	constructor(store: EnvelopeFieldStore) {
+		this.#store = store;
+	}
+
+	async readAuthoringFields(envelopeId: string): Promise<AuthoringFieldsSnapshot | null> {
+		return this.#store.readAuthoringFields(envelopeId);
+	}
 }
 
 export class InvalidFieldPlacementError extends Error {

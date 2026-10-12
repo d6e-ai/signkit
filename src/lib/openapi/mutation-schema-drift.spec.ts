@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { openApiDocument } from './document';
 import { commitDraftSchema } from '$lib/http/drafts';
 import { readySchema } from '$lib/http/envelope-ready';
+import { reopenSchema } from '$lib/http/envelope-reopen';
 import { fieldsSchema } from '$lib/http/envelope-fields';
 import { sendSchema } from '$lib/http/envelope-send';
 import { voidSchema } from '$lib/http/envelope-void';
@@ -36,6 +37,10 @@ describe('OpenAPI mutation schema drift and validity', () => {
 			'DraftRevisionReceipt',
 			'ReadyEnvelopeRequest',
 			'ReadyEnvelopeReceipt',
+			'ReopenEnvelopeRequest',
+			'ReopenEnvelopeReceipt',
+			'AuthoringEnvelopeField',
+			'AuthoringFieldsResponse',
 			'PlaceFieldsRequest',
 			'PlaceFieldsReceipt',
 			'SendEnvelopeRequest',
@@ -115,6 +120,37 @@ describe('OpenAPI mutation schema drift and validity', () => {
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/ReadyEnvelopeReceipt' }
+					}
+				}
+			})
+		);
+
+		const reopenPost = document.paths['/api/v1/envelopes/{envelopeId}/reopen'].post;
+		expect(reopenPost.requestBody).toEqual(
+			expect.objectContaining({
+				content: {
+					'application/json': {
+						schema: { $ref: '#/components/schemas/ReopenEnvelopeRequest' }
+					}
+				}
+			})
+		);
+		expect(reopenPost.responses?.['200']).toEqual(
+			expect.objectContaining({
+				content: {
+					'application/json': {
+						schema: { $ref: '#/components/schemas/ReopenEnvelopeReceipt' }
+					}
+				}
+			})
+		);
+
+		const fieldsGet = document.paths['/api/v1/envelopes/{envelopeId}/fields'].get;
+		expect(fieldsGet.responses?.['200']).toEqual(
+			expect.objectContaining({
+				content: {
+					'application/json': {
+						schema: { $ref: '#/components/schemas/AuthoringFieldsResponse' }
 					}
 				}
 			})
@@ -207,6 +243,10 @@ describe('OpenAPI mutation schema drift and validity', () => {
 			type: 'array',
 			items: { $ref: '#/components/schemas/EnvelopeField' }
 		});
+		expect(schemas.EnvelopeField.required).not.toContain('label');
+		expect(schemas.EnvelopeField.properties).not.toHaveProperty('label');
+		expect(schemas.AuthoringEnvelopeField.required).toEqual(expect.arrayContaining(['label']));
+		expect(schemas.AuthoringEnvelopeField.properties).toHaveProperty('label');
 	});
 
 	it('validates canonical commit example against server commitDraftSchema', () => {
@@ -275,6 +315,19 @@ describe('OpenAPI mutation schema drift and validity', () => {
 			]
 		};
 		expect(readySchema.safeParse(invalidRole).success).toBe(false);
+	});
+
+	it('validates canonical reopen example against server reopenSchema', () => {
+		const example = {
+			expectedGeneration: 1,
+			expectedFieldGeneration: 0,
+			expectedReadyAuditEventId: '0191eb70-6523-74b2-b7b5-2fa75bb6d003'
+		};
+		expect(reopenSchema.safeParse(example).success).toBe(true);
+		expect(reopenSchema.safeParse({ ...example, extra: true }).success).toBe(false);
+		expect(
+			reopenSchema.safeParse({ ...example, expectedReadyAuditEventId: 'not-a-uuid' }).success
+		).toBe(false);
 	});
 
 	it('validates canonical fields example against server fieldsSchema', () => {
