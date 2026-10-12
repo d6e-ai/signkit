@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
@@ -110,6 +110,19 @@
 	let envelope = $state<Envelope | null>(null);
 	let draft = $state<DraftWorkspaceResponse | null>(null);
 	let delivery = $state<PublicEnvelopeDeliveryStatus | null>(null);
+	// Guards the three independent completion reads below (status, PDF seal,
+	// completion deliveries) against a slow call from an earlier `load()`
+	// overwriting state a newer `load()` has already written: each read
+	// captures this value when it starts and discards its result if the
+	// component has since been destroyed or a newer generation has begun.
+	let completionReadsGeneration = 0;
+	let destroyed = false;
+	onDestroy(() => {
+		destroyed = true;
+	});
+	function isStaleCompletionRead(generation: number): boolean {
+		return destroyed || generation !== completionReadsGeneration;
+	}
 	let completionStatus = $state<PublicCompletionArtifactStatus | null>(null);
 	let completionStatusError = $state<string | null>(null);
 	let completionRetryPending = $state(false);
@@ -595,10 +608,14 @@
 	}
 
 	async function refreshCompletionStatus(): Promise<void> {
-		completionStatusError = null;
+		const generation = completionReadsGeneration;
 		try {
-			completionStatus = await client.completionArtifactStatus(envelopeId);
+			const result = await client.completionArtifactStatus(envelopeId);
+			if (isStaleCompletionRead(generation)) return;
+			completionStatus = result;
+			completionStatusError = null;
 		} catch {
+			if (isStaleCompletionRead(generation)) return;
 			completionStatus = null;
 			completionStatusError = m.envelope_completed_status_unavailable();
 		}
@@ -663,12 +680,15 @@
 	}
 
 	async function refreshCompletionDeliveries(): Promise<void> {
+		const generation = completionReadsGeneration;
 		completionDeliveriesError = null;
 		try {
 			const result = await client.completionDeliveries(envelopeId);
 			if (!Array.isArray(result)) throw new Error('malformed completion-deliveries response');
+			if (isStaleCompletionRead(generation)) return;
 			completionDeliveries = result;
 		} catch {
+			if (isStaleCompletionRead(generation)) return;
 			completionDeliveries = null;
 			completionDeliveriesError = m.envelope_completion_access_unavailable();
 		}
@@ -868,9 +888,16 @@
 				delivery = await client.deliveries(envelopeId).catch(() => null);
 			}
 			if (detail.envelope.status === 'completed') {
-				await refreshCompletionStatus();
-				await refreshPdfSealStatus();
-				await refreshCompletionDeliveries();
+				// Independent, non-blocking reads: the primary view (and `loading`)
+				// must not wait on these optional, sometimes-slow status surfaces,
+				// and none of the three should block another -- each renders its
+				// own loading/error state once it settles.
+				completionReadsGeneration += 1;
+				void Promise.all([
+					refreshCompletionStatus(),
+					refreshPdfSealStatus(),
+					refreshCompletionDeliveries()
+				]);
 			}
 			await hydrateAuthoringFields();
 			if (detail.envelope.status === 'draft') seedRecipientDraftsFromReady();
@@ -1763,11 +1790,15 @@
 	}
 	async function refreshPdfSealStatus(): Promise<void> {
 		if (pdfSealStatusPending) return;
+		const generation = completionReadsGeneration;
 		pdfSealStatusPending = true;
 		pdfSealStatusError = null;
 		try {
-			pdfSealStatus = await client.pdfSealStatus(envelopeId);
+			const result = await client.pdfSealStatus(envelopeId);
+			if (isStaleCompletionRead(generation)) return;
+			pdfSealStatus = result;
 		} catch {
+			if (isStaleCompletionRead(generation)) return;
 			pdfSealStatus = null;
 			pdfSealStatusError = m.envelope_pdf_seal_status_unavailable();
 		} finally {

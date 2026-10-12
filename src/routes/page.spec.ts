@@ -1,111 +1,76 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { render } from 'svelte/server';
-import DashboardPage from './+page.svelte';
 
-const REMOVED_COPY: readonly string[] = [
-	'Open core',
-	'Agent native',
-	'Agent-ready',
-	'Markdown source history',
-	'Git revisions',
-	'agent_ready',
-	'source_history'
-];
+describe('dashboard worklist page contracts', () => {
+	const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
 
-const PAGE_DATA = { email: 'user@example.com', name: 'User', instanceMemberRole: null };
-
-describe('dashboard page', () => {
-	it('renders the SSR initial loading shell without crashing', () => {
-		const { body } = render(DashboardPage, { props: { data: PAGE_DATA } });
-		expect(body).toContain('flex w-full flex-col gap-6');
-		expect(body).not.toContain('max-w-7xl');
-		expect(body).not.toContain('mx-auto');
+	it('renders the shared layout shell, not a nested max-width container', () => {
+		expect(source).toContain('flex w-full flex-col gap-6');
+		expect(source).not.toContain('max-w-7xl');
+		expect(source).not.toContain('mx-auto');
 	});
 
-	it('titles the page Dashboard, not Agreements', () => {
-		const { body } = render(DashboardPage, { props: { data: PAGE_DATA } });
-		const h1Match = body.match(/<h1[^>]*>([^<]*)<\/h1>/);
-		expect(h1Match).not.toBeNull();
-		expect(h1Match?.[1].trim()).toBe('Dashboard');
+	it('titles the page Dashboard and links the main CTA to the new-envelope route', () => {
+		expect(source).toMatch(/<h1[^>]*>\{m\.dashboard_title\(\)\}<\/h1>/);
+		expect(source).toContain("localizeHref('/envelopes/new')");
+		expect(source).toContain('m.dashboard_send_contract()');
 	});
 
-	it('never renders the removed product-introduction/Markdown/Git/agent-native copy', () => {
-		const { body } = render(DashboardPage, { props: { data: PAGE_DATA } });
-		for (const copy of REMOVED_COPY) {
-			expect(body).not.toContain(copy);
+	it('does not show a sign-in prompt -- the layout gate already handles anonymous/non-member callers', () => {
+		expect(source).not.toContain('signInHref');
+		expect(source).not.toContain('m.sign_in()');
+	});
+
+	it('renders all five worklist views with whole-instance counts independent of the query/page', () => {
+		for (const view of ['all', 'action_required', 'waiting', 'drafts', 'completed']) {
+			expect(source).toContain(`'${view}'`);
 		}
-	});
-
-	it('drops the product-introduction copy and blocks from the source, not just the loading state', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
-		for (const copy of REMOVED_COPY) {
-			expect(source).not.toContain(copy);
-		}
-		expect(source).not.toMatch(/IconBrandGit|IconRobot|IconClock/);
-	});
-
-	it('keeps exactly the two action-needed/waiting stat cards, dropping completed and total', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
-		expect(source).toContain('m.new_agreement()');
-		expect(source).toContain('m.recent_title()');
-		expect(source).toContain('m.stat_action_needed()');
-		expect(source).toContain('m.stat_waiting()');
-		expect(source).not.toContain('m.stat_completed()');
-		expect(source).not.toContain('m.envelope_list_title()');
-	});
-
-	it('places View all in a Card.Action, right-aligned and vertically aligned with the title', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
-		const recentHeaderMatch = source.match(
-			/<Card\.Header>\s*<Card\.Title>\{m\.recent_title\(\)\}<\/Card\.Title>\s*<Card\.Description>\{m\.recent_description\(\)\}<\/Card\.Description>\s*<Card\.Action>/
-		);
-		expect(recentHeaderMatch).not.toBeNull();
-		expect(source).toContain('m.view_all()');
-	});
-
-	it('fetches envelope detail only for active (sent/in_progress) envelopes', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
-		expect(source).toMatch(/envelope\.status === 'sent' \|\| envelope\.status === 'in_progress'/);
-		expect(source).toContain('client.getDetail(targets[index].id)');
-	});
-
-	it('classifies a current-user pending item by normalized email and actionable pending/viewed status', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
-		expect(source).toContain('isActionableRecipientRole(recipient.role)');
-		expect(source).toContain('normalizeEmail(recipient.email) === normalizedSelfEmail');
-		expect(source).toMatch(/recipient\.status === 'pending' \|\| recipient\.status === 'viewed'/);
-	});
-
-	it('caps concurrent detail fetches at 8 or fewer while still covering every active envelope', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
-		const concurrencyMatch = source.match(/const DETAIL_FETCH_CONCURRENCY = (\d+);/);
-		expect(concurrencyMatch).not.toBeNull();
-		const concurrency = Number(concurrencyMatch?.[1]);
-		expect(concurrency).toBeLessThanOrEqual(8);
-		expect(concurrency).toBeGreaterThan(0);
-		expect(source).toContain('Math.min(DETAIL_FETCH_CONCURRENCY, targets.length)');
-		expect(source).toContain('await Promise.all(Array.from({ length: workerCount }');
-	});
-
-	it('publishes counts/error/loading only from the newest overlapping stats load and invalidates on destroy', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
-		expect(source).toContain('let statsRequestGeneration = 0;');
-		expect(source).toMatch(/const generation = \+\+statsRequestGeneration;/);
-		expect(source).toMatch(/generation !== statsRequestGeneration/);
-		// Both success and failure paths must bail when stale, and the empty
-		// fast-path must too, so a slow first attempt never overwrites a
-		// faster retry with stale zeros or a stale failure.
-		expect(source).toMatch(/if \(isStale\(\)\) return;/);
-		expect(source).toContain('let destroyed = false;');
-		expect(source).toMatch(/onDestroy\(\(\) => \{\s*destroyed = true;/);
-		expect(source).toMatch(/destroyed \|\| generation !== statsRequestGeneration/);
-	});
-
-	it('disables the stats retry while a retry is already loading', () => {
-		const source: string = readFileSync('src/routes/+page.svelte', 'utf8');
+		expect(source).toContain('m.dashboard_tab_all()');
+		expect(source).toContain('m.dashboard_tab_action_required()');
+		expect(source).toContain('m.dashboard_tab_waiting()');
+		expect(source).toContain('m.dashboard_tab_drafts()');
+		expect(source).toContain('m.dashboard_tab_completed()');
+		// Counts come from `data.worklist.counts`, never a fabricated literal, and
+		// the count badge is only rendered once a worklist actually loaded.
 		expect(source).toMatch(
-			/disabled=\{statsLoading\}[\s\S]*?onclick=\{\(\) => void loadStats\(\)\}/
+			/\{#if data\.worklist\}[\s\S]*?viewTabCount\(view, data\.worklist\.counts\)/
 		);
+	});
+
+	it('builds tab/search/pagination links from the SvelteKit URL, never a client API fetch', () => {
+		expect(source).not.toContain('createEnvelopesClient');
+		expect(source).not.toContain('onMount');
+		expect(source).toContain('function buildHref(');
+		expect(source).toContain('method="GET"');
+	});
+
+	it('shows the dashboard-specific error message and a retry action, with no fabricated zero counts', () => {
+		expect(source).toMatch(/\{#if data\.worklistError\}/);
+		expect(source).toContain('data.worklistError.message');
+		expect(source).toContain('m.common_retry()');
+		expect(source).toContain('void invalidateAll()');
+	});
+
+	it('shows the empty state only once an error is ruled out', () => {
+		expect(source).toMatch(
+			/\{#if data\.worklistError\}[\s\S]*?\{:else if data\.worklist === null \|\| data\.worklist\.items\.length === 0\}/
+		);
+		expect(source).toContain('m.dashboard_empty_title()');
+	});
+
+	it('labels draft/ready rows "Continue editing" and everything else "Open", never a sign/approve shortcut', () => {
+		expect(source).toContain('m.dashboard_row_action_continue()');
+		expect(source).toContain('m.dashboard_row_action_open()');
+		expect(source).not.toMatch(/m\.\w*sign\w*\(\)/i);
+		expect(source).not.toMatch(/m\.\w*approve\w*\(\)/i);
+	});
+
+	it('links rows to the envelope detail page only, never a per-recipient capability URL', () => {
+		expect(source).toContain('localizeHref(`/envelopes/${item.envelope.id}`)');
+		expect(source).not.toContain('/c/');
+	});
+
+	it('scores completion progress against actionableRecipientCount, not recipientCount (which includes CC)', () => {
+		expect(source).toContain('total: item.actionableRecipientCount');
 	});
 });

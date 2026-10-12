@@ -1,535 +1,277 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import * as m from '$lib/paraglide/messages';
+import type {
+	DashboardItem,
+	DashboardPage as DashboardPageData,
+	DashboardQuery
+} from '$lib/application/dashboard/model';
+import type { PublicEnvelope } from '$lib/application/envelopes/model';
 import DashboardPage from './+page.svelte';
 
-const PAGE_DATA = { email: 'user@example.com', name: 'User', instanceMemberRole: null };
-
-function jsonResponse(data: unknown, status = 200): Response {
-	return new Response(JSON.stringify(data), {
-		status,
-		headers: { 'content-type': 'application/json' }
-	});
-}
-
-function problemResponse(status: number, detail: string): Response {
-	return new Response(
-		JSON.stringify({
-			type: 'urn:signkit:problem:test',
-			title: 'Error',
-			status,
-			detail,
-			instance: '/test'
-		}),
-		{ status, headers: { 'content-type': 'application/problem+json' } }
-	);
-}
-
-interface EnvelopeFixture {
-	id: string;
-	createdByUserId: string;
-	title: string;
-	status: 'draft' | 'ready' | 'sent' | 'in_progress' | 'completed';
-	repositoryGeneration: number;
-	repositoryHead: string | null;
-	repositoryArchiveSha256: string | null;
-	sentCommitSha: string | null;
-	fieldGeneration: number;
-	createdAt: string;
-	updatedAt: string;
-}
-
 function envelope(
-	overrides: Partial<EnvelopeFixture> & { id: string; title: string }
-): EnvelopeFixture {
+	overrides: Partial<PublicEnvelope> & { id: string; title: string }
+): PublicEnvelope {
 	return {
-		createdByUserId: '01900000-0000-7000-8000-000000000099',
-		status: 'draft',
-		repositoryGeneration: 0,
-		repositoryHead: null,
-		repositoryArchiveSha256: null,
-		sentCommitSha: null,
-		fieldGeneration: 0,
+		status: 'sent',
+		updatedAt: '2026-09-12T00:00:00.000Z',
 		createdAt: '2026-09-10T00:00:00.000Z',
-		updatedAt: '2026-09-10T00:00:00.000Z',
 		...overrides
-	};
+	} as PublicEnvelope;
 }
 
-interface RecipientFixture {
-	id: string;
-	email: string;
-	name: string;
-	role: 'signer' | 'approver' | 'viewer' | 'prefill' | 'cc';
-	locale: 'en' | 'ja';
-	routingOrder: number;
-	status: 'pending' | 'viewed' | 'completed' | 'declined';
-}
-
-function recipient(overrides: Partial<RecipientFixture> & { id: string }): RecipientFixture {
+function item(overrides: Partial<DashboardItem> & { envelope: PublicEnvelope }): DashboardItem {
 	return {
-		email: 'signer@example.com',
-		name: 'Signer',
-		role: 'signer',
-		locale: 'en',
-		routingOrder: 1,
-		status: 'pending',
+		recipient: null,
+		recipientCount: 0,
+		completedRecipientCount: 0,
+		actionableRecipientCount: 0,
+		nextRecipient: null,
+		actionRequired: false,
 		...overrides
 	};
 }
 
-function detailResponse(env: EnvelopeFixture, recipients: RecipientFixture[]): unknown {
-	return { envelope: env, recipients, readyAuditEventId: null, fields: [] };
+function worklistQuery(overrides: Partial<DashboardQuery> = {}): DashboardQuery {
+	return { view: 'all', query: '', cursor: null, limit: 25, ...overrides };
 }
 
-function isListRequest(url: string): boolean {
-	return url.includes('/api/v1/envelopes?') || url.endsWith('/api/v1/envelopes');
+function worklist(overrides: Partial<DashboardPageData> = {}): DashboardPageData {
+	return {
+		items: [],
+		nextCursor: null,
+		counts: { all: 0, actionRequired: 0, waiting: 0, drafts: 0, completed: 0 },
+		...overrides
+	};
 }
 
-function isDetailRequest(url: string, id: string): boolean {
-	return url.endsWith(`/api/v1/envelopes/${id}`);
+function pageData(overrides: {
+	worklist?: DashboardPageData | null;
+	worklistQuery?: DashboardQuery;
+	worklistError?: { status: number; message: string } | null;
+}) {
+	return {
+		worklist: 'worklist' in overrides ? overrides.worklist! : worklist(),
+		worklistQuery: overrides.worklistQuery ?? worklistQuery(),
+		worklistError: overrides.worklistError ?? null
+	};
 }
 
-describe('dashboard page in browser', () => {
+describe('dashboard worklist page in browser', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
 	});
 
-	it('renders exactly two stat cards, the recent-agreements list, and the create action', async () => {
-		const draft = envelope({ id: '01900000-0000-7000-8000-000000000001', title: 'NDA with Acme' });
-		const completed = envelope({
-			id: '01900000-0000-7000-8000-000000000002',
-			title: 'MSA with Beta Corp',
-			status: 'completed',
-			updatedAt: '2026-09-12T00:00:00.000Z'
-		});
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [draft, completed], nextCursor: null });
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
+	it('renders rows from the data prop with no fetch call at all -- SSR owns the data', async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal('fetch', fetchSpy);
+		const nda = envelope({ id: '01900000-0000-7000-8000-000000000001', title: 'NDA with Acme' });
 
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklist: worklist({ items: [item({ envelope: nda })] }) }) }
+		});
 
 		await expect.element(screen.getByText('NDA with Acme')).toBeVisible();
-		await expect.element(screen.getByText('MSA with Beta Corp')).toBeVisible();
-		await expect.element(screen.getByRole('link', { name: /New agreement/ })).toBeVisible();
-
-		await expect.element(screen.getByText(m.stat_action_needed(), { exact: true })).toBeVisible();
-		await expect.element(screen.getByText(m.stat_waiting(), { exact: true })).toBeVisible();
-		// The "Completed" text below is only ever the recent-list status badge --
-		// there is no third "Completed" stat card and no fourth "total" card.
-		expect(screen.getByText(m.envelope_list_title()).query()).toBeNull();
-
-		expect(screen.getByText(/Open core/).query()).toBeNull();
-		expect(screen.getByText(/Agent-ready/).query()).toBeNull();
-		expect(screen.getByText(/Markdown source history/).query()).toBeNull();
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
-	it('never fetches detail for draft, ready, or completed envelopes -- only sent/in_progress', async () => {
-		const detailRequests: string[] = [];
-		const draft = envelope({ id: '01900000-0000-7000-8000-000000000001', title: 'Draft one' });
-		const ready = envelope({
-			id: '01900000-0000-7000-8000-000000000002',
-			title: 'Ready one',
-			status: 'ready'
+	it('shows whole-instance counts as tab badges, independent of the current query/page', async () => {
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						counts: { all: 9, actionRequired: 3, waiting: 2, drafts: 1, completed: 3 }
+					}),
+					worklistQuery: worklistQuery({ query: 'acme' })
+				})
+			}
 		});
-		const completed = envelope({
+
+		await expect.element(screen.getByRole('link', { name: /All/ })).toBeVisible();
+		await expect.element(screen.getByRole('link', { name: /Action needed/ })).toBeVisible();
+		await expect.element(screen.getByRole('link', { name: /Waiting on others/ })).toBeVisible();
+		await expect.element(screen.getByRole('link', { name: /Drafts/ })).toBeVisible();
+		await expect.element(screen.getByRole('link', { name: /Completed/ })).toBeVisible();
+	});
+
+	it('builds tab hrefs that preserve the current search query and drop any stale cursor', async () => {
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist(),
+					worklistQuery: worklistQuery({ view: 'all', query: 'acme', cursor: 'stale-cursor' })
+				})
+			}
+		});
+
+		const draftsTab = screen.getByRole('link', { name: /Drafts/ });
+		await expect.element(draftsTab).toBeVisible();
+		const href = draftsTab.element().getAttribute('href') ?? '';
+		expect(href).toContain('view=drafts');
+		expect(href).toContain('q=acme');
+		expect(href).not.toContain('cursor=');
+	});
+
+	it('marks the active tab with aria-current', async () => {
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklistQuery: worklistQuery({ view: 'waiting' }) }) }
+		});
+
+		const waitingTab = screen.getByRole('link', { name: /Waiting on others/ });
+		await expect.element(waitingTab).toBeVisible();
+		expect(waitingTab.element().getAttribute('aria-current')).toBe('page');
+		const allTab = screen.getByRole('link', { name: /^All/ });
+		expect(allTab.element().getAttribute('aria-current')).toBeNull();
+	});
+
+	it('renders the search field as a real GET form carrying the current view', async () => {
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklistQuery: worklistQuery({ view: 'drafts', query: 'beta' }) }) }
+		});
+
+		const input = screen.getByLabelText(m.dashboard_search_label());
+		await expect.element(input).toBeVisible();
+		expect((input.element() as HTMLInputElement).value).toBe('beta');
+		const form = input.element().closest('form');
+		expect(form?.getAttribute('method')?.toUpperCase()).toBe('GET');
+		expect(form?.querySelector('input[name="view"]')).not.toBeNull();
+		expect((form?.querySelector('input[name="view"]') as HTMLInputElement | null)?.value).toBe(
+			'drafts'
+		);
+	});
+
+	it('shows an explicit error with a retry action and never a fabricated zero count', async () => {
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: null,
+					worklistError: { status: 503, message: 'Your agreements could not be loaded right now.' }
+				})
+			}
+		});
+
+		await expect
+			.element(screen.getByText('Your agreements could not be loaded right now.'))
+			.toBeVisible();
+		await expect.element(screen.getByRole('button', { name: m.common_retry() })).toBeVisible();
+		expect(screen.getByRole('link', { name: /All \d/ }).query()).toBeNull();
+	});
+
+	it('shows the empty state when the view has no items, without a false error', async () => {
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklist: worklist({ items: [] }) }) }
+		});
+
+		await expect.element(screen.getByText(m.dashboard_empty_title())).toBeVisible();
+	});
+
+	it('labels draft/ready rows "Continue editing" and others "Open", never a sign/approve shortcut', async () => {
+		const draft = envelope({
+			id: '01900000-0000-7000-8000-000000000001',
+			title: 'Draft agreement',
+			status: 'draft'
+		});
+		const sent = envelope({
+			id: '01900000-0000-7000-8000-000000000002',
+			title: 'Sent agreement',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						items: [
+							item({ envelope: draft }),
+							item({
+								envelope: sent,
+								actionRequired: true,
+								recipient: { name: 'Jamie Signer', email: 'jamie@example.com' },
+								nextRecipient: { name: 'Jamie Signer', email: 'jamie@example.com' }
+							})
+						]
+					})
+				})
+			}
+		});
+
+		await expect.element(screen.getByRole('link', { name: /Continue editing/ })).toBeVisible();
+		await expect
+			.element(screen.getByRole('link', { name: 'Open', exact: false }).nth(0))
+			.toBeVisible();
+		expect(screen.getByRole('link', { name: /Sign$/ }).query()).toBeNull();
+		expect(screen.getByRole('link', { name: /Approve$/ }).query()).toBeNull();
+	});
+
+	it('links every row to the envelope detail page, never to a per-recipient signing/capability URL', async () => {
+		const sent = envelope({
 			id: '01900000-0000-7000-8000-000000000003',
-			title: 'Completed one',
+			title: 'Needs the other signer',
+			status: 'sent'
+		});
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({
+						items: [
+							item({
+								envelope: sent,
+								recipient: { name: 'Other Signer', email: 'other@example.com' },
+								nextRecipient: { name: 'Other Signer', email: 'other@example.com' }
+							})
+						]
+					})
+				})
+			}
+		});
+
+		const link = screen.getByRole('link', { name: 'Needs the other signer' });
+		await expect.element(link).toBeVisible();
+		expect(link.element().getAttribute('href')).toMatch(
+			/\/envelopes\/01900000-0000-7000-8000-000000000003$/
+		);
+	});
+
+	it('preserves a terminal/voided envelope row in the All view', async () => {
+		const voided = envelope({
+			id: '01900000-0000-7000-8000-000000000004',
+			title: 'Voided agreement',
+			status: 'voided'
+		});
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklist: worklist({ items: [item({ envelope: voided })] }) }) }
+		});
+
+		await expect.element(screen.getByText('Voided agreement')).toBeVisible();
+	});
+
+	it('renders a next-page link built from the nextCursor, preserving the current view/query', async () => {
+		const completed = envelope({
+			id: '01900000-0000-7000-8000-000000000005',
+			title: 'Completed agreement',
 			status: 'completed'
 		});
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [draft, ready, completed], nextCursor: null });
+		const screen = await render(DashboardPage, {
+			props: {
+				data: pageData({
+					worklist: worklist({ items: [item({ envelope: completed })], nextCursor: 'abc123' }),
+					worklistQuery: worklistQuery({ view: 'completed', query: 'msa' })
+				})
 			}
-			detailRequests.push(url);
-			return jsonResponse({});
 		});
-		vi.stubGlobal('fetch', mockFetch);
 
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-		await expect.element(screen.getByText('Draft one')).toBeVisible();
-		expect(detailRequests).toHaveLength(0);
+		const nextLink = screen.getByRole('link', { name: m.dashboard_pagination_next() });
+		await expect.element(nextLink).toBeVisible();
+		const href = nextLink.element().getAttribute('href') ?? '';
+		expect(href).toContain('cursor=abc123');
+		expect(href).toContain('view=completed');
+		expect(href).toContain('q=msa');
 	});
 
-	it('counts action needed from an actionable recipient matching the caller by normalized email, pending or viewed', async () => {
-		const sent = envelope({
-			id: '01900000-0000-7000-8000-000000000001',
-			title: 'Needs my signature',
-			status: 'sent'
+	it('does not render a next-page link when there is no further cursor', async () => {
+		const screen = await render(DashboardPage, {
+			props: { data: pageData({ worklist: worklist({ nextCursor: null }) }) }
 		});
-		const inProgress = envelope({
-			id: '01900000-0000-7000-8000-000000000002',
-			title: 'Needs my approval',
-			status: 'in_progress'
-		});
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [sent, inProgress], nextCursor: null });
-			}
-			if (isDetailRequest(url, sent.id)) {
-				return jsonResponse(
-					detailResponse(sent, [
-						// Case and whitespace differ from the account email; normalization
-						// must still match it.
-						recipient({
-							id: 'r1',
-							role: 'signer',
-							email: '  USER@Example.com  ',
-							status: 'pending'
-						})
-					])
-				);
-			}
-			if (isDetailRequest(url, inProgress.id)) {
-				return jsonResponse(
-					detailResponse(inProgress, [
-						recipient({ id: 'r2', role: 'approver', email: 'user@example.com', status: 'viewed' })
-					])
-				);
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
 
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		const actionDescription = screen.getByText(m.stat_action_needed(), { exact: true });
-		await expect.element(actionDescription).toBeVisible();
-		const actionCard = actionDescription.element().closest<HTMLElement>('[data-slot="card"]');
-		expect(actionCard?.textContent).toContain('2');
-
-		const waitingDescription = screen.getByText(m.stat_waiting(), { exact: true });
-		await expect.element(waitingDescription).toBeVisible();
-		const waitingCard = waitingDescription.element().closest<HTMLElement>('[data-slot="card"]');
-		expect(waitingCard?.textContent).toContain('0');
-	});
-
-	it('excludes non-actionable roles and terminal statuses from both buckets', async () => {
-		const sent = envelope({
-			id: '01900000-0000-7000-8000-000000000001',
-			title: 'Only a viewer/cc pending',
-			status: 'sent'
-		});
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [sent], nextCursor: null });
-			}
-			if (isDetailRequest(url, sent.id)) {
-				return jsonResponse(
-					detailResponse(sent, [
-						recipient({
-							id: 'r1',
-							role: 'viewer',
-							email: 'watcher@example.com',
-							status: 'pending'
-						}),
-						recipient({ id: 'r2', role: 'cc', email: 'cc@example.com', status: 'pending' }),
-						recipient({
-							id: 'r3',
-							role: 'signer',
-							email: 'signer@example.com',
-							status: 'completed'
-						})
-					])
-				);
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		const actionDescription = screen.getByText(m.stat_action_needed(), { exact: true });
-		await expect.element(actionDescription).toBeVisible();
-		const actionCard = actionDescription.element().closest<HTMLElement>('[data-slot="card"]');
-		expect(actionCard?.textContent).toContain('0');
-
-		const waitingDescription = screen.getByText(m.stat_waiting(), { exact: true });
-		await expect.element(waitingDescription).toBeVisible();
-		const waitingCard = waitingDescription.element().closest<HTMLElement>('[data-slot="card"]');
-		expect(waitingCard?.textContent).toContain('0');
-	});
-
-	it('counts waiting for others only once no current-user pending item exists, without double-counting', async () => {
-		const waitingOnOthers = envelope({
-			id: '01900000-0000-7000-8000-000000000001',
-			title: 'Waiting on the other signer',
-			status: 'sent'
-		});
-		const needsMe = envelope({
-			id: '01900000-0000-7000-8000-000000000002',
-			title: 'Needs my signature',
-			status: 'in_progress'
-		});
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [waitingOnOthers, needsMe], nextCursor: null });
-			}
-			if (isDetailRequest(url, waitingOnOthers.id)) {
-				return jsonResponse(
-					detailResponse(waitingOnOthers, [
-						// The caller's own recipient row is already done; another
-						// signer is still pending.
-						recipient({
-							id: 'r1',
-							role: 'signer',
-							email: 'user@example.com',
-							status: 'completed'
-						}),
-						recipient({
-							id: 'r2',
-							role: 'signer',
-							email: 'other@example.com',
-							status: 'pending'
-						})
-					])
-				);
-			}
-			if (isDetailRequest(url, needsMe.id)) {
-				return jsonResponse(
-					detailResponse(needsMe, [
-						recipient({ id: 'r3', role: 'signer', email: 'user@example.com', status: 'pending' })
-					])
-				);
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		const actionDescription = screen.getByText(m.stat_action_needed(), { exact: true });
-		await expect.element(actionDescription).toBeVisible();
-		const actionCard = actionDescription.element().closest<HTMLElement>('[data-slot="card"]');
-		expect(actionCard?.textContent).toContain('1');
-
-		const waitingDescription = screen.getByText(m.stat_waiting(), { exact: true });
-		await expect.element(waitingDescription).toBeVisible();
-		const waitingCard = waitingDescription.element().closest<HTMLElement>('[data-slot="card"]');
-		expect(waitingCard?.textContent).toContain('1');
-	});
-
-	it('aggregates the envelope list across every paginated page before computing stats', async () => {
-		const page1 = envelope({
-			id: '01900000-0000-7000-8000-000000000001',
-			title: 'Page 1 agreement',
-			status: 'sent'
-		});
-		const page2 = envelope({
-			id: '01900000-0000-7000-8000-000000000002',
-			title: 'Page 2 agreement',
-			status: 'in_progress',
-			updatedAt: '2026-09-13T00:00:00.000Z'
-		});
-		const detailRequests = new Set<string>();
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				if (!url.includes('cursor=')) {
-					return jsonResponse({ items: [page1], nextCursor: 'page-2' });
-				}
-				return jsonResponse({ items: [page2], nextCursor: null });
-			}
-			if (isDetailRequest(url, page1.id) || isDetailRequest(url, page2.id)) {
-				detailRequests.add(url);
-				return jsonResponse(detailResponse(url.endsWith(page1.id) ? page1 : page2, []));
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		await expect.element(screen.getByText('Page 2 agreement')).toBeVisible();
-		expect(detailRequests.size).toBe(2);
-	});
-
-	it('shows an explicit error and offers a retry when a detail fetch fails, never a false zero', async () => {
-		const sent = envelope({
-			id: '01900000-0000-7000-8000-000000000001',
-			title: 'Detail fetch will fail',
-			status: 'sent'
-		});
-		let detailCallCount = 0;
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [sent], nextCursor: null });
-			}
-			if (isDetailRequest(url, sent.id)) {
-				detailCallCount += 1;
-				if (detailCallCount === 1) {
-					return problemResponse(503, 'Envelope details unavailable');
-				}
-				return jsonResponse(detailResponse(sent, []));
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		await expect.element(screen.getByText('Envelope details unavailable')).toBeVisible();
-		// Never a false zero: the numeric stat cards must not render while the
-		// detail fetch is in a known-failed state.
-		expect(screen.getByText(m.stat_action_needed(), { exact: true }).query()).toBeNull();
-		expect(screen.getByText(m.stat_waiting(), { exact: true }).query()).toBeNull();
-
-		await screen.getByRole('button', { name: 'Retry' }).click();
-		await expect.element(screen.getByText(m.stat_action_needed(), { exact: true })).toBeVisible();
-		expect(detailCallCount).toBe(2);
-	});
-
-	it('shows the sign-in prompt on 401 without any product-introduction copy', async () => {
-		const mockFetch = vi
-			.fn()
-			.mockImplementation(async () => problemResponse(401, 'Sign in required'));
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-		await expect.element(screen.getByRole('link', { name: 'Sign in' })).toBeVisible();
-	});
-
-	it('places View all inside the recent-agreements Card.Action, as a real link to /envelopes', async () => {
-		const mockFetch = vi
-			.fn()
-			.mockImplementation(async () => jsonResponse({ items: [], nextCursor: null }));
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		const viewAll = screen.getByRole('link', { name: m.view_all() });
-		await expect.element(viewAll).toBeVisible();
-		expect(viewAll.element().getAttribute('href')).toMatch(/\/envelopes$/);
-		expect(viewAll.element().closest('[data-slot="card-action"]')).not.toBeNull();
-	});
-
-	it('renders exactly two stat cards once loaded, never a third completed/total card', async () => {
-		const sent = envelope({
-			id: '01900000-0000-7000-8000-000000000011',
-			title: 'Active one',
-			status: 'sent'
-		});
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [sent], nextCursor: null });
-			}
-			if (isDetailRequest(url, sent.id)) {
-				return jsonResponse(detailResponse(sent, []));
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		await expect.element(screen.getByText(m.stat_action_needed(), { exact: true })).toBeVisible();
-		await expect.element(screen.getByText(m.stat_waiting(), { exact: true })).toBeVisible();
-		const cards = screen
-			.getByText(m.stat_action_needed(), { exact: true })
-			.element()
-			.closest('[data-slot="card"]')
-			?.parentElement?.querySelectorAll('[data-slot="card"]');
-		// The stats section grid holds exactly the action-needed and waiting cards.
-		expect(cards?.length).toBe(2);
-	});
-
-	it('caps concurrent detail fetches at 8 while covering every active envelope', async () => {
-		const actives = Array.from({ length: 20 }, (_, index) =>
-			envelope({
-				id: `01900000-0000-7000-8000-${String(index).padStart(12, '0')}`,
-				title: `Active ${index}`,
-				status: index % 2 === 0 ? 'sent' : 'in_progress'
-			})
-		);
-		let inFlight = 0;
-		let maxInFlight = 0;
-		const seen = new Set<string>();
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: actives, nextCursor: null });
-			}
-			const match = actives.find((env) => isDetailRequest(url, env.id));
-			if (match) {
-				inFlight += 1;
-				maxInFlight = Math.max(maxInFlight, inFlight);
-				seen.add(match.id);
-				await new Promise((resolve) => setTimeout(resolve, 10));
-				inFlight -= 1;
-				return jsonResponse(detailResponse(match, []));
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		await expect.element(screen.getByText(m.stat_action_needed(), { exact: true })).toBeVisible();
-		expect(seen.size).toBe(20);
-		expect(maxInFlight).toBeLessThanOrEqual(8);
-		expect(maxInFlight).toBeGreaterThan(1);
-	});
-
-	it('recovers via retry after a hung-then-failed first stats attempt without ever showing a false zero', async () => {
-		const sent = envelope({
-			id: '01900000-0000-7000-8000-000000000021',
-			title: 'Stale race',
-			status: 'sent'
-		});
-		let detailCallCount = 0;
-		const releaseFirst: Array<() => void> = [];
-		const mockFetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (isListRequest(url)) {
-				return jsonResponse({ items: [sent], nextCursor: null });
-			}
-			if (isDetailRequest(url, sent.id)) {
-				detailCallCount += 1;
-				if (detailCallCount === 1) {
-					// First attempt hangs until the retry has already succeeded.
-					await new Promise<void>((resolve) => releaseFirst.push(resolve));
-					return problemResponse(503, 'Stale details failure');
-				}
-				return jsonResponse(
-					detailResponse(sent, [
-						recipient({ id: 'r-new', role: 'signer', email: 'user@example.com', status: 'pending' })
-					])
-				);
-			}
-			return jsonResponse({});
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		const screen = await render(DashboardPage, { props: { data: PAGE_DATA } });
-
-		// Wait until the first attempt is hanging on its detail fetch, then
-		// drive the newer overlapping load by invoking the stats retry path:
-		// the error UI is not yet shown, so trigger a second list load via a
-		// fresh render would not overlap the same instance; instead assert the
-		// generation guard at the source level already covers ordering and here
-		// verify the retry path recovers without ever showing a false zero.
-		// Release the hung first attempt as a failure to reach the error state.
-		await vi.waitFor(() => expect(detailCallCount).toBe(1));
-		releaseFirst.forEach((release) => release());
-		await expect.element(screen.getByText('Stale details failure')).toBeVisible();
-		expect(screen.getByText(m.stat_action_needed(), { exact: true }).query()).toBeNull();
-
-		await screen.getByRole('button', { name: 'Retry' }).click();
-		await expect.element(screen.getByText(m.stat_action_needed(), { exact: true })).toBeVisible();
-		const actionDescription = screen.getByText(m.stat_action_needed(), { exact: true });
-		const actionCard = actionDescription.element().closest<HTMLElement>('[data-slot="card"]');
-		expect(actionCard?.textContent).toContain('1');
-		expect(detailCallCount).toBe(2);
+		expect(screen.getByRole('link', { name: m.dashboard_pagination_next() }).query()).toBeNull();
 	});
 });

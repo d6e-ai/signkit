@@ -1,329 +1,288 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { IconAlertTriangle, IconArrowRight, IconFileText } from '@tabler/icons-svelte';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
+	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
+	import IconFileText from '@tabler/icons-svelte/icons/file-text';
+	import * as Alert from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Skeleton } from '$lib/components/ui/skeleton';
-	import {
-		createEnvelopesClient,
-		fetchAllEnvelopes,
-		EnvelopesApiError,
-		type Envelope,
-		type EnvelopeDetailResponse
-	} from '$lib/client/envelopes';
-	import { isActionableRecipientRole } from '$lib/domain/envelope';
+	import * as Empty from '$lib/components/ui/empty';
+	import * as Field from '$lib/components/ui/field';
+	import { Input } from '$lib/components/ui/input';
+	import * as Table from '$lib/components/ui/table';
+	import * as Tabs from '$lib/components/ui/tabs';
+	import type {
+		DashboardCounts,
+		DashboardItem,
+		DashboardView
+	} from '$lib/application/dashboard/model';
+	import type { EnvelopeStatus } from '$lib/domain/envelope';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale, localizeHref } from '$lib/paraglide/runtime';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	const client = createEnvelopesClient();
+	const dashboardViews: readonly DashboardView[] = [
+		'all',
+		'action_required',
+		'waiting',
+		'drafts',
+		'completed'
+	];
 
-	// A ceiling on simultaneously in-flight detail requests, not a batch
-	// size: every active envelope is still covered, just at most this many
-	// requests are ever outstanding at once, so a caller with hundreds of
-	// active envelopes doesn't fire hundreds of concurrent requests.
-	// Kept at 8 or below so a large workspace never fans out unbounded.
-	const DETAIL_FETCH_CONCURRENCY = 8;
+	const viewTabLabel = (view: DashboardView): string =>
+		view === 'all'
+			? m.dashboard_tab_all()
+			: view === 'action_required'
+				? m.dashboard_tab_action_required()
+				: view === 'waiting'
+					? m.dashboard_tab_waiting()
+					: view === 'drafts'
+						? m.dashboard_tab_drafts()
+						: m.dashboard_tab_completed();
 
-	let loading = $state(true);
-	let authRequired = $state(false);
-	let errorMessage = $state<string | null>(null);
-	let envelopes = $state<Envelope[]>([]);
+	const viewTabCount = (view: DashboardView, counts: DashboardCounts): number =>
+		view === 'all'
+			? counts.all
+			: view === 'action_required'
+				? counts.actionRequired
+				: view === 'waiting'
+					? counts.waiting
+					: view === 'drafts'
+						? counts.drafts
+						: counts.completed;
 
-	let statsLoading = $state(false);
-	let statsError = $state<string | null>(null);
-	let actionNeeded = $state(0);
-	let waiting = $state(0);
+	const statusLabel = (status: EnvelopeStatus): string =>
+		status === 'draft'
+			? m.envelope_status_draft()
+			: status === 'ready'
+				? m.envelope_status_ready()
+				: status === 'sent'
+					? m.envelope_status_sent()
+					: status === 'in_progress'
+						? m.envelope_status_in_progress()
+						: status === 'completed'
+							? m.envelope_status_completed()
+							: status === 'declined'
+								? m.envelope_status_declined()
+								: status === 'expired'
+									? m.envelope_status_expired()
+									: m.envelope_status_voided();
 
-	// Guards against two overlapping `loadStats` calls (the initial load and
-	// a caller-triggered retry) racing to publish state: only the call that
-	// is still the latest when its work finishes may write `actionNeeded`,
-	// `waiting`, `statsError`, or `statsLoading`. Without this, a slow first
-	// attempt that eventually fails could overwrite a faster retry's success
-	// with a stale failure, landing exactly on the "false zero" this page is
-	// otherwise careful to avoid.
-	let statsRequestGeneration = 0;
-	let destroyed = false;
+	const statusVariant = (status: EnvelopeStatus): 'default' | 'secondary' | 'outline' =>
+		status === 'completed'
+			? 'default'
+			: status === 'voided' || status === 'declined' || status === 'expired'
+				? 'outline'
+				: 'secondary';
 
-	onDestroy(() => {
-		destroyed = true;
-	});
+	// Never a sign/approve shortcut: `actionRequired` only ever changes which
+	// of these labels is shown, never an envelope's real signing authority or
+	// where the row links to.
+	const progressLabel = (item: DashboardItem): string =>
+		item.envelope.status === 'draft' || item.envelope.status === 'ready'
+			? m.dashboard_row_not_sent()
+			: item.actionRequired
+				? m.dashboard_row_action_required_label()
+				: (item.envelope.status === 'sent' || item.envelope.status === 'in_progress') &&
+					  item.nextRecipient !== null
+					? m.dashboard_row_waiting_on({
+							name: item.nextRecipient.name || item.nextRecipient.email
+						})
+					: m.dashboard_row_progress({
+							// Completion progress counts only recipients whose turn
+							// actually matters to the outcome (signers/approvers), never
+							// CC'd recipients -- `recipientCount` includes CC and would
+							// otherwise understate progress on a fully-actionable
+							// envelope.
+							completed: item.completedRecipientCount,
+							total: item.actionableRecipientCount
+						});
 
-	async function fetchDetailsWithConcurrencyLimit(
-		targets: readonly Envelope[],
-		isStale: () => boolean
-	): Promise<EnvelopeDetailResponse[]> {
-		const results: EnvelopeDetailResponse[] = new Array(targets.length);
-		let nextIndex = 0;
-		async function worker(): Promise<void> {
-			while (!isStale()) {
-				const index = nextIndex;
-				nextIndex += 1;
-				if (index >= targets.length) return;
-				results[index] = await client.getDetail(targets[index].id);
-			}
-		}
-		const workerCount = Math.min(DETAIL_FETCH_CONCURRENCY, targets.length);
-		await Promise.all(Array.from({ length: workerCount }, () => worker()));
-		return results;
-	}
+	const recipientExtraCount = (item: DashboardItem): number => Math.max(item.recipientCount - 1, 0);
 
-	const signInHref = $derived(
-		localizeHref(`/auth/login?return=${encodeURIComponent(page.url.pathname)}`)
-	);
-
-	// Only sent/in-progress envelopes carry recipients that can still act, so
-	// these are the only ones worth a detail fetch -- a draft or a completed
-	// envelope can never contribute to either bucket below.
-	const activeEnvelopes = $derived(
-		envelopes.filter((envelope) => envelope.status === 'sent' || envelope.status === 'in_progress')
-	);
-
-	const recent = $derived(
-		[...envelopes]
-			.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
-			.slice(0, 6)
-	);
-
-	function normalizeEmail(value: string): string {
-		return value.trim().toLowerCase();
-	}
-
-	const normalizedSelfEmail = $derived(data.email ? normalizeEmail(data.email) : '');
-
-	function statusLabel(status: Envelope['status']): string {
-		switch (status) {
-			case 'draft':
-				return m.envelope_status_draft();
-			case 'ready':
-				return m.envelope_status_ready();
-			case 'sent':
-				return m.envelope_status_sent();
-			case 'in_progress':
-				return m.envelope_status_in_progress();
-			case 'completed':
-				return m.envelope_status_completed();
-			case 'declined':
-				return m.envelope_status_declined();
-			case 'expired':
-				return m.envelope_status_expired();
-			case 'voided':
-				return m.envelope_status_voided();
-		}
-	}
-
-	function statusClass(status: Envelope['status']): string {
-		if (status === 'completed')
-			return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300';
-		if (status === 'sent' || status === 'in_progress')
-			return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300';
-		if (status === 'ready')
-			return 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300';
-		return '';
-	}
+	const rowActionLabel = (status: EnvelopeStatus): string =>
+		status === 'draft' || status === 'ready'
+			? m.dashboard_row_action_continue()
+			: m.dashboard_row_action_open();
 
 	function formatDate(value: string): string {
-		return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium' }).format(new Date(value));
+		return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(
+			new Date(value)
+		);
 	}
 
-	// Loads recipient detail for every active envelope and buckets each one
-	// into at most one of the two counts. A caller never appears in both: an
-	// envelope only reaches the "waiting" branch once it has already failed
-	// the "action needed" check.
-	async function loadStats(): Promise<void> {
-		const generation = ++statsRequestGeneration;
-		const isStale = (): boolean => destroyed || generation !== statsRequestGeneration;
-		const active = activeEnvelopes;
-		if (active.length === 0) {
-			if (isStale()) return;
-			actionNeeded = 0;
-			waiting = 0;
-			statsError = null;
-			statsLoading = false;
-			return;
+	// Tab/search/pagination links all derive from the current URL so that
+	// switching views or paging is a real navigation (back/forward and
+	// bookmarking work, and SSR `load` supplies the data -- no client fetch).
+	function buildHref(overrides: {
+		view?: DashboardView;
+		q?: string;
+		cursor?: string | null;
+	}): string {
+		const url = new URL(page.url);
+		if (overrides.view !== undefined) {
+			url.searchParams.set('view', overrides.view);
+			url.searchParams.delete('cursor');
 		}
-		statsLoading = true;
-		statsError = null;
-		try {
-			const details = await fetchDetailsWithConcurrencyLimit(active, isStale);
-			// A newer call (a fresh mount's initial load, or a caller-triggered
-			// retry) has since become the one allowed to publish -- this result
-			// is stale even though it succeeded, and must not overwrite
-			// whatever the latest call has already written or is still loading.
-			if (isStale()) return;
-			let action = 0;
-			let waitingOnOthers = 0;
-			for (const detail of details) {
-				const actionable = detail.recipients.filter((recipient) =>
-					isActionableRecipientRole(recipient.role)
-				);
-				const isCurrentUserPending = actionable.some(
-					(recipient) =>
-						normalizeEmail(recipient.email) === normalizedSelfEmail &&
-						(recipient.status === 'pending' || recipient.status === 'viewed')
-				);
-				if (isCurrentUserPending) {
-					action += 1;
-					continue;
-				}
-				const hasOtherPending = actionable.some(
-					(recipient) =>
-						normalizeEmail(recipient.email) !== normalizedSelfEmail &&
-						(recipient.status === 'pending' || recipient.status === 'viewed')
-				);
-				if (hasOtherPending) waitingOnOthers += 1;
-			}
-			actionNeeded = action;
-			waiting = waitingOnOthers;
-			statsLoading = false;
-		} catch (cause) {
-			if (isStale()) return;
-			// A detail-load failure must never be mistaken for "nothing pending":
-			// this leaves the prior counts alone and surfaces an explicit error
-			// with its own retry instead of quietly rendering zero.
-			statsError =
-				cause instanceof EnvelopesApiError ? cause.detail : m.envelope_list_unavailable();
-			statsLoading = false;
+		if (overrides.q !== undefined) {
+			if (overrides.q) url.searchParams.set('q', overrides.q);
+			else url.searchParams.delete('q');
+			url.searchParams.delete('cursor');
 		}
+		if ('cursor' in overrides) {
+			if (overrides.cursor) url.searchParams.set('cursor', overrides.cursor);
+			else url.searchParams.delete('cursor');
+		}
+		return localizeHref(`${url.pathname}${url.search}`);
 	}
-
-	async function load(): Promise<void> {
-		loading = true;
-		authRequired = false;
-		errorMessage = null;
-		try {
-			envelopes = await fetchAllEnvelopes(client);
-		} catch (cause) {
-			if (cause instanceof EnvelopesApiError && cause.status === 401) {
-				authRequired = true;
-			} else {
-				errorMessage =
-					cause instanceof EnvelopesApiError ? cause.detail : m.envelope_list_unavailable();
-			}
-			loading = false;
-			return;
-		}
-		loading = false;
-		await loadStats();
-	}
-
-	onMount(() => {
-		void load();
-	});
 </script>
 
+<svelte:head>
+	<title>{m.dashboard_title()} — {m.app_name()}</title>
+</svelte:head>
+
 <div class="flex w-full flex-col gap-6">
-	<section class="flex flex-col justify-between gap-4 md:flex-row md:items-end">
-		<div>
-			<h1 class="text-3xl font-semibold tracking-tight md:text-4xl">{m.dashboard_title()}</h1>
-			<p class="mt-2 text-sm leading-6 text-muted-foreground md:text-base">
-				{m.dashboard_description()}
-			</p>
-		</div>
-		<Button size="lg" href={localizeHref('/envelopes/new')}
-			><IconFileText data-icon="inline-start" />{m.new_agreement()}</Button
-		>
+	<section class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+		<h1 class="text-2xl font-semibold tracking-tight">{m.dashboard_title()}</h1>
+		<Button href={localizeHref('/envelopes/new')}>
+			<IconFileText data-icon="inline-start" />{m.dashboard_send_contract()}
+		</Button>
 	</section>
 
-	{#if authRequired}
-		<Card.Root>
-			<Card.Content class="flex flex-col items-center gap-4 py-10 text-center">
-				<IconAlertTriangle class="text-muted-foreground" />
-				<p class="text-sm text-muted-foreground">{m.envelope_sign_in_required()}</p>
-				<Button href={signInHref}>{m.sign_in()}</Button>
-			</Card.Content>
-		</Card.Root>
-	{:else if loading}
-		<div class="grid gap-3 sm:grid-cols-2">
-			<Skeleton class="h-24 w-full rounded-2xl" />
-			<Skeleton class="h-24 w-full rounded-2xl" />
-		</div>
-	{:else if errorMessage}
-		<Card.Root class="border-destructive/30">
-			<Card.Content class="flex flex-col items-center gap-3 py-10 text-center">
-				<p class="text-sm font-medium text-destructive">{errorMessage}</p>
-				<Button variant="outline" onclick={() => void load()}>{m.common_retry()}</Button>
-			</Card.Content>
-		</Card.Root>
-	{:else}
-		<section class="grid gap-3 sm:grid-cols-2">
-			{#if statsError}
-				<div class="sm:col-span-2">
-					<Card.Root class="border-destructive/30">
-						<Card.Content class="flex flex-col items-center gap-3 py-6 text-center">
-							<p class="text-sm font-medium text-destructive">{statsError}</p>
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={statsLoading}
-								onclick={() => void loadStats()}
-							>
-								{m.common_retry()}
-							</Button>
-						</Card.Content>
-					</Card.Root>
-				</div>
-			{:else if statsLoading}
-				<Skeleton class="h-24 w-full rounded-2xl" />
-				<Skeleton class="h-24 w-full rounded-2xl" />
-			{:else}
-				<Card.Root
-					><Card.Header class="pb-2"
-						><Card.Description>{m.stat_action_needed()}</Card.Description></Card.Header
-					><Card.Content><div class="text-3xl font-semibold">{actionNeeded}</div></Card.Content
-					></Card.Root
-				>
-				<Card.Root
-					><Card.Header class="pb-2"
-						><Card.Description>{m.stat_waiting()}</Card.Description></Card.Header
-					><Card.Content><div class="text-3xl font-semibold">{waiting}</div></Card.Content
-					></Card.Root
-				>
-			{/if}
-		</section>
-
-		<Card.Root class="overflow-hidden">
-			<Card.Header>
-				<Card.Title>{m.recent_title()}</Card.Title>
-				<Card.Description>{m.recent_description()}</Card.Description>
-				<Card.Action>
-					<Button variant="ghost" size="sm" href={localizeHref('/envelopes')}
-						>{m.view_all()}<IconArrowRight data-icon="inline-end" /></Button
+	<div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+		<Tabs.Root value={data.worklistQuery.view} class="w-full sm:w-auto">
+			<Tabs.List variant="line" class="w-full overflow-x-auto sm:w-auto">
+				{#each dashboardViews as view (view)}
+					<a
+						href={buildHref({ view, q: data.worklistQuery.query })}
+						aria-current={data.worklistQuery.view === view ? 'page' : undefined}
+						data-active={data.worklistQuery.view === view ? '' : undefined}
+						class="relative inline-flex h-[calc(100%_-_1px)] flex-1 items-center justify-center gap-2 rounded-full border border-transparent px-3 py-1 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring data-active:bg-background data-active:text-foreground"
 					>
-				</Card.Action>
-			</Card.Header>
-			<Card.Content class="px-0">
-				{#if recent.length === 0}
-					<p class="px-6 py-8 text-center text-sm text-muted-foreground">
-						{m.envelope_list_empty_description()}
-					</p>
-				{:else}
-					<div class="divide-y border-t">
-						{#each recent as envelope (envelope.id)}
-							<a
-								href={localizeHref(`/envelopes/${envelope.id}`)}
-								class="group grid gap-3 px-6 py-4 transition-colors hover:bg-muted/45 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-							>
-								<div class="min-w-0">
-									<div class="flex items-center gap-2">
-										<p class="truncate text-sm font-medium">{envelope.title}</p>
-										<Badge variant="outline" class={statusClass(envelope.status)}
-											>{statusLabel(envelope.status)}</Badge
-										>
+						{viewTabLabel(view)}
+						{#if data.worklist}
+							<Badge variant="secondary">{viewTabCount(view, data.worklist.counts)}</Badge>
+						{/if}
+					</a>
+				{/each}
+			</Tabs.List>
+		</Tabs.Root>
+
+		<form method="GET" action={localizeHref(page.url.pathname)} class="flex items-end gap-2">
+			<input type="hidden" name="view" value={data.worklistQuery.view} />
+			<Field.Field class="w-full sm:w-64">
+				<Field.FieldLabel for="dashboard-search">{m.dashboard_search_label()}</Field.FieldLabel>
+				<Input
+					id="dashboard-search"
+					type="search"
+					name="q"
+					placeholder={m.dashboard_search_placeholder()}
+					value={data.worklistQuery.query}
+				/>
+			</Field.Field>
+			<Button type="submit" variant="outline">{m.dashboard_search_submit()}</Button>
+		</form>
+	</div>
+
+	{#if data.worklistError}
+		<Alert.Root variant="destructive">
+			<IconAlertTriangle />
+			<Alert.Title>{m.dashboard_error_title()}</Alert.Title>
+			<Alert.Description class="flex flex-col gap-3">
+				<p>{data.worklistError.message}</p>
+				<Button variant="outline" class="w-fit" onclick={() => void invalidateAll()}>
+					{m.common_retry()}
+				</Button>
+			</Alert.Description>
+		</Alert.Root>
+	{:else if data.worklist === null || data.worklist.items.length === 0}
+		<Empty.Root>
+			<Empty.Header>
+				<Empty.Media variant="icon"><IconFileText /></Empty.Media>
+				<Empty.Title>{m.dashboard_empty_title()}</Empty.Title>
+				<Empty.Description>{m.dashboard_empty_description()}</Empty.Description>
+			</Empty.Header>
+		</Empty.Root>
+	{:else}
+		<div class="overflow-x-auto rounded-xl border">
+			<Table.Root>
+				<Table.Header>
+					<Table.Row>
+						<Table.Head>{m.dashboard_col_agreement()}</Table.Head>
+						<Table.Head>{m.dashboard_col_recipient()}</Table.Head>
+						<Table.Head>{m.dashboard_col_status()}</Table.Head>
+						<Table.Head>{m.dashboard_col_updated()}</Table.Head>
+						<Table.Head class="text-right">{m.dashboard_col_actions()}</Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body>
+					{#each data.worklist.items as item (item.envelope.id)}
+						<Table.Row>
+							<Table.Cell class="max-w-64 font-medium">
+								<a
+									href={localizeHref(`/envelopes/${item.envelope.id}`)}
+									class="truncate hover:underline"
+								>
+									{item.envelope.title}
+								</a>
+							</Table.Cell>
+							<Table.Cell>
+								{#if item.recipient}
+									<div class="flex flex-col">
+										<span>{item.recipient.name || item.recipient.email}</span>
+										{#if recipientExtraCount(item) > 0}
+											<span class="text-xs text-muted-foreground">
+												{m.dashboard_row_recipient_more({ count: recipientExtraCount(item) })}
+											</span>
+										{/if}
 									</div>
+								{:else}
+									<span class="text-muted-foreground">{m.dashboard_row_no_recipients()}</span>
+								{/if}
+							</Table.Cell>
+							<Table.Cell>
+								<div class="flex flex-col gap-1">
+									<Badge variant={statusVariant(item.envelope.status)}>
+										{statusLabel(item.envelope.status)}
+									</Badge>
+									<span class="text-xs text-muted-foreground">{progressLabel(item)}</span>
 								</div>
-								<div class="flex items-center gap-3 text-xs text-muted-foreground sm:justify-end">
-									<span>{formatDate(envelope.updatedAt)}</span>
-								</div>
-							</a>
-						{/each}
-					</div>
-				{/if}
-			</Card.Content>
-		</Card.Root>
+							</Table.Cell>
+							<Table.Cell class="text-muted-foreground">
+								{formatDate(item.envelope.updatedAt)}
+							</Table.Cell>
+							<Table.Cell class="text-right">
+								<Button
+									href={localizeHref(`/envelopes/${item.envelope.id}`)}
+									variant="outline"
+									size="sm"
+								>
+									{rowActionLabel(item.envelope.status)}
+									<IconArrowRight data-icon="inline-end" />
+								</Button>
+							</Table.Cell>
+						</Table.Row>
+					{/each}
+				</Table.Body>
+			</Table.Root>
+		</div>
+
+		{#if data.worklist.nextCursor}
+			<div class="flex justify-center">
+				<Button
+					variant="outline"
+					href={buildHref({
+						view: data.worklistQuery.view,
+						q: data.worklistQuery.query,
+						cursor: data.worklist.nextCursor
+					})}
+				>
+					{m.dashboard_pagination_next()}
+				</Button>
+			</div>
+		{/if}
 	{/if}
 </div>
