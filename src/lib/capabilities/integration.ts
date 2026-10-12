@@ -2,6 +2,14 @@ export const API_KEY_RATE_WINDOW_SECONDS: number = 60;
 export const API_KEY_RATE_WINDOW_MAX_REQUESTS: number = 120;
 
 export const integrationCapabilities = {
+	dashboardWorklist: {
+		status: 'supported',
+		readEndpoint: '/api/v1/dashboard',
+		authentication: 'instance-session',
+		apiKeyAuthentication: false,
+		pagination: 'keyset-cursor',
+		views: ['all', 'action_required', 'waiting', 'drafts', 'completed']
+	},
 	apiKeyAuthentication: {
 		scheme: 'bearer',
 		tokenPrefix: 'signkit',
