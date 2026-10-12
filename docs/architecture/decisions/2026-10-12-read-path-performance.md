@@ -17,7 +17,7 @@ Repeated public-key fetches and duplicate member reads add latency before a page
 
 ## Consequences
 
-A membership change after the current request's read snapshot is observed on the next request; no membership snapshot survives across requests. Mutations retain their existing durable authorization boundary. Cold isolates and resolver eviction can still require a JWKS fetch.
+A membership change after the current request's read snapshot is observed on the next request; no membership snapshot survives across requests. Mutations retain their existing durable authorization boundary. Cold isolates and resolver eviction can still require a JWKS fetch. On Workers, jose does not share a request-bound pending fetch between concurrent cold requests.
 
 The detail batch returns related rows from one read boundary and reduces D1 round trips without introducing a provider-neutral transaction framework. The indexes require a normal forward migration on each supported database.
 

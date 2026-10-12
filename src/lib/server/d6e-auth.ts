@@ -99,8 +99,9 @@ const MAX_REMOTE_JWKS_SETS: number = 8;
  * verification material -- and jose's cooldown/rotation/retry bookkeeping
  * around it -- lives here, never anything token-, principal-, or
  * request-specific. Reusing the resolver instance across calls (instead of
- * calling `createRemoteJWKSet` fresh every time) is what lets jose's
- * cooldown window and in-flight fetch de-duplication take effect at all. A
+ * calling `createRemoteJWKSet` fresh every time) preserves its warm key cache
+ * and cooldown window. jose keeps fetch lifetimes runtime-aware: on Workers,
+ * concurrent cold requests do not share a request-bound pending fetch. A
  * configuration change to a different JWKS URL gets its own entry and never
  * shares keys with another origin.
  */
