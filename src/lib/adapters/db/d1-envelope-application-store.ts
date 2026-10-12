@@ -8,14 +8,16 @@ import type {
 	PublicEnvelopeDetailField,
 	PublicEnvelopeRecipient
 } from '$lib/application/envelopes/model';
-import type {
-	Envelope,
-	EnvelopeStatus,
-	MarkdownPath,
-	FieldGeometry,
-	FieldType,
-	RecipientRole,
-	RecipientStatus
+import {
+	fieldTypes,
+	recipientRoles,
+	type Envelope,
+	type EnvelopeStatus,
+	type FieldGeometry,
+	type FieldType,
+	type MarkdownPath,
+	type RecipientRole,
+	type RecipientStatus
 } from '$lib/domain/envelope';
 import type {
 	DraftAuditHead,
@@ -28,24 +30,31 @@ import type {
 	PublishedDraftRevision
 } from '$lib/ports/draft-mutation-store';
 import type { DraftPointerUpdate } from '$lib/ports/envelope-store';
-import { D1EnvelopeStore } from './d1-envelope-store';
+import {
+	D1_ENVELOPE_BY_ID_SQL,
+	D1EnvelopeStore,
+	d1EnvelopeFromRow,
+	type D1EnvelopeRow
+} from './d1-envelope-store';
 
 const MAX_LIST_LIMIT: number = 100;
 
-interface EnvelopeRow {
-	id: string;
-	created_by_user_id: string;
-	title: string;
-	status: EnvelopeStatus;
-	repository_generation: number;
-	repository_head: string | null;
-	repository_archive_key: string | null;
-	repository_archive_sha256: string | null;
-	sent_commit_sha: string | null;
-	field_generation: number;
-	created_at: string;
-	updated_at: string;
-}
+export const D1_ENVELOPE_DETAIL_RECIPIENT_SQL: string = `SELECT id, email, name, role, locale, routing_order, status
+				 FROM recipient
+				 WHERE envelope_id = ?
+				 ORDER BY routing_order ASC, id ASC`;
+
+export const D1_ENVELOPE_DETAIL_READY_SQL: string = `SELECT id
+				 FROM audit_event
+				 WHERE envelope_id = ? AND event_type = 'envelope.ready'
+				 ORDER BY sequence DESC
+				 LIMIT 1`;
+
+export const D1_ENVELOPE_DETAIL_FIELD_SQL: string = `SELECT id, recipient_id, document_id, document_path, field_type, required, position,
+				        page, x, y, width, height
+				 FROM envelope_field
+				 WHERE envelope_id = ?
+				 ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC`;
 
 interface IdempotencyRow {
 	envelope_id: string;
@@ -201,10 +210,12 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 							 LIMIT ?`
 						)
 						.bind(cursor.created_at, cursor.created_at, cursor.id, fetchLimit);
-		const result: D1Result<EnvelopeRow> = await statement.all<EnvelopeRow>();
+		const result: D1Result<D1EnvelopeRow> = await statement.all<D1EnvelopeRow>();
 		const hasNextPage: boolean = result.results.length > query.limit;
-		const rows: EnvelopeRow[] = hasNextPage ? result.results.slice(0, query.limit) : result.results;
-		const items: Envelope[] = rows.map((row: EnvelopeRow): Envelope => envelopeFromRow(row));
+		const rows: D1EnvelopeRow[] = hasNextPage
+			? result.results.slice(0, query.limit)
+			: result.results;
+		const items: Envelope[] = rows.map((row: D1EnvelopeRow): Envelope => d1EnvelopeFromRow(row));
 		const lastItem: Envelope | undefined = items.at(-1);
 
 		return {
@@ -288,50 +299,46 @@ export class D1EnvelopeApplicationStore implements EnvelopeApplicationStore, Dra
 	}
 
 	async readDetail(envelopeId: string): Promise<EnvelopeDetail | null> {
-		const envelope: Envelope | null = await this.findEnvelope(envelopeId);
-		if (envelope === null) return null;
+		const envelopeStatement: D1PreparedStatement = this.#database
+			.prepare(D1_ENVELOPE_BY_ID_SQL)
+			.bind(envelopeId);
+		const recipientStatement: D1PreparedStatement = this.#database
+			.prepare(D1_ENVELOPE_DETAIL_RECIPIENT_SQL)
+			.bind(envelopeId);
+		const readyStatement: D1PreparedStatement = this.#database
+			.prepare(D1_ENVELOPE_DETAIL_READY_SQL)
+			.bind(envelopeId);
+		const fieldStatement: D1PreparedStatement = this.#database
+			.prepare(D1_ENVELOPE_DETAIL_FIELD_SQL)
+			.bind(envelopeId);
 
-		const recipientResult = await this.#database
-			.prepare(
-				`SELECT id, email, name, role, locale, routing_order, status
-				 FROM recipient
-				 WHERE envelope_id = ?
-				 ORDER BY routing_order ASC, id ASC`
-			)
-			.bind(envelopeId)
-			.all<DetailRecipientRow>();
-
-		let readyAuditEventId: string | null = null;
-		if (envelope.status !== 'draft') {
-			const ready = await this.#database
-				.prepare(
-					`SELECT id
-					 FROM audit_event
-					 WHERE envelope_id = ? AND event_type = 'envelope.ready'
-					 ORDER BY sequence DESC
-					 LIMIT 1`
-				)
-				.bind(envelopeId)
-				.first<{ id: string }>();
-			readyAuditEventId = ready?.id ?? null;
+		const batched: D1Result<
+			D1EnvelopeRow | DetailRecipientRow | DetailReadyAuditRow | DetailFieldRow
+		>[] = await this.#database.batch<
+			D1EnvelopeRow | DetailRecipientRow | DetailReadyAuditRow | DetailFieldRow
+		>([envelopeStatement, recipientStatement, readyStatement, fieldStatement]);
+		if (batched.length !== 4) {
+			throw new Error('Envelope detail batch did not return four results.');
 		}
 
-		const fieldResult = await this.#database
-			.prepare(
-				`SELECT id, recipient_id, document_id, document_path, field_type, required, position,
-				        page, x, y, width, height
-				 FROM envelope_field
-				 WHERE envelope_id = ?
-				 ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC`
-			)
-			.bind(envelopeId)
-			.all<DetailFieldRow>();
+		const envelopeRows: D1EnvelopeRow[] = detailBatchRows<D1EnvelopeRow>(batched[0]);
+		const envelopeRow: D1EnvelopeRow | undefined = envelopeRows[0];
+		if (envelopeRow === undefined) return null;
+		const envelope: Envelope = d1EnvelopeFromRow(envelopeRow);
+
+		const recipientRows: DetailRecipientRow[] = detailBatchRows<DetailRecipientRow>(batched[1]);
+		const readyRows: DetailReadyAuditRow[] = detailBatchRows<DetailReadyAuditRow>(batched[2]);
+		const fieldRows: DetailFieldRow[] = detailBatchRows<DetailFieldRow>(batched[3]);
+		const readyAuditEventId: string | null =
+			envelope.status === 'draft' ? null : (readyRows[0]?.id ?? null);
 
 		return {
 			envelope,
-			recipients: recipientResult.results.map(fromRecipientRow),
+			recipients: recipientRows.map((row: DetailRecipientRow): PublicEnvelopeRecipient =>
+				fromRecipientRow(row)
+			),
 			readyAuditEventId,
-			fields: fieldResult.results.map(fromFieldRow)
+			fields: fieldRows.map((row: DetailFieldRow): PublicEnvelopeDetailField => fromFieldRow(row))
 		};
 	}
 
@@ -598,39 +605,26 @@ function envelopeFromCommand(command: CreateEnvelopeCommand): Envelope {
 	};
 }
 
-function envelopeFromRow(row: EnvelopeRow): Envelope {
-	return {
-		id: row.id,
-		createdByUserId: row.created_by_user_id,
-		title: row.title,
-		status: row.status,
-		repositoryGeneration: row.repository_generation,
-		repositoryHead: row.repository_head,
-		repositoryArchiveKey: row.repository_archive_key,
-		repositoryArchiveSha256: row.repository_archive_sha256,
-		sentCommitSha: row.sent_commit_sha,
-		fieldGeneration: row.field_generation,
-		createdAt: row.created_at,
-		updatedAt: row.updated_at
-	};
-}
-
 interface DetailRecipientRow {
 	id: string;
 	email: string;
 	name: string;
-	role: RecipientRole;
-	locale: 'en' | 'ja';
+	role: string;
+	locale: string;
 	routing_order: number;
-	status: RecipientStatus;
+	status: string;
+}
+
+interface DetailReadyAuditRow {
+	id: string;
 }
 
 interface DetailFieldRow {
 	id: string;
 	recipient_id: string;
 	document_id: string | null;
-	document_path: MarkdownPath | null;
-	field_type: FieldType;
+	document_path: string | null;
+	field_type: string;
 	required: number | boolean;
 	position: number;
 	page: number | null;
@@ -641,28 +635,95 @@ interface DetailFieldRow {
 }
 
 function fromRecipientRow(row: DetailRecipientRow): PublicEnvelopeRecipient {
+	const role: RecipientRole | null = recipientRoleFromRow(row.role);
+	const locale: 'en' | 'ja' | null = row.locale === 'en' || row.locale === 'ja' ? row.locale : null;
+	const status: RecipientStatus | null = recipientStatusFromRow(row.status);
+	if (
+		typeof row.id !== 'string' ||
+		row.id.length === 0 ||
+		typeof row.email !== 'string' ||
+		typeof row.name !== 'string' ||
+		role === null ||
+		locale === null ||
+		status === null ||
+		!Number.isSafeInteger(row.routing_order) ||
+		row.routing_order < 1
+	) {
+		throw new Error('Stored envelope recipient row is corrupted.');
+	}
 	return {
 		id: row.id,
 		email: row.email,
 		name: row.name,
-		role: row.role,
-		locale: row.locale,
+		role,
+		locale,
 		routingOrder: row.routing_order,
-		status: row.status
+		status
 	};
 }
 
 function fromFieldRow(row: DetailFieldRow): PublicEnvelopeDetailField {
+	const fieldType: FieldType | null = fieldTypeFromRow(row.field_type);
+	const documentId: string | null = typeof row.document_id === 'string' ? row.document_id : null;
+	const documentPath: MarkdownPath | null =
+		typeof row.document_path === 'string' ? (row.document_path as MarkdownPath) : null;
+	const required: boolean | null =
+		row.required === true || row.required === 1
+			? true
+			: row.required === false || row.required === 0
+				? false
+				: null;
+	if (
+		typeof row.id !== 'string' ||
+		row.id.length === 0 ||
+		typeof row.recipient_id !== 'string' ||
+		row.recipient_id.length === 0 ||
+		fieldType === null ||
+		required === null ||
+		(documentId === null) === (documentPath === null) ||
+		!Number.isSafeInteger(row.position) ||
+		row.position < 0
+	) {
+		throw new Error('Stored envelope field row is corrupted.');
+	}
 	return {
 		id: row.id,
 		recipientId: row.recipient_id,
-		documentId: row.document_id,
-		documentPath: row.document_path,
-		fieldType: row.field_type,
-		required: row.required === true || row.required === 1,
+		documentId,
+		documentPath,
+		fieldType,
+		required,
 		position: row.position,
 		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height)
 	};
+}
+
+function detailBatchRows<T>(result: D1Result<unknown> | undefined): T[] {
+	if (result === undefined || !Array.isArray(result.results)) {
+		throw new Error('Envelope detail batch result is malformed.');
+	}
+	return result.results as T[];
+}
+
+function recipientRoleFromRow(value: string): RecipientRole | null {
+	for (const role of recipientRoles) {
+		if (role === value) return role;
+	}
+	return null;
+}
+
+function recipientStatusFromRow(value: string): RecipientStatus | null {
+	if (value === 'pending' || value === 'viewed' || value === 'completed' || value === 'declined') {
+		return value;
+	}
+	return null;
+}
+
+function fieldTypeFromRow(value: string): FieldType | null {
+	for (const fieldType of fieldTypes) {
+		if (fieldType === value) return fieldType;
+	}
+	return null;
 }
 
 function geometryFromColumns(
