@@ -135,6 +135,24 @@ describe('root layout access gate', () => {
 		expect(resolveInstanceApplication).not.toHaveBeenCalled();
 	});
 
+	it.each(['/envelopes', '/setup', '/settings'])(
+		'fails closed on %s when identity is verified but membership is unavailable',
+		async (pathname: string) => {
+			const appLocals: App.Locals = {
+				...locals('active'),
+				identityState: 'unavailable',
+				bootstrapped: false,
+				instanceMembership: null
+			};
+			resolveInstanceApplication.mockResolvedValue(
+				application({ bootstrapped: false, member: null })
+			);
+			const failed = await captureHttpError(load(event({ pathname, appLocals })));
+			expect(failed.status).toBe(503);
+			expect(resolveInstanceApplication).not.toHaveBeenCalled();
+		}
+	);
+
 	it('lets an authenticated caller without local membership reach instance authorization', async () => {
 		// `no_membership` carries a verified principal. The local
 		// instance_member model decides whether the caller may proceed, so this

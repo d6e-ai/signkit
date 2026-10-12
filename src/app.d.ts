@@ -2,6 +2,7 @@ import '../.cloudflare/types/index.d.ts';
 
 import type { ApiKeyPrincipal } from '$lib/ports/api-key-authentication-store';
 import type { VerifiedPrincipal } from '$lib/server/d6e-auth';
+import type { RequestCallerContextLocals } from '$lib/server/request-caller-membership';
 import type { InstanceMemberRole, InstanceMemberStatus } from '$lib/ports/instance-store';
 
 /**
@@ -56,7 +57,7 @@ export type IdentityState = 'anonymous' | 'active' | 'no_membership' | 'suspende
 declare global {
 	namespace App {
 		// interface Error {}
-		interface Locals {
+		interface Locals extends RequestCallerContextLocals {
 			principal: VerifiedPrincipal | null;
 			instanceMembership: InstanceMembership | null;
 			bootstrapped: boolean;

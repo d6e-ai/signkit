@@ -13,10 +13,8 @@ import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 /**
  * Central page-access gate for every non-recipient browser page.
  *
- * `locals.principal` is null for both `anonymous` and `unavailable` identity
- * states (hooks.server.ts only ever assigns it after identity verification),
- * so it is the single narrowing check for
- * TypeScript, but the two states are not equivalent: `anonymous` redirects to
+ * An unavailable identity or member read fails closed, even when identity
+ * verification already populated `locals.principal`. An anonymous caller redirects to
  * sign-in, while `unavailable` means a session exists but identity could not
  * be verified -- redirecting that case into `/auth/login` would either loop
  * back through the same failing d6e-auth call or silently treat a verification
@@ -42,10 +40,10 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 	if (isRecipientSurfacePath(url.pathname)) return {};
 	if (isSignedOutSurfacePath(url.pathname)) return {};
 
+	if (locals.identityState === 'unavailable') {
+		error(503, 'Identity could not be verified.');
+	}
 	if (locals.principal === null) {
-		if (locals.identityState === 'unavailable') {
-			error(503, 'Identity could not be verified.');
-		}
 		const returnTo: string = `${url.pathname}${url.search}`;
 		redirect(302, localizeHref(`/auth/login?return=${encodeURIComponent(returnTo)}`));
 	}

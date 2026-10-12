@@ -215,6 +215,22 @@ describe('verifyAccessToken: remote JWKS resolver reuse', () => {
 		expect(calls.get(jwksUrl)).toBe(1);
 	});
 
+	it('revalidates identities, audience and expiry while reusing only the verification keys', async () => {
+		const jwksUrl: string = `${BASE_URL}/.well-known/jwks.json`;
+		const calls = mockFetchRouter(new Map([[jwksUrl, jwksJson([publicJwk])]]));
+		await verifyAccessToken(await signToken({ email: 'first@example.com' }));
+		await expect(
+			verifyAccessToken(await signToken({ sub: 'user-2', email: 'second@example.com' }))
+		).resolves.toMatchObject({ subject: 'user-2', email: 'second@example.com' });
+		await expect(
+			verifyAccessToken(await signToken({ email: 'first@example.com' }, { audience: 'other' }))
+		).rejects.toBeInstanceOf(D6eAuthRejectedError);
+		await expect(
+			verifyAccessToken(await signToken({ email: 'first@example.com' }, { expired: true }))
+		).rejects.toBeInstanceOf(D6eAuthRejectedError);
+		expect(calls.get(jwksUrl)).toBe(1);
+	});
+
 	it('fetches and verifies against an independent key set for a different configured JWKS URL, never sharing cached keys across origins', async () => {
 		const firstUrl: string = `${BASE_URL}/.well-known/jwks.json`;
 		const otherBaseUrl: string = nextBaseUrl();

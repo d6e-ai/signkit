@@ -180,6 +180,7 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 };
 
 export const handleSession: Handle = async ({ event, resolve }) => {
+	event.locals.requestCallerContexts = undefined;
 	event.locals.principal = null;
 	event.locals.instanceMembership = null;
 	event.locals.bootstrapped = false;

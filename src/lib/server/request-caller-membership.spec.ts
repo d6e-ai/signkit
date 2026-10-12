@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InstanceCallerContext, InstanceMemberMetadata } from '$lib/ports/instance-store';
-import { getRequestCallerContext } from './request-caller-membership';
+import {
+	getRequestCallerContext,
+	type RequestCallerContextLocals
+} from './request-caller-membership';
 
 const NOW: string = '2026-09-14T00:00:00.000Z';
 
@@ -14,7 +17,7 @@ function context(member: InstanceMemberMetadata | null = activeOwner()): Instanc
 
 describe('getRequestCallerContext', () => {
 	it('resolves once per (request, caller) pair, sharing the same read between a hook and the root layout', async () => {
-		const requestKey: object = {};
+		const requestKey: RequestCallerContextLocals = {};
 		const resolve = vi.fn(async (): Promise<InstanceCallerContext> => context());
 
 		const fromHook: InstanceCallerContext = await getRequestCallerContext(
@@ -33,7 +36,7 @@ describe('getRequestCallerContext', () => {
 	});
 
 	it('shares one in-flight read between concurrent callers before it has settled', async () => {
-		const requestKey: object = {};
+		const requestKey: RequestCallerContextLocals = {};
 		const resolve = vi.fn(
 			(): Promise<InstanceCallerContext> =>
 				new Promise((resolvePromise) => {
@@ -51,7 +54,7 @@ describe('getRequestCallerContext', () => {
 	});
 
 	it('keeps separate entries for different callers within the same request', async () => {
-		const requestKey: object = {};
+		const requestKey: RequestCallerContextLocals = {};
 		const resolveOwner = vi.fn(async (): Promise<InstanceCallerContext> => context());
 		const resolveNonMember = vi.fn(async (): Promise<InstanceCallerContext> => context(null));
 
@@ -116,7 +119,7 @@ describe('getRequestCallerContext', () => {
 	});
 
 	it('caches a rejection the same way it caches a success, so every reader observes the same failure without a silent retry', async () => {
-		const requestKey: object = {};
+		const requestKey: RequestCallerContextLocals = {};
 		const resolve = vi.fn(async (): Promise<InstanceCallerContext> => {
 			throw new Error('instance membership unavailable');
 		});
@@ -128,6 +131,18 @@ describe('getRequestCallerContext', () => {
 			'instance membership unavailable'
 		);
 
+		expect(resolve).toHaveBeenCalledTimes(1);
+	});
+
+	it('shares a synchronously thrown resolver failure without retrying it', async () => {
+		const locals: RequestCallerContextLocals = {};
+		const resolve = vi.fn((): Promise<InstanceCallerContext> => {
+			throw new Error('membership unavailable');
+		});
+		const first = getRequestCallerContext(locals, 'user-1', resolve);
+		const second = getRequestCallerContext(locals, 'user-1', resolve);
+		expect(second).toBe(first);
+		await expect(first).rejects.toThrow('membership unavailable');
 		expect(resolve).toHaveBeenCalledTimes(1);
 	});
 });
