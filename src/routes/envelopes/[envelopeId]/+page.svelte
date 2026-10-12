@@ -116,13 +116,15 @@
 	// captures this value when it starts and discards its result if the
 	// component has since been destroyed or a newer generation has begun.
 	let completionReadsGeneration = 0;
-	// Tracks which generation currently has an in-flight PDF-seal-status
-	// fetch, separately from the UI-facing `pdfSealStatusPending` flag: a
-	// stale call finishing after a newer `load()` has already started must
-	// not clear the pending indicator the newer call set, and the newer
-	// call's own guard must never be blocked by an old generation's
-	// still-in-flight request.
-	let pdfSealStatusInFlightGeneration: number | null = null;
+	// Identifies the most recently started PDF-seal-status read, separately
+	// from the UI-facing `pdfSealStatusPending` flag. Every refresh supersedes
+	// whatever read is still in flight -- even one the same `load()` started --
+	// instead of being skipped in its favor: the refresh that follows a seal
+	// request must observe the post-request status, and an earlier read that
+	// lands after it must not overwrite that with the pre-request one. Only the
+	// latest read clears the pending indicator, so a superseded or stale call
+	// finishing first never hides the read that is still outstanding.
+	let latestPdfSealStatusRead = 0;
 	let destroyed = false;
 	onDestroy(() => {
 		destroyed = true;
@@ -852,6 +854,18 @@
 		// after a *failed* reload, writing into a page that is now showing an
 		// error.
 		completionReadsGeneration += 1;
+		// The generation guard only drops writes still in flight; whatever the
+		// earlier reads already wrote must go too. `loading` no longer waits on
+		// this load's own reads, so a leftover completion status, seal status,
+		// delivery list, or error would otherwise render -- and drive actions
+		// such as the seal request -- against this load's envelope until those
+		// reads settle.
+		completionStatus = null;
+		completionStatusError = null;
+		pdfSealStatus = null;
+		pdfSealStatusError = null;
+		completionDeliveries = null;
+		completionDeliveriesError = null;
 		try {
 			const detail = await client.getDetail(envelopeId);
 			envelope = detail.envelope;
@@ -1803,23 +1817,22 @@
 	}
 	async function refreshPdfSealStatus(): Promise<void> {
 		const generation = completionReadsGeneration;
-		if (pdfSealStatusInFlightGeneration === generation) return;
-		pdfSealStatusInFlightGeneration = generation;
+		latestPdfSealStatusRead += 1;
+		const read = latestPdfSealStatusRead;
+		const isSuperseded = (): boolean =>
+			isStaleCompletionRead(generation) || read !== latestPdfSealStatusRead;
 		pdfSealStatusPending = true;
 		pdfSealStatusError = null;
 		try {
 			const result = await client.pdfSealStatus(envelopeId);
-			if (isStaleCompletionRead(generation)) return;
+			if (isSuperseded()) return;
 			pdfSealStatus = result;
 		} catch {
-			if (isStaleCompletionRead(generation)) return;
+			if (isSuperseded()) return;
 			pdfSealStatus = null;
 			pdfSealStatusError = m.envelope_pdf_seal_status_unavailable();
 		} finally {
-			if (pdfSealStatusInFlightGeneration === generation) {
-				pdfSealStatusInFlightGeneration = null;
-				pdfSealStatusPending = false;
-			}
+			if (read === latestPdfSealStatusRead) pdfSealStatusPending = false;
 		}
 	}
 
