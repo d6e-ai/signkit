@@ -2,6 +2,8 @@ import { WEBHOOK_AUDIT_EVENT_TYPES } from '$lib/domain/audit';
 import { recipientRoles, fieldTypes } from '$lib/domain/envelope';
 import { MAX_SIGNATURE_ASSET_BYTES } from '$lib/application/documents/signature-asset';
 import { MAINTENANCE_BACKLOG_QUEUES } from '$lib/observability/maintenance-backlog';
+import { DASHBOARD_VIEWS } from '$lib/application/dashboard/model';
+import { DEFAULT_DASHBOARD_LIMIT, MAX_DASHBOARD_LIMIT } from '$lib/ports/dashboard-store';
 
 const UUIDV7: Record<string, unknown> = {
 	type: 'string',
@@ -147,6 +149,89 @@ const CONTACT: Record<string, unknown> = {
 		updatedAt: { type: 'string', format: 'date-time' }
 	},
 	additionalProperties: false
+};
+
+const DASHBOARD_RECIPIENT_SUMMARY: Record<string, unknown> = {
+	type: 'object',
+	description:
+		'Display-only "who this is with" summary. No id, no status, no capability material -- and no signing authority.',
+	required: ['name', 'email'],
+	additionalProperties: false,
+	properties: {
+		name: { type: 'string' },
+		email: { type: 'string', format: 'email', maxLength: 320 }
+	}
+};
+
+const DASHBOARD_ITEM: Record<string, unknown> = {
+	type: 'object',
+	description:
+		'One worklist row. `recipient` is the first recipient by routing order, then id, regardless of role or status. `nextRecipient` is the earliest outstanding signer/approver currently holding the active turn. `actionRequired` is a display classification for the signed-in caller only -- it is never recipient signing authority and grants none.',
+	required: [
+		'envelope',
+		'recipient',
+		'recipientCount',
+		'completedRecipientCount',
+		'actionableRecipientCount',
+		'nextRecipient',
+		'actionRequired'
+	],
+	additionalProperties: false,
+	properties: {
+		envelope: { $ref: '#/components/schemas/Envelope' },
+		recipient: {
+			anyOf: [{ $ref: '#/components/schemas/DashboardRecipientSummary' }, { type: 'null' }]
+		},
+		recipientCount: { type: 'integer', minimum: 0 },
+		completedRecipientCount: {
+			type: 'integer',
+			minimum: 0,
+			description: 'Completed signer/approver recipients only; cc/viewer/prefill never count.'
+		},
+		actionableRecipientCount: {
+			type: 'integer',
+			minimum: 0,
+			description: 'signer/approver recipients only; cc/viewer/prefill never count.'
+		},
+		nextRecipient: {
+			anyOf: [{ $ref: '#/components/schemas/DashboardRecipientSummary' }, { type: 'null' }]
+		},
+		actionRequired: {
+			type: 'boolean',
+			description:
+				'Display classification for the signed-in caller only: true exactly while the caller personally holds the active turn. Carries no signing authority of its own.'
+		}
+	}
+};
+
+const DASHBOARD_COUNTS: Record<string, unknown> = {
+	type: 'object',
+	description: 'Whole-instance counts for every view, independent of q and of the current page.',
+	required: ['all', 'actionRequired', 'waiting', 'drafts', 'completed'],
+	additionalProperties: false,
+	properties: {
+		all: { type: 'integer', minimum: 0 },
+		actionRequired: { type: 'integer', minimum: 0 },
+		waiting: { type: 'integer', minimum: 0 },
+		drafts: { type: 'integer', minimum: 0 },
+		completed: { type: 'integer', minimum: 0 }
+	}
+};
+
+const DASHBOARD_PAGE: Record<string, unknown> = {
+	type: 'object',
+	required: ['items', 'nextCursor', 'counts'],
+	additionalProperties: false,
+	properties: {
+		items: { type: 'array', items: { $ref: '#/components/schemas/DashboardItem' } },
+		nextCursor: {
+			type: ['string', 'null'],
+			pattern: '^[A-Za-z0-9_-]{1,2000}$',
+			description:
+				'Opaque base64url keyset cursor, context-bound to the exact normalized view and search text it was minted under. It encodes the ordering boundary and search context, not signing authority; encoding is not encryption.'
+		},
+		counts: { $ref: '#/components/schemas/DashboardCounts' }
+	}
 };
 
 const FIELD_GEOMETRY: Record<string, unknown> = {
@@ -909,6 +994,49 @@ const contactLimitParam = {
 	schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 }
 };
 
+const dashboardViewParam = {
+	name: 'view',
+	in: 'query',
+	required: false,
+	schema: { type: 'string', enum: [...DASHBOARD_VIEWS], default: 'all' },
+	description:
+		'action_required and waiting are mutually exclusive subsets of sent/in_progress envelopes, decided by whether the signed-in caller personally holds the active turn. drafts covers draft and ready. completed covers only completed. all is unfiltered and the only view that still surfaces declined/expired/voided envelopes.'
+};
+
+const dashboardQueryParam = {
+	name: 'q',
+	in: 'query',
+	required: false,
+	schema: { type: 'string', maxLength: 200 },
+	description:
+		'Bounded literal search over the envelope title and recipient name/email. ASCII case folding and exact Unicode matches are supported; broader Unicode case folding parity is tracked in issue #236. Search text appears in the GET URL and encoded cursor context; the cursor is not an encrypted container.'
+};
+
+const dashboardCursorParam = {
+	name: 'cursor',
+	in: 'query',
+	required: false,
+	schema: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,2000}$' },
+	description:
+		'Opaque base64url keyset cursor from a previous nextCursor, context-bound to the exact normalized view and q it was minted under. A malformed cursor or one minted under a different view/q is a 400, never silently reinterpreted.'
+};
+
+const dashboardLimitParam = {
+	name: 'limit',
+	in: 'query',
+	required: false,
+	schema: {
+		type: 'integer',
+		minimum: 1,
+		maximum: MAX_DASHBOARD_LIMIT,
+		default: DEFAULT_DASHBOARD_LIMIT
+	}
+};
+
+const dashboardPageResponse = jsonResponse('200', 'Whole-instance dashboard worklist page', {
+	$ref: '#/components/schemas/DashboardPage'
+});
+
 const contactMutationProperties: Record<string, unknown> = {
 	email: { type: 'string', format: 'email', maxLength: 320 },
 	name: { type: 'string', minLength: 1, maxLength: 200 },
@@ -1326,6 +1454,7 @@ export function openApiDocument(): Record<string, unknown> {
 		servers: [{ url: '/' }],
 		tags: [
 			{ name: 'System' },
+			{ name: 'Dashboard' },
 			{ name: 'Envelopes' },
 			{ name: 'Contacts' },
 			{ name: 'Webhooks' },
@@ -1352,6 +1481,33 @@ export function openApiDocument(): Record<string, unknown> {
 					tags: ['System'],
 					security: [],
 					responses: jsonResponse('200', 'OpenAPI 3.1 document', { type: 'object' })
+				})
+			},
+			'/api/v1/dashboard': {
+				get: op({
+					summary: "Read the signed-in caller's dashboard worklist",
+					operationId: 'readDashboardWorklist',
+					description:
+						'Session-only. Requires a verified human session with an active local instance membership; any API-key request is rejected outright (403), never falling back to a cookie session. There is no caller or email request parameter -- the caller is always the authenticated session. `counts` reflects the whole instance for every view, independent of `q`; `items` is bounded to the current page.',
+					tags: ['Dashboard'],
+					security: [{ SessionCookie: [] }],
+					parameters: [
+						dashboardViewParam,
+						dashboardQueryParam,
+						dashboardCursorParam,
+						dashboardLimitParam
+					],
+					responses: {
+						...dashboardPageResponse,
+						'502': {
+							description: 'Dashboard worklist read failed',
+							content: {
+								'application/problem+json': {
+									schema: { $ref: '#/components/schemas/ProblemDetail' }
+								}
+							}
+						}
+					}
 				})
 			},
 			'/api/v1/contacts': {
@@ -3033,6 +3189,10 @@ export function openApiDocument(): Record<string, unknown> {
 				MaintenanceHealth: MAINTENANCE_HEALTH,
 				Envelope: ENVELOPE,
 				Contact: CONTACT,
+				DashboardRecipientSummary: DASHBOARD_RECIPIENT_SUMMARY,
+				DashboardItem: DASHBOARD_ITEM,
+				DashboardCounts: DASHBOARD_COUNTS,
+				DashboardPage: DASHBOARD_PAGE,
 				FieldGeometry: FIELD_GEOMETRY,
 				EnvelopeRecipient: ENVELOPE_RECIPIENT,
 				EnvelopeField: ENVELOPE_FIELD,
