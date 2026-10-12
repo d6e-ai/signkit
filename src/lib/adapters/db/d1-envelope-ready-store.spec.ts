@@ -122,9 +122,11 @@ describe('D1EnvelopeReadyStore', () => {
 			null,
 			{
 				id: command.envelopeId,
+				created_by_user_id: command.actorId,
 				title: 'Agreement',
 				status: 'draft',
 				repository_generation: 1,
+				field_generation: 0,
 				repository_head: command.expectedCommitSha,
 				repository_archive_key: 'internal',
 				repository_archive_sha256: 'd'.repeat(64),
