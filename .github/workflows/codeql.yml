@@ -1,12 +1,13 @@
+# CodeQL for JavaScript and TypeScript. Manual only.
+#
+# A run on every pull request, every push to main, and every Monday used
+# Actions minutes for a scan that can wait. Start it by hand:
+#
+#   gh workflow run codeql.yml --ref <branch>
 name: CodeQL
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  schedule:
-    - cron: '0 3 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read

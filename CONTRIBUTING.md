@@ -53,7 +53,7 @@ cargo test
 - Keep PRs focused on one change.
 - Add or update tests for any behavior change.
 - Update docs (`docs/`) when behavior changes — the docs are treated as normative, not incidental.
-- CI (`.github/workflows/ci.yml`) runs lint, typecheck, the full test suite against PostgreSQL, all three build targets, and the Rust CLI checks; a PR should pass all of it.
+- Run lint, typecheck, the test suite, the build targets, and the Rust CLI checks locally. `.github/workflows/ci.yml` is manual (`gh workflow run ci.yml --ref <branch>`); it does not run on a pull request.
 
 ## License
 
