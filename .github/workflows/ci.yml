@@ -1,9 +1,15 @@
+# Lint, PostgreSQL tests, three build targets, the Rust CLI, recipient
+# end-to-end, and PAdES conformance. Manual only.
+#
+# One run is about 25 billed minutes (several jobs in parallel, each
+# rounded up). That is local work: pnpm run lint, pnpm run check,
+# pnpm run test, the build:* scripts, and cargo test in cli/.
+#
+#   gh workflow run ci.yml --ref <branch>
 name: CI
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

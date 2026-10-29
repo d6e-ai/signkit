@@ -139,7 +139,7 @@ Tests inject HTTP and process layers and must not contact real GitHub or Cloudfl
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pull requests and pushes to `main`:
+`.github/workflows/ci.yml` does not run on pull requests or pushes. Start it by hand with `gh workflow run ci.yml --ref <branch>` when a remote run is needed. The same checks are local work. When started, the workflow runs:
 
 - **validate** — `lint`, `check`, Chromium install, and the full `test` script against a `postgres:18-alpine` service with `POSTGRES_TEST_URL` set, so PostgreSQL integration suites always run in CI.
 - **build** — a matrix over `node`, `cloudflare`, and `vercel`. The Node build additionally runs `test:node-build`; the Cloudflare build checks generated binding types, applies local D1 migrations through the scoped Wrangler compatibility path, runs `cf deploy --prebuilt --dry-run`, builds create-signkit, then builds and verifies a synthetic `v0.0.0-ci` release bundle (`SIGNKIT_RELEASE_TAG` overrides `GITHUB_REF_NAME` so the branch name cannot become the tag) and deletes `.release`.
