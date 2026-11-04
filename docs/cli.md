@@ -1,8 +1,10 @@
 # SignKit Rust CLI
 
-The first-party `signkit` CLI is a non-interactive client for agent and automation workflows. It calls the same `/api/v1` endpoints as the web application.
+The first-party `signkit` CLI is a non-interactive client for agent and automation workflows. It
+calls the same `/api/v1` endpoints as the web application.
 
-`create-signkit` is a separate npm package for provisioning and updating Cloudflare deployments; see [create-signkit.md](create-signkit.md).
+`create-signkit` is a separate npm package for provisioning and updating Cloudflare deployments; see
+[create-signkit.md](create-signkit.md).
 
 ## Build
 
@@ -28,9 +30,14 @@ Precedence is flags, environment, config, then defaults. Relevant values are:
 - `SIGNKIT_API_KEY`, or `--api-key-stdin` for secret input
 - For `recipient` commands only: `SIGNKIT_RECIPIENT_CAPABILITY`, or `--recipient-capability-stdin`
 
-Neither credential is accepted as a command-line value or config-file field. The CLI rejects secret-looking config keys recursively. It never follows HTTP redirects, so credentials cannot be forwarded to another origin. A sender API key cannot authorize any `recipient` command; the recipient's own invitation capability is required. When reading the capability from stdin, supply action JSON with `--file PATH`, not from the same stdin stream.
+Neither credential is accepted as a command-line value or config-file field. The CLI rejects
+secret-looking config keys recursively. It never follows HTTP redirects, so credentials cannot be
+forwarded to another origin. A sender API key cannot authorize any `recipient` command; the
+recipient's own invitation capability is required. When reading the capability from stdin, supply
+action JSON with `--file PATH`, not from the same stdin stream.
 
-There is no tenant flag or selector. The key's active local owner and scopes determine its authority.
+There is no tenant flag or selector. The key's active local owner and scopes determine its
+authority.
 
 ## Output
 
@@ -40,7 +47,8 @@ Successful JSON commands write a stable envelope to stdout:
 { "version": "1", "data": {} }
 ```
 
-Use `--raw` for the API body and `--pretty` for formatted JSON. Errors are RFC 9457-style JSON on stderr. Binary downloads never write document bytes to a terminal; provide an output file.
+Use `--raw` for the API body and `--pretty` for formatted JSON. Errors are RFC 9457-style JSON on
+stderr. Binary downloads never write document bytes to a terminal; provide an output file.
 
 ## Commands
 
@@ -69,10 +77,14 @@ signkit openapi --raw
 
 ### Mutation Discovery and Offline Validation
 
-Mutation commands support discovering canonical request schemas and performing offline local validation:
+Mutation commands support discovering canonical request schemas and performing offline local
+validation:
 
-- `--example`: Prints the canonical JSON request payload template for schema discovery and agent authoring.
-- `--validate-only`: Safely validates request payloads locally offline without issuing any network requests. Guarantees no network calls can occur, and does not require `--base-url` or `SIGNKIT_API_KEY`.
+- `--example`: Prints the canonical JSON request payload template for schema discovery and agent
+  authoring.
+- `--validate-only`: Safely validates request payloads locally offline without issuing any network
+  requests. Guarantees no network calls can occur, and does not require `--base-url` or
+  `SIGNKIT_API_KEY`.
 
 ```sh
 # Discover canonical request schemas
@@ -198,17 +210,31 @@ signkit envelopes void <envelope-id> --file void.json
 signkit envelopes pdf-seal-request <envelope-id> --profile pades-b-t --idempotency-key <opaque-key>
 ```
 
-When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope ids and cursors are validated as UUIDv7 before any network request.
+When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope ids and cursors are
+validated as UUIDv7 before any network request.
 
-`upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. `--expected-generation` is required; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). The JSON supplied to `document-order` must contain `expectedGeneration` and 1-20 unique UUIDv7 `documentIds` in the desired order. The list is the complete retained set: omit an existing document ID to remove it from the draft.
+`upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB.
+`--expected-generation` is required; `--title` is optional (1-200 characters, without control
+characters), and `--position` is optional (0-19). The JSON supplied to `document-order` must contain
+`expectedGeneration` and 1-20 unique UUIDv7 `documentIds` in the desired order. The list is the
+complete retained set: omit an existing document ID to remove it from the draft.
 
-`pdf-seal-request` explicitly requests the instance's configured `pades-b-b` or `pades-b-t` profile for an already-published completion PDF. `pdf-seal-status` reports the durable job and validation state. `pdf-seal-download` is available only after independent validation and atomic publication; it requires a regular output file and never writes agreement bytes to stdout.
+`pdf-seal-request` explicitly requests the instance's configured `pades-b-b` or `pades-b-t` profile
+for an already-published completion PDF. `pdf-seal-status` reports the durable job and validation
+state. `pdf-seal-download` is available only after independent validation and atomic publication; it
+requires a regular output file and never writes agreement bytes to stdout.
 
 ## Recipient review and decisions
 
-These commands belong to the recipient, not the sender. The recipient must obtain the capability from their own invitation and deliberately authorize the specific action and field values. Possession of a token does not itself give an agent permission to sign, approve, or decline silently. See the [browserless recipient decision](architecture/decisions/2026-09-25-browserless-recipient-capability.md).
+These commands belong to the recipient, not the sender. The recipient must obtain the capability
+from their own invitation and deliberately authorize the specific action and field values.
+Possession of a token does not itself give an agent permission to sign, approve, or decline
+silently. See the [agent contract](architecture/agent-contract.md#rust-cli-architecture-signkit).
 
-Use a dedicated secret environment variable or `--recipient-capability-stdin` without putting the token into shell arguments, JSON payloads, URLs, logs, or persisted CLI configuration. The CLI sends it only as an authorization header to `/api/v1/recipient/**`. Browser cookies and a sender API key are never composed with it.
+Use a dedicated secret environment variable or `--recipient-capability-stdin` without putting the
+token into shell arguments, JSON payloads, URLs, logs, or persisted CLI configuration. The CLI sends
+it only as an authorization header to `/api/v1/recipient/**`. Browser cookies and a sender API key
+are never composed with it.
 
 ```sh
 signkit recipient context
@@ -220,9 +246,20 @@ signkit recipient approve --file approve.json --consent
 signkit recipient decline --file decline.json --consent
 ```
 
-`context` and `documents` reveal only the active recipient's pinned agreement metadata, their own placed fields, and `fieldGeneration`. Download and review the PDF before deciding. For older single-document envelopes, omit `--document-id`; for document-set envelopes, provide the ID returned by `documents`. Recipient PDF downloads require a regular output file; no agreement bytes are written to stdout.
+`context` and `documents` reveal only the active recipient's pinned agreement metadata, their own
+placed fields, and `fieldGeneration`. Download and review the PDF before deciding. For older
+single-document envelopes, omit `--document-id`; for document-set envelopes, provide the ID returned
+by `documents`. Recipient PDF downloads require a regular output file; no agreement bytes are
+written to stdout.
 
-Action payloads use UUIDv7 IDs from the recipient context. `viewed`, `approve`, and `decline` each accept `{ "envelopeId": "…", "recipientId": "…" }`. Signing additionally requires the `expectedFieldGeneration` from `documents` and exactly one `{ "fieldId": "…", "value": "…" }` (or boolean checkbox value) for every assigned field. The server rechecks field ownership, types, required values, generation, role, routing, expiry, and revocation. Every action gets an idempotency key. For automation, pass an explicit `--idempotency-key` and retain it for an exact retry, especially after a timeout: a newly generated key cannot recover the original receipt once signing has completed. Never reuse the key for a different decision or payload.
+Action payloads use UUIDv7 IDs from the recipient context. `viewed`, `approve`, and `decline` each
+accept `{ "envelopeId": "…", "recipientId": "…" }`. Signing additionally requires the
+`expectedFieldGeneration` from `documents` and exactly one `{ "fieldId": "…", "value": "…" }` (or
+boolean checkbox value) for every assigned field. The server rechecks field ownership, types,
+required values, generation, role, routing, expiry, and revocation. Every action gets an idempotency
+key. For automation, pass an explicit `--idempotency-key` and retain it for an exact retry,
+especially after a timeout: a newly generated key cannot recover the original receipt once signing
+has completed. Never reuse the key for a different decision or payload.
 
 ```sh
 signkit recipient sign --example
@@ -230,7 +267,11 @@ signkit recipient sign --validate-only --file sign.json
 signkit recipient approve --validate-only --file approve.json
 ```
 
-Validation and examples are offline and non-mutating, with no credentials required. The `--consent` flag is required only for a real viewed/sign/approve/decline submission and is an attestation of the recipient's contemporaneous authorization for that particular action. After a terminal action, the sender can observe completion and download published evidence through their separate `envelopes:read` API-key authority.
+Validation and examples are offline and non-mutating, with no credentials required. The `--consent`
+flag is required only for a real viewed/sign/approve/decline submission and is an attestation of the
+recipient's contemporaneous authorization for that particular action. After a terminal action, the
+sender can observe completion and download published evidence through their separate
+`envelopes:read` API-key authority.
 
 ## Exit codes
 
@@ -254,4 +295,9 @@ The CLI preserves unknown API fields so newer servers remain inspectable by olde
 
 ## Compatibility
 
-Scripts written against v0.1.x must treat exit codes `8` (formerly any server/network/timeout failure) as stale. The stable automation contract is `0`–`12` as tabulated above: `8` now means rate limited (HTTP 429) with retry-after semantics, `9` means server unavailable (HTTP 5xx, retryable with backoff), `10` means transport failure (retryable), `11` means timeout (retryable), and `12` means redirect refused (do not retry against another origin). The RFC 9457 `status` field on stderr always carries the original HTTP status independently of the process exit code.
+Scripts written against v0.1.x must treat exit codes `8` (formerly any server/network/timeout
+failure) as stale. The stable automation contract is `0`–`12` as tabulated above: `8` now means rate
+limited (HTTP 429) with retry-after semantics, `9` means server unavailable (HTTP 5xx, retryable
+with backoff), `10` means transport failure (retryable), `11` means timeout (retryable), and `12`
+means redirect refused (do not retry against another origin). The RFC 9457 `status` field on stderr
+always carries the original HTTP status independently of the process exit code.

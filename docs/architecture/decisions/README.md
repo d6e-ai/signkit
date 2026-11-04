@@ -1,21 +1,14 @@
 # Architecture decisions
 
-Dated notes recording the rationale behind choices made in [../](../README.md) at the time they were made. They are historical context, not normative: the current normative contract always lives in the architecture spec files, and a decision note never overrides them.
+Decision records are optional explanations of a durable choice, not the source of the current
+product contract. Read the [architecture topic map](../README.md) for behavior and invariants.
 
-- [2026-10-11-envelope-reopen-and-authoring-fields.md](./2026-10-11-envelope-reopen-and-authoring-fields.md) — ready envelopes return to draft through an explicit reopen; complete field definitions are readable only on a dedicated drafts:write GET.
-- [2026-10-11-minimal-repository-wide-refactoring.md](./2026-10-11-minimal-repository-wide-refactoring.md) — replaces the R0–R7 proposal with four minimal, repository-wide PR groups, preserving current behavior and change-specific verification.
-- [2026-10-11-completion-access-reissue.md](./2026-10-11-completion-access-reissue.md) — explicit, audited successor grants for terminal completion delivery without reviving old access or rewriting completion evidence.
-- [2026-10-11-signature-asset-retention-ledger.md](./2026-10-11-signature-asset-retention-ledger.md) — one-way binding/retirement protects drawn signature bytes from publication/garbage-collection races.
-- [2026-10-10-cloudflare-cli-migration.md](./2026-10-10-cloudflare-cli-migration.md) — cf owns build output and typed runtime configuration; local D1 remains a verified Wrangler compatibility fallback.
-- [2026-10-10-operational-boundary-refactoring.md](./2026-10-10-operational-boundary-refactoring.md) — re-baselines the 2026-10-05 design-first refactoring proposal on post-#217 `main`, swaps the artifact-lifecycle and command/routing phase order, and tracks #218/#219 as separate behavior slices.
+Keep a dated `YYYY-MM-DD-topic.md` only when the reason for a choice, its rejected alternative, or a
+lasting consequence is not already clear from the relevant specification. State the date and whether
+the choice is proposed or accepted; link to the canonical specification instead of copying it. A
+short record is enough. Acceptance is not proof that code is implemented, tested, or deployed.
 
-- [2026-09-15-ordered-multi-document-pdf-upload.md](./2026-09-15-ordered-multi-document-pdf-upload.md) — envelopes are ordered mixed Markdown/PDF document sets with a Merkle `documentSetHash`.
-- [2026-09-15-executed-agreement-pdf.md](./2026-09-15-executed-agreement-pdf.md) — the completion PDF is the executed agreement with signed values drawn at frozen geometry, not an evidence summary.
-- [2026-09-15-security-fixes.md](./2026-09-15-security-fixes.md) — fail-closed hardening for redirects, uploads, session sealing, d6e-auth origin, CLI I/O, and webhook delivery.
-- [2026-09-15-bootstrap-fail-closed.md](./2026-09-15-bootstrap-fail-closed.md) — uninitialized instances fail closed without a bootstrap owner email; local-only unsafe opt-in, GoTo-only PDF actions, and three-label webhook wildcards.
-- [2026-09-15-release-publishing-integrity.md](./2026-09-15-release-publishing-integrity.md) — exact lockfile-pinned npm publishing, immutable draft-release reruns, and GitHub provenance generation with an explicit deploy-time verification boundary.
-- [2026-09-16-create-signkit-secret-bootstrap.md](./2026-09-16-create-signkit-secret-bootstrap.md) — pristine initial deploys read OAuth JSON once from stdin and bootstrap Worker secrets through a retained recovery file uploaded via `--secrets-file`; no secret-only stub flow.
-- [2026-09-17-recipient-contact-book.md](./2026-09-17-recipient-contact-book.md) — contacts are explicit, private per-member projections with body-based search and no recipient-history inference.
-- [2026-09-17-durable-instance-invitation-email.md](./2026-09-17-durable-instance-invitation-email.md) — invitation creation atomically schedules encrypted, retryable provider-neutral email and never returns the bearer token to the administrator.
-- [2026-09-23-instance-pades-seal-and-rfc3161.md](./2026-09-23-instance-pades-seal-and-rfc3161.md) — PAdES is an optional instance seal over the completed PDF, with external key custody, no B-T downgrade, and no qualified-signature claim.
-- [2026-09-26-recipient-completed-action-receipt.md](./2026-09-26-recipient-completed-action-receipt.md) — a revoked capability recovers a read-only signed/approved receipt from durable command and audit evidence, with no mutation or document access and a 30-day fail-closed window.
+Do not retain meeting transcripts, investigation diaries, completed plans, PR stacks, test counts,
+or superseded designs here. Those remain recoverable through Git history. Update the current
+specification when behavior changes; do not make readers reconstruct today's design from a chain of
+old decisions.
