@@ -2,7 +2,13 @@
 
 Status: implemented
 
-One envelope is one send operation. It contains an ordered list of up to 20 documents (`markdown` or `pdf`), one recipient graph, fields, artifacts, an audit stream, and exactly one Git repository. Markdown bodies and the canonical `document-set.json` live in Git; uploaded PDF bytes live content-addressed in object storage and never enter Git. At send, each document becomes its own immutable PDF. Fields are scoped by `documentId` + page + unit-square geometry.
+One envelope is one send operation. It contains an ordered list of up to 20 documents (`markdown` or
+`pdf`), one recipient graph, fields, artifacts, an audit stream, and exactly one Git repository.
+Markdown bodies and the canonical `document-set.json` live in Git; uploaded PDF bytes live
+content-addressed in object storage and never enter Git. At send, each document becomes its own
+immutable PDF. Fields are scoped by `documentId` + page + unit-square geometry.
+
+## State and routing
 
 Core states are:
 
@@ -13,34 +19,197 @@ draft → ready → sent → in_progress → completed
                     └──────────────→ voided
 ```
 
-Only `draft` is mutable. `ready` returns to `draft` before sending through an explicit `POST /api/v1/envelopes/{envelopeId}/reopen`. Sending atomically pins `sent_commit_sha`; later changes require a new or explicitly superseding envelope. Completion occurs only after every required recipient action has committed.
+Documents and the recipient graph change only in `draft`; signing positions remain editable while
+`ready`. `ready` returns to `draft` before sending through an explicit
+`POST /api/v1/envelopes/{envelopeId}/reopen`. Sending atomically pins `sent_commit_sha`; later
+changes require a new or explicitly superseding envelope. Completion occurs only after every
+required recipient action has committed.
 
-Recipient roles are `signer`, `approver`, `viewer`, `prefill`, and `cc`. Signer and approver are action-bearing. Viewer is a post-send read-only observer that must share an order with an action-bearing recipient and never blocks advancement. Prefill is pre-send-only; because its authoring command is not implemented, ready graphs containing prefill are rejected and it never receives a post-send capability. CC remains outside the signing capability graph.
+Recipient roles are `signer`, `approver`, `viewer`, `prefill`, and `cc`. Signer and approver are
+action-bearing. Viewer is a post-send read-only observer that must share an order with an
+action-bearing recipient and never blocks advancement. Prefill is pre-send-only; because its
+authoring command is not implemented, ready graphs containing prefill are rejected and it never
+receives a post-send capability. CC remains outside the signing capability graph.
 
-The initial recipient mutation is deliberately tied to `POST /api/v1/envelopes/{envelopeId}/ready`. The command declares the complete graph, requires at least one signer or approver, rejects prefill and every viewer-only routing order, normalizes email addresses, rejects duplicates, and checks the expected Git generation. D1 publishes its command, `draft → ready` compare-and-set, recipient projection, and `envelope.ready` event in one batch; PostgreSQL uses a row lock and transaction for the same boundary. The replay receipt is stored without capability tokens, and the audit payload contains recipient IDs, roles, and routing order rather than names or email addresses.
+## Ready, reopen, and send
 
-`POST /api/v1/envelopes/{envelopeId}/reopen` (`drafts:write`, required `Idempotency-Key`) returns `ready` to `draft` only while `sent_commit_sha IS NULL`. The strict JSON body echoes the observed Git generation, field generation, and latest `envelope.ready` audit event id. Publication keeps the repository head, generation, and recipient rows; deletes every `envelope_field` row; increments `field_generation` (never resets it); and appends one `envelope.reopened` audit event at hash version 3. The transaction (PostgreSQL `FOR UPDATE`) or D1 `AFTER INSERT` trigger rechecks those predicates, the audit head, and that the named ready event is still the latest ready with no later `envelope.ready` or `envelope.reopened`. A matching idempotent replay returns HTTP 200 with the durable receipt and the replay header. Conflict, not-ready, missing, and generic unavailable responses follow existing RFC 9457 conventions and never expose internal locators or provider errors.
+The initial recipient mutation is deliberately tied to `POST /api/v1/envelopes/{envelopeId}/ready`.
+The command declares the complete graph, requires at least one signer or approver, rejects prefill
+and every viewer-only routing order, normalizes email addresses, rejects duplicates, and checks the
+expected Git generation. D1 publishes its command, `draft → ready` compare-and-set, recipient
+projection, and `envelope.ready` event in one batch; PostgreSQL uses a row lock and transaction for
+the same boundary. The replay receipt is stored without capability tokens, and the audit payload
+contains recipient IDs, roles, and routing order rather than names or email addresses.
 
-Actual sending is a separate irreversible `POST /api/v1/envelopes/{envelopeId}/send` command. It requires the expected Git generation and the latest ready audit event ID, atomically pins `sent_commit_sha`, reserves hashed capabilities only for signer, approver, and viewer recipients, and writes one durable delivery intent per reserved capability before changing `ready` to `sent`. The minimum action-bearing order and its co-routed viewers are `pending`; higher action-bearing groups and their viewers are `blocked` with no active expiry until release. Legacy prefill delivery rows are never claimable and are terminally scrubbed by the bounded cleanup sweep. CC delivery belongs to completion rather than the signing-capability graph.
+`POST /api/v1/envelopes/{envelopeId}/reopen` (`drafts:write`, required `Idempotency-Key`) returns
+`ready` to `draft` only while `sent_commit_sha IS NULL`. The strict JSON body echoes the observed
+Git generation, field generation, and latest `envelope.ready` audit event id. Publication keeps the
+repository head, generation, and recipient rows; deletes every `envelope_field` row; increments
+`field_generation` (never resets it); and appends one `envelope.reopened` audit event at hash
+version 3. The transaction (PostgreSQL `FOR UPDATE`) or D1 `AFTER INSERT` trigger rechecks those
+predicates, the audit head, and that the named ready event is still the latest ready with no later
+`envelope.ready` or `envelope.reopened`. A matching idempotent replay returns HTTP 200 with the
+durable receipt and the replay header. Conflict, not-ready, missing, and generic unavailable
+responses follow existing RFC 9457 conventions and never expose internal locators or provider
+errors.
 
-The raw random capability exists durably only as AES-256-GCM ciphertext in the delivery outbox, sealed with a deployment secret and envelope/recipient/outbox context as authenticated data. Recipient rows contain the SHA-256 hash; public responses and audit payloads contain neither token, hash, ciphertext, key ID, nor outbox ID. Every delivery intent is database-constrained to a recipient in the exact same envelope: PostgreSQL uses a composite foreign key, while D1 uses insert/update guards and validates all existing rows during migration. The delivery worker decrypts immediately before delivery, verifies the ciphertext digest, sealing key, authenticated context, plaintext capability hash, expiry, and current recipient/envelope eligibility, and scrubs ciphertext after provider acceptance or a terminal failure. `envelope.sent` means that delivery intent is durable, not that an email provider has accepted a message. The caller-supplied ready audit event must be the latest `envelope.ready` for the same envelope, Git generation, and commit: no later `envelope.ready` or `envelope.reopened` may exist. Application preparation and the database publish guard both refuse a superseded ready anchor. `envelope.sent` still chains from the current audit head, which may include later field-placement events. D1 uses a final publish guard to verify that latest-ready anchor and the full outbox/capability projection before the state CAS and audit append; PostgreSQL uses row locks and one transaction. Provider delivery and routing-group release remain separate commands. Completion evidence matches the recipient roster to that same latest ready event; a send that still names a ready superseded by reopen fails closed.
+Actual sending is a separate irreversible `POST /api/v1/envelopes/{envelopeId}/send` command. It
+requires the expected Git generation and the latest ready audit event ID, atomically pins
+`sent_commit_sha`, reserves hashed capabilities only for signer, approver, and viewer recipients,
+and writes one durable delivery intent per reserved capability before changing `ready` to `sent`.
+The minimum action-bearing order and its co-routed viewers are `pending`; higher action-bearing
+groups and their viewers are `blocked` with no active expiry until release. Legacy prefill delivery
+rows are never claimable and are terminally scrubbed by the bounded cleanup sweep. CC delivery
+belongs to completion rather than the signing-capability graph.
 
-Invitation claims are limited to 25 rows, ordered by availability and creation, and guarded by a unique lease token. Pending and retryable failed rows become eligible at `available_at`; abandoned `processing` rows are reclaimed only after a five-minute lease. Each claimant re-reads its envelope- and lease-token-scoped recipient projection immediately before decrypting or sending. The claim transaction also converts at most 100 now-ineligible due or abandoned rows per run into terminal failures and scrubs their ciphertext, using a partial cleanup index so a decline, completion, revocation, expiry, or envelope terminal transition cannot strand reusable token material indefinitely or create an unbounded periodic sweep. Completion and failure updates compare the delivery ID, `processing` state, and lease token. Provider authentication, sender setup, unknown provider errors, transport failures, rate limits, and sealing-key drift remain retryable; only recipient-scoped permanent rejection, exhausted attempts, or integrity failures are terminal and scrub ciphertext. Retryable failures use capped exponential backoff for at most ten claimed attempts. A per-item store failure is isolated from sibling claims, while its lease becomes reclaimable after timeout. Cloudflare uses a one-minute scheduled trigger and D1. Its checked-in profile selects the native Email Sending binding, while a self-hosted Worker may select the same Nodemailer SMTP transport as Node on a non-25 submission port. Node/Docker and Vercel expose the same bearer-protected internal drain command for a host scheduler, backed by PostgreSQL and, per the configured `SIGNKIT_MAIL_PROVIDER`, either the SMTP client or the Cloudflare REST adapter. Responses and logs allowlist only delivery IDs, aggregate outcomes, and stable error codes. The provider call remains non-transactional after that final state read, and the provider-acceptance/database-completion gap is explicitly at-least-once: a crash after provider acceptance can cause a later duplicate, so mail content and downstream integrations must tolerate it.
+The raw random capability exists durably only as AES-256-GCM ciphertext in the delivery outbox,
+sealed with a deployment secret and envelope/recipient/outbox context as authenticated data.
+Recipient rows contain the SHA-256 hash; public responses and audit payloads contain neither token,
+hash, ciphertext, key ID, nor outbox ID. Every delivery intent is database-constrained to a
+recipient in the exact same envelope: PostgreSQL uses a composite foreign key, while D1 uses
+insert/update guards and validates all existing rows during migration. The delivery worker decrypts
+immediately before delivery, verifies the ciphertext digest, sealing key, authenticated context,
+plaintext capability hash, expiry, and current recipient/envelope eligibility, and scrubs ciphertext
+after provider acceptance or a terminal failure. `envelope.sent` means that delivery intent is
+durable, not that an email provider has accepted a message. The caller-supplied ready audit event
+must be the latest `envelope.ready` for the same envelope, Git generation, and commit: no later
+`envelope.ready` or `envelope.reopened` may exist. Application preparation and the database publish
+guard both refuse a superseded ready anchor. `envelope.sent` still chains from the current audit
+head, which may include later field-placement events. D1 uses a final publish guard to verify that
+latest-ready anchor and the full outbox/capability projection before the state CAS and audit append;
+PostgreSQL uses row locks and one transaction. Provider delivery and routing-group release remain
+separate commands. Completion evidence matches the recipient roster to that same latest ready event;
+a send that still names a ready superseded by reopen fails closed.
 
-Operators recover authoring and send state through active-instance-member or scoped API-key authorization on `GET /api/v1/envelopes/{envelopeId}` (`envelopes:read`). The read model returns the public envelope projection (Git locators and archive digest, never object-store keys), the current recipient graph (id, email, name, role, locale, routing order, status — never capability hashes or ciphertext), the latest `envelope.ready` audit event id when the envelope is no longer `draft`, and the current field set without labels. Labels can contain PII, so this public projection, placement receipts, and completion evidence stay label-free. Reload and a second tab continue from that durable read; send readiness is not reconstructed from `sessionStorage`. Create and list use the same public envelope projection.
+## Invitation delivery
 
-Operators read invitation progress through active-instance-member or scoped API-key authorization on `GET /api/v1/envelopes/{envelopeId}/deliveries`. The response contains the envelope state plus recipient ID, role, routing order, delivery state, attempts, timestamps, and a sanitized machine error code; it omits recipient email/name, capability material, sealing metadata, provider credentials, provider response bodies, and internal outbox IDs.
+Invitation claims are limited to 25 rows, ordered by availability and creation, and guarded by a
+unique lease token. Pending and retryable failed rows become eligible at `available_at`; abandoned
+`processing` rows are reclaimed only after a five-minute lease. Each claimant re-reads its envelope-
+and lease-token-scoped recipient projection immediately before decrypting or sending. The claim
+transaction also converts at most 100 now-ineligible due or abandoned rows per run into terminal
+failures and scrubs their ciphertext, using a partial cleanup index so a decline, completion,
+revocation, expiry, or envelope terminal transition cannot strand reusable token material
+indefinitely or create an unbounded periodic sweep. Completion and failure updates compare the
+delivery ID, `processing` state, and lease token. Provider authentication, sender setup, unknown
+provider errors, transport failures, rate limits, and sealing-key drift remain retryable; only
+recipient-scoped permanent rejection, exhausted attempts, or integrity failures are terminal and
+scrub ciphertext. Retryable failures use capped exponential backoff for at most ten claimed
+attempts. A per-item store failure is isolated from sibling claims, while its lease becomes
+reclaimable after timeout. Cloudflare uses a one-minute scheduled trigger and D1. Its checked-in
+profile selects the native Email Sending binding, while a self-hosted Worker may select the same
+Nodemailer SMTP transport as Node on a non-25 submission port. Node/Docker and Vercel expose the
+same bearer-protected internal drain command for a host scheduler, backed by PostgreSQL and, per the
+configured `SIGNKIT_MAIL_PROVIDER`, either the SMTP client or the Cloudflare REST adapter. Responses
+and logs allowlist only delivery IDs, aggregate outcomes, and stable error codes. The provider call
+remains non-transactional after that final state read, and the
+provider-acceptance/database-completion gap is explicitly at-least-once: a crash after provider
+acceptance can cause a later duplicate, so mail content and downstream integrations must tolerate
+it.
 
-`POST /api/v1/envelopes/{envelopeId}/fields` places signing fields while an envelope is `ready`, before it is sent. It is an idempotent, whole-set replace: the body carries the expected Git generation, an independent `expectedFieldGeneration` compare-and-set counter for the field set itself, and one to fifty declarations naming a recipient, a `documents/*.md` path, a field type (`signature`, `initials`, `text`, `date`, `checkbox`), a label, whether the field is required, a semantic document-order `position`, and required normalized page geometry (`page`, `x`, `y`, `width`, `height` as unit-square fractions of one rendered page). `position` remains authoritative for reading order; geometry is what makes a field reachable, and is required because a field a signer cannot see is a field they cannot complete. Geometry is validated against the deterministic PDF rendering of the pinned revision (see [Sent agreement rendering](#sent-agreement-rendering)): the named page must fall inside the page range its own document occupies there, and the box must not extend past the page edge. The sender places fields by dragging boxes onto that rendering, or, entirely without a pointer, by choosing a page and using an Add field action that drops a new box at a deterministic bounded inset and moves focus onto it; from there, arrow keys move the focused box (0.5% of the page per press, 2.5% with Shift), Alt+arrow resizes it by the same two steps, and Delete or Backspace removes it. Coordinates are unit-square fractions, so a box holds its place across zoom, screen size, and device; both placement paths share one clamp that keeps every box fully inside its page and above a minimum size. Only signer recipients scoped to the same envelope may own a field, and every document path is validated against the exact bounded Git workspace pinned by the expected generation, reusing the same `DraftPersistenceService` read path as the draft endpoints rather than duplicating archive decoding. Every published field set mints its own UUIDv7 field IDs (see [Identifiers](identifiers.md)); because placement is a whole-set replace guarded by `expectedFieldGeneration`, a client that republishes must re-read the set rather than assume a locator-stable ID, and a lost race replays the durable receipt's own IDs. Publishing atomically rechecks the envelope's `ready` state, Git generation and head, and field generation; replaces the entire `envelope_field` projection; increments `expectedFieldGeneration`; and appends one PII-minimized `envelope.fields_placed` audit event whose payload excludes labels. D1 uses a rollback-on-failed-predicate trigger — including a `json_each` check that every declared field's recipient is a signer in scope — gated by the same command-insert boundary as `ready`, with the field replacement itself performed as later statements in the same batch; PostgreSQL locks the envelope row and then every referenced recipient row in ID order inside one transaction before replacing the set. Fields are declared only in SQL; Git and object storage are never touched by this command. The response omits labels, audit hashes, archive/storage identifiers, emails, names, and internal command IDs.
+## Operator reads and fields
 
-`GET /api/v1/envelopes/{envelopeId}/fields` is a dedicated `drafts:write` authoring read, not a recipient, capability, or public endpoint. It returns `{envelopeId, generation, fieldGeneration, commitSha, fields}` with the complete stored definition, including `label`, `required`, `position`, and nullable `documentId` / `documentPath` / `geometry`. The read is a coherent SQL snapshot of the current envelope and field rows; it does not decode Git or draft archives, fabricate default labels, or drop fields that predate geometric placement. Authoring clients reload this complete set before a replace-all publish. A missing or malformed authoring read must not drive a partial replace. Public envelope detail, placement receipts, and completion evidence remain label-free.
+Operators recover authoring and send state through active-instance-member or scoped API-key
+authorization on `GET /api/v1/envelopes/{envelopeId}` (`envelopes:read`). The read model returns the
+public envelope projection (Git locators and archive digest, never object-store keys), the current
+recipient graph (id, email, name, role, locale, routing order, status — never capability hashes or
+ciphertext), the latest `envelope.ready` audit event id when the envelope is no longer `draft`, and
+the current field set without labels. Labels can contain PII, so this public projection, placement
+receipts, and completion evidence stay label-free. Reload and a second tab continue from that
+durable read; send readiness is not reconstructed from `sessionStorage`. Create and list use the
+same public envelope projection.
+
+Operators read invitation progress through active-instance-member or scoped API-key authorization on
+`GET /api/v1/envelopes/{envelopeId}/deliveries`. The response contains the envelope state plus
+recipient ID, role, routing order, delivery state, attempts, timestamps, and a sanitized machine
+error code; it omits recipient email/name, capability material, sealing metadata, provider
+credentials, provider response bodies, and internal outbox IDs.
+
+`POST /api/v1/envelopes/{envelopeId}/fields` places signing fields while an envelope is `ready`,
+before it is sent. It is an idempotent, whole-set replace: the body carries the expected Git
+generation, an independent `expectedFieldGeneration` compare-and-set counter for the field set
+itself, and one to fifty declarations naming a recipient and document, a field type (`signature`,
+`initials`, `text`, `date`, `checkbox`), a label, whether the field is required, a semantic
+document-order `position`, and required normalized page geometry (`page`, `x`, `y`, `width`,
+`height` as unit-square fractions of one rendered page). `position` remains authoritative for
+reading order; geometry is what makes a field reachable, and is required because a field a signer
+cannot see is a field they cannot complete. Geometry is validated against the deterministic PDF
+rendering of the pinned revision (see [Sent agreement rendering](#sent-agreement-rendering)): the
+named page must exist in the selected document's PDF, and the box must not extend past the page
+edge. The sender places fields by dragging boxes onto that rendering, or, entirely without a
+pointer, by choosing a page and using an Add field action that drops a new box at a deterministic
+bounded inset and moves focus onto it; from there, arrow keys move the focused box (0.5% of the page
+per press, 2.5% with Shift), Alt+arrow resizes it by the same two steps, and Delete or Backspace
+removes it. Coordinates are unit-square fractions, so a box holds its place across zoom, screen
+size, and device; both placement paths share one clamp that keeps every box fully inside its page
+and above a minimum size. Only signer recipients scoped to the same envelope may own a field, and
+every document path is validated against the exact bounded Git workspace pinned by the expected
+generation, reusing the same `DraftPersistenceService` read path as the draft endpoints rather than
+duplicating archive decoding. Every published field set mints its own UUIDv7 field IDs (see
+[Identifiers](identifiers.md)); because placement is a whole-set replace guarded by
+`expectedFieldGeneration`, a client that republishes must re-read the set rather than assume a
+locator-stable ID, and a lost race replays the durable receipt's own IDs. Publishing atomically
+rechecks the envelope's `ready` state, Git generation and head, and field generation; replaces the
+entire `envelope_field` projection; increments `expectedFieldGeneration`; and appends one
+PII-minimized `envelope.fields_placed` audit event whose payload excludes labels. D1 uses a
+rollback-on-failed-predicate trigger — including a `json_each` check that every declared field's
+recipient is a signer in scope — gated by the same command-insert boundary as `ready`, with the
+field replacement itself performed as later statements in the same batch; PostgreSQL locks the
+envelope row and then every referenced recipient row in ID order inside one transaction before
+replacing the set. Fields are declared only in SQL; Git and object storage are never touched by this
+command. The response omits labels, audit hashes, archive/storage identifiers, emails, names, and
+internal command IDs.
+
+`GET /api/v1/envelopes/{envelopeId}/fields` is a dedicated `drafts:write` authoring read, not a
+recipient, capability, or public endpoint. It returns
+`{envelopeId, generation, fieldGeneration, commitSha, fields}` with the complete stored definition,
+including `label`, `required`, `position`, and nullable `documentId` / `documentPath` / `geometry`.
+The read is a coherent SQL snapshot of the current envelope and field rows; it does not decode Git
+or draft archives, fabricate default labels, or drop fields that predate geometric placement.
+Authoring clients reload this complete set before a replace-all publish. A missing or malformed
+authoring read must not drive a partial replace. Public envelope detail, placement receipts, and
+completion evidence remain label-free.
 
 ## Sent agreement rendering
 
-Sending converts each document in the envelope's exact immutable revision into its own bounded, deterministic PDF, writes those objects under content-addressed keys, and pins the set in the same durable command that flips the envelope to `sent`. Git remains the source of truth for history; these artifacts are the source of truth for what the recipient was shown, and the only surface a field's page/x/y geometry can mean anything against. There is no concatenation and no single-PDF fallback for newly sent envelopes.
+Sending converts each document in the envelope's exact immutable revision into its own bounded,
+deterministic PDF, writes those objects under content-addressed keys, and pins the set in the same
+durable command that flips the envelope to `sent`. Git remains the source of truth for history;
+these artifacts are the source of truth for what the recipient was shown, and the only surface a
+field's page/x/y geometry can mean anything against. There is no concatenation and no single-PDF
+fallback for newly sent envelopes.
 
-The live pointer is `envelope_sent_document_set` plus one `envelope_sent_document` row per document, keyed by `(envelope, commit)` and joined back to `envelope.sent_commit_sha` on every read, so a pointer published for one revision can never satisfy a read pinned to another. `documentSetHash`, `documentCount`, and the per-document `{id, sha256, byteSize, pageCount}` tuples are part of the `envelope.sent` audit payload; storage keys are not, because a storage path is infrastructure rather than evidence, and each key is derivable from that document's digest plus the envelope scope. The send-command receipt stores those same tuples as `sent_documents_json` so idempotent replay can reconstruct the payload byte-for-byte, including rejecting unknown fields. Envelopes already sent before this change keep `envelope_sent_pdf` and the seven `sent_pdf_*` command columns as frozen evidence; replay of those rows reconstructs the historical `{sentPdfSha256, sentPdfBytes, sentPdfPageCount}` payload. D1 publishes the set marker inside `envelope_send_publish_guard` — which refuses outright if the command carries no document-set receipt — and PostgreSQL publishes the rows in the same transaction as the status flip and the audit event, so a stale generation, a lost CAS, an audit conflict, or an idempotency conflict rolls all three back together. Objects are written before anything references them, exactly as draft archives are, so a failed publication leaves unreferenced objects for the orphan sweep rather than a durable pointer to bytes that were never written.
+The live pointer is `envelope_sent_document_set` plus one `envelope_sent_document` row per document,
+keyed by `(envelope, commit)` and joined back to `envelope.sent_commit_sha` on every read, so a
+pointer published for one revision can never satisfy a read pinned to another. `documentSetHash`,
+`documentCount`, and the per-document `{id, sha256, byteSize, pageCount}` tuples are part of the
+`envelope.sent` audit payload; storage keys are not, because a storage path is infrastructure rather
+than evidence, and each key is derivable from that document's digest plus the envelope scope. The
+send-command receipt stores those same tuples as `sent_documents_json` so idempotent replay can
+reconstruct the payload byte-for-byte, including rejecting unknown fields. Envelopes already sent
+before this change keep `envelope_sent_pdf` and the seven `sent_pdf_*` command columns as frozen
+evidence; replay of those rows reconstructs the historical
+`{sentPdfSha256, sentPdfBytes, sentPdfPageCount}` payload. D1 publishes the set marker inside
+`envelope_send_publish_guard` — which refuses outright if the command carries no document-set
+receipt — and PostgreSQL publishes the rows in the same transaction as the status flip and the audit
+event, so a stale generation, a lost CAS, an audit conflict, or an idempotency conflict rolls all
+three back together. Objects are written before anything references them, exactly as draft archives
+are, so a failed publication leaves unreferenced objects for the orphan sweep rather than a durable
+pointer to bytes that were never written.
 
-Rendering is deterministic, bounded on page count, block count, tree depth, and document bytes, and embeds a subset of one OFL-licensed typeface that covers Japanese and Latin, so an agreement is legible without any font from the reader's machine or from the network. It consumes the same sanitized node tree the browser would have: no images, no HTML, no external resource of any kind. Because it is a pure function of the pinned revision, the sender's placement editor can render exactly the pages the signer will see before the envelope is sent at all.
+Markdown rendering is deterministic, bounded on page count, block count, tree depth, and document
+bytes, and embeds a subset of one OFL-licensed typeface that covers Japanese and Latin, so an
+agreement is legible without any font from the reader's machine or from the network. It consumes the
+same sanitized node tree the browser would have: no images, no HTML, no external resource of any
+kind. Because it is a pure function of the pinned revision, the sender's placement editor can render
+exactly the pages the signer will see before the envelope is sent at all.
 
-Recipients read the artifact over `GET /sign/{envelopeId}/agreement.pdf`, a same-origin endpoint authenticated only by the envelope-scoped sealed, http-only recipient session cookie: no token in the URL, in page data, or anywhere JavaScript can reach. The path names the non-secret UUIDv7 envelope ID so two tabs can fetch different documents; a path/cookie mismatch fails closed. The capability and the pinned commit are revalidated after the object read as well as before it, and the bytes are checked against the pinned digest and size before a single one is disclosed. Inactive access is an empty 404 indistinguishable from an unknown path; every storage or integrity failure is the same fixed, empty 503. Neither response carries an identifier, a name, an object key, or a provider message, and no recipient-facing response returns Markdown source.
+Recipients read the artifact over `GET /sign/{envelopeId}/agreement.pdf`, a same-origin endpoint
+authenticated only by the envelope-scoped sealed, http-only recipient session cookie: no token in
+the URL, in page data, or anywhere JavaScript can reach. The path names the non-secret UUIDv7
+envelope ID so two tabs can fetch different documents; a path/cookie mismatch fails closed. The
+capability and the pinned commit are revalidated after the object read as well as before it, and the
+bytes are checked against the pinned digest and size before a single one is disclosed. Inactive
+access is an empty 404 indistinguishable from an unknown path; every storage or integrity failure is
+the same fixed, empty 503. Neither response carries an identifier, a name, an object key, or a
+provider message, and no recipient-facing response returns Markdown source.

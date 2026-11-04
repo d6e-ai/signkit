@@ -1,12 +1,19 @@
 # Deployment
 
-How the three deployment profiles differ, what to configure, and how background jobs are driven. The normative boundary is [architecture/deployment-and-risks.md § Deployment](architecture/deployment-and-risks.md#deployment) and [architecture/persistence.md § Persistence](architecture/persistence.md#persistence); this document is the operational companion.
+How the three deployment profiles differ, what to configure, and how background jobs are driven. The
+normative boundary is
+[architecture/deployment-and-risks.md § Deployment](architecture/deployment-and-risks.md#deployment)
+and [architecture/persistence.md § Persistence](architecture/persistence.md#persistence); this
+document is the operational companion.
 
-The Cloudflare Workers profile can be published from a GitHub Release with [`create-signkit`](create-signkit.md) (`npx create-signkit --cloudflare ...`). That deployment CLI is not the Rust API CLI documented in [cli.md](cli.md).
+The Cloudflare Workers profile can be published from a GitHub Release with
+[`create-signkit`](create-signkit.md) (`npx create-signkit --cloudflare ...`). That deployment CLI
+is not the Rust API CLI documented in [cli.md](cli.md).
 
 ## Profiles
 
-`DEPLOY_TARGET` selects the adapter at build time. Each target produces its own artifact; there is no universal runtime build.
+`DEPLOY_TARGET` selects the adapter at build time. Each target produces its own artifact; there is
+no universal runtime build.
 
 | Target             | Build                       | Database      | Objects                 | Background work                      | Status           |
 | ------------------ | --------------------------- | ------------- | ----------------------- | ------------------------------------ | ---------------- |
@@ -14,19 +21,42 @@ The Cloudflare Workers profile can be published from a GitHub Release with [`cre
 | Cloudflare Workers | `pnpm run build:cloudflare` | D1 binding    | R2 binding              | one-minute cron drains in-process    | supported        |
 | Vercel             | `pnpm run build:vercel`     | PostgreSQL    | S3-compatible initially | platform-specific, not yet specified | CI-only, backlog |
 
-Priority order is Node/Docker first, Cloudflare second, Vercel last. Vercel compiles in CI but is experimental and not supported for production use.
+Priority order is Node/Docker first, Cloudflare second, Vercel last. Vercel compiles in CI but is
+experimental and not supported for production use.
 
 ## Node / Docker
 
-PostgreSQL 18 is the database baseline for this profile: CI validates against `postgres:18-alpine`, and that is the version new deployments should run. The migrations in `migrations/postgres` do not depend on version-18-only features, but older servers are not exercised by the test suite.
+PostgreSQL 18 is the database baseline for this profile: CI validates against `postgres:18-alpine`,
+and that is the version new deployments should run. The migrations in `migrations/postgres` do not
+depend on version-18-only features, but older servers are not exercised by the test suite.
 
-The supplied multi-stage `Dockerfile` builds the Node profile and runs it as the non-root `signkit` user on port 3000. Its healthcheck polls `GET /api/v1/system/capabilities`, an unauthenticated read that reports the API version, the detected runtime, and the supported profiles.
+The supplied multi-stage `Dockerfile` builds the Node profile and runs it as the non-root `signkit`
+user on port 3000. Its healthcheck polls `GET /api/v1/system/capabilities`, an unauthenticated read
+that reports the API version, the detected runtime, and the supported profiles.
 
 ### Applying PostgreSQL migrations
 
-`scripts/postgres-migrate.mjs` (`pnpm run db:migrate:postgres`) is the migration runner for this profile. It applies every file in `migrations/postgres` in filename order, each inside its own transaction, and records a durable `schema_migrations` ledger row (filename plus a SHA-256 checksum of that file's contents) only once that migration's transaction commits. A session-level `pg_advisory_lock` held for the whole run means a second concurrent invocation against the same database blocks instead of racing DDL. If an already-applied file's contents ever change on disk, the recorded checksum no longer matches it, and the runner refuses to proceed — reapplying an edited migration or silently ignoring the mismatch would both be worse than stopping and asking an operator to look. It supports a fresh, empty PostgreSQL 18 database (applies everything) and an already-current one (reports up to date and does nothing) the same way. `pnpm run db:migrate:postgres:check` (`--check`) reports pending migrations and checksum drift without ever writing to the database — safe to run with a read-only role as a release or deploy gate. Diagnostics are always filenames, checksums, and counts; the connection string and any credential are never logged.
+`scripts/postgres-migrate.mjs` (`pnpm run db:migrate:postgres`) is the migration runner for this
+profile. It applies every file in `migrations/postgres` in filename order, each inside its own
+transaction, and records a durable `schema_migrations` ledger row (filename plus a SHA-256 checksum
+of that file's contents) only once that migration's transaction commits. A session-level
+`pg_advisory_lock` held for the whole run means a second concurrent invocation against the same
+database blocks instead of racing DDL. If an already-applied file's contents ever change on disk,
+the recorded checksum no longer matches it, and the runner refuses to proceed — reapplying an edited
+migration or silently ignoring the mismatch would both be worse than stopping and asking an operator
+to look. It supports a fresh, empty PostgreSQL 18 database (applies everything) and an
+already-current one (reports up to date and does nothing) the same way.
+`pnpm run db:migrate:postgres:check` (`--check`) reports pending migrations and checksum drift
+without ever writing to the database — safe to run with a read-only role as a release or deploy
+gate. Diagnostics are always filenames, checksums, and counts; the connection string and any
+credential are never logged.
 
-**Run the migrator separately from the long-lived app process, with a different, more privileged database role.** The app's own `DATABASE_URL` should point at a role that can only read and write ordinary rows (`SELECT`/`INSERT`/`UPDATE`/`DELETE` on the application tables) — it never needs to create or alter a table while serving requests, so it should not be able to. The migrator needs `CREATE`/`ALTER`/`DROP` (schema DDL) plus read/write on `schema_migrations`; grant that to a separate role used only for this one-off invocation, for example:
+**Run the migrator separately from the long-lived app process, with a different, more privileged
+database role.** The app's own `DATABASE_URL` should point at a role that can only read and write
+ordinary rows (`SELECT`/`INSERT`/`UPDATE`/`DELETE` on the application tables) — it never needs to
+create or alter a table while serving requests, so it should not be able to. The migrator needs
+`CREATE`/`ALTER`/`DROP` (schema DDL) plus read/write on `schema_migrations`; grant that to a
+separate role used only for this one-off invocation, for example:
 
 ```sql
 -- One-time setup, run by an administrative role:
@@ -40,45 +70,100 @@ ALTER DEFAULT PRIVILEGES FOR ROLE signkit_migrator IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO signkit_app;
 ```
 
-The same Docker image serves both roles without any extra build: the app container's `CMD` is unchanged (`node build/node/index.js`, using `signkit_app`'s `DATABASE_URL`), while a migration is a short-lived, separate invocation of the same image with a different command and the `signkit_migrator` connection string, run once before rolling out a version that depends on new migrations and then discarded:
+The same Docker image serves both roles without any extra build: the app container's `CMD` is
+unchanged (`node build/node/index.js`, using `signkit_app`'s `DATABASE_URL`), while a migration is a
+short-lived, separate invocation of the same image with a different command and the
+`signkit_migrator` connection string, run once before rolling out a version that depends on new
+migrations and then discarded:
 
 ```sh
 docker run --rm -e DATABASE_URL="postgres://signkit_migrator:...@host/signkit" \
   <image> node scripts/postgres-migrate.mjs
 ```
 
-Never set the app's long-lived `DATABASE_URL` to the migrator role — that would hand DDL rights to a process that accepts external requests, defeating the point of separating them.
+Never set the app's long-lived `DATABASE_URL` to the migrator role — that would hand DDL rights to a
+process that accepts external requests, defeating the point of separating them.
 
-Put the app behind a reverse proxy that preserves the public HTTPS origin: `SIGNKIT_PUBLIC_ORIGIN` must match both the d6e-auth `/auth/callback` redirect URI registered for the client and the origin used to mint recipient signing and completion links.
+Put the app behind a reverse proxy that preserves the public HTTPS origin: `SIGNKIT_PUBLIC_ORIGIN`
+must match both the d6e-auth `/auth/callback` redirect URI registered for the client and the origin
+used to mint recipient signing and completion links.
 
-Objects go to any S3-compatible service. Most of them require path-style addressing (`S3_FORCE_PATH_STYLE=true`); set it to `false` for AWS S3 itself. R2 is not used through its S3 endpoint on this profile.
+Objects go to any S3-compatible service. Most of them require path-style addressing
+(`S3_FORCE_PATH_STYLE=true`); set it to `false` for AWS S3 itself. R2 is not used through its S3
+endpoint on this profile.
 
 ### Mail
 
-`SIGNKIT_MAIL_PROVIDER` selects the transport for invitation and completion delivery and accepts exactly two values:
+`SIGNKIT_MAIL_PROVIDER` selects the transport for invitation and completion delivery and accepts
+exactly two values:
 
-- `smtp` — a production Nodemailer SMTP client on Node/Docker, Vercel, and Cloudflare Workers, configured by `SIGNKIT_SMTP_HOST`, `SIGNKIT_SMTP_PORT`, `SIGNKIT_SMTP_SECURE`, and the optional `SIGNKIT_SMTP_USERNAME`/`SIGNKIT_SMTP_PASSWORD` pair. `SIGNKIT_SMTP_SECURE` is required and must be exactly `true` or `false` — there is no default, so an unset or blank value fails closed. `true` opens the connection already inside TLS (implicit TLS, typically port 465); `false` connects in the clear and then requires a STARTTLS upgrade before any mail command, aborting the send if the server cannot upgrade. There is no configuration that permits a plaintext session. Username and password must be set together or not at all — one without the other fails closed; the password is never trimmed, so its exact bytes reach the server. Workers additionally reject port 25, which the platform prohibits; use a public submission endpoint such as 465 or 587. **Resend and any other SMTP-speaking provider are configured this way, through their ordinary SMTP endpoint and credentials; SignKit has no Resend-specific code.**
-- `cloudflare` — Cloudflare Email Sending, called through the REST API on Node/Docker and Vercel with `CLOUDFLARE_EMAIL_ACCOUNT_ID`/`CLOUDFLARE_EMAIL_API_TOKEN` (this profile), or through the native `EMAIL` binding on Cloudflare Workers (see below).
+- `smtp` — a production Nodemailer SMTP client on Node/Docker, Vercel, and Cloudflare Workers,
+  configured by `SIGNKIT_SMTP_HOST`, `SIGNKIT_SMTP_PORT`, `SIGNKIT_SMTP_SECURE`, and the optional
+  `SIGNKIT_SMTP_USERNAME`/`SIGNKIT_SMTP_PASSWORD` pair. `SIGNKIT_SMTP_SECURE` is required and must
+  be exactly `true` or `false` — there is no default, so an unset or blank value fails closed.
+  `true` opens the connection already inside TLS (implicit TLS, typically port 465); `false`
+  connects in the clear and then requires a STARTTLS upgrade before any mail command, aborting the
+  send if the server cannot upgrade. There is no configuration that permits a plaintext session.
+  Username and password must be set together or not at all — one without the other fails closed; the
+  password is never trimmed, so its exact bytes reach the server. Workers additionally reject port
+  25, which the platform prohibits; use a public submission endpoint such as 465 or 587. **Resend
+  and any other SMTP-speaking provider are configured this way, through their ordinary SMTP endpoint
+  and credentials; SignKit has no Resend-specific code.**
+- `cloudflare` — Cloudflare Email Sending, called through the REST API on Node/Docker and Vercel
+  with `CLOUDFLARE_EMAIL_ACCOUNT_ID`/`CLOUDFLARE_EMAIL_API_TOKEN` (this profile), or through the
+  native `EMAIL` binding on Cloudflare Workers (see below).
 
-An unset, misspelled, or runtime-incompatible provider, or an incomplete provider configuration, makes the delivery and completion-delivery services unavailable (fail closed) rather than guessing a transport.
+An unset, misspelled, or runtime-incompatible provider, or an incomplete provider configuration,
+makes the delivery and completion-delivery services unavailable (fail closed) rather than guessing a
+transport.
 
 ## Cloudflare Workers
 
-`cloudflare.config.ts` declares the `DB` (D1), `OBJECTS` (R2), `ASSETS`, and `EMAIL` bindings, `nodejs_compat`, a default `SIGNKIT_MAIL_PROVIDER=cloudflare` var, observability, a one-minute primary maintenance cron, and a separate five-minute orphan-collection cron. `pnpm run build:cloudflare` produces cf Build Output; deployments consume it with `cf deploy --prebuilt`. The SvelteKit build and local D1 runner retain narrowly scoped Wrangler compatibility profiles. See [architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md). R2 is used through its in-process binding rather than an S3 endpoint, and D1 migrations live in `migrations/d1`.
+`cloudflare.config.ts` declares the `DB` (D1), `OBJECTS` (R2), `ASSETS`, and `EMAIL` bindings,
+`nodejs_compat`, a default `SIGNKIT_MAIL_PROVIDER=cloudflare` var, observability, a one-minute
+primary maintenance cron, and a separate five-minute orphan-collection cron.
+`pnpm run build:cloudflare` produces cf Build Output; deployments consume it with
+`cf deploy --prebuilt`. The SvelteKit build and local D1 runner retain narrowly scoped Wrangler
+compatibility profiles. See
+[architecture/cloudflare-tooling.md](architecture/cloudflare-tooling.md). R2 is used through its
+in-process binding rather than an S3 endpoint, and D1 migrations live in `migrations/d1`.
 
-The primary trigger invokes the protected delivery drains, completion-artifact publication, envelope expiry, webhooks, and both reseal sweeps in-process through the Worker's own `fetch` handler. Orphan object collection runs alone in its five-minute trigger so its bounded D1 reference checks receive an independent per-invocation query budget. Jobs within each trigger use `context.waitUntil`, so one failure cannot block its siblings. No external scheduler is required. Secrets belong in Worker secret storage (`.dev.vars` locally) and must never be committed: at minimum `DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, `DELIVERY_WORKER_SECRET`, the d6e-auth client credentials, plus the `SIGNKIT_PUBLIC_ORIGIN`, `SIGNKIT_EMAIL_FROM`, and `SIGNKIT_EMAIL_FROM_NAME` variables. `SIGNKIT_MAIL_PROVIDER` is not a secret — it ships as a text binding in `cloudflare.config.ts` and does not need to be set separately per deployment.
+The primary trigger invokes the protected delivery drains, completion-artifact publication, envelope
+expiry, webhooks, and both reseal sweeps in-process through the Worker's own `fetch` handler. Orphan
+object collection runs alone in its five-minute trigger so its bounded D1 reference checks receive
+an independent per-invocation query budget. Jobs within each trigger use `context.waitUntil`, so one
+failure cannot block its siblings. No external scheduler is required. Secrets belong in Worker
+secret storage (`.dev.vars` locally) and must never be committed: at minimum
+`DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, `DELIVERY_WORKER_SECRET`, the d6e-auth client
+credentials, plus the `SIGNKIT_PUBLIC_ORIGIN`, `SIGNKIT_EMAIL_FROM`, and `SIGNKIT_EMAIL_FROM_NAME`
+variables. `SIGNKIT_MAIL_PROVIDER` is not a secret — it ships as a text binding in
+`cloudflare.config.ts` and does not need to be set separately per deployment.
 
-The checked-in Worker profile defaults to the native `EMAIL` binding and needs no mail API token. A self-hosted Worker may instead set `SIGNKIT_MAIL_PROVIDER=smtp` and provide the same `SIGNKIT_SMTP_*` configuration used by Node; the `EMAIL` binding is then ignored. Nodemailer 10 runs its SMTP transport under the configured `nodejs_compat` flag. Port 25 is rejected before transport construction, and malformed or incomplete SMTP configuration leaves delivery unavailable rather than falling back to Cloudflare Email. The managed `create-signkit --cloudflare` flow keeps Cloudflare Email as its default and accepts `--mail-provider smtp` with bounded SMTP flags for an explicit SMTP deployment.
+The checked-in Worker profile defaults to the native `EMAIL` binding and needs no mail API token. A
+self-hosted Worker may instead set `SIGNKIT_MAIL_PROVIDER=smtp` and provide the same
+`SIGNKIT_SMTP_*` configuration used by Node; the `EMAIL` binding is then ignored. Nodemailer 10 runs
+its SMTP transport under the configured `nodejs_compat` flag. Port 25 is rejected before transport
+construction, and malformed or incomplete SMTP configuration leaves delivery unavailable rather than
+falling back to Cloudflare Email. The managed `create-signkit --cloudflare` flow keeps Cloudflare
+Email as its default and accepts `--mail-provider smtp` with bounded SMTP flags for an explicit SMTP
+deployment.
 
-Cloudflare Email Sending is currently beta. Sending to arbitrary recipient addresses requires Workers Paid; free accounts can only send to verified destination addresses, which is fine for testing but not for real envelopes. Check the current [Email Sending pricing and availability](https://developers.cloudflare.com/email-service/platform/pricing/) before treating this profile as zero-cost.
+Cloudflare Email Sending is currently beta. Sending to arbitrary recipient addresses requires
+Workers Paid; free accounts can only send to verified destination addresses, which is fine for
+testing but not for real envelopes. Check the current
+[Email Sending pricing and availability](https://developers.cloudflare.com/email-service/platform/pricing/)
+before treating this profile as zero-cost.
 
 ## Vercel
 
-The Vercel target builds with `adapter-vercel` on `nodejs22.x` and uses the same PostgreSQL and S3-compatible adapters as the Node profile. Native Vercel Blob is not S3-compatible and would need a separate adapter. Treat this profile as CI-validated only.
+The Vercel target builds with `adapter-vercel` on `nodejs22.x` and uses the same PostgreSQL and
+S3-compatible adapters as the Node profile. Native Vercel Blob is not S3-compatible and would need a
+separate adapter. Treat this profile as CI-validated only.
 
 ## Configuration
 
-All values come from `.env.example`; copy it to `.env` for Node development, and set the same names as Worker secrets or variables on Cloudflare.
+All values come from `.env.example`; copy it to `.env` for Node development, and set the same names
+as Worker secrets or variables on Cloudflare.
 
 | Variable                                                                                                                     | Purpose                                                                                                                                                                                                                                                                                                                                |
 | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -104,36 +189,80 @@ All values come from `.env.example`; copy it to `.env` for Node development, and
 
 ### Webhook destination allowlist
 
-Webhook endpoints deliver signed callbacks to deployer-chosen destinations only. `SIGNKIT_WEBHOOK_ALLOWED_HOSTS` is a comma-separated list of bare hostnames with exactly two entry kinds:
+Webhook endpoints deliver signed callbacks to deployer-chosen destinations only.
+`SIGNKIT_WEBHOOK_ALLOWED_HOSTS` is a comma-separated list of bare hostnames with exactly two entry
+kinds:
 
 - exact hosts (`hooks.example.com`), matched case-insensitively after canonicalization;
-- explicit wildcard suffixes (`*.hooks.example.com`), which cover subdomains at any depth but never the bare suffix itself — `*.hooks.example.com` allows `a.hooks.example.com` and not `hooks.example.com`.
+- explicit wildcard suffixes (`*.hooks.example.com`), which cover subdomains at any depth but never
+  the bare suffix itself — `*.hooks.example.com` allows `a.hooks.example.com` and not
+  `hooks.example.com`.
 
-Entries must not contain credentials, IP literals, ports, paths, queries, or fragments. Wildcard suffixes must carry at least three labels: `*.hooks.example.com` is allowed, while `*.example.com` and `*.com` are rejected — a two-label wildcard is one compromised subdomain away from covering a whole registrable domain. An absent, blank, or invalid value denies by default: webhook creation is refused and every delivery attempt fails closed with `host_not_allowed` before any DNS or network work. The policy is re-read on every creation and every delivery attempt, so tightening the value stops deliveries from endpoints created under an older policy without a restart; the existing public-IP DNS checks still run on every attempt, and delivery fetches never follow redirects.
+Entries must not contain credentials, IP literals, ports, paths, queries, or fragments. Wildcard
+suffixes must carry at least three labels: `*.hooks.example.com` is allowed, while `*.example.com`
+and `*.com` are rejected — a two-label wildcard is one compromised subdomain away from covering a
+whole registrable domain. An absent, blank, or invalid value denies by default: webhook creation is
+refused and every delivery attempt fails closed with `host_not_allowed` before any DNS or network
+work. The policy is re-read on every creation and every delivery attempt, so tightening the value
+stops deliveries from endpoints created under an older policy without a restart; the existing
+public-IP DNS checks still run on every attempt, and delivery fetches never follow redirects.
 
-Set the same value as a plain (non-secret) variable on every profile: `.env` for Node/Docker and Vercel, cf text bindings (or `.dev.vars` locally) for Cloudflare Workers.
+Set the same value as a plain (non-secret) variable on every profile: `.env` for Node/Docker and
+Vercel, cf text bindings (or `.dev.vars` locally) for Cloudflare Workers.
 
 ### Claim the initial owner immediately after deploy
 
-Uninitialized instances fail closed — there is no first-user-wins fallback. `POST /api/v1/instance/bootstrap` authorizes on the verified d6e-auth cookie session alone (see [architecture/authorization-and-instance-administration.md § Instance bootstrap](architecture/authorization-and-instance-administration.md#instance-bootstrap) and the fail-closed bootstrap risk in [architecture/deployment-and-risks.md § Primary risks](architecture/deployment-and-risks.md#primary-risks)), but the claim succeeds only when either `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` is configured and exactly matches the caller's verified email (compared case-insensitively), or the local-development-only `SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP=true` opt-in applies. Anything else is refused with 403 and the empty-instance window stays open, so the real owner can still claim it afterward. Complete this claim yourself right after deploying and before advertising the instance's URL to anyone else.
+Uninitialized instances fail closed — there is no first-user-wins fallback.
+`POST /api/v1/instance/bootstrap` authorizes on the verified d6e-auth cookie session alone (see
+[architecture/authorization-and-instance-administration.md § Instance bootstrap](architecture/authorization-and-instance-administration.md#instance-bootstrap)
+and the fail-closed bootstrap risk in
+[architecture/deployment-and-risks.md § Primary risks](architecture/deployment-and-risks.md#primary-risks)),
+but the claim succeeds only when either `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` is configured and exactly
+matches the caller's verified email (compared case-insensitively), or the local-development-only
+`SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP=true` opt-in applies. Anything else is refused with 403
+and the empty-instance window stays open, so the real owner can still claim it afterward. Complete
+this claim yourself right after deploying and before advertising the instance's URL to anyone else.
 
-Set `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` (as a Worker var on Cloudflare, or in the environment on Node/Docker/Vercel) to the intended owner's verified email before the first deploy. A verified caller whose email does not match is refused with 403 and the empty-instance window stays open. This is plain deployment configuration, not a cryptographic key: it never appears in logs or responses, and it stops mattering entirely once the instance is bootstrapped — already-claimed instances are unaffected by its value.
+Set `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` (as a Worker var on Cloudflare, or in the environment on
+Node/Docker/Vercel) to the intended owner's verified email before the first deploy. A verified
+caller whose email does not match is refused with 403 and the empty-instance window stays open. This
+is plain deployment configuration, not a cryptographic key: it never appears in logs or responses,
+and it stops mattering entirely once the instance is bootstrapped — already-claimed instances are
+unaffected by its value.
 
-The unsafe opt-in is honored only when every local-development signal agrees: a Node process, `NODE_ENV=development`, and a `SIGNKIT_PUBLIC_ORIGIN` naming a loopback host (`localhost`, `127.0.0.1`, `::1`). Checking the runtime mode separately from the configured origin is intentional: a production reverse proxy or environment that accidentally advertises a loopback public origin still fails closed. The exact `true` flag is ignored on Cloudflare Workers (including `wrangler dev`), on Vercel, with an unset/test/production `NODE_ENV`, and with any non-loopback or missing origin. `create-signkit --cloudflare deploy` requires the equivalent `--bootstrap-owner-email` flag and applies it as a non-secret Worker var.
+The unsafe opt-in is honored only when every local-development signal agrees: a Node process,
+`NODE_ENV=development`, and a `SIGNKIT_PUBLIC_ORIGIN` naming a loopback host (`localhost`,
+`127.0.0.1`, `::1`). Checking the runtime mode separately from the configured origin is intentional:
+a production reverse proxy or environment that accidentally advertises a loopback public origin
+still fails closed. The exact `true` flag is ignored on Cloudflare Workers (including
+`wrangler dev`), on Vercel, with an unset/test/production `NODE_ENV`, and with any non-loopback or
+missing origin. `create-signkit --cloudflare deploy` requires the equivalent
+`--bootstrap-owner-email` flag and applies it as a non-secret Worker var.
 
 ### Rotating `DELIVERY_ENCRYPTION_KEY` and `SESSION_ENCRYPTION_KEY`
 
-Both keys support an active+previous keyring, so rotation is safe: opening ciphertext is fail-closed by the explicit key ID recorded alongside it (the outbox row's `sealing_key_id` column, or the key ID embedded in the cookie envelope), and only the active key or the configured `_PREVIOUS` key can ever decrypt — never a key outside that pair.
+Both keys support an active+previous keyring, so rotation is safe: opening ciphertext is fail-closed
+by the explicit key ID recorded alongside it (the outbox row's `sealing_key_id` column, or the key
+ID embedded in the cookie envelope), and only the active key or the configured `_PREVIOUS` key can
+ever decrypt — never a key outside that pair.
 
-1. Set `DELIVERY_ENCRYPTION_KEY_PREVIOUS` (or `SESSION_ENCRYPTION_KEY_PREVIOUS`) to the current value of the key you are retiring.
+1. Set `DELIVERY_ENCRYPTION_KEY_PREVIOUS` (or `SESSION_ENCRYPTION_KEY_PREVIOUS`) to the current
+   value of the key you are retiring.
 2. Set `DELIVERY_ENCRYPTION_KEY` (or `SESSION_ENCRYPTION_KEY`) to a fresh 32 random bytes, base64.
-3. Deploy. New ciphertext seals under the new active key immediately; ciphertext already sealed under the previous key keeps opening correctly.
-4. Let the reseal sweep (below) migrate outstanding outbox ciphertext onto the active key over the following runs. Cookies migrate opportunistically the next time a session is resealed on a successful request; leave `_PREVIOUS` set for at least 30 days (the cookie/capability lifetime) so any cookie or capability that never gets resealed can still be opened.
-5. Once no outbox row reports the retired key ID and 30 days have passed, unset `_PREVIOUS`. A key ID outside the active/previous pair fails closed rather than being silently accepted — this is a deliberate integrity guarantee, not a bug to work around by widening the keyring.
+3. Deploy. New ciphertext seals under the new active key immediately; ciphertext already sealed
+   under the previous key keeps opening correctly.
+4. Let the reseal sweep (below) migrate outstanding outbox ciphertext onto the active key over the
+   following runs. Cookies migrate opportunistically the next time a session is resealed on a
+   successful request; leave `_PREVIOUS` set for at least 30 days (the cookie/capability lifetime)
+   so any cookie or capability that never gets resealed can still be opened.
+5. Once no outbox row reports the retired key ID and 30 days have passed, unset `_PREVIOUS`. A key
+   ID outside the active/previous pair fails closed rather than being silently accepted — this is a
+   deliberate integrity guarantee, not a bug to work around by widening the keyring.
 
 ## Background jobs
 
-Durable outboxes, DOCX conversion retries, expiry, reseal, webhook delivery, and object-store orphan collection are processed through protected endpoints:
+Durable outboxes, DOCX conversion retries, expiry, reseal, webhook delivery, and object-store orphan
+collection are processed through protected endpoints:
 
 | Endpoint                                                 | Work                                                                    |
 | -------------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -149,7 +278,10 @@ Durable outboxes, DOCX conversion retries, expiry, reseal, webhook delivery, and
 | `POST /api/v1/system/webhooks/drain`                     | signed webhook deliveries                                               |
 | `POST /api/v1/system/objects/orphan-sweep`               | deletes unreferenced object-store uploads older than 24 hours           |
 
-All endpoints authenticate with a constant-time check of `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare invokes them from its own scheduled trigger. Node/Docker and Vercel deployments must POST each path from a host scheduler (systemd timer, Kubernetes CronJob, or equivalent) roughly once a minute, for example:
+All endpoints authenticate with a constant-time check of
+`Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare invokes them from its own scheduled
+trigger. Node/Docker and Vercel deployments must POST each path from a host scheduler (systemd
+timer, Kubernetes CronJob, or equivalent) roughly once a minute, for example:
 
 ```sh
 for path in \
@@ -170,7 +302,8 @@ do
 done
 ```
 
-Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes — never object keys, ciphertext, or secrets.
+Responses and logs carry only stable delivery IDs, counts, outcomes, and sanitized error codes —
+never object keys, ciphertext, or secrets.
 
 The PDF seal drain never discovers or enqueues completion PDFs. Envelopes completed before sealing
 was configured remain `not_requested`; only an explicit request surface may create a job. The drain
@@ -179,18 +312,49 @@ pointer and chained audit event. An instance with every `PDF_SEAL_*` value unset
 `204` from this maintenance endpoint, so the documented disabled default remains a healthy
 scheduled-maintenance state. Partial configuration or missing durable bindings fails with `503`.
 
-Each delivery drain claims work with bounded leases, reclaims abandoned leases after five minutes, and backs off retryable failures. The external mail call is not inside the database transaction, so provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates. Delivery semantics, terminal-failure classification, and ciphertext scrubbing rules are specified in [architecture/completion-artifacts.md](architecture/completion-artifacts.md#completion-artifact-delivery-and-public-access-slice-b) and summarized in [api.md](api.md#background-drains).
+Each delivery drain claims work with bounded leases, reclaims abandoned leases after five minutes,
+and backs off retryable failures. The external mail call is not inside the database transaction, so
+provider acceptance and database completion form an **at-least-once** boundary: after an ambiguous
+process failure, a message can be sent twice. Mail recipients must tolerate rare duplicates.
+Provider failure classification is specified in [mail delivery](architecture/mail-delivery.md);
+grants, attachments, and ciphertext scrubbing follow
+[completion delivery](architecture/completion-delivery.md). Exact drain endpoints are described by
+the served [OpenAPI document](api.md#openapi-31-specification).
 
-The reseal sweeps are bounded maintenance, not delivery: each run migrates at most 50 non-`processing` outbox rows sealed under a key other than the active one, leaving rows sealed under a key outside the active/previous pair untouched for an operator to investigate rather than silently discarding them.
+The reseal sweeps are bounded maintenance, not delivery: each run migrates at most 50
+non-`processing` outbox rows sealed under a key other than the active one, leaving rows sealed under
+a key outside the active/previous pair untouched for an operator to investigate rather than silently
+discarding them.
 
-Instance-invitation payloads and their privacy-preserving idempotency fingerprints currently use the active/previous delivery key pair but do not have a separate reseal sweep. Keep `DELIVERY_ENCRYPTION_KEY_PREVIOUS` configured until every instance invitation created under it has reached its fixed seven-day expiry. Do not rotate a second time inside that overlap. Removing the previous key earlier makes encrypted rows unreadable and exact retries conflict until the key is restored; retries after the seven-day invitation window conflict by design.
+Instance-invitation payloads and their privacy-preserving idempotency fingerprints currently use the
+active/previous delivery key pair but do not have a separate reseal sweep. Keep
+`DELIVERY_ENCRYPTION_KEY_PREVIOUS` configured until every instance invitation created under it has
+reached its fixed seven-day expiry. Do not rotate a second time inside that overlap. Removing the
+previous key earlier makes encrypted rows unreadable and exact retries conflict until the key is
+restored; retries after the seven-day invitation window conflict by design.
 
-The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable (signer/approver) recipient that has ever been released has an expired capability and none currently has a live one, then transitions each envelope to `expired` with the same delivery-outbox scrub and capability revocation as an operator void, plus a chained `envelope.expired` audit event.
+The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable
+(signer/approver) recipient that has ever been released has an expired capability and none currently
+has a live one, then transitions each envelope to `expired` with the same delivery-outbox scrub and
+capability revocation as an operator void, plus a chained `envelope.expired` audit event.
 
-The orphan sweep lists at most 1,000 objects per run, skips anything younger than 24 hours or without a parseable upload time, and deletes only keys that SQL does not currently reference. A durable, server-owned resume key advances across scheduled runs so a first page of live objects cannot starve later orphans; callers cannot supply that cursor, shorten the grace period, or name a prefix. Failed pointer CAS uploads remain invisible until they age out and are collected.
+The orphan sweep lists at most 1,000 objects per run, skips anything younger than 24 hours or
+without a parseable upload time, and deletes only keys that SQL does not currently reference. A
+durable, server-owned resume key advances across scheduled runs so a first page of live objects
+cannot starve later orphans; callers cannot supply that cursor, shorten the grace period, or name a
+prefix. Failed pointer CAS uploads remain invisible until they age out and are collected.
 
-After repairing or enabling the sweep, no one-time backlog command is required. Its isolated schedule resumes from the durable checkpoint and processes one bounded page of at most 1,000 listed objects per run until it wraps to the start. Cloudflare reference checks expand each 100-object chunk from one JSON parameter and split set-based unions below D1's compound-select limit. A full page therefore stays within the free plan's 50-query invocation limit even when every candidate is a signature asset. A failed reference lookup or object-store operation leaves the checkpoint unchanged and fails closed without deleting unknown objects.
+After repairing or enabling the sweep, no one-time backlog command is required. Its isolated
+schedule resumes from the durable checkpoint and processes one bounded page of at most 1,000 listed
+objects per run until it wraps to the start. Cloudflare reference checks expand each 100-object
+chunk from one JSON parameter and split set-based unions below D1's compound-select limit. A full
+page therefore stays within the free plan's 50-query invocation limit even when every candidate is a
+signature asset. A failed reference lookup or object-store operation leaves the checkpoint unchanged
+and fails closed without deleting unknown objects.
 
 ## Disaster recovery
 
-Point-in-time D1 restore, R2 object recovery, PostgreSQL backup/restore, and S3-compatible object storage backup/restore runbooks live in [docs/operations/](operations/README.md); they are deliberately generic (no account, database, bucket, or Worker names) so they stay accurate as this deployment's specific resource names change.
+Point-in-time D1 restore, R2 object recovery, PostgreSQL backup/restore, and S3-compatible object
+storage backup/restore runbooks live in [docs/operations/](operations/README.md); they are
+deliberately generic (no account, database, bucket, or Worker names) so they stay accurate as this
+deployment's specific resource names change.

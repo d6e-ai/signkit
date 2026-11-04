@@ -1,10 +1,9 @@
 # PDF sealing
 
-Status: accepted design for Issue #78; provider and validator transports, the durable job store,
-runtime-neutral orchestration, atomic D1/PostgreSQL publication, fail-closed Node/Cloudflare runtime
-configuration, protected scheduled drain, explicit request/status/download API, Rust CLI commands,
-and operator UI are implemented. The drain processes only jobs created by the explicit request
-transaction.
+The provider and validator transports, durable job store, runtime-neutral orchestration, atomic
+D1/PostgreSQL publication, fail-closed Node/Cloudflare runtime configuration, protected scheduled
+drain, explicit request/status/download API, Rust CLI commands, and operator UI are implemented. The
+drain processes only jobs created by the explicit request transaction.
 
 ## Boundary and terminology
 
@@ -24,9 +23,9 @@ with `/TransformMethod /DocMDP`, the document catalogue has no `/Perms /DocMDP` 
 SignKit does not attach an allowed-change policy to the seal. “Instance seal” must not be shortened
 to “certification signature” in API names, storage names, audit events, logs, or product copy.
 
-Sealing adds cryptographic evidence; it does not decide legal effect. Product copy must not
-describe B-B, B-T, or their certificate as an advanced or qualified signature without a separate,
-explicit qualification result from an appropriate trust and identity design.
+Sealing adds cryptographic evidence; it does not decide legal effect. Product copy must not describe
+B-B, B-T, or their certificate as an advanced or qualified signature without a separate, explicit
+qualification result from an appropriate trust and identity design.
 
 ## Profiles
 
@@ -37,18 +36,18 @@ The initial profile vocabulary is exactly `pades-b-b` and `pades-b-t`.
 | `pades-b-b`       | An `ETSI.CAdES.detached` CMS signature, complete source-covering `ByteRange`, protected signer certificate, and valid certificate path under the configured policy. |
 | `pades-b-t`       | Every B-B property plus a verified RFC 3161 signature time-stamp trusted under the configured TSA policy.                                                           |
 
-The request and durable result carry separate `requestedProfile` and `achievedProfile` values. A
-B-T operation is successful only when `achievedProfile` is B-T. A TSA timeout, rejection, invalid
-token, wrong policy, wrong imprint, or untrusted TSA never publishes a B-B result for that request.
+The request and durable result carry separate `requestedProfile` and `achievedProfile` values. A B-T
+operation is successful only when `achievedProfile` is B-T. A TSA timeout, rejection, invalid token,
+wrong policy, wrong imprint, or untrusted TSA never publishes a B-B result for that request.
 
 B-LT and B-LTA are outside the current product boundary. B-LT requires complete certificate and
 revocation values in the PDF Document Security Store. B-LTA additionally requires a document
 time-stamp and an operational renewal schedule before algorithms, certificates, or previous
 time-stamps cease to be trustworthy. SignKit does not relabel B-T as LT/LTA or mutate its immutable
-publication; a future extension must publish a separately versioned derived artifact and, for
-B-LTA, operate durable renewal and escalation for the artifact's full retention lifetime. The
-binding decision is recorded in
-[`decisions/2026-09-23-instance-pades-seal-and-rfc3161.md`](decisions/2026-09-23-instance-pades-seal-and-rfc3161.md#long-term-validation-product-decision).
+publication; a future extension must publish a separately versioned derived artifact and, for B-LTA,
+operate durable renewal and escalation for the artifact's full retention lifetime. The extension
+requires a new product decision and matching lifecycle design before any stronger profile is
+advertised.
 
 ## Artifact and publication flow
 
@@ -59,30 +58,29 @@ to the recipient sign/approve transaction.
    and SHA-256.
 2. Freeze the requested profile and public policy identifiers: source PDF digest, expected signer
    certificate digest, seal-provider policy ID, TSA policy ID and trust-bundle digest when
-   applicable,
-   and validation-policy version.
+   applicable, and validation-policy version.
 3. Submit the bounded source stream to the seal provider under a stable, opaque operation ID.
    Reusing that ID with identical input returns the same operation; reusing it with different input
    is a conflict.
 4. Poll a submitted operation rather than keeping a Worker invocation open for an unbounded signing
    or TSA request. An ambiguous transport failure is resolved by reading the same operation ID.
-5. Before publication, independently validate the returned PDF against the frozen source and
-   policy. In particular, the output must retain the exact source bytes as its prefix and add only a
-   valid incremental update, the `ByteRange` must cover the signed revision except `/Contents`, and
-   the CMS, signer certificate, profile, and optional time-stamp must all verify.
+5. Before publication, independently validate the returned PDF against the frozen source and policy.
+   In particular, the output must retain the exact source bytes as its prefix and add only a valid
+   incremental update, the `ByteRange` must cover the signed revision except `/Contents`, and the
+   CMS, signer certificate, profile, and optional time-stamp must all verify.
 6. Write the bounded result and validation report as immutable, content-addressed objects. Publish
    their pointers, the durable command receipt, job state, and a chained
    `envelope.pdf_seal_published` audit event atomically in D1 or PostgreSQL.
 
 Provider output is not deterministic because certificates and time-stamps can vary. Safe replay
 therefore depends on the durable operation ID and provider receipt, not on rebuilding the same bytes
-from scratch. Provider authentication material, internal object keys, and signing-key references
-are never exposed through public status, logs, webhooks, or errors.
+from scratch. Provider authentication material, internal object keys, and signing-key references are
+never exposed through public status, logs, webhooks, or errors.
 
 ## State and failure semantics
 
-The instance API exposes this state as `pdfSeal.status`; it does not introduce a
-`pdfCertification` resource. The state machine is explicit:
+The instance API exposes this state as `pdfSeal.status`; it does not introduce a `pdfCertification`
+resource. The state machine is explicit:
 
 - `disabled`: this instance has no valid seal policy or runtime provider;
 - `not_requested`: a completion PDF exists, but no seal was requested;
@@ -93,10 +91,10 @@ The instance API exposes this state as `pdfSeal.status`; it does not introduce a
 
 The persistence layer follows the existing bounded-claim pattern: stable ordering, unique claim
 tokens, lease expiry and reclaim, a monotonic attempt sequence, a separate consecutive-failure
-budget, exponential backoff, evidence-checked command replay, and no provider call inside a
-database transaction. D1 claims rows with one `UPDATE … RETURNING` statement so reusing a token and
-timestamp cannot return an earlier claim. PostgreSQL uses `FOR UPDATE SKIP LOCKED` and returns only
-the rows changed by the same claim transaction.
+budget, exponential backoff, evidence-checked command replay, and no provider call inside a database
+transaction. D1 claims rows with one `UPDATE … RETURNING` statement so reusing a token and timestamp
+cannot return an earlier claim. PostgreSQL uses `FOR UPDATE SKIP LOCKED` and returns only the rows
+changed by the same claim transaction.
 
 The internal durable state separates the coarse job `status` from its `nextAction` so a process
 crash cannot erase which idempotent remote operation must be reconciled:
@@ -114,30 +112,30 @@ crash cannot erase which idempotent remote operation must be reconciled:
 One row is allowed for each immutable `completion_artifact_pdf`. Enqueue requires its persisted
 object key, digest, and generated byte size to exactly match the frozen source tuple. Rows created
 before byte-size attestation have `NULL` size and remain readable, but fail closed for sealing; a
-replay never guesses or backfills their size. The job, provider operation, and validation identifiers
-are stable UUIDv7 values; lease tokens and remote receipts remain opaque. Every lease outcome
-appends an immutable attempt row whose start time is the exact persisted lease time. Its monotonic
-attempt number is evidence, not a retry budget. Successful checkpoints reset the consecutive
-retry-failure counter; retry delay is derived from that counter, capped at one hour, and the eighth
-consecutive retryable failure is terminal. D1 batches each CAS transition and its attempt insert in
-one transaction; PostgreSQL locks the job row and performs the same transition and insert in one
-transaction.
+replay never guesses or backfills their size. The job, provider operation, and validation
+identifiers are stable UUIDv7 values; lease tokens and remote receipts remain opaque. Every lease
+outcome appends an immutable attempt row whose start time is the exact persisted lease time. Its
+monotonic attempt number is evidence, not a retry budget. Successful checkpoints reset the
+consecutive retry-failure counter; retry delay is derived from that counter, capped at one hour, and
+the eighth consecutive retryable failure is terminal. D1 batches each CAS transition and its attempt
+insert in one transaction; PostgreSQL locks the job row and performs the same transition and insert
+in one transaction.
 
 The runtime-neutral orchestrator advances an existing durable row through submit recovery, provider
-polling, immutable sealed-object persistence, independent validation, and immutable validation-report
-persistence. Every stored object is re-opened and re-hashed before the job becomes
+polling, immutable sealed-object persistence, independent validation, and immutable
+validation-report persistence. Every stored object is re-opened and re-hashed before the job becomes
 `publication_ready`. Runtime configuration and the protected bounded drain support D1/R2 and
 PostgreSQL/S3 deployments and fail closed when a configured durable dependency is absent.
 
 ### Explicit request and status API
 
-`GET /api/v1/envelopes/{envelopeId}/pdf-seal` requires `envelopes:read` for API keys.
-`POST` on the same resource requires `envelopes:send`, a bounded strict JSON body naming
-`pades-b-b` or `pades-b-t`, and an opaque `Idempotency-Key`. The requested profile must equal the
-instance policy. The request transaction freezes the exact published completion-PDF object key,
-digest, byte size, certificate digest, profile, seal policy, validation policy, and optional TSA
-tuple while creating the job. Public responses omit the object key, provider and validator
-receipts, lease tokens, and audit identifiers or hashes.
+`GET /api/v1/envelopes/{envelopeId}/pdf-seal` requires `envelopes:read` for API keys. `POST` on the
+same resource requires `envelopes:send`, a bounded strict JSON body naming `pades-b-b` or
+`pades-b-t`, and an opaque `Idempotency-Key`. The requested profile must equal the instance policy.
+The request transaction freezes the exact published completion-PDF object key, digest, byte size,
+certificate digest, profile, seal policy, validation policy, and optional TSA tuple while creating
+the job. Public responses omit the object key, provider and validator receipts, lease tokens, and
+audit identifiers or hashes.
 
 The immutable request command is keyed by actor type, actor ID, and idempotency key. An exact replay
 returns the original job identifiers; reuse for another envelope or profile conflicts. A separate
@@ -180,23 +178,22 @@ application drain wires the orchestrator's `publication_ready` output through th
 re-reads the durable job after independently reading and hashing the source PDF, sealed PDF, and
 validation report, then prepares and hashes a secret-free audit payload immediately before calling
 the atomic store. It never discovers completion PDFs or creates jobs, preserving the explicit
-request and no-automatic-backfill boundary.
-Both the publication pointer and durable replay receipt reject updates and deletes at the database
-boundary; publication evidence is append-only after the atomic transaction commits.
-The orphan collector treats every sealed PDF and validation report referenced by a durable seal job
-as live, including pre-publication and failed jobs, so its 24-hour sweep cannot erase evidence that
-is still needed for retry or operator diagnosis.
+request and no-automatic-backfill boundary. Both the publication pointer and durable replay receipt
+reject updates and deletes at the database boundary; publication evidence is append-only after the
+atomic transaction commits. The orphan collector treats every sealed PDF and validation report
+referenced by a durable seal job as live, including pre-publication and failed jobs, so its 24-hour
+sweep cannot erase evidence that is still needed for retry or operator diagnosis.
 
 Retryable failures include transport interruption, timeout, provider 5xx/rate limiting, an
 explicitly temporary key or HSM outage, and validation-service unavailability. Permanent or
 integrity failures include a missing or different source, operation-ID reuse with different input,
-unsupported algorithms, the wrong certificate or profile, certificate policy rejection, an
-invalid CMS/byte range, and an invalid or policy-mismatched time-stamp. Exhaustion makes a retryable
-failure terminal without relabelling an unverified artifact as published.
+unsupported algorithms, the wrong certificate or profile, certificate policy rejection, an invalid
+CMS/byte range, and an invalid or policy-mismatched time-stamp. Exhaustion makes a retryable failure
+terminal without relabelling an unverified artifact as published.
 
-If a future instance policy makes sealing required, completion delivery waits for
-`published`; failure must remain visible to an operator. An optional policy may continue to deliver
-the original visual PDF, but it must not label that attachment as instance-sealed.
+If a future instance policy makes sealing required, completion delivery waits for `published`;
+failure must remain visible to an operator. An optional policy may continue to deliver the original
+visual PDF, but it must not label that attachment as instance-sealed.
 
 ## Key, certificate, and TSA trust
 
@@ -226,18 +223,18 @@ The time-stamp token must also bind the exact TSA signing certificate through an
 identifier signed attribute. `SigningCertificate` with `ESSCertID` is accepted for SHA-1 only when
 the configured algorithm policy still permits SHA-1. For every other certificate-hash algorithm,
 `SigningCertificateV2` with `ESSCertIDv2` is required, as specified by
-[RFC 5816 section 2.2.1](https://www.rfc-editor.org/rfc/rfc5816.html#section-2.2.1). The identifier's
-certificate hash and any issuer/serial fields must match the certificate that verifies the token
-signature, following the verification update in
+[RFC 5816 section 2.2.1](https://www.rfc-editor.org/rfc/rfc5816.html#section-2.2.1). The
+identifier's certificate hash and any issuer/serial fields must match the certificate that verifies
+the token signature, following the verification update in
 [RFC 5816 section 2.2.2](https://www.rfc-editor.org/rfc/rfc5816.html#section-2.2.2). Missing,
-malformed, mismatched, or policy-disallowed identifiers fail validation. Ambient operating-system
-or TLS roots are not document-signing trust roots. TSA and revocation endpoints are static operator
+malformed, mismatched, or policy-disallowed identifiers fail validation. Ambient operating-system or
+TLS roots are not document-signing trust roots. TSA and revocation endpoints are static operator
 configuration, never URLs supplied by an envelope or certificate without an explicit allowlist.
 
 ## Provider and deployment boundary
 
-The application depends on a provider-neutral, authenticated HTTPS protocol with submit, status,
-and result operations. The protocol accepts a stable operation ID, source digest and bounded source
+The application depends on a provider-neutral, authenticated HTTPS protocol with submit, status, and
+result operations. The protocol accepts a stable operation ID, source digest and bounded source
 stream, requested profile, and non-secret policy identifiers. It returns bounded sealed bytes and a
 structured receipt; it never returns or accepts a raw private key.
 
@@ -246,54 +243,53 @@ provider responses cannot redirect the application or supply a status or result 
 `PUT {base}/pdf-seals/{operationId}` for the streamed source, `GET` on that same URL for status, and
 `GET {base}/pdf-seals/{operationId}/result` for the bounded result. The operation ID is also the
 idempotency key. Every response echoes the frozen source digest and size, exact requested profile,
-signer-certificate digest, seal and validation policy identifiers, and the B-T TSA policy tuple.
-The result requires an exact content length and SHA-256 and must achieve the requested profile;
+signer-certificate digest, seal and validation policy identifiers, and the B-T TSA policy tuple. The
+result requires an exact content length and SHA-256 and must achieve the requested profile;
 redirects, changed metadata, profile substitution, and arbitrary response URLs fail closed.
 Transport requests use manual redirect handling. Any 3xx or already-redirected response is rejected
 as a permanent provider error and its body is cancelled before parsing; a submit remains ambiguous
-because the original provider may already have accepted the stable operation ID.
-After submit returns a provider receipt, every ordinary status and result request pins that receipt
-and rejects a changed echo. A separate receipt-free status operation exists only to reconcile an
-ambiguous submit outcome; its first valid receipt must be persisted before ordinary polling. A
-source-length failure discovered while the PUT body is already being consumed is also ambiguous,
-because the provider may have created the stable operation before the stream failed.
+because the original provider may already have accepted the stable operation ID. After submit
+returns a provider receipt, every ordinary status and result request pins that receipt and rejects a
+changed echo. A separate receipt-free status operation exists only to reconcile an ambiguous submit
+outcome; its first valid receipt must be persisted before ordinary polling. A source-length failure
+discovered while the PUT body is already being consumed is also ambiguous, because the provider may
+have created the stable operation before the stream failed.
 
-`PdfSealProvider` and the remote HTTPS adapter implement only this untrusted transport boundary.
-The protected drain wires them to explicitly requested durable jobs, but provider success alone
-cannot publish an artifact: the independent validator and atomic publication boundary still gate
-every result.
+`PdfSealProvider` and the remote HTTPS adapter implement only this untrusted transport boundary. The
+protected drain wires them to explicitly requested durable jobs, but provider success alone cannot
+publish an artifact: the independent validator and atomic publication boundary still gate every
+result.
 
-The application port is named `PdfSealProvider`; `PdfCertificationProvider` and `Certifier`
-are deliberately not used because both collide with PDF certification-signature and certificate-
+The application port is named `PdfSealProvider`; `PdfCertificationProvider` and `Certifier` are
+deliberately not used because both collide with PDF certification-signature and certificate-
 authority terminology.
 
 ## Independent validator protocol
 
 `PdfSealValidator` is a provider-neutral gate between untrusted provider output and atomic
-publication. The protected drain wires the remote adapter without exposing a product capability;
-the validator receipt and report remain pre-publication evidence until the atomic store succeeds.
+publication. The protected drain wires the remote adapter without exposing a product capability; the
+validator receipt and report remain pre-publication evidence until the atomic store succeeds.
 
 One validation freezes a stable validation ID and seal operation ID together with both PDFs' exact
 SHA-256 and byte length, requested profile, signer-certificate SHA-256, seal-policy ID,
 validation-policy ID, and the B-T TSA policy/trust-bundle tuple. Its only endpoint is derived from
-one credential-free HTTPS base URL:
-`PUT {base}/pdf-seal-validations/{validationId}`. The stable validation ID is also the idempotency
-key. Repeating the ID with byte-identical PDFs and identical frozen metadata must return the stored
-result (or safely repeat the pure validation); `409` is reserved for reusing it with different
-input. A retry reopens both immutable objects because request streams are single-use. Redirects are
-handled manually and any 3xx, redirected, or opaque-redirect response fails permanently; a response
-cannot supply another URL.
+one credential-free HTTPS base URL: `PUT {base}/pdf-seal-validations/{validationId}`. The stable
+validation ID is also the idempotency key. Repeating the ID with byte-identical PDFs and identical
+frozen metadata must return the stored result (or safely repeat the pure validation); `409` is
+reserved for reusing it with different input. A retry reopens both immutable objects because request
+streams are single-use. Redirects are handled manually and any 3xx, redirected, or opaque-redirect
+response fails permanently; a response cannot supply another URL.
 
 The request media type is `application/vnd.signkit.pdf-seal-validation-v1`. Its bounded binary body
 is the exact source PDF followed immediately by the exact sealed PDF. Frozen source and sealed
-length headers delimit the frames without base64 or multipart buffering. The adapter rejects a
-short or long frame while streaming; the remote validator must independently hash both frames,
-compare their exact lengths and digests, and echo every frozen field. The source frame is capped by
-the shared 32 MiB completion-PDF lifecycle bound, and deployment policy chooses a sealed-result
-bound no larger than 64 MiB. B-B responses echo both TSA fields as explicit `null`; omission is an
-integrity failure. JSON is requested with identity content encoding so transparent decompression
-cannot invalidate its bounded byte accounting. A response is never accepted until both input frames
-reach their exact expected lengths and close successfully; an early response, input read failure, or
+length headers delimit the frames without base64 or multipart buffering. The adapter rejects a short
+or long frame while streaming; the remote validator must independently hash both frames, compare
+their exact lengths and digests, and echo every frozen field. The source frame is capped by the
+shared 32 MiB completion-PDF lifecycle bound, and deployment policy chooses a sealed-result bound no
+larger than 64 MiB. B-B responses echo both TSA fields as explicit `null`; omission is an integrity
+failure. JSON is requested with identity content encoding so transparent decompression cannot
+invalidate its bounded byte accounting. A response is never accepted until both input frames reach
+their exact expected lengths and close successfully; an early response, input read failure, or
 deadline cancels the input readers and response body and cannot publish a validation result.
 
 A successful JSON result is bounded to 64 KiB and must report the exact requested profile plus all
@@ -305,13 +301,13 @@ policy, token signature, pinned path, critical time-stamping-only EKU, ESS certi
 `genTime` checks. B-B requires no timestamp result; B-T requires one. Profile substitution is an
 integrity failure, never a downgrade.
 
-An invalid document is a successful protocol response with one or more allowlisted failure codes;
-it is not a retryable transport error. Only timeout, transport interruption, rate limiting, 5xx,
-and validation-service unavailability retry. Authentication, request rejection, validation-ID
-conflict, redirects, malformed or oversized responses, changed echoes, and integrity failures are
-permanent. Errors contain only a stable code, retryability, and optional HTTP status: remote URLs,
-credentials, response bodies, raw engine messages, certificate material, and provider key
-references never cross the port.
+An invalid document is a successful protocol response with one or more allowlisted failure codes; it
+is not a retryable transport error. Only timeout, transport interruption, rate limiting, 5xx, and
+validation-service unavailability retry. Authentication, request rejection, validation-ID conflict,
+redirects, malformed or oversized responses, changed echoes, and integrity failures are permanent.
+Errors contain only a stable code, retryability, and optional HTTP status: remote URLs, credentials,
+response bodies, raw engine messages, certificate material, and provider key references never cross
+the port.
 
 The eventual runtime must configure a validator trust boundary independent of the signing provider,
 read both immutable objects with their existing digest/size checks, persist the structured result,
@@ -356,20 +352,17 @@ fixture-only and must be unmistakably unrelated to any deployment certificate.
 
 The former generation/read mismatch is resolved. Executed-PDF generation, private and public
 completion downloads, and completion-evidence reads now share the 32 MiB
-`MAX_PUBLISHED_COMPLETION_PDF_BYTES` lifecycle bound. Before invoking the provider, the future
-sealing runtime must still verify the immutable object's recorded length and SHA-256 under that
-same source bound. The remote provider adapter independently enforces the attested stream length;
-its separately configured result bound caps the full PDF after the incremental sealing update.
+`MAX_PUBLISHED_COMPLETION_PDF_BYTES` lifecycle bound. Before invoking the provider, the sealing
+runtime verifies the immutable object's recorded length and SHA-256 under that same source bound.
+The remote provider adapter independently enforces the attested stream length; its separately
+configured result bound caps the full PDF after the incremental sealing update.
 
-Envelopes completed before sealing support remain `not_requested`. There is no automatic
-historical sealing: applying a current certificate or time-stamp later could otherwise be mistaken
-for evidence that existed at the original completion time. A future explicit backfill preserves and
-reports both `completedAt` and the later certificate/time-stamp time.
+Envelopes completed before sealing support remain `not_requested`. There is no automatic historical
+sealing: applying a current certificate or time-stamp later could otherwise be mistaken for evidence
+that existed at the original completion time. A future explicit backfill preserves and reports both
+`completedAt` and the later certificate/time-stamp time.
 
-The eventual migration and API slices must also update object-orphan reachability, backup/restore
-runbooks, capabilities, OpenAPI, the Rust CLI, completion delivery, audit exports, webhook event
-catalogues, and operator/public UI. This design intentionally adds none of those surfaces until the
-conformance gate and provider protocol have been proven.
-
-See the dated rationale in
-[`decisions/2026-09-23-instance-pades-seal-and-rfc3161.md`](decisions/2026-09-23-instance-pades-seal-and-rfc3161.md).
+Publication, reachability, protected request/status/download surfaces, runtime configuration, and
+operations are specified above. Integration instructions are in the [API guide](../api.md),
+[CLI guide](../cli.md), and [sealing runbook](../operations/pdf-sealing.md); they are not future
+implementation plans.

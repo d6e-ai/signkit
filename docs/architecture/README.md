@@ -1,41 +1,39 @@
-# SignKit architecture
+# Architecture
 
-Status: normative draft
+Read the specification for the behavior you are changing, not this entire tree.
+[Overview](overview.md) is a short introduction; usage and operations start at the
+[documentation task map](../README.md).
 
-Last updated: 2026-10-11
+Specifications define required guarantees. Code and tests establish what is implemented; a
+disagreement is documentation or implementation drift to resolve, not permission to weaken the
+guarantee or claim planned work is shipped.
 
-These files are the normative architecture, security, and evidence contracts for SignKit. Together they win over [`../api.md`](../api.md), [`../cli.md`](../cli.md), [`../create-signkit.md`](../create-signkit.md), [`../deployment.md`](../deployment.md), and [`../development.md`](../development.md) on any disagreement; those documents summarize what is implemented today and link back into these sections. No individual file below restates that precedence.
+| Topic                                                              | Specification                                                             |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Envelope states, ready/reopen/send, fields, and sent PDFs          | [Envelope model](envelope-model.md)                                       |
+| Markdown revisions, ordered PDF manifests, archive limits          | [Draft Git](draft-git-repository.md)                                      |
+| Persistent identifiers                                             | [UUIDv7 identifiers](identifiers.md)                                      |
+| Operator, API-key, recipient, membership, and invitation authority | [Authorization](authorization-and-instance-administration.md)             |
+| Private saved recipients                                           | [Contact book](recipient-contact-book.md)                                 |
+| Sender preparation and final review                                | [Sender workflow](sender-workflow.md)                                     |
+| Review through an agent or CLI                                     | [Contract review workflow](contract-review-workflow.md)                   |
+| Dashboard reads, filters, search, and pagination                   | [Worklist](dashboard-worklist.md)                                         |
+| SQL/object ownership, atomicity, migrations                        | [Persistence](persistence.md)                                             |
+| Behavior-preserving code changes                                   | [Code boundaries](code-boundaries.md)                                     |
+| Completion publication, evidence, PDF, and delivery                | [Completion artifacts](completion-artifacts.md)                           |
+| Explicit terminal-mail recovery                                    | [Completion access reissue](completion-access-reissue.md)                 |
+| Recipient invitation replacement                                   | [Invitation replacement](recipient-invitation-replacement.md)             |
+| Drawn-signature storage and collection                             | [Signature asset retention](signature-asset-retention.md)                 |
+| Optional PAdES instance sealing                                    | [PDF sealing](pdf-sealing.md)                                             |
+| CI-only seal fixtures and validators                               | [PAdES conformance](pades-conformance.md)                                 |
+| Durable DOCX import/export                                         | [DOCX conversion jobs](docx-conversion-jobs.md)                           |
+| Mail providers, TLS, and delivery failure classification           | [Mail delivery](mail-delivery.md)                                         |
+| Agent API, idempotency, and webhooks                               | [Agent contract](agent-contract.md)                                       |
+| Localization and licensing policy                                  | [Documents, localization, open core](documents-localization-open-core.md) |
+| Supported hosting boundaries and risks                             | [Deployment and risks](deployment-and-risks.md)                           |
+| cf configuration and compatibility paths                           | [Cloudflare tooling](cloudflare-tooling.md)                               |
+| Deployment CLI internals and release verification                  | [create-signkit](create-signkit.md)                                       |
 
-| File                                                                                         | Covers                                                                                                    | Status                                                                                                                       |
-| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| [overview.md](overview.md)                                                                   | Product boundary and layered architecture                                                                 | policy                                                                                                                       |
-| [envelope-model.md](envelope-model.md)                                                       | Envelope state machine, roles, ready/reopen/send/fields commands                                          | implemented                                                                                                                  |
-| [sender-workflow.md](sender-workflow.md)                                                     | Guided preparation, inline validation, corrections, input preservation, and final send review             | implemented                                                                                                                  |
-| [draft-git-repository.md](draft-git-repository.md)                                           | Git-backed Markdown draft storage                                                                         | implemented                                                                                                                  |
-| [persistence.md](persistence.md)                                                             | Database/object profiles, tenancy rules                                                                   | implemented                                                                                                                  |
-| [identifiers.md](identifiers.md)                                                             | UUIDv7 identifier minting and validation                                                                  | implemented                                                                                                                  |
-| [authorization-and-instance-administration.md](authorization-and-instance-administration.md) | Operator/recipient authority, recipient decisions, API key grants, instance bootstrap/members/invitations | implemented                                                                                                                  |
-| [recipient-contact-book.md](recipient-contact-book.md)                                       | Private owner-scoped contacts, session-only API, search privacy, and authoring integration                | accepted design for Issue #99                                                                                                |
-| [completion-artifacts.md](completion-artifacts.md)                                           | Completion manifest publication and delivery (Slices A/B); capability reissue                             | implemented — publication, delivery, visual PDF, and capability reissue                                                      |
-| [completion-access-reissue.md](completion-access-reissue.md)                                 | Explicit terminal-mail recovery, successor grants, idempotency, and operator confirmation                 | implemented — API/UI with append-only delivery and audit evidence                                                            |
-| [signature-asset-retention.md](signature-asset-retention.md)                                 | Drawn signature lifecycle, atomic binding, and bounded recoverable garbage collection                     | implemented — D1/PostgreSQL ledger and storage-neutral collection                                                            |
-| [pdf-sealing.md](pdf-sealing.md)                                                             | Instance PAdES seal, provider/validator/job boundaries, RFC 3161 trust, and conformance gate              | implemented — B-B/B-T request, processing, validation, publication, API, CLI, UI, download, and operations                   |
-| [pades-conformance.md](pades-conformance.md)                                                 | CI-only PAdES B-B/B-T fixture generation and dual-validator conformance evidence                          | implemented CI gate; not a runtime sealing implementation                                                                    |
-| [agent-contract.md](agent-contract.md)                                                       | Agent/CLI command contract                                                                                | implemented — CLI reads, evidence/PDF download, authoring/send/DOCX mutations, served OpenAPI 3.1, signed retryable webhooks |
-| [documents-localization-open-core.md](documents-localization-open-core.md)                   | DOCX/PDF derivation, localization, open-core licensing boundary                                           | mixed — document flows, optional instance sealing, and download implemented; open-core policy remains                        |
-| [deployment-and-risks.md](deployment-and-risks.md)                                           | Deployment target boundary and the primary risk register                                                  | mixed — Node/Docker and Cloudflare Workers supported (Vercel CI-only); the risk list is policy, not a status claim           |
-| [cloudflare-tooling.md](cloudflare-tooling.md)                                               | Typed cf configuration, build output, generated types, and compatibility boundaries                       | implemented with beta limitations                                                                                            |
-| [create-signkit.md](create-signkit.md)                                                       | create-signkit Cloudflare deployment CLI (not the Rust API CLI)                                           | implemented — first Cloudflare slice                                                                                         |
-
-The recipient-facing agreement rendering — the deterministic PDF an envelope is converted to at send time, how its pointer is pinned, and how it reaches a recipient — is specified in [envelope-model.md](envelope-model.md#sent-agreement-rendering).
-
-Rationale for early decisions, not normative today, lives in [decisions/](decisions/README.md),
-including the [instance PAdES seal and RFC 3161 boundary](decisions/2026-09-23-instance-pades-seal-and-rfc3161.md).
-
-## Reading order
-
-For newcomers: [overview](overview.md) → [envelope-model](envelope-model.md) → [draft-git-repository](draft-git-repository.md) → [persistence](persistence.md) → [identifiers](identifiers.md) → [authorization-and-instance-administration](authorization-and-instance-administration.md) → [recipient-contact-book](recipient-contact-book.md) → [completion-artifacts](completion-artifacts.md) → [pdf-sealing](pdf-sealing.md) → [PAdES conformance](pades-conformance.md).
-
-## Proposed changes
-
-The [minimal repository-wide refactoring plan](refactoring-plan.md), its [responsibility boundaries](refactoring-boundaries.md), and [verification gates](refactoring-verification.md) were reorganized on 2026-10-11 against local HEAD `189cc55996a041dec9cc89e5bf67648623c8daf8` (including #217, #219, and #218). The agreed scope covers the whole repository with four small PRs instead of the former R0–R7 migration; see the [scope decision](decisions/2026-10-11-minimal-repository-wide-refactoring.md). The [implementation record](refactoring-implementation.md) links the merged #223 → #224 → #225 → #226 stack and records the complete inventory, preserved contracts, verification and remaining gaps. These refactors do not change the implemented product specifications above or imply release/deployment.
+[Decision records](decisions/README.md) explain choices only when their rationale is needed.
+Completed plans, test-run logs, and superseded proposals belong in Git history, not in the current
+specification or its reading prerequisites.
