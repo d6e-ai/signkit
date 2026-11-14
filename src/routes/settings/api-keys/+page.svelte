@@ -13,6 +13,9 @@
 		<h1 class="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
 			{m.settings_tab_api_keys()}
 		</h1>
+		<p class="text-sm text-muted-foreground">
+			{m.settings_api_keys_description()}
+		</p>
 	</div>
 
 	<SettingsAccessGate require="any">

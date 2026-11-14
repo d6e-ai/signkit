@@ -5,9 +5,12 @@ boundary. d6e-auth proves a human identity; SignKit decides what that identity m
 `instance_member` row.
 
 Member administration currently identifies other members by their stable d6e-auth subject. SignKit
-does not copy profile data into its authorization store or attempt an unbounded directory lookup;
-resolving those subjects for display is tracked in
-[d6e-auth issue #218](https://github.com/d6e-ai/d6e-auth/issues/218).
+does not copy profile data into its authorization store or attempt an unbounded directory lookup.
+The provider's cross-user profile-resolution proposal,
+[d6e.ai issue #218](https://github.com/d6e-ai/d6e.ai/issues/218), was closed as not planned; its
+self-profile endpoints do not resolve other instance members. A separate SignKit display-data
+contract is tracked in [issue #260](https://github.com/d6e-ai/signkit/issues/260). Until implemented,
+the stable subject remains the display fallback as well as the membership identifier.
 
 ## Human sessions
 
@@ -92,6 +95,15 @@ whenever an API-key request is being evaluated, preventing credential compositio
 Supported scopes are `envelopes:read`, `drafts:write`, and `envelopes:send`. Key creation and
 revocation are human-session operations. The raw `signkit_` token is returned once; SQL stores only
 its hash and non-secret prefix.
+
+Operator settings for members, invitations, and API keys are list-first. Each route keeps its
+authorization gate. Members use one heading and description and identify other members by `userId`.
+Invitation and API-key creation open from a list toolbar into a Dialog; a generic creation failure
+is a form-level alert and does not mark the email or key-name field invalid unless the problem is
+associated with that input. Closing the API-key create Dialog does not dismiss the one-time
+`signkit_` secret; only explicit dismiss does, including after a failed or tokenless follow-up
+create. Scopes, expiry, and the rest of a key's metadata remain reachable on narrow viewports
+through a details overlay.
 
 ## Other authorities
 

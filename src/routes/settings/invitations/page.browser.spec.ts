@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import InvitationsPage from './+page.svelte';
 
@@ -52,6 +53,23 @@ function meResponse(memberData: ReturnType<typeof member> | null): Response {
 	return jsonResponse({ bootstrapped: true, member: memberData });
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+	let resolve: (value: T) => void = (): void => undefined;
+	const promise: Promise<T> = new Promise<T>((promiseResolve) => {
+		resolve = promiseResolve;
+	});
+	return { promise, resolve };
+}
+
+async function openInviteDialog(
+	screen: Awaited<ReturnType<typeof render>>
+): Promise<ReturnType<Awaited<ReturnType<typeof render>>['getByRole']>> {
+	await screen.getByRole('button', { name: 'Invite a new member' }).click();
+	const dialog = screen.getByRole('dialog');
+	await expect.element(dialog).toBeVisible();
+	return dialog;
+}
+
 describe('settings invitations page in the browser', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
@@ -88,8 +106,9 @@ describe('settings invitations page in the browser', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(InvitationsPage);
+		const dialog = await openInviteDialog(screen);
 
-		const roleSelect = screen.getByLabelText('Role');
+		const roleSelect = dialog.getByLabelText('Role');
 		await expect.element(roleSelect).toBeVisible();
 		await roleSelect.click();
 		const optionValues = screen
@@ -113,8 +132,9 @@ describe('settings invitations page in the browser', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(InvitationsPage);
+		const dialog = await openInviteDialog(screen);
 
-		const roleSelect = screen.getByLabelText('Role');
+		const roleSelect = dialog.getByLabelText('Role');
 		await expect.element(roleSelect).toBeVisible();
 		await roleSelect.click();
 		const optionValues = screen
@@ -245,8 +265,9 @@ describe('settings invitations page in the browser', () => {
 
 		const screen = await render(InvitationsPage);
 
-		await screen.getByLabelText('Email address').fill('alice@example.com');
-		await screen.getByRole('button', { name: 'Send invitation email' }).first().click();
+		let dialog = await openInviteDialog(screen);
+		await dialog.getByLabelText('Email address').fill('alice@example.com');
+		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
 		await expect
 			.element(
 				screen.getByText(
@@ -255,9 +276,11 @@ describe('settings invitations page in the browser', () => {
 			)
 			.toBeVisible();
 		expect(screen.getByText(/ski1_/).query()).toBeNull();
+		await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument();
 
-		await screen.getByLabelText('Email address').fill('bob@example.com');
-		await screen.getByRole('button', { name: 'Send invitation email' }).first().click();
+		dialog = await openInviteDialog(screen);
+		await dialog.getByLabelText('Email address').fill('bob@example.com');
+		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
 		await expect
 			.element(
 				screen.getByText(
@@ -272,7 +295,7 @@ describe('settings invitations page in the browser', () => {
 		).toBeNull();
 	});
 
-	it('associates a create failure FieldError inside its invalid Field with data-invalid and aria-invalid', async () => {
+	it('surfaces a generic create failure as a form-level Alert and keeps the entered email', async () => {
 		const mockFetch = vi
 			.fn()
 			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -291,15 +314,77 @@ describe('settings invitations page in the browser', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(InvitationsPage);
+		const dialog = await openInviteDialog(screen);
 
-		await screen.getByLabelText('Email address').fill('dup@example.com');
-		await screen.getByRole('button', { name: 'Send invitation email' }).first().click();
-		const fieldError = screen.getByText('Invitation already pending.');
-		await expect.element(fieldError).toBeVisible();
-		const field = fieldError.element().closest('[data-slot="field"]');
-		expect(field).not.toBeNull();
-		expect(field?.getAttribute('data-invalid')).not.toBeNull();
-		const emailInput = screen.getByLabelText('Email address');
-		expect(emailInput.element().getAttribute('aria-invalid')).toBe('true');
+		await dialog.getByLabelText('Email address').fill('dup@example.com');
+		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
+		const formError = dialog.getByRole('alert');
+		await expect.element(formError).toHaveTextContent('Invitation already pending.');
+		expect(formError.element().closest('[data-slot="field"]')).toBeNull();
+		const emailInput = dialog.getByLabelText('Email address');
+		expect(emailInput.element().getAttribute('aria-invalid')).not.toBe('true');
+		await expect.element(emailInput).toHaveValue('dup@example.com');
+	});
+
+	it('ignores Escape, overlay, and the close control while invitation creation is pending', async () => {
+		const createGate = deferred<Response>();
+		const mockFetch = vi
+			.fn()
+			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
+				const urlStr = String(url);
+				if (urlStr.includes('/api/v1/instance/members/me')) {
+					return meResponse(member({ userId: 'owner-user-1', role: 'owner' }));
+				}
+				if (urlStr.includes('/api/v1/instance/invitations') && init?.method === 'POST') {
+					return createGate.promise;
+				}
+				if (urlStr.includes('/api/v1/instance/invitations')) {
+					return jsonResponse({ invitations: [], nextCursor: null });
+				}
+				return jsonResponse({});
+			});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const screen = await render(InvitationsPage);
+		const dialog = await openInviteDialog(screen);
+		await dialog.getByLabelText('Email address').fill('pending@example.com');
+		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
+		await expect
+			.element(dialog.getByRole('button', { name: 'Scheduling invitation email…' }))
+			.toBeDisabled();
+
+		await userEvent.keyboard('{Escape}');
+		await expect.element(dialog).toBeVisible();
+		expect(dialog.getByRole('button', { name: 'Cancel' }).query()).toBeTruthy();
+		expect(dialog.element().querySelector('[data-slot="dialog-close"]')).toBeNull();
+		await expect.element(dialog.getByLabelText('Email address')).toHaveValue('pending@example.com');
+
+		createGate.resolve(
+			jsonResponse(
+				{
+					invitation: {
+						id: 'inv-pending',
+						role: 'member',
+						status: 'pending',
+						invitedByUserId: 'owner-user-1',
+						createdAt: '2026-09-03T00:00:00.000Z',
+						expiresAt: '2099-01-01T00:00:00.000Z',
+						acceptedAt: null,
+						acceptedByUserId: null,
+						revokedAt: null,
+						revokedByUserId: null
+					},
+					delivery: { status: 'scheduled' }
+				},
+				201
+			)
+		);
+		await expect
+			.element(
+				screen.getByText(
+					'The invitation email for pending@example.com is queued for background delivery.'
+				)
+			)
+			.toBeVisible();
 	});
 });

@@ -12,11 +12,13 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Alert from '$lib/components/ui/alert';
 	import * as Card from '$lib/components/ui/card';
+	import * as Dialog from '$lib/components/ui/dialog';
+	import * as Empty from '$lib/components/ui/empty';
 	import * as Field from '$lib/components/ui/field';
 	import * as Select from '$lib/components/ui/select';
 	import * as Table from '$lib/components/ui/table';
 	import { Spinner } from '$lib/components/ui/spinner';
-	import { IconMailForward, IconRefresh } from '@tabler/icons-svelte';
+	import { IconAlertTriangle, IconMailForward, IconRefresh } from '@tabler/icons-svelte';
 
 	let { isCallerOwner, isCallerAdmin }: { isCallerOwner: boolean; isCallerAdmin: boolean } =
 		$props();
@@ -32,6 +34,10 @@
 		}
 	}
 
+	function errorMessage(err: unknown): string {
+		return err instanceof Error ? err.message : String(err);
+	}
+
 	const client = createInstanceManagementClient();
 
 	let invitations = $state<InstanceInvitationMetadata[]>([]);
@@ -43,17 +49,31 @@
 	let invitePending = $state(false);
 	let inviteCreateError = $state<string | null>(null);
 	let inviteScheduledEmail = $state<string | null>(null);
+	let createOpen = $state(false);
 	let revokeInvitePending = $state<Record<string, boolean>>({});
+	let listRequestSequence = 0;
 
 	function isInvitationExpired(invitation: InstanceInvitationMetadata): boolean {
 		return invitation.status === 'pending' && Date.parse(invitation.expiresAt) <= Date.now();
 	}
 
+	function handleCreateOpenChange(nextOpen: boolean): void {
+		if (!nextOpen && invitePending) return;
+		createOpen = nextOpen;
+	}
+
+	function guardCreateDismiss(event: Event): void {
+		if (!invitePending) return;
+		event.preventDefault();
+	}
+
 	async function loadInvitations(cursor?: string | null) {
+		const sequence = ++listRequestSequence;
 		invitationsLoading = true;
 		invitationsError = null;
 		try {
 			const res = await client.listInvitations(cursor ? { cursor } : undefined);
+			if (sequence !== listRequestSequence) return;
 			if (cursor) {
 				invitations = [...invitations, ...res.invitations];
 			} else {
@@ -61,9 +81,10 @@
 			}
 			invitationsNextCursor = res.nextCursor;
 		} catch (err: unknown) {
-			invitationsError = err instanceof Error ? err.message : String(err);
+			if (sequence !== listRequestSequence) return;
+			invitationsError = errorMessage(err);
 		} finally {
-			invitationsLoading = false;
+			if (sequence === listRequestSequence) invitationsLoading = false;
 		}
 	}
 
@@ -74,6 +95,7 @@
 		invitePending = true;
 		inviteCreateError = null;
 		inviteScheduledEmail = null;
+		let created = false;
 		try {
 			await client.createInvitation({
 				email,
@@ -83,11 +105,15 @@
 			inviteScheduledEmail = email;
 			inviteEmail = '';
 			inviteRole = 'member';
-			await loadInvitations();
+			created = true;
 		} catch (err: unknown) {
-			inviteCreateError = err instanceof Error ? err.message : String(err);
+			inviteCreateError = errorMessage(err);
 		} finally {
 			invitePending = false;
+		}
+		if (created) {
+			createOpen = false;
+			await loadInvitations();
 		}
 	}
 
@@ -98,7 +124,7 @@
 			await client.revokeInvitation(id);
 			await loadInvitations();
 		} catch (err: unknown) {
-			invitationsError = err instanceof Error ? err.message : String(err);
+			invitationsError = errorMessage(err);
 		} finally {
 			revokeInvitePending[id] = false;
 		}
@@ -110,73 +136,6 @@
 </script>
 
 <div class="flex flex-col gap-6">
-	<!-- Create Form -->
-	<Card.Root>
-		<Card.Header>
-			<Card.Title>{m.settings_invitations_create_title()}</Card.Title>
-			<Card.Description>{m.settings_invitations_create_description()}</Card.Description>
-		</Card.Header>
-		<Card.Content>
-			<form onsubmit={handleCreateInvitation}>
-				<Field.FieldGroup>
-					<Field.FieldGroup class="grid gap-4 sm:grid-cols-2">
-						<Field.Field data-invalid={inviteCreateError !== null} data-disabled={invitePending}>
-							<Field.FieldLabel for="invite-email">
-								{m.settings_invitations_email_label()}
-							</Field.FieldLabel>
-							<Input
-								id="invite-email"
-								type="email"
-								placeholder={m.settings_invitations_email_placeholder()}
-								bind:value={inviteEmail}
-								disabled={invitePending}
-								aria-invalid={inviteCreateError !== null}
-								required
-							/>
-							<!-- The create failure isn't provably scoped to one input (it could
-							     be the email, the role, or a server-side rejection), but the
-							     email field is the one most often at fault and the one with a
-							     visible invalid state, so the message is associated here rather
-							     than floating unassociated at the form level. -->
-							{#if inviteCreateError}
-								<Field.FieldError>{inviteCreateError}</Field.FieldError>
-							{/if}
-						</Field.Field>
-						<Field.Field data-disabled={invitePending}>
-							<Field.FieldLabel for="invite-role">
-								{m.settings_invitations_role_label()}
-							</Field.FieldLabel>
-							<Select.Root type="single" bind:value={inviteRole} disabled={invitePending}>
-								<Select.Trigger id="invite-role" class="w-full">
-									{roleLabel(inviteRole)}
-								</Select.Trigger>
-								<Select.Content>
-									<Select.Group>
-										<Select.Item value="member" label={m.settings_members_role_member()} />
-										{#if isCallerOwner}
-											<Select.Item value="admin" label={m.settings_members_role_admin()} />
-											<Select.Item value="owner" label={m.settings_members_role_owner()} />
-										{/if}
-									</Select.Group>
-								</Select.Content>
-							</Select.Root>
-						</Field.Field>
-					</Field.FieldGroup>
-
-					<Button type="submit" disabled={invitePending || !inviteEmail.trim()}>
-						{#if invitePending}
-							<Spinner data-icon="inline-start" />
-							<span>{m.settings_invitations_create_pending()}</span>
-						{:else}
-							<IconMailForward data-icon="inline-start" />
-							<span>{m.settings_invitations_create_action()}</span>
-						{/if}
-					</Button>
-				</Field.FieldGroup>
-			</form>
-		</Card.Content>
-	</Card.Root>
-
 	{#if inviteScheduledEmail}
 		<Alert.Root>
 			<IconMailForward />
@@ -187,25 +146,34 @@
 		</Alert.Root>
 	{/if}
 
-	<!-- Invitations List -->
 	<Card.Root>
-		<Card.Header class="flex flex-row items-center justify-between">
-			<div>
-				<Card.Title>{m.settings_invitations_title()}</Card.Title>
-			</div>
-			<Button
-				variant="ghost"
-				size="sm"
-				onclick={() => loadInvitations()}
-				disabled={invitationsLoading}
-				aria-label={m.settings_invitations_refresh()}
-			>
-				<IconRefresh data-icon="inline-start" class={invitationsLoading ? 'animate-spin' : ''} />
-			</Button>
+		<Card.Header class="flex flex-wrap items-center justify-end">
+			<Card.Title class="sr-only">{m.settings_invitations_title()}</Card.Title>
+			<Card.Action>
+				<div class="flex items-center gap-2">
+					<Button
+						variant="ghost"
+						size="sm"
+						onclick={() => loadInvitations()}
+						disabled={invitationsLoading}
+						aria-label={m.settings_invitations_refresh()}
+					>
+						<IconRefresh
+							data-icon="inline-start"
+							class={invitationsLoading ? 'animate-spin' : ''}
+						/>
+					</Button>
+					<Button size="sm" onclick={() => (createOpen = true)}>
+						<IconMailForward data-icon="inline-start" />
+						{m.settings_invitations_create_title()}
+					</Button>
+				</div>
+			</Card.Action>
 		</Card.Header>
-		<Card.Content>
+		<Card.Content class="flex flex-col gap-4">
 			{#if invitationsError}
-				<Alert.Root variant="destructive" class="mb-4">
+				<Alert.Root variant="destructive">
+					<IconAlertTriangle />
 					<Alert.Title>{invitationsError}</Alert.Title>
 					<Alert.Action>
 						<Button variant="outline" size="xs" onclick={() => loadInvitations()}>
@@ -215,39 +183,36 @@
 				</Alert.Root>
 			{/if}
 
-			<div class="overflow-x-auto">
-				<Table.Root>
-					<Table.Header>
-						<Table.Row>
-							<Table.Head>{m.settings_invitations_col_id()}</Table.Head>
-							<Table.Head>{m.settings_invitations_col_role()}</Table.Head>
-							<Table.Head>{m.settings_invitations_col_status()}</Table.Head>
-							<Table.Head class="hidden md:table-cell"
-								>{m.settings_invitations_col_created()}</Table.Head
-							>
-							<Table.Head class="hidden md:table-cell"
-								>{m.settings_invitations_col_expires()}</Table.Head
-							>
-							<Table.Head class="text-right">{m.settings_invitations_col_actions()}</Table.Head>
-						</Table.Row>
-					</Table.Header>
-					<Table.Body>
-						{#if invitationsLoading && invitations.length === 0}
+			{#if invitationsLoading && invitations.length === 0}
+				<div class="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+					<Spinner class="size-4" />
+					<span>{m.settings_invitations_loading()}</span>
+				</div>
+			{:else if invitations.length === 0}
+				<Empty.Root>
+					<Empty.Header>
+						<Empty.Media variant="icon"><IconMailForward /></Empty.Media>
+						<Empty.Title>{m.settings_invitations_empty()}</Empty.Title>
+					</Empty.Header>
+				</Empty.Root>
+			{:else}
+				<div class="overflow-x-auto">
+					<Table.Root>
+						<Table.Header>
 							<Table.Row>
-								<Table.Cell colspan={6} class="h-24 text-center">
-									<div class="flex items-center justify-center gap-2 text-muted-foreground">
-										<Spinner class="size-4" />
-										<span>{m.settings_invitations_loading()}</span>
-									</div>
-								</Table.Cell>
+								<Table.Head>{m.settings_invitations_col_id()}</Table.Head>
+								<Table.Head>{m.settings_invitations_col_role()}</Table.Head>
+								<Table.Head>{m.settings_invitations_col_status()}</Table.Head>
+								<Table.Head class="hidden md:table-cell"
+									>{m.settings_invitations_col_created()}</Table.Head
+								>
+								<Table.Head class="hidden md:table-cell"
+									>{m.settings_invitations_col_expires()}</Table.Head
+								>
+								<Table.Head class="text-right">{m.settings_invitations_col_actions()}</Table.Head>
 							</Table.Row>
-						{:else if invitations.length === 0}
-							<Table.Row>
-								<Table.Cell colspan={6} class="h-24 text-center text-muted-foreground">
-									{m.settings_invitations_empty()}
-								</Table.Cell>
-							</Table.Row>
-						{:else}
+						</Table.Header>
+						<Table.Body>
 							{#each invitations as invitation (invitation.id)}
 								{@const isRevoking = revokeInvitePending[invitation.id] ?? false}
 								{@const isExpiredInvitation = isInvitationExpired(invitation)}
@@ -302,13 +267,13 @@
 									</Table.Cell>
 								</Table.Row>
 							{/each}
-						{/if}
-					</Table.Body>
-				</Table.Root>
-			</div>
+						</Table.Body>
+					</Table.Root>
+				</div>
+			{/if}
 
 			{#if invitationsNextCursor}
-				<div class="mt-4 flex justify-center">
+				<div class="flex justify-center">
 					<Button
 						variant="outline"
 						size="sm"
@@ -325,3 +290,81 @@
 		</Card.Content>
 	</Card.Root>
 </div>
+
+<Dialog.Root bind:open={() => createOpen, handleCreateOpenChange}>
+	<Dialog.Content
+		class="sm:max-w-lg"
+		showCloseButton={!invitePending}
+		closeLabel={m.common_cancel()}
+		interactOutsideBehavior={invitePending ? 'ignore' : 'close'}
+		escapeKeydownBehavior={invitePending ? 'ignore' : 'close'}
+		onInteractOutside={guardCreateDismiss}
+		onEscapeKeydown={guardCreateDismiss}
+	>
+		<Dialog.Header>
+			<Dialog.Title>{m.settings_invitations_create_title()}</Dialog.Title>
+			<Dialog.Description>{m.settings_invitations_create_description()}</Dialog.Description>
+		</Dialog.Header>
+		<form class="flex flex-col gap-6" onsubmit={handleCreateInvitation}>
+			<Field.FieldGroup>
+				{#if inviteCreateError}
+					<Alert.Root variant="destructive">
+						<IconAlertTriangle />
+						<Alert.Title>{inviteCreateError}</Alert.Title>
+					</Alert.Root>
+				{/if}
+				<Field.Field data-disabled={invitePending}>
+					<Field.FieldLabel for="invite-email">
+						{m.settings_invitations_email_label()}
+					</Field.FieldLabel>
+					<Input
+						id="invite-email"
+						type="email"
+						placeholder={m.settings_invitations_email_placeholder()}
+						bind:value={inviteEmail}
+						disabled={invitePending}
+						required
+					/>
+				</Field.Field>
+				<Field.Field data-disabled={invitePending}>
+					<Field.FieldLabel for="invite-role">
+						{m.settings_invitations_role_label()}
+					</Field.FieldLabel>
+					<Select.Root type="single" bind:value={inviteRole} disabled={invitePending}>
+						<Select.Trigger id="invite-role" class="w-full">
+							{roleLabel(inviteRole)}
+						</Select.Trigger>
+						<Select.Content>
+							<Select.Group>
+								<Select.Item value="member" label={m.settings_members_role_member()} />
+								{#if isCallerOwner}
+									<Select.Item value="admin" label={m.settings_members_role_admin()} />
+									<Select.Item value="owner" label={m.settings_members_role_owner()} />
+								{/if}
+							</Select.Group>
+						</Select.Content>
+					</Select.Root>
+				</Field.Field>
+			</Field.FieldGroup>
+			<Dialog.Footer>
+				<Button
+					type="button"
+					variant="outline"
+					disabled={invitePending}
+					onclick={() => handleCreateOpenChange(false)}
+				>
+					{m.common_cancel()}
+				</Button>
+				<Button type="submit" disabled={invitePending || !inviteEmail.trim()}>
+					{#if invitePending}
+						<Spinner data-icon="inline-start" />
+						<span>{m.settings_invitations_create_pending()}</span>
+					{:else}
+						<IconMailForward data-icon="inline-start" />
+						<span>{m.settings_invitations_create_action()}</span>
+					{/if}
+				</Button>
+			</Dialog.Footer>
+		</form>
+	</Dialog.Content>
+</Dialog.Root>
