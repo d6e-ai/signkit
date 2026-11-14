@@ -49,15 +49,17 @@ describe('settings invitations page server contracts', () => {
 		expect(panelSource).not.toMatch(/ui\/tabs/);
 	});
 
-	it('keeps the invitation FieldError inside its associated invalid Field with data-invalid and aria-invalid', () => {
+	it('surfaces a generic invitation create failure as a form-level Alert, not an invalid email Field', () => {
 		const panelSource = readFileSync(
 			'src/lib/components/settings/settings-invitations-panel.svelte',
 			'utf8'
 		);
 		expect(panelSource).toMatch(
-			/<Field\.Field[^>]*data-invalid=\{inviteCreateError !== null\}[^>]*>[\s\S]*?<Field\.FieldError>\{inviteCreateError\}<\/Field\.FieldError>[\s\S]*?<\/Field\.Field>/
+			/\{#if inviteCreateError\}[\s\S]*?<Alert\.Root variant="destructive">/
 		);
-		expect(panelSource).toMatch(/aria-invalid=\{inviteCreateError !== null\}/);
+		expect(panelSource).not.toMatch(/data-invalid=\{inviteCreateError/);
+		expect(panelSource).not.toMatch(/aria-invalid=\{inviteCreateError/);
+		expect(panelSource).not.toContain('<Field.FieldError>{inviteCreateError}</Field.FieldError>');
 	});
 
 	it('keeps the role select as Select.Content > Select.Group > Select.Item with no raw select/label/space-y', () => {

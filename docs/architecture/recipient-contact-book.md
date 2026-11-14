@@ -81,12 +81,15 @@ recipient draft. Recipient role and routing order remain under the sender's cont
 Saving is a separate explicit action. Typing a recipient, preparing an envelope, sending it, or
 receiving a historical envelope never creates or updates a contact. Lightweight create, replace, and
 delete management stays inside the recipient authoring surface; there is no primary Contacts sidebar
-destination.
+destination. The management Dialog is list-first: an Add contact toolbar action opens a clearly
+titled create or edit subview in the same Dialog, with an explicit return to the list. Delete
+confirmation remains a nested AlertDialog. Create and edit do not open a second stacked Dialog.
 
 The combobox and management dialog support keyboard navigation, visible focus, appropriate
 combobox/listbox/dialog semantics, and localized English and Japanese copy. Search requests are
-bounded, stale responses cannot replace newer results, and API failures leave the recipient draft
-intact.
+bounded, stale list pages cannot replace a newer list, entered values remain after a failed save,
+and a pending save or delete cannot close the Dialog or change the active view. API failures leave
+the recipient draft intact.
 
 ## Non-goals
 

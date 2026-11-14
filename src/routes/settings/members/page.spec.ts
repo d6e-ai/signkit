@@ -61,6 +61,14 @@ describe('settings members page server contracts', () => {
 		expect(panelSource).not.toMatch(/<label[\s>]/);
 		expect(panelSource).not.toContain('space-y');
 	});
+
+	it('does not repeat the page description on the members list card', () => {
+		const panelSource = readFileSync(
+			'src/lib/components/settings/settings-members-panel.svelte',
+			'utf8'
+		);
+		expect(panelSource).not.toContain('settings_members_description');
+	});
 });
 
 describe('settings members page server guard', () => {

@@ -49,15 +49,17 @@ describe('settings api-keys page server contracts', () => {
 		expect(panelSource).not.toMatch(/ui\/tabs/);
 	});
 
-	it('keeps the API-key FieldError inside its associated invalid Field with data-invalid and aria-invalid', () => {
+	it('surfaces a generic API-key create failure as a form-level Alert, not an invalid name Field', () => {
 		const panelSource = readFileSync(
 			'src/lib/components/settings/settings-api-keys-panel.svelte',
 			'utf8'
 		);
 		expect(panelSource).toMatch(
-			/<Field\.Field[^>]*data-invalid=\{keyCreateError !== null\}[^>]*>[\s\S]*?<Field\.FieldError>\{keyCreateError\}<\/Field\.FieldError>[\s\S]*?<\/Field\.Field>/
+			/\{#if keyCreateError\}[\s\S]*?<Alert\.Root variant="destructive">/
 		);
-		expect(panelSource).toMatch(/aria-invalid=\{keyCreateError !== null\}/);
+		expect(panelSource).not.toMatch(/data-invalid=\{keyCreateError/);
+		expect(panelSource).not.toMatch(/aria-invalid=\{keyCreateError/);
+		expect(panelSource).not.toContain('<Field.FieldError>{keyCreateError}</Field.FieldError>');
 	});
 });
 

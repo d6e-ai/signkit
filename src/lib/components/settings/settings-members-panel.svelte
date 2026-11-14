@@ -10,11 +10,13 @@
 	import { getLocale } from '$lib/paraglide/runtime';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
+	import * as Alert from '$lib/components/ui/alert';
 	import * as Card from '$lib/components/ui/card';
+	import * as Empty from '$lib/components/ui/empty';
 	import * as Select from '$lib/components/ui/select';
 	import * as Table from '$lib/components/ui/table';
 	import { Spinner } from '$lib/components/ui/spinner';
-	import { IconRefresh, IconUser } from '@tabler/icons-svelte';
+	import { IconAlertTriangle, IconRefresh, IconUser, IconUsers } from '@tabler/icons-svelte';
 
 	let {
 		currentUserId,
@@ -37,6 +39,10 @@
 		}
 	}
 
+	function errorMessage(err: unknown): string {
+		return err instanceof Error ? err.message : String(err);
+	}
+
 	const client = createInstanceManagementClient();
 
 	let members = $state<InstanceMemberMetadata[]>([]);
@@ -45,12 +51,15 @@
 	let membersNextCursor = $state<string | null>(null);
 	let memberRoleDrafts = $state<Record<string, InstanceMemberRole>>({});
 	let memberActionPending = $state<Record<string, boolean>>({});
+	let listRequestSequence = 0;
 
 	async function loadMembers(cursor?: string | null) {
+		const sequence = ++listRequestSequence;
 		membersLoading = true;
 		membersError = null;
 		try {
 			const res = await client.listMembers(cursor ? { cursor } : undefined);
+			if (sequence !== listRequestSequence) return;
 			if (cursor) {
 				members = [...members, ...res.members];
 			} else {
@@ -63,9 +72,10 @@
 				}
 			}
 		} catch (err: unknown) {
-			membersError = err instanceof Error ? err.message : String(err);
+			if (sequence !== listRequestSequence) return;
+			membersError = errorMessage(err);
 		} finally {
-			membersLoading = false;
+			if (sequence === listRequestSequence) membersLoading = false;
 		}
 	}
 
@@ -78,7 +88,7 @@
 			await client.setMemberRole(userId, newRole);
 			await loadMembers();
 		} catch (err: unknown) {
-			membersError = err instanceof Error ? err.message : String(err);
+			membersError = errorMessage(err);
 		} finally {
 			memberActionPending[userId] = false;
 		}
@@ -91,7 +101,7 @@
 			await client.setMemberStatus(userId, newStatus);
 			await loadMembers();
 		} catch (err: unknown) {
-			membersError = err instanceof Error ? err.message : String(err);
+			membersError = errorMessage(err);
 		} finally {
 			memberActionPending[userId] = false;
 		}
@@ -103,22 +113,21 @@
 </script>
 
 <Card.Root>
-	<Card.Header class="flex flex-row items-center justify-between">
-		<div>
-			<Card.Title>{m.settings_members_title()}</Card.Title>
-			<Card.Description>{m.settings_members_description()}</Card.Description>
-		</div>
-		<Button
-			variant="ghost"
-			size="sm"
-			onclick={() => loadMembers()}
-			disabled={membersLoading}
-			aria-label={m.settings_members_refresh()}
-		>
-			<IconRefresh data-icon="inline-start" class={membersLoading ? 'animate-spin' : ''} />
-		</Button>
+	<Card.Header class="flex flex-wrap items-center justify-end">
+		<Card.Title class="sr-only">{m.settings_members_title()}</Card.Title>
+		<Card.Action>
+			<Button
+				variant="ghost"
+				size="sm"
+				onclick={() => loadMembers()}
+				disabled={membersLoading}
+				aria-label={m.settings_members_refresh()}
+			>
+				<IconRefresh data-icon="inline-start" class={membersLoading ? 'animate-spin' : ''} />
+			</Button>
+		</Card.Action>
 	</Card.Header>
-	<Card.Content>
+	<Card.Content class="flex flex-col gap-4">
 		<!--
 			This banner surfaces both list-load failures and mutation failures
 			(a rejected role/status change), so its action is labeled as a list
@@ -126,45 +135,43 @@
 			the failed mutation.
 		-->
 		{#if membersError}
-			<div
-				class="mb-4 flex items-center justify-between rounded-xl border border-destructive/20 bg-destructive/10 p-3 text-destructive"
-				role="alert"
-			>
-				<span class="text-sm font-medium">{membersError}</span>
-				<Button variant="outline" size="xs" onclick={() => loadMembers()}
-					>{m.settings_members_refresh()}</Button
-				>
-			</div>
+			<Alert.Root variant="destructive">
+				<IconAlertTriangle />
+				<Alert.Title>{membersError}</Alert.Title>
+				<Alert.Action>
+					<Button variant="outline" size="xs" onclick={() => loadMembers()}>
+						{m.settings_members_refresh()}
+					</Button>
+				</Alert.Action>
+			</Alert.Root>
 		{/if}
 
-		<div class="overflow-x-auto">
-			<Table.Root>
-				<Table.Header>
-					<Table.Row>
-						<Table.Head>{m.settings_members_col_user()}</Table.Head>
-						<Table.Head>{m.settings_members_col_role()}</Table.Head>
-						<Table.Head>{m.settings_members_col_status()}</Table.Head>
-						<Table.Head class="hidden md:table-cell">{m.settings_members_col_joined()}</Table.Head>
-						<Table.Head class="text-right">{m.settings_members_col_actions()}</Table.Head>
-					</Table.Row>
-				</Table.Header>
-				<Table.Body>
-					{#if membersLoading && members.length === 0}
+		{#if membersLoading && members.length === 0}
+			<div class="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+				<Spinner class="size-4" />
+				<span>{m.settings_members_loading()}</span>
+			</div>
+		{:else if members.length === 0}
+			<Empty.Root>
+				<Empty.Header>
+					<Empty.Media variant="icon"><IconUsers /></Empty.Media>
+					<Empty.Title>{m.settings_members_empty()}</Empty.Title>
+				</Empty.Header>
+			</Empty.Root>
+		{:else}
+			<div class="overflow-x-auto">
+				<Table.Root>
+					<Table.Header>
 						<Table.Row>
-							<Table.Cell colspan={5} class="h-24 text-center">
-								<div class="flex items-center justify-center gap-2 text-muted-foreground">
-									<Spinner class="size-4" />
-									<span>{m.settings_members_loading()}</span>
-								</div>
-							</Table.Cell>
+							<Table.Head>{m.settings_members_col_user()}</Table.Head>
+							<Table.Head>{m.settings_members_col_role()}</Table.Head>
+							<Table.Head>{m.settings_members_col_status()}</Table.Head>
+							<Table.Head class="hidden md:table-cell">{m.settings_members_col_joined()}</Table.Head
+							>
+							<Table.Head class="text-right">{m.settings_members_col_actions()}</Table.Head>
 						</Table.Row>
-					{:else if members.length === 0}
-						<Table.Row>
-							<Table.Cell colspan={5} class="h-24 text-center text-muted-foreground">
-								{m.settings_members_empty()}
-							</Table.Cell>
-						</Table.Row>
-					{:else}
+					</Table.Header>
+					<Table.Body>
 						{#each members as member (member.userId)}
 							{@const isSelf = member.userId === currentUserId}
 							{@const isTargetMember = member.role === 'member'}
@@ -281,13 +288,13 @@
 								</Table.Cell>
 							</Table.Row>
 						{/each}
-					{/if}
-				</Table.Body>
-			</Table.Root>
-		</div>
+					</Table.Body>
+				</Table.Root>
+			</div>
+		{/if}
 
 		{#if membersNextCursor}
-			<div class="mt-4 flex justify-center">
+			<div class="flex justify-center">
 				<Button
 					variant="outline"
 					size="sm"
