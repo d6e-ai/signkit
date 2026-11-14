@@ -9,6 +9,11 @@ the HTTP surface, and the SSR loader.
 It explicitly rejects API-key authentication in the discovery contract, just
 as the route does at runtime; the bearer-key read endpoint list is unchanged.
 
+The root page is the canonical contract worklist and the sidebar has one Agreements entry for it.
+`/envelopes` is a compatibility redirect to that page, preserving the current locale and query string
+after the shared page-access gate. It does not fetch a second client-side list. Envelope detail and
+creation routes remain under `/envelopes/` and link back to the canonical worklist.
+
 ## Contract
 
 `src/lib/application/dashboard/model.ts` is the shared contract between the

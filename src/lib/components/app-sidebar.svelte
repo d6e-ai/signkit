@@ -7,7 +7,6 @@
 		IconChevronRight,
 		IconFileText,
 		IconKey,
-		IconLayoutDashboard,
 		IconLogout,
 		IconMailForward,
 		IconPlus,
@@ -33,10 +32,7 @@
 		instanceMemberRole: InstanceMemberRole | null;
 	} = $props();
 
-	const items = $derived([
-		{ title: m.nav_dashboard(), href: '/', icon: IconLayoutDashboard },
-		{ title: m.nav_agreements(), href: '/envelopes', icon: IconFileText }
-	]);
+	const items = $derived([{ title: m.nav_agreements(), href: '/', icon: IconFileText }]);
 	const settingsItems = $derived([
 		{ title: m.settings_tab_members(), href: '/settings/members', icon: IconUsers },
 		{ title: m.settings_tab_invitations(), href: '/settings/invitations', icon: IconMailForward },
@@ -121,7 +117,8 @@
 						<Sidebar.MenuItem>
 							<Sidebar.MenuButton
 								isActive={currentPath === item.href ||
-									(item.href !== '/' && currentPath.startsWith(`${item.href}/`))}
+									currentPath === '/envelopes' ||
+									currentPath.startsWith('/envelopes/')}
 								tooltipContent={item.title}
 							>
 								{#snippet child({ props })}

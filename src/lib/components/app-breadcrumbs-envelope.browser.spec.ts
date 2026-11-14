@@ -26,8 +26,8 @@ describe('app breadcrumbs on an envelope detail route', () => {
 		const anchors = screen.container.querySelectorAll('a');
 		expect(anchors).toHaveLength(2);
 		expect(anchors[0].textContent).toBe('SignKit');
-		expect(anchors[1].textContent).toBe('Envelopes');
-		expect(anchors[1].getAttribute('href')).toMatch(/\/envelopes$/);
+		expect(anchors[1].textContent).toBe('Agreements');
+		expect(anchors[1].getAttribute('href')).toMatch(/\/(?:en\/)?$/);
 		await expect.element(screen.getByText('Master Services Agreement')).toBeVisible();
 	});
 });

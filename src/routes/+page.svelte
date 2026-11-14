@@ -195,19 +195,19 @@
 </script>
 
 <svelte:head>
-	<title>{m.dashboard_title()} — {m.app_name()}</title>
+	<title>{m.nav_agreements()} — {m.app_name()}</title>
 </svelte:head>
 
 <div class="flex w-full flex-col gap-6">
 	<section class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-		<h1 class="text-2xl font-semibold tracking-tight">{m.dashboard_title()}</h1>
+		<h1 class="text-2xl font-semibold tracking-tight">{m.nav_agreements()}</h1>
 		<Button href={localizeHref('/envelopes/new')}>
 			<IconFileText data-icon="inline-start" />{m.dashboard_send_contract()}
 		</Button>
 	</section>
 
 	<nav
-		aria-label={m.dashboard_views_nav_label()}
+		aria-label={m.nav_agreements()}
 		class={tabsListVariants({ variant: 'line', class: 'h-auto w-full flex-wrap overflow-x-auto' })}
 	>
 		{#each dashboardViews as view (view)}
