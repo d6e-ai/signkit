@@ -1,3 +1,5 @@
+import type { InvitationDisplay, MemberDisplay } from '$lib/ports/instance-display-store';
+import { readInvitationDisplays, readMemberDisplays } from './instance-display';
 import type {
 	InstanceCallerContext,
 	InstanceInvitationMetadata,
@@ -96,6 +98,7 @@ export interface BootstrapOwnerResponse {
 }
 
 export interface ListInstanceMembersResponse {
+	memberDisplays?: Readonly<Record<string, MemberDisplay>>;
 	members: readonly InstanceMemberMetadata[];
 	nextCursor: string | null;
 }
@@ -125,6 +128,7 @@ export interface InstanceInvitationDelivery {
 }
 
 export interface ListInstanceInvitationsResponse {
+	invitationDisplays?: Readonly<Record<string, InvitationDisplay>>;
 	invitations: readonly InstanceInvitationMetadata[];
 	nextCursor: string | null;
 }
@@ -284,7 +288,18 @@ export class InstanceManagementClient {
 			},
 			options?.fetch
 		);
-		return data;
+		return {
+			members: data.members,
+			nextCursor: data.nextCursor,
+			...(data.memberDisplays === undefined
+				? {}
+				: {
+						memberDisplays: readMemberDisplays(
+							data.memberDisplays,
+							data.members.map((member) => member.userId)
+						)
+					})
+		};
 	}
 
 	setMemberRole(
@@ -444,7 +459,13 @@ export class InstanceManagementClient {
 			},
 			options?.fetch
 		);
-		return data;
+		return {
+			invitations: data.invitations,
+			nextCursor: data.nextCursor,
+			...(data.invitationDisplays === undefined
+				? {}
+				: { invitationDisplays: readInvitationDisplays(data.invitationDisplays, data.invitations) })
+		};
 	}
 
 	async revokeInvitation(

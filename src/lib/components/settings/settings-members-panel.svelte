@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import MemberDisplayView from './member-display.svelte';
+	import type { MemberDisplay } from '$lib/ports/instance-display-store';
+	import * as Sheet from '$lib/components/ui/sheet';
 	import {
 		createInstanceManagementClient,
 		type InstanceMemberMetadata,
@@ -16,7 +19,7 @@
 	import * as Select from '$lib/components/ui/select';
 	import * as Table from '$lib/components/ui/table';
 	import { Spinner } from '$lib/components/ui/spinner';
-	import { IconAlertTriangle, IconRefresh, IconUser, IconUsers } from '@tabler/icons-svelte';
+	import { IconAlertTriangle, IconRefresh, IconUsers } from '@tabler/icons-svelte';
 
 	let {
 		currentUserId,
@@ -39,6 +42,11 @@
 		}
 	}
 
+	function memberLabel(member: InstanceMemberMetadata): string {
+		const display = memberDisplays[member.userId];
+		return display?.state === 'available' ? display.name : member.userId;
+	}
+
 	function errorMessage(err: unknown): string {
 		return err instanceof Error ? err.message : String(err);
 	}
@@ -46,6 +54,8 @@
 	const client = createInstanceManagementClient();
 
 	let members = $state<InstanceMemberMetadata[]>([]);
+	let memberDisplays = $state<Record<string, MemberDisplay>>({});
+	let detailsMember = $state<InstanceMemberMetadata | null>(null);
 	let membersLoading = $state(false);
 	let membersError = $state<string | null>(null);
 	let membersNextCursor = $state<string | null>(null);
@@ -65,6 +75,11 @@
 			} else {
 				members = [...res.members];
 			}
+			memberDisplays = cursor
+				? { ...memberDisplays, ...res.memberDisplays }
+				: { ...res.memberDisplays };
+			if (detailsMember)
+				detailsMember = members.find((member) => member.userId === detailsMember?.userId) ?? null;
 			membersNextCursor = res.nextCursor;
 			for (const member of res.members) {
 				if (!cursor || !(member.userId in memberRoleDrafts)) {
@@ -182,16 +197,15 @@
 							{@const isPendingThis = memberActionPending[member.userId] ?? false}
 
 							<Table.Row>
-								<Table.Cell class="font-mono text-xs">
-									<div class="flex items-center gap-1.5">
-										<IconUser class="size-3.5 text-muted-foreground" />
-										<span class="max-w-[140px] truncate sm:max-w-[220px]">{member.userId}</span>
-										{#if isSelf}
-											<Badge variant="secondary" class="text-[10px]"
-												>{m.settings_members_you()}</Badge
-											>
-										{/if}
-									</div>
+								<Table.Cell class="min-w-52 whitespace-normal">
+									<MemberDisplayView
+										userId={member.userId}
+										display={memberDisplays[member.userId]}
+										onselect={() => (detailsMember = member)}
+									/>
+									{#if isSelf}<Badge variant="secondary" class="mt-2"
+											>{m.settings_members_you()}</Badge
+										>{/if}
 								</Table.Cell>
 								<Table.Cell>
 									{#if canOwnerManageRole}
@@ -205,7 +219,7 @@
 													size="sm"
 													class="h-7 text-xs font-medium"
 													aria-label={m.settings_members_role_aria_label({
-														userId: member.userId
+														userId: memberLabel(member)
 													})}
 												>
 													{roleLabel(memberRoleDrafts[member.userId])}
@@ -241,7 +255,7 @@
 													? 'secondary'
 													: 'outline'}
 										>
-											{member.role}
+											{roleLabel(member.role)}
 										</Badge>
 									{/if}
 								</Table.Cell>
@@ -310,3 +324,58 @@
 		{/if}
 	</Card.Content>
 </Card.Root>
+
+<Sheet.Root
+	open={detailsMember !== null}
+	onOpenChange={(open) => {
+		if (!open) detailsMember = null;
+	}}
+>
+	{#if detailsMember}
+		<Sheet.Content class="overflow-y-auto pb-6">
+			<Sheet.Header
+				><Sheet.Title>{m.settings_members_details_title()}</Sheet.Title><Sheet.Description
+					>{m.settings_display_snapshot_description()}</Sheet.Description
+				></Sheet.Header
+			>
+			<div class="flex flex-col gap-5 px-6">
+				<MemberDisplayView
+					userId={detailsMember.userId}
+					display={memberDisplays[detailsMember.userId]}
+					detailed
+				/>
+				<dl class="flex flex-col gap-4">
+					{#if memberDisplays[detailsMember.userId]?.state === 'available'}
+						<div>
+							<dt class="text-xs text-muted-foreground">{m.settings_display_subject()}</dt>
+							<dd class="font-mono text-xs [overflow-wrap:anywhere]">{detailsMember.userId}</dd>
+						</div>
+					{/if}
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_members_col_role()}</dt>
+						<dd>{roleLabel(detailsMember.role)}</dd>
+					</div>
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_members_col_status()}</dt>
+						<dd>
+							{detailsMember.status === 'active'
+								? m.settings_members_status_active()
+								: m.settings_members_status_suspended()}
+						</dd>
+					</div>
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_members_col_joined()}</dt>
+						<dd>
+							<time datetime={detailsMember.createdAt}
+								>{new Intl.DateTimeFormat(getLocale(), {
+									dateStyle: 'medium',
+									timeStyle: 'short'
+								}).format(new Date(detailsMember.createdAt))}</time
+							>
+						</dd>
+					</div>
+				</dl>
+			</div>
+		</Sheet.Content>
+	{/if}
+</Sheet.Root>

@@ -634,5 +634,19 @@
 	"signing_all_fields": "All fields ({count})",
 	"signing_field_navigate": "Go to {label} — {document}, page {page}",
 	"signing_field_optional": "Optional",
-	"signing_review_title": "Review and sign"
+	"signing_review_title": "Review and sign",
+	"settings_display_details_for": "Details for {name}",
+	"settings_display_observed": "Profile as of {timestamp}",
+	"settings_display_unavailable": "Display information unavailable",
+	"settings_display_subject": "Member ID",
+	"settings_members_details_title": "Member details",
+	"settings_display_snapshot_description": "Profile information comes from authentication and may differ from the current account.",
+	"settings_invitations_col_recipient": "Recipient / member",
+	"settings_invitations_details_title": "Invitation details",
+	"settings_invitations_details_description": "Recipient, membership and invitation history.",
+	"settings_invitation_target_removed": "Recipient address removed",
+	"settings_invitation_accepted_member": "Accepted member",
+	"settings_invitation_invited_by": "Invited by (member ID)",
+	"settings_invitation_accepted_at": "Accepted",
+	"settings_invitation_revoked_at": "Revoked"
 }
