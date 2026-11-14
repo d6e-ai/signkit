@@ -3,7 +3,7 @@
 Status: operational runbook for the scheduled drain/sweep dispatcher and the maintenance health read
 
 Every protected drain/sweep endpoint (`/api/v1/system/**/drain`, `**/reseal-sweep`,
-`objects/orphan-sweep`) returns a bounded batch result: counts such as `claimed`,
+`objects/orphan-sweep`, `instance-display/maintain`) returns a bounded batch result: counts such as `claimed`,
 `delivered`, `retryableFailed`, `permanentlyFailed`, and `integrityFailed`, plus a
 per-item `outcomes`/`items` array. The per-item array is never logged anywhere in
 this system — it can carry delivery/job identifiers — but the aggregate counts are

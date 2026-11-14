@@ -24,10 +24,22 @@ vi.mock('$lib/application/instance/instance-runtime', () => ({
 	resolveInstanceApplication
 }));
 
+const captureMemberSnapshot = vi.hoisted(() => vi.fn());
+const resolveInstanceDisplayApplication = vi.hoisted(() =>
+	vi.fn(async () => ({
+		captureMemberSnapshot,
+		memberDisplays: vi.fn(),
+		invitationDisplays: vi.fn()
+	}))
+);
+vi.mock('$lib/application/instance-display/instance-display-runtime', () => ({
+	resolveInstanceDisplayApplication
+}));
+
 const { handleSession } = await import('./hooks.server');
 const { load: loadLayout } = await import('./routes/+layout.server');
 const { D6eAuthRejectedError } = await import('$lib/server/d6e-auth');
-const { SESSION_COOKIE, seal } = await import('$lib/server/session');
+const { SESSION_COOKIE, seal, unseal } = await import('$lib/server/session');
 
 const PRINCIPAL: VerifiedPrincipal = {
 	subject: 'user-1',
@@ -120,6 +132,9 @@ beforeEach((): void => {
 	resolveInstanceApplication.mockResolvedValue(mockInstanceApplication);
 	getCurrentMember.mockReset();
 	getCurrentMember.mockResolvedValue(DEFAULT_CALLER_CONTEXT);
+	captureMemberSnapshot.mockReset();
+	captureMemberSnapshot.mockResolvedValue({ outcome: 'recorded' });
+	resolveInstanceDisplayApplication.mockClear();
 });
 
 afterEach((): void => {
@@ -301,5 +316,79 @@ describe('hook and root layout membership snapshot', () => {
 		await expect(runPage(cookies, '/setup')).rejects.toMatchObject({ status: 503 });
 		expect(resolveInstanceApplication).toHaveBeenCalledTimes(1);
 		expect(getCurrentMember).not.toHaveBeenCalled();
+	});
+});
+
+describe('handleSession: profile observation and display capture', () => {
+	const observedAt: string = '2026-09-12T12:00:00.000Z';
+
+	it('preserves profileObservedAt across verifyAccessToken of the same token', async () => {
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		const cookies: CookieJar = cookieJar({
+			[SESSION_COOKIE]: await sealedSession({
+				profileObservedAt: observedAt,
+				profileStoredAt: observedAt
+			})
+		});
+		await run(cookies);
+		expect(captureMemberSnapshot).not.toHaveBeenCalled();
+		const opened = await unseal(cookies.get(SESSION_COOKIE)!);
+		expect(opened?.session.profileObservedAt).toBe(observedAt);
+		expect(opened?.session.accessToken).toBe('access-token');
+	});
+
+	it('stamps a new profileObservedAt on refresh, not on ordinary membership timestamps', async () => {
+		const cookies: CookieJar = cookieJar({
+			[SESSION_COOKIE]: await sealedSession({
+				expiresAt: Math.floor(Date.now() / 1000) - 3600,
+				profileObservedAt: observedAt
+			})
+		});
+		refresh.mockResolvedValue({
+			accessToken: 'renewed-access',
+			refreshToken: 'renewed-refresh',
+			expiresIn: 3600,
+			principal: PRINCIPAL
+		});
+		await run(cookies);
+		const opened = await unseal(cookies.get(SESSION_COOKIE)!);
+		expect(opened?.session.profileObservedAt).not.toBe(observedAt);
+		expect(opened?.session.profileObservedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		expect(opened?.session.accessToken).toBe('renewed-access');
+		expect(captureMemberSnapshot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: PRINCIPAL.subject,
+				observedAt: opened?.session.profileObservedAt
+			})
+		);
+	});
+
+	it('keeps a pre-membership observation and does not capture until local membership exists', async () => {
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		getCurrentMember.mockResolvedValue({ bootstrapped: true, member: null });
+		const cookies: CookieJar = cookieJar({
+			[SESSION_COOKIE]: await sealedSession({ profileObservedAt: observedAt })
+		});
+		const locals: App.Locals = await run(cookies);
+		expect(locals.identityState).toBe('no_membership');
+		expect(captureMemberSnapshot).not.toHaveBeenCalled();
+		const opened = await unseal(cookies.get(SESSION_COOKIE)!);
+		expect(opened?.session.profileObservedAt).toBe(observedAt);
+	});
+
+	it('does not fail authentication when display capture throws, and logs no PII', async () => {
+		verifyAccessToken.mockResolvedValue(PRINCIPAL);
+		captureMemberSnapshot.mockRejectedValueOnce(
+			new Error('ciphertext exploded for user@example.com')
+		);
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const cookies: CookieJar = cookieJar({
+			[SESSION_COOKIE]: await sealedSession({ profileObservedAt: observedAt })
+		});
+		const locals: App.Locals = await run(cookies);
+		expect(locals.identityState).toBe('active');
+		expect(locals.principal).toEqual(PRINCIPAL);
+		expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('user@example.com');
+		errorSpy.mockRestore();
 	});
 });

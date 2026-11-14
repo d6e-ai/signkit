@@ -24,7 +24,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		accessToken: tokens.accessToken,
 		refreshToken: tokens.refreshToken,
 		expiresAt: Math.floor(Date.now() / 1000) + tokens.expiresIn,
-		principal: tokens.principal
+		principal: tokens.principal,
+		profileObservedAt: new Date().toISOString()
 	});
 	cookies.set(SESSION_COOKIE, cookie, {
 		...SESSION_COOKIE_OPTIONS,

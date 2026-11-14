@@ -56,6 +56,10 @@ export const PRIMARY_MAINTENANCE_JOBS: readonly ScheduledMaintenanceJob[] = [
 	{
 		name: 'completion delivery reseal sweep',
 		path: '/api/v1/system/completion-deliveries/reseal-sweep'
+	},
+	{
+		name: 'instance display maintain',
+		path: '/api/v1/system/instance-display/maintain'
 	}
 ];
 

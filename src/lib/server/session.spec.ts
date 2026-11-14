@@ -65,6 +65,28 @@ describe('operator session sealing', () => {
 		expect(opened?.resealedCookie).toBeNull();
 	});
 
+	it('preserves profileObservedAt across previous-key reseal and drops untrustworthy observation fields', async () => {
+		const observedAt: string = '2026-09-12T12:00:00.000Z';
+		const original = session({ profileObservedAt: observedAt, profileStoredAt: observedAt });
+		const sealedUnderOldActive = await seal(original);
+
+		privateEnv.SESSION_ENCRYPTION_KEY_PREVIOUS = privateEnv.SESSION_ENCRYPTION_KEY;
+		privateEnv.SESSION_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64');
+		const opened = await unseal(sealedUnderOldActive);
+		expect(opened?.session.profileObservedAt).toBe(observedAt);
+		expect(opened?.session.profileStoredAt).toBe(observedAt);
+		expect(opened?.resealedCookie).not.toBeNull();
+
+		const migrated = await unseal(opened!.resealedCookie!);
+		expect(migrated?.session.profileObservedAt).toBe(observedAt);
+		expect(migrated?.session.profileStoredAt).toBe(observedAt);
+		expect(migrated?.resealedCookie).toBeNull();
+
+		const withoutObservation = await unseal(await seal(session({ profileObservedAt: undefined })));
+		expect(withoutObservation?.session.profileObservedAt).toBeUndefined();
+		expect(withoutObservation?.session).not.toHaveProperty('profileObservedAt');
+	});
+
 	it('fails closed for tampering, malformed data, and oversized input', async () => {
 		const sealed = await seal(session());
 		const tampered = `${sealed[0] === 'A' ? 'B' : 'A'}${sealed.slice(1)}`;

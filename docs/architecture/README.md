@@ -14,6 +14,7 @@ guarantee or claim planned work is shipped.
 | Markdown revisions, ordered PDF manifests, archive limits          | [Draft Git](draft-git-repository.md)                                      |
 | Persistent identifiers                                             | [UUIDv7 identifiers](identifiers.md)                                      |
 | Operator, API-key, recipient, membership, and invitation authority | [Authorization](authorization-and-instance-administration.md)             |
+| Authorized member and invitation display labels                    | [Instance display metadata](instance-display-metadata.md)                 |
 | Private saved recipients                                           | [Contact book](recipient-contact-book.md)                                 |
 | Sender preparation and final review                                | [Sender workflow](sender-workflow.md)                                     |
 | Recipient document review and field navigation                     | [Recipient workflow](recipient-workflow.md)                               |

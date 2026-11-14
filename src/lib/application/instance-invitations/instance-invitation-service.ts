@@ -34,6 +34,7 @@ import type {
 	InstanceInvitationDeliveryPayloadSealer,
 	InstanceInvitationRequestFingerprints
 } from '$lib/security/instance-invitation-delivery-payload';
+import type { InstanceDisplayPayloadSealer } from '$lib/security/instance-display-payload';
 
 export { canonicalJson, sha256Hex };
 
@@ -210,6 +211,7 @@ export class InstanceInvitationCollisionExhaustedError extends Error {
 export interface InstanceInvitationApplicationDependencies {
 	readonly store: InstanceStore;
 	readonly payloadSealer: InstanceInvitationDeliveryPayloadSealer;
+	readonly displaySealer?: InstanceDisplayPayloadSealer;
 	readonly now?: () => Date;
 	readonly newId?: UuidV7Generator;
 	readonly newDeliveryId?: UuidV7Generator;
@@ -237,6 +239,7 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 	private readonly newDeliveryId: UuidV7Generator;
 	private readonly issueToken: () => Promise<IssuedInstanceInvitationToken>;
 	private readonly payloadSealer: InstanceInvitationDeliveryPayloadSealer;
+	private readonly displaySealer: InstanceDisplayPayloadSealer | null;
 
 	constructor(storeOrDependencies: InstanceStore | InstanceInvitationApplicationDependencies) {
 		if (
@@ -249,6 +252,7 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 				storeOrDependencies as InstanceInvitationApplicationDependencies;
 			this.store = deps.store;
 			this.payloadSealer = deps.payloadSealer;
+			this.displaySealer = deps.displaySealer ?? null;
 			this.now = deps.now ?? ((): Date => new Date());
 			this.newId = deps.newId ?? newUuidV7;
 			this.newDeliveryId = deps.newDeliveryId ?? newUuidV7;
@@ -301,6 +305,10 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 				{ email: normalizedEmail, token: issued.token },
 				{ invitationId, deliveryId }
 			);
+			const sealedDisplay =
+				this.displaySealer === null
+					? null
+					: await this.displaySealer.sealInvitationTarget({ email: normalizedEmail }, invitationId);
 
 			const command: CreateInstanceInvitationCommand = {
 				actor: commandActor,
@@ -317,7 +325,13 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 				deliverySealingKeyId: sealed.sealingKeyId,
 				sealedDeliveryPayloadSha256: sealed.sealedPayloadSha256,
 				createdAt,
-				expiresAt
+				expiresAt,
+				...(sealedDisplay === null
+					? {}
+					: {
+							sealedDisplayPayload: sealedDisplay.sealedPayload,
+							displaySealingKeyId: sealedDisplay.sealingKeyId
+						})
 			};
 
 			const result: CreateInstanceInvitationStoreResult =

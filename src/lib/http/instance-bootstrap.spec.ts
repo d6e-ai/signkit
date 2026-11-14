@@ -11,8 +11,14 @@ import {
 import { isLocalDevelopmentBootstrapEnvironment } from '$lib/security/bootstrap-owner-gate';
 
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
+const captureMemberDisplay = vi.hoisted(() => ({
+	bestEffortCaptureMemberDisplay: vi.fn(async (): Promise<null> => {
+		throw new Error('ciphertext exploded for user@example.com');
+	})
+}));
 
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
+vi.mock('$lib/server/instance-display-capture', () => captureMemberDisplay);
 
 const NOW: string = '2026-09-12T12:00:00.000Z';
 
@@ -59,6 +65,7 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 		privateEnv.NODE_ENV = 'development';
 		delete privateEnv.SIGNKIT_BOOTSTRAP_OWNER_EMAIL;
 		delete privateEnv.VERCEL;
+		captureMemberDisplay.bestEffortCaptureMemberDisplay.mockClear();
 	});
 
 	afterEach(() => {
@@ -325,6 +332,25 @@ describe('POST /api/v1/instance/bootstrap HTTP handler', () => {
 			member: mockMember,
 			bootstrapped: true
 		});
+		expect(captureMemberDisplay.bestEffortCaptureMemberDisplay).toHaveBeenCalled();
+	});
+
+	it('does not fail bootstrap when display capture throws, and logs no PII', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		const app: InstanceApplicationPort = {
+			bootstrapInstance: vi.fn().mockResolvedValue({
+				outcome: 'bootstrapped',
+				member: mockMember
+			}),
+			getCurrentMember: vi.fn()
+		};
+		const res: Response = await createInstanceBootstrapHandler((): InstanceApplicationPort => app)(
+			event({ headers: { 'idempotency-key': 'key-1' }, body: '{}' })
+		);
+		expect(res.status).toBe(201);
+		expect(await res.json()).toEqual({ member: mockMember, bootstrapped: true });
+		expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('user@example.com');
+		errorSpy.mockRestore();
 	});
 
 	it('returns 200 on safe idempotency replay with idempotency-replayed header', async () => {

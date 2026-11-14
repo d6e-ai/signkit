@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
@@ -256,6 +257,73 @@ describe('instance member administration HTTP handlers', () => {
 				members: [targetMember],
 				nextCursor: null
 			});
+		});
+
+		it('attaches allowlisted memberDisplays when enrichment is wired', async () => {
+			const app: InstanceMemberApplicationPort = memberApplication();
+			const display = {
+				captureMemberSnapshot: vi.fn(),
+				memberDisplays: vi.fn(async () => ({
+					[TARGET_USER_ID]: {
+						state: 'available' as const,
+						name: 'Ada',
+						email: 'ada@example.com',
+						observedAt: NOW,
+						expiresAt: '2026-12-11T12:00:00.000Z'
+					}
+				})),
+				invitationDisplays: vi.fn()
+			};
+			const response: Response = await createInstanceMemberHttpHandlers(
+				(): InstanceMemberApplicationPort => app,
+				(): typeof display => display
+			).list(memberEvent({ pathname: LIST_PATH }));
+			expect(response.headers.get('cache-control')).toBe('no-store');
+			expect(await response.json()).toEqual({
+				members: [targetMember],
+				nextCursor: null,
+				memberDisplays: {
+					[TARGET_USER_ID]: {
+						state: 'available',
+						name: 'Ada',
+						email: 'ada@example.com',
+						observedAt: NOW,
+						expiresAt: '2026-12-11T12:00:00.000Z'
+					}
+				}
+			});
+			expect(display.memberDisplays).toHaveBeenCalledWith(
+				{ type: 'user', id: 'user-1' },
+				[targetMember],
+				expect.any(String)
+			);
+		});
+
+		it('keeps the metadata page usable when display enrichment fails', async () => {
+			const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+			const response: Response = await createInstanceMemberHttpHandlers(
+				(): InstanceMemberApplicationPort => memberApplication(),
+				(): never => {
+					throw new Error('ciphertext exploded for ada@example.com');
+				}
+			).list(memberEvent({ pathname: LIST_PATH }));
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				members: [targetMember],
+				nextCursor: null,
+				memberDisplays: { [TARGET_USER_ID]: { state: 'unavailable' } }
+			});
+			expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('ada@example.com');
+			errorSpy.mockRestore();
+		});
+
+		it('production member list route always wires display enrichment', () => {
+			expect(readFileSync('src/routes/api/v1/instance/members/+server.ts', 'utf8')).toContain(
+				'resolveInstanceDisplayApplication'
+			);
+			expect(readFileSync('src/routes/api/v1/instance/invitations/+server.ts', 'utf8')).toContain(
+				'resolveInstanceDisplayApplication'
+			);
 		});
 
 		it('passes an explicit cursor and limit through', async () => {

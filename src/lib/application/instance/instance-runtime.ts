@@ -10,6 +10,7 @@ import {
 } from '$lib/application/instance-members/instance-member-service';
 import { InstanceApplication, type InstanceApplicationPort } from './instance-service';
 import { AesGcmInstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
+import { AesGcmInstanceDisplayPayloadSealer } from '$lib/security/instance-display-payload';
 
 export interface InstanceRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -53,17 +54,25 @@ export async function resolveInstanceInvitationApplication(
 		encryptionKey,
 		previousEncryptionKey
 	);
+	const displaySealer = new AesGcmInstanceDisplayPayloadSealer(
+		encryptionKey,
+		previousEncryptionKey
+	);
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
 		return database === undefined
 			? null
-			: new InstanceInvitationApplication({ store: new D1InstanceStore(database), payloadSealer });
+			: new InstanceInvitationApplication({
+					store: new D1InstanceStore(database),
+					payloadSealer,
+					displaySealer
+				});
 	}
 
 	const databaseUrl: string | undefined = env.DATABASE_URL;
 	if (databaseUrl === undefined || databaseUrl.trim().length === 0) return null;
 	const { resolvePostgresInstanceInvitationApplication } = await import('./runtime-postgres');
-	return resolvePostgresInstanceInvitationApplication(databaseUrl, payloadSealer);
+	return resolvePostgresInstanceInvitationApplication(databaseUrl, payloadSealer, displaySealer);
 }
 
 /**

@@ -48,6 +48,12 @@ import type {
 	InstanceInvitationDeliverySealContext,
 	SealedInstanceInvitationDeliveryPayload
 } from '$lib/security/instance-invitation-delivery-payload';
+import type {
+	InstanceDisplayPayloadSealer,
+	InvitationTargetDisplayPayload,
+	MemberDisplayPayload,
+	SealedInstanceDisplayPayload
+} from '$lib/security/instance-display-payload';
 
 const NOW: Date = new Date('2026-09-12T12:00:00.000Z');
 const EXPECTED_EXPIRY: string = new Date(
@@ -60,6 +66,49 @@ const VALID_UUID_2: string = '01900000-0000-7000-8000-000000000002';
 const VALID_UUID_3: string = '01900000-0000-7000-8000-000000000003';
 const VALID_UUID_4: string = '01900000-0000-7000-8000-000000000004';
 const TEST_TOKEN: string = `ski1_${'a'.repeat(43)}`;
+
+const fakeDisplaySealer: InstanceDisplayPayloadSealer = {
+	async sealMember(
+		payload: MemberDisplayPayload,
+		userId: string
+	): Promise<SealedInstanceDisplayPayload> {
+		void payload;
+		void userId;
+		return { sealedPayload: 'skidm1_test', sealingKeyId: 'display-member' };
+	},
+	async openMember(): Promise<MemberDisplayPayload> {
+		throw new Error('not used');
+	},
+	async sealInvitationTarget(
+		payload: InvitationTargetDisplayPayload,
+		invitationId: string
+	): Promise<SealedInstanceDisplayPayload> {
+		void payload;
+		void invitationId;
+		return { sealedPayload: 'skidt1_test', sealingKeyId: 'display-target' };
+	},
+	async openInvitationTarget(): Promise<InvitationTargetDisplayPayload> {
+		throw new Error('not used');
+	},
+	async memberActiveKeyId(): Promise<string> {
+		return 'display-member';
+	},
+	async invitationActiveKeyId(): Promise<string> {
+		return 'display-target';
+	},
+	async isKnownMemberKeyId(): Promise<boolean> {
+		return true;
+	},
+	async isKnownInvitationKeyId(): Promise<boolean> {
+		return true;
+	},
+	async isActiveMemberKeyId(): Promise<boolean> {
+		return true;
+	},
+	async isActiveInvitationKeyId(): Promise<boolean> {
+		return true;
+	}
+};
 
 const fakePayloadSealer: InstanceInvitationDeliveryPayloadSealer = {
 	async fingerprintRequest(input) {
@@ -276,6 +325,7 @@ function createTestApp(
 	return new InstanceInvitationApplication({
 		store,
 		payloadSealer: fakePayloadSealer,
+		displaySealer: fakeDisplaySealer,
 		now: clock,
 		newId,
 		newDeliveryId: (): string => VALID_UUID_4,
@@ -321,6 +371,8 @@ describe('InstanceInvitationApplication', () => {
 			expect(command.deliveryId).toBe(VALID_UUID_4);
 			expect(command.deliveryLocale).toBe('ja');
 			expect(command.sealedDeliveryPayload).toBe('skiod1_test-ciphertext');
+			expect(command.sealedDisplayPayload).toBe('skidt1_test');
+			expect(command.displaySealingKeyId).toBe('display-target');
 
 			// The keyed production fingerprint covers every delivery-affecting field.
 			const expectedFingerprint = await sha256Hex(

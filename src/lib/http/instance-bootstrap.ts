@@ -20,6 +20,7 @@ import {
 	validationErrors,
 	type JsonBodyResult
 } from './bounded-json-body';
+import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
 import { authorizeIdentityRequest, type AuthorizedIdentityActor } from './identity-authorization';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -205,7 +206,7 @@ export function createInstanceBootstrapHandler(
 		platform?: Readonly<App.Platform>
 	) => BootstrapUnsafeContext = resolveBootstrapUnsafeContext
 ): RequestHandler {
-	return async ({ locals, platform, request, url }): Promise<Response> => {
+	return async ({ locals, platform, request, url, cookies }): Promise<Response> => {
 		// Bootstrap is cookie-session-only: a `signkit_` API key is already
 		// rejected upstream in hooks.server.ts (instance management surfaces never
 		// resolve one), so a non-absent apiKeyAuthentication state here can only be
@@ -311,6 +312,23 @@ export function createInstanceBootstrapHandler(
 				{ id: authorized.id },
 				{ idempotencyKey: idempotencyKey.data }
 			);
+			if (
+				(result.outcome === 'bootstrapped' ||
+					(result.outcome === 'already_bootstrapped' && result.replayed === true)) &&
+				locals.principal !== null
+			) {
+				try {
+					await bestEffortCaptureMemberDisplay({
+						cookies,
+						url,
+						platform,
+						memberUserId: result.member.userId,
+						principal: locals.principal
+					});
+				} catch {
+					// Display capture never fails bootstrap.
+				}
+			}
 			return bootstrapResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceBootstrapRequestError) {

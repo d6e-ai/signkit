@@ -7,6 +7,10 @@ export interface Session {
 	refreshToken: string | null;
 	expiresAt: number;
 	principal: VerifiedPrincipal;
+	/** Provider-verified profile observation instant, ISO-8601 milliseconds. */
+	profileObservedAt?: string;
+	/** Observation instant last captured into instance_member_display. */
+	profileStoredAt?: string;
 }
 
 export const SESSION_COOKIE = 'signkit_session';
@@ -193,13 +197,40 @@ async function tryOpenLegacyFormat(cookie: string): Promise<Session | null> {
 
 function parseSession(plaintext: Uint8Array): Session | null {
 	try {
-		const session = JSON.parse(
-			new TextDecoder('utf-8', { fatal: true }).decode(plaintext)
-		) as Session;
-		return session.principal?.subject && session.accessToken ? session : null;
+		const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(plaintext));
+		if (parsed === null || typeof parsed !== 'object') return null;
+		const value = parsed as Record<string, unknown>;
+		if (typeof value.accessToken !== 'string' || value.accessToken.length === 0) return null;
+		if (typeof value.expiresAt !== 'number' || !Number.isFinite(value.expiresAt)) return null;
+		const principal = value.principal as VerifiedPrincipal | undefined;
+		if (
+			principal === null ||
+			typeof principal !== 'object' ||
+			typeof principal.subject !== 'string'
+		) {
+			return null;
+		}
+		const session: Session = {
+			accessToken: value.accessToken,
+			refreshToken: typeof value.refreshToken === 'string' ? value.refreshToken : null,
+			expiresAt: value.expiresAt,
+			principal
+		};
+		const observedAt: string | undefined = optionalIso(value.profileObservedAt);
+		const storedAt: string | undefined = optionalIso(value.profileStoredAt);
+		if (observedAt !== undefined) session.profileObservedAt = observedAt;
+		if (storedAt !== undefined) session.profileStoredAt = storedAt;
+		return session;
 	} catch {
 		return null;
 	}
+}
+
+function optionalIso(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return undefined;
+	if (new Date(value).toISOString() !== value) return undefined;
+	return value;
 }
 
 async function operatorSessionKeyring(): Promise<AesGcmSealingKeyring> {

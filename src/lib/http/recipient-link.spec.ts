@@ -456,7 +456,8 @@ describe('recipient link exchange', () => {
 			() => application(),
 			async (): Promise<string> => {
 				throw new Error('secret material that must not be logged');
-			}
+			},
+			() => new Date('2026-09-11T00:00:00.000Z')
 		)(input.event);
 		expect(response.headers.get('location')).toBe('/sign?access=unavailable');
 		expect(input.cookieDelete).not.toHaveBeenCalled();

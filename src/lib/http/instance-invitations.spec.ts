@@ -1,5 +1,12 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it, vi } from 'vitest';
+
+const captureMemberDisplay = vi.hoisted(() => ({
+	bestEffortCaptureMemberDisplay: vi.fn(async (): Promise<null> => {
+		throw new Error('ciphertext exploded for user@example.com');
+	})
+}));
+vi.mock('$lib/server/instance-display-capture', () => captureMemberDisplay);
 import {
 	InstanceInvitationCollisionExhaustedError,
 	InvalidInstanceInvitationRequestError,
@@ -574,6 +581,54 @@ describe('instance invitation HTTP handlers', () => {
 				await response.json();
 			expect(body.invitations).toHaveLength(1);
 			expect(body.nextCursor).toBeNull();
+			expect(body).not.toHaveProperty('invitationDisplays');
+		});
+
+		it('attaches invitationDisplays after authorization when enrichment is wired', async () => {
+			const app: InstanceInvitationApplicationPort = application();
+			const display = {
+				captureMemberSnapshot: vi.fn(),
+				memberDisplays: vi.fn(),
+				invitationDisplays: vi.fn(async () => ({
+					[INVITATION_ID]: { state: 'pending' as const, email: 'invitee@example.com' }
+				}))
+			};
+			const response: Response = await invoke(
+				createInstanceInvitationHttpHandlers(
+					(): InstanceInvitationApplicationPort => app,
+					(): typeof display => display
+				).list,
+				event({ pathname: CREATE_PATH })
+			);
+			expect(response.headers.get('cache-control')).toBe('no-store');
+			expect(await response.json()).toMatchObject({
+				invitations: [invitation],
+				nextCursor: null,
+				invitationDisplays: {
+					[INVITATION_ID]: { state: 'pending', email: 'invitee@example.com' }
+				}
+			});
+		});
+
+		it('keeps invitation metadata usable when display enrichment fails', async () => {
+			const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+			const response: Response = await invoke(
+				createInstanceInvitationHttpHandlers(
+					(): InstanceInvitationApplicationPort => application(),
+					(): never => {
+						throw new Error('ciphertext exploded for invitee@example.com');
+					}
+				).list,
+				event({ pathname: CREATE_PATH })
+			);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				invitations: [invitation],
+				nextCursor: null,
+				invitationDisplays: { [INVITATION_ID]: { state: 'unavailable' } }
+			});
+			expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('invitee@example.com');
+			errorSpy.mockRestore();
 		});
 
 		it('returns only safe, zero-PII invitation fields', async () => {
@@ -893,6 +948,33 @@ describe('instance invitation HTTP handlers', () => {
 				await response.json();
 			expect(body.invitation.id).toBe(INVITATION_ID);
 			expect(body.member.userId).toBe(member.userId);
+			expect(captureMemberDisplay.bestEffortCaptureMemberDisplay).toHaveBeenCalledWith(
+				expect.objectContaining({ memberUserId: member.userId })
+			);
+		});
+
+		it('does not fail accept when display capture throws, and logs no PII', async () => {
+			captureMemberDisplay.bestEffortCaptureMemberDisplay.mockRejectedValueOnce(
+				new Error('ciphertext exploded for user@example.com')
+			);
+			const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+			const app: InstanceInvitationApplicationPort = application();
+			const response: Response = await invoke(
+				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
+				event({
+					pathname: ACCEPT_PATH,
+					method: 'POST',
+					body: validAcceptBody(),
+					headers: { 'idempotency-key': 'accept-1' }
+				})
+			);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				invitation: { id: INVITATION_ID },
+				member: { userId: member.userId }
+			});
+			expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('user@example.com');
+			errorSpy.mockRestore();
 		});
 
 		it('marks an exact replay with the idempotency-replayed header', async () => {
