@@ -2935,6 +2935,7 @@
 											<Button
 												size="sm"
 												variant={activeDocumentKey === entry.key ? 'default' : 'outline'}
+												aria-pressed={activeDocumentKey === entry.key}
 												onclick={() => selectAuthoringDocument(entry)}
 											>
 												{authoringDocumentTitle(entry)}
@@ -2947,6 +2948,13 @@
 													? m.envelope_document_kind_pdf()
 													: m.envelope_document_kind_markdown()}
 											</Badge>
+											{#if entry.source === 'set' && entry.leaf.kind === 'pdf'}
+												<Badge variant="outline"
+													>{m.envelope_pdf_pages_label({
+														count: String(entry.leaf.pageCount)
+													})}</Badge
+												>
+											{/if}
 											{#if entry.source === 'set'}
 												<Button
 													size="sm"
@@ -3009,27 +3017,18 @@
 									{/key}
 								{/if}
 								{#if activePdfLeaf !== null && activePdfLeaf.kind === 'pdf'}
-									<div class="rounded-2xl border p-4">
-										<div class="flex items-center gap-2">
-											<span class="text-sm font-medium">{activePdfLeaf.title}</span>
-											<Badge variant="secondary">{m.envelope_document_kind_pdf()}</Badge>
-										</div>
-										<p class="mt-2 text-sm text-muted-foreground">
-											{m.envelope_pdf_pages_label({ count: String(activePdfLeaf.pageCount) })}
-										</p>
-										<Collapsible.Root class="mt-1">
-											<Collapsible.Trigger class="text-xs text-muted-foreground">
-												{m.envelope_advanced_details()}
-											</Collapsible.Trigger>
-											<Collapsible.Content>
-												<p class="mt-1 font-mono text-xs text-muted-foreground">
-													{m.envelope_pdf_digest_label({
-														digest: `${activePdfLeaf.sha256.slice(0, 12)}…`
-													})}
-												</p>
-											</Collapsible.Content>
-										</Collapsible.Root>
-									</div>
+									<Collapsible.Root class="mt-1">
+										<Collapsible.Trigger class="text-xs text-muted-foreground">
+											{m.envelope_advanced_details()}
+										</Collapsible.Trigger>
+										<Collapsible.Content>
+											<p class="mt-1 font-mono text-xs text-muted-foreground">
+												{m.envelope_pdf_digest_label({
+													digest: `${activePdfLeaf.sha256.slice(0, 12)}…`
+												})}
+											</p>
+										</Collapsible.Content>
+									</Collapsible.Root>
 								{:else if activeDocPath !== null}
 									<Collapsible.Root open={activeSavedDocument === undefined}>
 										<Collapsible.Trigger>

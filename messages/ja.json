@@ -616,5 +616,12 @@
 	"completion_receipt_invalid_title": "このリンクは無効です",
 	"completion_receipt_invalid_description": "リンクが無効、期限切れ、失効している、または契約書が存在しない可能性があります。ご不明な点は送信者にお問い合わせください。",
 	"completion_receipt_unavailable_title": "このページは一時的にご利用いただけません",
-	"completion_receipt_unavailable_description": "しばらくしてから、もう一度リンクを開いてください。"
+	"completion_receipt_unavailable_description": "しばらくしてから、もう一度リンクを開いてください。",
+	"signing_required_progress": "必須項目 {total}件中{completed}件が完了",
+	"signing_required_fields": "必須項目",
+	"signing_next_missing_field": "次の未入力項目",
+	"signing_all_fields": "すべての項目（{count}件）",
+	"signing_field_navigate": "{label}へ移動 — {document}、{page}ページ",
+	"signing_field_optional": "任意",
+	"signing_review_title": "確認して署名"
 }

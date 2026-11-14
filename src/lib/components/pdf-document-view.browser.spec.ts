@@ -80,6 +80,7 @@ test('renders every page of a SignKit-produced PDF and visibly paints document c
 	const { url, revoke } = agreementUrl();
 	try {
 		const screen = await render(PdfDocumentViewTestHost, { src: url });
+		expect(screen.getByRole('link', { name: 'Open the agreement' }).all()).toHaveLength(1);
 
 		// One box per page, positioned in percentage units so it tracks the page
 		// through zoom and responsive resizing without any pixel arithmetic.
@@ -113,6 +114,7 @@ test('renders every page of a SignKit-produced PDF and visibly paints document c
 		// The fallback link points at the same token-free source.
 		const link = screen.container.querySelector('a[href]') as HTMLAnchorElement;
 		expect(link.getAttribute('href')).toBe(url);
+		expect(screen.getByRole('link', { name: 'Open the agreement' }).all()).toHaveLength(1);
 		expect(screen.container.textContent).not.toContain('could not be displayed');
 	} finally {
 		revoke();
@@ -293,11 +295,12 @@ test('reports an explicit localized error and usable fallback on render failure 
 		.element(screen.getByText('Reload this page to try again, or open the document in a new tab.'))
 		.toBeInTheDocument();
 
-	// Fallback button inside alert
+	// One browser-native fallback stays available beside the error.
 	const fallbackButton = screen.container.querySelector(
-		'a[data-slot="button"][target="_blank"]'
+		'a[target="_blank"]'
 	) as HTMLAnchorElement | null;
 	expect(fallbackButton).not.toBeNull();
+	expect(screen.container.querySelectorAll('a[href]')).toHaveLength(1);
 	expect(fallbackButton!.getAttribute('href')).toBe('/this-path-does-not-exist.pdf');
 	expect(fallbackButton!.textContent).toContain('Open the agreement');
 	expect(screen.container.querySelectorAll('[data-pdf-page]')).toHaveLength(0);
@@ -317,9 +320,10 @@ test('reports an explicit localized error and usable fallback on render failure 
 		.toBeInTheDocument();
 
 	const fallbackButton = screen.container.querySelector(
-		'a[data-slot="button"][target="_blank"]'
+		'a[target="_blank"]'
 	) as HTMLAnchorElement | null;
 	expect(fallbackButton).not.toBeNull();
+	expect(screen.container.querySelectorAll('a[href]')).toHaveLength(1);
 	expect(fallbackButton!.getAttribute('href')).toBe('/this-path-does-not-exist-ja.pdf');
 	expect(fallbackButton!.textContent).toContain('契約書を開く');
 	expect(screen.container.querySelectorAll('[data-pdf-page]')).toHaveLength(0);
