@@ -1,6 +1,6 @@
 # Recipient invitation replacement
 
-The sender's Recipients tab exposes the existing session-authorized `POST /api/v1/envelopes/{envelopeId}/recipients/{recipientId}/reissue` command. Replacement changes only that recipient's invitation authority and delivery. It does not recreate the envelope, change the pinned documents or fields, or reset another recipient's decision.
+The sender's Status view exposes the existing session-authorized `POST /api/v1/envelopes/{envelopeId}/recipients/{recipientId}/reissue` command. Replacement changes only that recipient's invitation authority and delivery. It does not recreate the envelope, change the pinned documents or fields, or reset another recipient's decision.
 
 ## Eligibility and confirmation
 

@@ -1,7 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { userEvent } from 'vitest/browser';
+import { page as browserPage, userEvent } from 'vitest/browser';
 import EnvelopePage from './+page.svelte';
+import '../../layout.css';
+
+afterEach(async () => {
+	await browserPage.viewport(1280, 800);
+});
 
 vi.mock('$lib/components/pdf-document-view.svelte', async () => ({
 	default: (await import('./field-placement-pdf-view-test-stub.svelte')).default
@@ -263,6 +268,30 @@ async function addField(screen: Awaited<ReturnType<typeof render>>): Promise<HTM
 }
 
 describe('keyboard field placement', () => {
+	it.each([1280, 390])('keeps the PDF and selected geometry usable at %ipx', async (width) => {
+		await browserPage.viewport(width, 844);
+		const screen = await openFieldsTab(buildMockFetch());
+		await addField(screen);
+		const page = screen.container.querySelector('[data-pdf-page]') as HTMLElement;
+		const properties = screen.getByRole('complementary').element();
+		const pageBounds = page.getBoundingClientRect();
+		const propertiesBounds = properties.getBoundingClientRect();
+		if (width >= 1024) {
+			expect(propertiesBounds.left).toBeGreaterThanOrEqual(pageBounds.right);
+			expect(propertiesBounds.top).toBeLessThan(pageBounds.bottom);
+		} else {
+			expect(propertiesBounds.top).toBeGreaterThanOrEqual(pageBounds.bottom);
+		}
+		expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+		await expect.element(screen.getByLabelText('Left')).toBeVisible();
+		const help = screen.getByRole('button', { name: 'Keyboard and coordinates' });
+		expect(help.element().getAttribute('aria-expanded')).toBe('false');
+		await help.click();
+		expect(help.element().getAttribute('aria-expanded')).toBe('true');
+		await help.click();
+		await browserPage.screenshot({ fullPage: true });
+	});
+
 	it('creates a field with zero clicks at a deterministic, non-central position and focuses it', async () => {
 		const mockFetch = buildMockFetch();
 		const screen = await openFieldsTab(mockFetch);

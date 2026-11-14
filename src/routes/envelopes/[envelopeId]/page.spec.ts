@@ -12,7 +12,9 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('openReopenDialog');
 		expect(source).toContain('m.envelope_reopen_dialog_title()');
 		expect(source).not.toContain('reopen-anchor-probe');
-		expect(source).toContain('m.envelope_workflow_step({');
+		expect(source).not.toContain('m.envelope_workflow_step({');
+		expect(source).toContain('authoringTabComplete');
+		expect(source).toContain('m.envelope_tab_review()');
 		expect(source).toContain('m.envelope_review_title()');
 		expect(source).toContain('beforeunload');
 		expect(source).toContain('beforeNavigate');
@@ -204,10 +206,13 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain('id={`recipient-order-${draftItem.key}`}');
 	});
 
-	it('joins delivery rows to recipients and localizes invitation delivery state', () => {
-		expect(source).toContain('recipientForDelivery(item.recipientId)');
-		expect(source).toContain('deliveryStateLabel(item.status)');
+	it('joins invitation delivery to recipients without conflating response or completion mail', () => {
+		expect(source).toContain('currentDeliveryForRecipient(recipient.id)');
+		expect(source).toContain('deliveryStateLabel(invitation.status)');
+		expect(source).toContain('recipientWorkflowStatusLabel(recipient.status)');
 		expect(source).toContain('envelope_delivery_col_recipient');
+		expect(source).toContain('envelope_delivery_col_signing_status');
+		expect(source).toContain('envelope_delivery_col_status');
 		expect(source).not.toContain('envelope_delivery_col_order');
 		expect(source).not.toContain('envelope_delivery_col_attempts');
 		expect(source).not.toContain('<Table.Cell>{item.recipientRole}</Table.Cell>');
@@ -219,6 +224,9 @@ describe('envelope authoring page contracts', () => {
 		expect(source).toContain("case 'delivered':");
 		expect(source).toContain("case 'failed':");
 		expect(source).toContain('envelope_delivery_status_pending');
+		expect(source).toContain('envelope_delivery_status_unavailable');
+		expect(source).toContain('<Tabs.Content value="status"');
+		expect(source).toContain('m.envelope_tab_status()');
 	});
 
 	it('presents the completed artifact as the primary preview, ahead of the distinguished original documents', () => {
@@ -241,6 +249,7 @@ describe('envelope authoring page contracts', () => {
 		expect(documentsTab).toContain("{:else if envelope.status === 'completed'}");
 		expect(documentsTab).toContain('{@render completionArtifactSection()}');
 		expect(documentsTab).toContain('m.envelope_documents_originals_title()');
+		expect(documentsTab).toContain('<Collapsible.Root');
 		expect(documentsTab.indexOf('{@render completionArtifactSection()}')).toBeLessThan(
 			documentsTab.indexOf('m.envelope_documents_originals_title()')
 		);
@@ -260,7 +269,7 @@ describe('envelope authoring page contracts', () => {
 		expect(card).toContain(
 			'href={`/api/v1/envelopes/${envelopeId}/completion-artifact/evidence?format=markdown`}'
 		);
-		expect(card.match(/\n\s*download\n/g)?.length).toBe(3);
+		expect(card.match(/\bdownload(?:\s|>)/g)?.length).toBe(3);
 		expect(card.indexOf('m.envelope_completed_pdf_download()')).toBeLessThan(
 			card.indexOf('<PdfDocumentView')
 		);
@@ -328,32 +337,36 @@ describe('envelope authoring page contracts', () => {
 		expect(recipientsTab).not.toContain('m.envelope_recipients_description_locked()');
 	});
 
-	it('keeps placed fields visible and read-only once an envelope is sent or closed, instead of an apparently empty panel', () => {
+	it('keeps signature placement on the authoring fields tab and hides that tab after send', () => {
 		const fieldsTab = source.slice(
 			source.indexOf('<Tabs.Content value="fields"'),
 			source.indexOf('<Tabs.Content value="send"')
 		);
 		expect(fieldsTab).toContain("{#if envelope.status === 'draft'}");
-		expect(fieldsTab).toContain("{:else if envelope.status !== 'ready'}");
-		expect(fieldsTab).toContain('envelope.sentCommitSha === null');
-		expect(fieldsTab).toContain('m.envelope_fields_locked_closed_description()');
-		expect(fieldsTab).toContain('m.envelope_fields_locked_after_send_description()');
-		expect(fieldsTab).toContain('m.envelope_fields_none_placed()');
-		expect(fieldsTab).toContain('recipientName(field.recipientId)');
-		expect(fieldsTab).toContain('documentSetTitle(field.documentId)');
-		expect(fieldsTab.indexOf("{#if envelope.status === 'draft'}")).toBeLessThan(
-			fieldsTab.indexOf("{:else if envelope.status !== 'ready'}")
-		);
+		expect(fieldsTab).not.toContain("{:else if envelope.status !== 'ready'}");
+		expect(fieldsTab).not.toContain('m.envelope_fields_locked_closed_description()');
+		expect(fieldsTab).not.toContain('m.envelope_fields_locked_after_send_description()');
+		expect(source).toContain('showAuthoringGuide');
+		expect(source).toContain('m.envelope_tab_status()');
+		expect(source).toContain('syncWorkspaceTab');
 	});
 
-	it('replaces stale pre-send guidance in Send & status once the envelope has moved past ready, and separates delivery from response progress', () => {
-		const sendTab = source.slice(source.indexOf('<Tabs.Content value="send"'));
-		expect(sendTab).toContain('m.envelope_send_status_description()');
-		expect(sendTab).toContain("{:else if envelope.status === 'draft'}");
-		expect(sendTab).toContain('m.envelope_delivery_col_signing_status()');
-		expect(sendTab).toContain('recipientWorkflowStatusLabel(matched.status)');
-		expect(sendTab).toContain('m.envelope_delivery_delivered_at({');
-		expect(sendTab).toContain('formatDate(item.deliveredAt)');
+	it('tracks post-send responses in Status, separate from invitation delivery', () => {
+		const statusTab = source.slice(source.indexOf('<Tabs.Content value="status"'));
+		expect(statusTab).toContain('m.envelope_send_status_description()');
+		expect(statusTab).toContain('m.envelope_delivery_col_signing_status()');
+		expect(statusTab).toContain('recipientWorkflowStatusLabel(recipient.status)');
+		expect(statusTab).toContain('m.envelope_delivery_delivered_at({');
+		expect(statusTab).toContain('formatDate(invitation.deliveredAt)');
+		expect(statusTab).toContain('m.envelope_reissue_action()');
+		const sendTab = source.slice(
+			source.indexOf('<Tabs.Content value="send"'),
+			source.indexOf('<Tabs.Content value="status"')
+		);
+		expect(sendTab).toContain('m.envelope_review_title()');
+		expect(sendTab).not.toContain('m.envelope_void_title()');
+		expect(source).toContain('m.envelope_other_actions()');
+		expect(source).toContain('m.envelope_void_dialog_title()');
 	});
 
 	it('formats delivery timestamps with the shared locale-aware date formatter', () => {

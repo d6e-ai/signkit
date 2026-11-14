@@ -18,6 +18,8 @@
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconChevronRight from '@tabler/icons-svelte/icons/chevron-right';
+	import IconCheck from '@tabler/icons-svelte/icons/check';
+	import IconDotsVertical from '@tabler/icons-svelte/icons/dots-vertical';
 	import ContactCombobox from '$lib/components/contacts/contact-combobox.svelte';
 	import ContactManagementDialog from '$lib/components/contacts/contact-management-dialog.svelte';
 	import {
@@ -44,6 +46,7 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import * as Collapsible from '$lib/components/ui/collapsible';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import {
 		createEnvelopesClient,
 		createEnvelopeMutationAttempt,
@@ -91,13 +94,17 @@
 		type AuthoringFieldRecord
 	} from './authoring-fields';
 	import {
+		authoringStepComplete,
 		isAuthoringStatus,
+		isAuthoringTab,
 		previousAuthoringTab,
 		sendBlockReason,
 		signersMissingPlacements,
+		syncWorkspaceTab,
 		tabAfterRecipients,
 		type AuthoringTab,
-		type SendBlockReason
+		type SendBlockReason,
+		type WorkspaceTab
 	} from './authoring-workflow';
 
 	const client = createEnvelopesClient();
@@ -153,6 +160,7 @@
 	let pdfSealStatusPending = $state(false);
 	let pdfSealRequestPending = $state(false);
 	let pdfSealDownloadPending = $state(false);
+	let pdfSealDetailsOpen = $state(false);
 	let requestedPdfSealProfile = $state<PdfSealProfile>('pades-b-t');
 
 	// Completion access reissue: a token/key-free read of each recipient's
@@ -248,7 +256,8 @@
 	let authoringFieldsHydrated = $state(false);
 	let fieldsPublishedMessage = $state<string | null>(null);
 	let fieldsPublishAttempt = $state(createEnvelopeMutationAttempt());
-	let workspaceTab = $state<AuthoringTab>('documents');
+	let workspaceTab = $state<WorkspaceTab>('documents');
+	let workspaceTabReady = false;
 	/**
 	 * The exact publish payload (and observed field generation) the cached
 	 * Idempotency-Key was minted for. A retry of that same ambiguous command
@@ -586,17 +595,19 @@
 		}
 	}
 
-	function recipientForDelivery(recipientId: string): ReadyRecipientPublic | undefined {
-		return readyRecipients.find((recipient) => recipient.id === recipientId);
+	function currentDeliveryForRecipient(
+		recipientId: string
+	): PublicEnvelopeDeliveryStatus['deliveries'][number] | null {
+		const items = delivery?.deliveries.filter((entry) => entry.recipientId === recipientId) ?? [];
+		return (
+			items.find((entry) => entry.status === 'processing' || entry.status === 'blocked') ??
+			items.at(-1) ??
+			null
+		);
 	}
 
 	function deliveryStatusForRecipient(recipientId: string): InvitationDeliveryStatus | null {
-		const items = delivery?.deliveries.filter((entry) => entry.recipientId === recipientId) ?? [];
-		return (
-			items.find((entry) => entry.status === 'processing' || entry.status === 'blocked')?.status ??
-			items.at(-1)?.status ??
-			null
-		);
+		return currentDeliveryForRecipient(recipientId)?.status ?? null;
 	}
 
 	function reissueDisabledReason(recipient: ReadyRecipientPublic): string | null {
@@ -869,6 +880,8 @@
 		try {
 			const detail = await client.getDetail(envelopeId);
 			envelope = detail.envelope;
+			workspaceTab = syncWorkspaceTab(workspaceTab, detail.envelope.status, workspaceTabReady);
+			workspaceTabReady = true;
 			readyRecipients = detail.recipients;
 			readyAuditEventId = detail.readyAuditEventId;
 			placedFields = detail.fields;
@@ -2183,18 +2196,25 @@
 		})
 	);
 	const showAuthoringGuide = $derived(isAuthoringStatus(envelope?.status));
+	const fieldsStepComplete = $derived(
+		signerRecipients().length === 0 ||
+			(authoringFieldsHydrated && missingSignerIds.length === 0 && !fieldDraftsDirty)
+	);
+	const pdfSealNeedsAttention = $derived(
+		pdfSealStatusError !== null ||
+			pdfSealRequestError !== null ||
+			pdfSealDownloadError !== null ||
+			pdfSealStatus?.status === 'pending' ||
+			pdfSealStatus?.status === 'processing' ||
+			pdfSealStatus?.status === 'failed'
+	);
 
-	function workflowStepLabel(tab: AuthoringTab): string {
-		switch (tab) {
-			case 'documents':
-				return m.envelope_tab_documents();
-			case 'recipients':
-				return m.envelope_tab_recipients();
-			case 'fields':
-				return m.envelope_tab_fields();
-			case 'send':
-				return m.envelope_review_title();
-		}
+	function authoringTabComplete(tab: AuthoringTab): boolean {
+		return authoringStepComplete(tab, {
+			status: envelope?.status,
+			hasDocuments: hasAuthoringDocuments && dirtyPaths.size === 0,
+			fieldsComplete: fieldsStepComplete
+		});
 	}
 
 	function nextActionLabel(): string {
@@ -2260,6 +2280,7 @@
 	}
 
 	function goPreviousAuthoringStep(): void {
+		if (!isAuthoringTab(workspaceTab)) return;
 		const previous = previousAuthoringTab(workspaceTab);
 		if (previous === null) return;
 		workspaceTab = previous;
@@ -2370,11 +2391,7 @@
 			{:else if completionStatus.status === 'published'}
 				<div class="flex flex-wrap gap-2">
 					{#if completionStatus.pdfStatus === 'published'}
-						<Button
-							variant="outline"
-							href={`/api/v1/envelopes/${envelopeId}/completion-artifact/pdf`}
-							download
-						>
+						<Button href={`/api/v1/envelopes/${envelopeId}/completion-artifact/pdf`} download>
 							<IconFileTypePdf data-icon="inline-start" />
 							{m.envelope_completed_pdf_download()}
 						</Button>
@@ -2606,6 +2623,48 @@
 		{/if}
 	</AlertDialog.Root>
 {/snippet}
+{#snippet publishedFieldsSection()}
+	<Collapsible.Root class="flex flex-col gap-2">
+		<Collapsible.Trigger>
+			{#snippet child({ props })}
+				<Button {...props} variant="outline" class="w-fit">{m.envelope_fields_title()}</Button>
+			{/snippet}
+		</Collapsible.Trigger>
+		<Collapsible.Content class="flex flex-col gap-3">
+			<p class="text-sm text-muted-foreground">
+				{envelope?.sentCommitSha === null
+					? m.envelope_fields_locked_closed_description()
+					: m.envelope_fields_locked_after_send_description()}
+			</p>
+			<div class="overflow-x-auto">
+				<Table.Root>
+					<Table.Header>
+						<Table.Row>
+							<Table.Head>{m.envelope_field_col_recipient()}</Table.Head>
+							<Table.Head>{m.envelope_field_col_type()}</Table.Head>
+							<Table.Head>{m.envelope_field_col_document()}</Table.Head>
+							<Table.Head>{m.envelope_field_col_position()}</Table.Head>
+						</Table.Row>
+					</Table.Header>
+					<Table.Body>
+						{#each placedFields as field (field.id)}
+							<Table.Row>
+								<Table.Cell>{recipientName(field.recipientId)}</Table.Cell>
+								<Table.Cell>{fieldTypeLabel(field.fieldType)}</Table.Cell>
+								<Table.Cell
+									>{documentSetTitle(field.documentId) ??
+										m.envelope_field_document_unresolved()}</Table.Cell
+								>
+								<Table.Cell>{field.position}</Table.Cell>
+							</Table.Row>
+						{/each}
+					</Table.Body>
+				</Table.Root>
+			</div>
+		</Collapsible.Content>
+	</Collapsible.Root>
+{/snippet}
+
 {#snippet sentDocumentsList()}
 	<div class="flex flex-col gap-4">
 		<div class="flex justify-end">
@@ -2718,34 +2777,79 @@
 						{m.envelope_reopen_action()}
 					</Button>
 				{/if}
+				{#if isVoidable}
+					<DropdownMenu.Root>
+						<DropdownMenu.Trigger>
+							{#snippet child({ props })}
+								<Button
+									{...props}
+									variant="outline"
+									size="icon"
+									aria-label={m.envelope_other_actions()}
+								>
+									<IconDotsVertical />
+								</Button>
+							{/snippet}
+						</DropdownMenu.Trigger>
+						<DropdownMenu.Content align="end">
+							<DropdownMenu.Group>
+								<DropdownMenu.Item variant="destructive" onclick={() => (voidDialogOpen = true)}>
+									<IconBan />
+									{m.envelope_void_action()}
+								</DropdownMenu.Item>
+							</DropdownMenu.Group>
+						</DropdownMenu.Content>
+					</DropdownMenu.Root>
+				{/if}
 			</div>
 		</section>
-
-		{#if showAuthoringGuide}
-			<p class="text-sm text-muted-foreground" aria-live="polite">
-				{m.envelope_workflow_step({
-					current: String(
-						workspaceTab === 'documents'
-							? 1
-							: workspaceTab === 'recipients'
-								? 2
-								: workspaceTab === 'fields'
-									? 3
-									: 4
-					),
-					total: '4',
-					name: workflowStepLabel(workspaceTab)
-				})}
-			</p>
+		{#if voidError}
+			<p class="text-sm font-medium text-destructive" role="alert">{voidError}</p>
 		{/if}
 
 		<Tabs.Root bind:value={workspaceTab} class="w-full min-w-0">
-			<Tabs.List class="w-full overflow-x-auto">
-				<Tabs.Trigger value="documents">{m.envelope_tab_documents()}</Tabs.Trigger>
-				<Tabs.Trigger value="recipients">{m.envelope_tab_recipients()}</Tabs.Trigger>
-				<Tabs.Trigger value="fields">{m.envelope_tab_fields()}</Tabs.Trigger>
-				<Tabs.Trigger value="send">{m.envelope_tab_send()}</Tabs.Trigger>
-			</Tabs.List>
+			{#if showAuthoringGuide}
+				<Tabs.List class="w-full justify-start overflow-x-auto">
+					<Tabs.Trigger
+						value="documents"
+						aria-current={workspaceTab === 'documents' ? 'step' : undefined}
+					>
+						{#if authoringTabComplete('documents')}
+							<IconCheck data-icon="inline-start" aria-hidden="true" />
+							<span class="sr-only">{m.envelope_step_complete()}</span>
+						{/if}
+						{m.envelope_tab_documents()}
+					</Tabs.Trigger>
+					<Tabs.Trigger
+						value="recipients"
+						aria-current={workspaceTab === 'recipients' ? 'step' : undefined}
+					>
+						{#if authoringTabComplete('recipients')}
+							<IconCheck data-icon="inline-start" aria-hidden="true" />
+							<span class="sr-only">{m.envelope_step_complete()}</span>
+						{/if}
+						{m.envelope_tab_recipients()}
+					</Tabs.Trigger>
+					<Tabs.Trigger
+						value="fields"
+						aria-current={workspaceTab === 'fields' ? 'step' : undefined}
+					>
+						{#if authoringTabComplete('fields')}
+							<IconCheck data-icon="inline-start" aria-hidden="true" />
+							<span class="sr-only">{m.envelope_step_complete()}</span>
+						{/if}
+						{m.envelope_tab_fields()}
+					</Tabs.Trigger>
+					<Tabs.Trigger value="send" aria-current={workspaceTab === 'send' ? 'step' : undefined}>
+						{m.envelope_tab_review()}
+					</Tabs.Trigger>
+				</Tabs.List>
+			{:else}
+				<Tabs.List class="w-full overflow-x-auto">
+					<Tabs.Trigger value="status">{m.envelope_tab_status()}</Tabs.Trigger>
+					<Tabs.Trigger value="documents">{m.envelope_tab_documents()}</Tabs.Trigger>
+				</Tabs.List>
+			{/if}
 
 			<Tabs.Content value="documents" class="flex flex-col gap-4">
 				{#if envelope.status === 'draft'}
@@ -3075,13 +3179,21 @@
 					{@render completionArtifactSection()}
 					{@render completionAccessReissueSection()}
 					{#if draft !== null}
-						<div class="mt-2 flex flex-col gap-1">
-							<h2 class="text-sm font-medium">{m.envelope_documents_originals_title()}</h2>
-							<p class="text-xs text-muted-foreground">
-								{m.envelope_documents_originals_description()}
-							</p>
-						</div>
-						{@render sentDocumentsList()}
+						<Collapsible.Root class="flex flex-col gap-2">
+							<Collapsible.Trigger>
+								{#snippet child({ props })}
+									<Button {...props} variant="outline" class="w-fit">
+										{m.envelope_documents_originals_title()}
+									</Button>
+								{/snippet}
+							</Collapsible.Trigger>
+							<Collapsible.Content class="flex flex-col gap-2">
+								<p class="text-sm text-muted-foreground">
+									{m.envelope_documents_originals_description()}
+								</p>
+								{@render sentDocumentsList()}
+							</Collapsible.Content>
+						</Collapsible.Root>
 					{:else}
 						<p class="text-sm font-medium text-destructive" role="alert">
 							{sentDocumentsLoadError ?? m.envelope_sent_documents_unavailable()}
@@ -3095,213 +3207,238 @@
 					</p>
 				{/if}
 
+				{#if !showAuthoringGuide && placedFields.length > 0}
+					{@render publishedFieldsSection()}
+				{/if}
+
 				{#if envelope.status === 'completed'}
-					<Card.Root>
-						<Card.Header>
-							<Card.Title>{m.envelope_pdf_seal_title()}</Card.Title>
-							<Card.Description>{m.envelope_pdf_seal_description()}</Card.Description>
-						</Card.Header>
-						<Card.Content class="flex flex-col gap-4" aria-live="polite">
-							{#if pdfSealStatusError}
-								<Alert.Root variant="destructive">
-									<IconAlertTriangle />
-									<Alert.Title>{m.envelope_pdf_seal_status_label()}</Alert.Title>
-									<Alert.Description>{pdfSealStatusError}</Alert.Description>
-								</Alert.Root>
-							{:else if pdfSealStatus === null}
-								<Skeleton class="h-9 w-48" />
-							{:else if pdfSealStatus.status === 'disabled'}
-								<p class="text-sm text-muted-foreground">
-									{m.envelope_pdf_seal_status_disabled()}
-								</p>
-							{:else if pdfSealStatus.status === 'not_requested'}
-								<p class="text-sm text-muted-foreground">
-									{completionStatusError
-										? completionStatusError
-										: completionStatus?.status === 'failed'
-											? m.envelope_completed_status_failed()
-											: completionStatus?.status === 'pending' ||
-												  completionStatus?.status === 'processing'
-												? m.envelope_completed_status_pending()
-												: completionPdfStatus === 'published'
-													? m.envelope_pdf_seal_status_not_requested()
-													: completionPdfStatus === 'pending'
-														? m.envelope_completed_pdf_pending()
-														: m.envelope_completed_pdf_unavailable()}
-								</p>
-							{:else if pdfSealStatus.status === 'pending' || pdfSealStatus.status === 'processing'}
-								<div class="flex flex-col gap-3">
-									<p class="text-sm text-muted-foreground">
-										{pdfSealStatus.status === 'pending'
-											? m.envelope_pdf_seal_status_pending()
-											: m.envelope_pdf_seal_status_processing()}
-									</p>
-									<div class="flex flex-wrap gap-2">
-										<Badge variant="secondary">
-											{m.envelope_pdf_seal_profile_requested({
-												profile: pdfSealProfileLabel(pdfSealStatus.requestedProfile)
-											})}
-										</Badge>
-										<Badge variant="outline">
-											{pdfSealStatus.requestedProfile === 'pades-b-t'
-												? m.envelope_pdf_seal_timestamp_requested()
-												: m.envelope_pdf_seal_timestamp_absent()}
-										</Badge>
-									</div>
-								</div>
-							{:else if pdfSealStatus.status === 'failed'}
-								<div class="flex flex-col gap-3">
-									<Alert.Root variant="destructive">
-										<IconAlertTriangle />
-										<Alert.Title>{m.envelope_pdf_seal_status_failed()}</Alert.Title>
-										<Alert.Description>
-											{pdfSealStatus.retryable
-												? m.envelope_pdf_seal_status_failed_retryable()
-												: m.envelope_pdf_seal_status_failed_final()}
-										</Alert.Description>
-									</Alert.Root>
-									<Badge variant="secondary">
-										{m.envelope_pdf_seal_profile_requested({
-											profile: pdfSealProfileLabel(pdfSealStatus.requestedProfile)
-										})}
-									</Badge>
-								</div>
-							{:else if pdfSealStatus.status === 'published'}
-								<div class="flex flex-col gap-3">
-									<p class="text-sm text-muted-foreground">
-										{m.envelope_pdf_seal_status_published()}
-									</p>
-									<div class="flex flex-wrap gap-2">
-										<Badge>
-											{m.envelope_pdf_seal_profile_achieved({
-												profile: pdfSealProfileLabel(pdfSealStatus.achievedProfile)
-											})}
-										</Badge>
-										<Badge variant="secondary">{m.envelope_pdf_seal_validation_badge()}</Badge>
-										<Badge variant="outline">
-											{pdfSealStatus.achievedProfile === 'pades-b-t'
-												? m.envelope_pdf_seal_timestamp_present()
-												: m.envelope_pdf_seal_timestamp_absent()}
-										</Badge>
-									</div>
-								</div>
-							{/if}
-							{#if pdfSealRequestError}
-								<Alert.Root variant="destructive">
-									<IconAlertTriangle />
-									<Alert.Title>{m.envelope_pdf_seal_request_action()}</Alert.Title>
-									<Alert.Description>{pdfSealRequestError}</Alert.Description>
-								</Alert.Root>
-							{/if}
-							{#if pdfSealDownloadError}
-								<Alert.Root variant="destructive">
-									<IconAlertTriangle />
-									<Alert.Title>{m.envelope_pdf_seal_download_action()}</Alert.Title>
-									<Alert.Description>{pdfSealDownloadError}</Alert.Description>
-								</Alert.Root>
-							{/if}
-						</Card.Content>
-						{#if pdfSealStatus?.status === 'not_requested' && completionPdfStatus === 'published'}
-							<Card.Footer>
-								<form
-									class="flex w-full flex-col gap-4"
-									onsubmit={(event) => {
-										event.preventDefault();
-										void requestPdfSeal();
-									}}
-								>
-									<Field.FieldGroup>
-										<Field.Field data-disabled={pdfSealRequestPending}>
-											<Field.FieldLabel for="pdf-seal-profile">
-												{m.envelope_pdf_seal_profile_label()}
-											</Field.FieldLabel>
-											<Select.Root
-												type="single"
-												bind:value={requestedPdfSealProfile}
-												disabled={pdfSealRequestPending}
-											>
-												<Select.Trigger id="pdf-seal-profile" class="w-full">
-													{pdfSealProfileLabel(requestedPdfSealProfile)}
-												</Select.Trigger>
-												<Select.Content>
-													<Select.Group>
-														<Select.Item value="pades-b-b" label={m.envelope_pdf_seal_profile_bb()}>
-															{m.envelope_pdf_seal_profile_bb()}
-														</Select.Item>
-														<Select.Item value="pades-b-t" label={m.envelope_pdf_seal_profile_bt()}>
-															{m.envelope_pdf_seal_profile_bt()}
-														</Select.Item>
-													</Select.Group>
-												</Select.Content>
-											</Select.Root>
-											<Field.FieldDescription>
-												{requestedPdfSealProfile === 'pades-b-t'
-													? m.envelope_pdf_seal_profile_bt_description()
-													: m.envelope_pdf_seal_profile_bb_description()}
-											</Field.FieldDescription>
-										</Field.Field>
-									</Field.FieldGroup>
-									<Button type="submit" class="w-fit" disabled={pdfSealRequestPending}>
-										{#if pdfSealRequestPending}
-											<Spinner data-icon="inline-start" />
-										{:else}
-											<IconCertificate data-icon="inline-start" />
-										{/if}
-										{m.envelope_pdf_seal_request_action()}
+					<Collapsible.Root
+						class="flex flex-col gap-2"
+						bind:open={
+							() => pdfSealNeedsAttention || pdfSealDetailsOpen,
+							(open) => {
+								if (!pdfSealNeedsAttention) pdfSealDetailsOpen = open;
+							}
+						}
+					>
+						{#if !pdfSealNeedsAttention}
+							<Collapsible.Trigger>
+								{#snippet child({ props })}
+									<Button {...props} variant="outline" class="w-fit">
+										{m.envelope_pdf_seal_title()}
 									</Button>
-								</form>
-							</Card.Footer>
-						{:else if pdfSealStatus?.status === 'published'}
-							<Card.Footer>
-								<Button disabled={pdfSealDownloadPending} onclick={() => void downloadSealedPdf()}>
-									{#if pdfSealDownloadPending}
-										<Spinner data-icon="inline-start" />
-									{:else}
-										<IconFileTypePdf data-icon="inline-start" />
-									{/if}
-									{m.envelope_pdf_seal_download_action()}
-								</Button>
-							</Card.Footer>
-						{:else if pdfSealStatusError || pdfSealStatus?.status === 'pending' || pdfSealStatus?.status === 'processing' || pdfSealStatus?.status === 'failed'}
-							<Card.Footer>
-								<Button
-									variant="outline"
-									disabled={pdfSealStatusPending}
-									onclick={() => void refreshPdfSealStatus()}
-								>
-									{#if pdfSealStatusPending}
-										<Spinner data-icon="inline-start" />
-									{:else}
-										<IconRefresh data-icon="inline-start" />
-									{/if}
-									{m.envelope_pdf_seal_refresh_action()}
-								</Button>
-							</Card.Footer>
+								{/snippet}
+							</Collapsible.Trigger>
 						{/if}
-					</Card.Root>
+						<Collapsible.Content>
+							<Card.Root>
+								<Card.Header>
+									<Card.Title>{m.envelope_pdf_seal_title()}</Card.Title>
+									<Card.Description>{m.envelope_pdf_seal_description()}</Card.Description>
+								</Card.Header>
+								<Card.Content class="flex flex-col gap-4" aria-live="polite">
+									{#if pdfSealStatusError}
+										<Alert.Root variant="destructive">
+											<IconAlertTriangle />
+											<Alert.Title>{m.envelope_pdf_seal_status_label()}</Alert.Title>
+											<Alert.Description>{pdfSealStatusError}</Alert.Description>
+										</Alert.Root>
+									{:else if pdfSealStatus === null}
+										<Skeleton class="h-9 w-48" />
+									{:else if pdfSealStatus.status === 'disabled'}
+										<p class="text-sm text-muted-foreground">
+											{m.envelope_pdf_seal_status_disabled()}
+										</p>
+									{:else if pdfSealStatus.status === 'not_requested'}
+										<p class="text-sm text-muted-foreground">
+											{completionStatusError
+												? completionStatusError
+												: completionStatus?.status === 'failed'
+													? m.envelope_completed_status_failed()
+													: completionStatus?.status === 'pending' ||
+														  completionStatus?.status === 'processing'
+														? m.envelope_completed_status_pending()
+														: completionPdfStatus === 'published'
+															? m.envelope_pdf_seal_status_not_requested()
+															: completionPdfStatus === 'pending'
+																? m.envelope_completed_pdf_pending()
+																: m.envelope_completed_pdf_unavailable()}
+										</p>
+									{:else if pdfSealStatus.status === 'pending' || pdfSealStatus.status === 'processing'}
+										<div class="flex flex-col gap-3">
+											<p class="text-sm text-muted-foreground">
+												{pdfSealStatus.status === 'pending'
+													? m.envelope_pdf_seal_status_pending()
+													: m.envelope_pdf_seal_status_processing()}
+											</p>
+											<div class="flex flex-wrap gap-2">
+												<Badge variant="secondary">
+													{m.envelope_pdf_seal_profile_requested({
+														profile: pdfSealProfileLabel(pdfSealStatus.requestedProfile)
+													})}
+												</Badge>
+												<Badge variant="outline">
+													{pdfSealStatus.requestedProfile === 'pades-b-t'
+														? m.envelope_pdf_seal_timestamp_requested()
+														: m.envelope_pdf_seal_timestamp_absent()}
+												</Badge>
+											</div>
+										</div>
+									{:else if pdfSealStatus.status === 'failed'}
+										<div class="flex flex-col gap-3">
+											<Alert.Root variant="destructive">
+												<IconAlertTriangle />
+												<Alert.Title>{m.envelope_pdf_seal_status_failed()}</Alert.Title>
+												<Alert.Description>
+													{pdfSealStatus.retryable
+														? m.envelope_pdf_seal_status_failed_retryable()
+														: m.envelope_pdf_seal_status_failed_final()}
+												</Alert.Description>
+											</Alert.Root>
+											<Badge variant="secondary">
+												{m.envelope_pdf_seal_profile_requested({
+													profile: pdfSealProfileLabel(pdfSealStatus.requestedProfile)
+												})}
+											</Badge>
+										</div>
+									{:else if pdfSealStatus.status === 'published'}
+										<div class="flex flex-col gap-3">
+											<p class="text-sm text-muted-foreground">
+												{m.envelope_pdf_seal_status_published()}
+											</p>
+											<div class="flex flex-wrap gap-2">
+												<Badge>
+													{m.envelope_pdf_seal_profile_achieved({
+														profile: pdfSealProfileLabel(pdfSealStatus.achievedProfile)
+													})}
+												</Badge>
+												<Badge variant="secondary">{m.envelope_pdf_seal_validation_badge()}</Badge>
+												<Badge variant="outline">
+													{pdfSealStatus.achievedProfile === 'pades-b-t'
+														? m.envelope_pdf_seal_timestamp_present()
+														: m.envelope_pdf_seal_timestamp_absent()}
+												</Badge>
+											</div>
+										</div>
+									{/if}
+									{#if pdfSealRequestError}
+										<Alert.Root variant="destructive">
+											<IconAlertTriangle />
+											<Alert.Title>{m.envelope_pdf_seal_request_action()}</Alert.Title>
+											<Alert.Description>{pdfSealRequestError}</Alert.Description>
+										</Alert.Root>
+									{/if}
+									{#if pdfSealDownloadError}
+										<Alert.Root variant="destructive">
+											<IconAlertTriangle />
+											<Alert.Title>{m.envelope_pdf_seal_download_action()}</Alert.Title>
+											<Alert.Description>{pdfSealDownloadError}</Alert.Description>
+										</Alert.Root>
+									{/if}
+								</Card.Content>
+								{#if pdfSealStatus?.status === 'not_requested' && completionPdfStatus === 'published'}
+									<Card.Footer>
+										<form
+											class="flex w-full flex-col gap-4"
+											onsubmit={(event) => {
+												event.preventDefault();
+												void requestPdfSeal();
+											}}
+										>
+											<Field.FieldGroup>
+												<Field.Field data-disabled={pdfSealRequestPending}>
+													<Field.FieldLabel for="pdf-seal-profile">
+														{m.envelope_pdf_seal_profile_label()}
+													</Field.FieldLabel>
+													<Select.Root
+														type="single"
+														bind:value={requestedPdfSealProfile}
+														disabled={pdfSealRequestPending}
+													>
+														<Select.Trigger id="pdf-seal-profile" class="w-full">
+															{pdfSealProfileLabel(requestedPdfSealProfile)}
+														</Select.Trigger>
+														<Select.Content>
+															<Select.Group>
+																<Select.Item
+																	value="pades-b-b"
+																	label={m.envelope_pdf_seal_profile_bb()}
+																>
+																	{m.envelope_pdf_seal_profile_bb()}
+																</Select.Item>
+																<Select.Item
+																	value="pades-b-t"
+																	label={m.envelope_pdf_seal_profile_bt()}
+																>
+																	{m.envelope_pdf_seal_profile_bt()}
+																</Select.Item>
+															</Select.Group>
+														</Select.Content>
+													</Select.Root>
+													<Field.FieldDescription>
+														{requestedPdfSealProfile === 'pades-b-t'
+															? m.envelope_pdf_seal_profile_bt_description()
+															: m.envelope_pdf_seal_profile_bb_description()}
+													</Field.FieldDescription>
+												</Field.Field>
+											</Field.FieldGroup>
+											<Button type="submit" class="w-fit" disabled={pdfSealRequestPending}>
+												{#if pdfSealRequestPending}
+													<Spinner data-icon="inline-start" />
+												{:else}
+													<IconCertificate data-icon="inline-start" />
+												{/if}
+												{m.envelope_pdf_seal_request_action()}
+											</Button>
+										</form>
+									</Card.Footer>
+								{:else if pdfSealStatus?.status === 'published'}
+									<Card.Footer>
+										<Button
+											disabled={pdfSealDownloadPending}
+											onclick={() => void downloadSealedPdf()}
+										>
+											{#if pdfSealDownloadPending}
+												<Spinner data-icon="inline-start" />
+											{:else}
+												<IconFileTypePdf data-icon="inline-start" />
+											{/if}
+											{m.envelope_pdf_seal_download_action()}
+										</Button>
+									</Card.Footer>
+								{:else if pdfSealStatusError || pdfSealStatus?.status === 'pending' || pdfSealStatus?.status === 'processing' || pdfSealStatus?.status === 'failed'}
+									<Card.Footer>
+										<Button
+											variant="outline"
+											disabled={pdfSealStatusPending}
+											onclick={() => void refreshPdfSealStatus()}
+										>
+											{#if pdfSealStatusPending}
+												<Spinner data-icon="inline-start" />
+											{:else}
+												<IconRefresh data-icon="inline-start" />
+											{/if}
+											{m.envelope_pdf_seal_refresh_action()}
+										</Button>
+									</Card.Footer>
+								{/if}
+							</Card.Root>
+						</Collapsible.Content>
+					</Collapsible.Root>
 				{/if}
 			</Tabs.Content>
 
 			<Tabs.Content value="recipients" class="flex flex-col gap-4">
-				{#if reissueSuccessMessage}
-					<Alert.Root role="status">
-						<Alert.Description>{reissueSuccessMessage}</Alert.Description>
-					</Alert.Root>
-				{/if}
-				{#if reissueRefreshWarning}
-					<Alert.Root variant="destructive" role="alert">
-						<IconAlertTriangle />
-						<Alert.Description>{reissueRefreshWarning}</Alert.Description>
-					</Alert.Root>
-				{/if}
 				<Card.Root>
 					<Card.Header class="flex flex-wrap items-center justify-between gap-3">
 						<div class="min-w-0">
 							<Card.Title>{m.envelope_recipients_title()}</Card.Title>
 						</div>
-						<Button variant="outline" onclick={() => (contactManagementOpen = true)}>
-							<IconAddressBook data-icon="inline-start" />{m.contacts_manage_action()}
-						</Button>
+						{#if envelope.status === 'draft'}
+							<Button variant="outline" onclick={() => (contactManagementOpen = true)}>
+								<IconAddressBook data-icon="inline-start" />{m.contacts_manage_action()}
+							</Button>
+						{/if}
 					</Card.Header>
 					<Card.Content class="flex flex-col gap-4">
 						{#if envelope.status === 'draft'}
@@ -3517,7 +3654,6 @@
 											<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
 											<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
 											<Table.Head>{m.envelope_recipient_col_status()}</Table.Head>
-											<Table.Head class="text-right">{m.envelope_reissue_col_actions()}</Table.Head>
 										</Table.Row>
 									</Table.Header>
 									<Table.Body>
@@ -3528,32 +3664,6 @@
 												<Table.Cell>{recipientRoleLabel(recipient.role)}</Table.Cell>
 												<Table.Cell>{recipientLocaleLabel(recipient.locale)}</Table.Cell>
 												<Table.Cell>{recipientWorkflowStatusLabel(recipient.status)}</Table.Cell>
-												<Table.Cell class="text-right">
-													{#if reissueVisible(recipient)}
-														{@const disabledReason = reissueDisabledReason(recipient)}
-														<Button
-															size="sm"
-															variant="outline"
-															aria-label={m.envelope_reissue_action_aria({ name: recipient.name })}
-															title={disabledReason ?? undefined}
-															aria-describedby={disabledReason !== null
-																? `reissue-disabled-${recipient.id}`
-																: undefined}
-															disabled={reissuePending || disabledReason !== null}
-															onclick={() => chooseReissueTarget(recipient)}
-														>
-															{m.envelope_reissue_action()}
-														</Button>
-														{#if disabledReason !== null}
-															<p
-																id={`reissue-disabled-${recipient.id}`}
-																class="mt-1 text-xs text-muted-foreground"
-															>
-																{disabledReason}
-															</p>
-														{/if}
-													{/if}
-												</Table.Cell>
 											</Table.Row>
 										{/each}
 									</Table.Body>
@@ -3565,92 +3675,11 @@
 					</Card.Content>
 				</Card.Root>
 				<ContactManagementDialog bind:open={contactManagementOpen} />
-				<AlertDialog.Root
-					bind:open={
-						() => reissueTarget !== null,
-						(open) => {
-							if (!open) closeReissueDialog();
-						}
-					}
-				>
-					{#if reissueTarget !== null}
-						<AlertDialog.Content escapeKeydownBehavior={reissuePending ? 'ignore' : 'close'}>
-							<AlertDialog.Header>
-								<AlertDialog.Title>
-									{m.envelope_reissue_dialog_title({ name: reissueTarget.name })}
-								</AlertDialog.Title>
-								<AlertDialog.Description>
-									{m.envelope_reissue_dialog_description({ name: reissueTarget.name })}
-								</AlertDialog.Description>
-							</AlertDialog.Header>
-							{#if reissueError}
-								<p class="text-sm font-medium text-destructive" role="alert">{reissueError}</p>
-							{/if}
-							<AlertDialog.Footer>
-								<AlertDialog.Cancel disabled={reissuePending} onclick={closeReissueDialog}>
-									{m.common_cancel()}
-								</AlertDialog.Cancel>
-								<AlertDialog.Action
-									disabled={reissuePending}
-									onclick={(event) => {
-										event.preventDefault();
-										void confirmReissue();
-									}}
-								>
-									{#if reissuePending}<Spinner data-icon="inline-start" />{/if}
-									{m.envelope_reissue_dialog_confirm()}
-								</AlertDialog.Action>
-							</AlertDialog.Footer>
-						</AlertDialog.Content>
-					{/if}
-				</AlertDialog.Root>
 			</Tabs.Content>
 
 			<Tabs.Content value="fields" class="flex flex-col gap-4">
 				{#if envelope.status === 'draft'}
 					<p class="text-sm text-muted-foreground">{m.envelope_fields_requires_ready()}</p>
-				{:else if envelope.status !== 'ready'}
-					<Card.Root>
-						<Card.Header>
-							<Card.Title>{m.envelope_fields_title()}</Card.Title>
-							<Card.Description>
-								{envelope.sentCommitSha === null
-									? m.envelope_fields_locked_closed_description()
-									: m.envelope_fields_locked_after_send_description()}
-							</Card.Description>
-						</Card.Header>
-						<Card.Content>
-							{#if placedFields.length === 0}
-								<p class="text-sm text-muted-foreground">{m.envelope_fields_none_placed()}</p>
-							{:else}
-								<div class="overflow-x-auto">
-									<Table.Root>
-										<Table.Header>
-											<Table.Row>
-												<Table.Head>{m.envelope_field_col_recipient()}</Table.Head>
-												<Table.Head>{m.envelope_field_col_type()}</Table.Head>
-												<Table.Head>{m.envelope_field_col_document()}</Table.Head>
-												<Table.Head>{m.envelope_field_col_position()}</Table.Head>
-											</Table.Row>
-										</Table.Header>
-										<Table.Body>
-											{#each placedFields as field (field.id)}
-												<Table.Row>
-													<Table.Cell>{recipientName(field.recipientId)}</Table.Cell>
-													<Table.Cell>{fieldTypeLabel(field.fieldType)}</Table.Cell>
-													<Table.Cell>
-														{documentSetTitle(field.documentId) ??
-															m.envelope_field_document_unresolved()}
-													</Table.Cell>
-													<Table.Cell>{field.position}</Table.Cell>
-												</Table.Row>
-											{/each}
-										</Table.Body>
-									</Table.Root>
-								</div>
-							{/if}
-						</Card.Content>
-					</Card.Root>
 				{:else if signerRecipients().length === 0}
 					<p class="text-sm text-muted-foreground">{m.envelope_fields_no_signers()}</p>
 				{:else if documentPages === null}
@@ -3780,17 +3809,29 @@
 							{/if}
 
 							<div class="flex flex-col gap-3">
-								<div>
-									<p class="text-sm font-medium">{m.envelope_placement_title()}</p>
-									<p class="text-xs text-muted-foreground">
-										{m.envelope_placement_description()}
-									</p>
-									{#if !placementLocked}
-										<p class="mt-1 text-xs text-muted-foreground">
-											{m.envelope_placement_keyboard_hint()}
+								<p class="text-sm font-medium">{m.envelope_placement_title()}</p>
+								<Collapsible.Root class="flex flex-col gap-2">
+									<Collapsible.Trigger>
+										{#snippet child({ props })}
+											<Button {...props} variant="ghost" size="sm" class="w-fit">
+												{m.envelope_placement_help()}
+											</Button>
+										{/snippet}
+									</Collapsible.Trigger>
+									<Collapsible.Content class="flex flex-col gap-2">
+										<p class="text-xs text-muted-foreground">
+											{m.envelope_placement_description()}
 										</p>
-									{/if}
-								</div>
+										{#if !placementLocked}
+											<p class="text-xs text-muted-foreground">
+												{m.envelope_placement_keyboard_hint()}
+											</p>
+										{/if}
+										<p class="text-xs text-muted-foreground">
+											{m.envelope_field_geometry_description()}
+										</p>
+									</Collapsible.Content>
+								</Collapsible.Root>
 								{#if !placementLocked}
 									{#if newField.recipientId === ''}
 										<p class="text-sm text-muted-foreground">
@@ -3825,222 +3866,232 @@
 										</div>
 									{/if}
 								{/if}
-								{#if documentPages !== null && documentPages.documents.length > 1}
-									<nav class="flex flex-wrap gap-2" aria-label={m.envelope_document_switcher()}>
-										{#each documentPages.documents as document (document.documentId)}
-											<Button
-												size="sm"
-												variant={documentIdForPlacement() === document.documentId
-													? 'default'
-													: 'outline'}
-												onclick={() => {
-													selectedFieldKey = null;
-													keyboardAddPage = 1;
-													selectedPlacementDocumentId = document.documentId;
-													void loadDocumentPages();
-												}}
-											>
-												{document.title}
-												<Badge class="ml-1" variant="secondary">{document.kind}</Badge>
-											</Button>
-										{/each}
-									</nav>
-								{/if}
-								{#key `${envelopeId}:${documentIdForPlacement() ?? ''}`}
-									<PdfDocumentView
-										src={documentIdForPlacement() === null
-											? ''
-											: `/api/v1/envelopes/${envelopeId}/document-pdf?documentId=${encodeURIComponent(documentIdForPlacement() ?? '')}`}
-										label={m.signing_document_label()}
-										expectedPageCount={documentPages?.pageCount ?? 1}
-										loadingLabel={m.signing_document_loading()}
-										errorTitle={m.signing_document_error_title()}
-										errorDescription={m.signing_document_error_description()}
-										openLabel={m.signing_document_open()}
-									>
-										{#snippet overlay(page: PdfRenderedPage)}
-											<!-- svelte-ignore a11y_no_static_element_interactions -->
-											<!-- svelte-ignore a11y_click_events_have_key_events -->
-											<div
-												class="absolute inset-0"
-												class:cursor-crosshair={!placementLocked &&
-													placementReady &&
-													newField.recipientId !== ''}
-												aria-label={m.envelope_field_geometry_page_aria()}
-												onclick={(event) => handlePageClick(event, page.pageNumber)}
-											>
-												{#each draftsOnPage(page.pageNumber) as fieldDraft (fieldDraft.key)}
-													{#if fieldDraft.geometry}
-														<button
-															type="button"
-															id={`field-box-${fieldDraft.key}`}
-															aria-label={m.envelope_placement_box_label({
-																label: fieldDraft.label,
-																recipient: recipientName(fieldDraft.recipientId),
-																page: String(fieldDraft.geometry.page)
-															})}
-															aria-pressed={selectedFieldKey === fieldDraft.key}
-															class="absolute cursor-move touch-none rounded border-2 border-primary bg-primary/20 text-[10px] font-medium text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-															class:ring-2={selectedFieldKey === fieldDraft.key}
-															style={`left:${fieldDraft.geometry.x * 100}%;top:${fieldDraft.geometry.y * 100}%;width:${fieldDraft.geometry.width * 100}%;height:${fieldDraft.geometry.height * 100}%;`}
-															onpointerdown={(event) => startDrag(event, fieldDraft.key, 'move')}
-															onpointermove={continueDrag}
-															onpointerup={endDrag}
-															onpointercancel={endDrag}
-															onkeydown={(event) => handleFieldKeydown(event, fieldDraft.key)}
-															onfocus={() => {
-																selectedFieldKey = fieldDraft.key;
-															}}
-															onclick={(event) => event.stopPropagation()}
-														>
-															<span class="block truncate px-1">{fieldDraft.label}</span>
-															<span
-																role="presentation"
-																class="absolute right-0 bottom-0 size-3 cursor-se-resize touch-none rounded-sm bg-primary"
-																onpointerdown={(event) =>
-																	startDrag(event, fieldDraft.key, 'resize')}
-																onpointermove={continueDrag}
-																onpointerup={endDrag}
-																onpointercancel={endDrag}
-															></span>
-														</button>
-													{/if}
+								<div class="flex flex-col gap-4 lg:flex-row lg:items-start">
+									<div class="flex min-w-0 flex-1 flex-col gap-3">
+										{#if documentPages !== null && documentPages.documents.length > 1}
+											<nav class="flex flex-wrap gap-2" aria-label={m.envelope_document_switcher()}>
+												{#each documentPages.documents as document (document.documentId)}
+													<Button
+														size="sm"
+														variant={documentIdForPlacement() === document.documentId
+															? 'default'
+															: 'outline'}
+														onclick={() => {
+															selectedFieldKey = null;
+															keyboardAddPage = 1;
+															selectedPlacementDocumentId = document.documentId;
+															void loadDocumentPages();
+														}}
+													>
+														{document.title}
+														<Badge class="ml-1" variant="secondary">{document.kind}</Badge>
+													</Button>
 												{/each}
+											</nav>
+										{/if}
+										{#key `${envelopeId}:${documentIdForPlacement() ?? ''}`}
+											<PdfDocumentView
+												src={documentIdForPlacement() === null
+													? ''
+													: `/api/v1/envelopes/${envelopeId}/document-pdf?documentId=${encodeURIComponent(documentIdForPlacement() ?? '')}`}
+												label={m.signing_document_label()}
+												expectedPageCount={documentPages?.pageCount ?? 1}
+												loadingLabel={m.signing_document_loading()}
+												errorTitle={m.signing_document_error_title()}
+												errorDescription={m.signing_document_error_description()}
+												openLabel={m.signing_document_open()}
+											>
+												{#snippet overlay(page: PdfRenderedPage)}
+													<!-- svelte-ignore a11y_no_static_element_interactions -->
+													<!-- svelte-ignore a11y_click_events_have_key_events -->
+													<div
+														class="absolute inset-0"
+														class:cursor-crosshair={!placementLocked &&
+															placementReady &&
+															newField.recipientId !== ''}
+														aria-label={m.envelope_field_geometry_page_aria()}
+														onclick={(event) => handlePageClick(event, page.pageNumber)}
+													>
+														{#each draftsOnPage(page.pageNumber) as fieldDraft (fieldDraft.key)}
+															{#if fieldDraft.geometry}
+																<button
+																	type="button"
+																	id={`field-box-${fieldDraft.key}`}
+																	aria-label={m.envelope_placement_box_label({
+																		label: fieldDraft.label,
+																		recipient: recipientName(fieldDraft.recipientId),
+																		page: String(fieldDraft.geometry.page)
+																	})}
+																	aria-pressed={selectedFieldKey === fieldDraft.key}
+																	class="absolute cursor-move touch-none rounded border-2 border-primary bg-primary/20 text-[10px] font-medium text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+																	class:ring-2={selectedFieldKey === fieldDraft.key}
+																	style={`left:${fieldDraft.geometry.x * 100}%;top:${fieldDraft.geometry.y * 100}%;width:${fieldDraft.geometry.width * 100}%;height:${fieldDraft.geometry.height * 100}%;`}
+																	onpointerdown={(event) =>
+																		startDrag(event, fieldDraft.key, 'move')}
+																	onpointermove={continueDrag}
+																	onpointerup={endDrag}
+																	onpointercancel={endDrag}
+																	onkeydown={(event) => handleFieldKeydown(event, fieldDraft.key)}
+																	onfocus={() => {
+																		selectedFieldKey = fieldDraft.key;
+																	}}
+																	onclick={(event) => event.stopPropagation()}
+																>
+																	<span class="block truncate px-1">{fieldDraft.label}</span>
+																	<span
+																		role="presentation"
+																		class="absolute right-0 bottom-0 size-3 cursor-se-resize touch-none rounded-sm bg-primary"
+																		onpointerdown={(event) =>
+																			startDrag(event, fieldDraft.key, 'resize')}
+																		onpointermove={continueDrag}
+																		onpointerup={endDrag}
+																		onpointercancel={endDrag}
+																	></span>
+																</button>
+															{/if}
+														{/each}
+													</div>
+												{/snippet}
+											</PdfDocumentView>
+										{/key}
+										<div class="sr-only" role="status" aria-live="polite">
+											{geometryAnnouncement}
+										</div>
+									</div>
+									<aside class="flex w-full flex-col gap-4 lg:w-80 lg:shrink-0">
+										{#if selectedFieldPanel}
+											<Field.FieldSet>
+												<Field.FieldLegend variant="label">
+													{m.envelope_field_geometry_label()}
+												</Field.FieldLegend>
+												{#if !selectedFieldPanel.editable}
+													<Field.FieldDescription>
+														{m.envelope_field_geometry_readonly()}
+													</Field.FieldDescription>
+												{/if}
+												<Field.FieldGroup class="grid grid-cols-2 gap-3">
+													<Field.Field data-disabled={!selectedFieldPanel.editable}>
+														<Field.FieldLabel for="selected-field-page">
+															{m.envelope_field_geometry_page()}
+														</Field.FieldLabel>
+														<Input
+															id="selected-field-page"
+															type="number"
+															min="1"
+															max={currentDocumentPageCount()}
+															disabled={!selectedFieldPanel.editable}
+															value={selectedFieldPanel.geometry.page}
+															oninput={(event) =>
+																updateSelectedPage(Number(event.currentTarget.value))}
+														/>
+													</Field.Field>
+													<Field.Field data-disabled={!selectedFieldPanel.editable}>
+														<Field.FieldLabel for="selected-field-left">
+															{m.envelope_field_geometry_left()}
+														</Field.FieldLabel>
+														<Input
+															id="selected-field-left"
+															type="number"
+															min="0"
+															max="100"
+															step="0.1"
+															disabled={!selectedFieldPanel.editable}
+															value={round1(selectedFieldPanel.geometry.x * 100)}
+															oninput={(event) =>
+																updateSelectedPercent('x', Number(event.currentTarget.value))}
+														/>
+													</Field.Field>
+													<Field.Field data-disabled={!selectedFieldPanel.editable}>
+														<Field.FieldLabel for="selected-field-top">
+															{m.envelope_field_geometry_top()}
+														</Field.FieldLabel>
+														<Input
+															id="selected-field-top"
+															type="number"
+															min="0"
+															max="100"
+															step="0.1"
+															disabled={!selectedFieldPanel.editable}
+															value={round1(selectedFieldPanel.geometry.y * 100)}
+															oninput={(event) =>
+																updateSelectedPercent('y', Number(event.currentTarget.value))}
+														/>
+													</Field.Field>
+													<Field.Field data-disabled={!selectedFieldPanel.editable}>
+														<Field.FieldLabel for="selected-field-width">
+															{m.envelope_field_geometry_width()}
+														</Field.FieldLabel>
+														<Input
+															id="selected-field-width"
+															type="number"
+															min={MIN_FIELD_SIZE * 100}
+															max="100"
+															step="0.1"
+															disabled={!selectedFieldPanel.editable}
+															value={round1(selectedFieldPanel.geometry.width * 100)}
+															oninput={(event) =>
+																updateSelectedPercent('width', Number(event.currentTarget.value))}
+														/>
+													</Field.Field>
+													<Field.Field data-disabled={!selectedFieldPanel.editable}>
+														<Field.FieldLabel for="selected-field-height">
+															{m.envelope_field_geometry_height()}
+														</Field.FieldLabel>
+														<Input
+															id="selected-field-height"
+															type="number"
+															min={MIN_FIELD_SIZE * 100}
+															max="100"
+															step="0.1"
+															disabled={!selectedFieldPanel.editable}
+															value={round1(selectedFieldPanel.geometry.height * 100)}
+															oninput={(event) =>
+																updateSelectedPercent('height', Number(event.currentTarget.value))}
+														/>
+													</Field.Field>
+												</Field.FieldGroup>
+											</Field.FieldSet>
+										{/if}
+
+										{#if !placementLocked && fieldDrafts.length > 0}
+											<div class="overflow-x-auto">
+												<Table.Root>
+													<Table.Header>
+														<Table.Row>
+															<Table.Head>{m.envelope_field_col_label()}</Table.Head>
+															<Table.Head>{m.envelope_field_col_type()}</Table.Head>
+															<Table.Head>{m.envelope_field_col_document()}</Table.Head>
+															<Table.Head>{m.envelope_field_col_position()}</Table.Head>
+															<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
+														</Table.Row>
+													</Table.Header>
+													<Table.Body>
+														{#each fieldDrafts as fieldDraft (fieldDraft.key)}
+															<Table.Row>
+																<Table.Cell>{fieldDraft.label}</Table.Cell>
+																<Table.Cell>{fieldTypeLabel(fieldDraft.fieldType)}</Table.Cell>
+																<Table.Cell>{placedDocumentTitle(fieldDraft.documentId)}</Table.Cell
+																>
+																<Table.Cell>{fieldDraft.position}</Table.Cell>
+																<Table.Cell>
+																	<Button
+																		size="icon"
+																		variant="ghost"
+																		aria-label={m.common_remove()}
+																		onclick={() => removeFieldDraft(fieldDraft.key)}
+																	>
+																		<IconTrash />
+																	</Button>
+																</Table.Cell>
+															</Table.Row>
+														{/each}
+													</Table.Body>
+												</Table.Root>
 											</div>
-										{/snippet}
-									</PdfDocumentView>
-								{/key}
-								<div class="sr-only" role="status" aria-live="polite">{geometryAnnouncement}</div>
-							</div>
-
-							{#if selectedFieldPanel}
-								<Field.FieldSet>
-									<Field.FieldLegend variant="label">
-										{m.envelope_field_geometry_label()}
-									</Field.FieldLegend>
-									<Field.FieldDescription>
-										{selectedFieldPanel.editable
-											? m.envelope_field_geometry_description()
-											: m.envelope_field_geometry_readonly()}
-									</Field.FieldDescription>
-									<Field.FieldGroup class="grid gap-3 sm:grid-cols-5">
-										<Field.Field data-disabled={!selectedFieldPanel.editable}>
-											<Field.FieldLabel for="selected-field-page">
-												{m.envelope_field_geometry_page()}
-											</Field.FieldLabel>
-											<Input
-												id="selected-field-page"
-												type="number"
-												min="1"
-												max={currentDocumentPageCount()}
-												disabled={!selectedFieldPanel.editable}
-												value={selectedFieldPanel.geometry.page}
-												oninput={(event) => updateSelectedPage(Number(event.currentTarget.value))}
-											/>
-										</Field.Field>
-										<Field.Field data-disabled={!selectedFieldPanel.editable}>
-											<Field.FieldLabel for="selected-field-left">
-												{m.envelope_field_geometry_left()}
-											</Field.FieldLabel>
-											<Input
-												id="selected-field-left"
-												type="number"
-												min="0"
-												max="100"
-												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.x * 100)}
-												oninput={(event) =>
-													updateSelectedPercent('x', Number(event.currentTarget.value))}
-											/>
-										</Field.Field>
-										<Field.Field data-disabled={!selectedFieldPanel.editable}>
-											<Field.FieldLabel for="selected-field-top">
-												{m.envelope_field_geometry_top()}
-											</Field.FieldLabel>
-											<Input
-												id="selected-field-top"
-												type="number"
-												min="0"
-												max="100"
-												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.y * 100)}
-												oninput={(event) =>
-													updateSelectedPercent('y', Number(event.currentTarget.value))}
-											/>
-										</Field.Field>
-										<Field.Field data-disabled={!selectedFieldPanel.editable}>
-											<Field.FieldLabel for="selected-field-width">
-												{m.envelope_field_geometry_width()}
-											</Field.FieldLabel>
-											<Input
-												id="selected-field-width"
-												type="number"
-												min={MIN_FIELD_SIZE * 100}
-												max="100"
-												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.width * 100)}
-												oninput={(event) =>
-													updateSelectedPercent('width', Number(event.currentTarget.value))}
-											/>
-										</Field.Field>
-										<Field.Field data-disabled={!selectedFieldPanel.editable}>
-											<Field.FieldLabel for="selected-field-height">
-												{m.envelope_field_geometry_height()}
-											</Field.FieldLabel>
-											<Input
-												id="selected-field-height"
-												type="number"
-												min={MIN_FIELD_SIZE * 100}
-												max="100"
-												step="0.1"
-												disabled={!selectedFieldPanel.editable}
-												value={round1(selectedFieldPanel.geometry.height * 100)}
-												oninput={(event) =>
-													updateSelectedPercent('height', Number(event.currentTarget.value))}
-											/>
-										</Field.Field>
-									</Field.FieldGroup>
-								</Field.FieldSet>
-							{/if}
-
-							{#if !placementLocked && fieldDrafts.length > 0}
-								<div class="overflow-x-auto">
-									<Table.Root>
-										<Table.Header>
-											<Table.Row>
-												<Table.Head>{m.envelope_field_col_label()}</Table.Head>
-												<Table.Head>{m.envelope_field_col_type()}</Table.Head>
-												<Table.Head>{m.envelope_field_col_document()}</Table.Head>
-												<Table.Head>{m.envelope_field_col_position()}</Table.Head>
-												<Table.Head class="sr-only">{m.common_remove()}</Table.Head>
-											</Table.Row>
-										</Table.Header>
-										<Table.Body>
-											{#each fieldDrafts as fieldDraft (fieldDraft.key)}
-												<Table.Row>
-													<Table.Cell>{fieldDraft.label}</Table.Cell>
-													<Table.Cell>{fieldTypeLabel(fieldDraft.fieldType)}</Table.Cell>
-													<Table.Cell>{placedDocumentTitle(fieldDraft.documentId)}</Table.Cell>
-													<Table.Cell>{fieldDraft.position}</Table.Cell>
-													<Table.Cell>
-														<Button
-															size="icon"
-															variant="ghost"
-															aria-label={m.common_remove()}
-															onclick={() => removeFieldDraft(fieldDraft.key)}
-														>
-															<IconTrash />
-														</Button>
-													</Table.Cell>
-												</Table.Row>
-											{/each}
-										</Table.Body>
-									</Table.Root>
+										{/if}
+									</aside>
 								</div>
-							{/if}
+							</div>
 
 							{#if fieldsPublishedMessage}
 								<p class="text-sm text-muted-foreground" role="status">{fieldsPublishedMessage}</p>
@@ -4214,118 +4265,174 @@
 						</Card.Footer>
 					</Card.Root>
 				{/if}
-				{#if !showAuthoringGuide}
-					<Card.Root>
-						<Card.Header>
-							<Card.Title>{m.envelope_send_title()}</Card.Title>
-							<Card.Description>
-								{m.envelope_send_status_description()}
-							</Card.Description>
-						</Card.Header>
-						<Card.Content class="flex flex-col gap-4">
-							{#if delivery != null && delivery.deliveries.length > 0}
-								<div class="overflow-x-auto">
-									<Table.Root>
-										<Table.Header>
-											<Table.Row>
-												<Table.Head>{m.envelope_delivery_col_recipient()}</Table.Head>
-												<Table.Head>{m.envelope_delivery_col_role()}</Table.Head>
-												<Table.Head>{m.envelope_delivery_col_status()}</Table.Head>
-												<Table.Head>{m.envelope_delivery_col_signing_status()}</Table.Head>
-											</Table.Row>
-										</Table.Header>
-										<Table.Body>
-											{#each delivery.deliveries as item (item)}
-												{@const matched = recipientForDelivery(item.recipientId)}
-												<Table.Row>
-													<Table.Cell>
-														{#if matched}
-															<div class="flex flex-col">
-																<span>{matched.name}</span>
-																<span class="text-muted-foreground">{matched.email}</span>
-															</div>
-														{/if}
-													</Table.Cell>
-													<Table.Cell>
-														{recipientRoleLabel(matched?.role ?? item.recipientRole)}
-													</Table.Cell>
-													<Table.Cell>
-														<div class="flex flex-col gap-1">
-															<Badge variant="secondary" class="w-fit"
-																>{deliveryStateLabel(item.status)}</Badge
-															>
-															{#if item.deliveredAt}
-																<span class="text-xs text-muted-foreground">
-																	{m.envelope_delivery_delivered_at({
-																		timestamp: formatDate(item.deliveredAt)
-																	})}
-																</span>
-															{/if}
-														</div>
-													</Table.Cell>
-													<Table.Cell>
-														{#if matched}
-															<Badge variant="outline" class="w-fit"
-																>{recipientWorkflowStatusLabel(matched.status)}</Badge
-															>
-														{/if}
-													</Table.Cell>
-												</Table.Row>
-											{/each}
-										</Table.Body>
-									</Table.Root>
-								</div>
-							{/if}
-						</Card.Content>
-					</Card.Root>
-				{/if}
+			</Tabs.Content>
 
-				{#if isVoidable}
-					<Card.Root class="border-destructive/30">
-						<Card.Header>
-							<Card.Title>{m.envelope_void_title()}</Card.Title>
-							<Card.Description>{m.envelope_void_description()}</Card.Description>
-						</Card.Header>
-						<Card.Content class="flex flex-col gap-3">
-							{#if voidError}
-								<p class="text-sm font-medium text-destructive" role="alert">{voidError}</p>
-							{/if}
-							<AlertDialog.Root bind:open={voidDialogOpen}>
-								<AlertDialog.Trigger>
-									{#snippet child({ props })}
-										<Button {...props} variant="destructive" class="w-fit">
-											<IconBan data-icon="inline-start" />{m.envelope_void_action()}
-										</Button>
-									{/snippet}
-								</AlertDialog.Trigger>
-								<AlertDialog.Content>
-									<AlertDialog.Header>
-										<AlertDialog.Title>{m.envelope_void_dialog_title()}</AlertDialog.Title>
-										<AlertDialog.Description>
-											{m.envelope_void_dialog_description()}
-										</AlertDialog.Description>
-									</AlertDialog.Header>
-									<AlertDialog.Footer>
-										<AlertDialog.Cancel disabled={voidPending}
-											>{m.common_cancel()}</AlertDialog.Cancel
-										>
-										<AlertDialog.Action
-											variant="destructive"
-											disabled={voidPending}
-											onclick={async (event) => {
-												event.preventDefault();
-												await voidEnvelopeAction();
-											}}
-										>
-											{#if voidPending}<Spinner data-icon="inline-start" />{/if}
-											{m.envelope_void_dialog_confirm()}
-										</AlertDialog.Action>
-									</AlertDialog.Footer>
-								</AlertDialog.Content>
-							</AlertDialog.Root>
-						</Card.Content>
-					</Card.Root>
+			<Tabs.Content value="status" class="flex flex-col gap-4">
+				{#if reissueSuccessMessage}
+					<Alert.Root role="status">
+						<Alert.Description>{reissueSuccessMessage}</Alert.Description>
+					</Alert.Root>
 				{/if}
+				{#if reissueRefreshWarning}
+					<Alert.Root variant="destructive" role="alert">
+						<IconAlertTriangle />
+						<Alert.Description>{reissueRefreshWarning}</Alert.Description>
+					</Alert.Root>
+				{/if}
+				<Card.Root>
+					<Card.Header>
+						<Card.Title>{m.envelope_tab_status()}</Card.Title>
+						<Card.Description>{m.envelope_send_status_description()}</Card.Description>
+					</Card.Header>
+					<Card.Content class="flex flex-col gap-4">
+						{#if readyRecipients.length > 0}
+							<div class="overflow-x-auto">
+								<Table.Root class="block lg:table">
+									<Table.Header class="hidden lg:table-header-group">
+										<Table.Row>
+											<Table.Head>{m.envelope_delivery_col_recipient()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_role()}</Table.Head>
+											<Table.Head>{m.envelope_recipient_col_locale()}</Table.Head>
+											<Table.Head>{m.envelope_delivery_col_signing_status()}</Table.Head>
+											<Table.Head>{m.envelope_delivery_col_status()}</Table.Head>
+											<Table.Head class="text-right">{m.envelope_reissue_col_actions()}</Table.Head>
+										</Table.Row>
+									</Table.Header>
+									<Table.Body class="block lg:table-row-group">
+										{#each readyRecipients as recipient (recipient.id)}
+											{@const invitation = currentDeliveryForRecipient(recipient.id)}
+											<Table.Row class="grid grid-cols-2 gap-3 py-4 lg:table-row lg:py-0">
+												<Table.Cell
+													class="col-span-2 min-w-0 p-0 whitespace-normal lg:table-cell lg:p-3"
+												>
+													<div class="flex flex-col">
+														<span>{recipient.name}</span>
+														<span class="break-all text-muted-foreground">{recipient.email}</span>
+													</div>
+												</Table.Cell>
+												<Table.Cell class="min-w-0 p-0 whitespace-normal lg:table-cell lg:p-3">
+													<div class="flex flex-col gap-1">
+														<span class="text-xs text-muted-foreground lg:hidden"
+															>{m.envelope_recipient_col_role()}</span
+														>
+														{recipientRoleLabel(recipient.role)}
+													</div>
+												</Table.Cell>
+												<Table.Cell class="min-w-0 p-0 whitespace-normal lg:table-cell lg:p-3">
+													<div class="flex flex-col gap-1">
+														<span class="text-xs text-muted-foreground lg:hidden"
+															>{m.envelope_recipient_col_locale()}</span
+														>
+														{recipientLocaleLabel(recipient.locale)}
+													</div>
+												</Table.Cell>
+												<Table.Cell
+													class="col-span-2 min-w-0 p-0 whitespace-normal lg:table-cell lg:p-3"
+												>
+													<div class="flex flex-col gap-1">
+														<span class="text-xs text-muted-foreground lg:hidden"
+															>{m.envelope_delivery_col_signing_status()}</span
+														>
+														<Badge variant="outline" class="w-fit whitespace-normal">
+															{recipientWorkflowStatusLabel(recipient.status)}
+														</Badge>
+													</div>
+												</Table.Cell>
+												<Table.Cell
+													class="col-span-2 min-w-0 p-0 whitespace-normal lg:table-cell lg:p-3"
+												>
+													<div class="flex flex-col gap-1">
+														<span class="text-xs text-muted-foreground lg:hidden"
+															>{m.envelope_delivery_col_status()}</span
+														>
+														<Badge variant="secondary" class="w-fit whitespace-normal">
+															{invitation === null
+																? m.envelope_delivery_status_unavailable()
+																: deliveryStateLabel(invitation.status)}
+														</Badge>
+														{#if invitation?.deliveredAt}
+															<span class="text-xs text-muted-foreground">
+																{m.envelope_delivery_delivered_at({
+																	timestamp: formatDate(invitation.deliveredAt)
+																})}
+															</span>
+														{/if}
+													</div>
+												</Table.Cell>
+												<Table.Cell
+													class="col-span-2 min-w-0 p-0 text-right whitespace-normal lg:table-cell lg:p-3"
+												>
+													{#if reissueVisible(recipient)}
+														{@const disabledReason = reissueDisabledReason(recipient)}
+														<Button
+															size="sm"
+															variant="outline"
+															aria-label={m.envelope_reissue_action_aria({
+																name: recipient.name
+															})}
+															title={disabledReason ?? undefined}
+															aria-describedby={disabledReason !== null
+																? `reissue-disabled-${recipient.id}`
+																: undefined}
+															disabled={reissuePending || disabledReason !== null}
+															onclick={() => chooseReissueTarget(recipient)}
+														>
+															{m.envelope_reissue_action()}
+														</Button>
+														{#if disabledReason !== null}
+															<p
+																id={`reissue-disabled-${recipient.id}`}
+																class="mt-1 text-xs text-muted-foreground"
+															>
+																{disabledReason}
+															</p>
+														{/if}
+													{/if}
+												</Table.Cell>
+											</Table.Row>
+										{/each}
+									</Table.Body>
+								</Table.Root>
+							</div>
+						{:else}
+							<p class="text-sm text-muted-foreground">{m.envelope_recipients_empty()}</p>
+						{/if}
+						{#if delivery != null && delivery.deliveries.length > 0}
+							<Collapsible.Root class="flex flex-col gap-2">
+								<Collapsible.Trigger>
+									{#snippet child({ props })}
+										<Button {...props} variant="outline" class="w-fit"
+											>{m.envelope_delivery_history()}</Button
+										>
+									{/snippet}
+								</Collapsible.Trigger>
+								<Collapsible.Content>
+									<ul class="flex flex-col gap-3">
+										{#each delivery.deliveries as item (item)}
+											{@const recipient = readyRecipients.find(
+												(recipient) => recipient.id === item.recipientId
+											)}
+											<li class="flex flex-wrap items-center gap-2 text-sm">
+												<span>{recipient?.name ?? item.recipientId}</span>
+												<Badge variant="outline"
+													>{recipientRoleLabel(recipient?.role ?? item.recipientRole)}</Badge
+												>
+												<Badge variant="secondary">{deliveryStateLabel(item.status)}</Badge>
+												{#if item.deliveredAt}
+													<span class="text-muted-foreground"
+														>{m.envelope_delivery_delivered_at({
+															timestamp: formatDate(item.deliveredAt)
+														})}</span
+													>
+												{/if}
+											</li>
+										{/each}
+									</ul>
+								</Collapsible.Content>
+							</Collapsible.Root>
+						{/if}
+					</Card.Content>
+				</Card.Root>
 			</Tabs.Content>
 		</Tabs.Root>
 
@@ -4355,6 +4462,71 @@
 				{/if}
 			</div>
 		{/if}
+
+		<AlertDialog.Root
+			bind:open={
+				() => reissueTarget !== null,
+				(open) => {
+					if (!open) closeReissueDialog();
+				}
+			}
+		>
+			{#if reissueTarget !== null}
+				<AlertDialog.Content escapeKeydownBehavior={reissuePending ? 'ignore' : 'close'}>
+					<AlertDialog.Header>
+						<AlertDialog.Title>
+							{m.envelope_reissue_dialog_title({ name: reissueTarget.name })}
+						</AlertDialog.Title>
+						<AlertDialog.Description>
+							{m.envelope_reissue_dialog_description({ name: reissueTarget.name })}
+						</AlertDialog.Description>
+					</AlertDialog.Header>
+					{#if reissueError}
+						<p class="text-sm font-medium text-destructive" role="alert">{reissueError}</p>
+					{/if}
+					<AlertDialog.Footer>
+						<AlertDialog.Cancel disabled={reissuePending} onclick={closeReissueDialog}>
+							{m.common_cancel()}
+						</AlertDialog.Cancel>
+						<AlertDialog.Action
+							disabled={reissuePending}
+							onclick={(event) => {
+								event.preventDefault();
+								void confirmReissue();
+							}}
+						>
+							{#if reissuePending}<Spinner data-icon="inline-start" />{/if}
+							{m.envelope_reissue_dialog_confirm()}
+						</AlertDialog.Action>
+					</AlertDialog.Footer>
+				</AlertDialog.Content>
+			{/if}
+		</AlertDialog.Root>
+
+		<AlertDialog.Root bind:open={voidDialogOpen}>
+			<AlertDialog.Content>
+				<AlertDialog.Header>
+					<AlertDialog.Title>{m.envelope_void_dialog_title()}</AlertDialog.Title>
+					<AlertDialog.Description>
+						{m.envelope_void_dialog_description()}
+					</AlertDialog.Description>
+				</AlertDialog.Header>
+				<AlertDialog.Footer>
+					<AlertDialog.Cancel disabled={voidPending}>{m.common_cancel()}</AlertDialog.Cancel>
+					<AlertDialog.Action
+						variant="destructive"
+						disabled={voidPending}
+						onclick={async (event) => {
+							event.preventDefault();
+							await voidEnvelopeAction();
+						}}
+					>
+						{#if voidPending}<Spinner data-icon="inline-start" />{/if}
+						{m.envelope_void_dialog_confirm()}
+					</AlertDialog.Action>
+				</AlertDialog.Footer>
+			</AlertDialog.Content>
+		</AlertDialog.Root>
 
 		<AlertDialog.Root bind:open={reopenDialogOpen}>
 			<AlertDialog.Content>

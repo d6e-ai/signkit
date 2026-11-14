@@ -241,7 +241,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
-		await screen.getByRole('tab', { name: 'Send & status' }).click();
+		await screen.getByRole('tab', { name: 'Review' }).click();
 		await expect.element(screen.getByRole('button', { name: 'Send envelope' })).toBeVisible();
 		await screen.getByRole('button', { name: 'Send envelope' }).click();
 		expect(screen.container.querySelector('[role="alertdialog"]')).toBeNull();
@@ -490,6 +490,15 @@ describe('envelope authoring page remounts durable send state', () => {
 								locale: 'en',
 								routingOrder: 1,
 								status: 'pending'
+							},
+							{
+								id: '01900000-0000-7000-8000-000000000013',
+								email: 'bob@example.com',
+								name: 'Bob Lee',
+								role: 'approver',
+								locale: 'en',
+								routingOrder: 2,
+								status: 'pending'
 							}
 						]
 					});
@@ -537,8 +546,7 @@ describe('envelope authoring page remounts durable send state', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
-		await screen.getByRole('tab', { name: 'Send & status' }).click();
-		const sendPanel = screen.getByRole('tabpanel', { name: 'Send & status' });
+		const sendPanel = screen.getByRole('tabpanel', { name: 'Status' }).getByRole('table');
 		await expect.element(sendPanel.getByText('Alice Chen')).toBeVisible();
 		await expect.element(sendPanel.getByText('alice@example.com')).toBeVisible();
 		await expect.element(sendPanel.getByText('Waiting to send')).toBeVisible();
@@ -1016,6 +1024,7 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('button', { name: 'Instance-sealed PDF', exact: true }).click();
 		await expect
 			.element(
 				screen.getByText(
@@ -1055,6 +1064,7 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('button', { name: 'Instance-sealed PDF', exact: true }).click();
 		await expect
 			.element(screen.getByText('The final PDF is still being prepared.').last())
 			.toBeVisible();
@@ -1088,6 +1098,7 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('button', { name: 'Instance-sealed PDF', exact: true }).click();
 		await expect
 			.element(
 				screen
@@ -1140,6 +1151,7 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('button', { name: 'Instance-sealed PDF', exact: true }).click();
 		await expect
 			.element(
 				screen.getByText('Certificate-backed PDF signature with an RFC 3161 trusted timestamp.')
@@ -1194,6 +1206,7 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('button', { name: 'Instance-sealed PDF', exact: true }).click();
 		await expect
 			.element(screen.getByText('Independently validated', { exact: true }))
 			.toBeVisible();
@@ -1294,8 +1307,20 @@ describe('completed envelope shows the completed-artifacts card', () => {
 		const screen = await render(EnvelopePage);
 		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
 		await expect
-			.element(documentsPanel.getByRole('heading', { name: 'Original documents', level: 2 }))
+			.element(documentsPanel.getByRole('button', { name: 'Original documents' }))
 			.toBeVisible();
+		const previews = documentsPanel.getByTestId('sent-document-pdf-stub').all();
+		expect(previews).toHaveLength(2);
+		await expect.element(previews[0]!).toBeVisible();
+		await expect.element(previews[1]!).not.toBeVisible();
+		expect(
+			documentsPanel
+				.getByTestId('sent-document-pdf-stub')
+				.all()[0]!
+				.element()
+				.getAttribute('data-src')
+		).toBe(`/api/v1/envelopes/${ENVELOPE_ID}/completion-artifact/pdf`);
+		await documentsPanel.getByRole('button', { name: 'Original documents' }).click();
 		const stubs = documentsPanel.getByTestId('sent-document-pdf-stub').all();
 		expect(stubs).toHaveLength(2);
 		const sources = stubs.map((stub) => stub.element().getAttribute('data-src'));
@@ -1780,6 +1805,7 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 		vi.stubGlobal('fetch', mockSentFetch(pdfOnlyDraft));
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Documents' }).click();
 		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
 		await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
 		await expect.element(documentsPanel.getByText('Pages: 3')).toBeVisible();
@@ -1796,6 +1822,7 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 		vi.stubGlobal('fetch', mockSentFetch(mixedDraft));
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Documents' }).click();
 		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
 		await expect.element(documentsPanel.getByText('cover letter')).toBeVisible();
 		await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
@@ -1806,6 +1833,7 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 		vi.stubGlobal('fetch', mockSentFetch(pdfOnlyDraft));
 
 		const first = await render(EnvelopePage);
+		await first.getByRole('tab', { name: 'Documents' }).click();
 		await expect
 			.element(
 				first.getByRole('tabpanel', { name: 'Documents' }).getByText('signkit-sample-agreement-ja')
@@ -1814,6 +1842,7 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 		first.unmount();
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Documents' }).click();
 		await expect
 			.element(
 				screen.getByRole('tabpanel', { name: 'Documents' }).getByText('signkit-sample-agreement-ja')
@@ -1829,6 +1858,7 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 
 		const screen = await render(EnvelopePage);
 		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
+		await documentsPanel.getByRole('button', { name: 'Original documents' }).click();
 		await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
 		await expect
 			.element(documentsPanel.getByRole('link', { name: 'Download final PDF' }))
@@ -1841,6 +1871,9 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 			vi.stubGlobal('fetch', mockSentFetch(pdfOnlyDraft, { ...sentEnvelope, status }));
 
 			const screen = await render(EnvelopePage);
+			if (status !== 'ready') {
+				await screen.getByRole('tab', { name: 'Documents' }).click();
+			}
 			const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
 			await expect.element(documentsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
 			const stubs = documentsPanel.getByTestId('sent-document-pdf-stub').all();
@@ -1849,7 +1882,7 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 				`/api/v1/envelopes/${ENVELOPE_ID}/document-pdf?documentId=${PDF_DOCUMENT_ID}`
 			);
 			await expect
-				.element(documentsPanel.getByRole('heading', { name: 'Original documents', level: 2 }))
+				.element(documentsPanel.getByRole('button', { name: 'Original documents' }))
 				.not.toBeInTheDocument();
 			await expect
 				.element(documentsPanel.getByRole('link', { name: 'Download final PDF' }))
@@ -1879,6 +1912,7 @@ describe('sent envelope Documents tab renders the pinned document set', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
+		await screen.getByRole('tab', { name: 'Documents' }).click();
 		const documentsPanel = screen.getByRole('tabpanel', { name: 'Documents' });
 		await expect
 			.element(
@@ -2002,25 +2036,119 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		});
 	}
 
-	it('Fields tab keeps the placed field visible and read-only once the envelope is sent', async () => {
+	it.each(['sent', 'voided'] as const)(
+		'keeps published signature positions inspectable but read-only after %s',
+		async (status) => {
+			vi.stubGlobal(
+				'fetch',
+				mockLifecycleFetch({
+					...sentDetailWithFields,
+					envelope: {
+						...sentEnvelopeWithFields,
+						status,
+						sentCommitSha: status === 'sent' ? sentEnvelopeWithFields.sentCommitSha : null
+					}
+				})
+			);
+			const screen = await render(EnvelopePage);
+			await screen.getByRole('tab', { name: 'Documents' }).click();
+			const panel = screen.getByRole('tabpanel', { name: 'Documents' });
+			await expect
+				.element(panel.getByRole('cell', { name: 'Signature', exact: true }))
+				.not.toBeInTheDocument();
+			await panel.getByRole('button', { name: 'Signature positions', exact: true }).click();
+			await expect
+				.element(panel.getByRole('cell', { name: 'Dana Recipient', exact: true }))
+				.toBeVisible();
+			await expect
+				.element(panel.getByRole('cell', { name: 'Signature', exact: true }))
+				.toBeVisible();
+			await expect
+				.element(panel.getByRole('cell', { name: 'signkit-sample-agreement-ja', exact: true }))
+				.toBeVisible();
+			await expect
+				.element(panel.getByRole('button', { name: 'Save signature positions' }))
+				.not.toBeInTheDocument();
+		}
+	);
+
+	it('opens void confirmation from secondary actions without posting when cancelled', async () => {
+		const fetchMock = mockLifecycleFetch();
+		vi.stubGlobal('fetch', fetchMock);
+		const screen = await render(EnvelopePage);
+		await expect.element(screen.getByRole('tabpanel', { name: 'Status' })).toBeVisible();
+		await expect
+			.element(screen.getByRole('button', { name: 'Void envelope', exact: true }))
+			.not.toBeInTheDocument();
+		await screen.getByRole('button', { name: 'Other actions', exact: true }).click();
+		await screen.getByRole('menuitem', { name: 'Void envelope', exact: true }).click();
+		const dialog = screen.getByRole('alertdialog');
+		await expect.element(dialog).toBeVisible();
+		await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+		await expect.element(dialog).not.toBeInTheDocument();
+		expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+	});
+
+	it('drops authoring tabs after send and keeps placed-recipient progress on Status', async () => {
 		vi.stubGlobal('fetch', mockLifecycleFetch());
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Signature positions' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
-		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
-		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
-		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
+		await expect
+			.element(screen.getByRole('tab', { name: 'Signature positions' }))
+			.not.toBeInTheDocument();
+		await expect.element(screen.getByRole('tab', { name: 'Recipients' })).not.toBeInTheDocument();
+		await expect.element(screen.getByRole('tab', { name: 'Review' })).not.toBeInTheDocument();
+		const statusPanel = screen.getByRole('tabpanel', { name: 'Status' }).getByRole('table');
+		await expect.element(statusPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
+		await expect.element(statusPanel.getByRole('cell', { name: 'Completed' })).toBeVisible();
+		await expect
+			.element(statusPanel.getByRole('button', { name: 'Choose signature positions' }))
+			.not.toBeInTheDocument();
 		await expect
 			.element(
-				fieldsPanel.getByText(
-					'Field placement is available once this envelope is ready and before it is sent.'
+				statusPanel.getByText(
+					'Declare the complete recipient graph, then mark this envelope ready to freeze it.'
 				)
 			)
 			.not.toBeInTheDocument();
+		await expect
+			.element(statusPanel.getByText('This envelope must be ready before it can be sent.'))
+			.not.toBeInTheDocument();
+		await expect.element(statusPanel.getByText('Email sent')).toBeVisible();
+		const expectedDeliveredAt = new Intl.DateTimeFormat('en', {
+			dateStyle: 'medium',
+			timeStyle: 'short'
+		}).format(new Date(deliveredAt));
+		await expect.element(statusPanel.getByText(`Delivered ${expectedDeliveredAt}`)).toBeVisible();
 	});
 
-	it('Fields tab shows neutral closed-envelope guidance and no placed fields for an envelope voided before send', async () => {
+	it.each([1280, 390])(
+		'shows one recipient tracking list without page overflow at %ipx',
+		async (width) => {
+			await browserPage.viewport(width, 844);
+			vi.stubGlobal('fetch', mockLifecycleFetch());
+			const screen = await render(EnvelopePageMobileTestHost);
+			const panel = screen.getByRole('tabpanel', { name: 'Status' });
+			await expect.element(panel).toBeVisible();
+			expect(screen.getByRole('tab').all()).toHaveLength(2);
+			expect(panel.getByRole('table').all()).toHaveLength(1);
+			expect(panel.getByRole('row').all()).toHaveLength(width >= 1024 ? 2 : 1);
+			const history = panel.getByRole('button', { name: 'Invitation delivery history' });
+			expect(history.element().getAttribute('aria-expanded')).toBe('false');
+			expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+			expect(document.body.scrollWidth).toBeLessThanOrEqual(width);
+			for (const name of ['Completed', 'Email sent']) {
+				const status = panel.getByRole('table').getByText(name, { exact: true });
+				await expect.element(status).toBeVisible();
+				const bounds = status.element().getBoundingClientRect();
+				expect(bounds.left).toBeGreaterThanOrEqual(0);
+				expect(bounds.right).toBeLessThanOrEqual(width);
+			}
+			await browserPage.screenshot({ fullPage: true });
+		}
+	);
+
+	it('keeps Status and Documents tabs, not Signature positions, for envelopes voided before send', async () => {
 		const voidedBeforeSendDetail = {
 			...sentDetailWithFields,
 			envelope: {
@@ -2033,167 +2161,14 @@ describe('lifecycle beyond sent locks fields and reframes recipients and send st
 		vi.stubGlobal('fetch', mockLifecycleFetch(voidedBeforeSendDetail));
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Signature positions' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
-
 		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
-				)
-			)
-			.toBeVisible();
-		await expect
-			.element(fieldsPanel.getByText('No fields were placed for this envelope.'))
-			.toBeVisible();
-		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
-				)
-			)
+			.element(screen.getByRole('tab', { name: 'Signature positions' }))
 			.not.toBeInTheDocument();
+		await expect.element(screen.getByRole('tab', { name: 'Documents' })).toBeVisible();
+		await expect.element(screen.getByRole('tab', { name: 'Status' })).toBeVisible();
 		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Field placement is available once this envelope is ready and before it is sent.'
-				)
-			)
+			.element(screen.getByRole('button', { name: 'Save signature positions' }))
 			.not.toBeInTheDocument();
-		await expect
-			.element(fieldsPanel.getByRole('button', { name: 'Save signature positions' }))
-			.not.toBeInTheDocument();
-	});
-
-	it('Fields tab keeps placed field visible read-only with neutral closed copy when ready envelope is voided before send', async () => {
-		const readyThenVoidedDetail = {
-			...sentDetailWithFields,
-			envelope: {
-				...sentEnvelopeWithFields,
-				status: 'voided' as const,
-				sentCommitSha: null
-			},
-			fields: sentDetailWithFields.fields
-		};
-		vi.stubGlobal('fetch', mockLifecycleFetch(readyThenVoidedDetail));
-
-		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Signature positions' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
-
-		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
-				)
-			)
-			.toBeVisible();
-		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
-		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
-		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
-		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
-				)
-			)
-			.not.toBeInTheDocument();
-		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Field placement is available once this envelope is ready and before it is sent.'
-				)
-			)
-			.not.toBeInTheDocument();
-		await expect
-			.element(fieldsPanel.getByRole('button', { name: 'Save signature positions' }))
-			.not.toBeInTheDocument();
-	});
-
-	it('Fields tab retains existing after-send copy for post-send voided envelope', async () => {
-		const postSendVoidedDetail = {
-			...sentDetailWithFields,
-			envelope: {
-				...sentEnvelopeWithFields,
-				status: 'voided' as const,
-				sentCommitSha: sentEnvelopeWithFields.sentCommitSha
-			},
-			fields: sentDetailWithFields.fields
-		};
-		vi.stubGlobal('fetch', mockLifecycleFetch(postSendVoidedDetail));
-
-		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Signature positions' }).click();
-		const fieldsPanel = screen.getByRole('tabpanel', { name: 'Signature positions' });
-
-		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Fields are locked because this envelope has already been sent. This shows the field layout as it was published.'
-				)
-			)
-			.toBeVisible();
-		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Fields are locked because this envelope is closed. This shows the field layout as it was published.'
-				)
-			)
-			.not.toBeInTheDocument();
-		await expect.element(fieldsPanel.getByRole('cell', { name: 'Dana Recipient' })).toBeVisible();
-		await expect.element(fieldsPanel.getByRole('cell', { name: 'Signature' })).toBeVisible();
-		await expect.element(fieldsPanel.getByText('signkit-sample-agreement-ja')).toBeVisible();
-		await expect
-			.element(
-				fieldsPanel.getByText(
-					'Field placement is available once this envelope is ready and before it is sent.'
-				)
-			)
-			.not.toBeInTheDocument();
-		await expect
-			.element(fieldsPanel.getByRole('button', { name: 'Save signature positions' }))
-			.not.toBeInTheDocument();
-	});
-
-	it('Recipients tab shows response-progress framing, not draft-time readiness guidance, once sent', async () => {
-		vi.stubGlobal('fetch', mockLifecycleFetch());
-
-		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Recipients' }).click();
-		const recipientsPanel = screen.getByRole('tabpanel', { name: 'Recipients' });
-		await expect.element(recipientsPanel.getByText('Status', { exact: true })).toBeVisible();
-		await expect
-			.element(recipientsPanel.getByRole('cell', { name: 'Dana Recipient' }))
-			.toBeVisible();
-		await expect.element(recipientsPanel.getByRole('cell', { name: 'Completed' })).toBeVisible();
-		await expect
-			.element(recipientsPanel.getByRole('button', { name: 'Choose signature positions' }))
-			.not.toBeInTheDocument();
-		await expect
-			.element(
-				recipientsPanel.getByText(
-					'Declare the complete recipient graph, then mark this envelope ready to freeze it.'
-				)
-			)
-			.not.toBeInTheDocument();
-	});
-
-	it('Send & status tab drops the pre-send instructions and shows delivery and response progress distinctly', async () => {
-		vi.stubGlobal('fetch', mockLifecycleFetch());
-
-		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Send & status' }).click();
-		const sendPanel = screen.getByRole('tabpanel', { name: 'Send & status' });
-		await expect
-			.element(sendPanel.getByText('This envelope must be ready before it can be sent.'))
-			.not.toBeInTheDocument();
-		await expect.element(sendPanel.getByText('Email sent')).toBeVisible();
-		await expect.element(sendPanel.getByText('Completed')).toBeVisible();
-		const expectedDeliveredAt = new Intl.DateTimeFormat('en', {
-			dateStyle: 'medium',
-			timeStyle: 'short'
-		}).format(new Date(deliveredAt));
-		await expect.element(sendPanel.getByText(`Delivered ${expectedDeliveredAt}`)).toBeVisible();
 	});
 });
 
@@ -2269,7 +2244,7 @@ describe('completed envelope on actual 390x844 mobile viewport with keyboard tab
 		});
 	}
 
-	it('asserts actual innerWidth=390 and has no page-wide horizontal overflow across Documents, Recipients, Fields, and Send tabs', async () => {
+	it('asserts actual innerWidth=390 and has no page-wide horizontal overflow across completed Documents and Status tabs', async () => {
 		expect(window.innerWidth).toBe(390);
 
 		vi.stubGlobal('fetch', mockCompletedEnvFetch());
@@ -2293,7 +2268,7 @@ describe('completed envelope on actual 390x844 mobile viewport with keyboard tab
 			parseFloat(containerStyle.paddingRight);
 		expect(usableInnerWidth).toBe(358);
 
-		const tabs = ['Documents', 'Recipients', 'Signature positions', 'Send'] as const;
+		const tabs = ['Documents', 'Status'] as const;
 		for (const tabName of tabs) {
 			const trigger = screen.getByRole('tab', { name: tabName });
 			await trigger.click();
@@ -2329,24 +2304,7 @@ describe('completed envelope on actual 390x844 mobile viewport with keyboard tab
 		expect(document.activeElement).toBe(documentsTab.element());
 
 		await userEvent.keyboard('{ArrowRight}');
-		await expect.element(screen.getByRole('tabpanel', { name: 'Recipients' })).toBeVisible();
-
-		await userEvent.keyboard('{ArrowRight}');
-		await expect
-			.element(screen.getByRole('tabpanel', { name: 'Signature positions' }))
-			.toBeVisible();
-
-		await userEvent.keyboard('{ArrowRight}');
-		await expect.element(screen.getByRole('tabpanel', { name: 'Send' })).toBeVisible();
-
-		await userEvent.keyboard('{ArrowLeft}');
-		await expect
-			.element(screen.getByRole('tabpanel', { name: 'Signature positions' }))
-			.toBeVisible();
-
-		await userEvent.keyboard('{ArrowLeft}');
-		await expect.element(screen.getByRole('tabpanel', { name: 'Recipients' })).toBeVisible();
-
+		await expect.element(screen.getByRole('tabpanel', { name: 'Status' })).toBeVisible();
 		await userEvent.keyboard('{ArrowLeft}');
 		await expect.element(screen.getByRole('tabpanel', { name: 'Documents' })).toBeVisible();
 		await expect.element(screen.getByRole('link', { name: 'Download final PDF' })).toBeVisible();
