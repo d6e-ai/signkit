@@ -71,7 +71,8 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 				sealing_key_id = EXCLUDED.sealing_key_id,
 				observed_at = EXCLUDED.observed_at,
 				expires_at = EXCLUDED.expires_at,
-				stored_at = EXCLUDED.stored_at
+				stored_at = EXCLUDED.stored_at,
+				reseal_after = EXCLUDED.reseal_after
 			WHERE instance_member_display.observed_at < EXCLUDED.observed_at
 			RETURNING user_id AS "userId"
 		`;

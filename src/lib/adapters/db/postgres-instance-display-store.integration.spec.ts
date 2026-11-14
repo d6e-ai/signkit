@@ -147,6 +147,36 @@ postgresDescribe('PostgresInstanceDisplayStore integration', () => {
 		expect(await store.listMemberDisplayRows({ type: 'user', id: MEMBER_ID }, [OWNER_ID])).toEqual({
 			outcome: 'forbidden'
 		});
+		expect(
+			await store.deferMemberReseal({
+				userId: OWNER_ID,
+				previousSealingKeyId: sealed.sealingKeyId,
+				previousObservedAt: OBSERVED_AT,
+				previousExpiresAt: expiresAt,
+				previousSealedPayload: sealed.sealedPayload,
+				now: OBSERVED_AT
+			})
+		).toBe('deferred');
+		const refreshed = await new AesGcmInstanceDisplayPayloadSealer(key(2)).sealMember(
+			{
+				name: 'Ada',
+				email: 'ada@example.com',
+				observedAt: LATER_AT,
+				expiresAt: memberDisplayExpiresAt(LATER_AT)
+			},
+			OWNER_ID
+		);
+		expect(
+			await store.recordMemberSnapshot({
+				userId: OWNER_ID,
+				...refreshed,
+				observedAt: LATER_AT,
+				expiresAt: memberDisplayExpiresAt(LATER_AT),
+				storedAt: LATER_AT
+			})
+		).toEqual({ outcome: 'recorded' });
+		const eligible = await store.findMemberRowsForReseal(refreshed.sealingKeyId, LATER_AT, 50);
+		expect(eligible.map((row) => row.userId)).toEqual([OWNER_ID]);
 	});
 
 	it('atomically stores invitation display on create, scrubs on accept, and refuses replay recreation', async () => {

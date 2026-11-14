@@ -74,7 +74,8 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 					sealing_key_id = excluded.sealing_key_id,
 					observed_at = excluded.observed_at,
 					expires_at = excluded.expires_at,
-					stored_at = excluded.stored_at
+					stored_at = excluded.stored_at,
+					reseal_after = excluded.reseal_after
 				WHERE instance_member_display.observed_at < excluded.observed_at`
 			)
 			.bind(

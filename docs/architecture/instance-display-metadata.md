@@ -26,6 +26,7 @@ data from mail payloads, token-bearing ciphertext, or request bodies.
 A member snapshot contains only `name`, `email`, `observedAt`, and `expiresAt`. Retention is 90
 days after the original provider-verified profile observation that produced that snapshot. A newer
 observation replaces the snapshot and starts a new 90-day window.
+A fresh snapshot also clears any reseal deferral belonging to the ciphertext it replaces.
 
 Only the authenticated member's own verified session claims may write that member's snapshot, and
 only while the local member is `active`. The write target is the session subject. Request bodies,

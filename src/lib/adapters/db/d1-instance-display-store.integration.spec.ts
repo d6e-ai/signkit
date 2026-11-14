@@ -666,6 +666,39 @@ describe('D1 instance display store', () => {
 			)
 			.get('poison-0') as { sealedPayload: string };
 		expect(poison.sealedPayload).toBe(poisonPayload);
+
+		// A fresh authentication replaces the deferred snapshot and must not inherit
+		// its old rotation deadline when the next key rotation starts.
+		const refreshed = await rotated.sealMember(
+			{
+				name: 'Recovered',
+				email: 'recovered@example.com',
+				observedAt: now,
+				expiresAt: healthyExpires
+			},
+			'poison-0'
+		);
+		expect(
+			await store.recordMemberSnapshot({
+				userId: 'poison-0',
+				...refreshed,
+				observedAt: now,
+				expiresAt: healthyExpires,
+				storedAt: now
+			})
+		).toEqual({ outcome: 'recorded' });
+		const nextRotation = new AesGcmInstanceDisplayPayloadSealer(key(3), key(2));
+		await new InstanceDisplayMaintenanceService(
+			store,
+			nextRotation,
+			() => new Date(now)
+		).maintain();
+		const recovered = sqlite
+			.prepare(
+				'SELECT sealing_key_id AS sealingKeyId FROM instance_member_display WHERE user_id = ?'
+			)
+			.get('poison-0') as { sealingKeyId: string };
+		expect(recovered.sealingKeyId).toBe(await nextRotation.memberActiveKeyId());
 	});
 
 	it('does not revive accepted invitation ciphertext through reseal or defer', async () => {

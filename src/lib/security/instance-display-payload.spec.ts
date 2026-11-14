@@ -21,6 +21,16 @@ const memberPayload = {
 };
 
 describe('AesGcmInstanceDisplayPayloadSealer', () => {
+	it('does not schedule rotation when the previous key duplicates the active key', async () => {
+		const sealer = new AesGcmInstanceDisplayPayloadSealer(key(1), key(1));
+		expect(await sealer.memberPreviousKeyId()).toBeNull();
+		expect(await sealer.invitationPreviousKeyId()).toBeNull();
+		const sealed = await sealer.sealMember(memberPayload, USER_ID);
+		await expect(
+			sealer.openMember(sealed.sealedPayload, USER_ID, sealed.sealingKeyId)
+		).resolves.toEqual(memberPayload);
+	});
+
 	it('round-trips member snapshots under a distinct prefix and purpose key', async () => {
 		const sealer = new AesGcmInstanceDisplayPayloadSealer(key(1));
 		const sealed = await sealer.sealMember(memberPayload, USER_ID);

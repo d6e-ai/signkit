@@ -343,6 +343,8 @@ runs when the active/previous delivery keyring exists. Each run shares one clean
 100 expired member and invitation rows and reseals at most 50 previous-key rows. Unknown-key and
 unopenable previous-key ciphertext stays until expiry; the sweep advances a bounded `reseal_after`
 cursor instead of mutating or deleting it.
+Zero discovery in one batch is not proof that rotation is complete: deferred live rows can still
+reference the previous key. Verify those database references are gone or expired before retiring it.
 
 The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable
 (signer/approver) recipient that has ever been released has an expired capability and none currently
