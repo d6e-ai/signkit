@@ -40,6 +40,27 @@ refreshed revision and retain new manifest members. A failed refresh stops the s
 rather than submitting a partial document list. Form edits and document mutations are locked while a
 request is in flight.
 
+## Lifecycle views
+
+Preparation has four task tabs: documents, recipients, signature positions, and review. The current
+step and completed work are represented in that navigation; merely visiting a tab never completes
+a step. The final review remains the only place to send.
+
+Sent and closed envelopes have Status and Documents views. Status combines each recipient's
+identity, role, language, response, and invitation delivery in one row. Recipient rows stack on
+narrow screens so response and delivery do not require horizontal scrolling. The separate
+[invitation delivery history and replacement contract](recipient-invitation-replacement.md) still
+applies. Published signature positions remain available as read-only details with the documents.
+
+Completed envelopes open Documents with the final PDF first. Originals and optional instance
+sealing use progressive disclosure; publication failures, seal work in progress or failures, and
+[completion-mail recovery](completion-access-reissue.md) remain visible. The final PDF, originals,
+and optional sealed artifact keep their separate meanings.
+
+Placement keeps the PDF beside selected-field geometry on wide screens and stacks them on narrow
+screens. Keyboard and coordinate help can be expanded without removing the keyboard controls or
+numeric geometry inputs.
+
 ## Design basis and verification
 
 [NN/g heuristics](https://www.nngroup.com/articles/ten-usability-heuristics/) and

@@ -488,7 +488,7 @@ describe('guided sender workflow', () => {
 		await expect
 			.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 			.toBeVisible();
-		await expect.element(screen.getByText('Step 1 of 4: Documents')).toBeVisible();
+		await expect.element(screen.getByRole('tabpanel', { name: 'Documents' })).toBeVisible();
 
 		await screen.getByRole('button', { name: 'Edit document text' }).click();
 		const editor = screen.getByLabelText('Document content');
@@ -501,7 +501,7 @@ describe('guided sender workflow', () => {
 				screen.getByRole('tabpanel', { name: 'Documents' }).getByText('Could not save documents.')
 			)
 			.toBeVisible();
-		await expect.element(screen.getByText('Step 1 of 4: Documents')).toBeVisible();
+		await expect.element(screen.getByRole('tabpanel', { name: 'Documents' })).toBeVisible();
 		await expect.element(editor).toHaveValue('# Kept draft\n');
 	});
 
@@ -559,14 +559,16 @@ describe('guided sender workflow', () => {
 
 		const screen = await render(EnvelopePage);
 		await screen.getByRole('button', { name: 'Continue to recipients' }).click();
-		await expect.element(screen.getByText('Step 2 of 4: Recipients')).toBeVisible();
+		await expect.element(screen.getByRole('tabpanel', { name: 'Recipients' })).toBeVisible();
 		await screen.getByRole('button', { name: 'Add recipient' }).click();
 		await screen.getByLabelText('Email').fill('signer@example.com');
 		await screen.getByLabelText('Name').fill('Signer');
 		await screen.getByRole('button', { name: 'Choose signature positions' }).click();
 
 		await expect.poll(() => readyBody !== undefined).toBe(true);
-		await expect.element(screen.getByText('Step 3 of 4: Signature positions')).toBeVisible();
+		await expect
+			.element(screen.getByRole('tabpanel', { name: 'Signature positions' }))
+			.toBeVisible();
 		await expect.element(screen.getByText('Field placement')).toBeVisible();
 	});
 
@@ -597,17 +599,19 @@ describe('guided sender workflow', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Send & status' }).click();
+		await screen.getByRole('tab', { name: 'Review' }).click();
 		await expect.element(screen.getByText('Review before sending', { exact: true })).toBeVisible();
 		await screen.getByRole('tab', { name: 'Recipients' }).click();
 		await screen.getByRole('button', { name: 'Choose signature positions' }).click();
-		await expect.element(screen.getByText('Step 3 of 4: Signature positions')).toBeVisible();
+		await expect
+			.element(screen.getByRole('tabpanel', { name: 'Signature positions' }))
+			.toBeVisible();
 		expect(
 			mockFetch.mock.calls.some(
 				([url, init]) => String(url).endsWith('/ready') && init?.method === 'POST'
 			)
 		).toBe(false);
-		await screen.getByRole('tab', { name: 'Send & status' }).click();
+		await screen.getByRole('tab', { name: 'Review' }).click();
 		await expect
 			.element(screen.getByText('Add a signature position for each signer before sending.'))
 			.toBeVisible();
@@ -851,7 +855,7 @@ describe('guided sender workflow', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const screen = await render(EnvelopePage);
-		await screen.getByRole('tab', { name: 'Send & status' }).click();
+		await screen.getByRole('tab', { name: 'Review' }).click();
 		await expect
 			.element(screen.getByText('No signature positions are needed because nobody needs to sign.'))
 			.toBeVisible();

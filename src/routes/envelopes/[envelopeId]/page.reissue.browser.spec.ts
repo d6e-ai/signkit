@@ -163,8 +163,11 @@ async function openRecipientsPanel(fetchMock: ReturnType<typeof vi.fn>) {
 	await expect
 		.element(screen.getByRole('heading', { name: 'Agreement', level: 1 }).first())
 		.toBeVisible();
-	await screen.getByRole('tab', { name: 'Recipients' }).click();
-	return { screen, panel: screen.getByRole('tabpanel', { name: 'Recipients' }) };
+	const tab = screen.getByRole('tab', { name: 'Status', exact: true }).query()
+		? 'Status'
+		: 'Recipients';
+	await screen.getByRole('tab', { name: tab }).click();
+	return { screen, panel: screen.getByRole('tabpanel', { name: tab }) };
 }
 
 function headerOf(init: RequestInit | undefined, key: string): string | undefined {
@@ -244,14 +247,14 @@ describe('recipient invitation reissue action', () => {
 			)
 			.toBeDisabled();
 		await expect.element(panel.getByText(m.envelope_reissue_status_unavailable())).toBeVisible();
-		await screen.getByRole('tab', { name: 'Send & status' }).click();
-		const statusPanel = screen.getByRole('tabpanel', { name: 'Send & status' });
-		expect(statusPanel.getByRole('row').elements()).toHaveLength(3);
+		const statusPanel = screen.getByRole('tabpanel', { name: 'Status' });
+		await statusPanel.getByRole('button', { name: 'Invitation delivery history' }).click();
+		expect(statusPanel.getByRole('rowgroup').last().getByRole('row').elements()).toHaveLength(2);
 		await expect
 			.element(statusPanel.getByText(m.envelope_delivery_status_delivered()))
 			.toBeVisible();
 		await expect
-			.element(statusPanel.getByText(m.envelope_delivery_status_processing()))
+			.element(statusPanel.getByText(m.envelope_delivery_status_processing()).first())
 			.toBeVisible();
 	});
 

@@ -1,8 +1,14 @@
 export const AUTHORING_TABS = ['documents', 'recipients', 'fields', 'send'] as const;
 export type AuthoringTab = (typeof AUTHORING_TABS)[number];
+export type TrackingTab = 'status' | 'documents';
+export type WorkspaceTab = AuthoringTab | TrackingTab;
 
 export function isAuthoringStatus(status: string | undefined): boolean {
 	return status === 'draft' || status === 'ready';
+}
+
+export function isAuthoringTab(tab: string): tab is AuthoringTab {
+	return (AUTHORING_TABS as readonly string[]).includes(tab);
 }
 
 export function authoringTabIndex(tab: AuthoringTab): number {
@@ -21,6 +27,45 @@ export function previousAuthoringTab(tab: AuthoringTab): AuthoringTab | null {
 
 export function tabAfterRecipients(hasSigners: boolean): AuthoringTab {
 	return hasSigners ? 'fields' : 'send';
+}
+
+export function defaultWorkspaceTab(status: string | undefined): WorkspaceTab {
+	if (status === 'completed') return 'documents';
+	if (status !== undefined && !isAuthoringStatus(status)) return 'status';
+	return 'documents';
+}
+
+export function syncWorkspaceTab(
+	current: WorkspaceTab,
+	status: string | undefined,
+	initialized: boolean
+): WorkspaceTab {
+	if (!initialized) return defaultWorkspaceTab(status);
+	if (isAuthoringStatus(status)) return current === 'status' ? 'send' : current;
+	if (current === 'recipients' || current === 'fields' || current === 'send') {
+		return defaultWorkspaceTab(status);
+	}
+	return current;
+}
+
+export function authoringStepComplete(
+	step: AuthoringTab,
+	input: {
+		status: string | undefined;
+		hasDocuments: boolean;
+		fieldsComplete: boolean;
+	}
+): boolean {
+	switch (step) {
+		case 'documents':
+			return input.hasDocuments;
+		case 'recipients':
+			return input.status === 'ready';
+		case 'fields':
+			return input.status === 'ready' && input.fieldsComplete;
+		case 'send':
+			return false;
+	}
 }
 
 export interface SignerPlacementInput {

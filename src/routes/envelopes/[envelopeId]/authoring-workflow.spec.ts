@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+	authoringStepComplete,
+	defaultWorkspaceTab,
 	nextAuthoringTab,
 	previousAuthoringTab,
 	sendBlockReason,
 	signersMissingPlacements,
+	syncWorkspaceTab,
 	tabAfterRecipients
 } from './authoring-workflow';
 
@@ -32,6 +35,67 @@ describe('authoring workflow helpers', () => {
 		expect(signersMissingPlacements([{ id: 'signer-a' }], [{ recipientId: 'signer-a' }])).toEqual(
 			[]
 		);
+	});
+
+	it('defaults tracking tabs from envelope status, not leftover authoring tabs', () => {
+		expect(defaultWorkspaceTab('draft')).toBe('documents');
+		expect(defaultWorkspaceTab('ready')).toBe('documents');
+		expect(defaultWorkspaceTab('sent')).toBe('status');
+		expect(defaultWorkspaceTab('in_progress')).toBe('status');
+		expect(defaultWorkspaceTab('declined')).toBe('status');
+		expect(defaultWorkspaceTab('voided')).toBe('status');
+		expect(defaultWorkspaceTab('expired')).toBe('status');
+		expect(defaultWorkspaceTab('completed')).toBe('documents');
+		expect(syncWorkspaceTab('documents', 'sent', false)).toBe('status');
+		expect(syncWorkspaceTab('documents', 'completed', false)).toBe('documents');
+		expect(syncWorkspaceTab('send', 'sent', true)).toBe('status');
+		expect(syncWorkspaceTab('documents', 'sent', true)).toBe('documents');
+		expect(syncWorkspaceTab('status', 'draft', true)).toBe('send');
+	});
+
+	it('marks authoring steps from saved work, not tab order', () => {
+		expect(
+			authoringStepComplete('documents', {
+				status: 'draft',
+				hasDocuments: true,
+				fieldsComplete: false
+			})
+		).toBe(true);
+		expect(
+			authoringStepComplete('recipients', {
+				status: 'draft',
+				hasDocuments: true,
+				fieldsComplete: false
+			})
+		).toBe(false);
+		expect(
+			authoringStepComplete('recipients', {
+				status: 'ready',
+				hasDocuments: true,
+				fieldsComplete: false
+			})
+		).toBe(true);
+		expect(
+			authoringStepComplete('fields', {
+				status: 'ready',
+				hasDocuments: true,
+				fieldsComplete: false
+			})
+		).toBe(false);
+		expect(
+			authoringStepComplete('fields', {
+				status: 'ready',
+				hasDocuments: true,
+				fieldsComplete: true
+			})
+		).toBe(true);
+		expect(
+			authoringStepComplete('send', {
+				status: 'ready',
+				hasDocuments: true,
+				fieldsComplete: true
+			})
+		).toBe(false);
 	});
 
 	it('allows approval-only send without signature boxes', () => {
