@@ -2790,6 +2790,17 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Sweep batch result', { type: 'object' })
 				})
 			},
+			'/api/v1/system/instance-display/maintain': {
+				post: op({
+					summary: 'Expire and reseal instance display snapshots',
+					description:
+						'Bounded cleanup of expired member snapshots and invitation targets, plus previous-key reseal. Cleanup runs without mail configuration and remains available when the keyring is missing or malformed; reseal requires the delivery encryption keyring. Uses the same delivery-worker bearer authentication as other scheduled maintenance jobs.',
+					operationId: 'maintainInstanceDisplay',
+					tags: ['System', 'Instance'],
+					security: [{ DeliveryWorkerSecret: [] }],
+					responses: jsonResponse('200', 'Maintenance batch result', { type: 'object' })
+				})
+			},
 			'/api/v1/api-keys': {
 				get: op({
 					summary: 'List API keys owned by the caller',
@@ -2837,10 +2848,12 @@ export function openApiDocument(): Record<string, unknown> {
 			'/api/v1/instance/members': {
 				get: op({
 					summary: 'List instance members',
+					description:
+						'Session-only owner/admin member metadata page plus a top-level memberDisplays map keyed by userId. Display values are never authorization inputs and are omitted from mutation receipts and /me.',
 					operationId: 'listInstanceMembers',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
-					responses: jsonResponse('200', 'Member page', { type: 'object' })
+					responses: jsonResponse('200', 'Member page with display map', { type: 'object' })
 				})
 			},
 			'/api/v1/instance/members/me': {
@@ -2883,10 +2896,12 @@ export function openApiDocument(): Record<string, unknown> {
 			'/api/v1/instance/invitations': {
 				get: op({
 					summary: 'List instance invitations',
+					description:
+						'Session-only owner/admin invitation metadata page plus a top-level invitationDisplays map keyed by invitationId. Target email is display-only and is never added to mutation receipts.',
 					operationId: 'listInstanceInvitations',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
-					responses: jsonResponse('200', 'Invitation page', { type: 'object' })
+					responses: jsonResponse('200', 'Invitation page with display map', { type: 'object' })
 				}),
 				post: op({
 					summary: 'Create an instance invitation',

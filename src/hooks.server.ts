@@ -13,6 +13,7 @@ import { hasAuthorizationHeader, parseBearerApiKey } from '$lib/security/api-key
 import { D6eAuthRejectedError, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
 import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key-authentication';
 import { getRequestCallerContext } from '$lib/server/request-caller-membership';
+import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
 import {
 	SESSION_COOKIE,
 	SESSION_COOKIE_OPTIONS,
@@ -215,7 +216,8 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 				accessToken: renewed.accessToken,
 				refreshToken: renewed.refreshToken ?? session.refreshToken,
 				expiresAt: Math.floor(Date.now() / 1000) + renewed.expiresIn,
-				principal: renewed.principal
+				principal: renewed.principal,
+				profileObservedAt: new Date().toISOString()
 			};
 			event.cookies.set(SESSION_COOKIE, await seal(session), {
 				...SESSION_COOKIE_OPTIONS,
@@ -257,6 +259,19 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 				status: caller.member.status
 			};
 			event.locals.identityState = 'active';
+			try {
+				session =
+					(await bestEffortCaptureMemberDisplay({
+						cookies: event.cookies,
+						url: event.url,
+						platform: event.platform,
+						session,
+						memberUserId: caller.member.userId,
+						principal: session.principal
+					})) ?? session;
+			} catch {
+				// Display capture never fails identity resolution.
+			}
 		}
 	} catch (error) {
 		console.error(

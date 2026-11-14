@@ -112,6 +112,13 @@ export interface CreateInstanceInvitationCommand {
 	sealedDeliveryPayloadSha256: string;
 	createdAt: string;
 	expiresAt: string;
+	/**
+	 * Optional separately encrypted invitation-target display ciphertext.
+	 * Fresh production creates always supply both fields; exact replay never
+	 * reinserts them. Public metadata stays zero-PII either way.
+	 */
+	sealedDisplayPayload?: string;
+	displaySealingKeyId?: string;
 }
 
 /**

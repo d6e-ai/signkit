@@ -4,13 +4,14 @@ SignKit is single-instance software: one deployment and one database form the co
 boundary. d6e-auth proves a human identity; SignKit decides what that identity may do from its own
 `instance_member` row.
 
-Member administration currently identifies other members by their stable d6e-auth subject. SignKit
-does not copy profile data into its authorization store or attempt an unbounded directory lookup.
-The provider's cross-user profile-resolution proposal,
+Member administration identifies other members by their stable d6e-auth subject. SignKit does not
+copy profile data into its authorization store or attempt an unbounded directory lookup. The
+provider's cross-user profile-resolution proposal,
 [d6e.ai issue #218](https://github.com/d6e-ai/d6e.ai/issues/218), was closed as not planned; its
-self-profile endpoints do not resolve other instance members. A separate SignKit display-data
-contract is tracked in [issue #260](https://github.com/d6e-ai/signkit/issues/260). Until implemented,
-the stable subject remains the display fallback as well as the membership identifier.
+self-profile endpoints do not resolve other instance members. Authorized owner/admin list pages may
+attach a separate encrypted display projection; that contract is
+[instance display metadata](instance-display-metadata.md). Display values never authorize a request
+and never appear on mutation receipts or `/me`.
 
 ## Human sessions
 

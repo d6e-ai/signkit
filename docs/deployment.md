@@ -264,19 +264,20 @@ ever decrypt — never a key outside that pair.
 Durable outboxes, DOCX conversion retries, expiry, reseal, webhook delivery, and object-store orphan
 collection are processed through protected endpoints:
 
-| Endpoint                                                 | Work                                                                    |
-| -------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `POST /api/v1/system/instance-invitations/drain`         | instance member invitation mail                                         |
-| `POST /api/v1/system/deliveries/drain`                   | recipient invitation mail                                               |
-| `POST /api/v1/system/deliveries/reseal-sweep`            | migrates outstanding delivery capability ciphertext onto the active key |
-| `POST /api/v1/system/docx-conversions/drain`             | retries leased DOCX import and export jobs                              |
-| `POST /api/v1/system/completion-artifacts/drain`         | completion-artifact publication                                         |
-| `POST /api/v1/system/pdf-seals/drain`                    | advances and publishes explicitly requested instance PDF seals          |
-| `POST /api/v1/system/completion-deliveries/drain`        | completion notifications and read-only artifact access grants           |
-| `POST /api/v1/system/completion-deliveries/reseal-sweep` | migrates outstanding completion token ciphertext onto the active key    |
-| `POST /api/v1/system/envelopes/expiry-drain`             | transitions lapsed `sent`/`in_progress` envelopes to `expired`          |
-| `POST /api/v1/system/webhooks/drain`                     | signed webhook deliveries                                               |
-| `POST /api/v1/system/objects/orphan-sweep`               | deletes unreferenced object-store uploads older than 24 hours           |
+| Endpoint                                                 | Work                                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `POST /api/v1/system/instance-invitations/drain`         | instance member invitation mail                                            |
+| `POST /api/v1/system/deliveries/drain`                   | recipient invitation mail                                                  |
+| `POST /api/v1/system/deliveries/reseal-sweep`            | migrates outstanding delivery capability ciphertext onto the active key    |
+| `POST /api/v1/system/docx-conversions/drain`             | retries leased DOCX import and export jobs                                 |
+| `POST /api/v1/system/completion-artifacts/drain`         | completion-artifact publication                                            |
+| `POST /api/v1/system/pdf-seals/drain`                    | advances and publishes explicitly requested instance PDF seals             |
+| `POST /api/v1/system/completion-deliveries/drain`        | completion notifications and read-only artifact access grants              |
+| `POST /api/v1/system/completion-deliveries/reseal-sweep` | migrates outstanding completion token ciphertext onto the active key       |
+| `POST /api/v1/system/instance-display/maintain`          | expires member/invitation display rows and reseals previous-key ciphertext |
+| `POST /api/v1/system/envelopes/expiry-drain`             | transitions lapsed `sent`/`in_progress` envelopes to `expired`             |
+| `POST /api/v1/system/webhooks/drain`                     | signed webhook deliveries                                                  |
+| `POST /api/v1/system/objects/orphan-sweep`               | deletes unreferenced object-store uploads older than 24 hours              |
 
 All endpoints authenticate with a constant-time check of
 `Authorization: Bearer <DELIVERY_WORKER_SECRET>`. Cloudflare invokes them from its own scheduled
@@ -293,6 +294,7 @@ for path in \
   /api/v1/system/pdf-seals/drain \
   /api/v1/system/completion-deliveries/drain \
   /api/v1/system/completion-deliveries/reseal-sweep \
+  /api/v1/system/instance-display/maintain \
   /api/v1/system/envelopes/expiry-drain \
   /api/v1/system/webhooks/drain \
   /api/v1/system/objects/orphan-sweep
@@ -326,12 +328,23 @@ non-`processing` outbox rows sealed under a key other than the active one, leavi
 a key outside the active/previous pair untouched for an operator to investigate rather than silently
 discarding them.
 
-Instance-invitation payloads and their privacy-preserving idempotency fingerprints currently use the
-active/previous delivery key pair but do not have a separate reseal sweep. Keep
+Instance-invitation mail payloads and their privacy-preserving idempotency fingerprints currently
+use the active/previous delivery key pair but do not have a separate reseal sweep. Keep
 `DELIVERY_ENCRYPTION_KEY_PREVIOUS` configured until every instance invitation created under it has
-reached its fixed seven-day expiry. Do not rotate a second time inside that overlap. Removing the
-previous key earlier makes encrypted rows unreadable and exact retries conflict until the key is
-restored; retries after the seven-day invitation window conflict by design.
+reached its fixed seven-day expiry **and** instance-display previous-key rows have been resealed or
+expired by `POST /api/v1/system/instance-display/maintain`. Member snapshots last 90 days; invitation
+display targets last at most seven days. Do not rotate a second time inside that overlap. Removing
+the previous key earlier makes encrypted rows unreadable and exact invitation retries conflict until
+the key is restored; retries after the seven-day invitation window conflict by design.
+
+Display maintenance needs only the database. Cleanup runs without an encryption key, without a
+well-formed keyring, and without mail provider, public origin, or from-email configuration. Reseal
+runs when the active/previous delivery keyring exists. Each run shares one cleanup budget of at most
+100 expired member and invitation rows and reseals at most 50 previous-key rows. Unknown-key and
+unopenable previous-key ciphertext stays until expiry; the sweep advances a bounded `reseal_after`
+cursor instead of mutating or deleting it.
+Zero discovery in one batch is not proof that rotation is complete: deferred live rows can still
+reference the previous key. Verify those database references are gone or expired before retiring it.
 
 The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable
 (signer/approver) recipient that has ever been released has an expired capability and none currently

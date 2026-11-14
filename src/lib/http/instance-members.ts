@@ -20,6 +20,10 @@ import {
 	type JsonBodyResult
 } from './bounded-json-body';
 import { authorizeIdentityRequest, type AuthorizedIdentityActor } from './identity-authorization';
+import {
+	enrichMemberDisplays,
+	type InstanceDisplayApplicationResolver
+} from './instance-display-enrichment';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const MAX_MUTATION_BODY_BYTES: number = 1024;
@@ -321,7 +325,8 @@ async function resolveMemberApplicationOrProblem(
  * caller's own membership lookup and is never touched by this factory.
  */
 export function createInstanceMemberHttpHandlers(
-	resolveApplication: InstanceMemberApplicationResolver
+	resolveApplication: InstanceMemberApplicationResolver,
+	resolveDisplay: InstanceDisplayApplicationResolver | null = null
 ): InstanceMemberHttpHandlers {
 	const list: RequestHandler = async ({ locals, platform, url }): Promise<Response> => {
 		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
@@ -355,8 +360,18 @@ export function createInstanceMemberHttpHandlers(
 			);
 			if (result.outcome === 'forbidden') return forbidden(url.pathname);
 			if (result.outcome === 'member_suspended') return memberSuspended(url.pathname);
+			const memberDisplays = await enrichMemberDisplays(
+				resolveDisplay,
+				platform,
+				authorized.id,
+				result.page.items
+			);
 			return new Response(
-				JSON.stringify({ members: result.page.items, nextCursor: result.page.nextCursor }),
+				JSON.stringify({
+					members: result.page.items,
+					nextCursor: result.page.nextCursor,
+					...(memberDisplays === undefined ? {} : { memberDisplays })
+				}),
 				{
 					status: 200,
 					headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }

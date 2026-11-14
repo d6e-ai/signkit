@@ -1,3 +1,4 @@
+import { resolveInstanceDisplayApplication } from '$lib/application/instance-display/instance-display-runtime';
 import { resolveInstanceInvitationApplication } from '$lib/application/instance/instance-runtime';
 import {
 	createInstanceInvitationHttpHandlers,
@@ -5,7 +6,8 @@ import {
 } from '$lib/http/instance-invitations';
 
 const handlers: InstanceInvitationHttpHandlers = createInstanceInvitationHttpHandlers(
-	resolveInstanceInvitationApplication
+	resolveInstanceInvitationApplication,
+	resolveInstanceDisplayApplication
 );
 
 export const GET = handlers.list;

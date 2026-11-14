@@ -435,6 +435,26 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback(await this.#classifyCreateFailure(transaction, command));
 					}
 
+					if (
+						command.sealedDisplayPayload !== undefined &&
+						command.displaySealingKeyId !== undefined
+					) {
+						const insertedDisplay = await transaction<{ invitationId: string }[]>`
+							INSERT INTO instance_invitation_display (
+								invitation_id, sealed_payload, sealing_key_id, created_at, expires_at
+							) VALUES (
+								${command.invitationId}, ${command.sealedDisplayPayload},
+								${command.displaySealingKeyId}, ${command.createdAt}::timestamptz,
+								${command.expiresAt}::timestamptz
+							)
+							ON CONFLICT DO NOTHING
+							RETURNING invitation_id AS "invitationId"
+						`;
+						if (insertedDisplay.length !== 1) {
+							throw new InstanceRollback(await this.#classifyCreateFailure(transaction, command));
+						}
+					}
+
 					// 7. Insert receipt
 					const insertedReceipt = await transaction<{ actorId: string }[]>`
 						INSERT INTO instance_invitation_command (

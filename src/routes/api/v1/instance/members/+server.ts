@@ -1,3 +1,4 @@
+import { resolveInstanceDisplayApplication } from '$lib/application/instance-display/instance-display-runtime';
 import { resolveInstanceMemberApplication } from '$lib/application/instance/instance-runtime';
 import {
 	createInstanceMemberHttpHandlers,
@@ -5,7 +6,8 @@ import {
 } from '$lib/http/instance-members';
 
 const handlers: InstanceMemberHttpHandlers = createInstanceMemberHttpHandlers(
-	resolveInstanceMemberApplication
+	resolveInstanceMemberApplication,
+	resolveInstanceDisplayApplication
 );
 
 export const GET = handlers.list;

@@ -10,6 +10,7 @@ import {
 } from '$lib/application/instance-members/instance-member-service';
 import { InstanceApplication, type InstanceApplicationPort } from './instance-service';
 import type { InstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
+import type { InstanceDisplayPayloadSealer } from '$lib/security/instance-display-payload';
 
 /**
  * Share the process-local PostgreSQL pool used by the rest of the Node and
@@ -25,11 +26,13 @@ export function resolvePostgresInstanceApplication(databaseUrl: string): Instanc
  */
 export function resolvePostgresInstanceInvitationApplication(
 	databaseUrl: string,
-	payloadSealer: InstanceInvitationDeliveryPayloadSealer
+	payloadSealer: InstanceInvitationDeliveryPayloadSealer,
+	displaySealer?: InstanceDisplayPayloadSealer
 ): InstanceInvitationApplicationPort {
 	return new InstanceInvitationApplication({
 		store: new PostgresInstanceStore(resolvePostgresSql(databaseUrl)),
-		payloadSealer
+		payloadSealer,
+		displaySealer
 	});
 }
 

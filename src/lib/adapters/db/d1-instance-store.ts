@@ -546,13 +546,28 @@ export class D1InstanceStore implements InstanceStore {
 				command.createdAt
 			);
 
+		const mutations: D1PreparedStatement[] = [invitationStmt, deliveryStmt, receiptStmt];
+		if (command.sealedDisplayPayload !== undefined && command.displaySealingKeyId !== undefined) {
+			mutations.push(
+				this.#database
+					.prepare(
+						`INSERT INTO instance_invitation_display (
+							invitation_id, sealed_payload, sealing_key_id, created_at, expires_at
+						) VALUES (?, ?, ?, ?, ?)`
+					)
+					.bind(
+						command.invitationId,
+						command.sealedDisplayPayload,
+						command.displaySealingKeyId,
+						command.createdAt,
+						command.expiresAt
+					)
+			);
+		}
+
 		let applied: boolean;
 		try {
-			const results: D1Result[] = await this.#database.batch([
-				invitationStmt,
-				deliveryStmt,
-				receiptStmt
-			]);
+			const results: D1Result[] = await this.#database.batch(mutations);
 			applied = results.every((result: D1Result): boolean => changeCount(result) === 1);
 		} catch (error: unknown) {
 			const classified: CreateInstanceInvitationStoreResult | null =

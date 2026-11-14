@@ -52,6 +52,7 @@ describe('GET /api/v1/openapi.json', () => {
 			'/api/v1/webhooks/{webhookId}/revoke',
 			'/api/v1/system/webhooks/drain',
 			'/api/v1/system/objects/orphan-sweep',
+			'/api/v1/system/instance-display/maintain',
 			'/api/v1/instance/invitations/accept',
 			'/api/v1/envelopes/{envelopeId}/revisions',
 			'/api/v1/envelopes/{envelopeId}/revisions/diff',

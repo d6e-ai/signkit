@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import MemberDisplayView from './member-display.svelte';
+	import type { InvitationDisplay } from '$lib/ports/instance-display-store';
+	import * as Sheet from '$lib/components/ui/sheet';
 	import {
 		createInstanceManagementClient,
 		type InstanceInvitationMetadata,
@@ -41,6 +44,22 @@
 	const client = createInstanceManagementClient();
 
 	let invitations = $state<InstanceInvitationMetadata[]>([]);
+	let invitationDisplays = $state<Record<string, InvitationDisplay>>({});
+	let detailsInvitation = $state<InstanceInvitationMetadata | null>(null);
+	function invitationLabel(invitation: InstanceInvitationMetadata): string {
+		const display = invitationDisplays[invitation.id];
+		return display?.state === 'pending'
+			? display.email
+			: display?.state === 'accepted' && display.member.state === 'available'
+				? display.member.name
+				: invitation.id;
+	}
+	function formatTimestamp(value: string): string {
+		return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(
+			new Date(value)
+		);
+	}
+
 	let invitationsLoading = $state(false);
 	let invitationsError = $state<string | null>(null);
 	let invitationsNextCursor = $state<string | null>(null);
@@ -79,6 +98,11 @@
 			} else {
 				invitations = [...res.invitations];
 			}
+			invitationDisplays = cursor
+				? { ...invitationDisplays, ...res.invitationDisplays }
+				: { ...res.invitationDisplays };
+			if (detailsInvitation)
+				detailsInvitation = invitations.find((item) => item.id === detailsInvitation?.id) ?? null;
 			invitationsNextCursor = res.nextCursor;
 		} catch (err: unknown) {
 			if (sequence !== listRequestSequence) return;
@@ -200,7 +224,7 @@
 					<Table.Root>
 						<Table.Header>
 							<Table.Row>
-								<Table.Head>{m.settings_invitations_col_id()}</Table.Head>
+								<Table.Head>{m.settings_invitations_col_recipient()}</Table.Head>
 								<Table.Head>{m.settings_invitations_col_role()}</Table.Head>
 								<Table.Head>{m.settings_invitations_col_status()}</Table.Head>
 								<Table.Head class="hidden md:table-cell"
@@ -221,16 +245,37 @@
 									!isExpiredInvitation &&
 									(isCallerOwner || (isCallerAdmin && invitation.role === 'member'))}
 								<Table.Row>
-									<Table.Cell class="font-mono text-xs">
-										<span
-											class="block max-w-[120px] truncate sm:max-w-[180px]"
-											title={invitation.id}
-										>
-											{invitation.id}
-										</span>
+									<Table.Cell class="min-w-52 whitespace-normal">
+										{@const display = invitationDisplays[invitation.id]}
+										{#if display?.state === 'accepted' && display.member.state === 'available'}
+											<MemberDisplayView
+												userId={invitation.acceptedByUserId ?? invitation.id}
+												display={display.member}
+												onselect={() => (detailsInvitation = invitation)}
+											/>
+										{:else}
+											<div class="flex flex-col items-start gap-1">
+												<Button
+													variant="link"
+													class="h-auto justify-start p-0 whitespace-normal"
+													aria-label={m.settings_display_details_for({
+														name: invitationLabel(invitation)
+													})}
+													onclick={() => (detailsInvitation = invitation)}
+													><bdi dir="auto" class="[overflow-wrap:anywhere]"
+														>{invitationLabel(invitation)}</bdi
+													></Button
+												>
+												{#if display?.state !== 'pending'}<p class="text-xs text-muted-foreground">
+														{display?.state === 'redacted'
+															? m.settings_invitation_target_removed()
+															: m.settings_display_unavailable()}
+													</p>{/if}
+											</div>
+										{/if}
 									</Table.Cell>
 									<Table.Cell>
-										<Badge variant="outline">{invitation.role}</Badge>
+										<Badge variant="outline">{roleLabel(invitation.role)}</Badge>
 									</Table.Cell>
 									<Table.Cell>
 										{#if invitation.status === 'pending' && isExpiredInvitation}
@@ -368,3 +413,97 @@
 		</form>
 	</Dialog.Content>
 </Dialog.Root>
+
+<Sheet.Root
+	open={detailsInvitation !== null}
+	onOpenChange={(open) => {
+		if (!open) detailsInvitation = null;
+	}}
+>
+	{#if detailsInvitation}
+		{@const display = invitationDisplays[detailsInvitation.id]}
+		<Sheet.Content class="overflow-y-auto pb-6">
+			<Sheet.Header
+				><Sheet.Title>{m.settings_invitations_details_title()}</Sheet.Title><Sheet.Description
+					>{m.settings_invitations_details_description()}</Sheet.Description
+				></Sheet.Header
+			>
+			<div class="flex flex-col gap-5 px-6">
+				{#if display?.state === 'pending'}
+					<div>
+						<p class="text-xs text-muted-foreground">{m.settings_invitations_col_recipient()}</p>
+						<p class="[overflow-wrap:anywhere]"><bdi dir="auto">{display.email}</bdi></p>
+					</div>
+				{:else if display?.state === 'accepted'}
+					<div class="flex flex-col gap-2">
+						<p class="text-xs text-muted-foreground">{m.settings_invitation_accepted_member()}</p>
+						<MemberDisplayView
+							userId={detailsInvitation.acceptedByUserId ?? detailsInvitation.id}
+							display={display.member}
+							detailed
+						/>
+					</div>
+				{:else}<p class="text-sm text-muted-foreground">
+						{display?.state === 'redacted'
+							? m.settings_invitation_target_removed()
+							: m.settings_display_unavailable()}
+					</p>{/if}
+				<dl class="flex flex-col gap-4">
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_invitations_col_id()}</dt>
+						<dd class="font-mono text-xs [overflow-wrap:anywhere]">{detailsInvitation.id}</dd>
+					</div>
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_invitations_col_role()}</dt>
+						<dd>{roleLabel(detailsInvitation.role)}</dd>
+					</div>
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_invitations_col_created()}</dt>
+						<dd>
+							<time datetime={detailsInvitation.createdAt}
+								>{formatTimestamp(detailsInvitation.createdAt)}</time
+							>
+						</dd>
+					</div>
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_invitations_col_expires()}</dt>
+						<dd>
+							<time datetime={detailsInvitation.expiresAt}
+								>{formatTimestamp(detailsInvitation.expiresAt)}</time
+							>
+						</dd>
+					</div>
+					<div>
+						<dt class="text-xs text-muted-foreground">{m.settings_invitation_invited_by()}</dt>
+						<dd class="font-mono text-xs [overflow-wrap:anywhere]">
+							{detailsInvitation.invitedByUserId}
+						</dd>
+					</div>
+					{#if detailsInvitation.acceptedAt}<div>
+							<dt class="text-xs text-muted-foreground">{m.settings_invitation_accepted_at()}</dt>
+							<dd>
+								<time datetime={detailsInvitation.acceptedAt}
+									>{formatTimestamp(detailsInvitation.acceptedAt)}</time
+								>
+							</dd>
+						</div>{/if}
+					{#if detailsInvitation.acceptedByUserId && !(display?.state === 'accepted' && display.member.state === 'unavailable')}<div
+						>
+							<dt class="text-xs text-muted-foreground">{m.settings_display_subject()}</dt>
+							<dd class="font-mono text-xs [overflow-wrap:anywhere]">
+								{detailsInvitation.acceptedByUserId}
+							</dd>
+						</div>{/if}
+					{#if detailsInvitation.revokedAt}<div>
+							<dt class="text-xs text-muted-foreground">{m.settings_invitation_revoked_at()}</dt>
+							<dd>
+								<time datetime={detailsInvitation.revokedAt}
+									>{formatTimestamp(detailsInvitation.revokedAt)}</time
+								>
+							</dd>
+						</div>{/if}
+				</dl>
+			</div>
+		</Sheet.Content>
+	{/if}
+</Sheet.Root>

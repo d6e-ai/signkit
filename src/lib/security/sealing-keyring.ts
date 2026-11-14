@@ -41,6 +41,13 @@ export class AesGcmSealingKeyring {
 		return (await this.#active).keyId;
 	}
 
+	async previousKeyId(): Promise<string | null> {
+		const previous: LoadedSealingKey | null = await this.#previous;
+		return previous === null || previous.keyId === (await this.#active).keyId
+			? null
+			: previous.keyId;
+	}
+
 	async isKnownKeyId(keyId: string): Promise<boolean> {
 		if (keyId === (await this.#active).keyId) return true;
 		const previous: LoadedSealingKey | null = await this.#previous;

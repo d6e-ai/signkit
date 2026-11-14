@@ -7,7 +7,9 @@ database is one complete SignKit instance.
 
 `instance_member` is keyed by the d6e-auth subject and stores only local role, status, and
 timestamps. `instance_bootstrap` records the first owner claim. Invitations bind a verified email to
-a future local member.
+a future local member. Human-readable list labels live in separate encrypted
+`instance_member_display` and `instance_invitation_display` tables; see
+[instance display metadata](instance-display-metadata.md).
 
 Every envelope has a required `created_by_user_id` foreign key to `instance_member`. Every API key
 has a required `owner_user_id` foreign key to the member that created it. There is no separate

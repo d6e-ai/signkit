@@ -20,6 +20,7 @@ import {
 	INSTANCE_INVITATION_EMAIL_MAX_LENGTH,
 	INSTANCE_INVITATION_TOKEN_PATTERN
 } from '$lib/security/instance-invitation';
+import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
 import {
 	acceptsJson,
 	readJsonBody,
@@ -27,6 +28,10 @@ import {
 	type JsonBodyResult
 } from './bounded-json-body';
 import { authorizeIdentityRequest, type AuthorizedIdentityActor } from './identity-authorization';
+import {
+	enrichInvitationDisplays,
+	type InstanceDisplayApplicationResolver
+} from './instance-display-enrichment';
 import { problemResponse, type ProblemValidationError } from './problem';
 
 const MAX_CREATE_BODY_BYTES: number = 4 * 1024;
@@ -318,7 +323,8 @@ function actorOf(authorized: AuthorizedIdentityActor): InstanceInvitationActor {
 }
 
 export function createInstanceInvitationHttpHandlers(
-	resolveApplication: InstanceInvitationApplicationResolver
+	resolveApplication: InstanceInvitationApplicationResolver,
+	resolveDisplay: InstanceDisplayApplicationResolver | null = null
 ): InstanceInvitationHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
 		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
@@ -418,8 +424,18 @@ export function createInstanceInvitationHttpHandlers(
 			});
 			if (result.outcome === 'forbidden') return forbidden(url.pathname);
 			if (result.outcome === 'member_suspended') return memberSuspended(url.pathname);
+			const invitationDisplays = await enrichInvitationDisplays(
+				resolveDisplay,
+				platform,
+				authorized.id,
+				result.page.items
+			);
 			return new Response(
-				JSON.stringify({ invitations: result.page.items, nextCursor: result.page.nextCursor }),
+				JSON.stringify({
+					invitations: result.page.items,
+					nextCursor: result.page.nextCursor,
+					...(invitationDisplays === undefined ? {} : { invitationDisplays })
+				}),
 				{
 					status: 200,
 					headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
@@ -436,7 +452,13 @@ export function createInstanceInvitationHttpHandlers(
 		}
 	};
 
-	const accept: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
+	const accept: RequestHandler = async ({
+		locals,
+		platform,
+		request,
+		url,
+		cookies
+	}): Promise<Response> => {
 		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
 			locals,
 			url.pathname
@@ -499,6 +521,24 @@ export function createInstanceInvitationHttpHandlers(
 				token: parsed.data.token,
 				email: authorized.email
 			});
+			if (
+				(result.outcome === 'accepted' ||
+					result.outcome === 'replayed' ||
+					result.outcome === 'already_member') &&
+				locals.principal !== null
+			) {
+				try {
+					await bestEffortCaptureMemberDisplay({
+						cookies,
+						url,
+						platform,
+						memberUserId: result.member.userId,
+						principal: locals.principal
+					});
+				} catch {
+					// Display capture never fails invitation acceptance.
+				}
+			}
 			return acceptResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceInvitationRequestError) {
