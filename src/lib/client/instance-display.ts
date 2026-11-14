@@ -1,3 +1,7 @@
+import {
+	INSTANCE_DISPLAY_EMAIL_MAX_LENGTH,
+	INSTANCE_DISPLAY_NAME_MAX_LENGTH
+} from '$lib/domain/instance-display';
 import type { InvitationDisplay, MemberDisplay } from '$lib/ports/instance-display-store';
 import type { InstanceInvitationMetadata } from '$lib/ports/instance-store';
 
@@ -14,7 +18,11 @@ function text(value: unknown, max: number): value is string {
 /** Copy only display fields; hidden payload/key/credential properties never enter UI state. */
 export function readMemberDisplay(value: unknown, now = Date.now()): MemberDisplay {
 	if (!record(value) || value.state !== 'available') return unavailable();
-	if (!text(value.name, 200) || !text(value.email, 254)) return unavailable();
+	if (
+		!text(value.name, INSTANCE_DISPLAY_NAME_MAX_LENGTH) ||
+		!text(value.email, INSTANCE_DISPLAY_EMAIL_MAX_LENGTH)
+	)
+		return unavailable();
 	if (typeof value.observedAt !== 'string' || typeof value.expiresAt !== 'string') {
 		return unavailable();
 	}
@@ -70,7 +78,7 @@ export function readInvitationDisplays(
 			invitation.status === 'pending' &&
 			record(raw) &&
 			raw.state === 'pending' &&
-			text(raw.email, 254)
+			text(raw.email, INSTANCE_DISPLAY_EMAIL_MAX_LENGTH)
 		) {
 			result[invitation.id] = { state: 'pending', email: raw.email };
 		} else {
