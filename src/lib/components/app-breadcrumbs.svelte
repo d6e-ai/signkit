@@ -16,7 +16,7 @@
 	// crumb with the same text for a route this component doesn't recognize
 	// would read as "SignKit / SignKit" instead of a useful location.
 	const routeLabel = $derived.by((): string | null => {
-		if (currentPath === '/') return m.nav_dashboard();
+		if (currentPath === '/') return m.nav_agreements();
 		if (currentPath === '/envelopes/new') return m.new_agreement();
 		if (currentPath === '/envelopes') return m.nav_agreements();
 		if (currentPath.startsWith('/settings')) return m.nav_settings();
@@ -43,8 +43,8 @@
 		{#if isEnvelopeDetail}
 			<Breadcrumb.Separator class="shrink-0" />
 			<Breadcrumb.Item class="min-w-0 shrink">
-				<Breadcrumb.Link href={localizeHref('/envelopes')} class="truncate"
-					>{m.breadcrumb_envelopes()}</Breadcrumb.Link
+				<Breadcrumb.Link href={localizeHref('/')} class="truncate"
+					>{m.nav_agreements()}</Breadcrumb.Link
 				>
 			</Breadcrumb.Item>
 			<Breadcrumb.Separator class="shrink-0" />

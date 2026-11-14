@@ -15,7 +15,7 @@ describe('app breadcrumbs', () => {
 	});
 
 	it('is route-aware across the primary nav destinations', () => {
-		expect(source).toMatch(/currentPath === '\/'.*m\.nav_dashboard/);
+		expect(source).toMatch(/currentPath === '\/'.*m\.nav_agreements/);
 		expect(source).toMatch(/currentPath === '\/envelopes'.*m\.nav_agreements/);
 		expect(source).toMatch(/startsWith\('\/settings'\).*m\.nav_settings/);
 		expect(source).toMatch(/startsWith\('\/setup'\).*m\.setup_title/);
@@ -24,8 +24,8 @@ describe('app breadcrumbs', () => {
 	it('shows an envelope collection link and the loaded envelope title on detail routes', () => {
 		expect(source).toContain('/^\\/envelopes\\/[^/]+$/.test(currentPath)');
 		expect(source).toContain("currentPath !== '/envelopes/new'");
-		expect(source).toContain("href={localizeHref('/envelopes')}");
-		expect(source).toContain('m.breadcrumb_envelopes()');
+		expect(source).toContain("href={localizeHref('/')}");
+		expect(source).toContain('m.nav_agreements()');
 		expect(source).toContain('$envelopeBreadcrumbTitle ?? m.envelope_detail_title()');
 	});
 

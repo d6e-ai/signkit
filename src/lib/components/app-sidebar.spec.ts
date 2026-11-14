@@ -125,9 +125,9 @@ describe('app sidebar shell', () => {
 		expect(source).not.toMatch(/MenuBadge|badge:/);
 	});
 
-	it('keeps the real Dashboard and Agreements destinations as flat items', () => {
-		expect(source).toMatch(/m\.nav_dashboard\(\), href: '\/'/);
-		expect(source).toMatch(/m\.nav_agreements\(\), href: '\/envelopes'/);
+	it('has one Agreements destination for the canonical worklist', () => {
+		expect(source).toMatch(/m\.nav_agreements\(\), href: '\/'/);
+		expect(source).not.toContain('m.nav_dashboard()');
 	});
 
 	it('replaces the single settings link with an expandable Instance administration menu', () => {

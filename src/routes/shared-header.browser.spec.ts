@@ -56,6 +56,18 @@ describe('shared header regression on real +layout', () => {
 		await browserPage.viewport(1280, 800);
 	});
 
+	it('offers one active Agreements navigation link on an envelope detail page', async () => {
+		await browserPage.viewport(1280, 800);
+		const screen = await renderLayout();
+		const links = [
+			...screen.container.querySelectorAll<HTMLAnchorElement>('a[data-sidebar="menu-button"]')
+		];
+		expect(links).toHaveLength(1);
+		expect(links[0].textContent?.trim()).toBe('Agreements');
+		expect(links[0].getAttribute('href')).toMatch(/\/(?:en\/)?$/);
+		expect(links[0].getAttribute('data-active')).toBe('true');
+	});
+
 	it('asserts 390x844 mobile viewport with vertical scroll: controls do not shrink, breadcrumb truncates, and no horizontal overflow occurs', async () => {
 		await browserPage.viewport(390, 844);
 		expect(window.innerWidth).toBe(390);

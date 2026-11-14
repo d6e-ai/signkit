@@ -87,12 +87,12 @@ describe('dashboard worklist page SSR', () => {
 		expect(body).not.toContain('max-w-64');
 	});
 
-	it('titles the page Dashboard', async () => {
+	it('titles the canonical worklist Agreements', async () => {
 		await setMockedUrl('');
 		const { body } = render(DashboardPage, { props: { data: pageData({}) } });
 		const h1Match = body.match(/<h1[^>]*>([^<]*)<\/h1>/);
 		expect(h1Match).not.toBeNull();
-		expect(h1Match?.[1].trim()).toBe('Dashboard');
+		expect(h1Match?.[1].trim()).toBe('Agreements');
 	});
 
 	it('renders the worklist rows straight from the data prop, with nothing fetched during SSR', async () => {
