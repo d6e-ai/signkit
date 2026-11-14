@@ -16,6 +16,7 @@ guarantee or claim planned work is shipped.
 | Operator, API-key, recipient, membership, and invitation authority | [Authorization](authorization-and-instance-administration.md)             |
 | Private saved recipients                                           | [Contact book](recipient-contact-book.md)                                 |
 | Sender preparation and final review                                | [Sender workflow](sender-workflow.md)                                     |
+| Recipient document review and field navigation                     | [Recipient workflow](recipient-workflow.md)                               |
 | Review through an agent or CLI                                     | [Contract review workflow](contract-review-workflow.md)                   |
 | Dashboard reads, filters, search, and pagination                   | [Worklist](dashboard-worklist.md)                                         |
 | SQL/object ownership, atomicity, migrations                        | [Persistence](persistence.md)                                             |

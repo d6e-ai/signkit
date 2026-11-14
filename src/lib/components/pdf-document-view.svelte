@@ -39,7 +39,6 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import * as Alert from '$lib/components/ui/alert';
-	import { Button } from '$lib/components/ui/button';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import * as m from '$lib/paraglide/messages';
 	import { cn } from '$lib/utils';
@@ -344,16 +343,7 @@
 		<Alert.Root variant="destructive">
 			<IconAlertTriangle />
 			<Alert.Title>{errorTitle}</Alert.Title>
-			<Alert.Description class="flex flex-col gap-3">
-				<p>{errorDescription}</p>
-				{#if src}
-					<div>
-						<Button variant="outline" size="sm" href={src} target="_blank" rel="noopener">
-							{openLabel}
-						</Button>
-					</div>
-				{/if}
-			</Alert.Description>
+			<Alert.Description>{errorDescription}</Alert.Description>
 		</Alert.Root>
 	{:else if !ready}
 		<span class="sr-only" role="status">{loadingLabel}</span>

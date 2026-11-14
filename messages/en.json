@@ -616,5 +616,12 @@
 	"completion_receipt_invalid_title": "This link is not active",
 	"completion_receipt_invalid_description": "The link may be invalid, expired, revoked, or associated with an agreement that no longer exists. Contact the sender if you need clarification.",
 	"completion_receipt_unavailable_title": "This page is temporarily unavailable",
-	"completion_receipt_unavailable_description": "Please wait a moment and open the link again."
+	"completion_receipt_unavailable_description": "Please wait a moment and open the link again.",
+	"signing_required_progress": "{completed} of {total} required fields completed",
+	"signing_required_fields": "Required fields",
+	"signing_next_missing_field": "Next required field",
+	"signing_all_fields": "All fields ({count})",
+	"signing_field_navigate": "Go to {label} — {document}, page {page}",
+	"signing_field_optional": "Optional",
+	"signing_review_title": "Review and sign"
 }

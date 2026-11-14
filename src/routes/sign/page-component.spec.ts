@@ -203,7 +203,7 @@ describe('recipient signing page', () => {
 		}
 	});
 
-	it('lists this signer own fields by page and never another recipient fields', () => {
+	it('names each signer field with its document and page and excludes other recipients', () => {
 		const { body } = render(SignPage, {
 			props: {
 				data: activeData({ recipientStatus: 'viewed', fields: [signatureField] })
@@ -215,8 +215,8 @@ describe('recipient signing page', () => {
 		expect(body).toContain('JavaScript is required to submit and record your signature.');
 		// Field geometry.page is document-scoped: this field lives on page 1 of
 		// DOCUMENT_B, not concatenated page 2 of the whole envelope.
-		expect(body).toContain('#agreement-page-1');
-		expect(body).not.toContain('#agreement-page-2');
+		expect(body).toContain('Go to Your signature — schedule a, page 1');
+		expect(body).not.toContain('href="#agreement-page-');
 		expect(body).not.toContain(otherRecipientField.label);
 		expect(body).not.toContain('Approve agreement');
 	});
@@ -236,7 +236,7 @@ describe('recipient signing page', () => {
 		expect(body).not.toContain('Sign and complete');
 	});
 
-	it('proves approver role and approve/decline controls coexist with neutral access explanation and no sign controls', () => {
+	it('keeps role, expiry, document review and approve/decline controls in the compact approver workspace', () => {
 		const { body } = render(SignPage, {
 			props: {
 				data: activeData({
@@ -247,11 +247,10 @@ describe('recipient signing page', () => {
 			}
 		});
 
-		// Approver role and neutral access explanation
+		// Authorized role and link expiry remain directly visible.
 		expect(body).toContain('Approver');
-		expect(body).toContain(
-			'Your private link is active. Access is checked again whenever this page is opened.'
-		);
+		expect(body).toContain('Link expires');
+		expect(body).toContain('datetime="2026-09-12T00:00:00.000Z"');
 		expect(body).not.toContain('private signing link');
 
 		// Neutral generic document review copy
