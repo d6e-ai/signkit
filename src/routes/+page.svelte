@@ -207,7 +207,7 @@
 	</section>
 
 	<nav
-		aria-label={m.dashboard_views_nav_label()}
+		aria-label={m.nav_agreements()}
 		class={tabsListVariants({ variant: 'line', class: 'h-auto w-full flex-wrap overflow-x-auto' })}
 	>
 		{#each dashboardViews as view (view)}

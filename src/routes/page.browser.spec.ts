@@ -110,6 +110,9 @@ describe('dashboard worklist page in browser', () => {
 		await expect
 			.element(screen.getByRole('heading', { level: 1, name: m.nav_agreements() }))
 			.toBeVisible();
+		await expect
+			.element(screen.getByRole('navigation', { name: m.nav_agreements() }))
+			.toBeVisible();
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
