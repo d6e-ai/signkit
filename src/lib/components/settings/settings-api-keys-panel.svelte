@@ -68,8 +68,16 @@
 		return key.revokedAt === null && Date.parse(key.expiresAt) <= Date.now();
 	}
 
+	function resetCreateForm(): void {
+		newKeyName = '';
+		selectedScopes = defaultSelectedScopes();
+		keyExpiryDays = API_KEY_DEFAULT_EXPIRY_DAYS;
+		keyCreateError = null;
+	}
+
 	function handleCreateOpenChange(nextOpen: boolean): void {
 		if (!nextOpen && keyPending) return;
+		if (!nextOpen) resetCreateForm();
 		createOpen = nextOpen;
 	}
 
@@ -147,9 +155,7 @@
 					keyName: res.apiKey.name
 				});
 			}
-			newKeyName = '';
-			selectedScopes = defaultSelectedScopes();
-			keyExpiryDays = API_KEY_DEFAULT_EXPIRY_DAYS;
+			resetCreateForm();
 			created = true;
 		} catch (err: unknown) {
 			keyCreateError = errorMessage(err);
@@ -202,39 +208,43 @@
 					<IconX data-icon="inline-start" />
 				</Button>
 			</Alert.Action>
-			<p class="mt-1 text-xs font-medium text-foreground">
-				{m.settings_api_keys_secret_reveal_metadata({
-					name: settingsRevealState.revealedApiKey.keyName,
-					keyId: settingsRevealState.revealedApiKey.keyId
-				})}
-			</p>
-			<div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-				<div
-					class="flex-1 rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs break-all select-all"
-				>
-					{settingsRevealState.revealedApiKey.secret}
-				</div>
-				<Button
-					variant="default"
-					size="sm"
-					class="shrink-0"
-					onclick={() =>
-						settingsRevealState.copyApiKeySecret(settingsRevealState.revealedApiKey!.secret)}
-				>
-					{#if settingsRevealState.apiKeyCopied}
-						<IconCheck data-icon="inline-start" />
-						<span>{m.settings_api_keys_secret_copied()}</span>
-					{:else}
-						<IconCopy data-icon="inline-start" />
-						<span>{m.settings_api_keys_copy_secret()}</span>
-					{/if}
-				</Button>
-			</div>
-			{#if settingsRevealState.apiKeyCopyError}
-				<p class="mt-2 text-xs font-medium text-destructive" role="alert">
-					{settingsRevealState.apiKeyCopyError}
+			<!-- Alert is a two-column icon grid; the secret block spans both columns so it
+			     stacks full-width below the heading instead of landing in a leftover cell. -->
+			<div class="col-span-full">
+				<p class="mt-1 text-xs font-medium [overflow-wrap:anywhere] text-foreground">
+					{m.settings_api_keys_secret_reveal_metadata({
+						name: settingsRevealState.revealedApiKey.keyName,
+						keyId: settingsRevealState.revealedApiKey.keyId
+					})}
 				</p>
-			{/if}
+				<div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+					<div
+						class="flex-1 rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs break-all select-all"
+					>
+						{settingsRevealState.revealedApiKey.secret}
+					</div>
+					<Button
+						variant="default"
+						size="sm"
+						class="shrink-0"
+						onclick={() =>
+							settingsRevealState.copyApiKeySecret(settingsRevealState.revealedApiKey!.secret)}
+					>
+						{#if settingsRevealState.apiKeyCopied}
+							<IconCheck data-icon="inline-start" />
+							<span>{m.settings_api_keys_secret_copied()}</span>
+						{:else}
+							<IconCopy data-icon="inline-start" />
+							<span>{m.settings_api_keys_copy_secret()}</span>
+						{/if}
+					</Button>
+				</div>
+				{#if settingsRevealState.apiKeyCopyError}
+					<p class="mt-2 text-xs font-medium text-destructive" role="alert">
+						{settingsRevealState.apiKeyCopyError}
+					</p>
+				{/if}
+			</div>
 		</Alert.Root>
 	{/if}
 

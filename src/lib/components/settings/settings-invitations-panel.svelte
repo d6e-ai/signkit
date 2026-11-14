@@ -76,8 +76,15 @@
 		return invitation.status === 'pending' && Date.parse(invitation.expiresAt) <= Date.now();
 	}
 
+	function resetCreateForm(): void {
+		inviteEmail = '';
+		inviteRole = 'member';
+		inviteCreateError = null;
+	}
+
 	function handleCreateOpenChange(nextOpen: boolean): void {
 		if (!nextOpen && invitePending) return;
+		if (!nextOpen) resetCreateForm();
 		createOpen = nextOpen;
 	}
 
@@ -127,8 +134,7 @@
 				locale: getLocale() === 'ja' ? 'ja' : 'en'
 			});
 			inviteScheduledEmail = email;
-			inviteEmail = '';
-			inviteRole = 'member';
+			resetCreateForm();
 			created = true;
 		} catch (err: unknown) {
 			inviteCreateError = errorMessage(err);
