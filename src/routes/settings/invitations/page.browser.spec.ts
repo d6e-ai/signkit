@@ -324,6 +324,12 @@ describe('settings invitations page in the browser', () => {
 		const emailInput = dialog.getByLabelText('Email address');
 		expect(emailInput.element().getAttribute('aria-invalid')).not.toBe('true');
 		await expect.element(emailInput).toHaveValue('dup@example.com');
+		await userEvent.keyboard('{Escape}');
+		await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument();
+		const reopened = await openInviteDialog(screen);
+		await expect.element(reopened.getByLabelText('Email address')).toHaveValue('');
+		await expect.element(reopened.getByRole('alert')).not.toBeInTheDocument();
+		await expect.element(reopened.getByLabelText('Role')).toHaveTextContent('Member');
 	});
 
 	it('ignores Escape, overlay, and the close control while invitation creation is pending', async () => {

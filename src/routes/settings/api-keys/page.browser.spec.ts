@@ -452,6 +452,12 @@ describe('settings api-keys page in the browser', () => {
 		const nameInput = dialog.getByLabelText('Key name');
 		expect(nameInput.element().getAttribute('aria-invalid')).not.toBe('true');
 		await expect.element(nameInput).toHaveValue('Dup Key');
+		await userEvent.keyboard('{Escape}');
+		await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument();
+		const reopened = await openCreateKeyDialog(screen);
+		await expect.element(reopened.getByLabelText('Key name')).toHaveValue('');
+		await expect.element(reopened.getByRole('alert')).not.toBeInTheDocument();
+		await expect.element(reopened.getByRole('checkbox').first()).not.toBeChecked();
 	});
 
 	it('dismisses the revealed API-key secret via its dismiss action', async () => {
@@ -500,7 +506,10 @@ describe('settings api-keys page in the browser', () => {
 		expect(screen.getByText('signkit_dismiss_me').query()).toBeNull();
 	});
 
-	it('keeps the revealed secret after the create Dialog closes until explicit dismiss', async () => {
+	it('keeps the revealed secret readable at 390px after the create Dialog closes', async () => {
+		await page.viewport(390, 844);
+		const secret = `signkit_${'a'.repeat(64)}`;
+		const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
 		const mockFetch = vi
 			.fn()
 			.mockImplementation(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -521,7 +530,7 @@ describe('settings api-keys page in the browser', () => {
 								lastUsedAt: null,
 								revokedAt: null
 							},
-							token: 'signkit_retain_me'
+							token: secret
 						},
 						201
 					);
@@ -538,9 +547,18 @@ describe('settings api-keys page in the browser', () => {
 		await dialog.getByLabelText('Key name').fill('Retain Key');
 		await dialog.getByRole('checkbox').first().click();
 		await dialog.getByRole('button', { name: 'Create key' }).click();
-		await expect.element(screen.getByText('signkit_retain_me')).toBeVisible();
+		await expect.element(screen.getByText(secret, { exact: true })).toBeVisible();
 		await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument();
 		await expect.element(screen.getByText('One-time API key secret')).toBeVisible();
+		const metadata = screen.getByText('For “Retain Key” — key key-retain').element();
+		expect(metadata.getBoundingClientRect().width).toBeGreaterThan(200);
+		expect(metadata.getBoundingClientRect().right).toBeLessThanOrEqual(390);
+		const value = screen.getByText(secret, { exact: true }).element();
+		expect(value.getBoundingClientRect().width).toBeGreaterThan(200);
+		expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+		await screen.getByRole('button', { name: 'Copy secret' }).click();
+		expect(copy).toHaveBeenCalledWith(secret);
+		await page.screenshot({ fullPage: true });
 	});
 
 	it('keeps complete API-key metadata readable in a scrollable details overlay at 390px', async () => {
