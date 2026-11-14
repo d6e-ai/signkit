@@ -169,7 +169,7 @@
 	"settings_tab_api_keys": "APIキー",
 	"settings_members_title": "インスタンスメンバー",
 	"settings_members_description": "メンバーの役割とアクセス状態を管理します。",
-	"settings_members_col_user": "ユーザーID",
+	"settings_members_col_user": "メンバー",
 	"settings_members_col_role": "役割",
 	"settings_members_col_status": "ステータス",
 	"settings_members_col_joined": "参加日時",

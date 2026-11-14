@@ -14,7 +14,7 @@ function text(value: unknown, max: number): value is string {
 /** Copy only display fields; hidden payload/key/credential properties never enter UI state. */
 export function readMemberDisplay(value: unknown, now = Date.now()): MemberDisplay {
 	if (!record(value) || value.state !== 'available') return unavailable();
-	if (!text(value.name, 200) || !text(value.email, 320)) return unavailable();
+	if (!text(value.name, 200) || !text(value.email, 254)) return unavailable();
 	if (typeof value.observedAt !== 'string' || typeof value.expiresAt !== 'string') {
 		return unavailable();
 	}
@@ -70,7 +70,7 @@ export function readInvitationDisplays(
 			invitation.status === 'pending' &&
 			record(raw) &&
 			raw.state === 'pending' &&
-			text(raw.email, 320)
+			text(raw.email, 254)
 		) {
 			result[invitation.id] = { state: 'pending', email: raw.email };
 		} else {

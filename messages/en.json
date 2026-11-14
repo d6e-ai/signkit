@@ -169,7 +169,7 @@
 	"settings_tab_api_keys": "API keys",
 	"settings_members_title": "Instance members",
 	"settings_members_description": "View and manage member roles and statuses.",
-	"settings_members_col_user": "User ID",
+	"settings_members_col_user": "Member",
 	"settings_members_col_role": "Role",
 	"settings_members_col_status": "Status",
 	"settings_members_col_joined": "Joined",
