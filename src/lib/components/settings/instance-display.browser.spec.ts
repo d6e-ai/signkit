@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { getLocale, overwriteGetLocale } from '$lib/paraglide/runtime';
 import MembersPage from '../../../routes/settings/members/+page.svelte';
@@ -124,10 +124,15 @@ test('keeps a legacy member identifiable and exposes the complete stable ID in d
 	vi.stubGlobal('fetch', membersFetch(undefined, { ...target, userId: id }));
 	const screen = await render(MembersPage);
 	await expect.element(screen.getByText('Display information unavailable')).toBeVisible();
-	await screen.getByRole('button', { name: `Details for ${id}`, exact: true }).click();
+	const trigger = screen.getByRole('button', { name: `Details for ${id}`, exact: true });
+	(trigger.element() as HTMLButtonElement).focus();
+	await userEvent.keyboard('{Enter}');
 	const details = screen.getByRole('dialog');
 	await expect.element(details.getByRole('heading', { name: 'Member details' })).toBeVisible();
 	await expect.element(details.getByText(id, { exact: true })).toBeVisible();
+	await userEvent.keyboard('{Escape}');
+	await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument();
+	await expect.poll(() => document.activeElement).toBe(trigger.element());
 });
 
 test('keeps long member identity and full ID readable in mobile details', async () => {
