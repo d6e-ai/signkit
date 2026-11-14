@@ -96,6 +96,12 @@ const fakeDisplaySealer: InstanceDisplayPayloadSealer = {
 	async invitationActiveKeyId(): Promise<string> {
 		return 'display-target';
 	},
+	async memberPreviousKeyId(): Promise<string | null> {
+		return null;
+	},
+	async invitationPreviousKeyId(): Promise<string | null> {
+		return null;
+	},
 	async isKnownMemberKeyId(): Promise<boolean> {
 		return true;
 	},

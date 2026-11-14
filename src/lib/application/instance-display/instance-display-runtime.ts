@@ -48,17 +48,29 @@ async function resolveDisplayBindings(context: InstanceDisplayRuntimeContext): P
 	store: InstanceDisplayStore;
 	sealer: AesGcmInstanceDisplayPayloadSealer | null;
 } | null> {
-	const sealer: AesGcmInstanceDisplayPayloadSealer | null =
-		await resolveInstanceDisplaySealer(context);
+	const store: InstanceDisplayStore | null = await resolveDisplayStore(context);
+	if (store === null) return null;
+	let sealer: AesGcmInstanceDisplayPayloadSealer | null = null;
+	try {
+		sealer = await resolveInstanceDisplaySealer(context);
+	} catch {
+		// Malformed keys must not disable cleanup or list fallbacks.
+	}
+	return { store, sealer };
+}
+
+async function resolveDisplayStore(
+	context: InstanceDisplayRuntimeContext
+): Promise<InstanceDisplayStore | null> {
 	if (context.platform?.env !== undefined) {
 		const database: D1Database | undefined = context.platform.env.DB;
 		if (database === undefined) return null;
-		return { store: new D1InstanceDisplayStore(database), sealer };
+		return new D1InstanceDisplayStore(database);
 	}
 	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
 	if (databaseUrl === undefined) return null;
 	const { resolvePostgresInstanceDisplayStore } = await import('./runtime-postgres');
-	return { store: resolvePostgresInstanceDisplayStore(databaseUrl), sealer };
+	return resolvePostgresInstanceDisplayStore(databaseUrl);
 }
 
 function nonempty(value: string | undefined): string | undefined {

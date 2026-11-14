@@ -50,6 +50,8 @@ export interface InstanceDisplayPayloadSealer {
 	): Promise<InvitationTargetDisplayPayload>;
 	memberActiveKeyId(): Promise<string>;
 	invitationActiveKeyId(): Promise<string>;
+	memberPreviousKeyId(): Promise<string | null>;
+	invitationPreviousKeyId(): Promise<string | null>;
 	isKnownMemberKeyId(keyId: string): Promise<boolean>;
 	isKnownInvitationKeyId(keyId: string): Promise<boolean>;
 	isActiveMemberKeyId(keyId: string): Promise<boolean>;
@@ -89,6 +91,14 @@ export class AesGcmInstanceDisplayPayloadSealer implements InstanceDisplayPayloa
 
 	async invitationActiveKeyId(): Promise<string> {
 		return (await this.#invitationKeyring).activeKeyId();
+	}
+
+	async memberPreviousKeyId(): Promise<string | null> {
+		return (await this.#memberKeyring).previousKeyId();
+	}
+
+	async invitationPreviousKeyId(): Promise<string | null> {
+		return (await this.#invitationKeyring).previousKeyId();
 	}
 
 	async isKnownMemberKeyId(keyId: string): Promise<boolean> {

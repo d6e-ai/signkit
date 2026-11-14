@@ -87,6 +87,21 @@ describe('operator session sealing', () => {
 		expect(withoutObservation?.session).not.toHaveProperty('profileObservedAt');
 	});
 
+	it('ignores malformed calendar observation fields without dropping the session', async () => {
+		const original = session({
+			profileObservedAt: '2026-99-99T00:00:00.000Z',
+			profileStoredAt: '2026-02-30T00:00:00.000Z'
+		});
+		const opened = await unseal(await seal(original));
+		expect(opened).not.toBeNull();
+		expect(opened?.session.accessToken).toBe(original.accessToken);
+		expect(opened?.session.principal).toEqual(PRINCIPAL);
+		expect(opened?.session.profileObservedAt).toBeUndefined();
+		expect(opened?.session.profileStoredAt).toBeUndefined();
+		expect(opened?.session).not.toHaveProperty('profileObservedAt');
+		expect(opened?.session).not.toHaveProperty('profileStoredAt');
+	});
+
 	it('fails closed for tampering, malformed data, and oversized input', async () => {
 		const sealed = await seal(session());
 		const tampered = `${sealed[0] === 'A' ? 'B' : 'A'}${sealed.slice(1)}`;

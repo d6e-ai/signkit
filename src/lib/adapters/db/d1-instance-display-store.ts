@@ -9,6 +9,9 @@ import {
 	type CasResealDisplayResult,
 	type CasResealInvitationDisplayCommand,
 	type CasResealMemberDisplayCommand,
+	type DeferDisplayResealResult,
+	type DeferInvitationDisplayResealCommand,
+	type DeferMemberDisplayResealCommand,
 	type InstanceDisplayCleanupResult,
 	type InstanceDisplayStore,
 	type InstanceInvitationDisplayRow,
@@ -45,6 +48,8 @@ const MEMBER_DISPLAY_COLUMNS: string =
 	'user_id, sealed_payload, sealing_key_id, observed_at, expires_at, stored_at';
 const INVITATION_DISPLAY_COLUMNS: string =
 	'invitation_id, sealed_payload, sealing_key_id, created_at, expires_at';
+const INVITATION_DISPLAY_JOIN_COLUMNS: string =
+	'display.invitation_id AS invitation_id, display.sealed_payload AS sealed_payload, display.sealing_key_id AS sealing_key_id, display.created_at AS created_at, display.expires_at AS expires_at';
 
 export class D1InstanceDisplayStore implements InstanceDisplayStore {
 	readonly #database: D1Database;
@@ -159,6 +164,7 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 
 	async cleanupExpired(now: string, limit: number): Promise<InstanceDisplayCleanupResult> {
 		const bounded: number = boundInstanceDisplayCleanupLimit(limit);
+		if (bounded === 0) return { expired: 0, deleted: 0 };
 		const memberDelete: D1Result = await this.#database
 			.prepare(
 				`DELETE FROM instance_member_display
@@ -167,10 +173,19 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 					 WHERE expires_at <= ?
 					 ORDER BY expires_at, user_id
 					 LIMIT ?
-				 )`
+				 )
+				 AND expires_at <= ?`
 			)
-			.bind(now, bounded)
+			.bind(now, bounded, now)
 			.run();
+		const expired: number = Math.min(
+			changeCount(memberDelete),
+			INSTANCE_DISPLAY_CLEANUP_BATCH_LIMIT
+		);
+		const remaining: number = bounded - expired;
+		if (remaining < 1) {
+			return { expired, deleted: 0 };
+		}
 		const invitationDelete: D1Result = await this.#database
 			.prepare(
 				`DELETE FROM instance_invitation_display
@@ -184,31 +199,41 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 					    OR invitation.expires_at <= ?
 					 ORDER BY display.expires_at, display.invitation_id
 					 LIMIT ?
+				 )
+				 AND invitation_id IN (
+					 SELECT display.invitation_id
+					 FROM instance_invitation_display AS display
+					 INNER JOIN instance_invitation AS invitation
+					   ON invitation.id = display.invitation_id
+					 WHERE display.expires_at <= ?
+					    OR invitation.status <> 'pending'
+					    OR invitation.expires_at <= ?
 				 )`
 			)
-			.bind(now, now, bounded)
+			.bind(now, now, remaining, now, now)
 			.run();
 		return {
-			expired: Math.min(changeCount(memberDelete), INSTANCE_DISPLAY_CLEANUP_BATCH_LIMIT),
+			expired,
 			deleted: Math.min(changeCount(invitationDelete), INSTANCE_DISPLAY_CLEANUP_BATCH_LIMIT)
 		};
 	}
 
 	async findMemberRowsForReseal(
-		activeSealingKeyId: string,
+		previousSealingKeyId: string,
 		now: string,
 		limit: number
 	): Promise<readonly InstanceMemberDisplayRow[]> {
 		const bounded: number = boundInstanceDisplayResealLimit(limit);
+		if (bounded === 0) return [];
 		const result: D1Result<MemberDisplaySqlRow> = await this.#database
 			.prepare(
 				`SELECT ${MEMBER_DISPLAY_COLUMNS}
 				 FROM instance_member_display
-				 WHERE sealing_key_id <> ? AND expires_at > ?
+				 WHERE sealing_key_id = ? AND expires_at > ? AND reseal_after <= ?
 				 ORDER BY expires_at, user_id
 				 LIMIT ?`
 			)
-			.bind(activeSealingKeyId, now, bounded)
+			.bind(previousSealingKeyId, now, now, bounded)
 			.all<MemberDisplaySqlRow>();
 		return (result.results ?? [])
 			.slice(0, INSTANCE_DISPLAY_RESEAL_BATCH_LIMIT)
@@ -216,24 +241,27 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 	}
 
 	async findInvitationRowsForReseal(
-		activeSealingKeyId: string,
+		previousSealingKeyId: string,
 		now: string,
 		limit: number
 	): Promise<readonly InstanceInvitationDisplayRow[]> {
 		const bounded: number = boundInstanceDisplayResealLimit(limit);
+		if (bounded === 0) return [];
 		const result: D1Result<InvitationDisplaySqlRow> = await this.#database
 			.prepare(
-				`SELECT ${INVITATION_DISPLAY_COLUMNS}
+				`SELECT ${INVITATION_DISPLAY_JOIN_COLUMNS}
 				 FROM instance_invitation_display AS display
 				 INNER JOIN instance_invitation AS invitation
 				   ON invitation.id = display.invitation_id
-				 WHERE display.sealing_key_id <> ?
+				 WHERE display.sealing_key_id = ?
+				   AND display.expires_at > ?
+				   AND display.reseal_after <= ?
 				   AND invitation.status = 'pending'
 				   AND invitation.expires_at > ?
 				 ORDER BY display.expires_at, display.invitation_id
 				 LIMIT ?`
 			)
-			.bind(activeSealingKeyId, now, bounded)
+			.bind(previousSealingKeyId, now, now, now, bounded)
 			.all<InvitationDisplaySqlRow>();
 		return (result.results ?? [])
 			.slice(0, INSTANCE_DISPLAY_RESEAL_BATCH_LIMIT)
@@ -251,6 +279,7 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 				   AND sealing_key_id = ?
 				   AND observed_at = ?
 				   AND expires_at = ?
+				   AND sealed_payload = ?
 				   AND expires_at > ?`
 			)
 			.bind(
@@ -261,6 +290,7 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 				command.previousSealingKeyId,
 				command.previousObservedAt,
 				command.previousExpiresAt,
+				command.previousSealedPayload,
 				command.storedAt
 			)
 			.run();
@@ -276,6 +306,8 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 				 SET sealed_payload = ?, sealing_key_id = ?
 				 WHERE invitation_id = ?
 				   AND sealing_key_id = ?
+				   AND sealed_payload = ?
+				   AND expires_at > ?
 				   AND EXISTS (
 					 SELECT 1 FROM instance_invitation
 					 WHERE id = instance_invitation_display.invitation_id
@@ -288,10 +320,67 @@ export class D1InstanceDisplayStore implements InstanceDisplayStore {
 				command.sealingKeyId,
 				command.invitationId,
 				command.previousSealingKeyId,
+				command.previousSealedPayload,
+				command.now,
 				command.now
 			)
 			.run();
 		return changeCount(result) === 1 ? 'resealed' : 'stale';
+	}
+
+	async deferMemberReseal(
+		command: DeferMemberDisplayResealCommand
+	): Promise<DeferDisplayResealResult> {
+		const result: D1Result = await this.#database
+			.prepare(
+				`UPDATE instance_member_display
+				 SET reseal_after = expires_at
+				 WHERE user_id = ?
+				   AND sealing_key_id = ?
+				   AND observed_at = ?
+				   AND expires_at = ?
+				   AND sealed_payload = ?
+				   AND expires_at > ?`
+			)
+			.bind(
+				command.userId,
+				command.previousSealingKeyId,
+				command.previousObservedAt,
+				command.previousExpiresAt,
+				command.previousSealedPayload,
+				command.now
+			)
+			.run();
+		return changeCount(result) === 1 ? 'deferred' : 'stale';
+	}
+
+	async deferInvitationReseal(
+		command: DeferInvitationDisplayResealCommand
+	): Promise<DeferDisplayResealResult> {
+		const result: D1Result = await this.#database
+			.prepare(
+				`UPDATE instance_invitation_display
+				 SET reseal_after = expires_at
+				 WHERE invitation_id = ?
+				   AND sealing_key_id = ?
+				   AND sealed_payload = ?
+				   AND expires_at > ?
+				   AND EXISTS (
+					 SELECT 1 FROM instance_invitation
+					 WHERE id = instance_invitation_display.invitation_id
+					   AND status = 'pending'
+					   AND expires_at > ?
+				   )`
+			)
+			.bind(
+				command.invitationId,
+				command.previousSealingKeyId,
+				command.previousSealedPayload,
+				command.now,
+				command.now
+			)
+			.run();
+		return changeCount(result) === 1 ? 'deferred' : 'stale';
 	}
 }
 

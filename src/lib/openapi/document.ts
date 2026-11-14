@@ -2794,7 +2794,7 @@ export function openApiDocument(): Record<string, unknown> {
 				post: op({
 					summary: 'Expire and reseal instance display snapshots',
 					description:
-						'Bounded cleanup of expired member snapshots and invitation targets, plus previous-key reseal. Runs without mail configuration; reseal requires the delivery encryption keyring. Uses the same delivery-worker bearer authentication as other scheduled maintenance jobs.',
+						'Bounded cleanup of expired member snapshots and invitation targets, plus previous-key reseal. Cleanup runs without mail configuration and remains available when the keyring is missing or malformed; reseal requires the delivery encryption keyring. Uses the same delivery-worker bearer authentication as other scheduled maintenance jobs.',
 					operationId: 'maintainInstanceDisplay',
 					tags: ['System', 'Instance'],
 					security: [{ DeliveryWorkerSecret: [] }],

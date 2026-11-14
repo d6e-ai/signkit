@@ -8,6 +8,7 @@ CREATE TABLE instance_member_display (
   observed_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   stored_at TEXT NOT NULL,
+  reseal_after TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
   FOREIGN KEY (user_id) REFERENCES instance_member(user_id) ON DELETE CASCADE,
   CONSTRAINT instance_member_display_user_id_bound CHECK (
     length(user_id) BETWEEN 1 AND 200
@@ -32,6 +33,10 @@ CREATE TABLE instance_member_display (
     length(stored_at) = 24
     AND strftime('%Y-%m-%dT%H:%M:%fZ', stored_at) IS stored_at
   ),
+  CONSTRAINT instance_member_display_reseal_after_iso CHECK (
+    length(reseal_after) = 24
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', reseal_after) IS reseal_after
+  ),
   CONSTRAINT instance_member_display_lifetime CHECK (
     datetime(expires_at) > datetime(observed_at)
   )
@@ -41,7 +46,7 @@ CREATE INDEX instance_member_display_expires
   ON instance_member_display(expires_at, user_id);
 
 CREATE INDEX instance_member_display_reseal
-  ON instance_member_display(sealing_key_id, expires_at, user_id);
+  ON instance_member_display(sealing_key_id, reseal_after, expires_at, user_id);
 
 CREATE TABLE instance_invitation_display (
   invitation_id TEXT NOT NULL PRIMARY KEY,
@@ -49,6 +54,7 @@ CREATE TABLE instance_invitation_display (
   sealing_key_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
+  reseal_after TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
   FOREIGN KEY (invitation_id) REFERENCES instance_invitation(id) ON DELETE CASCADE,
   CONSTRAINT instance_invitation_display_id_uuidv7 CHECK (
     length(invitation_id) = 36
@@ -77,6 +83,10 @@ CREATE TABLE instance_invitation_display (
     length(expires_at) = 24
     AND strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) IS expires_at
   ),
+  CONSTRAINT instance_invitation_display_reseal_iso CHECK (
+    length(reseal_after) = 24
+    AND strftime('%Y-%m-%dT%H:%M:%fZ', reseal_after) IS reseal_after
+  ),
   CONSTRAINT instance_invitation_display_lifetime CHECK (
     datetime(expires_at) > datetime(created_at)
   )
@@ -86,7 +96,7 @@ CREATE INDEX instance_invitation_display_expires
   ON instance_invitation_display(expires_at, invitation_id);
 
 CREATE INDEX instance_invitation_display_reseal
-  ON instance_invitation_display(sealing_key_id, expires_at, invitation_id);
+  ON instance_invitation_display(sealing_key_id, reseal_after, expires_at, invitation_id);
 
 -- Acceptance and revocation atomically scrub the display-only target. Mail
 -- ciphertext continues to scrub through the existing delivery trigger.

@@ -1,6 +1,7 @@
 import {
 	allowlistedInvitationDisplay,
 	allowlistedMemberDisplay,
+	emptyDisplayMap,
 	invitationDisplayState,
 	isUsableDisplayName,
 	memberDisplayExpiresAt,
@@ -107,7 +108,7 @@ export class InstanceDisplayApplication implements InstanceDisplayApplicationPor
 		members: readonly InstanceMemberMetadata[],
 		now: string
 	): Promise<Record<string, MemberDisplay>> {
-		const displays: Record<string, MemberDisplay> = {};
+		const displays: Record<string, MemberDisplay> = emptyDisplayMap();
 		for (const member of members) {
 			displays[member.userId] = unavailableMemberDisplay();
 		}
@@ -141,7 +142,7 @@ export class InstanceDisplayApplication implements InstanceDisplayApplicationPor
 		invitations: readonly InstanceInvitationMetadata[],
 		now: string
 	): Promise<Record<string, InvitationDisplay>> {
-		const displays: Record<string, InvitationDisplay> = {};
+		const displays: Record<string, InvitationDisplay> = emptyDisplayMap();
 		for (const invitation of invitations) {
 			displays[invitation.id] = unavailableInvitationDisplay();
 		}
@@ -173,7 +174,7 @@ export class InstanceDisplayApplication implements InstanceDisplayApplicationPor
 			);
 			const memberDisplays: Record<string, MemberDisplay> =
 				acceptedUserIds.length === 0
-					? {}
+					? emptyDisplayMap()
 					: await this.memberDisplays(
 							actor,
 							acceptedUserIds.map((userId: string): InstanceMemberMetadata => ({

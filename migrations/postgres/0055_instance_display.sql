@@ -8,6 +8,7 @@ CREATE TABLE instance_member_display (
   observed_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
   stored_at timestamptz NOT NULL,
+  reseal_after timestamptz NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01T00:00:00.000Z',
   CONSTRAINT instance_member_display_user_id_bound CHECK (
     char_length(user_id) BETWEEN 1 AND 200
   ),
@@ -27,7 +28,7 @@ CREATE INDEX instance_member_display_expires
   ON instance_member_display(expires_at, user_id);
 
 CREATE INDEX instance_member_display_reseal
-  ON instance_member_display(sealing_key_id, expires_at, user_id);
+  ON instance_member_display(sealing_key_id, reseal_after, expires_at, user_id);
 
 CREATE TABLE instance_invitation_display (
   invitation_id text NOT NULL PRIMARY KEY REFERENCES instance_invitation(id) ON DELETE CASCADE,
@@ -35,6 +36,7 @@ CREATE TABLE instance_invitation_display (
   sealing_key_id text NOT NULL,
   created_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
+  reseal_after timestamptz NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01T00:00:00.000Z',
   CONSTRAINT instance_invitation_display_id_uuidv7 CHECK (
     invitation_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
@@ -54,7 +56,7 @@ CREATE INDEX instance_invitation_display_expires
   ON instance_invitation_display(expires_at, invitation_id);
 
 CREATE INDEX instance_invitation_display_reseal
-  ON instance_invitation_display(sealing_key_id, expires_at, invitation_id);
+  ON instance_invitation_display(sealing_key_id, reseal_after, expires_at, invitation_id);
 
 CREATE FUNCTION scrub_terminal_instance_invitation_display() RETURNS trigger
 LANGUAGE plpgsql AS $$

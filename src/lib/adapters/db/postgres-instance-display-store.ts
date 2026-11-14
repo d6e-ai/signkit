@@ -10,6 +10,9 @@ import {
 	type CasResealDisplayResult,
 	type CasResealInvitationDisplayCommand,
 	type CasResealMemberDisplayCommand,
+	type DeferDisplayResealResult,
+	type DeferInvitationDisplayResealCommand,
+	type DeferMemberDisplayResealCommand,
 	type InstanceDisplayCleanupResult,
 	type InstanceDisplayStore,
 	type InstanceInvitationDisplayRow,
@@ -137,6 +140,7 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 
 	async cleanupExpired(now: string, limit: number): Promise<InstanceDisplayCleanupResult> {
 		const bounded: number = boundInstanceDisplayCleanupLimit(limit);
+		if (bounded === 0) return { expired: 0, deleted: 0 };
 		const members = await this.#sql<{ userId: string }[]>`
 			WITH doomed AS (
 				SELECT user_id
@@ -148,8 +152,12 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 			DELETE FROM instance_member_display AS display
 			USING doomed
 			WHERE display.user_id = doomed.user_id
+				AND display.expires_at <= ${now}::timestamptz
 			RETURNING display.user_id AS "userId"
 		`;
+		const expired: number = Math.min(members.length, INSTANCE_DISPLAY_CLEANUP_BATCH_LIMIT);
+		const remaining: number = bounded - expired;
+		if (remaining < 1) return { expired, deleted: 0 };
 		const invitations = await this.#sql<{ invitationId: string }[]>`
 			WITH doomed AS (
 				SELECT display.invitation_id
@@ -160,25 +168,32 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 					OR invitation.status <> 'pending'
 					OR invitation.expires_at <= ${now}::timestamptz
 				ORDER BY display.expires_at, display.invitation_id
-				LIMIT ${bounded}
+				LIMIT ${remaining}
 			)
 			DELETE FROM instance_invitation_display AS display
-			USING doomed
+			USING doomed, instance_invitation AS invitation
 			WHERE display.invitation_id = doomed.invitation_id
+				AND invitation.id = display.invitation_id
+				AND (
+					display.expires_at <= ${now}::timestamptz
+					OR invitation.status <> 'pending'
+					OR invitation.expires_at <= ${now}::timestamptz
+				)
 			RETURNING display.invitation_id AS "invitationId"
 		`;
 		return {
-			expired: Math.min(members.length, INSTANCE_DISPLAY_CLEANUP_BATCH_LIMIT),
+			expired,
 			deleted: Math.min(invitations.length, INSTANCE_DISPLAY_CLEANUP_BATCH_LIMIT)
 		};
 	}
 
 	async findMemberRowsForReseal(
-		activeSealingKeyId: string,
+		previousSealingKeyId: string,
 		now: string,
 		limit: number
 	): Promise<readonly InstanceMemberDisplayRow[]> {
 		const bounded: number = boundInstanceDisplayResealLimit(limit);
+		if (bounded === 0) return [];
 		const rows: MemberDisplaySqlRow[] = await this.#sql<MemberDisplaySqlRow[]>`
 			SELECT
 				user_id AS "userId",
@@ -188,7 +203,9 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 				expires_at AS "expiresAt",
 				stored_at AS "storedAt"
 			FROM instance_member_display
-			WHERE sealing_key_id <> ${activeSealingKeyId} AND expires_at > ${now}::timestamptz
+			WHERE sealing_key_id = ${previousSealingKeyId}
+				AND expires_at > ${now}::timestamptz
+				AND reseal_after <= ${now}::timestamptz
 			ORDER BY expires_at, user_id
 			LIMIT ${bounded}
 		`;
@@ -196,11 +213,12 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 	}
 
 	async findInvitationRowsForReseal(
-		activeSealingKeyId: string,
+		previousSealingKeyId: string,
 		now: string,
 		limit: number
 	): Promise<readonly InstanceInvitationDisplayRow[]> {
 		const bounded: number = boundInstanceDisplayResealLimit(limit);
+		if (bounded === 0) return [];
 		const rows: InvitationDisplaySqlRow[] = await this.#sql<InvitationDisplaySqlRow[]>`
 			SELECT
 				display.invitation_id AS "invitationId",
@@ -211,7 +229,9 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 			FROM instance_invitation_display AS display
 			INNER JOIN instance_invitation AS invitation
 				ON invitation.id = display.invitation_id
-			WHERE display.sealing_key_id <> ${activeSealingKeyId}
+			WHERE display.sealing_key_id = ${previousSealingKeyId}
+				AND display.expires_at > ${now}::timestamptz
+				AND display.reseal_after <= ${now}::timestamptz
 				AND invitation.status = 'pending'
 				AND invitation.expires_at > ${now}::timestamptz
 			ORDER BY display.expires_at, display.invitation_id
@@ -232,6 +252,7 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 				AND sealing_key_id = ${command.previousSealingKeyId}
 				AND observed_at = ${command.previousObservedAt}::timestamptz
 				AND expires_at = ${command.previousExpiresAt}::timestamptz
+				AND sealed_payload = ${command.previousSealedPayload}
 				AND expires_at > ${command.storedAt}::timestamptz
 			RETURNING user_id AS "userId"
 		`;
@@ -247,6 +268,8 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 				sealing_key_id = ${command.sealingKeyId}
 			WHERE display.invitation_id = ${command.invitationId}
 				AND display.sealing_key_id = ${command.previousSealingKeyId}
+				AND display.sealed_payload = ${command.previousSealedPayload}
+				AND display.expires_at > ${command.now}::timestamptz
 				AND EXISTS (
 					SELECT 1 FROM instance_invitation
 					WHERE id = display.invitation_id
@@ -257,6 +280,44 @@ export class PostgresInstanceDisplayStore implements InstanceDisplayStore {
 		`;
 		return updated.length === 1 ? 'resealed' : 'stale';
 	}
+
+	async deferMemberReseal(
+		command: DeferMemberDisplayResealCommand
+	): Promise<DeferDisplayResealResult> {
+		const updated = await this.#sql<{ userId: string }[]>`
+			UPDATE instance_member_display
+			SET reseal_after = expires_at
+			WHERE user_id = ${command.userId}
+				AND sealing_key_id = ${command.previousSealingKeyId}
+				AND observed_at = ${command.previousObservedAt}::timestamptz
+				AND expires_at = ${command.previousExpiresAt}::timestamptz
+				AND sealed_payload = ${command.previousSealedPayload}
+				AND expires_at > ${command.now}::timestamptz
+			RETURNING user_id AS "userId"
+		`;
+		return updated.length === 1 ? 'deferred' : 'stale';
+	}
+
+	async deferInvitationReseal(
+		command: DeferInvitationDisplayResealCommand
+	): Promise<DeferDisplayResealResult> {
+		const updated = await this.#sql<{ invitationId: string }[]>`
+			UPDATE instance_invitation_display AS display
+			SET reseal_after = expires_at
+			WHERE display.invitation_id = ${command.invitationId}
+				AND display.sealing_key_id = ${command.previousSealingKeyId}
+				AND display.sealed_payload = ${command.previousSealedPayload}
+				AND display.expires_at > ${command.now}::timestamptz
+				AND EXISTS (
+					SELECT 1 FROM instance_invitation
+					WHERE id = display.invitation_id
+						AND status = 'pending'
+						AND expires_at > ${command.now}::timestamptz
+				)
+			RETURNING display.invitation_id AS "invitationId"
+		`;
+		return updated.length === 1 ? 'deferred' : 'stale';
+	}
 }
 
 async function authorizeActor(
@@ -264,7 +325,7 @@ async function authorizeActor(
 	actorId: string
 ): Promise<ListInstanceDisplayRowsResult<never>> {
 	const members: MemberRoleStatusRow[] = await sql<MemberRoleStatusRow[]>`
-		SELECT role, status FROM instance_member WHERE user_id = ${actorId} LIMIT 1
+		SELECT role, status FROM instance_member WHERE user_id = ${actorId} LIMIT 1 FOR SHARE
 	`;
 	const member: MemberRoleStatusRow | undefined = members[0];
 	if (member === undefined || member.role === 'member') {

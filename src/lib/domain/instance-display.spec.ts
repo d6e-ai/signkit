@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+	boundInstanceDisplayCleanupLimit,
+	boundInstanceDisplayResealLimit,
+	emptyDisplayMap,
 	invitationDisplayState,
+	isIsoInstant,
 	memberDisplayExpiresAt,
 	projectAvailableMemberDisplay,
 	unavailableMemberDisplay
@@ -33,6 +37,30 @@ describe('instance display domain', () => {
 				now: OBSERVED_AT
 			})
 		).toEqual(unavailableMemberDisplay());
+	});
+
+	it('rejects malformed calendar instants without throwing', () => {
+		expect(isIsoInstant('2026-99-99T00:00:00.000Z')).toBe(false);
+		expect(isIsoInstant('2026-02-30T00:00:00.000Z')).toBe(false);
+		expect(isIsoInstant('2026-09-12T12:00:00.000Z')).toBe(true);
+	});
+
+	it('does not clamp a spent cleanup or reseal budget back to one', () => {
+		expect(boundInstanceDisplayCleanupLimit(0)).toBe(0);
+		expect(boundInstanceDisplayCleanupLimit(-1)).toBe(0);
+		expect(boundInstanceDisplayResealLimit(0)).toBe(0);
+		expect(boundInstanceDisplayCleanupLimit(100)).toBe(100);
+		expect(boundInstanceDisplayCleanupLimit(101)).toBe(100);
+	});
+
+	it('keeps __proto__ and constructor as own map keys', () => {
+		const displays = emptyDisplayMap<string>();
+		displays['__proto__'] = 'unavailable';
+		displays['constructor'] = 'unavailable';
+		expect(Object.getPrototypeOf(displays)).toBeNull();
+		expect(Object.hasOwn(displays, '__proto__')).toBe(true);
+		expect(Object.hasOwn(displays, 'constructor')).toBe(true);
+		expect(JSON.parse(JSON.stringify(displays))['__proto__']).toBe('unavailable');
 	});
 
 	it('hides expired pending invitations immediately', () => {

@@ -62,6 +62,7 @@ export interface CasResealMemberDisplayCommand {
 	previousSealingKeyId: string;
 	previousObservedAt: string;
 	previousExpiresAt: string;
+	previousSealedPayload: string;
 	sealedPayload: string;
 	sealingKeyId: string;
 	storedAt: string;
@@ -70,12 +71,30 @@ export interface CasResealMemberDisplayCommand {
 export interface CasResealInvitationDisplayCommand {
 	invitationId: string;
 	previousSealingKeyId: string;
+	previousSealedPayload: string;
 	sealedPayload: string;
 	sealingKeyId: string;
 	now: string;
 }
 
+export interface DeferMemberDisplayResealCommand {
+	userId: string;
+	previousSealingKeyId: string;
+	previousObservedAt: string;
+	previousExpiresAt: string;
+	previousSealedPayload: string;
+	now: string;
+}
+
+export interface DeferInvitationDisplayResealCommand {
+	invitationId: string;
+	previousSealingKeyId: string;
+	previousSealedPayload: string;
+	now: string;
+}
+
 export type CasResealDisplayResult = 'resealed' | 'stale';
+export type DeferDisplayResealResult = 'deferred' | 'stale';
 
 /**
  * Encrypted instance display persistence. Authorization for list reads is an
@@ -96,12 +115,12 @@ export interface InstanceDisplayStore {
 	): Promise<ListInstanceDisplayRowsResult<InstanceInvitationDisplayRow>>;
 	cleanupExpired(now: string, limit: number): Promise<InstanceDisplayCleanupResult>;
 	findMemberRowsForReseal(
-		activeSealingKeyId: string,
+		previousSealingKeyId: string,
 		now: string,
 		limit: number
 	): Promise<readonly InstanceMemberDisplayRow[]>;
 	findInvitationRowsForReseal(
-		activeSealingKeyId: string,
+		previousSealingKeyId: string,
 		now: string,
 		limit: number
 	): Promise<readonly InstanceInvitationDisplayRow[]>;
@@ -109,6 +128,10 @@ export interface InstanceDisplayStore {
 	casResealInvitationTarget(
 		command: CasResealInvitationDisplayCommand
 	): Promise<CasResealDisplayResult>;
+	deferMemberReseal(command: DeferMemberDisplayResealCommand): Promise<DeferDisplayResealResult>;
+	deferInvitationReseal(
+		command: DeferInvitationDisplayResealCommand
+	): Promise<DeferDisplayResealResult>;
 }
 
 export function uniqueBoundedDisplayIds(ids: readonly string[], limit: number): string[] {

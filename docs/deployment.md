@@ -337,9 +337,12 @@ display targets last at most seven days. Do not rotate a second time inside that
 the previous key earlier makes encrypted rows unreadable and exact invitation retries conflict until
 the key is restored; retries after the seven-day invitation window conflict by design.
 
-Display maintenance needs only the database. Cleanup runs without an encryption key and without mail
-provider, public origin, or from-email configuration. Reseal runs when the active/previous delivery
-keyring exists. Each run cleans at most 100 expired rows and reseals at most 50 previous-key rows.
+Display maintenance needs only the database. Cleanup runs without an encryption key, without a
+well-formed keyring, and without mail provider, public origin, or from-email configuration. Reseal
+runs when the active/previous delivery keyring exists. Each run shares one cleanup budget of at most
+100 expired member and invitation rows and reseals at most 50 previous-key rows. Unknown-key and
+unopenable previous-key ciphertext stays until expiry; the sweep advances a bounded `reseal_after`
+cursor instead of mutating or deleting it.
 
 The envelope expiry drain discovers `sent`/`in_progress` envelopes where every actionable
 (signer/approver) recipient that has ever been released has an expired capability and none currently

@@ -1,5 +1,6 @@
 import type { InstanceDisplayApplicationPort } from '$lib/application/instance-display/instance-display-service';
 import {
+	emptyDisplayMap,
 	unavailableInvitationDisplay,
 	unavailableMemberDisplay
 } from '$lib/domain/instance-display';
@@ -23,7 +24,7 @@ export async function enrichMemberDisplays(
 	members: readonly InstanceMemberMetadata[]
 ): Promise<Record<string, MemberDisplay> | undefined> {
 	if (resolveDisplay === null || resolveDisplay === undefined) return undefined;
-	const fallback: Record<string, MemberDisplay> = {};
+	const fallback: Record<string, MemberDisplay> = emptyDisplayMap();
 	for (const member of members) fallback[member.userId] = unavailableMemberDisplay();
 	try {
 		const application: InstanceDisplayApplicationPort | null = await resolveDisplay({ platform });
@@ -42,7 +43,7 @@ export async function enrichInvitationDisplays(
 	invitations: readonly InstanceInvitationMetadata[]
 ): Promise<Record<string, InvitationDisplay> | undefined> {
 	if (resolveDisplay === null || resolveDisplay === undefined) return undefined;
-	const fallback: Record<string, InvitationDisplay> = {};
+	const fallback: Record<string, InvitationDisplay> = emptyDisplayMap();
 	for (const invitation of invitations) fallback[invitation.id] = unavailableInvitationDisplay();
 	try {
 		const application: InstanceDisplayApplicationPort | null = await resolveDisplay({ platform });

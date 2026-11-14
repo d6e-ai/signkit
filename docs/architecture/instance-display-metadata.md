@@ -105,8 +105,9 @@ Invitation display states:
 - missing, legacy, corrupt, or unconfigured: `{ state: "unavailable" }`
 
 Decoded objects are allowlisted. Ciphertext, hashes, key IDs, and hidden payload fields are never
-projected. If display enrichment fails, the metadata page remains usable with unavailable display
-states. Production list routes always attach the maps and `Cache-Control: no-store`.
+projected. Display maps are null-prototype objects so subject identifiers such as `__proto__` remain
+own properties. If display enrichment fails, the metadata page remains usable with unavailable
+display states. Production list routes always attach the maps and `Cache-Control: no-store`.
 
 ## Encryption
 
@@ -116,15 +117,19 @@ keys, distinct prefixes, and AAD bound to kind plus record id. It does not use
 
 New writes use the active key. Member payloads include timestamp and lifetime fields that must
 match on open. Unknown keys are unavailable; the keyring is not widened and recoverable
-ciphertext is not deleted.
+ciphertext is not deleted. Unopenable previous-key rows stay physically retained until expiry.
 
 ## Maintenance
 
 `POST /api/v1/system/instance-display/maintain` uses `DELIVERY_WORKER_SECRET` and the scheduled
-maintenance registry. It needs only the database: cleanup runs without an encryption key and
-without mail provider, public origin, or from-email configuration. Reseal runs when the
-active/previous display keyring exists.
+maintenance registry. It needs only the database: cleanup runs without an encryption key, without a
+well-formed keyring, and without mail provider, public origin, or from-email configuration. Reseal
+runs when the active/previous display keyring exists.
 
-Each run cleans at most 100 expired rows and reseals at most 50 previous-key rows, using indexed
-deadlines and compare-and-swap updates so accepted, revoked, expired, or replaced rows are not
-revived. Responses expose bounded counts and fixed redacted failure counters only.
+Each run shares one cleanup budget of at most 100 expired member and invitation rows, then reseals
+at most 50 previous-key rows. Discovery is an indexed query for the known previous key plus a
+`reseal_after` cursor, so unknown-key and already-deferred corrupt rows cannot starve healthy
+previous-key members or invitations. Compare-and-swap updates match the original ciphertext and
+expiry so accepted, revoked, expired, or replaced rows are not revived. Unopenable previous-key
+rows defer until their expiry without mutating live ciphertext. Responses expose bounded counts and
+fixed redacted failure counters only.

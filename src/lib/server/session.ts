@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { isIsoInstant } from '$lib/domain/instance-display';
 import { AesGcmSealingKeyring, decodeBase64SealingKey } from '$lib/security/sealing-keyring';
 import type { VerifiedPrincipal } from './d6e-auth';
 
@@ -227,9 +228,7 @@ function parseSession(plaintext: Uint8Array): Session | null {
 }
 
 function optionalIso(value: unknown): string | undefined {
-	if (typeof value !== 'string') return undefined;
-	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return undefined;
-	if (new Date(value).toISOString() !== value) return undefined;
+	if (typeof value !== 'string' || !isIsoInstant(value)) return undefined;
 	return value;
 }
 

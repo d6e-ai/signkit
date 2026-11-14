@@ -44,6 +44,44 @@ describe('instance display runtime', () => {
 		expect(service).toBeInstanceOf(InstanceDisplayMaintenanceService);
 	});
 
+	it('keeps maintenance usable when the encryption key is malformed and does not log key material', async () => {
+		const malformedKey: string = 'not-a-valid-delivery-key';
+		privateEnv.DATABASE_URL = TEST_DATABASE_URL;
+		privateEnv.DELIVERY_ENCRYPTION_KEY = malformedKey;
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		try {
+			const service = await resolveInstanceDisplayMaintenanceService({});
+			expect(service).toBeInstanceOf(InstanceDisplayMaintenanceService);
+			expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(malformedKey);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
+	it('wires D1 maintenance without SMTP when the previous key is malformed', async () => {
+		const malformedPrevious: string = 'short';
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+		try {
+			const platform = {
+				env: {
+					DB: {} as D1Database,
+					DELIVERY_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
+					DELIVERY_ENCRYPTION_KEY_PREVIOUS: malformedPrevious
+				}
+			} as App.Platform;
+			expect(await resolveInstanceDisplayMaintenanceService({ platform })).toBeInstanceOf(
+				InstanceDisplayMaintenanceService
+			);
+			expect(await resolveInstanceDisplayApplication({ platform })).toBeInstanceOf(
+				InstanceDisplayApplication
+			);
+			expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(malformedPrevious);
+			expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(TEST_ENCRYPTION_KEY);
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	it('fails closed on a Cloudflare platform without D1 instead of using DATABASE_URL', async () => {
 		privateEnv.DATABASE_URL = TEST_DATABASE_URL;
 		const platform = { env: {} } as App.Platform;

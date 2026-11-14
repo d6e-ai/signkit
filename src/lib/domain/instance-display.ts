@@ -25,7 +25,13 @@ export function unavailableInvitationDisplay(): InvitationDisplay {
 
 export function isIsoInstant(value: string): boolean {
 	if (!ISO_INSTANT_PATTERN.test(value)) return false;
-	return new Date(value).toISOString() === value;
+	const parsed: number = Date.parse(value);
+	if (!Number.isFinite(parsed)) return false;
+	return new Date(parsed).toISOString() === value;
+}
+
+export function emptyDisplayMap<T>(): Record<string, T> {
+	return Object.create(null) as Record<string, T>;
 }
 
 export function memberDisplayExpiresAt(observedAt: string): string {
@@ -36,12 +42,12 @@ export function memberDisplayExpiresAt(observedAt: string): string {
 }
 
 export function boundInstanceDisplayCleanupLimit(limit: number): number {
-	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	if (!Number.isSafeInteger(limit) || limit < 1) return 0;
 	return Math.min(limit, INSTANCE_DISPLAY_CLEANUP_BATCH_LIMIT);
 }
 
 export function boundInstanceDisplayResealLimit(limit: number): number {
-	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	if (!Number.isSafeInteger(limit) || limit < 1) return 0;
 	return Math.min(limit, INSTANCE_DISPLAY_RESEAL_BATCH_LIMIT);
 }
 
