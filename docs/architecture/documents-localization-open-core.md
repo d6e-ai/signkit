@@ -49,10 +49,18 @@ not by an external organization. Hash chaining improves evidence but is not an o
 
 ## Localization
 
-Paraglide uses `en` and `ja`, in that order: URL, cookie, then base locale. Human pages have
-explicit `/en` and `/ja` forms while `/` remains the English base. API, well-known, health, webhook,
-and agent endpoints are excluded from locale routing. Signing links carry the recipient language
-chosen by the sender. Language controls use language names, not country flags.
+Paraglide uses `en` and `ja`, with its existing URL, cookie, then base-locale strategy. Human pages
+have explicit `/en` and `/ja` forms. Before that middleware, application redirects send locale-less
+GET/HEAD document navigation to the language selected in SignKit (`PARAGLIDE_LOCALE`), otherwise
+the highest-priority supported `Accept-Language` preference (including regional variants), otherwise
+English. These temporary redirects retain the path and query, use private/no-store caching, and
+vary on Cookie and Accept-Language. Explicit locale URLs are preserved. This redirect policy does
+not change Paraglide's compiler configuration or locale selection for an already-localized page.
+
+API, well-known, health, webhook, and agent endpoints are excluded from locale routing. Assets,
+data/fetch requests, mutations, and recipient/capability surfaces do not use the preference redirect.
+Signing links retain the recipient language chosen by the sender. Language controls use language
+names, not country flags.
 
 ## Open-core enterprise boundary
 
