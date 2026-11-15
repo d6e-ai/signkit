@@ -1,6 +1,6 @@
 import type { Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
-import { getTextDirection } from '$lib/paraglide/runtime';
+import { cookieName, getTextDirection } from '$lib/paraglide/runtime';
 import { paraglideMiddleware } from '$lib/paraglide/server';
 import {
 	resolveApiKeyAuthentication,
@@ -14,6 +14,7 @@ import { D6eAuthRejectedError, refresh, verifyAccessToken } from '$lib/server/d6
 import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key-authentication';
 import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
+import { localePreferenceRedirect } from '$lib/server/locale-redirect';
 import {
 	SESSION_COOKIE,
 	SESSION_COOKIE_OPTIONS,
@@ -38,8 +39,14 @@ export function isSessionExcludedPath(pathname: string): boolean {
 	);
 }
 
-const handleLocale: Handle = ({ event, resolve }) => {
+export const handleLocale: Handle = ({ event, resolve }) => {
 	if (isLocaleExcludedPath(event.url.pathname)) return resolve(event);
+	const preferenceRedirect = localePreferenceRedirect(
+		event.url,
+		event.request,
+		event.cookies.get(cookieName)
+	);
+	if (preferenceRedirect) return preferenceRedirect;
 
 	return paraglideMiddleware(event.request, ({ request, locale }) => {
 		event.request = request;
