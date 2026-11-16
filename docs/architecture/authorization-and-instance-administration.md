@@ -69,7 +69,8 @@ only that email delivery was scheduled.
 Invitation emails carry an acceptance link to `/invitations/accept`, with the token in the URL
 fragment. This public landing page removes the fragment before offering sign-in and keeps the
 validated token in tab-scoped session storage with a ten-minute validity window to bridge OAuth.
-The OAuth return path contains no token. Missing, invalid, or expired local handoffs ask the user
+The OAuth return path contains no token. Fragment changes are captured even without a page remount;
+a late acceptance result for an older handoff cannot discard the current one. Missing, invalid, or expired local handoffs ask the user
 to reopen the existing email link; the ordinary non-member settings page asks the user to request
 an invitation from an administrator. Neither offers token entry.
 
@@ -77,7 +78,8 @@ The confirmation shows only the caller's own verified email from private, non-ca
 It never resolves or exposes the invitation's target email to an unauthenticated visitor. An explicit
 same-origin `POST /auth/switch-account` ends the local SignKit session and starts a fresh OAuth flow
 with account selection, retaining the invitation in the same tab. It does not log out other services
-or provider accounts. A single-account provider must render fresh credential entry for this request
+or provider accounts. The confirmation uses a same-origin referrer policy so native same-origin POSTs
+retain their request origin while cross-origin navigation receives no referrer. A single-account provider must render fresh credential entry for this request
 rather than silently reuse its current account. Cancelled/failed authorization returns to the invitation
 with recovery actions; choosing the same subject is reported explicitly. Stale callbacks cannot consume
 a newer OAuth flow. Verified code exchange is the only source of a replacement SignKit identity.

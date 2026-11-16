@@ -82,15 +82,18 @@ beforeEach(() => {
 	});
 });
 describe('invitation account recovery', () => {
-	it('requires same-origin POST before clearing any session or OAuth state', async () => {
-		const e = event('/auth/switch-account', { [SESSION_COOKIE]: 'old' }, 'https://foreign.example');
-		expect(
-			(await outcome(() => switchAccount(e as unknown as Parameters<typeof switchAccount>[0])))
-				.status
-		).toBe(403);
-		expect(e.writes).toEqual([]);
-		expect(e.deleted).toEqual([]);
-	});
+	it.each(['https://foreign.example', 'null'])(
+		'rejects origin %s before clearing any session or OAuth state',
+		async (origin) => {
+			const e = event('/auth/switch-account', { [SESSION_COOKIE]: 'old' }, origin);
+			expect(
+				(await outcome(() => switchAccount(e as unknown as Parameters<typeof switchAccount>[0])))
+					.status
+			).toBe(403);
+			expect(e.writes).toEqual([]);
+			expect(e.deleted).toEqual([]);
+		}
+	);
 	it('clears the local session and begins a fresh, account-selecting flow to the same invitation surface', async () => {
 		const e = event('/auth/switch-account', {
 			[SESSION_COOKIE]: 'old',

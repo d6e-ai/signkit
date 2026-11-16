@@ -19,7 +19,7 @@ it.each(['active', 'no_membership', 'suspended', 'anonymous', 'unavailable'] as 
 		});
 		expect(headers).toMatchObject({
 			'cache-control': 'private, no-store',
-			'referrer-policy': 'no-referrer'
+			'referrer-policy': 'same-origin'
 		});
 	}
 );
