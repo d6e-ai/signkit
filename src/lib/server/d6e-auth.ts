@@ -123,12 +123,17 @@ function remoteJwksSetFor(jwksUrl: string): RemoteJWKSet {
 	return created;
 }
 
-export function authorizeUrl(redirectUri: string, state: string): string {
+export function authorizeUrl(
+	redirectUri: string,
+	state: string,
+	prompt?: 'select_account'
+): string {
 	const { baseUrl, clientId } = configuration();
 	const url = new URL(`${baseUrl}/auth/login`);
 	url.searchParams.set('client_id', clientId);
 	url.searchParams.set('redirect_uri', redirectUri);
 	url.searchParams.set('state', state);
+	if (prompt) url.searchParams.set('prompt', prompt);
 	return url.toString();
 }
 

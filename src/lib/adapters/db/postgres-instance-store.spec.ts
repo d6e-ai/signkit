@@ -976,10 +976,7 @@ describe('PostgresInstanceStore', () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date('2026-11-16T12:00:00.000Z'));
 			try {
-				const scripted = new ScriptedPostgres([
-					[{ role: 'owner', status: 'active' }],
-					[]
-				]);
+				const scripted = new ScriptedPostgres([[{ role: 'owner', status: 'active' }], []]);
 
 				const result: ListInstanceInvitationsStoreResult = await store(
 					scripted
@@ -1001,10 +998,7 @@ describe('PostgresInstanceStore', () => {
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date('2026-11-16T12:00:00.000Z'));
 			try {
-				const scripted = new ScriptedPostgres([
-					[{ role: 'owner', status: 'active' }],
-					[]
-				]);
+				const scripted = new ScriptedPostgres([[{ role: 'owner', status: 'active' }], []]);
 				const cursor: string = INVITATION_ID;
 
 				await store(scripted).listInstanceInvitations(
@@ -1024,10 +1018,7 @@ describe('PostgresInstanceStore', () => {
 		});
 
 		it('does not filter history list SQL when view is omitted', async () => {
-			const scripted = new ScriptedPostgres([
-				[{ role: 'owner', status: 'active' }],
-				[]
-			]);
+			const scripted = new ScriptedPostgres([[{ role: 'owner', status: 'active' }], []]);
 
 			await store(scripted).listInstanceInvitations(
 				{ type: 'user', id: OWNER_ID },

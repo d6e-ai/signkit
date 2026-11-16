@@ -711,6 +711,42 @@ describe('instance invitation HTTP handlers', () => {
 	});
 
 	describe('accept', () => {
+		it('rejects a stale displayed account before resolving or consuming an invitation', async () => {
+			const resolver = vi.fn(() => application());
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(resolver).accept,
+				event({
+					pathname: ACCEPT_PATH,
+					method: 'POST',
+					body: JSON.stringify({ token: VALID_TOKEN }),
+					headers: {
+						'idempotency-key': 'expected-account',
+						'x-signkit-expected-subject': 'previous-user'
+					}
+				})
+			);
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({ type: 'urn:signkit:problem:account-changed' });
+			expect(resolver).not.toHaveBeenCalled();
+		});
+		it('allows a matching displayed account without trusting a body-supplied identity', async () => {
+			const app = application();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app).accept,
+				event({
+					pathname: ACCEPT_PATH,
+					method: 'POST',
+					body: JSON.stringify({ token: VALID_TOKEN }),
+					headers: { 'idempotency-key': 'expected-account', 'x-signkit-expected-subject': 'user-1' }
+				})
+			);
+			expect(response.status).toBe(200);
+			expect(app.accept).toHaveBeenCalledWith(
+				{ id: 'user-1' },
+				expect.objectContaining({ email: 'user@example.com' })
+			);
+		});
+
 		function validAcceptBody(overrides: Record<string, unknown> = {}): string {
 			return JSON.stringify({ token: VALID_TOKEN, ...overrides });
 		}

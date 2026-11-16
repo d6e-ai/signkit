@@ -477,6 +477,10 @@ describe('InstanceManagementClient', () => {
 				member: mockData.member,
 				replayed: false
 			});
+			await client.acceptInvitation({ token: 'ski1_token_value_abc', expectedSubject: 'usr-002' });
+			const init = fetchMock.mock.calls.at(-1)![1]!;
+			expect(new Headers(init.headers).get('x-signkit-expected-subject')).toBe('usr-002');
+			expect(JSON.parse(init.body as string)).toEqual({ token: 'ski1_token_value_abc' });
 		});
 
 		it('POST create API key', async () => {

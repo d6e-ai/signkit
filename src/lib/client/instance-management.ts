@@ -87,6 +87,7 @@ export interface CreateInvitationInput {
 
 export interface AcceptInvitationInput {
 	token: string;
+	expectedSubject?: string;
 }
 
 export interface CreateApiKeyInput {
@@ -524,7 +525,10 @@ export class InstanceManagementClient {
 				headers: {
 					'content-type': 'application/json',
 					accept: 'application/json, application/problem+json',
-					'idempotency-key': idempotencyKey
+					'idempotency-key': idempotencyKey,
+					...(typeof tokenOrInput === 'object' && tokenOrInput.expectedSubject
+						? { 'x-signkit-expected-subject': tokenOrInput.expectedSubject }
+						: {})
 				},
 				body: JSON.stringify({ token })
 			},

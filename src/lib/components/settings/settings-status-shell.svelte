@@ -11,14 +11,17 @@
 
 	let {
 		ctx,
-		ready
+		ready,
+		signInHref: suppliedSignInHref
 	}: {
 		ctx: SettingsCallerContext;
 		ready: Snippet;
+		signInHref?: string;
 	} = $props();
 
 	const signInHref = $derived(
-		localizeHref(`/auth/login?return=${encodeURIComponent(page.url.pathname)}`)
+		suppliedSignInHref ??
+			localizeHref(`/auth/login?return=${encodeURIComponent(page.url.pathname)}`)
 	);
 </script>
 
@@ -42,7 +45,12 @@
 			<Card.Description>{m.settings_sign_in_description()}</Card.Description>
 		</Card.Header>
 		<Card.Footer>
-			<Button href={signInHref} class="w-full">
+			<Button
+				href={signInHref}
+				class="w-full"
+				data-sveltekit-preload-data="off"
+				data-sveltekit-reload
+			>
 				{m.settings_sign_in_action()}
 			</Button>
 		</Card.Footer>

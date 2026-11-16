@@ -471,6 +471,16 @@ export function createInstanceInvitationHttpHandlers(
 			url.pathname
 		);
 		if (authorized instanceof Response) return authorized;
+		const expectedSubject = request.headers.get('x-signkit-expected-subject');
+		if (expectedSubject !== null && expectedSubject !== authorized.id) {
+			return problemResponse({
+				type: 'urn:signkit:problem:account-changed',
+				title: 'Account changed',
+				status: 409,
+				detail: 'Your signed-in account changed. Refresh the account shown before continuing.',
+				instance: url.pathname
+			});
+		}
 
 		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
 		if (!idempotencyKey.success) {

@@ -395,7 +395,10 @@ describe('D1InstanceStore unit tests', () => {
 			});
 			const store = new D1InstanceStore(fake.database);
 
-			await store.listInstanceInvitations({ type: 'user', id: OWNER_ID }, { cursor: null, limit: 10 });
+			await store.listInstanceInvitations(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: null, limit: 10 }
+			);
 			expect(fake.batches[0][1].sql).not.toContain("status = 'pending'");
 			expect(fake.batches[0][1].bindings).toEqual([11]);
 		});
