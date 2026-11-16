@@ -69,56 +69,17 @@ describe('settings entry page in the browser', () => {
 		expect(gotoMock).not.toHaveBeenCalled();
 	});
 
-	it('offers the invitation-accept card to a non-member, and redirects once acceptance makes them an active member', async () => {
-		let meCallCount = 0;
-		const mockFetch = vi.fn().mockImplementation(async (url: RequestInfo | URL) => {
-			const urlStr = String(url);
-			if (urlStr.includes('/api/v1/instance/invitations/accept')) {
-				return jsonResponse({
-					invitation: {
-						id: 'inv-1',
-						role: 'member',
-						status: 'accepted',
-						invitedByUserId: 'owner-1',
-						createdAt: '2026-09-01T00:00:00.000Z',
-						expiresAt: '2099-01-01T00:00:00.000Z',
-						acceptedAt: '2026-09-14T00:00:00.000Z',
-						acceptedByUserId: 'user-1',
-						revokedAt: null,
-						revokedByUserId: null
-					},
-					member: member({ userId: 'user-1', role: 'member' })
-				});
-			}
-			if (urlStr.includes('/api/v1/instance/members/me')) {
-				meCallCount += 1;
-				return meCallCount === 1
-					? meResponse(null)
-					: meResponse(member({ userId: 'user-1', role: 'member' }));
-			}
-			return jsonResponse({});
-		});
+	it('asks a non-member to request an administrator invitation without a token form', async () => {
+		const mockFetch = vi.fn(async () => meResponse(null));
 		vi.stubGlobal('fetch', mockFetch);
-
 		const screen = await render(SettingsPage);
 		await expect
-			.element(
-				screen.getByText(
-					'You are not currently a member of this instance. Enter an invitation token to join.'
-				)
-			)
+			.element(screen.getByText('Ask your administrator to send you an invitation email.'))
 			.toBeVisible();
-
-		await screen.getByLabelText('Invitation token').fill('ski1_test_token');
-		await screen.getByRole('button', { name: 'Accept invitation' }).click();
-
-		// Accepting makes the caller a plain active member, so the page hands off
-		// to their one authorized destination instead of staying on the
-		// invitation-accept card.
-		await vi.waitFor(() =>
-			expect(gotoMock).toHaveBeenCalledWith(expect.stringMatching(/\/settings\/api-keys$/))
-		);
-		expect(meCallCount).toBe(2);
+		expect(screen.getByRole('textbox').query()).toBeNull();
+		expect(screen.getByRole('button', { name: 'Accept invitation' }).query()).toBeNull();
+		expect(mockFetch.mock.calls).toHaveLength(1);
+		expect(gotoMock).not.toHaveBeenCalled();
 	});
 
 	it('shows the access-restricted card for a suspended member, never a tabbed UI', async () => {

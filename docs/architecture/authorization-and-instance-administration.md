@@ -66,6 +66,15 @@ purpose-specific authenticated data bound to the invitation and delivery identif
 replay proves the original delivery row and never creates or exposes another token. The API returns
 only that email delivery was scheduled.
 
+Invitation emails carry an acceptance link to `/invitations/accept`, with the token in the URL
+fragment. This public landing page removes the fragment before offering sign-in and keeps the
+validated token in tab-scoped session storage with a ten-minute validity window to bridge OAuth. The OAuth
+return path contains no token. Missing or invalid links and the ordinary non-member settings page
+ask the user to request an invitation from an administrator; neither offers token entry. After
+sign-in, an explicit confirmation invokes the existing email-bound acceptance command. Success
+clears the tab handoff and refreshes membership before entering settings. Opening a link never
+accepts an invitation by itself.
+
 The protected instance-invitation drain uses the deployment's configured mail provider, a
 five-minute reclaimable lease, capped exponential backoff, and at most ten claimed attempts. It
 rechecks the invitation's pending/unexpired state and both token digests after opening the payload.

@@ -7,6 +7,7 @@ import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { isSettingsSurfacePath } from '$lib/navigation/settings-surface';
 import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
 import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
+import { isInvitationSurfacePath } from '$lib/navigation/invitation-surface';
 import { localizeHref } from '$lib/paraglide/runtime';
 import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 
@@ -39,6 +40,9 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 	// authenticated email at all.
 	if (isRecipientSurfacePath(url.pathname)) return {};
 	if (isSignedOutSurfacePath(url.pathname)) return {};
+	// Capture the fragment in the browser before starting OAuth. Acceptance
+	// itself still requires the authenticated, email-bound POST command.
+	if (isInvitationSurfacePath(url.pathname)) return {};
 
 	if (locals.identityState === 'unavailable') {
 		error(503, 'Identity could not be verified.');

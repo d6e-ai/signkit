@@ -11,6 +11,7 @@
 	import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 	import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
 	import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
+	import { isInvitationSurfacePath } from '$lib/navigation/invitation-surface';
 	import { page } from '$app/state';
 	import './layout.css';
 	import * as m from '$lib/paraglide/messages';
@@ -19,7 +20,8 @@
 	let bareShell = $derived(
 		isRecipientSurfacePath(page.url.pathname) ||
 			isSignedOutSurfacePath(page.url.pathname) ||
-			isSetupSurfacePath(page.url.pathname)
+			isSetupSurfacePath(page.url.pathname) ||
+			isInvitationSurfacePath(page.url.pathname)
 	);
 	let navigationPending = $derived(navigating.to !== null);
 </script>

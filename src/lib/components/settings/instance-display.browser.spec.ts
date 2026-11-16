@@ -119,6 +119,41 @@ test('shows the observed member identity and keeps role mutations keyed by the s
 	expect(JSON.parse(request![1]!.body as string)).toEqual({ role: 'admin' });
 });
 
+test.each([
+	{ locale: 'en' as const, width: 1280, name: 'Alex Rivera' },
+	{ locale: 'ja' as const, width: 1280, name: '山田 太郎' },
+	{ locale: 'ja' as const, width: 390, name: '長い名前'.repeat(30) },
+	{ locale: 'en' as const, width: 390, name: null }
+])(
+	'keeps the self badge beside the identity above its metadata ($locale, $width)',
+	async ({ locale, width, name }) => {
+		await page.viewport(width, 844);
+		overwriteGetLocale(() => locale);
+		vi.stubGlobal(
+			'fetch',
+			membersFetch(name ? { [owner.userId]: snapshot(name) } : undefined, owner)
+		);
+		const screen = await render(MembersPage);
+		const badge = screen.getByText(locale === 'ja' ? 'あなた' : 'You', { exact: true });
+		await expect.element(badge).toBeVisible();
+		const trigger = screen.getByRole('button', {
+			name:
+				locale === 'ja' ? `${name ?? owner.userId} の詳細` : `Details for ${name ?? owner.userId}`,
+			exact: true
+		});
+		const badgeElement = badge.element() as HTMLElement;
+		const row = trigger.element().parentElement!;
+		expect(badgeElement.parentElement).toBe(row);
+		const rect = badgeElement.getBoundingClientRect();
+		const identity = trigger.element().getBoundingClientRect();
+		expect(rect.left).toBeGreaterThanOrEqual(identity.right);
+		expect(rect.top).toBeLessThan(identity.top + 24);
+		const cell = badgeElement.closest('td')!;
+		expect(rect.right).toBeLessThanOrEqual(cell.getBoundingClientRect().right);
+		expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+	}
+);
+
 test('keeps a legacy member identifiable and exposes the complete stable ID in details', async () => {
 	const id = `member-${'a'.repeat(175)}`;
 	vi.stubGlobal('fetch', membersFetch(undefined, { ...target, userId: id }));

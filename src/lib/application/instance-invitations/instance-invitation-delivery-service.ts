@@ -180,12 +180,11 @@ export class InstanceInvitationDeliveryService {
 			);
 		}
 
-		const settingsUrl: string = `${this.#origin}/${claim.locale}/settings`;
+		const acceptanceUrl: string = `${this.#origin}/${claim.locale}/invitations/accept#token=${encodeURIComponent(payload.token)}`;
 		const copy = renderInstanceInvitationMail(
 			claim.locale,
 			claim.role,
-			settingsUrl,
-			payload.token,
+			acceptanceUrl,
 			claim.expiresAt
 		);
 		const message: MailMessage = {

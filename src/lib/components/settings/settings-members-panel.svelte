@@ -201,11 +201,9 @@
 									<MemberDisplayView
 										userId={member.userId}
 										display={memberDisplays[member.userId]}
+										{isSelf}
 										onselect={() => (detailsMember = member)}
 									/>
-									{#if isSelf}<Badge variant="secondary" class="mt-2"
-											>{m.settings_members_you()}</Badge
-										>{/if}
 								</Table.Cell>
 								<Table.Cell>
 									{#if canOwnerManageRole}
