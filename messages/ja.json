@@ -164,6 +164,8 @@
 	"settings_invitation_accept_error": "招待を受けられませんでした。招待先のアカウントを確認するか、管理者に再招待を依頼してください。",
 	"settings_invitation_current_account": "ログイン中のアカウント",
 	"settings_invitation_switch_account": "別のアカウントで続ける",
+	"settings_invitation_switch_pending": "ログイン画面を開いています…",
+	"settings_invitation_switch_error": "ログイン画面を開けませんでした。もう一度お試しください。",
 	"settings_invitation_account_unavailable": "アカウントを確認するため、ログインし直してください。",
 	"settings_invitation_account_changed": "別のタブでアカウントが変わりました。表示中のアカウントを確認してから続けてください。",
 	"settings_invitation_same_account": "同じアカウントでログインしました。別のアカウントを選び直すこともできます。",

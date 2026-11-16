@@ -8,15 +8,19 @@ import '../../layout.css';
 const account = { subject: 'signed-in-subject', email: 'current@example.com' };
 const renderPage = (identity = account) =>
 	render(InvitationPage, { data: { signedInAccount: identity } });
-const { gotoMock, invalidateMock, appPage } = vi.hoisted(() => ({
+const { gotoMock, invalidateMock, authorizeMock, appPage } = vi.hoisted(() => ({
 	gotoMock: vi.fn(),
 	invalidateMock: vi.fn(),
+	authorizeMock: vi.fn(),
 	appPage: { url: new URL('https://signkit.example/en/invitations/accept') }
 }));
 vi.mock('$app/navigation', () => ({
 	goto: gotoMock,
 	invalidateAll: invalidateMock,
 	afterNavigate: vi.fn()
+}));
+vi.mock('$lib/client/authorization-navigation', () => ({
+	navigateToAuthorization: authorizeMock
 }));
 vi.mock('$app/state', () => ({
 	page: appPage
@@ -35,6 +39,7 @@ function problem(status: number, detail: string) {
 beforeEach(async () => {
 	await page.viewport(1280, 844);
 	gotoMock.mockReset();
+	authorizeMock.mockReset();
 	appPage.url = new URL('https://signkit.example/en/invitations/accept');
 	invalidateMock.mockReset();
 	overwriteGetLocale(() => 'en');
@@ -88,25 +93,91 @@ describe('invitation email landing page', () => {
 		expect(JSON.parse(request[1]!.body as string)).toEqual({ token });
 		expect(window.sessionStorage.getItem('signkit:pending-invitation')).toBeNull();
 	});
-	it('shows the current email and submits account switching without exposing the invitation', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async () => json({ member: null, bootstrapped: true }))
+	it('prepares account switching with a same-origin command then navigates separately without exposing the invitation', async () => {
+		let finish: (response: Response) => void = () => {};
+		const pending = new Promise<Response>((resolve) => {
+			finish = resolve;
+		});
+		const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+			init?.method === 'POST' ? pending : json({ member: null, bootstrapped: true })
 		);
+		vi.stubGlobal('fetch', fetchMock);
 		const screen = await renderPage();
 		await expect.element(screen.getByText('current@example.com')).toBeVisible();
 		const button = screen.getByRole('button', { name: 'Use another account', exact: true });
-		const form = button.element().closest('form')!;
-		const submitted = vi.fn((event: Event) => event.preventDefault());
-		form.addEventListener('submit', submitted);
+		expect(button.element().closest('form')).toBeNull();
 		await button.click();
-		expect(submitted).toHaveBeenCalledOnce();
-		expect(form.method).toBe('post');
-		expect(new URL(form.action).pathname).toMatch(/\/auth\/switch-account$/);
-		expect([...new FormData(form).keys()]).toEqual([]);
-		expect(form.action).not.toContain(token);
+		await expect
+			.element(screen.getByRole('button', { name: 'Opening sign-in…', exact: true }))
+			.toBeDisabled();
+		await expect
+			.element(screen.getByRole('button', { name: 'Accept invitation', exact: true }))
+			.toBeDisabled();
+		expect(authorizeMock).not.toHaveBeenCalled();
+		const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+		expect(posts).toHaveLength(1);
+		expect(String(posts[0][0])).toMatch(/\/auth\/switch-account$/);
+		expect(posts[0][1]).toEqual({
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { accept: 'application/json' },
+			redirect: 'error'
+		});
+		const authorizeUrl = 'https://auth.example/auth/login?state=fresh&prompt=select_account';
+		finish(json({ authorizeUrl }));
+		await vi.waitFor(() => expect(authorizeMock).toHaveBeenCalledExactlyOnceWith(authorizeUrl));
+		expect(window.sessionStorage.getItem('signkit:pending-invitation')).toContain(token);
+		expect(JSON.stringify(posts)).not.toContain(token);
 		expect(document.body.textContent).not.toContain(token);
 	});
+	it('refreshes the signed-in identity when returning from authorization through browser history', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+				init?.method === 'POST'
+					? json({ authorizeUrl: 'https://auth.example/auth/login' })
+					: json({ member: null, bootstrapped: true })
+			)
+		);
+		const screen = await renderPage();
+		await screen.getByRole('button', { name: 'Use another account', exact: true }).click();
+		await vi.waitFor(() => expect(authorizeMock).toHaveBeenCalled());
+		window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+		await vi.waitFor(() => expect(invalidateMock).toHaveBeenCalledOnce());
+		await expect
+			.element(screen.getByRole('button', { name: 'Use another account', exact: true }))
+			.toBeEnabled();
+		expect(window.sessionStorage.getItem('signkit:pending-invitation')).toContain(token);
+	});
+	it.each(['network', 'http', 'invalid-destination'])(
+		'keeps the invitation and offers a switch retry after %s failure',
+		async (failure) => {
+			let failed = false;
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+					if (init?.method !== 'POST') return json({ member: null, bootstrapped: true });
+					if (failed) return json({ authorizeUrl: 'https://auth.example/auth/login' });
+					failed = true;
+					if (failure === 'network') throw new TypeError('Failed to fetch');
+					return failure === 'http'
+						? problem(503, 'Unavailable')
+						: json({ authorizeUrl: 'javascript:alert(1)' });
+				})
+			);
+			const screen = await renderPage();
+			await screen.getByRole('button', { name: 'Use another account', exact: true }).click();
+			await expect
+				.element(screen.getByRole('alert'))
+				.toHaveTextContent('Could not open sign-in. Try again.');
+			expect(authorizeMock).not.toHaveBeenCalled();
+			expect(window.sessionStorage.getItem('signkit:pending-invitation')).toContain(token);
+			await screen.getByRole('button', { name: 'Use another account', exact: true }).click();
+			await vi.waitFor(() =>
+				expect(authorizeMock).toHaveBeenCalledExactlyOnceWith('https://auth.example/auth/login')
+			);
+		}
+	);
 	it.each(['cancelled', 'failed', 'same-account'])(
 		'offers recovery for an OAuth %s return without automatically accepting',
 		async (reason) => {
@@ -161,36 +232,32 @@ describe('invitation email landing page', () => {
 			new Headers(posts[0][1]!.headers).get('idempotency-key')
 		);
 	});
-	it('submits the real native switch form with a same-origin Origin header', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async () => json({ member: null, bootstrapped: true }))
-		);
-		const screen = await renderPage();
-		const button = screen.getByRole('button', { name: 'Use another account', exact: true });
-		await expect.element(button).toBeVisible();
+	it('sends the real browser switch command with a same-origin Origin header', async () => {
+		const nativeFetch = window.fetch.bind(window);
 		const { url } = await commands.startFixtureServer({
 			status: 200,
-			headers: { 'content-type': 'text/plain' },
+			headers: { 'content-type': 'application/json' },
 			bodyBase64: '',
 			echoRequest: true
 		});
-		const frame = document.createElement('iframe');
-		frame.name = 'invitation-form-result';
-		frame.hidden = true;
-		document.body.appendChild(frame);
-		const form = button.element().closest('form')!;
-		form.action = url;
-		form.target = frame.name;
+		let requestMetadata: { method: string; origin: string; referer: string } | undefined;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				if (init?.method !== 'POST') return json({ member: null, bootstrapped: true });
+				const response = await nativeFetch(url, init);
+				requestMetadata = await response.json();
+				return json({ authorizeUrl: 'https://auth.example/auth/login' });
+			})
+		);
 		try {
-			await button.click();
-			await expect.poll(() => frame.contentDocument?.body.textContent).toContain('origin');
-			const result = JSON.parse(frame.contentDocument!.body.textContent!);
-			expect(result.method).toBe('POST');
-			expect(result.origin).toBe(window.location.origin);
-			expect(result.referer).not.toContain(token);
+			const screen = await renderPage();
+			await screen.getByRole('button', { name: 'Use another account', exact: true }).click();
+			await vi.waitFor(() => expect(authorizeMock).toHaveBeenCalled());
+			expect(requestMetadata?.method).toBe('POST');
+			expect(requestMetadata?.origin).toBe(window.location.origin);
+			expect(requestMetadata?.referer).not.toContain(token);
 		} finally {
-			frame.remove();
 			await commands.stopFixtureServer();
 		}
 	});

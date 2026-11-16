@@ -1,4 +1,4 @@
-import { error, redirect } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
 import { localizeHref } from '$lib/paraglide/runtime';
 import { beginOAuthLogin } from '$lib/server/oauth-login';
 import { SESSION_COOKIE } from '$lib/server/session';
@@ -12,5 +12,7 @@ export const POST: RequestHandler = ({ request, url, cookies, locals }) => {
 		previousSubject: locals.identityState === 'unavailable' ? null : locals.principal?.subject
 	});
 	cookies.delete(SESSION_COOKIE, { path: '/' });
-	redirect(303, destination);
+	// A native form redirect to the provider is blocked by form-action 'self'.
+	// Return the destination for a separate top-level navigation instead.
+	return json({ authorizeUrl: destination }, { headers: { 'cache-control': 'private, no-store' } });
 };

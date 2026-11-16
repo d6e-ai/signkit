@@ -76,8 +76,10 @@ an invitation from an administrator. Neither offers token entry.
 
 The confirmation shows only the caller's own verified email from private, non-cacheable page data.
 It never resolves or exposes the invitation's target email to an unauthenticated visitor. An explicit
-same-origin `POST /auth/switch-account` ends the local SignKit session and starts a fresh OAuth flow
-with account selection, retaining the invitation in the same tab. It does not log out other services
+same-origin `POST /auth/switch-account` ends the local SignKit session and returns a private,
+non-cacheable authorization URL for a fresh OAuth flow with account selection. The browser then
+navigates to that URL separately, retaining the invitation in the same tab. This keeps the
+`form-action 'self'` policy intact. It does not log out other services
 or provider accounts. The confirmation uses a same-origin referrer policy so native same-origin POSTs
 retain their request origin while cross-origin navigation receives no referrer. A single-account provider must render fresh credential entry for this request
 rather than silently reuse its current account. Cancelled/failed authorization returns to the invitation
