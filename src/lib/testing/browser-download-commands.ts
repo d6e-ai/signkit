@@ -26,6 +26,8 @@ export interface StartFixtureServerOptions {
 	bodyBase64: string;
 	/** Optional specific URL path to bind to (e.g. /api/v1/envelopes/...) */
 	urlPath?: string;
+	/** Echo native browser request metadata instead of a static body. */
+	echoRequest?: boolean;
 }
 
 export interface CaptureDownloadOptions {
@@ -48,6 +50,7 @@ interface FixtureRecord {
 	status: number;
 	headers: Record<string, string>;
 	body: Buffer;
+	echoRequest?: boolean;
 }
 
 const fixtures: Map<string, FixtureRecord> = ((globalThis as Record<string, unknown>)[
@@ -70,7 +73,15 @@ export function testDownloadMiddleware(): Plugin {
 				const fixture = fixtures.get(full) ?? fixtures.get(parsed.pathname);
 				if (fixture) {
 					res.writeHead(fixture.status, fixture.headers);
-					res.end(fixture.body);
+					res.end(
+						fixture.echoRequest
+							? JSON.stringify({
+									method: req.method,
+									origin: req.headers.origin ?? null,
+									referer: req.headers.referer ?? null
+								})
+							: fixture.body
+					);
 					return;
 				}
 				next();
@@ -82,11 +93,11 @@ export function testDownloadMiddleware(): Plugin {
 /** Registers a test fixture on the same-origin Vite dev server. */
 export const startFixtureServer: BrowserCommand<[StartFixtureServerOptions]> = async (
 	_browserContext,
-	{ status, headers, bodyBase64, urlPath }
+	{ status, headers, bodyBase64, urlPath, echoRequest }
 ) => {
 	const body = Buffer.from(bodyBase64, 'base64');
 	const path = urlPath ?? `/__test_download__/fixture-${++fixtureCounter}`;
-	fixtures.set(path, { status, headers, body });
+	fixtures.set(path, { status, headers, body, echoRequest });
 	return { url: path };
 };
 

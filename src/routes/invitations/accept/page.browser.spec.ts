@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { page } from 'vitest/browser';
+import { page, commands } from 'vitest/browser';
 import { getLocale, overwriteGetLocale } from '$lib/paraglide/runtime';
 import { clearInvitationLink } from '$lib/client/invitation-link';
 import InvitationPage from './+page.svelte';
@@ -13,7 +13,11 @@ const { gotoMock, invalidateMock, appPage } = vi.hoisted(() => ({
 	invalidateMock: vi.fn(),
 	appPage: { url: new URL('https://signkit.example/en/invitations/accept') }
 }));
-vi.mock('$app/navigation', () => ({ goto: gotoMock, invalidateAll: invalidateMock }));
+vi.mock('$app/navigation', () => ({
+	goto: gotoMock,
+	invalidateAll: invalidateMock,
+	afterNavigate: vi.fn()
+}));
 vi.mock('$app/state', () => ({
 	page: appPage
 }));
@@ -156,6 +160,85 @@ describe('invitation email landing page', () => {
 		expect(new Headers(posts[1][1]!.headers).get('idempotency-key')).not.toBe(
 			new Headers(posts[0][1]!.headers).get('idempotency-key')
 		);
+	});
+	it('submits the real native switch form with a same-origin Origin header', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => json({ member: null, bootstrapped: true }))
+		);
+		const screen = await renderPage();
+		const button = screen.getByRole('button', { name: 'Use another account', exact: true });
+		await expect.element(button).toBeVisible();
+		const { url } = await commands.startFixtureServer({
+			status: 200,
+			headers: { 'content-type': 'text/plain' },
+			bodyBase64: '',
+			echoRequest: true
+		});
+		const frame = document.createElement('iframe');
+		frame.name = 'invitation-form-result';
+		frame.hidden = true;
+		document.body.appendChild(frame);
+		const form = button.element().closest('form')!;
+		form.action = url;
+		form.target = frame.name;
+		try {
+			await button.click();
+			await expect.poll(() => frame.contentDocument?.body.textContent).toContain('origin');
+			const result = JSON.parse(frame.contentDocument!.body.textContent!);
+			expect(result.method).toBe('POST');
+			expect(result.origin).toBe(window.location.origin);
+			expect(result.referer).not.toContain(token);
+		} finally {
+			frame.remove();
+			await commands.stopFixtureServer();
+		}
+	});
+	it('replaces a handoff on hash-only navigation and clears invalid fragments in the same page', async () => {
+		const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+			init?.method === 'POST'
+				? json({ invitation: {}, member: {} })
+				: json({ member: null, bootstrapped: true })
+		);
+		vi.stubGlobal('fetch', fetchMock);
+		const screen = await renderPage();
+		await expect
+			.element(screen.getByRole('button', { name: 'Accept invitation', exact: true }))
+			.toBeVisible();
+		const nextToken = `ski1_${'b'.repeat(43)}`;
+		window.location.hash = `token=${nextToken}`;
+		await expect.poll(() => window.location.hash).toBe('');
+		await screen.getByRole('button', { name: 'Accept invitation', exact: true }).click();
+		const post = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')!;
+		expect(JSON.parse(post[1]!.body as string)).toEqual({ token: nextToken });
+		window.location.hash = 'token=invalid';
+		await expect
+			.element(screen.getByText('Open your invitation email', { exact: true }))
+			.toBeVisible();
+		expect(window.sessionStorage.getItem('signkit:pending-invitation')).toBeNull();
+	});
+	it('does not discard a new handoff when acceptance of the previous one completes', async () => {
+		let finish: (response: Response) => void = () => {};
+		const pending = new Promise<Response>((resolve) => {
+			finish = resolve;
+		});
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+				init?.method === 'POST' ? pending : json({ member: null, bootstrapped: true })
+			)
+		);
+		const screen = await renderPage();
+		await screen.getByRole('button', { name: 'Accept invitation', exact: true }).click();
+		const nextToken = `ski1_${'c'.repeat(43)}`;
+		window.location.hash = `token=${nextToken}`;
+		await expect.poll(() => window.location.hash).toBe('');
+		finish(json({ invitation: {}, member: {} }));
+		await expect
+			.element(screen.getByRole('button', { name: 'Accept invitation', exact: true }))
+			.toBeVisible();
+		expect(gotoMock).not.toHaveBeenCalled();
+		expect(window.sessionStorage.getItem('signkit:pending-invitation')).toContain(nextToken);
 	});
 	it('retains a retryable link and command identity after a rejected acceptance', async () => {
 		const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
