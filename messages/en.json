@@ -164,6 +164,8 @@
 	"settings_invitation_accept_error": "This invitation could not be accepted. Check that you are using the invited account, or ask your administrator for a new invitation.",
 	"settings_invitation_current_account": "Signed in as",
 	"settings_invitation_switch_account": "Use another account",
+	"settings_invitation_switch_pending": "Opening sign-in…",
+	"settings_invitation_switch_error": "Could not open sign-in. Try again.",
 	"settings_invitation_account_unavailable": "Sign in again to confirm your account.",
 	"settings_invitation_account_changed": "Your account changed in another tab. Check the account shown here before continuing.",
 	"settings_invitation_same_account": "You signed in with the same account. You can choose another account below.",

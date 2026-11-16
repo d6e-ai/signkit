@@ -99,11 +99,12 @@ describe('invitation account recovery', () => {
 			[SESSION_COOKIE]: 'old',
 			[OAUTH_STATE_COOKIE]: 'stale'
 		});
-		const r = await outcome(() =>
-			switchAccount(e as unknown as Parameters<typeof switchAccount>[0])
-		);
-		expect(r.status).toBe(303);
-		const dest = new URL(r.location!);
+		const r = await switchAccount(e as unknown as Parameters<typeof switchAccount>[0]);
+		expect(r.status).toBe(200);
+		expect(r.headers.get('cache-control')).toBe('private, no-store');
+		expect(r.headers.has('location')).toBe(false);
+		const { authorizeUrl } = (await r.json()) as { authorizeUrl: string };
+		const dest = new URL(authorizeUrl);
 		expect(dest.searchParams.get('prompt')).toBe('select_account');
 		expect(dest.searchParams.get('state')).not.toBe('stale');
 		expect(e.deleted).toContain(SESSION_COOKIE);
@@ -115,8 +116,8 @@ describe('invitation account recovery', () => {
 			sameSite: 'lax',
 			maxAge: 600
 		});
-		expect(r.location).not.toContain('wrong-subject');
-		expect(r.location).not.toContain('ski1_');
+		expect(authorizeUrl).not.toContain('wrong-subject');
+		expect(authorizeUrl).not.toContain('ski1_');
 	});
 	it('normal login clears stale return/switch hints and never accepts a foreign return path', async () => {
 		const e = event('/auth/login?return=%2F%2Fforeign.example&prompt=invalid', {
