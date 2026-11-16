@@ -621,27 +621,7 @@ export class D1InstanceStore implements InstanceStore {
 			return { outcome: 'listed', page: { items: [], nextCursor: null } };
 		}
 
-		const pageStmt: D1PreparedStatement =
-			query.cursor === null
-				? this.#database
-						.prepare(
-							`SELECT ${INVITATION_METADATA_COLUMNS}
-							 FROM instance_invitation
-							 ORDER BY created_at DESC, id DESC
-							 LIMIT ?`
-						)
-						.bind(fetchLimit)
-				: this.#database
-						.prepare(
-							`SELECT ${INVITATION_METADATA_COLUMNS}
-							 FROM instance_invitation
-							 WHERE (created_at, id) < (
-								 SELECT created_at, id FROM instance_invitation WHERE id = ? LIMIT 1
-							 )
-							 ORDER BY created_at DESC, id DESC
-							 LIMIT ?`
-						)
-						.bind(query.cursor, fetchLimit);
+		const pageStmt: D1PreparedStatement = this.#prepareInvitationListPage(query, fetchLimit);
 
 		const results: D1Result<MemberRoleStatusRow | InvitationMetadataRow>[] =
 			await this.#database.batch<MemberRoleStatusRow | InvitationMetadataRow>([
@@ -1647,6 +1627,37 @@ export class D1InstanceStore implements InstanceStore {
 			)
 			.bind(userId)
 			.first<MemberRow>();
+	}
+
+	#prepareInvitationListPage(
+		query: InstanceInvitationListQuery,
+		fetchLimit: number
+	): D1PreparedStatement {
+		const predicates: string[] = [];
+		const bindings: unknown[] = [];
+		if (query.view === 'active') {
+			predicates.push("status = 'pending' AND expires_at > ?");
+			// Lexical comparison, not datetime(): both sides are canonical UTC
+			// millisecond ISO-8601 strings, so string ordering matches chronological
+			// ordering exactly, whereas datetime() truncates to whole seconds.
+			bindings.push(new Date().toISOString());
+		}
+		if (query.cursor !== null) {
+			predicates.push(`(created_at, id) < (
+								 SELECT created_at, id FROM instance_invitation WHERE id = ? LIMIT 1
+							 )`);
+			bindings.push(query.cursor);
+		}
+		const whereClause: string =
+			predicates.length === 0 ? '' : `WHERE ${predicates.join(' AND ')}\n\t\t\t\t\t\t\t `;
+		return this.#database
+			.prepare(
+				`SELECT ${INVITATION_METADATA_COLUMNS}
+							 FROM instance_invitation
+							 ${whereClause}ORDER BY created_at DESC, id DESC
+							 LIMIT ?`
+			)
+			.bind(...bindings, fetchLimit);
 	}
 }
 

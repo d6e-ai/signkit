@@ -65,6 +65,10 @@ export interface ListPaginationParams {
 	limit?: number;
 }
 
+export interface ListInvitationsParams extends ListPaginationParams {
+	view?: 'active';
+}
+
 export interface SetMemberRoleInput {
 	userId: string;
 	role: InstanceMemberRole;
@@ -195,7 +199,7 @@ export class InstanceManagementClient {
 		return this.newIdempotencyKeyFn();
 	}
 
-	private buildUrl(path: string, params?: ListPaginationParams): string {
+	private buildUrl(path: string, params?: ListInvitationsParams): string {
 		const fullPath = `${this.baseUrl}${path}`;
 		if (!params) return fullPath;
 		const searchParams = new URLSearchParams();
@@ -204,6 +208,9 @@ export class InstanceManagementClient {
 		}
 		if (params.limit !== undefined && params.limit !== null) {
 			searchParams.set('limit', String(params.limit));
+		}
+		if (params.view === 'active') {
+			searchParams.set('view', 'active');
 		}
 		const query = searchParams.toString();
 		return query ? `${fullPath}?${query}` : fullPath;
@@ -445,7 +452,7 @@ export class InstanceManagementClient {
 	}
 
 	async listInvitations(
-		params?: ListPaginationParams,
+		params?: ListInvitationsParams,
 		options?: RequestOptions
 	): Promise<ListInstanceInvitationsResponse> {
 		const url = this.buildUrl('/api/v1/instance/invitations', params);

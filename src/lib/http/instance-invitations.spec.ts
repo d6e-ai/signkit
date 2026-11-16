@@ -656,6 +656,32 @@ describe('instance invitation HTTP handlers', () => {
 			expect(app.list).toHaveBeenCalledWith({ id: 'user-1' }, { cursor: INVITATION_ID, limit: 5 });
 		});
 
+		it('forwards view=active with the default history query otherwise unchanged', async () => {
+			const app: InstanceInvitationApplicationPort = application();
+			const response: Response = await invoke(
+				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).list,
+				event({ pathname: CREATE_PATH, search: `?view=active&cursor=${INVITATION_ID}` })
+			);
+			expect(response.status).toBe(200);
+			expect(app.list).toHaveBeenCalledWith(
+				{ id: 'user-1' },
+				{ cursor: INVITATION_ID, limit: 25, view: 'active' }
+			);
+		});
+
+		it('rejects an unknown list view without calling the application', async () => {
+			const app: InstanceInvitationApplicationPort = application();
+			const response: Response = await invoke(
+				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).list,
+				event({ pathname: CREATE_PATH, search: '?view=history' })
+			);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({
+				type: 'urn:signkit:problem:validation-failed'
+			});
+			expect(app.list).not.toHaveBeenCalled();
+		});
+
 		it.each([
 			['forbidden', 403, 'urn:signkit:problem:instance-invitation-forbidden'],
 			['member_suspended', 403, 'urn:signkit:problem:instance-invitation-member-suspended']

@@ -3,6 +3,7 @@ import {
 	DEFAULT_INSTANCE_INVITATION_LIST_LIMIT,
 	isInstanceIdempotencyKey,
 	isInstanceInvitationId,
+	isInstanceInvitationListView,
 	isInstanceMemberRole,
 	resolveInstanceInvitationExpiresAt,
 	type AcceptInstanceInvitationCommand,
@@ -11,6 +12,7 @@ import {
 	type CreateInstanceInvitationStoreResult,
 	type InstanceActor,
 	type InstanceInvitationListQuery,
+	type InstanceInvitationListView,
 	type InstanceInvitationMetadata,
 	type InstanceMemberMetadata,
 	type InstanceMemberRole,
@@ -87,6 +89,7 @@ export type CreateInstanceInvitationResult =
 export interface ListInstanceInvitationsInput {
 	cursor?: string | null;
 	limit?: number;
+	view?: InstanceInvitationListView;
 }
 
 export type ListInstanceInvitationsResult = ListInstanceInvitationsStoreResult;
@@ -378,9 +381,11 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 				: DEFAULT_INSTANCE_INVITATION_LIST_LIMIT;
 		const cursor: string | null = query?.cursor ?? null;
 
+		const view: InstanceInvitationListView | undefined = normalizeListView(query?.view);
 		const listQuery: InstanceInvitationListQuery = {
 			cursor,
-			limit
+			limit,
+			...(view === undefined ? {} : { view })
 		};
 
 		return await this.store.listInstanceInvitations(commandActor, listQuery);
@@ -583,4 +588,12 @@ function assertInvitationId(id: unknown): string {
 		throw new InvalidInstanceInvitationRequestError('Invalid instance invitation identifier.');
 	}
 	return id;
+}
+
+function normalizeListView(view: unknown): InstanceInvitationListView | undefined {
+	if (view === undefined) return undefined;
+	if (!isInstanceInvitationListView(view)) {
+		throw new InvalidInstanceInvitationRequestError('Invalid instance invitation list view.');
+	}
+	return view;
 }

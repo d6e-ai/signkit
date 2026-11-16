@@ -13,6 +13,7 @@ import {
 import {
 	DEFAULT_INSTANCE_INVITATION_LIST_LIMIT,
 	MAX_INSTANCE_INVITATION_LIST_LIMIT,
+	type InstanceInvitationListView,
 	type InstanceMemberMetadata,
 	type InstanceMemberRole
 } from '$lib/ports/instance-store';
@@ -71,7 +72,11 @@ const createInstanceInvitationSchema: ZodType<{
 // cursor is forwarded opaquely and fails closed there (an empty page, or
 // forbidden/member_suspended for an actor who cannot list at all) rather
 // than being rejected here on shape.
-const listInstanceInvitationsSchema: ZodType<{ cursor?: string; limit: number }> = z
+const listInstanceInvitationsSchema: ZodType<{
+	cursor?: string;
+	limit: number;
+	view?: InstanceInvitationListView;
+}> = z
 	.object({
 		cursor: z.string().min(1).max(200).optional(),
 		limit: z.coerce
@@ -79,7 +84,8 @@ const listInstanceInvitationsSchema: ZodType<{ cursor?: string; limit: number }>
 			.int()
 			.min(1)
 			.max(MAX_INSTANCE_INVITATION_LIST_LIMIT)
-			.default(DEFAULT_INSTANCE_INVITATION_LIST_LIMIT)
+			.default(DEFAULT_INSTANCE_INVITATION_LIST_LIMIT),
+		view: z.enum(['active']).optional()
 	})
 	.strict();
 
@@ -420,7 +426,8 @@ export function createInstanceInvitationHttpHandlers(
 		try {
 			const result: ListInstanceInvitationsResult = await application.list(actorOf(authorized), {
 				cursor: query.data.cursor ?? null,
-				limit: query.data.limit
+				limit: query.data.limit,
+				...(query.data.view === 'active' ? { view: 'active' as const } : {})
 			});
 			if (result.outcome === 'forbidden') return forbidden(url.pathname);
 			if (result.outcome === 'member_suspended') return memberSuspended(url.pathname);

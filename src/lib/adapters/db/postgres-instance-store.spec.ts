@@ -971,6 +971,100 @@ describe('PostgresInstanceStore', () => {
 			// Only member check was executed, no invitation query
 			expect(scripted.queries).toHaveLength(1);
 		});
+
+		it('filters pending unexpired rows in SQL before LIMIT for view=active', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date('2026-11-16T12:00:00.000Z'));
+			try {
+				const scripted = new ScriptedPostgres([
+					[{ role: 'owner', status: 'active' }],
+					[]
+				]);
+
+				const result: ListInstanceInvitationsStoreResult = await store(
+					scripted
+				).listInstanceInvitations(
+					{ type: 'user', id: OWNER_ID },
+					{ cursor: null, limit: 10, view: 'active' }
+				);
+				expect(result.outcome).toBe('listed');
+				const pageSql: string = scripted.texts()[1];
+				expect(pageSql).toContain("status = 'pending' AND expires_at > ?::timestamptz");
+				expect(pageSql.indexOf("status = 'pending'")).toBeLessThan(pageSql.indexOf('LIMIT ?'));
+				expect(scripted.queries[1].values).toEqual(['2026-11-16T12:00:00.000Z', 11]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('keeps cursor lookup unfiltered so a history cursor cannot hide later active rows', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date('2026-11-16T12:00:00.000Z'));
+			try {
+				const scripted = new ScriptedPostgres([
+					[{ role: 'owner', status: 'active' }],
+					[]
+				]);
+				const cursor: string = INVITATION_ID;
+
+				await store(scripted).listInstanceInvitations(
+					{ type: 'user', id: OWNER_ID },
+					{ cursor, limit: 10, view: 'active' }
+				);
+				const pageSql: string = scripted.texts()[1];
+				expect(pageSql).toContain("status = 'pending' AND expires_at > ?::timestamptz");
+				expect(pageSql).toContain(
+					'SELECT created_at, id FROM instance_invitation WHERE id = ? LIMIT 1'
+				);
+				expect(pageSql).not.toContain("id = ? AND status = 'pending'");
+				expect(scripted.queries[1].values).toEqual(['2026-11-16T12:00:00.000Z', cursor, 11]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('does not filter history list SQL when view is omitted', async () => {
+			const scripted = new ScriptedPostgres([
+				[{ role: 'owner', status: 'active' }],
+				[]
+			]);
+
+			await store(scripted).listInstanceInvitations(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: null, limit: 10 }
+			);
+			expect(scripted.texts()[1]).not.toContain("status = 'pending'");
+			expect(scripted.queries).toHaveLength(2);
+		});
+
+		it('authorizes malformed active-view cursors before any invitation query', async () => {
+			const scripted = new ScriptedPostgres([[{ role: 'owner', status: 'active' }]]);
+
+			const result: ListInstanceInvitationsStoreResult = await store(
+				scripted
+			).listInstanceInvitations(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: 'malformed-cursor-not-uuid', limit: 10, view: 'active' }
+			);
+			expect(result).toEqual({
+				outcome: 'listed',
+				page: { items: [], nextCursor: null }
+			});
+			expect(scripted.queries).toHaveLength(1);
+		});
+
+		it('refuses view=active listing when caller is member role', async () => {
+			const scripted = new ScriptedPostgres([[{ role: 'member', status: 'active' }]]);
+
+			const result: ListInstanceInvitationsStoreResult = await store(
+				scripted
+			).listInstanceInvitations(
+				{ type: 'user', id: MEMBER_ID },
+				{ cursor: null, limit: 10, view: 'active' }
+			);
+			expect(result).toEqual({ outcome: 'forbidden' });
+			expect(scripted.queries).toHaveLength(1);
+		});
 	});
 
 	describe('acceptInstanceInvitation', () => {

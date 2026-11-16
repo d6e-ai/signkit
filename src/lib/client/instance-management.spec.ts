@@ -381,6 +381,18 @@ describe('InstanceManagementClient', () => {
 				expect.objectContaining({ method: 'GET' })
 			);
 			expect(res).toEqual(mockData);
+
+			await client.listInvitations({ view: 'active', cursor: 'inv-cursor' });
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'/api/v1/instance/invitations?cursor=inv-cursor&view=active',
+				expect.objectContaining({ method: 'GET' })
+			);
+
+			await client.listInvitations();
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'/api/v1/instance/invitations',
+				expect.objectContaining({ method: 'GET' })
+			);
 		});
 
 		it('POST revoke invitation', async () => {

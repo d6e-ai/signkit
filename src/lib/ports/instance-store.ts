@@ -155,9 +155,19 @@ export type CreateInstanceInvitationStoreResult =
 	| { outcome: 'member_suspended' }
 	| { outcome: 'integrity_error' };
 
+/**
+ * Optional invitation list visibility. Omitted or unknown callers keep the
+ * historical page (every stored invitation). `active` is pending and still
+ * unexpired at authoritative server now; adapters apply that predicate in SQL
+ * before keyset pagination and LIMIT. Cursors stay opaque invitation IDs and
+ * are resolved by id alone so a history cursor cannot hide later active rows.
+ */
+export type InstanceInvitationListView = 'active';
+
 export interface InstanceInvitationListQuery {
 	cursor: string | null;
 	limit: number;
+	view?: InstanceInvitationListView;
 }
 
 export interface InstanceInvitationListPage {
@@ -473,6 +483,10 @@ export function isInstanceInvitationId(value: string): boolean {
 
 export function isInstanceInvitationStatus(value: unknown): value is InstanceInvitationStatus {
 	return value === 'pending' || value === 'accepted' || value === 'revoked';
+}
+
+export function isInstanceInvitationListView(value: unknown): value is InstanceInvitationListView {
+	return value === 'active';
 }
 
 export function boundInstanceInvitationListLimit(limit: number): number {

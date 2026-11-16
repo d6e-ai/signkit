@@ -781,6 +781,26 @@ describe('InstanceInvitationApplication', () => {
 
 			await app.list(ACTOR, { limit: 50 });
 			expect(store.listCalls[5].query.limit).toBe(50);
+
+			await app.list(ACTOR, { view: 'active', cursor: 'cursor-2' });
+			expect(store.listCalls[6].query).toEqual({
+				cursor: 'cursor-2',
+				limit: DEFAULT_INSTANCE_INVITATION_LIST_LIMIT,
+				view: 'active'
+			});
+		});
+
+		it('omits view from the store query unless it is active', async () => {
+			const store = new FakeInstanceStore();
+			const app = createTestApp(store);
+
+			await app.list(ACTOR, {});
+			expect(store.listCalls[0].query).not.toHaveProperty('view');
+
+			await expect(app.list(ACTOR, { view: 'history' as 'active' })).rejects.toThrow(
+				InvalidInstanceInvitationRequestError
+			);
+			expect(store.listCalls).toHaveLength(1);
 		});
 
 		it('forwards store results for list', async () => {
