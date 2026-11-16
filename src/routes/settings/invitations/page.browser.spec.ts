@@ -269,11 +269,7 @@ describe('settings invitations page in the browser', () => {
 		await dialog.getByLabelText('Email address').fill('alice@example.com');
 		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
 		await expect
-			.element(
-				screen.getByText(
-					'The invitation email for alice@example.com is queued for background delivery.'
-				)
-			)
+			.element(screen.getByText('Sending an invitation email to alice@example.com.'))
 			.toBeVisible();
 		expect(screen.getByText(/ski1_/).query()).toBeNull();
 		await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument();
@@ -282,16 +278,10 @@ describe('settings invitations page in the browser', () => {
 		await dialog.getByLabelText('Email address').fill('bob@example.com');
 		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
 		await expect
-			.element(
-				screen.getByText(
-					'The invitation email for bob@example.com is queued for background delivery.'
-				)
-			)
+			.element(screen.getByText('Sending an invitation email to bob@example.com.'))
 			.toBeVisible();
 		expect(
-			screen
-				.getByText('The invitation email for alice@example.com is queued for background delivery.')
-				.query()
+			screen.getByText('Sending an invitation email to alice@example.com.').query()
 		).toBeNull();
 	});
 
@@ -386,11 +376,7 @@ describe('settings invitations page in the browser', () => {
 			)
 		);
 		await expect
-			.element(
-				screen.getByText(
-					'The invitation email for pending@example.com is queued for background delivery.'
-				)
-			)
+			.element(screen.getByText('Sending an invitation email to pending@example.com.'))
 			.toBeVisible();
 	});
 });

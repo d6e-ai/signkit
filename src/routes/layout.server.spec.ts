@@ -96,6 +96,25 @@ describe('root layout access gate', () => {
 		expect(resolveInstanceApplication).not.toHaveBeenCalled();
 	});
 
+	it.each(['/invitations/accept', '/en/invitations/accept', '/ja/invitations/accept/'])(
+		'lets the email landing page %s capture its fragment before authentication',
+		async (pathname) => {
+			const data = await load(event({ pathname, appLocals: locals('anonymous') }));
+			expect(data).toEqual({});
+			expect(resolveInstanceApplication).not.toHaveBeenCalled();
+		}
+	);
+
+	it.each(['/invitations', '/invitations/accept/extra', '/invitations/accepted'])(
+		'keeps other invitation-like path %s behind authentication',
+		async (pathname) => {
+			const redirected = await captureRedirect(
+				load(event({ pathname, appLocals: locals('anonymous') }))
+			);
+			expect(redirected.location).toContain('/auth/login?return=');
+		}
+	);
+
 	/**
 	 * The signed-out surface must render for an anonymous caller without
 	 * redirecting into /auth/login: it is exactly where POST /auth/logout sends

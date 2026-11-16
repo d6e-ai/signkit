@@ -85,7 +85,11 @@ describe('InstanceInvitationDeliveryService', () => {
 			from: { email: 'noreply@example.com', name: 'SignKit' }
 		});
 		expect(messages[0].text).toContain(TOKEN);
-		expect(messages[0].html).toContain('https://signkit.example/ja/settings');
+		expect(messages[0].html).toContain(
+			`https://signkit.example/ja/invitations/accept#token=${TOKEN}`
+		);
+		expect(messages[0].text).not.toContain('トークンを貼り付け');
+		expect(messages[0].html).not.toContain('ワンタイム招待トークン');
 		expect(complete).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: DELIVERY_ID }));
 	});
 

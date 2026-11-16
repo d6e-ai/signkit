@@ -2,6 +2,7 @@
 	import type { MemberDisplay } from '$lib/ports/instance-display-store';
 	import * as Avatar from '$lib/components/ui/avatar';
 	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
 	import * as m from '$lib/paraglide/messages';
 	import { getLocale } from '$lib/paraglide/runtime';
 
@@ -9,12 +10,14 @@
 		userId,
 		display,
 		onselect,
-		detailed = false
+		detailed = false,
+		isSelf = false
 	}: {
 		userId: string;
 		display: MemberDisplay | undefined;
 		onselect?: () => void;
 		detailed?: boolean;
+		isSelf?: boolean;
 	} = $props();
 	const available = $derived(display?.state === 'available' ? display : null);
 	const label = $derived(available?.name ?? userId);
@@ -26,15 +29,18 @@
 		<Avatar.Root aria-hidden="true"><Avatar.Fallback>{initials}</Avatar.Fallback></Avatar.Root>
 	{/if}
 	<div class="flex min-w-0 flex-1 flex-col items-start gap-1">
-		{#if onselect}
-			<Button
-				variant="link"
-				class="h-auto min-w-0 justify-start p-0 whitespace-normal"
-				onclick={onselect}
-				aria-label={m.settings_display_details_for({ name: label })}
-				><bdi dir="auto" class="[overflow-wrap:anywhere]">{label}</bdi></Button
-			>
-		{:else}<p class="[overflow-wrap:anywhere]"><bdi dir="auto">{label}</bdi></p>{/if}
+		<div class="flex w-full min-w-0 items-baseline gap-2">
+			{#if onselect}
+				<Button
+					variant="link"
+					class="h-auto min-w-0 shrink justify-start p-0 whitespace-normal"
+					onclick={onselect}
+					aria-label={m.settings_display_details_for({ name: label })}
+					><bdi dir="auto" class="min-w-0 [overflow-wrap:anywhere]">{label}</bdi></Button
+				>
+			{:else}<p class="min-w-0 [overflow-wrap:anywhere]"><bdi dir="auto">{label}</bdi></p>{/if}
+			{#if isSelf}<Badge variant="secondary">{m.settings_members_you()}</Badge>{/if}
+		</div>
 		{#if available}
 			<p class="text-xs [overflow-wrap:anywhere] text-muted-foreground">
 				<bdi dir="auto">{available.email}</bdi>
