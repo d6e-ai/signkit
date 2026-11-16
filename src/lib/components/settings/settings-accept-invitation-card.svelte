@@ -49,7 +49,7 @@
 	}
 </script>
 
-<Card.Root class="mx-auto max-w-lg">
+<Card.Root class="mx-auto w-full max-w-lg">
 	<Card.Header>
 		<Card.Title>{m.settings_invitation_accept_title()}</Card.Title>
 		<Card.Description>{m.settings_invitation_accept_description()}</Card.Description>

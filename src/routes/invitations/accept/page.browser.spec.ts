@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+import { page } from 'vitest/browser';
 import { getLocale, overwriteGetLocale } from '$lib/paraglide/runtime';
 import { clearInvitationLink } from '$lib/client/invitation-link';
 import InvitationPage from './+page.svelte';
@@ -20,7 +21,8 @@ function json(body: unknown, status = 200) {
 function problem(status: number, detail: string) {
 	return json({ type: 'urn:signkit:problem:test', title: 'Error', status, detail }, status);
 }
-beforeEach(() => {
+beforeEach(async () => {
+	await page.viewport(1280, 844);
 	gotoMock.mockReset();
 	overwriteGetLocale(() => 'en');
 	clearInvitationLink(window);
@@ -119,6 +121,49 @@ describe('invitation email landing page', () => {
 		await expect.element(screen.getByRole('link', { name: 'Sign in', exact: true })).toBeVisible();
 		expect(gotoMock).not.toHaveBeenCalled();
 	});
+	it.each([
+		{ width: 1280, hasInvitation: false, signedOut: false },
+		{ width: 390, hasInvitation: false, signedOut: false },
+		{ width: 1280, hasInvitation: true, signedOut: false },
+		{ width: 390, hasInvitation: true, signedOut: false },
+		{ width: 1280, hasInvitation: true, signedOut: true },
+		{ width: 390, hasInvitation: true, signedOut: true }
+	])(
+		'keeps the invitation card readable at $width pixels (link: $hasInvitation)',
+		async ({ width, hasInvitation, signedOut }) => {
+			await page.viewport(width, 844);
+			overwriteGetLocale(() => 'ja');
+			if (!hasInvitation)
+				window.history.replaceState(
+					window.history.state,
+					'',
+					window.location.pathname + window.location.search
+				);
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(async () =>
+					signedOut
+						? problem(401, 'Authentication required')
+						: json({ member: null, bootstrapped: true })
+				)
+			);
+			const screen = await render(InvitationPage);
+			const description = screen.getByText(
+				signedOut
+					? 'ワークスペース管理にアクセスするにはログインしてください。'
+					: hasInvitation
+						? 'このワークスペースに参加します。招待メールが届いたアカウントでログインしていることを確認してください。'
+						: '管理者に招待メールの送信を依頼してください。'
+			);
+			await expect.element(description).toBeVisible();
+			const card = description.element().closest('[data-slot="card"]')!;
+			const bounds = card.getBoundingClientRect();
+			expect(bounds.width).toBeGreaterThanOrEqual(Math.min(400, width - 64));
+			expect(bounds.right).toBeLessThanOrEqual(width);
+			expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
+			expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+		}
+	);
 	it.each(['', '#token=invalid'])(
 		'shows only an administrator notice for a missing or invalid link %s',
 		async (hash) => {

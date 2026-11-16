@@ -31,7 +31,7 @@
 		<p class="text-sm font-medium">{m.nav_loading()}</p>
 	</div>
 {:else if ctx.authRequired}
-	<Card.Root class="mx-auto max-w-md">
+	<Card.Root class="mx-auto w-full max-w-md">
 		<Card.Header>
 			<div
 				class="mb-2 flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary"
