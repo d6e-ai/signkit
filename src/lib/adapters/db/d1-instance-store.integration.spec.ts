@@ -112,6 +112,57 @@ function insertMember(
 	`);
 }
 
+const MS_DAY: number = 24 * 60 * 60 * 1000;
+
+function isoFromMs(ms: number): string {
+	return new Date(ms).toISOString();
+}
+
+function listInvitationId(n: number): string {
+	return `01900000-0000-7000-8000-${n.toString(16).padStart(12, '0')}`;
+}
+
+function hexDigest(n: number, fill: string): string {
+	return n.toString(16).padStart(64, fill);
+}
+
+function insertInvitationRow(
+	sqlite: DatabaseSync,
+	input: {
+		id: string;
+		status: 'pending' | 'accepted' | 'revoked';
+		createdAt: string;
+		expiresAt: string;
+		tokenHash: string;
+		emailBinding: string;
+		acceptedAt?: string;
+		acceptedByUserId?: string;
+		revokedAt?: string;
+		revokedByUserId?: string;
+	}
+): void {
+	sqlite
+		.prepare(
+			`INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id,
+				created_at, expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id
+			) VALUES (?, 'member', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(
+			input.id,
+			input.status,
+			input.tokenHash,
+			input.emailBinding,
+			ACTOR_ID,
+			input.createdAt,
+			input.expiresAt,
+			input.acceptedAt ?? null,
+			input.acceptedByUserId ?? null,
+			input.revokedAt ?? null,
+			input.revokedByUserId ?? null
+		);
+}
+
 interface Fixture {
 	sqlite: DatabaseSync;
 	store: D1InstanceStore;
@@ -1209,6 +1260,215 @@ describe('D1InstanceStore', () => {
 				expect(item.email_binding).toBeUndefined();
 				expect(item.emailBinding).toBeUndefined();
 				expect(item.email).toBeUndefined();
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('keeps omitted view as full history while view=active filters mixed states in SQL', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				insertMember(sqlite, 'list-acceptor-1');
+				const nowMs: number = Date.now();
+				const activeCreatedAt: string = isoFromMs(nowMs - 6 * MS_DAY);
+				const activeExpiresAt: string = isoFromMs(nowMs - 6 * MS_DAY + 7 * MS_DAY - 1000);
+				const expiredCreatedAt: string = isoFromMs(nowMs - 10 * MS_DAY);
+				const expiredExpiresAt: string = isoFromMs(nowMs - 10 * MS_DAY + 7 * MS_DAY - 1000);
+				const revokedCreatedAt: string = isoFromMs(nowMs - 2 * MS_DAY);
+				const revokedExpiresAt: string = isoFromMs(nowMs - 2 * MS_DAY + 7 * MS_DAY - 1000);
+				const acceptedCreatedAt: string = isoFromMs(nowMs - 3 * MS_DAY);
+				const acceptedExpiresAt: string = isoFromMs(nowMs - 3 * MS_DAY + 7 * MS_DAY - 1000);
+				const activeId: string = listInvitationId(1);
+				const expiredId: string = listInvitationId(2);
+				const revokedId: string = listInvitationId(3);
+				const acceptedId: string = listInvitationId(4);
+
+				insertInvitationRow(sqlite, {
+					id: activeId,
+					status: 'pending',
+					createdAt: activeCreatedAt,
+					expiresAt: activeExpiresAt,
+					tokenHash: hexDigest(1, 'a'),
+					emailBinding: hexDigest(1, 'b')
+				});
+				insertInvitationRow(sqlite, {
+					id: expiredId,
+					status: 'pending',
+					createdAt: expiredCreatedAt,
+					expiresAt: expiredExpiresAt,
+					tokenHash: hexDigest(2, 'a'),
+					emailBinding: hexDigest(2, 'b')
+				});
+				insertInvitationRow(sqlite, {
+					id: revokedId,
+					status: 'revoked',
+					createdAt: revokedCreatedAt,
+					expiresAt: revokedExpiresAt,
+					tokenHash: hexDigest(3, 'a'),
+					emailBinding: hexDigest(3, 'b'),
+					revokedAt: isoFromMs(nowMs - MS_DAY),
+					revokedByUserId: ACTOR_ID
+				});
+				insertInvitationRow(sqlite, {
+					id: acceptedId,
+					status: 'accepted',
+					createdAt: acceptedCreatedAt,
+					expiresAt: acceptedExpiresAt,
+					tokenHash: hexDigest(4, 'a'),
+					emailBinding: hexDigest(4, 'b'),
+					acceptedAt: isoFromMs(nowMs - 2 * MS_DAY),
+					acceptedByUserId: 'list-acceptor-1'
+				});
+
+				const history = await store.listInstanceInvitations(
+					{ type: 'user', id: ACTOR_ID },
+					{ cursor: null, limit: 10 }
+				);
+				expect(history.outcome).toBe('listed');
+				if (history.outcome !== 'listed') return;
+				expect(history.page.items.map((item) => item.id)).toEqual([
+					revokedId,
+					acceptedId,
+					activeId,
+					expiredId
+				]);
+
+				const active = await store.listInstanceInvitations(
+					{ type: 'user', id: ACTOR_ID },
+					{ cursor: null, limit: 10, view: 'active' }
+				);
+				expect(active.outcome).toBe('listed');
+				if (active.outcome !== 'listed') return;
+				expect(active.page.items.map((item) => item.id)).toEqual([activeId]);
+				expect(active.page.items[0]?.status).toBe('pending');
+				expect(active.page.nextCursor).toBeNull();
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('returns an empty active page for history-only invitations and keeps default history', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				insertMember(sqlite, 'list-acceptor-1');
+				const nowMs: number = Date.now();
+				insertInvitationRow(sqlite, {
+					id: listInvitationId(2),
+					status: 'pending',
+					createdAt: isoFromMs(nowMs - 10 * MS_DAY),
+					expiresAt: isoFromMs(nowMs - 10 * MS_DAY + 7 * MS_DAY - 1000),
+					tokenHash: hexDigest(2, 'a'),
+					emailBinding: hexDigest(2, 'b')
+				});
+				insertInvitationRow(sqlite, {
+					id: listInvitationId(3),
+					status: 'revoked',
+					createdAt: isoFromMs(nowMs - 2 * MS_DAY),
+					expiresAt: isoFromMs(nowMs - 2 * MS_DAY + 7 * MS_DAY - 1000),
+					tokenHash: hexDigest(3, 'a'),
+					emailBinding: hexDigest(3, 'b'),
+					revokedAt: isoFromMs(nowMs - MS_DAY),
+					revokedByUserId: ACTOR_ID
+				});
+				insertInvitationRow(sqlite, {
+					id: listInvitationId(4),
+					status: 'accepted',
+					createdAt: isoFromMs(nowMs - 3 * MS_DAY),
+					expiresAt: isoFromMs(nowMs - 3 * MS_DAY + 7 * MS_DAY - 1000),
+					tokenHash: hexDigest(4, 'a'),
+					emailBinding: hexDigest(4, 'b'),
+					acceptedAt: isoFromMs(nowMs - 2 * MS_DAY),
+					acceptedByUserId: 'list-acceptor-1'
+				});
+
+				const history = await store.listInstanceInvitations(
+					{ type: 'user', id: ACTOR_ID },
+					{ cursor: null, limit: 10 }
+				);
+				expect(history.outcome).toBe('listed');
+				if (history.outcome !== 'listed') return;
+				expect(history.page.items).toHaveLength(3);
+
+				const active = await store.listInstanceInvitations(
+					{ type: 'user', id: ACTOR_ID },
+					{ cursor: null, limit: 10, view: 'active' }
+				);
+				expect(active).toEqual({
+					outcome: 'listed',
+					page: { items: [], nextCursor: null }
+				});
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('surfaces an older active invitation on the first active page past many historical rows', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				const nowMs: number = Date.now();
+				const activeId: string = listInvitationId(1);
+				insertInvitationRow(sqlite, {
+					id: activeId,
+					status: 'pending',
+					createdAt: isoFromMs(nowMs - 6 * MS_DAY),
+					expiresAt: isoFromMs(nowMs - 6 * MS_DAY + 7 * MS_DAY - 1000),
+					tokenHash: hexDigest(1, 'a'),
+					emailBinding: hexDigest(1, 'b')
+				});
+				const historicalIds: string[] = [];
+				for (let i = 0; i < 30; i += 1) {
+					const id: string = listInvitationId(16 + i);
+					historicalIds.push(id);
+					insertInvitationRow(sqlite, {
+						id,
+						status: 'revoked',
+						createdAt: isoFromMs(nowMs - (i + 1) * 60 * 60 * 1000),
+						expiresAt: isoFromMs(nowMs - (i + 1) * 60 * 60 * 1000 + 7 * MS_DAY - 1000),
+						tokenHash: hexDigest(16 + i, 'c'),
+						emailBinding: hexDigest(16 + i, 'd'),
+						revokedAt: isoFromMs(nowMs - 30 * 60 * 1000),
+						revokedByUserId: ACTOR_ID
+					});
+				}
+
+				const historyPage = await store.listInstanceInvitations(
+					{ type: 'user', id: ACTOR_ID },
+					{ cursor: null, limit: 10 }
+				);
+				expect(historyPage.outcome).toBe('listed');
+				if (historyPage.outcome !== 'listed') return;
+				expect(historyPage.page.items).toHaveLength(10);
+				expect(historyPage.page.items.map((item) => item.id)).toEqual(historicalIds.slice(0, 10));
+				expect(historyPage.page.items.some((item) => item.id === activeId)).toBe(false);
+				expect(historyPage.page.nextCursor).toBe(historicalIds[9]);
+
+				const activePage = await store.listInstanceInvitations(
+					{ type: 'user', id: ACTOR_ID },
+					{ cursor: null, limit: 10, view: 'active' }
+				);
+				expect(activePage.outcome).toBe('listed');
+				if (activePage.outcome !== 'listed') return;
+				expect(activePage.page.items.map((item) => item.id)).toEqual([activeId]);
+				expect(activePage.page.nextCursor).toBeNull();
+
+				const activeFromHistoryCursor = await store.listInstanceInvitations(
+					{ type: 'user', id: ACTOR_ID },
+					{ cursor: historyPage.page.nextCursor, limit: 10, view: 'active' }
+				);
+				expect(activeFromHistoryCursor.outcome).toBe('listed');
+				if (activeFromHistoryCursor.outcome !== 'listed') return;
+				expect(activeFromHistoryCursor.page.items.map((item) => item.id)).toEqual([activeId]);
+
+				insertMember(sqlite, 'regular-user', 'member');
+				expect(
+					await store.listInstanceInvitations(
+						{ type: 'user', id: 'regular-user' },
+						{ cursor: null, limit: 10, view: 'active' }
+					)
+				).toEqual({ outcome: 'forbidden' });
 			} finally {
 				sqlite.close();
 			}

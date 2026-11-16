@@ -193,7 +193,7 @@ describe('settings invitations page in the browser', () => {
 		expect(revokeButtons.all()).toHaveLength(1);
 	});
 
-	it('renders an unrevoked but past-expiry invitation as Expired and offers no revoke action', async () => {
+	it('omits an unrevoked but past-expiry invitation and offers no revoke action', async () => {
 		const mockFetch = vi.fn().mockImplementation(async (url: RequestInfo | URL) => {
 			const urlStr = String(url);
 			if (urlStr.includes('/api/v1/instance/members/me')) {
@@ -224,7 +224,9 @@ describe('settings invitations page in the browser', () => {
 
 		const screen = await render(InvitationsPage);
 
-		await expect.element(screen.getByText('Expired', { exact: true })).toBeVisible();
+		await expect
+			.element(screen.getByText('No invitations awaiting acceptance.', { exact: true }))
+			.toBeVisible();
 		expect(screen.getByRole('button', { name: 'Revoke' }).query()).toBeNull();
 	});
 

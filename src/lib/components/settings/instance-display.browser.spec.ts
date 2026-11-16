@@ -229,7 +229,7 @@ test('shows a pending target without credential material and keeps the ID in det
 	expect(document.body.textContent).not.toContain('ciphertext-hidden');
 });
 
-test('identifies an accepted member separately from the original invitation target', async () => {
+test('omits accepted identities from invitations because they belong in the members list', async () => {
 	const item = invitation('accepted');
 	vi.stubGlobal(
 		'fetch',
@@ -240,12 +240,9 @@ test('identifies an accepted member separately from the original invitation targ
 		})
 	);
 	const screen = await render(InvitationsPage);
-	await expect.element(screen.getByText('Alex Rivera', { exact: true })).toBeVisible();
-	await screen.getByRole('button', { name: 'Details for Alex Rivera', exact: true }).click();
-	const details = screen.getByRole('dialog');
-	await expect.element(details.getByText('Accepted member', { exact: true })).toBeVisible();
-	await expect.element(details.getByText(target.userId, { exact: true })).toBeVisible();
+	await expect.element(screen.getByText('No invitations awaiting acceptance.')).toBeVisible();
 	expect(document.body.textContent).not.toContain('old-target@example.com');
+	expect(document.body.textContent).not.toContain('Alex Rivera');
 });
 
 test.each(['revoked', 'expired'] as const)(
@@ -257,10 +254,39 @@ test.each(['revoked', 'expired'] as const)(
 			invitationsFetch(item, { state: 'pending', email: 'should-be-hidden@example.com' })
 		);
 		const screen = await render(InvitationsPage);
-		await expect.element(screen.getByText('Recipient address removed')).toBeVisible();
+		await expect.element(screen.getByText('No invitations awaiting acceptance.')).toBeVisible();
 		await expect
 			.element(screen.getByRole('button', { name: 'Revoke', exact: true }))
 			.not.toBeInTheDocument();
 		expect(document.body.textContent).not.toContain('should-be-hidden@example.com');
 	}
 );
+
+test('requests the active view and removes a revoked invitation into the Japanese empty state', async () => {
+	overwriteGetLocale(() => 'ja');
+	const item = invitation();
+	let revoked = false;
+	const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+		const url = String(input);
+		if (url.endsWith('/members/me')) return json({ member: owner, bootstrapped: true });
+		if (init?.method === 'POST') {
+			revoked = true;
+			return json({ invitation: { ...item, status: 'revoked' } });
+		}
+		return json({
+			invitations: [{ ...item, status: revoked ? 'revoked' : 'pending' }],
+			nextCursor: null,
+			invitationDisplays: { [item.id]: { state: 'pending', email: 'active@example.com' } }
+		});
+	});
+	vi.stubGlobal('fetch', fetchMock);
+	const screen = await render(InvitationsPage);
+	await expect.element(screen.getByText('active@example.com', { exact: true })).toBeVisible();
+	const listCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/invitations'))!;
+	expect(new URL(String(listCall[0]), 'https://signkit.example').searchParams.get('view')).toBe(
+		'active'
+	);
+	await screen.getByRole('button', { name: '失効', exact: true }).click();
+	await expect.element(screen.getByText('承諾待ちの招待はありません。')).toBeVisible();
+	expect(screen.getByText('active@example.com', { exact: true }).query()).toBeNull();
+});

@@ -5,10 +5,17 @@ import { getLocale, overwriteGetLocale } from '$lib/paraglide/runtime';
 import { clearInvitationLink } from '$lib/client/invitation-link';
 import InvitationPage from './+page.svelte';
 import '../../layout.css';
-const { gotoMock } = vi.hoisted(() => ({ gotoMock: vi.fn() }));
-vi.mock('$app/navigation', () => ({ goto: gotoMock }));
+const account = { subject: 'signed-in-subject', email: 'current@example.com' };
+const renderPage = (identity = account) =>
+	render(InvitationPage, { data: { signedInAccount: identity } });
+const { gotoMock, invalidateMock, appPage } = vi.hoisted(() => ({
+	gotoMock: vi.fn(),
+	invalidateMock: vi.fn(),
+	appPage: { url: new URL('https://signkit.example/en/invitations/accept') }
+}));
+vi.mock('$app/navigation', () => ({ goto: gotoMock, invalidateAll: invalidateMock }));
 vi.mock('$app/state', () => ({
-	page: { url: new URL('https://signkit.example/en/invitations/accept') }
+	page: appPage
 }));
 const token = `ski1_${'a'.repeat(43)}`;
 const defaultLocale = getLocale;
@@ -24,6 +31,8 @@ function problem(status: number, detail: string) {
 beforeEach(async () => {
 	await page.viewport(1280, 844);
 	gotoMock.mockReset();
+	appPage.url = new URL('https://signkit.example/en/invitations/accept');
+	invalidateMock.mockReset();
 	overwriteGetLocale(() => 'en');
 	clearInvitationLink(window);
 	window.history.replaceState(window.history.state, '', `#token=${token}`);
@@ -44,7 +53,7 @@ describe('invitation email landing page', () => {
 			'fetch',
 			vi.fn(async () => problem(401, 'Authentication required'))
 		);
-		const signedOut = await render(InvitationPage);
+		const signedOut = await renderPage();
 		const signIn = signedOut.getByRole('link', { name: 'Sign in', exact: true });
 		await expect.element(signIn).toBeVisible();
 		expect(window.location.hash).toBe('');
@@ -59,7 +68,7 @@ describe('invitation email landing page', () => {
 				: json({ member: null, bootstrapped: true })
 		);
 		vi.stubGlobal('fetch', fetchMock);
-		const signedIn = await render(InvitationPage);
+		const signedIn = await renderPage();
 		const confirm = signedIn.getByRole('button', { name: 'Accept invitation', exact: true });
 		await expect.element(confirm).toBeVisible();
 		expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
@@ -75,6 +84,79 @@ describe('invitation email landing page', () => {
 		expect(JSON.parse(request[1]!.body as string)).toEqual({ token });
 		expect(window.sessionStorage.getItem('signkit:pending-invitation')).toBeNull();
 	});
+	it('shows the current email and submits account switching without exposing the invitation', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => json({ member: null, bootstrapped: true }))
+		);
+		const screen = await renderPage();
+		await expect.element(screen.getByText('current@example.com')).toBeVisible();
+		const button = screen.getByRole('button', { name: 'Use another account', exact: true });
+		const form = button.element().closest('form')!;
+		const submitted = vi.fn((event: Event) => event.preventDefault());
+		form.addEventListener('submit', submitted);
+		await button.click();
+		expect(submitted).toHaveBeenCalledOnce();
+		expect(form.method).toBe('post');
+		expect(new URL(form.action).pathname).toMatch(/\/auth\/switch-account$/);
+		expect([...new FormData(form).keys()]).toEqual([]);
+		expect(form.action).not.toContain(token);
+		expect(document.body.textContent).not.toContain(token);
+	});
+	it.each(['cancelled', 'failed', 'same-account'])(
+		'offers recovery for an OAuth %s return without automatically accepting',
+		async (reason) => {
+			appPage.url = new URL(`https://signkit.example/en/invitations/accept?auth=${reason}`);
+			const fetchMock = vi.fn(async () => json({ member: null, bootstrapped: true }));
+			vi.stubGlobal('fetch', fetchMock);
+			const screen = await renderPage();
+			await expect.element(screen.getByRole('alert')).toBeVisible();
+			await expect
+				.element(screen.getByRole('button', { name: 'Use another account', exact: true }))
+				.toBeVisible();
+			expect(fetchMock.mock.calls).toHaveLength(1);
+		}
+	);
+	it('refreshes an account changed in another tab and requires another explicit confirmation with a new command key', async () => {
+		let changed = false;
+		const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+			init?.method === 'POST'
+				? changed
+					? json({ invitation: {}, member: {} })
+					: json(
+							{
+								status: 409,
+								type: 'urn:signkit:problem:account-changed',
+								title: 'Account changed',
+								detail: 'Refresh your account.'
+							},
+							409
+						)
+				: json({ member: null, bootstrapped: true })
+		);
+		vi.stubGlobal('fetch', fetchMock);
+		const screen = await renderPage();
+		await screen.getByRole('button', { name: 'Accept invitation', exact: true }).click();
+		await expect
+			.element(screen.getByRole('alert'))
+			.toHaveTextContent('Your account changed in another tab');
+		expect(invalidateMock).toHaveBeenCalledOnce();
+		expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+		changed = true;
+		await screen.rerender({
+			data: { signedInAccount: { subject: 'new-subject', email: 'new@example.com' } }
+		});
+		await screen.getByRole('button', { name: 'Accept invitation', exact: true }).click();
+		await vi.waitFor(() => expect(gotoMock).toHaveBeenCalled());
+		const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+		expect(new Headers(posts[0][1]!.headers).get('x-signkit-expected-subject')).toBe(
+			account.subject
+		);
+		expect(new Headers(posts[1][1]!.headers).get('x-signkit-expected-subject')).toBe('new-subject');
+		expect(new Headers(posts[1][1]!.headers).get('idempotency-key')).not.toBe(
+			new Headers(posts[0][1]!.headers).get('idempotency-key')
+		);
+	});
 	it('retains a retryable link and command identity after a rejected acceptance', async () => {
 		const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
 			init?.method === 'POST'
@@ -82,7 +164,7 @@ describe('invitation email landing page', () => {
 				: json({ member: null, bootstrapped: true })
 		);
 		vi.stubGlobal('fetch', fetchMock);
-		const screen = await render(InvitationPage);
+		const screen = await renderPage();
 		const confirm = screen.getByRole('button', { name: 'Accept invitation', exact: true });
 		await confirm.click();
 		await expect
@@ -110,7 +192,7 @@ describe('invitation email landing page', () => {
 				: json({ member: null, bootstrapped: true });
 		});
 		vi.stubGlobal('fetch', fetchMock);
-		const screen = await render(InvitationPage);
+		const screen = await renderPage();
 		await screen.getByRole('button', { name: 'Accept invitation', exact: true }).click();
 		await expect
 			.element(screen.getByRole('button', { name: 'Accepting invitation…', exact: true }))
@@ -147,13 +229,13 @@ describe('invitation email landing page', () => {
 						: json({ member: null, bootstrapped: true })
 				)
 			);
-			const screen = await render(InvitationPage);
+			const screen = await renderPage();
 			const description = screen.getByText(
 				signedOut
 					? 'ワークスペース管理にアクセスするにはログインしてください。'
 					: hasInvitation
 						? 'このワークスペースに参加します。招待メールが届いたアカウントでログインしていることを確認してください。'
-						: '管理者に招待メールの送信を依頼してください。'
+						: 'メール内の招待リンクをもう一度開いて続けてください。招待の有効期限が切れている場合は、管理者に再招待を依頼してください。'
 			);
 			await expect.element(description).toBeVisible();
 			const card = description.element().closest('[data-slot="card"]')!;
@@ -175,9 +257,13 @@ describe('invitation email landing page', () => {
 			overwriteGetLocale(() => 'ja');
 			const fetchMock = vi.fn();
 			vi.stubGlobal('fetch', fetchMock);
-			const screen = await render(InvitationPage);
+			const screen = await renderPage();
 			await expect
-				.element(screen.getByText('管理者に招待メールの送信を依頼してください。'))
+				.element(
+					screen.getByText(
+						'メール内の招待リンクをもう一度開いて続けてください。招待の有効期限が切れている場合は、管理者に再招待を依頼してください。'
+					)
+				)
 				.toBeVisible();
 			expect(screen.getByRole('textbox').query()).toBeNull();
 			expect(fetchMock).not.toHaveBeenCalled();

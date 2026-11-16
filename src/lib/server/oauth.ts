@@ -1,5 +1,6 @@
 export const OAUTH_STATE_COOKIE = 'signkit_oauth_state';
 export const OAUTH_RETURN_COOKIE = 'signkit_oauth_return';
+export const OAUTH_SWITCH_COOKIE = 'signkit_oauth_switch';
 
 // Fixed, non-routable placeholder origin used purely to anchor URL parsing
 // for canonicalization; it is never dereferenced.

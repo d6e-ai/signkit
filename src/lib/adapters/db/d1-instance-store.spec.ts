@@ -337,6 +337,88 @@ describe('D1InstanceStore unit tests', () => {
 			// No batch was executed, only single statement check on member
 			expect(fake.batches).toHaveLength(0);
 		});
+
+		it('filters pending unexpired rows in SQL before LIMIT for view=active', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date('2026-11-16T12:00:00.000Z'));
+			try {
+				const fake = fakeD1({
+					batchResults: [[{ role: 'owner', status: 'active' }], []]
+				});
+				const store = new D1InstanceStore(fake.database);
+
+				const result = await store.listInstanceInvitations(
+					{ type: 'user', id: OWNER_ID },
+					{ cursor: null, limit: 10, view: 'active' }
+				);
+				expect(result.outcome).toBe('listed');
+				const pageSql: string = fake.batches[0][1].sql;
+				expect(pageSql).toContain("status = 'pending' AND expires_at > ?");
+				expect(pageSql.indexOf("status = 'pending'")).toBeLessThan(pageSql.indexOf('LIMIT ?'));
+				expect(fake.batches[0][1].bindings).toEqual(['2026-11-16T12:00:00.000Z', 11]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('keeps cursor lookup unfiltered so a history cursor cannot hide later active rows', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date('2026-11-16T12:00:00.000Z'));
+			try {
+				const fake = fakeD1({
+					batchResults: [[{ role: 'owner', status: 'active' }], []]
+				});
+				const store = new D1InstanceStore(fake.database);
+				const cursor: string = '01900000-0000-7000-8000-000000000201';
+
+				await store.listInstanceInvitations(
+					{ type: 'user', id: OWNER_ID },
+					{ cursor, limit: 10, view: 'active' }
+				);
+				const pageSql: string = fake.batches[0][1].sql;
+				expect(pageSql).toContain("status = 'pending' AND expires_at > ?");
+				expect(pageSql).toContain(
+					'SELECT created_at, id FROM instance_invitation WHERE id = ? LIMIT 1'
+				);
+				expect(pageSql).not.toContain(
+					"SELECT created_at, id FROM instance_invitation WHERE id = ? AND status = 'pending'"
+				);
+				expect(fake.batches[0][1].bindings).toEqual(['2026-11-16T12:00:00.000Z', cursor, 11]);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('does not filter history list SQL when view is omitted', async () => {
+			const fake = fakeD1({
+				batchResults: [[{ role: 'owner', status: 'active' }], []]
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			await store.listInstanceInvitations(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: null, limit: 10 }
+			);
+			expect(fake.batches[0][1].sql).not.toContain("status = 'pending'");
+			expect(fake.batches[0][1].bindings).toEqual([11]);
+		});
+
+		it('authorizes malformed active-view cursors before any page query', async () => {
+			const fake = fakeD1({
+				firstResult: { role: 'owner', status: 'active' }
+			});
+			const store = new D1InstanceStore(fake.database);
+
+			const result = await store.listInstanceInvitations(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: 'not-a-uuid-cursor', limit: 10, view: 'active' }
+			);
+			expect(result).toEqual({
+				outcome: 'listed',
+				page: { items: [], nextCursor: null }
+			});
+			expect(fake.batches).toHaveLength(0);
+		});
 	});
 
 	describe('acceptInstanceInvitation', () => {

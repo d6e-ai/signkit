@@ -141,6 +141,7 @@ These endpoints require a human session and reject API-key credentials:
 | `POST` | `/api/v1/instance/bootstrap`          | Claim the empty instance      |
 | `GET`  | `/api/v1/instance/members/me`         | Read current local membership |
 | `GET`  | `/api/v1/instance/members`            | List members                  |
+| `GET`  | `/api/v1/instance/invitations`        | List invitations              |
 | `POST` | `/api/v1/instance/invitations`        | Invite a member               |
 | `POST` | `/api/v1/instance/invitations/accept` | Accept an invitation          |
 | `POST` | `/api/v1/api-keys`                    | Create an owner-bound API key |

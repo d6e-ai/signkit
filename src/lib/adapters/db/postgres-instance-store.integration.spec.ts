@@ -267,6 +267,53 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		`;
 	}
 
+	const MS_DAY: number = 24 * 60 * 60 * 1000;
+
+	function isoFromMs(ms: number): string {
+		return new Date(ms).toISOString();
+	}
+
+	function listInvitationId(n: number): string {
+		return `01900000-0000-7000-8000-${n.toString(16).padStart(12, '0')}`;
+	}
+
+	function hexDigest(n: number, fill: string): string {
+		return n.toString(16).padStart(64, fill);
+	}
+
+	async function insertInvitationRow(input: {
+		id: string;
+		status: 'pending' | 'accepted' | 'revoked';
+		createdAt: string;
+		expiresAt: string;
+		tokenHash: string;
+		emailBinding: string;
+		acceptedAt?: string;
+		acceptedByUserId?: string;
+		revokedAt?: string;
+		revokedByUserId?: string;
+	}): Promise<void> {
+		await database()`
+			INSERT INTO instance_invitation (
+				id, role, status, token_hash, email_binding, invited_by_user_id,
+				created_at, expires_at, accepted_at, accepted_by_user_id, revoked_at, revoked_by_user_id
+			) VALUES (
+				${input.id},
+				'member',
+				${input.status},
+				${input.tokenHash},
+				${input.emailBinding},
+				${OWNER_ID},
+				${input.createdAt}::timestamptz,
+				${input.expiresAt}::timestamptz,
+				${input.acceptedAt ?? null}::timestamptz,
+				${input.acceptedByUserId ?? null},
+				${input.revokedAt ?? null}::timestamptz,
+				${input.revokedByUserId ?? null}
+			)
+		`;
+	}
+
 	it('uses the accepted invitation index for the committed concurrency query', async () => {
 		await database().unsafe('BEGIN');
 		try {
@@ -966,6 +1013,193 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 				{ cursor: null, limit: 10 }
 			);
 		expect(memberListResult).toEqual({ outcome: 'forbidden' });
+	});
+
+	it('keeps omitted view as full history while view=active filters mixed states in SQL', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember('list-acceptor-1', 'member');
+		const nowMs: number = Date.now();
+		const activeId: string = listInvitationId(1);
+		const expiredId: string = listInvitationId(2);
+		const revokedId: string = listInvitationId(3);
+		const acceptedId: string = listInvitationId(4);
+
+		await insertInvitationRow({
+			id: activeId,
+			status: 'pending',
+			createdAt: isoFromMs(nowMs - 6 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 6 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(1, 'a'),
+			emailBinding: hexDigest(1, 'b')
+		});
+		await insertInvitationRow({
+			id: expiredId,
+			status: 'pending',
+			createdAt: isoFromMs(nowMs - 10 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 10 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(2, 'a'),
+			emailBinding: hexDigest(2, 'b')
+		});
+		await insertInvitationRow({
+			id: revokedId,
+			status: 'revoked',
+			createdAt: isoFromMs(nowMs - 2 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 2 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(3, 'a'),
+			emailBinding: hexDigest(3, 'b'),
+			revokedAt: isoFromMs(nowMs - MS_DAY),
+			revokedByUserId: OWNER_ID
+		});
+		await insertInvitationRow({
+			id: acceptedId,
+			status: 'accepted',
+			createdAt: isoFromMs(nowMs - 3 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 3 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(4, 'a'),
+			emailBinding: hexDigest(4, 'b'),
+			acceptedAt: isoFromMs(nowMs - 2 * MS_DAY),
+			acceptedByUserId: 'list-acceptor-1'
+		});
+
+		const history: ListInstanceInvitationsStoreResult = await store().listInstanceInvitations(
+			{ type: 'user', id: OWNER_ID },
+			{ cursor: null, limit: 10 }
+		);
+		expect(history.outcome).toBe('listed');
+		if (history.outcome !== 'listed') return;
+		expect(history.page.items.map((item) => item.id)).toEqual([
+			revokedId,
+			acceptedId,
+			activeId,
+			expiredId
+		]);
+
+		const active: ListInstanceInvitationsStoreResult = await store().listInstanceInvitations(
+			{ type: 'user', id: OWNER_ID },
+			{ cursor: null, limit: 10, view: 'active' }
+		);
+		expect(active.outcome).toBe('listed');
+		if (active.outcome !== 'listed') return;
+		expect(active.page.items.map((item) => item.id)).toEqual([activeId]);
+		expect(active.page.items[0]?.status).toBe('pending');
+		expect(active.page.nextCursor).toBeNull();
+	});
+
+	it('returns an empty active page for history-only invitations and keeps default history', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember('list-acceptor-1', 'member');
+		const nowMs: number = Date.now();
+		await insertInvitationRow({
+			id: listInvitationId(2),
+			status: 'pending',
+			createdAt: isoFromMs(nowMs - 10 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 10 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(2, 'a'),
+			emailBinding: hexDigest(2, 'b')
+		});
+		await insertInvitationRow({
+			id: listInvitationId(3),
+			status: 'revoked',
+			createdAt: isoFromMs(nowMs - 2 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 2 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(3, 'a'),
+			emailBinding: hexDigest(3, 'b'),
+			revokedAt: isoFromMs(nowMs - MS_DAY),
+			revokedByUserId: OWNER_ID
+		});
+		await insertInvitationRow({
+			id: listInvitationId(4),
+			status: 'accepted',
+			createdAt: isoFromMs(nowMs - 3 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 3 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(4, 'a'),
+			emailBinding: hexDigest(4, 'b'),
+			acceptedAt: isoFromMs(nowMs - 2 * MS_DAY),
+			acceptedByUserId: 'list-acceptor-1'
+		});
+
+		const history: ListInstanceInvitationsStoreResult = await store().listInstanceInvitations(
+			{ type: 'user', id: OWNER_ID },
+			{ cursor: null, limit: 10 }
+		);
+		expect(history.outcome).toBe('listed');
+		if (history.outcome !== 'listed') return;
+		expect(history.page.items).toHaveLength(3);
+
+		const active: ListInstanceInvitationsStoreResult = await store().listInstanceInvitations(
+			{ type: 'user', id: OWNER_ID },
+			{ cursor: null, limit: 10, view: 'active' }
+		);
+		expect(active).toEqual({
+			outcome: 'listed',
+			page: { items: [], nextCursor: null }
+		});
+	});
+
+	it('surfaces an older active invitation on the first active page past many historical rows', async (): Promise<void> => {
+		await insertMember(OWNER_ID, 'owner');
+		await insertMember(MEMBER_ID, 'member');
+		const nowMs: number = Date.now();
+		const activeId: string = listInvitationId(1);
+		await insertInvitationRow({
+			id: activeId,
+			status: 'pending',
+			createdAt: isoFromMs(nowMs - 6 * MS_DAY),
+			expiresAt: isoFromMs(nowMs - 6 * MS_DAY + 7 * MS_DAY - 1000),
+			tokenHash: hexDigest(1, 'a'),
+			emailBinding: hexDigest(1, 'b')
+		});
+		const historicalIds: string[] = [];
+		for (let i = 0; i < 30; i += 1) {
+			const id: string = listInvitationId(16 + i);
+			historicalIds.push(id);
+			await insertInvitationRow({
+				id,
+				status: 'revoked',
+				createdAt: isoFromMs(nowMs - (i + 1) * 60 * 60 * 1000),
+				expiresAt: isoFromMs(nowMs - (i + 1) * 60 * 60 * 1000 + 7 * MS_DAY - 1000),
+				tokenHash: hexDigest(16 + i, 'c'),
+				emailBinding: hexDigest(16 + i, 'd'),
+				revokedAt: isoFromMs(nowMs - 30 * 60 * 1000),
+				revokedByUserId: OWNER_ID
+			});
+		}
+
+		const historyPage: ListInstanceInvitationsStoreResult = await store().listInstanceInvitations(
+			{ type: 'user', id: OWNER_ID },
+			{ cursor: null, limit: 10 }
+		);
+		expect(historyPage.outcome).toBe('listed');
+		if (historyPage.outcome !== 'listed') return;
+		expect(historyPage.page.items).toHaveLength(10);
+		expect(historyPage.page.items.map((item) => item.id)).toEqual(historicalIds.slice(0, 10));
+		expect(historyPage.page.items.some((item) => item.id === activeId)).toBe(false);
+		expect(historyPage.page.nextCursor).toBe(historicalIds[9]);
+
+		const activePage: ListInstanceInvitationsStoreResult = await store().listInstanceInvitations(
+			{ type: 'user', id: OWNER_ID },
+			{ cursor: null, limit: 10, view: 'active' }
+		);
+		expect(activePage.outcome).toBe('listed');
+		if (activePage.outcome !== 'listed') return;
+		expect(activePage.page.items.map((item) => item.id)).toEqual([activeId]);
+		expect(activePage.page.nextCursor).toBeNull();
+
+		const activeFromHistoryCursor: ListInstanceInvitationsStoreResult =
+			await store().listInstanceInvitations(
+				{ type: 'user', id: OWNER_ID },
+				{ cursor: historyPage.page.nextCursor, limit: 10, view: 'active' }
+			);
+		expect(activeFromHistoryCursor.outcome).toBe('listed');
+		if (activeFromHistoryCursor.outcome !== 'listed') return;
+		expect(activeFromHistoryCursor.page.items.map((item) => item.id)).toEqual([activeId]);
+
+		expect(
+			await store().listInstanceInvitations(
+				{ type: 'user', id: MEMBER_ID },
+				{ cursor: null, limit: 10, view: 'active' }
+			)
+		).toEqual({ outcome: 'forbidden' });
 	});
 
 	it('accepts an invitation and enrolls a new active instance member', async (): Promise<void> => {

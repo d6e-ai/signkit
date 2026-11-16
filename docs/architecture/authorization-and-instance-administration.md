@@ -68,12 +68,33 @@ only that email delivery was scheduled.
 
 Invitation emails carry an acceptance link to `/invitations/accept`, with the token in the URL
 fragment. This public landing page removes the fragment before offering sign-in and keeps the
-validated token in tab-scoped session storage with a ten-minute validity window to bridge OAuth. The OAuth
-return path contains no token. Missing or invalid links and the ordinary non-member settings page
-ask the user to request an invitation from an administrator; neither offers token entry. After
-sign-in, an explicit confirmation invokes the existing email-bound acceptance command. Success
-clears the tab handoff and refreshes membership before entering settings. Opening a link never
-accepts an invitation by itself.
+validated token in tab-scoped session storage with a ten-minute validity window to bridge OAuth.
+The OAuth return path contains no token. Missing, invalid, or expired local handoffs ask the user
+to reopen the existing email link; the ordinary non-member settings page asks the user to request
+an invitation from an administrator. Neither offers token entry.
+
+The confirmation shows only the caller's own verified email from private, non-cacheable page data.
+It never resolves or exposes the invitation's target email to an unauthenticated visitor. An explicit
+same-origin `POST /auth/switch-account` ends the local SignKit session and starts a fresh OAuth flow
+with account selection, retaining the invitation in the same tab. It does not log out other services
+or provider accounts. A single-account provider must render fresh credential entry for this request
+rather than silently reuse its current account. Cancelled/failed authorization returns to the invitation
+with recovery actions; choosing the same subject is reported explicitly. Stale callbacks cannot consume
+a newer OAuth flow. Verified code exchange is the only source of a replacement SignKit identity.
+
+An explicit confirmation invokes the existing email-bound acceptance command. The browser includes
+`x-signkit-expected-subject` to bind the click to the account it displayed; if the current verified
+subject differs, the server returns `account-changed` (409) before consuming the invitation. The UI
+refreshes its identity and requires another confirmation. The optional header never establishes
+identity or changes the opaque response for invalid, expired, revoked, or wrong-email invitations.
+Success clears the tab handoff and refreshes membership before entering settings. Opening a link
+never accepts an invitation by itself.
+
+The normal invitation list requests `view=active`: pending invitations whose expiry is after server
+now, filtered before keyset pagination and its limit on both supported databases. Accepted users
+are shown through the member list; revoked, expired and accepted invitations do not appear in the
+normal invitation UI. Historical records are retained, and the list API's omitted/`all` view remains
+compatible with historical readers. All views retain the same owner/admin authorization boundary.
 
 The protected instance-invitation drain uses the deployment's configured mail provider, a
 five-minute reclaimable lease, capped exponential backoff, and at most ten claimed attempts. It

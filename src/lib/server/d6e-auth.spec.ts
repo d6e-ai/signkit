@@ -103,6 +103,14 @@ function withHeaderAlg(token: string, alg: string): string {
 	return `${newHeaderB64}.${payloadB64}.${signatureB64}`;
 }
 
+it('requests deliberate account selection only when explicitly requested', () => {
+	const selected = new URL(authorizeUrl('https://app.example/callback', 'state', 'select_account'));
+	expect(selected.searchParams.get('prompt')).toBe('select_account');
+	expect(
+		new URL(authorizeUrl('https://app.example/callback', 'state')).searchParams.has('prompt')
+	).toBe(false);
+});
+
 describe('verifyAccessToken', () => {
 	it('returns a verified principal for a well-formed token', async () => {
 		mockFetchJwks();

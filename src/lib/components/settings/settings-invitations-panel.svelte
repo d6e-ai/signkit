@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import MemberDisplayView from './member-display.svelte';
 	import type { InvitationDisplay } from '$lib/ports/instance-display-store';
 	import * as Sheet from '$lib/components/ui/sheet';
 	import {
@@ -48,11 +47,7 @@
 	let detailsInvitation = $state<InstanceInvitationMetadata | null>(null);
 	function invitationLabel(invitation: InstanceInvitationMetadata): string {
 		const display = invitationDisplays[invitation.id];
-		return display?.state === 'pending'
-			? display.email
-			: display?.state === 'accepted' && display.member.state === 'available'
-				? display.member.name
-				: invitation.id;
+		return display?.state === 'pending' ? display.email : invitation.id;
 	}
 	function formatTimestamp(value: string): string {
 		return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(
@@ -98,12 +93,15 @@
 		invitationsLoading = true;
 		invitationsError = null;
 		try {
-			const res = await client.listInvitations(cursor ? { cursor } : undefined);
+			const res = await client.listInvitations({ view: 'active', ...(cursor ? { cursor } : {}) });
+			const active = res.invitations.filter(
+				(item) => item.status === 'pending' && Date.parse(item.expiresAt) > Date.now()
+			);
 			if (sequence !== listRequestSequence) return;
 			if (cursor) {
-				invitations = [...invitations, ...res.invitations];
+				invitations = [...invitations, ...active].filter((item) => !isInvitationExpired(item));
 			} else {
-				invitations = [...res.invitations];
+				invitations = [...active];
 			}
 			invitationDisplays = cursor
 				? { ...invitationDisplays, ...res.invitationDisplays }
@@ -232,7 +230,6 @@
 							<Table.Row>
 								<Table.Head>{m.settings_invitations_col_recipient()}</Table.Head>
 								<Table.Head>{m.settings_invitations_col_role()}</Table.Head>
-								<Table.Head>{m.settings_invitations_col_status()}</Table.Head>
 								<Table.Head class="hidden md:table-cell"
 									>{m.settings_invitations_col_created()}</Table.Head
 								>
@@ -253,47 +250,29 @@
 								<Table.Row>
 									<Table.Cell class="min-w-52 whitespace-normal">
 										{@const display = invitationDisplays[invitation.id]}
-										{#if display?.state === 'accepted' && display.member.state === 'available'}
-											<MemberDisplayView
-												userId={invitation.acceptedByUserId ?? invitation.id}
-												display={display.member}
-												onselect={() => (detailsInvitation = invitation)}
-											/>
-										{:else}
-											<div class="flex flex-col items-start gap-1">
-												<Button
-													variant="link"
-													class="h-auto justify-start p-0 whitespace-normal"
-													aria-label={m.settings_display_details_for({
-														name: invitationLabel(invitation)
-													})}
-													onclick={() => (detailsInvitation = invitation)}
-													><bdi dir="auto" class="[overflow-wrap:anywhere]"
-														>{invitationLabel(invitation)}</bdi
-													></Button
-												>
-												{#if display?.state !== 'pending'}<p class="text-xs text-muted-foreground">
-														{display?.state === 'redacted'
-															? m.settings_invitation_target_removed()
-															: m.settings_display_unavailable()}
-													</p>{/if}
-											</div>
-										{/if}
+										<div class="flex flex-col items-start gap-1">
+											<Button
+												variant="link"
+												class="h-auto justify-start p-0 whitespace-normal"
+												aria-label={m.settings_display_details_for({
+													name: invitationLabel(invitation)
+												})}
+												onclick={() => (detailsInvitation = invitation)}
+												><bdi dir="auto" class="[overflow-wrap:anywhere]"
+													>{invitationLabel(invitation)}</bdi
+												></Button
+											>
+											{#if display?.state !== 'pending'}<p class="text-xs text-muted-foreground">
+													{display?.state === 'redacted'
+														? m.settings_invitation_target_removed()
+														: m.settings_display_unavailable()}
+												</p>{/if}
+										</div>
 									</Table.Cell>
 									<Table.Cell>
 										<Badge variant="outline">{roleLabel(invitation.role)}</Badge>
 									</Table.Cell>
-									<Table.Cell>
-										{#if invitation.status === 'pending' && isExpiredInvitation}
-											<Badge variant="outline">{m.settings_invitations_status_expired()}</Badge>
-										{:else if invitation.status === 'pending'}
-											<Badge variant="secondary">{m.settings_invitations_status_pending()}</Badge>
-										{:else if invitation.status === 'accepted'}
-											<Badge variant="outline">{m.settings_invitations_status_accepted()}</Badge>
-										{:else}
-											<Badge variant="destructive">{m.settings_invitations_status_revoked()}</Badge>
-										{/if}
-									</Table.Cell>
+
 									<Table.Cell class="hidden text-xs text-muted-foreground md:table-cell">
 										{new Date(invitation.createdAt).toLocaleDateString(getLocale())}
 									</Table.Cell>
@@ -440,15 +419,6 @@
 						<p class="text-xs text-muted-foreground">{m.settings_invitations_col_recipient()}</p>
 						<p class="[overflow-wrap:anywhere]"><bdi dir="auto">{display.email}</bdi></p>
 					</div>
-				{:else if display?.state === 'accepted'}
-					<div class="flex flex-col gap-2">
-						<p class="text-xs text-muted-foreground">{m.settings_invitation_accepted_member()}</p>
-						<MemberDisplayView
-							userId={detailsInvitation.acceptedByUserId ?? detailsInvitation.id}
-							display={display.member}
-							detailed
-						/>
-					</div>
 				{:else}<p class="text-sm text-muted-foreground">
 						{display?.state === 'redacted'
 							? m.settings_invitation_target_removed()
@@ -485,29 +455,6 @@
 							{detailsInvitation.invitedByUserId}
 						</dd>
 					</div>
-					{#if detailsInvitation.acceptedAt}<div>
-							<dt class="text-xs text-muted-foreground">{m.settings_invitation_accepted_at()}</dt>
-							<dd>
-								<time datetime={detailsInvitation.acceptedAt}
-									>{formatTimestamp(detailsInvitation.acceptedAt)}</time
-								>
-							</dd>
-						</div>{/if}
-					{#if detailsInvitation.acceptedByUserId && !(display?.state === 'accepted' && display.member.state === 'unavailable')}<div
-						>
-							<dt class="text-xs text-muted-foreground">{m.settings_display_subject()}</dt>
-							<dd class="font-mono text-xs [overflow-wrap:anywhere]">
-								{detailsInvitation.acceptedByUserId}
-							</dd>
-						</div>{/if}
-					{#if detailsInvitation.revokedAt}<div>
-							<dt class="text-xs text-muted-foreground">{m.settings_invitation_revoked_at()}</dt>
-							<dd>
-								<time datetime={detailsInvitation.revokedAt}
-									>{formatTimestamp(detailsInvitation.revokedAt)}</time
-								>
-							</dd>
-						</div>{/if}
 				</dl>
 			</div>
 		</Sheet.Content>

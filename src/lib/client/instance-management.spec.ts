@@ -381,6 +381,18 @@ describe('InstanceManagementClient', () => {
 				expect.objectContaining({ method: 'GET' })
 			);
 			expect(res).toEqual(mockData);
+
+			await client.listInvitations({ view: 'active', cursor: 'inv-cursor' });
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'/api/v1/instance/invitations?cursor=inv-cursor&view=active',
+				expect.objectContaining({ method: 'GET' })
+			);
+
+			await client.listInvitations();
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'/api/v1/instance/invitations',
+				expect.objectContaining({ method: 'GET' })
+			);
 		});
 
 		it('POST revoke invitation', async () => {
@@ -465,6 +477,10 @@ describe('InstanceManagementClient', () => {
 				member: mockData.member,
 				replayed: false
 			});
+			await client.acceptInvitation({ token: 'ski1_token_value_abc', expectedSubject: 'usr-002' });
+			const init = fetchMock.mock.calls.at(-1)![1]!;
+			expect(new Headers(init.headers).get('x-signkit-expected-subject')).toBe('usr-002');
+			expect(JSON.parse(init.body as string)).toEqual({ token: 'ski1_token_value_abc' });
 		});
 
 		it('POST create API key', async () => {

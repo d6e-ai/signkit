@@ -536,40 +536,11 @@ export class PostgresInstanceStore implements InstanceStore {
 
 				const limit: number = boundInstanceInvitationListLimit(query.limit);
 				const fetchLimit: number = limit + 1;
-
-				const rows: InvitationMetadataRow[] =
-					query.cursor === null
-						? await transaction<InvitationMetadataRow[]>`
-								SELECT
-									id, role, status,
-									invited_by_user_id AS "invitedByUserId",
-									created_at AS "createdAt",
-									expires_at AS "expiresAt",
-									accepted_at AS "acceptedAt",
-									accepted_by_user_id AS "acceptedByUserId",
-									revoked_at AS "revokedAt",
-									revoked_by_user_id AS "revokedByUserId"
-								FROM instance_invitation
-								ORDER BY created_at DESC, id DESC
-								LIMIT ${fetchLimit}
-							`
-						: await transaction<InvitationMetadataRow[]>`
-								SELECT
-									id, role, status,
-									invited_by_user_id AS "invitedByUserId",
-									created_at AS "createdAt",
-									expires_at AS "expiresAt",
-									accepted_at AS "acceptedAt",
-									accepted_by_user_id AS "acceptedByUserId",
-									revoked_at AS "revokedAt",
-									revoked_by_user_id AS "revokedByUserId"
-								FROM instance_invitation
-								WHERE (created_at, id) < (
-									SELECT created_at, id FROM instance_invitation WHERE id = ${query.cursor} LIMIT 1
-								)
-								ORDER BY created_at DESC, id DESC
-								LIMIT ${fetchLimit}
-							`;
+				const rows: InvitationMetadataRow[] = await this.#listInvitationPage(
+					transaction,
+					query,
+					fetchLimit
+				);
 
 				const hasNextPage: boolean = rows.length > limit;
 				const pageRows: InvitationMetadataRow[] = hasNextPage ? rows.slice(0, limit) : rows;
@@ -1406,6 +1377,84 @@ export class PostgresInstanceStore implements InstanceStore {
 					LIMIT 1
 				`;
 		return rows[0] ?? null;
+	}
+
+	async #listInvitationPage(
+		sql: Sql,
+		query: InstanceInvitationListQuery,
+		fetchLimit: number
+	): Promise<InvitationMetadataRow[]> {
+		const nowIso: string = new Date().toISOString();
+		if (query.view === 'active' && query.cursor === null) {
+			return await sql<InvitationMetadataRow[]>`
+				SELECT
+					id, role, status,
+					invited_by_user_id AS "invitedByUserId",
+					created_at AS "createdAt",
+					expires_at AS "expiresAt",
+					accepted_at AS "acceptedAt",
+					accepted_by_user_id AS "acceptedByUserId",
+					revoked_at AS "revokedAt",
+					revoked_by_user_id AS "revokedByUserId"
+				FROM instance_invitation
+				WHERE status = 'pending' AND expires_at > ${nowIso}::timestamptz
+				ORDER BY created_at DESC, id DESC
+				LIMIT ${fetchLimit}
+			`;
+		}
+		if (query.view === 'active') {
+			return await sql<InvitationMetadataRow[]>`
+				SELECT
+					id, role, status,
+					invited_by_user_id AS "invitedByUserId",
+					created_at AS "createdAt",
+					expires_at AS "expiresAt",
+					accepted_at AS "acceptedAt",
+					accepted_by_user_id AS "acceptedByUserId",
+					revoked_at AS "revokedAt",
+					revoked_by_user_id AS "revokedByUserId"
+				FROM instance_invitation
+				WHERE status = 'pending' AND expires_at > ${nowIso}::timestamptz
+				  AND (created_at, id) < (
+					SELECT created_at, id FROM instance_invitation WHERE id = ${query.cursor} LIMIT 1
+				  )
+				ORDER BY created_at DESC, id DESC
+				LIMIT ${fetchLimit}
+			`;
+		}
+		if (query.cursor === null) {
+			return await sql<InvitationMetadataRow[]>`
+				SELECT
+					id, role, status,
+					invited_by_user_id AS "invitedByUserId",
+					created_at AS "createdAt",
+					expires_at AS "expiresAt",
+					accepted_at AS "acceptedAt",
+					accepted_by_user_id AS "acceptedByUserId",
+					revoked_at AS "revokedAt",
+					revoked_by_user_id AS "revokedByUserId"
+				FROM instance_invitation
+				ORDER BY created_at DESC, id DESC
+				LIMIT ${fetchLimit}
+			`;
+		}
+		return await sql<InvitationMetadataRow[]>`
+			SELECT
+				id, role, status,
+				invited_by_user_id AS "invitedByUserId",
+				created_at AS "createdAt",
+				expires_at AS "expiresAt",
+				accepted_at AS "acceptedAt",
+				accepted_by_user_id AS "acceptedByUserId",
+				revoked_at AS "revokedAt",
+				revoked_by_user_id AS "revokedByUserId"
+			FROM instance_invitation
+			WHERE (created_at, id) < (
+				SELECT created_at, id FROM instance_invitation WHERE id = ${query.cursor} LIMIT 1
+			)
+			ORDER BY created_at DESC, id DESC
+			LIMIT ${fetchLimit}
+		`;
 	}
 
 	async #countPendingInvitations(sql: Sql, asOf: Date | string): Promise<number> {

@@ -2901,6 +2901,16 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'listInstanceInvitations',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
+					parameters: [
+						{
+							name: 'view',
+							in: 'query',
+							required: false,
+							schema: { type: 'string', enum: ['all', 'active'], default: 'all' },
+							description:
+								'active filters to unexpired pending invitations before pagination; omitted/all retains history.'
+						}
+					],
 					responses: jsonResponse('200', 'Invitation page with display map', { type: 'object' })
 				}),
 				post: op({
@@ -2927,7 +2937,17 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'acceptInstanceInvitation',
 					tags: ['Instance'],
 					security: [{ SessionCookie: [] }],
-					parameters: [idempotencyHeader],
+					parameters: [
+						idempotencyHeader,
+						{
+							name: 'x-signkit-expected-subject',
+							in: 'header',
+							required: false,
+							schema: { type: 'string' },
+							description:
+								'Optional UI concurrency guard. A different signed-in subject returns account-changed (409) without consuming the invitation. This header never grants authority.'
+						}
+					],
 					requestBody: JSON_BODY,
 					responses: jsonResponse('200', 'Accepted invitation', { type: 'object' })
 				})
