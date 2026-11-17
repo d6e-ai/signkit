@@ -13,6 +13,7 @@ import {
 	type CompletionEvidenceAuditEvent,
 	type CompletionEvidenceField,
 	type CompletionEvidenceRecipient,
+	requireCompletionDateOptions,
 	EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR,
 	type CompletionArtifactPdfMetadata,
 	type FailCompletionArtifactCommand,
@@ -56,6 +57,8 @@ interface RecipientEvidenceRow {
 }
 
 interface FieldEvidenceRow {
+	dateMode: string | null;
+	dateTimeZone: string | null;
 	fieldId: string;
 	fieldType: FieldType;
 	valueJson: string;
@@ -243,11 +246,14 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 			WHERE recipient.envelope_id = ${envelopeId}
 			ORDER BY recipient.id`;
 		const fields = await this.#sql<FieldEvidenceRow[]>`
-			SELECT field_id AS "fieldId", field_type AS "fieldType", value_json AS "valueJson",
-				value_sha256 AS "valueSha256"
-			FROM field_value
-			WHERE envelope_id = ${envelopeId}
-			ORDER BY field_id`;
+			SELECT value.field_id AS "fieldId", value.field_type AS "fieldType",
+				value.value_json AS "valueJson", value.value_sha256 AS "valueSha256",
+				field.date_mode AS "dateMode", field.date_time_zone AS "dateTimeZone"
+			FROM field_value value
+			LEFT JOIN envelope_field field
+				ON field.id = value.field_id AND field.envelope_id = value.envelope_id
+			WHERE value.envelope_id = ${envelopeId}
+			ORDER BY value.field_id`;
 		const throughSequence: number | undefined = options?.throughSequence;
 		const auditEvents =
 			throughSequence === undefined
@@ -284,7 +290,8 @@ export class PostgresCompletionArtifactStore implements CompletionArtifactStore 
 				id: row.fieldId,
 				fieldType: row.fieldType,
 				valueJson: row.valueJson,
-				valueSha256: row.valueSha256
+				valueSha256: row.valueSha256,
+				...requireCompletionDateOptions(row.fieldType, row.dateMode, row.dateTimeZone)
 			})),
 			auditEvents: auditEvents.map((row: AuditEvidenceRow): CompletionEvidenceAuditEvent => ({
 				id: row.id,

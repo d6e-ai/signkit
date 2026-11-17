@@ -165,6 +165,84 @@ describe('assembleExecutedAgreementPdf aggregate budget', () => {
 	});
 });
 
+describe('attestExecutedAgreementSources automatic signing date options', () => {
+	const FIELD_ID: string = '01900000-0000-7000-8000-0000000000a1';
+	const geometry = { page: 1, x: 0.1, y: 0.1, width: 0.2, height: 0.05 };
+
+	async function withPlacement(zone: string) {
+		const { input } = await fixture(1);
+		const steps: AuditChainStep[] = input.auditEvents.map((event) => ({
+			id: event.id,
+			eventType: event.eventType,
+			actorType: event.actorType,
+			actorId: event.actorId,
+			occurredAt: event.occurredAt,
+			payload: JSON.parse(event.payloadJson) as unknown
+		}));
+		steps.splice(2, 0, {
+			id: 'event-placed',
+			eventType: 'envelope.fields_placed',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-10T00:00:15.000Z',
+			payload: {
+				commitSha: SENT_COMMIT_SHA,
+				generation: 1,
+				fieldGeneration: 1,
+				fields: [
+					{
+						id: FIELD_ID,
+						recipientId: 'recipient-1',
+						documentId: MARKDOWN_A_ID,
+						documentPath: null,
+						fieldType: 'date',
+						required: false,
+						position: 0,
+						geometry,
+						dateMode: 'signed_at',
+						dateTimeZone: zone
+					}
+				]
+			}
+		});
+		input.auditEvents = await buildVerifiedAuditChain({ envelopeId: ENVELOPE_ID }, steps);
+		input.fieldGeneration = 1;
+		return input;
+	}
+
+	function row(options: { dateMode?: 'signed_at'; dateTimeZone?: string }) {
+		return {
+			id: FIELD_ID,
+			documentId: MARKDOWN_A_ID,
+			documentPath: null,
+			position: 0,
+			recipientId: 'recipient-1',
+			fieldType: 'date' as const,
+			required: false,
+			geometry,
+			...options
+		};
+	}
+
+	it('accepts a projection whose frozen zone matches its hash-chained placement', async () => {
+		const input = await withPlacement('Asia/Tokyo');
+		input.fieldGeometry = [row({ dateMode: 'signed_at', dateTimeZone: 'Asia/Tokyo' })];
+		await expect(attestExecutedAgreementSources(input)).resolves.toBeUndefined();
+	});
+
+	it.each([
+		['a zone edited after send', { dateMode: 'signed_at' as const, dateTimeZone: 'UTC' }],
+		['an automatic flag stripped from the projection', {}],
+		['a mode with no zone', { dateMode: 'signed_at' as const }]
+	])('fails closed on %s', async (_name, options) => {
+		const input = await withPlacement('Asia/Tokyo');
+		input.fieldGeometry = [row(options)];
+		await expect(attestExecutedAgreementSources(input)).rejects.toBeInstanceOf(
+			ExecutedPdfIntegrityError
+		);
+	});
+});
+
 describe('attestExecutedAgreementSources field placements after reopen', () => {
 	it('accepts a legacy empty field set at fieldGeneration 0 without reopen', async () => {
 		const { input } = await fixture(1);

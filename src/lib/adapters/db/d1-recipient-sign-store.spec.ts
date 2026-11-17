@@ -290,7 +290,7 @@ describe('D1RecipientSignStore', () => {
 	});
 
 	it('publishes a command insert plus one field_value insert per submitted value', async () => {
-		const fake = fakeD1([eligibleRow]);
+		const fake = fakeD1([eligibleRow, null], [fieldRows]);
 		const result = await new D1RecipientSignStore(fake.database).publishSign(command);
 		expect(result).toMatchObject({
 			outcome: 'published',
@@ -325,8 +325,8 @@ describe('D1RecipientSignStore', () => {
 
 	it('classifies a lost write as replayed from durable state without parsing the provider error', async () => {
 		const fake = fakeD1(
-			[eligibleRow, completedRow, storedRow(), completedRow],
-			[fieldValueRows],
+			[eligibleRow, null, completedRow, storedRow(), completedRow],
+			[fieldRows, fieldValueRows],
 			new Error('UNIQUE constraint failed: recipient_signed_command')
 		);
 		const result = await new D1RecipientSignStore(fake.database).publishSign(command);
@@ -339,8 +339,8 @@ describe('D1RecipientSignStore', () => {
 	it('rethrows unclassified failures without inspecting provider error strings', async () => {
 		const error: Error = new Error('UNIQUE constraint failed: recipient_signed_command');
 		const fake = fakeD1(
-			[eligibleRow, eligibleRow, null, null, { sequence: 4, event_hash: 'hash-4' }],
-			[siblingRows, fieldRows],
+			[eligibleRow, null, eligibleRow, null, null, { sequence: 4, event_hash: 'hash-4' }, null],
+			[fieldRows, siblingRows, fieldRows],
 			error
 		);
 		await expect(new D1RecipientSignStore(fake.database).publishSign(command)).rejects.toBe(error);
@@ -378,8 +378,8 @@ describe('D1RecipientSignStore', () => {
 
 	it('reports idempotency_conflict when classifyFailure sees a reconstructed fingerprint mismatch', async () => {
 		const fake = fakeD1(
-			[eligibleRow, completedRow, storedRow(), completedRow],
-			[fieldValueRows],
+			[eligibleRow, null, completedRow, storedRow(), completedRow],
+			[fieldRows, fieldValueRows],
 			new Error('UNIQUE constraint failed: recipient_signed_command')
 		);
 		const result = await new D1RecipientSignStore(fake.database).publishSign({

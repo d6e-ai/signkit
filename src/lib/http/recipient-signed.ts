@@ -224,7 +224,7 @@ async function resultResponse(
 				title: 'Invalid signing field value',
 				status: 400,
 				detail:
-					'A submitted value referenced a field this recipient does not own or did not match its declared type.',
+					'A submitted value referenced a field this recipient does not own, an automatic date field the server fills, or did not match its declared type.',
 				instance
 			},
 			securityHeaders()
@@ -236,7 +236,8 @@ async function resultResponse(
 				type: 'urn:signkit:problem:recipient-signed-incomplete-field-set',
 				title: 'Incomplete signing field set',
 				status: 400,
-				detail: 'Every field declared for this recipient must receive exactly one value.',
+				detail:
+					'Every editable field declared for this recipient must receive exactly one value. Automatic date fields are filled by the server and must not be submitted.',
 				instance
 			},
 			securityHeaders()

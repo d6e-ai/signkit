@@ -170,6 +170,24 @@ Authoring clients reload this complete set before a replace-all publish. A missi
 authoring read must not drive a partial replace. Public envelope detail, placement receipts, and
 completion evidence remain label-free.
 
+### Entered dates and automatic signing dates
+
+An ordinary `date` field is entered by its signer as a real calendar date in `YYYY-MM-DD` form.
+An automatic signing date is a `date` field with `dateMode: "signed_at"` and a mandatory IANA
+`dateTimeZone`. The sender chooses that zone before sending; placement, reads and audit evidence
+retain both options. A field without either option keeps the existing manual behavior and canonical
+bytes. Invalid modes, invalid zones, partial configuration and date options on other field types
+are rejected. Automatic-date options cannot be silently dropped by a read or whole-set replacement.
+
+The signer submits only editable field values. Supplying a value for an automatic date is rejected.
+The signing command derives every automatic value from its authoritative server `signedAt` instant
+in the frozen zone, and publishes the resulting `YYYY-MM-DD` values and hashes atomically with the
+signer's decision. The browser's clock, displayed date and submitted text cannot establish that
+value. A replay uses the original signing instant, including when retried across midnight; changing
+an entered value under the same command key still conflicts. Frozen date configuration and generated
+values participate in completion evidence verification and final PDF composition. The full signed
+timestamp remains in the audit record independently of the date-only representation on the document.
+
 ## Sent agreement rendering
 
 Sending converts each document in the envelope's exact immutable revision into its own bounded,

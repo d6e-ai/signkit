@@ -12,6 +12,7 @@ import {
 	type CompletionEvidenceAuditEvent,
 	type CompletionEvidenceField,
 	type CompletionEvidenceRecipient,
+	requireCompletionDateOptions,
 	EXHAUSTED_TRANSIENT_COMPLETION_ARTIFACT_ERROR,
 	type CompletionArtifactPdfMetadata,
 	type FailCompletionArtifactCommand,
@@ -64,6 +65,8 @@ interface RecipientEvidenceRow {
 }
 
 interface FieldEvidenceRow {
+	date_mode: string | null;
+	date_time_zone: string | null;
 	field_id: string;
 	field_type: FieldType;
 	value_json: string;
@@ -232,10 +235,14 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 			.all<RecipientEvidenceRow>();
 		const fields: D1Result<FieldEvidenceRow> = await this.#database
 			.prepare(
-				`SELECT field_id, field_type, value_json, value_sha256
-				 FROM field_value
-				 WHERE envelope_id = ?
-				 ORDER BY field_id`
+				`SELECT value.field_id AS field_id, value.field_type AS field_type,
+					value.value_json AS value_json, value.value_sha256 AS value_sha256,
+					field.date_mode AS date_mode, field.date_time_zone AS date_time_zone
+				 FROM field_value value
+				 LEFT JOIN envelope_field field
+					ON field.id = value.field_id AND field.envelope_id = value.envelope_id
+				 WHERE value.envelope_id = ?
+				 ORDER BY value.field_id`
 			)
 			.bind(envelopeId)
 			.all<FieldEvidenceRow>();
@@ -280,7 +287,8 @@ export class D1CompletionArtifactStore implements CompletionArtifactStore {
 				id: row.field_id,
 				fieldType: row.field_type,
 				valueJson: row.value_json,
-				valueSha256: row.value_sha256
+				valueSha256: row.value_sha256,
+				...requireCompletionDateOptions(row.field_type, row.date_mode, row.date_time_zone)
 			})),
 			auditEvents: auditEvents.results.map(
 				(row: AuditEvidenceRow): CompletionEvidenceAuditEvent => ({

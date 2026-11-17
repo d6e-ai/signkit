@@ -1,3 +1,4 @@
+import type { DateFieldOptions } from '$lib/domain/signing-date';
 import type { FieldGeometry, FieldType, MarkdownPath } from '$lib/domain/envelope';
 
 /**
@@ -6,7 +7,7 @@ import type { FieldGeometry, FieldType, MarkdownPath } from '$lib/domain/envelop
  * echoes labels), this is scoped to exactly one recipient's own fields and
  * includes the label so the recipient knows what to fill in.
  */
-export interface RecipientFieldDeclaration {
+export interface RecipientFieldDeclaration extends DateFieldOptions {
 	id: string;
 	documentId: string | null;
 	documentPath: MarkdownPath | null;

@@ -18,6 +18,7 @@ import {
 	type SignFingerprintValue
 } from '$lib/domain/commands/recipient-sign';
 import type { FieldType } from '$lib/domain/envelope';
+import { formatSigningDate, isDateSignedField } from '$lib/domain/signing-date';
 import type { ObjectStore } from '$lib/ports/object-store';
 import type { SignatureAssetLedger } from '$lib/ports/signature-asset-ledger';
 import type {
@@ -128,7 +129,8 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 
 			const matched: MatchedFieldValues | MatchFailure = await matchFieldValues(
 				preparation.fields,
-				input.values
+				input.values,
+				signedAt
 			);
 			if (matched.outcome !== 'ok') return matched;
 			const fieldValues: readonly SignedFieldValue[] = matched.fieldValues;
@@ -146,7 +148,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 			const requestFingerprint: string = await fingerprintFromFieldValues(
 				input,
 				capabilityHash,
-				fieldValues
+				matched.manualFieldValues
 			);
 
 			// Replay is proven by the durable command receipt, its field values, and
@@ -248,7 +250,10 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 
 interface MatchedFieldValues {
 	outcome: 'ok';
+	/** Every value to persist: submitted manual values plus generated automatic dates. */
 	fieldValues: readonly SignedFieldValue[];
+	/** Only the client-controlled values; the request fingerprint covers these alone. */
+	manualFieldValues: readonly SignedFieldValue[];
 }
 
 type MatchFailure =
@@ -297,15 +302,18 @@ async function replayExisting(
 	input: RecipientSignedInput,
 	capabilityHash: string
 ): Promise<RecipientSignedResult> {
+	// Replay never regenerates automatic dates: the durable receipt already
+	// holds them, and `storedFields` lists only the editable (manual) fields.
 	const matched: MatchedFieldValues | MatchFailure = await matchFieldValues(
 		preparation.storedFields,
-		input.values
+		input.values,
+		preparation.result.signedAt
 	);
 	if (matched.outcome !== 'ok') return { outcome: 'idempotency_conflict' };
 	const requestFingerprint: string = await fingerprintFromFieldValues(
 		input,
 		capabilityHash,
-		matched.fieldValues
+		matched.manualFieldValues
 	);
 	if (requestFingerprint !== preparation.reconstructedFingerprint) {
 		return { outcome: 'idempotency_conflict' };
@@ -335,10 +343,31 @@ async function fingerprintFromFieldValues(
 	});
 }
 
+/**
+ * Matches the submitted editable values to the recipient's declared fields and
+ * generates the server-owned automatic dates from `signedAt`. A signer never
+ * submits an automatic date field: such an ID is rejected outright, and each
+ * automatic field gets exactly one generated value even when `submitted` is
+ * empty. `manualFieldValues` is the client-controlled subset the request
+ * fingerprint covers.
+ */
 async function matchFieldValues(
-	declared: readonly SignableFieldDeclaration[],
-	submitted: readonly SignFieldValueInput[]
+	allDeclared: readonly SignableFieldDeclaration[],
+	submitted: readonly SignFieldValueInput[],
+	signedAt: string
 ): Promise<MatchedFieldValues | MatchFailure> {
+	const automatic: readonly SignableFieldDeclaration[] = allDeclared.filter(
+		(field: SignableFieldDeclaration): boolean => isDateSignedField(field)
+	);
+	const automaticIds: Set<string> = new Set(
+		automatic.map((field: SignableFieldDeclaration): string => field.id)
+	);
+	if (submitted.some((entry: SignFieldValueInput): boolean => automaticIds.has(entry.fieldId))) {
+		return { outcome: 'invalid_field' };
+	}
+	const declared: readonly SignableFieldDeclaration[] = allDeclared.filter(
+		(field: SignableFieldDeclaration): boolean => !automaticIds.has(field.id)
+	);
 	if (submitted.length !== declared.length) return { outcome: 'incomplete_field_set' };
 
 	const declaredById: Map<string, SignableFieldDeclaration> = new Map(
@@ -372,10 +401,29 @@ async function matchFieldValues(
 			valueSha256: await sha256TextHex(valueJson)
 		});
 	}
-	values.sort((left: SignedFieldValue, right: SignedFieldValue): number =>
-		left.fieldId < right.fieldId ? -1 : left.fieldId > right.fieldId ? 1 : 0
-	);
-	return { outcome: 'ok', fieldValues: values };
+	const byFieldId = (left: SignedFieldValue, right: SignedFieldValue): number =>
+		left.fieldId < right.fieldId ? -1 : left.fieldId > right.fieldId ? 1 : 0;
+	values.sort(byFieldId);
+	const manualFieldValues: readonly SignedFieldValue[] = [...values];
+
+	const generated: SignedFieldValue[] = [];
+	for (const field of automatic) {
+		if (field.dateTimeZone === undefined) return { outcome: 'invalid_field' };
+		const valueJson: string = JSON.stringify(formatSigningDate(signedAt, field.dateTimeZone));
+		generated.push({
+			fieldId: field.id,
+			fieldType: field.fieldType,
+			valueJson,
+			valueSha256: await sha256TextHex(valueJson),
+			dateMode: 'signed_at',
+			dateTimeZone: field.dateTimeZone
+		});
+	}
+	return {
+		outcome: 'ok',
+		fieldValues: [...values, ...generated].sort(byFieldId),
+		manualFieldValues
+	};
 }
 
 function validateFieldValue(

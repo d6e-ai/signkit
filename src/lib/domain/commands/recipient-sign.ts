@@ -1,4 +1,9 @@
 import { hashStoredAuditEvent, sha256TextHex } from '$lib/domain/audit';
+import {
+	formatSigningDate,
+	isDateSignedField,
+	type DateFieldOptions
+} from '$lib/domain/signing-date';
 import { validStoredDecisionFollowThrough } from './recipient-decision-routing';
 
 export interface SignFingerprintValue {
@@ -6,7 +11,7 @@ export interface SignFingerprintValue {
 	value: string | boolean;
 }
 
-export interface StoredSignFingerprintValue {
+export interface StoredSignFingerprintValue extends DateFieldOptions {
 	fieldId: string;
 	valueJson: string;
 	valueSha256: string;
@@ -116,13 +121,41 @@ export async function reconstructRecipientSignFingerprint(input: {
 	expectedFieldGeneration: number;
 	fieldCount: number;
 	stored: readonly StoredSignFingerprintValue[];
+	/**
+	 * The durable signing instant. Required to prove stored automatic dates:
+	 * each must equal the server-derived date for that instant in its frozen
+	 * zone. Automatic values are never client input, so they are excluded from
+	 * the request fingerprint (which therefore survives replay across midnight).
+	 */
+	signedAt?: string;
 }): Promise<string | null> {
 	if (input.stored.length !== input.fieldCount) return null;
 	for (const value of input.stored) {
 		const digest: string = await sha256TextHex(value.valueJson);
 		if (digest !== value.valueSha256) return null;
 	}
-	const values: readonly SignFingerprintValue[] | null = fingerprintValuesFromStored(input.stored);
+	const manual: StoredSignFingerprintValue[] = [];
+	for (const value of input.stored) {
+		if (value.dateMode === undefined) {
+			manual.push(value);
+			continue;
+		}
+		if (
+			!isDateSignedField({ fieldType: 'date', dateMode: value.dateMode }) ||
+			value.dateTimeZone === undefined ||
+			input.signedAt === undefined
+		) {
+			return null;
+		}
+		let expected: string;
+		try {
+			expected = JSON.stringify(formatSigningDate(input.signedAt, value.dateTimeZone));
+		} catch {
+			return null;
+		}
+		if (value.valueJson !== expected) return null;
+	}
+	const values: readonly SignFingerprintValue[] | null = fingerprintValuesFromStored(manual);
 	if (values === null) return null;
 	return fingerprintRecipientSignRequest({
 		envelopeId: input.envelopeId,

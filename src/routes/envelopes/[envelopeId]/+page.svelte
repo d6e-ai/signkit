@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
+	import type { DateFieldOptions } from '$lib/domain/signing-date';
+	import { dateFieldOptions, parseDateFieldOptions } from '$lib/client/date-fields';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
@@ -239,7 +241,9 @@
 	let exportError = $state<string | null>(null);
 
 	// Field placement state.
-	interface FieldDraft {
+	let signingDateTimeZone = $state('UTC');
+	let dateTimeZones = $state<string[]>(['UTC']);
+	interface FieldDraft extends DateFieldOptions {
 		key: string;
 		recipientId: string;
 		documentId: string | null;
@@ -280,7 +284,7 @@
 	let geometryAnnouncement = $state('');
 	let newField = $state<{
 		recipientId: string;
-		fieldType: FieldType;
+		fieldType: FieldType | 'date_signed';
 		label: string;
 		required: boolean;
 	}>({
@@ -527,7 +531,9 @@
 		return documentId.slice(0, 8);
 	}
 
-	function fieldTypeLabel(fieldType: FieldType): string {
+	function fieldTypeLabel(fieldType: FieldType | 'date_signed', dateMode?: 'signed_at'): string {
+		if (fieldType === 'date_signed' || dateMode === 'signed_at')
+			return m.signing_field_type_date_signed();
 		if (fieldType === 'signature') return m.signing_field_type_signature();
 		if (fieldType === 'initials') return m.signing_field_type_initials();
 		if (fieldType === 'date') return m.signing_field_type_date();
@@ -964,6 +970,7 @@
 			recipientId: record.recipientId,
 			documentId: record.documentId,
 			fieldType: record.fieldType,
+			...dateFieldOptions(record),
 			label: record.label,
 			required: record.required,
 			position: record.position,
@@ -1450,6 +1457,17 @@
 
 	function addFieldAt(page: number, x: number, y: number): void {
 		if (placementLocked) return;
+		if (
+			newField.fieldType === 'date_signed' &&
+			parseDateFieldOptions({
+				fieldType: 'date',
+				dateMode: 'signed_at',
+				dateTimeZone: signingDateTimeZone
+			}) === null
+		) {
+			placementError = m.signing_date_time_zone_invalid();
+			return;
+		}
 		fieldDraftsDirty = true;
 		const documentId = documentIdForPlacement();
 		if (newField.recipientId === '' || documentId === null) return;
@@ -1468,9 +1486,12 @@
 				key,
 				recipientId: newField.recipientId,
 				documentId,
-				fieldType: newField.fieldType,
+				fieldType: newField.fieldType === 'date_signed' ? 'date' : newField.fieldType,
+				...(newField.fieldType === 'date_signed'
+					? { dateMode: 'signed_at' as const, dateTimeZone: signingDateTimeZone }
+					: {}),
 				label,
-				required: newField.required,
+				required: newField.fieldType === 'date_signed' || newField.required,
 				position: fieldDrafts.length + 1,
 				geometry
 			}
@@ -1684,6 +1705,7 @@
 				recipientId: draftItem.recipientId,
 				documentId: draftItem.documentId as string,
 				fieldType: draftItem.fieldType,
+				...dateFieldOptions(draftItem),
 				label: draftItem.label,
 				required: draftItem.required,
 				position: draftItem.position,
@@ -2287,6 +2309,14 @@
 	}
 
 	onMount(() => {
+		signingDateTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+		dateTimeZones = [
+			...new Set([
+				'UTC',
+				signingDateTimeZone,
+				...(typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [])
+			])
+		];
 		const onBeforeUnload = (event: BeforeUnloadEvent): void => {
 			if (!hasUnsavedAuthoringWork) return;
 			event.preventDefault();
@@ -2650,7 +2680,13 @@
 						{#each placedFields as field (field.id)}
 							<Table.Row>
 								<Table.Cell>{recipientName(field.recipientId)}</Table.Cell>
-								<Table.Cell>{fieldTypeLabel(field.fieldType)}</Table.Cell>
+								<Table.Cell
+									>{fieldTypeLabel(field.fieldType, field.dateMode)}{#if field.dateTimeZone}<p
+											class="text-xs text-muted-foreground"
+										>
+											{field.dateTimeZone}
+										</p>{/if}</Table.Cell
+								>
 								<Table.Cell
 									>{documentSetTitle(field.documentId) ??
 										m.envelope_field_document_unresolved()}</Table.Cell
@@ -3764,6 +3800,12 @@
 													<Select.Item value="text" label={m.signing_field_type_text()}>
 														{m.signing_field_type_text()}
 													</Select.Item>
+													<Select.Item
+														value="date_signed"
+														label={m.signing_field_type_date_signed()}
+													>
+														{m.signing_field_type_date_signed()}
+													</Select.Item>
 													<Select.Item value="date" label={m.signing_field_type_date()}>
 														{m.signing_field_type_date()}
 													</Select.Item>
@@ -3774,6 +3816,26 @@
 											</Select.Content>
 										</Select.Root>
 									</Field.Field>
+									{#if newField.fieldType === 'date_signed'}
+										<Field.Field class="sm:col-span-2">
+											<Field.FieldLabel for="field-date-time-zone"
+												>{m.signing_date_time_zone()}</Field.FieldLabel
+											>
+											<Input
+												id="field-date-time-zone"
+												list="signing-date-time-zones"
+												bind:value={signingDateTimeZone}
+												required
+											/>
+											<datalist id="signing-date-time-zones"
+												>{#each dateTimeZones as zone (zone)}<option value={zone}
+													></option>{/each}</datalist
+											>
+											<Field.FieldDescription
+												>{m.signing_date_time_zone_description()}</Field.FieldDescription
+											>
+										</Field.Field>
+									{/if}
 									<Field.Field>
 										<Field.FieldLabel for="field-label">
 											{m.envelope_field_label_label()}
@@ -3781,7 +3843,12 @@
 										<Input id="field-label" bind:value={newField.label} maxlength={200} />
 									</Field.Field>
 									<Field.Field orientation="horizontal">
-										<Checkbox id="field-required" bind:checked={newField.required} />
+										<Checkbox
+											id="field-required"
+											checked={newField.fieldType === 'date_signed' || newField.required}
+											onCheckedChange={(checked) => (newField.required = checked === true)}
+											disabled={newField.fieldType === 'date_signed'}
+										/>
 										<Field.FieldLabel for="field-required" class="font-normal">
 											{m.signing_field_required()}
 										</Field.FieldLabel>
@@ -4068,7 +4135,16 @@
 														{#each fieldDrafts as fieldDraft (fieldDraft.key)}
 															<Table.Row>
 																<Table.Cell>{fieldDraft.label}</Table.Cell>
-																<Table.Cell>{fieldTypeLabel(fieldDraft.fieldType)}</Table.Cell>
+																<Table.Cell
+																	>{fieldTypeLabel(
+																		fieldDraft.fieldType,
+																		fieldDraft.dateMode
+																	)}{#if fieldDraft.dateTimeZone}<p
+																			class="text-xs text-muted-foreground"
+																		>
+																			{fieldDraft.dateTimeZone}
+																		</p>{/if}</Table.Cell
+																>
 																<Table.Cell>{placedDocumentTitle(fieldDraft.documentId)}</Table.Cell
 																>
 																<Table.Cell>{fieldDraft.position}</Table.Cell>

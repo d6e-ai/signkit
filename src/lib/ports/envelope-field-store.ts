@@ -1,3 +1,4 @@
+import type { DateFieldOptions } from '$lib/domain/signing-date';
 import type {
 	Envelope,
 	EnvelopeField,
@@ -25,7 +26,7 @@ export interface FieldAuditHead {
  * echoed back, and no audit hash, archive/storage identifier, or internal
  * command ID is exposed.
  */
-export interface PublicEnvelopeField {
+export interface PublicEnvelopeField extends DateFieldOptions {
 	id: string;
 	recipientId: string;
 	documentId: string | null;

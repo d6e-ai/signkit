@@ -2,6 +2,12 @@ import { gzipSync } from 'fflate';
 import type { FieldType, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
 import { isActionableRecipientRole } from '$lib/domain/envelope';
 import {
+	dateOptionsProperties,
+	formatSigningDate,
+	placementDateOptionsMatch,
+	type DateFieldOptions
+} from '$lib/domain/signing-date';
+import {
 	CompletionArtifactBoundExceededError,
 	CompletionArtifactIntegrityError,
 	MAX_COMPLETION_AUDIT_VERIFY_EVENTS,
@@ -35,6 +41,7 @@ const READY_EVENT_TYPE: string = 'envelope.ready';
 const REOPENED_EVENT_TYPE: string = 'envelope.reopened';
 const SENT_EVENT_TYPE: string = 'envelope.sent';
 const SIGNED_EVENT_TYPE: string = 'recipient.signed';
+const PLACED_EVENT_TYPE: string = 'envelope.fields_placed';
 const APPROVED_EVENT_TYPE: string = 'recipient.approved';
 
 export interface CompletionManifestDocument {
@@ -57,7 +64,12 @@ export interface CompletionManifestRecipient {
 	decisionAt: string | null;
 }
 
-export interface CompletionManifestField {
+/**
+ * `dateMode`/`dateTimeZone` appear only on automatic signing dates, so every
+ * legacy/manual field serializes (and every legacy manifest parses) exactly as
+ * before.
+ */
+export interface CompletionManifestField extends DateFieldOptions {
 	id: string;
 	fieldType: FieldType;
 	valueSha256: string;
@@ -148,6 +160,7 @@ export async function buildCompletionManifest(
 		MAX_AUDIT_VERIFY_EVENTS
 	);
 	verifyFieldsMatchSignedAuditTrail(input.auditEvents, payloadsByEventId, input.fields);
+	verifyAutomaticSigningDates(input.auditEvents, payloadsByEventId, input.fields);
 	verifyRecipientRosterMatchesReadyEvent(input.auditEvents, payloadsByEventId, input.recipients);
 	verifyRecipientDecisionsMatchAuditTrail(input.auditEvents, input.recipients);
 
@@ -193,7 +206,8 @@ export async function buildCompletionManifest(
 		.map((field: CompletionEvidenceField): CompletionManifestField => ({
 			id: field.id,
 			fieldType: field.fieldType,
-			valueSha256: field.valueSha256
+			valueSha256: field.valueSha256,
+			...dateOptionsProperties(field)
 		}))
 		.sort((left, right): number => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 
@@ -306,6 +320,72 @@ function verifyFieldsMatchSignedAuditTrail(
 		) {
 			throw new CompletionArtifactIntegrityError(
 				'Field evidence does not match the signed audit trail'
+			);
+		}
+	}
+}
+
+/**
+ * Automatic signing dates are server-owned evidence, so completion proves them
+ * twice: the frozen zone must match the hash-chained `envelope.fields_placed`
+ * payload, and each persisted value must equal the date of the verified
+ * `recipient.signed` instant that stored it in that zone. A legacy field set
+ * (no automatic dates) passes through untouched.
+ */
+function verifyAutomaticSigningDates(
+	auditEvents: readonly CompletionEvidenceAuditEvent[],
+	payloadsByEventId: ReadonlyMap<string, unknown>,
+	fields: readonly CompletionEvidenceField[]
+): void {
+	const automatic: readonly CompletionEvidenceField[] = fields.filter(
+		(field: CompletionEvidenceField): boolean => field.dateMode !== undefined
+	);
+	if (automatic.length === 0) return;
+	const placement: CompletionEvidenceAuditEvent | undefined = auditEvents
+		.filter((event: CompletionEvidenceAuditEvent): boolean => event.eventType === PLACED_EVENT_TYPE)
+		.reduce<CompletionEvidenceAuditEvent | undefined>(
+			(latest, event) =>
+				latest === undefined || event.sequence > latest.sequence ? event : latest,
+			undefined
+		);
+	const placedPayload: unknown =
+		placement === undefined ? undefined : payloadsByEventId.get(placement.id);
+	if (
+		placement === undefined ||
+		typeof placedPayload !== 'object' ||
+		placedPayload === null ||
+		!placementDateOptionsMatch(
+			JSON.stringify(placedPayload),
+			fields.map((field: CompletionEvidenceField) => ({
+				id: field.id,
+				...dateOptionsProperties(field)
+			}))
+		)
+	) {
+		throw new CompletionArtifactIntegrityError(
+			'Automatic signing date options do not match the attested field placement'
+		);
+	}
+	const signedAtByFieldId: Map<string, string> = new Map();
+	for (const event of auditEvents) {
+		if (event.eventType !== SIGNED_EVENT_TYPE) continue;
+		for (const declared of extractSignedFieldDeclarations(payloadsByEventId.get(event.id))) {
+			signedAtByFieldId.set(declared.id, event.occurredAt);
+		}
+	}
+	for (const field of automatic) {
+		const signedAt: string | undefined = signedAtByFieldId.get(field.id);
+		let expected: string | null = null;
+		if (signedAt !== undefined && field.dateTimeZone !== undefined) {
+			try {
+				expected = JSON.stringify(formatSigningDate(signedAt, field.dateTimeZone));
+			} catch {
+				expected = null;
+			}
+		}
+		if (expected === null || field.fieldType !== 'date' || field.valueJson !== expected) {
+			throw new CompletionArtifactIntegrityError(
+				'Automatic signing date does not match its verified signing instant'
 			);
 		}
 	}

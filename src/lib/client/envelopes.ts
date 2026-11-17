@@ -1,3 +1,5 @@
+import type { DateFieldOptions } from '$lib/domain/signing-date';
+import { parseDateFieldOptions } from '$lib/client/date-fields';
 import type { DraftPath, FieldGeometry, FieldType, RecipientRole } from '$lib/domain/envelope';
 import type { DocumentSetManifest } from '$lib/domain/document-set';
 import type { PublicEnvelope } from '$lib/application/envelopes/model';
@@ -187,7 +189,7 @@ export interface ReadyEnvelopeResponse {
 	replayed: boolean;
 }
 
-export interface FieldPlacementInput {
+export interface FieldPlacementInput extends DateFieldOptions {
 	recipientId: string;
 	documentId: string;
 	fieldType: FieldType;
@@ -204,7 +206,7 @@ export interface PlaceFieldsInput {
 	fields: readonly FieldPlacementInput[];
 }
 
-export interface PublicEnvelopeFieldResponse {
+export interface PublicEnvelopeFieldResponse extends DateFieldOptions {
 	id: string;
 	recipientId: string;
 	documentId: string | null;
@@ -228,7 +230,7 @@ export interface PlaceFieldsResponse {
 	replayed: boolean;
 }
 
-export interface AuthoringFieldResponse {
+export interface AuthoringFieldResponse extends DateFieldOptions {
 	id: string;
 	recipientId: string;
 	documentId: string | null;
@@ -1159,6 +1161,12 @@ function asAuthoringField(data: unknown): AuthoringFieldResponse | null {
 	if (typeof field.id !== 'string' || field.id.length === 0) return null;
 	if (typeof field.recipientId !== 'string' || field.recipientId.length === 0) return null;
 	if (typeof field.fieldType !== 'string' || field.fieldType.length === 0) return null;
+	const dateOptions = parseDateFieldOptions({
+		fieldType: field.fieldType,
+		dateMode: field.dateMode,
+		dateTimeZone: field.dateTimeZone
+	});
+	if (dateOptions === null) return null;
 	if (typeof field.label !== 'string') return null;
 	if (typeof field.required !== 'boolean') return null;
 	if (
@@ -1192,6 +1200,7 @@ function asAuthoringField(data: unknown): AuthoringFieldResponse | null {
 		documentId: typeof field.documentId === 'string' ? field.documentId : null,
 		documentPath,
 		fieldType: field.fieldType as AuthoringFieldResponse['fieldType'],
+		...dateOptions,
 		label: field.label,
 		required: field.required,
 		position: field.position,

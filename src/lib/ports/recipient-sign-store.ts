@@ -1,4 +1,5 @@
 import type { FieldType } from '$lib/domain/envelope';
+import type { DateFieldOptions } from '$lib/domain/signing-date';
 
 export {
 	canonicalRecipientSignFingerprint,
@@ -22,7 +23,7 @@ export interface SignFingerprintValue {
 	value: string | boolean;
 }
 
-export interface StoredSignValue {
+export interface StoredSignValue extends DateFieldOptions {
 	fieldId: string;
 	fieldType: FieldType;
 	valueJson: string;
@@ -46,7 +47,7 @@ export interface SignRoutingSnapshot {
  * intentionally absent here too; this shape only carries what the command
  * boundary needs to validate submitted values.
  */
-export interface SignableFieldDeclaration {
+export interface SignableFieldDeclaration extends DateFieldOptions {
 	id: string;
 	fieldType: FieldType;
 	required: boolean;
@@ -101,7 +102,7 @@ export type SignPreparation =
  * written only to the field_value table and never echoed into the command's
  * audit trail, which carries `valueSha256` alone as evidence.
  */
-export interface SignedFieldValue {
+export interface SignedFieldValue extends DateFieldOptions {
 	fieldId: string;
 	fieldType: FieldType;
 	valueJson: string;

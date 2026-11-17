@@ -210,6 +210,41 @@ describe('acceptAuthoringFields', () => {
 });
 
 describe('parseAuthoringFieldsResponse', () => {
+	it('preserves automatic-date options and refuses a changed signing timezone', () => {
+		const automaticField = {
+			...fullField,
+			fieldType: 'date' as const,
+			dateMode: 'signed_at' as const,
+			dateTimeZone: 'Asia/Tokyo'
+		};
+		const response = matchingResponse({ fields: [automaticField] });
+		expect(parseAuthoringFieldsResponse(response)).toEqual(response);
+		expect(
+			acceptAuthoringFields(response, envelopeId, matchingRevision, [automaticField], knownLinks)
+		).toEqual([automaticField]);
+		expect(
+			acceptAuthoringFields(
+				response,
+				envelopeId,
+				matchingRevision,
+				[{ ...automaticField, dateTimeZone: 'UTC' }],
+				knownLinks
+			)
+		).toBeNull();
+	});
+	it.each([
+		{ dateMode: 'signed_at' },
+		{ dateTimeZone: 'Asia/Tokyo' },
+		{ dateMode: 'signed_at', dateTimeZone: 'not/a-zone' },
+		{ dateMode: 'client_clock', dateTimeZone: 'Asia/Tokyo' }
+	])('rejects malformed date configuration without dropping it: %j', (options) => {
+		expect(
+			parseAuthoringFieldsResponse({
+				...matchingResponse(),
+				fields: [{ ...fullField, fieldType: 'date', ...options }]
+			})
+		).toBeNull();
+	});
 	it('parses a complete authoring payload', () => {
 		expect(parseAuthoringFieldsResponse(matchingResponse())).toEqual(matchingResponse());
 	});

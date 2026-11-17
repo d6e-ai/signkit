@@ -9,6 +9,12 @@ import {
 } from '$lib/domain/commands/recipient-sign';
 import type { FieldType, RecipientRole } from '$lib/domain/envelope';
 import {
+	automaticDatesMatchDeclarations,
+	dateFieldOptionsFromColumns,
+	placementDateOptionsMatch,
+	type DateFieldOptions
+} from '$lib/domain/signing-date';
+import {
 	type SignAuditHead,
 	type SignLookupKey,
 	type SignPreparation,
@@ -102,6 +108,30 @@ interface FieldDeclarationRow {
 	id: string;
 	fieldType: FieldType;
 	required: boolean;
+	dateMode: string | null;
+	dateTimeZone: string | null;
+}
+
+/** Maps rows to declarations, or null when stored date options are corrupt. */
+function declarationsFromRows(
+	rows: readonly FieldDeclarationRow[]
+): readonly SignableFieldDeclaration[] | null {
+	const declarations: SignableFieldDeclaration[] = [];
+	for (const row of rows) {
+		const options: DateFieldOptions | null = dateFieldOptionsFromColumns(
+			row.fieldType,
+			row.dateMode,
+			row.dateTimeZone
+		);
+		if (options === null) return null;
+		declarations.push({
+			id: row.id,
+			fieldType: row.fieldType,
+			required: row.required,
+			...options
+		});
+	}
+	return declarations;
 }
 
 interface AuditHeadRow {
@@ -219,11 +249,12 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 			identity.envelopeId
 		);
 		if (auditHead === null) return { outcome: 'integrity_error' };
-		const fields: readonly SignableFieldDeclaration[] = await this.#readFieldDeclarations(
+		const fields: readonly SignableFieldDeclaration[] | null = await this.#readFieldDeclarations(
 			this.#sql,
 			identity.envelopeId,
 			identity.recipientId
 		);
+		if (fields === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
 			envelopeId: identity.envelopeId,
@@ -289,8 +320,9 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 				}
 				if (actor.recipientRole !== 'signer') return { outcome: 'role_not_actionable' };
 
-				const fields = await transaction<FieldDeclarationRow[]>`
-						SELECT id, field_type AS "fieldType", required
+				const fieldRows = await transaction<FieldDeclarationRow[]>`
+						SELECT id, field_type AS "fieldType", required,
+							date_mode AS "dateMode", date_time_zone AS "dateTimeZone"
 						FROM envelope_field
 						WHERE envelope_id = ${identity.envelopeId}
 							AND recipient_id = ${actor.id}
@@ -348,20 +380,29 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 				if (lockedRow.envelopeFieldGeneration !== command.expectedFieldGeneration) {
 					return { outcome: 'field_generation_conflict' };
 				}
-				if (fields.length !== command.fieldValues.length) {
+				const fields: readonly SignableFieldDeclaration[] | null = declarationsFromRows(fieldRows);
+				if (fields === null || fields.length !== command.fieldValues.length) {
 					return { outcome: 'integrity_error' };
 				}
-				const declaredById: Map<string, FieldDeclarationRow> = new Map(
-					fields.map((field: FieldDeclarationRow): [string, FieldDeclarationRow] => [
+				if (!(await this.#placementProvesDateOptions(transaction, actor.envelopeId, fields))) {
+					return { outcome: 'integrity_error' };
+				}
+				const declaredById: Map<string, SignableFieldDeclaration> = new Map(
+					fields.map((field: SignableFieldDeclaration): [string, SignableFieldDeclaration] => [
 						field.id,
 						field
 					])
 				);
 				for (const value of command.fieldValues) {
-					const declared: FieldDeclarationRow | undefined = declaredById.get(value.fieldId);
+					const declared: SignableFieldDeclaration | undefined = declaredById.get(value.fieldId);
 					if (declared === undefined || declared.fieldType !== value.fieldType) {
 						return { outcome: 'integrity_error' };
 					}
+				}
+				// Every value carries its declaration's frozen options and every
+				// automatic date is the exact date of this command's signing instant.
+				if (!automaticDatesMatchDeclarations(fields, command.fieldValues, command.updatedAt)) {
+					return { outcome: 'integrity_error' };
 				}
 
 				const routing: SignRoutingSnapshot = routingAfterActor(
@@ -678,14 +719,36 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 		sql: Sql,
 		envelopeId: string,
 		recipientId: string
-	): Promise<readonly SignableFieldDeclaration[]> {
+	): Promise<readonly SignableFieldDeclaration[] | null> {
 		const rows = await sql<FieldDeclarationRow[]>`
-			SELECT id, field_type AS "fieldType", required
+			SELECT id, field_type AS "fieldType", required,
+				date_mode AS "dateMode", date_time_zone AS "dateTimeZone"
 			FROM envelope_field
 			WHERE envelope_id = ${envelopeId}
 				AND recipient_id = ${recipientId}
 			ORDER BY id`;
-		return rows;
+		const declarations: readonly SignableFieldDeclaration[] | null = declarationsFromRows(rows);
+		if (declarations === null) return null;
+		return (await this.#placementProvesDateOptions(sql, envelopeId, declarations))
+			? declarations
+			: null;
+	}
+
+	/** Proves the frozen date options against the latest placement audit evidence. */
+	async #placementProvesDateOptions(
+		sql: Sql,
+		envelopeId: string,
+		declarations: readonly SignableFieldDeclaration[]
+	): Promise<boolean> {
+		const rows = await sql<{ payloadJson: string }[]>`
+			SELECT payload_json AS "payloadJson" FROM audit_event
+			WHERE envelope_id = ${envelopeId} AND event_type = 'envelope.fields_placed'
+			ORDER BY sequence DESC LIMIT 1`;
+		const placement: { payloadJson: string } | undefined = rows[0];
+		if (placement === undefined) {
+			return !declarations.some((field: SignableFieldDeclaration) => field.dateMode !== undefined);
+		}
+		return placementDateOptionsMatch(placement.payloadJson, declarations);
 	}
 
 	async #resolveCommand(
@@ -829,30 +892,52 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 		sql: Sql,
 		envelopeId: string,
 		recipientId: string
-	): Promise<readonly StoredSignValue[]> {
+	): Promise<readonly StoredSignValue[] | null> {
 		const rows = await sql<
 			{
 				fieldId: string;
 				fieldType: FieldType;
 				valueJson: string;
 				valueSha256: string;
+				dateMode: string | null;
+				dateTimeZone: string | null;
 			}[]
 		>`
-			SELECT field_id AS "fieldId", field_type AS "fieldType",
-				value_json AS "valueJson", value_sha256 AS "valueSha256"
-			FROM field_value
-			WHERE envelope_id = ${envelopeId}
-				AND recipient_id = ${recipientId}
-			ORDER BY field_id`;
-		return rows;
+			SELECT value.field_id AS "fieldId", value.field_type AS "fieldType",
+				value.value_json AS "valueJson", value.value_sha256 AS "valueSha256",
+				field.date_mode AS "dateMode", field.date_time_zone AS "dateTimeZone"
+			FROM field_value value
+			LEFT JOIN envelope_field field
+				ON field.id = value.field_id AND field.envelope_id = value.envelope_id
+			WHERE value.envelope_id = ${envelopeId}
+				AND value.recipient_id = ${recipientId}
+			ORDER BY value.field_id`;
+		const stored: StoredSignValue[] = [];
+		for (const row of rows) {
+			const options: DateFieldOptions | null = dateFieldOptionsFromColumns(
+				row.fieldType,
+				row.dateMode,
+				row.dateTimeZone
+			);
+			if (options === null) return null;
+			stored.push({
+				fieldId: row.fieldId,
+				fieldType: row.fieldType,
+				valueJson: row.valueJson,
+				valueSha256: row.valueSha256,
+				...options
+			});
+		}
+		return stored;
 	}
 
 	async #evidenceResult(sql: Sql, row: SignedCommandRow): Promise<SignPreparation> {
-		const stored: readonly StoredSignValue[] = await this.#readStoredValues(
+		const stored: readonly StoredSignValue[] | null = await this.#readStoredValues(
 			sql,
 			row.envelopeId,
 			row.recipientId
 		);
+		if (stored === null) return { outcome: 'integrity_error' };
 		const reconstructed: string | null = await reconstructedFingerprint(row, stored);
 		if (
 			reconstructed === null ||
@@ -872,11 +957,15 @@ export class PostgresRecipientSignStore implements RecipientSignStore {
 			outcome: 'existing',
 			reconstructedFingerprint: reconstructed,
 			result,
-			storedFields: stored.map((value: StoredSignValue): SignableFieldDeclaration => ({
-				id: value.fieldId,
-				fieldType: value.fieldType,
-				required: false
-			}))
+			// Only editable fields: automatic dates are server-owned and never part
+			// of a retried submission.
+			storedFields: stored
+				.filter((value: StoredSignValue): boolean => value.dateMode === undefined)
+				.map((value: StoredSignValue): SignableFieldDeclaration => ({
+					id: value.fieldId,
+					fieldType: value.fieldType,
+					required: false
+				}))
 		};
 	}
 
@@ -1068,7 +1157,8 @@ async function reconstructedFingerprint(
 		capabilityHash: row.capabilityHash,
 		expectedFieldGeneration: Number(row.expectedFieldGeneration),
 		fieldCount: Number(row.fieldCount),
-		stored
+		stored,
+		signedAt: isoTimestamp(row.updatedAt)
 	});
 }
 
