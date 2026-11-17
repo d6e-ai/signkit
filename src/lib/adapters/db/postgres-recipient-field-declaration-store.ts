@@ -1,5 +1,6 @@
 import postgres from 'postgres';
 import type { FieldGeometry, FieldType, MarkdownPath } from '$lib/domain/envelope';
+import { dateFieldOptionsFromColumns, type DateFieldOptions } from '$lib/domain/signing-date';
 import type {
 	RecipientFieldDeclaration,
 	RecipientFieldDeclarationStore,
@@ -19,6 +20,8 @@ interface FieldRow {
 	y: number | null;
 	width: number | null;
 	height: number | null;
+	dateMode: string | null;
+	dateTimeZone: string | null;
 }
 
 export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDeclarationStore {
@@ -39,7 +42,8 @@ export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDec
 		const rows = await this.#sql<FieldRow[]>`
 			SELECT id, document_id AS "documentId", document_path AS "documentPath",
 				field_type AS "fieldType",
-				label, required, position, page, x, y, width, height
+				label, required, position, page, x, y, width, height,
+				date_mode AS "dateMode", date_time_zone AS "dateTimeZone"
 			FROM envelope_field
 			WHERE envelope_id = ${envelopeId}
 				AND recipient_id = ${recipientId}
@@ -54,10 +58,22 @@ export class PostgresRecipientFieldDeclarationStore implements RecipientFieldDec
 				label: row.label,
 				required: row.required,
 				position: row.position,
-				geometry: toGeometry(row)
+				geometry: toGeometry(row),
+				...requireDateOptions(row.fieldType, row.dateMode, row.dateTimeZone)
 			}))
 		};
 	}
+}
+
+/** Corrupt stored date options fail the read closed rather than becoming manual fields. */
+function requireDateOptions(
+	fieldType: string,
+	mode: string | null,
+	zone: string | null
+): DateFieldOptions {
+	const options: DateFieldOptions | null = dateFieldOptionsFromColumns(fieldType, mode, zone);
+	if (options === null) throw new Error('Recipient field date options are corrupt');
+	return options;
 }
 
 /**

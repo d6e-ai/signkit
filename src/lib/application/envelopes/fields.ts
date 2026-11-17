@@ -9,6 +9,12 @@ import type {
 	DraftPersistenceService,
 	DraftWorkspaceSnapshot
 } from '$lib/application/drafts/draft-persistence';
+import {
+	canonicalizeDateFieldOptions,
+	dateOptionsProperties,
+	InvalidDateFieldOptionsError,
+	type DateFieldOptions
+} from '$lib/domain/signing-date';
 import { isUuidV7, newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import type {
 	AuthoringFieldsSnapshot,
@@ -32,7 +38,7 @@ const MAX_FIELD_COUNT: number = 50;
 const MAX_POSITION: number = 100_000;
 const MAX_LABEL_LENGTH: number = 200;
 
-export interface FieldPlacementInput {
+export interface FieldPlacementInput extends DateFieldOptions {
 	recipientId: string;
 	documentId: string;
 	fieldType: FieldType;
@@ -203,7 +209,8 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				label: field.label,
 				required: field.required,
 				position: field.position,
-				geometry: field.geometry
+				geometry: field.geometry,
+				...dateOptionsProperties(field)
 			})
 		);
 
@@ -221,7 +228,8 @@ export class EnvelopeFieldApplication implements EnvelopeFieldApplicationPort {
 				fieldType: field.fieldType,
 				required: field.required,
 				position: field.position,
-				geometry: field.geometry
+				geometry: field.geometry,
+				...dateOptionsProperties(field)
 			}))
 		});
 		const auditEventHash: string = await hashAuditEventV3(
@@ -354,7 +362,8 @@ function canonicalizeFields(
 			label: field.label.trim(),
 			required: field.required,
 			position: field.position,
-			geometry: field.geometry
+			geometry: field.geometry,
+			...canonicalDateOptions(field)
 		}))
 		.sort(
 			(left: FieldPlacementInput, right: FieldPlacementInput): number =>
@@ -363,6 +372,17 @@ function canonicalizeFields(
 				compareCodeUnits(left.recipientId, right.recipientId) ||
 				compareCodeUnits(left.fieldType, right.fieldType)
 		);
+}
+
+function canonicalDateOptions(field: FieldPlacementInput): DateFieldOptions {
+	try {
+		return canonicalizeDateFieldOptions(field.fieldType, field);
+	} catch (error: unknown) {
+		if (error instanceof InvalidDateFieldOptionsError) {
+			throw new InvalidFieldPlacementError(error.message);
+		}
+		throw error;
+	}
 }
 
 function compareCodeUnits(left: string, right: string): number {

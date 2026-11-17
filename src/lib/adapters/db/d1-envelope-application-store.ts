@@ -8,6 +8,7 @@ import type {
 	PublicEnvelopeDetailField,
 	PublicEnvelopeRecipient
 } from '$lib/application/envelopes/model';
+import { dateFieldOptionsFromColumns, type DateFieldOptions } from '$lib/domain/signing-date';
 import {
 	fieldTypes,
 	recipientRoles,
@@ -51,7 +52,7 @@ export const D1_ENVELOPE_DETAIL_READY_SQL: string = `SELECT id
 				 LIMIT 1`;
 
 export const D1_ENVELOPE_DETAIL_FIELD_SQL: string = `SELECT id, recipient_id, document_id, document_path, field_type, required, position,
-				        page, x, y, width, height
+				        page, x, y, width, height, date_mode, date_time_zone
 				 FROM envelope_field
 				 WHERE envelope_id = ?
 				 ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC`;
@@ -632,6 +633,8 @@ interface DetailFieldRow {
 	y: number | null;
 	width: number | null;
 	height: number | null;
+	date_mode?: string | null;
+	date_time_zone?: string | null;
 }
 
 function fromRecipientRow(row: DetailRecipientRow): PublicEnvelopeRecipient {
@@ -673,6 +676,11 @@ function fromFieldRow(row: DetailFieldRow): PublicEnvelopeDetailField {
 			: row.required === false || row.required === 0
 				? false
 				: null;
+	const dateOptions: DateFieldOptions | null = dateFieldOptionsFromColumns(
+		row.field_type,
+		row.date_mode,
+		row.date_time_zone
+	);
 	if (
 		typeof row.id !== 'string' ||
 		row.id.length === 0 ||
@@ -680,6 +688,7 @@ function fromFieldRow(row: DetailFieldRow): PublicEnvelopeDetailField {
 		row.recipient_id.length === 0 ||
 		fieldType === null ||
 		required === null ||
+		dateOptions === null ||
 		(documentId === null) === (documentPath === null) ||
 		!Number.isSafeInteger(row.position) ||
 		row.position < 0
@@ -694,7 +703,8 @@ function fromFieldRow(row: DetailFieldRow): PublicEnvelopeDetailField {
 		fieldType,
 		required,
 		position: row.position,
-		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height)
+		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height),
+		...dateOptions
 	};
 }
 

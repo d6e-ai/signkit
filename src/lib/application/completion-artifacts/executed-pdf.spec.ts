@@ -91,6 +91,30 @@ describe('buildExecutedPdf', () => {
 		expect(text).toContain('Alex Signer');
 	});
 
+	it('draws the persisted automatic signing date exactly as stored on the sent document', async () => {
+		const persisted: ExecutedPdfField = field({
+			id: 'field-auto-date',
+			fieldType: 'date',
+			geometry: { page: 1, x: 0.1, y: 0.8, width: 0.3, height: 0.05 },
+			// The server-generated value for an instant that is already the 1st in Tokyo.
+			value: parseExecutedFieldValue('date', JSON.stringify('2026-04-01'))
+		});
+		const result: ExecutedPdfResult = buildExecutedPdf({
+			documents: [markdownDocument()],
+			fields: [field(), persisted]
+		});
+		expect(result.renderedFieldCount).toBe(2);
+		const text: string = await pageText(result.bytes, 1);
+		expect(text).toContain('Alex Signer');
+		expect(text).toContain('2026-04-01');
+		// Identical persisted evidence yields identical bytes, so a retry can never re-date the PDF.
+		const again: ExecutedPdfResult = buildExecutedPdf({
+			documents: [markdownDocument()],
+			fields: [field(), persisted]
+		});
+		expect(Buffer.from(again.bytes).equals(Buffer.from(result.bytes))).toBe(true);
+	});
+
 	it('keeps an uploaded PDF as the base and overlays the value on its own page', async () => {
 		const uploaded: ExecutedPdfDocument = uploadedDocument({ position: 0 });
 

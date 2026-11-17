@@ -7,6 +7,11 @@ import type {
 	Recipient
 } from '$lib/domain/envelope';
 import {
+	dateFieldOptionsFromColumns,
+	dateOptionsProperties,
+	type DateFieldOptions
+} from '$lib/domain/signing-date';
+import {
 	AuthoringFieldsIntegrityError,
 	type AuthoringEnvelopeField,
 	type AuthoringFieldsSnapshot,
@@ -81,7 +86,9 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 				        envelope_field.x AS x,
 				        envelope_field.y AS y,
 				        envelope_field.width AS width,
-				        envelope_field.height AS height
+				        envelope_field.height AS height,
+					        envelope_field.date_mode AS date_mode,
+					        envelope_field.date_time_zone AS date_time_zone
 				 FROM envelope
 				 LEFT JOIN envelope_field ON envelope_field.envelope_id = envelope.id
 				 WHERE envelope.id = ?
@@ -159,8 +166,9 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 					.prepare(
 						`INSERT INTO envelope_field (
 							id, envelope_id, recipient_id, document_id, document_path, field_type,
-							label, required, position, page, x, y, width, height, created_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+							label, required, position, page, x, y, width, height, created_at, updated_at,
+							date_mode, date_time_zone
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 					)
 					.bind(
 						field.id,
@@ -178,7 +186,9 @@ export class D1EnvelopeFieldStore implements EnvelopeFieldStore {
 						field.geometry?.width ?? null,
 						field.geometry?.height ?? null,
 						command.updatedAt,
-						command.updatedAt
+						command.updatedAt,
+						field.dateMode ?? null,
+						field.dateTimeZone ?? null
 					)
 			)
 		];
@@ -349,7 +359,8 @@ async function validStoredReceipt(
 			label: field.label,
 			required: field.required,
 			position: field.position,
-			geometry: field.geometry
+			geometry: field.geometry,
+			...dateOptionsProperties(field)
 		}))
 	});
 	const expectedAuditPayload: string = JSON.stringify({
@@ -364,7 +375,8 @@ async function validStoredReceipt(
 			fieldType: field.fieldType,
 			required: field.required,
 			position: field.position,
-			geometry: field.geometry
+			geometry: field.geometry,
+			...dateOptionsProperties(field)
 		}))
 	});
 	return (
@@ -402,7 +414,12 @@ function isEnvelopeField(value: unknown): value is EnvelopeField {
 		typeof candidate.required === 'boolean' &&
 		typeof candidate.position === 'number' &&
 		Number.isSafeInteger(candidate.position) &&
-		isFieldGeometryOrNull(candidate.geometry)
+		isFieldGeometryOrNull(candidate.geometry) &&
+		dateFieldOptionsFromColumns(
+			String(candidate.fieldType),
+			(candidate.dateMode as string | undefined) ?? null,
+			(candidate.dateTimeZone as string | undefined) ?? null
+		) !== null
 	);
 }
 
@@ -440,6 +457,8 @@ interface AuthoringJoinRow {
 	y: number | null;
 	width: number | null;
 	height: number | null;
+	date_mode: string | null;
+	date_time_zone: string | null;
 }
 
 function snapshotFromJoinRows(
@@ -505,6 +524,14 @@ function authoringFieldFromJoinRow(row: AuthoringJoinRow): AuthoringEnvelopeFiel
 	if (row.document_path !== null && typeof row.document_path !== 'string') {
 		throw new AuthoringFieldsIntegrityError('Authoring field row is incomplete or invalid');
 	}
+	const dateOptions: DateFieldOptions | null = dateFieldOptionsFromColumns(
+		row.field_type,
+		row.date_mode,
+		row.date_time_zone
+	);
+	if (dateOptions === null) {
+		throw new AuthoringFieldsIntegrityError('Authoring field date options are corrupt');
+	}
 	return {
 		id: row.id,
 		recipientId: row.recipient_id,
@@ -514,7 +541,8 @@ function authoringFieldFromJoinRow(row: AuthoringJoinRow): AuthoringEnvelopeFiel
 		label: row.label,
 		required,
 		position: row.position,
-		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height)
+		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height),
+		...dateOptions
 	};
 }
 
@@ -553,7 +581,8 @@ function toPublicField(field: EnvelopeField): PublicEnvelopeField {
 		fieldType: field.fieldType,
 		required: field.required,
 		position: field.position,
-		geometry: field.geometry
+		geometry: field.geometry,
+		...dateOptionsProperties(field)
 	};
 }
 

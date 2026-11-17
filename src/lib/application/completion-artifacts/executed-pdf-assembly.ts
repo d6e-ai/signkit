@@ -9,6 +9,7 @@ import {
 	signatureAssetKey
 } from '$lib/application/documents/signature-asset';
 import { fieldTypes, type FieldGeometry, type FieldType } from '$lib/domain/envelope';
+import { dateFieldOptionsFromColumns, type DateFieldOptions } from '$lib/domain/signing-date';
 import {
 	documentSetHash,
 	type DocumentSetLeaf,
@@ -206,7 +207,7 @@ interface SentAuditDocumentDeclaration {
 	pageCount: number;
 }
 
-interface PlacedFieldDeclaration {
+interface PlacedFieldDeclaration extends DateFieldOptions {
 	id: string;
 	recipientId: string;
 	documentId: string | null;
@@ -412,6 +413,8 @@ function attestFieldPlacements(
 			declaration.fieldType !== row.fieldType ||
 			declaration.required !== row.required ||
 			declaration.position !== row.position ||
+			declaration.dateMode !== row.dateMode ||
+			declaration.dateTimeZone !== row.dateTimeZone ||
 			!sameGeometry(declaration.geometry, row.geometry)
 		) {
 			throw new ExecutedPdfIntegrityError(
@@ -594,9 +597,29 @@ function parsePlacedFields(value: unknown): readonly PlacedFieldDeclaration[] {
 			fieldType: fieldType as FieldType,
 			required: entry.required,
 			position: entry.position as number,
-			geometry: parseGeometry(entry.geometry)
+			geometry: parseGeometry(entry.geometry),
+			...parseAttestedDateOptions(fieldType as string, entry)
 		};
 	});
+}
+
+/** Legacy payloads carry neither option; a lone or unknown option is a tampered declaration. */
+function parseAttestedDateOptions(
+	fieldType: string,
+	entry: Record<string, unknown>
+): DateFieldOptions {
+	const options: DateFieldOptions | null = dateFieldOptionsFromColumns(
+		fieldType,
+		(entry.dateMode as string | undefined) ?? null,
+		(entry.dateTimeZone as string | undefined) ?? null
+	);
+	if (options === null) {
+		throw new ExecutedPdfIntegrityError(
+			'missing_geometry',
+			'Attested field declaration is invalid'
+		);
+	}
+	return options;
 }
 
 function parseGeometry(value: unknown): FieldGeometry | null {

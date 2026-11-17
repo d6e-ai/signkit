@@ -6,6 +6,7 @@ import type {
 	RecipientRole,
 	RecipientStatus
 } from '$lib/domain/envelope';
+import type { DateFieldOptions } from '$lib/domain/signing-date';
 import type { EnvelopeStore } from '$lib/ports/envelope-store';
 
 export interface EnvelopeActor {
@@ -117,7 +118,7 @@ export interface PublicEnvelopeRecipient {
  * Operator-safe field projection. Labels can carry PII and are never echoed
  * on this read model, matching the field-placement receipt.
  */
-export interface PublicEnvelopeDetailField {
+export interface PublicEnvelopeDetailField extends DateFieldOptions {
 	id: string;
 	recipientId: string;
 	documentId: string | null;

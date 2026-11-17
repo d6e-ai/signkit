@@ -275,6 +275,21 @@ const ENVELOPE_RECIPIENT: Record<string, unknown> = {
 	additionalProperties: false
 };
 
+const DATE_MODE_PROPERTY: Record<string, unknown> = {
+	type: 'string',
+	enum: ['signed_at'],
+	description:
+		'Optional, fieldType=date only, and must be sent together with dateTimeZone. signed_at makes the date server-owned: the server fills it from the exact signing instant in dateTimeZone as YYYY-MM-DD and a signer cannot submit it. Omit both options for a manual date field.'
+};
+
+const DATE_TIME_ZONE_PROPERTY: Record<string, unknown> = {
+	type: 'string',
+	minLength: 1,
+	maxLength: 64,
+	description:
+		'IANA time zone (for example Asia/Tokyo) frozen into the placement audit evidence. Required with dateMode=signed_at and rejected otherwise; the server canonicalizes it.'
+};
+
 const ENVELOPE_FIELD: Record<string, unknown> = {
 	type: 'object',
 	description: 'Operator-safe field projection. Labels can carry PII and are never echoed back.',
@@ -298,7 +313,9 @@ const ENVELOPE_FIELD: Record<string, unknown> = {
 		position: { type: 'integer', minimum: 0, maximum: 100000 },
 		geometry: {
 			anyOf: [{ $ref: '#/components/schemas/FieldGeometry' }, { type: 'null' }]
-		}
+		},
+		dateMode: DATE_MODE_PROPERTY,
+		dateTimeZone: DATE_TIME_ZONE_PROPERTY
 	},
 	additionalProperties: false
 };
@@ -329,7 +346,9 @@ const AUTHORING_ENVELOPE_FIELD: Record<string, unknown> = {
 		position: { type: 'integer', minimum: 0, maximum: 100000 },
 		geometry: {
 			anyOf: [{ $ref: '#/components/schemas/FieldGeometry' }, { type: 'null' }]
-		}
+		},
+		dateMode: DATE_MODE_PROPERTY,
+		dateTimeZone: DATE_TIME_ZONE_PROPERTY
 	},
 	additionalProperties: false
 };
@@ -626,7 +645,9 @@ const PLACE_FIELDS_REQUEST: Record<string, unknown> = {
 					label: { type: 'string', minLength: 1, maxLength: 200 },
 					required: { type: 'boolean' },
 					position: { type: 'integer', minimum: 0, maximum: 100000 },
-					geometry: { $ref: '#/components/schemas/FieldGeometry' }
+					geometry: { $ref: '#/components/schemas/FieldGeometry' },
+					dateMode: DATE_MODE_PROPERTY,
+					dateTimeZone: DATE_TIME_ZONE_PROPERTY
 				}
 			}
 		}

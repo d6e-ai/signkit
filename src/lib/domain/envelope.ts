@@ -1,3 +1,5 @@
+import type { DateFieldOptions } from './signing-date';
+
 export const envelopeStatuses = [
 	'draft',
 	'ready',
@@ -74,7 +76,7 @@ export interface FieldGeometry {
  * describes semantic document order and remains authoritative for reading
  * order; `geometry`, when present, additionally places the field visually.
  */
-export interface EnvelopeField {
+export interface EnvelopeField extends DateFieldOptions {
 	id: string;
 	envelopeId: string;
 	recipientId: string;

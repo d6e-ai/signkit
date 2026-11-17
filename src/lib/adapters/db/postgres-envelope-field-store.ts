@@ -8,6 +8,11 @@ import type {
 	Recipient
 } from '$lib/domain/envelope';
 import {
+	dateFieldOptionsFromColumns,
+	dateOptionsProperties,
+	type DateFieldOptions
+} from '$lib/domain/signing-date';
+import {
 	AuthoringFieldsIntegrityError,
 	type AuthoringEnvelopeField,
 	type AuthoringFieldsSnapshot,
@@ -94,7 +99,9 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 				envelope_field.x AS x,
 				envelope_field.y AS y,
 				envelope_field.width AS width,
-				envelope_field.height AS height
+				envelope_field.height AS height,
+				envelope_field.date_mode AS "dateMode",
+				envelope_field.date_time_zone AS "dateTimeZone"
 			FROM envelope
 			LEFT JOIN envelope_field ON envelope_field.envelope_id = envelope.id
 			WHERE envelope.id = ${envelopeId}
@@ -218,13 +225,15 @@ export class PostgresEnvelopeFieldStore implements EnvelopeFieldStore {
 					await transaction`
 							INSERT INTO envelope_field (
 								id, envelope_id, recipient_id, document_id, document_path, field_type,
-								label, required, position, page, x, y, width, height, created_at, updated_at
+								label, required, position, page, x, y, width, height, created_at, updated_at,
+								date_mode, date_time_zone
 							) VALUES (
 								${field.id}, ${field.envelopeId}, ${field.recipientId},
 								${field.documentId}, ${field.documentPath}, ${field.fieldType}, ${field.label}, ${field.required},
 								${field.position}, ${field.geometry?.page ?? null}, ${field.geometry?.x ?? null},
 								${field.geometry?.y ?? null}, ${field.geometry?.width ?? null},
-								${field.geometry?.height ?? null}, ${command.updatedAt}, ${command.updatedAt}
+								${field.geometry?.height ?? null}, ${command.updatedAt}, ${command.updatedAt},
+								${field.dateMode ?? null}, ${field.dateTimeZone ?? null}
 							)
 						`;
 				}
@@ -406,7 +415,8 @@ async function validStoredReceipt(
 			label: field.label,
 			required: field.required,
 			position: field.position,
-			geometry: field.geometry
+			geometry: field.geometry,
+			...dateOptionsProperties(field)
 		}))
 	});
 	const expectedAuditPayload: string = JSON.stringify({
@@ -421,7 +431,8 @@ async function validStoredReceipt(
 			fieldType: field.fieldType,
 			required: field.required,
 			position: field.position,
-			geometry: field.geometry
+			geometry: field.geometry,
+			...dateOptionsProperties(field)
 		}))
 	});
 	return (
@@ -459,7 +470,12 @@ function isEnvelopeField(value: unknown): value is EnvelopeField {
 		typeof candidate.required === 'boolean' &&
 		typeof candidate.position === 'number' &&
 		Number.isSafeInteger(candidate.position) &&
-		isFieldGeometryOrNull(candidate.geometry)
+		isFieldGeometryOrNull(candidate.geometry) &&
+		dateFieldOptionsFromColumns(
+			String(candidate.fieldType),
+			(candidate.dateMode as string | undefined) ?? null,
+			(candidate.dateTimeZone as string | undefined) ?? null
+		) !== null
 	);
 }
 
@@ -497,6 +513,8 @@ interface AuthoringJoinRow {
 	y: number | null;
 	width: number | null;
 	height: number | null;
+	dateMode: string | null;
+	dateTimeZone: string | null;
 }
 
 function snapshotFromJoinRows(
@@ -558,6 +576,14 @@ function authoringFieldFromJoinRow(row: AuthoringJoinRow): AuthoringEnvelopeFiel
 	if (row.documentPath !== null && typeof row.documentPath !== 'string') {
 		throw new AuthoringFieldsIntegrityError('Authoring field row is incomplete or invalid');
 	}
+	const dateOptions: DateFieldOptions | null = dateFieldOptionsFromColumns(
+		row.fieldType,
+		row.dateMode,
+		row.dateTimeZone
+	);
+	if (dateOptions === null) {
+		throw new AuthoringFieldsIntegrityError('Authoring field date options are corrupt');
+	}
 	return {
 		id: row.id,
 		recipientId: row.recipientId,
@@ -567,7 +593,8 @@ function authoringFieldFromJoinRow(row: AuthoringJoinRow): AuthoringEnvelopeFiel
 		label: row.label,
 		required: row.required,
 		position: row.position,
-		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height)
+		geometry: geometryFromColumns(row.page, row.x, row.y, row.width, row.height),
+		...dateOptions
 	};
 }
 
@@ -606,7 +633,8 @@ function toPublicField(field: EnvelopeField): PublicEnvelopeField {
 		fieldType: field.fieldType,
 		required: field.required,
 		position: field.position,
-		geometry: field.geometry
+		geometry: field.geometry,
+		...dateOptionsProperties(field)
 	};
 }
 

@@ -1,4 +1,5 @@
 import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
+import { requireCompletionDateOptions } from '$lib/ports/completion-artifact-store';
 import type {
 	CompletionPdfEvidenceStore,
 	CompletionPdfFieldGeometry
@@ -25,11 +26,13 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 			y: number | null;
 			width: number | null;
 			height: number | null;
+			date_mode: string | null;
+			date_time_zone: string | null;
 		}
 		const result: D1Result<Row> = await this.#database
 			.prepare(
 				`SELECT id, document_id, document_path, position, recipient_id, field_type, required,
-				        page, x, y, width, height
+				        page, x, y, width, height, date_mode, date_time_zone
 				 FROM envelope_field
 				 WHERE envelope_id = ?
 				 ORDER BY document_id ASC, document_path ASC, position ASC, id ASC`
@@ -44,7 +47,8 @@ export class D1CompletionPdfEvidenceStore implements CompletionPdfEvidenceStore 
 			recipientId: row.recipient_id,
 			fieldType: row.field_type as FieldType,
 			required: row.required === 1,
-			geometry: toGeometry(row)
+			geometry: toGeometry(row),
+			...requireCompletionDateOptions(row.field_type, row.date_mode, row.date_time_zone)
 		}));
 	}
 }

@@ -763,4 +763,146 @@ describe('EnvelopeFieldApplication', () => {
 		expect(result).toEqual({ outcome: 'document_set_not_materialized' });
 		expect(store.commands).toHaveLength(0);
 	});
+
+	describe('automatic signing dates', () => {
+		const geometry = { page: 1, x: 0.1, y: 0.1, width: 0.25, height: 0.05 };
+		const manualDate = {
+			recipientId: signerId,
+			documentId: AGREEMENT_ID,
+			fieldType: 'date' as const,
+			label: 'Date',
+			required: true,
+			position: 1,
+			geometry
+		};
+
+		async function place(
+			fields: readonly Record<string, unknown>[],
+			key: string = 'fields-date'
+		): Promise<{
+			store: CapturingStore;
+			result: Awaited<ReturnType<EnvelopeFieldApplication['place']>>;
+		}> {
+			const envelope: Envelope = await readyEnvelope();
+			const store: CapturingStore = new CapturingStore(envelope);
+			const drafts: DraftPersistenceService = await draftPersistenceFor(envelope, [
+				{ path: 'documents/agreement.md', content: '# Agreement' }
+			]);
+			const result = await new EnvelopeFieldApplication(store, drafts).place(actor, envelopeId, {
+				idempotencyKey: key,
+				expectedGeneration: 2,
+				expectedFieldGeneration: 0,
+				fields: fields as never
+			});
+			return { store, result };
+		}
+
+		it('freezes the canonical zone into the placement command, fingerprint and audit payload', async () => {
+			const { store, result } = await place([
+				{ ...manualDate, dateMode: 'signed_at', dateTimeZone: 'asia/tokyo' },
+				{
+					...manualDate,
+					label: 'Manual',
+					position: 2
+				}
+			]);
+			expect(result.outcome).toBe('published');
+			const [automatic, manual] = store.commands[0].fields;
+			expect(automatic).toMatchObject({ dateMode: 'signed_at', dateTimeZone: 'Asia/Tokyo' });
+			expect(Object.keys(manual)).not.toContain('dateMode');
+			const payload = JSON.parse(store.commands[0].auditPayloadJson) as {
+				fields: Record<string, unknown>[];
+			};
+			expect(payload.fields[0]).toMatchObject({
+				dateMode: 'signed_at',
+				dateTimeZone: 'Asia/Tokyo'
+			});
+			expect(Object.keys(payload.fields[1])).not.toContain('dateMode');
+			expect(store.commands[0].auditPayloadJson).not.toContain('asia/tokyo');
+		});
+
+		it('keeps legacy canonical request and audit bytes identical when options are omitted', async () => {
+			const { store } = await place([manualDate]);
+			const command = store.commands[0];
+			const expectedRequest: string = JSON.stringify({
+				expectedGeneration: 2,
+				expectedFieldGeneration: 0,
+				fields: [
+					{
+						recipientId: manualDate.recipientId,
+						documentId: manualDate.documentId,
+						fieldType: 'date',
+						label: 'Date',
+						required: true,
+						position: 1,
+						geometry
+					}
+				]
+			});
+			expect(command.requestFingerprint).toBe(
+				createHash('sha256').update(expectedRequest).digest('hex')
+			);
+			expect(command.auditPayloadJson).toBe(
+				JSON.stringify({
+					commitSha: command.expectedCommitSha,
+					generation: 2,
+					fieldGeneration: 1,
+					fields: [
+						{
+							id: command.fields[0].id,
+							recipientId: signerId,
+							documentId: AGREEMENT_ID,
+							documentPath: null,
+							fieldType: 'date',
+							required: true,
+							position: 1,
+							geometry
+						}
+					]
+				})
+			);
+			expect(JSON.stringify(command.fields[0])).not.toMatch(/dateMode|dateTimeZone/);
+		});
+
+		it('changes the request fingerprint when only the zone changes, so keys cannot be replayed across zones', async () => {
+			const tokyo = await place([
+				{ ...manualDate, dateMode: 'signed_at', dateTimeZone: 'Asia/Tokyo' }
+			]);
+			const paris = await place([
+				{ ...manualDate, dateMode: 'signed_at', dateTimeZone: 'Europe/Paris' }
+			]);
+			const manual = await place([manualDate]);
+			const hashes = new Set([
+				tokyo.store.commands[0].requestFingerprint,
+				paris.store.commands[0].requestFingerprint,
+				manual.store.commands[0].requestFingerprint
+			]);
+			expect(hashes.size).toBe(3);
+		});
+
+		it.each([
+			['only a mode', { dateMode: 'signed_at' }],
+			['only a zone', { dateTimeZone: 'Asia/Tokyo' }],
+			['an unknown zone', { dateMode: 'signed_at', dateTimeZone: 'Mars/Olympus' }],
+			['an offset instead of an IANA zone', { dateMode: 'signed_at', dateTimeZone: '+09:00' }],
+			['an unknown mode', { dateMode: 'manual', dateTimeZone: 'Asia/Tokyo' }]
+		])('rejects a date field with %s instead of silently dropping it', async (_name, options) => {
+			await expect(place([{ ...manualDate, ...options }])).rejects.toBeInstanceOf(
+				InvalidFieldPlacementError
+			);
+		});
+
+		it('rejects options on non-date field types', async () => {
+			await expect(
+				place([
+					{
+						...manualDate,
+						fieldType: 'text',
+						dateMode: 'signed_at',
+						dateTimeZone: 'Asia/Tokyo'
+					}
+				])
+			).rejects.toThrow(/only valid on date fields/);
+		});
+	});
 });

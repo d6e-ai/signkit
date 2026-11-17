@@ -1,4 +1,5 @@
 import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
+import type { DateFieldOptions } from '$lib/domain/signing-date';
 
 /**
  * Read-only field placement for PDF rendering. Although `envelope_field` is
@@ -14,7 +15,7 @@ import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
  * carry `documentPath` and no geometry; those envelopes publish the evidence
  * summary alone.
  */
-export interface CompletionPdfFieldGeometry {
+export interface CompletionPdfFieldGeometry extends DateFieldOptions {
 	id: string;
 	/** Exactly one of `documentId` and `documentPath` is set. */
 	documentId: string | null;

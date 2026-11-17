@@ -289,6 +289,7 @@ describe('PostgresRecipientSignStore', () => {
 			[],
 			[],
 			[],
+			[],
 			[{ sequence: 4, eventHash: command.previousAuditHash }],
 			[{ id: command.expectedRecipientId }],
 			[{ id: command.expectedEnvelopeId }],
@@ -325,6 +326,7 @@ describe('PostgresRecipientSignStore', () => {
 			expect.stringContaining('FROM field_value'),
 			expect.stringContaining('FROM recipient_signed_command'),
 			expect.stringContaining('FROM recipient_signed_command'),
+			expect.stringContaining("event_type = 'envelope.fields_placed'"),
 			expect.stringContaining('FROM audit_event'),
 			expect.stringContaining("SET status = 'completed'"),
 			expect.stringContaining('UPDATE envelope'),
@@ -369,6 +371,7 @@ describe('PostgresRecipientSignStore', () => {
 				}
 			],
 			[{ id: fieldId, fieldType: 'signature', required: true }],
+			[],
 			[],
 			[],
 			[],
@@ -421,6 +424,7 @@ describe('PostgresRecipientSignStore', () => {
 				{ id: 'delivery-delivered', status: 'delivered', retryable: false, sealedCapability: null }
 			],
 			[{ id: fieldId, fieldType: 'signature', required: true }],
+			[],
 			[],
 			[],
 			[],
@@ -482,6 +486,7 @@ describe('PostgresRecipientSignStore', () => {
 				}
 			],
 			[{ id: fieldId, fieldType: 'signature', required: true }],
+			[],
 			[],
 			[],
 			[]
@@ -574,7 +579,8 @@ describe('PostgresRecipientSignStore', () => {
 			[],
 			[actorLockRow, siblingLockRow],
 			[{ sequence: 4, eventHash: 'hash-4' }],
-			[{ id: fieldId, fieldType: 'signature', required: true }]
+			[{ id: fieldId, fieldType: 'signature', required: true }],
+			[]
 		]);
 		const result = await new PostgresRecipientSignStore(database.client()).prepareSign(
 			command,

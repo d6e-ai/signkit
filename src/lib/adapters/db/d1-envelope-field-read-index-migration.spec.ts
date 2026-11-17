@@ -43,6 +43,12 @@ const AUTHORING_SQL: string = `SELECT envelope.repository_generation AS reposito
 				 ORDER BY COALESCE(envelope_field.document_id, envelope_field.document_path) ASC,
 				          envelope_field.position ASC, envelope_field.id ASC`;
 
+/** The detail read as it stood before 0060 added the optional date option columns. */
+const PRE_0060_DETAIL_SQL: string = D1_ENVELOPE_DETAIL_FIELD_SQL.replace(
+	', date_mode, date_time_zone',
+	''
+);
+
 function queryPlan(sqlite: DatabaseSync, sql: string): string {
 	return (
 		sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(ENVELOPE_ID) as {
@@ -150,7 +156,7 @@ describe('D1 envelope_field COALESCE read index migration', () => {
 		try {
 			applyD1MigrationsThrough(sqlite, REBUILD_MIGRATION);
 			seedMixedFields(sqlite);
-			const detailPlan: string = queryPlan(sqlite, D1_ENVELOPE_DETAIL_FIELD_SQL);
+			const detailPlan: string = queryPlan(sqlite, PRE_0060_DETAIL_SQL);
 			const authoringPlan: string = queryPlan(sqlite, AUTHORING_SQL);
 			expect(detailPlan).toContain('SCAN envelope_field');
 			expect(detailPlan).not.toContain('envelope_field_envelope_coalesce_order');
@@ -171,7 +177,7 @@ describe('D1 envelope_field COALESCE read index migration', () => {
 			expect(names).toContain('envelope_field_envelope_coalesce_order');
 			expect(names).toContain('envelope_field_document_order');
 			expect(names).toContain('envelope_field_document_path_order');
-			const detailPlan: string = queryPlan(sqlite, D1_ENVELOPE_DETAIL_FIELD_SQL);
+			const detailPlan: string = queryPlan(sqlite, PRE_0060_DETAIL_SQL);
 			const authoringPlan: string = queryPlan(sqlite, AUTHORING_SQL);
 			expect(detailPlan).toContain(
 				'SEARCH envelope_field USING INDEX envelope_field_envelope_coalesce_order'

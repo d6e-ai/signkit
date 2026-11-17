@@ -1,5 +1,6 @@
 import type { FieldType, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
 import type { AuditHashVersion } from '$lib/domain/audit';
+import { dateFieldOptionsFromColumns, type DateFieldOptions } from '$lib/domain/signing-date';
 
 export const MAX_COMPLETION_ARTIFACT_CLAIM_BATCH: number = 10;
 export const MAX_COMPLETION_ARTIFACT_DISCOVERY_BATCH: number = 25;
@@ -61,6 +62,24 @@ export function requireCanonicalIsoMillisecondTimestamp(value: string): string {
 	return value;
 }
 
+/**
+ * Date options read from nullable `envelope_field` columns. Both null is a
+ * manual/historical field; any other shape is corruption and fails closed.
+ */
+export function requireCompletionDateOptions(
+	fieldType: string,
+	mode: string | null | undefined,
+	zone: string | null | undefined
+): DateFieldOptions {
+	const options: DateFieldOptions | null = dateFieldOptionsFromColumns(fieldType, mode, zone);
+	if (options === null) {
+		throw new CompletionArtifactIntegrityError(
+			'Completion evidence has corrupt date field options'
+		);
+	}
+	return options;
+}
+
 export interface ClaimCompletionArtifactsCommand {
 	claimToken: string;
 	claimedAt: string;
@@ -102,7 +121,7 @@ export interface CompletionEvidenceRecipient {
 	decisionOccurredAt: string | null;
 }
 
-export interface CompletionEvidenceField {
+export interface CompletionEvidenceField extends DateFieldOptions {
 	id: string;
 	fieldType: FieldType;
 	/**

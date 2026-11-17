@@ -1,6 +1,10 @@
 import type { RequestHandler } from '@sveltejs/kit';
 import { z, type ZodIssue, type ZodType } from 'zod';
 import { fieldTypes } from '$lib/domain/envelope';
+import {
+	canonicalizeDateFieldOptions,
+	InvalidDateFieldOptionsError
+} from '$lib/domain/signing-date';
 import type {
 	EnvelopeAuthoringFieldsReadPort,
 	EnvelopeFieldApplicationPort,
@@ -56,9 +60,27 @@ const fieldSchema = z
 			}),
 		required: z.boolean(),
 		position: z.number().int().min(0).max(100_000),
-		geometry: geometrySchema
+		geometry: geometrySchema,
+		/**
+		 * Optional server-owned automatic signing date. Both options are supplied
+		 * together on `date` fields only; legacy/manual fields omit both.
+		 */
+		dateMode: z.literal('signed_at').optional(),
+		dateTimeZone: z.string().min(1).max(64).optional()
 	})
-	.strict();
+	.strict()
+	.superRefine((field, context): void => {
+		try {
+			canonicalizeDateFieldOptions(field.fieldType, field);
+		} catch (error: unknown) {
+			if (!(error instanceof InvalidDateFieldOptionsError)) throw error;
+			context.addIssue({
+				code: 'custom',
+				path: ['dateTimeZone'],
+				message: error.message
+			});
+		}
+	});
 export const fieldsSchema = z
 	.object({
 		expectedGeneration: z.number().int().min(1).max(MAX_GENERATION),

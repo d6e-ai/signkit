@@ -8,6 +8,12 @@ import {
 } from '$lib/domain/commands/recipient-sign';
 import type { FieldType, RecipientRole } from '$lib/domain/envelope';
 import {
+	automaticDatesMatchDeclarations,
+	dateFieldOptionsFromColumns,
+	placementDateOptionsMatch,
+	type DateFieldOptions
+} from '$lib/domain/signing-date';
+import {
 	type SignAuditHead,
 	type SignLookupKey,
 	type SignPreparation,
@@ -53,6 +59,8 @@ interface FieldDeclarationRow {
 	id: string;
 	field_type: FieldType;
 	required: number;
+	date_mode: string | null;
+	date_time_zone: string | null;
 }
 
 interface SignedCommandRow {
@@ -179,10 +187,11 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		if (routing === null) return { outcome: 'integrity_error' };
 		const auditHead: SignAuditHead | null = await this.#readAuditHead(identity.envelope_id);
 		if (auditHead === null) return { outcome: 'integrity_error' };
-		const fields: readonly SignableFieldDeclaration[] = await this.#readFieldDeclarations(
+		const fields: readonly SignableFieldDeclaration[] | null = await this.#readFieldDeclarations(
 			identity.envelope_id,
 			identity.recipient_id
 		);
+		if (fields === null) return { outcome: 'integrity_error' };
 		return {
 			outcome: 'ready',
 			envelopeId: identity.envelope_id,
@@ -204,6 +213,27 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		);
 		const identity: SignPreparation | RecipientEnvelopeRow = classifyIdentity(row, command);
 		if (!isFoundRow(identity)) return publishFromPreparation(identity);
+
+		// Re-prove, immediately before the atomic batch, that every value carries
+		// its declaration's frozen options and every automatic date is the exact
+		// date of this command's signing instant. The field_generation trigger
+		// check keeps the declarations unchanged until the batch commits.
+		const declarations: readonly SignableFieldDeclaration[] | null =
+			await this.#readFieldDeclarations(identity.envelope_id, identity.recipient_id);
+		if (
+			declarations === null ||
+			declarations.length !== command.fieldValues.length ||
+			!automaticDatesMatchDeclarations(
+				declarations,
+				command.fieldValues.map((field: SignedFieldValue) => ({
+					...field,
+					fieldId: field.fieldId
+				})),
+				command.updatedAt
+			)
+		) {
+			return { outcome: 'integrity_error' };
+		}
 
 		const fieldValuesEvidence: readonly EvidenceField[] = command.fieldValues.map(
 			(field: SignedFieldValue): EvidenceField => ({
@@ -366,23 +396,50 @@ export class D1RecipientSignStore implements RecipientSignStore {
 		return { sequence: row.sequence, eventHash: row.event_hash };
 	}
 
+	/**
+	 * The recipient's frozen declarations, or null when stored date options are
+	 * corrupt or disagree with the hash-chained placement evidence they were
+	 * frozen into (e.g. a time zone edited after send), so signing fails closed.
+	 */
 	async #readFieldDeclarations(
 		envelopeId: string,
 		recipientId: string
-	): Promise<readonly SignableFieldDeclaration[]> {
+	): Promise<readonly SignableFieldDeclaration[] | null> {
 		const result: D1Result<FieldDeclarationRow> = await this.#database
 			.prepare(
-				`SELECT id, field_type, required FROM envelope_field
+				`SELECT id, field_type, required, date_mode, date_time_zone FROM envelope_field
 				 WHERE envelope_id = ? AND recipient_id = ?
 				 ORDER BY id`
 			)
 			.bind(envelopeId, recipientId)
 			.all<FieldDeclarationRow>();
-		return result.results.map((row: FieldDeclarationRow): SignableFieldDeclaration => ({
-			id: row.id,
-			fieldType: row.field_type,
-			required: row.required === 1
-		}));
+		const declarations: SignableFieldDeclaration[] = [];
+		for (const row of result.results) {
+			const options: DateFieldOptions | null = dateFieldOptionsFromColumns(
+				row.field_type,
+				row.date_mode,
+				row.date_time_zone
+			);
+			if (options === null) return null;
+			declarations.push({
+				id: row.id,
+				fieldType: row.field_type,
+				required: row.required === 1,
+				...options
+			});
+		}
+		const placement: { payload_json: string } | null = await this.#database
+			.prepare(
+				`SELECT payload_json FROM audit_event
+				 WHERE envelope_id = ? AND event_type = 'envelope.fields_placed'
+				 ORDER BY sequence DESC LIMIT 1`
+			)
+			.bind(envelopeId)
+			.first<{ payload_json: string }>();
+		if (placement === null) {
+			return declarations.some((field) => field.dateMode !== undefined) ? null : declarations;
+		}
+		return placementDateOptionsMatch(placement.payload_json, declarations) ? declarations : null;
 	}
 
 	async #resolveCommand(recipientId: string, key: SignLookupKey): Promise<SignPreparation | null> {
@@ -449,40 +506,53 @@ export class D1RecipientSignStore implements RecipientSignStore {
 	async #readStoredValues(
 		envelopeId: string,
 		recipientId: string
-	): Promise<readonly StoredSignValue[]> {
-		const result: D1Result<{
+	): Promise<readonly StoredSignValue[] | null> {
+		interface StoredValueRow {
 			field_id: string;
 			field_type: FieldType;
 			value_json: string;
 			value_sha256: string;
-		}> = await this.#database
+			date_mode: string | null;
+			date_time_zone: string | null;
+		}
+		const result: D1Result<StoredValueRow> = await this.#database
 			.prepare(
-				`SELECT field_id, field_type, value_json, value_sha256 FROM field_value
-				 WHERE envelope_id = ? AND recipient_id = ?
-				 ORDER BY field_id`
+				`SELECT value.field_id AS field_id, value.field_type AS field_type,
+					value.value_json AS value_json, value.value_sha256 AS value_sha256,
+					field.date_mode AS date_mode, field.date_time_zone AS date_time_zone
+				 FROM field_value value
+				 LEFT JOIN envelope_field field
+					ON field.id = value.field_id AND field.envelope_id = value.envelope_id
+				 WHERE value.envelope_id = ? AND value.recipient_id = ?
+				 ORDER BY value.field_id`
 			)
 			.bind(envelopeId, recipientId)
-			.all();
-		return result.results.map(
-			(row: {
-				field_id: string;
-				field_type: FieldType;
-				value_json: string;
-				value_sha256: string;
-			}): StoredSignValue => ({
+			.all<StoredValueRow>();
+		const stored: StoredSignValue[] = [];
+		for (const row of result.results) {
+			const options: DateFieldOptions | null = dateFieldOptionsFromColumns(
+				row.field_type,
+				row.date_mode,
+				row.date_time_zone
+			);
+			if (options === null) return null;
+			stored.push({
 				fieldId: row.field_id,
 				fieldType: row.field_type,
 				valueJson: row.value_json,
-				valueSha256: row.value_sha256
-			})
-		);
+				valueSha256: row.value_sha256,
+				...options
+			});
+		}
+		return stored;
 	}
 
 	async #evidenceResult(row: SignedCommandRow): Promise<SignPreparation> {
-		const stored: readonly StoredSignValue[] = await this.#readStoredValues(
+		const stored: readonly StoredSignValue[] | null = await this.#readStoredValues(
 			row.envelope_id,
 			row.recipient_id
 		);
+		if (stored === null) return { outcome: 'integrity_error' };
 		const reconstructed: string | null = await reconstructedFingerprint(row, stored);
 		if (
 			reconstructed === null ||
@@ -495,11 +565,15 @@ export class D1RecipientSignStore implements RecipientSignStore {
 			outcome: 'existing',
 			reconstructedFingerprint: reconstructed,
 			result: resultFromRow(row),
-			storedFields: stored.map((value: StoredSignValue): SignableFieldDeclaration => ({
-				id: value.fieldId,
-				fieldType: value.fieldType,
-				required: false
-			}))
+			// Only editable fields: automatic dates are server-owned and never part
+			// of a retried submission.
+			storedFields: stored
+				.filter((value: StoredSignValue): boolean => value.dateMode === undefined)
+				.map((value: StoredSignValue): SignableFieldDeclaration => ({
+					id: value.fieldId,
+					fieldType: value.fieldType,
+					required: false
+				}))
 		};
 	}
 
@@ -707,7 +781,8 @@ async function reconstructedFingerprint(
 		capabilityHash: row.capability_hash,
 		expectedFieldGeneration: row.expected_field_generation,
 		fieldCount: row.field_count,
-		stored
+		stored,
+		signedAt: row.updated_at
 	});
 }
 

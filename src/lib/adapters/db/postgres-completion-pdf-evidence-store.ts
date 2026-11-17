@@ -1,5 +1,6 @@
 import postgres from 'postgres';
 import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
+import { requireCompletionDateOptions } from '$lib/ports/completion-artifact-store';
 import type {
 	CompletionPdfEvidenceStore,
 	CompletionPdfFieldGeometry
@@ -18,6 +19,8 @@ interface GeometryRow {
 	y: number | null;
 	width: number | null;
 	height: number | null;
+	dateMode: string | null;
+	dateTimeZone: string | null;
 }
 
 export class PostgresCompletionPdfEvidenceStore implements CompletionPdfEvidenceStore {
@@ -31,7 +34,8 @@ export class PostgresCompletionPdfEvidenceStore implements CompletionPdfEvidence
 		const rows = await this.#sql<GeometryRow[]>`
 			SELECT id, document_id AS "documentId", document_path AS "documentPath", position,
 			       recipient_id AS "recipientId", field_type AS "fieldType", required,
-			       page, x, y, width, height
+			       page, x, y, width, height,
+			       date_mode AS "dateMode", date_time_zone AS "dateTimeZone"
 			FROM envelope_field
 			WHERE envelope_id = ${envelopeId}
 			ORDER BY document_id ASC, document_path ASC, position ASC, id ASC`;
@@ -43,7 +47,8 @@ export class PostgresCompletionPdfEvidenceStore implements CompletionPdfEvidence
 			recipientId: row.recipientId,
 			fieldType: row.fieldType as FieldType,
 			required: row.required,
-			geometry: toGeometry(row)
+			geometry: toGeometry(row),
+			...requireCompletionDateOptions(row.fieldType, row.dateMode, row.dateTimeZone)
 		}));
 	}
 }

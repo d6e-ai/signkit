@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { gunzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import type {
@@ -763,5 +764,143 @@ describe('gzipCompletionArtifact', () => {
 		const gzipped: Uint8Array = gzipCompletionArtifact('hello world');
 		const decoded: Uint8Array = gunzipSync(gzipped);
 		expect(new TextDecoder().decode(decoded)).toBe('hello world');
+	});
+});
+
+describe('buildCompletionManifest: automatic signing dates', () => {
+	const SIGNED_AT: string = '2026-03-31T15:30:00.000Z';
+	const sha = (value: string): string => createHash('sha256').update(value).digest('hex');
+	const tokyoValue: string = JSON.stringify('2026-04-01');
+
+	function placementStep(zone: string): AuditChainStep {
+		return {
+			id: 'audit-event-placed',
+			eventType: 'envelope.fields_placed',
+			actorType: 'user',
+			actorId: 'user-1',
+			occurredAt: '2026-09-11T12:00:00.000Z',
+			payload: {
+				commitSha: SENT_COMMIT_SHA,
+				generation: 1,
+				fieldGeneration: 1,
+				fields: [
+					{
+						id: 'field-b',
+						recipientId: 'recipient-b',
+						documentId: 'doc-1',
+						documentPath: null,
+						fieldType: 'signature',
+						required: true,
+						position: 0,
+						geometry: null
+					},
+					{
+						id: 'field-a',
+						recipientId: 'recipient-b',
+						documentId: 'doc-1',
+						documentPath: null,
+						fieldType: 'date',
+						required: false,
+						position: 1,
+						geometry: null,
+						dateMode: 'signed_at',
+						dateTimeZone: zone
+					}
+				]
+			}
+		};
+	}
+
+	async function automaticInput(
+		options: {
+			zone?: string;
+			valueJson?: string;
+			withPlacement?: boolean;
+			fieldZone?: string;
+		} = {}
+	): Promise<BuildCompletionManifestInput> {
+		const valueJson: string = options.valueJson ?? tokyoValue;
+		const steps: AuditChainStep[] = defaultSteps();
+		steps[2] = {
+			...steps[2],
+			occurredAt: SIGNED_AT,
+			payload: {
+				...(steps[2].payload as Record<string, unknown>),
+				fields: [
+					{ id: 'field-b', fieldType: 'signature', valueSha256: FIELD_B_SHA256 },
+					{ id: 'field-a', fieldType: 'date', valueSha256: sha(valueJson) }
+				],
+				signedAt: SIGNED_AT
+			}
+		};
+		if (options.withPlacement !== false)
+			steps.splice(2, 0, placementStep(options.zone ?? 'Asia/Tokyo'));
+		return baseInput({
+			auditEvents: await buildVerifiedAuditChain(CONTEXT, steps),
+			recipients: defaultRecipients(SIGNED_AT),
+			fields: [
+				{
+					id: 'field-b',
+					fieldType: 'signature',
+					valueJson: '"Signed"',
+					valueSha256: FIELD_B_SHA256
+				},
+				{
+					id: 'field-a',
+					fieldType: 'date',
+					valueJson,
+					valueSha256: sha(valueJson),
+					dateMode: 'signed_at',
+					dateTimeZone: options.fieldZone ?? 'Asia/Tokyo'
+				}
+			]
+		});
+	}
+
+	it('records the frozen options only on the automatic field and leaves manual fields untouched', async () => {
+		const manifest: CompletionManifestV1 = await buildCompletionManifest(await automaticInput());
+		expect(manifest.fields).toEqual([
+			{
+				id: 'field-a',
+				fieldType: 'date',
+				valueSha256: sha(tokyoValue),
+				dateMode: 'signed_at',
+				dateTimeZone: 'Asia/Tokyo'
+			},
+			{ id: 'field-b', fieldType: 'signature', valueSha256: FIELD_B_SHA256 }
+		]);
+		const json: string = canonicalManifestJson(manifest);
+		expect(json.match(/dateMode/g)).toHaveLength(1);
+		// The manifest carries digests, never the date itself.
+		expect(json).not.toContain('2026-04-01');
+	});
+
+	it('keeps a legacy manifest byte-identical: no option keys and no added evidence checks', async () => {
+		const legacy: CompletionManifestV1 = await buildCompletionManifest(await baseInput());
+		const json: string = canonicalManifestJson(legacy);
+		expect(json).not.toMatch(/dateMode|dateTimeZone/);
+		expect(Object.keys(legacy.fields[0])).toEqual(['id', 'fieldType', 'valueSha256']);
+	});
+
+	it('fails closed when the persisted date is not the date of the verified signing instant', async () => {
+		// Internally consistent digest, but UTC's date for an instant that is already the 1st in Tokyo.
+		await expect(
+			buildCompletionManifest(await automaticInput({ valueJson: JSON.stringify('2026-03-31') }))
+		).rejects.toThrow(/does not match its verified signing instant/);
+		await expect(
+			buildCompletionManifest(await automaticInput({ valueJson: JSON.stringify('2026-04-02') }))
+		).rejects.toThrow(CompletionArtifactIntegrityError);
+	});
+
+	it('fails closed when the frozen zone differs from the placement evidence or the evidence is absent', async () => {
+		await expect(buildCompletionManifest(await automaticInput({ zone: 'UTC' }))).rejects.toThrow(
+			/do not match the attested field placement/
+		);
+		await expect(
+			buildCompletionManifest(await automaticInput({ fieldZone: 'Pacific/Kiritimati' }))
+		).rejects.toThrow(/do not match the attested field placement/);
+		await expect(
+			buildCompletionManifest(await automaticInput({ withPlacement: false }))
+		).rejects.toThrow(/do not match the attested field placement/);
 	});
 });

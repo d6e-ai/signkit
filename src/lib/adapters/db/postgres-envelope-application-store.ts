@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { dateFieldOptionsFromColumns, type DateFieldOptions } from '$lib/domain/signing-date';
 import type {
 	CreateEnvelopeCommand,
 	CreateEnvelopeStoreResult,
@@ -318,7 +319,9 @@ export class PostgresEnvelopeApplicationStore
 				x,
 				y,
 				width,
-				height
+				height,
+				date_mode AS "dateMode",
+				date_time_zone AS "dateTimeZone"
 			FROM envelope_field
 			WHERE envelope_id = ${envelopeId}
 			ORDER BY COALESCE(document_id, document_path) ASC, position ASC, id ASC
@@ -881,6 +884,8 @@ interface PostgresDetailFieldRow {
 	y: number | null;
 	width: number | null;
 	height: number | null;
+	dateMode?: string | null;
+	dateTimeZone?: string | null;
 }
 
 function fromPostgresRecipientRow(row: PostgresDetailRecipientRow): PublicEnvelopeRecipient {
@@ -896,6 +901,12 @@ function fromPostgresRecipientRow(row: PostgresDetailRecipientRow): PublicEnvelo
 }
 
 function fromPostgresFieldRow(row: PostgresDetailFieldRow): PublicEnvelopeDetailField {
+	const dateOptions: DateFieldOptions | null = dateFieldOptionsFromColumns(
+		row.fieldType,
+		row.dateMode,
+		row.dateTimeZone
+	);
+	if (dateOptions === null) throw new Error('Stored envelope field row is corrupted.');
 	return {
 		id: row.id,
 		recipientId: row.recipientId,
@@ -904,7 +915,8 @@ function fromPostgresFieldRow(row: PostgresDetailFieldRow): PublicEnvelopeDetail
 		fieldType: row.fieldType,
 		required: row.required,
 		position: row.position,
-		geometry: postgresGeometryFromColumns(row.page, row.x, row.y, row.width, row.height)
+		geometry: postgresGeometryFromColumns(row.page, row.x, row.y, row.width, row.height),
+		...dateOptions
 	};
 }
 

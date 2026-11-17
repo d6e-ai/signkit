@@ -1,3 +1,4 @@
+import { dateOptionsProperties, type DateFieldOptions } from '$lib/domain/signing-date';
 import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
 import type {
 	EnvelopeSentDocumentStore,
@@ -20,7 +21,7 @@ import {
 } from './recipient-access';
 
 /** A field the recipient must complete, positioned on one sent document. */
-export interface RecipientPlacedField {
+export interface RecipientPlacedField extends DateFieldOptions {
 	id: string;
 	documentId: string | null;
 	fieldType: FieldType;
@@ -181,7 +182,8 @@ function toPlacedFieldsForSet(
 			fieldType: field.fieldType,
 			label: field.label,
 			required: field.required,
-			geometry
+			geometry,
+			...dateOptionsProperties(field)
 		};
 	});
 }
@@ -218,7 +220,8 @@ function toPlacedFieldsForLegacy(
 			fieldType: field.fieldType,
 			label: field.label,
 			required: field.required,
-			geometry
+			geometry,
+			...dateOptionsProperties(field)
 		};
 	});
 }

@@ -82,6 +82,67 @@ function application(result?: PlaceFieldsResult): EnvelopeFieldApplicationPort {
 	};
 }
 
+describe('envelope fields HTTP handler: automatic signing date options', () => {
+	function dateBody(extra: Record<string, unknown>): string {
+		const body = JSON.parse(validBody()) as { fields: Record<string, unknown>[] };
+		body.fields[0] = { ...body.fields[0], fieldType: 'date', ...extra };
+		return JSON.stringify(body);
+	}
+	const headers = { 'idempotency-key': 'fields-date' };
+
+	it('forwards complete automatic options to the application unchanged', async () => {
+		const port = application();
+		const response: Response = await createEnvelopeFieldsHandler(() => port)(
+			event({ body: dateBody({ dateMode: 'signed_at', dateTimeZone: 'Asia/Tokyo' }), headers })
+		);
+		expect(response.status).toBe(200);
+		const input = vi.mocked(port.place).mock.calls[0][2];
+		expect(input.fields[0]).toMatchObject({ dateMode: 'signed_at', dateTimeZone: 'Asia/Tokyo' });
+	});
+
+	it('forwards legacy fields without any date option keys', async () => {
+		const port = application();
+		await createEnvelopeFieldsHandler(() => port)(event({ body: validBody(), headers }));
+		const input = vi.mocked(port.place).mock.calls[0][2];
+		expect(Object.keys(input.fields[0])).not.toContain('dateMode');
+		expect(Object.keys(input.fields[0])).not.toContain('dateTimeZone');
+	});
+
+	it.each([
+		['a lone mode', { dateMode: 'signed_at' }],
+		['a lone zone', { dateTimeZone: 'Asia/Tokyo' }],
+		['an unknown mode', { dateMode: 'manual', dateTimeZone: 'Asia/Tokyo' }],
+		['a non-IANA zone', { dateMode: 'signed_at', dateTimeZone: 'Mars/Olympus' }],
+		['an empty zone', { dateMode: 'signed_at', dateTimeZone: '' }],
+		['an overlong zone', { dateMode: 'signed_at', dateTimeZone: 'A'.repeat(65) }]
+	])(
+		'rejects %s with a 400 validation problem and never reaches the application',
+		async (_n, extra) => {
+			const port = application();
+			const response: Response = await createEnvelopeFieldsHandler(() => port)(
+				event({ body: dateBody(extra), headers })
+			);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({
+				type: 'urn:signkit:problem:validation-failed'
+			});
+			expect(port.place).not.toHaveBeenCalled();
+		}
+	);
+
+	it('rejects automatic options on a non-date field', async () => {
+		const port = application();
+		const response: Response = await createEnvelopeFieldsHandler(() => port)(
+			event({
+				body: dateBody({ fieldType: 'text', dateMode: 'signed_at', dateTimeZone: 'Asia/Tokyo' }),
+				headers
+			})
+		);
+		expect(response.status).toBe(400);
+		expect(port.place).not.toHaveBeenCalled();
+	});
+});
+
 describe('envelope fields HTTP handler', () => {
 	it('authorizes before parsing or resolving dependencies', async () => {
 		const resolver: EnvelopeFieldApplicationResolver = vi.fn(() => null);

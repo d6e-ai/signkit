@@ -1,4 +1,5 @@
 import type { FieldGeometry, FieldType, MarkdownPath } from '$lib/domain/envelope';
+import { dateFieldOptionsFromColumns, type DateFieldOptions } from '$lib/domain/signing-date';
 import type {
 	RecipientFieldDeclaration,
 	RecipientFieldDeclarationStore,
@@ -18,6 +19,8 @@ interface FieldRow {
 	y: number | null;
 	width: number | null;
 	height: number | null;
+	date_mode: string | null;
+	date_time_zone: string | null;
 }
 
 export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarationStore {
@@ -39,7 +42,7 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 		const result: D1Result<FieldRow> = await this.#database
 			.prepare(
 				`SELECT id, document_id, document_path, field_type, label, required, position,
-					page, x, y, width, height
+					page, x, y, width, height, date_mode, date_time_zone
 				 FROM envelope_field
 				 WHERE envelope_id = ? AND recipient_id = ?
 				 ORDER BY COALESCE(document_id, document_path), position, id`
@@ -56,10 +59,22 @@ export class D1RecipientFieldDeclarationStore implements RecipientFieldDeclarati
 				label: row.label,
 				required: row.required === 1,
 				position: row.position,
-				geometry: toGeometry(row)
+				geometry: toGeometry(row),
+				...requireDateOptions(row.field_type, row.date_mode, row.date_time_zone)
 			}))
 		};
 	}
+}
+
+/** Corrupt stored date options fail the read closed rather than becoming manual fields. */
+function requireDateOptions(
+	fieldType: string,
+	mode: string | null,
+	zone: string | null
+): DateFieldOptions {
+	const options: DateFieldOptions | null = dateFieldOptionsFromColumns(fieldType, mode, zone);
+	if (options === null) throw new Error('Recipient field date options are corrupt');
+	return options;
 }
 
 /**
