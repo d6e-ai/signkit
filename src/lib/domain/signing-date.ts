@@ -82,7 +82,7 @@ export function dateFieldOptionsFromColumns(
 	const noZone: boolean = zone === null || zone === undefined;
 	if (noMode && noZone) return {};
 	if (noMode || noZone || fieldType !== 'date' || mode !== 'signed_at') return null;
-	if (canonicalizeTimeZone(zone) === null) return null;
+	if (zone === null || zone === undefined || canonicalizeTimeZone(zone) === null) return null;
 	return { dateMode: 'signed_at', dateTimeZone: zone };
 }
 
