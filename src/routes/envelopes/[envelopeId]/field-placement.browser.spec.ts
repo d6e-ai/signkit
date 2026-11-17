@@ -268,6 +268,74 @@ async function addField(screen: Awaited<ReturnType<typeof render>>): Promise<HTM
 }
 
 describe('keyboard field placement', () => {
+	it('loads the authoring page when time-zone suggestions are unsupported', async () => {
+		const descriptor = Object.getOwnPropertyDescriptor(Intl, 'supportedValuesOf')!;
+		Object.defineProperty(Intl, 'supportedValuesOf', { ...descriptor, value: undefined });
+		try {
+			const screen = await openFieldsTab(buildMockFetch());
+			await expect
+				.element(screen.getByRole('button', { name: 'Add field', exact: true }))
+				.toBeEnabled();
+			await screen.getByLabelText('Field type').click();
+			await browserPage
+				.getByRole('option', { name: 'Date signed (automatic)', exact: true })
+				.click();
+			await expect
+				.element(screen.getByRole('combobox', { name: 'Signing-date time zone' }))
+				.not.toHaveValue('');
+		} finally {
+			Object.defineProperty(Intl, 'supportedValuesOf', descriptor);
+		}
+	});
+	it('places an automatic signing date with a frozen valid time zone', async () => {
+		const mockFetch = buildMockFetch();
+		const screen = await openFieldsTab(mockFetch);
+		await screen.getByLabelText('Field type').click();
+		await browserPage.getByRole('option', { name: 'Date signed (automatic)', exact: true }).click();
+		const zone = screen.getByRole('combobox', { name: 'Signing-date time zone' });
+		await zone.fill('not-a-time-zone');
+		await screen.getByRole('button', { name: 'Add field', exact: true }).click();
+		await expect
+			.element(screen.getByText('Choose a valid time zone, such as Asia/Tokyo.'))
+			.toBeVisible();
+		await zone.fill('Asia/Tokyo');
+		await screen.getByRole('button', { name: 'Add field', exact: true }).click();
+		await expect
+			.element(screen.getByRole('button', { name: 'Date signed (automatic) for Signer on page 1' }))
+			.toBeVisible();
+		await screen.getByRole('button', { name: 'Save signature positions' }).click();
+		await expect.element(screen.getByText('1 signature positions saved.')).toBeVisible();
+		const request = mockFetch.mock.calls.find(
+			([, init]) => init?.method === 'POST' && String(init.body).includes('dateMode')
+		);
+		expect(request).toBeDefined();
+		const field = JSON.parse(request![1].body as string).fields[0];
+		expect(field).toMatchObject({
+			fieldType: 'date',
+			dateMode: 'signed_at',
+			dateTimeZone: 'Asia/Tokyo',
+			required: true
+		});
+		// A whole-set replacement after the dedicated authoring refresh must preserve the original options.
+		await screen.getByLabelText('Field type').click();
+		await browserPage.getByRole('option', { name: 'Text', exact: true }).click();
+		await screen.getByRole('button', { name: 'Add field', exact: true }).click();
+		await expect
+			.element(screen.getByRole('button', { name: 'Text for Signer on page 1' }))
+			.toBeVisible();
+		await screen.getByRole('button', { name: 'Save signature positions' }).click();
+		await expect.element(screen.getByText('2 signature positions saved.')).toBeVisible();
+		const posts = mockFetch.mock.calls.filter(
+			([, init]) => init?.method === 'POST' && String(init.body).includes('dateMode')
+		);
+		expect(posts).toHaveLength(2);
+		expect(JSON.parse(posts[1][1].body as string).fields[0]).toMatchObject({
+			fieldType: 'date',
+			dateMode: 'signed_at',
+			dateTimeZone: 'Asia/Tokyo',
+			required: true
+		});
+	});
 	it.each([1280, 390])('keeps the PDF and selected geometry usable at %ipx', async (width) => {
 		await browserPage.viewport(width, 844);
 		const screen = await openFieldsTab(buildMockFetch());

@@ -12,6 +12,12 @@ scrolling and focusing. A later field selection or manual document switch cancel
 focus request. Required-field validation uses the same navigation before opening final confirmation.
 Optional fields remain available through the navigator and document overlays.
 
+[Automatic signing dates](envelope-model.md#entered-dates-and-automatic-signing-dates) are shown as
+read-only, with an automatic indicator and the frozen time zone available to the signer. They do
+not appear as missing input or inflate manual required-field progress. No browser-generated date
+is shown as an already recorded signing date. They are filled only by the final explicit signing
+command; entered dates retain their calendar input.
+
 A filled field, viewing a PDF and completing a recipient's action are separate states. Signing and
 approval retain explicit confirmation; merely navigating or filling fields never submits an action.
 Approvers do not see signer progress. Existing action controllers retain retry and idempotency

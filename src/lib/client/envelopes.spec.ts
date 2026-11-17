@@ -402,33 +402,37 @@ describe('EnvelopesClient', () => {
 		expect(JSON.parse(init?.body as string)).toEqual({ requestedProfile: 'pades-b-t' });
 	});
 
-	it('reads the complete authoring field set for the current revision', async () => {
-		const fields = {
-			envelopeId: envelope.id,
-			generation: 1,
-			fieldGeneration: 2,
-			commitSha: 'a'.repeat(40),
-			fields: [
-				{
-					id: '01900000-0000-7000-8000-000000000010',
-					recipientId: '01900000-0000-7000-8000-000000000011',
-					documentId: '01900000-0000-7000-8000-000000000012',
-					documentPath: 'documents/agreement.md',
-					fieldType: 'signature',
-					label: 'Sign here',
-					required: true,
-					position: 1,
-					geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
-				}
-			]
-		};
-		const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(fields));
-		const client = createEnvelopesClient({ fetch: fetchMock });
+	it.each([{}, { fieldType: 'date', dateMode: 'signed_at', dateTimeZone: 'Asia/Tokyo' }])(
+		'reads the complete authoring field set without losing date options: %j',
+		async (options) => {
+			const fields = {
+				envelopeId: envelope.id,
+				generation: 1,
+				fieldGeneration: 2,
+				commitSha: 'a'.repeat(40),
+				fields: [
+					{
+						id: '01900000-0000-7000-8000-000000000010',
+						recipientId: '01900000-0000-7000-8000-000000000011',
+						documentId: '01900000-0000-7000-8000-000000000012',
+						documentPath: 'documents/agreement.md',
+						fieldType: 'signature',
+						...options,
+						label: 'Sign here',
+						required: true,
+						position: 1,
+						geometry: { page: 1, x: 0.1, y: 0.2, width: 0.3, height: 0.05 }
+					}
+				]
+			};
+			const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(fields));
+			const client = createEnvelopesClient({ fetch: fetchMock });
 
-		await expect(client.authoringFields(envelope.id)).resolves.toEqual(fields);
-		expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/fields`);
-		expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET' });
-	});
+			await expect(client.authoringFields(envelope.id)).resolves.toEqual(fields);
+			expect(fetchMock.mock.calls[0][0]).toBe(`/api/v1/envelopes/${envelope.id}/fields`);
+			expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'GET' });
+		}
+	);
 
 	it('rejects a truncated authoring field set instead of hydrating it', async () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>

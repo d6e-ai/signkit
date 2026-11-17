@@ -188,6 +188,95 @@ test('keeps approval separate from signer progress and requires confirmation', a
 	expect(fetchMock).not.toHaveBeenCalled();
 });
 
+test('keeps the signing date read-only and submits only entered fields after explicit confirmation', async () => {
+	const data = fixture();
+	if (data.state !== 'active') throw new Error('Expected active fixture');
+	data.fields = [
+		data.fields[0],
+		{
+			...data.fields[1],
+			documentId: DOCUMENT_A,
+			fieldType: 'date',
+			label: 'Signing date',
+			dateMode: 'signed_at',
+			dateTimeZone: 'Asia/Tokyo',
+			geometry: { ...data.fields[1].geometry, y: 0.3 }
+		},
+		{
+			...data.fields[1],
+			id: '01910000-0000-7000-8000-000000000023',
+			documentId: DOCUMENT_A,
+			fieldType: 'date',
+			label: 'Effective date',
+			geometry: { ...data.fields[1].geometry, y: 0.4 }
+		}
+	];
+	const fetchMock = vi.fn<typeof fetch>(async () => new Response('{}', { status: 503 }));
+	vi.stubGlobal('fetch', fetchMock);
+	const screen = await render(SignPage, { data });
+	await finish(DOCUMENT_A);
+	await screen.getByRole('textbox', { name: 'Full name — Text' }).fill('Alex');
+	await screen.getByLabelText('Effective date — Date (entered)').fill('2027-02-01');
+	const automatic = screen.getByRole('textbox', {
+		name: 'Signing date — Date signed (automatic)'
+	});
+	await expect.element(automatic).toHaveAttribute('readonly');
+	await expect.element(automatic).toHaveValue('');
+	await expect
+		.element(automatic)
+		.toHaveAttribute('aria-describedby', `${FIELD_B}-date-description`);
+	await expect
+		.element(screen.getByText('Automatically recorded when you sign, using Asia/Tokyo.'))
+		.toBeInTheDocument();
+	await screen.getByRole('button', { name: 'All fields (3)', exact: true }).click();
+	await expect.element(screen.getByText('Asia/Tokyo', { exact: true })).toBeVisible();
+	await expect.element(screen.getByText('2 of 2 required fields completed')).toBeVisible();
+	await screen.getByRole('button', { name: 'Sign and complete', exact: true }).click();
+	expect(fetchMock).not.toHaveBeenCalled();
+	await screen
+		.getByRole('alertdialog')
+		.getByRole('button', { name: 'Sign and complete', exact: true })
+		.click();
+	await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+	const init = fetchMock.mock.calls[0][1] as RequestInit;
+	expect(JSON.parse(init.body as string).values).toEqual([
+		{ fieldId: FIELD_A, value: 'Alex' },
+		{ fieldId: '01910000-0000-7000-8000-000000000023', value: '2027-02-01' }
+	]);
+});
+
+test('allows explicit signing with only automatic dates at 390px without inventing a browser date', async () => {
+	await page.viewport(390, 844);
+	const data = fixture();
+	if (data.state !== 'active') throw new Error('Expected active fixture');
+	data.fields = [
+		{
+			...data.fields[0],
+			fieldType: 'date',
+			dateMode: 'signed_at',
+			dateTimeZone: 'Pacific/Kiritimati',
+			label: 'Signing date'
+		}
+	];
+	const fetchMock = vi.fn<typeof fetch>(async () => new Response('{}', { status: 503 }));
+	vi.stubGlobal('fetch', fetchMock);
+	const screen = await render(SignPage, { data });
+	await finish(DOCUMENT_A);
+	await expect.element(screen.getByText('No required fields to fill in')).toBeVisible();
+	await expect
+		.element(screen.getByRole('button', { name: 'Next required field' }))
+		.not.toBeInTheDocument();
+	await screen.getByRole('button', { name: 'Sign and complete', exact: true }).click();
+	await screen
+		.getByRole('alertdialog')
+		.getByRole('button', { name: 'Sign and complete', exact: true })
+		.click();
+	await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+	const init = fetchMock.mock.calls[0][1] as RequestInit;
+	expect(JSON.parse(init.body as string).values).toEqual([]);
+	expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+});
+
 test('keeps metadata and actionable progress within a 390px viewport', async () => {
 	await page.viewport(390, 844);
 	const screen = await render(SignPage, { data: fixture() });

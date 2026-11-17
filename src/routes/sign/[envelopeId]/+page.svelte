@@ -752,6 +752,7 @@
 
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
+	import { isDateSignedField, type DateFieldOptions } from '$lib/domain/signing-date';
 	import { onMount, tick, untrack } from 'svelte';
 	import { IconAlertTriangle, IconCircleCheck, IconCircleX } from '@tabler/icons-svelte';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
@@ -855,7 +856,9 @@
 		);
 	}
 
-	const requiredFields = $derived(placedFields.filter((field) => field.required));
+	const requiredFields = $derived(
+		placedFields.filter((field) => field.required && !isDateSignedField(field))
+	);
 	const missingRequiredFields = $derived(
 		requiredFields.filter((field) => isFieldValueMissing(field, fieldValues[field.id]))
 	);
@@ -942,10 +945,10 @@
 	}
 
 	function isFieldValueMissing(
-		field: { fieldType: string; required: boolean },
+		field: { fieldType: string; required: boolean } & DateFieldOptions,
 		value: unknown
 	): boolean {
-		if (!field.required) return false;
+		if (!field.required || isDateSignedField(field)) return false;
 		if (field.fieldType === 'checkbox') return value !== true;
 		return typeof value !== 'string' || value.trim().length === 0;
 	}
@@ -1095,10 +1098,12 @@
 	async function handleSignConfirm(): Promise<void> {
 		if (data.state !== 'active') return;
 		signController ??= buildSignController();
-		const values = data.fields.map((field) => ({
-			fieldId: field.id,
-			value: fieldValues[field.id]
-		}));
+		const values = data.fields
+			.filter((field) => !isDateSignedField(field))
+			.map((field) => ({
+				fieldId: field.id,
+				value: fieldValues[field.id]
+			}));
 		await signController?.confirmSign(values);
 	}
 
@@ -1311,6 +1316,19 @@
 				disabled={!fieldsEditable}
 				bind:value={() => fieldValues[field.id] as string, (next) => (fieldValues[field.id] = next)}
 			/>
+		{:else if isDateSignedField(field)}
+			<Input
+				id={field.id}
+				readonly
+				aria-label="{field.label} — {m.signing_field_type_date_signed()}"
+				aria-describedby="{field.id}-date-description"
+				placeholder={m.signing_date_automatic_placeholder()}
+				title={m.signing_date_automatic_description({ timeZone: field.dateTimeZone ?? '' })}
+				class="size-full min-h-0 px-1 text-xs"
+			/>
+			<span id="{field.id}-date-description" class="sr-only">
+				{m.signing_date_automatic_description({ timeZone: field.dateTimeZone ?? '' })}
+			</span>
 		{:else if field.fieldType === 'date'}
 			<Input
 				id={field.id}
@@ -1456,10 +1474,12 @@
 						<Card.Content class="flex flex-col gap-3">
 							<div class="flex flex-wrap items-center justify-between gap-3">
 								<p class="text-sm" aria-live="polite">
-									{m.signing_required_progress({
-										completed: String(requiredFields.length - missingRequiredFields.length),
-										total: String(requiredFields.length)
-									})}
+									{requiredFields.length === 0
+										? m.signing_no_manual_required_fields()
+										: m.signing_required_progress({
+												completed: String(requiredFields.length - missingRequiredFields.length),
+												total: String(requiredFields.length)
+											})}
 								</p>
 								{#if missingRequiredFields[0]}
 									<Button
@@ -1488,7 +1508,7 @@
 									<ul class="flex flex-col gap-1">
 										{#each placedFields as field (field.id)}
 											{@const done = !isFieldValueMissing(
-												{ fieldType: field.fieldType, required: true },
+												{ ...field, required: true },
 												fieldValues[field.id]
 											)}
 											<li>
@@ -1505,6 +1525,11 @@
 												>
 													<span class="flex min-w-0 flex-col items-start gap-1 text-left">
 														<span>{field.label}</span>
+														{#if isDateSignedField(field)}
+															<span class="text-xs [overflow-wrap:anywhere] text-muted-foreground"
+																>{field.dateTimeZone}</span
+															>
+														{/if}
 														<span class="text-xs text-muted-foreground"
 															>{fieldDocumentTitle(field)} · {m.signing_document_page({
 																page: String(field.geometry.page)
@@ -1512,11 +1537,13 @@
 														>
 													</span>
 													<Badge variant={done ? 'secondary' : 'outline'}
-														>{done
-															? m.signing_field_complete()
-															: field.required
-																? m.signing_field_required()
-																: m.signing_field_optional()}</Badge
+														>{isDateSignedField(field)
+															? m.signing_field_automatic()
+															: done
+																? m.signing_field_complete()
+																: field.required
+																	? m.signing_field_required()
+																	: m.signing_field_optional()}</Badge
 													>
 												</Button>
 											</li>

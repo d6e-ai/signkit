@@ -1,3 +1,5 @@
+import type { DateFieldOptions } from '$lib/domain/signing-date';
+import { dateFieldOptions, parseDateFieldOptions } from '$lib/client/date-fields';
 import {
 	fieldTypes,
 	isDraftPath,
@@ -19,7 +21,7 @@ export interface AuthoringFieldsRevision {
 	commitSha: string | null;
 }
 
-export interface AuthoringFieldRecord {
+export interface AuthoringFieldRecord extends DateFieldOptions {
 	id: string;
 	recipientId: string;
 	documentId: string | null;
@@ -35,7 +37,7 @@ export interface AuthoringFieldRecord {
  * The label-free public detail projection used to prove a GET /fields body
  * is the complete current set rather than a subset or a mismatched rewrite.
  */
-export interface PublicAuthoringFieldProjection {
+export interface PublicAuthoringFieldProjection extends DateFieldOptions {
 	id: string;
 	recipientId: string;
 	documentId: string | null;
@@ -132,6 +134,8 @@ function samePublicMetadata(
 		record.documentId === projected.documentId &&
 		record.documentPath === projected.documentPath &&
 		record.fieldType === projected.fieldType &&
+		record.dateMode === projected.dateMode &&
+		record.dateTimeZone === projected.dateTimeZone &&
 		record.required === projected.required &&
 		record.position === projected.position &&
 		sameGeometry(record.geometry, projected.geometry)
@@ -164,6 +168,12 @@ function parseAuthoringField(data: unknown): AuthoringFieldResponse | null {
 	if (typeof field.id !== 'string' || field.id.length === 0) return null;
 	if (typeof field.recipientId !== 'string' || field.recipientId.length === 0) return null;
 	if (!isFieldType(field.fieldType)) return null;
+	const options = parseDateFieldOptions({
+		fieldType: field.fieldType,
+		dateMode: field.dateMode,
+		dateTimeZone: field.dateTimeZone
+	});
+	if (options === null) return null;
 	if (typeof field.label !== 'string') return null;
 	if (typeof field.required !== 'boolean') return null;
 	if (!isNonNegativeInt(field.position)) return null;
@@ -179,6 +189,7 @@ function parseAuthoringField(data: unknown): AuthoringFieldResponse | null {
 		documentId,
 		documentPath,
 		fieldType: field.fieldType,
+		...dateFieldOptions(field as DateFieldOptions),
 		label: field.label,
 		required: field.required,
 		position: field.position,
@@ -187,6 +198,7 @@ function parseAuthoringField(data: unknown): AuthoringFieldResponse | null {
 }
 
 function toAuthoringFieldRecord(field: AuthoringFieldResponse): AuthoringFieldRecord | null {
+	if (parseDateFieldOptions(field) === null) return null;
 	if (!isFieldType(field.fieldType) || typeof field.label !== 'string') return null;
 	if (typeof field.required !== 'boolean' || !isNonNegativeInt(field.position)) return null;
 	if (typeof field.id !== 'string' || typeof field.recipientId !== 'string') return null;
@@ -202,6 +214,7 @@ function toAuthoringFieldRecord(field: AuthoringFieldResponse): AuthoringFieldRe
 		documentId,
 		documentPath,
 		fieldType: field.fieldType,
+		...dateFieldOptions(field as DateFieldOptions),
 		label: field.label,
 		required: field.required,
 		position: field.position,

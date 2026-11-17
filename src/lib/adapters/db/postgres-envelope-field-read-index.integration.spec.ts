@@ -220,8 +220,11 @@ postgresDescribe('PostgreSQL envelope_field COALESCE read index', () => {
 			const authoringPlan: string = await explain(client, AUTHORING_SQL);
 			expect(detailPlan).toContain('envelope_field_envelope_coalesce_order');
 			expect(authoringPlan).toContain('envelope_field_envelope_coalesce_order');
-			const detail = await new PostgresEnvelopeApplicationStore(client).readDetail(ENVELOPE_ID);
-			expect(detail?.fields.map((field): string => field.id)).toEqual(MIXED_FIELD_IDS);
+			// Exercise the projection that existed at this migration boundary. The current
+			// application also reads date-option columns added later, and is covered by
+			// the fully migrated schema above.
+			const fields = await client.unsafe<{ id: string }[]>(DETAIL_SQL);
+			expect(fields.map((field): string => field.id)).toEqual(MIXED_FIELD_IDS);
 		} finally {
 			await client.unsafe('SET search_path TO public');
 			await client.unsafe(`DROP SCHEMA IF EXISTS "${upgradeSchema}" CASCADE`);
