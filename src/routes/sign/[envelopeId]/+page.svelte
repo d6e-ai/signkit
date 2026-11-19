@@ -1,4 +1,12 @@
 <script lang="ts" module>
+	import {
+		instructionRequest,
+		readSigningInstruction,
+		signingInstructionPrompt,
+		type SigningInstructionPrompt,
+		type SigningInstructionRequest
+	} from '$lib/domain/signing-instruction';
+
 	import { isProblemOfType, SIGNED_ASSET_EXPIRED_PROBLEM } from '$lib/components/signature-draft';
 	import { defaultNewIdempotencyKey } from '$lib/client/http-problem';
 
@@ -478,6 +486,7 @@
 		| 'validation_failure'
 		| 'transient_failure'
 		| 'terminal_failure'
+		| 'instruction_conflict'
 		| 'success';
 
 	export interface RecipientSignFieldValue {
@@ -517,7 +526,10 @@
 	}
 
 	export interface RecipientSignController {
-		confirmSign(values: readonly RecipientSignFieldValue[]): Promise<void>;
+		confirmSign(
+			values: readonly RecipientSignFieldValue[],
+			instruction?: SigningInstructionRequest
+		): Promise<void>;
 		getStatus(): RecipientSignStatus;
 		isInFlight(): boolean;
 		getIdempotencyKey(): string | null;
@@ -545,6 +557,7 @@
 		let inFlight = false;
 		let idempotencyKey: string | null = null;
 		let submittedValues: readonly RecipientSignFieldValue[] | null = null;
+		let submittedInstruction: SigningInstructionRequest | undefined;
 		let replayed = false;
 		let receipt: RecipientSignReceipt | null = null;
 		const abortController = new AbortController();
@@ -555,11 +568,20 @@
 		const fetchFn = customFetch ?? (typeof fetch !== 'undefined' ? fetch : undefined);
 		const generateIdempotencyKey = customNewIdempotencyKey ?? defaultNewIdempotencyKey;
 
-		async function confirmSign(values: readonly RecipientSignFieldValue[]): Promise<void> {
+		async function confirmSign(
+			values: readonly RecipientSignFieldValue[],
+			instruction?: SigningInstructionRequest
+		): Promise<void> {
 			const currentRecipientStatus = getRecipientStatus();
 			const canSign =
 				pageState === 'active' && role === 'signer' && currentRecipientStatus === 'viewed';
-			if (!canSign || inFlight || status === 'success' || status === 'terminal_failure') {
+			if (
+				!canSign ||
+				inFlight ||
+				status === 'success' ||
+				status === 'terminal_failure' ||
+				status === 'instruction_conflict'
+			) {
 				return;
 			}
 			if (!fetchFn) return;
@@ -567,10 +589,14 @@
 			if (!idempotencyKey) {
 				idempotencyKey = generateIdempotencyKey();
 			}
-			submittedValues ??= values.map((entry: RecipientSignFieldValue): RecipientSignFieldValue => ({
-				fieldId: entry.fieldId,
-				value: entry.value
-			}));
+			if (submittedValues === null) {
+				submittedInstruction =
+					instruction === undefined ? undefined : instructionRequest(instruction);
+				submittedValues = values.map((entry: RecipientSignFieldValue): RecipientSignFieldValue => ({
+					fieldId: entry.fieldId,
+					value: entry.value
+				}));
+			}
 
 			inFlight = true;
 			status = 'pending';
@@ -580,13 +606,27 @@
 				const response = await postSigningAction(
 					fetchFn,
 					'/api/v1/signing/sign',
-					{ envelopeId, recipientId, expectedFieldGeneration, values: submittedValues },
+					{
+						envelopeId,
+						recipientId,
+						expectedFieldGeneration,
+						values: submittedValues,
+						...(submittedInstruction === undefined
+							? {}
+							: { signingInstruction: submittedInstruction })
+					},
 					idempotencyKey,
 					abortController.signal
 				);
 
 				if (response.status === 200) {
-					const validated = await validateSignedReceipt(response, envelopeId, recipientId);
+					const validated = await validateSignedReceipt(
+						response,
+						envelopeId,
+						recipientId,
+						submittedInstruction,
+						expectedFieldGeneration
+					);
 					if (validated) {
 						const isReplay = response.headers.get('idempotency-replayed') === 'true';
 						replayed = isReplay;
@@ -603,6 +643,12 @@
 					submittedValues = null;
 					status = 'validation_failure';
 					onStatusChange?.('validation_failure');
+					return;
+				}
+
+				if (await isProblemOfType(response, 'urn:signkit:problem:signing-instruction-conflict')) {
+					status = 'instruction_conflict';
+					onStatusChange?.(status);
 					return;
 				}
 
@@ -655,7 +701,9 @@
 	export async function validateSignedReceipt(
 		response: Response,
 		expectedEnvelopeId: string,
-		expectedRecipientId: string
+		expectedRecipientId: string,
+		expectedInstruction?: SigningInstructionRequest,
+		expectedFieldGeneration?: number
 	): Promise<RecipientSignReceipt | null> {
 		const signed = await parseRecipientActionReceipt(
 			response,
@@ -663,7 +711,16 @@
 			expectedRecipientId,
 			{
 				wrapperKey: 'signed',
-				nestedKeys: ['envelopeId', 'envelopeStatus', 'recipientId', 'recipientStatus', 'signedAt'],
+				nestedKeys: [
+					'envelopeId',
+					'envelopeStatus',
+					'recipientId',
+					'recipientStatus',
+					'signedAt',
+					...(expectedInstruction === undefined ? [] : ['signingInstruction'])
+				],
+				expectedInstruction,
+				expectedFieldGeneration,
 				timestampKey: 'signedAt',
 				expectedRecipientStatus: 'completed',
 				expectedEnvelopeStatuses: ['completed', 'in_progress']
@@ -696,6 +753,8 @@
 		readonly timestampKey: string;
 		readonly expectedRecipientStatus: string;
 		readonly expectedEnvelopeStatuses: readonly string[];
+		readonly expectedInstruction?: SigningInstructionRequest;
+		readonly expectedFieldGeneration?: number;
 	}
 
 	interface ValidatedRecipientActionReceipt {
@@ -728,6 +787,17 @@
 		if (!isRecord(body) || !hasExactKeys(body, [shape.wrapperKey])) return null;
 		const nested: unknown = body[shape.wrapperKey];
 		if (!isRecord(nested) || !hasExactKeys(nested, shape.nestedKeys)) return null;
+		if (shape.expectedInstruction !== undefined) {
+			const actual = await readSigningInstruction(nested);
+			if (
+				!actual ||
+				actual.sentEventHash !== shape.expectedInstruction.sentEventHash ||
+				actual.locale !== shape.expectedInstruction.locale ||
+				actual.version !== shape.expectedInstruction.version ||
+				actual.fieldGeneration !== shape.expectedFieldGeneration
+			)
+				return null;
+		}
 		const timestamp = nested[shape.timestampKey];
 		if (
 			nested.envelopeId !== expectedEnvelopeId ||
@@ -822,6 +892,7 @@
 	let signPending = $state(false);
 	let isSigned = $state(false);
 	let signDialogOpen = $state(false);
+	let confirmationInstruction = $state<SigningInstructionPrompt | undefined>();
 	let signAttempted = $state(false);
 	let signController: RecipientSignController | null = null;
 	let fieldValues = $state<Record<string, string | boolean>>(
@@ -1047,6 +1118,9 @@
 		} else if (status === 'validation_failure') {
 			signDialogOpen = false;
 			liveMessage = m.signing_sign_validation_failed();
+		} else if (status === 'instruction_conflict') {
+			signDialogOpen = false;
+			liveMessage = m.signing_instruction_refresh();
 		} else if (status === 'terminal_failure') {
 			signDialogOpen = false;
 			liveMessage = m.signing_sign_failed();
@@ -1092,6 +1166,13 @@
 			if (missing) navigateToField(missing);
 			return;
 		}
+		if (signStatus !== 'transient_failure') {
+			const source = data.state === 'active' ? data.signingInstruction : undefined;
+			confirmationInstruction =
+				source === undefined
+					? undefined
+					: signingInstructionPrompt(source.sentEventHash, getLocale());
+		}
 		signDialogOpen = true;
 	}
 
@@ -1104,7 +1185,7 @@
 				fieldId: field.id,
 				value: fieldValues[field.id]
 			}));
-		await signController?.confirmSign(values);
+		await signController?.confirmSign(values, confirmationInstruction);
 	}
 
 	function buildDeclineController(): RecipientDeclineController | null {
@@ -1614,7 +1695,12 @@
 							<Card.Footer
 								class="flex flex-col gap-3 border-t bg-muted/20 py-4 sm:flex-row sm:items-center sm:justify-between"
 							>
-								{#if signStatus === 'terminal_failure'}
+								{#if signStatus === 'instruction_conflict'}
+									<p class="text-sm text-destructive">{m.signing_instruction_refresh()}</p>
+									<Button variant="outline" onclick={() => window.location.reload()}
+										>{m.common_retry()}</Button
+									>
+								{:else if signStatus === 'terminal_failure'}
 									<p class="text-xs font-medium text-destructive">{m.signing_sign_failed()}</p>
 								{:else}
 									<AlertDialog.Root bind:open={signDialogOpen}>
@@ -1631,7 +1717,8 @@
 											<AlertDialog.Header>
 												<AlertDialog.Title>{m.signing_sign_dialog_title()}</AlertDialog.Title>
 												<AlertDialog.Description>
-													{m.signing_sign_dialog_description()}
+													{confirmationInstruction?.statement ??
+														m.signing_sign_dialog_description()}
 												</AlertDialog.Description>
 											</AlertDialog.Header>
 											{#if signStatus === 'transient_failure'}

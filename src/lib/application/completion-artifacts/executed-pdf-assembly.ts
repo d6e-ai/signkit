@@ -283,6 +283,7 @@ export async function attestExecutedAgreementSources(
 		await verifySigningInstructionEvidence({
 			auditEvents: input.auditEvents,
 			payloadsByEventId,
+			sentCommitSha: input.sentCommitSha,
 			fieldGeneration: input.fieldGeneration,
 			fields: input.fields
 		});

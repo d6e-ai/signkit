@@ -5,7 +5,7 @@ import {
 	type Recipient
 } from '$lib/domain/envelope';
 import { SIGNING_INSTRUCTION_VERSION } from '$lib/domain/commands/sent-signing-instruction';
-import { newUuidV7,type UuidV7Generator } from '$lib/ids/uuid-v7';
+import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import { SendCompletionBudgetError } from './send-completion-budget';
 import type {
 	DeliveryManifestEntry,

@@ -16,6 +16,8 @@ import type {
 import { canonicalRecipientSignFingerprint } from '$lib/ports/recipient-sign-store';
 import { hashRecipientCapability } from '$lib/security/recipient-capability';
 import { InvalidSignInputError, RecipientSignedApplication } from './recipient-signed';
+import { signingInstructionPrompt } from '$lib/domain/signing-instruction';
+import type { EnvelopeSentDocumentStore } from '$lib/ports/envelope-sent-document-store';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
 const envelopeId: string = '01910000-0000-7000-8000-000000000001';
@@ -112,6 +114,56 @@ async function expectedFingerprint(
 }
 
 describe('RecipientSignedApplication', () => {
+	it('requires the marked send commitment and binds the exact statement and field values atomically', async () => {
+		const storePort = store([ready(), ready(), ready()]);
+		const sentEventHash = 'a'.repeat(64);
+		const sentDocuments: EnvelopeSentDocumentStore = {
+			findDocument: async () => null,
+			findSet: async (envelopeId, commitSha) => ({
+				envelopeId,
+				commitSha,
+				documentSetHash: 'b'.repeat(64),
+				documentCount: 0,
+				documents: [],
+				createdAt: '2026-09-11T00:01:00.000Z',
+				signingInstructionEventHash: sentEventHash
+			})
+		};
+		const signedAt = '2026-09-11T00:02:00.000Z';
+		const app = new RecipientSignedApplication(
+			storePort,
+			() => new Date(signedAt),
+			undefined,
+			null,
+			null,
+			sentDocuments
+		);
+		expect(await app.sign(input)).toEqual({ outcome: 'signing_instruction_conflict' });
+		const instruction = { version: 1, locale: 'ja', sentEventHash } as const;
+		expect(
+			await app.sign({
+				...input,
+				signingInstruction: { ...instruction, sentEventHash: 'c'.repeat(64) }
+			})
+		).toEqual({ outcome: 'signing_instruction_conflict' });
+		expect(storePort.publishSign).not.toHaveBeenCalled();
+		expect((await app.sign({ ...input, signingInstruction: instruction })).outcome).toBe(
+			'published'
+		);
+		const command: PublishRecipientSignedCommand = storePort.publishSign.mock.calls[0][0];
+		const textSha256 = createHash('sha256')
+			.update(signingInstructionPrompt(sentEventHash, 'ja').statement)
+			.digest('hex');
+		expect(JSON.parse(command.auditPayloadJson)).toMatchObject({
+			recipientId,
+			role: 'signer',
+			sentCommitSha: 'a'.repeat(40),
+			signedAt,
+			fields: [{ id: fieldId, valueSha256: command.fieldValues[0].valueSha256 }],
+			signingInstruction: { ...instruction, textSha256, fieldGeneration: 1 }
+		});
+		expect(command.requestFingerprint).not.toBe(await expectedFingerprint());
+	});
 	it('publishes a PII-free, digest-only signed command without a release or completion', async () => {
 		const storePort = store();
 		const result = await new RecipientSignedApplication(

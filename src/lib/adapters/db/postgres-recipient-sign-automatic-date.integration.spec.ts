@@ -3,6 +3,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { RecipientSignedApplication } from '$lib/application/signing/recipient-signed';
+import { createSigningInstruction } from '$lib/domain/signing-instruction';
+import type { EnvelopeSentDocumentStore } from '$lib/ports/envelope-sent-document-store';
 import { hashAuditEventV3 } from '$lib/domain/audit';
 import type { EnvelopeField } from '$lib/domain/envelope';
 import { dateOptionsProperties } from '$lib/domain/signing-date';
@@ -23,6 +25,20 @@ if (CI_ENABLED && TEST_DATABASE_URL === undefined) {
 const postgresDescribe = TEST_DATABASE_URL === undefined ? describe.skip : describe;
 
 type Client = ReturnType<typeof postgres>;
+
+const SIGNING_INSTRUCTION = { version: 1, locale: 'ja', sentEventHash: '2'.repeat(64) } as const;
+const instructionDocuments: EnvelopeSentDocumentStore = {
+	findSet: async () => ({
+		envelopeId: ENVELOPE_ID,
+		commitSha: COMMIT_SHA,
+		documentSetHash: '3'.repeat(64),
+		documentCount: 0,
+		documents: [],
+		createdAt: SENT_AT,
+		signingInstructionEventHash: SIGNING_INSTRUCTION.sentEventHash
+	}),
+	findDocument: async () => null
+};
 
 const TOKEN: string = `skr1_${'C'.repeat(43)}`;
 const ENVELOPE_ID: string = '01920003-0000-7000-8000-000000000001';
@@ -68,7 +84,10 @@ const sha256 = (value: string): string => createHash('sha256').update(value).dig
 interface Fixture {
 	db: Client;
 	fieldStore: PostgresEnvelopeFieldStore;
-	application: (now: string) => RecipientSignedApplication;
+	application: (
+		now: string,
+		sentDocuments?: EnvelopeSentDocumentStore
+	) => RecipientSignedApplication;
 }
 
 /** Real placement, then send/view, in an isolated schema that is dropped afterwards. */
@@ -259,8 +278,15 @@ async function withFixture(
 		await run({
 			db,
 			fieldStore,
-			application: (now: string): RecipientSignedApplication =>
-				new RecipientSignedApplication(signStore, (): Date => new Date(now))
+			application: (now, sentDocuments) =>
+				new RecipientSignedApplication(
+					signStore,
+					() => new Date(now),
+					undefined,
+					null,
+					null,
+					sentDocuments
+				)
 		});
 	} finally {
 		await db.unsafe(`SET search_path TO public`);
@@ -315,6 +341,33 @@ postgresDescribe('PostgreSQL automatic signing dates (live, isolated schemas)', 
 				dateTimeZone: 'UTC'
 			});
 			expect(Object.keys(ownById.get(TEXT_ID)!)).not.toContain('dateMode');
+		});
+	});
+
+	it('commits explicit instruction evidence once and replays the original signing instant', async () => {
+		await withFixture(AUTO_ONLY, async ({ db, application }) => {
+			const app = application(SIGN_INSTANT, instructionDocuments);
+			expect(await app.sign(input([]))).toEqual({ outcome: 'signing_instruction_conflict' });
+			const submission = { ...input([]), signingInstruction: SIGNING_INSTRUCTION };
+			const signed = await app.sign(submission);
+			if (signed.outcome !== 'published') throw new Error('Expected the instruction to publish');
+			const proof = await createSigningInstruction(SIGNING_INSTRUCTION, 1);
+			expect(signed.result).toMatchObject({ signedAt: SIGN_INSTANT, signingInstruction: proof });
+			const retry = application(NEXT_DAY_RETRY, instructionDocuments);
+			expect(await retry.sign(submission)).toEqual({ outcome: 'replayed', result: signed.result });
+			expect(
+				await retry.sign({
+					...submission,
+					signingInstruction: { ...SIGNING_INSTRUCTION, locale: 'en' }
+				})
+			).toEqual({ outcome: 'idempotency_conflict' });
+			const commands = await db<
+				{ audit_payload_json: string }[]
+			>`SELECT audit_payload_json FROM recipient_signed_command`;
+			expect(commands).toHaveLength(1);
+			expect(JSON.parse(commands[0].audit_payload_json)).toMatchObject({
+				signingInstruction: proof
+			});
 		});
 	});
 

@@ -178,6 +178,7 @@ export async function buildCompletionManifest(
 		await verifySigningInstructionEvidence({
 			auditEvents: input.auditEvents,
 			payloadsByEventId,
+			sentCommitSha: input.sentCommitSha,
 			fieldGeneration: input.fieldGeneration,
 			fields: input.fields,
 			recipients: input.recipients

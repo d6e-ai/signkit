@@ -238,10 +238,10 @@ are never composed with it.
 
 ```sh
 signkit recipient context
-signkit recipient documents
+signkit recipient documents > reviewed-documents.json
 signkit recipient pdf <envelope-id> --document-id <document-id> --output agreement.pdf
 signkit recipient viewed --file viewed.json --consent
-signkit recipient sign --file sign.json --consent
+signkit recipient sign --file sign.json --signing-instruction-file reviewed-documents.json --consent
 signkit recipient approve --file approve.json --consent
 signkit recipient decline --file decline.json --consent
 ```
@@ -251,6 +251,11 @@ placed fields, and `fieldGeneration`. Download and review the PDF before decidin
 single-document envelopes, omit `--document-id`; for document-set envelopes, provide the ID returned
 by `documents`. Recipient PDF downloads require a regular output file; no agreement bytes are
 written to stdout.
+
+For a document response containing `signingInstruction`, review its `statement` with the PDF
+before authorizing the sign command. Use `--signing-instruction-file` to pass that same reviewed
+response. Envelopes sent before versioned instructions omit this key and can still be signed
+without the flag. See [signing instructions](architecture/recipient-workflow.md#signing-instructions).
 
 Action payloads use UUIDv7 IDs from the recipient context. `viewed`, `approve`, and `decline` each
 accept `{ "envelopeId": "…", "recipientId": "…" }`. Signing additionally requires the

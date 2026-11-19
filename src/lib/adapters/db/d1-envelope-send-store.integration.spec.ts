@@ -8,6 +8,7 @@ import type { EnvelopeSendStore, PublishSentEnvelopeCommand } from '$lib/ports/e
 import { AesGcmRecipientCapabilitySealer } from '$lib/security/delivery-capability';
 import { D1DeliveryOutboxStore } from './d1-delivery-outbox-store';
 import { D1EnvelopeSendStore } from './d1-envelope-send-store';
+import { D1EnvelopeSentDocumentStore } from './d1-envelope-sent-document-store';
 import { sqliteD1Database } from './sqlite-d1-test-support';
 
 const MIGRATION_PATHS: readonly string[] = readdirSync('migrations/d1')
@@ -91,6 +92,11 @@ describe('D1EnvelopeSendStore SQLite integration', () => {
 			});
 			if (first.outcome !== 'published') throw new Error('Expected the first send to publish');
 			expect(replay).toEqual({ outcome: 'replayed', result: first.result });
+			const event = sqlite
+				.prepare('SELECT event_hash FROM audit_event WHERE id = ?')
+				.get(first.result.auditEventId);
+			const sent = await new D1EnvelopeSentDocumentStore(database).findSet(ENVELOPE_ID, COMMIT_SHA);
+			expect(sent).toMatchObject({ signingInstructionEventHash: event?.event_hash });
 			const deliveries = sqlite
 				.prepare(
 					`SELECT recipient_id, status, available_at, reserved_capability_expires_at

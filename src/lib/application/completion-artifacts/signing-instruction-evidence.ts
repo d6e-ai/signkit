@@ -56,6 +56,7 @@ export interface VerifySigningInstructionEvidenceInput {
 	auditEvents: readonly CompletionEvidenceAuditEvent[];
 	/** Parsed payloads of an already hash-verified chain. */
 	payloadsByEventId: ReadonlyMap<string, unknown>;
+	sentCommitSha: string;
 	fieldGeneration: number;
 	fields: readonly CompletionEvidenceField[];
 	/** When supplied, each signer's SQL decision pointer must equal the verified event. */
@@ -86,17 +87,14 @@ export async function verifySigningInstructionEvidence(
 	input: VerifySigningInstructionEvidenceInput
 ): Promise<CompletionSigningInstructionEvidence | null> {
 	const sentEvents = input.auditEvents.filter((event) => event.eventType === SENT_EVENT_TYPE);
-	// Pre-send-event manifests are legacy; assembly separately demands exactly one send.
-	if (sentEvents.length === 0) return null;
 	if (sentEvents.length > 1) fail('Completion evidence has more than one envelope.sent event');
-	const sentEvent: CompletionEvidenceAuditEvent = sentEvents[0];
-	const sentPayload = asRecord(input.payloadsByEventId.get(sentEvent.id));
-	if (sentPayload === undefined) fail('Verified envelope.sent payload is missing');
-	const version = sentSigningInstructionVersion(sentPayload);
+	const sentEvent = sentEvents.at(0);
+	const sentPayload = sentEvent && asRecord(input.payloadsByEventId.get(sentEvent.id));
+	if (sentEvent && !sentPayload) fail('Verified envelope.sent payload is missing');
+	const version = sentPayload && sentSigningInstructionVersion(sentPayload);
 	if (version === null) fail('Verified envelope.sent signing instruction marker is invalid');
-
 	const signedEvents = input.auditEvents.filter((event) => event.eventType === SIGNED_EVENT_TYPE);
-	if (version === undefined) {
+	if (!sentEvent || !sentPayload || version === undefined) {
 		for (const event of signedEvents) {
 			const payload = asRecord(input.payloadsByEventId.get(event.id));
 			if (payload !== undefined && 'signingInstruction' in payload) {
@@ -107,8 +105,12 @@ export async function verifySigningInstructionEvidence(
 	}
 
 	const sentCommitSha: unknown = sentPayload.commitSha;
-	if (typeof sentCommitSha !== 'string') fail('Verified envelope.sent commit is missing');
-	if (!Array.isArray(sentPayload.documents) || sentPayload.documents.length === 0) {
+	if (sentCommitSha !== input.sentCommitSha) fail('Verified envelope.sent commit does not match');
+	if (
+		!Array.isArray(sentPayload.documents) ||
+		sentPayload.documents.length === 0 ||
+		sentPayload.documentCount !== sentPayload.documents.length
+	) {
 		fail('Verified envelope.sent documents are missing');
 	}
 	const sentPdfSha256: string[] = (sentPayload.documents as unknown[]).map((entry) => {
@@ -119,10 +121,14 @@ export async function verifySigningInstructionEvidence(
 		return sha;
 	});
 
-	const signerIds = readySigners(input, sentEvent);
+	const signerIds = readySigners(input, sentEvent, sentPayload.readyAuditEventId);
 	const signedBySigner = new Map<string, CompletionEvidenceAuditEvent>();
 	for (const event of signedEvents) {
-		if (event.actorId === null || !signerIds.has(event.actorId)) {
+		if (
+			event.actorType !== 'recipient' ||
+			event.actorId === null ||
+			!signerIds.has(event.actorId)
+		) {
 			fail('Signed event actor is not a named signer of the marked send');
 		}
 		if (signedBySigner.has(event.actorId)) {
@@ -132,6 +138,7 @@ export async function verifySigningInstructionEvidence(
 	}
 
 	const fieldsById = new Map(input.fields.map((field) => [field.id, field] as const));
+	const attestedFields = new Set<string>();
 	const parties: SigningInstructionEvidenceParty[] = [];
 	for (const [recipientId, routingOrder] of signerIds) {
 		const event = signedBySigner.get(recipientId);
@@ -161,17 +168,20 @@ export async function verifySigningInstructionEvidence(
 			fail('Signed event signing instruction does not match the exact envelope.sent event');
 		}
 		const declared: SigningInstructionEvidenceField[] = [];
-		for (const candidate of Array.isArray(payload.fields) ? (payload.fields as unknown[]) : []) {
+		if (!Array.isArray(payload.fields)) fail('Signed event field digests are missing');
+		for (const candidate of payload.fields as unknown[]) {
 			const field = asRecord(candidate);
 			const stored = typeof field?.id === 'string' ? fieldsById.get(field.id) : undefined;
 			if (
 				field === undefined ||
 				stored === undefined ||
+				attestedFields.has(stored.id) ||
 				field.fieldType !== stored.fieldType ||
 				field.valueSha256 !== stored.valueSha256
 			) {
 				fail('Signed event field digests do not match the verified field evidence');
 			}
+			attestedFields.add(stored.id);
 			declared.push({
 				id: stored.id,
 				fieldType: stored.fieldType,
@@ -206,6 +216,7 @@ export async function verifySigningInstructionEvidence(
 			fields: declared.sort((l, r) => byId(l.id, r.id))
 		});
 	}
+	if (attestedFields.size !== fieldsById.size) fail('Signed event field digests are incomplete');
 	parties.sort((l, r) => byId(l.recipientId, r.recipientId));
 	return {
 		version: 1,
@@ -220,16 +231,18 @@ export async function verifySigningInstructionEvidence(
 /** Signers named by the latest `envelope.ready` before send. */
 function readySigners(
 	input: VerifySigningInstructionEvidenceInput,
-	sentEvent: CompletionEvidenceAuditEvent
+	sentEvent: CompletionEvidenceAuditEvent,
+	readyEventId: unknown
 ): Map<string, number> {
 	const ready = input.auditEvents
 		.filter((event) => event.eventType === READY_EVENT_TYPE && event.sequence < sentEvent.sequence)
 		.reduce<CompletionEvidenceAuditEvent | undefined>(
-			(latest, event) => (latest === undefined || event.sequence > latest.sequence ? event : latest),
+			(latest, event) =>
+				latest === undefined || event.sequence > latest.sequence ? event : latest,
 			undefined
 		);
 	const payload = ready === undefined ? undefined : asRecord(input.payloadsByEventId.get(ready.id));
-	if (payload === undefined || !Array.isArray(payload.recipients)) {
+	if (ready?.id !== readyEventId || payload === undefined || !Array.isArray(payload.recipients)) {
 		fail('envelope.ready recipient declarations are missing for the marked send');
 	}
 	const signers = new Map<string, number>();

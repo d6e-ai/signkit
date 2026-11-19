@@ -1,4 +1,9 @@
 import {
+	createSigningInstruction,
+	type SigningInstructionRequest
+} from '$lib/domain/signing-instruction';
+import type { EnvelopeSentDocumentStore } from '$lib/ports/envelope-sent-document-store';
+import {
 	SIGNATURE_ASSET_REF_PATTERN,
 	SIGNATURE_ASSET_REF_PREFIX,
 	verifySignatureAssetReference,
@@ -55,6 +60,7 @@ export interface RecipientSignedInput {
 	expectedFieldGeneration: number;
 	idempotencyKey: string;
 	values: readonly SignFieldValueInput[];
+	signingInstruction?: SigningInstructionRequest;
 }
 
 export type RecipientSignedResult =
@@ -64,6 +70,7 @@ export type RecipientSignedResult =
 	| { outcome: 'role_not_actionable' }
 	| { outcome: 'idempotency_conflict' }
 	| { outcome: 'field_generation_conflict' }
+	| { outcome: 'signing_instruction_conflict' }
 	| { outcome: 'invalid_field' }
 	| { outcome: 'incomplete_field_set' }
 	| { outcome: 'missing_required_value' }
@@ -101,7 +108,8 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 		 * sweep cannot retire it mid-submission; publication itself re-checks and
 		 * binds the row atomically in the store regardless.
 		 */
-		private readonly signatureLedger: SignatureAssetLedger | null = null
+		private readonly signatureLedger: SignatureAssetLedger | null = null,
+		private readonly sentDocuments?: EnvelopeSentDocumentStore
 	) {}
 
 	async sign(input: RecipientSignedInput): Promise<RecipientSignedResult> {
@@ -126,6 +134,24 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 			if (preparation.fieldGeneration !== input.expectedFieldGeneration) {
 				return { outcome: 'field_generation_conflict' };
 			}
+
+			const sent = await this.sentDocuments?.findSet(
+				preparation.envelopeId,
+				preparation.sentCommitSha
+			);
+			const sentEventHash = sent?.signingInstructionEventHash;
+			const request = input.signingInstruction;
+			if (
+				sentEventHash !== request?.sentEventHash ||
+				(request !== undefined &&
+					(request.version !== 1 || (request.locale !== 'en' && request.locale !== 'ja')))
+			) {
+				return { outcome: 'signing_instruction_conflict' };
+			}
+			const signingInstruction =
+				request === undefined
+					? undefined
+					: await createSigningInstruction(request, preparation.fieldGeneration);
 
 			const matched: MatchedFieldValues | MatchFailure = await matchFieldValues(
 				preparation.fields,
@@ -165,7 +191,8 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 					fieldType: field.fieldType,
 					valueSha256: field.valueSha256
 				})),
-				signedAt
+				signedAt,
+				signingInstruction
 			});
 			const auditEventHash: string = await hashAuditEventV3(
 				{
@@ -224,6 +251,7 @@ export class RecipientSignedApplication implements RecipientSignedApplicationPor
 				recipientRole: 'signer',
 				routingOrder: preparation.routingOrder,
 				expectedSentCommitSha: preparation.sentCommitSha,
+				signingInstruction,
 				expectedFieldGeneration: input.expectedFieldGeneration,
 				fieldValues,
 				updatedAt: signedAt,
@@ -339,7 +367,8 @@ async function fingerprintFromFieldValues(
 		recipientId: input.expectedRecipientId,
 		capabilityHash,
 		expectedFieldGeneration: input.expectedFieldGeneration,
-		values
+		values,
+		signingInstruction: input.signingInstruction
 	});
 }
 

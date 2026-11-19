@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { signingInstructionPrompt } from '$lib/domain/signing-instruction';
 import type {
 	CompletionEvidenceAuditEvent,
 	CompletionEvidenceField,
@@ -12,33 +14,16 @@ import {
 	type BuildCompletionManifestInput
 } from './completion-manifest';
 
-/**
- * The real domain readers are owned by the parent integration. These stand-ins
- * keep this spec's contract explicit: `null` for malformed/unrecognized or a
- * text digest that does not verify (BAD_TEXT_SHA256), `undefined` when absent.
- */
 const BAD_TEXT_SHA256: string = 'e'.repeat(64);
-vi.mock('$lib/domain/signing-instruction', () => ({
-	readSigningInstruction: async (payload: unknown): Promise<unknown> => {
-		const instruction: unknown = (payload as Record<string, unknown>).signingInstruction;
-		if (instruction === undefined) return undefined;
-		const candidate = instruction as Record<string, unknown>;
-		if (candidate.version !== 1 || candidate.textSha256 === BAD_TEXT_SHA256) return null;
-		return instruction;
-	}
-}));
-vi.mock('$lib/domain/commands/sent-signing-instruction', () => ({
-	sentSigningInstructionVersion: (payload: Record<string, unknown>): 1 | undefined | null => {
-		const version: unknown = payload.signingInstructionVersion;
-		return version === undefined ? undefined : version === 1 ? 1 : null;
-	}
-}));
-
 const ENVELOPE_ID: string = '01900000-0000-7000-8000-000000000001';
 const COMMIT: string = 'a'.repeat(40);
 const OTHER_COMMIT: string = 'b'.repeat(40);
-const TEXT_EN: string = '1'.repeat(64);
-const TEXT_JA: string = '2'.repeat(64);
+const TEXT_EN = createHash('sha256')
+	.update(signingInstructionPrompt('0'.repeat(64), 'en').statement)
+	.digest('hex');
+const TEXT_JA = createHash('sha256')
+	.update(signingInstructionPrompt('0'.repeat(64), 'ja').statement)
+	.digest('hex');
 const PDF_ONE: string = '3'.repeat(64);
 const PDF_TWO: string = '4'.repeat(64);
 const SIG_SHA: string = '5'.repeat(64);
@@ -92,13 +77,16 @@ function steps(options: Options, sentEventHash: string): AuditChainStep[] {
 				role: 'signer',
 				routingOrder: order,
 				sentCommitSha: options.signedCommit ?? COMMIT,
-				fields: [
-					{
-						id: `field-${recipientId}`,
-						fieldType: 'signature',
-						valueSha256: recipientId === 'signer-1' ? SIG_SHA : DATE_SHA
-					}
-				],
+				fields:
+					recipientId === 'approver-1'
+						? []
+						: [
+								{
+									id: `field-${recipientId}`,
+									fieldType: 'signature',
+									valueSha256: recipientId === 'signer-1' ? SIG_SHA : DATE_SHA
+								}
+							],
 				signedAt: at,
 				...(marked && options.omitInstructionFor !== recipientId
 					? { signingInstruction: instruction }
@@ -203,6 +191,7 @@ async function input(options: Options = {}): Promise<BuildCompletionManifestInpu
 		sentCommitSha: COMMIT,
 		draftArchiveSha256: '8'.repeat(64),
 		fieldGeneration: options.generation ?? 3,
+		documentSetHash: '7'.repeat(64),
 		documents: [{ path: 'documents/a.md', sha256: '9'.repeat(64) }],
 		recipients: recipients(),
 		fields: FIELDS,
@@ -243,6 +232,7 @@ describe('signing instruction completion evidence', () => {
 			'draftArchiveSha256',
 			'fieldGeneration',
 			'completedAt',
+			'documentSetHash',
 			'documents',
 			'recipients',
 			'fields',
@@ -272,7 +262,11 @@ describe('signing instruction completion evidence', () => {
 	});
 
 	it.each([
-		['a missing instruction on one signer', { omitInstructionFor: 'signer-2' }, /does not match the exact/],
+		[
+			'a missing instruction on one signer',
+			{ omitInstructionFor: 'signer-2' },
+			/does not match the exact/
+		],
 		[
 			'an instruction bound to a different send event',
 			{
@@ -311,9 +305,12 @@ describe('signing instruction completion evidence', () => {
 		],
 		['an unrecognized send marker', { sentVersion: 2 }, /marker is invalid/],
 		['a signed event from a non-signer', { extraSigned: true }, /not a named signer/]
-	] satisfies [string, Options, RegExp][])('fails closed on %s', async (_name, options, message) => {
-		await expect(buildCompletionManifest(await input(options))).rejects.toThrow(message);
-	});
+	] satisfies [string, Options, RegExp][])(
+		'fails closed on %s',
+		async (_name, options, message) => {
+			await expect(buildCompletionManifest(await input(options))).rejects.toThrow(message);
+		}
+	);
 
 	it('rejects a decision pointer that names another signer event', async () => {
 		const base = await input();
@@ -333,8 +330,8 @@ describe('signing instruction completion evidence', () => {
 	});
 
 	it('rejects a signed event pinned to a different commit', async () => {
-		await expect(buildCompletionManifest(await input({ signedCommit: OTHER_COMMIT }))).rejects.toThrow(
-			/does not match its named signer and send/
-		);
+		await expect(
+			buildCompletionManifest(await input({ signedCommit: OTHER_COMMIT }))
+		).rejects.toThrow(/does not match its named signer and send/);
 	});
 });

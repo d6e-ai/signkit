@@ -31,6 +31,8 @@ export interface SentDocumentSetPointer {
 	documentCount: number;
 	documents: readonly SentDocumentPointer[];
 	createdAt: string;
+	/** Verified hash of the send event that pinned these PDF bytes and the consent version. */
+	signingInstructionEventHash?: string;
 }
 
 export interface EnvelopeSentDocumentStore {

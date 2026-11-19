@@ -134,6 +134,7 @@
 	"signing_sign_action": "署名して完了",
 	"signing_sign_description": "入力内容を確認してから、署名してこの契約を完了してください。",
 	"signing_sign_dialog_title": "この契約を完了しますか？",
+	"signing_instruction_refresh": "文書を再読み込みして、署名の指示をもう一度確認してください。",
 	"signing_sign_dialog_description": "署名すると入力内容が記録され、あなたの対応が完了します。",
 	"signing_sign_dialog_cancel": "キャンセル",
 	"signing_sign_dialog_confirm": "署名して完了",

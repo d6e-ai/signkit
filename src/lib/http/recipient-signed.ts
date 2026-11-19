@@ -36,7 +36,15 @@ const bodySchema = z
 			.int()
 			.min(0)
 			.max(MAX_GENERATION - 1),
-		values: z.array(fieldValueSchema).max(MAX_VALUES)
+		values: z.array(fieldValueSchema).max(MAX_VALUES),
+		signingInstruction: z
+			.object({
+				version: z.literal(1),
+				locale: z.enum(['en', 'ja']),
+				sentEventHash: z.string().regex(/^[a-f0-9]{64}$/)
+			})
+			.strict()
+			.optional()
 	})
 	.strict();
 const idempotencyKeySchema: ZodType<string> = z
@@ -119,7 +127,10 @@ export function createRecipientSignedHandler(
 				expectedRecipientId: parsed.data.recipientId,
 				expectedFieldGeneration: parsed.data.expectedFieldGeneration,
 				idempotencyKey: idempotencyKey.data,
-				values: parsed.data.values
+				values: parsed.data.values,
+				...(parsed.data.signingInstruction === undefined
+					? {}
+					: { signingInstruction: parsed.data.signingInstruction })
 			});
 			return await resultResponse(
 				result,
@@ -180,7 +191,10 @@ async function resultResponse(
 					recipientId: result.result.recipientId,
 					recipientStatus: 'completed',
 					envelopeStatus: result.result.envelopeStatus,
-					signedAt: result.result.signedAt
+					signedAt: result.result.signedAt,
+					...(result.result.signingInstruction === undefined
+						? {}
+						: { signingInstruction: result.result.signingInstruction })
 				}
 			}),
 			{ status: 200, headers }
@@ -200,6 +214,19 @@ async function resultResponse(
 				title: 'Idempotency key conflict',
 				status: 409,
 				detail: 'The Idempotency-Key was already used for a different recipient signing command.',
+				instance
+			},
+			securityHeaders()
+		);
+	}
+	if (result.outcome === 'signing_instruction_conflict') {
+		return problemResponse(
+			{
+				type: 'urn:signkit:problem:signing-instruction-conflict',
+				title: 'Signing instruction required for this version',
+				status: 409,
+				detail:
+					'Reload the agreement and confirm the signing instruction for the displayed version.',
 				instance
 			},
 			securityHeaders()

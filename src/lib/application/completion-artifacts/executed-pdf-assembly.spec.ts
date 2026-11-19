@@ -1,19 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { signingInstructionPrompt } from '$lib/domain/signing-instruction';
 import { buildFixturePdf, textPage } from '$lib/adapters/pdf/pdf-fixture-test-support';
 
-// Stand-ins for the parent-owned domain readers (see signing-instruction-evidence.spec.ts).
-vi.mock('$lib/domain/signing-instruction', () => ({
-	readSigningInstruction: async (payload: unknown): Promise<unknown> =>
-		(payload as Record<string, unknown>).signingInstruction
-}));
-vi.mock('$lib/domain/commands/sent-signing-instruction', () => ({
-	sentSigningInstructionVersion: (payload: Record<string, unknown>): 1 | undefined | null =>
-		payload.signingInstructionVersion === undefined
-			? undefined
-			: payload.signingInstructionVersion === 1
-				? 1
-				: null
-}));
 import {
 	documentSetHash,
 	upsertMarkdownDocument,
@@ -629,7 +618,14 @@ describe('attestExecutedAgreementSources signing instruction authorization', () 
 			auditEvents: await buildVerifiedAuditChain(context, withSigned(first[sentIndex].eventHash))
 		};
 	}
-	const valid = { version: 1, locale: 'ja', textSha256: '1'.repeat(64), fieldGeneration: 0 };
+	const valid = {
+		version: 1,
+		locale: 'ja',
+		textSha256: createHash('sha256')
+			.update(signingInstructionPrompt('0'.repeat(64), 'ja').statement)
+			.digest('hex'),
+		fieldGeneration: 0
+	};
 
 	it('accepts a marked send when every signer carries a matching instruction', async () => {
 		await expect(attestExecutedAgreementSources(await markedInput(valid))).resolves.toBeUndefined();

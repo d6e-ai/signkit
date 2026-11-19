@@ -134,6 +134,7 @@
 	"signing_sign_action": "Sign and complete",
 	"signing_sign_description": "Review your entries, then sign to complete this agreement.",
 	"signing_sign_dialog_title": "Complete this agreement?",
+	"signing_instruction_refresh": "Reload the agreement and review the signing instruction again.",
 	"signing_sign_dialog_description": "Signing records your entries and completes your part of this agreement.",
 	"signing_sign_dialog_cancel": "Cancel",
 	"signing_sign_dialog_confirm": "Sign and complete",

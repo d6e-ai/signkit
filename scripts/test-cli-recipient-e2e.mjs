@@ -176,6 +176,12 @@ try {
 	const documents = await cli(['recipient', 'documents'], recipient);
 	assert.equal(documents.fieldGeneration, 1);
 	assert.equal(documents.documents?.[0]?.documentId, documentId);
+	const instruction = documents.signingInstruction;
+	assert.equal(instruction?.version, 1);
+	assert.equal(instruction.locale, 'en');
+	assert.match(instruction.sentEventHash, /^[a-f0-9]{64}$/);
+	assert.match(instruction.statement, /this version of the documents/);
+	const reviewedInstructionFile = await jsonFile('reviewed-documents.json', documents);
 	const fieldId = documents.fields?.[0]?.id;
 	assert.match(fieldId, UUID_V7);
 
@@ -197,11 +203,27 @@ try {
 		expectedFieldGeneration: documents.fieldGeneration,
 		values: [{ fieldId, value: 'Test Recipient' }]
 	});
-	const signed = await cli(
-		['recipient', 'sign', '--file', signFile, '--consent', '--idempotency-key', uuidv7()],
-		recipient
-	);
+	const signArgs = [
+		'recipient',
+		'sign',
+		'--file',
+		signFile,
+		'--signing-instruction-file',
+		reviewedInstructionFile,
+		'--consent',
+		'--idempotency-key',
+		uuidv7()
+	];
+	const signed = await cli(signArgs, recipient);
 	assert.equal(signed.signed?.envelopeStatus, 'completed');
+	assert.deepEqual(signed.signed.signingInstruction, {
+		version: instruction.version,
+		locale: instruction.locale,
+		sentEventHash: instruction.sentEventHash,
+		textSha256: createHash('sha256').update(instruction.statement).digest('hex'),
+		fieldGeneration: documents.fieldGeneration
+	});
+	assert.deepEqual((await cli(signArgs, recipient)).signed, signed.signed);
 
 	const completed = await cli(['envelopes', 'get', envelopeId]);
 	assert.equal(completed.envelope?.status, 'completed');
@@ -246,6 +268,17 @@ try {
 	assert.equal(evidence.envelopeId, envelopeId);
 	assert.ok(
 		evidence.recipients.some((item) => item.id === recipientId && item.status === 'completed')
+	);
+	assert.equal(evidence.signingInstructions.sentEventHash, instruction.sentEventHash);
+	assert.deepEqual(evidence.signingInstructions.sentPdfSha256, [
+		createHash('sha256')
+			.update(await readFile(reviewedPdf))
+			.digest('hex')
+	]);
+	assert.deepEqual(
+		evidence.signingInstructions.parties.find((party) => party.recipientId === recipientId)
+			?.signingInstruction,
+		signed.signed.signingInstruction
 	);
 	assert.ok((await readFile(executedPath)).subarray(0, 5).equals(Buffer.from('%PDF-')));
 

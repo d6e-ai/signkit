@@ -52,6 +52,9 @@ export function createRecipientDocumentsHandler(
 					access: workspace.access,
 					documents: workspace.documents,
 					source: workspace.source,
+					...(workspace.signingInstruction === undefined
+						? {}
+						: { signingInstruction: workspace.signingInstruction }),
 					...(mode === 'bearer'
 						? { fields: workspace.fields, fieldGeneration: workspace.fieldGeneration }
 						: {})

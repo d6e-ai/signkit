@@ -362,9 +362,9 @@ describe('PostgresEnvelopeSendStore', () => {
 			{ outcome: 'replayed', result: { status: 'sent' } }
 		);
 		for (const bad of ['2', '"1"', 'null', 'true']) {
-			await expect(replayWith(`${markerBase},"signingInstructionVersion":${bad}}`)).resolves.toEqual(
-				{ outcome: 'integrity_error' }
-			);
+			await expect(
+				replayWith(`${markerBase},"signingInstructionVersion":${bad}}`)
+			).resolves.toEqual({ outcome: 'integrity_error' });
 		}
 		await expect(
 			replayWith(`{"signingInstructionVersion":1,${command.auditPayloadJson.slice(1)}`)

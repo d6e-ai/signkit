@@ -239,7 +239,8 @@ export async function resolveRecipientSignedApplication(
 			undefined,
 			undefined,
 			bucket === undefined ? null : new R2ObjectStore(bucket),
-			bucket === undefined ? null : new D1SignatureAssetLedger(database)
+			bucket === undefined ? null : new D1SignatureAssetLedger(database),
+			new D1EnvelopeSentDocumentStore(database)
 		);
 	}
 

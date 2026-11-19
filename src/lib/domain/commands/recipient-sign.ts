@@ -1,3 +1,8 @@
+import {
+	instructionRequest,
+	type SigningInstruction,
+	type SigningInstructionRequest
+} from '$lib/domain/signing-instruction';
 import { hashStoredAuditEvent, sha256TextHex } from '$lib/domain/audit';
 import {
 	formatSigningDate,
@@ -30,6 +35,7 @@ export interface RecipientSignedAuditPayload {
 	sentCommitSha: string;
 	fields: readonly RecipientSignedAuditField[];
 	signedAt: string;
+	signingInstruction?: SigningInstruction;
 }
 
 export interface RecipientSignFingerprintInput {
@@ -38,6 +44,7 @@ export interface RecipientSignFingerprintInput {
 	capabilityHash: string;
 	expectedFieldGeneration: number;
 	values: readonly SignFingerprintValue[];
+	signingInstruction?: SigningInstructionRequest;
 }
 
 export interface StoredRecipientSignedReceiptInput {
@@ -48,6 +55,7 @@ export interface StoredRecipientSignedReceiptInput {
 	sentCommitSha: string;
 	requestHash: string;
 	reconstructedFingerprint: string;
+	signingInstruction?: SigningInstruction;
 	auditPayloadJson: string;
 	auditEventHash: string;
 	previousAuditHash: string;
@@ -87,7 +95,10 @@ export function canonicalRecipientSignFingerprint(input: RecipientSignFingerprin
 		recipientId: input.recipientId,
 		capabilityHash: input.capabilityHash,
 		expectedFieldGeneration: input.expectedFieldGeneration,
-		values
+		values,
+		...(input.signingInstruction === undefined
+			? {}
+			: { signingInstruction: instructionRequest(input.signingInstruction) })
 	});
 }
 
@@ -128,6 +139,7 @@ export async function reconstructRecipientSignFingerprint(input: {
 	 * the request fingerprint (which therefore survives replay across midnight).
 	 */
 	signedAt?: string;
+	signingInstruction?: SigningInstructionRequest;
 }): Promise<string | null> {
 	if (input.stored.length !== input.fieldCount) return null;
 	for (const value of input.stored) {
@@ -162,7 +174,8 @@ export async function reconstructRecipientSignFingerprint(input: {
 		recipientId: input.recipientId,
 		capabilityHash: input.capabilityHash,
 		expectedFieldGeneration: input.expectedFieldGeneration,
-		values
+		values,
+		signingInstruction: input.signingInstruction
 	});
 }
 
@@ -182,7 +195,10 @@ export function recipientSignedAuditPayload(
 		routingOrder: payload.routingOrder,
 		sentCommitSha: payload.sentCommitSha,
 		fields,
-		signedAt: payload.signedAt
+		signedAt: payload.signedAt,
+		...(payload.signingInstruction === undefined
+			? {}
+			: { signingInstruction: payload.signingInstruction })
 	};
 }
 
@@ -218,7 +234,8 @@ export async function validStoredRecipientSignedReceipt(
 		routingOrder: row.routingOrder,
 		sentCommitSha: row.sentCommitSha,
 		fields: row.evidenceFields,
-		signedAt: row.occurredAt
+		signedAt: row.occurredAt,
+		signingInstruction: row.signingInstruction
 	});
 	const auditPayload: string = JSON.stringify(auditPayloadValue);
 	const auditEventHash: string = await hashStoredAuditEvent(
