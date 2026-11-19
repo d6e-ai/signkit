@@ -1,14 +1,8 @@
 import type postgres from 'postgres';
-
-export type ProviderSigningReservation = {
-	readonly issuer: string;
-	readonly audience: string;
-	readonly envelopeId: string;
-	readonly operationId: string;
-	readonly authorizationSha256: string;
-	/** Informational only; deliberately not part of exact replay matching. */
-	readonly acceptedAt: string;
-};
+import type {
+	ProviderSigningLedger,
+	ProviderSigningReservation
+} from '$lib/application/pdf-seals/provider-signing-gate';
 
 export type ProviderSigningReserveResult = 'reserved' | 'existing' | 'conflict';
 
@@ -19,7 +13,7 @@ type StoredReservation = { envelope_id: string; authorization_sha256: string };
  * the schema lives in tools/pdf-seal-authority/postgres-schema.sql. Does no I/O besides
  * the database and never retries: an ambiguous failure propagates to the caller.
  */
-export class PostgresProviderSigningReplay {
+export class PostgresProviderSigningReplay implements ProviderSigningLedger {
 	readonly #sql: ReturnType<typeof postgres>;
 
 	constructor(sql: ReturnType<typeof postgres>) {
@@ -29,10 +23,12 @@ export class PostgresProviderSigningReplay {
 	async reserve(input: ProviderSigningReservation): Promise<ProviderSigningReserveResult> {
 		// No conflict target: either uniqueness constraint (operation or envelope) suppresses the insert.
 		const inserted = await this.#sql`
+			WITH admission AS MATERIALIZED (SELECT clock_timestamp() AS accepted_at)
 			INSERT INTO provider_signing_replay
-				(issuer, audience, envelope_id, operation_id, authorization_sha256, accepted_at)
-			VALUES (${input.issuer}, ${input.audience}, ${input.envelopeId}, ${input.operationId},
-				${input.authorizationSha256}, ${input.acceptedAt}::timestamptz)
+				(issuer, audience, envelope_id, operation_id, authorization_sha256, accepted_at, expires_at)
+			SELECT ${input.issuer}, ${input.audience}, ${input.envelopeId}, ${input.operationId},
+				${input.authorizationSha256}, accepted_at, ${input.expiresAt}::timestamptz
+			FROM admission WHERE accepted_at < ${input.expiresAt}::timestamptz
 			ON CONFLICT DO NOTHING
 			RETURNING operation_id
 		`;

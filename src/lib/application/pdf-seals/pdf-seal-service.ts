@@ -260,7 +260,11 @@ export class PdfSealService {
 					return this.#failFromIntegrityOrGeneric(claimed, error, now);
 				}
 				submittedSource = source;
-				operation = await this.#provider.submit({ ...reference, envelopeId: job.envelopeId, source });
+				operation = await this.#provider.submit({
+					...reference,
+					envelopeId: job.envelopeId,
+					source
+				});
 			}
 		} catch (error: unknown) {
 			if (submittedSource !== null) await cancelStreamQuietly(submittedSource);

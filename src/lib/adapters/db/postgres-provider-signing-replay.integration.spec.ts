@@ -2,10 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-	PostgresProviderSigningReplay,
-	type ProviderSigningReservation
-} from './postgres-provider-signing-replay';
+import type { ProviderSigningReservation } from '$lib/application/pdf-seals/provider-signing-gate';
+import { PostgresProviderSigningReplay } from './postgres-provider-signing-replay';
 
 const DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
 const postgresDescribe = DATABASE_URL === undefined ? describe.skip : describe;
@@ -14,15 +12,16 @@ type Sql = ReturnType<typeof postgres>;
 
 const HASH_A: string = 'a'.repeat(64);
 const HASH_B: string = 'b'.repeat(64);
+let testAudience: string;
 
 function request(overrides: Partial<ProviderSigningReservation> = {}): ProviderSigningReservation {
 	return {
 		issuer: 'issuer-1',
-		audience: 'audience-1',
+		audience: testAudience,
 		envelopeId: 'envelope-1',
 		operationId: 'operation-1',
 		authorizationSha256: HASH_A,
-		acceptedAt: '2026-01-01T00:00:00.000Z',
+		expiresAt: new Date(Date.now() + 60_000).toISOString(),
 		...overrides
 	};
 }
@@ -43,9 +42,8 @@ postgresDescribe('PostgreSQL provider signing replay ledger', () => {
 		await sql.unsafe(readFileSync('tools/pdf-seal-authority/postgres-schema.sql', 'utf8'));
 	});
 
-	beforeEach(async () => {
-		if (sql === null) return;
-		await sql.unsafe('TRUNCATE provider_signing_replay');
+	beforeEach(() => {
+		testAudience = randomUUID();
 	});
 
 	afterAll(async () => {
@@ -60,12 +58,19 @@ postgresDescribe('PostgreSQL provider signing replay ledger', () => {
 		return new PostgresProviderSigningReplay(sql);
 	}
 
-	it('reserves once and replays exactly, ignoring acceptedAt', async () => {
+	it('reserves once and replays exactly across renewed authorization', async () => {
 		expect(await ledger().reserve(request())).toBe('reserved');
 		expect(await ledger().reserve(request())).toBe('existing');
-		expect(await ledger().reserve(request({ acceptedAt: '2027-01-01T00:00:00.000Z' }))).toBe(
-			'existing'
+		expect(
+			await ledger().reserve(request({ expiresAt: new Date(Date.now() + 120_000).toISOString() }))
+		).toBe('existing');
+	});
+
+	it('rejects expiry at the durable admission boundary without consuming the envelope', async () => {
+		expect(await ledger().reserve(request({ expiresAt: '2020-01-01T00:00:00.000Z' }))).toBe(
+			'conflict'
 		);
+		expect(await ledger().reserve(request())).toBe('reserved');
 	});
 
 	it('conflicts on a reused operation with a different envelope or hash', async () => {
@@ -100,13 +105,16 @@ postgresDescribe('PostgreSQL provider signing replay ledger', () => {
 			await restarted.end({ timeout: 5 });
 		}
 		await expect(sql!.unsafe('DELETE FROM provider_signing_replay')).rejects.toThrow(/immutable/);
+		await expect(sql!.unsafe('TRUNCATE provider_signing_replay')).rejects.toThrow(/immutable/);
 		await expect(
 			sql!.unsafe(`UPDATE provider_signing_replay SET authorization_sha256 = '${HASH_B}'`)
 		).rejects.toThrow(/immutable/);
 	});
 
 	it('grants exactly one reservation under concurrent identical requests', async () => {
-		const results = await Promise.all(Array.from({ length: 12 }, () => ledger().reserve(request())));
+		const results = await Promise.all(
+			Array.from({ length: 12 }, () => ledger().reserve(request()))
+		);
 		expect(results.filter((r) => r === 'reserved')).toHaveLength(1);
 		expect(results.filter((r) => r === 'existing')).toHaveLength(11);
 	});

@@ -233,16 +233,55 @@ configuration, never URLs supplied by an envelope or certificate without an expl
 
 ## Provider and deployment boundary
 
-The application depends on a provider-neutral, authenticated HTTPS protocol with submit, status, and
-result operations. The protocol accepts a stable operation ID, source digest and bounded source
-stream, requested profile, and non-secret policy identifiers. It returns bounded sealed bytes and a
-structured receipt; it never returns or accepts a raw private key.
+The instance API authorizes scheduling a seal request. The provider's key service authorizes the
+private operation. Scheduling credentials can request a short-lived grant from the trusted
+instruction issuer. The issuer loads the completion from an independently administered recipient and
+publication plane. It verifies the audit chain and required #284 instructions, re-derives the
+completion manifest and field digests, and binds the exact executed PDF to that manifest. It accepts
+at least one actual signer and rejects versionless sends, approval-only completions, and
+evidence-summary PDFs. [Signing instructions](recipient-workflow.md#signing-instructions).
 
-The initial remote transport derives every endpoint from one operator-configured HTTPS base URL;
-provider responses cannot redirect the application or supply a status or result URL. It uses
-`PUT {base}/pdf-seals/{operationId}` for the streamed source, `GET` on that same URL for status, and
-`GET {base}/pdf-seals/{operationId}/result` for the bounded result. The operation ID is also the
-idempotency key. Every response echoes the frozen source digest and size, exact requested profile,
+The issuer signs a grant for a specific issuer, audience, envelope, operation ID, completed evidence
+digest, sent event hash, executed PDF digest and byte size, certificate and policy tuple. Grants use
+compact ES256 JWS and expire after five minutes. The key service pins the issuer's verification key
+and its own certificate and trust policy. It checks the grant again and hashes the bounded uploaded
+bytes before reserving the operation durably and calling its non-exportable HSM/KMS or equivalent
+provider-owned key. [JWS](https://www.rfc-editor.org/rfc/rfc7515),
+[ES256](https://www.rfc-editor.org/rfc/rfc7518#section-3.4).
+
+Mount `createPdfSealAuthorizationHandler` in the signing authority and
+`createAuthorizedPdfSealSubmitHandler` inside the key service. Both authenticators scope the
+scheduling credential to the configured audience. The authority checks envelope access for that
+audience before reading its own publication pointers, bounded objects and underlying audit chain
+through `createTrustedPdfSealCompletionReader`. Configure one audience per isolation scope. A shared
+HTTPS front door can route to the issuer and key service with the same scoped scheduling credential.
+Neither backend accepts that credential as permission to use a key. The
+provider-owned PostgreSQL ledger uses `tools/pdf-seal-authority/postgres-schema.sql` outside the
+SignKit database. Its unique keys reserve one operation per issuer, audience and envelope while the
+grant is valid on the ledger clock. That admission authorizes the one execution. Exact replays read
+the accepted operation. If a crash leaves a reservation without a receipt, reconcile at
+the key service without re-invoking the key. Gate deployments must keep the key and its credential
+exclusive to this ingress. Polling and result retrieval must be read-only with respect to key use.
+
+For hosted operation, the organization controlling the recipient-capability ingress, immutable
+publication store and ES256 key is the trusted instruction issuer. The certificate holder or its
+contracted signing provider operates the key service and its replay ledger. The validator operates
+the validation policy independently. In a self-hosted integration, a customer-operated instance can
+schedule seals for artifacts rooted in that separately managed issuer's recipient and publication
+plane. A completion created only in customer-controlled SQL and object storage is ineligible for
+the independently managed key. Hash chaining alone cannot establish evidence provenance across
+that administrative boundary. The issuer's store, provisioning and ingress credentials are managed
+outside the customer instance. This trust profile requires a managed issuer and key service before
+activation. [Provider operations](../operations/pdf-sealing.md).
+
+The remote transport derives every endpoint from one configured HTTPS base URL. Provider responses
+cannot redirect the application or supply a status or result URL. `POST
+{base}/pdf-seal-authorizations/{operationId}` receives the envelope ID and complete frozen operation
+reference as JSON, and responds with `{ "authorization": "<compact JWS>" }`. The application verifies
+this grant before uploading bytes. `PUT {base}/authorized-pdf-seals/{operationId}` submits the source
+with `X-SignKit-Envelope-Id` and `X-SignKit-Seal-Authorization`. `GET` on that URL reads status, and
+`GET {base}/authorized-pdf-seals/{operationId}/result` reads the bounded result. Use the operation ID
+as the idempotency key. Every operation response echoes the frozen source digest and size, exact requested profile,
 signer-certificate digest, seal and validation policy identifiers, and the B-T TSA policy tuple. The
 result requires an exact content length and SHA-256 and must achieve the requested profile;
 redirects, changed metadata, profile substitution, and arbitrary response URLs fail closed.

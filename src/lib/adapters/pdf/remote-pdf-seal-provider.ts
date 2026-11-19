@@ -15,7 +15,7 @@ import {
 	type PdfSealAuthorizationTrust
 } from '$lib/application/pdf-seals/pdf-seal-authorization';
 
-const MAX_AUTHORIZATION_TOKEN_LENGTH: number = 8192;
+const MAX_AUTHORIZATION_TOKEN_LENGTH: number = 4096;
 /** Raw uncompressed P-256 point: 0x04 prefix + 64 bytes, unpadded base64url. */
 const AUTHORIZATION_PUBLIC_KEY_PATTERN: RegExp = /^B[A-Za-z0-9_-]{86}$/;
 const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
@@ -121,13 +121,15 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			...reference,
 			envelopeId: command.envelopeId
 		});
+		const headers = this.#headers(reference, true, 'application/json', null, authorization);
+		headers.set('x-signkit-envelope-id', command.envelopeId);
 		const response: Response = await this.#performFetch(
 			this.#operationUrl(reference.operationId),
 			{
 				method: 'PUT',
 				redirect: 'manual',
 				signal: AbortSignal.timeout(this.#timeoutMs),
-				headers: this.#headers(reference, true, 'application/json', null, authorization),
+				headers,
 				body: exactLengthStream(command.source, reference.sourceByteSize),
 				// Required by Node's standards-based fetch for streaming request bodies;
 				// ignored by Workers, whose fetch accepts the same ReadableStream body.

@@ -351,7 +351,9 @@ describe('RemotePdfSealProvider', () => {
 
 		it('treats a throwing verifier as failure and sends no PUT', async () => {
 			verifyMock.mockRejectedValue(new Error(SECRET));
-			const fetchMock = vi.fn(async (): Promise<Response> => jsonResponse({ authorization: AUTH_TOKEN }));
+			const fetchMock = vi.fn(async (): Promise<Response> =>
+				jsonResponse({ authorization: AUTH_TOKEN })
+			);
 			await expect(rawProvider(fetchMock).submit(command())).rejects.toMatchObject({
 				code: 'provider_authentication_failed',
 				ambiguous: false
@@ -373,8 +375,8 @@ describe('RemotePdfSealProvider', () => {
 		});
 
 		it('rejects an oversized preflight body without a PUT', async () => {
-			const fetchMock = vi.fn(
-				async (): Promise<Response> => jsonResponse({ authorization: 'a'.repeat(70 * 1024) })
+			const fetchMock = vi.fn(async (): Promise<Response> =>
+				jsonResponse({ authorization: 'a'.repeat(70 * 1024) })
 			);
 			await expect(rawProvider(fetchMock).submit(command())).rejects.toMatchObject({
 				code: 'response_too_large',
@@ -384,7 +386,9 @@ describe('RemotePdfSealProvider', () => {
 		});
 
 		it('does not preflight GET recovery, status, or result reads', async () => {
-			const fetchMock = vi.fn(async (): Promise<Response> => jsonResponse(operationEnvelope(reference())));
+			const fetchMock = vi.fn(async (): Promise<Response> =>
+				jsonResponse(operationEnvelope(reference()))
+			);
 			await rawProvider(fetchMock).recoverAmbiguousSubmit(reference());
 			await rawProvider(fetchMock).getStatus(receipt());
 			expect(verifyMock).not.toHaveBeenCalled();
@@ -412,7 +416,9 @@ describe('RemotePdfSealProvider', () => {
 				const body: Uint8Array = new Uint8Array(
 					await new Response(init?.body as BodyInit).arrayBuffer()
 				);
-				expect(String(input)).toBe('https://seal.example.test/api/v1/authorized-pdf-seals/op%3Awith-colon');
+				expect(String(input)).toBe(
+					'https://seal.example.test/api/v1/authorized-pdf-seals/op%3Awith-colon'
+				);
 				expect(init?.method).toBe('PUT');
 				expect(init?.redirect).toBe('manual');
 				expect(body).toEqual(SOURCE_BYTES);

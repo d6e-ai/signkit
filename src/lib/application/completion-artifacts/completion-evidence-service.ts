@@ -79,10 +79,30 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 
 		const isMarkdown = format === 'markdown';
 		const digest = isMarkdown ? status.published.markdownSha256 : status.published.jsonSha256;
+		return await this.#readGzippedEvidence(envelopeId, format, digest);
+	}
+
+	async readPdfManifest(envelopeId: string): Promise<CompletionEvidenceResult | null> {
+		const record = await this.#pdfStore.readCompletionArtifactPdf(envelopeId);
+		if (record === null) return null;
+		if (
+			record.envelopeId !== envelopeId ||
+			record.pdfManifestObjectKey !==
+				completionArtifactObjectKey(envelopeId, 'pdf-manifest', record.pdfManifestSha256)
+		)
+			throw new CompletionEvidenceReadError('artifact_key_mismatch');
+		return await this.#readGzippedEvidence(envelopeId, 'pdf-manifest', record.pdfManifestSha256);
+	}
+
+	async #readGzippedEvidence(
+		envelopeId: string,
+		format: 'json' | 'markdown' | 'pdf-manifest',
+		digest: string
+	): Promise<CompletionEvidenceResult> {
 		if (!SHA256_PATTERN.test(digest)) {
 			throw new CompletionEvidenceReadError('artifact_digest_invalid');
 		}
-		const key = completionArtifactObjectKey(envelopeId, isMarkdown ? 'markdown' : 'json', digest);
+		const key = completionArtifactObjectKey(envelopeId, format, digest);
 
 		const stream = await this.#objects.get(key);
 		if (stream === null) {
@@ -103,7 +123,7 @@ export class CompletionEvidenceService implements CompletionEvidenceApplicationP
 
 		return {
 			content,
-			contentType: isMarkdown ? 'text/markdown; charset=utf-8' : 'application/json',
+			contentType: format === 'markdown' ? 'text/markdown; charset=utf-8' : 'application/json',
 			digest
 		};
 	}
