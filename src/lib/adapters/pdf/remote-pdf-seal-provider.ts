@@ -9,7 +9,15 @@ import {
 	type PdfSealSucceededOperation,
 	type SubmitPdfSealOperation
 } from '$lib/ports/pdf-seal-provider';
+import {
+	verifyPdfSealAuthorization,
+	type PdfSealAuthorizationRequest,
+	type PdfSealAuthorizationTrust
+} from '$lib/application/pdf-seals/pdf-seal-authorization';
 
+const MAX_AUTHORIZATION_TOKEN_LENGTH: number = 8192;
+/** Raw uncompressed P-256 point: 0x04 prefix + 64 bytes, unpadded base64url. */
+const AUTHORIZATION_PUBLIC_KEY_PATTERN: RegExp = /^B[A-Za-z0-9_-]{86}$/;
 const SHA256_PATTERN: RegExp = /^[a-f0-9]{64}$/;
 const SAFE_IDENTIFIER_PATTERN: RegExp = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SAFE_ERROR_CODE_PATTERN: RegExp = /^[a-z][a-z0-9_]{1,64}$/;
@@ -25,6 +33,8 @@ type FetchImplementation = (input: RequestInfo | URL, init?: RequestInit) => Pro
 export interface RemotePdfSealProviderOptions {
 	baseUrl: string;
 	bearerToken: string;
+	/** Required issuer/audience/key every authorization token must verify against. */
+	authorizationTrust: PdfSealAuthorizationTrust;
 	/** Deployment policy chooses the actual ceiling; the adapter caps it at 64 MiB. */
 	maxResultBytes: number;
 	timeoutMs?: number;
@@ -58,6 +68,7 @@ interface ProviderOperationEnvelope {
 export class RemotePdfSealProvider implements PdfSealProvider {
 	readonly #baseUrl: string;
 	readonly #bearerToken: string;
+	readonly #trust: PdfSealAuthorizationTrust;
 	readonly #maxResultBytes: number;
 	readonly #timeoutMs: number;
 	readonly #fetch: FetchImplementation;
@@ -65,6 +76,24 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 	constructor(options: RemotePdfSealProviderOptions) {
 		this.#baseUrl = normalizeBaseUrl(options.baseUrl);
 		this.#bearerToken = validateBearerToken(options.bearerToken);
+		const trust: PdfSealAuthorizationTrust | undefined = options.authorizationTrust;
+		if (
+			typeof trust !== 'object' ||
+			trust === null ||
+			typeof trust.issuer !== 'string' ||
+			trust.issuer.length === 0 ||
+			typeof trust.audience !== 'string' ||
+			trust.audience.length === 0 ||
+			typeof trust.publicKey !== 'string' ||
+			!AUTHORIZATION_PUBLIC_KEY_PATTERN.test(trust.publicKey)
+		) {
+			throw providerError('invalid_configuration', false, false);
+		}
+		this.#trust = {
+			issuer: trust.issuer,
+			audience: trust.audience,
+			publicKey: trust.publicKey
+		};
 		this.#maxResultBytes = validateIntegerRange(
 			options.maxResultBytes,
 			1,
@@ -82,16 +111,23 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 
 	async submit(command: SubmitPdfSealOperation): Promise<PdfSealProviderOperation> {
 		const reference: PdfSealOperationReference = normalizedOperationReference(command);
+		assertSafeIdentifier(command.envelopeId);
 		if (!isReadableByteStream(command.source)) {
 			throw providerError('invalid_request', false, false);
 		}
+		// Preflight happens before any source byte is read or uploaded, so every
+		// failure here is definitively non-ambiguous.
+		const authorization: string = await this.#authorize({
+			...reference,
+			envelopeId: command.envelopeId
+		});
 		const response: Response = await this.#performFetch(
 			this.#operationUrl(reference.operationId),
 			{
 				method: 'PUT',
 				redirect: 'manual',
 				signal: AbortSignal.timeout(this.#timeoutMs),
-				headers: this.#headers(reference, true),
+				headers: this.#headers(reference, true, 'application/json', null, authorization),
 				body: exactLengthStream(command.source, reference.sourceByteSize),
 				// Required by Node's standards-based fetch for streaming request bodies;
 				// ignored by Workers, whose fetch accepts the same ReadableStream body.
@@ -183,14 +219,58 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 	}
 
 	#operationUrl(operationId: string): string {
-		return `${this.#baseUrl}/pdf-seals/${encodeURIComponent(operationId)}`;
+		return `${this.#baseUrl}/authorized-pdf-seals/${encodeURIComponent(operationId)}`;
+	}
+
+	async #authorize(request: PdfSealAuthorizationRequest): Promise<string> {
+		const response: Response = await this.#performFetch(
+			`${this.#baseUrl}/pdf-seal-authorizations/${encodeURIComponent(request.operationId)}`,
+			{
+				method: 'POST',
+				redirect: 'manual',
+				signal: AbortSignal.timeout(this.#timeoutMs),
+				// The instance bearer is a scheduling credential only; it never
+				// authorizes a seal. The signed token below is the authority.
+				headers: new Headers({
+					accept: 'application/json',
+					authorization: `Bearer ${this.#bearerToken}`,
+					'content-type': 'application/json',
+					'idempotency-key': request.operationId
+				}),
+				body: JSON.stringify(request)
+			},
+			false
+		);
+		const envelope: ProviderOperationEnvelope = await this.#readJson(response, false);
+		const keys: string[] = Object.keys(envelope);
+		const token: unknown = (envelope as { authorization?: unknown }).authorization;
+		if (
+			keys.length !== 1 ||
+			typeof token !== 'string' ||
+			token.length < 1 ||
+			token.length > MAX_AUTHORIZATION_TOKEN_LENGTH ||
+			!BEARER_TOKEN_PATTERN.test(token)
+		) {
+			throw providerError('invalid_response', false, false);
+		}
+		let claims: unknown;
+		try {
+			claims = await verifyPdfSealAuthorization(token, request, this.#trust);
+		} catch {
+			claims = null;
+		}
+		if (claims === null || claims === undefined) {
+			throw providerError('provider_authentication_failed', false, false);
+		}
+		return token;
 	}
 
 	#headers(
 		reference: PdfSealOperationReference,
 		includeContentType: boolean,
 		accept: string = 'application/json',
-		providerReceiptId: string | null = null
+		providerReceiptId: string | null = null,
+		authorization: string | null = null
 	): Headers {
 		const headers: Headers = new Headers({
 			accept,
@@ -212,6 +292,9 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 		}
 		if (providerReceiptId !== null) {
 			headers.set('x-signkit-provider-receipt-id', providerReceiptId);
+		}
+		if (authorization !== null) {
+			headers.set('x-signkit-seal-authorization', authorization);
 		}
 		if (reference.tsaPolicyId !== null) {
 			headers.set('x-signkit-tsa-policy-id', reference.tsaPolicyId);
@@ -237,12 +320,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 		}
 	}
 
-	async #readOperationResponse(
-		response: Response,
-		reference: PdfSealOperationReference,
-		ambiguous: boolean,
-		expectedProviderReceiptId: string | null = null
-	): Promise<PdfSealProviderOperation> {
+	async #readJson(response: Response, ambiguous: boolean): Promise<ProviderOperationEnvelope> {
 		await assertSuccessfulResponse(response, ambiguous);
 		if (mediaType(response.headers.get('content-type')) !== 'application/json') {
 			await discardBoundedBody(response.body, MAX_PROVIDER_ERROR_BYTES);
@@ -259,15 +337,23 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 			MAX_PROVIDER_JSON_BYTES,
 			ambiguous
 		);
-		let envelope: ProviderOperationEnvelope;
 		try {
 			const decoded: string = new TextDecoder('utf-8', { fatal: true }).decode(body);
 			const parsed: unknown = JSON.parse(decoded);
 			if (!isRecord(parsed)) throw new Error('not an object');
-			envelope = parsed;
+			return parsed;
 		} catch {
 			throw providerError('invalid_response', false, ambiguous);
 		}
+	}
+
+	async #readOperationResponse(
+		response: Response,
+		reference: PdfSealOperationReference,
+		ambiguous: boolean,
+		expectedProviderReceiptId: string | null = null
+	): Promise<PdfSealProviderOperation> {
+		const envelope: ProviderOperationEnvelope = await this.#readJson(response, ambiguous);
 		return parseOperationEnvelope(
 			envelope,
 			reference,

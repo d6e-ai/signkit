@@ -19,6 +19,8 @@ export interface PdfSealOperationReference {
 }
 
 export interface SubmitPdfSealOperation extends PdfSealOperationReference {
+	/** Envelope the operation belongs to; bound into the signer authorization. */
+	envelopeId: string;
 	source: ReadableStream<Uint8Array>;
 }
 

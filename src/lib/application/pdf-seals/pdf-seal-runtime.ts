@@ -9,6 +9,7 @@ import type { ObjectStore } from '$lib/ports/object-store';
 import type { PdfSealPublicationStore } from '$lib/ports/pdf-seal-publication-store';
 import type { PdfSealProfile, PdfSealProvider } from '$lib/ports/pdf-seal-provider';
 import type { PdfSealValidator } from '$lib/ports/pdf-seal-validator';
+import type { PdfSealAuthorizationTrust } from './pdf-seal-authorization';
 import { PdfSealDrainService } from './pdf-seal-drain-service';
 import { PdfSealService } from './pdf-seal-service';
 
@@ -25,8 +26,18 @@ const CONFIGURATION_KEYS = [
 	'PDF_SEAL_POLICY_ID',
 	'PDF_SEAL_VALIDATION_POLICY_ID',
 	'PDF_SEAL_TSA_POLICY_ID',
-	'PDF_SEAL_TSA_TRUST_BUNDLE_SHA256'
+	'PDF_SEAL_TSA_TRUST_BUNDLE_SHA256',
+	'PDF_SEAL_AUTHORIZATION_ISSUER',
+	'PDF_SEAL_AUTHORIZATION_AUDIENCE',
+	'PDF_SEAL_AUTHORIZATION_PUBLIC_KEY'
 ] as const;
+const AUTHORIZATION_KEYS = [
+	'PDF_SEAL_AUTHORIZATION_ISSUER',
+	'PDF_SEAL_AUTHORIZATION_AUDIENCE',
+	'PDF_SEAL_AUTHORIZATION_PUBLIC_KEY'
+] as const;
+/** Raw uncompressed P-256 point, unpadded base64url. */
+const AUTHORIZATION_PUBLIC_KEY_PATTERN: RegExp = /^B[A-Za-z0-9_-]{86}$/;
 
 type PdfSealConfigurationKey = (typeof CONFIGURATION_KEYS)[number];
 export type PdfSealRuntimeEnvironment = Partial<Record<PdfSealConfigurationKey, string>>;
@@ -43,6 +54,7 @@ export interface PdfSealRequestPolicy {
 export interface PdfSealRuntimeConfiguration {
 	providerUrl: string;
 	providerToken: string;
+	authorizationTrust: PdfSealAuthorizationTrust;
 	validatorUrl: string;
 	validatorToken: string;
 	requestPolicy: PdfSealRequestPolicy;
@@ -69,10 +81,16 @@ export class PdfSealRuntimeConfigurationError extends Error {
 export function parsePdfSealRuntimeConfiguration(
 	values: PdfSealRuntimeEnvironment
 ): PdfSealRuntimeConfiguration | null {
-	const present: boolean = CONFIGURATION_KEYS.some(
-		(key: PdfSealConfigurationKey): boolean => values[key] !== undefined && values[key] !== ''
-	);
-	if (!present) return null;
+	const isSet = (key: PdfSealConfigurationKey): boolean =>
+		values[key] !== undefined && values[key] !== '';
+	// Unset or legacy (no authorization tuple at all) stays disabled; a partial
+	// tuple falls through and fails closed on the required checks below.
+	if (!AUTHORIZATION_KEYS.some(isSet)) return null;
+	const authorizationTrust: PdfSealAuthorizationTrust = {
+		issuer: requiredTrimmed(values.PDF_SEAL_AUTHORIZATION_ISSUER),
+		audience: requiredTrimmed(values.PDF_SEAL_AUTHORIZATION_AUDIENCE),
+		publicKey: requiredPublicKey(values.PDF_SEAL_AUTHORIZATION_PUBLIC_KEY)
+	};
 
 	const profileValue: string = requiredTrimmed(values.PDF_SEAL_PROFILE);
 	if (profileValue !== 'pades-b-b' && profileValue !== 'pades-b-t') invalidConfiguration();
@@ -100,6 +118,7 @@ export function parsePdfSealRuntimeConfiguration(
 	return {
 		providerUrl,
 		providerToken,
+		authorizationTrust,
 		validatorUrl,
 		validatorToken,
 		requestPolicy: {
@@ -173,6 +192,7 @@ export async function resolvePdfSealRuntime(
 	const provider: PdfSealProvider = new RemotePdfSealProvider({
 		baseUrl: configuration.providerUrl,
 		bearerToken: configuration.providerToken,
+		authorizationTrust: configuration.authorizationTrust,
 		maxResultBytes: MAX_SEALED_PDF_BYTES
 	});
 	const validator: PdfSealValidator = new RemotePdfSealValidator({
@@ -235,6 +255,12 @@ function optionalTrimmed(value: string | undefined): string | undefined {
 function requiredDigest(value: string | undefined): string {
 	const normalized: string = requiredTrimmed(value);
 	if (!SHA256_PATTERN.test(normalized)) invalidConfiguration();
+	return normalized;
+}
+
+function requiredPublicKey(value: string | undefined): string {
+	const normalized: string = requiredTrimmed(value);
+	if (!AUTHORIZATION_PUBLIC_KEY_PATTERN.test(normalized)) invalidConfiguration();
 	return normalized;
 }
 

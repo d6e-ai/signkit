@@ -524,6 +524,7 @@ describe('PdfSealService', () => {
 		expect(submitMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				operationId: job.operationId,
+				envelopeId: job.envelopeId,
 				signerCertificateSha256: 'd'.repeat(64),
 				sealPolicyId: 'seal-policy-before-rotation',
 				validationPolicyId: 'validation-policy-before-rotation'

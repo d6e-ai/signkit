@@ -8,12 +8,25 @@ import {
 } from '$lib/ports/pdf-seal-provider';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	RemotePdfSealProvider,
 	type RemotePdfSealProviderOptions
 } from './remote-pdf-seal-provider';
 
+const verifyMock = vi.hoisted(() => vi.fn());
+vi.mock('$lib/application/pdf-seals/pdf-seal-authorization', () => ({
+	verifyPdfSealAuthorization: verifyMock
+}));
+
+const AUTH_TOKEN: string = 'signed.authorization.token';
+const TRUST = {
+	issuer: 'https://issuer.example.test',
+	audience: 'signkit-seal',
+	publicKey: `B${'A'.repeat(86)}`
+};
+const ENVELOPE_ID: string = 'envelope-01';
+const AUTH_URL: string = 'https://seal.example.test/api/v1/pdf-seal-authorizations/';
 const SECRET: string = 'provider-secret-that-must-not-leak';
 const SOURCE_SHA256: string = 'a'.repeat(64);
 const CERTIFICATE_SHA256: string = 'b'.repeat(64);
@@ -91,6 +104,7 @@ function reference(overrides: Partial<PdfSealOperationReference> = {}): PdfSealO
 function command(overrides: Partial<SubmitPdfSealOperation> = {}): SubmitPdfSealOperation {
 	return {
 		...reference(),
+		envelopeId: ENVELOPE_ID,
 		source: byteStream(SOURCE_BYTES),
 		...overrides
 	};
@@ -139,17 +153,36 @@ function byteStream(
 	});
 }
 
-function provider(
+/** Builds a provider whose fetch is used verbatim, including for the auth preflight. */
+function rawProvider(
 	fetchImplementation: RemotePdfSealProviderOptions['fetch'],
 	overrides: Partial<RemotePdfSealProviderOptions> = {}
 ): RemotePdfSealProvider {
 	return new RemotePdfSealProvider({
 		baseUrl: 'https://seal.example.test/api/v1/',
 		bearerToken: SECRET,
+		authorizationTrust: TRUST,
 		maxResultBytes: 1024 * 1024,
 		fetch: fetchImplementation,
 		...overrides
 	});
+}
+
+/**
+ * Same, but the authorization preflight is answered transparently so existing
+ * transport tests only observe the authorized-path traffic.
+ */
+function provider(
+	fetchImplementation: RemotePdfSealProviderOptions['fetch'],
+	overrides: Partial<RemotePdfSealProviderOptions> = {}
+): RemotePdfSealProvider {
+	const inner = fetchImplementation as NonNullable<RemotePdfSealProviderOptions['fetch']>;
+	return rawProvider(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+		if (String(input).startsWith(AUTH_URL)) {
+			return jsonResponse({ authorization: AUTH_TOKEN });
+		}
+		return inner(input, init);
+	}, overrides);
 }
 
 function expectProviderError(
@@ -206,6 +239,172 @@ function resultHeaders(
 }
 
 describe('RemotePdfSealProvider', () => {
+	beforeEach(() => {
+		verifyMock.mockReset();
+		verifyMock.mockResolvedValue({ ok: true });
+	});
+
+	describe('authorization preflight', () => {
+		it('POSTs the full reference before any PUT and sends the verified token on the PUT', async () => {
+			const calls: { url: string; method?: string; headers: Headers; body: unknown }[] = [];
+			const fetchMock = vi.fn(
+				async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+					calls.push({
+						url: String(input),
+						method: init?.method,
+						headers: new Headers(init?.headers),
+						body: init?.method === 'POST' ? init.body : undefined
+					});
+					if (init?.method === 'POST') return jsonResponse({ authorization: AUTH_TOKEN });
+					await new Response(init?.body as BodyInit).arrayBuffer();
+					return jsonResponse(operationEnvelope(reference()));
+				}
+			);
+			await rawProvider(fetchMock).submit(command());
+			expect(calls.map((call) => call.method)).toEqual(['POST', 'PUT']);
+			expect(calls[0].url).toBe(`${AUTH_URL}seal-op_01-test`);
+			expect(calls[0].headers.get('authorization')).toBe(`Bearer ${SECRET}`);
+			expect(calls[0].headers.get('x-signkit-seal-authorization')).toBeNull();
+			expect(JSON.parse(calls[0].body as string)).toEqual({
+				...reference(),
+				envelopeId: ENVELOPE_ID
+			});
+			expect(calls[1].url).toBe(
+				'https://seal.example.test/api/v1/authorized-pdf-seals/seal-op_01-test'
+			);
+			expect(calls[1].headers.get('x-signkit-seal-authorization')).toBe(AUTH_TOKEN);
+			expect(verifyMock).toHaveBeenCalledWith(
+				AUTH_TOKEN,
+				{ ...reference(), envelopeId: ENVELOPE_ID },
+				TRUST
+			);
+		});
+
+		it('never reads the source when preflight fails', async () => {
+			const fetchMock = vi.fn(async (): Promise<Response> => new Response('no', { status: 403 }));
+			const source: ReadableStream<Uint8Array> = byteStream(SOURCE_BYTES);
+			let caught: unknown;
+			try {
+				await rawProvider(fetchMock).submit(command({ source }));
+			} catch (error: unknown) {
+				caught = error;
+			}
+			expectProviderError(caught, {
+				code: 'provider_authentication_failed',
+				retryable: false,
+				ambiguous: false,
+				httpStatus: 403
+			});
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(source.locked).toBe(false);
+		});
+
+		it.each([
+			['missing token', { other: 'x' }],
+			['non-string token', { authorization: 7 }],
+			['empty token', { authorization: '' }],
+			['malformed token', { authorization: 'bad token\n' }],
+			['extra fields', { authorization: AUTH_TOKEN, extra: true }]
+		])('sends no PUT for a %s', async (_name, body) => {
+			const methods: (string | undefined)[] = [];
+			const fetchMock = vi.fn(
+				async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+					methods.push(init?.method);
+					return jsonResponse(body);
+				}
+			);
+			let caught: unknown;
+			try {
+				await rawProvider(fetchMock).submit(command());
+			} catch (error: unknown) {
+				caught = error;
+			}
+			expectProviderError(caught, { code: 'invalid_response', retryable: false, ambiguous: false });
+			expect(methods).toEqual(['POST']);
+		});
+
+		it.each([null, undefined])(
+			'sends no PUT when the token does not verify (%s)',
+			async (verdict) => {
+				verifyMock.mockResolvedValue(verdict);
+				const methods: (string | undefined)[] = [];
+				const fetchMock = vi.fn(
+					async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+						methods.push(init?.method);
+						return jsonResponse({ authorization: AUTH_TOKEN });
+					}
+				);
+				let caught: unknown;
+				try {
+					await rawProvider(fetchMock).submit(command());
+				} catch (error: unknown) {
+					caught = error;
+				}
+				expectProviderError(caught, {
+					code: 'provider_authentication_failed',
+					retryable: false,
+					ambiguous: false
+				});
+				expect(methods).toEqual(['POST']);
+			}
+		);
+
+		it('treats a throwing verifier as failure and sends no PUT', async () => {
+			verifyMock.mockRejectedValue(new Error(SECRET));
+			const fetchMock = vi.fn(async (): Promise<Response> => jsonResponse({ authorization: AUTH_TOKEN }));
+			await expect(rawProvider(fetchMock).submit(command())).rejects.toMatchObject({
+				code: 'provider_authentication_failed',
+				ambiguous: false
+			});
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		it('reports a preflight network failure as non-ambiguous and retryable', async () => {
+			const fetchMock = vi.fn(async (): Promise<Response> => {
+				throw new Error(SECRET);
+			});
+			let caught: unknown;
+			try {
+				await rawProvider(fetchMock).submit(command());
+			} catch (error: unknown) {
+				caught = error;
+			}
+			expectProviderError(caught, { code: 'network_error', retryable: true, ambiguous: false });
+		});
+
+		it('rejects an oversized preflight body without a PUT', async () => {
+			const fetchMock = vi.fn(
+				async (): Promise<Response> => jsonResponse({ authorization: 'a'.repeat(70 * 1024) })
+			);
+			await expect(rawProvider(fetchMock).submit(command())).rejects.toMatchObject({
+				code: 'response_too_large',
+				ambiguous: false
+			});
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		it('does not preflight GET recovery, status, or result reads', async () => {
+			const fetchMock = vi.fn(async (): Promise<Response> => jsonResponse(operationEnvelope(reference())));
+			await rawProvider(fetchMock).recoverAmbiguousSubmit(reference());
+			await rawProvider(fetchMock).getStatus(receipt());
+			expect(verifyMock).not.toHaveBeenCalled();
+			for (const call of fetchMock.mock.calls as unknown as [string][]) {
+				expect(call[0]).toContain('/authorized-pdf-seals/');
+			}
+		});
+
+		it.each([
+			{ issuer: '' },
+			{ audience: '' },
+			{ publicKey: `C${'A'.repeat(86)}` },
+			{ publicKey: `B${'A'.repeat(86)}=` }
+		])('requires valid authorization trust: %j', (trust) => {
+			expect(() => rawProvider(vi.fn(), { authorizationTrust: { ...TRUST, ...trust } })).toThrow(
+				expect.objectContaining({ code: 'invalid_configuration' })
+			);
+		});
+	});
+
 	it('streams submit to a fixed derived endpoint with frozen metadata and no secret in the URL', async () => {
 		const requestReference: PdfSealOperationReference = reference({ operationId: 'op:with-colon' });
 		const fetchMock = vi.fn(
@@ -213,7 +412,7 @@ describe('RemotePdfSealProvider', () => {
 				const body: Uint8Array = new Uint8Array(
 					await new Response(init?.body as BodyInit).arrayBuffer()
 				);
-				expect(String(input)).toBe('https://seal.example.test/api/v1/pdf-seals/op%3Awith-colon');
+				expect(String(input)).toBe('https://seal.example.test/api/v1/authorized-pdf-seals/op%3Awith-colon');
 				expect(init?.method).toBe('PUT');
 				expect(init?.redirect).toBe('manual');
 				expect(body).toEqual(SOURCE_BYTES);
@@ -229,6 +428,7 @@ describe('RemotePdfSealProvider', () => {
 		);
 		const result: PdfSealProviderOperation = await provider(fetchMock).submit({
 			...requestReference,
+			envelopeId: ENVELOPE_ID,
 			source: byteStream(SOURCE_BYTES, 2)
 		});
 		expect(result).toMatchObject({ status: 'pending', operationId: 'op:with-colon' });
@@ -264,7 +464,11 @@ describe('RemotePdfSealProvider', () => {
 			}
 		);
 		await expect(
-			provider(fetchMock).submit({ ...requestReference, source: byteStream(SOURCE_BYTES) })
+			provider(fetchMock).submit({
+				...requestReference,
+				envelopeId: ENVELOPE_ID,
+				source: byteStream(SOURCE_BYTES)
+			})
 		).resolves.toMatchObject({ requestedProfile: 'pades-b-t', status: 'pending' });
 	});
 
@@ -484,7 +688,11 @@ describe('RemotePdfSealProvider', () => {
 		const adapter: RemotePdfSealProvider = provider(fetchMock);
 		let caught: unknown;
 		try {
-			await adapter.submit({ ...requestReference, source: byteStream(SOURCE_BYTES) });
+			await adapter.submit({
+				...requestReference,
+				envelopeId: ENVELOPE_ID,
+				source: byteStream(SOURCE_BYTES)
+			});
 		} catch (error: unknown) {
 			caught = error;
 		}
@@ -497,8 +705,8 @@ describe('RemotePdfSealProvider', () => {
 			status: 'processing'
 		});
 		expect(urls).toEqual([
-			'https://seal.example.test/api/v1/pdf-seals/seal-op_01-test',
-			'https://seal.example.test/api/v1/pdf-seals/seal-op_01-test'
+			'https://seal.example.test/api/v1/authorized-pdf-seals/seal-op_01-test',
+			'https://seal.example.test/api/v1/authorized-pdf-seals/seal-op_01-test'
 		]);
 	});
 
@@ -644,8 +852,8 @@ describe('RemotePdfSealProvider', () => {
 			providerReceiptId: 'receipt-01'
 		});
 		expect(urls).toEqual([
-			'https://seal.example.test/api/v1/pdf-seals/seal-op_01-test',
-			'https://seal.example.test/api/v1/pdf-seals/seal-op_01-test'
+			'https://seal.example.test/api/v1/authorized-pdf-seals/seal-op_01-test',
+			'https://seal.example.test/api/v1/authorized-pdf-seals/seal-op_01-test'
 		]);
 	});
 
@@ -664,7 +872,7 @@ describe('RemotePdfSealProvider', () => {
 		};
 		const fetchMock = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
 			expect(String(input)).toBe(
-				'https://seal.example.test/api/v1/pdf-seals/seal-op_01-test/result'
+				'https://seal.example.test/api/v1/authorized-pdf-seals/seal-op_01-test/result'
 			);
 			return new Response(byteStream(resultBytes, 3), {
 				headers: resultHeaders(operation, resultBytes.byteLength)
