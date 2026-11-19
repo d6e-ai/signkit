@@ -264,6 +264,7 @@ describe('RemotePdfSealProvider', () => {
 			expect(calls.map((call) => call.method)).toEqual(['POST', 'PUT']);
 			expect(calls[0].url).toBe(`${AUTH_URL}seal-op_01-test`);
 			expect(calls[0].headers.get('authorization')).toBe(`Bearer ${SECRET}`);
+			expect(calls[0].headers.get('accept-encoding')).toBe('identity');
 			expect(calls[0].headers.get('x-signkit-seal-authorization')).toBeNull();
 			expect(JSON.parse(calls[0].body as string)).toEqual({
 				...reference(),
@@ -273,6 +274,7 @@ describe('RemotePdfSealProvider', () => {
 				'https://seal.example.test/api/v1/authorized-pdf-seals/seal-op_01-test'
 			);
 			expect(calls[1].headers.get('x-signkit-seal-authorization')).toBe(AUTH_TOKEN);
+			expect(calls[1].headers.get('accept-encoding')).toBe('identity');
 			expect(verifyMock).toHaveBeenCalledWith(
 				AUTH_TOKEN,
 				{ ...reference(), envelopeId: ENVELOPE_ID },

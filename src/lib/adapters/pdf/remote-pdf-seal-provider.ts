@@ -235,6 +235,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 				// authorizes a seal. The signed token below is the authority.
 				headers: new Headers({
 					accept: 'application/json',
+					'accept-encoding': 'identity',
 					authorization: `Bearer ${this.#bearerToken}`,
 					'content-type': 'application/json',
 					'idempotency-key': request.operationId
@@ -276,6 +277,7 @@ export class RemotePdfSealProvider implements PdfSealProvider {
 	): Headers {
 		const headers: Headers = new Headers({
 			accept,
+			'accept-encoding': 'identity',
 			authorization: `Bearer ${this.#bearerToken}`,
 			'idempotency-key': reference.operationId,
 			'x-signkit-operation-id': reference.operationId,
