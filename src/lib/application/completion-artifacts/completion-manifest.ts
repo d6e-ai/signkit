@@ -19,6 +19,15 @@ import {
 	verifyCompletionAuditChain,
 	type CompletionAuditChainVerification
 } from './audit-event-integrity';
+import {
+	verifySigningInstructionEvidence,
+	type CompletionSigningInstructionEvidence
+} from './signing-instruction-evidence';
+
+export type {
+	CompletionSigningInstructionEvidence,
+	SigningInstructionEvidenceParty
+} from './signing-instruction-evidence';
 
 export {
 	CompletionArtifactBoundExceededError,
@@ -91,6 +100,8 @@ export interface CompletionManifestV1 {
 	recipients: readonly CompletionManifestRecipient[];
 	fields: readonly CompletionManifestField[];
 	auditProof: CompletionManifestAuditProof;
+	/** Only on manifests of sends marked with `signingInstructionVersion`; legacy bytes never include it. */
+	signingInstructions?: CompletionSigningInstructionEvidence;
 }
 
 export interface BuildCompletionManifestInput {
@@ -163,6 +174,14 @@ export async function buildCompletionManifest(
 	verifyAutomaticSigningDates(input.auditEvents, payloadsByEventId, input.fields);
 	verifyRecipientRosterMatchesReadyEvent(input.auditEvents, payloadsByEventId, input.recipients);
 	verifyRecipientDecisionsMatchAuditTrail(input.auditEvents, input.recipients);
+	const signingInstructions: CompletionSigningInstructionEvidence | null =
+		await verifySigningInstructionEvidence({
+			auditEvents: input.auditEvents,
+			payloadsByEventId,
+			fieldGeneration: input.fieldGeneration,
+			fields: input.fields,
+			recipients: input.recipients
+		});
 
 	const attestedDocumentSetHash: string | null = attestedSentDocumentSetHash(
 		input.auditEvents,
@@ -224,7 +243,8 @@ export async function buildCompletionManifest(
 		documents,
 		recipients,
 		fields,
-		auditProof
+		auditProof,
+		...(signingInstructions === null ? {} : { signingInstructions })
 	};
 }
 
@@ -701,6 +721,24 @@ export function renderCompletionMarkdown(manifest: CompletionManifestV1): string
 		'- Hash chain: every stored event hash was independently re-derived from its recorded fields, and the chain was verified end-to-end through the envelope.completed anchor. This is not a tamper-proof guarantee — a whole-chain database rewrite that recomputes every hash consistently would pass this check. Detecting that requires an external signed/published anchor, which is out of scope for this artifact.',
 		''
 	);
+	if (manifest.signingInstructions !== undefined) {
+		const evidence: CompletionSigningInstructionEvidence = manifest.signingInstructions;
+		lines.push(
+			'## Signing instructions',
+			'',
+			`- Send event hash: ${escapeMarkdownCell(evidence.sentEventHash)}`,
+			`- Sent PDF SHA-256 (in order): ${evidence.sentPdfSha256.map(escapeMarkdownCell).join(', ')}`,
+			'',
+			'| Recipient | Locale | Instruction text SHA-256 | Field generation | Signed at |',
+			'| --- | --- | --- | --- | --- |'
+		);
+		for (const party of evidence.parties) {
+			lines.push(
+				`| ${escapeMarkdownCell(party.recipientId)} | ${party.signingInstruction.locale} | ${escapeMarkdownCell(party.signingInstruction.textSha256)} | ${party.signingInstruction.fieldGeneration} | ${escapeMarkdownCell(party.signedAt)} |`
+			);
+		}
+		lines.push('');
+	}
 	const markdown: string = lines.join('\n');
 	assertBoundedSourceBytes(markdown, 'Completion manifest Markdown');
 	return markdown;

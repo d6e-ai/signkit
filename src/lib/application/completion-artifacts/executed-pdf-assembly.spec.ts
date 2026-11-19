@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildFixturePdf, textPage } from '$lib/adapters/pdf/pdf-fixture-test-support';
+
+// Stand-ins for the parent-owned domain readers (see signing-instruction-evidence.spec.ts).
+vi.mock('$lib/domain/signing-instruction', () => ({
+	readSigningInstruction: async (payload: unknown): Promise<unknown> =>
+		(payload as Record<string, unknown>).signingInstruction
+}));
+vi.mock('$lib/domain/commands/sent-signing-instruction', () => ({
+	sentSigningInstructionVersion: (payload: Record<string, unknown>): 1 | undefined | null =>
+		payload.signingInstructionVersion === undefined
+			? undefined
+			: payload.signingInstructionVersion === 1
+				? 1
+				: null
+}));
 import {
 	documentSetHash,
 	upsertMarkdownDocument,
@@ -566,3 +580,70 @@ async function reopenThenReadyChain(
 		}
 	]);
 }
+
+describe('attestExecutedAgreementSources signing instruction authorization', () => {
+	async function markedInput(
+		instruction: Record<string, unknown> | null
+	): Promise<AssembleExecutedAgreementInput> {
+		const { input } = await fixture(1);
+		const steps: AuditChainStep[] = input.auditEvents.map((event) => ({
+			id: event.id,
+			eventType: event.eventType,
+			actorType: event.actorType,
+			actorId: event.actorId,
+			occurredAt: event.occurredAt,
+			payload: JSON.parse(event.payloadJson) as unknown
+		}));
+		const sentIndex: number = steps.findIndex((step) => step.id === 'event-sent');
+		steps[sentIndex].payload = {
+			...(steps[sentIndex].payload as object),
+			signingInstructionVersion: 1
+		};
+		const signed = (hash: string): AuditChainStep => ({
+			id: 'event-signed',
+			eventType: 'recipient.signed',
+			actorType: 'recipient',
+			actorId: 'recipient-1',
+			occurredAt: '2026-09-10T00:00:25.000Z',
+			payload: {
+				recipientId: 'recipient-1',
+				role: 'signer',
+				routingOrder: 1,
+				sentCommitSha: SENT_COMMIT_SHA,
+				fields: [],
+				signedAt: '2026-09-10T00:00:25.000Z',
+				...(instruction === null
+					? {}
+					: { signingInstruction: { ...instruction, sentEventHash: hash } })
+			}
+		});
+		const context = { envelopeId: ENVELOPE_ID };
+		const withSigned = (hash: string): AuditChainStep[] => [
+			...steps.slice(0, sentIndex + 1),
+			signed(hash),
+			...steps.slice(sentIndex + 1)
+		];
+		const first = await buildVerifiedAuditChain(context, withSigned('0'.repeat(64)));
+		return {
+			...input,
+			auditEvents: await buildVerifiedAuditChain(context, withSigned(first[sentIndex].eventHash))
+		};
+	}
+	const valid = { version: 1, locale: 'ja', textSha256: '1'.repeat(64), fieldGeneration: 0 };
+
+	it('accepts a marked send when every signer carries a matching instruction', async () => {
+		await expect(attestExecutedAgreementSources(await markedInput(valid))).resolves.toBeUndefined();
+	});
+
+	it('rejects a marked send directly when a signer has no instruction', async () => {
+		await expect(attestExecutedAgreementSources(await markedInput(null))).rejects.toMatchObject({
+			reason: 'invalid_document'
+		});
+	});
+
+	it('rejects a marked send whose instruction names another field generation', async () => {
+		await expect(
+			attestExecutedAgreementSources(await markedInput({ ...valid, fieldGeneration: 1 }))
+		).rejects.toBeInstanceOf(ExecutedPdfIntegrityError);
+	});
+});
