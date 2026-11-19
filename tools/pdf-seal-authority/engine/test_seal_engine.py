@@ -5,15 +5,17 @@ Run from this directory: ``python -m pytest`` (needs requirements.txt plus pytes
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import http.client
 import threading
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
 from cryptography.x509.oid import NameOID
 
 import seal_engine as se
@@ -37,6 +39,10 @@ def _cert(subject, issuer, key, signer_key, ca: bool) -> x509.Certificate:
         .not_valid_before(now - timedelta(days=1))
         .not_valid_after(now + timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(not ca, not ca, False, False, False, ca, ca, False, False),
+            critical=True,
+        )
     )
     return builder.sign(signer_key, hashes.SHA256())
 
@@ -72,8 +78,8 @@ class FakeKms:
 
     def sign(self, KeyId, Message, MessageType, SigningAlgorithm):
         self.sign_calls += 1
-        assert (KeyId, MessageType, SigningAlgorithm) == (ARN, "RAW", se.KMS_ALGORITHM)
-        sig = self.key.sign(Message, padding.PKCS1v15(), hashes.SHA256())
+        assert (KeyId, MessageType, SigningAlgorithm) == (ARN, "DIGEST", se.KMS_ALGORITHM)
+        sig = self.key.sign(Message, padding.PKCS1v15(), utils.Prehashed(hashes.SHA256()))
         r = {
             "KeyId": ARN,
             "SigningAlgorithm": se.KMS_ALGORITHM,
@@ -119,6 +125,27 @@ def test_success_exactly_one_sign_and_incremental(pki):
     out, rid = engine.seal(pdf, sha(pdf), pki[0].leaf_sha256)
     assert (kms.sign_calls, rid) == (1, "req-1")
     assert out.startswith(pdf) and b"ETSI.CAdES.detached" in out
+
+
+def test_independent_validator_accepts_engine_output(pki, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "validator"))
+    from config import load_config
+    from engine import Reference, evaluate
+
+    identity, _ = pki
+    engine, kms = engine_for(pki)
+    source = minimal_pdf()
+    sealed, _ = engine.seal(source, sha(source), identity.leaf_sha256)
+    config = load_config({
+        "VALIDATOR_TOKEN": TOKEN,
+        "SEAL_CA_DER": base64.b64encode(identity.chain_der[-1]).decode(),
+        "SEAL_CERTIFICATE_SHA256": identity.leaf_sha256,
+        "SEAL_POLICY_ID": "test-seal",
+        "VALIDATION_POLICY_ID": "test-validator",
+    })
+    result = evaluate(config, Reference("test-seal", "test-validator", identity.leaf_sha256), source, sealed)
+    assert result.valid, result.ordered_failures()
+    assert kms.sign_calls == 1
 
 
 def test_digest_mismatch_never_touches_kms(pki):

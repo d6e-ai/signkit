@@ -3,24 +3,16 @@ import type {
 	ProviderSigningReservation
 } from '../../../src/lib/application/pdf-seals/provider-signing-gate';
 import type { PdfSealProviderOperation } from '../../../src/lib/ports/pdf-seal-provider';
+import type { PdfSealAuthorizationRequest } from '../../../src/lib/application/pdf-seals/pdf-seal-authorization';
 
 const ISO_MILLIS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 /** Same fixed-width UTC text as Date#toISOString, evaluated once per statement. */
 const DB_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
+const DISPATCH_CUTOFF = "strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds')";
 
 export interface Scope {
 	issuer: string;
 	audience: string;
-}
-
-export interface ReceiptReference {
-	operationId: string;
-	envelopeId: string;
-	sourceSha256: string;
-	sourceByteSize: number;
-	signerCertificateSha256: string;
-	sealPolicyId: string;
-	validationPolicyId: string;
 }
 
 export interface ReceiptRow {
@@ -37,6 +29,7 @@ export interface ReceiptRow {
 	error_code: string | null;
 	result_sha256: string | null;
 	result_byte_size: number | null;
+	updated_at: string;
 }
 
 /** Provider-owned permanent reservation. Never retries: any ambiguity propagates. */
@@ -47,11 +40,14 @@ export class D1ProviderSigningLedger implements ProviderSigningLedger {
 		this.#db = db;
 	}
 
-	async reserve(input: ProviderSigningReservation): Promise<'reserved' | 'existing' | 'conflict'> {
+	async reserve(
+		input: ProviderSigningReservation,
+		reference: PdfSealAuthorizationRequest
+	): Promise<'reserved' | 'existing' | 'conflict'> {
 		if (!ISO_MILLIS.test(input.expiresAt)) throw new TypeError('invalid expiry');
-		// Single statement: either unique key (operation or envelope) suppresses the insert, and the
-		// admission is bounded by the database clock.
-		const inserted = await this.#db
+		// D1 batches are transactional. A reservation commits with its receipt or
+		// neither row commits. Both unique keys and the ledger clock gate admission.
+		const reservation = this.#db
 			.prepare(
 				`INSERT OR IGNORE INTO provider_signing_replay
 					(issuer, audience, envelope_id, operation_id, authorization_sha256, accepted_at, expires_at)
@@ -66,9 +62,35 @@ export class D1ProviderSigningLedger implements ProviderSigningLedger {
 				input.authorizationSha256,
 				input.expiresAt,
 				input.expiresAt
+			);
+		const receipt = this.#db
+			.prepare(
+				`INSERT INTO provider_signing_receipt
+				(issuer, audience, operation_id, envelope_id, receipt_id, source_sha256,
+				 source_byte_size, requested_profile, signer_certificate_sha256, seal_policy_id,
+				 validation_policy_id, status, created_at, updated_at)
+			 SELECT issuer, audience, operation_id, envelope_id, ?, ?, ?, 'pades-b-b', ?, ?, ?,
+				'pending', ${DB_NOW}, ${DB_NOW}
+			 FROM provider_signing_replay
+			 WHERE issuer = ? AND audience = ? AND operation_id = ? AND envelope_id = ?
+				AND authorization_sha256 = ?
+			 ON CONFLICT (issuer, audience, operation_id) DO NOTHING`
 			)
-			.run();
-		if (inserted.meta.changes === 1) return 'reserved';
+			.bind(
+				crypto.randomUUID(),
+				reference.sourceSha256,
+				reference.sourceByteSize,
+				reference.signerCertificateSha256,
+				reference.sealPolicyId,
+				reference.validationPolicyId,
+				input.issuer,
+				input.audience,
+				input.operationId,
+				input.envelopeId,
+				input.authorizationSha256
+			);
+		const [inserted, created] = await this.#db.batch([reservation, receipt]);
+		if (inserted.meta.changes === 1 && created.meta.changes === 1) return 'reserved';
 		const existing = await this.#db
 			.prepare(
 				`SELECT envelope_id, authorization_sha256 FROM provider_signing_replay
@@ -82,18 +104,6 @@ export class D1ProviderSigningLedger implements ProviderSigningLedger {
 			? 'existing'
 			: 'conflict';
 	}
-
-	/** True when the operation or its envelope already consumed a reservation in this scope. */
-	async known(scope: Scope, operationId: string, envelopeId: string): Promise<boolean> {
-		const row = await this.#db
-			.prepare(
-				`SELECT 1 AS found FROM provider_signing_replay
-				WHERE issuer = ? AND audience = ? AND (operation_id = ? OR envelope_id = ?)`
-			)
-			.bind(scope.issuer, scope.audience, operationId, envelopeId)
-			.first<{ found: number }>();
-		return row !== null;
-	}
 }
 
 export class D1ReceiptStore {
@@ -105,41 +115,12 @@ export class D1ReceiptStore {
 		this.#scope = scope;
 	}
 
-	/** Receipt exists only for an already reserved operation of the same envelope. */
-	async createPending(reference: ReceiptReference, receiptId: string): Promise<void> {
-		const result = await this.#db
-			.prepare(
-				`INSERT OR IGNORE INTO provider_signing_receipt
-					(issuer, audience, operation_id, envelope_id, receipt_id, source_sha256,
-					 source_byte_size, requested_profile, signer_certificate_sha256, seal_policy_id,
-					 validation_policy_id, status, created_at, updated_at)
-				SELECT issuer, audience, operation_id, envelope_id, ?, ?, ?, 'pades-b-b', ?, ?, ?,
-					'pending', ${DB_NOW}, ${DB_NOW}
-				FROM provider_signing_replay
-				WHERE issuer = ? AND audience = ? AND operation_id = ? AND envelope_id = ?`
-			)
-			.bind(
-				receiptId,
-				reference.sourceSha256,
-				reference.sourceByteSize,
-				reference.signerCertificateSha256,
-				reference.sealPolicyId,
-				reference.validationPolicyId,
-				this.#scope.issuer,
-				this.#scope.audience,
-				reference.operationId,
-				reference.envelopeId
-			)
-			.run();
-		if (result.meta.changes !== 1) throw new Error('receipt_not_created');
-	}
-
 	async read(operationId: string): Promise<ReceiptRow | null> {
 		return this.#db
 			.prepare(
 				`SELECT operation_id, envelope_id, receipt_id, source_sha256, source_byte_size,
 					requested_profile, signer_certificate_sha256, seal_policy_id, validation_policy_id,
-					status, error_code, result_sha256, result_byte_size
+					status, error_code, result_sha256, result_byte_size, updated_at
 				FROM provider_signing_receipt WHERE issuer = ? AND audience = ? AND operation_id = ?`
 			)
 			.bind(this.#scope.issuer, this.#scope.audience, operationId)
@@ -148,7 +129,15 @@ export class D1ReceiptStore {
 
 	/** Exactly one caller wins the right to call the engine. */
 	async claim(operationId: string): Promise<boolean> {
-		return (await this.#transition(operationId, 'pending', "status = 'processing'", [])) === 1;
+		const result = await this.#db
+			.prepare(
+				`UPDATE provider_signing_receipt SET status = 'processing', updated_at = ${DB_NOW}
+			 WHERE issuer = ? AND audience = ? AND operation_id = ? AND status = 'pending'
+				AND updated_at > ${DISPATCH_CUTOFF}`
+			)
+			.bind(this.#scope.issuer, this.#scope.audience, operationId)
+			.run();
+		return result.meta.changes === 1;
 	}
 
 	async succeed(
@@ -165,11 +154,18 @@ export class D1ReceiptStore {
 		);
 	}
 
-	async fail(operationId: string, errorCode: string): Promise<boolean> {
+	async fail(
+		operationId: string,
+		errorCode: string,
+		engineRequestId: string | null = null
+	): Promise<boolean> {
 		return (
-			(await this.#transition(operationId, 'processing', "status = 'failed', error_code = ?", [
-				errorCode
-			])) === 1
+			(await this.#transition(
+				operationId,
+				'processing',
+				"status = 'failed', error_code = ?, engine_request_id = ?",
+				[errorCode, engineRequestId]
+			)) === 1
 		);
 	}
 
@@ -177,7 +173,7 @@ export class D1ReceiptStore {
 		operationId: string,
 		from: ReceiptRow['status'],
 		assignments: string,
-		values: (string | number)[]
+		values: (string | number | null)[]
 	): Promise<number> {
 		const result = await this.#db
 			.prepare(
@@ -207,9 +203,23 @@ export function operationOf(row: ReceiptRow): PdfSealProviderOperation {
 	switch (row.status) {
 		case 'pending':
 		case 'processing':
+			if (Date.now() - Date.parse(row.updated_at) > 120_000) {
+				return {
+					...base,
+					status: 'failed',
+					retryable: false,
+					errorCode:
+						row.status === 'pending' ? 'provider_dispatch_expired' : 'provider_outcome_unknown'
+				};
+			}
 			return { ...base, status: row.status };
 		case 'failed':
-			return { ...base, status: 'failed', errorCode: row.error_code ?? 'signing_failed', retryable: false };
+			return {
+				...base,
+				status: 'failed',
+				errorCode: row.error_code ?? 'signing_failed',
+				retryable: false
+			};
 		case 'succeeded':
 			return {
 				...base,

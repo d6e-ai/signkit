@@ -61,7 +61,6 @@ from pyhanko_certvalidator.registry import SimpleCertificateStore
 MAX_BODY_BYTES = 32 * 1024 * 1024
 PROFILE = "pades-b-b"
 KMS_ALGORITHM = "RSASSA_PKCS1_V1_5_SHA_256"
-KMS_RAW_MESSAGE_LIMIT = 4096
 FIELD_NAME = "SignKitInstanceSeal"
 KEY_ARN_PATTERN = re.compile(
     r"arn:aws[a-z-]*:kms:([a-z0-9-]+):[0-9]{12}:key/[0-9a-zA-Z-]+"
@@ -126,6 +125,9 @@ class Identity:
         bc = _basic_constraints(leaf)
         if bc is not None and bc.ca:
             raise ValueError("leaf is a CA")
+        usage = leaf.extensions.get_extension_for_class(x509.KeyUsage).value
+        if not usage.digital_signature or not usage.content_commitment:
+            raise ValueError("leaf key usage does not permit sealing")
         child = leaf
         for ca in chain:
             bc_ca = _basic_constraints(ca)
@@ -179,8 +181,8 @@ def kms_client_factory(key_arn: str) -> Callable[[], Any]:
             region_name=region,
             config=Config(
                 retries={"total_max_attempts": 1, "mode": "standard"},
-                connect_timeout=5,
-                read_timeout=20,
+                connect_timeout=2,
+                read_timeout=5,
             ),
         )
 
@@ -196,13 +198,16 @@ class KmsSigner(signers.Signer):
     """pyHanko signer delegating the single raw RSA PKCS#1 v1.5 SHA-256 signature to KMS."""
 
     def __init__(self, identity: Identity, client: Any, key_arn: str) -> None:
-        super().__init__(prefer_pss=False, embed_roots=True)
-        self.signing_cert = asn1_x509.Certificate.load(identity.leaf_der)
         store = SimpleCertificateStore()
         store.register_multiple(
             [asn1_x509.Certificate.load(der) for der in identity.chain_der]
         )
-        self.cert_registry = store
+        super().__init__(
+            prefer_pss=False,
+            embed_roots=True,
+            signing_cert=asn1_x509.Certificate.load(identity.leaf_der),
+            cert_registry=store,
+        )
         self._identity = identity
         self._client = client
         self._key_arn = key_arn
@@ -218,14 +223,12 @@ class KmsSigner(signers.Signer):
             return bytes(self._identity.signature_length)  # never touches KMS
         if self.sign_calls:
             raise EngineError(500, "second_sign_refused", self.kms_request_id)
-        if len(data) > KMS_RAW_MESSAGE_LIMIT:
-            raise EngineError(500, "message_too_large")
         self.sign_calls = 1
         try:
             response = self._client.sign(
                 KeyId=self._key_arn,
-                Message=data,
-                MessageType="RAW",
+                Message=hashlib.sha256(data).digest(),
+                MessageType="DIGEST",
                 SigningAlgorithm=KMS_ALGORITHM,
             )
         except (BotoCoreError, ClientError) as error:

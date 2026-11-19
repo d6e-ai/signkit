@@ -11,6 +11,10 @@ import {
 import { base64UrlEncode } from '../../../src/lib/security/opaque-token';
 import { handle, type GatewayEnv } from './index';
 
+const appToken = 'a'.repeat(43);
+const engineToken = 'b'.repeat(43);
+const issuerToken = 'c'.repeat(43);
+
 const envelopeId = '01900000-0000-7000-8000-000000000601';
 const otherEnvelopeId = '01900000-0000-7000-8000-000000000602';
 const operationId = '01900000-0000-7000-8000-000000000603';
@@ -61,7 +65,10 @@ function harness() {
 		head: vi.fn(async (key: string) => {
 			const found = objects.get(key);
 			return found
-				? ({ size: found.bytes.length, customMetadata: found.customMetadata } as unknown as R2Object)
+				? ({
+						size: found.bytes.length,
+						customMetadata: found.customMetadata
+					} as unknown as R2Object)
 				: null;
 		}),
 		get: vi.fn(async (key: string) => {
@@ -76,20 +83,24 @@ function harness() {
 		})
 	};
 	const issuer = vi.fn(async (_url: string, init: RequestInit) => {
-		expect((init.headers as Record<string, string>).authorization).toBe('Bearer app-token');
+		expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${issuerToken}`);
 		const request = JSON.parse(init.body as string) as PdfSealAuthorizationRequest;
 		const token = await signPdfSealAuthorization(
 			request,
 			{ evidenceSha256: 'b'.repeat(64), sentEventHash: 'c'.repeat(64) },
 			{ issuer: 'independent-issuer', audience: 'provider' },
-			async (input) => new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, input)),
+			async (input) =>
+				new Uint8Array(
+					await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, input)
+				),
 			new Date()
 		);
 		return Response.json({ authorization: token });
 	});
 	const engine = vi.fn(async (_url: string, init: RequestInit) => {
 		const headers = init.headers as Record<string, string>;
-		expect(headers.authorization).toBe('Bearer engine-secret');
+		expect(headers.authorization).toBe(`Bearer ${engineToken}`);
+		expect(headers['x-signkit-seal-profile']).toBe('pades-b-b');
 		expect(headers['x-signkit-source-sha256']).toBe(reference.sourceSha256);
 		expect(headers['x-signkit-signer-certificate-sha256']).toBe(certificate);
 		return new Response(sealed, {
@@ -107,8 +118,9 @@ function harness() {
 		SEAL_CERTIFICATE_SHA256: certificate,
 		SEAL_POLICY_ID: 'seal-policy',
 		VALIDATION_POLICY_ID: 'validator-policy',
-		GATEWAY_TOKEN: 'app-token',
-		ENGINE_TOKEN: 'engine-secret'
+		GATEWAY_TOKEN: appToken,
+		ENGINE_TOKEN: engineToken,
+		ISSUER_TOKEN: issuerToken
 	} as unknown as GatewayEnv;
 	const pending: Promise<unknown>[] = [];
 	const ctx = { waitUntil: (promise: Promise<unknown>) => void pending.push(promise) };
@@ -124,7 +136,7 @@ function harness() {
 
 function echoHeaders(extra: Record<string, string> = {}): Headers {
 	return new Headers({
-		authorization: 'Bearer app-token',
+		authorization: `Bearer ${appToken}`,
 		'idempotency-key': operationId,
 		'x-signkit-operation-id': operationId,
 		'x-signkit-source-sha256': reference.sourceSha256,
@@ -139,7 +151,7 @@ function echoHeaders(extra: Record<string, string> = {}): Headers {
 
 const url = (path: string): string => `https://gateway.example${path}`;
 
-function authorize(body: object = reference, token = 'app-token'): Request {
+function authorize(body: object = reference, token = appToken): Request {
 	return new Request(url(`/pdf-seal-authorizations/${operationId}`), {
 		method: 'POST',
 		headers: {
@@ -230,7 +242,7 @@ describe('managed key gateway', () => {
 		});
 	});
 
-	it('reconciles existing operations without issuing a grant and disables legacy routes', async () => {
+	it('revalidates an existing operation without a second key call and disables legacy routes', async () => {
 		const gw = harness();
 		const { authorization } = (await (await gw.call(authorize())).json()) as {
 			authorization: string;
@@ -239,21 +251,26 @@ describe('managed key gateway', () => {
 		await gw.settle();
 		expect(gw.issuer).toHaveBeenCalledTimes(1);
 
-		expect((await gw.call(authorize())).status).toBe(409);
+		const renewed = await gw.call(authorize());
+		expect(renewed.status).toBe(200);
+		const grant = (await renewed.json()) as { authorization: string };
+		expect((await gw.call(put(grant.authorization))).status).toBe(200);
+		await gw.settle();
+		expect(gw.engine).toHaveBeenCalledTimes(1);
 		expect(
 			(await gw.call(authorize({ ...reference, operationId: otherOperationId(), envelopeId })))
 				.status
 		).toBe(400);
-		expect(gw.issuer).toHaveBeenCalledTimes(1);
+		expect(gw.issuer).toHaveBeenCalledTimes(2);
 
 		for (const [method, path] of [
 			['POST', '/seal'],
 			['PUT', `/pdf-seals/${operationId}`],
 			['GET', `/authorized-pdf-seals/${operationId}/extra/result`]
 		] as const) {
-			expect((await gw.call(new Request(url(path), { method, headers: echoHeaders() }))).status).toBe(
-				404
-			);
+			expect(
+				(await gw.call(new Request(url(path), { method, headers: echoHeaders() }))).status
+			).toBe(404);
 		}
 		const unauthenticated = await gw.call(
 			new Request(url(`/authorized-pdf-seals/${operationId}`), {
@@ -266,7 +283,12 @@ describe('managed key gateway', () => {
 
 	it('marks the receipt failed and never retries when the engine fails', async () => {
 		const gw = harness();
-		gw.engine.mockResolvedValueOnce(new Response('nope', { status: 500 }));
+		gw.engine.mockResolvedValueOnce(
+			new Response('nope', {
+				status: 500,
+				headers: { 'x-signkit-kms-request-id': kmsRequestId }
+			})
+		);
 		const { authorization } = (await (await gw.call(authorize())).json()) as {
 			authorization: string;
 		};
@@ -275,11 +297,35 @@ describe('managed key gateway', () => {
 		await gw.call(put(authorization));
 		await gw.settle();
 		expect(gw.engine).toHaveBeenCalledTimes(1);
-		expect(gw.sqlite.prepare('SELECT status, error_code FROM provider_signing_receipt').get()).toEqual({
+		expect(
+			gw.sqlite
+				.prepare('SELECT status, error_code, engine_request_id FROM provider_signing_receipt')
+				.get()
+		).toEqual({
 			status: 'failed',
-			error_code: 'engine_rejected'
+			error_code: 'engine_rejected',
+			engine_request_id: kmsRequestId
 		});
 		expect(gw.objects.size).toBe(0);
+	});
+
+	it('commits the reservation and pending receipt together before dispatch', async () => {
+		const gw = harness();
+		const { authorization } = (await (await gw.call(authorize())).json()) as {
+			authorization: string;
+		};
+		gw.sqlite.exec(`CREATE TRIGGER unavailable_receipt BEFORE INSERT ON provider_signing_receipt
+			BEGIN SELECT RAISE(ABORT, 'receipt storage failure'); END;`);
+		expect((await gw.call(put(authorization))).status).toBe(503);
+		expect(
+			gw.sqlite.prepare('SELECT count(*) AS count FROM provider_signing_replay').get()
+		).toEqual({ count: 0 });
+		expect(gw.engine).not.toHaveBeenCalled();
+
+		gw.sqlite.exec('DROP TRIGGER unavailable_receipt');
+		expect((await gw.call(put(authorization))).status).toBe(200);
+		await gw.settle();
+		expect(gw.engine).toHaveBeenCalledTimes(1);
 	});
 
 	it('keeps replay rows permanent', () => {

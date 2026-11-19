@@ -22,7 +22,10 @@ export interface ProviderSigningReservation {
 
 export interface ProviderSigningLedger {
 	/** Atomic, permanent reservation in a store owned by the service controlling the key. */
-	reserve(command: ProviderSigningReservation): Promise<'reserved' | 'existing' | 'conflict'>;
+	reserve(
+		command: ProviderSigningReservation,
+		reference: PdfSealAuthorizationRequest
+	): Promise<'reserved' | 'existing' | 'conflict'>;
 }
 
 export interface ProviderSigningGateOptions<Result> {
@@ -69,14 +72,17 @@ export async function acceptAuthorizedPdfSeal<Result>(
 	);
 	const expiry = claims.expiresAt * 1000;
 	if (!(expiry > now().getTime())) return { outcome: 'denied' };
-	const reservation = await options.ledger.reserve({
-		issuer: claims.issuer,
-		audience: claims.audience,
-		envelopeId: request.envelopeId,
-		operationId: request.operationId,
-		authorizationSha256,
-		expiresAt: new Date(expiry).toISOString()
-	});
+	const reservation = await options.ledger.reserve(
+		{
+			issuer: claims.issuer,
+			audience: claims.audience,
+			envelopeId: request.envelopeId,
+			operationId: request.operationId,
+			authorizationSha256,
+			expiresAt: new Date(expiry).toISOString()
+		},
+		request
+	);
 	if (reservation === 'conflict') return { outcome: 'conflict' };
 	if (reservation === 'existing') return { outcome: 'replayed' };
 	if (reservation !== 'reserved') return { outcome: 'denied' };

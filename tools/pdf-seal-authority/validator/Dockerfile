@@ -1,12 +1,12 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
+COPY requirements-linux-amd64.lock ./
+RUN pip install --require-hashes --only-binary=:all: -r requirements-linux-amd64.lock
 
 COPY config.py engine.py server.py ./
 RUN useradd --system --no-create-home --uid 10001 validator

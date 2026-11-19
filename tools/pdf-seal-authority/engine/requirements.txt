@@ -1,6 +1,6 @@
 asn1crypto==1.5.1
-boto3==1.40.0
-botocore==1.40.0
+boto3==1.44.6
+botocore==1.44.6
 cryptography==50.0.1
 pyhanko==0.37.0
 pyhanko-certvalidator==0.32.1

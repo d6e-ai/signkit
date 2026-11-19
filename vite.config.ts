@@ -128,7 +128,7 @@ export default defineConfig({
 				test: {
 					name: 'server',
 					environment: 'node',
-					include: ['src/**/*.{test,spec}.{js,ts}'],
+					include: ['src/**/*.{test,spec}.{js,ts}', 'tools/pdf-seal-authority/**/*.spec.ts'],
 					exclude: [
 						'src/**/*.svelte.{test,spec}.{js,ts}',
 						'src/**/*.browser.spec.ts',

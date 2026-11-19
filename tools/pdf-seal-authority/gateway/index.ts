@@ -7,6 +7,8 @@ import {
 	type PdfSealAuthorizationTrust
 } from '../../../src/lib/application/pdf-seals/pdf-seal-authorization';
 import { createAuthorizedPdfSealSubmitHandler } from '../../../src/lib/http/authorized-pdf-seal-provider';
+import { UUID_V7_PATTERN } from '../../../src/lib/ids/uuid-v7';
+import { sealServiceTokenPattern } from '../cloudflare/security';
 import {
 	D1ProviderSigningLedger,
 	D1ReceiptStore,
@@ -33,6 +35,8 @@ export interface GatewayEnv {
 	VALIDATION_POLICY_ID: string;
 	/** Application scheduling credential. Never authorizes key use by itself. */
 	GATEWAY_TOKEN: string;
+	/** Independent private bearer for the issuer service binding. */
+	ISSUER_TOKEN: string;
 	/** Private engine bearer, used only by this gateway. */
 	ENGINE_TOKEN: string;
 }
@@ -47,7 +51,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const LABEL = /^[\x21-\x7e]{1,128}$/;
 const PUBLIC_KEY = /^B[A-Za-z0-9_-]{86}$/;
-const TOKEN = /^[A-Za-z0-9\-._~+/]{1,4096}=*$/;
+const COMPACT_GRANT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const encoder = new TextEncoder();
 
 interface Config {
@@ -55,6 +59,7 @@ interface Config {
 	trust: PdfSealAuthorizationTrust;
 	policy: PdfSealAuthorizationPolicy;
 	gatewayToken: string;
+	issuerToken: string;
 	engineToken: string;
 }
 
@@ -67,8 +72,9 @@ function configure(env: GatewayEnv): Config | null {
 	const certificate = text(env.SEAL_CERTIFICATE_SHA256, SHA256);
 	const sealPolicyId = text(env.SEAL_POLICY_ID, LABEL);
 	const validationPolicyId = text(env.VALIDATION_POLICY_ID, LABEL);
-	const gatewayToken = text(env.GATEWAY_TOKEN, TOKEN);
-	const engineToken = text(env.ENGINE_TOKEN, TOKEN);
+	const gatewayToken = text(env.GATEWAY_TOKEN, sealServiceTokenPattern);
+	const issuerToken = text(env.ISSUER_TOKEN, sealServiceTokenPattern);
+	const engineToken = text(env.ENGINE_TOKEN, sealServiceTokenPattern);
 	if (
 		audience === null ||
 		issuer === null ||
@@ -77,7 +83,9 @@ function configure(env: GatewayEnv): Config | null {
 		sealPolicyId === null ||
 		validationPolicyId === null ||
 		gatewayToken === null ||
+		issuerToken === null ||
 		engineToken === null ||
+		new Set([gatewayToken, issuerToken, engineToken]).size !== 3 ||
 		!env.ISSUER ||
 		!env.ENGINE ||
 		!env.LEDGER ||
@@ -98,6 +106,7 @@ function configure(env: GatewayEnv): Config | null {
 			tsaTrustBundleSha256: null
 		},
 		gatewayToken,
+		issuerToken,
 		engineToken
 	};
 }
@@ -120,7 +129,7 @@ export async function handle(
 			url.pathname
 		);
 		// Any other path, including legacy bearer-only signing routes, does not exist.
-		if (route === null || !SAFE_ID.test(route[2])) return reply(404);
+		if (route === null || !UUID_V7_PATTERN.test(route[2])) return reply(404);
 		const operationId = route[2];
 		if (route[1] === 'pdf-seal-authorizations') {
 			if (route[3] !== undefined) return reply(404);
@@ -157,19 +166,6 @@ async function submit(
 		ledger: new D1ProviderSigningLedger(env.LEDGER),
 		// Runs only for the caller that won the durable reservation.
 		sign: async (claims, source) => {
-			const receiptId = crypto.randomUUID();
-			await receipts.createPending(
-				{
-					operationId: claims.operationId,
-					envelopeId: claims.envelopeId,
-					sourceSha256: claims.sourceSha256,
-					sourceByteSize: claims.sourceByteSize,
-					signerCertificateSha256: claims.signerCertificateSha256,
-					sealPolicyId: claims.sealPolicyId,
-					validationPolicyId: claims.validationPolicyId
-				},
-				receiptId
-			);
 			const row = await receipts.read(claims.operationId);
 			if (row === null || row.status !== 'pending') throw new Error('receipt_missing');
 			// One signing fetch, scheduled once. Nothing else ever calls the engine.
@@ -192,6 +188,7 @@ async function runSigning(
 	operationId: string,
 	source: Uint8Array<ArrayBuffer>
 ): Promise<void> {
+	let engineRequestId: string | null = null;
 	try {
 		if (!(await receipts.claim(operationId))) return;
 		const row = await receipts.read(operationId);
@@ -207,6 +204,7 @@ async function runSigning(
 					accept: 'application/pdf',
 					'accept-encoding': 'identity',
 					'content-type': 'application/pdf',
+					'x-signkit-seal-profile': row.requested_profile,
 					'x-signkit-source-sha256': row.source_sha256,
 					'x-signkit-signer-certificate-sha256': row.signer_certificate_sha256
 				},
@@ -216,44 +214,41 @@ async function runSigning(
 			await receipts.fail(operationId, 'engine_unavailable');
 			return;
 		}
-		const engineRequestId = response.headers.get('x-signkit-kms-request-id');
+		const reportedId = response.headers.get('x-signkit-kms-request-id');
+		engineRequestId = reportedId !== null && SAFE_ID.test(reportedId) ? reportedId : null;
 		const encoding = response.headers.get('content-encoding');
 		if (
 			response.status !== 200 ||
 			response.redirected ||
 			mediaType(response.headers.get('content-type')) !== 'application/pdf' ||
 			(encoding !== null && encoding.toLowerCase() !== 'identity') ||
-			engineRequestId === null ||
-			!SAFE_ID.test(engineRequestId)
+			engineRequestId === null
 		) {
 			await response.body?.cancel().catch(() => undefined);
 			await receipts.fail(
 				operationId,
-				response.status === 200 ? 'engine_invalid_response' : 'engine_rejected'
+				response.status === 200 ? 'engine_invalid_response' : 'engine_rejected',
+				engineRequestId
 			);
 			return;
 		}
 		const limit = Math.min(row.source_byte_size + MAX_ENGINE_GROWTH_BYTES, MAX_RESULT_BYTES);
 		const bytes = await readBounded(response, limit).catch(() => null);
-		if (
-			bytes === null ||
-			bytes.byteLength <= row.source_byte_size ||
-			!startsWithPdfMagic(bytes)
-		) {
-			await receipts.fail(operationId, 'engine_invalid_response');
+		if (bytes === null || bytes.byteLength <= row.source_byte_size || !startsWithPdfMagic(bytes)) {
+			await receipts.fail(operationId, 'engine_invalid_response', engineRequestId);
 			return;
 		}
 		const sha256 = await sha256Hex(bytes);
 		const key = await resultKey(config.scope, operationId);
 		const stored = await storeResult(env.RESULTS, key, bytes, sha256, row, engineRequestId);
 		if (!stored) {
-			await receipts.fail(operationId, 'result_store_failed');
+			await receipts.fail(operationId, 'result_store_failed', engineRequestId);
 			return;
 		}
 		await receipts.succeed(operationId, { sha256, byteSize: bytes.byteLength, engineRequestId });
 	} catch {
 		// A post-reservation failure is terminal; the key is never invoked again.
-		await receipts.fail(operationId, 'signing_failed').catch(() => undefined);
+		await receipts.fail(operationId, 'signing_failed', engineRequestId).catch(() => undefined);
 	}
 }
 
@@ -305,7 +300,8 @@ async function readStatus(
 	if (row === null) return reply(404);
 	const refusal = checkRequestEcho(request, row, false);
 	if (refusal !== null) return reply(refusal);
-	if (row.status === 'processing') row = (await reconcileFromResults(env, config, receipts, row)) ?? row;
+	if (row.status === 'processing')
+		row = (await reconcileFromResults(env, config, receipts, row)) ?? row;
 	return reply(200, operationOf(row));
 }
 
@@ -389,7 +385,11 @@ async function readResult(
  * The caller must restate the frozen operation. A pinned receipt header, when given (required for
  * result), must equal the stored receipt exactly. Returns an HTTP status to refuse with, or null.
  */
-function checkRequestEcho(request: Request, row: ReceiptRow, receiptRequired: boolean): number | null {
+function checkRequestEcho(
+	request: Request,
+	row: ReceiptRow,
+	receiptRequired: boolean
+): number | null {
 	const h = request.headers;
 	const receipt = h.get('x-signkit-provider-receipt-id');
 	if (receipt === null ? receiptRequired : receipt !== row.receipt_id) return 403;
@@ -414,7 +414,7 @@ function checkRequestEcho(request: Request, row: ReceiptRow, receiptRequired: bo
 	return null;
 }
 
-/** Forward to the independent issuer. An existing operation is reconcile-only: no new grant. */
+/** The issuer can renew a grant; a replay can only read the accepted receipt. */
 async function relayAuthorization(
 	request: Request,
 	operationId: string,
@@ -442,9 +442,6 @@ async function relayAuthorization(
 		return reply(400);
 	}
 	if (!matchesPdfSealAuthorizationPolicy(input, config.policy)) return reply(403);
-	if (await new D1ProviderSigningLedger(env.LEDGER).known(config.scope, operationId, input.envelopeId)) {
-		return reply(409);
-	}
 	const canonical = JSON.stringify(pdfSealAuthorizationReference(input));
 	const upstream = await env.ISSUER.fetch(
 		`https://issuer.internal/pdf-seal-authorizations/${encodeURIComponent(operationId)}`,
@@ -453,7 +450,7 @@ async function relayAuthorization(
 			redirect: 'manual',
 			signal: AbortSignal.timeout(ISSUER_TIMEOUT_MS),
 			headers: {
-				authorization: `Bearer ${config.gatewayToken}`,
+				authorization: `Bearer ${config.issuerToken}`,
 				accept: 'application/json',
 				'accept-encoding': 'identity',
 				'content-type': 'application/json',
@@ -484,7 +481,7 @@ async function relayAuthorization(
 			parsed === null ||
 			Object.keys(parsed).length !== 1 ||
 			typeof authorization !== 'string' ||
-			!TOKEN.test(authorization)
+			!COMPACT_GRANT.test(authorization)
 		) {
 			return reply(503);
 		}
