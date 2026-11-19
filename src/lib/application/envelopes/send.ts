@@ -4,7 +4,8 @@ import {
 	isPostSendInvitationRecipientRole,
 	type Recipient
 } from '$lib/domain/envelope';
-import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
+import { SIGNING_INSTRUCTION_VERSION } from '$lib/domain/commands/sent-signing-instruction';
+import { newUuidV7,type UuidV7Generator } from '$lib/ids/uuid-v7';
 import { SendCompletionBudgetError } from './send-completion-budget';
 import type {
 	DeliveryManifestEntry,
@@ -217,7 +218,9 @@ export class EnvelopeSendApplication implements EnvelopeSendApplicationPort {
 			// without writing an infrastructure key into the evidence record.
 			documentSetHash: sentDocumentSet.documentSetHash,
 			documentCount: sentDocumentSet.documentCount,
-			documents: sentAuditDocuments(sentDocumentSet.documents)
+			documents: sentAuditDocuments(sentDocumentSet.documents),
+			// Appended last so historical payloads stay byte-identical.
+			signingInstructionVersion: SIGNING_INSTRUCTION_VERSION
 		});
 		const auditEventHash: string = await hashAuditEventV3(
 			{

@@ -165,6 +165,10 @@ describe('EnvelopeSendApplication', () => {
 			queuedDeliveryCount: 2,
 			reservedCapabilityCount: 3
 		});
+		// The marker is the final canonical key of every newly published send.
+		expect(store.commands[0].auditPayloadJson.endsWith(',"signingInstructionVersion":1}')).toBe(
+			true
+		);
 		expect(store.commands[0].auditPayloadJson).not.toContain('@example.com');
 		expect(store.commands[0].auditPayloadJson).not.toContain('skr1_');
 	});
