@@ -103,7 +103,12 @@ pub const EXAMPLE_RECIPIENT_SIGN_JSON: &str = r#"{
       "fieldId": "0191eb70-6523-74b2-b7b5-2fa75bb6d002",
       "value": "Jane Doe"
     }
-  ]
+  ],
+  "signingInstruction": {
+    "version": 1,
+    "locale": "en",
+    "sentEventHash": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
 }"#;
 
 pub const MAX_RECIPIENT_VALUES: usize = 50;
@@ -1542,8 +1547,105 @@ pub fn validate_recipient_action_payload(
     })
 }
 
+/// Strictly validates the request-side `signingInstruction` binding object:
+/// exactly `{ version: 1, locale: "en"|"ja", sentEventHash: 64 lowercase hex }`.
+pub fn validate_signing_instruction_request(
+    val: &serde_json::Value,
+    path: &str,
+    errors: &mut Vec<ProblemValidationError>,
+) {
+    let mut push = |p: String, message: &str| {
+        errors.push(ProblemValidationError {
+            path: p,
+            message: message.to_string(),
+            extra: Default::default(),
+        });
+    };
+    let Some(obj) = val.as_object() else {
+        push(path.to_string(), "signingInstruction must be an object.");
+        return;
+    };
+    for key in obj.keys() {
+        if !matches!(key.as_str(), "version" | "locale" | "sentEventHash") {
+            push(
+                format!("{path}.{key}"),
+                "Unrecognized property. Only version, locale, and sentEventHash are permitted.",
+            );
+        }
+    }
+    if obj.get("version").and_then(|v| v.as_u64()) != Some(1) {
+        push(format!("{path}.version"), "version must be the integer 1.");
+    }
+    if !matches!(
+        obj.get("locale").and_then(|v| v.as_str()),
+        Some("en" | "ja")
+    ) {
+        push(format!("{path}.locale"), "locale must be \"en\" or \"ja\".");
+    }
+    let hash_ok = obj
+        .get("sentEventHash")
+        .and_then(|v| v.as_str())
+        .is_some_and(|h| {
+            h.len() == 64
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
+    if !hash_ok {
+        push(
+            format!("{path}.sentEventHash"),
+            "sentEventHash must be 64 lowercase hexadecimal characters.",
+        );
+    }
+}
+
+/// Extracts the request-side signing instruction from a user-supplied JSON
+/// value: either the bare binding object or a `GET /recipient/documents`
+/// response whose `.signingInstruction` carries the binding plus the
+/// server-provided `statement` (which is never forwarded). Strict validation.
+pub fn signing_instruction_from_supplied(
+    value: &serde_json::Value,
+) -> Result<serde_json::Value, CliError> {
+    let candidate = match value.as_object() {
+        Some(o) if o.contains_key("signingInstruction") => &o["signingInstruction"],
+        _ => value,
+    };
+    let Some(obj) = candidate.as_object() else {
+        return Err(CliError::usage(
+            "Signing instruction JSON must be an object or a recipient documents response containing signingInstruction.",
+        ));
+    };
+    let mut binding = serde_json::Map::new();
+    for key in ["version", "locale", "sentEventHash"] {
+        if let Some(v) = obj.get(key) {
+            binding.insert(key.to_string(), v.clone());
+        }
+    }
+    for key in obj.keys() {
+        if !matches!(
+            key.as_str(),
+            "version" | "locale" | "sentEventHash" | "statement"
+        ) {
+            binding.insert(key.clone(), obj[key].clone());
+        }
+    }
+    let binding = serde_json::Value::Object(binding);
+    let mut errors = Vec::new();
+    validate_signing_instruction_request(&binding, "signingInstruction", &mut errors);
+    if !errors.is_empty() {
+        let detail = errors
+            .iter()
+            .map(|e| format!("{}: {}", e.path, e.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(CliError::usage(format!(
+            "Invalid signing instruction: {detail}"
+        )));
+    }
+    Ok(binding)
+}
+
 /// Validates the `{ envelopeId, recipientId, expectedFieldGeneration, values }`
-/// payload for the `sign` recipient command.
+/// payload (plus optional `signingInstruction`) for the `sign` recipient command.
 pub fn validate_recipient_sign_payload(
     object: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<ValidationReceipt, CliError> {
@@ -1554,6 +1656,7 @@ pub fn validate_recipient_sign_payload(
         "recipientId",
         "expectedFieldGeneration",
         "values",
+        "signingInstruction",
     ]
     .into_iter()
     .collect();
@@ -1567,6 +1670,9 @@ pub fn validate_recipient_sign_payload(
                 extra: Default::default(),
             });
         }
+    }
+    if let Some(val) = object.get("signingInstruction") {
+        validate_signing_instruction_request(val, "signingInstruction", &mut errors);
     }
 
     let mut envelope_id_val: Option<String> = None;

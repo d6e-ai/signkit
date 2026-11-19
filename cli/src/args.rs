@@ -795,8 +795,20 @@ pub struct RecipientActionArgs {
               \"fieldId\": \"0191eb70-6523-74b2-b7b5-2fa75bb6d002\",\n        \
               \"value\": \"Jane Doe\"\n      \
             }\n    \
-          ]\n  \
+          ],\n    \
+          \"signingInstruction\": {\n      \
+            \"version\": 1,\n      \
+            \"locale\": \"en\",\n      \
+            \"sentEventHash\": \"0000000000000000000000000000000000000000000000000000000000000000\"\n    \
+          }\n  \
         }\n\n\
+        SIGNING INSTRUCTION:\n  \
+          Envelopes sent with a signing instruction require the signingInstruction \
+          object, copied from `signkit recipient documents` (.signingInstruction; \
+          present the exact .statement text to the recipient first). Supply it \
+          inline or via --signing-instruction-file. Legacy envelopes have no \
+          signingInstruction; omit it. The CLI never fetches a fresh instruction \
+          at submission time.\n\n\
         CONSENT:\n  \
           Supplying --consent is an attestation that the recipient reviewed and \
           authorized signing with exactly these field values. An automated agent \
@@ -811,6 +823,14 @@ pub struct RecipientSignArgs {
     /// JSON file or `-` for stdin. Defaults to stdin.
     #[arg(long, value_name = "PATH", default_value = "-")]
     pub file: String,
+
+    /// JSON file holding the signing instruction the recipient was shown: either
+    /// the `.signingInstruction` object or a full `recipient documents` response.
+    /// Only version, locale, and sentEventHash are sent; `statement` is never
+    /// forwarded. Omit for legacy envelopes. The CLI never fetches a fresh
+    /// instruction at submission time.
+    #[arg(long, value_name = "PATH")]
+    pub signing_instruction_file: Option<String>,
 
     /// Overlay `envelopeId` onto the JSON body.
     #[arg(long, value_name = "ENVELOPE_ID")]

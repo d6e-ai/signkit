@@ -3002,7 +3002,7 @@ export function openApiDocument(): Record<string, unknown> {
 				get: op({
 					summary: 'Discover pinned recipient documents and own fields',
 					description:
-						'Returns the recipient-owned field declarations and fieldGeneration, but no Markdown source or storage keys.',
+						'Returns recipient-owned fields, fieldGeneration, and (for signers on marked sends) signingInstruction with the exact statement, version, locale, and sentEventHash. Markdown source and storage keys are excluded.',
 					operationId: 'getRecipientCliDocuments',
 					tags: ['Signing'],
 					security: [{ RecipientCapability: [] }],
@@ -3041,12 +3041,51 @@ export function openApiDocument(): Record<string, unknown> {
 				post: op({
 					summary: 'Sign as the authorized recipient without a browser',
 					description:
-						'Requires explicit recipient intent in the client; the invitation capability, expected field generation, idempotency key, and every owned field value are validated server-side. An agent must not silently sign for someone else.',
+						'For envelopes sent with signing instructions enabled, confirm the exact statement returned by GET /recipient/documents and submit its version, locale, and sentEventHash as signingInstruction. Older sends keep the versionless request. The signed receipt includes the original instruction on exact replay. The invitation capability, expected field generation, idempotency key, and every owned field value are validated server-side. An agent must not silently sign for someone else.',
 					operationId: 'signRecipientCli',
 					tags: ['Signing'],
 					security: [{ RecipientCapability: [] }],
 					parameters: [idempotencyHeader],
-					requestBody: JSON_BODY,
+					requestBody: {
+						required: true,
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									additionalProperties: false,
+									required: ['envelopeId', 'recipientId', 'expectedFieldGeneration', 'values'],
+									properties: {
+										envelopeId: { type: 'string', format: 'uuid' },
+										recipientId: { type: 'string', format: 'uuid' },
+										expectedFieldGeneration: { type: 'integer', minimum: 0, maximum: 2147483646 },
+										values: {
+											type: 'array',
+											maxItems: 50,
+											items: {
+												type: 'object',
+												additionalProperties: false,
+												required: ['fieldId', 'value'],
+												properties: {
+													fieldId: { type: 'string', format: 'uuid' },
+													value: { type: ['string', 'boolean'] }
+												}
+											}
+										},
+										signingInstruction: {
+											type: 'object',
+											additionalProperties: false,
+											required: ['version', 'locale', 'sentEventHash'],
+											properties: {
+												version: { type: 'integer', const: 1 },
+												locale: { type: 'string', enum: ['en', 'ja'] },
+												sentEventHash: { type: 'string', pattern: '^[a-f0-9]{64}$' }
+											}
+										}
+									}
+								}
+							}
+						}
+					},
 					responses: jsonResponse('200', 'Signature receipt', { type: 'object' })
 				})
 			},

@@ -241,7 +241,8 @@ export function resolvePostgresRecipientSignedApplication(
 		undefined,
 		undefined,
 		signatureAssets,
-		signatureAssets === null ? null : new PostgresSignatureAssetLedger(resources.sql)
+		signatureAssets === null ? null : new PostgresSignatureAssetLedger(resources.sql),
+		new PostgresEnvelopeSentDocumentStore(resources.sql)
 	);
 }
 

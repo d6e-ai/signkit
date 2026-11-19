@@ -1,3 +1,7 @@
+import {
+	signingInstructionPrompt,
+	type SigningInstructionPrompt
+} from '$lib/domain/signing-instruction';
 import { dateOptionsProperties, type DateFieldOptions } from '$lib/domain/signing-date';
 import type { FieldGeometry, FieldType } from '$lib/domain/envelope';
 import type {
@@ -46,6 +50,7 @@ export interface RecipientWorkspace {
 	source: 'document-set' | 'legacy';
 	fields: readonly RecipientPlacedField[];
 	fieldGeneration: number;
+	signingInstruction?: SigningInstructionPrompt;
 }
 
 export interface RecipientWorkspaceApplicationPort {
@@ -142,7 +147,15 @@ export class RecipientWorkspaceService implements RecipientWorkspaceApplicationP
 						],
 			source: set !== null ? 'document-set' : 'legacy',
 			fields,
-			fieldGeneration: ownFields.fieldGeneration
+			fieldGeneration: ownFields.fieldGeneration,
+			...(after.recipientRole === 'signer' && set?.signingInstructionEventHash !== undefined
+				? {
+						signingInstruction: signingInstructionPrompt(
+							set.signingInstructionEventHash,
+							after.recipientLocale
+						)
+					}
+				: {})
 		};
 	}
 }

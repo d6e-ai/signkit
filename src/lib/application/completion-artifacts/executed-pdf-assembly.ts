@@ -19,7 +19,10 @@ import type {
 	CompletionEvidenceAuditEvent,
 	CompletionEvidenceField
 } from '$lib/ports/completion-artifact-store';
-import { MAX_COMPLETION_AUDIT_VERIFY_EVENTS } from '$lib/ports/completion-artifact-store';
+import {
+	CompletionArtifactIntegrityError,
+	MAX_COMPLETION_AUDIT_VERIFY_EVENTS
+} from '$lib/ports/completion-artifact-store';
 import type { CompletionPdfFieldGeometry } from '$lib/ports/completion-pdf-evidence-store';
 import type {
 	SentDocumentPointer,
@@ -27,6 +30,7 @@ import type {
 } from '$lib/ports/envelope-sent-document-store';
 import type { ObjectStore } from '$lib/ports/object-store';
 import { verifyCompletionAuditChain } from './audit-event-integrity';
+import { verifySigningInstructionEvidence } from './signing-instruction-evidence';
 import {
 	buildExecutedPdf,
 	ExecutedPdfBoundExceededError,
@@ -275,6 +279,24 @@ export async function attestExecutedAgreementSources(
 		);
 	}
 	attestFieldPlacements(input, payloadsByEventId, sentEvent);
+	try {
+		await verifySigningInstructionEvidence({
+			auditEvents: input.auditEvents,
+			payloadsByEventId,
+			sentCommitSha: input.sentCommitSha,
+			fieldGeneration: input.fieldGeneration,
+			fields: input.fields
+		});
+	} catch (error: unknown) {
+		if (error instanceof CompletionArtifactIntegrityError) {
+			throw new ExecutedPdfIntegrityError(
+				'invalid_document',
+				'Signing instruction evidence does not match the attested send event',
+				{ cause: error }
+			);
+		}
+		throw error;
+	}
 }
 
 function attestSentDocument(

@@ -1,6 +1,10 @@
 import postgres from 'postgres';
 import { sentAuditDocuments } from '$lib/application/documents/sent-document-pdf';
 import {
+	sentSigningInstructionVersion,
+	type SIGNING_INSTRUCTION_VERSION
+} from '$lib/domain/commands/sent-signing-instruction';
+import {
 	isActionableRecipientRole,
 	isPostSendInvitationRecipientRole,
 	type Envelope,
@@ -575,6 +579,8 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 		const documents = parseSentAuditDocuments(row.sentDocumentsJson);
 		const documentCount: number = Number(row.documentCount);
 		if (documents === null || documents.length !== documentCount) return false;
+		const marker = storedSigningInstructionVersion(row.auditPayloadJson);
+		if (marker === null) return false;
 		return (
 			JSON.stringify({
 				commitSha: row.commitSha,
@@ -587,7 +593,8 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 				initialCapabilityExpiresAt: isoTimestamp(row.initialCapabilityExpiresAt),
 				documentSetHash: row.documentSetHash,
 				documentCount,
-				documents
+				documents,
+				...(marker === undefined ? {} : { signingInstructionVersion: marker })
 			}) === row.auditPayloadJson
 		);
 	}
@@ -609,6 +616,20 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 		);
 	}
 	return false;
+}
+
+/** `undefined` = historical (absent), `null` = unparseable or unrecognized. */
+function storedSigningInstructionVersion(
+	payloadJson: string
+): typeof SIGNING_INSTRUCTION_VERSION | undefined | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(payloadJson) as unknown;
+	} catch {
+		return null;
+	}
+	if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+	return sentSigningInstructionVersion(parsed as Record<string, unknown>);
 }
 
 function isDocumentSetReceipt(row: SendCommandRow): row is SendCommandRow & {

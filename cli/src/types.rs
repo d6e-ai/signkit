@@ -1884,6 +1884,26 @@ pub struct RecipientDocumentsResponse {
     pub fields: Vec<RecipientPlacedField>,
     #[serde(rename = "fieldGeneration")]
     pub field_generation: u64,
+    /// Optional signing instruction bound to the sent event. Absent for legacy
+    /// envelopes. `statement` is the exact server-provided text to present.
+    #[serde(
+        rename = "signingInstruction",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signing_instruction: Option<RecipientSigningInstruction>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Server-provided signing instruction in `GET /api/v1/recipient/documents`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipientSigningInstruction {
+    pub version: u64,
+    pub locale: String,
+    #[serde(rename = "sentEventHash")]
+    pub sent_event_hash: String,
+    pub statement: String,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -1961,6 +1981,24 @@ pub struct RecipientSignRequest {
     #[serde(rename = "expectedFieldGeneration")]
     pub expected_field_generation: u64,
     pub values: Vec<RecipientSignFieldValue>,
+    /// Binding to the signing instruction the recipient was shown; omitted for
+    /// legacy envelopes.
+    #[serde(
+        rename = "signingInstruction",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signing_instruction: Option<RecipientSigningInstructionRequest>,
+}
+
+/// Request-side signing instruction binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecipientSigningInstructionRequest {
+    pub version: u8,
+    pub locale: String,
+    #[serde(rename = "sentEventHash")]
+    pub sent_event_hash: String,
 }
 
 /// Response payload from `POST /api/v1/recipient/sign`.

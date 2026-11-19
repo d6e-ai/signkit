@@ -5,6 +5,11 @@ import SignPage from './[envelopeId]/+page.svelte';
 import { pdfLoad } from './field-navigation-pdf-test-stub.svelte';
 import type { PageData } from './[envelopeId]/$types';
 import type { RecipientPlacedField } from '$lib/application/signing/recipient-workspace';
+import {
+	createSigningInstruction,
+	instructionRequest,
+	signingInstructionPrompt
+} from '$lib/domain/signing-instruction';
 import '../layout.css';
 
 vi.mock('$lib/components/pdf-document-view.svelte', async () => ({
@@ -274,6 +279,53 @@ test('allows explicit signing with only automatic dates at 390px without inventi
 	await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
 	const init = fetchMock.mock.calls[0][1] as RequestInit;
 	expect(JSON.parse(init.body as string).values).toEqual([]);
+	expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+});
+
+test('shows the document-bound instruction before signing and reuses it after an ambiguous failure', async () => {
+	await page.viewport(390, 844);
+	const data = fixture();
+	if (data.state !== 'active') throw new Error('Expected active fixture');
+	data.fields = [];
+	const prompt = signingInstructionPrompt('b'.repeat(64), 'en');
+	data.signingInstruction = prompt;
+	const request = instructionRequest(prompt);
+	const proof = await createSigningInstruction(request, data.fieldGeneration);
+	const fetchMock = vi
+		.fn<typeof fetch>()
+		.mockResolvedValueOnce(new Response('{}', { status: 503 }))
+		.mockResolvedValueOnce(
+			Response.json({
+				signed: {
+					envelopeId: data.access.envelopeId,
+					recipientId: data.access.recipientId,
+					envelopeStatus: 'completed',
+					recipientStatus: 'completed',
+					signedAt: '2026-11-19T08:00:00.000Z',
+					signingInstruction: proof
+				}
+			})
+		);
+	vi.stubGlobal('fetch', fetchMock);
+	const screen = await render(SignPage, { data });
+	await finish(DOCUMENT_A);
+	const sign = screen.getByRole('button', { name: 'Sign and complete', exact: true });
+	const dialog = screen.getByRole('alertdialog');
+	await sign.click();
+	await expect.element(dialog.getByText(prompt.statement)).toBeVisible();
+	await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect.element(dialog).not.toBeInTheDocument();
+	expect(fetchMock).not.toHaveBeenCalled();
+	await sign.click();
+	await dialog.getByRole('button', { name: 'Sign and complete', exact: true }).click();
+	await dialog.getByRole('button', { name: 'Try again', exact: true }).click();
+	await expect.element(screen.getByText('Agreement signed', { exact: true })).toBeVisible();
+	const [first, retry] = fetchMock.mock.calls.map((call) => call[1]);
+	expect(JSON.parse(first?.body as string).signingInstruction).toEqual(request);
+	expect(retry?.body).toBe(first?.body);
+	expect(new Headers(retry?.headers).get('idempotency-key')).toBe(
+		new Headers(first?.headers).get('idempotency-key')
+	);
 	expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
 });
 

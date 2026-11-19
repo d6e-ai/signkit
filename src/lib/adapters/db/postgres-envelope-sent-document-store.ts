@@ -1,3 +1,7 @@
+import {
+	attestSentSigningInstruction,
+	type SentSigningInstructionEvidenceRow
+} from './sent-signing-instruction-evidence';
 import type postgres from 'postgres';
 import type {
 	EnvelopeSentDocumentStore,
@@ -7,10 +11,10 @@ import type {
 
 type Sql = ReturnType<typeof postgres>;
 
-interface SentDocumentSetRow {
+interface SentDocumentSetRow extends SentSigningInstructionEvidenceRow {
 	envelopeId: string;
 	commitSha: string;
-	documentSetHash: string;
+	documentSetHash: string | null;
 	documentCount: number;
 	createdAt: Date | string;
 }
@@ -41,20 +45,31 @@ export class PostgresEnvelopeSentDocumentStore implements EnvelopeSentDocumentSt
 	async findSet(envelopeId: string, commitSha: string): Promise<SentDocumentSetPointer | null> {
 		const setRows = await this.#sql<SentDocumentSetRow[]>`
 			SELECT
-				document_set.envelope_id AS "envelopeId",
-				document_set.commit_sha AS "commitSha",
+				envelope.id AS "envelopeId", envelope.sent_commit_sha AS "commitSha",
 				document_set.document_set_hash AS "documentSetHash",
 				document_set.document_count AS "documentCount",
-				document_set.created_at AS "createdAt"
-			FROM envelope_sent_document_set document_set
-			INNER JOIN envelope
-				ON envelope.id = document_set.envelope_id
-				AND envelope.sent_commit_sha = document_set.commit_sha
-			WHERE document_set.envelope_id = ${envelopeId}
-				AND document_set.commit_sha = ${commitSha}
+				document_set.created_at AS "createdAt",
+				command.audit_payload_json AS "commandPayloadJson", event.payload_json AS "payloadJson",
+				command.audit_event_id AS "commandEventId", event.id AS "eventId",
+				event.event_hash AS "eventHash", event.previous_hash AS "previousHash", event.sequence,
+				event.actor_id AS "actorId", event.actor_type AS "actorType",
+				to_char(event.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "occurredAt",
+				CASE WHEN EXTRACT(MICROSECONDS FROM event.occurred_at)::bigint % 1000 = 0
+					THEN event.hash_version ELSE NULL END AS "hashVersion"
+			FROM envelope
+			LEFT JOIN envelope_sent_document_set document_set
+				ON document_set.envelope_id = envelope.id
+				AND document_set.commit_sha = envelope.sent_commit_sha
+			LEFT JOIN envelope_send_command command ON command.envelope_id = envelope.id
+			LEFT JOIN audit_event event ON event.envelope_id = envelope.id AND event.event_type = 'envelope.sent'
+			WHERE envelope.id = ${envelopeId} AND envelope.sent_commit_sha = ${commitSha}
 			LIMIT 1`;
 		const setRow: SentDocumentSetRow | undefined = setRows[0];
 		if (setRow === undefined) return null;
+		if (setRow.documentSetHash === null) {
+			await attestSentSigningInstruction(envelopeId, commitSha, setRow, null);
+			return null;
+		}
 		const documentRows = await this.#sql<SentDocumentRow[]>`
 			SELECT envelope_id AS "envelopeId",
 				commit_sha AS "commitSha", document_id AS "documentId", position, kind, title,
@@ -68,14 +83,20 @@ export class PostgresEnvelopeSentDocumentStore implements EnvelopeSentDocumentSt
 		const documents: SentDocumentPointer[] = [];
 		for (const row of documentRows) {
 			const pointer: SentDocumentPointer | null = toDocumentPointer(row);
-			if (pointer === null) return null;
+			if (pointer === null) {
+				await attestSentSigningInstruction(envelopeId, commitSha, setRow, null);
+				return null;
+			}
 			documents.push(pointer);
 		}
-		if (documents.length !== Number(setRow.documentCount)) return null;
-		for (let index = 0; index < documents.length; index += 1) {
-			if (documents[index].position !== index) return null;
+		if (
+			documents.length !== Number(setRow.documentCount) ||
+			documents.some((document, index) => document.position !== index)
+		) {
+			await attestSentSigningInstruction(envelopeId, commitSha, setRow, null);
+			return null;
 		}
-		return {
+		const set: SentDocumentSetPointer = {
 			envelopeId: setRow.envelopeId,
 			commitSha: setRow.commitSha,
 			documentSetHash: setRow.documentSetHash,
@@ -84,6 +105,15 @@ export class PostgresEnvelopeSentDocumentStore implements EnvelopeSentDocumentSt
 			createdAt:
 				setRow.createdAt instanceof Date ? setRow.createdAt.toISOString() : String(setRow.createdAt)
 		};
+		const signingInstructionEventHash = await attestSentSigningInstruction(
+			envelopeId,
+			commitSha,
+			setRow,
+			set
+		);
+		return signingInstructionEventHash === undefined
+			? set
+			: { ...set, signingInstructionEventHash };
 	}
 
 	async findDocument(

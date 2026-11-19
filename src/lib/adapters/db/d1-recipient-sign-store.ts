@@ -1,4 +1,8 @@
 import {
+	readSigningInstructionJson,
+	type SigningInstruction
+} from '$lib/domain/signing-instruction';
+import {
 	commandMatchesRecipientDecisionRouting,
 	recipientDecisionRoutingSnapshot
 } from '$lib/domain/commands/recipient-decision-routing';
@@ -553,18 +557,28 @@ export class D1RecipientSignStore implements RecipientSignStore {
 			row.recipient_id
 		);
 		if (stored === null) return { outcome: 'integrity_error' };
-		const reconstructed: string | null = await reconstructedFingerprint(row, stored);
+		const instruction = await readSigningInstructionJson(row.audit_payload_json);
+		if (
+			instruction === null ||
+			(instruction !== undefined && instruction.fieldGeneration !== row.expected_field_generation)
+		) {
+			return { outcome: 'integrity_error' };
+		}
+		const reconstructed: string | null = await reconstructedFingerprint(row, stored, instruction);
 		if (
 			reconstructed === null ||
 			!validAuditEvidence(row) ||
-			!(await validStoredReceipt(row, stored, reconstructed))
+			!(await validStoredReceipt(row, stored, reconstructed, instruction))
 		) {
 			return { outcome: 'integrity_error' };
 		}
 		return {
 			outcome: 'existing',
 			reconstructedFingerprint: reconstructed,
-			result: resultFromRow(row),
+			result: {
+				...resultFromRow(row),
+				...(instruction === undefined ? {} : { signingInstruction: instruction })
+			},
 			// Only editable fields: automatic dates are server-owned and never part
 			// of a retried submission.
 			storedFields: stored
@@ -773,7 +787,8 @@ function parseEvidenceFields(value: string): readonly EvidenceField[] | null {
 
 async function reconstructedFingerprint(
 	row: SignedCommandRow,
-	stored: readonly StoredSignValue[]
+	stored: readonly StoredSignValue[],
+	instruction: SigningInstruction | undefined
 ): Promise<string | null> {
 	return reconstructRecipientSignFingerprint({
 		envelopeId: row.envelope_id,
@@ -782,6 +797,7 @@ async function reconstructedFingerprint(
 		expectedFieldGeneration: row.expected_field_generation,
 		fieldCount: row.field_count,
 		stored,
+		signingInstruction: instruction,
 		signedAt: row.updated_at
 	});
 }
@@ -789,7 +805,8 @@ async function reconstructedFingerprint(
 async function validStoredReceipt(
 	row: SignedCommandRow,
 	stored: readonly StoredSignValue[],
-	reconstructed: string
+	reconstructed: string,
+	instruction: SigningInstruction | undefined
 ): Promise<boolean> {
 	const fields: readonly EvidenceField[] | null = parseEvidenceFields(row.field_values_json);
 	if (fields === null) return false;
@@ -801,6 +818,7 @@ async function validStoredReceipt(
 		sentCommitSha: row.sent_commit_sha,
 		requestHash: row.request_hash,
 		reconstructedFingerprint: reconstructed,
+		signingInstruction: instruction,
 		auditPayloadJson: row.audit_payload_json,
 		auditEventHash: row.audit_event_hash,
 		previousAuditHash: row.previous_audit_hash,
@@ -833,6 +851,9 @@ function resultFromCommand(command: PublishRecipientSignedCommand): PublishedRec
 		sentCommitSha: command.expectedSentCommitSha,
 		envelopeStatus: command.completedAuditEventId === null ? 'in_progress' : 'completed',
 		signedAt: command.updatedAt,
+		...(command.signingInstruction === undefined
+			? {}
+			: { signingInstruction: command.signingInstruction }),
 		auditEventId: command.auditEventId,
 		completedAuditEventId: command.completedAuditEventId,
 		nextRoutingOrder: command.nextRoutingOrder

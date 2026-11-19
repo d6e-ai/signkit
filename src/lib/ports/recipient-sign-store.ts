@@ -1,3 +1,4 @@
+import type { SigningInstruction } from '$lib/domain/signing-instruction';
 import type { FieldType } from '$lib/domain/envelope';
 import type { DateFieldOptions } from '$lib/domain/signing-date';
 
@@ -61,6 +62,7 @@ export interface PublishedRecipientSigned {
 	sentCommitSha: string;
 	envelopeStatus: 'in_progress' | 'completed';
 	signedAt: string;
+	signingInstruction?: SigningInstruction;
 	auditEventId: string;
 	completedAuditEventId: string | null;
 	nextRoutingOrder: number | null;
@@ -113,6 +115,7 @@ export interface PublishRecipientSignedCommand extends SignCommandKey {
 	recipientRole: 'signer';
 	routingOrder: number;
 	expectedSentCommitSha: string;
+	signingInstruction?: SigningInstruction;
 	expectedFieldGeneration: number;
 	fieldValues: readonly SignedFieldValue[];
 	updatedAt: string;

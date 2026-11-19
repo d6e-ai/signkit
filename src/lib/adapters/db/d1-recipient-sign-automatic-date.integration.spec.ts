@@ -2,10 +2,26 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { RecipientSignedApplication } from '$lib/application/signing/recipient-signed';
+import { createSigningInstruction } from '$lib/domain/signing-instruction';
+import type { EnvelopeSentDocumentStore } from '$lib/ports/envelope-sent-document-store';
 import { hashAuditEventV3 } from '$lib/domain/audit';
 import { hashRecipientCapability } from '$lib/security/recipient-capability';
 import { D1RecipientSignStore } from './d1-recipient-sign-store';
 import { applyD1Migrations, sqliteD1Database } from './sqlite-d1-test-support';
+
+const SIGNING_INSTRUCTION = { version: 1, locale: 'ja', sentEventHash: '2'.repeat(64) } as const;
+const instructionDocuments: EnvelopeSentDocumentStore = {
+	findSet: async () => ({
+		envelopeId: ENVELOPE_ID,
+		commitSha: COMMIT_SHA,
+		documentSetHash: '3'.repeat(64),
+		documentCount: 0,
+		documents: [],
+		createdAt: SENT_AT,
+		signingInstructionEventHash: SIGNING_INSTRUCTION.sentEventHash
+	}),
+	findDocument: async () => null
+};
 
 const TOKEN: string = `skr1_${'B'.repeat(43)}`;
 const ENVELOPE_ID: string = '01920002-0000-7000-8000-000000000001';
@@ -39,7 +55,10 @@ const ALL_FIELDS: readonly SeedField[] = [
 
 async function seed(fields: readonly SeedField[]): Promise<{
 	sqlite: DatabaseSync;
-	application: (now: string) => RecipientSignedApplication;
+	application: (
+		now: string,
+		sentDocuments?: EnvelopeSentDocumentStore
+	) => RecipientSignedApplication;
 }> {
 	const sqlite = new DatabaseSync(':memory:');
 	applyD1Migrations(sqlite);
@@ -198,8 +217,15 @@ async function seed(fields: readonly SeedField[]): Promise<{
 	const store = new D1RecipientSignStore(sqliteD1Database(sqlite));
 	return {
 		sqlite,
-		application: (now: string): RecipientSignedApplication =>
-			new RecipientSignedApplication(store, (): Date => new Date(now))
+		application: (now, sentDocuments) =>
+			new RecipientSignedApplication(
+				store,
+				() => new Date(now),
+				undefined,
+				null,
+				null,
+				sentDocuments
+			)
 	};
 }
 
@@ -222,6 +248,36 @@ function storedValues(sqlite: DatabaseSync): Record<string, string> {
 }
 
 describe('D1 automatic signing dates (real SQLite, migrated schema)', () => {
+	it('commits explicit instruction evidence once and replays the original signing instant', async () => {
+		const { sqlite, application } = await seed(ALL_FIELDS.slice(2));
+		try {
+			const app = application(SIGN_INSTANT, instructionDocuments);
+			expect(await app.sign(input([]))).toEqual({ outcome: 'signing_instruction_conflict' });
+			const submission = { ...input([]), signingInstruction: SIGNING_INSTRUCTION };
+			const signed = await app.sign(submission);
+			if (signed.outcome !== 'published') throw new Error('Expected the instruction to publish');
+			const proof = await createSigningInstruction(SIGNING_INSTRUCTION, 1);
+			expect(signed.result).toMatchObject({ signedAt: SIGN_INSTANT, signingInstruction: proof });
+			const retry = application(NEXT_DAY_RETRY, instructionDocuments);
+			expect(await retry.sign(submission)).toEqual({ outcome: 'replayed', result: signed.result });
+			expect(
+				await retry.sign({
+					...submission,
+					signingInstruction: { ...SIGNING_INSTRUCTION, locale: 'en' }
+				})
+			).toEqual({ outcome: 'idempotency_conflict' });
+			const command = sqlite
+				.prepare('SELECT audit_payload_json FROM recipient_signed_command')
+				.all();
+			expect(command).toHaveLength(1);
+			expect(JSON.parse(command[0].audit_payload_json as string)).toMatchObject({
+				signingInstruction: proof
+			});
+		} finally {
+			sqlite.close();
+		}
+	});
+
 	it('signs an all-automatic field set with an empty submission and persists each generated value', async () => {
 		const { sqlite, application } = await seed(ALL_FIELDS.slice(2));
 		const result = await application(SIGN_INSTANT).sign(input([]));

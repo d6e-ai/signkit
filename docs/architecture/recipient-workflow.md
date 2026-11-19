@@ -25,6 +25,30 @@ behavior. [Sent PDF guarantees](envelope-model.md#sent-agreement-rendering) and
 [terminal receipt authority](authorization-and-instance-administration.md#recipient-terminal-receipts)
 remain the governing contracts.
 
+## Signing instructions
+
+The canonical send event for new envelopes selects signing instruction version 1 and commits
+an ordered list of the exact sent PDF digests. The send event hash in the recipient workspace
+identifies that version of the agreement. The recipient sees the versioned consent statement in
+the final confirmation. Its accepted locale and text digest, the send event hash, and the field
+generation are stored in the same `recipient.signed` event as the signer, revision, field value
+digests and signing time. The envelope is bound by the audit hash context. A sender who is also a
+signer uses their recipient capability and confirms in the same way. Approvals and views follow
+their own workflows.
+
+The browser and bearer API submit the instruction version, displayed locale and reviewed send
+hash with the signing request. An absent or mismatched instruction on a marked send fails before
+any decision is recorded. A later revision requires a fresh send and a fresh instruction. Exact
+replay reproduces the committed decision and instruction. Envelopes already sent without the
+marker retain their original request, receipt and evidence formats. Such decisions carry no
+versioned instruction.
+
+Completion evidence verifies every named signer's instruction against the sent document set and
+its audit event. The existing executed PDF and publication checks connect that evidence to the
+document bytes and permitted field overlays. This record attests the recipient-capability action.
+Signing-time identity verification, independently retained evidence and provider key authorization
+require their own trust controls.
+
 A terminal receipt shows the recipient's action once, its recorded time, whole-envelope progress
 and the explanation that document access and action authority have ended. It does not reconstruct
 an active document workspace. Completing one recipient's action never implies that every recipient

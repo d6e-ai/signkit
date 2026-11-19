@@ -1,4 +1,8 @@
 import { sentAuditDocuments } from '$lib/application/documents/sent-document-pdf';
+import {
+	sentSigningInstructionVersion,
+	type SIGNING_INSTRUCTION_VERSION
+} from '$lib/domain/commands/sent-signing-instruction';
 import type { Envelope, Recipient, RecipientRole, RecipientStatus } from '$lib/domain/envelope';
 import type {
 	DeliveryManifestEntry,
@@ -488,6 +492,8 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 	if (isDocumentSetReceipt(row)) {
 		const documents = parseSentAuditDocuments(row.sent_documents_json);
 		if (documents === null || documents.length !== row.document_count) return false;
+		const marker = storedSigningInstructionVersion(row.audit_payload_json);
+		if (marker === null) return false;
 		return (
 			JSON.stringify({
 				commitSha: row.commit_sha,
@@ -500,7 +506,8 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 				initialCapabilityExpiresAt: row.initial_capability_expires_at,
 				documentSetHash: row.document_set_hash,
 				documentCount: row.document_count,
-				documents
+				documents,
+				...(marker === undefined ? {} : { signingInstructionVersion: marker })
 			}) === row.audit_payload_json
 		);
 	}
@@ -522,6 +529,20 @@ async function validStoredReceipt(row: SendCommandRow): Promise<boolean> {
 		);
 	}
 	return false;
+}
+
+/** `undefined` = historical (absent), `null` = unparseable or unrecognized. */
+function storedSigningInstructionVersion(
+	payloadJson: string
+): typeof SIGNING_INSTRUCTION_VERSION | undefined | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(payloadJson) as unknown;
+	} catch {
+		return null;
+	}
+	if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+	return sentSigningInstructionVersion(parsed as Record<string, unknown>);
 }
 
 function isDocumentSetReceipt(row: SendCommandRow): row is SendCommandRow & {

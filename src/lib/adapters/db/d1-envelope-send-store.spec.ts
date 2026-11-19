@@ -321,6 +321,46 @@ describe('D1EnvelopeSendStore', () => {
 		).resolves.toEqual({ outcome: 'integrity_error' });
 	});
 
+	it('replays versionless and marked receipts but rejects unrecognized or misplaced markers', async () => {
+		const evidence = [
+			{
+				id: 'delivery-1',
+				recipient_id: 'recipient-1',
+				status: 'pending',
+				retryable: 1,
+				capability_hash: 'cap-hash',
+				reserved_capability_expires_at: '2026-09-25T00:02:00.000Z',
+				sealed_capability: 'sealed',
+				sealing_key_id: 'key-1',
+				sealed_capability_sha256: sealedDigest,
+				recipient_capability_hash: 'cap-hash',
+				recipient_capability_expires_at: '2026-09-25T00:02:00.000Z'
+			}
+		];
+		const replayWith = (payload: string): Promise<unknown> =>
+			new D1EnvelopeSendStore(
+				fakeD1(
+					[storedRow({ audit_payload_json: payload, evidence_payload_json: payload })],
+					[evidence]
+				).database
+			).prepareSend(command, 2, 'ready-audit');
+		const base: string = command.auditPayloadJson.slice(0, -1);
+		await expect(replayWith(command.auditPayloadJson)).resolves.toMatchObject({
+			outcome: 'replayed'
+		});
+		await expect(replayWith(`${base},"signingInstructionVersion":1}`)).resolves.toMatchObject({
+			outcome: 'replayed'
+		});
+		for (const bad of ['2', '"1"', 'null', 'true']) {
+			await expect(replayWith(`${base},"signingInstructionVersion":${bad}}`)).resolves.toEqual({
+				outcome: 'integrity_error'
+			});
+		}
+		await expect(
+			replayWith(`{"signingInstructionVersion":1,${command.auditPayloadJson.slice(1)}`)
+		).resolves.toEqual({ outcome: 'integrity_error' });
+	});
+
 	it('replays a pre-migration sent-pdf receipt whose document_set_hash is null', async () => {
 		const evidence = [
 			{

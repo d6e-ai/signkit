@@ -350,6 +350,26 @@ describe('PostgresEnvelopeSendStore', () => {
 			).prepareSend(command, 2, 'ready-audit')
 		).resolves.toEqual({ outcome: 'integrity_error' });
 
+		const replayWith = (payload: string): Promise<unknown> =>
+			new PostgresEnvelopeSendStore(
+				new ScriptedPostgres([
+					[commandRow({ auditPayloadJson: payload, evidencePayloadJson: payload })],
+					evidence
+				]).client()
+			).prepareSend(command, 2, 'ready-audit');
+		const markerBase: string = command.auditPayloadJson.slice(0, -1);
+		await expect(replayWith(`${markerBase},"signingInstructionVersion":1}`)).resolves.toMatchObject(
+			{ outcome: 'replayed', result: { status: 'sent' } }
+		);
+		for (const bad of ['2', '"1"', 'null', 'true']) {
+			await expect(
+				replayWith(`${markerBase},"signingInstructionVersion":${bad}}`)
+			).resolves.toEqual({ outcome: 'integrity_error' });
+		}
+		await expect(
+			replayWith(`{"signingInstructionVersion":1,${command.auditPayloadJson.slice(1)}`)
+		).resolves.toEqual({ outcome: 'integrity_error' });
+
 		const legacyPayload: string = JSON.stringify({
 			commitSha: command.commitSha,
 			generation: command.expectedGeneration,

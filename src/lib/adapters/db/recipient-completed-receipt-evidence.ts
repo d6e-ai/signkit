@@ -1,3 +1,4 @@
+import { readSigningInstructionJson } from '$lib/domain/signing-instruction';
 import type {
 	ProvenRecipientCompletedReceipt,
 	RecipientCompletedReceiptAction,
@@ -298,7 +299,8 @@ async function validCompletionEvidence(
 /**
  * Rebuilds the action's audit payload from durable columns so the stored JSON
  * and hash are compared against a value derived from evidence, never parsed
- * from the stored payload itself.
+ * from unverified request data. The optional statement is independently
+ * checked against the immutable text registry and covered by the audit hash.
  */
 async function provenAuditPayload(
 	row: RecipientCompletedReceiptEvidenceRow,
@@ -317,7 +319,14 @@ async function provenAuditPayload(
 	}
 	const fields: readonly FieldDigest[] | null = provenFieldDigests(row);
 	if (fields === null) return null;
-	return { ...base, fields, signedAt: completedAt };
+	const signingInstruction = await readSigningInstructionJson(row.auditPayloadJson);
+	if (signingInstruction === null) return null;
+	return {
+		...base,
+		fields,
+		signedAt: completedAt,
+		...(signingInstruction === undefined ? {} : { signingInstruction })
+	};
 }
 
 /**
