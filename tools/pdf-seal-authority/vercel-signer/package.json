@@ -1,0 +1,11 @@
+{
+	"name": "signkit-vercel-signer",
+	"private": true,
+	"version": "0.0.0",
+	"engines": {
+		"node": "24.x"
+	},
+	"scripts": {
+		"test": "node --test"
+	}
+}

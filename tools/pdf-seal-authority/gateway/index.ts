@@ -163,12 +163,20 @@ async function submit(
 		authenticate: (incoming) => authenticate(incoming, config),
 		trust: config.trust,
 		policy: config.policy,
-		ledger: new D1ProviderSigningLedger(env.LEDGER),
+		ledger: new D1ProviderSigningLedger(env.LEDGER, async () => {
+			const response = await env.ENGINE.fetch('https://engine.internal/healthz', {
+				redirect: 'manual',
+				signal: AbortSignal.timeout(12_000),
+				headers: { authorization: `Bearer ${config.engineToken}` }
+			});
+			await response.body?.cancel();
+			if (response.status !== 200 || response.redirected) throw new Error('engine_unavailable');
+		}),
 		// Runs only for the caller that won the durable reservation.
 		sign: async (claims, source) => {
 			const row = await receipts.read(claims.operationId);
 			if (row === null || row.status !== 'pending') throw new Error('receipt_missing');
-			// One signing fetch, scheduled once. Nothing else ever calls the engine.
+			// One signing fetch, scheduled once for the successful reservation.
 			ctx.waitUntil(runSigning(env, config, receipts, claims.operationId, source));
 			return operationOf(row);
 		},
@@ -204,6 +212,7 @@ async function runSigning(
 					accept: 'application/pdf',
 					'accept-encoding': 'identity',
 					'content-type': 'application/pdf',
+					'x-signkit-operation-id': operationId,
 					'x-signkit-seal-profile': row.requested_profile,
 					'x-signkit-source-sha256': row.source_sha256,
 					'x-signkit-signer-certificate-sha256': row.signer_certificate_sha256

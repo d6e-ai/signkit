@@ -111,7 +111,7 @@ export class RemotePdfSealValidator implements PdfSealValidator {
 			MAX_TIMEOUT_MS,
 			'invalid_configuration'
 		);
-		this.#fetch = options.fetch ?? fetch;
+		this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
 	}
 
 	async validate(command: ValidatePdfSealCommand): Promise<PdfSealValidationResult> {

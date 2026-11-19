@@ -101,15 +101,20 @@ function harness() {
 		const headers = init.headers as Record<string, string>;
 		expect(headers.authorization).toBe(`Bearer ${engineToken}`);
 		expect(headers['x-signkit-seal-profile']).toBe('pades-b-b');
+		expect(headers['x-signkit-operation-id']).toBe(operationId);
 		expect(headers['x-signkit-source-sha256']).toBe(reference.sourceSha256);
 		expect(headers['x-signkit-signer-certificate-sha256']).toBe(certificate);
 		return new Response(sealed, {
 			headers: { 'content-type': 'application/pdf', 'x-signkit-kms-request-id': kmsRequestId }
 		});
 	});
+	const engineReady = vi.fn(async () => new Response(null, { status: 200 }));
 	const env = {
 		ISSUER: { fetch: issuer },
-		ENGINE: { fetch: engine },
+		ENGINE: {
+			fetch: (url: string, init: RequestInit) =>
+				url.endsWith('/healthz') ? engineReady() : engine(url, init)
+		},
 		LEDGER: sqliteD1Database(sqlite),
 		RESULTS: results,
 		SEAL_AUDIENCE: 'provider',
@@ -129,6 +134,7 @@ function harness() {
 		objects,
 		issuer,
 		engine,
+		engineReady,
 		call: async (request: Request) => handle(request, env, ctx),
 		settle: async () => void (await Promise.all(pending.splice(0)))
 	};
@@ -190,6 +196,7 @@ describe('managed key gateway', () => {
 			403
 		);
 		expect(gw.engine).not.toHaveBeenCalled();
+		expect(gw.engineReady).not.toHaveBeenCalled();
 
 		const accepted = await gw.call(put(authorization));
 		expect(accepted.status).toBe(200);
@@ -323,6 +330,22 @@ describe('managed key gateway', () => {
 		expect(gw.engine).not.toHaveBeenCalled();
 
 		gw.sqlite.exec('DROP TRIGGER unavailable_receipt');
+		expect((await gw.call(put(authorization))).status).toBe(200);
+		await gw.settle();
+		expect(gw.engine).toHaveBeenCalledTimes(1);
+	});
+
+	it('preserves the operation for retry if the engine is still starting', async () => {
+		const gw = harness();
+		gw.engineReady.mockResolvedValueOnce(new Response(null, { status: 503 }));
+		const { authorization } = (await (await gw.call(authorize())).json()) as {
+			authorization: string;
+		};
+		expect((await gw.call(put(authorization))).status).toBe(503);
+		expect(
+			gw.sqlite.prepare('SELECT count(*) AS count FROM provider_signing_replay').get()
+		).toEqual({ count: 0 });
+		expect(gw.engine).not.toHaveBeenCalled();
 		expect((await gw.call(put(authorization))).status).toBe(200);
 		await gw.settle();
 		expect(gw.engine).toHaveBeenCalledTimes(1);

@@ -6,6 +6,7 @@ const idleMilliseconds = 60_000;
 
 export abstract class SealContainer<Environment> extends DurableObject<Environment> {
 	protected abstract readonly enableInternet: boolean;
+	protected readonly readinessTimeoutMs: number = 10_000;
 	protected abstract containerEnvironment(): Record<string, string>;
 
 	async proxy(request: Request): Promise<Response> {
@@ -21,7 +22,7 @@ export abstract class SealContainer<Environment> extends DurableObject<Environme
 			}
 			await container.setInactivityTimeout(idleMilliseconds);
 			const port = container.getTcpPort(containerPort);
-			if (!(await ready(port))) return unavailable(503);
+			if (!(await ready(port, this.readinessTimeoutMs))) return unavailable(503);
 			const { pathname } = new URL(request.url);
 			// Wait for the health check before sending the input. A lost sign
 			// response remains ambiguous, so a submitted request is never retried.
@@ -32,8 +33,8 @@ export abstract class SealContainer<Environment> extends DurableObject<Environme
 	}
 }
 
-async function ready(port: Fetcher): Promise<boolean> {
-	const deadline = Date.now() + 10_000;
+async function ready(port: Fetcher, timeoutMs: number): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
 	do {
 		try {
 			const response = await port.fetch('http://container/healthz', {

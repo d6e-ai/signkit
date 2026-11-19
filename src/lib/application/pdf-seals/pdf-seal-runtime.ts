@@ -189,16 +189,26 @@ export async function resolvePdfSealRuntime(
 		});
 	}
 
+	const providerService = platformEnv?.PDF_SEAL_PROVIDER_SERVICE;
+	const validatorService = platformEnv?.PDF_SEAL_VALIDATOR_SERVICE;
 	const provider: PdfSealProvider = new RemotePdfSealProvider({
 		baseUrl: configuration.providerUrl,
 		bearerToken: configuration.providerToken,
 		authorizationTrust: configuration.authorizationTrust,
-		maxResultBytes: MAX_SEALED_PDF_BYTES
+		maxResultBytes: MAX_SEALED_PDF_BYTES,
+		fetch:
+			providerService === undefined
+				? undefined
+				: (input, init) => providerService.fetch(input, init)
 	});
 	const validator: PdfSealValidator = new RemotePdfSealValidator({
 		baseUrl: configuration.validatorUrl,
 		bearerToken: configuration.validatorToken,
-		maxSealedBytes: MAX_SEALED_PDF_BYTES
+		maxSealedBytes: MAX_SEALED_PDF_BYTES,
+		fetch:
+			validatorService === undefined
+				? undefined
+				: (input, init) => validatorService.fetch(input, init)
 	});
 	const processor = new PdfSealService(jobs, objects, provider, validator);
 	return {

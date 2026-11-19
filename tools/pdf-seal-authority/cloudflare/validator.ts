@@ -13,6 +13,7 @@ interface ValidatorEnvironment {
 
 export class ValidationEngine extends SealContainer<ValidatorEnvironment> {
 	protected readonly enableInternet = false;
+	protected override readonly readinessTimeoutMs = 30_000;
 
 	protected containerEnvironment(): Record<string, string> {
 		const env = this.env;
