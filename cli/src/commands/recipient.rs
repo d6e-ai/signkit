@@ -66,14 +66,7 @@ pub fn execute_offline(
                 return Ok(());
             }
             if args.validate_only {
-                let mut object = read_json_object(&args.file)?;
-                overlay_string(&mut object, "envelopeId", args.envelope_id.as_deref());
-                overlay_string(&mut object, "recipientId", args.recipient_id.as_deref());
-                overlay_u64(
-                    &mut object,
-                    "expectedFieldGeneration",
-                    args.expected_field_generation,
-                );
+                let object = build_sign_object(args)?;
                 let receipt = crate::validation::validate_recipient_sign_payload(&object)?;
                 print_success(&receipt, raw, pretty)?;
                 return Ok(());
@@ -245,13 +238,17 @@ async fn simple_action<T: DeserializeOwned + Serialize>(
     Ok(())
 }
 
-async fn sign(
-    client: &SignKitClient,
-    args: RecipientSignArgs,
-    raw: bool,
-    pretty: bool,
-) -> Result<(), CliError> {
-    require_consent(args.consent)?;
+/// Reads the sign JSON, applies overlays, and merges the optional
+/// `--signing-instruction-file`. A supplied instruction is never refreshed from
+/// the network; it must match any inline `signingInstruction` exactly.
+fn build_sign_object(
+    args: &RecipientSignArgs,
+) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
+    if args.signing_instruction_file.as_deref() == Some("-") && args.file == "-" {
+        return Err(CliError::usage(
+            "--file and --signing-instruction-file cannot both read from stdin.",
+        ));
+    }
     let mut object = read_json_object(&args.file)?;
     overlay_string(&mut object, "envelopeId", args.envelope_id.as_deref());
     overlay_string(&mut object, "recipientId", args.recipient_id.as_deref());
@@ -260,6 +257,29 @@ async fn sign(
         "expectedFieldGeneration",
         args.expected_field_generation,
     );
+    if let Some(path) = args.signing_instruction_file.as_deref() {
+        let supplied = crate::io::read_json_value(path)?;
+        let binding = crate::validation::signing_instruction_from_supplied(&supplied)?;
+        if let Some(inline) = object.get("signingInstruction") {
+            if inline != &binding {
+                return Err(CliError::usage(
+                    "signingInstruction in the JSON body does not match --signing-instruction-file.",
+                ));
+            }
+        }
+        object.insert("signingInstruction".to_string(), binding);
+    }
+    Ok(object)
+}
+
+async fn sign(
+    client: &SignKitClient,
+    args: RecipientSignArgs,
+    raw: bool,
+    pretty: bool,
+) -> Result<(), CliError> {
+    require_consent(args.consent)?;
+    let object = build_sign_object(&args)?;
     let _receipt = crate::validation::validate_recipient_sign_payload(&object)?;
     let request: RecipientSignRequest = serde_json::from_value(serde_json::Value::Object(object))
         .map_err(|err| {

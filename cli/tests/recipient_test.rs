@@ -832,3 +832,189 @@ async fn test_recipient_documents_bounded_response_handling() {
     ]);
     assert_eq!(run_cli(cli).await, ExitCode::ValidationError);
 }
+
+// --- Signing instruction binding (#284) ------------------------------------------
+
+const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn sign_payload_with(instruction: serde_json::Value) -> tempfile::NamedTempFile {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    let body = serde_json::json!({
+        "envelopeId": common::TEST_ENVELOPE_ID,
+        "recipientId": common::TEST_RECIPIENT_ID,
+        "expectedFieldGeneration": 0,
+        "values": [{ "fieldId": common::TEST_FIELD_ID, "value": "Jane Doe" }],
+        "signingInstruction": instruction,
+    });
+    write!(file, "{body}").unwrap();
+    file
+}
+
+fn json_file(value: serde_json::Value) -> tempfile::NamedTempFile {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    write!(file, "{value}").unwrap();
+    file
+}
+
+async fn validate_sign(file: &tempfile::NamedTempFile, extra: &[&str]) -> ExitCode {
+    let mut args = vec![
+        "signkit",
+        "--base-url",
+        "http://127.0.0.1:9",
+        "recipient",
+        "sign",
+        "--file",
+        file.path().to_str().unwrap(),
+        "--validate-only",
+    ];
+    args.extend_from_slice(extra);
+    run_cli(Cli::parse_from(args)).await
+}
+
+#[tokio::test]
+async fn test_recipient_sign_accepts_bound_signing_instruction() {
+    for locale in ["en", "ja"] {
+        let file = sign_payload_with(
+            serde_json::json!({ "version": 1, "locale": locale, "sentEventHash": HASH }),
+        );
+        assert_eq!(validate_sign(&file, &[]).await, ExitCode::Success);
+    }
+}
+
+#[tokio::test]
+async fn test_recipient_sign_rejects_invalid_signing_instruction() {
+    let upper = HASH.to_uppercase();
+    let cases = [
+        serde_json::json!({ "version": 2, "locale": "en", "sentEventHash": HASH }),
+        serde_json::json!({ "version": 1, "locale": "fr", "sentEventHash": HASH }),
+        serde_json::json!({ "version": 1, "locale": "en", "sentEventHash": upper }),
+        serde_json::json!({ "version": 1, "locale": "en", "sentEventHash": "abc" }),
+        serde_json::json!({ "version": 1, "locale": "en" }),
+        serde_json::json!({ "version": 1, "locale": "en", "sentEventHash": HASH, "statement": "x" }),
+        serde_json::json!("nope"),
+    ];
+    for case in cases {
+        let file = sign_payload_with(case.clone());
+        assert_eq!(
+            validate_sign(&file, &[]).await,
+            ExitCode::UsageError,
+            "{case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_recipient_sign_instruction_file_mismatch_is_rejected() {
+    let inline = sign_payload_with(
+        serde_json::json!({ "version": 1, "locale": "en", "sentEventHash": HASH }),
+    );
+    let other = json_file(serde_json::json!({
+        "version": 1, "locale": "ja", "sentEventHash": HASH
+    }));
+    let code = validate_sign(
+        &inline,
+        &["--signing-instruction-file", other.path().to_str().unwrap()],
+    )
+    .await;
+    assert_eq!(code, ExitCode::UsageError);
+}
+
+#[tokio::test]
+async fn test_recipient_sign_instruction_requires_consent_before_network() {
+    let _env = common::EnvScope::new(&[(
+        "SIGNKIT_RECIPIENT_CAPABILITY",
+        Some(common::TEST_RECIPIENT_CAPABILITY),
+    )])
+    .await;
+    let file = sign_payload_file();
+    let instruction = json_file(serde_json::json!({
+        "version": 1, "locale": "en", "sentEventHash": HASH
+    }));
+    let cli = Cli::parse_from([
+        "signkit",
+        "--base-url",
+        "http://127.0.0.1:9",
+        "recipient",
+        "sign",
+        "--file",
+        file.path().to_str().unwrap(),
+        "--signing-instruction-file",
+        instruction.path().to_str().unwrap(),
+    ]);
+    assert_eq!(run_cli(cli).await, ExitCode::UsageError);
+}
+
+#[tokio::test]
+async fn test_recipient_sign_forwards_supplied_instruction_from_documents_response() {
+    let mock_server = common::start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/recipient/sign"))
+        .and(body_json(serde_json::json!({
+            "envelopeId": common::TEST_ENVELOPE_ID,
+            "recipientId": common::TEST_RECIPIENT_ID,
+            "expectedFieldGeneration": 0,
+            "values": [{ "fieldId": common::TEST_FIELD_ID, "value": "Jane Doe" }],
+            "signingInstruction": { "version": 1, "locale": "ja", "sentEventHash": HASH }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            format!(
+                r#"{{"signed":{{"envelopeId":"{e}","recipientId":"{r}","recipientStatus":"completed","envelopeStatus":"completed","signingInstruction":{{"version":1,"locale":"ja","sentEventHash":"{h}","textSha256":"{h}","fieldGeneration":0}}}}}}"#,
+                e = common::TEST_ENVELOPE_ID,
+                r = common::TEST_RECIPIENT_ID,
+                h = HASH,
+            ),
+            "application/json",
+        ))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let _env = common::EnvScope::new(&[(
+        "SIGNKIT_RECIPIENT_CAPABILITY",
+        Some(common::TEST_RECIPIENT_CAPABILITY),
+    )])
+    .await;
+    let file = sign_payload_file();
+    // A saved `recipient documents` response, including the presented statement.
+    let documents = json_file(serde_json::json!({
+        "signingInstruction": {
+            "version": 1, "locale": "ja", "sentEventHash": HASH, "statement": "署名します"
+        }
+    }));
+    let cli = Cli::parse_from([
+        "signkit",
+        "--base-url",
+        &mock_server.uri(),
+        "recipient",
+        "sign",
+        "--file",
+        file.path().to_str().unwrap(),
+        "--signing-instruction-file",
+        documents.path().to_str().unwrap(),
+        "--consent",
+    ]);
+    assert_eq!(run_cli(cli).await, ExitCode::Success);
+}
+
+#[test]
+fn test_recipient_documents_preserves_server_statement_and_legacy_shape() {
+    use signkit_cli::types::RecipientDocumentsResponse;
+    let mut value: serde_json::Value = serde_json::from_str(&documents_json()).unwrap();
+    let legacy: RecipientDocumentsResponse = serde_json::from_value(value.clone()).unwrap();
+    assert!(legacy.signing_instruction.is_none());
+    assert!(!serde_json::to_value(&legacy)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .contains_key("signingInstruction"));
+
+    value["signingInstruction"] = serde_json::json!({
+        "version": 1, "locale": "en", "sentEventHash": HASH, "statement": "Exact  text\n"
+    });
+    let parsed: RecipientDocumentsResponse = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        parsed.signing_instruction.as_ref().unwrap().statement,
+        "Exact  text\n"
+    );
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), value);
+}
