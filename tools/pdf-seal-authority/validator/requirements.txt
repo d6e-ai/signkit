@@ -1,0 +1,7 @@
+# Direct runtime dependencies pinned to the versions locked in tools/pades-conformance/uv.lock.
+# Regenerate a fully hashed transitive lock (`uv pip compile --generate-hashes`) before release.
+cryptography==50.0.1
+pyhanko==0.37.0
+pyhanko-certvalidator==0.32.1
+asn1crypto==1.5.1
+oscrypto==1.3.0
