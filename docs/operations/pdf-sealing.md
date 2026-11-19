@@ -63,9 +63,9 @@ read-only `psql` service for PostgreSQL. Take a database snapshot before any bro
 
 - Provision the independently managed issuer, key-service routes and provider-owned replay database
   described in the [provider contract](../architecture/pdf-sealing.md#provider-and-deployment-boundary).
-  Initialize the standalone ledger with `tools/pdf-seal-authority/postgres-schema.sql`. Restrict its
-  service role to inserting and reading reservations. Retain these records and the provider receipt
-  history through backup and recovery.
+  The standalone PostgreSQL ledger uses `tools/pdf-seal-authority/postgres-schema.sql`; the
+  Cloudflare deployment uses [its standalone D1 ledger](#cloudflare-and-aws-kms).
+  Retain reservations and the provider receipt history through backup and recovery.
 - Retire the old bearer-only key ingress before enabling the new protocol. Existing published seals
   stay downloadable. Preserve the records of queued legacy seal jobs. An unfinished seal can advance
   only with its exact frozen policy and an independent verified grant using the new routes. Never
@@ -83,6 +83,51 @@ read-only `psql` service for PostgreSQL. Take a database snapshot before any bro
   match. Keep the same issuer and audience identity and durable replay ledger across rotations.
   The issuer maintains issuance and access records. The key operator owns certificate rotation,
   revocation, reservation reconciliation and evidence of key-service outcomes.
+
+### Cloudflare and AWS KMS
+
+Deploy one isolated set of four Workers per environment. Restrict issuer, evidence-store and
+provider deployment access to their trusted administrators. The Cloudflare account administrator can
+change these bindings and belongs to the hosted trust boundary. A customer-controlled evidence store
+is ineligible for this profile. The engine and issuer have service bindings and no public route.
+The gateway's scheduling credential and the validator's credential are the only credentials
+SignKit receives.
+
+1. Create a dedicated D1 ledger from `tools/pdf-seal-authority/gateway/schema.sql` and a private
+   R2 result bucket. Bind the issuer to the trusted recipient and completion stores for one
+   audience. Keep reservations when replacing Workers and images.
+2. Create an AWS KMS RSA `SIGN_VERIFY` key. Issue a leaf certificate for its `GetPublicKey`
+   result under the validator's trusted CA. The leaf requires digital signature and content
+   commitment key usage. Install its DER SHA-256 pin at the issuer, gateway, validator and SignKit.
+   For a private CA, provide the CA certificate to verifiers through the approved trust channel.
+   Keep the CA private key offline. The engine checks that the leaf and KMS public keys match.
+3. Give the engine principal `kms:GetPublicKey` and `kms:Sign` on that key ARN. Require
+   `kms:SigningAlgorithm` of `RSASSA_PKCS1_V1_5_SHA_256` and `kms:MessageType` of `DIGEST` for
+   `Sign`. Restrict management and audit roles separately. Keep the issuer's ES256 private key and
+   the engine's AWS credentials in their respective Worker secrets. Use independent 32-byte random
+   values encoded as unpadded base64url for the scheduling, issuer, engine and validator credentials.
+4. Generate SvelteKit types with `pnpm run check`. Build each prebuilt bundle with
+   `node tools/pdf-seal-authority/build-cloudflare.mjs <new-private-output-directory>`.
+   Use the deployment settings below. The Docker builds use hash-pinned Python wheels for Linux
+   x86-64. From the output directory run `cf deploy --prebuilt --no-provision --dry-run`, then deploy
+   with `cf deploy --prebuilt --no-provision --secrets-file <private-json-file>`. Deploy the issuer
+   and engine before the gateway. The validator runs with container internet access disabled.
+
+| Role        | Build settings                                                                                                                                     | Runtime secrets                                                                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| All         | `SEAL_WORKER_PREFIX`, `SEAL_WORKER_ROLE`                                                                                                           |                                                                                                                                                      |
+| `issuer`    | `SEAL_ISSUER`, `SEAL_AUDIENCE`, `SEAL_CERTIFICATE_SHA256`, `SEAL_POLICY_ID`, `VALIDATION_POLICY_ID`, `SEAL_EVIDENCE_DB_ID`, `SEAL_EVIDENCE_BUCKET` | `ISSUER_TOKEN`, `ISSUER_PRIVATE_KEY_PKCS8` (base64 DER)                                                                                              |
+| `gateway`   | Same issuer, audience and policy pins, `SEAL_AUTHORIZATION_PUBLIC_KEY`, `SEAL_LEDGER_DB_ID`, `SEAL_RESULT_BUCKET`                                  | `GATEWAY_TOKEN`, `ISSUER_TOKEN`, `ENGINE_TOKEN`                                                                                                      |
+| `engine`    | Shared settings only                                                                                                                               | `ENGINE_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_KMS_KEY_ARN`, `SEAL_CERTIFICATE_DER` and `SEAL_CA_DER` (base64 DER) |
+| `validator` | Same certificate and policy pins                                                                                                                   | `VALIDATOR_TOKEN`, `SEAL_CA_DER` (base64 DER trust root)                                                                                             |
+
+Verify in the non-production environment before enabling production. Use a disposable completed
+envelope with verified signing instructions. Check that missing, invalid, expired and mismatched
+grants create no reservations and produce no KMS `Sign` events. Submit the valid grant and exact
+PDF, replay the same operation, and correlate the one KMS request ID with the provider receipt and
+CloudTrail. Verify the sealed result and original PDF through SignKit. Repeat the deployment with
+separate production keys, buckets, ledgers and credentials. Activate only the complete B-B tuple and
+preserve existing signing requests and published artifacts.
 
 ## Certificate private-key loss
 
