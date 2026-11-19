@@ -84,7 +84,7 @@ read-only `psql` service for PostgreSQL. Take a database snapshot before any bro
   The issuer maintains issuance and access records. The key operator owns certificate rotation,
   revocation, reservation reconciliation and evidence of key-service outcomes.
 
-### Cloudflare and AWS KMS
+### Cloudflare Workers with a managed signing key
 
 Deploy one isolated set of four Workers per environment. Restrict issuer, evidence-store and
 provider deployment access to their trusted administrators. The Cloudflare account administrator can
@@ -96,16 +96,15 @@ SignKit receives.
 1. Create a dedicated D1 ledger from `tools/pdf-seal-authority/gateway/schema.sql` and a private
    R2 result bucket. Bind the issuer to the trusted recipient and completion stores for one
    audience. Keep reservations when replacing Workers and images.
-2. Create an AWS KMS RSA `SIGN_VERIFY` key. Issue a leaf certificate for its `GetPublicKey`
-   result under the validator's trusted CA. The leaf requires digital signature and content
-   commitment key usage. Install its DER SHA-256 pin at the issuer, gateway, validator and SignKit.
-   For a private CA, provide the CA certificate to verifiers through the approved trust channel.
-   Keep the CA private key offline. The engine checks that the leaf and KMS public keys match.
-3. Give the engine principal `kms:GetPublicKey` and `kms:Sign` on that key ARN. Require
-   `kms:SigningAlgorithm` of `RSASSA_PKCS1_V1_5_SHA_256` and `kms:MessageType` of `DIGEST` for
-   `Sign`. Restrict management and audit roles separately. Keep the issuer's ES256 private key and
-   the engine's AWS credentials in their respective Worker secrets. Use independent 32-byte random
-   values encoded as unpadded base64url for the scheduling, issuer, engine and validator credentials.
+2. Provision one [managed signing key](#managed-key-backends) for the environment. Issue a leaf
+   certificate for its public key under the validator's trusted CA. The leaf requires digital
+   signature and content commitment key usage. Install its DER SHA-256 pin at the issuer, gateway,
+   validator and SignKit. For a private CA, provide the CA certificate to verifiers through the
+   approved trust channel. Keep the CA private key offline. The engine verifies each signature
+   against the leaf's public key before embedding it.
+3. Keep the instruction issuer's ES256 key in its own Worker secrets. Use independent 32-byte
+   random values encoded as unpadded base64url for the scheduling, issuer, engine, and validator
+   credentials. Restrict management and audit roles separately.
 4. Generate SvelteKit types with `pnpm run check`. Build each prebuilt bundle with
    `node tools/pdf-seal-authority/build-cloudflare.mjs <new-private-output-directory>`.
    Use the deployment settings below. The Docker builds use hash-pinned Python wheels for Linux
@@ -113,21 +112,42 @@ SignKit receives.
    with `cf deploy --prebuilt --no-provision --secrets-file <private-json-file>`. Deploy the issuer
    and engine before the gateway. The validator runs with container internet access disabled.
 
-| Role        | Build settings                                                                                                                                     | Runtime secrets                                                                                                                                      |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| All         | `SEAL_WORKER_PREFIX`, `SEAL_WORKER_ROLE`                                                                                                           |                                                                                                                                                      |
-| `issuer`    | `SEAL_ISSUER`, `SEAL_AUDIENCE`, `SEAL_CERTIFICATE_SHA256`, `SEAL_POLICY_ID`, `VALIDATION_POLICY_ID`, `SEAL_EVIDENCE_DB_ID`, `SEAL_EVIDENCE_BUCKET` | `ISSUER_TOKEN`, `ISSUER_PRIVATE_KEY_PKCS8` (base64 DER)                                                                                              |
-| `gateway`   | Same issuer, audience and policy pins, `SEAL_AUTHORIZATION_PUBLIC_KEY`, `SEAL_LEDGER_DB_ID`, `SEAL_RESULT_BUCKET`                                  | `GATEWAY_TOKEN`, `ISSUER_TOKEN`, `ENGINE_TOKEN`                                                                                                      |
-| `engine`    | Shared settings only                                                                                                                               | `ENGINE_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_KMS_KEY_ARN`, `SEAL_CERTIFICATE_DER` and `SEAL_CA_DER` (base64 DER) |
-| `validator` | Same certificate and policy pins                                                                                                                   | `VALIDATOR_TOKEN`, `SEAL_CA_DER` (base64 DER trust root)                                                                                             |
+| Role        | Build settings                                                                                                                                     | Runtime secrets                                                                                    |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| All         | `SEAL_WORKER_PREFIX`, `SEAL_WORKER_ROLE`                                                                                                           |                                                                                                    |
+| `issuer`    | `SEAL_ISSUER`, `SEAL_AUDIENCE`, `SEAL_CERTIFICATE_SHA256`, `SEAL_POLICY_ID`, `VALIDATION_POLICY_ID`, `SEAL_EVIDENCE_DB_ID`, `SEAL_EVIDENCE_BUCKET` | `ISSUER_TOKEN`, `ISSUER_PRIVATE_KEY_PKCS8` (base64 DER)                                            |
+| `gateway`   | Same issuer, audience and policy pins, `SEAL_AUTHORIZATION_PUBLIC_KEY`, `SEAL_LEDGER_DB_ID`, `SEAL_RESULT_BUCKET`                                  | `GATEWAY_TOKEN`, `ISSUER_TOKEN`, `ENGINE_TOKEN`                                                    |
+| `engine`    | Shared settings only                                                                                                                               | `ENGINE_TOKEN`, `SEAL_CERTIFICATE_DER` and `SEAL_CA_DER` (base64 DER), plus the backend's settings |
+| `validator` | Same certificate and policy pins                                                                                                                   | `VALIDATOR_TOKEN`, `SEAL_CA_DER` (base64 DER trust root)                                           |
 
 Verify in the non-production environment before enabling production. Use a disposable completed
 envelope with verified signing instructions. Check that missing, invalid, expired and mismatched
-grants create no reservations and produce no KMS `Sign` events. Submit the valid grant and exact
-PDF, replay the same operation, and correlate the one KMS request ID with the provider receipt and
-CloudTrail. Verify the sealed result and original PDF through SignKit. Repeat the deployment with
+grants create no reservations and produce no key-use events. Submit the valid grant and exact
+PDF, replay the same operation, and correlate one successful key use with the provider receipt.
+Verify the sealed result and original PDF through SignKit. Repeat the deployment with
 separate production keys, buckets, ledgers and credentials. Activate only the complete B-B tuple and
 preserve existing signing requests and published artifacts.
+
+#### Managed key backends
+
+For Vercel KMS, deploy `tools/pdf-seal-authority/vercel-signer` to a dedicated, OIDC-enabled Vercel
+project per environment. Use an `RS256` issuer with a Vercel-generated key and a grant for that
+project and environment only. Keep SignKit's deployment and project credentials outside the grant.
+Bind `VERCEL_KMS_ISSUER_ID`, `VERCEL_KMS_KEY_ID`, `VERCEL_KMS_FINGERPRINT` and an independent
+`VERCEL_SIGNER_TOKEN` as signer project secrets. Bind the same expected key ID, public key
+fingerprint and signer token at the Cloudflare engine, plus `VERCEL_SIGNER_URL`, the dedicated
+`https://<project>.vercel.app/api/sign` endpoint. The function accepts the engine's one authorized
+request for CMS signed attributes and uses its own deployment OIDC token for the managed key. Its
+key-use record contains the operation and request identifiers. Customer deployment credentials
+must have no authority to modify the signer project or its KMS grant. For certificate rotation,
+stage a new issuer and signer deployment under a new policy generation. Keep the prior issuer
+available until its accepted operations are reconciled.
+
+For AWS KMS, create an RSA `SIGN_VERIFY` key and issue the certificate using `GetPublicKey`.
+Grant the engine principal `kms:GetPublicKey` and `kms:Sign` on the exact key ARN. Require
+`kms:SigningAlgorithm` of `RSASSA_PKCS1_V1_5_SHA_256` and `kms:MessageType` of `DIGEST` for
+`Sign`. Bind `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and `AWS_KMS_KEY_ARN`
+at the engine. Use CloudTrail for key-use reconciliation.
 
 ## Certificate private-key loss
 

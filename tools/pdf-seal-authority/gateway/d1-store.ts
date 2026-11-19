@@ -35,9 +35,11 @@ export interface ReceiptRow {
 /** Provider-owned permanent reservation. Never retries: any ambiguity propagates. */
 export class D1ProviderSigningLedger implements ProviderSigningLedger {
 	readonly #db: D1Database;
+	readonly #prepareEngine: () => Promise<void>;
 
-	constructor(db: D1Database) {
+	constructor(db: D1Database, prepareEngine: () => Promise<void>) {
 		this.#db = db;
+		this.#prepareEngine = prepareEngine;
 	}
 
 	async reserve(
@@ -45,6 +47,10 @@ export class D1ProviderSigningLedger implements ProviderSigningLedger {
 		reference: PdfSealAuthorizationRequest
 	): Promise<'reserved' | 'existing' | 'conflict'> {
 		if (!ISO_MILLIS.test(input.expiresAt)) throw new TypeError('invalid expiry');
+		const accepted = await this.#existingReservation(input);
+		if (accepted !== null) return accepted;
+		// A container that is still starting must leave the operation eligible for retry.
+		await this.#prepareEngine();
 		// D1 batches are transactional. A reservation commits with its receipt or
 		// neither row commits. Both unique keys and the ledger clock gate admission.
 		const reservation = this.#db
@@ -91,14 +97,21 @@ export class D1ProviderSigningLedger implements ProviderSigningLedger {
 			);
 		const [inserted, created] = await this.#db.batch([reservation, receipt]);
 		if (inserted.meta.changes === 1 && created.meta.changes === 1) return 'reserved';
+		return (await this.#existingReservation(input)) ?? 'conflict';
+	}
+
+	async #existingReservation(
+		input: ProviderSigningReservation
+	): Promise<'existing' | 'conflict' | null> {
 		const existing = await this.#db
 			.prepare(
-				`SELECT envelope_id, authorization_sha256 FROM provider_signing_replay
-				WHERE issuer = ? AND audience = ? AND operation_id = ?`
+				`SELECT operation_id, envelope_id, authorization_sha256 FROM provider_signing_replay
+				WHERE issuer = ? AND audience = ? AND (operation_id = ? OR envelope_id = ?)`
 			)
-			.bind(input.issuer, input.audience, input.operationId)
-			.first<{ envelope_id: string; authorization_sha256: string }>();
-		return existing !== null &&
+			.bind(input.issuer, input.audience, input.operationId, input.envelopeId)
+			.first<{ operation_id: string; envelope_id: string; authorization_sha256: string }>();
+		if (existing === null) return null;
+		return existing.operation_id === input.operationId &&
 			existing.envelope_id === input.envelopeId &&
 			existing.authorization_sha256 === input.authorizationSha256
 			? 'existing'
