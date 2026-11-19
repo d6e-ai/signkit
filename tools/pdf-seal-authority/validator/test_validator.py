@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.client
+import io
 import json
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
@@ -17,12 +19,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from pyhanko.keys import load_cert_from_pemder, load_private_key_from_pemder
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import signers
 from pyhanko.sign.fields import SigSeedSubFilter
 from pyhanko.sign.timestamps import DummyTimeStamper
 
 from config import Config, ConfigurationError, load_config
-from engine import Reference, evaluate
+from engine import Reference, _revision_changes_allowed, evaluate
 from server import MEDIA_TYPE, ValidatorServer
 
 TOKEN = "t" * 40
@@ -191,6 +194,12 @@ def test_valid_b_b_is_accepted_with_every_check_computed(fx: Fixture, sealed: by
     outcome = evaluate(fx.config(), fx.reference(), fx.source, sealed)
     assert outcome.failures == set()
     assert outcome.valid and all(outcome.checks.values())
+
+
+def test_incremental_validation_requires_the_original_catalogue(fx: Fixture) -> None:
+    source = PdfFileReader(io.BytesIO(fx.source))
+    other_root = SimpleNamespace(idnum=source.root_ref.idnum + 1, generation=0)
+    assert not _revision_changes_allowed(source, SimpleNamespace(root_ref=other_root), 1, None)
 
 
 def test_modified_source_prefix_is_rejected(fx: Fixture, sealed: bytes) -> None:

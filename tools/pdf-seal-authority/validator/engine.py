@@ -52,8 +52,11 @@ CHECK_KEYS: tuple[str, ...] = (
 ALLOWED_DIGESTS = {"sha256", "sha384", "sha512"}
 HEX_CONTENTS = re.compile(rb"^<[0-9A-Fa-f]*>$")
 ROOT_MUTABLE = {"/AcroForm", "/Extensions"}
-OTHER_MUTABLE = {"/Annots", "/Fields", "/SigFlags"}
 ACROFORM_ALLOWED = {"/Fields", "/SigFlags"}
+SIGNATURE_FIELD_KEYS = {"/Type", "/Subtype", "/FT", "/T", "/F", "/Rect", "/P", "/V"}
+SIGNATURE_KEYS = {"/Type", "/Filter", "/SubFilter", "/Contents", "/ByteRange", "/M"}
+ESIC_EXTENSION = {"/Type": "/DeveloperExtensions", "/BaseVersion": "/1.7", "/ExtensionLevel": 1}
+TRAILER_MUTABLE = {"/Size", "/Prev", "/ID", "/Info"}
 
 
 @dataclass
@@ -121,7 +124,9 @@ def evaluate(
     )
     if structural:
         try:
-            structural = _revision_changes_allowed(source_reader, sealed_reader, source_revisions)
+            structural = _revision_changes_allowed(
+                source_reader, sealed_reader, source_revisions, signatures[0]
+            )
         except Exception:
             structural = False
     outcome.checks["incrementalUpdateValid"] = structural
@@ -140,25 +145,116 @@ def evaluate(
 
 
 def _revision_changes_allowed(
-    source_reader: PdfFileReader, sealed_reader: PdfFileReader, source_revisions: int
+    source_reader: PdfFileReader,
+    sealed_reader: PdfFileReader,
+    source_revisions: int,
+    signature: Any,
 ) -> bool:
     """The single new revision may only add the signature field/value and wire it in."""
+    root_key = _canonical(source_reader.root_ref)
+    if root_key != _canonical(sealed_reader.root_ref):
+        return False
+    old_trailer = source_reader.trailer
+    new_trailer = sealed_reader.trailer
+    for key in (set(old_trailer) | set(new_trailer)) - TRAILER_MUTABLE:
+        if (
+            key not in old_trailer
+            or key not in new_trailer
+            or _canonical(old_trailer.raw_get(key)) != _canonical(new_trailer.raw_get(key))
+        ):
+            return False
     old = sealed_reader.get_historical_resolver(source_revisions - 1)
     new = sealed_reader.get_historical_resolver(source_revisions)
     if list(new.refs_freed_in_revision()):
         return False
     source_size = int(source_reader.trailer["/Size"])
-    root_id = source_reader.root_ref.idnum
+    field = signature.sig_field
+    value = signature.sig_object
+    if (
+        not set(dict.keys(field)) <= SIGNATURE_FIELD_KEYS
+        or not set(dict.keys(value)) <= SIGNATURE_KEYS
+        or field.get("/Type") != "/Annot"
+        or field.get("/Subtype") != "/Widget"
+    ):
+        return False
+    if field.container_ref.idnum < source_size or value.container_ref.idnum < source_size:
+        return False
+    field_key = _canonical(field.container_ref)
+    value_key = _canonical(value.container_ref)
+    acroform = sealed_reader.root.raw_get("/AcroForm")
+    acroform_key = _canonical(acroform)
+    page = field.raw_get("/P")
+    page_key = _canonical(page)
+    if page.idnum >= source_size or str(page.get_object().get("/Type")) != "/Page":
+        return False
+    if _canonical(field.raw_get("/V")) != value_key:
+        return False
+
+    new_allowed = {field_key, value_key, acroform_key}
+    # pyHanko adds a plain producer/modification-date dictionary when the
+    # original trailer has no Info entry.
+    if "/Info" in sealed_reader.trailer:
+        info = sealed_reader.trailer.raw_get("/Info")
+        if "/Info" in source_reader.trailer:
+            if _canonical(info) != _canonical(source_reader.trailer.raw_get("/Info")):
+                return False
+        else:
+            metadata = info.get_object()
+            if (
+                not isinstance(metadata, dict)
+                or not set(dict.keys(metadata)) <= {"/Producer", "/ModDate"}
+                or not all(isinstance(value, str) for value in dict.values(metadata))
+            ):
+                return False
+            new_allowed.add(_canonical(info))
+    elif "/Info" in source_reader.trailer:
+        return False
+
+    form = acroform.get_object()
+    old_form = source_reader.root.get("/AcroForm")
+    if old_form is not None and (
+        _canonical(source_reader.root.raw_get("/AcroForm")) != acroform_key
+        or not set(dict.keys(old_form)) <= ACROFORM_ALLOWED
+    ):
+        return False
+    if (
+        not isinstance(form, dict)
+        or not set(dict.keys(form)) <= ACROFORM_ALLOWED
+        or form.get("/SigFlags") != 3
+        or not _adds_signature(
+            None if old_form is None else dict.get(old_form, "/Fields"),
+            dict.get(form, "/Fields"),
+            field_key,
+        )
+    ):
+        return False
+    if not _adds_signature(
+        dict.get(old.get_object(page.reference), "/Annots"),
+        dict.get(page.get_object(), "/Annots"),
+        field_key,
+    ):
+        return False
+
     for ref in new.explicit_refs_in_revision():
+        ref_key = _canonical(ref)
         if ref.idnum >= source_size:
-            continue  # brand-new object
+            if ref_key not in new_allowed:
+                return False
+            continue
         old_obj = old.get_object(ref)
         new_obj = new.get_object(ref)
         if hasattr(old_obj, "encoded_data") or hasattr(new_obj, "encoded_data"):
             return False  # no existing stream (page content, fonts, images) may change
         if not isinstance(old_obj, dict) or not isinstance(new_obj, dict):
             return False
-        mutable = ROOT_MUTABLE if ref.idnum == root_id else OTHER_MUTABLE
+        if ref_key == root_key:
+            mutable = ROOT_MUTABLE
+        elif ref_key == page_key:
+            mutable = {"/Annots"}
+        elif ref_key == acroform_key:
+            mutable = ACROFORM_ALLOWED
+        else:
+            return False
         old_items = dict(dict.items(old_obj))
         new_items = dict(dict.items(new_obj))
         for key in set(old_items) | set(new_items):
@@ -168,46 +264,27 @@ def _revision_changes_allowed(
                 return False
             if _canonical(old_items[key]) != _canonical(new_items[key]):
                 return False
-        if ref.idnum == root_id and not _acroform_extends(old_items, new_items):
+        if ref_key == root_key and not _extensions_unchanged_or_added(old_items, new_items):
             return False
-        if "/Fields" in new_items or "/Fields" in old_items:
-            if not _adds_exactly_one(old_items.get("/Fields"), new_items.get("/Fields")):
-                return False
-        if "/Annots" in new_items or "/Annots" in old_items:
-            if not _adds_exactly_one(old_items.get("/Annots"), new_items.get("/Annots")):
-                return False
     return True
 
 
-def _acroform_extends(old_items: dict[Any, Any], new_items: dict[Any, Any]) -> bool:
-    if "/AcroForm" not in new_items:
-        return False
-    new_form = new_items["/AcroForm"]
-    new_form = new_form.get_object() if hasattr(new_form, "idnum") else new_form
-    if not isinstance(new_form, dict) or not set(dict.keys(new_form)) <= ACROFORM_ALLOWED:
-        # Fields not in the allowlist (e.g. JavaScript actions) are not introduced by the seal.
-        old_form = old_items.get("/AcroForm")
-        if old_form is None:
-            return False
-        old_form = old_form.get_object() if hasattr(old_form, "idnum") else old_form
-        extra = set(dict.keys(new_form)) - ACROFORM_ALLOWED
-        return all(
-            key in dict.keys(old_form)
-            and _canonical(dict.get(old_form, key)) == _canonical(dict.get(new_form, key))
-            for key in extra
+def _extensions_unchanged_or_added(old_items: dict[Any, Any], new_items: dict[Any, Any]) -> bool:
+    old_extension = old_items.get("/Extensions")
+    new_extension = new_items.get("/Extensions")
+    return (
+        _canonical(new_extension) == _canonical(old_extension)
+        or (
+            old_extension is None
+            and _canonical(new_extension) == _canonical({"/ESIC": ESIC_EXTENSION})
         )
-    return True
+    )
 
 
-def _adds_exactly_one(old_array: Any, new_array: Any) -> bool:
-    old_set = _raw_items(old_array)
+def _adds_signature(old_array: Any, new_array: Any, field_key: Any) -> bool:
+    old_items = _raw_items(old_array)
     new_items = _raw_items(new_array)
-    if old_set is None and new_items is None:
-        return True
-    old_items = old_set or []
-    if new_items is None:
-        return False
-    return len(new_items) == len(old_items) + 1 and all(item in new_items for item in old_items)
+    return (old_array is None or old_items is not None) and new_items == [*(old_items or []), field_key]
 
 
 def _raw_items(value: Any) -> list[Any] | None:
@@ -234,8 +311,10 @@ def _canonical(value: Any) -> Any:
         return ("bytes", bytes(value))
     if isinstance(value, bool) or value is None:
         return value
-    if isinstance(value, (int, float)):
-        return ("num", float(value))
+    if isinstance(value, int):
+        return ("int", int(value))
+    if isinstance(value, float):
+        return ("float", value)
     if isinstance(value, str):
         return ("str", str(value))
     return ("other", repr(value))
