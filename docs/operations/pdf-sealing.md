@@ -59,6 +59,31 @@ ORDER BY attempt_number;
 Use `wrangler d1 execute <DATABASE_NAME> --remote --command '<READ_ONLY_SQL>'` for D1 or a
 read-only `psql` service for PostgreSQL. Take a database snapshot before any broader investigation.
 
+## Authorization rollout and custody
+
+- Provision the independently managed issuer, key-service routes and provider-owned replay database
+  described in the [provider contract](../architecture/pdf-sealing.md#provider-and-deployment-boundary).
+  Initialize the standalone ledger with `tools/pdf-seal-authority/postgres-schema.sql`. Restrict its
+  service role to inserting and reading reservations. Retain these records and the provider receipt
+  history through backup and recovery.
+- Retire the old bearer-only key ingress before enabling the new protocol. Existing published seals
+  stay downloadable. Preserve the records of queued legacy seal jobs. An unfinished seal can advance
+  only with its exact frozen policy and an independent verified grant using the new routes. Never
+  retry an ambiguous private operation with a different ID or recreate the provider ledger.
+- Retry authorization and submission while the key service has accepted no reservation. After
+  reservation, retries can only reconcile the original operation. A missing receipt requires
+  checking the provider's key-use audit before any recovery decision.
+- Enable the complete provider and validator tuple including `PDF_SEAL_AUTHORIZATION_ISSUER`,
+  `PDF_SEAL_AUTHORIZATION_AUDIENCE` and `PDF_SEAL_AUTHORIZATION_PUBLIC_KEY`. The last value is the
+  canonical unpadded base64url of an uncompressed P-256 public point. A legacy tuple without the
+  authorization settings disables new requests and the drain. Ordinary completion PDFs and old
+  recipient requests use their usual workflow.
+- Rotate the issuer key separately from the certificate. Coordinate the trust pin at the client and
+  provider, stop issuance under a compromised key immediately, and stop admission until the pins
+  match. Keep the same issuer and audience identity and durable replay ledger across rotations.
+  The issuer maintains issuance and access records. The key operator owns certificate rotation,
+  revocation, reservation reconciliation and evidence of key-service outcomes.
+
 ## Certificate private-key loss
 
 ### Suspected temporary loss
@@ -92,9 +117,10 @@ relevant time evidence.
 
 1. Obtain the new certificate in the provider key boundary and calculate its DER certificate
    SHA-256 independently.
-2. Inventory jobs that are not published. Drain them to publication, or keep the old key and policy
-   available at the provider until they reach a terminal state. The provider must continue to
-   resolve every old operation ID against its original key.
+2. Inventory jobs that are not published. Drain them to a terminal state before switching a
+   single-policy issuer and key service. If serving policies in parallel, route only to configured
+   handlers for the exact pinned policy tuple and keep the replay ledger shared for the same issuer
+   and audience. Resolve every accepted operation ID against its original provider receipt.
 3. Create a new `PDF_SEAL_POLICY_ID`; update `PDF_SEAL_SIGNER_CERTIFICATE_SHA256` and any changed
    validation policy. Never reuse a policy ID for different semantics.
 4. Deploy the complete `PDF_SEAL_*` tuple atomically. A partial tuple fails closed.

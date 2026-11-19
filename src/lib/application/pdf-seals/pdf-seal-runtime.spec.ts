@@ -7,6 +7,8 @@ import {
 	type PdfSealRuntimeEnvironment
 } from './pdf-seal-runtime';
 
+const PUBLIC_KEY: string = `B${'A'.repeat(86)}`;
+
 function environment(overrides: PdfSealRuntimeEnvironment = {}): PdfSealRuntimeEnvironment {
 	return {
 		PDF_SEAL_PROFILE: 'pades-b-b',
@@ -17,6 +19,9 @@ function environment(overrides: PdfSealRuntimeEnvironment = {}): PdfSealRuntimeE
 		PDF_SEAL_SIGNER_CERTIFICATE_SHA256: 'a'.repeat(64),
 		PDF_SEAL_POLICY_ID: 'seal-policy-v1',
 		PDF_SEAL_VALIDATION_POLICY_ID: 'validation-policy-v1',
+		PDF_SEAL_AUTHORIZATION_ISSUER: 'https://issuer.example.com',
+		PDF_SEAL_AUTHORIZATION_AUDIENCE: 'signkit-seal',
+		PDF_SEAL_AUTHORIZATION_PUBLIC_KEY: PUBLIC_KEY,
 		...overrides
 	};
 }
@@ -25,6 +30,42 @@ describe('PDF seal runtime configuration', () => {
 	it('treats a completely absent configuration as disabled', () => {
 		expect(parsePdfSealRuntimeConfiguration({})).toBeNull();
 		expect(resolvePdfSealRequestPolicy({ platform: { env: {} } as App.Platform })).toBeNull();
+	});
+
+	it('keeps a legacy configuration without any authorization tuple disabled', () => {
+		const legacy: PdfSealRuntimeEnvironment = environment();
+		delete legacy.PDF_SEAL_AUTHORIZATION_ISSUER;
+		delete legacy.PDF_SEAL_AUTHORIZATION_AUDIENCE;
+		delete legacy.PDF_SEAL_AUTHORIZATION_PUBLIC_KEY;
+		expect(parsePdfSealRuntimeConfiguration(legacy)).toBeNull();
+	});
+
+	it('exposes the authorization trust from a complete tuple', () => {
+		expect(parsePdfSealRuntimeConfiguration(environment())?.authorizationTrust).toEqual({
+			issuer: 'https://issuer.example.com',
+			audience: 'signkit-seal',
+			publicKey: PUBLIC_KEY
+		});
+	});
+
+	it.each([
+		{ PDF_SEAL_AUTHORIZATION_ISSUER: undefined },
+		{ PDF_SEAL_AUTHORIZATION_AUDIENCE: undefined },
+		{ PDF_SEAL_AUTHORIZATION_PUBLIC_KEY: undefined },
+		{ PDF_SEAL_AUTHORIZATION_PUBLIC_KEY: `A${'A'.repeat(86)}` },
+		{ PDF_SEAL_AUTHORIZATION_PUBLIC_KEY: `B${'A'.repeat(85)}` },
+		{ PDF_SEAL_AUTHORIZATION_PUBLIC_KEY: `B${'A'.repeat(86)}=` },
+		{ PDF_SEAL_AUTHORIZATION_PUBLIC_KEY: `B${'+'.repeat(86)}` }
+	] as PdfSealRuntimeEnvironment[])('fails closed on a partial or invalid auth tuple: %o', (v) => {
+		expect(() => parsePdfSealRuntimeConfiguration(environment(v))).toThrow(
+			PdfSealRuntimeConfigurationError
+		);
+	});
+
+	it('fails closed on a lone authorization key with nothing else configured', () => {
+		expect(() =>
+			parsePdfSealRuntimeConfiguration({ PDF_SEAL_AUTHORIZATION_ISSUER: 'issuer' })
+		).toThrow(PdfSealRuntimeConfigurationError);
 	});
 
 	it('resolves the frozen request policy without constructing durable or remote adapters', () => {

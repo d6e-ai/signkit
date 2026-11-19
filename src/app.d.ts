@@ -104,6 +104,9 @@ declare global {
 				PDF_SEAL_VALIDATION_POLICY_ID?: string;
 				PDF_SEAL_TSA_POLICY_ID?: string;
 				PDF_SEAL_TSA_TRUST_BUNDLE_SHA256?: string;
+				PDF_SEAL_AUTHORIZATION_ISSUER?: string;
+				PDF_SEAL_AUTHORIZATION_AUDIENCE?: string;
+				PDF_SEAL_AUTHORIZATION_PUBLIC_KEY?: string;
 			};
 			context?: { waitUntil(promise: Promise<unknown>): void };
 			caches?: CacheStorage;
