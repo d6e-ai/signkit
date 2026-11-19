@@ -111,6 +111,11 @@ SignKit receives.
    x86-64. From the output directory run `cf deploy --prebuilt --no-provision --dry-run`, then deploy
    with `cf deploy --prebuilt --no-provision --secrets-file <private-json-file>`. Deploy the issuer
    and engine before the gateway. The validator runs with container internet access disabled.
+5. When SignKit and the services run in the same Cloudflare account, bind SignKit's
+   `PDF_SEAL_PROVIDER_SERVICE` to the gateway and `PDF_SEAL_VALIDATOR_SERVICE` to the validator.
+   Keep the corresponding HTTPS URLs in the seal policy so the transport can construct and
+   validate each protocol endpoint. The service bindings carry the existing authenticated requests
+   without exposing the private engine or the instruction issuer to SignKit.
 
 | Role        | Build settings                                                                                                                                     | Runtime secrets                                                                                    |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |

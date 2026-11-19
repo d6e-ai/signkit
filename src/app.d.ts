@@ -97,8 +97,10 @@ declare global {
 				PDF_SEAL_PROFILE?: string;
 				PDF_SEAL_PROVIDER_URL?: string;
 				PDF_SEAL_PROVIDER_TOKEN?: string;
+				PDF_SEAL_PROVIDER_SERVICE?: Fetcher;
 				PDF_SEAL_VALIDATOR_URL?: string;
 				PDF_SEAL_VALIDATOR_TOKEN?: string;
+				PDF_SEAL_VALIDATOR_SERVICE?: Fetcher;
 				PDF_SEAL_SIGNER_CERTIFICATE_SHA256?: string;
 				PDF_SEAL_POLICY_ID?: string;
 				PDF_SEAL_VALIDATION_POLICY_ID?: string;
