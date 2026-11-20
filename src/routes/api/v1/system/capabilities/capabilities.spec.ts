@@ -254,6 +254,14 @@ describe('GET /api/v1/system/capabilities', () => {
 			cookies: false
 		});
 
+		expect((data as unknown as Record<string, unknown>).receivedInvitations).toEqual({
+			status: 'supported',
+			listEndpoint: '/api/v1/instance/invitations/received',
+			acceptEndpoint: '/api/v1/instance/invitations/{invitationId}/accept',
+			authentication: 'instance-session',
+			apiKeyAuthentication: false,
+			recipientMatch: 'verified-email'
+		});
 		expect(data.dashboardWorklist).toEqual({
 			status: 'supported',
 			readEndpoint: '/api/v1/dashboard',

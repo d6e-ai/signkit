@@ -4,8 +4,11 @@ import {
 	isInstanceInvitationId,
 	isInstanceInvitationStatus,
 	isInstanceMemberRole,
+	isAcceptByRecipientCommand,
 	isInstanceMemberStatus,
 	MAX_PENDING_INSTANCE_INVITATIONS,
+	MAX_RECEIVED_INSTANCE_INVITATIONS,
+	recipientLookupCandidates,
 	type AcceptInstanceInvitationCommand,
 	type AcceptInstanceInvitationStoreResult,
 	type BootstrapInstanceCommand,
@@ -23,6 +26,9 @@ import {
 	type InstanceStore,
 	type ListInstanceInvitationsStoreResult,
 	type ListInstanceMembersStoreResult,
+	type ListReceivedInstanceInvitationsQuery,
+	type ListReceivedInstanceInvitationsStoreResult,
+	type ReceivedInstanceInvitation,
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult,
 	type SetInstanceMemberRoleCommand,
@@ -49,6 +55,13 @@ interface MemberRow {
 interface MemberRoleStatusRow {
 	role: string;
 	status: string;
+}
+
+interface ReceivedInvitationRow {
+	id: string;
+	role: string;
+	created_at: string;
+	expires_at: string;
 }
 
 interface BootstrapRow {
@@ -79,6 +92,8 @@ interface InvitationCandidateRow {
 	role: string;
 	status: string;
 	email_binding: string;
+	/** Present only for a by-recipient accept; null when the invitation has none. */
+	recipient_lookup?: string | null;
 	invited_by_user_id: string;
 	created_at: string;
 	expires_at: string;
@@ -565,10 +580,34 @@ export class D1InstanceStore implements InstanceStore {
 			);
 		}
 
+		if (command.recipientLookup !== undefined) {
+			mutations.push(
+				this.#database
+					.prepare(
+						`INSERT INTO instance_invitation_recipient (
+							invitation_id, recipient_lookup, created_at, expires_at
+						) VALUES (?, ?, ?, ?)`
+					)
+					.bind(command.invitationId, command.recipientLookup, command.createdAt, command.expiresAt)
+			);
+		}
+
+		// Expired recipient lookups can no longer match anything; each create
+		// removes them so they never outlive their invitation. It runs last in
+		// the same batch, and its row count is deliberately excluded from the
+		// one-row-per-mutation check below.
+		const recipientCleanupStmt: D1PreparedStatement = this.#database
+			.prepare('DELETE FROM instance_invitation_recipient WHERE expires_at <= ?')
+			.bind(command.createdAt);
+
 		let applied: boolean;
 		try {
-			const results: D1Result[] = await this.#database.batch(mutations);
-			applied = results.every((result: D1Result): boolean => changeCount(result) === 1);
+			const results: D1Result[] = await this.#database.batch([...mutations, recipientCleanupStmt]);
+			applied =
+				results.length === mutations.length + 1 &&
+				results
+					.slice(0, mutations.length)
+					.every((result: D1Result): boolean => changeCount(result) === 1);
 		} catch (error: unknown) {
 			const classified: CreateInstanceInvitationStoreResult | null =
 				await this.#classifyCreateFailure(command);
@@ -681,13 +720,14 @@ export class D1InstanceStore implements InstanceStore {
 		// commits first leaves an accepted invitation bound to this actor, and
 		// the loser's predicate is false from then on. ON CONFLICT DO NOTHING
 		// keeps that loser from clobbering the winner's membership.
+		const memberProof: D1AcceptProofPredicate = acceptProofPredicate(command, 'invitation');
 		const memberStmt: D1PreparedStatement = this.#database
 			.prepare(
 				`INSERT INTO instance_member (user_id, role, status, created_at, updated_at)
 				 SELECT ?, invitation.role, 'active', ?, ?
 				 FROM instance_invitation invitation
 				 WHERE invitation.id = ? AND invitation.status = 'pending'
-				   AND invitation.token_hash = ? AND invitation.email_binding = ?
+				   AND ${memberProof.sql}
 				   AND invitation.expires_at > ?
 				   AND NOT EXISTS (
 				     SELECT 1 FROM instance_invitation consumed
@@ -700,8 +740,7 @@ export class D1InstanceStore implements InstanceStore {
 				command.acceptedAt,
 				command.acceptedAt,
 				gate.invitation.id,
-				command.tokenHash,
-				command.emailBinding,
+				...memberProof.binds,
 				command.acceptedAt,
 				command.actor.id
 			);
@@ -724,11 +763,15 @@ export class D1InstanceStore implements InstanceStore {
 		// tables — the actor is an active member, and no other invitation is
 		// already accepted for them — so this statement holds on its own terms
 		// rather than only by way of a connection-level counter.
+		const invitationProof: D1AcceptProofPredicate = acceptProofPredicate(
+			command,
+			'instance_invitation'
+		);
 		const invitationStmt: D1PreparedStatement = this.#database
 			.prepare(
 				`UPDATE instance_invitation
 				 SET status = 'accepted', accepted_at = ?, accepted_by_user_id = ?
-				 WHERE id = ? AND status = 'pending' AND token_hash = ? AND email_binding = ?
+				 WHERE id = ? AND status = 'pending' AND ${invitationProof.sql}
 				   AND expires_at > ?
 				   AND (SELECT changes()) = 1
 				   AND EXISTS (
@@ -743,8 +786,7 @@ export class D1InstanceStore implements InstanceStore {
 				command.acceptedAt,
 				command.actor.id,
 				gate.invitation.id,
-				command.tokenHash,
-				command.emailBinding,
+				...invitationProof.binds,
 				command.acceptedAt,
 				command.actor.id,
 				command.actor.id
@@ -821,6 +863,42 @@ export class D1InstanceStore implements InstanceStore {
 		const classified: AcceptInstanceInvitationStoreResult | null =
 			await this.#classifyAcceptFailure(command);
 		return classified ?? { outcome: 'integrity_error' };
+	}
+
+	async listReceivedInstanceInvitations(
+		query: ListReceivedInstanceInvitationsQuery
+	): Promise<ListReceivedInstanceInvitationsStoreResult> {
+		const candidates: readonly string[] = recipientLookupCandidates(query);
+		const memberStmt: D1PreparedStatement = this.#database
+			.prepare(
+				'SELECT user_id, role, status, created_at, updated_at FROM instance_member WHERE user_id = ? LIMIT 1'
+			)
+			.bind(query.actor.id);
+		const listStmt: D1PreparedStatement = this.#database
+			.prepare(
+				`SELECT invitation.id, invitation.role, invitation.created_at, invitation.expires_at
+				 FROM instance_invitation_recipient recipient
+				 INNER JOIN instance_invitation invitation ON invitation.id = recipient.invitation_id
+				 WHERE recipient.recipient_lookup IN (${candidates.map((): string => '?').join(', ')})
+				   AND recipient.expires_at > ?
+				   AND invitation.status = 'pending'
+				   AND invitation.expires_at > ?
+				 ORDER BY invitation.created_at DESC, invitation.id DESC
+				 LIMIT ?`
+			)
+			.bind(...candidates, query.now, query.now, boundReceivedLimit(query.limit));
+
+		const results: D1Result<MemberRow | ReceivedInvitationRow>[] = await this.#database.batch<
+			MemberRow | ReceivedInvitationRow
+		>([memberStmt, listStmt]);
+		const member: MemberRow | null = firstRow<MemberRow>(results[0]);
+		if (member !== null) {
+			return member.status === 'active'
+				? { outcome: 'already_member', member: metadataFromMemberRow(member) }
+				: { outcome: 'member_suspended' };
+		}
+		const rows: ReceivedInvitationRow[] = (results[1]?.results ?? []) as ReceivedInvitationRow[];
+		return { outcome: 'listed', items: rows.map(receivedFromRow) };
 	}
 
 	async revokeInstanceInvitation(
@@ -1448,14 +1526,25 @@ export class D1InstanceStore implements InstanceStore {
 			)
 			.bind(command.actor.id);
 
-		const invitationStmt: D1PreparedStatement = this.#database
-			.prepare(
-				`SELECT ${INVITATION_METADATA_COLUMNS}, email_binding
-				 FROM instance_invitation
-				 WHERE token_hash = ?
-				 LIMIT 1`
-			)
-			.bind(command.tokenHash);
+		const invitationStmt: D1PreparedStatement = isAcceptByRecipientCommand(command)
+			? this.#database
+					.prepare(
+						`SELECT ${INVITATION_METADATA_COLUMNS}, email_binding,
+						   (SELECT recipient.recipient_lookup FROM instance_invitation_recipient recipient
+						    WHERE recipient.invitation_id = instance_invitation.id) AS recipient_lookup
+						 FROM instance_invitation
+						 WHERE id = ?
+						 LIMIT 1`
+					)
+					.bind(command.invitationId)
+			: this.#database
+					.prepare(
+						`SELECT ${INVITATION_METADATA_COLUMNS}, email_binding
+						 FROM instance_invitation
+						 WHERE token_hash = ?
+						 LIMIT 1`
+					)
+					.bind(command.tokenHash);
 
 		const results: D1Result<AcceptInvitationReceiptRow | MemberRow | InvitationCandidateRow>[] =
 			await this.#database.batch<AcceptInvitationReceiptRow | MemberRow | InvitationCandidateRow>([
@@ -1503,7 +1592,7 @@ export class D1InstanceStore implements InstanceStore {
 		const expiresAtMs: number = invitationRow !== null ? Date.parse(invitationRow.expires_at) : NaN;
 		if (
 			invitationRow === null ||
-			!(await secretsEqual(command.emailBinding, invitationRow.email_binding)) ||
+			!(await acceptProofMatches(command, invitationRow)) ||
 			invitationRow.status !== 'pending' ||
 			!Number.isFinite(acceptedAtMs) ||
 			!Number.isFinite(createdAtMs) ||
@@ -1976,6 +2065,68 @@ function metadataFromMemberRow(row: MemberRow): InstanceMemberMetadata {
 		createdAt: row.created_at,
 		updatedAt: row.updated_at
 	};
+}
+
+interface D1AcceptProofPredicate {
+	sql: string;
+	binds: readonly string[];
+}
+
+/**
+ * The proof part of the accept predicates: the link's token hash and email
+ * binding, or the invitation id plus one of the caller's recipient lookups.
+ */
+function acceptProofPredicate(
+	command: AcceptInstanceInvitationCommand,
+	table: string
+): D1AcceptProofPredicate {
+	if (isAcceptByRecipientCommand(command)) {
+		const candidates: readonly string[] = recipientLookupCandidates(command);
+		return {
+			sql: `${table}.id = ? AND EXISTS (
+			     SELECT 1 FROM instance_invitation_recipient recipient
+			     WHERE recipient.invitation_id = ${table}.id
+			       AND recipient.recipient_lookup IN (${candidates.map((): string => '?').join(', ')})
+			   )`,
+			binds: [command.invitationId, ...candidates]
+		};
+	}
+	return {
+		sql: `${table}.token_hash = ? AND ${table}.email_binding = ?`,
+		binds: [command.tokenHash, command.emailBinding]
+	};
+}
+
+/**
+ * Constant-time proof check for either accept form: the link's email binding,
+ * or one of the caller's recipient lookups against the stored lookup.
+ */
+async function acceptProofMatches(
+	command: AcceptInstanceInvitationCommand,
+	row: InvitationCandidateRow
+): Promise<boolean> {
+	if (isAcceptByRecipientCommand(command)) {
+		const stored: string | null = row.recipient_lookup ?? null;
+		if (stored === null || row.id !== command.invitationId) return false;
+		let matched: boolean = false;
+		for (const candidate of recipientLookupCandidates(command)) {
+			if (await secretsEqual(candidate, stored)) matched = true;
+		}
+		return matched;
+	}
+	return await secretsEqual(command.emailBinding, row.email_binding);
+}
+
+function boundReceivedLimit(limit: number): number {
+	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	return Math.min(limit, MAX_RECEIVED_INSTANCE_INVITATIONS);
+}
+
+function receivedFromRow(row: ReceivedInvitationRow): ReceivedInstanceInvitation {
+	if (!isInstanceMemberRole(row.role)) {
+		throw new Error('Stored instance invitation state is corrupted.');
+	}
+	return { id: row.id, role: row.role, createdAt: row.created_at, expiresAt: row.expires_at };
 }
 
 function changeCount(result: D1Result): number {

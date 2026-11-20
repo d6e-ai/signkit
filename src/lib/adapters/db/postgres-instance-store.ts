@@ -5,8 +5,11 @@ import {
 	isInstanceInvitationId,
 	isInstanceInvitationStatus,
 	isInstanceMemberRole,
+	isAcceptByRecipientCommand,
 	isInstanceMemberStatus,
 	MAX_PENDING_INSTANCE_INVITATIONS,
+	MAX_RECEIVED_INSTANCE_INVITATIONS,
+	recipientLookupCandidates,
 	type AcceptInstanceInvitationCommand,
 	type AcceptInstanceInvitationStoreResult,
 	type BootstrapInstanceCommand,
@@ -23,6 +26,9 @@ import {
 	type InstanceStore,
 	type ListInstanceInvitationsStoreResult,
 	type ListInstanceMembersStoreResult,
+	type ListReceivedInstanceInvitationsQuery,
+	type ListReceivedInstanceInvitationsStoreResult,
+	type ReceivedInstanceInvitation,
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult,
 	type SetInstanceMemberRoleCommand,
@@ -70,6 +76,13 @@ interface CountRow {
 	count: string | number;
 }
 
+interface ReceivedInvitationRow {
+	id: string;
+	role: string;
+	createdAt: Date | string;
+	expiresAt: Date | string;
+}
+
 interface InvitationMetadataRow {
 	id: string;
 	role: string;
@@ -88,6 +101,8 @@ interface InvitationCandidateRow {
 	role: string;
 	status: string;
 	emailBinding: string;
+	/** Present only for a by-recipient accept; null when the invitation has none. */
+	recipientLookup?: string | null;
 	invitedByUserId: string;
 	createdAt: Date | string;
 	expiresAt: Date | string;
@@ -455,6 +470,22 @@ export class PostgresInstanceStore implements InstanceStore {
 						}
 					}
 
+					if (command.recipientLookup !== undefined) {
+						const insertedRecipient = await transaction<{ invitationId: string }[]>`
+							INSERT INTO instance_invitation_recipient (
+								invitation_id, recipient_lookup, created_at, expires_at
+							) VALUES (
+								${command.invitationId}, ${command.recipientLookup},
+								${command.createdAt}::timestamptz, ${command.expiresAt}::timestamptz
+							)
+							ON CONFLICT DO NOTHING
+							RETURNING invitation_id AS "invitationId"
+						`;
+						if (insertedRecipient.length !== 1) {
+							throw new InstanceRollback(await this.#classifyCreateFailure(transaction, command));
+						}
+					}
+
 					// 7. Insert receipt
 					const insertedReceipt = await transaction<{ actorId: string }[]>`
 						INSERT INTO instance_invitation_command (
@@ -477,6 +508,13 @@ export class PostgresInstanceStore implements InstanceStore {
 					if (insertedReceipt.length !== 1) {
 						throw new InstanceRollback(await this.#classifyCreateFailure(transaction, command));
 					}
+
+					// Expired recipient lookups can no longer match anything; each
+					// create removes them so they never outlive their invitation.
+					await transaction`
+						DELETE FROM instance_invitation_recipient
+						WHERE expires_at <= ${command.createdAt}::timestamptz
+					`;
 
 					return {
 						outcome: 'created',
@@ -605,27 +643,18 @@ export class PostgresInstanceStore implements InstanceStore {
 						});
 					}
 
-					// 5. Lock invitation FOR UPDATE
-					const invRows = await transaction<InvitationCandidateRow[]>`
-						SELECT
-							id, role, status,
-							email_binding AS "emailBinding",
-							invited_by_user_id AS "invitedByUserId",
-							created_at AS "createdAt",
-							expires_at AS "expiresAt",
-							accepted_at AS "acceptedAt",
-							accepted_by_user_id AS "acceptedByUserId",
-							revoked_at AS "revokedAt",
-							revoked_by_user_id AS "revokedByUserId"
-						FROM instance_invitation
-						WHERE token_hash = ${command.tokenHash}
-						FOR UPDATE
-					`;
-					if (invRows.length === 0) {
+					// 5. Lock invitation FOR UPDATE, located by its link token or,
+					// without the link, by its id.
+					const lockedInv: InvitationCandidateRow | null = await this.#findAcceptCandidate(
+						transaction,
+						command,
+						true
+					);
+					if (lockedInv === null) {
 						throw new InstanceRollback({ outcome: 'invitation_invalid' });
 					}
 
-					const inv: InvitationCandidateRow = invRows[0];
+					const inv: InvitationCandidateRow = lockedInv;
 					if (inv.status !== 'pending') {
 						const racedReceipt: AcceptInvitationReceiptRow | null = await this.#findAcceptReceipt(
 							transaction,
@@ -641,7 +670,7 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback({ outcome: 'invitation_invalid' });
 					}
 
-					if (!(await secretsEqual(command.emailBinding, inv.emailBinding))) {
+					if (!(await acceptProofMatches(command, inv))) {
 						throw new InstanceRollback({ outcome: 'invitation_invalid' });
 					}
 
@@ -717,19 +746,36 @@ export class PostgresInstanceStore implements InstanceStore {
 						throw new InstanceRollback({ outcome: 'integrity_error' });
 					}
 
-					// 7. Update invitation
-					const updated = await transaction<{ id: string }[]>`
-						UPDATE instance_invitation
-						SET status = 'accepted',
-							accepted_at = ${command.acceptedAt}::timestamptz,
-							accepted_by_user_id = ${command.actor.id}
-						WHERE id = ${inv.id}
-						  AND status = 'pending'
-						  AND token_hash = ${command.tokenHash}
-						  AND email_binding = ${command.emailBinding}
-						  AND expires_at > ${command.acceptedAt}::timestamptz
-						RETURNING id
-					`;
+					// 7. Update invitation, restating the same proof the checks above used.
+					const updated = isAcceptByRecipientCommand(command)
+						? await transaction<{ id: string }[]>`
+							UPDATE instance_invitation
+							SET status = 'accepted',
+								accepted_at = ${command.acceptedAt}::timestamptz,
+								accepted_by_user_id = ${command.actor.id}
+							WHERE id = ${inv.id}
+							  AND id = ${command.invitationId}
+							  AND status = 'pending'
+							  AND expires_at > ${command.acceptedAt}::timestamptz
+							  AND EXISTS (
+							    SELECT 1 FROM instance_invitation_recipient recipient
+							    WHERE recipient.invitation_id = instance_invitation.id
+							      AND recipient.recipient_lookup = ANY(${[...recipientLookupCandidates(command)]})
+							  )
+							RETURNING id
+						`
+						: await transaction<{ id: string }[]>`
+							UPDATE instance_invitation
+							SET status = 'accepted',
+								accepted_at = ${command.acceptedAt}::timestamptz,
+								accepted_by_user_id = ${command.actor.id}
+							WHERE id = ${inv.id}
+							  AND status = 'pending'
+							  AND token_hash = ${command.tokenHash}
+							  AND email_binding = ${command.emailBinding}
+							  AND expires_at > ${command.acceptedAt}::timestamptz
+							RETURNING id
+						`;
 					if (updated.length !== 1) {
 						throw new InstanceRollback(await this.#classifyAcceptFailure(transaction, command));
 					}
@@ -792,6 +838,45 @@ export class PostgresInstanceStore implements InstanceStore {
 			}
 			throw error;
 		}
+	}
+
+	async listReceivedInstanceInvitations(
+		query: ListReceivedInstanceInvitationsQuery
+	): Promise<ListReceivedInstanceInvitationsStoreResult> {
+		return await this.#sql.begin(
+			async (transaction): Promise<ListReceivedInstanceInvitationsStoreResult> => {
+				const memberRows = await transaction<MemberRow[]>`
+					SELECT user_id AS "userId", role, status, created_at AS "createdAt", updated_at AS "updatedAt"
+					FROM instance_member
+					WHERE user_id = ${query.actor.id}
+					LIMIT 1
+				`;
+				const member: MemberRow | null = memberRows[0] ?? null;
+				if (member !== null) {
+					return member.status === 'active'
+						? { outcome: 'already_member', member: memberMetadataFromRow(member) }
+						: { outcome: 'member_suspended' };
+				}
+
+				const limit: number = boundReceivedLimit(query.limit);
+				const rows: ReceivedInvitationRow[] = await transaction<ReceivedInvitationRow[]>`
+					SELECT
+						invitation.id,
+						invitation.role,
+						invitation.created_at AS "createdAt",
+						invitation.expires_at AS "expiresAt"
+					FROM instance_invitation_recipient recipient
+					INNER JOIN instance_invitation invitation ON invitation.id = recipient.invitation_id
+					WHERE recipient.recipient_lookup = ANY(${[...recipientLookupCandidates(query)]})
+					  AND recipient.expires_at > ${query.now}::timestamptz
+					  AND invitation.status = 'pending'
+					  AND invitation.expires_at > ${query.now}::timestamptz
+					ORDER BY invitation.created_at DESC, invitation.id DESC
+					LIMIT ${limit}
+				`;
+				return { outcome: 'listed', items: rows.map(receivedFromRow) };
+			}
+		);
 	}
 
 	async revokeInstanceInvitation(
@@ -1552,6 +1637,88 @@ export class PostgresInstanceStore implements InstanceStore {
 		return rows[0] ?? null;
 	}
 
+	/**
+	 * The accept candidate, located by its link token or, for a by-recipient
+	 * command, by its id together with its stored recipient lookup (null when
+	 * the invitation predates lookups or the lookup was scrubbed).
+	 */
+	async #findAcceptCandidate(
+		sql: Sql,
+		command: AcceptInstanceInvitationCommand,
+		forUpdate: boolean
+	): Promise<InvitationCandidateRow | null> {
+		if (isAcceptByRecipientCommand(command)) {
+			const rows = forUpdate
+				? await sql<InvitationCandidateRow[]>`
+						SELECT
+							id, role, status,
+							email_binding AS "emailBinding",
+							(SELECT recipient.recipient_lookup FROM instance_invitation_recipient recipient
+							 WHERE recipient.invitation_id = instance_invitation.id) AS "recipientLookup",
+							invited_by_user_id AS "invitedByUserId",
+							created_at AS "createdAt",
+							expires_at AS "expiresAt",
+							accepted_at AS "acceptedAt",
+							accepted_by_user_id AS "acceptedByUserId",
+							revoked_at AS "revokedAt",
+							revoked_by_user_id AS "revokedByUserId"
+						FROM instance_invitation
+						WHERE id = ${command.invitationId}
+						FOR UPDATE
+					`
+				: await sql<InvitationCandidateRow[]>`
+						SELECT
+							id, role, status,
+							email_binding AS "emailBinding",
+							(SELECT recipient.recipient_lookup FROM instance_invitation_recipient recipient
+							 WHERE recipient.invitation_id = instance_invitation.id) AS "recipientLookup",
+							invited_by_user_id AS "invitedByUserId",
+							created_at AS "createdAt",
+							expires_at AS "expiresAt",
+							accepted_at AS "acceptedAt",
+							accepted_by_user_id AS "acceptedByUserId",
+							revoked_at AS "revokedAt",
+							revoked_by_user_id AS "revokedByUserId"
+						FROM instance_invitation
+						WHERE id = ${command.invitationId}
+						LIMIT 1
+					`;
+			return rows[0] ?? null;
+		}
+		const rows = forUpdate
+			? await sql<InvitationCandidateRow[]>`
+					SELECT
+						id, role, status,
+						email_binding AS "emailBinding",
+						invited_by_user_id AS "invitedByUserId",
+						created_at AS "createdAt",
+						expires_at AS "expiresAt",
+						accepted_at AS "acceptedAt",
+						accepted_by_user_id AS "acceptedByUserId",
+						revoked_at AS "revokedAt",
+						revoked_by_user_id AS "revokedByUserId"
+					FROM instance_invitation
+					WHERE token_hash = ${command.tokenHash}
+					FOR UPDATE
+				`
+			: await sql<InvitationCandidateRow[]>`
+					SELECT
+						id, role, status,
+						email_binding AS "emailBinding",
+						invited_by_user_id AS "invitedByUserId",
+						created_at AS "createdAt",
+						expires_at AS "expiresAt",
+						accepted_at AS "acceptedAt",
+						accepted_by_user_id AS "acceptedByUserId",
+						revoked_at AS "revokedAt",
+						revoked_by_user_id AS "revokedByUserId"
+					FROM instance_invitation
+					WHERE token_hash = ${command.tokenHash}
+					LIMIT 1
+				`;
+		return rows[0] ?? null;
+	}
+
 	async #findAcceptReceipt(
 		sql: Sql,
 		actorType: string,
@@ -1713,27 +1880,12 @@ export class PostgresInstanceStore implements InstanceStore {
 		// start whenever that path reaches this classifier, so re-reading
 		// "active" here would only ever reflect that same doomed insert, not
 		// genuine pre-existing membership.
-		const invRows = await sql<InvitationCandidateRow[]>`
-			SELECT
-				id, role, status,
-				email_binding AS "emailBinding",
-				invited_by_user_id AS "invitedByUserId",
-				created_at AS "createdAt",
-				expires_at AS "expiresAt",
-				accepted_at AS "acceptedAt",
-				accepted_by_user_id AS "acceptedByUserId",
-				revoked_at AS "revokedAt",
-				revoked_by_user_id AS "revokedByUserId"
-			FROM instance_invitation
-			WHERE token_hash = ${command.tokenHash}
-			LIMIT 1
-		`;
-		if (invRows.length === 0) {
+		const inv: InvitationCandidateRow | null = await this.#findAcceptCandidate(sql, command, false);
+		if (inv === null) {
 			return { outcome: 'invitation_invalid' };
 		}
 
-		const inv = invRows[0];
-		if (inv.status !== 'pending' || !(await secretsEqual(command.emailBinding, inv.emailBinding))) {
+		if (inv.status !== 'pending' || !(await acceptProofMatches(command, inv))) {
 			return { outcome: 'invitation_invalid' };
 		}
 
@@ -2298,6 +2450,43 @@ function metadataFromInvitationRow(row: InvitationMetadataRow): InstanceInvitati
 		revokedAt: toIsoOrNull(row.revokedAt),
 		revokedByUserId: row.revokedByUserId
 	};
+}
+
+function boundReceivedLimit(limit: number): number {
+	if (!Number.isSafeInteger(limit) || limit < 1) return 1;
+	return Math.min(limit, MAX_RECEIVED_INSTANCE_INVITATIONS);
+}
+
+function receivedFromRow(row: ReceivedInvitationRow): ReceivedInstanceInvitation {
+	if (!isInstanceMemberRole(row.role)) {
+		throw new Error('Stored instance invitation state is corrupted.');
+	}
+	return {
+		id: row.id,
+		role: row.role,
+		createdAt: toIso(row.createdAt),
+		expiresAt: toIso(row.expiresAt)
+	};
+}
+
+/**
+ * Constant-time proof check for either accept form: the link's email binding,
+ * or one of the caller's recipient lookups against the stored lookup.
+ */
+async function acceptProofMatches(
+	command: AcceptInstanceInvitationCommand,
+	inv: InvitationCandidateRow
+): Promise<boolean> {
+	if (isAcceptByRecipientCommand(command)) {
+		const stored: string | null = inv.recipientLookup ?? null;
+		if (stored === null || inv.id !== command.invitationId) return false;
+		let matched: boolean = false;
+		for (const candidate of recipientLookupCandidates(command)) {
+			if (await secretsEqual(candidate, stored)) matched = true;
+		}
+		return matched;
+	}
+	return await secretsEqual(command.emailBinding, inv.emailBinding);
 }
 
 function toIso(val: Date | string): string {

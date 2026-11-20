@@ -15,7 +15,8 @@ export function renderInstanceInvitationMail(
 	locale: InstanceInvitationDeliveryLocale,
 	role: 'owner' | 'admin' | 'member',
 	acceptanceUrl: string,
-	expiresAt: string
+	expiresAt: string,
+	joinUrl: string
 ): TransactionalMailCopy {
 	const isJapanese: boolean = locale === 'ja';
 	const subject: string = isJapanese
@@ -29,8 +30,11 @@ export function renderInstanceInvitationMail(
 	const cta: string = isJapanese ? '招待を受ける' : 'Accept invitation';
 	const expiry: string = isJapanese ? `有効期限: ${expiresAt}` : `Expires: ${expiresAt}`;
 	const instructions: string = isJapanese
-		? '下のリンクを開き、このメールが届いたアカウントでログインして参加してください。'
-		: 'Open the link below and sign in with the account that received this email to join.';
+		? '下のリンクを開き、このメールアドレスのアカウントでログインして参加してください。まだアカウントがない場合は、このメールアドレスでアカウントを作成し、メールアドレスを確認すると参加できます。'
+		: "Open the link below and sign in with an account for this email address to join. If you don't have an account yet, create one with this email address and verify it to join.";
+	const alternative: string = isJapanese
+		? 'リンクを開かなくても、次のページにこのメールアドレスのアカウントでログインすると、招待が表示され参加できます。'
+		: 'You can also join without the link: sign in on the page below with an account for this email address, and the invitation will be shown there.';
 	const footer: string = isJapanese
 		? 'この招待はあなた専用です。心当たりがない場合は、このメールを無視してください。'
 		: 'This invitation is unique to you. If you were not expecting this email, you can ignore it.';
@@ -45,6 +49,9 @@ export function renderInstanceInvitationMail(
 		'',
 		acceptanceUrl,
 		'',
+		alternative,
+		joinUrl,
+		'',
 		footer
 	].join('\n');
 	return {
@@ -57,8 +64,10 @@ export function renderInstanceInvitationMail(
 			cta,
 			expiry,
 			instructions,
+			alternative,
 			footer,
-			acceptanceUrl
+			acceptanceUrl,
+			joinUrl
 		})
 	};
 }
@@ -70,8 +79,10 @@ interface HtmlCopy {
 	cta: string;
 	expiry: string;
 	instructions: string;
+	alternative: string;
 	footer: string;
 	acceptanceUrl: string;
+	joinUrl: string;
 }
 
 function renderHtml(locale: InstanceInvitationDeliveryLocale, copy: HtmlCopy): string {
@@ -94,6 +105,7 @@ function renderHtml(locale: InstanceInvitationDeliveryLocale, copy: HtmlCopy): s
 		`<tr><td style="padding:16px 28px 0;font-size:15px;line-height:1.6">${safe.instructions}</td></tr>` +
 		`<tr><td style="padding:10px 28px 0;font-size:12px;color:${TRANSACTIONAL_EMAIL_MUTED_FOREGROUND}">${safe.expiry}</td></tr>` +
 		`<tr><td align="center" style="padding:28px"><a href="${safe.acceptanceUrl}" style="display:inline-block;padding:12px 24px;background:${TRANSACTIONAL_EMAIL_PRIMARY};color:${TRANSACTIONAL_EMAIL_PRIMARY_FOREGROUND};text-decoration:none;border-radius:8px;font-size:16px;font-weight:700">${safe.cta}</a></td></tr>` +
+		`<tr><td style="padding:0 28px 20px;font-size:14px;line-height:1.6;color:${TRANSACTIONAL_EMAIL_MUTED_FOREGROUND}">${safe.alternative}<br><a href="${safe.joinUrl}" style="color:${TRANSACTIONAL_EMAIL_PRIMARY};overflow-wrap:anywhere">${safe.joinUrl}</a></td></tr>` +
 		`<tr><td style="padding:20px 28px 28px;border-top:1px solid ${TRANSACTIONAL_EMAIL_BORDER};font-size:12px;line-height:1.5;color:${TRANSACTIONAL_EMAIL_MUTED_FOREGROUND}">${safe.footer}</td></tr>` +
 		'</table></td></tr></table></body></html>'
 	);

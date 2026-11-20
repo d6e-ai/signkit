@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import * as m from '$lib/paraglide/messages';
 	import { localizeHref } from '$lib/paraglide/runtime';
 	import { Spinner } from '$lib/components/ui/spinner';
 	import SettingsStatusShell from '$lib/components/settings/settings-status-shell.svelte';
-	import SettingsInvitationRequiredCard from '$lib/components/settings/settings-invitation-required-card.svelte';
+	import SettingsReceivedInvitations from '$lib/components/settings/settings-received-invitations.svelte';
 	import SettingsAccessRestrictedCard from '$lib/components/settings/settings-access-restricted-card.svelte';
 	import { createSettingsCallerContext } from '$lib/components/settings/settings-caller-context.svelte';
 
@@ -19,6 +19,12 @@
 	const isOwnerOrAdmin = $derived(
 		isActiveMember && (currentMember?.role === 'owner' || currentMember?.role === 'admin')
 	);
+
+	// Joining refreshes membership; the redirect below then takes over.
+	async function refreshMembership() {
+		await invalidateAll();
+		await ctx.load();
+	}
 
 	// Active members go directly to the settings their role can use.
 	$effect(() => {
@@ -35,7 +41,10 @@
 	<SettingsStatusShell {ctx}>
 		{#snippet ready()}
 			{#if !currentMember}
-				<SettingsInvitationRequiredCard />
+				<SettingsReceivedInvitations
+					onAccepted={refreshMembership}
+					onAuthenticationRequired={() => ctx.load()}
+				/>
 			{:else if !isActiveMember}
 				<SettingsAccessRestrictedCard member={currentMember} />
 			{:else}

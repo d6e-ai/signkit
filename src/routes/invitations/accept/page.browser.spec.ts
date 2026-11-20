@@ -385,7 +385,7 @@ describe('invitation email landing page', () => {
 					? 'ワークスペース管理にアクセスするにはログインしてください。'
 					: hasInvitation
 						? 'このワークスペースに参加します。招待メールが届いたアカウントでログインしていることを確認してください。'
-						: 'メール内の招待リンクをもう一度開いて続けてください。招待の有効期限が切れている場合は、管理者に再招待を依頼してください。'
+						: 'メール内の招待リンクをもう一度開くか、招待されたメールアドレスのアカウントでログインして設定を開くと参加できます。招待の有効期限が切れている場合は、管理者に再招待を依頼してください。'
 			);
 			await expect.element(description).toBeVisible();
 			const card = description.element().closest('[data-slot="card"]')!;
@@ -411,7 +411,7 @@ describe('invitation email landing page', () => {
 			await expect
 				.element(
 					screen.getByText(
-						'メール内の招待リンクをもう一度開いて続けてください。招待の有効期限が切れている場合は、管理者に再招待を依頼してください。'
+						'メール内の招待リンクをもう一度開くか、招待されたメールアドレスのアカウントでログインして設定を開くと参加できます。招待の有効期限が切れている場合は、管理者に再招待を依頼してください。'
 					)
 				)
 				.toBeVisible();

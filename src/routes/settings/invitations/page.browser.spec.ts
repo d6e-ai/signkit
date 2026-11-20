@@ -271,7 +271,11 @@ describe('settings invitations page in the browser', () => {
 		await dialog.getByLabelText('Email address').fill('alice@example.com');
 		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
 		await expect
-			.element(screen.getByText('Sending an invitation email to alice@example.com.'))
+			.element(
+				screen.getByText(
+					'Sending an invitation email to alice@example.com. Even without the link, they can join by signing in with an account for this email address.'
+				)
+			)
 			.toBeVisible();
 		expect(screen.getByText(/ski1_/).query()).toBeNull();
 		await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument();
@@ -280,10 +284,18 @@ describe('settings invitations page in the browser', () => {
 		await dialog.getByLabelText('Email address').fill('bob@example.com');
 		await dialog.getByRole('button', { name: 'Send invitation email' }).click();
 		await expect
-			.element(screen.getByText('Sending an invitation email to bob@example.com.'))
+			.element(
+				screen.getByText(
+					'Sending an invitation email to bob@example.com. Even without the link, they can join by signing in with an account for this email address.'
+				)
+			)
 			.toBeVisible();
 		expect(
-			screen.getByText('Sending an invitation email to alice@example.com.').query()
+			screen
+				.getByText(
+					'Sending an invitation email to alice@example.com. Even without the link, they can join by signing in with an account for this email address.'
+				)
+				.query()
 		).toBeNull();
 	});
 
@@ -378,7 +390,11 @@ describe('settings invitations page in the browser', () => {
 			)
 		);
 		await expect
-			.element(screen.getByText('Sending an invitation email to pending@example.com.'))
+			.element(
+				screen.getByText(
+					'Sending an invitation email to pending@example.com. Even without the link, they can join by signing in with an account for this email address.'
+				)
+			)
 			.toBeVisible();
 	});
 });

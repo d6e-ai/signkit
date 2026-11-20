@@ -94,6 +94,47 @@ identity or changes the opaque response for invalid, expired, revoked, or wrong-
 Success clears the tab handoff and refreshes membership before entering settings. Opening a link
 never accepts an invitation by itself.
 
+#### Joining without the link
+
+A verified invitee may also accept without the emailed link. Creating an invitation stores, beside
+it, a recipient lookup: an HMAC of the normalized invited email under a purpose-separated key derived
+from `DELIVERY_ENCRYPTION_KEY`. It is never the email itself, and without that key the database alone
+cannot test candidate addresses; a holder of both the database and the key can, exactly as with the
+keyed request fingerprints. Invitations created before lookups existed have none and remain
+acceptable through their link only.
+
+`GET /api/v1/instance/invitations/received` lists pending invitations, unexpired at server now, whose
+lookup matches the caller's own provider-verified email claim (active or, during rotation, previous
+key), newest first and at most 20. It returns only id, role, creation and expiry, plus the account
+it was matched for. No request value selects the email, the list requires no membership, and active
+or suspended members receive an empty list. A missing or false `email_verified` claim fails closed.
+
+`POST /api/v1/instance/invitations/{invitationId}/accept` takes an empty body and runs the same
+acceptance transaction, `x-signkit-expected-subject` check, verified-email requirement, responses,
+and opaque failure as the link, but proves the invitation by its id and the caller's lookup instead
+of the token. Its idempotency fingerprint differs from the link's, so a key cannot replay one form
+as the other. Acceptance or revocation through either path (including revocations cascaded by member
+suspension or demotion) atomically deletes the lookup; expired lookups are deleted by the next
+invitation create. Non-members who sign in see their received invitations on the settings page and
+can join from there; invitation mail names that page, or `SIGNKIT_CONSOLE_URL` when configured, as
+the way to join without the link. Both endpoints use the same identity authorization as the link
+accept, so any operator credential accepted there is accepted here; API keys are rejected. System
+capabilities advertise both endpoints as `receivedInvitations`, so a client can detect support.
+
+When `SIGNKIT_CONSOLE_URL` is configured, this server is listed in a d6e console. Creating an
+invitation (or exactly replaying a still-pending one) then sends D6E Auth a note — the normalized
+invited email, the expiry, and the inviter's subject — authenticated with this server's OAuth
+client credentials, so the console can show the server to the invitee before they join. The revoke
+endpoint withdraws the note; acceptance does not, because the console's own acceptance consumes it.
+Notes run after the command commits, never follow redirects, and are best effort: a failure is
+logged by event name and status only and never changes the response. The create response waits for
+the note, so a revoke issued from it cannot be overtaken by a late note; the withdrawal may finish
+after the revoke response. D6E Auth also refuses a note for an invitation it has seen withdrawn
+(`409 invitation_revoked`), which SignKit treats as the expected end state, so no ordering can
+revive a revoked invitation. Revocations cascaded by member
+suspension or demotion do not withdraw notes; such notes lapse at their expiry, and accepting
+through the console then meets the same opaque failure.
+
 The normal invitation list requests `view=active`: pending invitations whose expiry is after server
 now, filtered before keyset pagination and its limit on both supported databases. Accepted users
 are shown through the member list; revoked, expired and accepted invitations do not appear in the

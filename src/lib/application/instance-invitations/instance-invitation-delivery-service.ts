@@ -33,6 +33,36 @@ const CONCURRENCY: number = 5;
 export interface InstanceInvitationDeliverySenderConfig {
 	fromEmail: string;
 	fromName: string;
+	/**
+	 * Optional page where the invitee can also join without the link (a
+	 * console that lists this server). Absent, the mail points at this
+	 * server's own settings page, which lists received invitations.
+	 */
+	consoleUrl?: string;
+}
+
+/**
+ * Accepts only an absolute https URL without credentials or fragment, so a
+ * misconfigured value can never put another scheme or a secret into mail.
+ * Returns the normalized URL, or null when the value is not acceptable.
+ */
+export function parseInstanceInvitationConsoleUrl(value: string): string | null {
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return null;
+	}
+	if (
+		parsed.protocol !== 'https:' ||
+		parsed.username !== '' ||
+		parsed.password !== '' ||
+		parsed.hash !== '' ||
+		parsed.href.length > 2048
+	) {
+		return null;
+	}
+	return parsed.href;
 }
 
 export class InvalidInstanceInvitationDeliveryConfigError extends Error {
@@ -181,11 +211,14 @@ export class InstanceInvitationDeliveryService {
 		}
 
 		const acceptanceUrl: string = `${this.#origin}/${claim.locale}/invitations/accept#token=${encodeURIComponent(payload.token)}`;
+		// Joining without the link needs no token, so this URL carries none.
+		const joinUrl: string = this.#sender.consoleUrl ?? `${this.#origin}/${claim.locale}/settings`;
 		const copy = renderInstanceInvitationMail(
 			claim.locale,
 			claim.role,
 			acceptanceUrl,
-			claim.expiresAt
+			claim.expiresAt,
+			joinUrl
 		);
 		const message: MailMessage = {
 			to: payload.email,
@@ -298,7 +331,10 @@ function assertSenderConfig(
 	) {
 		throw new InvalidInstanceInvitationDeliveryConfigError();
 	}
-	return sender;
+	if (sender.consoleUrl === undefined) return sender;
+	const consoleUrl: string | null = parseInstanceInvitationConsoleUrl(sender.consoleUrl);
+	if (consoleUrl === null) throw new InvalidInstanceInvitationDeliveryConfigError();
+	return { ...sender, consoleUrl };
 }
 
 function isValidMailbox(value: string): boolean {

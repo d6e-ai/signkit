@@ -8,7 +8,8 @@ import {
 import { createInstanceBootstrapHandler } from '$lib/http/instance-bootstrap';
 import { identityOnlyLocals } from '$lib/http/http-handler-test-support';
 import type {
-	AcceptInstanceInvitationCommand,
+	AcceptInstanceInvitationByRecipientCommand,
+	AcceptInstanceInvitationByTokenCommand,
 	AcceptInstanceInvitationStoreResult,
 	BootstrapInstanceCommand,
 	BootstrapInstanceStoreResult,
@@ -16,6 +17,8 @@ import type {
 	CreateInstanceInvitationStoreResult,
 	InstanceCallerContext,
 	ListInstanceInvitationsStoreResult,
+	ListReceivedInstanceInvitationsQuery,
+	ListReceivedInstanceInvitationsStoreResult,
 	RevokeInstanceInvitationCommand,
 	RevokeInstanceInvitationStoreResult
 } from '$lib/ports/instance-store';
@@ -74,8 +77,8 @@ function createInvitationCommand(
 }
 
 function acceptInvitationCommand(
-	overrides: Partial<AcceptInstanceInvitationCommand> = {}
-): AcceptInstanceInvitationCommand {
+	overrides: Partial<AcceptInstanceInvitationByTokenCommand> = {}
+): AcceptInstanceInvitationByTokenCommand {
 	return {
 		actor: { type: 'user', id: 'accepting-user-1' },
 		idempotencyKey: 'invite-accept-key-1',
@@ -1794,6 +1797,272 @@ describe('D1InstanceStore', () => {
 
 				const replay = await store.acceptInstanceInvitation(acceptInvitationCommand());
 				expect(replay).toEqual({ outcome: 'integrity_error' });
+			} finally {
+				sqlite.close();
+			}
+		});
+	});
+
+	describe('acceptance without the link (recipient lookup)', () => {
+		const LOOKUP: string = '1'.repeat(64);
+		const PREVIOUS_LOOKUP: string = '2'.repeat(64);
+		const OTHER_LOOKUP: string = '3'.repeat(64);
+		const ACCEPTOR: string = 'accepting-user-1';
+		const NOW: string = '2026-09-13T12:00:00.000Z';
+
+		function byRecipient(
+			overrides: Partial<AcceptInstanceInvitationByRecipientCommand> = {}
+		): AcceptInstanceInvitationByRecipientCommand {
+			return {
+				actor: { type: 'user', id: ACCEPTOR },
+				idempotencyKey: 'invite-accept-received-1',
+				requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+				invitationId: INVITATION_ID,
+				recipientLookup: LOOKUP,
+				acceptedAt: NOW,
+				...overrides
+			};
+		}
+
+		function received(
+			store: D1InstanceStore,
+			overrides: Partial<ListReceivedInstanceInvitationsQuery> = {}
+		): Promise<ListReceivedInstanceInvitationsStoreResult> {
+			return store.listReceivedInstanceInvitations({
+				actor: { type: 'user', id: ACCEPTOR },
+				recipientLookup: LOOKUP,
+				now: NOW,
+				limit: 20,
+				...overrides
+			});
+		}
+
+		function recipientRows(sqlite: DatabaseSync): unknown[] {
+			return sqlite.prepare('SELECT invitation_id FROM instance_invitation_recipient').all();
+		}
+
+		it('lists only pending, unexpired invitations matching the lookup, newest first', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(
+					createInvitationCommand({ role: 'admin', recipientLookup: LOOKUP })
+				);
+				await store.createInstanceInvitation(
+					createInvitationCommand({
+						idempotencyKey: 'invite-create-key-2',
+						invitationId: OTHER_INVITATION_ID,
+						tokenHash: OTHER_TOKEN_HASH,
+						createdAt: '2026-09-12T13:00:00.000Z',
+						recipientLookup: LOOKUP
+					})
+				);
+				await store.createInstanceInvitation(
+					createInvitationCommand({
+						idempotencyKey: 'invite-create-key-3',
+						invitationId: THIRD_INVITATION_ID,
+						tokenHash: 'a'.repeat(64),
+						recipientLookup: OTHER_LOOKUP
+					})
+				);
+
+				expect(await received(store)).toEqual({
+					outcome: 'listed',
+					items: [
+						{
+							id: OTHER_INVITATION_ID,
+							role: 'member',
+							createdAt: '2026-09-12T13:00:00.000Z',
+							expiresAt: EXPIRES_AT
+						},
+						{ id: INVITATION_ID, role: 'admin', createdAt: CREATED_AT, expiresAt: EXPIRES_AT }
+					]
+				});
+				expect(await received(store, { recipientLookup: '4'.repeat(64) })).toEqual({
+					outcome: 'listed',
+					items: []
+				});
+				expect(await received(store, { now: EXPIRES_AT })).toEqual({
+					outcome: 'listed',
+					items: []
+				});
+				expect(await received(store, { limit: 1 })).toMatchObject({
+					items: [{ id: OTHER_INVITATION_ID }]
+				});
+				expect(recipientRows(sqlite)).toHaveLength(3);
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('matches the previous-key lookup during a delivery-key rotation', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(
+					createInvitationCommand({ recipientLookup: PREVIOUS_LOOKUP })
+				);
+				const rotated = { recipientLookup: LOOKUP, previousRecipientLookup: PREVIOUS_LOOKUP };
+				expect(await received(store, rotated)).toMatchObject({
+					items: [{ id: INVITATION_ID }]
+				});
+				expect(await store.acceptInstanceInvitation(byRecipient(rotated))).toMatchObject({
+					outcome: 'accepted'
+				});
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('reports members instead of listing: active members already belong, suspended ones fail closed', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand({ recipientLookup: LOOKUP }));
+				insertMember(sqlite, ACCEPTOR, 'member', 'active');
+				expect(await received(store)).toMatchObject({
+					outcome: 'already_member',
+					member: { userId: ACCEPTOR, status: 'active' }
+				});
+				sqlite.exec(
+					`UPDATE instance_member SET status = 'suspended' WHERE user_id = '${ACCEPTOR}'`
+				);
+				expect(await received(store)).toEqual({ outcome: 'member_suspended' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('accepts by id with the matching lookup, enrolls the invited role, and scrubs the lookup', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(
+					createInvitationCommand({ role: 'admin', recipientLookup: LOOKUP })
+				);
+				const result = await store.acceptInstanceInvitation(byRecipient());
+				expect(result).toMatchObject({
+					outcome: 'accepted',
+					invitation: { id: INVITATION_ID, status: 'accepted', acceptedByUserId: ACCEPTOR },
+					member: { userId: ACCEPTOR, role: 'admin', status: 'active' }
+				});
+				expect(recipientRows(sqlite)).toEqual([]);
+				const receipt = sqlite
+					.prepare(
+						`SELECT command_type, request_hash, invitation_id FROM instance_invitation_command
+						 WHERE actor_id = ? AND idempotency_key = ?`
+					)
+					.get(ACCEPTOR, 'invite-accept-received-1');
+				expect(receipt).toEqual({
+					command_type: 'accept',
+					request_hash: OTHER_REQUEST_FINGERPRINT,
+					invitation_id: INVITATION_ID
+				});
+
+				// Exact replay returns the recorded result; a different fingerprint conflicts.
+				expect(await store.acceptInstanceInvitation(byRecipient())).toMatchObject({
+					outcome: 'replayed',
+					invitation: { id: INVITATION_ID }
+				});
+				expect(
+					await store.acceptInstanceInvitation(
+						byRecipient({ requestFingerprint: REQUEST_FINGERPRINT })
+					)
+				).toEqual({ outcome: 'idempotency_conflict' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('rejects a wrong lookup, an unknown id, an invitation without a lookup, and an expired invitation opaquely', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand({ recipientLookup: LOOKUP }));
+				await store.createInstanceInvitation(
+					createInvitationCommand({
+						idempotencyKey: 'invite-create-key-2',
+						invitationId: OTHER_INVITATION_ID,
+						tokenHash: OTHER_TOKEN_HASH
+					})
+				);
+				for (const command of [
+					byRecipient({ recipientLookup: OTHER_LOOKUP }),
+					byRecipient({ invitationId: THIRD_INVITATION_ID }),
+					byRecipient({ invitationId: OTHER_INVITATION_ID }),
+					byRecipient({ acceptedAt: EXPIRES_AT })
+				]) {
+					expect(await store.acceptInstanceInvitation(command)).toEqual({
+						outcome: 'invitation_invalid'
+					});
+				}
+				expect(
+					sqlite
+						.prepare('SELECT COUNT(*) AS n FROM instance_member WHERE user_id = ?')
+						.get(ACCEPTOR)
+				).toEqual({ n: 0 });
+				const statuses = sqlite
+					.prepare("SELECT COUNT(*) AS n FROM instance_invitation WHERE status = 'pending'")
+					.get();
+				expect(statuses).toEqual({ n: 2 });
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('keeps the link path working and scrubs the lookup when the link is used', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand({ recipientLookup: LOOKUP }));
+				expect(await store.acceptInstanceInvitation(acceptInvitationCommand())).toMatchObject({
+					outcome: 'accepted'
+				});
+				expect(recipientRows(sqlite)).toEqual([]);
+				expect(
+					await store.acceptInstanceInvitation(
+						byRecipient({ actor: { type: 'user', id: OTHER_ACTOR_ID } })
+					)
+				).toEqual({ outcome: 'invitation_invalid' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('scrubs the lookup on revoke, so a revoked invitation is neither listed nor accepted', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand({ recipientLookup: LOOKUP }));
+				expect(await store.revokeInstanceInvitation(revokeInvitationCommand())).toMatchObject({
+					outcome: 'revoked'
+				});
+				expect(recipientRows(sqlite)).toEqual([]);
+				expect(await received(store)).toEqual({ outcome: 'listed', items: [] });
+				expect(await store.acceptInstanceInvitation(byRecipient())).toEqual({
+					outcome: 'invitation_invalid'
+				});
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('removes expired lookups on the next create', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand({ recipientLookup: LOOKUP }));
+				await store.createInstanceInvitation(
+					createInvitationCommand({
+						idempotencyKey: 'invite-create-key-2',
+						invitationId: OTHER_INVITATION_ID,
+						tokenHash: OTHER_TOKEN_HASH,
+						createdAt: EXPIRES_AT,
+						expiresAt: '2026-09-26T12:00:00.000Z',
+						recipientLookup: OTHER_LOOKUP
+					})
+				);
+				expect(recipientRows(sqlite)).toEqual([{ invitation_id: OTHER_INVITATION_ID }]);
 			} finally {
 				sqlite.close();
 			}

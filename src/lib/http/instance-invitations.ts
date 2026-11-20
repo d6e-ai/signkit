@@ -8,6 +8,7 @@ import {
 	type InstanceInvitationActor,
 	type InstanceInvitationApplicationPort,
 	type ListInstanceInvitationsResult,
+	type ListReceivedInstanceInvitationsResult,
 	type RevokeInstanceInvitationResult
 } from '$lib/application/instance-invitations/instance-invitation-service';
 import {
@@ -19,8 +20,14 @@ import {
 } from '$lib/ports/instance-store';
 import {
 	INSTANCE_INVITATION_EMAIL_MAX_LENGTH,
-	INSTANCE_INVITATION_TOKEN_PATTERN
+	INSTANCE_INVITATION_TOKEN_PATTERN,
+	normalizeInstanceInvitationEmail
 } from '$lib/security/instance-invitation';
+import {
+	consoleInvitationNotes,
+	runAfterCommand,
+	type ConsoleInvitationNotesPort
+} from '$lib/server/console-invitation-notes';
 import {
 	bestEffortCaptureMemberDisplay,
 	displayCaptureSource
@@ -101,6 +108,15 @@ const acceptInstanceInvitationSchema: ZodType<{ token: string }> = z
 /** Revoke carries no fields of its own: an empty object is the only valid body. */
 const revokeInstanceInvitationSchema = z.object({}).strict();
 
+/**
+ * Accepting a received invitation carries no fields either: the invitation id
+ * is in the path and the email is the caller's own verified identity claim.
+ */
+const acceptReceivedInstanceInvitationSchema = z.object({}).strict();
+
+/** The received list takes no query parameters. */
+const listReceivedInstanceInvitationsSchema = z.object({}).strict();
+
 interface ResolverContext {
 	platform?: Readonly<App.Platform>;
 }
@@ -113,6 +129,8 @@ export interface InstanceInvitationHttpHandlers {
 	create: RequestHandler;
 	list: RequestHandler;
 	accept: RequestHandler;
+	listReceived: RequestHandler;
+	acceptReceived: RequestHandler;
 	revoke: RequestHandler;
 }
 
@@ -292,6 +310,26 @@ function invitationCannotBeAccepted(instance: string): Response {
 	});
 }
 
+function accountChanged(instance: string): Response {
+	return problemResponse({
+		type: 'urn:signkit:problem:account-changed',
+		title: 'Account changed',
+		status: 409,
+		detail: 'Your signed-in account changed. Refresh the account shown before continuing.',
+		instance
+	});
+}
+
+function emailVerificationRequired(instance: string, detail: string): Response {
+	return problemResponse({
+		type: 'urn:signkit:problem:email-verification-required',
+		title: 'Email verification required',
+		status: 403,
+		detail,
+		instance
+	});
+}
+
 function integrityError(instance: string): Response {
 	return problemResponse({
 		type: 'urn:signkit:problem:instance-invitation-integrity-error',
@@ -333,7 +371,8 @@ function actorOf(authorized: AuthorizedIdentityActor): InstanceInvitationActor {
 
 export function createInstanceInvitationHttpHandlers(
 	resolveApplication: InstanceInvitationApplicationResolver,
-	resolveDisplay: InstanceDisplayApplicationResolver | null = null
+	resolveDisplay: InstanceDisplayApplicationResolver | null = null,
+	consoleNotes: ConsoleInvitationNotesPort = consoleInvitationNotes
 ): InstanceInvitationHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
 		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
@@ -385,6 +424,28 @@ export function createInstanceInvitationHttpHandlers(
 				role: parsed.data.role,
 				locale: parsed.data.locale
 			});
+			if (
+				(result.outcome === 'created' || result.outcome === 'replayed') &&
+				result.invitation.status === 'pending'
+			) {
+				// An exact replay re-sends the same note; D6E Auth overwrites it.
+				// Awaited, never deferred to waitUntil: only this response reveals
+				// the invitation id to the inviter's client, so a revoke (and its
+				// note withdrawal) issued from it cannot overtake this note and
+				// have a late PUT write a revoked invitation back.
+				const invitation = result.invitation;
+				await consoleNotes
+					.note(
+						{
+							invitationId: invitation.id,
+							recipientEmail: normalizeInstanceInvitationEmail(parsed.data.email),
+							expiresAt: invitation.expiresAt,
+							inviterSubject: authorized.id
+						},
+						{ platform }
+					)
+					.catch((): void => undefined);
+			}
 			return createResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceInvitationRequestError) {
@@ -476,13 +537,7 @@ export function createInstanceInvitationHttpHandlers(
 		if (authorized instanceof Response) return authorized;
 		const expectedSubject = request.headers.get('x-signkit-expected-subject');
 		if (expectedSubject !== null && expectedSubject !== authorized.id) {
-			return problemResponse({
-				type: 'urn:signkit:problem:account-changed',
-				title: 'Account changed',
-				status: 409,
-				detail: 'Your signed-in account changed. Refresh the account shown before continuing.',
-				instance: url.pathname
-			});
+			return accountChanged(url.pathname);
 		}
 
 		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
@@ -517,13 +572,10 @@ export function createInstanceInvitationHttpHandlers(
 		// Missing or false `email_verified` fails closed: holding a session
 		// is not a provider-verified inbox guarantee.
 		if (authorized.emailVerified !== true) {
-			return problemResponse({
-				type: 'urn:signkit:problem:email-verification-required',
-				title: 'Email verification required',
-				status: 403,
-				detail: 'Accepting an invitation requires a provider-verified email claim.',
-				instance: url.pathname
-			});
+			return emailVerificationRequired(
+				url.pathname,
+				'Accepting an invitation requires a provider-verified email claim.'
+			);
 		}
 
 		const application: InstanceInvitationApplicationPort | Response =
@@ -541,24 +593,7 @@ export function createInstanceInvitationHttpHandlers(
 				token: parsed.data.token,
 				email: authorized.email
 			});
-			if (
-				(result.outcome === 'accepted' ||
-					result.outcome === 'replayed' ||
-					result.outcome === 'already_member') &&
-				locals.principal !== null
-			) {
-				try {
-					await bestEffortCaptureMemberDisplay({
-						...displayCaptureSource(locals, cookies),
-						url,
-						platform,
-						memberUserId: result.member.userId,
-						principal: locals.principal
-					});
-				} catch {
-					// Display capture never fails invitation acceptance.
-				}
-			}
+			await captureAcceptedMemberDisplay(result, { locals, cookies, url, platform });
 			return acceptResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceInvitationRequestError) {
@@ -569,6 +604,169 @@ export function createInstanceInvitationHttpHandlers(
 			console.error(
 				JSON.stringify({
 					event: 'instance_invitation_accept_failed',
+					message: operationErrorName(error)
+				})
+			);
+			return serviceUnavailable(url.pathname);
+		}
+	};
+
+	const listReceived: RequestHandler = async ({ locals, platform, url }): Promise<Response> => {
+		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
+			locals,
+			url.pathname
+		);
+		if (authorized instanceof Response) return authorized;
+
+		const query = listReceivedInstanceInvitationsSchema.safeParse(
+			Object.fromEntries(url.searchParams)
+		);
+		if (!query.success) {
+			return validationFailed(
+				url.pathname,
+				'The received invitation list takes no query parameters.',
+				validationErrors(query.error.issues)
+			);
+		}
+
+		// Matching is by the caller's own verified email claim only, the same
+		// fail-closed rule acceptance applies.
+		if (authorized.emailVerified !== true) {
+			return emailVerificationRequired(
+				url.pathname,
+				'Listing received invitations requires a provider-verified email claim.'
+			);
+		}
+
+		const application: InstanceInvitationApplicationPort | Response =
+			await resolveApplicationOrProblem(
+				resolveApplication,
+				{ platform },
+				url.pathname,
+				'instance_invitation_received_resolution_failed'
+			);
+		if (application instanceof Response) return application;
+
+		try {
+			const result: ListReceivedInstanceInvitationsResult = await application.listReceived(
+				actorOf(authorized),
+				{ email: authorized.email }
+			);
+			// Members (active or suspended) have nothing to accept; the list is
+			// empty for them rather than a distinct error, matching the opaque
+			// acceptance outcome for a suspended member.
+			const invitations = result.outcome === 'listed' ? result.items : [];
+			return new Response(
+				JSON.stringify({
+					account: { subject: authorized.id, email: authorized.email },
+					invitations
+				}),
+				{
+					status: 200,
+					headers: { 'cache-control': 'no-store', 'content-type': 'application/json' }
+				}
+			);
+		} catch (error: unknown) {
+			if (error instanceof InvalidInstanceInvitationRequestError) {
+				return validationFailed(url.pathname, error.message, [
+					{ path: '$', message: error.message }
+				]);
+			}
+			console.error(
+				JSON.stringify({
+					event: 'instance_invitation_received_failed',
+					message: operationErrorName(error)
+				})
+			);
+			return serviceUnavailable(url.pathname);
+		}
+	};
+
+	const acceptReceived: RequestHandler = async ({
+		locals,
+		params,
+		platform,
+		request,
+		url,
+		cookies
+	}): Promise<Response> => {
+		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
+			locals,
+			url.pathname
+		);
+		if (authorized instanceof Response) return authorized;
+		const expectedSubject = request.headers.get('x-signkit-expected-subject');
+		if (expectedSubject !== null && expectedSubject !== authorized.id) {
+			return accountChanged(url.pathname);
+		}
+
+		const invitationId: string = params.invitationId ?? '';
+
+		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
+		if (!idempotencyKey.success) {
+			return idempotencyKeyRequired(url.pathname, idempotencyKey.error.issues);
+		}
+		if (!acceptsJson(request)) {
+			return unsupportedMediaType(
+				url.pathname,
+				'Instance invitation acceptance requires an application/json request body.'
+			);
+		}
+
+		const body: JsonBodyResult = await readJsonBody(request, MAX_ACCEPT_BODY_BYTES);
+		if (!body.ok) {
+			return body.reason === 'too_large'
+				? bodyTooLarge(url.pathname, MAX_ACCEPT_BODY_BYTES)
+				: invalidJson(url.pathname);
+		}
+
+		const parsed = acceptReceivedInstanceInvitationSchema.safeParse(body.value);
+		if (!parsed.success) {
+			return validationFailed(
+				url.pathname,
+				'The instance invitation acceptance request did not match the required schema.',
+				validationErrors(parsed.error.issues)
+			);
+		}
+
+		// The matched email is the caller's own authenticated identity claim,
+		// never a request value, and must be provider-verified.
+		if (authorized.emailVerified !== true) {
+			return emailVerificationRequired(
+				url.pathname,
+				'Accepting an invitation requires a provider-verified email claim.'
+			);
+		}
+
+		const application: InstanceInvitationApplicationPort | Response =
+			await resolveApplicationOrProblem(
+				resolveApplication,
+				{ platform },
+				url.pathname,
+				'instance_invitation_accept_received_resolution_failed'
+			);
+		if (application instanceof Response) return application;
+
+		try {
+			const result: AcceptInstanceInvitationResult = await application.acceptReceived(
+				actorOf(authorized),
+				{
+					idempotencyKey: idempotencyKey.data,
+					invitationId,
+					email: authorized.email
+				}
+			);
+			await captureAcceptedMemberDisplay(result, { locals, cookies, url, platform });
+			return acceptResponse(result, url.pathname);
+		} catch (error: unknown) {
+			if (error instanceof InvalidInstanceInvitationRequestError) {
+				return validationFailed(url.pathname, error.message, [
+					{ path: '$', message: error.message }
+				]);
+			}
+			console.error(
+				JSON.stringify({
+					event: 'instance_invitation_accept_received_failed',
 					message: operationErrorName(error)
 				})
 			);
@@ -633,6 +831,10 @@ export function createInstanceInvitationHttpHandlers(
 				invitationId,
 				{ idempotencyKey: idempotencyKey.data }
 			);
+			if (result.outcome === 'revoked' || result.outcome === 'replayed') {
+				const revokedId: string = result.invitation.id;
+				await runAfterCommand(platform, () => consoleNotes.forget(revokedId, { platform }));
+			}
 			return revokeResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceInvitationRequestError) {
@@ -650,7 +852,39 @@ export function createInstanceInvitationHttpHandlers(
 		}
 	};
 
-	return { create, list, accept, revoke };
+	return { create, list, accept, listReceived, acceptReceived, revoke };
+}
+
+interface AcceptDisplayContext {
+	locals: App.Locals;
+	cookies: Parameters<RequestHandler>[0]['cookies'];
+	url: URL;
+	platform: Readonly<App.Platform> | undefined;
+}
+
+/** Records the caller's own display snapshot after either accept form. */
+async function captureAcceptedMemberDisplay(
+	result: AcceptInstanceInvitationResult,
+	{ locals, cookies, url, platform }: AcceptDisplayContext
+): Promise<void> {
+	if (
+		(result.outcome === 'accepted' ||
+			result.outcome === 'replayed' ||
+			result.outcome === 'already_member') &&
+		locals.principal !== null
+	) {
+		try {
+			await bestEffortCaptureMemberDisplay({
+				...displayCaptureSource(locals, cookies),
+				url,
+				platform,
+				memberUserId: result.member.userId,
+				principal: locals.principal
+			});
+		} catch {
+			// Display capture never fails invitation acceptance.
+		}
+	}
 }
 
 function createResponse(result: CreateInstanceInvitationResult, instance: string): Response {

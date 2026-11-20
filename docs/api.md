@@ -139,20 +139,22 @@ publication is `404` and an integrity or storage failure is `503`.
 
 These endpoints require a human session and reject API-key credentials:
 
-| Method | Path                                  | Purpose                       |
-| ------ | ------------------------------------- | ----------------------------- |
-| `POST` | `/api/v1/instance/bootstrap`          | Claim the empty instance      |
-| `GET`  | `/api/v1/instance/members/me`         | Read current local membership |
-| `GET`  | `/api/v1/instance/members`            | List members                  |
-| `GET`  | `/api/v1/instance/invitations`        | List invitations              |
-| `POST` | `/api/v1/instance/invitations`        | Invite a member               |
-| `POST` | `/api/v1/instance/invitations/accept` | Accept an invitation          |
-| `POST` | `/api/v1/api-keys`                    | Create an owner-bound API key |
-| `GET`  | `/api/v1/api-keys`                    | List the caller's keys        |
-| `POST` | `/api/v1/api-keys/{apiKeyId}/revoke`  | Revoke a key                  |
-| `POST` | `/api/v1/webhooks`                    | Create a webhook              |
-| `GET`  | `/api/v1/webhooks`                    | List webhooks                 |
-| `POST` | `/api/v1/webhooks/{webhookId}/revoke` | Revoke a webhook              |
+| Method | Path                                                 | Purpose                                              |
+| ------ | ---------------------------------------------------- | ---------------------------------------------------- |
+| `POST` | `/api/v1/instance/bootstrap`                         | Claim the empty instance                             |
+| `GET`  | `/api/v1/instance/members/me`                        | Read current local membership                        |
+| `GET`  | `/api/v1/instance/members`                           | List members                                         |
+| `GET`  | `/api/v1/instance/invitations`                       | List invitations                                     |
+| `POST` | `/api/v1/instance/invitations`                       | Invite a member                                      |
+| `POST` | `/api/v1/instance/invitations/accept`                | Accept an invitation                                 |
+| `GET`  | `/api/v1/instance/invitations/received`              | List invitations sent to the caller's verified email |
+| `POST` | `/api/v1/instance/invitations/{invitationId}/accept` | Accept a received invitation without the link        |
+| `POST` | `/api/v1/api-keys`                                   | Create an owner-bound API key                        |
+| `GET`  | `/api/v1/api-keys`                                   | List the caller's keys                               |
+| `POST` | `/api/v1/api-keys/{apiKeyId}/revoke`                 | Revoke a key                                         |
+| `POST` | `/api/v1/webhooks`                                   | Create a webhook                                     |
+| `GET`  | `/api/v1/webhooks`                                   | List webhooks                                        |
+| `POST` | `/api/v1/webhooks/{webhookId}/revoke`                | Revoke a webhook                                     |
 
 See [authorization and instance administration](architecture/authorization-and-instance-administration.md) for role and fail-closed details.
 

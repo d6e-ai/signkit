@@ -142,7 +142,7 @@ describe('D1InstanceStore unit tests', () => {
 			expect(fake.batches).toHaveLength(2); // batch 0: gate, batch 1: mutations
 
 			const mutationBatch = fake.batches[1];
-			expect(mutationBatch).toHaveLength(3);
+			expect(mutationBatch).toHaveLength(4);
 			expect(mutationBatch[0].sql).toContain('INSERT INTO instance_invitation');
 			expect(mutationBatch[0].bindings).toEqual([
 				INVITATION_ID,
@@ -174,6 +174,9 @@ describe('D1InstanceStore unit tests', () => {
 				'member',
 				CREATED_AT
 			]);
+			// The expired recipient-lookup cleanup rides last in the same batch.
+			expect(mutationBatch[3].sql).toContain('DELETE FROM instance_invitation_recipient');
+			expect(mutationBatch[3].bindings).toEqual([CREATED_AT]);
 		});
 
 		it('refuses create immediately at gate when actor is suspended', async () => {

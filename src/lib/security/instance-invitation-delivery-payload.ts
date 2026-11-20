@@ -1,4 +1,4 @@
-import { isInstanceInvitationToken } from './instance-invitation';
+import { isInstanceInvitationToken, normalizeInstanceInvitationEmail } from './instance-invitation';
 import { AesGcmSealingKeyring, decodeBase64SealingKey, sha256Hex } from './sealing-keyring';
 
 const FORMAT_PREFIX: string = 'skiod1_';
@@ -6,6 +6,9 @@ const IV_BYTES: number = 12;
 const ENV_VAR_NAME: string = 'DELIVERY_ENCRYPTION_KEY';
 const REQUEST_FINGERPRINT_INFO: Uint8Array<ArrayBuffer> = new TextEncoder().encode(
 	'signkit-instance-invitation-request-fingerprint-v1'
+);
+const RECIPIENT_LOOKUP_INFO: Uint8Array<ArrayBuffer> = new TextEncoder().encode(
+	'signkit-instance-invitation-recipient-lookup-v1'
 );
 
 export type InstanceInvitationDeliveryLocale = 'en' | 'ja';
@@ -37,10 +40,21 @@ export interface InstanceInvitationRequestFingerprints {
 	previous?: string;
 }
 
+/**
+ * Keyed digests of one normalized email. `active` is stored with a new
+ * invitation; a lookup matches either digest so invitations created before a
+ * delivery-key rotation stay findable while the previous key is configured.
+ */
+export interface InstanceInvitationRecipientLookups {
+	active: string;
+	previous?: string;
+}
+
 export interface InstanceInvitationDeliveryPayloadSealer {
 	fingerprintRequest(
 		input: InstanceInvitationRequestFingerprintInput
 	): Promise<InstanceInvitationRequestFingerprints>;
+	recipientLookups(normalizedEmail: string): Promise<InstanceInvitationRecipientLookups>;
 	seal(
 		payload: InstanceInvitationDeliveryPayload,
 		context: InstanceInvitationDeliverySealContext
@@ -63,6 +77,8 @@ export class AesGcmInstanceInvitationDeliveryPayloadSealer implements InstanceIn
 	readonly #keyring: AesGcmSealingKeyring;
 	readonly #activeFingerprintKey: Promise<CryptoKey>;
 	readonly #previousFingerprintKey: Promise<CryptoKey | null>;
+	readonly #activeRecipientLookupKey: Promise<CryptoKey>;
+	readonly #previousRecipientLookupKey: Promise<CryptoKey | null>;
 
 	constructor(activeEncodedKey: string, previousEncodedKey?: string) {
 		const activeKeyBytes: Uint8Array<ArrayBuffer> = decodeBase64SealingKey(
@@ -74,9 +90,16 @@ export class AesGcmInstanceInvitationDeliveryPayloadSealer implements InstanceIn
 				? null
 				: decodeBase64SealingKey(previousEncodedKey, `${ENV_VAR_NAME}_PREVIOUS`);
 		this.#keyring = new AesGcmSealingKeyring(activeKeyBytes, previousKeyBytes);
-		this.#activeFingerprintKey = deriveFingerprintKey(activeKeyBytes);
+		this.#activeFingerprintKey = deriveHmacKey(activeKeyBytes, REQUEST_FINGERPRINT_INFO);
 		this.#previousFingerprintKey =
-			previousKeyBytes === null ? Promise.resolve(null) : deriveFingerprintKey(previousKeyBytes);
+			previousKeyBytes === null
+				? Promise.resolve(null)
+				: deriveHmacKey(previousKeyBytes, REQUEST_FINGERPRINT_INFO);
+		this.#activeRecipientLookupKey = deriveHmacKey(activeKeyBytes, RECIPIENT_LOOKUP_INFO);
+		this.#previousRecipientLookupKey =
+			previousKeyBytes === null
+				? Promise.resolve(null)
+				: deriveHmacKey(previousKeyBytes, RECIPIENT_LOOKUP_INFO);
 	}
 
 	async fingerprintRequest(
@@ -87,6 +110,23 @@ export class AesGcmInstanceInvitationDeliveryPayloadSealer implements InstanceIn
 		);
 		const active: string = await hmacHex(await this.#activeFingerprintKey, bytes);
 		const previousKey: CryptoKey | null = await this.#previousFingerprintKey;
+		return previousKey === null
+			? { active }
+			: { active, previous: await hmacHex(previousKey, bytes) };
+	}
+
+	/**
+	 * A purpose-separated HMAC of the normalized email alone. Unlike an
+	 * unkeyed hash, a database holder without the delivery key cannot test
+	 * candidate addresses against it.
+	 */
+	async recipientLookups(normalizedEmail: string): Promise<InstanceInvitationRecipientLookups> {
+		if (normalizeInstanceInvitationEmail(normalizedEmail) !== normalizedEmail) {
+			throw new Error('Invalid instance invitation email');
+		}
+		const bytes: Uint8Array<ArrayBuffer> = new TextEncoder().encode(normalizedEmail);
+		const active: string = await hmacHex(await this.#activeRecipientLookupKey, bytes);
+		const previousKey: CryptoKey | null = await this.#previousRecipientLookupKey;
 		return previousKey === null
 			? { active }
 			: { active, previous: await hmacHex(previousKey, bytes) };
@@ -148,7 +188,10 @@ export class AesGcmInstanceInvitationDeliveryPayloadSealer implements InstanceIn
 	}
 }
 
-async function deriveFingerprintKey(keyBytes: Uint8Array<ArrayBuffer>): Promise<CryptoKey> {
+async function deriveHmacKey(
+	keyBytes: Uint8Array<ArrayBuffer>,
+	info: Uint8Array<ArrayBuffer>
+): Promise<CryptoKey> {
 	const keyMaterial: CryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'HKDF', false, [
 		'deriveKey'
 	]);
@@ -157,7 +200,7 @@ async function deriveFingerprintKey(keyBytes: Uint8Array<ArrayBuffer>): Promise<
 			name: 'HKDF',
 			hash: 'SHA-256',
 			salt: new Uint8Array(new ArrayBuffer(0)),
-			info: REQUEST_FINGERPRINT_INFO
+			info
 		},
 		keyMaterial,
 		{ name: 'HMAC', hash: 'SHA-256', length: 256 },

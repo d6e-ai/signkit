@@ -17,9 +17,14 @@ import {
 	type CreateInstanceInvitationResult,
 	type InstanceInvitationApplicationPort,
 	type ListInstanceInvitationsResult,
+	type ListReceivedInstanceInvitationsResult,
 	type RevokeInstanceInvitationResult
 } from '$lib/application/instance-invitations/instance-invitation-service';
 import type { InstanceInvitationMetadata, InstanceMemberMetadata } from '$lib/ports/instance-store';
+import type {
+	ConsoleInvitationNoteOutcome,
+	ConsoleInvitationNotesPort
+} from '$lib/server/console-invitation-notes';
 import {
 	identityOnlyLocals,
 	unavailableIdentityLocalsWithPrincipal
@@ -98,6 +103,22 @@ function application(): InstanceInvitationApplicationPort {
 		outcome: 'revoked',
 		invitation
 	}));
+	const listReceived = vi.fn(async (): Promise<ListReceivedInstanceInvitationsResult> => ({
+		outcome: 'listed',
+		items: [
+			{
+				id: INVITATION_ID,
+				role: 'member',
+				createdAt: invitation.createdAt,
+				expiresAt: invitation.expiresAt
+			}
+		]
+	}));
+	const acceptReceived = vi.fn(async (): Promise<AcceptInstanceInvitationResult> => ({
+		outcome: 'accepted',
+		invitation,
+		member
+	}));
 	return {
 		create,
 		createInstanceInvitation: create,
@@ -105,6 +126,8 @@ function application(): InstanceInvitationApplicationPort {
 		listInstanceInvitations: list,
 		accept,
 		acceptInstanceInvitation: accept,
+		listReceived,
+		acceptReceived,
 		revoke,
 		revokeInstanceInvitation: revoke
 	};
@@ -120,6 +143,8 @@ async function invoke(
 const CREATE_PATH: string = '/api/v1/instance/invitations';
 const ACCEPT_PATH: string = '/api/v1/instance/invitations/accept';
 const revokePath = (id: string): string => `/api/v1/instance/invitations/${id}/revoke`;
+const RECEIVED_PATH: string = '/api/v1/instance/invitations/received';
+const acceptReceivedPath = (id: string): string => `/api/v1/instance/invitations/${id}/accept`;
 
 function validCreateBody(overrides: Record<string, unknown> = {}): string {
 	return JSON.stringify({ email: 'invitee@example.com', role: 'member', ...overrides });
@@ -1234,6 +1259,460 @@ describe('instance invitation HTTP handlers', () => {
 			} finally {
 				consoleErrorSpy.mockRestore();
 			}
+		});
+	});
+
+	describe('console invitation notes', () => {
+		function notes(): ConsoleInvitationNotesPort & {
+			note: ReturnType<typeof vi.fn>;
+			forget: ReturnType<typeof vi.fn>;
+		} {
+			return {
+				note: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => 'sent'),
+				forget: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => 'sent')
+			};
+		}
+
+		function createEvent(): RequestEvent {
+			return event({
+				pathname: CREATE_PATH,
+				method: 'POST',
+				body: validCreateBody({ email: '  Invitee@Example.COM ' }),
+				headers: { 'idempotency-key': 'create-1' }
+			});
+		}
+
+		it('notes a created invitation with the normalized email, expiry, and inviter', async () => {
+			const app = application();
+			const port = notes();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(201);
+			expect(port.note).toHaveBeenCalledWith(
+				{
+					invitationId: INVITATION_ID,
+					recipientEmail: 'invitee@example.com',
+					expiresAt: invitation.expiresAt,
+					inviterSubject: 'user-1'
+				},
+				expect.objectContaining({})
+			);
+		});
+
+		it('re-notes an exact replay of a pending invitation but not of a finished one', async () => {
+			const pendingApp = application();
+			(pendingApp.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				outcome: 'replayed',
+				invitation,
+				replayed: true
+			} satisfies CreateInstanceInvitationResult);
+			const pendingPort = notes();
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => pendingApp, null, pendingPort).create,
+				createEvent()
+			);
+			expect(pendingPort.note).toHaveBeenCalledTimes(1);
+
+			const revokedApp = application();
+			(revokedApp.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				outcome: 'replayed',
+				invitation: { ...invitation, status: 'revoked', revokedAt: invitation.createdAt },
+				replayed: true
+			} satisfies CreateInstanceInvitationResult);
+			const revokedPort = notes();
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => revokedApp, null, revokedPort).create,
+				createEvent()
+			);
+			expect(revokedPort.note).not.toHaveBeenCalled();
+		});
+
+		it('does not note a refused create', async () => {
+			const app = application();
+			(app.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				outcome: 'forbidden'
+			} satisfies CreateInstanceInvitationResult);
+			const port = notes();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(403);
+			expect(port.note).not.toHaveBeenCalled();
+		});
+
+		it('waits for the note before answering a create on Workers, so a revoke cannot overtake it', async () => {
+			const app = application();
+			const port = notes();
+			let noted: boolean = false;
+			port.note.mockImplementationOnce(async (): Promise<ConsoleInvitationNoteOutcome> => {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				noted = true;
+				return 'sent';
+			});
+			const waitUntil = vi.fn();
+			const requestEvent: RequestEvent = createEvent();
+			(requestEvent as { platform?: unknown }).platform = { context: { waitUntil } };
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				requestEvent
+			);
+			expect(response.status).toBe(201);
+			expect(noted).toBe(true);
+			expect(waitUntil).not.toHaveBeenCalled();
+		});
+
+		it('lets the withdrawal continue after the revoke response on Workers', async () => {
+			const app = application();
+			const port = notes();
+			const waitUntil = vi.fn();
+			const requestEvent: RequestEvent = event({
+				pathname: revokePath(INVITATION_ID),
+				method: 'POST',
+				body: '{}',
+				headers: { 'idempotency-key': 'revoke-1' },
+				params: { invitationId: INVITATION_ID }
+			});
+			(requestEvent as { platform?: unknown }).platform = { context: { waitUntil } };
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).revoke,
+				requestEvent
+			);
+			expect(response.status).toBe(200);
+			expect(waitUntil).toHaveBeenCalledTimes(1);
+			expect(port.forget).toHaveBeenCalledWith(INVITATION_ID, expect.objectContaining({}));
+		});
+
+		it('keeps the create response when the note fails', async () => {
+			const app = application();
+			const port = notes();
+			port.note.mockRejectedValueOnce(new Error('D6E Auth down'));
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(201);
+		});
+
+		it('withdraws the note after a revoke, including an exact replay', async () => {
+			for (const result of [
+				{ outcome: 'revoked', invitation },
+				{ outcome: 'replayed', invitation, replayed: true }
+			] satisfies RevokeInstanceInvitationResult[]) {
+				const app = application();
+				(app.revoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce(result);
+				const port = notes();
+				const response = await invoke(
+					createInstanceInvitationHttpHandlers(() => app, null, port).revoke,
+					event({
+						pathname: revokePath(INVITATION_ID),
+						method: 'POST',
+						body: '{}',
+						headers: { 'idempotency-key': 'revoke-1' },
+						params: { invitationId: INVITATION_ID }
+					})
+				);
+				expect(response.status).toBe(200);
+				expect(port.forget).toHaveBeenCalledWith(INVITATION_ID, expect.objectContaining({}));
+			}
+		});
+
+		it('never touches notes when accepting', async () => {
+			const app = application();
+			const port = notes();
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).accept,
+				event({
+					pathname: ACCEPT_PATH,
+					method: 'POST',
+					body: JSON.stringify({ token: VALID_TOKEN }),
+					headers: { 'idempotency-key': 'accept-1' }
+				})
+			);
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).acceptReceived,
+				event({
+					pathname: acceptReceivedPath(INVITATION_ID),
+					method: 'POST',
+					body: '{}',
+					headers: { 'idempotency-key': 'accept-2' },
+					params: { invitationId: INVITATION_ID },
+					locals: locals('no_membership')
+				})
+			);
+			expect(port.note).not.toHaveBeenCalled();
+			expect(port.forget).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('listReceived', () => {
+		it('rejects anonymous callers before resolving dependencies', async () => {
+			const resolver = vi.fn(() => application());
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(resolver).listReceived,
+				event({ pathname: RECEIVED_PATH, locals: locals('anonymous') })
+			);
+			expect(response.status).toBe(401);
+			expect(resolver).not.toHaveBeenCalled();
+		});
+
+		it('requires a provider-verified email claim before matching anything', async () => {
+			const resolver = vi.fn(() => application());
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(resolver).listReceived,
+				event({
+					pathname: RECEIVED_PATH,
+					locals: identityOnlyLocals('no_membership', { emailVerified: false })
+				})
+			);
+			expect(response.status).toBe(403);
+			expect(await response.json()).toMatchObject({
+				type: 'urn:signkit:problem:email-verification-required'
+			});
+			expect(resolver).not.toHaveBeenCalled();
+		});
+
+		it('rejects query parameters, so no request value can select another email', async () => {
+			const app = application();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app).listReceived,
+				event({ pathname: RECEIVED_PATH, search: '?email=other%40example.com' })
+			);
+			expect(response.status).toBe(400);
+			expect(app.listReceived).not.toHaveBeenCalled();
+		});
+
+		it("lists by the caller's own verified email and names the account it was matched for", async () => {
+			const app = application();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app).listReceived,
+				event({ pathname: RECEIVED_PATH, locals: locals('no_membership') })
+			);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('cache-control')).toBe('no-store');
+			expect(app.listReceived).toHaveBeenCalledWith(
+				{ id: 'user-1' },
+				{ email: 'user@example.com' }
+			);
+			expect(await response.json()).toEqual({
+				account: { subject: 'user-1', email: 'user@example.com' },
+				invitations: [
+					{
+						id: INVITATION_ID,
+						role: 'member',
+						createdAt: invitation.createdAt,
+						expiresAt: invitation.expiresAt
+					}
+				]
+			});
+		});
+
+		it('returns an empty list to active and suspended members alike', async () => {
+			for (const result of [
+				{ outcome: 'already_member', member },
+				{ outcome: 'member_suspended' }
+			] satisfies ListReceivedInstanceInvitationsResult[]) {
+				const app = application();
+				(app.listReceived as ReturnType<typeof vi.fn>).mockResolvedValueOnce(result);
+				const response = await invoke(
+					createInstanceInvitationHttpHandlers(() => app).listReceived,
+					event({ pathname: RECEIVED_PATH })
+				);
+				expect(response.status).toBe(200);
+				const body: { invitations: unknown[] } = await response.json();
+				expect(body.invitations).toEqual([]);
+			}
+		});
+
+		it('rejects an API key, never composing it with a cookie session', async () => {
+			const resolver = vi.fn(() => application());
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(resolver).listReceived,
+				event({
+					pathname: RECEIVED_PATH,
+					locals: {
+						...locals('active'),
+						apiKeyAuthentication: { state: 'rejected_surface' }
+					} as App.Locals
+				})
+			);
+			expect(response.status).toBe(403);
+			expect(resolver).not.toHaveBeenCalled();
+		});
+
+		it('fails closed with 503 when persistence is not wired', async () => {
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => null).listReceived,
+				event({ pathname: RECEIVED_PATH })
+			);
+			expect(response.status).toBe(503);
+		});
+	});
+
+	describe('acceptReceived', () => {
+		function acceptReceivedEvent(
+			overrides: Partial<Parameters<typeof event>[0]> = {}
+		): RequestEvent {
+			return event({
+				pathname: acceptReceivedPath(INVITATION_ID),
+				method: 'POST',
+				body: '{}',
+				headers: { 'idempotency-key': 'accept-received-1' },
+				params: { invitationId: INVITATION_ID },
+				locals: locals('no_membership'),
+				...overrides
+			});
+		}
+
+		it('rejects a stale displayed account before resolving or consuming an invitation', async () => {
+			const resolver = vi.fn(() => application());
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(resolver).acceptReceived,
+				acceptReceivedEvent({
+					headers: {
+						'idempotency-key': 'accept-received-1',
+						'x-signkit-expected-subject': 'previous-user'
+					}
+				})
+			);
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({ type: 'urn:signkit:problem:account-changed' });
+			expect(resolver).not.toHaveBeenCalled();
+		});
+
+		it('rejects anonymous callers before resolving dependencies', async () => {
+			const resolver = vi.fn(() => application());
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(resolver).acceptReceived,
+				acceptReceivedEvent({ locals: locals('anonymous') })
+			);
+			expect(response.status).toBe(401);
+			expect(resolver).not.toHaveBeenCalled();
+		});
+
+		it('requires an Idempotency-Key', async () => {
+			const app = application();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app).acceptReceived,
+				acceptReceivedEvent({ headers: {} })
+			);
+			expect(response.status).toBe(400);
+			expect(app.acceptReceived).not.toHaveBeenCalled();
+		});
+
+		it('rejects a body-supplied email or token: the body must be empty', async () => {
+			for (const body of [
+				JSON.stringify({ email: 'other@example.com' }),
+				JSON.stringify({ token: VALID_TOKEN })
+			]) {
+				const app = application();
+				const response = await invoke(
+					createInstanceInvitationHttpHandlers(() => app).acceptReceived,
+					acceptReceivedEvent({ body })
+				);
+				expect(response.status).toBe(400);
+				expect(app.acceptReceived).not.toHaveBeenCalled();
+			}
+		});
+
+		it('requires a provider-verified email claim', async () => {
+			const app = application();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app).acceptReceived,
+				acceptReceivedEvent({
+					locals: identityOnlyLocals('no_membership', { emailVerified: false })
+				})
+			);
+			expect(response.status).toBe(403);
+			expect(await response.json()).toMatchObject({
+				type: 'urn:signkit:problem:email-verification-required'
+			});
+			expect(app.acceptReceived).not.toHaveBeenCalled();
+		});
+
+		it("accepts the path invitation with the caller's own verified email", async () => {
+			const app = application();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app).acceptReceived,
+				acceptReceivedEvent({
+					headers: {
+						'idempotency-key': 'accept-received-1',
+						'x-signkit-expected-subject': 'user-1'
+					}
+				})
+			);
+			expect(response.status).toBe(200);
+			expect(app.acceptReceived).toHaveBeenCalledWith(
+				{ id: 'user-1' },
+				{
+					idempotencyKey: 'accept-received-1',
+					invitationId: INVITATION_ID,
+					email: 'user@example.com'
+				}
+			);
+			expect(await response.json()).toMatchObject({
+				invitation: { id: INVITATION_ID },
+				member: { userId: member.userId }
+			});
+			expect(captureMemberDisplay.bestEffortCaptureMemberDisplay).toHaveBeenCalledWith(
+				expect.objectContaining({ memberUserId: member.userId })
+			);
+		});
+
+		it('shares the link accept responses: replay header, opaque 404, and already-member 409', async () => {
+			const cases: [AcceptInstanceInvitationResult, number][] = [
+				[{ outcome: 'replayed', invitation, member, replayed: true }, 200],
+				[{ outcome: 'invitation_invalid' }, 404],
+				[{ outcome: 'member_suspended' }, 404],
+				[{ outcome: 'already_member', member }, 409],
+				[{ outcome: 'idempotency_conflict' }, 409]
+			];
+			const bodies: Record<string, unknown> = {};
+			for (const [result, status] of cases) {
+				const app = application();
+				(app.acceptReceived as ReturnType<typeof vi.fn>).mockResolvedValueOnce(result);
+				const response = await invoke(
+					createInstanceInvitationHttpHandlers(() => app).acceptReceived,
+					acceptReceivedEvent()
+				);
+				expect(response.status).toBe(status);
+				if (result.outcome === 'replayed') {
+					expect(response.headers.get('idempotency-replayed')).toBe('true');
+				}
+				bodies[result.outcome] = await response.json();
+			}
+			expect(bodies.invitation_invalid).toEqual(bodies.member_suspended);
+			expect(bodies.already_member).toMatchObject({
+				type: 'urn:signkit:problem:instance-member-already-exists'
+			});
+		});
+
+		it('routes a malformed invitation id to validation-failed', async () => {
+			const app = application();
+			(app.acceptReceived as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+				new InvalidInstanceInvitationRequestError('Invalid instance invitation identifier.')
+			);
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app).acceptReceived,
+				acceptReceivedEvent({
+					pathname: acceptReceivedPath('not-a-uuid'),
+					params: { invitationId: 'not-a-uuid' }
+				})
+			);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({
+				type: 'urn:signkit:problem:validation-failed'
+			});
+		});
+
+		it('fails closed with 503 when persistence is not wired', async () => {
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => null).acceptReceived,
+				acceptReceivedEvent()
+			);
+			expect(response.status).toBe(503);
 		});
 	});
 

@@ -354,7 +354,11 @@
 						bind:value={inviteEmail}
 						disabled={invitePending}
 						required
+						aria-describedby="invite-email-description"
 					/>
+					<Field.FieldDescription id="invite-email-description">
+						{m.settings_invitations_email_description()}
+					</Field.FieldDescription>
 				</Field.Field>
 				<Field.Field data-disabled={invitePending}>
 					<Field.FieldLabel for="invite-role">

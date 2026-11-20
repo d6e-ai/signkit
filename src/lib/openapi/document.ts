@@ -3021,6 +3021,41 @@ export function openApiDocument(): Record<string, unknown> {
 					responses: jsonResponse('200', 'Accepted invitation', { type: 'object' })
 				})
 			},
+			'/api/v1/instance/invitations/received': {
+				get: op({
+					summary: 'List invitations received by the signed-in account',
+					description:
+						"Pending, unexpired invitations addressed to the caller's own provider-verified email, newest first, at most 20, with the account they were matched for. Requires no membership; members receive an empty list. No request value selects the email.",
+					operationId: 'listReceivedInstanceInvitations',
+					tags: ['Instance'],
+					security: [{ SessionCookie: [] }],
+					responses: jsonResponse('200', 'Received invitations', { type: 'object' })
+				})
+			},
+			'/api/v1/instance/invitations/{invitationId}/accept': {
+				post: op({
+					summary: 'Accept a received invitation without the emailed link',
+					description:
+						"Same transaction, responses, and opaque failure as the link acceptance, but the invitation is identified by id and must be addressed to the caller's own provider-verified email. The body is an empty object.",
+					operationId: 'acceptReceivedInstanceInvitation',
+					tags: ['Instance'],
+					security: [{ SessionCookie: [] }],
+					parameters: [
+						{ name: 'invitationId', in: 'path', required: true, schema: UUIDV7 },
+						idempotencyHeader,
+						{
+							name: 'x-signkit-expected-subject',
+							in: 'header',
+							required: false,
+							schema: { type: 'string' },
+							description:
+								'Optional UI concurrency guard. A different signed-in subject returns account-changed (409) without consuming the invitation. This header never grants authority.'
+						}
+					],
+					requestBody: JSON_BODY,
+					responses: jsonResponse('200', 'Accepted invitation', { type: 'object' })
+				})
+			},
 			'/api/v1/instance/invitations/{invitationId}/revoke': {
 				post: op({
 					summary: 'Revoke an instance invitation',

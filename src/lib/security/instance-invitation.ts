@@ -6,15 +6,19 @@
  * the prefix plus 32 cryptographically random bytes, canonical unpadded
  * base64url encoded. Only its SHA-256 `tokenHash` is ever persisted.
  *
- * The invited email address is never stored in plaintext, and no hash of the
- * email alone is stored either — that would let a holder of the database
- * enumerate invited addresses by dictionary or rainbow-table attack. Instead
+ * The invited email address is never stored in plaintext, and no unkeyed hash
+ * of the email alone is stored either — that would let a holder of the
+ * database enumerate invited addresses by dictionary or rainbow-table attack.
  * `computeInstanceInvitationEmailBinding` hashes the token together with the
  * normalized email, so the stored `emailBinding` can only be reproduced by
  * someone who already holds the raw token and is asserting a specific
- * address. Acceptance recomputes the binding from the bearer token and the
- * caller-asserted email and compares it to the stored value; it never
- * attempts to recover or index by email.
+ * address. Link acceptance recomputes the binding from the bearer token and
+ * the caller-asserted email and compares it to the stored value.
+ *
+ * Acceptance without the link instead matches a separate recipient lookup:
+ * an HMAC of the normalized email under a key derived from
+ * `DELIVERY_ENCRYPTION_KEY` (see the delivery payload sealer). Without that
+ * key, the database alone still cannot test candidate addresses.
  */
 
 export const INSTANCE_INVITATION_TOKEN_PREFIX: string = 'ski1_';

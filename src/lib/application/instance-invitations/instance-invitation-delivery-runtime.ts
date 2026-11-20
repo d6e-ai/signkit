@@ -3,7 +3,11 @@ import { resolveNodeMailSender, resolveWorkerMailSender } from '$lib/application
 import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
 import type { MailSender } from '$lib/ports/mail-sender';
 import { AesGcmInstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
-import { InstanceInvitationDeliveryService } from './instance-invitation-delivery-service';
+import {
+	InstanceInvitationDeliveryService,
+	parseInstanceInvitationConsoleUrl,
+	type InstanceInvitationDeliverySenderConfig
+} from './instance-invitation-delivery-service';
 
 export interface InstanceInvitationDeliveryRuntimeContext {
 	platform?: Readonly<App.Platform>;
@@ -32,6 +36,11 @@ export async function resolveInstanceInvitationDeliveryService(
 		fromName === undefined
 	)
 		return null;
+	const sender: InstanceInvitationDeliverySenderConfig = {
+		fromEmail,
+		fromName,
+		...consoleUrlConfig(platformEnv?.SIGNKIT_CONSOLE_URL ?? env.SIGNKIT_CONSOLE_URL)
+	};
 	const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(
 		encryptionKey,
 		nonempty(platformEnv?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS)
@@ -48,7 +57,7 @@ export async function resolveInstanceInvitationDeliveryService(
 			sealer,
 			mail,
 			publicOrigin,
-			{ fromEmail, fromName }
+			sender
 		);
 	}
 
@@ -62,8 +71,23 @@ export async function resolveInstanceInvitationDeliveryService(
 		sealer,
 		mail,
 		publicOrigin,
-		{ fromEmail, fromName }
+		sender
 	);
+}
+
+/**
+ * The console link is optional copy: an unacceptable value is left out of the
+ * mail (and logged without echoing it) rather than blocking delivery.
+ */
+function consoleUrlConfig(value: string | undefined): { consoleUrl?: string } {
+	const configured: string | undefined = nonempty(value);
+	if (configured === undefined) return {};
+	const consoleUrl: string | null = parseInstanceInvitationConsoleUrl(configured);
+	if (consoleUrl === null) {
+		console.warn(JSON.stringify({ event: 'instance_invitation_console_url_invalid' }));
+		return {};
+	}
+	return { consoleUrl };
 }
 
 function nonempty(value: string | undefined): string | undefined {
