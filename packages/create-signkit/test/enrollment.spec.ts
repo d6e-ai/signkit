@@ -356,7 +356,7 @@ describe('console enrollment failures', () => {
 			'enrollment_invalid_request',
 			/invalid \(invalid_request\)/
 		],
-		[503, 'down', 5, 'enrollment_unavailable', /may or may not have consumed the token/],
+		[503, 'down', 5, 'enrollment_unavailable', /same token within 30 minutes/],
 		[302, '', 1, 'enrollment_redirect', /refusing to follow it/]
 	] as const)(
 		'maps HTTP %i to a clear error without touching Cloudflare or saving anything',
@@ -395,7 +395,8 @@ describe('console enrollment failures', () => {
 		expect(result.code).toBe(5);
 		expect(result.json).toMatchObject({ ok: false, code: 'enrollment_unavailable' });
 		expect(String(result.json?.message)).toMatch(/socket hang up \(\[redacted\]\)/);
-		expect(String(result.json?.message)).toMatch(/remove that server in the SignKit console/);
+		expect(String(result.json?.message)).toMatch(/same token within 30 minutes/);
+		expect(String(result.json?.message)).toMatch(/Auth Clients in the D6E account/);
 		expectNoCloudflareMutation(cloudflare);
 		expect(await result.fs.exists(RECOVERY_PATH)).toBe(false);
 		expectNoSecretsIn(result.stdout + result.stderr);

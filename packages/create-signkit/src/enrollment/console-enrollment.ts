@@ -129,7 +129,7 @@ export async function requestConsoleEnrollment(
 			request.token
 		);
 		throw enrollmentError(
-			`D6E Auth console enrollment at ${endpoint} could not be completed (${detail}). D6E Auth may or may not have processed the request. Rerun the same command: an unused token still enrolls, while an "invalid_token" (already used) or "conflict" answer means a registration for ${request.publicOrigin} may exist without its client secret here; remove that server in the SignKit console and issue a new token.`,
+			`D6E Auth console enrollment at ${endpoint} could not be completed (${detail}). D6E Auth may or may not have processed the request. Rerun the same command with the same token within 30 minutes of issuing it: D6E Auth answers a repeated enrollment of ${request.publicOrigin} with the same server and a new client secret. If the token has expired and a registration for ${request.publicOrigin} exists without its secret here, an organization owner or admin can disable it, or rotate its secret, under the organization's Auth Clients in the D6E account, then issue a new token.`,
 			5,
 			'enrollment_unavailable'
 		);
@@ -150,7 +150,7 @@ export async function requestConsoleEnrollment(
 	}
 	if (status === 409) {
 		throw enrollmentError(
-			`D6E Auth refused the console enrollment${suffix}: an active SignKit server is already registered for ${request.publicOrigin}, or the email of the account that issued the token is not verified. Remove the existing registration or verify the email in D6E Auth, then issue a new token. Nothing was changed in Cloudflare.`,
+			`D6E Auth refused the console enrollment${suffix}: an active SignKit server is already registered for ${request.publicOrigin}, or the email of the account that issued the token is not verified. Disable the existing registration under the organization's Auth Clients in the D6E account, or verify the email in D6E Auth, then issue a new token. Nothing was changed in Cloudflare.`,
 			4,
 			'enrollment_conflict'
 		);
@@ -171,7 +171,7 @@ export async function requestConsoleEnrollment(
 	}
 	if (status === 429 || status >= 500) {
 		throw enrollmentError(
-			`D6E Auth console enrollment is unavailable (HTTP ${status}${suffix}). D6E Auth may or may not have consumed the token; rerun the same command. Nothing was changed in Cloudflare.`,
+			`D6E Auth console enrollment is unavailable (HTTP ${status}${suffix}). D6E Auth may or may not have processed the request; rerun the same command with the same token within 30 minutes of issuing it. Nothing was changed in Cloudflare.`,
 			5,
 			'enrollment_unavailable'
 		);
@@ -269,7 +269,7 @@ function invalidResponse(
 		? `D6E Auth may have registered server ${serverId} for ${request.publicOrigin}`
 		: `D6E Auth may have registered a server for ${request.publicOrigin}`;
 	return enrollmentError(
-		`D6E Auth returned an unusable console enrollment response (${reason}); nothing was saved and nothing was changed in Cloudflare. ${registration}; remove it in the SignKit console, then issue a new token.`,
+		`D6E Auth returned an unusable console enrollment response (${reason}); nothing was saved and nothing was changed in Cloudflare. ${registration}; rerun with the same token within 30 minutes of issuing it to receive it again with a new client secret, or have an organization owner or admin disable it, or rotate its secret, under the organization's Auth Clients in the D6E account and issue a new token.`,
 		1,
 		'enrollment_invalid_response'
 	);

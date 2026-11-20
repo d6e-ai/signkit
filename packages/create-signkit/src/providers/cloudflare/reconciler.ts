@@ -1223,7 +1223,7 @@ async function resolveDeploymentEnrollment(
 		}
 		if (record.publicOrigin !== target.publicOrigin) {
 			throw preflight(
-				`the retained console enrollment at ${recordPath} registered ${record.publicOrigin}, but this deploy targets ${target.publicOrigin ?? 'no public origin'}. Its OAuth client only accepts ${record.publicOrigin}/auth/callback; deploy with --public-origin ${record.publicOrigin}, or remove that server in the SignKit console and start again with a fresh state directory.`
+				`the retained console enrollment at ${recordPath} registered ${record.publicOrigin}, but this deploy targets ${target.publicOrigin ?? 'no public origin'}. Its OAuth client only accepts ${record.publicOrigin}/auth/callback; deploy with --public-origin ${record.publicOrigin}, or disable that server under the organization's Auth Clients in the D6E account and start again with a fresh state directory.`
 			);
 		}
 		if (record.d6eAuthBaseUrl !== target.d6eAuthBaseUrl) {
@@ -1493,7 +1493,7 @@ async function enrollAndRetainRecovery(
 		});
 	} catch (error) {
 		throw generic(
-			`D6E Auth enrolled server ${serverId}, but the recovery file at ${recoveryPath} could not be written (${error instanceof Error ? error.message : String(error)}), so its OAuth client secret was not kept. Nothing was changed in Cloudflare. Remove server ${serverId} in the SignKit console, issue a new token, and rerun.`
+			`D6E Auth enrolled server ${serverId}, but the recovery file at ${recoveryPath} could not be written (${error instanceof Error ? error.message : String(error)}), so its OAuth client secret was not kept. Nothing was changed in Cloudflare. Fix the state directory, then rerun the same command with the same token within 30 minutes of issuing it: D6E Auth returns server ${serverId} again with a new client secret. After that window, have an organization owner or admin disable server ${serverId} under the organization's Auth Clients in the D6E account, issue a new token, and rerun.`
 		);
 	}
 	let recordPath: string;
