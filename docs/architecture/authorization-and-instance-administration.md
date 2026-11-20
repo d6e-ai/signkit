@@ -121,6 +121,16 @@ the way to join without the link. Both endpoints use the same identity authoriza
 accept, so any operator credential accepted there is accepted here; API keys are rejected. System
 capabilities advertise both endpoints as `receivedInvitations`, so a client can detect support.
 
+When `SIGNKIT_CONSOLE_URL` is configured, this server is listed in a d6e console. Creating an
+invitation (or exactly replaying a still-pending one) then sends D6E Auth a note — the normalized
+invited email, the expiry, and the inviter's subject — authenticated with this server's OAuth
+client credentials, so the console can show the server to the invitee before they join. The revoke
+endpoint withdraws the note; acceptance does not, because the console's own acceptance consumes it.
+Notes run after the command commits, never follow redirects, and are best effort: a failure is
+logged by event name and status only and never changes the response. Revocations cascaded by member
+suspension or demotion do not withdraw notes; such notes lapse at their expiry, and accepting
+through the console then meets the same opaque failure.
+
 The normal invitation list requests `view=active`: pending invitations whose expiry is after server
 now, filtered before keyset pagination and its limit on both supported databases. Accepted users
 are shown through the member list; revoked, expired and accepted invitations do not appear in the

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- With `SIGNKIT_CONSOLE_URL` set, creating an invitation sends D6E Auth a note with the invited email, expiry, and inviter (as this server's OAuth client) so the console can list the server for the invitee; revoking withdraws it. Notes are best effort and log no email.
 - Invitations now store a recipient lookup: an HMAC of the normalized invited email under a key derived from `DELIVERY_ENCRYPTION_KEY`, deleted on acceptance, revocation, or expiry. The email itself is still never stored.
 
 ## [0.1.17] - 2026-10-12

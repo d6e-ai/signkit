@@ -20,8 +20,14 @@ import {
 } from '$lib/ports/instance-store';
 import {
 	INSTANCE_INVITATION_EMAIL_MAX_LENGTH,
-	INSTANCE_INVITATION_TOKEN_PATTERN
+	INSTANCE_INVITATION_TOKEN_PATTERN,
+	normalizeInstanceInvitationEmail
 } from '$lib/security/instance-invitation';
+import {
+	consoleInvitationNotes,
+	runAfterCommand,
+	type ConsoleInvitationNotesPort
+} from '$lib/server/console-invitation-notes';
 import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
 import {
 	acceptsJson,
@@ -362,7 +368,8 @@ function actorOf(authorized: AuthorizedIdentityActor): InstanceInvitationActor {
 
 export function createInstanceInvitationHttpHandlers(
 	resolveApplication: InstanceInvitationApplicationResolver,
-	resolveDisplay: InstanceDisplayApplicationResolver | null = null
+	resolveDisplay: InstanceDisplayApplicationResolver | null = null,
+	consoleNotes: ConsoleInvitationNotesPort = consoleInvitationNotes
 ): InstanceInvitationHttpHandlers {
 	const create: RequestHandler = async ({ locals, platform, request, url }): Promise<Response> => {
 		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
@@ -414,6 +421,24 @@ export function createInstanceInvitationHttpHandlers(
 				role: parsed.data.role,
 				locale: parsed.data.locale
 			});
+			if (
+				(result.outcome === 'created' || result.outcome === 'replayed') &&
+				result.invitation.status === 'pending'
+			) {
+				// An exact replay re-sends the same note; D6E Auth overwrites it.
+				const invitation = result.invitation;
+				await runAfterCommand(platform, () =>
+					consoleNotes.note(
+						{
+							invitationId: invitation.id,
+							recipientEmail: normalizeInstanceInvitationEmail(parsed.data.email),
+							expiresAt: invitation.expiresAt,
+							inviterSubject: authorized.id
+						},
+						{ platform }
+					)
+				);
+			}
 			return createResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceInvitationRequestError) {
@@ -799,6 +824,10 @@ export function createInstanceInvitationHttpHandlers(
 				invitationId,
 				{ idempotencyKey: idempotencyKey.data }
 			);
+			if (result.outcome === 'revoked' || result.outcome === 'replayed') {
+				const revokedId: string = result.invitation.id;
+				await runAfterCommand(platform, () => consoleNotes.forget(revokedId, { platform }));
+			}
 			return revokeResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceInvitationRequestError) {

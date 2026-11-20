@@ -18,6 +18,10 @@ import {
 	type RevokeInstanceInvitationResult
 } from '$lib/application/instance-invitations/instance-invitation-service';
 import type { InstanceInvitationMetadata, InstanceMemberMetadata } from '$lib/ports/instance-store';
+import type {
+	ConsoleInvitationNoteOutcome,
+	ConsoleInvitationNotesPort
+} from '$lib/server/console-invitation-notes';
 import {
 	identityOnlyLocals,
 	unavailableIdentityLocalsWithPrincipal
@@ -1251,6 +1255,149 @@ describe('instance invitation HTTP handlers', () => {
 			} finally {
 				consoleErrorSpy.mockRestore();
 			}
+		});
+	});
+
+	describe('console invitation notes', () => {
+		function notes(): ConsoleInvitationNotesPort & {
+			note: ReturnType<typeof vi.fn>;
+			forget: ReturnType<typeof vi.fn>;
+		} {
+			return {
+				note: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => 'sent'),
+				forget: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => 'sent')
+			};
+		}
+
+		function createEvent(): RequestEvent {
+			return event({
+				pathname: CREATE_PATH,
+				method: 'POST',
+				body: validCreateBody({ email: '  Invitee@Example.COM ' }),
+				headers: { 'idempotency-key': 'create-1' }
+			});
+		}
+
+		it('notes a created invitation with the normalized email, expiry, and inviter', async () => {
+			const app = application();
+			const port = notes();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(201);
+			expect(port.note).toHaveBeenCalledWith(
+				{
+					invitationId: INVITATION_ID,
+					recipientEmail: 'invitee@example.com',
+					expiresAt: invitation.expiresAt,
+					inviterSubject: 'user-1'
+				},
+				expect.objectContaining({})
+			);
+		});
+
+		it('re-notes an exact replay of a pending invitation but not of a finished one', async () => {
+			const pendingApp = application();
+			(pendingApp.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				outcome: 'replayed',
+				invitation,
+				replayed: true
+			} satisfies CreateInstanceInvitationResult);
+			const pendingPort = notes();
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => pendingApp, null, pendingPort).create,
+				createEvent()
+			);
+			expect(pendingPort.note).toHaveBeenCalledTimes(1);
+
+			const revokedApp = application();
+			(revokedApp.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				outcome: 'replayed',
+				invitation: { ...invitation, status: 'revoked', revokedAt: invitation.createdAt },
+				replayed: true
+			} satisfies CreateInstanceInvitationResult);
+			const revokedPort = notes();
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => revokedApp, null, revokedPort).create,
+				createEvent()
+			);
+			expect(revokedPort.note).not.toHaveBeenCalled();
+		});
+
+		it('does not note a refused create', async () => {
+			const app = application();
+			(app.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+				outcome: 'forbidden'
+			} satisfies CreateInstanceInvitationResult);
+			const port = notes();
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(403);
+			expect(port.note).not.toHaveBeenCalled();
+		});
+
+		it('keeps the create response when the note fails', async () => {
+			const app = application();
+			const port = notes();
+			port.note.mockRejectedValueOnce(new Error('D6E Auth down'));
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(201);
+		});
+
+		it('withdraws the note after a revoke, including an exact replay', async () => {
+			for (const result of [
+				{ outcome: 'revoked', invitation },
+				{ outcome: 'replayed', invitation, replayed: true }
+			] satisfies RevokeInstanceInvitationResult[]) {
+				const app = application();
+				(app.revoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce(result);
+				const port = notes();
+				const response = await invoke(
+					createInstanceInvitationHttpHandlers(() => app, null, port).revoke,
+					event({
+						pathname: revokePath(INVITATION_ID),
+						method: 'POST',
+						body: '{}',
+						headers: { 'idempotency-key': 'revoke-1' },
+						params: { invitationId: INVITATION_ID }
+					})
+				);
+				expect(response.status).toBe(200);
+				expect(port.forget).toHaveBeenCalledWith(INVITATION_ID, expect.objectContaining({}));
+			}
+		});
+
+		it('never touches notes when accepting', async () => {
+			const app = application();
+			const port = notes();
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).accept,
+				event({
+					pathname: ACCEPT_PATH,
+					method: 'POST',
+					body: JSON.stringify({ token: VALID_TOKEN }),
+					headers: { 'idempotency-key': 'accept-1' }
+				})
+			);
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).acceptReceived,
+				event({
+					pathname: acceptReceivedPath(INVITATION_ID),
+					method: 'POST',
+					body: '{}',
+					headers: { 'idempotency-key': 'accept-2' },
+					params: { invitationId: INVITATION_ID },
+					locals: locals('no_membership')
+				})
+			);
+			expect(port.note).not.toHaveBeenCalled();
+			expect(port.forget).not.toHaveBeenCalled();
 		});
 	});
 

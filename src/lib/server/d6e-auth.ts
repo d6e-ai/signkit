@@ -90,6 +90,26 @@ function configuration() {
 	return { baseUrl: validatedBaseUrl(rawBaseUrl), clientId, clientSecret };
 }
 
+export interface ServerClientCredentials {
+	baseUrl: string;
+	clientId: string;
+	clientSecret: string;
+}
+
+/**
+ * This server's own OAuth client pair and validated D6E Auth origin, for
+ * server-to-server calls made as the client. Null when d6e-auth is not
+ * configured or its origin is invalid; never throws, so callers cannot leak
+ * configuration through an error.
+ */
+export function serverClientCredentials(): ServerClientCredentials | null {
+	try {
+		return configuration();
+	} catch {
+		return null;
+	}
+}
+
 /** Bounds memory under a misconfigured or rotating-origin deployment. */
 const MAX_REMOTE_JWKS_SETS: number = 8;
 
