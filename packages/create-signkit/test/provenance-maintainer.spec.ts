@@ -1,7 +1,11 @@
 import type { Bundle, VerifyOptions } from 'sigstore';
 import { compress } from 'snappyjs';
 import { describe, expect, it, vi } from 'vitest';
-import type { ResolvedRelease } from '../src/release/github.js';
+import {
+	createGithubReleaseResolver,
+	sha256Hex,
+	type ResolvedRelease
+} from '../src/release/github.js';
 import {
 	GITHUB_ACCOUNT_OIDC_ISSUER,
 	MAINTAINER_SIGNERS,
@@ -9,7 +13,9 @@ import {
 } from '../src/release/maintainer-signers.js';
 import {
 	MAINTAINER_BUILD_TYPE,
-	createMaintainerReleaseStatement
+	MAX_MAINTAINER_SIGNATURE_BYTES,
+	createMaintainerReleaseStatement,
+	maintainerSignatureAssetName
 } from '../src/release/maintainer-statement.js';
 import {
 	createGithubProvenanceVerifier,
@@ -17,9 +23,17 @@ import {
 	type ProvenanceVerifierOptions,
 	type SigstoreBundleVerifier
 } from '../src/release/provenance.js';
-import { COMMIT, FakeHttp, sampleManifest } from './helpers.js';
+import {
+	COMMIT,
+	FakeHttp,
+	githubReleaseJson,
+	sampleBundleBytes,
+	sampleManifest
+} from './helpers.js';
 
 const REPOSITORY_ID = 1365209252;
+const API = 'https://api.github.com/repos/d6e-ai/signkit';
+const DL = 'https://github.com/d6e-ai/signkit/releases/download';
 const BLOB_URL =
 	'https://tmaproduction.blob.core.windows.net/attestations/1365209252/2026/11/20/654321.json.sn?sv=signed-value';
 const MAINTAINER_EMAIL = 'maintainer@example.com';
@@ -35,15 +49,17 @@ type Statement = Record<string, unknown> & {
 	};
 };
 
-describe('maintainer-signed release provenance', () => {
+describe('maintainer signature release asset', () => {
 	it.each([
 		{ tag: 'v1.2.3', channel: 'stable' as const },
 		{ tag: 'v1.2.3-beta.1', channel: 'beta' as const }
 	])(
 		'accepts a pinned GitHub account signature for $channel releases',
 		async ({ tag, channel }) => {
-			const release = resolvedRelease(tag, channel);
-			const http = configuredHttp(release, [maintainerStatement(release)]);
+			const { release, http } = maintainerRelease(
+				maintainerStatement(baseRelease(tag, channel)),
+				baseRelease(tag, channel)
+			);
 			const verifyBundle = sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL);
 
 			const result = await createGithubProvenanceVerifier(http, verifyBundle, OPTIONS).verify(
@@ -63,6 +79,7 @@ describe('maintainer-signed release provenance', () => {
 				subjectSha256: release.manifest.bundle.sha256,
 				predicateType: 'https://slsa.dev/provenance/v1',
 				buildType: 'https://github.com/d6e-ai/signkit/release/maintainer/v1',
+				signatureAsset: `signkit-provenance-${tag}.sigstore.json`,
 				attestationCount: 1,
 				trustRoot: 'sigstore-public-good'
 			});
@@ -78,39 +95,42 @@ describe('maintainer-signed release provenance', () => {
 			});
 			expect(options.certificateIdentityURI).toBeUndefined();
 			expect(options.certificateOIDs).toBeUndefined();
+			// The GitHub attestations lookup still runs first, and the asset comes
+			// from the release download URL under the same host and size rules.
+			expect(http.requests[0]?.url).toContain(`${API}/attestations/sha256:`);
+			const assetRequest = http.requests[1]!;
+			expect(assetRequest.url).toBe(`${DL}/${tag}/signkit-provenance-${tag}.sigstore.json`);
+			expect(assetRequest.maxBytes).toBe(release.maintainerSignature!.size);
+			expect([...assetRequest.allowedHosts]).toContain('github.com');
+			expect([...assetRequest.allowedHosts]).not.toContain('tmaproduction.blob.core.windows.net');
 		}
 	);
 
-	it('accepts any one of several pinned maintainers and repeated signatures', async () => {
-		const release = resolvedRelease();
+	it('accepts any one of several pinned maintainers', async () => {
+		const { release, http } = maintainerRelease(maintainerStatement(baseRelease()));
 		const signers: MaintainerSigner[] = [
 			{ issuer: GITHUB_ACCOUNT_OIDC_ISSUER, email: 'first@example.com' },
 			{ issuer: GITHUB_ACCOUNT_OIDC_ISSUER, email: MAINTAINER_EMAIL }
 		];
-		const http = configuredHttp(release, [
-			maintainerStatement(release),
-			maintainerStatement(release)
-		]);
 		const verifyBundle = sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL);
 		await expect(
 			createGithubProvenanceVerifier(http, verifyBundle, { maintainerSigners: signers }).verify(
 				release,
 				release.manifest.bundle.sha256
 			)
-		).resolves.toMatchObject({ kind: 'maintainer', attestationCount: 2 });
+		).resolves.toMatchObject({ kind: 'maintainer' });
 		expect(verifyBundle.mock.calls[0]![1].certificateIdentityEmail).toBe(
 			'^(?:first@example\\.com|maintainer@example\\.com)$'
 		);
 	});
 
 	it('rejects a certificate from another OIDC issuer', async () => {
-		const release = resolvedRelease();
 		for (const issuer of [
 			'https://accounts.google.com',
 			'https://token.actions.githubusercontent.com',
 			'https://github.com/login/oauth/'
 		]) {
-			const http = configuredHttp(release, [maintainerStatement(release)]);
+			const { release, http } = maintainerRelease(maintainerStatement(baseRelease()));
 			await expect(
 				createGithubProvenanceVerifier(
 					http,
@@ -123,7 +143,6 @@ describe('maintainer-signed release provenance', () => {
 	});
 
 	it('rejects unlisted and look-alike signer emails', async () => {
-		const release = resolvedRelease();
 		for (const email of [
 			'other@example.com',
 			'MAINTAINER@example.com',
@@ -131,7 +150,7 @@ describe('maintainer-signed release provenance', () => {
 			'maintainer@example.com.attacker.test',
 			'evil-maintainer@example.com'
 		]) {
-			const http = configuredHttp(release, [maintainerStatement(release)]);
+			const { release, http } = maintainerRelease(maintainerStatement(baseRelease()));
 			await expect(
 				createGithubProvenanceVerifier(
 					http,
@@ -144,7 +163,6 @@ describe('maintainer-signed release provenance', () => {
 	});
 
 	it('re-checks the verified identity exactly instead of trusting the policy alone', async () => {
-		const release = resolvedRelease();
 		for (const signer of [
 			{},
 			{
@@ -160,7 +178,7 @@ describe('maintainer-signed release provenance', () => {
 				}
 			}
 		]) {
-			const http = configuredHttp(release, [maintainerStatement(release)]);
+			const { release, http } = maintainerRelease(maintainerStatement(baseRelease()));
 			await expect(
 				createGithubProvenanceVerifier(http, async () => signer, OPTIONS).verify(
 					release,
@@ -171,9 +189,9 @@ describe('maintainer-signed release provenance', () => {
 	});
 
 	it('fails closed when no maintainer is pinned', async () => {
-		const release = resolvedRelease();
+		const statement = maintainerStatement(baseRelease());
+		const { release, http } = maintainerRelease(statement);
 		const verifyBundle = sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL);
-		const http = configuredHttp(release, [maintainerStatement(release)]);
 		await expect(
 			createGithubProvenanceVerifier(http, verifyBundle, { maintainerSigners: [] }).verify(
 				release,
@@ -182,17 +200,19 @@ describe('maintainer-signed release provenance', () => {
 		).rejects.toThrow(/pins no maintainer signers/);
 		await expect(
 			verifyMaintainerReleaseBundle(
-				signedBundle(maintainerStatement(release)),
+				signedBundle(statement),
 				release,
 				release.manifest.bundle.sha256,
-				{ verifyBundle, maintainerSigners: [] }
+				{
+					verifyBundle,
+					maintainerSigners: []
+				}
 			)
 		).rejects.toThrow(/pins no maintainer signers/);
 		expect(verifyBundle).not.toHaveBeenCalled();
 	});
 
 	it('rejects a malformed pinned signer list', async () => {
-		const release = resolvedRelease();
 		const malformed = [
 			[{ issuer: 'https://accounts.google.com', email: MAINTAINER_EMAIL }],
 			[{ issuer: GITHUB_ACCOUNT_OIDC_ISSUER, email: 'not-an-email' }],
@@ -201,7 +221,7 @@ describe('maintainer-signed release provenance', () => {
 		] as unknown as Array<readonly MaintainerSigner[]>;
 		for (const maintainerSigners of malformed) {
 			const verifyBundle = sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL);
-			const http = configuredHttp(release, [maintainerStatement(release)]);
+			const { release, http } = maintainerRelease(maintainerStatement(baseRelease()));
 			await expect(
 				createGithubProvenanceVerifier(http, verifyBundle, { maintainerSigners }).verify(
 					release,
@@ -224,9 +244,8 @@ describe('maintainer-signed release provenance', () => {
 	});
 
 	it('uses the shipped signer list by default', async () => {
-		const release = resolvedRelease();
+		const { release, http } = maintainerRelease(maintainerStatement(baseRelease()));
 		const verifyBundle = sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL);
-		const http = configuredHttp(release, [maintainerStatement(release)]);
 		const outcome = createGithubProvenanceVerifier(http, verifyBundle).verify(
 			release,
 			release.manifest.bundle.sha256
@@ -240,7 +259,6 @@ describe('maintainer-signed release provenance', () => {
 	});
 
 	it('rejects every mismatched signed statement claim', async () => {
-		const release = resolvedRelease();
 		const mutations: Array<[string, (statement: Statement) => void, RegExp]> = [
 			[
 				'subject digest',
@@ -299,12 +317,19 @@ describe('maintainer-signed release provenance', () => {
 				'statement type',
 				(s) => (s._type = 'https://in-toto.io/Statement/v0.1'),
 				/in-toto Statement v1/
+			],
+			[
+				'build type',
+				(s) =>
+					(s.predicate.buildDefinition.buildType =
+						'https://github.com/d6e-ai/signkit/release/maintainer/v2'),
+				/not the maintainer release type/
 			]
 		];
 		for (const [name, mutate, message] of mutations) {
-			const statement = maintainerStatement(release);
+			const statement = maintainerStatement(baseRelease());
 			mutate(statement);
-			const http = configuredHttp(release, [statement]);
+			const { release, http } = maintainerRelease(statement);
 			await expect(
 				createGithubProvenanceVerifier(
 					http,
@@ -316,39 +341,8 @@ describe('maintainer-signed release provenance', () => {
 		}
 	});
 
-	it('rejects unknown build types on both the online and local paths', async () => {
-		const release = resolvedRelease();
-		for (const buildType of [
-			'https://github.com/d6e-ai/signkit/release/maintainer/v2',
-			'https://example.test/build'
-		]) {
-			const statement = maintainerStatement(release);
-			statement.predicate.buildDefinition.buildType = buildType;
-			const verifyBundle = sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL);
-			await expect(
-				createGithubProvenanceVerifier(
-					configuredHttp(release, [statement]),
-					verifyBundle,
-					OPTIONS
-				).verify(release, release.manifest.bundle.sha256),
-				buildType
-			).rejects.toThrow();
-			await expect(
-				verifyMaintainerReleaseBundle(
-					signedBundle(statement),
-					release,
-					release.manifest.bundle.sha256,
-					{
-						...OPTIONS,
-						verifyBundle
-					}
-				)
-			).rejects.toThrow(/not the maintainer release type/);
-		}
-	});
-
 	it('rejects a replaced bundle whose digest the signed statement does not name', async () => {
-		const original = resolvedRelease();
+		const original = baseRelease();
 		const replacementDigest = 'e'.repeat(64);
 		const replaced: ResolvedRelease = {
 			...original,
@@ -357,52 +351,49 @@ describe('maintainer-signed release provenance', () => {
 				bundle: { ...original.manifest.bundle, sha256: replacementDigest }
 			}
 		};
-		const http = configuredHttp(replaced, [maintainerStatement(original)]);
+		const { release, http } = maintainerRelease(maintainerStatement(original), replaced);
 		await expect(
 			createGithubProvenanceVerifier(
 				http,
 				sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL),
 				OPTIONS
-			).verify(replaced, replacementDigest)
+			).verify(release, replacementDigest)
 		).rejects.toThrow(/matching bundle subject/);
+	});
+
+	it('reports missing provenance when there is neither an attestation nor an asset', async () => {
+		const release = baseRelease();
+		const http = attestationHttp(release, []);
 		await expect(
-			verifyMaintainerReleaseBundle(
-				signedBundle(maintainerStatement(original)),
-				original,
-				replacementDigest,
-				OPTIONS
+			createGithubProvenanceVerifier(http, async () => ({}), OPTIONS).verify(
+				release,
+				release.manifest.bundle.sha256
 			)
-		).rejects.toThrow(/does not match the downloaded bundle/);
+		).rejects.toThrow(/GitHub release provenance is missing for the downloaded Cloudflare bundle/);
 	});
 
-	it('maps signature failures and an unavailable trust root like the workflow path', async () => {
-		const release = resolvedRelease();
+	it('refuses a release that has both workflow attestations and a maintainer asset', async () => {
+		const workflow = baseRelease();
+		const { release, http } = maintainerRelease(maintainerStatement(workflow), workflow, [
+			workflowStatement(workflow)
+		]);
+		const verifyBundle = vi.fn<SigstoreBundleVerifier>(async () => ({}));
 		await expect(
-			createGithubProvenanceVerifier(
-				configuredHttp(release, [maintainerStatement(release)]),
-				async () => {
-					throw new Error('bad signature');
-				},
-				OPTIONS
-			).verify(release, release.manifest.bundle.sha256)
-		).rejects.toMatchObject({ exitCode: 1 });
-		await expect(
-			createGithubProvenanceVerifier(
-				configuredHttp(release, [maintainerStatement(release)]),
-				async () => {
-					throw new Error('network timeout');
-				},
-				OPTIONS
-			).verify(release, release.manifest.bundle.sha256)
-		).rejects.toMatchObject({ code: 'unavailable', exitCode: 5 });
+			createGithubProvenanceVerifier(http, verifyBundle, OPTIONS).verify(
+				release,
+				release.manifest.bundle.sha256
+			)
+		).rejects.toThrow(/mixes GitHub workflow attestations and a maintainer signature asset/);
+		expect(verifyBundle).not.toHaveBeenCalled();
+		expect(http.requests.some((request) => request.url.endsWith('.sigstore.json'))).toBe(false);
 	});
 
-	it('still accepts workflow provenance and refuses to mix the two kinds', async () => {
-		const release = resolvedRelease();
-		const workflowHttp = configuredHttp(release, [workflowStatement(release)]);
-		const workflowVerifier = vi.fn<SigstoreBundleVerifier>(async () => ({}));
+	it('keeps the workflow path unchanged when the release has no maintainer asset', async () => {
+		const release = baseRelease();
+		const http = attestationHttp(release, [workflowStatement(release)]);
+		const verifyBundle = vi.fn<SigstoreBundleVerifier>(async () => ({}));
 		await expect(
-			createGithubProvenanceVerifier(workflowHttp, workflowVerifier, OPTIONS).verify(
+			createGithubProvenanceVerifier(http, verifyBundle, OPTIONS).verify(
 				release,
 				release.manifest.bundle.sha256
 			)
@@ -411,32 +402,117 @@ describe('maintainer-signed release provenance', () => {
 			workflow: '.github/workflows/release-cloudflare-bundle.yml',
 			sourceRef: `refs/tags/${release.tag}`
 		});
-		expect(workflowVerifier.mock.calls[0]![1]).toMatchObject({
+		expect(verifyBundle.mock.calls[0]![1]).toMatchObject({
 			certificateIssuer: 'https://token.actions.githubusercontent.com'
 		});
+	});
 
-		for (const statements of [
-			[workflowStatement(release), maintainerStatement(release)],
-			[maintainerStatement(release), workflowStatement(release)]
-		]) {
-			const mixedHttp = configuredHttp(release, statements);
+	it('never accepts a maintainer statement through the GitHub attestations API', async () => {
+		const release = baseRelease();
+		const http = attestationHttp(release, [maintainerStatement(release)]);
+		await expect(
+			createGithubProvenanceVerifier(
+				http,
+				sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL),
+				OPTIONS
+			).verify(release, release.manifest.bundle.sha256)
+		).rejects.toThrow(/event or workflow source ref is not allowed/);
+	});
+
+	it('bounds the asset size before and during the download', async () => {
+		const statement = maintainerStatement(baseRelease());
+		for (const size of [MAX_MAINTAINER_SIGNATURE_BYTES + 1, 0, -1, 1.5]) {
+			const { release, http } = maintainerRelease(statement);
+			release.maintainerSignature!.size = size;
 			await expect(
 				createGithubProvenanceVerifier(
-					mixedHttp,
-					async () => ({
-						identity: {
-							subjectAlternativeName: MAINTAINER_EMAIL,
-							extensions: { issuer: GITHUB_ACCOUNT_OIDC_ISSUER }
-						}
-					}),
+					http,
+					sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL),
 					OPTIONS
-				).verify(release, release.manifest.bundle.sha256)
-			).rejects.toThrow(/mixes workflow and maintainer attestations/);
+				).verify(release, release.manifest.bundle.sha256),
+				String(size)
+			).rejects.toThrow(/maintainer signature asset (size \d+ exceeds|has an invalid size)/);
+			expect(http.requests.some((request) => request.url.endsWith('.sigstore.json'))).toBe(false);
+		}
+
+		const shorter = maintainerRelease(statement);
+		shorter.release.maintainerSignature!.size -= 1;
+		await expect(
+			createGithubProvenanceVerifier(shorter.http, async () => ({}), OPTIONS).verify(
+				shorter.release,
+				shorter.release.manifest.bundle.sha256
+			)
+		).rejects.toThrow(/exceeded limit/);
+
+		const longer = maintainerRelease(statement);
+		longer.release.maintainerSignature!.size += 1;
+		await expect(
+			createGithubProvenanceVerifier(longer.http, async () => ({}), OPTIONS).verify(
+				longer.release,
+				longer.release.manifest.bundle.sha256
+			)
+		).rejects.toThrow(/does not match the release asset size/);
+	});
+
+	it('rejects a malformed asset and maps a failed download to unavailable', async () => {
+		const malformed: Array<[Uint8Array, RegExp]> = [
+			[new TextEncoder().encode('not json'), /not valid JSON/],
+			[new TextEncoder().encode('[1,2]'), /must be a JSON object/],
+			[new TextEncoder().encode('{"mediaType":"x"}'), /missing its signed statement/],
+			[
+				new TextEncoder().encode(
+					JSON.stringify({ dsseEnvelope: { payload: Buffer.from('nope').toString('base64') } })
+				),
+				/statement is not valid JSON/
+			]
+		];
+		for (const [bytes, message] of malformed) {
+			const { release, http } = maintainerRelease(bytes);
+			await expect(
+				createGithubProvenanceVerifier(http, async () => ({}), OPTIONS).verify(
+					release,
+					release.manifest.bundle.sha256
+				),
+				message.source
+			).rejects.toThrow(message);
+		}
+		for (const status of [404, 503]) {
+			const { release, http } = maintainerRelease(maintainerStatement(baseRelease()));
+			http.replace(signatureUrl(release), new Uint8Array(), status);
+			await expect(
+				createGithubProvenanceVerifier(http, async () => ({}), OPTIONS).verify(
+					release,
+					release.manifest.bundle.sha256
+				)
+			).rejects.toMatchObject({ code: 'unavailable', exitCode: 5 });
 		}
 	});
 
+	it('maps signature failures and an unavailable trust root like the workflow path', async () => {
+		const first = maintainerRelease(maintainerStatement(baseRelease()));
+		await expect(
+			createGithubProvenanceVerifier(
+				first.http,
+				async () => {
+					throw new Error('bad signature');
+				},
+				OPTIONS
+			).verify(first.release, first.release.manifest.bundle.sha256)
+		).rejects.toMatchObject({ exitCode: 1 });
+		const second = maintainerRelease(maintainerStatement(baseRelease()));
+		await expect(
+			createGithubProvenanceVerifier(
+				second.http,
+				async () => {
+					throw new Error('network timeout');
+				},
+				OPTIONS
+			).verify(second.release, second.release.manifest.bundle.sha256)
+		).rejects.toMatchObject({ code: 'unavailable', exitCode: 5 });
+	});
+
 	it('verifies a local bundle with the same policy as the online path', async () => {
-		const release = resolvedRelease();
+		const release = baseRelease();
 		const verifyBundle = sigstoreWithCertificate(GITHUB_ACCOUNT_OIDC_ISSUER, MAINTAINER_EMAIL);
 		await expect(
 			verifyMaintainerReleaseBundle(
@@ -449,6 +525,50 @@ describe('maintainer-signed release provenance', () => {
 		expect(verifyBundle.mock.calls[0]![1].certificateIdentityEmail).toBe(
 			'^(?:maintainer@example\\.com)$'
 		);
+	});
+});
+
+describe('maintainer signature asset resolution', () => {
+	it('records the asset when the release has one and checks its URL', async () => {
+		const bundle = sampleBundleBytes();
+		const manifest = sampleManifest({
+			bundle: { ...sampleManifest().bundle, size: bundle.byteLength, sha256: sha256Hex(bundle) }
+		});
+		const name = maintainerSignatureAssetName('v1.2.3');
+		expect(name).toBe('signkit-provenance-v1.2.3.sigstore.json');
+
+		const plain = new FakeHttp();
+		plain.on(`${API}/releases/tags/v1.2.3`, githubReleaseJson({ tag: 'v1.2.3' }));
+		plain.on(`${DL}/v1.2.3/signkit-cloudflare-manifest.json`, JSON.stringify(manifest));
+		const workflowRelease = await createGithubReleaseResolver(plain).resolve({
+			version: 'v1.2.3',
+			channel: 'stable'
+		});
+		expect(workflowRelease.maintainerSignature).toBeUndefined();
+
+		const signed = new FakeHttp();
+		const json = githubReleaseJson({ tag: 'v1.2.3' });
+		(json.assets as unknown[]).push({
+			name,
+			size: 4096,
+			browser_download_url: `${DL}/v1.2.3/${name}`,
+			content_type: 'application/json'
+		});
+		signed.on(`${API}/releases/tags/v1.2.3`, json);
+		signed.on(`${DL}/v1.2.3/signkit-cloudflare-manifest.json`, JSON.stringify(manifest));
+		await expect(
+			createGithubReleaseResolver(signed).resolve({ version: 'v1.2.3', channel: 'stable' })
+		).resolves.toMatchObject({ maintainerSignature: { assetName: name, size: 4096 } });
+
+		const evil = new FakeHttp();
+		const evilJson = structuredClone(json);
+		(evilJson.assets as Array<{ browser_download_url: string }>)[2]!.browser_download_url =
+			'https://evil.example/signature.json';
+		evil.on(`${API}/releases/tags/v1.2.3`, evilJson);
+		evil.on(`${DL}/v1.2.3/signkit-cloudflare-manifest.json`, JSON.stringify(manifest));
+		await expect(
+			createGithubReleaseResolver(evil).resolve({ version: 'v1.2.3', channel: 'stable' })
+		).rejects.toThrow(/not an allowed GitHub origin/);
 	});
 });
 
@@ -501,7 +621,11 @@ describe('maintainer release statement', () => {
 			{ tag: 'v1.2.3', commit: COMMIT.slice(1), subjects },
 			{ tag: 'v1.2.3', commit: COMMIT, subjects: [] },
 			{ tag: 'v1.2.3', commit: COMMIT, subjects: [...subjects, ...subjects] },
-			{ tag: 'v1.2.3', commit: COMMIT, subjects: [{ name: 'a.tar.gz', sha256: 'A'.repeat(64) }] },
+			{
+				tag: 'v1.2.3',
+				commit: COMMIT,
+				subjects: [{ name: 'a.tar.gz', sha256: 'A'.repeat(64) }]
+			},
 			{
 				tag: 'v1.2.3',
 				commit: COMMIT,
@@ -514,7 +638,7 @@ describe('maintainer release statement', () => {
 	});
 });
 
-function resolvedRelease(tag = 'v1.2.3', channel: 'stable' | 'beta' = 'stable'): ResolvedRelease {
+function baseRelease(tag = 'v1.2.3', channel: 'stable' | 'beta' = 'stable'): ResolvedRelease {
 	const manifest = sampleManifest({
 		tag,
 		channel,
@@ -529,9 +653,39 @@ function resolvedRelease(tag = 'v1.2.3', channel: 'stable' | 'beta' = 'stable'):
 		prerelease: channel === 'beta',
 		commit: COMMIT,
 		manifest,
-		manifestUrl: `https://github.com/d6e-ai/signkit/releases/download/${tag}/signkit-cloudflare-manifest.json`,
-		bundleUrl: `https://github.com/d6e-ai/signkit/releases/download/${tag}/${manifest.bundle.assetName}`
+		manifestUrl: `${DL}/${tag}/signkit-cloudflare-manifest.json`,
+		bundleUrl: `${DL}/${tag}/${manifest.bundle.assetName}`
 	};
+}
+
+/**
+ * A release with the maintainer signature asset: the attestations API has
+ * nothing (or `attestations`), and the asset holds `signature`, a statement to
+ * wrap in a fixture bundle or raw bytes.
+ */
+function maintainerRelease(
+	signature: Statement | Uint8Array,
+	release: ResolvedRelease = baseRelease(),
+	attestations: unknown[] = []
+): { release: ResolvedRelease; http: FakeHttp } {
+	const bytes =
+		signature instanceof Uint8Array
+			? signature
+			: new TextEncoder().encode(JSON.stringify(signedBundle(signature)));
+	const signed: ResolvedRelease = {
+		...release,
+		maintainerSignature: {
+			assetName: maintainerSignatureAssetName(release.tag),
+			size: bytes.byteLength
+		}
+	};
+	const http = attestationHttp(signed, attestations);
+	http.on(signatureUrl(signed), bytes);
+	return { release: signed, http };
+}
+
+function signatureUrl(release: ResolvedRelease): string {
+	return `${DL}/${release.tag}/${maintainerSignatureAssetName(release.tag)}`;
 }
 
 function maintainerStatement(release: ResolvedRelease): Statement {
@@ -626,15 +780,22 @@ function signedBundle(statement: unknown): Bundle {
 	} as unknown as Bundle;
 }
 
-function configuredHttp(release: ResolvedRelease, statements: unknown[]): FakeHttp {
+function attestationApiUrl(digest: string): string {
+	return `${API}/attestations/sha256:${digest}?predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1&per_page=10`;
+}
+
+function attestationHttp(release: ResolvedRelease, statements: unknown[]): FakeHttp {
 	const http = new FakeHttp();
+	if (statements.length === 0) {
+		http.on(attestationApiUrl(release.manifest.bundle.sha256), {}, 404);
+		return http;
+	}
 	const urls = statements.map((_, index) =>
 		BLOB_URL.replace('654321.json.sn', `${654321 + index}.json.sn`)
 	);
-	http.on(
-		`https://api.github.com/repos/d6e-ai/signkit/attestations/sha256:${release.manifest.bundle.sha256}?predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1&per_page=10`,
-		{ attestations: urls.map((bundle_url) => ({ bundle_url, repository_id: REPOSITORY_ID })) }
-	);
+	http.on(attestationApiUrl(release.manifest.bundle.sha256), {
+		attestations: urls.map((bundle_url) => ({ bundle_url, repository_id: REPOSITORY_ID }))
+	});
 	for (let index = 0; index < statements.length; index += 1) {
 		http.on(
 			urls[index]!,

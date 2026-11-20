@@ -11,13 +11,18 @@ import {
 import { generic, unavailable } from '../cli/errors.js';
 import type { HttpClient } from '../runtime/http.js';
 import { utf8 } from '../runtime/http.js';
+import { downloadReleaseAsset } from './assets.js';
 import type { ResolvedRelease } from './github.js';
 import {
 	GITHUB_ACCOUNT_OIDC_ISSUER,
 	MAINTAINER_SIGNERS,
 	type MaintainerSigner
 } from './maintainer-signers.js';
-import { MAINTAINER_BUILD_TYPE } from './maintainer-statement.js';
+import {
+	MAINTAINER_BUILD_TYPE,
+	MAX_MAINTAINER_SIGNATURE_BYTES,
+	maintainerSignatureAssetName
+} from './maintainer-statement.js';
 
 const ATTESTATION_API_VERSION = '2026-03-10';
 const ATTESTATION_BLOB_HOST = 'tmaproduction.blob.core.windows.net';
@@ -59,14 +64,16 @@ export interface WorkflowReleaseProvenance extends ReleaseProvenanceBase {
 }
 
 /**
- * Built locally and signed by a maintainer pinned in `maintainer-signers.ts`.
- * The signer's email is deliberately not part of the result; the pinned list
+ * Built locally and signed by a maintainer pinned in `maintainer-signers.ts`;
+ * the Sigstore bundle is the release asset named in `signatureAsset`. The
+ * signer's email is deliberately not part of the result; the pinned list
  * shipped in this package is the trust anchor.
  */
 export interface MaintainerReleaseProvenance extends ReleaseProvenanceBase {
 	kind: 'maintainer';
 	signerIssuer: typeof GITHUB_ACCOUNT_OIDC_ISSUER;
 	buildType: typeof MAINTAINER_BUILD_TYPE;
+	signatureAsset: string;
 }
 
 export type ReleaseProvenance = WorkflowReleaseProvenance | MaintainerReleaseProvenance;
@@ -172,6 +179,22 @@ async function verifyGithubProvenance(
 		eventName: 'push'
 	});
 	const attestations = await fetchAttestationList(http, bundleSha256);
+	// GitHub's attestations API stores only GitHub Actions-issued signatures,
+	// so it can only hold workflow provenance. A maintainer signature is a
+	// release asset instead. A release carries exactly one kind: an asset next
+	// to workflow attestations is refused rather than silently ranked.
+	if (release.maintainerSignature) {
+		if (attestations.length > 0) {
+			throw generic(
+				'release provenance mixes GitHub workflow attestations and a maintainer signature asset'
+			);
+		}
+		const signature = await fetchMaintainerSignature(http, release, release.maintainerSignature);
+		return verifyMaintainerReleaseBundle(signature, release, bundleSha256, {
+			verifyBundle,
+			maintainerSigners
+		});
+	}
 	if (attestations.length === 0) {
 		throw generic('GitHub release provenance is missing for the downloaded Cloudflare bundle');
 	}
@@ -179,7 +202,6 @@ async function verifyGithubProvenance(
 		throw generic(`GitHub returned more than ${MAX_ATTESTATIONS} provenance attestations`);
 	}
 
-	let verifiedKind: ReleaseProvenance['kind'] | undefined;
 	let verifiedSourceRef: string | undefined;
 	for (const attestation of attestations) {
 		if (String(attestation.repository_id) !== REPOSITORY_ID) {
@@ -187,28 +209,6 @@ async function verifyGithubProvenance(
 		}
 		const bundle = await fetchAttestationBundle(http, attestation.bundle_url);
 		const statement = parseStatement(bundle);
-		// Every returned attestation must verify, and all must be of one kind.
-		// Only the exact maintainer build type selects the maintainer policy;
-		// everything else takes the unchanged workflow path, which rejects
-		// unknown build types after signature verification.
-		const kind = attestationKind(statement);
-		if (verifiedKind !== undefined && verifiedKind !== kind) {
-			throw generic('GitHub release provenance mixes workflow and maintainer attestations');
-		}
-		verifiedKind = kind;
-		if (kind === 'maintainer') {
-			await verifyMaintainerAttestation(
-				bundle,
-				statement,
-				release,
-				bundleSha256,
-				commit,
-				verifyBundle,
-				maintainerSigners
-			);
-			verifiedSourceRef = releaseTagRef;
-			continue;
-		}
 		const releaseSource = selectReleaseSource(statement, releaseTagRef);
 		if (verifiedSourceRef !== undefined && verifiedSourceRef !== releaseSource.sourceRef) {
 			throw generic('GitHub release provenance contains conflicting workflow source refs');
@@ -247,9 +247,6 @@ async function verifyGithubProvenance(
 		});
 	}
 
-	if (verifiedKind === 'maintainer') {
-		return maintainerProvenance(release, bundleSha256, commit, attestations.length);
-	}
 	return {
 		status: 'verified',
 		mode: 'online',
@@ -268,9 +265,9 @@ async function verifyGithubProvenance(
 }
 
 /**
- * Verifies one maintainer-signed Sigstore bundle exactly as the online
- * verifier does for each attestation it fetches, without the GitHub lookup.
- * `scripts/release-local.mjs` uses it before and after uploading an attestation.
+ * Verifies one maintainer-signed Sigstore bundle with the maintainer policy.
+ * The online verifier uses it for the release's signature asset, and
+ * `scripts/release-local.mjs` uses it on the local bundle before publishing.
  */
 export async function verifyMaintainerReleaseBundle(
 	bundle: Bundle,
@@ -286,7 +283,7 @@ export async function verifyMaintainerReleaseBundle(
 		throw generic('release provenance subject digest does not match the downloaded bundle');
 	}
 	const statement = parseStatement(bundle);
-	if (attestationKind(statement) !== 'maintainer') {
+	if (!hasMaintainerBuildType(statement)) {
 		throw generic('maintainer release provenance build type is not the maintainer release type');
 	}
 	await verifyMaintainerAttestation(
@@ -298,15 +295,6 @@ export async function verifyMaintainerReleaseBundle(
 		options.verifyBundle ?? verifySigstore,
 		options.maintainerSigners ?? MAINTAINER_SIGNERS
 	);
-	return maintainerProvenance(release, bundleSha256, commit, 1);
-}
-
-function maintainerProvenance(
-	release: ResolvedRelease,
-	bundleSha256: string,
-	commit: string,
-	attestationCount: number
-): MaintainerReleaseProvenance {
 	return {
 		status: 'verified',
 		mode: 'online',
@@ -319,16 +307,44 @@ function maintainerProvenance(
 		subjectSha256: bundleSha256,
 		predicateType: SLSA_PREDICATE_TYPE,
 		buildType: MAINTAINER_BUILD_TYPE,
-		attestationCount,
+		signatureAsset: maintainerSignatureAssetName(release.tag),
+		attestationCount: 1,
 		trustRoot: 'sigstore-public-good'
 	};
 }
 
-function attestationKind(statement: InTotoStatement): ReleaseProvenance['kind'] {
+async function fetchMaintainerSignature(
+	http: HttpClient,
+	release: ResolvedRelease,
+	asset: { assetName: string; size: number }
+): Promise<Bundle> {
+	if (asset.assetName !== maintainerSignatureAssetName(release.tag)) {
+		throw generic('maintainer signature asset name does not match the release tag');
+	}
+	const bytes = await downloadReleaseAsset(http, {
+		tag: release.tag,
+		assetName: asset.assetName,
+		size: asset.size,
+		maxBytes: MAX_MAINTAINER_SIGNATURE_BYTES,
+		label: 'maintainer signature asset'
+	});
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(utf8(bytes));
+	} catch {
+		throw generic('maintainer signature asset is not valid JSON');
+	}
+	if (!isObject(parsed)) {
+		throw generic('maintainer signature asset must be a JSON object');
+	}
+	return parsed as Bundle;
+}
+
+function hasMaintainerBuildType(statement: InTotoStatement): boolean {
 	const buildType = isObject(statement.predicate)
 		? (statement.predicate.buildDefinition as { buildType?: unknown } | undefined)?.buildType
 		: undefined;
-	return buildType === MAINTAINER_BUILD_TYPE ? 'maintainer' : 'workflow';
+	return buildType === MAINTAINER_BUILD_TYPE;
 }
 
 async function verifyMaintainerAttestation(
