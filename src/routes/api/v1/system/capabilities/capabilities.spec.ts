@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import type { RequestEvent } from '@sveltejs/kit';
 import { describe, expect, it } from 'vitest';
+import { advertisedPublicOrigin } from '$lib/capabilities';
 import { GET } from './+server';
 
 function createEvent(platform?: App.Platform): RequestEvent {
@@ -36,6 +38,8 @@ interface CapabilitiesResponse {
 	};
 	name: string;
 	apiVersion: string;
+	version: string;
+	publicOrigin: string | null;
 	runtime: 'node' | 'cloudflare' | 'vercel';
 	supportedProfiles: {
 		node: { database: string; objects: string; status: string };
@@ -344,5 +348,47 @@ describe('GET /api/v1/system/capabilities', () => {
 		const response = await GET(createEvent(platform));
 		const data = (await response.json()) as CapabilitiesResponse;
 		expect(data.runtime).toBe('cloudflare');
+	});
+
+	it('reports the build version from package.json and the configured public origin', async () => {
+		const packageVersion: string = (
+			JSON.parse(
+				readFileSync(new URL('../../../../../../package.json', import.meta.url), 'utf8')
+			) as {
+				version: string;
+			}
+		).version;
+		const platform = {
+			env: { DB: {} as D1Database, SIGNKIT_PUBLIC_ORIGIN: 'https://Sign.Example.com/' }
+		} as unknown as App.Platform;
+
+		const data = (await (await GET(createEvent(platform))).json()) as CapabilitiesResponse;
+
+		expect(data.version).toBe(packageVersion);
+		expect(data.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+		expect(data.publicOrigin).toBe('https://sign.example.com');
+	});
+
+	it('reports a null public origin when none is configured', async () => {
+		const platform = { env: { DB: {} as D1Database } } as unknown as App.Platform;
+
+		const data = (await (await GET(createEvent(platform))).json()) as CapabilitiesResponse;
+
+		expect(data).toHaveProperty('publicOrigin', null);
+	});
+});
+
+describe('advertisedPublicOrigin', () => {
+	it.each([
+		[undefined, null],
+		['', null],
+		['   ', null],
+		['not a url', null],
+		['ftp://sign.example.com', null],
+		['https://sign.example.com', 'https://sign.example.com'],
+		['https://sign.example.com:8443/', 'https://sign.example.com:8443'],
+		['http://localhost:5173', 'http://localhost:5173']
+	])('maps %j to %j', (raw, expected) => {
+		expect(advertisedPublicOrigin(raw)).toBe(expected);
 	});
 });

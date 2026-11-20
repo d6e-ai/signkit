@@ -6,7 +6,10 @@ const captureMemberDisplay = vi.hoisted(() => ({
 		throw new Error('ciphertext exploded for user@example.com');
 	})
 }));
-vi.mock('$lib/server/instance-display-capture', () => captureMemberDisplay);
+vi.mock('$lib/server/instance-display-capture', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/instance-display-capture')>()),
+	...captureMemberDisplay
+}));
 import {
 	InstanceInvitationCollisionExhaustedError,
 	InvalidInstanceInvitationRequestError,
@@ -947,6 +950,7 @@ describe('instance invitation HTTP handlers', () => {
 						pathname: ACCEPT_PATH,
 						locals: {
 							apiKeyAuthentication: { state: 'absent' },
+							accessTokenAuthentication: { state: 'absent' },
 							bootstrapped: true,
 							identityState: 'active',
 							instanceMembership: {

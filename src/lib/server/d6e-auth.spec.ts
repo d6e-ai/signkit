@@ -4,7 +4,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
-import { authorizeUrl, D6eAuthRejectedError, refresh, verifyAccessToken } from './d6e-auth';
+import {
+	authorizeUrl,
+	D6eAuthRejectedError,
+	refresh,
+	verifyAccessToken,
+	verifyBearerAccessToken
+} from './d6e-auth';
 import { mockFetchRouter } from './d6e-auth-jwks-test-support';
 
 let baseUrlCounter: number = 0;
@@ -80,17 +86,24 @@ async function signToken(
 		audience?: string;
 		expired?: boolean;
 		kid?: string;
+		omitExpiry?: boolean;
+		omitIssuedAt?: boolean;
+		issuedAt?: number;
 	} = {}
 ): Promise<string> {
 	const now: number = Math.floor(Date.now() / 1000);
-	return new SignJWT({ ...claims })
+	let jwt: SignJWT = new SignJWT({ ...claims })
 		.setProtectedHeader({ alg: 'RS256', kid: options.kid ?? KID })
-		.setIssuedAt(options.expired ? now - 7200 : now)
 		.setIssuer('d6e-auth')
 		.setAudience(options.audience ?? CLIENT_ID)
-		.setExpirationTime(options.expired ? now - 3600 : now + 3600)
-		.setSubject(claims.sub ?? 'user-1')
-		.sign(options.key ?? privateKey);
+		.setSubject(claims.sub ?? 'user-1');
+	if (options.omitIssuedAt !== true) {
+		jwt = jwt.setIssuedAt(options.issuedAt ?? (options.expired ? now - 7200 : now));
+	}
+	if (options.omitExpiry !== true) {
+		jwt = jwt.setExpirationTime(options.expired ? now - 3600 : now + 3600);
+	}
+	return jwt.sign(options.key ?? privateKey);
 }
 
 function withHeaderAlg(token: string, alg: string): string {
@@ -203,6 +216,74 @@ describe('verifyAccessToken', () => {
 		const token: string = await signToken({ email: 'user@example.com' });
 
 		const error: unknown = await verifyAccessToken(token).catch((caught: unknown) => caught);
+		expect(error).not.toBeInstanceOf(D6eAuthRejectedError);
+	});
+});
+
+describe('verifyBearerAccessToken', () => {
+	it('returns the principal and the token issuance as the profile observation', async () => {
+		mockFetchJwks();
+		const issuedAt: number = Math.floor(Date.now() / 1000) - 30;
+		const token: string = await signToken(
+			{ email: 'user@example.com', name: 'User', email_verified: true },
+			{ issuedAt }
+		);
+
+		await expect(verifyBearerAccessToken(token)).resolves.toEqual({
+			principal: {
+				subject: 'user-1',
+				email: 'user@example.com',
+				name: 'User',
+				emailVerified: true
+			},
+			observedAt: new Date(issuedAt * 1000).toISOString()
+		});
+	});
+
+	it('clamps a post-dated issuance to now', async () => {
+		mockFetchJwks();
+		const token: string = await signToken(
+			{ email: 'user@example.com' },
+			{ issuedAt: Math.floor(Date.now() / 1000) + 3600 }
+		);
+
+		const verified = await verifyBearerAccessToken(token);
+		expect(Date.parse(verified.observedAt ?? '')).toBeLessThanOrEqual(Date.now());
+	});
+
+	it('reports no observation for a token without iat', async () => {
+		mockFetchJwks();
+		const token: string = await signToken({ email: 'user@example.com' }, { omitIssuedAt: true });
+
+		await expect(verifyBearerAccessToken(token)).resolves.toMatchObject({ observedAt: null });
+	});
+
+	it.each([
+		['a token without an expiry', { omitExpiry: true }, {}],
+		['an expired token', { expired: true }, {}],
+		['a token for another client', { audience: 'another-client' }, {}],
+		['a refresh token', {}, { type: 'refresh' }],
+		['a token without an email', {}, { email: undefined }]
+	])('rejects (not unavailable) %s', async (_name, options, claims) => {
+		mockFetchJwks();
+		const token: string = await signToken({ email: 'user@example.com', ...claims }, options);
+
+		await expect(verifyBearerAccessToken(token)).rejects.toBeInstanceOf(D6eAuthRejectedError);
+	});
+
+	it('still accepts a cookie-session token without an expiry through verifyAccessToken', async () => {
+		mockFetchJwks();
+		const token: string = await signToken({ email: 'user@example.com' }, { omitExpiry: true });
+
+		await expect(verifyAccessToken(token)).resolves.toMatchObject({ subject: 'user-1' });
+	});
+
+	it('leaves a JWKS fetch failure as a generic (unavailable) failure', async () => {
+		mockFetchResponse(503);
+		const token: string = await signToken({ email: 'user@example.com' });
+
+		const error: unknown = await verifyBearerAccessToken(token).catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(Error);
 		expect(error).not.toBeInstanceOf(D6eAuthRejectedError);
 	});
 });

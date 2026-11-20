@@ -2,11 +2,19 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from '../constants.js';
 
 export interface HttpRequest {
 	url: string;
-	method?: 'GET' | 'HEAD';
+	method?: 'GET' | 'HEAD' | 'POST';
 	headers?: Record<string, string>;
+	/** Request body for POST. Callers own its encoding and content-type header. */
+	body?: string;
 	maxBytes: number;
 	allowedHosts: ReadonlySet<string>;
 	requireHttps?: boolean;
+	/**
+	 * When false, a 3xx response is returned to the caller instead of being
+	 * followed. Credential-bearing requests use this so a redirect can never
+	 * carry their `Authorization` header to another URL.
+	 */
+	followRedirects?: boolean;
 	timeoutMs?: number;
 	signal?: AbortSignal;
 }
@@ -48,11 +56,12 @@ export async function boundedFetch(
 		const response = await fetchImpl(current, {
 			method: request.method ?? 'GET',
 			headers,
+			...(request.body !== undefined ? { body: request.body } : {}),
 			redirect: 'manual',
 			signal
 		});
 		const location = response.headers.get('location');
-		if (isRedirect(response.status) && location) {
+		if (request.followRedirects !== false && isRedirect(response.status) && location) {
 			const next = new URL(location, current);
 			current = parseAllowedUrl(next.toString(), request.allowedHosts, requireHttps);
 			continue;

@@ -231,6 +231,12 @@ export class MemoryFileSystem implements FileSystem {
 export class FakeHttp implements HttpClient {
 	readonly requests: HttpRequest[] = [];
 	private readonly routes = new Map<string, HttpResponse[]>();
+	private readonly failures = new Map<string, Error>();
+
+	/** Makes every request to `url` reject, like a network failure. */
+	fail(url: string, error: Error): void {
+		this.failures.set(url, error);
+	}
 
 	on(url: string, body: unknown, status = 200, headers: Record<string, string> = {}): void {
 		const list = this.routes.get(url) ?? [];
@@ -247,6 +253,10 @@ export class FakeHttp implements HttpClient {
 		const host = new URL(request.url).hostname;
 		if (!request.allowedHosts.has(host)) {
 			throw new Error(`refusing download from unexpected host ${host}`);
+		}
+		const failure = this.failures.get(request.url);
+		if (failure) {
+			throw failure;
 		}
 		const list = this.routes.get(request.url);
 		if (!list || list.length === 0) {
@@ -478,6 +488,7 @@ export function command(overrides: Partial<ParsedCommand> = {}): ParsedCommand {
 			smtpSecure: false,
 			smtpUsername: false,
 			bootstrapOwnerEmail: false,
+			consoleOrigins: false,
 			...overrides.overrides
 		}
 	};

@@ -113,6 +113,33 @@ or an organization. Owner, admin, and member roles have the same access to their
 access to another member's contacts. Unknown and cross-owner contact identifiers are deliberately
 indistinguishable.
 
+### Operator access tokens
+
+An operator console may present a d6e-auth access token instead of the session cookie, as
+`Authorization: Bearer <JWT>`. SignKit verifies it with the session's own checks: RS256 against the
+provider JWKS, issuer `d6e-auth`, audience equal to this deployment's `D6E_AUTH_CLIENT_ID`, `sub`
+and `email` present, and never a refresh token. A bearer token must also carry `exp`. A token minted
+for another client, including another SignKit deployment, fails the audience check.
+
+The verified identity then takes the same `instance_member` read as a cookie session. Roles,
+suspension, the `no_membership` bootstrap and self-profile access, and every session-only surface
+(dashboard, contacts, members, invitations, API keys, webhooks, bootstrap, recipient-link reissue)
+behave identically. Envelope commands are attributed to that member as `user`, never `agent`. API
+key rules are unchanged.
+
+- The token is recognized only on the operator API surface: `/api/v1/api-keys`, `/api/v1/contacts`,
+  `/api/v1/dashboard`, `/api/v1/envelopes`, `/api/v1/instance`, and `/api/v1/webhooks`. This is an
+  allowlist; a new prefix stays closed until it is added. Signing, recipient, completion-artifact,
+  and system endpoints and browser pages never resolve one.
+- Only the exact `Bearer ` scheme followed by a compact JWS that does not start with `signkit_`
+  selects this mode. Every other `Authorization` value keeps its API-key handling.
+- Presenting the token is exclusive. The operator cookie is neither read nor written — not
+  refreshed, resealed, or cleared — and a failed token never falls back to it.
+- An invalid, expired, foreign-audience, refresh, or malformed token gets the ordinary opaque `401`
+  `authentication-required` problem with `WWW-Authenticate: Bearer` and no `error` parameter. An
+  unreachable key set or missing configuration is `503`, as for the session.
+- Every request verifies its token again; only public verification keys are cached.
+
 ## API keys
 
 API keys belong to one `instance_member` through `owner_user_id`. They never select a tenant and
@@ -139,6 +166,40 @@ associated with that input. Closing the API-key create Dialog does not dismiss t
 `signkit_` secret; only explicit dismiss does, including after a failed or tokenless follow-up
 create. Scopes, expiry, and the rest of a key's metadata remain reachable on narrow viewports
 through a details overlay.
+
+## Cross-origin operator consoles
+
+`SIGNKIT_CONSOLE_ORIGINS` lists the exact browser origins of operator consoles that may call the
+operator API directly ([configuration](../deployment.md#configuration)). Entries are HTTPS origins,
+or HTTP for an exact loopback host during development, without wildcard, path, query, or
+credentials. Absent or blank turns the feature off; an invalid entry turns it off too and logs a
+value-free diagnostic.
+
+For a request whose `Origin` is listed:
+
+- A preflight (`OPTIONS` with `Access-Control-Request-Method`) on the operator API surface is
+  answered `204` before any credential handling or routing, with `Access-Control-Allow-Origin`
+  echoing that origin, `Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE`,
+  `Access-Control-Allow-Headers: authorization, content-type, accept, idempotency-key,
+x-signkit-expected-subject`, `Access-Control-Max-Age: 600`, and `Vary: Origin`.
+- Every actual response, problem responses included, carries `Access-Control-Allow-Origin`,
+  `Vary: Origin`, and
+  `Access-Control-Expose-Headers: content-disposition, idempotency-replayed, location, www-authenticate`.
+- `GET /api/v1/system/capabilities` and `GET /api/v1/openapi.json` are shared the same way, for
+  `GET` only.
+
+`Access-Control-Allow-Credentials` is never sent. A console authenticates only with an
+[operator access token](#operator-access-tokens), so a browser never attaches this deployment's
+cookie to a cross-origin call. CORS grants no authority: every shared request still needs its own
+credential.
+
+Any other origin, method, or path gets no CORS header; a refused preflight reaches routing and is
+answered `405`. While the feature is on, eligible responses carry `Vary: Origin` whatever origin
+asked. Signing, recipient, completion-artifact, and system endpoints never answer cross-origin, and
+the browser recipient commands keep their explicit same-origin check. SvelteKit's CSRF check still
+refuses cross-origin form content types (`application/x-www-form-urlencoded`, `multipart/form-data`,
+`text/plain`); no operator endpoint accepts them, so console calls with JSON or raw
+(`application/pdf`, DOCX, `application/octet-stream`) bodies are governed by this policy alone.
 
 ## Other authorities
 
@@ -225,6 +286,8 @@ per-endpoint signing secret and a deployer-managed destination allowlist.
 ## Fail-closed rules
 
 - Failed identity verification is unavailable, not anonymous.
+- A presented bearer, an API key or an operator access token, never composes with or falls back to
+  a browser cookie.
 - Missing persistence is a service error, never an authorization bypass.
 - Unknown or revoked keys share an opaque authentication failure.
 - Authorization is evaluated on every request; it is not cached across membership changes.

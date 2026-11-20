@@ -53,6 +53,12 @@ ordinary request handling are not profile observations.
 Legacy cookies without a trustworthy observation stay unavailable until refresh or
 reauthentication.
 
+An [operator access token](authorization-and-instance-administration.md#operator-access-tokens) is
+its own observation: its `iat`, clamped to the current time. It has no cookie marker, so the bearer
+path captures only on the self-profile read (`GET /api/v1/instance/members/me`) that a console makes
+when it opens a deployment, plus bootstrap and invitation acceptance. A cookie that accompanies the
+token is never read for the observation and never receives the marker.
+
 After local active membership is resolved, SignKit best-effort captures the snapshot from that
 session observation. A cookie marker (`profileStoredAt` matching `profileObservedAt`) prevents a
 database write and encryption on every later request for the same observation. Successful
@@ -63,8 +69,8 @@ Display capture failure never fails authentication, membership resolution, boots
 invitation acceptance. Logs use fixed redacted codes and never include raw errors, identifiers,
 email, names, ciphertext, keys, or tokens.
 
-Cookie principal authority, API-key bearer exclusion, and recipient-surface session exclusion are
-unchanged.
+Cookie principal authority, bearer exclusion (API keys and operator access tokens), and
+recipient-surface session exclusion are unchanged.
 
 ## Invitation targets
 
