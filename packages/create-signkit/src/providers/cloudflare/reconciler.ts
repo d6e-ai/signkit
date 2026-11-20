@@ -1252,7 +1252,7 @@ async function resolveDeploymentEnrollment(
 	}
 	if (await runtime.fs.exists(recoveryPath)) {
 		throw preflight(
-			`${ENROLLMENT_TOKEN_ENV} is set, but a recovery file already exists at ${recoveryPath} without an enrollment record, so its retained OAuth pair is reused instead of enrolling. Unset ${ENROLLMENT_TOKEN_ENV} and pass --bootstrap-owner-email (and --console-origins if needed) explicitly. The token was not used.`
+			`${ENROLLMENT_TOKEN_ENV} is set, but a recovery file already exists at ${recoveryPath} without an enrollment record, so its retained OAuth pair is reused instead of enrolling. Unset ${ENROLLMENT_TOKEN_ENV} and pass --bootstrap-owner-email (and --console-origins and --console-url if needed) explicitly. The token was not used.`
 		);
 	}
 	return { mode: 'request', token };
@@ -1511,7 +1511,7 @@ async function enrollAndRetainRecovery(
 		recordPath = await writeEnrollmentRecord(runtime.fs, recoveryPath, enrolled.record);
 	} catch (error) {
 		throw preflight(
-			`D6E Auth enrolled server ${serverId} and its OAuth pair is retained in ${recoveryPath}, but the enrollment record could not be written (${error instanceof Error ? error.message : String(error)}). Nothing was changed in Cloudflare. Rerun with ${ENROLLMENT_TOKEN_ENV} unset, passing --bootstrap-owner-email with the email of the account that issued the token and --console-origins "${enrolled.record.consoleOrigins.join(',')}".`
+			`D6E Auth enrolled server ${serverId} and its OAuth pair is retained in ${recoveryPath}, but the enrollment record could not be written (${error instanceof Error ? error.message : String(error)}). Nothing was changed in Cloudflare. Rerun with ${ENROLLMENT_TOKEN_ENV} unset, passing --bootstrap-owner-email with the email of the account that issued the token and --console-origins "${enrolled.record.consoleOrigins.join(',')}"${enrolled.record.consoleUrl === undefined ? '' : ` --console-url "${enrolled.record.consoleUrl}"`}.`
 		);
 	}
 	const staged = await stageDeploymentRecovery(runtime, ensured, requiredSecrets);
