@@ -178,6 +178,7 @@ as Worker secrets or variables on Cloudflare.
 | `SIGNKIT_BOOTSTRAP_OWNER_EMAIL`                                                                                              | Required on every uninitialized non-local instance. Restricts instance bootstrap to one verified email; see [Claim the initial owner immediately after deploy](#claim-the-initial-owner-immediately-after-deploy). Not a secret; only the local-development triple (`NODE_ENV=development`, unsafe flag, loopback origin) replaces it. |
 | `SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP`                                                                                  | Exactly `true` restores first-user-wins bootstrap only when all local-development checks hold: Node, `NODE_ENV=development`, and a loopback `SIGNKIT_PUBLIC_ORIGIN`. Ignored with an unset/other `NODE_ENV`, on Cloudflare Workers, Vercel, and any non-loopback origin. Never set in production.                                      |
 | `SIGNKIT_WEBHOOK_ALLOWED_HOSTS`                                                                                              | Deployer-owned webhook destination allowlist (comma-separated exact hosts and `*.` wildcard suffixes). Absent, blank, or invalid denies webhook creation and every delivery attempt by default. See [Webhook destination allowlist](#webhook-destination-allowlist).                                                                   |
+| `SIGNKIT_CONSOLE_ORIGINS`                                                                                                    | Optional comma-separated exact browser origins of operator consoles allowed to call the operator API cross-origin with a d6e-auth access token (HTTPS; HTTP only for loopback). Absent, blank, or invalid turns cross-origin access off. Not a secret. See [Console origins](#console-origins).                                        |
 | `SIGNKIT_MAIL_PROVIDER`                                                                                                      | Mail transport: exactly `smtp` or `cloudflare`. Required on every runtime; the checked-in Worker profile supplies `cloudflare` as its editable default. See [Mail](#mail) above.                                                                                                                                                       |
 | `SIGNKIT_SMTP_HOST`, `SIGNKIT_SMTP_PORT`, `SIGNKIT_SMTP_SECURE`, `SIGNKIT_SMTP_USERNAME`, `SIGNKIT_SMTP_PASSWORD`            | SMTP connection settings for `SIGNKIT_MAIL_PROVIDER=smtp` on every runtime. Workers reject port 25. Covers Resend and any other SMTP-speaking provider.                                                                                                                                                                                |
 | `DATABASE_URL`                                                                                                               | PostgreSQL connection string (Node and Vercel profiles).                                                                                                                                                                                                                                                                               |
@@ -210,6 +211,20 @@ public-IP DNS checks still run on every attempt, and delivery fetches never foll
 
 Set the same value as a plain (non-secret) variable on every profile: `.env` for Node/Docker and
 Vercel, cf text bindings (or `.dev.vars` locally) for Cloudflare Workers.
+
+### Console origins
+
+An operator console served from another origin calls `/api/v1` directly with a d6e-auth access
+token minted for this deployment's client ID. List its origin in `SIGNKIT_CONSOLE_ORIGINS`, for
+example `https://console.example.com`; several consoles are comma-separated. Entries are compared
+exactly with the browser's `Origin` header, so a scheme, host, or port difference does not match.
+Leave the value empty to keep the operator API same-origin only. The CORS and token rules are
+specified in
+[authorization](architecture/authorization-and-instance-administration.md#cross-origin-operator-consoles).
+
+Set it as a plain (non-secret) variable: `.env` for Node/Docker and Vercel, a Worker variable (or
+`.dev.vars` locally) for Cloudflare Workers. The checked-in Worker configuration does not declare
+it, so a deploy keeps the value already set on the Worker.
 
 ### Claim the initial owner immediately after deploy
 

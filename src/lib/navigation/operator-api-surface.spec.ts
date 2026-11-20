@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOperatorApiPath } from './operator-api-surface';
+import { consoleCorsSurface, isOperatorApiPath } from './operator-api-surface';
 
 describe('operator API surface', () => {
 	it.each([
@@ -16,6 +16,7 @@ describe('operator API surface', () => {
 		'/api/v1/webhooks/01900000-0000-7000-8000-000000000201/deliveries'
 	])('includes %s', (pathname) => {
 		expect(isOperatorApiPath(pathname)).toBe(true);
+		expect(consoleCorsSurface(pathname)).toBe('operator');
 	});
 
 	it.each([
@@ -26,8 +27,7 @@ describe('operator API surface', () => {
 		'/api/v1/completion-artifacts',
 		'/api/v1/system/deliveries/drain',
 		'/api/v1/system/maintenance/health',
-		'/api/v1/system/capabilities',
-		'/api/v1/openapi.json',
+		'/api/v1/system/capabilities/extra',
 		'/api/v1/envelopesx',
 		'/api/v1',
 		'/s/skr1_token',
@@ -35,7 +35,16 @@ describe('operator API surface', () => {
 		'/envelopes',
 		'/settings/api-keys',
 		'/auth/login'
-	])('excludes %s from bearer verification', (pathname) => {
+	])('excludes %s from bearer verification and console CORS', (pathname) => {
 		expect(isOperatorApiPath(pathname)).toBe(false);
+		expect(consoleCorsSurface(pathname)).toBeNull();
 	});
+
+	it.each(['/api/v1/system/capabilities', '/api/v1/openapi.json'])(
+		'opens %s as public discovery only',
+		(pathname) => {
+			expect(isOperatorApiPath(pathname)).toBe(false);
+			expect(consoleCorsSurface(pathname)).toBe('discovery');
+		}
+	);
 });

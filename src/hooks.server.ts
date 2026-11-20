@@ -8,10 +8,16 @@ import {
 } from '$lib/application/api-keys/api-key-authentication-runtime';
 import { resolveInstanceApplication } from '$lib/application/instance/instance-runtime';
 import { isApiKeyAuthenticatedPath, isApiKeyRejectedPath } from '$lib/navigation/api-key-surface';
-import { isOperatorApiPath } from '$lib/navigation/operator-api-surface';
+import { consoleCorsSurface, isOperatorApiPath } from '$lib/navigation/operator-api-surface';
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { parseBearerAccessToken } from '$lib/security/access-token-bearer';
 import { hasAuthorizationHeader, parseBearerApiKey } from '$lib/security/api-key';
+import {
+	consoleCorsPreflightResponse,
+	isConsoleCorsMethod,
+	resolveConsoleOrigins,
+	withConsoleCorsHeaders
+} from '$lib/http/console-cors';
 import {
 	D6eAuthRejectedError,
 	refresh,
@@ -68,6 +74,53 @@ export const handleLocale: Handle = ({ event, resolve }) => {
 					.replace('%paraglide.dir%', getTextDirection(locale))
 		});
 	});
+};
+
+/**
+ * Cross-origin access for operator consoles listed in `SIGNKIT_CONSOLE_ORIGINS`.
+ *
+ * Runs first so a preflight is answered before any credential handling: a
+ * preflight never carries credentials and must not reach a route. Only the
+ * operator API surface (every method it uses) and public discovery (`GET`) are
+ * eligible; the recipient surface, completion artifacts, and system endpoints
+ * never receive a CORS header whatever origin asks.
+ *
+ * Credentialed CORS is never allowed. The console authenticates with an
+ * explicit d6e-auth access token, so browsers never attach this deployment's
+ * cookie to a cross-origin call, and a request that is not allowed simply gets
+ * no CORS headers -- the browser then withholds the response from the page.
+ * SvelteKit's own CSRF origin check still applies first: it refuses
+ * cross-origin form content types (`application/x-www-form-urlencoded`,
+ * `multipart/form-data`, `text/plain`), which no operator endpoint accepts, and
+ * leaves the JSON and raw-body API calls a console makes to this policy. The
+ * explicit same-origin checks of the recipient signing commands are unaffected
+ * because those paths are never eligible.
+ */
+export const handleConsoleCors: Handle = async ({ event, resolve }) => {
+	const surface = consoleCorsSurface(event.url.pathname);
+	if (surface === null) return resolve(event);
+	const origins: ReadonlySet<string> = resolveConsoleOrigins(event.platform);
+	if (origins.size === 0) return resolve(event);
+
+	const origin: string | null = event.request.headers.get('origin');
+	const allowedOrigin: string | null = origin !== null && origins.has(origin) ? origin : null;
+	const requestedMethod: string | null = event.request.headers.get('access-control-request-method');
+	if (event.request.method === 'OPTIONS' && requestedMethod !== null) {
+		if (allowedOrigin !== null && isConsoleCorsMethod(surface, requestedMethod)) {
+			return consoleCorsPreflightResponse(allowedOrigin, surface);
+		}
+		// A refused preflight falls through to normal routing, which has no
+		// OPTIONS handler and answers 405 without any CORS header.
+		return withConsoleCorsHeaders(await resolve(event), null);
+	}
+
+	const response: Response = await resolve(event);
+	return withConsoleCorsHeaders(
+		response,
+		allowedOrigin !== null && isConsoleCorsMethod(surface, event.request.method)
+			? allowedOrigin
+			: null
+	);
 };
 
 /**
@@ -442,4 +495,9 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
-export const handle: Handle = sequence(handleLocale, handleApiKeyAuthentication, handleSession);
+export const handle: Handle = sequence(
+	handleConsoleCors,
+	handleLocale,
+	handleApiKeyAuthentication,
+	handleSession
+);

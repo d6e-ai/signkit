@@ -167,6 +167,40 @@ associated with that input. Closing the API-key create Dialog does not dismiss t
 create. Scopes, expiry, and the rest of a key's metadata remain reachable on narrow viewports
 through a details overlay.
 
+## Cross-origin operator consoles
+
+`SIGNKIT_CONSOLE_ORIGINS` lists the exact browser origins of operator consoles that may call the
+operator API directly ([configuration](../deployment.md#configuration)). Entries are HTTPS origins,
+or HTTP for an exact loopback host during development, without wildcard, path, query, or
+credentials. Absent or blank turns the feature off; an invalid entry turns it off too and logs a
+value-free diagnostic.
+
+For a request whose `Origin` is listed:
+
+- A preflight (`OPTIONS` with `Access-Control-Request-Method`) on the operator API surface is
+  answered `204` before any credential handling or routing, with `Access-Control-Allow-Origin`
+  echoing that origin, `Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE`,
+  `Access-Control-Allow-Headers: authorization, content-type, accept, idempotency-key,
+x-signkit-expected-subject`, `Access-Control-Max-Age: 600`, and `Vary: Origin`.
+- Every actual response, problem responses included, carries `Access-Control-Allow-Origin`,
+  `Vary: Origin`, and
+  `Access-Control-Expose-Headers: content-disposition, idempotency-replayed, location, www-authenticate`.
+- `GET /api/v1/system/capabilities` and `GET /api/v1/openapi.json` are shared the same way, for
+  `GET` only.
+
+`Access-Control-Allow-Credentials` is never sent. A console authenticates only with an
+[operator access token](#operator-access-tokens), so a browser never attaches this deployment's
+cookie to a cross-origin call. CORS grants no authority: every shared request still needs its own
+credential.
+
+Any other origin, method, or path gets no CORS header; a refused preflight reaches routing and is
+answered `405`. While the feature is on, eligible responses carry `Vary: Origin` whatever origin
+asked. Signing, recipient, completion-artifact, and system endpoints never answer cross-origin, and
+the browser recipient commands keep their explicit same-origin check. SvelteKit's CSRF check still
+refuses cross-origin form content types (`application/x-www-form-urlencoded`, `multipart/form-data`,
+`text/plain`); no operator endpoint accepts them, so console calls with JSON or raw
+(`application/pdf`, DOCX, `application/octet-stream`) bodies are governed by this policy alone.
+
 ## Other authorities
 
 Recipient pages use envelope-scoped capability tokens and encrypted browser sessions. They do not
