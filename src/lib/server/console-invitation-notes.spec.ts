@@ -84,6 +84,17 @@ describe('consoleInvitationNotes', () => {
 		expect(init.body).toBeUndefined();
 	});
 
+	it('treats a note refused for an already withdrawn invitation as withdrawn, not failed', async () => {
+		configure();
+		const warn = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response('{"error":"invitation_revoked"}', { status: 409 }))
+		);
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('withdrawn');
+		expect(warn).not.toHaveBeenCalled();
+	});
+
 	it('reports a rejected or unreachable D6E Auth as failed, logging neither email nor secret', async () => {
 		configure();
 		const warn = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);

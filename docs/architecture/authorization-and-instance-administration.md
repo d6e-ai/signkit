@@ -129,7 +129,9 @@ endpoint withdraws the note; acceptance does not, because the console's own acce
 Notes run after the command commits, never follow redirects, and are best effort: a failure is
 logged by event name and status only and never changes the response. The create response waits for
 the note, so a revoke issued from it cannot be overtaken by a late note; the withdrawal may finish
-after the revoke response. Revocations cascaded by member
+after the revoke response. D6E Auth also refuses a note for an invitation it has seen withdrawn
+(`409 invitation_revoked`), which SignKit treats as the expected end state, so no ordering can
+revive a revoked invitation. Revocations cascaded by member
 suspension or demotion do not withdraw notes; such notes lapse at their expiry, and accepting
 through the console then meets the same opaque failure.
 

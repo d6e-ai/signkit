@@ -16,7 +16,8 @@ import { serverClientCredentials, type ServerClientCredentials } from './d6e-aut
  * credentials, and never changes the command's response. The create note is
  * awaited before the create response so a revoke issued from that response
  * cannot be overtaken by it; only the withdrawal may continue after its
- * response (see {@link runAfterCommand}).
+ * response (see {@link runAfterCommand}). D6E Auth refuses a note for an id it
+ * has already seen withdrawn, so a late note can never revive a revoked one.
  */
 
 const NOTE_TIMEOUT_MS: number = 5_000;
@@ -33,7 +34,12 @@ export interface ConsoleInvitationNoteContext {
 	platform?: Readonly<App.Platform>;
 }
 
-export type ConsoleInvitationNoteOutcome = 'sent' | 'disabled' | 'failed';
+/**
+ * `withdrawn`: D6E Auth already holds a withdrawal for this invitation id and
+ * refused the note (409 `invitation_revoked`). That is the intended end state
+ * after a revoke that overtook the note, not a failure.
+ */
+export type ConsoleInvitationNoteOutcome = 'sent' | 'withdrawn' | 'disabled' | 'failed';
 
 export interface ConsoleInvitationNotesPort {
 	note(
@@ -90,6 +96,7 @@ async function send(
 		);
 		await response.body?.cancel().catch((): void => undefined);
 		if (response.ok) return 'sent';
+		if (method === 'PUT' && response.status === 409) return 'withdrawn';
 		console.warn(JSON.stringify({ event, status: response.status }));
 		return 'failed';
 	} catch (error: unknown) {
