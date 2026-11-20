@@ -146,10 +146,12 @@ Before the first maintainer-signed release:
 1. The release owner pins the signing identity in
    `packages/create-signkit/src/release/maintainer-signers.ts` in a reviewed
    commit on `main`: `issuer` is `https://github.com/login/oauth` and `email`
-   is the verified primary email of the maintainer's GitHub account, exactly as
-   GitHub reports it. The account must use two-factor authentication. The
-   email becomes public in the Sigstore transparency log and in the stored
-   attestation. While the list is empty, `sign` refuses to start and
+   is the address the maintainer will choose on Sigstore's consent screen,
+   byte for byte. Use the account's GitHub noreply address
+   (`<user id>+<login>@users.noreply.github.com`) and pick it on the consent
+   screen when signing. The account must use two-factor authentication. The
+   chosen email becomes public in the Sigstore transparency log and in the
+   stored attestation. While the list is empty, `sign` refuses to start and
    `create-signkit` rejects every maintainer signature. Each `create-signkit`
    version trusts the list it was built with, so bump `create-signkit` with
    every change to the list.
