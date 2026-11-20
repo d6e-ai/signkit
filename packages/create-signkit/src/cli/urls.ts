@@ -173,3 +173,46 @@ export function originFromDomain(domain: string): string {
 export function hostnameFromOrigin(origin: string): string {
 	return new URL(origin).hostname;
 }
+
+const MAX_CONSOLE_URL_LENGTH = 2048;
+
+/**
+ * Canonical `SIGNKIT_CONSOLE_URL`: where invitation emails send people to
+ * join without the link. An `https:` URL, or `http:` only for a loopback host,
+ * with no userinfo, query, or fragment. Returns `undefined` when invalid.
+ */
+export function canonicalConsoleUrl(value: unknown): string | undefined {
+	if (typeof value !== 'string' || value.length === 0 || value.length > MAX_CONSOLE_URL_LENGTH) {
+		return undefined;
+	}
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return undefined;
+	}
+	if (url.username || url.password || url.search || url.hash) {
+		return undefined;
+	}
+	const secure = url.protocol === 'https:';
+	const loopbackHttp = url.protocol === 'http:' && LOOPBACK_HOSTNAMES.has(url.hostname);
+	if (!secure && !loopbackHttp) {
+		return undefined;
+	}
+	return url.href;
+}
+
+/** Parses `--console-url`. An empty value clears it (the server then names its own settings page). */
+export function parseConsoleUrlFlag(value: string, flag: string): string {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) {
+		return '';
+	}
+	const url = canonicalConsoleUrl(trimmed);
+	if (url === undefined) {
+		throw usage(
+			`${flag} must be an https URL (http only for localhost, 127.0.0.1, or [::1]) with no query or fragment`
+		);
+	}
+	return url;
+}

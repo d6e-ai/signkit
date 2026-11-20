@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
 import { SECRET_ENV_NAME } from '../constants.js';
 import { generic, usage } from '../cli/errors.js';
-import { canonicalConsoleOrigin, MAX_CONSOLE_ORIGINS } from '../cli/urls.js';
+import { canonicalConsoleOrigin, canonicalConsoleUrl, MAX_CONSOLE_ORIGINS } from '../cli/urls.js';
 import type { CommandName, MailProviderId, ProviderId, ReleaseChannel } from '../cli/parse.js';
 import type { FileSystem } from '../runtime/fs.js';
 
@@ -45,6 +45,12 @@ export interface DeploymentState {
 	 * array records an explicit "console CORS off".
 	 */
 	consoleOrigins?: string[];
+	/**
+	 * Canonical `SIGNKIT_CONSOLE_URL`, recorded from `--console-url` or the
+	 * console enrollment response and re-applied by later runs. `''` records an
+	 * explicit "no console URL".
+	 */
+	consoleUrl?: string;
 	lastD1BackupPath?: string;
 	channel: ReleaseChannel;
 	version?: string;
@@ -198,6 +204,13 @@ export function parseState(raw: string): DeploymentState {
 	}
 	if (parsed.consoleOrigins !== undefined) {
 		assertConsoleOrigins(parsed.consoleOrigins);
+	}
+	if (
+		parsed.consoleUrl !== undefined &&
+		(typeof parsed.consoleUrl !== 'string' ||
+			(parsed.consoleUrl !== '' && canonicalConsoleUrl(parsed.consoleUrl) !== parsed.consoleUrl))
+	) {
+		throw generic('deployment state consoleUrl is invalid');
 	}
 	return parsed as unknown as DeploymentState;
 }

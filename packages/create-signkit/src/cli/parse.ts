@@ -14,7 +14,12 @@ import {
 } from '../constants.js';
 import { parseReleaseTag } from '../release/semver.js';
 import { usage } from './errors.js';
-import { parseConsoleOriginsFlag, parseEmailAddress, parseHttpsOrigin } from './urls.js';
+import {
+	parseConsoleOriginsFlag,
+	parseConsoleUrlFlag,
+	parseEmailAddress,
+	parseHttpsOrigin
+} from './urls.js';
 
 export type ProviderId = 'cloudflare' | 'node' | 'vercel';
 export type MailProviderId = 'cloudflare' | 'smtp';
@@ -45,6 +50,11 @@ export interface ParsedCommand {
 	 * empty array is an explicit "console CORS off" and clears the Worker var.
 	 */
 	consoleOrigins?: string[];
+	/**
+	 * Canonical `SIGNKIT_CONSOLE_URL` from `--console-url`, where invitation
+	 * emails send people to join without the link. `''` clears the Worker var.
+	 */
+	consoleUrl?: string;
 	/** Display name sent with a console enrollment request (`--server-name`). */
 	serverName?: string;
 	version: string;
@@ -68,6 +78,7 @@ export interface ParsedCommand {
 		smtpUsername: boolean;
 		bootstrapOwnerEmail: boolean;
 		consoleOrigins: boolean;
+		consoleUrl: boolean;
 	};
 }
 
@@ -101,6 +112,7 @@ const VALUE_OPTION_FLAGS = new Set([
 	'smtp-username',
 	'bootstrap-owner-email',
 	'console-origins',
+	'console-url',
 	'server-name',
 	'version',
 	'channel',
@@ -315,6 +327,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
 		consoleOriginsRaw === undefined
 			? undefined
 			: parseConsoleOriginsFlag(consoleOriginsRaw, '--console-origins');
+	const consoleUrlRaw = values.get('console-url');
+	const consoleUrl =
+		consoleUrlRaw === undefined ? undefined : parseConsoleUrlFlag(consoleUrlRaw, '--console-url');
 	const serverName = parseOptionalServerName(values.get('server-name'));
 
 	if (domain && publicOrigin) {
@@ -344,6 +359,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
 		smtpUsername,
 		bootstrapOwnerEmail,
 		consoleOrigins,
+		consoleUrl,
 		serverName,
 		version,
 		channel: channelRaw,
@@ -365,7 +381,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
 			smtpSecure: values.has('smtp-secure'),
 			smtpUsername: values.has('smtp-username'),
 			bootstrapOwnerEmail: values.has('bootstrap-owner-email'),
-			consoleOrigins: values.has('console-origins')
+			consoleOrigins: values.has('console-origins'),
+			consoleUrl: values.has('console-url')
 		}
 	};
 }
@@ -503,6 +520,7 @@ Options:
   --smtp-username <name>  Optional SMTP username; password is accepted only in secret stdin JSON
   --bootstrap-owner-email <email>  SIGNKIT_BOOTSTRAP_OWNER_EMAIL as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it; console enrollment supplies a default)
   --console-origins <list>  SIGNKIT_CONSOLE_ORIGINS: comma-separated console origins allowed to call /api/v1 cross-origin ("" clears it; console enrollment supplies a default)
+  --console-url <url>     SIGNKIT_CONSOLE_URL: where invitation emails send people to join without the link ("" clears it; console enrollment supplies a default)
   --server-name <text>    Console display name sent with D6E_ENROLLMENT_TOKEN enrollment (default: public origin hostname)
   --version <tag|latest>  Release tag or "latest" (default: latest)
   --channel <stable|beta> Release channel (enforced against the selected tag; used to pick latest)

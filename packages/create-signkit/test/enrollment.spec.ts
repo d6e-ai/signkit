@@ -32,6 +32,7 @@ const AUTH_ORIGIN = 'https://auth.example.com';
 const ENROLL_URL = `${AUTH_ORIGIN}/api/v1/console/enrollments`;
 const PUBLIC_ORIGIN = 'https://signkit.example.workers.dev';
 const CONSOLE_ORIGIN = 'https://console.example.com';
+const CONSOLE_URL = `${CONSOLE_ORIGIN}/signkit/console`;
 const STATE_PATH = '/xdg/state/create-signkit/state.json';
 const RECOVERY_PATH = resolveRecoveryPath(STATE_PATH);
 const RECORD_PATH = resolveEnrollmentRecordPath(RECOVERY_PATH);
@@ -229,6 +230,38 @@ describe('console enrollment on a pristine initial deploy', () => {
 		expect(result.stdout).not.toContain('console.owner@example.com');
 	});
 
+	it('sets SIGNKIT_CONSOLE_URL from the consoleUrl D6E Auth names, and keeps it', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		const http = new OrderedHttp(cloudflare);
+		http.on(ENROLL_URL, enrollmentBody({ consoleUrl: CONSOLE_URL }), 201);
+		const result = await runEnrolled({ http, cloudflare });
+
+		expect(result.code).toBe(0);
+		const record = JSON.parse(await result.fs.readFile(RECORD_PATH)) as Record<string, unknown>;
+		expect(record.consoleUrl).toBe(CONSOLE_URL);
+		const config = JSON.parse(result.cloudflare.lastConfig ?? '{}') as {
+			vars: Record<string, string>;
+		};
+		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(CONSOLE_URL);
+		const state = JSON.parse(await result.fs.readFile(STATE_PATH)) as Record<string, unknown>;
+		expect(state.consoleUrl).toBe(CONSOLE_URL);
+	});
+
+	it('leaves SIGNKIT_CONSOLE_URL unset when D6E Auth names no consoleUrl', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		const http = new OrderedHttp(cloudflare);
+		http.on(ENROLL_URL, enrollmentBody(), 201);
+		const result = await runEnrolled({ http, cloudflare });
+
+		expect(result.code).toBe(0);
+		const config = JSON.parse(result.cloudflare.lastConfig ?? '{}') as {
+			vars: Record<string, string>;
+		};
+		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_URL');
+		const state = JSON.parse(await result.fs.readFile(STATE_PATH)) as Record<string, unknown>;
+		expect(state).not.toHaveProperty('consoleUrl');
+	});
+
 	it('prints a human enrollment line without secrets or the owner address', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		const http = new OrderedHttp(cloudflare);
@@ -411,7 +444,11 @@ describe('console enrollment failures', () => {
 		],
 		['a non-https console origin', { consoleOrigins: ['http://console.example.com'] }],
 		['a console origin with a path', { consoleOrigins: ['https://console.example.com/app'] }],
-		['a malformed owner email', { bootstrapOwnerEmail: 'not-an-email' }]
+		['a malformed owner email', { bootstrapOwnerEmail: 'not-an-email' }],
+		['a console URL outside the console origins', { consoleUrl: 'https://other.example.com/x' }],
+		['a non-https console URL', { consoleUrl: 'http://console.example.com/signkit/console' }],
+		['a console URL with a query', { consoleUrl: `${CONSOLE_ORIGIN}/signkit/console?x=1` }],
+		['a non-string console URL', { consoleUrl: 42 }]
 	])('rejects a 201 with %s and saves nothing', async (_name, overrides) => {
 		const cloudflare = new FakeCloudflareClient();
 		const http = new OrderedHttp(cloudflare);
@@ -800,5 +837,71 @@ describe('bounded POST transport', () => {
 		expect(seen).toHaveLength(1);
 		expect(seen[0]?.init.method).toBe('POST');
 		expect(seen[0]?.init.body).toBe('{"kind":"signkit"}');
+	});
+});
+
+describe('--console-url', () => {
+	function parsed(value: string): ParsedCommand {
+		const result = parseArgv([
+			'--cloudflare',
+			'plan',
+			'--account-id',
+			ACCOUNT_ID,
+			'--console-url',
+			value
+		]);
+		if (result.kind !== 'command') throw new Error('expected a command');
+		return result;
+	}
+
+	it('canonicalizes, allows http only for loopback, and clears with an empty value', () => {
+		expect(parsed(' https://Console.Example.com/signkit/console ').consoleUrl).toBe(CONSOLE_URL);
+		expect(parsed('http://localhost:5173/signkit/console').consoleUrl).toBe(
+			'http://localhost:5173/signkit/console'
+		);
+		expect(parsed('').consoleUrl).toBe('');
+		expect(parsed('').overrides.consoleUrl).toBe(true);
+	});
+
+	it.each([
+		'http://console.example.com/signkit/console',
+		'https://console.example.com/signkit/console?x=1',
+		'https://console.example.com/signkit/console#top',
+		'https://user@console.example.com/',
+		'console.example.com/signkit/console'
+	])('rejects %s', (value) => {
+		expect(() => parsed(value)).toThrow(/--console-url/);
+	});
+
+	it('applies an explicit URL on upgrade and records it in state', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await runEnrolled({
+			cloudflare,
+			fs,
+			env: { D6E_ENROLLMENT_TOKEN: undefined },
+			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--console-url', CONSOLE_URL]
+		});
+		expect(result.code).toBe(0);
+		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
+		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(CONSOLE_URL);
+		const state = JSON.parse(await fs.readFile(STATE_PATH)) as Record<string, unknown>;
+		expect(state.consoleUrl).toBe(CONSOLE_URL);
+	});
+
+	it('leaves the remote var alone when neither the flag nor state names it', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await runEnrolled({
+			cloudflare,
+			fs,
+			env: { D6E_ENROLLMENT_TOKEN: undefined },
+			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID]
+		});
+		expect(result.code).toBe(0);
+		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
+		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_URL');
 	});
 });

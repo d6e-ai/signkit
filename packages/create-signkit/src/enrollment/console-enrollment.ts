@@ -9,6 +9,7 @@ import { CliError, generic, usage, type ExitCode } from '../cli/errors.js';
 import {
 	canonicalConsoleOrigin,
 	canonicalConsoleOrigins,
+	canonicalConsoleUrl,
 	hostnameFromOrigin,
 	isValidEmailAddress,
 	MAX_CONSOLE_ORIGINS
@@ -46,6 +47,12 @@ export interface EnrollmentRecord {
 	d6eAuthBaseUrl: string;
 	bootstrapOwnerEmail: string;
 	consoleOrigins: string[];
+	/**
+	 * `SIGNKIT_CONSOLE_URL` from the response (`consoleUrl`), where invitation
+	 * emails send people to join without the link. Absent when D6E Auth does
+	 * not name one.
+	 */
+	consoleUrl?: string;
 }
 
 export interface EnrollmentResponse {
@@ -241,6 +248,13 @@ function parseEnrollmentSuccess(
 	} catch {
 		throw invalidResponse('consoleOrigins contains an invalid origin', request, serverId);
 	}
+	let consoleUrl: string | undefined;
+	if (body.consoleUrl !== undefined) {
+		consoleUrl = canonicalConsoleUrl(body.consoleUrl);
+		if (consoleUrl === undefined || !consoleOrigins.includes(new URL(consoleUrl).origin)) {
+			throw invalidResponse('consoleUrl is malformed or outside consoleOrigins', request, serverId);
+		}
+	}
 	return {
 		oauth,
 		record: {
@@ -250,7 +264,8 @@ function parseEnrollmentSuccess(
 			publicOrigin: request.publicOrigin,
 			d6eAuthBaseUrl: request.baseUrl,
 			bootstrapOwnerEmail: body.bootstrapOwnerEmail.trim().toLowerCase(),
-			consoleOrigins
+			consoleOrigins,
+			...(consoleUrl === undefined ? {} : { consoleUrl })
 		}
 	};
 }
@@ -296,7 +311,8 @@ export function serializeEnrollmentRecord(record: EnrollmentRecord): string {
 			publicOrigin: record.publicOrigin,
 			d6eAuthBaseUrl: record.d6eAuthBaseUrl,
 			bootstrapOwnerEmail: record.bootstrapOwnerEmail,
-			consoleOrigins: record.consoleOrigins
+			consoleOrigins: record.consoleOrigins,
+			...(record.consoleUrl === undefined ? {} : { consoleUrl: record.consoleUrl })
 		},
 		null,
 		'\t'
@@ -368,6 +384,13 @@ export async function readEnrollmentRecord(
 	if (consoleOrigins.length !== parsed.consoleOrigins.length) {
 		throw invalid();
 	}
+	if (
+		parsed.consoleUrl !== undefined &&
+		(typeof parsed.consoleUrl !== 'string' ||
+			canonicalConsoleUrl(parsed.consoleUrl) !== parsed.consoleUrl)
+	) {
+		throw invalid();
+	}
 	return {
 		schemaVersion: ENROLLMENT_RECORD_SCHEMA_VERSION,
 		kind: 'signkit',
@@ -375,7 +398,8 @@ export async function readEnrollmentRecord(
 		publicOrigin: parsed.publicOrigin,
 		d6eAuthBaseUrl: parsed.d6eAuthBaseUrl,
 		bootstrapOwnerEmail: parsed.bootstrapOwnerEmail,
-		consoleOrigins
+		consoleOrigins,
+		...(parsed.consoleUrl === undefined ? {} : { consoleUrl: parsed.consoleUrl })
 	};
 }
 

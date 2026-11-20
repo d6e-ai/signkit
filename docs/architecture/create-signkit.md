@@ -119,6 +119,8 @@ If D6E Auth processed the request but the response or the recovery file was lost
 
 `--console-origins <list>` sets `SIGNKIT_CONSOLE_ORIGINS` explicitly on any deploy or upgrade, with the same origin rules; an empty value writes an empty var, turning console CORS off. Like other non-secret vars it is recorded in state and inherited; when neither the flag, state, nor an enrollment names it, the generated config omits the var and `--keep-vars` leaves any remote value in place. The Worker's handling of the var is listed with the other runtime settings in [deployment](../deployment.md#configuration).
 
+The enrollment response may also name `consoleUrl` (for SignKit, `https://www.d6e.ai/signkit/console`), which must be inside `consoleOrigins`; it becomes `SIGNKIT_CONSOLE_URL`, the place invitation emails offer for joining without the link, and is kept in the enrollment record and state. `--console-url <url>` sets or (with `""`) clears it explicitly on any deploy or upgrade.
+
 ## Drift
 
 If local state, an explicit target, and remote identity disagree, mutating `deploy`/`upgrade` refuse. Supplying `--worker-name`/`--d1`/`--r2` that differ from state is still drift. `adopt` is the only command that records the intended existing resources into local state. `plan` reports `drift[]` without mutating, and human non-JSON plan output prints a `Drift:` list.

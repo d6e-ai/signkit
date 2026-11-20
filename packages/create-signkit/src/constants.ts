@@ -24,6 +24,7 @@ export const ASSETS_BINDING = 'ASSETS';
 export const EMAIL_BINDING = 'EMAIL';
 export const SMTP_PASSWORD_SECRET = 'SIGNKIT_SMTP_PASSWORD';
 export const CONSOLE_ORIGINS_VAR = 'SIGNKIT_CONSOLE_ORIGINS';
+export const CONSOLE_URL_VAR = 'SIGNKIT_CONSOLE_URL';
 
 /** Environment variable carrying a single-use D6E Auth console enrollment token. */
 export const ENROLLMENT_TOKEN_ENV = 'D6E_ENROLLMENT_TOKEN';

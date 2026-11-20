@@ -3,6 +3,7 @@ import {
 	BACKUP_DIR_MODE,
 	BACKUP_FILE_MODE,
 	CONSOLE_ORIGINS_VAR,
+	CONSOLE_URL_VAR,
 	ENROLLMENT_TOKEN_ENV,
 	MIGRATION_POLICY_NOTES,
 	REQUIRED_WORKER_SECRETS,
@@ -937,6 +938,7 @@ function nextState(
 			: {}),
 		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
 		consoleOrigins: consoleOriginsForState(target, existing),
+		consoleUrl: target.consoleUrl ?? existing?.consoleUrl,
 		lastD1BackupPath: extra.lastD1BackupPath ?? existing?.lastD1BackupPath,
 		channel: input.channel,
 		version: release.tag,
@@ -992,6 +994,9 @@ function generatedWorkerVars(
 	}
 	if (target.consoleOrigins !== undefined) {
 		vars[CONSOLE_ORIGINS_VAR] = target.consoleOrigins.join(',');
+	}
+	if (target.consoleUrl !== undefined) {
+		vars[CONSOLE_URL_VAR] = target.consoleUrl;
 	}
 	return vars;
 }
@@ -1116,6 +1121,7 @@ function adoptState(
 			: {}),
 		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
 		consoleOrigins: consoleOriginsForState(target, existing),
+		consoleUrl: target.consoleUrl ?? existing?.consoleUrl,
 		lastD1BackupPath: retarget ? undefined : existing?.lastD1BackupPath,
 		channel: input.channel,
 		version: retarget ? undefined : existing?.version,
@@ -1259,7 +1265,8 @@ function withEnrollmentDefaults(
 	return {
 		...target,
 		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? record.bootstrapOwnerEmail,
-		consoleOrigins: target.consoleOrigins ?? [...record.consoleOrigins]
+		consoleOrigins: target.consoleOrigins ?? [...record.consoleOrigins],
+		consoleUrl: target.consoleUrl ?? record.consoleUrl
 	};
 }
 
@@ -1682,6 +1689,7 @@ async function writeGeneratedConfig(
 		smtpUsername: vars.SIGNKIT_SMTP_USERNAME,
 		bootstrapOwnerEmail: vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL,
 		consoleOrigins: vars[CONSOLE_ORIGINS_VAR],
+		consoleUrl: vars[CONSOLE_URL_VAR],
 		manifest: release.manifest,
 		main: posixPath(extracted.root, extracted.main, 'generated Worker main'),
 		assetsDirectory: posixPath(
