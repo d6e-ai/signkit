@@ -426,9 +426,13 @@ export function createInstanceInvitationHttpHandlers(
 				result.invitation.status === 'pending'
 			) {
 				// An exact replay re-sends the same note; D6E Auth overwrites it.
+				// Awaited, never deferred to waitUntil: only this response reveals
+				// the invitation id to the inviter's client, so a revoke (and its
+				// note withdrawal) issued from it cannot overtake this note and
+				// have a late PUT write a revoked invitation back.
 				const invitation = result.invitation;
-				await runAfterCommand(platform, () =>
-					consoleNotes.note(
+				await consoleNotes
+					.note(
 						{
 							invitationId: invitation.id,
 							recipientEmail: normalizeInstanceInvitationEmail(parsed.data.email),
@@ -437,7 +441,7 @@ export function createInstanceInvitationHttpHandlers(
 						},
 						{ platform }
 					)
-				);
+					.catch((): void => undefined);
 			}
 			return createResponse(result, url.pathname);
 		} catch (error: unknown) {

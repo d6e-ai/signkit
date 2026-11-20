@@ -1339,6 +1339,48 @@ describe('instance invitation HTTP handlers', () => {
 			expect(port.note).not.toHaveBeenCalled();
 		});
 
+		it('waits for the note before answering a create on Workers, so a revoke cannot overtake it', async () => {
+			const app = application();
+			const port = notes();
+			let noted: boolean = false;
+			port.note.mockImplementationOnce(async (): Promise<ConsoleInvitationNoteOutcome> => {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				noted = true;
+				return 'sent';
+			});
+			const waitUntil = vi.fn();
+			const requestEvent: RequestEvent = createEvent();
+			(requestEvent as { platform?: unknown }).platform = { context: { waitUntil } };
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				requestEvent
+			);
+			expect(response.status).toBe(201);
+			expect(noted).toBe(true);
+			expect(waitUntil).not.toHaveBeenCalled();
+		});
+
+		it('lets the withdrawal continue after the revoke response on Workers', async () => {
+			const app = application();
+			const port = notes();
+			const waitUntil = vi.fn();
+			const requestEvent: RequestEvent = event({
+				pathname: revokePath(INVITATION_ID),
+				method: 'POST',
+				body: '{}',
+				headers: { 'idempotency-key': 'revoke-1' },
+				params: { invitationId: INVITATION_ID }
+			});
+			(requestEvent as { platform?: unknown }).platform = { context: { waitUntil } };
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).revoke,
+				requestEvent
+			);
+			expect(response.status).toBe(200);
+			expect(waitUntil).toHaveBeenCalledTimes(1);
+			expect(port.forget).toHaveBeenCalledWith(INVITATION_ID, expect.objectContaining({}));
+		});
+
 		it('keeps the create response when the note fails', async () => {
 			const app = application();
 			const port = notes();

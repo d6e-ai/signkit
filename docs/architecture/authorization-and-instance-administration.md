@@ -127,7 +127,9 @@ invited email, the expiry, and the inviter's subject — authenticated with this
 client credentials, so the console can show the server to the invitee before they join. The revoke
 endpoint withdraws the note; acceptance does not, because the console's own acceptance consumes it.
 Notes run after the command commits, never follow redirects, and are best effort: a failure is
-logged by event name and status only and never changes the response. Revocations cascaded by member
+logged by event name and status only and never changes the response. The create response waits for
+the note, so a revoke issued from it cannot be overtaken by a late note; the withdrawal may finish
+after the revoke response. Revocations cascaded by member
 suspension or demotion do not withdraw notes; such notes lapse at their expiry, and accepting
 through the console then meets the same opaque failure.
 

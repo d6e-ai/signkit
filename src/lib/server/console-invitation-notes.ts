@@ -13,7 +13,10 @@ import { serverClientCredentials, type ServerClientCredentials } from './d6e-aut
  *
  * Notes are best effort and run after the invitation command has committed.
  * A failure is logged by event name and status only, never with the email or
- * credentials, and never changes the command's response.
+ * credentials, and never changes the command's response. The create note is
+ * awaited before the create response so a revoke issued from that response
+ * cannot be overtaken by it; only the withdrawal may continue after its
+ * response (see {@link runAfterCommand}).
  */
 
 const NOTE_TIMEOUT_MS: number = 5_000;
