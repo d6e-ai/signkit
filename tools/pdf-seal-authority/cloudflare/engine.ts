@@ -1,9 +1,11 @@
 import { SealContainer } from './container-proxy';
+import { placedObject } from './placement';
 import { authenticated, unavailable } from './security';
 
 interface EngineEnvironment {
 	ENGINE_TOKEN: string;
 	SEAL_KEY_BACKEND?: string;
+	SEAL_LOCATION_HINT?: string;
 	AWS_ACCESS_KEY_ID?: string;
 	AWS_SECRET_ACCESS_KEY?: string;
 	AWS_REGION?: string;
@@ -77,6 +79,8 @@ export default {
 		const { SigningEngine: namespace } = ctx.exports as Cloudflare.Exports & {
 			SigningEngine: DurableObjectNamespace<SigningEngine>;
 		};
-		return await namespace.getByName('sign').proxy(request);
+		const engine = placedObject(namespace, 'sign', env.SEAL_LOCATION_HINT);
+		if (engine === null) return unavailable(503);
+		return await engine.proxy(request);
 	}
 } satisfies ExportedHandler<EngineEnvironment>;

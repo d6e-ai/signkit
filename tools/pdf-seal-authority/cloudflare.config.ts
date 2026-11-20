@@ -1,4 +1,5 @@
 import { bindings, defineConfig, defineContainer, exports } from 'cf/config';
+import { isSealLocationHint } from './cloudflare/placement.ts';
 
 function setting(name: string): string {
 	const value = process.env[name];
@@ -15,6 +16,14 @@ const base = {
 	previewUrls: false,
 	observability: { enabled: true, logs: { invocationLogs: false } }
 };
+
+/** Optional container region (Durable Object location hint) for the engine and validator. */
+function placement(): Record<string, ReturnType<typeof bindings.text>> {
+	const hint = process.env.SEAL_LOCATION_HINT;
+	if (hint === undefined || hint === '') return {};
+	if (!isSealLocationHint(hint)) throw new Error('Invalid SEAL_LOCATION_HINT');
+	return { SEAL_LOCATION_HINT: bindings.text(hint) };
+}
 
 function policy() {
 	return {
@@ -86,6 +95,7 @@ function configure() {
 					workersDev: !signing,
 					exports: { [exportName]: exports.durableObject({ storage: 'sqlite', container: image }) },
 					env: {
+						...placement(),
 						...(signing ? {} : policy()),
 						...(signing && process.env.SEAL_KEY_BACKEND
 							? { SEAL_KEY_BACKEND: bindings.text(setting('SEAL_KEY_BACKEND')) }

@@ -22,7 +22,8 @@ const buildSettings = [
 	'SEAL_EVIDENCE_DB_ID',
 	'SEAL_EVIDENCE_BUCKET',
 	'SEAL_LEDGER_DB_ID',
-	'SEAL_RESULT_BUCKET'
+	'SEAL_RESULT_BUCKET',
+	'SEAL_LOCATION_HINT'
 ];
 
 if (process.argv.length !== 3) throw new Error('Pass a new directory for the prebuilt service');

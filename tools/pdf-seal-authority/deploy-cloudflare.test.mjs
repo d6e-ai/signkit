@@ -94,3 +94,44 @@ test('a failed preview never applies a partial release', async () => {
 		/preview rejected/
 	);
 });
+
+test('a role subset builds, previews and deploys only those roles, with the location hint', async () => {
+	const source = { DEPLOY_ENGINE: 'token-for-engine', DEPLOY_VALIDATOR: 'token-for-validator' };
+	const operations = [];
+	await deploySealAuthority(
+		{ ...manifest, settings: { ...manifest.settings, SEAL_LOCATION_HINT: 'apac-se' } },
+		{
+			apply: true,
+			source,
+			only: ['validator', 'engine'],
+			runCommand: async (args, { cwd, env }) => {
+				if (basename(args[0]) === 'build-cloudflare.mjs') {
+					assert.equal(env.SEAL_LOCATION_HINT, 'apac-se');
+					operations.push(`build:${env.SEAL_WORKER_ROLE}`);
+					return;
+				}
+				operations.push(`${args.includes('--dry-run') ? 'preview' : 'deploy'}:${basename(cwd)}`);
+			}
+		}
+	);
+	assert.deepEqual(operations, [
+		'build:engine',
+		'preview:engine',
+		'build:validator',
+		'preview:validator',
+		'deploy:engine',
+		'deploy:validator'
+	]);
+});
+
+test('an unknown role or location hint is refused before building', async () => {
+	const runCommand = async () => assert.fail('nothing may run');
+	await assert.rejects(deploySealAuthority(manifest, { only: ['signer'], runCommand }), /subset/);
+	await assert.rejects(deploySealAuthority(manifest, { only: [], runCommand }), /subset/);
+	await assert.rejects(
+		deploySealAuthority(
+			{ ...manifest, settings: { ...manifest.settings, SEAL_LOCATION_HINT: 'sin1' } },
+			{ runCommand }
+		)
+	);
+});

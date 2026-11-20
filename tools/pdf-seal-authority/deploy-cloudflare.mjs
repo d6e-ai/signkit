@@ -13,6 +13,20 @@ const root = resolve(directory, '../..');
 const require = createRequire(import.meta.url);
 const cf = join(dirname(require.resolve('cf/package.json')), 'bin/cf');
 const roles = ['issuer', 'engine', 'validator', 'gateway'];
+/** Durable Object location hints; kept equal to cloudflare/placement.ts (checked by its spec). */
+export const SEAL_LOCATION_HINTS = [
+	'wnam',
+	'enam',
+	'sam',
+	'weur',
+	'eeur',
+	'apac',
+	'apac-ne',
+	'apac-se',
+	'oc',
+	'afr',
+	'me'
+];
 const accountId = z.string().regex(/^[a-f0-9]{32}$/);
 const identifier = z.string().min(1);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
@@ -46,7 +60,8 @@ const releaseSchema = z
 			SEAL_EVIDENCE_DB_ID: z.uuid(),
 			SEAL_EVIDENCE_BUCKET: identifier,
 			SEAL_LEDGER_DB_ID: z.uuid(),
-			SEAL_RESULT_BUCKET: identifier
+			SEAL_RESULT_BUCKET: identifier,
+			SEAL_LOCATION_HINT: z.enum(SEAL_LOCATION_HINTS).optional()
 		}),
 		deploy: z.strictObject({
 			issuer: target,
@@ -100,12 +115,25 @@ function deployEnvironment(source, privateDir, account, target) {
 	return env;
 }
 
+/**
+ * The roles to release, in release order. A subset redeploys only those Workers against the same
+ * manifest (for example the engine and validator after a placement change); the others keep their
+ * active versions and service bindings.
+ */
+function selectRoles(only) {
+	if (!Array.isArray(only) || only.length === 0 || only.some((role) => !roles.includes(role))) {
+		throw new Error(`Roles must be a non-empty subset of ${roles.join(', ')}`);
+	}
+	return roles.filter((role) => only.includes(role));
+}
+
 export async function deploySealAuthority(
 	manifest,
-	{ apply = false, source = process.env, runCommand = run, base = process.cwd() } = {}
+	{ apply = false, source = process.env, runCommand = run, base = process.cwd(), only = roles } = {}
 ) {
 	const release = releaseSchema.parse(manifest);
-	for (const role of roles) {
+	const selected = selectRoles(only);
+	for (const role of selected) {
 		const { tokenEnv, secretsFile } = release.deploy[role];
 		if (apply && tokenEnv && !source[tokenEnv]) throw new Error(`Missing ${role} deployment token`);
 		if (apply && secretsFile) await access(resolve(base, secretsFile));
@@ -114,7 +142,7 @@ export async function deploySealAuthority(
 	const temporary = await mkdtemp(join(tmpdir(), 'signkit-seal-release-'));
 	try {
 		const buildEnv = buildEnvironment(source, temporary);
-		for (const role of roles) {
+		for (const role of selected) {
 			const output = join(temporary, role);
 			process.stdout.write(`Building and validating ${role}\n`);
 			await runCommand([join(directory, 'build-cloudflare.mjs'), output], {
@@ -130,7 +158,7 @@ export async function deploySealAuthority(
 			});
 		}
 		if (!apply) return;
-		for (const role of roles) {
+		for (const role of selected) {
 			const target = release.deploy[role];
 			const output = join(temporary, role);
 			const args = [cf, 'deploy', '--prebuilt', '--no-provision'];
@@ -150,18 +178,21 @@ export async function deploySealAuthority(
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
 	try {
 		const { values, positionals } = parseArgs({
-			options: { apply: { type: 'boolean' } },
+			options: { apply: { type: 'boolean' }, only: { type: 'string' } },
 			allowPositionals: true
 		});
 		if (positionals.length !== 1) {
 			throw new Error(
-				'Usage: node tools/pdf-seal-authority/deploy-cloudflare.mjs <release.json> [--apply]'
+				'Usage: node tools/pdf-seal-authority/deploy-cloudflare.mjs <release.json> [--only <role,...>] [--apply]'
 			);
 		}
 		const path = resolve(positionals[0]);
 		await deploySealAuthority(JSON.parse(await readFile(path, 'utf8')), {
 			apply: values.apply,
-			base: dirname(path)
+			base: dirname(path),
+			...(values.only === undefined
+				? {}
+				: { only: values.only.split(',').map((role) => role.trim()) })
 		});
 	} catch (error) {
 		if (error instanceof z.ZodError) {

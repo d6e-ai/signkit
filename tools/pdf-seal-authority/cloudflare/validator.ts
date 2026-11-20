@@ -1,5 +1,6 @@
 import { UUID_V7_PATTERN } from '$lib/ids/uuid-v7';
 import { SealContainer } from './container-proxy';
+import { placedObject } from './placement';
 import { authenticated, unavailable } from './security';
 
 interface ValidatorEnvironment {
@@ -8,6 +9,7 @@ interface ValidatorEnvironment {
 	SEAL_CERTIFICATE_SHA256: string;
 	SEAL_POLICY_ID: string;
 	VALIDATION_POLICY_ID: string;
+	SEAL_LOCATION_HINT?: string;
 }
 
 export class ValidationEngine extends SealContainer<ValidatorEnvironment> {
@@ -40,6 +42,8 @@ export default {
 		const { ValidationEngine: namespace } = ctx.exports as Cloudflare.Exports & {
 			ValidationEngine: DurableObjectNamespace<ValidationEngine>;
 		};
-		return await namespace.getByName('validate').proxy(request);
+		const validator = placedObject(namespace, 'validate', env.SEAL_LOCATION_HINT);
+		if (validator === null) return unavailable(503);
+		return await validator.proxy(request);
 	}
 } satisfies ExportedHandler<ValidatorEnvironment>;
