@@ -84,6 +84,12 @@ export type IdentityState = 'anonymous' | 'active' | 'no_membership' | 'suspende
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 declare global {
+	/**
+	 * The product version this build was made from, injected by `define` in
+	 * `vite.config.ts`. Read it through `$lib/capabilities/version`.
+	 */
+	const __SIGNKIT_VERSION__: string;
+
 	namespace App {
 		// interface Error {}
 		interface Locals extends RequestCallerContextLocals {

@@ -923,6 +923,32 @@ const PROBLEM_RESPONSES: Record<string, unknown> = {
 	}
 };
 
+/**
+ * The stable identification fields of the capability advertisement. Feature
+ * sections beyond these are discovery data and may grow.
+ */
+const SYSTEM_CAPABILITIES = {
+	type: 'object',
+	required: ['name', 'apiVersion', 'version', 'runtime', 'publicOrigin'],
+	properties: {
+		name: { const: 'SignKit' },
+		apiVersion: { const: 'v1' },
+		version: {
+			type: 'string',
+			description:
+				'Product version of the running build (the release tag without its leading `v` for a release build).'
+		},
+		runtime: { enum: ['node', 'cloudflare', 'vercel'] },
+		publicOrigin: {
+			type: ['string', 'null'],
+			format: 'uri',
+			description:
+				'Canonical SIGNKIT_PUBLIC_ORIGIN that recipient links are built from, or null when it is unset or not an HTTP(S) URL.'
+		}
+	},
+	additionalProperties: true
+};
+
 function jsonResponse(status: string, description: string, schema: Record<string, unknown>) {
 	return {
 		[status]: {
@@ -1514,7 +1540,7 @@ export function openApiDocument(): Record<string, unknown> {
 					operationId: 'getCapabilities',
 					tags: ['System'],
 					security: [],
-					responses: jsonResponse('200', 'Capability advertisement', { type: 'object' })
+					responses: jsonResponse('200', 'Capability advertisement', SYSTEM_CAPABILITIES)
 				})
 			},
 			'/api/v1/openapi.json': {

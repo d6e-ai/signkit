@@ -1,6 +1,6 @@
 # HTTP API
 
-SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature set at `GET /api/v1/system/capabilities` and the OpenAPI 3.1 document at `GET /api/v1/openapi.json`.
+SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature set at `GET /api/v1/system/capabilities` and the OpenAPI 3.1 document at `GET /api/v1/openapi.json`. Capabilities also identify the deployment: `version` is the product version of the running build and `publicOrigin` is the configured `SIGNKIT_PUBLIC_ORIGIN` (or `null`).
 
 ## Authentication
 

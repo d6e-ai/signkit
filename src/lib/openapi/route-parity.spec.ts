@@ -481,4 +481,17 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 		}
 		expect(sessionOperations).toBeGreaterThan(0);
 	});
+
+	it('documents the capability identification fields a console reads', () => {
+		const get = pathItem(openApiDocument(), '/api/v1/system/capabilities').get;
+		const schema = (
+			get.responses as {
+				'200': { content: { 'application/json': { schema: { required: string[] } } } };
+			}
+		)['200'].content['application/json'].schema;
+		expect(schema.required).toEqual(
+			expect.arrayContaining(['name', 'apiVersion', 'version', 'runtime', 'publicOrigin'])
+		);
+		expect(get.security).toEqual([]);
+	});
 });
