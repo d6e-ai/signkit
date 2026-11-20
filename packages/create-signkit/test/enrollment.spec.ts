@@ -611,6 +611,55 @@ describe('console enrollment in plan and argv', () => {
 		expect(stdout.join('')).not.toContain(TOKEN);
 	});
 
+	it('does not plan an enrollment when retained recovery material would make deploy refuse the token', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		const fs = new MemoryFileSystem();
+		await ensureRecoveryBinding({
+			fs,
+			recoveryPath: RECOVERY_PATH,
+			accountId: ACCOUNT_ID,
+			workerName: 'signkit',
+			allowCreate: true
+		});
+		await ensureRecoverySecrets({
+			fs,
+			recoveryPath: RECOVERY_PATH,
+			requiredSecrets: [
+				'DELIVERY_ENCRYPTION_KEY',
+				'SESSION_ENCRYPTION_KEY',
+				'DELIVERY_WORKER_SECRET',
+				'D6E_AUTH_CLIENT_ID',
+				'D6E_AUTH_CLIENT_SECRET'
+			],
+			oauth: { D6E_AUTH_CLIENT_ID: 'stdin-id', D6E_AUTH_CLIENT_SECRET: 'stdin-secret' }
+		});
+		const http = new OrderedHttp(cloudflare);
+		const stdout: string[] = [];
+		const code = await runCreateSignkit({
+			argv: [
+				'--cloudflare',
+				'plan',
+				'--account-id',
+				ACCOUNT_ID,
+				'--public-origin',
+				PUBLIC_ORIGIN,
+				'--json'
+			],
+			stdout: { write: (chunk) => stdout.push(chunk) },
+			stderr: { write: () => undefined },
+			env: { XDG_STATE_HOME: '/xdg/state', D6E_ENROLLMENT_TOKEN: TOKEN },
+			runtime: { fs, cloudflare, http, releases: fakeReleases(), extractor: fakeExtractor(fs) }
+		});
+		expect(code).toBe(0);
+		const json = JSON.parse(stdout.join('')) as {
+			plan: Array<{ id: string; mutating: boolean }>;
+			bootstrapWarning?: string;
+		};
+		expect(json.plan.find((step) => step.id === 'console-enrollment')).toBeUndefined();
+		expect(json.bootstrapWarning ?? '').not.toMatch(/issued the console enrollment token/);
+		expect(http.requests).toHaveLength(0);
+	});
+
 	it('refuses a malformed token without echoing it', async () => {
 		const result = await runEnrolled({ env: { D6E_ENROLLMENT_TOKEN: 'd6ee_short-secret-value' } });
 		expect(result.code).toBe(2);

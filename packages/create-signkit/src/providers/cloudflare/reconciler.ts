@@ -191,14 +191,17 @@ export async function reconcileCloudflare(
 	});
 	assertSupportedSecretTaxonomy(release, runtime, stateStore.path);
 	const preparedBundle = await runtime.releases.prepareBundle(release);
+	// Mirrors the deploy-time enrollment gate: retained recovery material, with
+	// or without an enrollment record, means the token would not be used.
+	const enrollmentRecoveryPath: string =
+		runtime.recoveryPath ?? resolveRecoveryPath(stateStore.path);
 	const enrollmentPending: boolean =
 		enrollmentToken !== undefined &&
 		existing === undefined &&
 		remote.versions.length === 0 &&
 		remote.secretNames.length === 0 &&
-		!(await runtime.fs.exists(
-			resolveEnrollmentRecordPath(runtime.recoveryPath ?? resolveRecoveryPath(stateStore.path))
-		));
+		!(await runtime.fs.exists(enrollmentRecoveryPath)) &&
+		!(await runtime.fs.exists(resolveEnrollmentRecordPath(enrollmentRecoveryPath)));
 	const plan = buildPlan(input, existing, target, remote, release, enrollmentPending);
 	if (input.command === 'plan') {
 		return {
