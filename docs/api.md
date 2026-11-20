@@ -25,7 +25,8 @@ The contact API is human-session-only. API keys, recipient capabilities, and rec
 - Operator identifiers are UUIDv7.
 - Mutations require an `Idempotency-Key` opaque token; UUIDv4 is recommended.
 - Concurrent authoring uses `expectedGeneration` and, where relevant, `expectedFieldGeneration` or an expected state.
-- Errors use `application/problem+json` following RFC 9457.
+- Errors use `application/problem+json` following RFC 9457. A path under `/api` that matches no endpoint returns a `404`
+  `urn:signkit:problem:route-not-found` problem rather than a page or a sign-in redirect.
 - Private object keys, token hashes, audit hashes, and raw capabilities are never returned from public models.
 
 ## OpenAPI 3.1 Specification

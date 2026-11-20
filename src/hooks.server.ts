@@ -1,5 +1,6 @@
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
+import { problemResponse } from '$lib/http/problem';
 import { cookieName, getTextDirection } from '$lib/paraglide/runtime';
 import { paraglideMiddleware } from '$lib/paraglide/server';
 import {
@@ -121,6 +122,27 @@ export const handleConsoleCors: Handle = async ({ event, resolve }) => {
 			? allowedOrigin
 			: null
 	);
+};
+
+/**
+ * An API path that matches no route answers a JSON problem instead of the
+ * HTML not-found page. That page runs the root layout, which sends an
+ * anonymous caller to sign-in: a redirect a cross-origin console cannot read
+ * (it surfaces as a CORS failure) and a script cannot use. Placed after the
+ * console CORS hook, so an allowed console can read the 404.
+ */
+export const handleUnknownApiRoute: Handle = ({ event, resolve }) => {
+	const pathname: string = event.url.pathname;
+	if (event.route.id === null && (pathname === '/api' || pathname.startsWith('/api/'))) {
+		return problemResponse({
+			type: 'urn:signkit:problem:route-not-found',
+			title: 'Route not found',
+			status: 404,
+			detail: 'No API endpoint matches this path.',
+			instance: pathname
+		});
+	}
+	return resolve(event);
 };
 
 /**
@@ -497,6 +519,7 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 
 export const handle: Handle = sequence(
 	handleConsoleCors,
+	handleUnknownApiRoute,
 	handleLocale,
 	handleApiKeyAuthentication,
 	handleSession
