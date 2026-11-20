@@ -6,9 +6,11 @@
  * Release, and npm-before-public ordering. The difference is the provenance:
  * instead of a workflow attestation, a maintainer pinned in
  * `packages/create-signkit/src/release/maintainer-signers.ts` signs an in-toto
- * statement with Sigstore keyless signing (GitHub account sign-in), and the
- * bundle is stored with GitHub's attestations API so create-signkit finds it
- * by digest exactly as before.
+ * statement with Sigstore keyless signing (GitHub account sign-in). GitHub's
+ * attestations API stores only GitHub Actions-issued signatures, so the
+ * Sigstore bundle is published as the release asset
+ * `signkit-provenance-<tag>.sigstore.json`, where create-signkit reads it. It
+ * is not listed in SHA256SUMS, which is itself one of the signed subjects.
  *
  *   node scripts/release-local.mjs build   --tag vX.Y.Z [--dry-run]
  *   node scripts/release-local.mjs sign    --tag vX.Y.Z [--no-browser] [--dry-run]
@@ -62,8 +64,6 @@ const CSK_DIR = join(ROOT, 'packages/create-signkit');
 const MANIFEST_NAME = 'signkit-cloudflare-manifest.json';
 const IN_TOTO_PAYLOAD_TYPE = 'application/vnd.in-toto+json';
 const SLSA_PREDICATE_TYPE = 'https://slsa.dev/provenance/v1';
-const ATTESTATION_API_VERSION = '2026-03-10';
-const ATTESTATION_BLOB_HOST = 'tmaproduction.blob.core.windows.net';
 // Sigstore public-good OIDC (Dex). Fulcio writes the upstream connector id
 // into the certificate issuer extension, so the GitHub connector yields
 // https://github.com/login/oauth and the verified account email as subject.
@@ -83,8 +83,8 @@ const USAGE = `Usage: node scripts/release-local.mjs <build|sign|npm|publish> --
            with a pinned maintainer's GitHub account) and verify it locally.
            --no-browser           print the sign-in URL without opening a browser
   npm      Publish packages/create-signkit unless that version is on npm.
-  publish  Create or reuse the draft GitHub Release, upload assets and the
-           attestation, verify the draft with create-signkit, then publish it.
+  publish  Create or reuse the draft GitHub Release, upload the assets and the
+           signature asset, verify the draft with create-signkit, then publish it.
 
   --dry-run  run every check and print the mutations without performing them
 `;
@@ -403,7 +403,9 @@ async function sign(options) {
 	log(
 		`verified: ${describeProvenance(provenance)}${logIndex ? `; Rekor log index ${logIndex}` : ''}`
 	);
-	log('wrote .release/provenance.sigstore.json');
+	log(
+		`wrote .release/provenance.sigstore.json; publish uploads it as signkit-provenance-${tag}.sigstore.json`
+	);
 	log(`next: node scripts/release-local.mjs npm --tag ${tag}`);
 }
 
@@ -507,143 +509,54 @@ async function publish(options) {
 		note(message);
 	}
 
-	const prereleaseArg = channel === 'beta' ? '--prerelease' : '--prerelease=false';
-	const expectedNames = releaseAssetNames(tag);
-	const mutate = async (description, action) => {
-		if (dryRun) {
-			log(`[dry-run] would ${description}`);
-			return undefined;
-		}
-		log(description);
-		return action();
-	};
-
-	heading(`Draft release ${tag}`);
-	const existing = await releaseView(tag);
-	let remoteNames = [];
-	if (!existing) {
-		await mutate(`create draft release ${tag} at ${head} (${prereleaseArg})`, () =>
-			run('gh', [
-				'release',
-				'create',
-				tag,
-				'--repo',
-				REPOSITORY,
-				'--draft',
-				'--target',
-				head,
-				'--generate-notes',
-				prereleaseArg
-			])
-		);
-	} else {
-		// Rerun path: the release is immutable from here unless it is still a
-		// draft with matching metadata, target, and only expected asset names.
-		if (existing.isDraft !== true) {
-			throw new Error(`refusing to upload to existing public release ${tag}`);
-		}
-		if (existing.isPrerelease !== (channel === 'beta')) {
-			throw new Error(
-				`refusing to mutate draft release ${tag}: prerelease metadata does not match the tag channel`
-			);
-		}
-		await assertDraftTarget(tag, existing, head);
-		remoteNames = (existing.assets ?? []).map((asset) => asset.name);
-		for (const name of remoteNames) {
-			if (!expectedNames.includes(name)) {
-				throw new Error(
-					`refusing to mutate draft release ${tag}: unexpected existing asset ${name}`
-				);
-			}
-		}
-		log(`reusing draft release ${tag} (${remoteNames.length} existing assets)`);
-	}
-
-	heading('Upload release assets');
+	const csk = await loadCreateSignkitForPublish();
 	const scratch = await mkdtemp(join(tmpdir(), 'signkit-release-'));
 	try {
-		for (const name of expectedNames) {
-			const localPath = join(ASSETS_DIR, name);
-			if (remoteNames.includes(name)) {
-				const dir = await mkdtemp(join(scratch, 'asset-'));
-				await run('gh', [
-					'release',
-					'download',
-					tag,
-					'--repo',
-					REPOSITORY,
-					'--pattern',
-					name,
-					'--dir',
-					dir
-				]);
-				if (!(await sameBytes(localPath, join(dir, name)))) {
-					throw new Error(
-						`refusing to replace mismatched existing asset ${name} on draft release ${tag}`
-					);
-				}
-				log(`reusing byte-identical draft asset ${name}`);
-			} else {
-				await mutate(`upload ${name}`, () =>
-					run('gh', ['release', 'upload', tag, localPath, '--repo', REPOSITORY])
-				);
-			}
-		}
+		// GitHub's attestations API stores only GitHub Actions-issued signatures,
+		// so the maintainer bundle is uploaded as a release asset under its
+		// canonical name, next to the six assets it signs.
+		const signatureName = csk.maintainerSignatureAssetName(tag);
+		const signaturePath = join(scratch, signatureName);
+		await writeFile(signaturePath, await readFile(BUNDLE_PATH));
+		const files = new Map(releaseAssetNames(tag).map((name) => [name, join(ASSETS_DIR, name)]));
+		files.set(signatureName, signaturePath);
 
-		heading('Store the maintainer attestation with GitHub');
-		const existingBundles = await listAttestationBundles(context.bundleSha256);
-		const ourSignature = dsseSignature(bundle);
-		if (existingBundles.some((candidate) => dsseSignature(candidate) === ourSignature)) {
-			log('this signature is already stored for the Cloudflare bundle digest');
-		} else {
-			await mutate(
-				`upload the attestation (${existingBundles.length} already stored for this digest)`,
-				async () => {
-					const body = join(scratch, 'attestation.json');
-					await writeFile(body, JSON.stringify({ bundle }));
-					const id = await output('gh', [
-						'api',
-						'--method',
-						'POST',
-						`repos/${REPOSITORY}/attestations`,
-						'--input',
-						body,
-						'--jq',
-						'.id'
-					]);
-					log(`stored attestation ${id.trim()}`);
-				}
-			);
-		}
+		await uploadDraft({ tag, head, channel, files, dryRun, gh: ghReleaseOps, scratch });
 		if (dryRun) {
-			log(
-				'[dry-run] would re-download the draft, verify it with create-signkit, and mark it public'
-			);
+			log('[dry-run] would re-download the draft, verify it with create-signkit, and publish it');
 			return;
 		}
-
 		heading('Verify the draft exactly as create-signkit will');
-		const verified = await verifyDraft(context, scratch);
+		const verified = await verifyDraft({
+			tag,
+			commit: head,
+			channel,
+			files,
+			subjects: context.subjects,
+			signatureName,
+			gh: ghReleaseOps,
+			scratch,
+			csk
+		});
 		log(`verified draft: ${describeProvenance(verified)}`);
 	} finally {
 		await rm(scratch, { recursive: true, force: true });
 	}
 
 	heading(`Mark ${tag} public`);
-	const final = await releaseView(tag);
+	const final = await ghReleaseOps.view(tag);
 	if (!final || final.isDraft !== true) {
 		throw new Error(`release ${tag} is no longer a draft; refusing any further mutation`);
 	}
-	await assertDraftTarget(tag, final, head);
-	await run('gh', ['release', 'edit', tag, '--repo', REPOSITORY, '--draft=false']);
+	await assertDraftTarget(ghReleaseOps, tag, final, head);
+	await ghReleaseOps.markPublic(tag);
 
 	heading('Resolve the public release with create-signkit');
-	const github = await importCreateSignkit('release/github.js');
-	const http = (await importCreateSignkit('runtime/http.js')).createFetchHttpClient();
+	const http = csk.createFetchHttpClient();
 	try {
 		const prepared = await retry(
 			async () => {
-				const resolver = github.createGithubReleaseResolver(http);
+				const resolver = csk.createGithubReleaseResolver(http);
 				const resolved = await resolver.resolve({ version: tag, channel });
 				return resolver.prepareBundle(resolved);
 			},
@@ -659,70 +572,158 @@ async function publish(options) {
 	}
 }
 
-async function verifyDraft(context, scratch) {
-	const { tag, commit, channel } = context;
-	const view = await releaseView(tag);
+/**
+ * Creates the draft (or checks an existing one) and uploads every file in
+ * `files` (asset name -> local path) that the draft does not hold yet. An
+ * existing asset is reused only when it is byte-identical; anything else on
+ * the draft, a public release, or other metadata is refused.
+ */
+export async function uploadDraft({ tag, head, channel, files, dryRun, gh, scratch }) {
+	const prereleaseArg = channel === 'beta' ? '--prerelease' : '--prerelease=false';
+	const expectedNames = [...files.keys()];
+	const mutate = async (description, action) => {
+		if (dryRun) {
+			log(`[dry-run] would ${description}`);
+			return undefined;
+		}
+		log(description);
+		return action();
+	};
+
+	heading(`Draft release ${tag}`);
+	const existing = await gh.view(tag);
+	let remoteNames = [];
+	if (!existing) {
+		await mutate(`create draft release ${tag} at ${head} (${prereleaseArg})`, () =>
+			gh.createDraft(tag, head, prereleaseArg)
+		);
+	} else {
+		// Rerun path: the release is immutable from here unless it is still a
+		// draft with matching metadata, target, and only expected asset names.
+		if (existing.isDraft !== true) {
+			throw new Error(`refusing to upload to existing public release ${tag}`);
+		}
+		if (existing.isPrerelease !== (channel === 'beta')) {
+			throw new Error(
+				`refusing to mutate draft release ${tag}: prerelease metadata does not match the tag channel`
+			);
+		}
+		await assertDraftTarget(gh, tag, existing, head);
+		remoteNames = (existing.assets ?? []).map((asset) => asset.name);
+		for (const name of remoteNames) {
+			if (!expectedNames.includes(name)) {
+				throw new Error(
+					`refusing to mutate draft release ${tag}: unexpected existing asset ${name}`
+				);
+			}
+		}
+		log(`reusing draft release ${tag} (${remoteNames.length} existing assets)`);
+	}
+
+	heading('Upload release assets');
+	for (const [name, localPath] of files) {
+		if (remoteNames.includes(name)) {
+			const dir = await mkdtemp(join(scratch, 'asset-'));
+			await gh.download(tag, dir, name);
+			if (!(await sameBytes(localPath, join(dir, name)))) {
+				throw new Error(
+					`refusing to replace mismatched existing asset ${name} on draft release ${tag}`
+				);
+			}
+			log(`reusing byte-identical draft asset ${name}`);
+		} else {
+			await mutate(`upload ${name}`, () => gh.upload(tag, localPath));
+		}
+	}
+}
+
+/**
+ * Downloads the whole draft, requires exactly the uploaded files byte for
+ * byte, and runs create-signkit's online provenance verifier on it. The
+ * resolver refuses drafts by design, so this builds the release it would
+ * resolve, and serves the signature asset from the authenticated draft
+ * download because a draft's public download URL does not exist yet. Every
+ * other request (the attestations lookup, Sigstore) goes to the network.
+ */
+export async function verifyDraft({
+	tag,
+	commit,
+	channel,
+	files,
+	subjects,
+	signatureName,
+	gh,
+	scratch,
+	csk,
+	retryDelayMs = 10_000
+}) {
+	const view = await gh.view(tag);
 	if (!view || view.isDraft !== true) throw new Error(`expected draft release ${tag}`);
-	const expected = [...releaseAssetNames(tag)].sort();
+	const expected = [...files.keys()].sort();
 	const remote = (view.assets ?? []).map((asset) => asset.name).sort();
 	if (expected.join('\n') !== remote.join('\n')) {
 		throw new Error(
-			`refusing to publish draft release ${tag}: remote asset set differs from the signed statement`
+			`refusing to publish draft release ${tag}: remote asset set differs from the uploaded assets`
 		);
 	}
 	const dir = await mkdtemp(join(scratch, 'draft-'));
-	await run('gh', ['release', 'download', tag, '--repo', REPOSITORY, '--dir', dir]);
+	await gh.download(tag, dir);
 	const downloaded = (await readdir(dir)).sort();
 	if (expected.join('\n') !== downloaded.join('\n')) {
 		throw new Error(
 			`refusing to publish draft release ${tag}: downloaded asset set is incomplete or unexpected`
 		);
 	}
-	for (const subject of await hashAssets(dir, expected)) {
-		if (context.subjects.get(subject.name) !== subject.sha256) {
+	for (const [name, localPath] of files) {
+		if (!(await sameBytes(localPath, join(dir, name)))) {
+			throw new Error(`refusing to publish draft release ${tag}: ${name} differs from the upload`);
+		}
+		if (name !== signatureName && subjects.get(name) !== (await sha256File(join(dir, name)))) {
 			throw new Error(
-				`refusing to publish draft release ${tag}: ${subject.name} differs from the signed statement`
+				`refusing to publish draft release ${tag}: ${name} differs from the signed statement`
 			);
 		}
 	}
-	const manifestModule = await importCreateSignkit('release/manifest.js');
-	const github = await importCreateSignkit('release/github.js');
-	const provenanceModule = await importCreateSignkit('release/provenance.js');
-	const httpModule = await importCreateSignkit('runtime/http.js');
-	const manifest = manifestModule.parseReleaseManifest(
-		await readFile(join(dir, MANIFEST_NAME), 'utf8'),
-		{
-			tag,
-			commit
-		}
-	);
+	const manifest = csk.parseReleaseManifest(await readFile(join(dir, MANIFEST_NAME), 'utf8'), {
+		tag,
+		commit
+	});
 	if (manifest.channel !== channel) {
 		throw new Error(`draft manifest channel ${manifest.channel} does not match ${channel}`);
 	}
 	const bundleBytes = await readFile(join(dir, manifest.bundle.assetName));
-	const digest = github.sha256Hex(bundleBytes);
+	const digest = csk.sha256Hex(bundleBytes);
 	if (digest !== manifest.bundle.sha256 || bundleBytes.byteLength !== manifest.bundle.size) {
 		throw new Error('draft Cloudflare bundle does not match its manifest');
 	}
-	// The resolver refuses drafts by design, so build the same resolved release
-	// it would produce and run the unchanged online provenance verifier.
+	const signatureBytes = await readFile(join(dir, signatureName));
 	const release = {
 		tag,
 		channel,
 		prerelease: channel === 'beta',
 		commit,
 		manifest,
-		manifestUrl: github.githubDownloadUrl(tag, MANIFEST_NAME),
-		bundleUrl: github.githubDownloadUrl(tag, manifest.bundle.assetName)
+		manifestUrl: csk.githubDownloadUrl(tag, MANIFEST_NAME),
+		bundleUrl: csk.githubDownloadUrl(tag, manifest.bundle.assetName),
+		maintainerSignature: { assetName: signatureName, size: signatureBytes.byteLength }
 	};
-	const verifier = provenanceModule.createGithubProvenanceVerifier(
-		httpModule.createFetchHttpClient()
-	);
+	const signatureUrl = csk.githubDownloadUrl(tag, signatureName);
+	const network = csk.createFetchHttpClient();
+	const http = {
+		async request(request) {
+			if (request.url !== signatureUrl) return network.request(request);
+			if (signatureBytes.byteLength > request.maxBytes) {
+				throw new Error(`response body exceeded limit ${request.maxBytes}`);
+			}
+			return { url: request.url, status: 200, headers: {}, body: new Uint8Array(signatureBytes) };
+		}
+	};
+	const verifier = csk.createGithubProvenanceVerifier(http);
 	const provenance = await retry(() => verifier.verify(release, digest), {
 		attempts: 6,
-		delayMs: 10_000,
-		label: 'attestation lookup',
-		retryIf: (error) => /provenance is missing|temporarily unavailable/.test(String(error?.message))
+		delayMs: retryDelayMs,
+		label: 'draft provenance',
+		retryIf: (error) => /temporarily unavailable/.test(String(error?.message))
 	});
 	if (provenance.kind !== 'maintainer') {
 		throw new Error(
@@ -730,6 +731,25 @@ async function verifyDraft(context, scratch) {
 		);
 	}
 	return provenance;
+}
+
+async function loadCreateSignkitForPublish() {
+	const [manifest, github, provenance, http, statement] = await Promise.all([
+		importCreateSignkit('release/manifest.js'),
+		importCreateSignkit('release/github.js'),
+		importCreateSignkit('release/provenance.js'),
+		importCreateSignkit('runtime/http.js'),
+		importCreateSignkit('release/maintainer-statement.js')
+	]);
+	return {
+		parseReleaseManifest: manifest.parseReleaseManifest,
+		sha256Hex: github.sha256Hex,
+		githubDownloadUrl: github.githubDownloadUrl,
+		createGithubReleaseResolver: github.createGithubReleaseResolver,
+		createGithubProvenanceVerifier: provenance.createGithubProvenanceVerifier,
+		createFetchHttpClient: http.createFetchHttpClient,
+		maintainerSignatureAssetName: statement.maintainerSignatureAssetName
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,33 +1073,71 @@ export function decodeJwtClaims(token) {
 // ---------------------------------------------------------------------------
 // GitHub helpers (plain gh; run under the release owner's login)
 
-async function releaseView(tag) {
-	const result = await capture('gh', [
-		'release',
-		'view',
-		tag,
-		'--repo',
-		REPOSITORY,
-		'--json',
-		'isDraft,isPrerelease,targetCommitish,assets'
-	]);
-	if (result.code !== 0) {
-		if (/release not found|HTTP 404/i.test(result.stderr)) return undefined;
-		throw new Error(`gh release view ${tag} failed: ${lastLine(result.stderr)}`);
+/** Release operations publish needs, all through plain `gh`; tests inject a fake. */
+const ghReleaseOps = {
+	async view(tag) {
+		const result = await capture('gh', [
+			'release',
+			'view',
+			tag,
+			'--repo',
+			REPOSITORY,
+			'--json',
+			'isDraft,isPrerelease,targetCommitish,assets'
+		]);
+		if (result.code !== 0) {
+			if (/release not found|HTTP 404/i.test(result.stderr)) return undefined;
+			throw new Error(`gh release view ${tag} failed: ${lastLine(result.stderr)}`);
+		}
+		return JSON.parse(result.stdout);
+	},
+	async resolveCommit(target) {
+		return (
+			await output('gh', [
+				'api',
+				`repos/${REPOSITORY}/commits/${encodeURIComponent(target)}`,
+				'--jq',
+				'.sha'
+			])
+		).trim();
+	},
+	createDraft(tag, head, prereleaseArg) {
+		return run('gh', [
+			'release',
+			'create',
+			tag,
+			'--repo',
+			REPOSITORY,
+			'--draft',
+			'--target',
+			head,
+			'--generate-notes',
+			prereleaseArg
+		]);
+	},
+	upload(tag, path) {
+		return run('gh', ['release', 'upload', tag, path, '--repo', REPOSITORY]);
+	},
+	download(tag, dir, name) {
+		return run('gh', [
+			'release',
+			'download',
+			tag,
+			'--repo',
+			REPOSITORY,
+			...(name ? ['--pattern', name] : []),
+			'--dir',
+			dir
+		]);
+	},
+	markPublic(tag) {
+		return run('gh', ['release', 'edit', tag, '--repo', REPOSITORY, '--draft=false']);
 	}
-	return JSON.parse(result.stdout);
-}
+};
 
-async function assertDraftTarget(tag, release, head) {
+async function assertDraftTarget(gh, tag, release, head) {
 	const target = String(release.targetCommitish ?? '');
-	const sha = (
-		await output('gh', [
-			'api',
-			`repos/${REPOSITORY}/commits/${encodeURIComponent(target)}`,
-			'--jq',
-			'.sha'
-		])
-	).trim();
+	const sha = await gh.resolveCommit(target);
 	if (sha !== head) {
 		throw new Error(
 			`refusing to publish draft release ${tag}: target ${target} resolves to ${sha}, not ${head}`
@@ -1104,43 +1162,6 @@ async function remoteTagCommit(tag) {
 		return object?.object?.sha;
 	}
 	return ref?.object?.sha;
-}
-
-async function listAttestationBundles(digest) {
-	const predicate = encodeURIComponent(SLSA_PREDICATE_TYPE);
-	const result = await capture('gh', [
-		'api',
-		'-H',
-		`X-GitHub-Api-Version: ${ATTESTATION_API_VERSION}`,
-		`repos/${REPOSITORY}/attestations/sha256:${digest}?predicate_type=${predicate}&per_page=10`
-	]);
-	if (result.code !== 0) {
-		if (/HTTP 404/.test(result.stderr)) return [];
-		throw new Error(`attestation lookup failed: ${lastLine(result.stderr)}`);
-	}
-	const bundles = [];
-	for (const item of JSON.parse(result.stdout)?.attestations ?? []) {
-		if (item?.bundle && typeof item.bundle === 'object') {
-			bundles.push(item.bundle);
-			continue;
-		}
-		const url = new URL(String(item?.bundle_url ?? ''));
-		if (url.protocol !== 'https:' || url.hostname !== ATTESTATION_BLOB_HOST) {
-			throw new Error('GitHub returned an attestation bundle URL outside its blob store');
-		}
-		const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(30_000) });
-		if (!response.ok)
-			throw new Error(`attestation bundle download failed (HTTP ${response.status})`);
-		const { uncompress } = requireFromCreateSignkit('snappyjs');
-		const decoded = uncompress(new Uint8Array(await response.arrayBuffer()), 4 * 1024 * 1024);
-		bundles.push(JSON.parse(Buffer.from(decoded).toString('utf8')));
-	}
-	return bundles;
-}
-
-function dsseSignature(bundle) {
-	const signature = bundle?.dsseEnvelope?.signatures?.[0]?.sig;
-	return typeof signature === 'string' && signature.length > 0 ? signature : undefined;
 }
 
 // ---------------------------------------------------------------------------
