@@ -192,7 +192,7 @@ async function build(options) {
 	if (!process.version.startsWith('v24.')) {
 		note(`the workflow builds with Node 24; this build uses ${process.version} (recorded)`);
 	}
-	if (!toolchain.rustc.startsWith('rustc 1.88.0')) {
+	if (!toolchain.rustc.startsWith('1.88.0 ')) {
 		note(`the workflow builds the CLI with Rust 1.88.0; this build uses ${toolchain.rustc}`);
 	}
 
@@ -1270,8 +1270,8 @@ async function readToolchain() {
 	return {
 		node: process.version,
 		pnpm: await first('pnpm', ['--version']),
-		rustc: await first('rustc', ['--version']),
-		cargo: await first('cargo', ['--version']),
+		rustc: (await first('rustc', ['--version'])).replace(/^rustc\s+/, ''),
+		cargo: (await first('cargo', ['--version'])).replace(/^cargo\s+/, ''),
 		docker: await first('docker', ['version', '--format', '{{.Server.Version}}'])
 	};
 }
