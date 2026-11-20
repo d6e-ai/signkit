@@ -199,15 +199,55 @@ async function tokenRequest(parameters: Record<string, string>): Promise<TokenSe
 }
 
 export async function verifyAccessToken(token: string): Promise<VerifiedPrincipal> {
+	return principalFromPayload(await verifiedAccessTokenPayload(token, []));
+}
+
+/**
+ * A d6e-auth access token presented directly as an `Authorization: Bearer`
+ * credential, after verification.
+ */
+export interface VerifiedBearerAccessToken {
+	principal: VerifiedPrincipal;
+	/**
+	 * The provider's profile observation time: the token's `iat`, as an ISO-8601
+	 * UTC timestamp, clamped to now so a skewed clock cannot post-date it. `null`
+	 * when the token carries no usable `iat`.
+	 */
+	observedAt: string | null;
+}
+
+/**
+ * Verifies a d6e-auth access token presented as a bearer credential on the
+ * operator API (for example by an operator console that obtained it for this
+ * deployment).
+ *
+ * The checks are exactly the session's -- RS256 against the provider JWKS,
+ * issuer `d6e-auth`, audience this deployment's own `D6E_AUTH_CLIENT_ID`, a
+ * `sub` and `email`, and never a refresh token -- plus a mandatory `exp`: a
+ * bearer is replayable by whoever holds it, so one without an expiry is
+ * refused rather than accepted forever. A token minted for another client
+ * fails the audience check, so a token issued for one SignKit deployment never
+ * authenticates at another.
+ */
+export async function verifyBearerAccessToken(token: string): Promise<VerifiedBearerAccessToken> {
+	const payload: JWTPayload = await verifiedAccessTokenPayload(token, ['exp']);
+	return { principal: principalFromPayload(payload), observedAt: observedAtFromPayload(payload) };
+}
+
+async function verifiedAccessTokenPayload(
+	token: string,
+	requiredClaims: readonly string[]
+): Promise<JWTPayload> {
 	const { baseUrl, clientId } = configuration();
 	const jwks = remoteJwksSetFor(`${baseUrl}/.well-known/jwks.json`);
 	try {
 		const { payload } = await jwtVerify(token, jwks, {
 			algorithms: ['RS256'],
 			issuer: 'd6e-auth',
-			audience: clientId
+			audience: clientId,
+			...(requiredClaims.length === 0 ? {} : { requiredClaims: [...requiredClaims] })
 		});
-		return principalFromPayload(payload);
+		return payload;
 	} catch (error: unknown) {
 		// Only the errors that pass a verdict on this specific token -- expired,
 		// malformed, wrong signature, disallowed algorithm, no matching key in an
@@ -228,6 +268,13 @@ export async function verifyAccessToken(token: string): Promise<VerifiedPrincipa
 		}
 		throw error;
 	}
+}
+
+function observedAtFromPayload(payload: JWTPayload): string | null {
+	if (typeof payload.iat !== 'number' || !Number.isFinite(payload.iat) || payload.iat <= 0) {
+		return null;
+	}
+	return new Date(Math.min(payload.iat * 1000, Date.now())).toISOString();
 }
 
 function principalFromPayload(payload: JWTPayload): VerifiedPrincipal {

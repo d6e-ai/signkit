@@ -32,6 +32,7 @@ function event(authorization?: string): RequestEvent {
 	return {
 		locals: {
 			apiKeyAuthentication: { state: 'absent' },
+			accessTokenAuthentication: { state: 'absent' },
 			identityState: 'unavailable',
 			memberships: [],
 			principal: null

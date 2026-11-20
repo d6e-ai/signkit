@@ -14,7 +14,12 @@ import {
 } from '../constants.js';
 import { parseReleaseTag } from '../release/semver.js';
 import { usage } from './errors.js';
-import { parseEmailAddress, parseHttpsOrigin } from './urls.js';
+import {
+	parseConsoleOriginsFlag,
+	parseConsoleUrlFlag,
+	parseEmailAddress,
+	parseHttpsOrigin
+} from './urls.js';
 
 export type ProviderId = 'cloudflare' | 'node' | 'vercel';
 export type MailProviderId = 'cloudflare' | 'smtp';
@@ -40,6 +45,18 @@ export interface ParsedCommand {
 	smtpSecure?: boolean;
 	smtpUsername?: string;
 	bootstrapOwnerEmail?: string;
+	/**
+	 * Canonical `SIGNKIT_CONSOLE_ORIGINS` list from `--console-origins`. An
+	 * empty array is an explicit "console CORS off" and clears the Worker var.
+	 */
+	consoleOrigins?: string[];
+	/**
+	 * Canonical `SIGNKIT_CONSOLE_URL` from `--console-url`, where invitation
+	 * emails send people to join without the link. `''` clears the Worker var.
+	 */
+	consoleUrl?: string;
+	/** Display name sent with a console enrollment request (`--server-name`). */
+	serverName?: string;
 	version: string;
 	channel: ReleaseChannel;
 	statePath?: string;
@@ -60,6 +77,8 @@ export interface ParsedCommand {
 		smtpSecure: boolean;
 		smtpUsername: boolean;
 		bootstrapOwnerEmail: boolean;
+		consoleOrigins: boolean;
+		consoleUrl: boolean;
 	};
 }
 
@@ -92,6 +111,9 @@ const VALUE_OPTION_FLAGS = new Set([
 	'smtp-secure',
 	'smtp-username',
 	'bootstrap-owner-email',
+	'console-origins',
+	'console-url',
+	'server-name',
 	'version',
 	'channel',
 	'state'
@@ -300,6 +322,16 @@ export function parseArgv(argv: string[]): ParsedArgv {
 			? undefined
 			: parseEmailAddress(bootstrapOwnerEmailRaw, '--bootstrap-owner-email').toLowerCase();
 
+	const consoleOriginsRaw = values.get('console-origins');
+	const consoleOrigins =
+		consoleOriginsRaw === undefined
+			? undefined
+			: parseConsoleOriginsFlag(consoleOriginsRaw, '--console-origins');
+	const consoleUrlRaw = values.get('console-url');
+	const consoleUrl =
+		consoleUrlRaw === undefined ? undefined : parseConsoleUrlFlag(consoleUrlRaw, '--console-url');
+	const serverName = parseOptionalServerName(values.get('server-name'));
+
 	if (domain && publicOrigin) {
 		const implied = `https://${domain}`;
 		if (publicOrigin !== implied) {
@@ -326,6 +358,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
 		smtpSecure,
 		smtpUsername,
 		bootstrapOwnerEmail,
+		consoleOrigins,
+		consoleUrl,
+		serverName,
 		version,
 		channel: channelRaw,
 		statePath: values.get('state'),
@@ -345,7 +380,9 @@ export function parseArgv(argv: string[]): ParsedArgv {
 			smtpPort: values.has('smtp-port'),
 			smtpSecure: values.has('smtp-secure'),
 			smtpUsername: values.has('smtp-username'),
-			bootstrapOwnerEmail: values.has('bootstrap-owner-email')
+			bootstrapOwnerEmail: values.has('bootstrap-owner-email'),
+			consoleOrigins: values.has('console-origins'),
+			consoleUrl: values.has('console-url')
 		}
 	};
 }
@@ -385,6 +422,27 @@ function parseOptionalSmtpUsername(value: string | undefined): string | undefine
 		throw usage('--smtp-username must be 1-256 characters without NUL');
 	}
 	return username;
+}
+
+export const MAX_SERVER_NAME_LENGTH = 100;
+
+function parseOptionalServerName(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const name: string = value.trim().normalize('NFC');
+	const codePoints: string[] = [...name];
+	if (
+		codePoints.length < 1 ||
+		codePoints.length > MAX_SERVER_NAME_LENGTH ||
+		codePoints.some((char) => {
+			const codePoint = char.codePointAt(0) ?? 0;
+			return codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f);
+		})
+	) {
+		throw usage(
+			`--server-name must be 1-${MAX_SERVER_NAME_LENGTH} characters without control characters`
+		);
+	}
+	return name;
 }
 
 function parseBooleanFlag(name: string, value: string): boolean {
@@ -460,7 +518,10 @@ Options:
   --smtp-port <port>      SMTP port 1-65535 except 25 (required for smtp)
   --smtp-secure <bool>    Exactly true (implicit TLS) or false (required STARTTLS)
   --smtp-username <name>  Optional SMTP username; password is accepted only in secret stdin JSON
-  --bootstrap-owner-email <email>  SIGNKIT_BOOTSTRAP_OWNER_EMAIL as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it)
+  --bootstrap-owner-email <email>  SIGNKIT_BOOTSTRAP_OWNER_EMAIL as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it; console enrollment supplies a default)
+  --console-origins <list>  SIGNKIT_CONSOLE_ORIGINS: comma-separated console origins allowed to call /api/v1 cross-origin ("" clears it; console enrollment supplies a default)
+  --console-url <url>     SIGNKIT_CONSOLE_URL: where invitation emails send people to join without the link ("" clears it; console enrollment supplies a default)
+  --server-name <text>    Console display name sent with D6E_ENROLLMENT_TOKEN enrollment (default: public origin hostname)
   --version <tag|latest>  Release tag or "latest" (default: latest)
   --channel <stable|beta> Release channel (enforced against the selected tag; used to pick latest)
 
@@ -479,7 +540,10 @@ A pristine initial deploy (no local state, no remote Worker versions/secrets)
 reads secret JSON once from stdin: redirect a secure file with exactly
 D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET, plus SIGNKIT_SMTP_PASSWORD when
 --smtp-username is configured
-(create-signkit --cloudflare deploy ... --yes < oauth.json). Back up the recovery
+(create-signkit --cloudflare deploy ... --yes < oauth.json). With a console
+enrollment token in the D6E_ENROLLMENT_TOKEN environment variable, the initial
+deploy obtains the OAuth pair from D6E Auth instead and reads no OAuth stdin.
+Back up the recovery
 file and its adjacent target-binding file together. Only the recovery file path
 and SHA-256 fingerprint are reported. See docs/create-signkit.md.
 Worker rollback cannot roll back D1. See docs/create-signkit.md.

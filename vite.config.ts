@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import adapterCloudflare from '@sveltejs/adapter-cloudflare';
 import adapterNode from '@sveltejs/adapter-node';
@@ -30,6 +31,17 @@ import {
 
 const deployTarget = process.env.DEPLOY_TARGET ?? 'node';
 
+/**
+ * The product version advertised by `GET /api/v1/system/capabilities`. The
+ * release workflow enforces tag-equals-version for this file, so a release
+ * build reports its release.
+ */
+const signkitVersion: string = (
+	JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+		version: string;
+	}
+).version;
+
 const postgresLiveSpecs: string[] = [
 	'src/**/postgres-*.integration.spec.ts',
 	'src/lib/adapters/db/postgres-envelope-document-store.spec.ts',
@@ -50,6 +62,9 @@ function deploymentAdapter() {
 }
 
 export default defineConfig({
+	define: {
+		__SIGNKIT_VERSION__: JSON.stringify(signkitVersion)
+	},
 	plugins: [
 		...(process.env.VITEST ? [testDownloadMiddleware()] : []),
 		tailwindcss(),

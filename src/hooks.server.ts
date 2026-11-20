@@ -1,5 +1,6 @@
-import type { Handle } from '@sveltejs/kit';
+import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
+import { problemResponse } from '$lib/http/problem';
 import { cookieName, getTextDirection } from '$lib/paraglide/runtime';
 import { paraglideMiddleware } from '$lib/paraglide/server';
 import {
@@ -8,9 +9,24 @@ import {
 } from '$lib/application/api-keys/api-key-authentication-runtime';
 import { resolveInstanceApplication } from '$lib/application/instance/instance-runtime';
 import { isApiKeyAuthenticatedPath, isApiKeyRejectedPath } from '$lib/navigation/api-key-surface';
+import { consoleCorsSurface, isOperatorApiPath } from '$lib/navigation/operator-api-surface';
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
+import { parseBearerAccessToken } from '$lib/security/access-token-bearer';
 import { hasAuthorizationHeader, parseBearerApiKey } from '$lib/security/api-key';
-import { D6eAuthRejectedError, refresh, verifyAccessToken } from '$lib/server/d6e-auth';
+import {
+	consoleCorsPreflightResponse,
+	isConsoleCorsMethod,
+	resolveConsoleOrigins,
+	withConsoleCorsHeaders
+} from '$lib/http/console-cors';
+import {
+	D6eAuthRejectedError,
+	refresh,
+	verifyAccessToken,
+	verifyBearerAccessToken,
+	type VerifiedBearerAccessToken,
+	type VerifiedPrincipal
+} from '$lib/server/d6e-auth';
 import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key-authentication';
 import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
@@ -22,6 +38,8 @@ import {
 	seal,
 	unseal
 } from '$lib/server/session';
+
+type InstanceMembership = NonNullable<App.Locals['instanceMembership']>;
 
 export function isLocaleExcludedPath(pathname: string): boolean {
 	return ['/api', '/.well-known', '/health', '/ready', '/webhooks', '/agent'].some(
@@ -60,6 +78,74 @@ export const handleLocale: Handle = ({ event, resolve }) => {
 };
 
 /**
+ * Cross-origin access for operator consoles listed in `SIGNKIT_CONSOLE_ORIGINS`.
+ *
+ * Runs first so a preflight is answered before any credential handling: a
+ * preflight never carries credentials and must not reach a route. Only the
+ * operator API surface (every method it uses) and public discovery (`GET`) are
+ * eligible; the recipient surface, completion artifacts, and system endpoints
+ * never receive a CORS header whatever origin asks.
+ *
+ * Credentialed CORS is never allowed. The console authenticates with an
+ * explicit d6e-auth access token, so browsers never attach this deployment's
+ * cookie to a cross-origin call, and a request that is not allowed simply gets
+ * no CORS headers -- the browser then withholds the response from the page.
+ * SvelteKit's own CSRF origin check still applies first: it refuses
+ * cross-origin form content types (`application/x-www-form-urlencoded`,
+ * `multipart/form-data`, `text/plain`), which no operator endpoint accepts, and
+ * leaves the JSON and raw-body API calls a console makes to this policy. The
+ * explicit same-origin checks of the recipient signing commands are unaffected
+ * because those paths are never eligible.
+ */
+export const handleConsoleCors: Handle = async ({ event, resolve }) => {
+	const surface = consoleCorsSurface(event.url.pathname);
+	if (surface === null) return resolve(event);
+	const origins: ReadonlySet<string> = resolveConsoleOrigins(event.platform);
+	if (origins.size === 0) return resolve(event);
+
+	const origin: string | null = event.request.headers.get('origin');
+	const allowedOrigin: string | null = origin !== null && origins.has(origin) ? origin : null;
+	const requestedMethod: string | null = event.request.headers.get('access-control-request-method');
+	if (event.request.method === 'OPTIONS' && requestedMethod !== null) {
+		if (allowedOrigin !== null && isConsoleCorsMethod(surface, requestedMethod)) {
+			return consoleCorsPreflightResponse(allowedOrigin, surface);
+		}
+		// A refused preflight falls through to normal routing, which has no
+		// OPTIONS handler and answers 405 without any CORS header.
+		return withConsoleCorsHeaders(await resolve(event), null);
+	}
+
+	const response: Response = await resolve(event);
+	return withConsoleCorsHeaders(
+		response,
+		allowedOrigin !== null && isConsoleCorsMethod(surface, event.request.method)
+			? allowedOrigin
+			: null
+	);
+};
+
+/**
+ * An API path that matches no route answers a JSON problem instead of the
+ * HTML not-found page. That page runs the root layout, which sends an
+ * anonymous caller to sign-in: a redirect a cross-origin console cannot read
+ * (it surfaces as a CORS failure) and a script cannot use. Placed after the
+ * console CORS hook, so an allowed console can read the 404.
+ */
+export const handleUnknownApiRoute: Handle = ({ event, resolve }) => {
+	const pathname: string = event.url.pathname;
+	if (event.route.id === null && (pathname === '/api' || pathname.startsWith('/api/'))) {
+		return problemResponse({
+			type: 'urn:signkit:problem:route-not-found',
+			title: 'Route not found',
+			status: 404,
+			detail: 'No API endpoint matches this path.',
+			instance: pathname
+		});
+	}
+	return resolve(event);
+};
+
+/**
  * Whether this request is in bearer mode, and if so which token it presented.
  *
  * Extracted as a pure function because it encodes the two rules the rest of the
@@ -88,6 +174,28 @@ export function resolveApiKeyBearerMode(
 	return { mode: 'bearer', token: parseBearerApiKey(authorization) };
 }
 
+export type BearerMode =
+	ReturnType<typeof resolveApiKeyBearerMode> | { mode: 'access_token'; token: string };
+
+/**
+ * The bearer mode for this request across both credential families.
+ *
+ * A d6e-auth access token -- `Bearer ` and a compact JWS, never starting with
+ * `signkit_` -- is recognized only on the operator API surface, and is checked
+ * before the API key rules so a console token on an envelope route is not
+ * answered as an unknown API key. Everything else, including every `signkit_`
+ * value and every opaque non-JWT bearer, is decided by
+ * {@link resolveApiKeyBearerMode} exactly as before access tokens were
+ * accepted.
+ */
+export function resolveBearerMode(pathname: string, authorization: string | null): BearerMode {
+	if (isOperatorApiPath(pathname)) {
+		const accessToken: string | null = parseBearerAccessToken(authorization);
+		if (accessToken !== null) return { mode: 'access_token', token: accessToken };
+	}
+	return resolveApiKeyBearerMode(pathname, authorization);
+}
+
 /**
  * Whether the cookie session must be left unresolved for this request.
  *
@@ -96,14 +204,17 @@ export function resolveApiKeyBearerMode(
  * this design forbids: an attacker-supplied bearer riding a victim's session.
  */
 export function isCookieSessionSuppressed(
-	authentication: App.Locals['apiKeyAuthentication']
+	authentication: App.Locals['apiKeyAuthentication'],
+	accessToken: App.Locals['accessTokenAuthentication'] = { state: 'absent' }
 ): boolean {
-	return authentication.state !== 'absent';
+	return authentication.state !== 'absent' || accessToken.state !== 'absent';
 }
 
 /**
  * Resolves a `signkit_` bearer token into an instance authority, before any
- * cookie session is considered.
+ * cookie session is considered. It also selects access-token bearer mode for a
+ * d6e-auth access token on the operator API surface (see
+ * {@link resolveBearerMode}); that token is verified by {@link handleSession}.
  *
  * Three properties matter here and all of them are load-bearing:
  *
@@ -125,11 +236,19 @@ export function isCookieSessionSuppressed(
  */
 export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => {
 	event.locals.apiKeyAuthentication = { state: 'absent' };
-	const bearer = resolveApiKeyBearerMode(
+	event.locals.accessTokenAuthentication = { state: 'absent' };
+	const bearer: BearerMode = resolveBearerMode(
 		event.url.pathname,
 		event.request.headers.get('authorization')
 	);
 	if (bearer.mode === 'cookie') return resolve(event);
+	if (bearer.mode === 'access_token') {
+		// No API key was presented, so `apiKeyAuthentication` stays `absent` and
+		// the authorization helpers treat the verified identity as a human
+		// session. `handleSession` verifies the token and never reads the cookie.
+		event.locals.accessTokenAuthentication = { state: 'presented', token: bearer.token };
+		return resolve(event);
+	}
 	if (bearer.mode === 'rejected') {
 		// No durable read at all: the refusal follows from where the key was
 		// presented, so there is nothing to look up and nothing to disclose.
@@ -187,6 +306,121 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 	return resolve(event);
 };
 
+/**
+ * Resolves the local instance membership for a verified d6e-auth identity and
+ * records it in `locals`, identically for the cookie session and an
+ * access-token bearer. Returns the membership only when it is active.
+ *
+ * d6e-auth proves identity only. The active local instance member is the sole
+ * operator authority, resolved here through the same instance application
+ * resolver the handlers use, on both D1 and PostgreSQL. A verified identity
+ * with no membership stays authorized for bootstrap and self-profile surfaces
+ * only. Throws when membership cannot be read; callers fail closed.
+ */
+async function resolveMemberIdentity(
+	event: RequestEvent,
+	principal: VerifiedPrincipal
+): Promise<InstanceMembership | null> {
+	const application = await resolveInstanceApplication({ platform: event.platform });
+	if (application === null) {
+		event.locals.principal = principal;
+		event.locals.identityState = 'unavailable';
+		return null;
+	}
+	const caller = await getRequestCallerContext(event.locals, principal.subject, () =>
+		application.getCurrentMember({ id: principal.subject })
+	);
+	event.locals.principal = principal;
+	event.locals.bootstrapped = caller.bootstrapped;
+	if (caller.member === null) {
+		event.locals.identityState = 'no_membership';
+		return null;
+	}
+	const membership: InstanceMembership = {
+		userId: caller.member.userId,
+		role: caller.member.role,
+		status: caller.member.status
+	};
+	event.locals.instanceMembership = membership;
+	if (caller.member.status !== 'active') {
+		event.locals.identityState = 'suspended';
+		return null;
+	}
+	event.locals.identityState = 'active';
+	return membership;
+}
+
+/**
+ * The only request on which an access-token bearer records the member display
+ * snapshot from its own verified claims: the self-profile read a console makes
+ * when it opens a deployment. Unlike the cookie session, a bearer request has
+ * no per-observation marker that could suppress a sealing and database write on
+ * every later call, so capture is tied to this one entry read (bootstrap and
+ * invitation acceptance still capture immediately on their own).
+ */
+function isAccessTokenDisplayCaptureRequest(event: RequestEvent): boolean {
+	return event.request.method === 'GET' && event.url.pathname === '/api/v1/instance/members/me';
+}
+
+/**
+ * Access-token bearer mode: the identity comes from the presented d6e-auth
+ * access token alone. The cookie jar is neither read nor written -- not even
+ * cleared on rejection -- because this request never had a cookie authority.
+ */
+async function resolveAccessTokenSession(event: RequestEvent, token: string): Promise<void> {
+	let verified: VerifiedBearerAccessToken;
+	try {
+		verified = await verifyBearerAccessToken(token);
+	} catch (error: unknown) {
+		const rejected: boolean = error instanceof D6eAuthRejectedError;
+		// Never log the token or anything derived from it: only the failure shape.
+		console.error(
+			JSON.stringify({
+				event: 'access_token_bearer_verification_failed',
+				outcome: rejected ? 'rejected' : 'unavailable',
+				message: error instanceof Error ? error.name : 'UnknownError'
+			})
+		);
+		event.locals.accessTokenAuthentication = { state: rejected ? 'rejected' : 'unavailable' };
+		event.locals.identityState = rejected ? 'anonymous' : 'unavailable';
+		return;
+	}
+	event.locals.accessTokenAuthentication = { state: 'verified', observedAt: verified.observedAt };
+
+	try {
+		const active: InstanceMembership | null = await resolveMemberIdentity(
+			event,
+			verified.principal
+		);
+		if (
+			active !== null &&
+			verified.observedAt !== null &&
+			isAccessTokenDisplayCaptureRequest(event)
+		) {
+			try {
+				await bestEffortCaptureMemberDisplay({
+					platform: event.platform,
+					accessTokenObservedAt: verified.observedAt,
+					memberUserId: active.userId,
+					principal: verified.principal
+				});
+			} catch {
+				// Display capture never fails identity resolution.
+			}
+		}
+	} catch (error: unknown) {
+		console.error(
+			JSON.stringify({
+				event: 'identity_resolution_failed',
+				message: error instanceof Error ? error.message : 'unknown error'
+			})
+		);
+		event.locals.principal = null;
+		event.locals.instanceMembership = null;
+		event.locals.identityState = 'unavailable';
+	}
+}
+
 export const handleSession: Handle = async ({ event, resolve }) => {
 	event.locals.requestCallerContexts = undefined;
 	event.locals.principal = null;
@@ -194,9 +428,18 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 	event.locals.bootstrapped = false;
 	event.locals.identityState = 'anonymous';
 	if (isSessionExcludedPath(event.url.pathname)) return resolve(event);
+	const accessToken: App.Locals['accessTokenAuthentication'] =
+		event.locals.accessTokenAuthentication;
+	if (accessToken.state === 'presented') {
+		await resolveAccessTokenSession(event, accessToken.token);
+		return resolve(event);
+	}
 	// Bearer mode is exclusive: once an `Authorization` header has been presented
-	// on an API key surface, this request has no cookie authority at all.
-	if (isCookieSessionSuppressed(event.locals.apiKeyAuthentication)) return resolve(event);
+	// on an API key surface, or an access token on the operator surface, this
+	// request has no cookie authority at all.
+	if (isCookieSessionSuppressed(event.locals.apiKeyAuthentication, accessToken)) {
+		return resolve(event);
+	}
 
 	const cookie = event.cookies.get(SESSION_COOKIE);
 	if (!cookie) return resolve(event);
@@ -234,38 +477,8 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 			session.principal = await verifyAccessToken(session.accessToken);
 		}
 
-		// d6e-auth proves identity only. The active local instance member is
-		// the sole operator authority, resolved here through the same
-		// instance application resolver the handlers use, on both D1 and
-		// PostgreSQL. A verified identity with no membership stays
-		// authorized for bootstrap and self-profile surfaces only.
-		const application = await resolveInstanceApplication({ platform: event.platform });
-		if (application === null) {
-			event.locals.principal = session.principal;
-			event.locals.identityState = 'unavailable';
-			return resolve(event);
-		}
-		const caller = await getRequestCallerContext(event.locals, session.principal.subject, () =>
-			application.getCurrentMember({ id: session.principal.subject })
-		);
-		event.locals.principal = session.principal;
-		event.locals.bootstrapped = caller.bootstrapped;
-		if (caller.member === null) {
-			event.locals.identityState = 'no_membership';
-		} else if (caller.member.status !== 'active') {
-			event.locals.instanceMembership = {
-				userId: caller.member.userId,
-				role: caller.member.role,
-				status: caller.member.status
-			};
-			event.locals.identityState = 'suspended';
-		} else {
-			event.locals.instanceMembership = {
-				userId: caller.member.userId,
-				role: caller.member.role,
-				status: caller.member.status
-			};
-			event.locals.identityState = 'active';
+		const active: InstanceMembership | null = await resolveMemberIdentity(event, session.principal);
+		if (active !== null) {
 			try {
 				session =
 					(await bestEffortCaptureMemberDisplay({
@@ -273,7 +486,7 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 						url: event.url,
 						platform: event.platform,
 						session,
-						memberUserId: caller.member.userId,
+						memberUserId: active.userId,
 						principal: session.principal
 					})) ?? session;
 			} catch {
@@ -304,4 +517,10 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
-export const handle: Handle = sequence(handleLocale, handleApiKeyAuthentication, handleSession);
+export const handle: Handle = sequence(
+	handleConsoleCors,
+	handleUnknownApiRoute,
+	handleLocale,
+	handleApiKeyAuthentication,
+	handleSession
+);

@@ -3,7 +3,8 @@ import {
 	isCookieSessionSuppressed,
 	isLocaleExcludedPath,
 	isSessionExcludedPath,
-	resolveApiKeyBearerMode
+	resolveApiKeyBearerMode,
+	resolveBearerMode
 } from './hooks.server';
 
 describe('locale exclusions', () => {
@@ -201,5 +202,79 @@ describe('cookie session suppression', () => {
 				}
 			})
 		).toBe(true);
+	});
+});
+
+describe('access-token bearer mode selection', () => {
+	const JWT: string = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.c2lnbmF0dXJl';
+	const API_KEY: string = `signkit_${'a'.repeat(43)}`;
+
+	/**
+	 * Every operator surface accepts the token in place of the cookie, including
+	 * the session-only ones and the envelope routes an API key may also use.
+	 */
+	it.each([
+		'/api/v1/envelopes',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/send',
+		'/api/v1/dashboard',
+		'/api/v1/contacts',
+		'/api/v1/api-keys',
+		'/api/v1/webhooks',
+		'/api/v1/instance/bootstrap',
+		'/api/v1/instance/members/me',
+		'/api/v1/envelopes/01900000-0000-7000-8000-000000000001/recipients/r/reissue'
+	])('selects access-token mode on %s', (pathname) => {
+		expect(resolveBearerMode(pathname, `Bearer ${JWT}`)).toEqual({
+			mode: 'access_token',
+			token: JWT
+		});
+	});
+
+	it.each([
+		'/api/v1/signing/context',
+		'/api/v1/recipient/context',
+		'/api/v1/completion-artifacts',
+		'/api/v1/system/deliveries/drain',
+		'/api/v1/system/capabilities',
+		'/api/v1/openapi.json',
+		'/s/skr1_token',
+		'/settings',
+		'/'
+	])('never selects access-token mode on %s', (pathname) => {
+		expect(resolveBearerMode(pathname, `Bearer ${JWT}`)).toEqual(
+			resolveApiKeyBearerMode(pathname, `Bearer ${JWT}`)
+		);
+		expect(resolveBearerMode(pathname, `Bearer ${JWT}`)).toEqual({ mode: 'cookie' });
+	});
+
+	/**
+	 * API keys and every opaque non-JWT bearer keep exactly the decision they had
+	 * before access tokens were accepted.
+	 */
+	it.each([
+		['/api/v1/envelopes', `Bearer ${API_KEY}`],
+		['/api/v1/envelopes', `Bearer skr1_${'a'.repeat(43)}`],
+		['/api/v1/envelopes', `bearer ${JWT}`],
+		['/api/v1/envelopes', 'Basic dXNlcjpwYXNz'],
+		['/api/v1/api-keys', `Bearer ${API_KEY}`],
+		['/api/v1/instance/bootstrap', `Bearer ${API_KEY}`],
+		['/api/v1/contacts', `Bearer skr1_${'a'.repeat(43)}`],
+		['/api/v1/dashboard', null]
+	])('delegates %s %s to the API key rules', (pathname, authorization) => {
+		expect(resolveBearerMode(pathname, authorization)).toEqual(
+			resolveApiKeyBearerMode(pathname, authorization)
+		);
+	});
+
+	it('suppresses the cookie session for every access-token state', () => {
+		for (const accessToken of [
+			{ state: 'presented', token: JWT },
+			{ state: 'verified', observedAt: null },
+			{ state: 'rejected' },
+			{ state: 'unavailable' }
+		] as const) {
+			expect(isCookieSessionSuppressed({ state: 'absent' }, accessToken)).toBe(true);
+		}
+		expect(isCookieSessionSuppressed({ state: 'absent' }, { state: 'absent' })).toBe(false);
 	});
 });

@@ -1,5 +1,7 @@
 import {
 	ASSETS_BINDING,
+	CONSOLE_ORIGINS_VAR,
+	CONSOLE_URL_VAR,
 	D1_BINDING,
 	EMAIL_BINDING,
 	R2_BINDING,
@@ -24,6 +26,10 @@ export interface WranglerConfigInput {
 	smtpSecure?: boolean;
 	smtpUsername?: string;
 	bootstrapOwnerEmail?: string;
+	/** Joined `SIGNKIT_CONSOLE_ORIGINS`; an empty string is written explicitly to clear it. */
+	consoleOrigins?: string;
+	/** `SIGNKIT_CONSOLE_URL`; an empty string is written explicitly to clear it. */
+	consoleUrl?: string;
 	manifest: ReleaseManifest;
 	main: string;
 	assetsDirectory: string;
@@ -54,6 +60,12 @@ export function renderWranglerConfig(input: WranglerConfigInput): string {
 	}
 	if (input.bootstrapOwnerEmail) {
 		vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL = input.bootstrapOwnerEmail;
+	}
+	if (input.consoleOrigins !== undefined) {
+		vars[CONSOLE_ORIGINS_VAR] = input.consoleOrigins;
+	}
+	if (input.consoleUrl !== undefined) {
+		vars[CONSOLE_URL_VAR] = input.consoleUrl;
 	}
 	const config = {
 		name: input.workerName,

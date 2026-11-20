@@ -28,7 +28,10 @@ import {
 	runAfterCommand,
 	type ConsoleInvitationNotesPort
 } from '$lib/server/console-invitation-notes';
-import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
+import {
+	bestEffortCaptureMemberDisplay,
+	displayCaptureSource
+} from '$lib/server/instance-display-capture';
 import {
 	acceptsJson,
 	readJsonBody,
@@ -872,7 +875,7 @@ async function captureAcceptedMemberDisplay(
 	) {
 		try {
 			await bestEffortCaptureMemberDisplay({
-				cookies,
+				...displayCaptureSource(locals, cookies),
 				url,
 				platform,
 				memberUserId: result.member.userId,

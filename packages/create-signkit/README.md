@@ -11,6 +11,8 @@ npx create-signkit --cloudflare deploy --account-id <id> --email-from ops@exampl
 
 The `--cloudflare` provider flag is required and must appear before the command. There is no implicit Cloudflare default.
 
+With a single-use console enrollment token in the `D6E_ENROLLMENT_TOKEN` environment variable, the initial deploy obtains the OAuth pair from D6E Auth instead of `oauth.json`.
+
 Normative architecture: https://github.com/d6e-ai/signkit/blob/main/docs/architecture/create-signkit.md
 
 Operator guide: https://github.com/d6e-ai/signkit/blob/main/docs/create-signkit.md

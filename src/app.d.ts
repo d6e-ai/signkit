@@ -30,6 +30,32 @@ export type ApiKeyAuthenticationState =
 	| { state: 'unavailable' };
 
 /**
+ * Outcome of a d6e-auth access token presented as `Authorization: Bearer` on
+ * the operator API surface.
+ *
+ * Anything other than `absent` means the request is in access-token bearer
+ * mode: the identity comes from that token alone and the operator cookie is
+ * never read, so an attacker-supplied token can never ride a victim's session
+ * and a failed token can never fall back to one. `apiKeyAuthentication` stays
+ * `absent` in this mode, because no API key was presented; the authorization
+ * helpers then treat the verified identity exactly like a cookie session.
+ *
+ * - `presented`: selected by the bearer-mode hook, not yet verified.
+ * - `verified`: identity resolved from the token; `observedAt` is its
+ *   provider profile observation time (`iat`), used for display capture.
+ * - `rejected`: the token itself failed verification (expired, wrong audience,
+ *   refresh token, malformed, untrusted key). Answered as unauthenticated.
+ * - `unavailable`: the token could not be checked (provider or configuration
+ *   failure). Answered as identity unavailable.
+ */
+export type AccessTokenAuthenticationState =
+	| { state: 'absent' }
+	| { state: 'presented'; token: string }
+	| { state: 'verified'; observedAt: string | null }
+	| { state: 'rejected' }
+	| { state: 'unavailable' };
+
+/**
  * The caller's local instance membership, resolved from the durable instance
  * store for every verified session. d6e-auth proves identity only
  * (subject/name/email); this row is the sole operator authority.
@@ -41,9 +67,12 @@ export interface InstanceMembership {
 }
 
 /**
- * Verified session identity resolved against local instance membership:
+ * Verified session identity resolved against local instance membership. The
+ * identity comes from the operator cookie session or, in access-token bearer
+ * mode, from the presented d6e-auth access token; the states mean the same
+ * either way:
  *
- * - `anonymous`: no session cookie.
+ * - `anonymous`: no session cookie, or a rejected access-token bearer.
  * - `active`: verified identity with an active local instance member row.
  * - `no_membership`: verified identity with no local member row. Only
  *   bootstrap and self-profile surfaces authorize this state.
@@ -55,6 +84,12 @@ export type IdentityState = 'anonymous' | 'active' | 'no_membership' | 'suspende
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 declare global {
+	/**
+	 * The product version this build was made from, injected by `define` in
+	 * `vite.config.ts`. Read it through `$lib/capabilities/version`.
+	 */
+	const __SIGNKIT_VERSION__: string;
+
 	namespace App {
 		// interface Error {}
 		interface Locals extends RequestCallerContextLocals {
@@ -69,6 +104,11 @@ declare global {
 			 * fallback for an API key request.
 			 */
 			apiKeyAuthentication: ApiKeyAuthenticationState;
+			/**
+			 * Required for the same reason as `apiKeyAuthentication`: the session
+			 * hook reads it to decide whether the cookie may be considered at all.
+			 */
+			accessTokenAuthentication: AccessTokenAuthenticationState;
 		}
 		// interface PageData {}
 		// interface PageState {}
@@ -91,6 +131,7 @@ declare global {
 				SIGNKIT_SMTP_USERNAME?: string;
 				SIGNKIT_SMTP_PASSWORD?: string;
 				SIGNKIT_WEBHOOK_ALLOWED_HOSTS?: string;
+				SIGNKIT_CONSOLE_ORIGINS?: string;
 				SESSION_ENCRYPTION_KEY?: string;
 				SESSION_ENCRYPTION_KEY_PREVIOUS?: string;
 				SIGNKIT_BOOTSTRAP_OWNER_EMAIL?: string;

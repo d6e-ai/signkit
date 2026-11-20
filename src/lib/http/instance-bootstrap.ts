@@ -20,7 +20,10 @@ import {
 	validationErrors,
 	type JsonBodyResult
 } from './bounded-json-body';
-import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
+import {
+	bestEffortCaptureMemberDisplay,
+	displayCaptureSource
+} from '$lib/server/instance-display-capture';
 import { authorizeIdentityRequest, type AuthorizedIdentityActor } from './identity-authorization';
 import { problemResponse, type ProblemValidationError } from './problem';
 
@@ -207,7 +210,8 @@ export function createInstanceBootstrapHandler(
 	) => BootstrapUnsafeContext = resolveBootstrapUnsafeContext
 ): RequestHandler {
 	return async ({ locals, platform, request, url, cookies }): Promise<Response> => {
-		// Bootstrap is cookie-session-only: a `signkit_` API key is already
+		// Bootstrap is human-session-only (the operator cookie, or a d6e-auth
+		// access-token bearer standing in for it): a `signkit_` API key is already
 		// rejected upstream in hooks.server.ts (instance management surfaces never
 		// resolve one), so a non-absent apiKeyAuthentication state here can only be
 		// that rejection, and authorizeIdentityRequest below answers it with 403.
@@ -319,7 +323,7 @@ export function createInstanceBootstrapHandler(
 			) {
 				try {
 					await bestEffortCaptureMemberDisplay({
-						cookies,
+						...displayCaptureSource(locals, cookies),
 						url,
 						platform,
 						memberUserId: result.member.userId,

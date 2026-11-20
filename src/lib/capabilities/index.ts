@@ -1,6 +1,7 @@
 import { authoringCapabilities } from './authoring';
 import { evidenceCapabilities } from './evidence';
 import { integrationCapabilities } from './integration';
+import { SIGNKIT_VERSION } from './version';
 
 export type SignKitRuntime = 'node' | 'cloudflare' | 'vercel';
 
@@ -13,11 +14,35 @@ export function resolveSignKitRuntime(input: {
 	return 'node';
 }
 
-export function systemCapabilities(runtime: SignKitRuntime) {
+/**
+ * The public origin this deployment advertises: the configured
+ * `SIGNKIT_PUBLIC_ORIGIN` in canonical origin form, or `null` when it is unset,
+ * blank, or not an HTTP(S) URL. It is the origin recipient links are built
+ * from, which a console uses to confirm it is talking to the deployment it
+ * registered.
+ */
+export function advertisedPublicOrigin(raw: string | undefined): string | null {
+	if (raw === undefined || raw.trim().length === 0) return null;
+	let url: URL;
+	try {
+		url = new URL(raw.trim());
+	} catch {
+		return null;
+	}
+	if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+	return url.origin;
+}
+
+export function systemCapabilities(input: {
+	runtime: SignKitRuntime;
+	publicOrigin: string | null;
+}) {
 	return {
 		name: 'SignKit',
 		apiVersion: 'v1',
-		runtime,
+		version: SIGNKIT_VERSION,
+		runtime: input.runtime,
+		publicOrigin: input.publicOrigin,
 		supportedProfiles: {
 			node: { database: 'postgresql', objects: 's3-compatible', status: 'scaffolded' },
 			cloudflare: { database: 'd1', objects: 'r2', status: 'scaffolded' },

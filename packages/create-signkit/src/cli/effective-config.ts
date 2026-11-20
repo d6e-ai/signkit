@@ -26,6 +26,17 @@ export interface EffectiveTarget {
 	smtpSecure?: boolean;
 	smtpUsername?: string;
 	bootstrapOwnerEmail?: string;
+	/**
+	 * `SIGNKIT_CONSOLE_ORIGINS`. `undefined` leaves the remote var untouched
+	 * (`--keep-vars`); an empty array writes an empty value, turning console
+	 * CORS off.
+	 */
+	consoleOrigins?: readonly string[];
+	/**
+	 * `SIGNKIT_CONSOLE_URL`. `undefined` leaves the remote var untouched; `''`
+	 * writes an empty value (the server then names its own settings page).
+	 */
+	consoleUrl?: string;
 	inherited: {
 		workerName: boolean;
 		d1: boolean;
@@ -41,6 +52,8 @@ export interface EffectiveTarget {
 		smtpSecure: boolean;
 		smtpUsername: boolean;
 		bootstrapOwnerEmail: boolean;
+		consoleOrigins: boolean;
+		consoleUrl: boolean;
 	};
 	appliedDefaults: {
 		d6eAuthBaseUrl: boolean;
@@ -115,6 +128,13 @@ export function resolveEffectiveConfig(
 		? parsed.bootstrapOwnerEmail
 		: (parsed.bootstrapOwnerEmail ?? state?.bootstrapOwnerEmail);
 
+	const consoleOrigins = parsed.overrides.consoleOrigins
+		? parsed.consoleOrigins
+		: (parsed.consoleOrigins ?? state?.consoleOrigins);
+	const consoleUrl = parsed.overrides.consoleUrl
+		? parsed.consoleUrl
+		: (parsed.consoleUrl ?? state?.consoleUrl);
+
 	let emailFromName = DEFAULT_EMAIL_FROM_NAME;
 	let emailFromNameDefaulted = true;
 	if (parsed.overrides.emailFromName && parsed.emailFromName) {
@@ -148,6 +168,8 @@ export function resolveEffectiveConfig(
 		smtpSecure,
 		smtpUsername,
 		bootstrapOwnerEmail,
+		consoleOrigins,
+		consoleUrl,
 		inherited: {
 			workerName: Boolean(state && !parsed.overrides.workerName),
 			d1: Boolean(state && !parsed.overrides.d1),
@@ -162,7 +184,9 @@ export function resolveEffectiveConfig(
 			smtpPort: Boolean(state && !parsed.overrides.smtpPort),
 			smtpSecure: Boolean(state && !parsed.overrides.smtpSecure),
 			smtpUsername: Boolean(state && !parsed.overrides.smtpUsername),
-			bootstrapOwnerEmail: Boolean(state && !parsed.overrides.bootstrapOwnerEmail)
+			bootstrapOwnerEmail: Boolean(state && !parsed.overrides.bootstrapOwnerEmail),
+			consoleOrigins: Boolean(state && !parsed.overrides.consoleOrigins),
+			consoleUrl: Boolean(state && !parsed.overrides.consoleUrl)
 		},
 		appliedDefaults: {
 			d6eAuthBaseUrl: d6eAuthBaseUrlDefaulted,

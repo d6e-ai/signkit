@@ -1,10 +1,12 @@
 # HTTP API
 
-SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature set at `GET /api/v1/system/capabilities` and the OpenAPI 3.1 document at `GET /api/v1/openapi.json`.
+SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature set at `GET /api/v1/system/capabilities` and the OpenAPI 3.1 document at `GET /api/v1/openapi.json`. Capabilities also identify the deployment: `version` is the product version of the running build and `publicOrigin` is the configured `SIGNKIT_PUBLIC_ORIGIN` (or `null`).
 
 ## Authentication
 
 Operator browser requests use the d6e-auth session cookie plus an active local `instance_member` row.
+
+An operator console on another origin sends a d6e-auth access token minted for this deployment instead, as `Authorization: Bearer <JWT>`. It is accepted wherever the session cookie is, identifies the same member, and makes the cookie ignored for that request. Cross-origin calls are allowed only from origins in `SIGNKIT_CONSOLE_ORIGINS`. The rules are specified in [Authorization](architecture/authorization-and-instance-administration.md#operator-access-tokens).
 
 Automation uses a bearer key:
 
@@ -23,7 +25,8 @@ The contact API is human-session-only. API keys, recipient capabilities, and rec
 - Operator identifiers are UUIDv7.
 - Mutations require an `Idempotency-Key` opaque token; UUIDv4 is recommended.
 - Concurrent authoring uses `expectedGeneration` and, where relevant, `expectedFieldGeneration` or an expected state.
-- Errors use `application/problem+json` following RFC 9457.
+- Errors use `application/problem+json` following RFC 9457. A path under `/api` that matches no endpoint returns a `404`
+  `urn:signkit:problem:route-not-found` problem rather than a page or a sign-in redirect.
 - Private object keys, token hashes, audit hashes, and raw capabilities are never returned from public models.
 
 ## OpenAPI 3.1 Specification

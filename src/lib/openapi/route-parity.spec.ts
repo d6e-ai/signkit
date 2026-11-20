@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { isOperatorApiPath } from '$lib/navigation/operator-api-surface';
 import { openApiDocument } from './document';
 
 const API_ROOT = 'src/routes/api/v1';
@@ -148,7 +149,7 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 			'/api/v1/envelopes/{envelopeId}/recipients/{recipientId}/reissue'
 		]) {
 			const post = pathItem(document, path).post;
-			expect(post.security).toEqual([{ SessionCookie: [] }]);
+			expect(post.security).toEqual([{ SessionCookie: [] }, { D6eAccessToken: [] }]);
 			const parameters = post.parameters as Array<{
 				name: string;
 				in: string;
@@ -179,7 +180,7 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 		const item = pathItem(document, '/api/v1/contacts/{contactId}');
 
 		for (const operation of [collection.get, collection.post, search, item.put, item.delete]) {
-			expect(operation.security).toEqual([{ SessionCookie: [] }]);
+			expect(operation.security).toEqual([{ SessionCookie: [] }, { D6eAccessToken: [] }]);
 			expect(operation.security).not.toEqual(expect.arrayContaining([{ SignKitApiKey: [] }]));
 		}
 
@@ -278,7 +279,11 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 			'/api/v1/envelopes/{envelopeId}/completion-artifact/evidence'
 		]) {
 			const get = pathItem(document, path).get;
-			expect(get.security).toEqual([{ SignKitApiKey: [] }, { SessionCookie: [] }]);
+			expect(get.security).toEqual([
+				{ SignKitApiKey: [] },
+				{ SessionCookie: [] },
+				{ D6eAccessToken: [] }
+			]);
 			expect(get.parameters).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({ name: 'envelopeId', in: 'path', required: true }),
@@ -297,7 +302,11 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 			'/api/v1/envelopes/{envelopeId}/completion-artifact/pdf'
 		]) {
 			const get = pathItem(document, path).get;
-			expect(get.security).toEqual([{ SignKitApiKey: [] }, { SessionCookie: [] }]);
+			expect(get.security).toEqual([
+				{ SignKitApiKey: [] },
+				{ SessionCookie: [] },
+				{ D6eAccessToken: [] }
+			]);
 			const content = (get.responses as { '200': { content: Record<string, unknown> } })['200']
 				.content;
 			expect(content).toHaveProperty('application/pdf');
@@ -341,7 +350,7 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 		const get = pathItem(document, '/api/v1/dashboard').get;
 
 		// Session-only authority: never an API-key fallback.
-		expect(get.security).toEqual([{ SessionCookie: [] }]);
+		expect(get.security).toEqual([{ SessionCookie: [] }, { D6eAccessToken: [] }]);
 		expect(get.security).not.toEqual(expect.arrayContaining([{ SignKitApiKey: [] }]));
 
 		const parameters = get.parameters as Array<{
@@ -442,5 +451,47 @@ describe('OpenAPI 3.1 /api/v1 route parity', () => {
 		expect(responses['404'].content).not.toHaveProperty('application/problem+json');
 		expect(responses['500'].content).toHaveProperty('text/plain');
 		expect(responses['500'].content).not.toHaveProperty('application/problem+json');
+	});
+
+	it('offers the d6e-auth access token exactly where the operator session is accepted', () => {
+		const document = openApiDocument() as {
+			paths: Record<string, Record<string, { security?: Record<string, unknown>[] }>>;
+			components: { securitySchemes: Record<string, { scheme?: string; bearerFormat?: string }> };
+		};
+		expect(document.components.securitySchemes.D6eAccessToken).toEqual(
+			expect.objectContaining({ scheme: 'bearer', bearerFormat: 'JWT' })
+		);
+		let sessionOperations: number = 0;
+		for (const [path, item] of Object.entries(document.paths)) {
+			for (const operation of Object.values(item)) {
+				const security: Record<string, unknown>[] = operation.security ?? [];
+				const session: boolean = security.some((requirement) => 'SessionCookie' in requirement);
+				const accessToken: boolean = security.some(
+					(requirement) => 'D6eAccessToken' in requirement
+				);
+				expect(accessToken, path).toBe(session);
+				// The hooks verify an access token only on the operator API surface, so
+				// documenting it anywhere else would promise authentication that never
+				// happens.
+				if (session) {
+					expect(isOperatorApiPath(path), path).toBe(true);
+					sessionOperations += 1;
+				}
+			}
+		}
+		expect(sessionOperations).toBeGreaterThan(0);
+	});
+
+	it('documents the capability identification fields a console reads', () => {
+		const get = pathItem(openApiDocument(), '/api/v1/system/capabilities').get;
+		const schema = (
+			get.responses as {
+				'200': { content: { 'application/json': { schema: { required: string[] } } } };
+			}
+		)['200'].content['application/json'].schema;
+		expect(schema.required).toEqual(
+			expect.arrayContaining(['name', 'apiVersion', 'version', 'runtime', 'publicOrigin'])
+		);
+		expect(get.security).toEqual([]);
 	});
 });

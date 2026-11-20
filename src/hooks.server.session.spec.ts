@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import type { RequestEvent } from '@sveltejs/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TokenSet, VerifiedPrincipal } from '$lib/server/d6e-auth';
+import type { TokenSet, VerifiedBearerAccessToken, VerifiedPrincipal } from '$lib/server/d6e-auth';
 import type { InstanceCallerContext } from '$lib/ports/instance-store';
 import type { Session } from '$lib/server/session';
 
@@ -10,10 +10,11 @@ vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
 const refresh = vi.fn<(refreshToken: string) => Promise<TokenSet>>();
 const verifyAccessToken = vi.fn<(token: string) => Promise<VerifiedPrincipal>>();
+const verifyBearerAccessToken = vi.fn<(token: string) => Promise<VerifiedBearerAccessToken>>();
 
 vi.mock('$lib/server/d6e-auth', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('$lib/server/d6e-auth')>();
-	return { ...actual, refresh, verifyAccessToken };
+	return { ...actual, refresh, verifyAccessToken, verifyBearerAccessToken };
 });
 
 const getCurrentMember = vi.fn<(actor: { id: string }) => Promise<InstanceCallerContext>>();
@@ -97,7 +98,10 @@ async function sealedSession(overrides: Partial<Session> = {}): Promise<string> 
 
 function event(cookies: CookieJar): RequestEvent {
 	return {
-		locals: { apiKeyAuthentication: { state: 'absent' } } as unknown as App.Locals,
+		locals: {
+			apiKeyAuthentication: { state: 'absent' },
+			accessTokenAuthentication: { state: 'absent' }
+		} as unknown as App.Locals,
 		url: new URL('https://signkit.example/envelopes'),
 		cookies
 	} as unknown as RequestEvent;
@@ -128,6 +132,7 @@ beforeEach((): void => {
 	privateEnv.SESSION_ENCRYPTION_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
 	refresh.mockReset();
 	verifyAccessToken.mockReset();
+	verifyBearerAccessToken.mockReset();
 	resolveInstanceApplication.mockReset();
 	resolveInstanceApplication.mockResolvedValue(mockInstanceApplication);
 	getCurrentMember.mockReset();
@@ -390,5 +395,128 @@ describe('handleSession: profile observation and display capture', () => {
 		expect(locals.principal).toEqual(PRINCIPAL);
 		expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('user@example.com');
 		errorSpy.mockRestore();
+	});
+});
+
+describe('handleSession: access-token bearer mode', () => {
+	const BEARER_OBSERVED_AT: string = '2026-11-20T09:00:00.000Z';
+
+	async function runBearer(
+		input: { pathname?: string; method?: string; cookies?: CookieJar } = {}
+	): Promise<{ locals: App.Locals; cookies: CookieJar }> {
+		const cookies: CookieJar =
+			input.cookies ?? cookieJar({ [SESSION_COOKIE]: await sealedSession() });
+		const url: URL = new URL(
+			`https://signkit.example${input.pathname ?? '/api/v1/instance/members/me'}`
+		);
+		const evt = {
+			locals: {
+				apiKeyAuthentication: { state: 'absent' },
+				accessTokenAuthentication: { state: 'presented', token: 'presented-access-token' }
+			} as unknown as App.Locals,
+			url,
+			request: new Request(url, { method: input.method ?? 'GET' }),
+			cookies
+		} as unknown as RequestEvent;
+		await handleSession({
+			event: evt,
+			resolve: async (): Promise<Response> => new Response('ok')
+		} as unknown as Parameters<typeof handleSession>[0]);
+		return { locals: evt.locals, cookies };
+	}
+
+	it('resolves the member from the token and never consults the cookie session', async () => {
+		verifyBearerAccessToken.mockResolvedValue({
+			principal: PRINCIPAL,
+			observedAt: BEARER_OBSERVED_AT
+		});
+
+		const { locals, cookies } = await runBearer({ pathname: '/api/v1/dashboard' });
+
+		expect(verifyBearerAccessToken).toHaveBeenCalledExactlyOnceWith('presented-access-token');
+		expect(verifyAccessToken).not.toHaveBeenCalled();
+		expect(refresh).not.toHaveBeenCalled();
+		expect(locals.identityState).toBe('active');
+		expect(locals.principal).toEqual(PRINCIPAL);
+		expect(locals.accessTokenAuthentication).toEqual({
+			state: 'verified',
+			observedAt: BEARER_OBSERVED_AT
+		});
+		expect(cookies.deletedNames).toEqual([]);
+		// Not on the self-profile read, so no display capture either.
+		expect(captureMemberSnapshot).not.toHaveBeenCalled();
+	});
+
+	it('captures the display snapshot from the token on the self-profile read only', async () => {
+		verifyBearerAccessToken.mockResolvedValue({
+			principal: PRINCIPAL,
+			observedAt: BEARER_OBSERVED_AT
+		});
+		const cookies: CookieJar = cookieJar({
+			[SESSION_COOKIE]: await sealedSession({ profileObservedAt: '2026-09-12T12:00:00.000Z' })
+		});
+		const before: string | undefined = cookies.get(SESSION_COOKIE);
+
+		await runBearer({ cookies });
+
+		expect(captureMemberSnapshot).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				userId: PRINCIPAL.subject,
+				name: PRINCIPAL.name,
+				email: PRINCIPAL.email,
+				observedAt: BEARER_OBSERVED_AT
+			})
+		);
+		// The accompanying cookie neither supplies the observation nor gets a marker.
+		expect(cookies.get(SESSION_COOKIE)).toBe(before);
+
+		captureMemberSnapshot.mockClear();
+		await runBearer({ method: 'POST' });
+		expect(captureMemberSnapshot).not.toHaveBeenCalled();
+	});
+
+	it('does not capture an unverified email or a token without an observation', async () => {
+		verifyBearerAccessToken.mockResolvedValueOnce({
+			principal: { ...PRINCIPAL, emailVerified: false },
+			observedAt: BEARER_OBSERVED_AT
+		});
+		await runBearer();
+		verifyBearerAccessToken.mockResolvedValueOnce({ principal: PRINCIPAL, observedAt: null });
+		await runBearer();
+
+		expect(captureMemberSnapshot).not.toHaveBeenCalled();
+	});
+
+	it('answers a rejected token as anonymous without touching the cookie', async () => {
+		verifyBearerAccessToken.mockRejectedValue(new D6eAuthRejectedError('rejected'));
+
+		const { locals, cookies } = await runBearer();
+
+		expect(locals.identityState).toBe('anonymous');
+		expect(locals.principal).toBeNull();
+		expect(locals.accessTokenAuthentication).toEqual({ state: 'rejected' });
+		expect(cookies.deletedNames).toEqual([]);
+		expect(cookies.has(SESSION_COOKIE)).toBe(true);
+		expect(getCurrentMember).not.toHaveBeenCalled();
+	});
+
+	it('answers a provider outage as unavailable', async () => {
+		verifyBearerAccessToken.mockRejectedValue(new Error('jwks unreachable'));
+
+		const { locals } = await runBearer();
+
+		expect(locals.identityState).toBe('unavailable');
+		expect(locals.accessTokenAuthentication).toEqual({ state: 'unavailable' });
+	});
+
+	it('fails closed as unavailable when membership cannot be read', async () => {
+		verifyBearerAccessToken.mockResolvedValue({ principal: PRINCIPAL, observedAt: null });
+		getCurrentMember.mockRejectedValue(new Error('durable store unreachable'));
+
+		const { locals } = await runBearer();
+
+		expect(locals.identityState).toBe('unavailable');
+		expect(locals.principal).toBeNull();
+		expect(locals.instanceMembership).toBeNull();
 	});
 });

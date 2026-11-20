@@ -28,28 +28,31 @@ Omitting `--cloudflare` exits 2. There is no implicit Cloudflare default.
 
 ## Flags
 
-| Flag                      | Meaning                                                                                                                                  |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `--account-id`            | Cloudflare account ID (required; never inherited)                                                                                        |
-| `--worker-name`           | Worker name (default `signkit` when there is no state)                                                                                   |
-| `--d1`                    | D1 name or UUID (default `signkit` when there is no state)                                                                               |
-| `--r2`                    | R2 bucket name (default `signkit-objects` when there is no state)                                                                        |
-| `--domain`                | Optional custom hostname; implies `https://<hostname>`                                                                                   |
-| `--public-origin`         | Public https origin; must agree with `--domain` when both are set                                                                        |
-| `--d6e-auth-base-url`     | `D6E_AUTH_BASE_URL` (default `https://www.d6e.ai`)                                                                                       |
-| `--email-from`            | `SIGNKIT_EMAIL_FROM` (required for the initial managed deploy)                                                                           |
-| `--email-from-name`       | `SIGNKIT_EMAIL_FROM_NAME` (default `SignKit`)                                                                                            |
-| `--mail-provider`         | `cloudflare` (default, native Email binding) or `smtp`                                                                                   |
-| `--smtp-host`             | SMTP hostname; required with `--mail-provider smtp`                                                                                      |
-| `--smtp-port`             | SMTP submission port; required with SMTP, and port 25 is refused                                                                         |
-| `--smtp-secure`           | `true` for implicit TLS or `false` for mandatory STARTTLS; required with SMTP                                                            |
-| `--smtp-username`         | Optional SMTP username; when present, `SIGNKIT_SMTP_PASSWORD` is read only from secret stdin                                             |
-| `--bootstrap-owner-email` | `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it) |
-| `--version`               | `latest` or an exact tag such as `v1.2.3`                                                                                                |
-| `--channel`               | `stable` (default) or `beta`; enforced against the selected release                                                                      |
-| `--state`                 | Override the XDG state file                                                                                                              |
-| `--yes`                   | Required for deploy/adopt/upgrade                                                                                                        |
-| `--json`                  | Machine-readable result on stdout                                                                                                        |
+| Flag                      | Meaning                                                                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--account-id`            | Cloudflare account ID (required; never inherited)                                                                                                                                                |
+| `--worker-name`           | Worker name (default `signkit` when there is no state)                                                                                                                                           |
+| `--d1`                    | D1 name or UUID (default `signkit` when there is no state)                                                                                                                                       |
+| `--r2`                    | R2 bucket name (default `signkit-objects` when there is no state)                                                                                                                                |
+| `--domain`                | Optional custom hostname; implies `https://<hostname>`                                                                                                                                           |
+| `--public-origin`         | Public https origin; must agree with `--domain` when both are set                                                                                                                                |
+| `--d6e-auth-base-url`     | `D6E_AUTH_BASE_URL` (default `https://www.d6e.ai`)                                                                                                                                               |
+| `--email-from`            | `SIGNKIT_EMAIL_FROM` (required for the initial managed deploy)                                                                                                                                   |
+| `--email-from-name`       | `SIGNKIT_EMAIL_FROM_NAME` (default `SignKit`)                                                                                                                                                    |
+| `--mail-provider`         | `cloudflare` (default, native Email binding) or `smtp`                                                                                                                                           |
+| `--smtp-host`             | SMTP hostname; required with `--mail-provider smtp`                                                                                                                                              |
+| `--smtp-port`             | SMTP submission port; required with SMTP, and port 25 is refused                                                                                                                                 |
+| `--smtp-secure`           | `true` for implicit TLS or `false` for mandatory STARTTLS; required with SMTP                                                                                                                    |
+| `--smtp-username`         | Optional SMTP username; when present, `SIGNKIT_SMTP_PASSWORD` is read only from secret stdin                                                                                                     |
+| `--bootstrap-owner-email` | `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it; console enrollment supplies a default)                  |
+| `--console-origins`       | `SIGNKIT_CONSOLE_ORIGINS`: comma-separated console origins allowed to call `/api/v1` cross-origin; `""` turns it off; console enrollment supplies a default                                      |
+| `--console-url`           | `SIGNKIT_CONSOLE_URL`: where invitation emails send people to join without the link (https; http only for loopback); `""` clears it; console enrollment supplies the `consoleUrl` D6E Auth names |
+| `--server-name`           | Console display name sent with console enrollment (default: the public origin's hostname); requires `D6E_ENROLLMENT_TOKEN`                                                                       |
+| `--version`               | `latest` or an exact tag such as `v1.2.3`                                                                                                                                                        |
+| `--channel`               | `stable` (default) or `beta`; enforced against the selected release                                                                                                                              |
+| `--state`                 | Override the XDG state file                                                                                                                                                                      |
+| `--yes`                   | Required for deploy/adopt/upgrade                                                                                                                                                                |
+| `--json`                  | Machine-readable result on stdout                                                                                                                                                                |
 
 Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state **before** Cloudflare inspection. Cloudflare Email is the default, while `--mail-provider smtp` generates SMTP vars and omits the native `EMAIL` binding. Secrets are never accepted on argv.
 
@@ -73,6 +76,16 @@ Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state **befor
    ```
 
    On a genuinely pristine initial deploy (no local state and no remote Worker versions/secrets), the CLI creates three independent 32-byte base64 values for `DELIVERY_ENCRYPTION_KEY`, `SESSION_ENCRYPTION_KEY`, and `DELIVERY_WORKER_SECRET`, combines them with the stdin OAuth pair and, when configured, the SMTP password into a flat recovery file at `<state-dir>/recovery.json`, and creates an adjacent non-secret binding file for the selected Cloudflare account and Worker (parent `0700`, files `0600` from creation, exclusive no-overwrite, fsynced, retained on success and failure). It rechecks the retained fingerprint while copying the validated values into a private `0600` temporary file for `wrangler deploy --secrets-file`; Wrangler never reopens the retained path after validation. Only the retained path and SHA-256 fingerprint are returned/logged. Windows is refused because the required POSIX ownership and mode guarantees cannot be enforced; use Linux, macOS, or WSL. A retry after a failed initial deploy (D1/R2 exist but no Worker/state) validates the binding and reuses the same file without reading stdin again; a different target is refused. Remote Worker versions/secrets with no local state are not pristine: deploy refuses and tells the operator to `adopt` first. Unknown manifest secret names fail closed before any Cloudflare mutation.
+
+   **Console enrollment instead of an OAuth file.** When the SignKit console shows an enrollment command, it issues a single-use token. Put it in the environment, not on the command line, and omit the OAuth stdin file; `--bootstrap-owner-email` then defaults to the console account that issued the token:
+
+   ```sh
+   read -rs D6E_ENROLLMENT_TOKEN && export D6E_ENROLLMENT_TOKEN
+   create-signkit --cloudflare deploy --account-id <id> --email-from ops@example.com --domain sign.example.com --yes
+   unset D6E_ENROLLMENT_TOKEN
+   ```
+
+   The CLI finishes every local and read-only check before it uses the token, then registers the public origin with D6E Auth, keeps the returned OAuth pair in the recovery file, and writes a non-secret `enrollment.json` beside it. Back up all three files together. If the deploy fails later, rerun the same command (with or without the token): the retained pair and defaults are reused and D6E Auth is not called again. An enrollment error leaves Cloudflare unchanged and only the binding file on disk. If D6E Auth could not be reached or its answer was lost, rerun with the same token within 30 minutes of issuing it; D6E Auth returns the same server with a new client secret. Issue a new token when the message says it is invalid or already used. With authenticated SMTP, stdin then carries only `{"SIGNKIT_SMTP_PASSWORD":"…"}`. See [architecture/create-signkit.md](architecture/create-signkit.md#console-enrollment) for the full contract and failure table.
 
    `--email-from` and `--public-origin` or `--domain` are required whenever local state is absent. `--bootstrap-owner-email` is required for every deploy and upgrade (an explicit flag, or the address recorded in state from a previous run): the CLI validates and canonicalizes it to trimmed lowercase and applies it as a non-secret Worker var, never printing the address. Without it the deployment fails closed before creating anything — an uninitialized instance whose bootstrap endpoint anyone could claim is never produced. `--public-origin` may be used instead of `--domain`. Both must agree when set together. Subsequent deploys inherit these non-secret vars from state; `--keep-vars` leaves extra remote vars in place.
 
@@ -124,7 +137,7 @@ If smoke fails or is skipped after complete `deploy`, or after `upgrade` has suc
 
 ## State
 
-Default path: `$XDG_STATE_HOME/create-signkit/state.json` (typically `~/.local/state/create-signkit/state.json`). It stores account id, Worker name, D1 name/id, R2 name, optional domain/origin/mail vars, the canonicalized bootstrap owner email, last D1 backup path, release tag/commit, D1 schema epoch, version ids, and the optional non-secret `triggerReconciliationRequired` partial-state marker. It must never contain secrets. A release with a different schema epoch cannot upgrade a populated D1 in place; recreate and adopt a fresh D1 first.
+Default path: `$XDG_STATE_HOME/create-signkit/state.json` (typically `~/.local/state/create-signkit/state.json`). It stores account id, Worker name, D1 name/id, R2 name, optional domain/origin/mail vars, the canonicalized bootstrap owner email, the console origins, last D1 backup path, release tag/commit, D1 schema epoch, version ids, and the optional non-secret `triggerReconciliationRequired` partial-state marker. It must never contain secrets. A release with a different schema epoch cannot upgrade a populated D1 in place; recreate and adopt a fresh D1 first.
 
 ## Distinguishing the CLIs
 

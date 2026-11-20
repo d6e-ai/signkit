@@ -23,6 +23,14 @@ export const R2_BINDING = 'OBJECTS';
 export const ASSETS_BINDING = 'ASSETS';
 export const EMAIL_BINDING = 'EMAIL';
 export const SMTP_PASSWORD_SECRET = 'SIGNKIT_SMTP_PASSWORD';
+export const CONSOLE_ORIGINS_VAR = 'SIGNKIT_CONSOLE_ORIGINS';
+export const CONSOLE_URL_VAR = 'SIGNKIT_CONSOLE_URL';
+
+/** Environment variable carrying a single-use D6E Auth console enrollment token. */
+export const ENROLLMENT_TOKEN_ENV = 'D6E_ENROLLMENT_TOKEN';
+export const ENROLLMENT_PATH = '/api/v1/console/enrollments';
+export const MAX_ENROLLMENT_RESPONSE_BYTES = 16 * 1024;
+export const ENROLLMENT_TIMEOUT_MS = 30_000;
 
 export const MANIFEST_ASSET_NAME = 'signkit-cloudflare-manifest.json';
 export const BUNDLE_ASSET_PREFIX = 'signkit-cloudflare-';

@@ -18,7 +18,10 @@ const captureMemberDisplay = vi.hoisted(() => ({
 }));
 
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
-vi.mock('$lib/server/instance-display-capture', () => captureMemberDisplay);
+vi.mock('$lib/server/instance-display-capture', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/instance-display-capture')>()),
+	...captureMemberDisplay
+}));
 
 const NOW: string = '2026-09-12T12:00:00.000Z';
 
