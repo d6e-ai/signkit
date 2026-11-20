@@ -10,16 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- d6e consoles can operate a SignKit server: operator `/api/v1/**` accepts a d6e-auth access token minted for this server's client as a Bearer (the same identity as the session cookie, never mixed with it), `SIGNKIT_CONSOLE_ORIGINS` allows listed console origins to call the operator API cross-origin, `system/capabilities` reports `version` and `publicOrigin`, and unknown API paths answer a JSON 404 ([#297](https://github.com/d6e-ai/signkit/pull/297)).
+- `create-signkit` console enrollment: with `D6E_ENROLLMENT_TOKEN` in the environment, the initial deploy registers the server with D6E Auth and uses the returned OAuth client instead of an OAuth stdin file; `--console-origins`, `--console-url`, and `--server-name` set the console variables ([#297](https://github.com/d6e-ai/signkit/pull/297)).
+- Automatic signing dates with explicit time zones ([#281](https://github.com/d6e-ai/signkit/pull/281)).
+- Managed PDF seal services: an isolated seal authority with selectable key backends (including KMS and Vercel-managed keys), deployed together with the signing services; provider-key sealing requires independently verified signing instructions bound to the sent document version ([#291](https://github.com/d6e-ai/signkit/pull/291)–[#295](https://github.com/d6e-ai/signkit/pull/295)).
 - Join without the emailed link: a signed-in user whose verified email matches a pending invitation sees it on the settings page and can accept it there. New session APIs list received invitations and accept one by id with the same transaction and checks as the link; the link keeps working.
 - Invitation copy says people without an account can be invited and join after signing up with that address. Invitation mail adds a token-free way to join and links to `SIGNKIT_CONSOLE_URL` when configured.
 - Maintainer-signed releases without GitHub Actions: `scripts/release-local.mjs` builds, signs, and publishes a release from one Linux x86_64 machine with the release workflow's gates, asset names, checksums, draft-first GitHub Release, and npm-before-public order ([release checklist](docs/release-checklist.md)).
 
 ### Changed
 
+- Contract navigation uses the searchable worklist throughout; sender envelopes are organized around preparation, tracking and completed documents; recipient review focuses on documents and required-field progress; settings and contacts are list-first and show authorized member profiles and invitation recipients ([#262](https://github.com/d6e-ai/signkit/pull/262)–[#267](https://github.com/d6e-ai/signkit/pull/267)).
+- Automatic CI and CodeQL runs are stopped; checks run on demand ([#249](https://github.com/d6e-ai/signkit/pull/249)).
 - Publish `create-signkit` 0.1.10, which accepts maintainer-signed release provenance next to the release workflow's attestations. The `provenance` result gains `kind` (`workflow` or `maintainer`).
+
+### Fixed
+
+- Page redirects respect the saved and browser language ([#271](https://github.com/d6e-ai/signkit/pull/271)).
+- Settings secrets stay readable and dismissed creation forms reset ([#269](https://github.com/d6e-ai/signkit/pull/269)).
+- Invitation acceptance: simpler acceptance and member identity feedback, readable cards in the public layout, account recovery with only actionable invitations shown, preserved form origins and hash handoffs, and account switching under the existing CSP ([#273](https://github.com/d6e-ai/signkit/pull/273)–[#279](https://github.com/d6e-ai/signkit/pull/279)).
 
 ### Security
 
+- A d6e-auth Bearer is accepted only on the operator API, only with this server's client as audience, and never falls back to the cookie when it fails; recipient and signing routes ignore it. A console token can do what the signed-in session can, including issuing API keys, so its short lifetime and fixed audience bound the exposure ([#297](https://github.com/d6e-ai/signkit/pull/297)).
 - With `SIGNKIT_CONSOLE_URL` set, creating an invitation sends D6E Auth a note with the invited email, expiry, and inviter (as this server's OAuth client) so the console can list the server for the invitee; revoking withdraws it. Notes are best effort and log no email.
 - Invitations now store a recipient lookup: an HMAC of the normalized invited email under a key derived from `DELIVERY_ENCRYPTION_KEY`, deleted on acceptance, revocation, or expiry. The email itself is still never stored.
 - `create-signkit` 0.1.10 also accepts a release whose Cloudflare bundle is attested by a Sigstore public-good keyless signature from a GitHub account sign-in, when the account email is pinned in `packages/create-signkit/src/release/maintainer-signers.ts` and the signed statement names the bundle digest, repository, tag, and commit. For such a release, trust rests on that GitHub account (its sign-in and verified email) and the maintainer's build machine instead of GitHub-hosted runners running the reviewed workflow: whoever controls a pinned account can sign a release, and no third party rebuilds it. Removing a signer protects only create-signkit versions published afterwards. With no pinned signer, every maintainer signature is rejected. create-signkit 0.1.9 and earlier accept only workflow provenance and refuse maintainer-signed releases. The signer's email is public in the Sigstore transparency log and the stored attestation, but create-signkit does not print it. Workflow-attested releases verify unchanged. See [create-signkit](docs/architecture/create-signkit.md#release-provenance).
