@@ -1,0 +1,6 @@
+# Python 3.12, Linux amd64. Install with --require-hashes --only-binary=:all:.
+asn1crypto==1.5.1 --hash=sha256:db4e40728b728508912cbb3d44f19ce188f218e9eba635821bb4b68564f8fd67
+cffi==2.1.1 --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf
+cryptography==50.0.1 --hash=sha256:51afcfceb15597cf2635068e4ac9a56b2abde622edde17f37d85fd7b5306497a
+pycparser==3.12 --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e
+python-pkcs11==0.10.1 --hash=sha256:431ab2da60074f08e0a96b6cb4aa61816feebf620a93625f7a0f6579dfc7ef5a

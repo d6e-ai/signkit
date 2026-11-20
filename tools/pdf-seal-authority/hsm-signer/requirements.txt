@@ -1,0 +1,2 @@
+cryptography==50.0.1
+python-pkcs11==0.10.1

@@ -87,7 +87,9 @@ function configure() {
 					exports: { [exportName]: exports.durableObject({ storage: 'sqlite', container: image }) },
 					env: {
 						...(signing ? {} : policy()),
-						PROCESS: bindings.durableObject({ worker: name, exportName })
+						...(signing && process.env.SEAL_KEY_BACKEND
+							? { SEAL_KEY_BACKEND: bindings.text(setting('SEAL_KEY_BACKEND')) }
+							: {})
 					}
 				}
 			});

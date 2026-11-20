@@ -46,7 +46,7 @@ class FakeVercel:
         }
         if self.mutate:
             self.mutate(payload)
-        return se.VercelHttpResponse(
+        return se.SignerHttpResponse(
             self.status, self.content_type, json.dumps(payload).encode()
         )
 
@@ -58,7 +58,7 @@ def config() -> se.VercelConfig:
 def vercel_engine(pki, **kwargs):  # noqa: F811
     identity, key = pki
     transport = FakeVercel(key, **kwargs)
-    return se.Engine(identity, "", vercel=config(), transport=transport), transport
+    return se.Engine(identity, se.RemoteSigningAdapter(config(), transport)), transport
 
 
 def seal(engine, pki, operation_id=OP_ID):  # noqa: F811

@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const buildSettings = [
 	'SEAL_WORKER_PREFIX',
 	'SEAL_WORKER_ROLE',
+	'SEAL_KEY_BACKEND',
 	'SEAL_ISSUER',
 	'SEAL_AUDIENCE',
 	'SEAL_CERTIFICATE_SHA256',
