@@ -52,7 +52,7 @@
 		"@types/mdast": "^4.0.4",
 		"@types/node": "^26",
 		"@vitest/browser-playwright": "^4.1.11",
-		"bits-ui": "^2.19.2",
+		"bits-ui": "^2.19.5",
 		"cf": "1.0.0-beta.14",
 		"clsx": "^2.1.1",
 		"eslint": "^10.4.1",
