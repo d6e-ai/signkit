@@ -112,7 +112,7 @@ def minimal_pdf() -> bytes:
 def engine_for(pki, **override):
     identity, key = pki
     kms = FakeKms(identity, key, **override)
-    return se.Engine(identity, ARN, lambda: kms), kms
+    return se.Engine(identity, se.AwsKmsAdapter(ARN, lambda: kms)), kms
 
 
 def sha(b: bytes) -> str:

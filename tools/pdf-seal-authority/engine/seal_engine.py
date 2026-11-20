@@ -1,4 +1,4 @@
-"""PAdES B-B seal engine backed by an AWS KMS asymmetric RSA key.
+"""PAdES B-B seal engine backed by an external RSA signing key.
 
 Deployment: private Cloudflare Container, reachable only through the trusted gate's private
 binding (never app credentials, never a public route). Listens on 0.0.0.0:8080.
@@ -11,24 +11,16 @@ binding (never app credentials, never a public route). Listens on 0.0.0.0:8080.
         X-SignKit-Signer-Certificate-Sha256: <64 lowercase hex of the leaf DER>
       200 application/pdf (exact Content-Length) + x-signkit-kms-request-id.
 
-Environment (public material and one non-secret key reference only; no private key is loaded):
+Environment (no private signing key is loaded):
     ENGINE_TOKEN           shared internal bearer secret, >= 32 chars
     SEAL_CERTIFICATE_DER   base64 DER leaf certificate
     SEAL_CA_DER            base64 concatenated DER private CA chain, issuer of the leaf first,
                            self-signed root last
-    AWS_KMS_KEY_ARN        key ARN of a SIGN_VERIFY RSA key (aliases are refused)
-    AWS credentials/region come from the container's standard AWS environment.
+    SEAL_KEY_BACKEND       aws-kms, vercel-kms, or pkcs11-hsm
 
-Opt-in Vercel KMS mode (exclusive with AWS_KMS_KEY_ARN; no AWS credentials or key here):
-    VERCEL_SIGNER_URL      exactly https://<name>.vercel.app/api/sign
-    VERCEL_SIGNER_TOKEN    43 base64url chars, sent as the bearer to the Vercel Function
-    VERCEL_KMS_KEY_ID      expected keyId in the response
-    VERCEL_KMS_FINGERPRINT expected fingerprint in the response
-  /seal then requires one canonical lowercase UUIDv7 ``x-signkit-operation-id`` header. The
-  single signing call is one no-redirect, no-retry, size/time-bounded HTTPS POST of
-  {operationId, message=base64(CMS signed attributes)}; the {keyId, algorithm: RS256, fingerprint,
-  signature, requestId} reply is checked and the signature verified against the leaf before use.
-  requestId is returned as x-signkit-kms-request-id.
+The AWS adapter calls KMS with a SHA-256 digest. Vercel and PKCS#11 use one bounded HTTPS
+POST of CMS signed attributes and require a UUIDv7 operation ID. In both cases the leaf key
+verifies the returned signature before embedding and the gateway retains the key-use request ID.
 
 Guarantees per accepted operation: input is hashed and compared before any use; the dry-run
 placeholder pass never calls KMS; exactly one ``Sign`` call (client retries disabled) is made;
@@ -56,7 +48,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 import boto3
@@ -85,13 +77,21 @@ UUID_V7 = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
 VERCEL_HOST = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.vercel\.app")
-VERCEL_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
-VERCEL_FIELD = re.compile(r"[A-Za-z0-9:_./+=-]{1,128}")
-VERCEL_REQUEST_ID = re.compile(r"[A-Za-z0-9:_.-]{1,128}")
-VERCEL_MAX_RESPONSE = 16 * 1024
-VERCEL_MAX_SIGNATURE_TEXT = 700  # base64 of a 4096-bit RSA signature is 684 characters
-VERCEL_SOCKET_TIMEOUT = 5
-VERCEL_TOTAL_TIMEOUT = 10
+DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+HSM_HOST = re.compile(rf"(?:{DNS_LABEL}\.)+[a-z](?:[a-z0-9-]{{0,61}}[a-z0-9])?")
+SIGNER_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
+SIGNER_FIELD = re.compile(r"[A-Za-z0-9:_./+=-]{1,128}")
+SIGNER_REQUEST_ID = re.compile(r"[A-Za-z0-9:_.-]{1,128}")
+SIGNER_MAX_RESPONSE = 16 * 1024
+SIGNER_MAX_SIGNATURE_TEXT = 700  # base64 of a 4096-bit RSA signature is 684 characters
+SIGNER_SOCKET_TIMEOUT = 5
+SIGNER_TOTAL_TIMEOUT = 10
+
+BACKEND_ENV = {
+    "aws-kms": ("AWS_KMS_KEY_ARN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"),
+    "vercel-kms": ("VERCEL_SIGNER_URL", "VERCEL_SIGNER_TOKEN", "VERCEL_KMS_KEY_ID", "VERCEL_KMS_FINGERPRINT"),
+    "pkcs11-hsm": ("HSM_SIGNER_URL", "HSM_SIGNER_TOKEN", "HSM_SIGNER_KEY_ID", "HSM_SIGNER_FINGERPRINT"),
+}
 
 
 class EngineError(Exception):
@@ -300,57 +300,65 @@ class KmsSigner(OneShotSigner):
         return bytes(signature)
 
 
-# --------------------------------------------------------------------------- Vercel KMS
+# --------------------------------------------------------------------------- HTTPS-backed signers
 
 
 @dataclass(frozen=True)
-class VercelConfig:
+class RemoteConfig:
     url: str
     host: str
     token: str
     key_id: str
     fingerprint: str
 
+    def __post_init__(self) -> None:
+        if not SIGNER_TOKEN.fullmatch(self.token):
+            raise ValueError("signer token must be 43 base64url characters")
+        if not SIGNER_FIELD.fullmatch(self.key_id):
+            raise ValueError("invalid signer key ID")
+
+
+def signer_hostname(url: str, pattern: re.Pattern[str]) -> str:
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if len(host) > 253 or not pattern.fullmatch(host) or url != f"https://{host}/api/sign":
+        raise ValueError("signer URL must be a canonical HTTPS /api/sign endpoint")
+    return host
+
+
+class VercelConfig(RemoteConfig):
     @classmethod
     def load(cls, url: str, token: str, key_id: str, fingerprint: str) -> VercelConfig:
-        parts = urlsplit(url)
-        host = parts.hostname or ""
-        if (
-            parts.scheme != "https"
-            or parts.path != "/api/sign"
-            or parts.query
-            or parts.fragment
-            or parts.username is not None
-            or parts.password is not None
-            or parts.port is not None
-            or not VERCEL_HOST.fullmatch(host)
-            or url != f"https://{host}/api/sign"
-        ):
-            raise ValueError("VERCEL_SIGNER_URL must be https://<name>.vercel.app/api/sign")
-        if not VERCEL_TOKEN.fullmatch(token):
-            raise ValueError("VERCEL_SIGNER_TOKEN must be 43 base64url characters")
-        if not VERCEL_FIELD.fullmatch(key_id) or not VERCEL_FIELD.fullmatch(fingerprint):
-            raise ValueError("invalid VERCEL_KMS_KEY_ID or VERCEL_KMS_FINGERPRINT")
-        return cls(url, host, token, key_id, fingerprint)
+        if not SIGNER_FIELD.fullmatch(fingerprint):
+            raise ValueError("invalid VERCEL_KMS_FINGERPRINT")
+        return cls(url, signer_hostname(url, VERCEL_HOST), token, key_id, fingerprint)
+
+
+class HsmConfig(RemoteConfig):
+    @classmethod
+    def load(cls, url: str, token: str, key_id: str, fingerprint: str) -> HsmConfig:
+        if not HEX64.fullmatch(fingerprint):
+            raise ValueError("HSM_SIGNER_FINGERPRINT must be lowercase SHA-256 hex")
+        return cls(url, signer_hostname(url, HSM_HOST), token, key_id, fingerprint)
 
 
 @dataclass(frozen=True)
-class VercelHttpResponse:
+class SignerHttpResponse:
     status: int
     content_type: str
     body: bytes
 
 
-Transport = Callable[[VercelConfig, bytes], VercelHttpResponse]
+Transport = Callable[[RemoteConfig, bytes], SignerHttpResponse]
 
 
-def https_post(config: VercelConfig, body: bytes) -> VercelHttpResponse:
+def https_post(config: RemoteConfig, body: bytes) -> SignerHttpResponse:
     """One bounded HTTPS POST: verified TLS, no redirect following, no retry, capped response."""
-    deadline = time.monotonic() + VERCEL_TOTAL_TIMEOUT
+    deadline = time.monotonic() + SIGNER_TOTAL_TIMEOUT
     connection = http.client.HTTPSConnection(
         config.host,
         443,
-        timeout=VERCEL_SOCKET_TIMEOUT,
+        timeout=SIGNER_SOCKET_TIMEOUT,
         context=ssl.create_default_context(),
     )
     try:
@@ -369,33 +377,33 @@ def https_post(config: VercelConfig, body: bytes) -> VercelHttpResponse:
         response = connection.getresponse()
         declared = response.getheader("Content-Length")
         if declared is not None and (
-            not declared.isdigit() or int(declared) > VERCEL_MAX_RESPONSE
+            not declared.isdigit() or int(declared) > SIGNER_MAX_RESPONSE
         ):
             raise ValueError("response too large")
         out = bytearray()
-        while len(out) <= VERCEL_MAX_RESPONSE:
+        while len(out) <= SIGNER_MAX_RESPONSE:
             if time.monotonic() > deadline:
                 raise TimeoutError
-            chunk = response.read(min(4096, VERCEL_MAX_RESPONSE + 1 - len(out)))
+            chunk = response.read(min(4096, SIGNER_MAX_RESPONSE + 1 - len(out)))
             if not chunk:
                 break
             out += chunk
-        if len(out) > VERCEL_MAX_RESPONSE:
+        if len(out) > SIGNER_MAX_RESPONSE:
             raise ValueError("response too large")
-        return VercelHttpResponse(
+        return SignerHttpResponse(
             response.status, response.getheader("Content-Type") or "", bytes(out)
         )
     finally:
         connection.close()
 
 
-class VercelSigner(OneShotSigner):
-    """Delegates one signature to the dedicated Vercel Function authorized to use KMS."""
+class RemoteSigner(OneShotSigner):
+    """Delegates one signature to a dedicated HTTPS signing service."""
 
     def __init__(
         self,
         identity: Identity,
-        config: VercelConfig,
+        config: RemoteConfig,
         operation_id: str,
         transport: Transport = https_post,
     ) -> None:
@@ -417,9 +425,9 @@ class VercelSigner(OneShotSigner):
             response = self._transport(config, request)
         except Exception:  # network/TLS/timeout/oversize: no details, no retry
             raise EngineError(502, "kms_sign_failed") from None
-        payload = _parse_vercel_json(response)
+        payload = _parse_signer_json(response)
         rid = payload.get("requestId") if isinstance(payload, dict) else None
-        if not (isinstance(rid, str) and VERCEL_REQUEST_ID.fullmatch(rid)):
+        if not (isinstance(rid, str) and SIGNER_REQUEST_ID.fullmatch(rid)):
             rid = None
         self.kms_request_id = rid
         if response.status != 200:
@@ -436,7 +444,7 @@ class VercelSigner(OneShotSigner):
                 payload["fingerprint"].encode(), config.fingerprint.encode()
             )
             or not isinstance(signature_text, str)
-            or len(signature_text) > VERCEL_MAX_SIGNATURE_TEXT
+            or len(signature_text) > SIGNER_MAX_SIGNATURE_TEXT
         ):
             raise EngineError(502, "kms_response_rejected", rid)
         try:
@@ -451,7 +459,7 @@ class VercelSigner(OneShotSigner):
         return signature
 
 
-def _parse_vercel_json(response: VercelHttpResponse) -> Any:
+def _parse_signer_json(response: SignerHttpResponse) -> Any:
     if not response.content_type.lower().startswith("application/json"):
         return None
     try:
@@ -477,32 +485,84 @@ def verify_kms_key(client: Any, identity: Identity, key_arn: str) -> None:
         raise EngineError(409, "kms_key_certificate_mismatch")
 
 
+# --------------------------------------------------------------------------- adapters
+
+
+class SigningKeyAdapter(Protocol):
+    requires_operation_id: bool
+
+    def signer_for(self, identity: Identity, operation_id: str | None) -> OneShotSigner: ...
+
+
+class AwsKmsAdapter:
+    requires_operation_id = False
+
+    def __init__(
+        self, key_arn: str, client_factory: Callable[[], Any] | None = None
+    ) -> None:
+        self._key_arn = key_arn
+        self._client_factory = client_factory or kms_client_factory(key_arn)
+        self._verified_leaf: str | None = None
+        self._lock = threading.Lock()
+
+    def signer_for(self, identity: Identity, operation_id: str | None) -> OneShotSigner:
+        client = self._client_factory()
+        with self._lock:
+            if self._verified_leaf != identity.leaf_sha256:
+                verify_kms_key(client, identity, self._key_arn)
+                self._verified_leaf = identity.leaf_sha256
+        return KmsSigner(identity, client, self._key_arn)
+
+
+class RemoteSigningAdapter:
+    requires_operation_id = True
+
+    def __init__(self, config: RemoteConfig, transport: Transport = https_post) -> None:
+        self._config = config
+        self._transport = transport
+
+    def signer_for(self, identity: Identity, operation_id: str | None) -> OneShotSigner:
+        if operation_id is None or not UUID_V7.fullmatch(operation_id):
+            raise EngineError(400, "bad_operation_id")
+        return RemoteSigner(identity, self._config, operation_id, self._transport)
+
+
+def load_signing_adapter(env: Mapping[str, str], identity: Identity) -> SigningKeyAdapter:
+    groups = {
+        backend: tuple(env.get(name, "") for name in names)
+        for backend, names in BACKEND_ENV.items()
+    }
+    configured = [backend for backend, values in groups.items() if any(values)]
+    backend = env.get("SEAL_KEY_BACKEND")
+    if backend is None and configured in (["aws-kms"], ["vercel-kms"]):
+        backend = configured[0]
+    if backend not in groups or configured != [backend]:
+        raise ValueError("configure exactly one signing key backend")
+    settings = groups[backend]
+    if backend == "aws-kms":
+        key_arn, access_key_id, secret_access_key, _ = settings
+        if bool(access_key_id) != bool(secret_access_key):
+            raise ValueError("incomplete AWS credentials")
+        return AwsKmsAdapter(key_arn)
+    if backend == "vercel-kms":
+        return RemoteSigningAdapter(VercelConfig.load(*settings))
+    config = HsmConfig.load(*settings)
+    if not hmac.compare_digest(config.fingerprint, hashlib.sha256(identity.public_key_der).hexdigest()):
+        raise ValueError("HSM signer fingerprint does not match the configured certificate")
+    return RemoteSigningAdapter(config)
+
+
 # --------------------------------------------------------------------------- engine
 
 
 class Engine:
-    def __init__(
-        self,
-        identity: Identity,
-        key_arn: str,
-        client_factory: Callable[[], Any] | None = None,
-        *,
-        vercel: VercelConfig | None = None,
-        transport: Transport = https_post,
-    ) -> None:
+    def __init__(self, identity: Identity, adapter: SigningKeyAdapter) -> None:
         self.identity = identity
-        self.vercel = vercel
-        self.key_arn = vercel.key_id if vercel else key_arn
-        self._transport = transport
-        self._factory = (
-            None if vercel else (client_factory or kms_client_factory(key_arn))
-        )
-        self._key_verified = False
-        self._lock = threading.Lock()
+        self._adapter = adapter
 
     @property
     def requires_operation_id(self) -> bool:
-        return self.vercel is not None
+        return self._adapter.requires_operation_id
 
     def seal(
         self,
@@ -521,21 +581,7 @@ class Engine:
         ):
             raise EngineError(409, "signer_certificate_mismatch")
         self.identity.assert_valid(datetime.now(UTC))
-        signer: OneShotSigner
-        if self.vercel is not None:
-            if operation_id is None or not UUID_V7.fullmatch(operation_id):
-                raise EngineError(400, "bad_operation_id")
-            signer = VercelSigner(
-                self.identity, self.vercel, operation_id, self._transport
-            )
-        else:
-            assert self._factory is not None
-            client = self._factory()  # fresh client per accepted operation
-            with self._lock:
-                if not self._key_verified:
-                    verify_kms_key(client, self.identity, self.key_arn)
-                    self._key_verified = True
-            signer = KmsSigner(self.identity, client, self.key_arn)
+        signer = self._adapter.signer_for(self.identity, operation_id)
         metadata = signers.PdfSignatureMetadata(
             field_name=FIELD_NAME,
             md_algorithm="sha256",
@@ -730,8 +776,6 @@ def make_server(
 def main() -> None:
     env = os.environ
     token = env.get("ENGINE_TOKEN", "")
-    key_arn = env.get("AWS_KMS_KEY_ARN", "")
-    vercel_url = env.get("VERCEL_SIGNER_URL", "")
     if len(token) < 32:
         sys.exit("ENGINE_TOKEN must be at least 32 characters")
     try:
@@ -739,21 +783,7 @@ def main() -> None:
             base64.b64decode(env.get("SEAL_CERTIFICATE_DER", ""), validate=True),
             base64.b64decode(env.get("SEAL_CA_DER", ""), validate=True),
         )
-        if vercel_url:
-            if key_arn:
-                raise ValueError("AWS and Vercel signing modes are exclusive")
-            engine = Engine(
-                identity,
-                "",
-                vercel=VercelConfig.load(
-                    vercel_url,
-                    env.get("VERCEL_SIGNER_TOKEN", ""),
-                    env.get("VERCEL_KMS_KEY_ID", ""),
-                    env.get("VERCEL_KMS_FINGERPRINT", ""),
-                ),
-            )
-        else:
-            engine = Engine(identity, key_arn)
+        engine = Engine(identity, load_signing_adapter(env, identity))
     except Exception:
         sys.exit("invalid seal certificate, CA chain or signing configuration")
     server = make_server(engine, token)
