@@ -5,6 +5,11 @@ import { problemResponse } from './problem';
 /**
  * An instance actor that may have arrived by either authority.
  *
+ * `session` is a human operator: the cookie session or a d6e-auth access-token
+ * bearer standing in for it. Both resolve the same verified identity and local
+ * membership, so a console request acts as that member (`user`), never as an
+ * `agent`.
+ *
  * `id` is the stable actor identifier for provenance: the d6e-auth subject for a
  * session, the API key id for a key. The two namespaces must never be conflated
  * -- an API key id is a SignKit-minted UUIDv7 and is not a user -- which is why

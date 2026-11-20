@@ -1,3 +1,4 @@
+import { accessTokenChallenge } from './access-token-challenge';
 import { problemResponse } from './problem';
 
 export interface AuthorizedIdentityActor {
@@ -15,6 +16,10 @@ export interface AuthorizedIdentityActor {
  * needs; `no_membership` is authorized here so a verified identity with no
  * membership can still bootstrap the instance or read its own profile.
  * Anonymous callers are rejected.
+ *
+ * The verified identity is the operator cookie session's or, in access-token
+ * bearer mode, the presented d6e-auth access token's; both resolve the same
+ * locals, so this helper does not distinguish them.
  *
  * Authorization is gated on an explicit allow-list of the intended
  * authenticated states (`active`, `no_membership`) rather than inferred from
@@ -43,13 +48,16 @@ export function authorizeIdentityRequest(
 		});
 	}
 	if (locals.identityState === 'anonymous') {
-		return problemResponse({
-			type: 'urn:signkit:problem:authentication-required',
-			title: 'Authentication required',
-			status: 401,
-			detail: 'Sign in before accessing API key resources.',
-			instance
-		});
+		return problemResponse(
+			{
+				type: 'urn:signkit:problem:authentication-required',
+				title: 'Authentication required',
+				status: 401,
+				detail: 'Sign in before accessing API key resources.',
+				instance
+			},
+			accessTokenChallenge(locals)
+		);
 	}
 	if (
 		(locals.identityState === 'active' || locals.identityState === 'no_membership') &&

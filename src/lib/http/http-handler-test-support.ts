@@ -12,6 +12,7 @@ const ORIGIN: string = 'https://signkit.example';
 export function instanceScopedLocals(state: App.Locals['identityState']): App.Locals {
 	return {
 		apiKeyAuthentication: { state: 'absent' },
+		accessTokenAuthentication: { state: 'absent' },
 		identityState: state,
 		instanceMembership:
 			state === 'active' ? { userId: 'user-1', role: 'owner', status: 'active' } : null,
@@ -34,6 +35,7 @@ export function identityOnlyLocals(
 ): App.Locals {
 	return {
 		apiKeyAuthentication: { state: 'absent' },
+		accessTokenAuthentication: { state: 'absent' },
 		identityState: state,
 		instanceMembership: null,
 		bootstrapped: true,
@@ -52,6 +54,7 @@ export function identityOnlyLocals(
 export function unavailableIdentityLocalsWithPrincipal(): App.Locals {
 	return {
 		apiKeyAuthentication: { state: 'absent' },
+		accessTokenAuthentication: { state: 'absent' },
 		identityState: 'unavailable',
 		instanceMembership: null,
 		bootstrapped: true,

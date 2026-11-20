@@ -1,3 +1,4 @@
+import { accessTokenChallenge } from './access-token-challenge';
 import { problemResponse } from './problem';
 
 export interface AuthorizedInstanceActor {
@@ -43,8 +44,11 @@ function apiKeyNotPermitted(locals: App.Locals, instance: string): Response | nu
 /**
  * Session-only instance authorization.
  *
- * The active local instance member is the sole operator authority. Requests
- * that accept API keys use {@link authorizeScopedInstanceRequest} instead.
+ * The active local instance member is the sole operator authority. The
+ * member's identity comes from the operator cookie session or, in access-token
+ * bearer mode, from a verified d6e-auth access token; both are human sessions
+ * here. Requests that accept API keys use {@link authorizeScopedInstanceRequest}
+ * instead.
  * This helper still refuses a presented key, which is required for instance
  * administration and any remaining session-only surfaces.
  */
@@ -56,13 +60,16 @@ export function authorizeInstanceRequest(
 	if (refused !== null) return refused;
 
 	if (locals.identityState === 'anonymous') {
-		return problemResponse({
-			type: 'urn:signkit:problem:authentication-required',
-			title: 'Authentication required',
-			status: 401,
-			detail: 'Sign in before accessing instance resources.',
-			instance
-		});
+		return problemResponse(
+			{
+				type: 'urn:signkit:problem:authentication-required',
+				title: 'Authentication required',
+				status: 401,
+				detail: 'Sign in before accessing instance resources.',
+				instance
+			},
+			accessTokenChallenge(locals)
+		);
 	}
 	if (locals.identityState === 'no_membership') {
 		return problemResponse({

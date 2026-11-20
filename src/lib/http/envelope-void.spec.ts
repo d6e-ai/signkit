@@ -25,6 +25,7 @@ function apiKeyLocals(): App.Locals {
 				expiresAt: '2026-12-11T00:00:00.000Z'
 			}
 		},
+		accessTokenAuthentication: { state: 'absent' },
 		identityState: 'anonymous',
 		instanceMembership: null,
 		bootstrapped: true,

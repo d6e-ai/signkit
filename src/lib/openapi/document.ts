@@ -932,12 +932,32 @@ function jsonResponse(status: string, description: string, schema: Record<string
 	};
 }
 
+type SecurityRequirement = Record<string, readonly string[]>;
+
+/**
+ * Every operation that accepts the operator cookie session also accepts a
+ * d6e-auth access token minted for this deployment, presented as a bearer
+ * (`D6eAccessToken`). Derived here rather than repeated per operation so the two
+ * can never drift apart.
+ */
+function withAccessTokenAlternative(
+	security: readonly SecurityRequirement[]
+): SecurityRequirement[] {
+	const requirements: SecurityRequirement[] = [...security];
+	if (
+		requirements.some((requirement: SecurityRequirement): boolean => 'SessionCookie' in requirement)
+	) {
+		requirements.push({ D6eAccessToken: [] });
+	}
+	return requirements;
+}
+
 function op(input: {
 	summary: string;
 	description?: string;
 	operationId: string;
 	tags: readonly string[];
-	security?: readonly Record<string, readonly string[]>[];
+	security?: readonly SecurityRequirement[];
 	parameters?: unknown[];
 	requestBody?: unknown;
 	responses: Record<string, unknown>;
@@ -948,7 +968,9 @@ function op(input: {
 		...(input.description === undefined ? {} : { description: input.description }),
 		operationId: input.operationId,
 		tags: [...input.tags],
-		security: input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }],
+		security: withAccessTokenAlternative(
+			input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }]
+		),
 		...(input.parameters === undefined
 			? {}
 			: {
@@ -3255,6 +3277,13 @@ export function openApiDocument(): Record<string, unknown> {
 					type: 'apiKey',
 					in: 'cookie',
 					name: 'signkit_session'
+				},
+				D6eAccessToken: {
+					type: 'http',
+					scheme: 'bearer',
+					bearerFormat: 'JWT',
+					description:
+						"d6e-auth access token whose audience is this deployment's own client ID, presented by an operator console instead of the session cookie. It authenticates the same human member as the session (role and membership checks are identical) and is accepted wherever SessionCookie is; the cookie is ignored whenever this bearer is presented. An invalid, expired, refresh, or foreign-audience token is an opaque 401 with `WWW-Authenticate: Bearer`."
 				},
 				DeliveryWorkerSecret: {
 					type: 'http',

@@ -6,6 +6,8 @@ SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature 
 
 Operator browser requests use the d6e-auth session cookie plus an active local `instance_member` row.
 
+An operator console on another origin sends a d6e-auth access token minted for this deployment instead, as `Authorization: Bearer <JWT>`. It is accepted wherever the session cookie is, identifies the same member, and makes the cookie ignored for that request. The rules are specified in [Authorization](architecture/authorization-and-instance-administration.md#operator-access-tokens).
+
 Automation uses a bearer key:
 
 ```http

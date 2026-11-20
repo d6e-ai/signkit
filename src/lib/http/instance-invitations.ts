@@ -21,7 +21,10 @@ import {
 	INSTANCE_INVITATION_EMAIL_MAX_LENGTH,
 	INSTANCE_INVITATION_TOKEN_PATTERN
 } from '$lib/security/instance-invitation';
-import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
+import {
+	bestEffortCaptureMemberDisplay,
+	displayCaptureSource
+} from '$lib/server/instance-display-capture';
 import {
 	acceptsJson,
 	readJsonBody,
@@ -546,7 +549,7 @@ export function createInstanceInvitationHttpHandlers(
 			) {
 				try {
 					await bestEffortCaptureMemberDisplay({
-						cookies,
+						...displayCaptureSource(locals, cookies),
 						url,
 						platform,
 						memberUserId: result.member.userId,
