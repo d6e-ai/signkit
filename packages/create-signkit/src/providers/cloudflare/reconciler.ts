@@ -2,6 +2,8 @@ import { join } from 'node:path';
 import {
 	BACKUP_DIR_MODE,
 	BACKUP_FILE_MODE,
+	CONSOLE_ORIGINS_VAR,
+	ENROLLMENT_TOKEN_ENV,
 	MIGRATION_POLICY_NOTES,
 	REQUIRED_WORKER_SECRETS,
 	SMTP_PASSWORD_SECRET
@@ -24,12 +26,23 @@ import {
 	ensureRecoveryBinding,
 	ensureRecoverySecrets,
 	readInitialSecrets,
+	readSmtpPasswordSecret,
 	RECOVERY_DIR_MODE,
 	resolveRecoveryPath,
 	stageRecoverySecrets,
 	tryReuseRecoverySecrets,
 	type InitialSecretInput
 } from '../../recovery/bootstrap.js';
+import {
+	defaultServerName,
+	readEnrollmentRecord,
+	requestConsoleEnrollment,
+	resolveEnrollmentRecordPath,
+	resolveEnrollmentToken,
+	writeEnrollmentRecord,
+	type EnrollmentRecord,
+	type EnrollmentResponse
+} from '../../enrollment/console-enrollment.js';
 import {
 	createStateStore,
 	d1BackupFileName,
@@ -103,7 +116,19 @@ export interface ReconcileResult {
 	migrationPolicy: string;
 	recoveryPath?: string;
 	recoveryFingerprint?: string;
+	enrollment?: EnrollmentReport;
 	provenance?: ReleaseProvenance;
+}
+
+/**
+ * Non-secret outcome of console enrollment for this run: `enrolled` when this
+ * run exchanged the token with D6E Auth, `reused` when a retained enrollment
+ * record from an earlier attempt supplied the OAuth pair and defaults.
+ */
+export interface EnrollmentReport {
+	status: 'enrolled' | 'reused';
+	serverId: string;
+	recordPath: string;
 }
 
 const BOOTSTRAP_WARNING_CONFIGURED =
@@ -112,8 +137,12 @@ const BOOTSTRAP_WARNING_CONFIGURED =
 const BOOTSTRAP_WARNING_MISSING =
 	'No bootstrap owner email is configured: an uninitialized instance fails closed and cannot be claimed. Pass --bootstrap-owner-email <email> to deploy or upgrade; create-signkit applies it as a non-secret Worker var.';
 
-function bootstrapWarningFor(target: EffectiveTarget): string {
-	return target.bootstrapOwnerEmail ? BOOTSTRAP_WARNING_CONFIGURED : BOOTSTRAP_WARNING_MISSING;
+const BOOTSTRAP_WARNING_FROM_ENROLLMENT =
+	'The bootstrap owner email defaults to the D6E Auth account that issued the console enrollment token and is applied as a non-secret Worker var. That account claims the initial owner via POST /api/v1/instance/bootstrap (the SignKit console does this when it first opens the server); claim it before advertising this URL.';
+
+function bootstrapWarningFor(target: EffectiveTarget, ownerFromEnrollment = false): string {
+	if (target.bootstrapOwnerEmail) return BOOTSTRAP_WARNING_CONFIGURED;
+	return ownerFromEnrollment ? BOOTSTRAP_WARNING_FROM_ENROLLMENT : BOOTSTRAP_WARNING_MISSING;
 }
 
 export async function reconcileCloudflare(
@@ -133,6 +162,10 @@ export async function reconcileCloudflare(
 		);
 	}
 	const target = resolveEffectiveConfig(input, existing);
+	const enrollmentToken: string | undefined = resolveEnrollmentToken(runtime.env);
+	if (input.serverName !== undefined && enrollmentToken === undefined) {
+		throw usage(`--server-name is only sent with console enrollment; set ${ENROLLMENT_TOKEN_ENV}`);
+	}
 	assertSelectedAccountAuthorized(await runtime.cloudflare.whoami(), target.accountId);
 	const remote = await inspectRemote(runtime.cloudflare, target);
 	assertUpgradeRouteUnchanged(input, existing);
@@ -158,7 +191,15 @@ export async function reconcileCloudflare(
 	});
 	assertSupportedSecretTaxonomy(release, runtime, stateStore.path);
 	const preparedBundle = await runtime.releases.prepareBundle(release);
-	const plan = buildPlan(input, existing, target, remote, release);
+	const enrollmentPending: boolean =
+		enrollmentToken !== undefined &&
+		existing === undefined &&
+		remote.versions.length === 0 &&
+		remote.secretNames.length === 0 &&
+		!(await runtime.fs.exists(
+			resolveEnrollmentRecordPath(runtime.recoveryPath ?? resolveRecoveryPath(stateStore.path))
+		));
+	const plan = buildPlan(input, existing, target, remote, release, enrollmentPending);
 	if (input.command === 'plan') {
 		return {
 			exitCode: 0,
@@ -176,7 +217,7 @@ export async function reconcileCloudflare(
 			),
 			drift,
 			message: 'plan only; no Cloudflare resources were created or changed',
-			bootstrapWarning: bootstrapWarningFor(target),
+			bootstrapWarning: bootstrapWarningFor(target, enrollmentPending),
 			migrationPolicy: MIGRATION_POLICY_NOTES
 		};
 	}
@@ -190,7 +231,8 @@ export async function reconcileCloudflare(
 		remote,
 		release,
 		preparedBundle,
-		plan
+		plan,
+		enrollmentToken
 	);
 }
 
@@ -240,21 +282,40 @@ async function adopt(
 
 async function deployOrUpgrade(
 	input: ParsedCommand,
-	target: EffectiveTarget,
+	resolvedTarget: EffectiveTarget,
 	runtime: ReconcileRuntime,
 	stateStore: StateStore,
 	existing: DeploymentState | undefined,
 	remote: RemoteSnapshot,
 	release: ResolvedRelease,
 	preparedBundle: PreparedReleaseBundle,
-	plan: PlanStep[]
+	plan: PlanStep[],
+	enrollmentToken: string | undefined
 ): Promise<ReconcileResult> {
 	const mutations: string[] = [];
 	const current = { ...remote };
 	const initialManagedDeploy = input.command === 'deploy' && existing === undefined;
 	const requiresFirstWorkerUpload = current.versions.length === 0;
 	assertNoTakeover(input, existing, current);
-	assertInitialManagedDeployVars(target, release, initialManagedDeploy);
+	const enrollment: DeploymentEnrollment = await resolveDeploymentEnrollment(
+		input,
+		resolvedTarget,
+		existing,
+		current,
+		runtime,
+		stateStore.path,
+		enrollmentToken
+	);
+	let target: EffectiveTarget =
+		enrollment.mode === 'reuse'
+			? withEnrollmentDefaults(resolvedTarget, enrollment.record)
+			: resolvedTarget;
+	assertInitialManagedDeployVars(
+		target,
+		release,
+		initialManagedDeploy,
+		enrollment.mode === 'request'
+	);
 	if (input.command === 'deploy' && !initialManagedDeploy) {
 		assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, true);
 	}
@@ -270,6 +331,11 @@ async function deployOrUpgrade(
 		}
 	}
 
+	// Pure resource checks run before recovery and enrollment so an impossible
+	// deploy cannot consume a single-use enrollment token or create recovery
+	// material first.
+	assertMissingResourcesCreatable(input, existing, current, target);
+
 	const requiredSecrets = requiredSecretsFor(target, release.manifest.requiredSecrets);
 	const missing = missingSecrets(current.secretNames, requiredSecrets);
 	const deploymentRecovery = await prepareDeploymentRecovery(
@@ -280,10 +346,23 @@ async function deployOrUpgrade(
 		release,
 		runtime,
 		stateStore.path,
-		missing
+		missing,
+		enrollment
 	);
+	if (deploymentRecovery?.enrollment?.status === 'enrolled') {
+		mutations.push('enrollment');
+	}
 	if (deploymentRecovery?.created) {
 		mutations.push('recovery');
+	}
+	if (deploymentRecovery?.enrolledRecord) {
+		target = withEnrollmentDefaults(target, deploymentRecovery.enrolledRecord);
+		try {
+			assertInitialManagedDeployVars(target, release, initialManagedDeploy, false);
+		} catch (error) {
+			await runtime.fs.rm(deploymentRecovery.cleanupDir);
+			throw error;
+		}
 	}
 
 	let workDir: string;
@@ -727,7 +806,8 @@ function buildPlan(
 	existing: DeploymentState | undefined,
 	target: EffectiveTarget,
 	remote: RemoteSnapshot,
-	release: ResolvedRelease
+	release: ResolvedRelease,
+	enrollmentPending: boolean
 ): PlanStep[] {
 	const steps: PlanStep[] = [
 		{
@@ -754,6 +834,13 @@ function buildPlan(
 				mutating: true
 			}
 		];
+	}
+	if (enrollmentPending) {
+		steps.push({
+			id: 'console-enrollment',
+			summary: `register ${target.publicOrigin ?? 'the public origin'} with D6E Auth console enrollment (single-use ${ENROLLMENT_TOKEN_ENV}; the returned OAuth pair is retained in the recovery file instead of reading OAuth stdin)`,
+			mutating: true
+		});
 	}
 	if (!remote.d1 && !existing) {
 		steps.push({
@@ -846,6 +933,7 @@ function nextState(
 				}
 			: {}),
 		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
+		consoleOrigins: consoleOriginsForState(target, existing),
 		lastD1BackupPath: extra.lastD1BackupPath ?? existing?.lastD1BackupPath,
 		channel: input.channel,
 		version: release.tag,
@@ -861,6 +949,14 @@ function nextState(
 		appliedMigrations: extra.appliedMigrations ?? existing?.appliedMigrations,
 		adopted: extra.adopted ?? existing?.adopted
 	};
+}
+
+function consoleOriginsForState(
+	target: EffectiveTarget,
+	existing: DeploymentState | undefined
+): string[] | undefined {
+	if (target.consoleOrigins !== undefined) return [...target.consoleOrigins];
+	return existing?.consoleOrigins;
 }
 
 function generatedWorkerVars(
@@ -891,13 +987,17 @@ function generatedWorkerVars(
 	if (target.bootstrapOwnerEmail) {
 		vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL = target.bootstrapOwnerEmail;
 	}
+	if (target.consoleOrigins !== undefined) {
+		vars[CONSOLE_ORIGINS_VAR] = target.consoleOrigins.join(',');
+	}
 	return vars;
 }
 
 function assertInitialManagedDeployVars(
 	target: EffectiveTarget,
 	release: ResolvedRelease,
-	initialManagedDeploy: boolean
+	initialManagedDeploy: boolean,
+	bootstrapOwnerFromEnrollment = false
 ): void {
 	if (!initialManagedDeploy) {
 		return;
@@ -912,8 +1012,20 @@ function assertInitialManagedDeployVars(
 			'--public-origin or --domain is required for the initial managed deploy (SIGNKIT_PUBLIC_ORIGIN)'
 		);
 	}
-	assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, false);
-	assertRequiredVarsPresent(release.manifest.requiredVars, generatedWorkerVars(target, true), true);
+	// With a pending console enrollment and no explicit flag, the bootstrap
+	// owner is supplied by the enrollment response; every other required var is
+	// still checked here, before the single-use token is exchanged.
+	const ownerPending: boolean = bootstrapOwnerFromEnrollment && !target.bootstrapOwnerEmail;
+	if (!ownerPending) {
+		assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, false);
+	}
+	assertRequiredVarsPresent(
+		ownerPending
+			? release.manifest.requiredVars.filter((name) => name !== 'SIGNKIT_BOOTSTRAP_OWNER_EMAIL')
+			: release.manifest.requiredVars,
+		generatedWorkerVars(target, true),
+		true
+	);
 }
 
 /**
@@ -1000,6 +1112,7 @@ function adoptState(
 				}
 			: {}),
 		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? existing?.bootstrapOwnerEmail,
+		consoleOrigins: consoleOriginsForState(target, existing),
 		lastD1BackupPath: retarget ? undefined : existing?.lastD1BackupPath,
 		channel: input.channel,
 		version: retarget ? undefined : existing?.version,
@@ -1056,17 +1169,128 @@ interface DeploymentRecovery {
 	recoveryPath: string;
 	recoveryFingerprint: string;
 	created: boolean;
+	enrollment?: EnrollmentReport;
+	/** Set only when this run enrolled; its defaults are applied after recovery succeeds. */
+	enrolledRecord?: EnrollmentRecord;
+}
+
+/**
+ * How this run relates to console enrollment, decided before any file or
+ * Cloudflare mutation:
+ *
+ * - `none`: no token and no retained record; stdin OAuth JSON as before.
+ * - `reuse`: a retained enrollment record from an earlier pristine attempt
+ *   supplies the defaults; its OAuth pair is in the retained recovery file.
+ * - `request`: exchange the token with D6E Auth after every local check.
+ */
+type DeploymentEnrollment =
+	| { mode: 'none' }
+	| { mode: 'reuse'; record: EnrollmentRecord; recordPath: string }
+	| { mode: 'request'; token: string };
+
+async function resolveDeploymentEnrollment(
+	input: ParsedCommand,
+	target: EffectiveTarget,
+	existing: DeploymentState | undefined,
+	remote: RemoteSnapshot,
+	runtime: ReconcileRuntime,
+	statePath: string,
+	token: string | undefined
+): Promise<DeploymentEnrollment> {
+	const recoveryPath: string = runtime.recoveryPath ?? resolveRecoveryPath(statePath);
+	const recordPath: string = resolveEnrollmentRecordPath(recoveryPath);
+	if (!isPristineInitialDeploy(input, existing, remote)) {
+		// An earlier enrolled deploy recorded its defaults in state, so a token
+		// still exported for that deployment is simply unused. Without a record
+		// the token would be silently ignored on an existing deployment, which
+		// console enrollment does not support, so that is refused instead.
+		if (token === undefined || (await runtime.fs.exists(recordPath))) {
+			return { mode: 'none' };
+		}
+		throw preflight(
+			`${ENROLLMENT_TOKEN_ENV} is set, but console enrollment only runs on a pristine initial deploy (no local state and no remote Worker versions or secrets). Enrolling an existing deployment is not supported; unset ${ENROLLMENT_TOKEN_ENV}. The token was not used.`
+		);
+	}
+	if (await runtime.fs.exists(recordPath)) {
+		let record: EnrollmentRecord | undefined;
+		try {
+			record = await readEnrollmentRecord(runtime.fs, recoveryPath);
+		} catch (error) {
+			throw preflight(error instanceof Error ? error.message : String(error));
+		}
+		if (record === undefined) {
+			throw preflight(`enrollment record at ${recordPath} disappeared during validation`);
+		}
+		if (record.publicOrigin !== target.publicOrigin) {
+			throw preflight(
+				`the retained console enrollment at ${recordPath} registered ${record.publicOrigin}, but this deploy targets ${target.publicOrigin ?? 'no public origin'}. Its OAuth client only accepts ${record.publicOrigin}/auth/callback; deploy with --public-origin ${record.publicOrigin}, or remove that server in the SignKit console and start again with a fresh state directory.`
+			);
+		}
+		if (record.d6eAuthBaseUrl !== target.d6eAuthBaseUrl) {
+			throw preflight(
+				`the retained console enrollment at ${recordPath} was issued by ${record.d6eAuthBaseUrl}, but this deploy uses ${target.d6eAuthBaseUrl}; pass --d6e-auth-base-url ${record.d6eAuthBaseUrl}.`
+			);
+		}
+		if (!(await runtime.fs.exists(recoveryPath))) {
+			throw preflight(
+				`enrollment record at ${recordPath} exists but the recovery file ${recoveryPath} holding its OAuth pair is missing. Restore both from the same backup; the CLI never enrolls the same server twice.`
+			);
+		}
+		return { mode: 'reuse', record, recordPath };
+	}
+	if (token === undefined) {
+		return { mode: 'none' };
+	}
+	if (await runtime.fs.exists(recoveryPath)) {
+		throw preflight(
+			`${ENROLLMENT_TOKEN_ENV} is set, but a recovery file already exists at ${recoveryPath} without an enrollment record, so its retained OAuth pair is reused instead of enrolling. Unset ${ENROLLMENT_TOKEN_ENV} and pass --bootstrap-owner-email (and --console-origins if needed) explicitly. The token was not used.`
+		);
+	}
+	return { mode: 'request', token };
+}
+
+function withEnrollmentDefaults(
+	target: EffectiveTarget,
+	record: EnrollmentRecord
+): EffectiveTarget {
+	return {
+		...target,
+		bootstrapOwnerEmail: target.bootstrapOwnerEmail ?? record.bootstrapOwnerEmail,
+		consoleOrigins: target.consoleOrigins ?? [...record.consoleOrigins]
+	};
+}
+
+function assertMissingResourcesCreatable(
+	input: ParsedCommand,
+	existing: DeploymentState | undefined,
+	remote: RemoteSnapshot,
+	target: EffectiveTarget
+): void {
+	if (!remote.d1) {
+		if (input.command !== 'deploy' || existing) {
+			throw conflict(`D1 ${target.d1} does not exist`);
+		}
+		if (isUuid(target.d1)) {
+			throw conflict(
+				`D1 id ${target.d1} was not found; pass a D1 name to create it, or adopt an existing database`
+			);
+		}
+	}
+	if (!remote.r2Exists && (input.command !== 'deploy' || existing)) {
+		throw conflict(`R2 bucket ${target.r2} does not exist`);
+	}
 }
 
 function recoveryMetadata(
 	recovery: DeploymentRecovery | undefined
-): Pick<ReconcileResult, 'recoveryPath' | 'recoveryFingerprint'> {
+): Pick<ReconcileResult, 'recoveryPath' | 'recoveryFingerprint' | 'enrollment'> {
 	if (!recovery) {
 		return {};
 	}
 	return {
 		recoveryPath: recovery.recoveryPath,
-		recoveryFingerprint: recovery.recoveryFingerprint
+		recoveryFingerprint: recovery.recoveryFingerprint,
+		...(recovery.enrollment ? { enrollment: recovery.enrollment } : {})
 	};
 }
 
@@ -1106,7 +1330,8 @@ async function prepareDeploymentRecovery(
 	release: ResolvedRelease,
 	runtime: ReconcileRuntime,
 	statePath: string,
-	missingSecrets: readonly string[]
+	missingSecrets: readonly string[],
+	enrollment: DeploymentEnrollment
 ): Promise<DeploymentRecovery | undefined> {
 	const pristine = isPristineInitialDeploy(input, existing, remote);
 	if (!pristine && missingSecrets.length === 0) {
@@ -1139,12 +1364,25 @@ async function prepareDeploymentRecovery(
 			if (!reused) {
 				throw new Error(`recovery file at ${recoveryPath} disappeared during validation`);
 			}
-			return stageDeploymentRecovery(runtime, reused, requiredSecrets);
+			const staged = await stageDeploymentRecovery(runtime, reused, requiredSecrets);
+			return enrollment.mode === 'reuse'
+				? {
+						...staged,
+						enrollment: {
+							status: 'reused',
+							serverId: enrollment.record.serverId,
+							recordPath: enrollment.recordPath
+						}
+					}
+				: staged;
 		} catch (error) {
 			throw preflight(
 				`${error instanceof Error ? error.message : String(error)}. Restore the recovery file and its binding metadata at ${recoveryPath} from a secure backup; the CLI never overwrites them and identifies the secret map by path and SHA-256 fingerprint only.`
 			);
 		}
+	}
+	if (enrollment.mode === 'request') {
+		return enrollAndRetainRecovery(input, target, release, runtime, recoveryPath, enrollment.token);
 	}
 	if (!runtime.readStdin) {
 		throw preflight(
@@ -1189,6 +1427,89 @@ async function prepareDeploymentRecovery(
 			`${error instanceof Error ? error.message : String(error)}. Restore the recovery file at ${recoveryPath} from a secure backup; the CLI never overwrites it and identifies it by path and SHA-256 fingerprint only.`
 		);
 	}
+}
+
+/**
+ * Console enrollment for a pristine initial deploy with no retained recovery
+ * file. Everything that can fail locally runs first (recovery directory and
+ * target binding, SMTP password stdin), then the single-use token is
+ * exchanged, then the OAuth pair is retained exactly like stdin OAuth JSON and
+ * the non-secret record is written beside it. Cloudflare is untouched until
+ * this returns.
+ */
+async function enrollAndRetainRecovery(
+	input: ParsedCommand,
+	target: EffectiveTarget,
+	release: ResolvedRelease,
+	runtime: ReconcileRuntime,
+	recoveryPath: string,
+	token: string
+): Promise<DeploymentRecovery> {
+	if (!target.publicOrigin) {
+		throw preflight('--public-origin or --domain is required for console enrollment');
+	}
+	const requiredSecrets = requiredSecretsFor(target, release.manifest.requiredSecrets);
+	const requiresSmtpPassword: boolean =
+		target.mailProvider === 'smtp' && target.smtpUsername !== undefined;
+	let smtpPassword: string | undefined;
+	try {
+		await ensureRecoveryBinding({
+			fs: runtime.fs,
+			recoveryPath,
+			accountId: target.accountId,
+			workerName: target.workerName,
+			allowCreate: true
+		});
+		if (requiresSmtpPassword) {
+			if (!runtime.readStdin) {
+				throw new Error('secret stdin is unavailable');
+			}
+			smtpPassword = await readSmtpPasswordSecret(runtime.readStdin);
+		}
+	} catch (error) {
+		throw preflight(
+			`${error instanceof Error ? error.message : String(error)}. Fix this before console enrollment; ${ENROLLMENT_TOKEN_ENV} was not used.${requiresSmtpPassword ? ` With console enrollment, secret stdin carries exactly ${SMTP_PASSWORD_SECRET}.` : ''}`
+		);
+	}
+
+	const enrolled: EnrollmentResponse = await requestConsoleEnrollment({
+		http: runtime.http,
+		baseUrl: target.d6eAuthBaseUrl,
+		token,
+		publicOrigin: target.publicOrigin,
+		name: input.serverName ?? defaultServerName(target.publicOrigin)
+	});
+	const serverId: string = enrolled.record.serverId;
+
+	let ensured: { path: string; fingerprint: string; created: boolean };
+	try {
+		ensured = await ensureRecoverySecrets({
+			fs: runtime.fs,
+			recoveryPath,
+			requiredSecrets,
+			oauth: enrolled.oauth,
+			...(smtpPassword !== undefined ? { smtpPassword } : {}),
+			...(runtime.randomBytes ? { randomBytes: runtime.randomBytes } : {})
+		});
+	} catch (error) {
+		throw generic(
+			`D6E Auth enrolled server ${serverId}, but the recovery file at ${recoveryPath} could not be written (${error instanceof Error ? error.message : String(error)}), so its OAuth client secret was not kept. Nothing was changed in Cloudflare. Remove server ${serverId} in the SignKit console, issue a new token, and rerun.`
+		);
+	}
+	let recordPath: string;
+	try {
+		recordPath = await writeEnrollmentRecord(runtime.fs, recoveryPath, enrolled.record);
+	} catch (error) {
+		throw preflight(
+			`D6E Auth enrolled server ${serverId} and its OAuth pair is retained in ${recoveryPath}, but the enrollment record could not be written (${error instanceof Error ? error.message : String(error)}). Nothing was changed in Cloudflare. Rerun with ${ENROLLMENT_TOKEN_ENV} unset, passing --bootstrap-owner-email with the email of the account that issued the token and --console-origins "${enrolled.record.consoleOrigins.join(',')}".`
+		);
+	}
+	const staged = await stageDeploymentRecovery(runtime, ensured, requiredSecrets);
+	return {
+		...staged,
+		enrollment: { status: 'enrolled', serverId, recordPath },
+		enrolledRecord: enrolled.record
+	};
 }
 
 async function stageDeploymentRecovery(
@@ -1357,6 +1678,7 @@ async function writeGeneratedConfig(
 			vars.SIGNKIT_SMTP_SECURE === undefined ? undefined : vars.SIGNKIT_SMTP_SECURE === 'true',
 		smtpUsername: vars.SIGNKIT_SMTP_USERNAME,
 		bootstrapOwnerEmail: vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL,
+		consoleOrigins: vars[CONSOLE_ORIGINS_VAR],
 		manifest: release.manifest,
 		main: posixPath(extracted.root, extracted.main, 'generated Worker main'),
 		assetsDirectory: posixPath(

@@ -172,6 +172,122 @@ export async function readInitialSecrets(
 	return parseInitialSecretStdinBytes(raw, requireSmtpPassword);
 }
 
+/**
+ * Secret stdin for an enrolled initial deploy: the OAuth pair comes from the
+ * console enrollment response, so stdin carries exactly the SMTP password and
+ * nothing else. Only read when authenticated SMTP is configured.
+ */
+export function parseSmtpPasswordStdinBytes(raw: Uint8Array): string {
+	if (raw.byteLength > MAX_STDIN_BYTES) {
+		throw generic(`secret stdin exceeds the ${MAX_STDIN_BYTES}-byte limit; refusing to parse`);
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString('utf8'));
+	} catch {
+		throw generic('secret stdin is not valid JSON');
+	}
+	if (!isRecord(parsed) || Object.keys(parsed).join(',') !== SMTP_RECOVERY_SECRET_NAME) {
+		throw generic(
+			`secret stdin must contain exactly ${SMTP_RECOVERY_SECRET_NAME} when the OAuth pair comes from console enrollment`
+		);
+	}
+	assertSmtpPassword(parsed[SMTP_RECOVERY_SECRET_NAME]);
+	return parsed[SMTP_RECOVERY_SECRET_NAME] as string;
+}
+
+export async function readSmtpPasswordSecret(
+	readStdin: () => Promise<Uint8Array>
+): Promise<string> {
+	let raw: Uint8Array;
+	try {
+		raw = await readStdin();
+	} catch (error) {
+		throw generic(
+			`secret stdin cannot be read: ${error instanceof Error ? error.message : String(error)}`
+		);
+	}
+	return parseSmtpPasswordStdinBytes(raw);
+}
+
+/**
+ * Validates an OAuth pair with the same exact-key and bounds rules the stdin
+ * JSON and the retained recovery file use, without writing anything.
+ */
+export function parseOAuthSecretInput(input: unknown): OAuthSecretInput {
+	return parseOAuthInput(input);
+}
+
+/**
+ * Reads a small non-secret file retained beside the recovery file (same
+ * directory, same `0700`/`0600`, owner, and no-symlink guarantees). Returns
+ * `undefined` when it does not exist.
+ */
+export async function readRetainedSidecar(
+	fs: FileSystem,
+	recoveryPath: string,
+	path: string,
+	maxBytes: number,
+	label: string
+): Promise<string | undefined> {
+	const parentDir: string = await prepareParentDir(fs, recoveryPath);
+	if (dirname(path) !== parentDir) {
+		throw generic(`${label} must live beside the recovery file`);
+	}
+	if (!(await fs.exists(path))) {
+		return undefined;
+	}
+	await assertSafeDirectoryMode(fs, parentDir);
+	await assertSafeFileMode(fs, path);
+	const st = await fs.stat(path);
+	if (st.size > maxBytes) {
+		throw generic(`${label} at ${path} exceeds the size limit`);
+	}
+	let raw: Uint8Array;
+	try {
+		raw = await fs.readFileBuffer(path);
+	} catch {
+		throw generic(`${label} at ${path} cannot be read`);
+	}
+	if (raw.byteLength > maxBytes) {
+		throw generic(`${label} at ${path} exceeds the size limit`);
+	}
+	return Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString('utf8');
+}
+
+/** Creates a retained sidecar exclusively (`0600`, no overwrite) and fsyncs it and its directory. */
+export async function writeRetainedSidecarExclusive(
+	fs: FileSystem,
+	recoveryPath: string,
+	path: string,
+	contents: string,
+	label: string
+): Promise<void> {
+	const parentDir: string = await prepareParentDir(fs, recoveryPath);
+	if (dirname(path) !== parentDir) {
+		throw generic(`${label} must live beside the recovery file`);
+	}
+	try {
+		await fs.writeFileExclusive(path, new TextEncoder().encode(contents), RECOVERY_FILE_MODE);
+	} catch {
+		throw generic(`${label} at ${path} cannot be created exclusively; refusing to overwrite`);
+	}
+	await fs.fsync(path);
+	await fs.fsync(parentDir);
+}
+
+/**
+ * Runs the recovery directory checks (platform, path, symlink, `0700`, owner)
+ * without creating any file, so a caller can fail before an irreversible
+ * remote step such as consuming a single-use enrollment token.
+ */
+export async function assertRecoveryDirectoryUsable(
+	fs: FileSystem,
+	recoveryPath: string
+): Promise<void> {
+	await prepareParentDir(fs, recoveryPath);
+}
+
 export function createNodeStdinReader(): () => Promise<Uint8Array> {
 	return async () => {
 		const stdin = process.stdin;

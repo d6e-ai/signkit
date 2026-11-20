@@ -78,6 +78,13 @@ function emit(io: RunIo, parsed: ParsedCommand, result: ReconcileResult): void {
 	if (result.recoveryFingerprint) {
 		io.stdout.write(`Recovery fingerprint: ${result.recoveryFingerprint}\n`);
 	}
+	if (result.enrollment) {
+		io.stdout.write(
+			result.enrollment.status === 'enrolled'
+				? `Console enrollment: registered server ${result.enrollment.serverId} with D6E Auth (record: ${result.enrollment.recordPath})\n`
+				: `Console enrollment: reused server ${result.enrollment.serverId} from ${result.enrollment.recordPath}\n`
+		);
+	}
 	if (result.missingSecrets.length > 0) {
 		io.stdout.write(`Missing secrets: ${result.missingSecrets.join(', ')}\n`);
 	}

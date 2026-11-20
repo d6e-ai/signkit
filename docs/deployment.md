@@ -224,7 +224,8 @@ specified in
 
 Set it as a plain (non-secret) variable: `.env` for Node/Docker and Vercel, a Worker variable (or
 `.dev.vars` locally) for Cloudflare Workers. The checked-in Worker configuration does not declare
-it, so a deploy keeps the value already set on the Worker.
+it, so a deploy keeps the value already set on the Worker. `create-signkit` sets it from console
+enrollment; see [create-signkit](create-signkit.md).
 
 ### Claim the initial owner immediately after deploy
 

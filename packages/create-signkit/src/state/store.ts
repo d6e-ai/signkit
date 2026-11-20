@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { SECRET_ENV_NAME } from '../constants.js';
 import { generic, usage } from '../cli/errors.js';
+import { canonicalConsoleOrigin, MAX_CONSOLE_ORIGINS } from '../cli/urls.js';
 import type { CommandName, MailProviderId, ProviderId, ReleaseChannel } from '../cli/parse.js';
 import type { FileSystem } from '../runtime/fs.js';
 
@@ -38,6 +39,12 @@ export interface DeploymentState {
 	 * secret-looking fields independently.
 	 */
 	bootstrapOwnerEmail?: string;
+	/**
+	 * Canonical `SIGNKIT_CONSOLE_ORIGINS` list, recorded from `--console-origins`
+	 * or the console enrollment response and re-applied by later runs. An empty
+	 * array records an explicit "console CORS off".
+	 */
+	consoleOrigins?: string[];
 	lastD1BackupPath?: string;
 	channel: ReleaseChannel;
 	version?: string;
@@ -189,7 +196,21 @@ export function parseState(raw: string): DeploymentState {
 	) {
 		throw generic('deployment state smtpUsername is invalid');
 	}
+	if (parsed.consoleOrigins !== undefined) {
+		assertConsoleOrigins(parsed.consoleOrigins);
+	}
 	return parsed as unknown as DeploymentState;
+}
+
+function assertConsoleOrigins(value: unknown): void {
+	if (
+		!Array.isArray(value) ||
+		value.length > MAX_CONSOLE_ORIGINS ||
+		value.some((origin: unknown) => canonicalConsoleOrigin(origin) !== origin) ||
+		new Set(value).size !== value.length
+	) {
+		throw generic('deployment state consoleOrigins is invalid');
+	}
 }
 
 function assertTriggerReconciliationMarker(value: unknown): void {

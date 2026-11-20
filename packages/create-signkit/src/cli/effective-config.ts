@@ -26,6 +26,12 @@ export interface EffectiveTarget {
 	smtpSecure?: boolean;
 	smtpUsername?: string;
 	bootstrapOwnerEmail?: string;
+	/**
+	 * `SIGNKIT_CONSOLE_ORIGINS`. `undefined` leaves the remote var untouched
+	 * (`--keep-vars`); an empty array writes an empty value, turning console
+	 * CORS off.
+	 */
+	consoleOrigins?: readonly string[];
 	inherited: {
 		workerName: boolean;
 		d1: boolean;
@@ -41,6 +47,7 @@ export interface EffectiveTarget {
 		smtpSecure: boolean;
 		smtpUsername: boolean;
 		bootstrapOwnerEmail: boolean;
+		consoleOrigins: boolean;
 	};
 	appliedDefaults: {
 		d6eAuthBaseUrl: boolean;
@@ -115,6 +122,10 @@ export function resolveEffectiveConfig(
 		? parsed.bootstrapOwnerEmail
 		: (parsed.bootstrapOwnerEmail ?? state?.bootstrapOwnerEmail);
 
+	const consoleOrigins = parsed.overrides.consoleOrigins
+		? parsed.consoleOrigins
+		: (parsed.consoleOrigins ?? state?.consoleOrigins);
+
 	let emailFromName = DEFAULT_EMAIL_FROM_NAME;
 	let emailFromNameDefaulted = true;
 	if (parsed.overrides.emailFromName && parsed.emailFromName) {
@@ -148,6 +159,7 @@ export function resolveEffectiveConfig(
 		smtpSecure,
 		smtpUsername,
 		bootstrapOwnerEmail,
+		consoleOrigins,
 		inherited: {
 			workerName: Boolean(state && !parsed.overrides.workerName),
 			d1: Boolean(state && !parsed.overrides.d1),
@@ -162,7 +174,8 @@ export function resolveEffectiveConfig(
 			smtpPort: Boolean(state && !parsed.overrides.smtpPort),
 			smtpSecure: Boolean(state && !parsed.overrides.smtpSecure),
 			smtpUsername: Boolean(state && !parsed.overrides.smtpUsername),
-			bootstrapOwnerEmail: Boolean(state && !parsed.overrides.bootstrapOwnerEmail)
+			bootstrapOwnerEmail: Boolean(state && !parsed.overrides.bootstrapOwnerEmail),
+			consoleOrigins: Boolean(state && !parsed.overrides.consoleOrigins)
 		},
 		appliedDefaults: {
 			d6eAuthBaseUrl: d6eAuthBaseUrlDefaulted,
