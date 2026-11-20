@@ -93,10 +93,6 @@ class UsageError extends Error {}
 
 const commands = { build, sign, npm: publishNpm, publish };
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-	await main(process.argv.slice(2));
-}
-
 async function main(args) {
 	try {
 		const { positionals, values } = parseArgs({
@@ -1456,4 +1452,10 @@ function log(text) {
 
 function note(text) {
 	process.stdout.write(`NOTE: ${text}\n`);
+}
+
+// Run last: a top-level await above a later `const` (such as ghReleaseOps)
+// would reach it before initialization.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+	await main(process.argv.slice(2));
 }
