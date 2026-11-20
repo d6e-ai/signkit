@@ -536,6 +536,7 @@ export function sampleProvenance(manifest = sampleManifest()): ReleaseProvenance
 	return {
 		status: 'verified',
 		mode: 'online',
+		kind: 'workflow',
 		repository: SIGNKIT_REPOSITORY,
 		workflow: '.github/workflows/release-cloudflare-bundle.yml',
 		sourceRef: `refs/tags/${manifest.tag}`,

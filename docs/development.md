@@ -225,4 +225,6 @@ remains an integrity check rather than a signature. The npm package's prerelease
 dist-tag `beta`; stable package versions publish to `latest`. The package has completed its one-time
 manual first publish, so normal releases use OIDC Trusted Publishing only. See
 [release-checklist.md](release-checklist.md) for the non-publishing local verification that precedes
-any tag push.
+any tag push. When GitHub Actions cannot run, `scripts/release-local.mjs` performs the same release
+from one maintainer machine, with a pinned maintainer's Sigstore signature instead of workflow
+provenance; its sign-in flow and asset list are tested by `pnpm run test:release-tooling`.
