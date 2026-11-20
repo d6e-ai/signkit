@@ -10,6 +10,14 @@ export const integrationCapabilities = {
 		pagination: 'keyset-cursor',
 		views: ['all', 'action_required', 'waiting', 'drafts', 'completed']
 	},
+	receivedInvitations: {
+		status: 'supported',
+		listEndpoint: '/api/v1/instance/invitations/received',
+		acceptEndpoint: '/api/v1/instance/invitations/{invitationId}/accept',
+		authentication: 'instance-session',
+		apiKeyAuthentication: false,
+		recipientMatch: 'verified-email'
+	},
 	apiKeyAuthentication: {
 		scheme: 'bearer',
 		tokenPrefix: 'signkit',

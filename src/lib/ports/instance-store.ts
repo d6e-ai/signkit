@@ -14,6 +14,10 @@ export const MAX_INSTANCE_INVITATION_LIST_LIMIT: number = 100;
 export const DEFAULT_INSTANCE_INVITATION_LIST_LIMIT: number = 25;
 /** Maximum number of simultaneously live (unexpired) pending invitations per instance. */
 export const MAX_PENDING_INSTANCE_INVITATIONS: number = 200;
+/** Upper bound of one caller's received-invitation list; it is not paginated. */
+export const MAX_RECEIVED_INSTANCE_INVITATIONS: number = 20;
+/** Keyed recipient lookups are lowercase hex HMAC-SHA-256 digests. */
+export const INSTANCE_INVITATION_RECIPIENT_LOOKUP_PATTERN: RegExp = /^[0-9a-f]{64}$/;
 export const MAX_INSTANCE_MEMBER_LIST_LIMIT: number = 100;
 export const DEFAULT_INSTANCE_MEMBER_LIST_LIMIT: number = 25;
 
@@ -119,6 +123,13 @@ export interface CreateInstanceInvitationCommand {
 	 */
 	sealedDisplayPayload?: string;
 	displaySealingKeyId?: string;
+	/**
+	 * Keyed digest of the normalized invited email (never the email itself),
+	 * stored beside the invitation so its verified recipient can find and
+	 * accept it without the emailed link. Fresh production creates always
+	 * supply it; an invitation without one is accepted only through its link.
+	 */
+	recipientLookup?: string;
 }
 
 /**
@@ -187,19 +198,101 @@ export type ListInstanceInvitationsStoreResult =
 	| { outcome: 'member_suspended' };
 
 /**
- * One accept attempt. `tokenHash` locates the invitation; `emailBinding` is
- * recomputed by the caller from the bearer token and the asserted email and
- * must equal the stored value byte-for-byte. The actor is the accepting
- * user, who does not need to already be an instance member.
+ * One accept attempt through the emailed link. `tokenHash` locates the
+ * invitation; `emailBinding` is recomputed by the caller from the bearer
+ * token and the asserted email and must equal the stored value
+ * byte-for-byte. The actor is the accepting user, who does not need to
+ * already be an instance member.
  */
-export interface AcceptInstanceInvitationCommand {
+export interface AcceptInstanceInvitationByTokenCommand {
 	actor: InstanceActor;
 	idempotencyKey: string;
 	requestFingerprint: string;
 	tokenHash: string;
 	emailBinding: string;
 	acceptedAt: string;
+	invitationId?: undefined;
+	recipientLookup?: undefined;
+	previousRecipientLookup?: undefined;
 }
+
+/**
+ * One accept attempt without the link. `invitationId` locates the
+ * invitation; `recipientLookup` (and, during a delivery-key rotation,
+ * `previousRecipientLookup`) is the keyed digest of the caller's own
+ * verified email and must equal the invitation's stored recipient lookup.
+ * Every other rule — pending, unexpired, enrollment, receipt, and the
+ * opaque failure — is the same as {@link AcceptInstanceInvitationByTokenCommand}.
+ */
+export interface AcceptInstanceInvitationByRecipientCommand {
+	actor: InstanceActor;
+	idempotencyKey: string;
+	requestFingerprint: string;
+	invitationId: string;
+	recipientLookup: string;
+	previousRecipientLookup?: string;
+	acceptedAt: string;
+	tokenHash?: undefined;
+	emailBinding?: undefined;
+}
+
+export type AcceptInstanceInvitationCommand =
+	AcceptInstanceInvitationByTokenCommand | AcceptInstanceInvitationByRecipientCommand;
+
+export function isAcceptByRecipientCommand(
+	command: AcceptInstanceInvitationCommand
+): command is AcceptInstanceInvitationByRecipientCommand {
+	return command.invitationId !== undefined;
+}
+
+/**
+ * The distinct non-empty recipient lookups a by-recipient command may match:
+ * the active-key digest and, during rotation, the previous-key digest.
+ */
+export function recipientLookupCandidates(command: {
+	recipientLookup: string;
+	previousRecipientLookup?: string;
+}): readonly string[] {
+	const candidates: string[] = [command.recipientLookup];
+	if (
+		command.previousRecipientLookup !== undefined &&
+		command.previousRecipientLookup !== command.recipientLookup
+	) {
+		candidates.push(command.previousRecipientLookup);
+	}
+	return candidates;
+}
+
+/**
+ * The only projection of an invitation shown to its own recipient: enough to
+ * choose and accept it, nothing about the inviter or the token.
+ */
+export interface ReceivedInstanceInvitation {
+	id: string;
+	role: InstanceMemberRole;
+	createdAt: string;
+	expiresAt: string;
+}
+
+export interface ListReceivedInstanceInvitationsQuery {
+	actor: InstanceActor;
+	recipientLookup: string;
+	previousRecipientLookup?: string;
+	now: string;
+	limit: number;
+}
+
+/**
+ * - `listed`: pending invitations, unexpired at `now`, whose recipient lookup
+ *   matches, newest first, at most `limit`. The actor is not a member.
+ * - `already_member`: the actor is already an active member; nothing to accept.
+ * - `member_suspended`: the actor is a suspended member; acceptance would fail
+ *   closed, so nothing is listed.
+ */
+export type ListReceivedInstanceInvitationsStoreResult =
+	| { outcome: 'listed'; items: readonly ReceivedInstanceInvitation[] }
+	| { outcome: 'already_member'; member: InstanceMemberMetadata }
+	| { outcome: 'member_suspended' };
 
 /**
  * Provider-independent accept outcomes.
@@ -427,8 +520,10 @@ export type SetInstanceMemberStatusStoreResult =
  * the same `InstanceStore` port rather than a separate membership port.
  * Create and list invitations require the actor to be a currently active
  * `owner` or `admin`. Accept requires only that the bearer token and
- * asserted email resolve a `pending`, unexpired invitation; it enrolls the
+ * asserted email — or the invitation id and the keyed lookup of the caller's
+ * verified email — resolve a `pending`, unexpired invitation; it enrolls the
  * actor as an instance member atomically with consuming the invitation.
+ * Listing received invitations needs no membership, only that keyed lookup.
  * Member administration (`setInstanceMemberRole`, `setInstanceMemberStatus`)
  * lets an `owner` administer any member and lets an `admin` administer only
  * current `member`-role targets, never granting above `member`. Create,
@@ -450,6 +545,9 @@ export interface InstanceStore {
 	acceptInstanceInvitation(
 		command: AcceptInstanceInvitationCommand
 	): Promise<AcceptInstanceInvitationStoreResult>;
+	listReceivedInstanceInvitations(
+		query: ListReceivedInstanceInvitationsQuery
+	): Promise<ListReceivedInstanceInvitationsStoreResult>;
 	revokeInstanceInvitation(
 		command: RevokeInstanceInvitationCommand
 	): Promise<RevokeInstanceInvitationStoreResult>;

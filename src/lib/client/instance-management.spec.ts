@@ -483,6 +483,45 @@ describe('InstanceManagementClient', () => {
 			expect(JSON.parse(init.body as string)).toEqual({ token: 'ski1_token_value_abc' });
 		});
 
+		it('GET received invitations and POST accept by id without a token', async () => {
+			const listData = {
+				account: { subject: 'usr-002', email: 'invitee@example.com' },
+				invitations: [
+					{
+						id: '01900000-0000-7000-8000-000000000001',
+						role: 'member',
+						createdAt: '2026-09-01T00:00:00Z',
+						expiresAt: '2026-09-08T00:00:00Z'
+					}
+				]
+			};
+			const fetchMock = vi.fn<typeof globalThis.fetch>(async () => mockJsonResponse(listData));
+			const client = createInstanceManagementClient({
+				fetch: fetchMock,
+				newIdempotencyKey: () => 'accept-received-key'
+			});
+			expect(await client.listReceivedInvitations()).toEqual(listData);
+			expect(fetchMock).toHaveBeenLastCalledWith('/api/v1/instance/invitations/received', {
+				method: 'GET',
+				credentials: 'same-origin',
+				headers: { accept: 'application/json, application/problem+json' }
+			});
+
+			fetchMock.mockResolvedValueOnce(
+				mockJsonResponse({ invitation: { id: listData.invitations[0].id }, member: {} })
+			);
+			await client.acceptReceivedInvitation({
+				invitationId: listData.invitations[0].id,
+				expectedSubject: 'usr-002'
+			});
+			const [url, init] = fetchMock.mock.calls.at(-1)!;
+			expect(url).toBe('/api/v1/instance/invitations/01900000-0000-7000-8000-000000000001/accept');
+			const headers = new Headers(init!.headers);
+			expect(headers.get('idempotency-key')).toBe('accept-received-key');
+			expect(headers.get('x-signkit-expected-subject')).toBe('usr-002');
+			expect(init!.body).toBe('{}');
+		});
+
 		it('POST create API key', async () => {
 			const mockApiKey = {
 				id: 'key-001',

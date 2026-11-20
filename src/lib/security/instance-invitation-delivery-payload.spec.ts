@@ -70,4 +70,37 @@ describe('AesGcmInstanceInvitationDeliveryPayloadSealer', () => {
 		expect(rotatedFingerprints.active).not.toBe(oldFingerprint.active);
 		expect(rotatedFingerprints.previous).toBe(oldFingerprint.active);
 	});
+
+	it('keys recipient lookups by email alone, purpose-separated, with rotation', async () => {
+		const oldSealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key(1));
+		const lookups = await oldSealer.recipientLookups('invitee@example.com');
+		expect(lookups.active).toMatch(/^[0-9a-f]{64}$/);
+		expect(lookups.previous).toBeUndefined();
+		expect((await oldSealer.recipientLookups('invitee@example.com')).active).toBe(lookups.active);
+		expect((await oldSealer.recipientLookups('other@example.com')).active).not.toBe(lookups.active);
+		// Another key cannot reproduce it, and it never equals a request fingerprint.
+		expect(
+			(
+				await new AesGcmInstanceInvitationDeliveryPayloadSealer(key(3)).recipientLookups(
+					'invitee@example.com'
+				)
+			).active
+		).not.toBe(lookups.active);
+		const fingerprints = await oldSealer.fingerprintRequest({
+			email: 'invitee@example.com',
+			role: 'member',
+			locale: 'ja'
+		});
+		expect(fingerprints.active).not.toBe(lookups.active);
+
+		const rotated = new AesGcmInstanceInvitationDeliveryPayloadSealer(key(2), key(1));
+		const rotatedLookups = await rotated.recipientLookups('invitee@example.com');
+		expect(rotatedLookups.active).not.toBe(lookups.active);
+		expect(rotatedLookups.previous).toBe(lookups.active);
+	});
+
+	it('rejects a recipient lookup for an unnormalized email', async () => {
+		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key(1));
+		await expect(sealer.recipientLookups('Invitee@Example.com')).rejects.toThrow();
+	});
 });

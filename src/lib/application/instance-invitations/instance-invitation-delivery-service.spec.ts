@@ -90,7 +90,46 @@ describe('InstanceInvitationDeliveryService', () => {
 		);
 		expect(messages[0].text).not.toContain('トークンを貼り付け');
 		expect(messages[0].html).not.toContain('ワンタイム招待トークン');
+		// Without a configured console, the token-free join link is this server's settings page.
+		expect(messages[0].text).toContain('https://signkit.example/ja/settings');
 		expect(complete).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: DELIVERY_ID }));
+	});
+
+	it('points the token-free join link at a configured console', async () => {
+		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
+		const claim: ClaimedInstanceInvitationDelivery = await eligibleClaim(sealer);
+		const messages: MailMessage[] = [];
+		const store: InstanceInvitationDeliveryStore = {
+			claimPending: vi.fn(async () => [claim]),
+			readClaimed: vi.fn(async () => claim),
+			complete: vi.fn(async () => ({ outcome: 'completed' as const })),
+			fail: vi.fn(async () => ({ outcome: 'failed' as const }))
+		};
+		const service = new InstanceInvitationDeliveryService(
+			store,
+			sealer,
+			{
+				async send(message: MailMessage) {
+					messages.push(message);
+					return { outcome: 'accepted', providerMessageId: '<message@example>' };
+				}
+			},
+			'https://signkit.example',
+			{
+				fromEmail: 'noreply@example.com',
+				fromName: 'SignKit',
+				consoleUrl: 'https://console.example/signkit/console'
+			},
+			(): Date => NOW,
+			(): string => 'claim-token'
+		);
+		expect((await service.deliverPending()).delivered).toBe(1);
+		expect(messages[0].text).toContain('https://console.example/signkit/console');
+		expect(messages[0].text).not.toContain('https://signkit.example/ja/settings');
+		const consoleLine = messages[0].text
+			.split('\n')
+			.find((line: string): boolean => line.startsWith('https://console.example'));
+		expect(consoleLine).not.toContain(TOKEN);
 	});
 
 	it('treats a lost claim as stale without opening or sending', async () => {
@@ -202,5 +241,21 @@ describe('InstanceInvitationDeliveryService', () => {
 					fromName: 'SignKit\r\nBcc: victim@example.com'
 				})
 		).toThrow(InvalidInstanceInvitationDeliveryConfigError);
+		for (const consoleUrl of [
+			'http://console.example/',
+			'javascript:alert(1)',
+			'https://user:secret@console.example/',
+			'https://console.example/#fragment',
+			'not a url'
+		]) {
+			expect(
+				() =>
+					new InstanceInvitationDeliveryService(store, sealer, mail, 'https://signkit.example', {
+						fromEmail: 'noreply@example.com',
+						fromName: 'SignKit',
+						consoleUrl
+					})
+			).toThrow(InvalidInstanceInvitationDeliveryConfigError);
+		}
 	});
 });

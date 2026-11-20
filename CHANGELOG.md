@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Join without the emailed link: a signed-in user whose verified email matches a pending invitation sees it on the settings page and can accept it there. New session APIs list received invitations and accept one by id with the same transaction and checks as the link; the link keeps working.
+- Invitation copy says people without an account can be invited and join after signing up with that address. Invitation mail adds a token-free way to join and links to `SIGNKIT_CONSOLE_URL` when configured.
+
+### Security
+
+- Invitations now store a recipient lookup: an HMAC of the normalized invited email under a key derived from `DELIVERY_ENCRYPTION_KEY`, deleted on acceptance, revocation, or expiry. The email itself is still never stored.
+
 ## [0.1.17] - 2026-10-12
 
 ### Added

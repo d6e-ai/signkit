@@ -10,6 +10,8 @@ import {
 import { createInstanceBootstrapHandler } from '$lib/http/instance-bootstrap';
 import { identityOnlyLocals } from '$lib/http/http-handler-test-support';
 import type {
+	AcceptInstanceInvitationByRecipientCommand,
+	AcceptInstanceInvitationByTokenCommand,
 	AcceptInstanceInvitationCommand,
 	AcceptInstanceInvitationStoreResult,
 	BootstrapInstanceCommand,
@@ -26,6 +28,8 @@ import type {
 	InstanceStore,
 	ListInstanceInvitationsStoreResult,
 	ListInstanceMembersStoreResult,
+	ListReceivedInstanceInvitationsQuery,
+	ListReceivedInstanceInvitationsStoreResult,
 	RevokeInstanceInvitationCommand,
 	RevokeInstanceInvitationStoreResult,
 	SetInstanceMemberRoleCommand,
@@ -114,8 +118,8 @@ function createCommand(
 }
 
 function acceptCommand(
-	overrides: Partial<AcceptInstanceInvitationCommand> = {}
-): AcceptInstanceInvitationCommand {
+	overrides: Partial<AcceptInstanceInvitationByTokenCommand> = {}
+): AcceptInstanceInvitationByTokenCommand {
 	return {
 		actor: { type: 'user', id: ACCEPTOR_ID },
 		idempotencyKey: 'accept-idem-key-1',
@@ -2576,6 +2580,199 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		}
 	});
 
+	describe('acceptance without the link (recipient lookup)', () => {
+		const LOOKUP: string = '7'.repeat(64);
+		const PREVIOUS_LOOKUP: string = '8'.repeat(64);
+		const OTHER_LOOKUP: string = '9'.repeat(64);
+		const THIRD_INVITATION_ID: string = '01900000-0000-7000-8000-000000000003';
+
+		function byRecipient(
+			overrides: Partial<AcceptInstanceInvitationByRecipientCommand> = {}
+		): AcceptInstanceInvitationByRecipientCommand {
+			return {
+				actor: { type: 'user', id: ACCEPTOR_ID },
+				idempotencyKey: 'accept-received-idem-1',
+				requestFingerprint: OTHER_REQUEST_FINGERPRINT,
+				invitationId: INVITATION_ID,
+				recipientLookup: LOOKUP,
+				acceptedAt: ACCEPTED_AT,
+				...overrides
+			};
+		}
+
+		function received(
+			overrides: Partial<ListReceivedInstanceInvitationsQuery> = {}
+		): Promise<ListReceivedInstanceInvitationsStoreResult> {
+			return store().listReceivedInstanceInvitations({
+				actor: { type: 'user', id: ACCEPTOR_ID },
+				recipientLookup: LOOKUP,
+				now: ACCEPTED_AT,
+				limit: 20,
+				...overrides
+			});
+		}
+
+		async function recipientRows(): Promise<{ invitationId: string }[]> {
+			return database()<{ invitationId: string }[]>`
+				SELECT invitation_id AS "invitationId" FROM instance_invitation_recipient
+				ORDER BY invitation_id
+			`;
+		}
+
+		it('lists only pending, unexpired invitations matching the lookup, newest first', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(
+				createCommand({ role: 'admin', recipientLookup: LOOKUP })
+			);
+			await store().createInstanceInvitation(
+				createCommand({
+					idempotencyKey: 'create-idem-key-2',
+					invitationId: OTHER_INVITATION_ID,
+					tokenHash: OTHER_TOKEN_HASH,
+					createdAt: '2026-09-12T13:00:00.000Z',
+					recipientLookup: LOOKUP
+				})
+			);
+			await store().createInstanceInvitation(
+				createCommand({
+					idempotencyKey: 'create-idem-key-3',
+					invitationId: THIRD_INVITATION_ID,
+					tokenHash: '4'.repeat(64),
+					recipientLookup: OTHER_LOOKUP
+				})
+			);
+
+			expect(await received()).toEqual({
+				outcome: 'listed',
+				items: [
+					{
+						id: OTHER_INVITATION_ID,
+						role: 'member',
+						createdAt: '2026-09-12T13:00:00.000Z',
+						expiresAt: EXPIRES_AT
+					},
+					{ id: INVITATION_ID, role: 'admin', createdAt: CREATED_AT, expiresAt: EXPIRES_AT }
+				]
+			});
+			expect(await received({ recipientLookup: '5'.repeat(64) })).toEqual({
+				outcome: 'listed',
+				items: []
+			});
+			expect(await received({ now: EXPIRES_AT })).toEqual({ outcome: 'listed', items: [] });
+			expect(await received({ limit: 1 })).toMatchObject({ items: [{ id: OTHER_INVITATION_ID }] });
+		});
+
+		it('matches the previous-key lookup during a delivery-key rotation', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(createCommand({ recipientLookup: PREVIOUS_LOOKUP }));
+			const rotated = { recipientLookup: LOOKUP, previousRecipientLookup: PREVIOUS_LOOKUP };
+			expect(await received(rotated)).toMatchObject({ items: [{ id: INVITATION_ID }] });
+			expect(await store().acceptInstanceInvitation(byRecipient(rotated))).toMatchObject({
+				outcome: 'accepted'
+			});
+		});
+
+		it('reports members instead of listing', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(createCommand({ recipientLookup: LOOKUP }));
+			await insertMember(ACCEPTOR_ID, 'member', 'active');
+			expect(await received()).toMatchObject({
+				outcome: 'already_member',
+				member: { userId: ACCEPTOR_ID, status: 'active' }
+			});
+			await database()`UPDATE instance_member SET status = 'suspended' WHERE user_id = ${ACCEPTOR_ID}`;
+			expect(await received()).toEqual({ outcome: 'member_suspended' });
+		});
+
+		it('accepts by id with the matching lookup, enrolls the invited role, scrubs the lookup, and replays', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(
+				createCommand({ role: 'admin', recipientLookup: LOOKUP })
+			);
+			expect(await store().acceptInstanceInvitation(byRecipient())).toMatchObject({
+				outcome: 'accepted',
+				invitation: { id: INVITATION_ID, status: 'accepted', acceptedByUserId: ACCEPTOR_ID },
+				member: { userId: ACCEPTOR_ID, role: 'admin', status: 'active' }
+			});
+			expect(await recipientRows()).toEqual([]);
+			expect(await store().acceptInstanceInvitation(byRecipient())).toMatchObject({
+				outcome: 'replayed',
+				invitation: { id: INVITATION_ID }
+			});
+			expect(
+				await store().acceptInstanceInvitation(
+					byRecipient({ requestFingerprint: REQUEST_FINGERPRINT })
+				)
+			).toEqual({ outcome: 'idempotency_conflict' });
+		});
+
+		it('rejects a wrong lookup, an unknown id, an invitation without a lookup, and an expired invitation opaquely', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(createCommand({ recipientLookup: LOOKUP }));
+			await store().createInstanceInvitation(
+				createCommand({
+					idempotencyKey: 'create-idem-key-2',
+					invitationId: OTHER_INVITATION_ID,
+					tokenHash: OTHER_TOKEN_HASH
+				})
+			);
+			for (const command of [
+				byRecipient({ recipientLookup: OTHER_LOOKUP }),
+				byRecipient({ invitationId: THIRD_INVITATION_ID }),
+				byRecipient({ invitationId: OTHER_INVITATION_ID }),
+				byRecipient({ acceptedAt: EXPIRES_AT })
+			]) {
+				expect(await store().acceptInstanceInvitation(command)).toEqual({
+					outcome: 'invitation_invalid'
+				});
+			}
+			expect((await memberRows()).map((row) => row.userId)).toEqual([OWNER_ID]);
+		});
+
+		it('keeps the link path working and scrubs the lookup when the link is used', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(createCommand({ recipientLookup: LOOKUP }));
+			expect(await store().acceptInstanceInvitation(acceptCommand())).toMatchObject({
+				outcome: 'accepted'
+			});
+			expect(await recipientRows()).toEqual([]);
+			expect(
+				await store().acceptInstanceInvitation(
+					byRecipient({ actor: { type: 'user', id: OTHER_ACTOR_ID } })
+				)
+			).toEqual({ outcome: 'invitation_invalid' });
+		});
+
+		it('scrubs the lookup on revoke', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(createCommand({ recipientLookup: LOOKUP }));
+			expect(await store().revokeInstanceInvitation(revokeCommand())).toMatchObject({
+				outcome: 'revoked'
+			});
+			expect(await recipientRows()).toEqual([]);
+			expect(await received()).toEqual({ outcome: 'listed', items: [] });
+			expect(await store().acceptInstanceInvitation(byRecipient())).toEqual({
+				outcome: 'invitation_invalid'
+			});
+		});
+
+		it('removes expired lookups on the next create', async () => {
+			await store().bootstrapInstance(bootstrapCommand());
+			await store().createInstanceInvitation(createCommand({ recipientLookup: LOOKUP }));
+			await store().createInstanceInvitation(
+				createCommand({
+					idempotencyKey: 'create-idem-key-2',
+					invitationId: OTHER_INVITATION_ID,
+					tokenHash: OTHER_TOKEN_HASH,
+					createdAt: EXPIRES_AT,
+					expiresAt: '2026-09-26T12:00:00.000Z',
+					recipientLookup: OTHER_LOOKUP
+				})
+			);
+			expect(await recipientRows()).toEqual([{ invitationId: OTHER_INVITATION_ID }]);
+		});
+	});
+
 	describe('deploy-time bootstrap owner gate over the real HTTP handler + store', () => {
 		function bootstrapEvent(email: string, idempotencyKey: string): RequestEvent {
 			const pathname: string = '/api/v1/instance/bootstrap';
@@ -2628,6 +2825,7 @@ function synchronizeBootstrap(delegates: readonly InstanceStore[]): readonly Ins
 		createInstanceInvitation: delegate.createInstanceInvitation.bind(delegate),
 		listInstanceInvitations: delegate.listInstanceInvitations.bind(delegate),
 		acceptInstanceInvitation: delegate.acceptInstanceInvitation.bind(delegate),
+		listReceivedInstanceInvitations: delegate.listReceivedInstanceInvitations.bind(delegate),
 		revokeInstanceInvitation: delegate.revokeInstanceInvitation.bind(delegate),
 		listInstanceMembers: delegate.listInstanceMembers.bind(delegate),
 		setInstanceMemberRole: delegate.setInstanceMemberRole.bind(delegate),

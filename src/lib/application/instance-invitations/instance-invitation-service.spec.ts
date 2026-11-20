@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	DEFAULT_INSTANCE_INVITATION_LIST_LIMIT,
 	INSTANCE_INVITATION_DEFAULT_EXPIRY_MS,
+	MAX_RECEIVED_INSTANCE_INVITATIONS,
 	MAX_INSTANCE_INVITATION_LIST_LIMIT,
 	type AcceptInstanceInvitationCommand,
 	type AcceptInstanceInvitationStoreResult,
@@ -18,6 +19,8 @@ import {
 	type ListInstanceInvitationsStoreResult,
 	type ListInstanceMembersStoreResult,
 	type RevokeInstanceInvitationCommand,
+	type ListReceivedInstanceInvitationsQuery,
+	type ListReceivedInstanceInvitationsStoreResult,
 	type RevokeInstanceInvitationStoreResult,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
@@ -120,6 +123,9 @@ const fakePayloadSealer: InstanceInvitationDeliveryPayloadSealer = {
 	async fingerprintRequest(input) {
 		return { active: await sha256Hex(canonicalJson(input)) };
 	},
+	async recipientLookups(normalizedEmail: string) {
+		return { active: await sha256Hex(`lookup|${normalizedEmail}`) };
+	},
 	async seal(
 		payload: InstanceInvitationDeliveryPayload,
 		context: InstanceInvitationDeliverySealContext
@@ -145,6 +151,8 @@ class FakeInstanceStore implements InstanceStore {
 	readonly listCalls: { actor: InstanceActor; query: InstanceInvitationListQuery }[] = [];
 	readonly acceptCommands: AcceptInstanceInvitationCommand[] = [];
 	readonly revokeCommands: RevokeInstanceInvitationCommand[] = [];
+	readonly receivedQueries: ListReceivedInstanceInvitationsQuery[] = [];
+	receivedResult: ListReceivedInstanceInvitationsStoreResult = { outcome: 'listed', items: [] };
 
 	readonly #createResults: CreateInstanceInvitationStoreResult[];
 	readonly #listResults: ListInstanceInvitationsStoreResult[];
@@ -197,6 +205,13 @@ class FakeInstanceStore implements InstanceStore {
 				member: memberMetadata(command.actor.id, 'admin')
 			}
 		);
+	}
+
+	async listReceivedInstanceInvitations(
+		query: ListReceivedInstanceInvitationsQuery
+	): Promise<ListReceivedInstanceInvitationsStoreResult> {
+		this.receivedQueries.push(query);
+		return this.receivedResult;
 	}
 
 	async revokeInstanceInvitation(
@@ -1009,6 +1024,120 @@ describe('InstanceInvitationApplication', () => {
 
 				expect(result.outcome).toBe(storeResult.outcome);
 			}
+		});
+	});
+
+	describe('recipient lookup (acceptance without the link)', () => {
+		it('stores the active keyed lookup of the normalized invited email on create', async () => {
+			const store = new FakeInstanceStore();
+			const app = createTestApp(store);
+			await app.create(ACTOR, {
+				idempotencyKey: 'create-lookup-1',
+				email: '  Invitee@Example.COM ',
+				role: 'member'
+			});
+			expect(store.createCommands[0]?.recipientLookup).toBe(
+				await sha256Hex('lookup|invitee@example.com')
+			);
+			expect(JSON.stringify(store.createCommands[0])).not.toContain('invitee@example.com');
+		});
+
+		it("lists received invitations by the caller's normalized email lookup only", async () => {
+			const store = new FakeInstanceStore();
+			store.receivedResult = {
+				outcome: 'listed',
+				items: [
+					{
+						id: VALID_UUID_1,
+						role: 'admin',
+						createdAt: NOW.toISOString(),
+						expiresAt: EXPECTED_EXPIRY
+					}
+				]
+			};
+			const app = createTestApp(store);
+			const result = await app.listReceived(ACCEPTOR_ACTOR, { email: 'Invitee@Example.com' });
+			expect(result).toEqual(store.receivedResult);
+			expect(store.receivedQueries).toEqual([
+				{
+					actor: { type: 'user', id: ACCEPTOR_ACTOR.id },
+					recipientLookup: await sha256Hex('lookup|invitee@example.com'),
+					now: NOW.toISOString(),
+					limit: MAX_RECEIVED_INSTANCE_INVITATIONS
+				}
+			]);
+		});
+
+		it('accepts by invitation id with a by-recipient command and a distinct fingerprint', async () => {
+			const store = new FakeInstanceStore();
+			const app = createTestApp(store);
+			const result: AcceptInstanceInvitationResult = await app.acceptReceived(ACCEPTOR_ACTOR, {
+				idempotencyKey: 'accept-received-1',
+				invitationId: VALID_UUID_1,
+				email: 'Invitee@Example.com'
+			});
+			expect(result.outcome).toBe('accepted');
+			const command = store.acceptCommands[0];
+			expect(command).toEqual({
+				actor: { type: 'user', id: ACCEPTOR_ACTOR.id },
+				idempotencyKey: 'accept-received-1',
+				requestFingerprint: await sha256Hex(
+					canonicalJson({ invitationId: VALID_UUID_1, proof: 'verified_email' })
+				),
+				invitationId: VALID_UUID_1,
+				recipientLookup: await sha256Hex('lookup|invitee@example.com'),
+				acceptedAt: NOW.toISOString()
+			});
+			expect(command?.tokenHash).toBeUndefined();
+		});
+
+		it('marks a by-recipient replay like a link replay', async () => {
+			const store = new FakeInstanceStore(
+				[],
+				[],
+				[
+					{
+						outcome: 'replayed',
+						invitation: {
+							id: VALID_UUID_1,
+							role: 'member',
+							status: 'accepted',
+							invitedByUserId: ACTOR.id,
+							createdAt: NOW.toISOString(),
+							expiresAt: EXPECTED_EXPIRY,
+							acceptedAt: NOW.toISOString(),
+							acceptedByUserId: ACCEPTOR_ACTOR.id,
+							revokedAt: null,
+							revokedByUserId: null
+						},
+						member: memberMetadata(ACCEPTOR_ACTOR.id, 'member')
+					}
+				]
+			);
+			const app = createTestApp(store);
+			const result = await app.acceptReceived(ACCEPTOR_ACTOR, {
+				idempotencyKey: 'accept-received-1',
+				invitationId: VALID_UUID_1,
+				email: 'invitee@example.com'
+			});
+			expect(result).toMatchObject({ outcome: 'replayed', replayed: true });
+		});
+
+		it('rejects a malformed invitation id or email before reaching the store', async () => {
+			const store = new FakeInstanceStore();
+			const app = createTestApp(store);
+			await expect(
+				app.acceptReceived(ACCEPTOR_ACTOR, {
+					idempotencyKey: 'accept-received-1',
+					invitationId: 'not-a-uuid',
+					email: 'invitee@example.com'
+				})
+			).rejects.toBeInstanceOf(InvalidInstanceInvitationRequestError);
+			await expect(
+				app.listReceived(ACCEPTOR_ACTOR, { email: 'not-an-email' })
+			).rejects.toBeInstanceOf(InvalidInstanceInvitationRequestError);
+			expect(store.acceptCommands).toEqual([]);
+			expect(store.receivedQueries).toEqual([]);
 		});
 	});
 

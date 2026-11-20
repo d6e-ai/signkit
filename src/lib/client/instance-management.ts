@@ -90,6 +90,25 @@ export interface AcceptInvitationInput {
 	expectedSubject?: string;
 }
 
+export interface AcceptReceivedInvitationInput {
+	invitationId: string;
+	expectedSubject?: string;
+}
+
+/** An invitation addressed to the signed-in account's verified email. */
+export interface ReceivedInstanceInvitation {
+	id: string;
+	role: InstanceMemberRole;
+	createdAt: string;
+	expiresAt: string;
+}
+
+export interface ListReceivedInstanceInvitationsResponse {
+	/** The account the list was matched for; pass its subject as expectedSubject. */
+	account: { subject: string; email: string };
+	invitations: ReceivedInstanceInvitation[];
+}
+
 export interface CreateApiKeyInput {
 	name: string;
 	scopes: readonly ApiKeyScope[];
@@ -531,6 +550,59 @@ export class InstanceManagementClient {
 						: {})
 				},
 				body: JSON.stringify({ token })
+			},
+			options?.fetch
+		);
+		const replayed = response.headers.get('idempotency-replayed') === 'true';
+		return {
+			invitation: data.invitation,
+			member: data.member,
+			replayed
+		};
+	}
+
+	async listReceivedInvitations(
+		options?: RequestOptions
+	): Promise<ListReceivedInstanceInvitationsResponse> {
+		const url = this.buildUrl('/api/v1/instance/invitations/received');
+		const { data } = await this.request<ListReceivedInstanceInvitationsResponse>(
+			url,
+			{
+				method: 'GET',
+				headers: {
+					accept: 'application/json, application/problem+json'
+				}
+			},
+			options?.fetch
+		);
+		return {
+			account: data.account,
+			invitations: Array.isArray(data.invitations) ? data.invitations : []
+		};
+	}
+
+	async acceptReceivedInvitation(
+		input: AcceptReceivedInvitationInput,
+		options?: RequestOptions
+	): Promise<AcceptInstanceInvitationResponse> {
+		const url = this.buildUrl(
+			`/api/v1/instance/invitations/${encodeURIComponent(input.invitationId)}/accept`
+		);
+		const idempotencyKey = this.mintIdempotencyKey(options?.idempotencyKey);
+		const { data, response } = await this.request<{
+			invitation: InstanceInvitationMetadata;
+			member: InstanceMemberMetadata;
+		}>(
+			url,
+			{
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					accept: 'application/json, application/problem+json',
+					'idempotency-key': idempotencyKey,
+					...(input.expectedSubject ? { 'x-signkit-expected-subject': input.expectedSubject } : {})
+				},
+				body: '{}'
 			},
 			options?.fetch
 		);

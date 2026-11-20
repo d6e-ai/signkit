@@ -14,6 +14,7 @@ import type {
 	ListInstanceInvitationsStoreResult,
 	ListInstanceMembersStoreResult,
 	RevokeInstanceInvitationCommand,
+	ListReceivedInstanceInvitationsStoreResult,
 	RevokeInstanceInvitationStoreResult,
 	SetInstanceMemberRoleCommand,
 	SetInstanceMemberRoleStoreResult,
@@ -69,6 +70,10 @@ class MockInstanceStore implements InstanceStore {
 		void actor;
 		void query;
 		return { outcome: 'forbidden' };
+	}
+
+	async listReceivedInstanceInvitations(): Promise<ListReceivedInstanceInvitationsStoreResult> {
+		throw new Error('not used');
 	}
 
 	async acceptInstanceInvitation(

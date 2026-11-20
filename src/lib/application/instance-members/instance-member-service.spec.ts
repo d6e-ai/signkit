@@ -17,6 +17,7 @@ import {
 	type ListInstanceInvitationsStoreResult,
 	type ListInstanceMembersStoreResult,
 	type RevokeInstanceInvitationCommand,
+	type ListReceivedInstanceInvitationsStoreResult,
 	type RevokeInstanceInvitationStoreResult,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
@@ -131,6 +132,10 @@ class FakeInstanceStore implements InstanceStore {
 		void actor;
 		void query;
 		return { outcome: 'listed', page: { items: [], nextCursor: null } };
+	}
+
+	async listReceivedInstanceInvitations(): Promise<ListReceivedInstanceInvitationsStoreResult> {
+		throw new Error('not used');
 	}
 
 	async acceptInstanceInvitation(

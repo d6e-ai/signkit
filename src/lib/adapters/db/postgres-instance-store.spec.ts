@@ -2,7 +2,7 @@ import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import * as bearerSecret from '$lib/security/bearer-secret';
 import type {
-	AcceptInstanceInvitationCommand,
+	AcceptInstanceInvitationByTokenCommand,
 	AcceptInstanceInvitationStoreResult,
 	BootstrapInstanceCommand,
 	BootstrapInstanceStoreResult,
@@ -141,8 +141,8 @@ function createCommand(
 }
 
 function acceptCommand(
-	overrides: Partial<AcceptInstanceInvitationCommand> = {}
-): AcceptInstanceInvitationCommand {
+	overrides: Partial<AcceptInstanceInvitationByTokenCommand> = {}
+): AcceptInstanceInvitationByTokenCommand {
 	return {
 		actor: { type: 'user', id: ACCEPTOR_ID },
 		idempotencyKey: 'accept-idem-1',
@@ -490,7 +490,8 @@ describe('PostgresInstanceStore', () => {
 				[{ count: '0' }], // count check
 				[{ id: INVITATION_ID }], // invitation insert
 				[{ id: '01900000-0000-7000-8000-000000000002' }], // delivery insert
-				[{ actorId: OWNER_ID }] // receipt insert
+				[{ actorId: OWNER_ID }], // receipt insert
+				[] // expired recipient lookup cleanup
 			]);
 
 			const result: CreateInstanceInvitationStoreResult =
@@ -517,6 +518,8 @@ describe('PostgresInstanceStore', () => {
 			expect(scripted.texts()[4]).toContain('INSERT INTO instance_invitation');
 			expect(scripted.texts()[5]).toContain('INSERT INTO instance_invitation_delivery_outbox');
 			expect(scripted.texts()[6]).toContain('INSERT INTO instance_invitation_command');
+			expect(scripted.texts()[7]).toContain('DELETE FROM instance_invitation_recipient');
+			expect(scripted.queries[7].values).toEqual([CREATED_AT.toISOString()]);
 		});
 
 		it('refuses create immediately when actor is suspended', async () => {
@@ -588,7 +591,8 @@ describe('PostgresInstanceStore', () => {
 				[{ count: '0' }], // count check (0 live pending, 200 expired filtered out)
 				[{ id: INVITATION_ID }], // invitation insert RETURNING id
 				[{ id: '01900000-0000-7000-8000-000000000002' }], // delivery insert
-				[{ actorId: OWNER_ID }] // receipt insert RETURNING actor_id
+				[{ actorId: OWNER_ID }], // receipt insert RETURNING actor_id
+				[] // expired recipient lookup cleanup
 			]);
 
 			const createdResult: CreateInstanceInvitationStoreResult =

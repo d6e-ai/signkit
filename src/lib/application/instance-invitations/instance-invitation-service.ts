@@ -5,7 +5,9 @@ import {
 	isInstanceInvitationId,
 	isInstanceInvitationListView,
 	isInstanceMemberRole,
+	MAX_RECEIVED_INSTANCE_INVITATIONS,
 	resolveInstanceInvitationExpiresAt,
+	type AcceptInstanceInvitationByRecipientCommand,
 	type AcceptInstanceInvitationCommand,
 	type AcceptInstanceInvitationStoreResult,
 	type CreateInstanceInvitationCommand,
@@ -18,6 +20,7 @@ import {
 	type InstanceMemberRole,
 	type InstanceStore,
 	type ListInstanceInvitationsStoreResult,
+	type ListReceivedInstanceInvitationsStoreResult,
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult
 } from '$lib/ports/instance-store';
@@ -34,6 +37,7 @@ import { canonicalJson, sha256Hex } from '$lib/application/instance/instance-com
 import type {
 	InstanceInvitationDeliveryLocale,
 	InstanceInvitationDeliveryPayloadSealer,
+	InstanceInvitationRecipientLookups,
 	InstanceInvitationRequestFingerprints
 } from '$lib/security/instance-invitation-delivery-payload';
 import type { InstanceDisplayPayloadSealer } from '$lib/security/instance-display-payload';
@@ -128,6 +132,20 @@ export type AcceptInstanceInvitationResult =
 	| { outcome: 'member_suspended' }
 	| { outcome: 'integrity_error' };
 
+export interface ListReceivedInstanceInvitationsInput {
+	/** The caller's own provider-verified email; never a request-supplied value. */
+	email: string;
+}
+
+export type ListReceivedInstanceInvitationsResult = ListReceivedInstanceInvitationsStoreResult;
+
+export interface AcceptReceivedInstanceInvitationInput {
+	idempotencyKey: string;
+	invitationId: string;
+	/** The caller's own provider-verified email; never a request-supplied value. */
+	email: string;
+}
+
 export interface RevokeInstanceInvitationInput {
 	idempotencyKey: string;
 	invitationId?: string;
@@ -181,6 +199,16 @@ export interface InstanceInvitationApplicationPort {
 		actor: InstanceInvitationActor,
 		input: AcceptInstanceInvitationInput
 	): Promise<AcceptInstanceInvitationResult>;
+	/** Pending invitations addressed to the caller's verified email. */
+	listReceived(
+		actor: InstanceInvitationActor,
+		input: ListReceivedInstanceInvitationsInput
+	): Promise<ListReceivedInstanceInvitationsResult>;
+	/** Accepts one received invitation by id, without the emailed link. */
+	acceptReceived(
+		actor: InstanceInvitationActor,
+		input: AcceptReceivedInstanceInvitationInput
+	): Promise<AcceptInstanceInvitationResult>;
 	revoke(
 		actor: InstanceInvitationActor,
 		invitationIdOrInput: string | (RevokeInstanceInvitationInput & { invitationId: string }),
@@ -232,6 +260,8 @@ export interface InstanceInvitationApplicationDependencies {
  * - `accept`: validates bearer token, normalizes authenticated principal email,
  *   hashes token and computes email binding, fingerprints canonical `tokenHash`
  *   (zero-PII), and enlists the store with authenticated caller subject.
+ * - `listReceived` / `acceptReceived`: the same acceptance without the link,
+ *   matching the keyed recipient lookup of the caller's verified email.
  * - `revoke`: validates target UUIDv7, fingerprints canonical `invitationId`, and
  *   marks replay state.
  */
@@ -288,6 +318,11 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 				role: normalizedRole,
 				locale
 			});
+		// Keyed, so the stored lookup does not let the database alone test
+		// candidate addresses; it lets the verified recipient accept without
+		// the emailed link.
+		const recipientLookups: InstanceInvitationRecipientLookups =
+			await this.payloadSealer.recipientLookups(normalizedEmail);
 
 		for (let attempt: number = 0; attempt < MAX_CREDENTIAL_ATTEMPTS; attempt += 1) {
 			const invitationId: string = this.newId();
@@ -329,6 +364,7 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 				sealedDeliveryPayloadSha256: sealed.sealedPayloadSha256,
 				createdAt,
 				expiresAt,
+				recipientLookup: recipientLookups.active,
 				...(sealedDisplay === null
 					? {}
 					: {
@@ -424,27 +460,7 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 			acceptedAt
 		};
 
-		const result: AcceptInstanceInvitationStoreResult =
-			await this.store.acceptInstanceInvitation(command);
-
-		switch (result.outcome) {
-			case 'accepted':
-				return {
-					outcome: 'accepted',
-					invitation: result.invitation,
-					member: result.member,
-					replayed: false
-				};
-			case 'replayed':
-				return {
-					outcome: 'replayed',
-					invitation: result.invitation,
-					member: result.member,
-					replayed: true
-				};
-			default:
-				return result;
-		}
+		return publicAcceptResult(await this.store.acceptInstanceInvitation(command));
 	}
 
 	async acceptInstanceInvitation(
@@ -452,6 +468,50 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 		input: AcceptInstanceInvitationInput
 	): Promise<AcceptInstanceInvitationResult> {
 		return this.accept(actor, input);
+	}
+
+	async listReceived(
+		actor: InstanceInvitationActor,
+		input: ListReceivedInstanceInvitationsInput
+	): Promise<ListReceivedInstanceInvitationsResult> {
+		const commandActor: InstanceActor = assertActor(actor);
+		const normalizedEmail: string = normalizeEmail(input.email);
+		const lookups: InstanceInvitationRecipientLookups =
+			await this.payloadSealer.recipientLookups(normalizedEmail);
+		return await this.store.listReceivedInstanceInvitations({
+			actor: commandActor,
+			recipientLookup: lookups.active,
+			...(lookups.previous === undefined ? {} : { previousRecipientLookup: lookups.previous }),
+			now: this.now().toISOString(),
+			limit: MAX_RECEIVED_INSTANCE_INVITATIONS
+		});
+	}
+
+	async acceptReceived(
+		actor: InstanceInvitationActor,
+		input: AcceptReceivedInstanceInvitationInput
+	): Promise<AcceptInstanceInvitationResult> {
+		const commandActor: InstanceActor = assertActor(actor);
+		const idempotencyKey: string = assertIdempotencyKey(input.idempotencyKey);
+		const invitationId: string = assertInvitationId(input.invitationId);
+		const normalizedEmail: string = normalizeEmail(input.email);
+		const lookups: InstanceInvitationRecipientLookups =
+			await this.payloadSealer.recipientLookups(normalizedEmail);
+		// Distinct from the link's `{ tokenHash }` fingerprint, so one
+		// Idempotency-Key can never replay one accept form as the other.
+		const requestFingerprint: string = await sha256Hex(
+			canonicalJson({ invitationId, proof: 'verified_email' })
+		);
+		const command: AcceptInstanceInvitationByRecipientCommand = {
+			actor: commandActor,
+			idempotencyKey,
+			requestFingerprint,
+			invitationId,
+			recipientLookup: lookups.active,
+			...(lookups.previous === undefined ? {} : { previousRecipientLookup: lookups.previous }),
+			acceptedAt: this.now().toISOString()
+		};
+		return publicAcceptResult(await this.store.acceptInstanceInvitation(command));
 	}
 
 	async revoke(
@@ -522,6 +582,29 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 }
 
 export { InstanceInvitationApplication as InstanceInvitationService };
+
+function publicAcceptResult(
+	result: AcceptInstanceInvitationStoreResult
+): AcceptInstanceInvitationResult {
+	switch (result.outcome) {
+		case 'accepted':
+			return {
+				outcome: 'accepted',
+				invitation: result.invitation,
+				member: result.member,
+				replayed: false
+			};
+		case 'replayed':
+			return {
+				outcome: 'replayed',
+				invitation: result.invitation,
+				member: result.member,
+				replayed: true
+			};
+		default:
+			return result;
+	}
+}
 
 function assertActor(actor: InstanceInvitationActor): InstanceActor {
 	if (!actor || typeof actor.id !== 'string' || actor.id.length < 1 || actor.id.length > 200) {
