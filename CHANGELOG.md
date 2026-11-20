@@ -6,15 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-11-20
+
 ### Added
 
 - Join without the emailed link: a signed-in user whose verified email matches a pending invitation sees it on the settings page and can accept it there. New session APIs list received invitations and accept one by id with the same transaction and checks as the link; the link keeps working.
 - Invitation copy says people without an account can be invited and join after signing up with that address. Invitation mail adds a token-free way to join and links to `SIGNKIT_CONSOLE_URL` when configured.
+- Maintainer-signed releases without GitHub Actions: `scripts/release-local.mjs` builds, signs, and publishes a release from one Linux x86_64 machine with the release workflow's gates, asset names, checksums, draft-first GitHub Release, and npm-before-public order ([release checklist](docs/release-checklist.md)).
+
+### Changed
+
+- Publish `create-signkit` 0.1.10, which accepts maintainer-signed release provenance next to the release workflow's attestations. The `provenance` result gains `kind` (`workflow` or `maintainer`).
 
 ### Security
 
 - With `SIGNKIT_CONSOLE_URL` set, creating an invitation sends D6E Auth a note with the invited email, expiry, and inviter (as this server's OAuth client) so the console can list the server for the invitee; revoking withdraws it. Notes are best effort and log no email.
 - Invitations now store a recipient lookup: an HMAC of the normalized invited email under a key derived from `DELIVERY_ENCRYPTION_KEY`, deleted on acceptance, revocation, or expiry. The email itself is still never stored.
+- `create-signkit` 0.1.10 also accepts a release whose Cloudflare bundle is attested by a Sigstore public-good keyless signature from a GitHub account sign-in, when the account email is pinned in `packages/create-signkit/src/release/maintainer-signers.ts` and the signed statement names the bundle digest, repository, tag, and commit. For such a release, trust rests on that GitHub account (its sign-in and verified email) and the maintainer's build machine instead of GitHub-hosted runners running the reviewed workflow: whoever controls a pinned account can sign a release, and no third party rebuilds it. Removing a signer protects only create-signkit versions published afterwards. With no pinned signer, every maintainer signature is rejected. create-signkit 0.1.9 and earlier accept only workflow provenance and refuse maintainer-signed releases. The signer's email is public in the Sigstore transparency log and the stored attestation, but create-signkit does not print it. Workflow-attested releases verify unchanged. See [create-signkit](docs/architecture/create-signkit.md#release-provenance).
 
 ## [0.1.17] - 2026-10-12
 
