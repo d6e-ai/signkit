@@ -153,7 +153,8 @@ deploy the validator to a separately administered account and connect to it over
 		"SEAL_EVIDENCE_DB_ID": "<evidence D1 ID>",
 		"SEAL_EVIDENCE_BUCKET": "<evidence R2 name>",
 		"SEAL_LEDGER_DB_ID": "<separate replay D1 ID>",
-		"SEAL_RESULT_BUCKET": "<private result R2 name>"
+		"SEAL_RESULT_BUCKET": "<private result R2 name>",
+		"SEAL_LOCATION_HINT": "<optional Durable Object location hint, such as apac-se>"
 	},
 	"deploy": {
 		"issuer": { "tokenEnv": "CF_ISSUER_DEPLOY_TOKEN" },
@@ -164,6 +165,16 @@ deploy the validator to a separately administered account and connect to it over
 }
 ```
 
+The engine and validator containers run where their Durable Objects live. Without
+`SEAL_LOCATION_HINT`, each object was created near its first request and stays there; Cloudflare
+does not relocate it. Set the optional hint to one of Cloudflare's
+[location hints](https://developers.cloudflare.com/durable-objects/reference/data-location/) to
+place both containers in a region. Changing the hint addresses a new hinted object rather than
+moving the old one; neither object stores data, so nothing is migrated, and the first seal after
+the change waits for a cold container. A hint is a request, not a guarantee: after deploying, read
+each container instance's location before relying on it. Signed PDFs and signing attributes pass
+through the engine container, so this is the setting that keeps them in a region.
+
 Set `secretsFile` on each role for initial provisioning or rotation. Use a private JSON file
 path relative to the manifest or an absolute path. Omit it to retain the deployed Worker secrets.
 The signer project or HSM host is provisioned separately by the key operator.
@@ -172,7 +183,9 @@ The signer project or HSM host is provisioned separately by the key operator.
 node tools/pdf-seal-authority/deploy-cloudflare.mjs /path/to/release.json --apply
 ```
 
-Without `--apply` the command builds and previews the four prebuilt Workers locally. With
+Without `--apply` the command builds and previews the four prebuilt Workers locally. `--only
+engine,validator` limits the build, preview and deploy to those roles, for example after a
+placement change; the other Workers keep their active versions. With
 `--apply` it runs all four previews before deploying the issuer, engine, validator and gateway in
 that order. Each upload uses its own credentials, targets existing data resources and stops the
 release on failure. Worker and container rollouts can finish at different times. After a partial
