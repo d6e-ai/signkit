@@ -1685,6 +1685,56 @@ describe('human plan output', () => {
 		expect(result.stderr).toBe('');
 	});
 
+	it('names a maintainer-signed release without printing the signer', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		const releases = fakeReleases();
+		const prepareBundle = releases.prepareBundle.bind(releases);
+		releases.prepareBundle = async (release) => {
+			const prepared = await prepareBundle(release);
+			return {
+				...prepared,
+				provenance: {
+					status: 'verified',
+					mode: 'online',
+					kind: 'maintainer',
+					repository: 'd6e-ai/signkit',
+					signerIssuer: 'https://github.com/login/oauth',
+					sourceRef: prepared.provenance.sourceRef,
+					sourceCommit: prepared.provenance.sourceCommit,
+					subjectName: prepared.provenance.subjectName,
+					subjectSha256: prepared.provenance.subjectSha256,
+					predicateType: 'https://slsa.dev/provenance/v1',
+					buildType: 'https://github.com/d6e-ai/signkit/release/maintainer/v1',
+					attestationCount: 1,
+					trustRoot: 'sigstore-public-good'
+				}
+			};
+		};
+		const human = await run(
+			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID],
+			cloudflare,
+			new MemoryFileSystem(),
+			releases
+		);
+		expect(human.code).toBe(0);
+		expect(human.stdout).toContain(
+			'Provenance: verified d6e-ai/signkit maintainer signature (pinned GitHub account) refs/tags/v1.2.3\n'
+		);
+
+		const json = await run(
+			['--cloudflare', 'plan', '--account-id', ACCOUNT_ID, '--json'],
+			cloudflare,
+			new MemoryFileSystem(),
+			releases
+		);
+		expect(JSON.parse(json.stdout).provenance).toMatchObject({
+			kind: 'maintainer',
+			signerIssuer: 'https://github.com/login/oauth',
+			sourceRef: 'refs/tags/v1.2.3'
+		});
+	});
+
 	it('prints drift in human plan output', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		cloudflare.seedReadyWorker();

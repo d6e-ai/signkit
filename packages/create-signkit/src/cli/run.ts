@@ -68,8 +68,13 @@ function emit(io: RunIo, parsed: ParsedCommand, result: ReconcileResult): void {
 		io.stdout.write(`D1 backup: ${result.d1BackupPath}\n`);
 	}
 	if (result.provenance) {
+		// Like the workflow line, name the trust anchor rather than a person:
+		// the maintainer's email stays out of deploy logs and JSON output, and
+		// the pinned signer list shipped in this package is what was enforced.
 		io.stdout.write(
-			`Provenance: verified ${result.provenance.repository}/${result.provenance.workflow} ${result.provenance.sourceRef}\n`
+			result.provenance.kind === 'maintainer'
+				? `Provenance: verified ${result.provenance.repository} maintainer signature (pinned GitHub account) ${result.provenance.sourceRef}\n`
+				: `Provenance: verified ${result.provenance.repository}/${result.provenance.workflow} ${result.provenance.sourceRef}\n`
 		);
 	}
 	if (result.recoveryPath) {

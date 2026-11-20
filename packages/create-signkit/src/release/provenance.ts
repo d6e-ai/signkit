@@ -12,6 +12,12 @@ import { generic, unavailable } from '../cli/errors.js';
 import type { HttpClient } from '../runtime/http.js';
 import { utf8 } from '../runtime/http.js';
 import type { ResolvedRelease } from './github.js';
+import {
+	GITHUB_ACCOUNT_OIDC_ISSUER,
+	MAINTAINER_SIGNERS,
+	type MaintainerSigner
+} from './maintainer-signers.js';
+import { MAINTAINER_BUILD_TYPE } from './maintainer-statement.js';
 
 const ATTESTATION_API_VERSION = '2026-03-10';
 const ATTESTATION_BLOB_HOST = 'tmaproduction.blob.core.windows.net';
@@ -32,23 +38,46 @@ const RELEASE_BRANCH_REF = 'refs/heads/main';
 
 type ReleaseEventName = 'push' | 'workflow_dispatch';
 
-export interface ReleaseProvenance {
+interface ReleaseProvenanceBase {
 	status: 'verified';
 	mode: 'online';
 	repository: typeof SIGNKIT_REPOSITORY;
-	workflow: typeof WORKFLOW_PATH;
 	sourceRef: string;
 	sourceCommit: string;
 	subjectName: string;
 	subjectSha256: string;
 	predicateType: typeof SLSA_PREDICATE_TYPE;
-	buildType: typeof WORKFLOW_BUILD_TYPE;
 	attestationCount: number;
 	trustRoot: 'sigstore-public-good';
 }
 
+/** Built and attested by the GitHub Actions release workflow. */
+export interface WorkflowReleaseProvenance extends ReleaseProvenanceBase {
+	kind: 'workflow';
+	workflow: typeof WORKFLOW_PATH;
+	buildType: typeof WORKFLOW_BUILD_TYPE;
+}
+
+/**
+ * Built locally and signed by a maintainer pinned in `maintainer-signers.ts`.
+ * The signer's email is deliberately not part of the result; the pinned list
+ * shipped in this package is the trust anchor.
+ */
+export interface MaintainerReleaseProvenance extends ReleaseProvenanceBase {
+	kind: 'maintainer';
+	signerIssuer: typeof GITHUB_ACCOUNT_OIDC_ISSUER;
+	buildType: typeof MAINTAINER_BUILD_TYPE;
+}
+
+export type ReleaseProvenance = WorkflowReleaseProvenance | MaintainerReleaseProvenance;
+
 export interface ProvenanceVerifier {
 	verify(release: ResolvedRelease, bundleSha256: string): Promise<ReleaseProvenance>;
+}
+
+export interface ProvenanceVerifierOptions {
+	/** Defaults to the pinned {@link MAINTAINER_SIGNERS}; injectable for tests only. */
+	maintainerSigners?: readonly MaintainerSigner[];
 }
 
 export type SigstoreBundleVerifier = (bundle: Bundle, options: VerifyOptions) => Promise<unknown>;
@@ -104,11 +133,13 @@ interface InTotoStatement {
 
 export function createGithubProvenanceVerifier(
 	http: HttpClient,
-	verifyBundle: SigstoreBundleVerifier = verifySigstore
+	verifyBundle: SigstoreBundleVerifier = verifySigstore,
+	options: ProvenanceVerifierOptions = {}
 ): ProvenanceVerifier {
+	const maintainerSigners = options.maintainerSigners ?? MAINTAINER_SIGNERS;
 	return {
 		verify(release, bundleSha256) {
-			return verifyGithubProvenance(http, verifyBundle, release, bundleSha256);
+			return verifyGithubProvenance(http, verifyBundle, maintainerSigners, release, bundleSha256);
 		}
 	};
 }
@@ -116,6 +147,7 @@ export function createGithubProvenanceVerifier(
 async function verifyGithubProvenance(
 	http: HttpClient,
 	verifyBundle: SigstoreBundleVerifier,
+	maintainerSigners: readonly MaintainerSigner[],
 	release: ResolvedRelease,
 	bundleSha256: string
 ): Promise<ReleaseProvenance> {
@@ -147,6 +179,7 @@ async function verifyGithubProvenance(
 		throw generic(`GitHub returned more than ${MAX_ATTESTATIONS} provenance attestations`);
 	}
 
+	let verifiedKind: ReleaseProvenance['kind'] | undefined;
 	let verifiedSourceRef: string | undefined;
 	for (const attestation of attestations) {
 		if (String(attestation.repository_id) !== REPOSITORY_ID) {
@@ -154,6 +187,28 @@ async function verifyGithubProvenance(
 		}
 		const bundle = await fetchAttestationBundle(http, attestation.bundle_url);
 		const statement = parseStatement(bundle);
+		// Every returned attestation must verify, and all must be of one kind.
+		// Only the exact maintainer build type selects the maintainer policy;
+		// everything else takes the unchanged workflow path, which rejects
+		// unknown build types after signature verification.
+		const kind = attestationKind(statement);
+		if (verifiedKind !== undefined && verifiedKind !== kind) {
+			throw generic('GitHub release provenance mixes workflow and maintainer attestations');
+		}
+		verifiedKind = kind;
+		if (kind === 'maintainer') {
+			await verifyMaintainerAttestation(
+				bundle,
+				statement,
+				release,
+				bundleSha256,
+				commit,
+				verifyBundle,
+				maintainerSigners
+			);
+			verifiedSourceRef = releaseTagRef;
+			continue;
+		}
 		const releaseSource = selectReleaseSource(statement, releaseTagRef);
 		if (verifiedSourceRef !== undefined && verifiedSourceRef !== releaseSource.sourceRef) {
 			throw generic('GitHub release provenance contains conflicting workflow source refs');
@@ -192,9 +247,13 @@ async function verifyGithubProvenance(
 		});
 	}
 
+	if (verifiedKind === 'maintainer') {
+		return maintainerProvenance(release, bundleSha256, commit, attestations.length);
+	}
 	return {
 		status: 'verified',
 		mode: 'online',
+		kind: 'workflow',
 		repository: SIGNKIT_REPOSITORY,
 		workflow: WORKFLOW_PATH,
 		sourceRef: verifiedSourceRef as string,
@@ -206,6 +265,177 @@ async function verifyGithubProvenance(
 		attestationCount: attestations.length,
 		trustRoot: 'sigstore-public-good'
 	};
+}
+
+/**
+ * Verifies one maintainer-signed Sigstore bundle exactly as the online
+ * verifier does for each attestation it fetches, without the GitHub lookup.
+ * `scripts/release-local.mjs` uses it before and after uploading an attestation.
+ */
+export async function verifyMaintainerReleaseBundle(
+	bundle: Bundle,
+	release: ResolvedRelease,
+	bundleSha256: string,
+	options: ProvenanceVerifierOptions & { verifyBundle?: SigstoreBundleVerifier } = {}
+): Promise<MaintainerReleaseProvenance> {
+	const commit = release.commit;
+	if (!commit) {
+		throw generic('release provenance requires a resolved source commit');
+	}
+	if (bundleSha256 !== release.manifest.bundle.sha256) {
+		throw generic('release provenance subject digest does not match the downloaded bundle');
+	}
+	const statement = parseStatement(bundle);
+	if (attestationKind(statement) !== 'maintainer') {
+		throw generic('maintainer release provenance build type is not the maintainer release type');
+	}
+	await verifyMaintainerAttestation(
+		bundle,
+		statement,
+		release,
+		bundleSha256,
+		commit,
+		options.verifyBundle ?? verifySigstore,
+		options.maintainerSigners ?? MAINTAINER_SIGNERS
+	);
+	return maintainerProvenance(release, bundleSha256, commit, 1);
+}
+
+function maintainerProvenance(
+	release: ResolvedRelease,
+	bundleSha256: string,
+	commit: string,
+	attestationCount: number
+): MaintainerReleaseProvenance {
+	return {
+		status: 'verified',
+		mode: 'online',
+		kind: 'maintainer',
+		repository: SIGNKIT_REPOSITORY,
+		signerIssuer: GITHUB_ACCOUNT_OIDC_ISSUER,
+		sourceRef: `refs/tags/${release.tag}`,
+		sourceCommit: commit,
+		subjectName: release.manifest.bundle.assetName,
+		subjectSha256: bundleSha256,
+		predicateType: SLSA_PREDICATE_TYPE,
+		buildType: MAINTAINER_BUILD_TYPE,
+		attestationCount,
+		trustRoot: 'sigstore-public-good'
+	};
+}
+
+function attestationKind(statement: InTotoStatement): ReleaseProvenance['kind'] {
+	const buildType = isObject(statement.predicate)
+		? (statement.predicate.buildDefinition as { buildType?: unknown } | undefined)?.buildType
+		: undefined;
+	return buildType === MAINTAINER_BUILD_TYPE ? 'maintainer' : 'workflow';
+}
+
+async function verifyMaintainerAttestation(
+	bundle: Bundle,
+	statement: InTotoStatement,
+	release: ResolvedRelease,
+	bundleSha256: string,
+	commit: string,
+	verifyBundle: SigstoreBundleVerifier,
+	maintainerSigners: readonly MaintainerSigner[]
+): Promise<void> {
+	const signers = assertMaintainerSigners(maintainerSigners);
+	if (signers.length === 0) {
+		throw generic(
+			'maintainer-signed release provenance is not accepted: this create-signkit version pins no maintainer signers'
+		);
+	}
+	let signer: unknown;
+	try {
+		signer = await verifyBundle(bundle, {
+			certificateIssuer: GITHUB_ACCOUNT_OIDC_ISSUER,
+			// sigstore-js treats the identity as an unanchored regular expression.
+			certificateIdentityEmail: `^(?:${signers.map((entry) => escapeRegex(entry.email)).join('|')})$`,
+			ctLogThreshold: 1,
+			tlogThreshold: 1,
+			timeout: SIGSTORE_TIMEOUT_MS,
+			retry: 1,
+			tufForceCache: false
+		});
+	} catch (error) {
+		if (isTrustRootUnavailable(error)) {
+			throw unavailable('Sigstore trust-root verification is temporarily unavailable');
+		}
+		throw generic('maintainer release provenance signature or signer identity is invalid');
+	}
+	// Re-check the verified certificate identity with exact comparison, so the
+	// decision never rests on the regular expression alone.
+	const identity = isObject(signer) && isObject(signer.identity) ? signer.identity : undefined;
+	const email = identity?.subjectAlternativeName;
+	const issuer = isObject(identity?.extensions) ? identity.extensions.issuer : undefined;
+	if (
+		typeof email !== 'string' ||
+		issuer !== GITHUB_ACCOUNT_OIDC_ISSUER ||
+		!signers.some((entry) => entry.email === email && entry.issuer === issuer)
+	) {
+		throw generic('maintainer release provenance signer is not a pinned maintainer');
+	}
+	assertMaintainerStatementMatches(statement, release, bundleSha256, commit);
+}
+
+function assertMaintainerSigners(
+	signers: readonly MaintainerSigner[]
+): readonly MaintainerSigner[] {
+	const seen = new Set<string>();
+	for (const entry of signers) {
+		if (
+			!isObject(entry) ||
+			entry.issuer !== GITHUB_ACCOUNT_OIDC_ISSUER ||
+			typeof entry.email !== 'string' ||
+			entry.email.length > 254 ||
+			!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry.email) ||
+			seen.has(entry.email)
+		) {
+			throw generic(
+				'the pinned maintainer signer list is malformed; refusing maintainer provenance'
+			);
+		}
+		seen.add(entry.email);
+	}
+	return signers;
+}
+
+function assertMaintainerStatementMatches(
+	statement: InTotoStatement,
+	release: ResolvedRelease,
+	bundleSha256: string,
+	commit: string
+): void {
+	if (statement._type !== IN_TOTO_STATEMENT_TYPE) {
+		throw generic('maintainer release provenance statement type is not in-toto Statement v1');
+	}
+	if (statement.predicateType !== SLSA_PREDICATE_TYPE) {
+		throw generic('maintainer release provenance predicate type is not SLSA provenance v1');
+	}
+	assertSingleBundleSubject(
+		statement,
+		release.manifest.bundle.assetName,
+		bundleSha256,
+		'maintainer release provenance'
+	);
+	const predicate = statement.predicate as unknown;
+	const definition = isObject(predicate) ? predicate.buildDefinition : undefined;
+	if (!isObject(definition) || definition.buildType !== MAINTAINER_BUILD_TYPE) {
+		throw generic('maintainer release provenance build type is not the maintainer release type');
+	}
+	const parameters = definition.externalParameters;
+	if (
+		!isObject(parameters) ||
+		Object.keys(parameters).sort().join(',') !== 'commit,ref,repository' ||
+		parameters.repository !== REPOSITORY_URL ||
+		parameters.ref !== `refs/tags/${release.tag}` ||
+		parameters.commit !== commit
+	) {
+		throw generic(
+			'maintainer release provenance repository, tag, or commit does not match the release'
+		);
+	}
 }
 
 function selectReleaseSource(
@@ -374,36 +604,12 @@ function assertStatementMatches(
 	if (statement.predicateType !== SLSA_PREDICATE_TYPE) {
 		throw generic('GitHub release provenance predicate type is not SLSA provenance v1');
 	}
-	if (
-		!Array.isArray(statement.subject) ||
-		statement.subject.length === 0 ||
-		statement.subject.length > 1024
-	) {
-		throw generic('GitHub release provenance subject list is missing or exceeds its limit');
-	}
-	for (const subject of statement.subject) {
-		if (
-			!isObject(subject) ||
-			typeof subject.name !== 'string' ||
-			subject.name.length === 0 ||
-			subject.name.length > 255 ||
-			!isObject(subject.digest) ||
-			typeof subject.digest.sha256 !== 'string' ||
-			!/^[0-9a-f]{64}$/.test(subject.digest.sha256)
-		) {
-			throw generic('GitHub release provenance contains a malformed subject');
-		}
-	}
-	const matchingSubjects = statement.subject.filter(
-		(subject) =>
-			isObject(subject) &&
-			subject.name === release.manifest.bundle.assetName &&
-			isObject(subject.digest) &&
-			subject.digest.sha256 === bundleSha256
+	assertSingleBundleSubject(
+		statement,
+		release.manifest.bundle.assetName,
+		bundleSha256,
+		'GitHub release provenance'
 	);
-	if (matchingSubjects.length !== 1) {
-		throw generic('GitHub release provenance must contain exactly one matching bundle subject');
-	}
 	const predicate = statement.predicate;
 	if (
 		!isObject(predicate) ||
@@ -454,6 +660,46 @@ function assertStatementMatches(
 	}
 }
 
+// Shared by both provenance kinds: a bounded, well-formed subject list with
+// exactly one entry naming the downloaded bundle and its digest.
+function assertSingleBundleSubject(
+	statement: InTotoStatement,
+	assetName: string,
+	bundleSha256: string,
+	label: string
+): void {
+	if (
+		!Array.isArray(statement.subject) ||
+		statement.subject.length === 0 ||
+		statement.subject.length > 1024
+	) {
+		throw generic(`${label} subject list is missing or exceeds its limit`);
+	}
+	for (const subject of statement.subject) {
+		if (
+			!isObject(subject) ||
+			typeof subject.name !== 'string' ||
+			subject.name.length === 0 ||
+			subject.name.length > 255 ||
+			!isObject(subject.digest) ||
+			typeof subject.digest.sha256 !== 'string' ||
+			!/^[0-9a-f]{64}$/.test(subject.digest.sha256)
+		) {
+			throw generic(`${label} contains a malformed subject`);
+		}
+	}
+	const matchingSubjects = statement.subject.filter(
+		(subject) =>
+			isObject(subject) &&
+			subject.name === assetName &&
+			isObject(subject.digest) &&
+			subject.digest.sha256 === bundleSha256
+	);
+	if (matchingSubjects.length !== 1) {
+		throw generic(`${label} must contain exactly one matching bundle subject`);
+	}
+}
+
 export function createGithubCertificatePolicy(
 	input: GithubCertificatePolicyInput
 ): GithubCertificatePolicy {
@@ -501,6 +747,10 @@ function derUtf8String(value: string): string {
 
 function exactRegex(value: string): string {
 	return `^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+}
+
+function escapeRegex(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function isTrustRootUnavailable(error: unknown): boolean {
