@@ -136,9 +136,12 @@ no implementation is a release blocker.
 
 `scripts/release-local.mjs` runs the workflow's release on one Linux x86_64
 machine. Instead of a workflow attestation, a pinned maintainer signs the
-release with Sigstore keyless signing after a GitHub account sign-in, and the
-signature is stored with GitHub's attestations API, where `create-signkit`
-finds it by digest. The trust model and the exact checks are in
+release with Sigstore keyless signing after a GitHub account sign-in. GitHub's
+attestations API stores only GitHub Actions-issued signatures, so the Sigstore
+bundle is published as the release asset
+`signkit-provenance-<tag>.sigstore.json`, where `create-signkit` reads it. The
+other six assets keep the workflow's names, and the signature is not listed in
+`SHA256SUMS`, which it signs. The trust model and the exact checks are in
 [create-signkit](architecture/create-signkit.md#maintainer-signatures).
 
 Before the first maintainer-signed release:
@@ -151,7 +154,7 @@ Before the first maintainer-signed release:
    (`<user id>+<login>@users.noreply.github.com`) and pick it on the consent
    screen when signing. The account must use two-factor authentication. The
    chosen email becomes public in the Sigstore transparency log and in the
-   stored attestation. While the list is empty, `sign` refuses to start and
+   signature asset. While the list is empty, `sign` refuses to start and
    `create-signkit` rejects every maintainer signature. Each `create-signkit`
    version trusts the list it was built with, so bump `create-signkit` with
    every change to the list.
@@ -159,8 +162,8 @@ Before the first maintainer-signed release:
    version from `packageManager`, a Rust toolchain (the workflow uses 1.88.0),
    Docker, `bash`, `tar`, `gzip`, `sha256sum`, `git`, and `gh`, plus a browser
    for the Sigstore sign-in. The signed statement records the tool versions.
-3. `gh` is signed in to an account that can create releases and attestations
-   in the repository, and `npm` is signed in to an owner of the
+3. `gh` is signed in to an account that can create and edit releases in the
+   repository, and `npm` is signed in to an owner of the
    `create-signkit` package with two-factor authentication. The package must
    allow publishing by an interactive owner login.
 
@@ -199,12 +202,15 @@ For each release, after sections 1 to 3 and with the release commit merged:
    does not exist elsewhere, and npm already has the `create-signkit` version.
    It creates a draft release targeting the commit with the channel's
    prerelease flag (or reuses a draft only when its metadata, target, and
-   existing assets match byte for byte), uploads the missing assets, and stores
-   the attestation with `POST /repos/d6e-ai/signkit/attestations` unless that
-   signature is already stored. It then downloads the whole draft, compares
-   every asset with the signed statement, runs the online `create-signkit`
-   provenance verifier on it, makes the release public, and resolves the public
-   release with `create-signkit`.
+   existing assets match byte for byte) and uploads the missing assets: the six
+   built assets and `.release/provenance.sigstore.json` as
+   `signkit-provenance-v<version>.sigstore.json`. It then downloads the whole
+   draft, compares all seven assets with the upload and the signed statement,
+   runs the online `create-signkit` provenance verifier on it (the signature
+   asset comes from the authenticated draft download, because a draft has no
+   public download URL yet), makes the release public, and resolves the public
+   release with `create-signkit`, which now downloads the signature asset
+   publicly.
 6. Run `create-signkit --cloudflare plan` for the new tag and confirm that both
    human and `--json` output report `maintainer` provenance. Then remove
    `.release` and, if it is not needed, the `signkit:v<version>` image.
@@ -212,18 +218,20 @@ For each release, after sections 1 to 3 and with the release commit merged:
 Every subcommand accepts `--dry-run`, which runs its checks and prints the
 mutations it would perform. Reruns are safe: `build` starts over, `sign`
 reuses a signature that still verifies, `npm` skips a published version, and
-`publish` reuses byte-identical draft assets and a stored attestation while
-refusing a public release or any mismatch. If `publish` fails before the
+`publish` reuses byte-identical draft assets, including the signature asset,
+while refusing a public release or any mismatch. If `publish` fails before the
 release is public, the draft stays private; fix the cause and rerun it. Never
 delete and re-create a public release or its tag; cut a patch release.
 
 ## Provenance checks after publishing
 
-GitHub stores the provenance attestations separately from the release assets.
-`create-signkit plan`, `deploy`, and `upgrade` query them by the downloaded
-Cloudflare bundle digest and require online GitHub/Sigstore verification before
-any local recovery-file or Cloudflare mutation. A release is not deployable if
-its attestation is missing, invalid, ambiguous, unavailable, malformed, or too
-large. Confirm both human and `--json` plan output report verified provenance
+GitHub stores workflow provenance attestations separately from the release
+assets; a maintainer-signed release carries its signature as the release asset
+`signkit-provenance-<tag>.sigstore.json`. `create-signkit plan`, `deploy`, and
+`upgrade` query the attestations by the downloaded Cloudflare bundle digest,
+read the signature asset when the release has one, and require online
+GitHub/Sigstore verification before any local recovery-file or Cloudflare
+mutation. A release is not deployable if its provenance is missing, invalid,
+mixed, ambiguous, unavailable, malformed, or too large. Confirm both human and `--json` plan output report verified provenance
 of the expected kind (`workflow` or `maintainer`); `adopt` intentionally omits
 it because it does not select a release.

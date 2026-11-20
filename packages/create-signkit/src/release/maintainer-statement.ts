@@ -12,7 +12,20 @@ export const IN_TOTO_STATEMENT_TYPE = 'https://in-toto.io/Statement/v1';
 export const IN_TOTO_PAYLOAD_TYPE = 'application/vnd.in-toto+json';
 export const SLSA_PROVENANCE_PREDICATE_TYPE = 'https://slsa.dev/provenance/v1';
 
+/** Upper bound for the maintainer Sigstore bundle asset (a few KiB in practice). */
+export const MAX_MAINTAINER_SIGNATURE_BYTES = 256 * 1024;
+
 const MAX_SUBJECTS = 1024;
+
+/**
+ * Release asset that carries the maintainer's Sigstore bundle. GitHub's
+ * attestations API stores only GitHub Actions-issued signatures, so the bundle
+ * is published next to the assets it signs. It is not listed in SHA256SUMS:
+ * SHA256SUMS is itself a signed subject, and the bundle authenticates itself.
+ */
+export function maintainerSignatureAssetName(tag: string): string {
+	return `signkit-provenance-${tag}.sigstore.json`;
+}
 
 export interface MaintainerStatementSubject {
 	name: string;

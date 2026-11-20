@@ -2,19 +2,18 @@ import { createHash } from 'node:crypto';
 import {
 	GITHUB_ALLOWED_HOSTS,
 	GITHUB_API_ORIGIN,
-	GITHUB_DOWNLOAD_ORIGIN,
 	MANIFEST_ASSET_NAME,
 	MAX_BUNDLE_BYTES,
 	MAX_MANIFEST_BYTES,
 	MAX_RELEASE_LIST_BYTES,
-	PACKAGE_NAME,
-	PACKAGE_VERSION,
 	SIGNKIT_REPOSITORY
 } from '../constants.js';
 import { generic, unavailable } from '../cli/errors.js';
 import type { ReleaseChannel } from '../cli/parse.js';
 import type { HttpClient } from '../runtime/http.js';
 import { utf8 } from '../runtime/http.js';
+import { assertReleaseAssetUrl, githubDownloadUrl, RELEASE_USER_AGENT } from './assets.js';
+import { maintainerSignatureAssetName } from './maintainer-statement.js';
 import { parseReleaseManifest, type ReleaseManifest } from './manifest.js';
 import {
 	createGithubProvenanceVerifier,
@@ -51,6 +50,11 @@ export interface ResolvedRelease {
 	manifest: ReleaseManifest;
 	manifestUrl: string;
 	bundleUrl: string;
+	/**
+	 * The maintainer Sigstore bundle asset, when the release has one. Where it
+	 * is stored grants no trust; it is verified like any other signature.
+	 */
+	maintainerSignature?: { assetName: string; size: number };
 }
 
 export interface ReleaseResolver {
@@ -63,7 +67,7 @@ export interface PreparedReleaseBundle {
 	provenance: ReleaseProvenance;
 }
 
-const USER_AGENT = `${PACKAGE_NAME}/${PACKAGE_VERSION}`;
+const USER_AGENT = RELEASE_USER_AGENT;
 const ACCEPT_JSON = 'application/vnd.github+json';
 
 export function createGithubReleaseResolver(
@@ -82,35 +86,10 @@ export function createGithubReleaseResolver(
 	};
 }
 
-export function githubDownloadUrl(tag: string, assetName: string): string {
-	return `${GITHUB_DOWNLOAD_ORIGIN}/${SIGNKIT_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`;
-}
+export { assertReleaseAssetUrl, githubDownloadUrl };
 
 export function githubApiUrl(path: string): string {
 	return `${GITHUB_API_ORIGIN}/repos/${SIGNKIT_REPOSITORY}${path}`;
-}
-
-export function assertReleaseAssetUrl(urlText: string, tag: string, assetName: string): URL {
-	const expected = githubDownloadUrl(tag, assetName);
-	const url = new URL(urlText);
-	if (url.origin !== GITHUB_DOWNLOAD_ORIGIN && url.origin !== GITHUB_API_ORIGIN) {
-		throw generic(`asset URL origin ${url.origin} is not an allowed GitHub origin`);
-	}
-	if (url.origin === GITHUB_DOWNLOAD_ORIGIN && url.toString() !== expected) {
-		throw generic(`asset URL ${urlText} does not match the expected GitHub release download URL`);
-	}
-	if (url.origin === GITHUB_API_ORIGIN) {
-		const allowed = new RegExp(
-			`^/repos/${SIGNKIT_REPOSITORY.replace('/', '\\/')}/releases/assets/\\d+$`
-		);
-		if (!allowed.test(url.pathname)) {
-			throw generic(`asset API URL ${urlText} is not a SignKit release asset`);
-		}
-	}
-	if (!GITHUB_ALLOWED_HOSTS.has(url.hostname)) {
-		throw generic(`asset URL host ${url.hostname} is not allowed`);
-	}
-	return url;
 }
 
 async function resolveRelease(
@@ -160,6 +139,11 @@ async function resolveRelease(
 		release.tag_name,
 		manifest.bundle.assetName
 	);
+	const signatureName = maintainerSignatureAssetName(release.tag_name);
+	const signatureAsset = release.assets.find((asset) => asset.name === signatureName);
+	if (signatureAsset) {
+		assertReleaseAssetUrl(signatureAsset.browser_download_url, release.tag_name, signatureName);
+	}
 	return {
 		tag: release.tag_name,
 		channel: manifest.channel,
@@ -167,7 +151,10 @@ async function resolveRelease(
 		commit,
 		manifest,
 		manifestUrl,
-		bundleUrl
+		bundleUrl,
+		...(signatureAsset
+			? { maintainerSignature: { assetName: signatureName, size: signatureAsset.size } }
+			: {})
 	};
 }
 

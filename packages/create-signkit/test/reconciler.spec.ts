@@ -1706,6 +1706,7 @@ describe('human plan output', () => {
 					subjectSha256: prepared.provenance.subjectSha256,
 					predicateType: 'https://slsa.dev/provenance/v1',
 					buildType: 'https://github.com/d6e-ai/signkit/release/maintainer/v1',
+					signatureAsset: 'signkit-provenance-v1.2.3.sigstore.json',
 					attestationCount: 1,
 					trustRoot: 'sigstore-public-good'
 				}
@@ -1731,6 +1732,7 @@ describe('human plan output', () => {
 		expect(JSON.parse(json.stdout).provenance).toMatchObject({
 			kind: 'maintainer',
 			signerIssuer: 'https://github.com/login/oauth',
+			signatureAsset: 'signkit-provenance-v1.2.3.sigstore.json',
 			sourceRef: 'refs/tags/v1.2.3'
 		});
 	});
