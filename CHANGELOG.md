@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - The PDF seal authority's engine and validator containers can be placed with an optional `SEAL_LOCATION_HINT` (a Durable Object location hint), and the release command can deploy a subset of roles with `--only`.
+- Console CORS also exposes `retry-after` and `x-signkit-commit-sha`, so a d6e console can pace its retry after a void, reissue, or DOCX conversion and read which draft commit a DOCX export rendered. Allowed request headers and authorization are unchanged.
 
 ## [0.1.18] - 2026-11-20
 
