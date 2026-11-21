@@ -33,12 +33,14 @@ evidence remain unchanged. Recreating the same normalized email after deletion i
 
 ## Authorization and privacy
 
-All contact operations require a verified d6e-auth browser session and a currently active local
-`instance_member`. Owner, admin, and member roles have equal access to their own contact book and no
-access to another member's rows.
+All contact operations require a verified d6e-auth session and a currently active local
+`instance_member`. The session is the browser cookie or, from an operator console, a verified
+[operator access token](authorization-and-instance-administration.md#operator-access-tokens); both
+are the member's own human session. Owner, admin, and member roles have equal access to their own
+contact book and no access to another member's rows.
 
-The surface rejects SignKit API keys and recipient capabilities. A disallowed bearer cannot ride an
-otherwise valid browser cookie into the contact API. Recipient-session cookies authorize only their
+The surface rejects SignKit API keys, recipient capabilities, and every other bearer value. A
+disallowed bearer cannot ride an otherwise valid browser cookie into the contact API. Recipient-session cookies authorize only their
 envelope-scoped signing surface and grant no contact authority.
 
 Names, email addresses, and search text are excluded from audit payloads, structured logs, problem

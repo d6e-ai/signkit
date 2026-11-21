@@ -101,6 +101,125 @@ describe('contact HTTP handlers', () => {
 		expect(recipientBearer.status).toBe(403);
 	});
 
+	it('serves a verified operator access token as the member session on every contact route', async () => {
+		const app = application();
+		const handlers = createContactHttpHandlers(() => app);
+		const tokenLocals = (): App.Locals => {
+			const locals = instanceScopedLocals('active');
+			locals.accessTokenAuthentication = { state: 'verified', observedAt: null };
+			return locals;
+		};
+		const bearer = { authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig' };
+
+		const list = await handlers.list(
+			createHttpRequestEvent({
+				pathname: '/api/v1/contacts',
+				locals: tokenLocals(),
+				headers: bearer
+			})
+		);
+		expect(list.status).toBe(200);
+		expect(app.list).toHaveBeenLastCalledWith(
+			{ id: 'user-1' },
+			{ query: null, cursor: null, limit: 25 }
+		);
+
+		const search = await handlers.search(
+			createHttpRequestEvent({
+				pathname: '/api/v1/contacts/search',
+				method: 'POST',
+				locals: tokenLocals(),
+				headers: bearer,
+				body: JSON.stringify({ query: 'alice' }),
+				jsonBodyContentType: true
+			})
+		);
+		expect(search.status).toBe(200);
+
+		const create = await handlers.create(
+			createHttpRequestEvent({
+				pathname: '/api/v1/contacts',
+				method: 'POST',
+				locals: tokenLocals(),
+				headers: { ...bearer, 'idempotency-key': 'contact-create-1' },
+				body: JSON.stringify({ name: 'Alice', email: 'alice@example.com', locale: 'ja' }),
+				jsonBodyContentType: true
+			})
+		);
+		expect(create.status).toBe(201);
+
+		const update = await handlers.update(
+			createHttpRequestEvent({
+				pathname: `/api/v1/contacts/${ID}`,
+				method: 'PUT',
+				locals: tokenLocals(),
+				params: { contactId: ID },
+				headers: { ...bearer, 'idempotency-key': 'contact-update-1' },
+				body: JSON.stringify({
+					expectedVersion: 1,
+					name: 'Alice',
+					email: 'alice@example.com',
+					locale: 'ja'
+				}),
+				jsonBodyContentType: true
+			})
+		);
+		expect(update.status).toBe(200);
+
+		const remove = await handlers.delete(
+			createHttpRequestEvent({
+				pathname: `/api/v1/contacts/${ID}`,
+				method: 'DELETE',
+				locals: tokenLocals(),
+				params: { contactId: ID },
+				headers: { ...bearer, 'idempotency-key': 'contact-delete-1' },
+				body: JSON.stringify({ expectedVersion: 1 }),
+				jsonBodyContentType: true
+			})
+		);
+		expect(remove.status).toBe(200);
+		expect(app.create).toHaveBeenCalledOnce();
+		expect(app.update).toHaveBeenCalledOnce();
+		expect(app.delete).toHaveBeenCalledOnce();
+	});
+
+	it('keeps refusing a bearer that is not a verified access token', async () => {
+		const handlers = createContactHttpHandlers(() => application());
+		const bearer = { authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig' };
+		const states: App.Locals['accessTokenAuthentication'][] = [
+			{ state: 'absent' },
+			{ state: 'presented', token: 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.sig' },
+			{ state: 'rejected' },
+			{ state: 'unavailable' }
+		];
+		for (const accessTokenAuthentication of states) {
+			const locals = instanceScopedLocals('active');
+			locals.accessTokenAuthentication = accessTokenAuthentication;
+			const response = await handlers.list(
+				createHttpRequestEvent({ pathname: '/api/v1/contacts', locals, headers: bearer })
+			);
+			expect(response.status).toBe(403);
+			expect(((await response.json()) as { type: string }).type).toBe(
+				'urn:signkit:problem:credential-not-permitted'
+			);
+		}
+
+		const apiKeyLocals = instanceScopedLocals('active');
+		apiKeyLocals.accessTokenAuthentication = { state: 'verified', observedAt: null };
+		apiKeyLocals.apiKeyAuthentication = { state: 'rejected_surface' };
+		const apiKey = await handlers.list(
+			createHttpRequestEvent({
+				pathname: '/api/v1/contacts',
+				locals: apiKeyLocals,
+				headers: { authorization: `Bearer signkit_${'a'.repeat(43)}` }
+			})
+		);
+		expect(apiKey.status).toBe(403);
+		expect(((await apiKey.json()) as { type: string }).type).toBe(
+			'urn:signkit:problem:api-key-not-permitted'
+		);
+	});
+
 	it('enforces strict bounded search and returns the public delete shape', async () => {
 		const app = application();
 		const handlers = createContactHttpHandlers(() => app);

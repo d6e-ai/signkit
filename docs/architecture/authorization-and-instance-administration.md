@@ -316,9 +316,10 @@ expired receipt, a capability that expired without ever being used, a superseded
 capability, a voided or expired envelope, and any malformed, tampered, or mismatched evidence or
 cookie all fail closed to the same generic invalid response as an unknown link.
 
-Contacts are a human-session-only operator surface. API keys, recipient capabilities, and
-recipient-session cookies cannot authorize contact reads, search, creation, replacement, or
-deletion. Presenting a disallowed bearer on the contact surface must not compose with a browser
+Contacts are a human-session-only operator surface: the operator cookie or a verified
+[operator access token](#operator-access-tokens). API keys, recipient capabilities, any other bearer
+value, and recipient-session cookies cannot authorize contact reads, search, creation, replacement,
+or deletion. Presenting a disallowed bearer on the contact surface must not compose with a browser
 session.
 
 Background drains use dedicated deployment secrets. They cannot be called with a browser session or
