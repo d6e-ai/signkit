@@ -18,7 +18,7 @@ No tenant selector is accepted. A key belongs to the local member that created i
 
 Recipient browser endpoints use `skr1_` capability links and the encrypted browser session created from them. The separate `/api/v1/recipient/**` CLI surface accepts only the recipient's own `skr1_` bearer capability; neither a sender API key nor a browser cookie authorizes it. Background drains use their dedicated deployment secrets.
 
-The contact API is human-session-only. API keys, recipient capabilities, and recipient browser sessions do not authorize contact reads or mutations.
+The contact API is human-session-only: the operator session cookie or a verified d6e-auth operator access token from a console. API keys, recipient capabilities, other bearer values, and recipient browser sessions do not authorize contact reads or mutations.
 
 ## Common rules
 

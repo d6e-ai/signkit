@@ -261,12 +261,20 @@ function authorizeContactRequest(
 ): AuthorizedInstanceActor | Response {
 	const authorized: AuthorizedInstanceActor | Response = authorizeInstanceRequest(locals, instance);
 	if (authorized instanceof Response) return authorized;
-	if ((request.headers.get('authorization') ?? '').trim().length > 0) {
+	// A verified d6e-auth access token is the member's own session presented by
+	// an operator console, so it reaches the contact book like the cookie does.
+	// Every other bearer stays refused, and a presented token never composes
+	// with a cookie (the hooks layer skips the cookie in bearer mode).
+	if (
+		locals.accessTokenAuthentication.state !== 'verified' &&
+		(request.headers.get('authorization') ?? '').trim().length > 0
+	) {
 		return problemResponse({
 			type: 'urn:signkit:problem:credential-not-permitted',
 			title: 'Bearer credentials are not accepted here',
 			status: 403,
-			detail: 'This endpoint requires an interactive operator session without a bearer credential.',
+			detail:
+				'This endpoint requires an operator session: the session cookie or a d6e-auth access token.',
 			instance
 		});
 	}
