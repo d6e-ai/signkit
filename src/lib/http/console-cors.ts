@@ -32,12 +32,18 @@ export const CONSOLE_CORS_ALLOWED_HEADERS: readonly string[] = [
 	'x-signkit-expected-subject'
 ];
 
-/** Non-safelisted response headers a console needs to read. */
+/**
+ * Non-safelisted response headers a console needs to read. `retry-after` paces
+ * the console's retry after a void, reissue, or DOCX conversion answers "not
+ * yet"; `x-signkit-commit-sha` names the draft commit a DOCX export rendered.
+ */
 export const CONSOLE_CORS_EXPOSED_HEADERS: readonly string[] = [
 	'content-disposition',
 	'idempotency-replayed',
 	'location',
-	'www-authenticate'
+	'retry-after',
+	'www-authenticate',
+	'x-signkit-commit-sha'
 ];
 
 export const CONSOLE_CORS_MAX_AGE_SECONDS: number = 600;

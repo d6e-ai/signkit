@@ -217,7 +217,7 @@ describe('console CORS on actual responses', () => {
 		expect(await response.text()).toBe('pdf');
 		expect(response.headers.get('access-control-allow-origin')).toBe(CONSOLE);
 		expect(response.headers.get('access-control-expose-headers')).toBe(
-			'content-disposition, idempotency-replayed, location, www-authenticate'
+			'content-disposition, idempotency-replayed, location, retry-after, www-authenticate, x-signkit-commit-sha'
 		);
 		expect(response.headers.get('vary')).toBe('Origin');
 		expect(response.headers.has('access-control-allow-credentials')).toBe(false);

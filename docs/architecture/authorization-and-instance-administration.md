@@ -225,7 +225,10 @@ For a request whose `Origin` is listed:
 x-signkit-expected-subject`, `Access-Control-Max-Age: 600`, and `Vary: Origin`.
 - Every actual response, problem responses included, carries `Access-Control-Allow-Origin`,
   `Vary: Origin`, and
-  `Access-Control-Expose-Headers: content-disposition, idempotency-replayed, location, www-authenticate`.
+  `Access-Control-Expose-Headers: content-disposition, idempotency-replayed, location, retry-after,
+www-authenticate, x-signkit-commit-sha`. `retry-after` paces a retry after a void, reissue, or DOCX
+  conversion that is not ready yet; `x-signkit-commit-sha` names the draft commit a DOCX export
+  rendered.
 - `GET /api/v1/system/capabilities` and `GET /api/v1/openapi.json` are shared the same way, for
   `GET` only.
 
