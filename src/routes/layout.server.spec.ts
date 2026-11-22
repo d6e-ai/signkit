@@ -38,14 +38,20 @@ function event(input: {
 	pathname: string;
 	search?: string;
 	appLocals?: App.Locals;
+	consoleUrl?: string;
 }): Parameters<typeof load>[0] {
 	const url: URL = new URL(`https://signkit.example${input.pathname}${input.search ?? ''}`);
 	return {
 		locals: input.appLocals ?? locals(),
-		platform: undefined,
+		platform:
+			input.consoleUrl === undefined
+				? undefined
+				: { env: { SIGNKIT_CONSOLE_URL: input.consoleUrl } },
 		url
 	} as unknown as Parameters<typeof load>[0];
 }
+
+const CONSOLE_URL: string = 'https://console.example.com/signkit/console';
 
 /**
  * `localizeHref` runs outside of any request context in this unit test (there
@@ -281,5 +287,58 @@ describe('root layout access gate', () => {
 		resolveInstanceApplication.mockResolvedValue(application(null));
 		const failed = await captureHttpError(load(event({ pathname: '/envelopes' })));
 		expect(failed.status).toBe(503);
+	});
+
+	describe('on a server listed in a d6e console', () => {
+		it('sends every operator page to the console before any sign-in or instance read', async () => {
+			for (const pathname of [
+				'/',
+				'/ja',
+				'/en/',
+				'/envelopes',
+				'/ja/envelopes/01900000-0000-7000-8000-000000000001',
+				'/envelopes/new',
+				'/settings',
+				'/en/settings/api-keys',
+				'/setup',
+				'/signed-out'
+			]) {
+				const redirected = await captureRedirect(
+					load(event({ pathname, appLocals: locals('anonymous'), consoleUrl: CONSOLE_URL }))
+				);
+				expect(redirected).toEqual({ status: 302, location: CONSOLE_URL });
+			}
+			expect(resolveInstanceApplication).not.toHaveBeenCalled();
+		});
+
+		it('keeps the recipient and invitation pages on this server', async () => {
+			for (const pathname of [
+				'/s/token',
+				'/sign/01900000-0000-7000-8000-000000000001',
+				'/c/x/view'
+			]) {
+				expect(
+					await load(event({ pathname, appLocals: locals('anonymous'), consoleUrl: CONSOLE_URL }))
+				).toEqual({});
+			}
+			expect(
+				await load(
+					event({
+						pathname: '/ja/invitations/accept',
+						appLocals: locals('anonymous'),
+						consoleUrl: CONSOLE_URL
+					})
+				)
+			).toEqual({});
+		});
+
+		it('keeps every page on a standalone server or with an unacceptable console URL', async () => {
+			for (const consoleUrl of [undefined, '', '   ', 'http://console.example.com/']) {
+				const redirected = await captureRedirect(
+					load(event({ pathname: '/settings', appLocals: locals('anonymous'), consoleUrl }))
+				);
+				expect(redirected.location).toBe('/auth/login?return=%2Fsettings');
+			}
+		});
 	});
 });
