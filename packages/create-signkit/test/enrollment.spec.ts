@@ -300,7 +300,7 @@ describe('console enrollment on a pristine initial deploy', () => {
 		expect(state.consoleOrigins).toEqual(['https://other-console.example']);
 	});
 
-	it('refuses an explicit empty --console-origins: the console must be able to call the API', async () => {
+	it('refuses an explicit empty --console-origins before spending the enrollment token', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		const http = new OrderedHttp(cloudflare);
 		http.on(ENROLL_URL, enrollmentBody(), 201);

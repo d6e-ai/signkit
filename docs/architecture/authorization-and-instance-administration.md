@@ -76,10 +76,12 @@ be overtaken by a late note, and the outbox row is stored with `available_at` 60
 it does. When D6E Auth stores the note (or already holds a withdrawal for the id, `409
 invitation_revoked`), the row is closed as handed off: status `delivered`, provider id
 `d6e-auth:console-invitation-email`, sealed payload erased. Otherwise (D6E Auth unreachable or
-refusing, or no console configured) the row is released at once, and the protected
-instance-invitation drain retries the same note with a five-minute reclaimable lease, capped
+refusing) the row is released at once, and the protected instance-invitation drain retries the same
+note with a five-minute reclaimable lease, capped
 exponential backoff, and at most ten claimed attempts. The drain rechecks the invitation's
-pending/unexpired state and the payload's digests after opening it. If the create request ends
+pending/unexpired state and the payload's digests after opening it. Without the console
+registration (URL and client credentials) the drain is unavailable and claims nothing, so no row
+spends its attempts while the server is misconfigured. If the create request ends
 before deciding, the hold lapses and the drain sends the note; D6E Auth treats a repeated note as the
 same note and emails only the first time it sees an invitation and address.
 

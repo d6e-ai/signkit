@@ -1016,7 +1016,13 @@ export function assertConsoleRegistration(
 	target: EffectiveTarget,
 	enrollmentPending: boolean
 ): void {
-	if (enrollmentPending) return;
+	// An explicit flag wins over enrollment defaults, so an explicitly empty
+	// value would survive the enrollment: refuse it before the single-use token
+	// is spent.
+	const explicitlyEmpty: boolean =
+		target.consoleUrl === '' ||
+		(target.consoleOrigins !== undefined && target.consoleOrigins.length === 0);
+	if (enrollmentPending && !explicitlyEmpty) return;
 	if (target.consoleUrl && target.consoleOrigins && target.consoleOrigins.length > 0) return;
 	throw preflight(
 		`SignKit is operated from a d6e console and has no operator pages of its own. For a new server, set ${ENROLLMENT_TOKEN_ENV} (issued from the console) so this deploy registers it; for a server already registered, pass --console-url and --console-origins.`

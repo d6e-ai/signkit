@@ -2,6 +2,8 @@ import { env } from '$env/dynamic/private';
 import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
 import { AesGcmInstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
 import { consoleInvitationNotes } from '$lib/server/console-invitation-notes';
+import { resolveConsoleUrl } from '$lib/server/console-url';
+import { serverClientCredentials } from '$lib/server/d6e-auth';
 import {
 	InstanceInvitationDeliveryService,
 	type InstanceInvitationNotifier
@@ -13,9 +15,11 @@ export interface InstanceInvitationDeliveryRuntimeContext {
 
 /**
  * The invitation outbox drain. Each pending invitation is delivered to D6E
- * Auth as a console note; only the durable store and the delivery encryption
- * key (to open the sealed recipient address) are required here, and a server
- * without a console URL or client credentials keeps the rows for retry.
+ * Auth as a console note, so it needs the durable store, the delivery
+ * encryption key (to open the sealed recipient address), and the console
+ * registration (console URL and client credentials). Without the registration
+ * the drain is unavailable and claims nothing, so rows keep their attempts and
+ * are delivered once the server is configured.
  */
 export async function resolveInstanceInvitationDeliveryService(
 	context: InstanceInvitationDeliveryRuntimeContext
@@ -25,6 +29,9 @@ export async function resolveInstanceInvitationDeliveryService(
 		platformEnv?.DELIVERY_ENCRYPTION_KEY ?? env.DELIVERY_ENCRYPTION_KEY
 	);
 	if (encryptionKey === undefined) return null;
+	if (resolveConsoleUrl(context.platform) === null || serverClientCredentials() === null) {
+		return null;
+	}
 	const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(
 		encryptionKey,
 		nonempty(platformEnv?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS)
