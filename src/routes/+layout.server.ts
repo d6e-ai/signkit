@@ -3,12 +3,14 @@ import type { LayoutServerLoad } from './$types';
 import { resolveInstanceApplication } from '$lib/application/instance/instance-runtime';
 import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
 import type { InstanceCallerContext, InstanceMemberRole } from '$lib/ports/instance-store';
+import { isConsoleRedirectedPagePath } from '$lib/navigation/console-redirect-surface';
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
 import { isSettingsSurfacePath } from '$lib/navigation/settings-surface';
 import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
 import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
 import { isInvitationSurfacePath } from '$lib/navigation/invitation-surface';
 import { localizeHref } from '$lib/paraglide/runtime';
+import { resolveConsoleUrl } from '$lib/server/console-url';
 import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 
 /**
@@ -31,6 +33,14 @@ import { getRequestCallerContext } from '$lib/server/request-caller-membership';
  * so a just-logged-out caller lands on a public page with a Sign In action
  * instead of being bounced straight back through this same gate into another
  * OAuth round trip.
+ *
+ * A server listed in a d6e console (`SIGNKIT_CONSOLE_URL`) is operated there:
+ * its operator pages (see `isConsoleRedirectedPagePath`) redirect to the
+ * console before any sign-in, so a visitor never starts this server's OAuth
+ * round trip for them. Done here rather than in a hook so SvelteKit turns the
+ * redirect into its data-request form during client-side navigation too, for
+ * example after accepting an invitation by link. A standalone server (no
+ * console URL) keeps every page.
  */
 export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 	// Omitted rather than `{ email: null }`: the recipient surface has its own
@@ -39,6 +49,10 @@ export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
 	// `PageData` -- including recipient pages that have nothing to do with an
 	// authenticated email at all.
 	if (isRecipientSurfacePath(url.pathname)) return {};
+	if (isConsoleRedirectedPagePath(url.pathname)) {
+		const consoleUrl: string | null = resolveConsoleUrl(platform);
+		if (consoleUrl !== null) redirect(302, consoleUrl);
+	}
 	if (isSignedOutSurfacePath(url.pathname)) return {};
 	// Capture the fragment in the browser before starting OAuth. Acceptance
 	// itself still requires the authenticated, email-bound POST command.

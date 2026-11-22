@@ -1,5 +1,4 @@
-import { env } from '$env/dynamic/private';
-import { parseInstanceInvitationConsoleUrl } from '$lib/application/instance-invitations/instance-invitation-delivery-service';
+import { resolveConsoleUrl } from './console-url';
 import { serverClientCredentials, type ServerClientCredentials } from './d6e-auth';
 
 /**
@@ -89,10 +88,7 @@ export interface ConsoleInvitationNotesPort {
 }
 
 function consoleConfigured(context: ConsoleInvitationNoteContext): boolean {
-	const raw: string | undefined =
-		context.platform?.env?.SIGNKIT_CONSOLE_URL ?? env.SIGNKIT_CONSOLE_URL;
-	const trimmed: string = raw?.trim() ?? '';
-	return trimmed.length > 0 && parseInstanceInvitationConsoleUrl(trimmed) !== null;
+	return resolveConsoleUrl(context.platform) !== null;
 }
 
 function basicAuthorization(credentials: ServerClientCredentials): string {

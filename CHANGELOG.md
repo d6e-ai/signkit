@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Console CORS also exposes `retry-after` and `x-signkit-commit-sha`, so a d6e console can pace its retry after a void, reissue, or DOCX conversion and read which draft commit a DOCX export rendered. Allowed request headers and authorization are unchanged.
 - On a server listed in a d6e console (`SIGNKIT_CONSOLE_URL`), invitations send exactly one email: the invitation note names the mail language, and when D6E Auth answers `invitationEmail: "queued"` it emails the invitee a console link and SignKit leaves out its own mail. A failed note, `"skipped"`, or an older D6E Auth keeps SignKit's mail; a new invitation's own mail waits up to 60 seconds for that answer.
 
+- A server listed in a d6e console (`SIGNKIT_CONSOLE_URL`) redirects its own operator pages (dashboard, envelopes, settings, setup, signed-out) to the console. Recipient pages, invitation acceptance by link, sign-in and the API stay on the server, and standalone servers keep every page.
+
 ### Fixed
 
 - The contact API accepts a verified d6e-auth operator access token, as the documentation and OpenAPI already stated, so a d6e console can list, search, create, update, and delete the member's own contacts. API keys and every other bearer value are still refused.

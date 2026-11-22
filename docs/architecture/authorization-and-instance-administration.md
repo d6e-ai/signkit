@@ -121,8 +121,16 @@ the way to join without the link. Both endpoints use the same identity authoriza
 accept, so any operator credential accepted there is accepted here; API keys are rejected. System
 capabilities advertise both endpoints as `receivedInvitations`, so a client can detect support.
 
-When `SIGNKIT_CONSOLE_URL` is configured, this server is listed in a d6e console. Creating an
-invitation (or exactly replaying a still-pending one) then sends D6E Auth a note — the normalized
+When `SIGNKIT_CONSOLE_URL` is configured, this server is listed in a d6e console and is operated
+there. Its own operator pages (the dashboard, envelopes, settings, first-owner setup, and the
+signed-out page) answer a `302` to that URL before any sign-in, so a visitor never starts this
+server's OAuth round trip for them. The root layout does it, so SvelteKit also returns the redirect
+for client-side navigation. The recipient pages (`/s`, `/sign`, `/c`), invitation acceptance by link
+(`/invitations/accept` and the `/auth/*` sign-in it uses), and the whole API are unchanged. A
+standalone server, without a console URL or with an unacceptable one, keeps every page.
+
+On such a server, creating an
+invitation (or exactly replaying a still-pending one) also sends D6E Auth a note — the normalized
 invited email, the expiry, and the inviter's subject — authenticated with this server's OAuth
 client credentials, so the console can show the server to the invitee before they join. The revoke
 endpoint withdraws the note; acceptance does not, because the console's own acceptance consumes it.
