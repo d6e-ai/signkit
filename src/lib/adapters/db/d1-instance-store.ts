@@ -31,6 +31,9 @@ import {
 	type ReceivedInstanceInvitation,
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult,
+	type SettleInstanceInvitationDeliveryCommand,
+	type SettleInstanceInvitationDeliveryStoreResult,
+	CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
 	type SetInstanceMemberStatusCommand,
@@ -556,7 +559,7 @@ export class D1InstanceStore implements InstanceStore {
 				command.sealedDeliveryPayload,
 				command.deliverySealingKeyId,
 				command.sealedDeliveryPayloadSha256,
-				command.createdAt,
+				command.deliveryAvailableAt ?? command.createdAt,
 				command.createdAt,
 				command.createdAt
 			);
@@ -899,6 +902,39 @@ export class D1InstanceStore implements InstanceStore {
 		}
 		const rows: ReceivedInvitationRow[] = (results[1]?.results ?? []) as ReceivedInvitationRow[];
 		return { outcome: 'listed', items: rows.map(receivedFromRow) };
+	}
+
+	async settleInstanceInvitationDelivery(
+		command: SettleInstanceInvitationDeliveryCommand
+	): Promise<SettleInstanceInvitationDeliveryStoreResult> {
+		if (command.handoff === 'console') {
+			const handedOff: D1Result = await this.#database
+				.prepare(
+					`UPDATE instance_invitation_delivery_outbox
+					 SET status = 'delivered', retryable = 0, sealed_payload = NULL,
+					     delivered_at = ?, provider_message_id = ?, last_error = NULL, updated_at = ?
+					 WHERE invitation_id = ?
+					   AND (status = 'pending' OR (status = 'failed' AND retryable = 1))`
+				)
+				.bind(
+					command.settledAt,
+					CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID,
+					command.settledAt,
+					command.invitationId
+				)
+				.run();
+			return changeCount(handedOff) > 0 ? { outcome: 'handed_off' } : { outcome: 'unchanged' };
+		}
+		// Lexical comparison: both sides are canonical UTC millisecond ISO strings.
+		const released: D1Result = await this.#database
+			.prepare(
+				`UPDATE instance_invitation_delivery_outbox
+				 SET available_at = ?, updated_at = ?
+				 WHERE invitation_id = ? AND status = 'pending' AND available_at > ?`
+			)
+			.bind(command.settledAt, command.settledAt, command.invitationId, command.settledAt)
+			.run();
+		return changeCount(released) > 0 ? { outcome: 'released' } : { outcome: 'unchanged' };
 	}
 
 	async revokeInstanceInvitation(

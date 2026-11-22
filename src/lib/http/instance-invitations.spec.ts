@@ -21,9 +21,11 @@ import {
 	type RevokeInstanceInvitationResult
 } from '$lib/application/instance-invitations/instance-invitation-service';
 import type { InstanceInvitationMetadata, InstanceMemberMetadata } from '$lib/ports/instance-store';
-import type {
-	ConsoleInvitationNoteOutcome,
-	ConsoleInvitationNotesPort
+import {
+	CONSOLE_NOTE_DELIVERY_HOLD_MS,
+	type ConsoleInvitationNoteOutcome,
+	type ConsoleInvitationNoteResult,
+	type ConsoleInvitationNotesPort
 } from '$lib/server/console-invitation-notes';
 import {
 	identityOnlyLocals,
@@ -129,7 +131,8 @@ function application(): InstanceInvitationApplicationPort {
 		listReceived,
 		acceptReceived,
 		revoke,
-		revokeInstanceInvitation: revoke
+		revokeInstanceInvitation: revoke,
+		settleDelivery: vi.fn(async () => ({ outcome: 'released' as const }))
 	};
 }
 
@@ -1263,12 +1266,20 @@ describe('instance invitation HTTP handlers', () => {
 	});
 
 	describe('console invitation notes', () => {
-		function notes(): ConsoleInvitationNotesPort & {
+		function notes(
+			invitationEmail: ConsoleInvitationNoteResult['invitationEmail'] = null,
+			enabled: boolean = true
+		): ConsoleInvitationNotesPort & {
+			enabled: ReturnType<typeof vi.fn>;
 			note: ReturnType<typeof vi.fn>;
 			forget: ReturnType<typeof vi.fn>;
 		} {
 			return {
-				note: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => 'sent'),
+				enabled: vi.fn((): boolean => enabled),
+				note: vi.fn(async (): Promise<ConsoleInvitationNoteResult> => ({
+					outcome: 'sent',
+					invitationEmail
+				})),
 				forget: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => 'sent')
 			};
 		}
@@ -1295,10 +1306,100 @@ describe('instance invitation HTTP handlers', () => {
 					invitationId: INVITATION_ID,
 					recipientEmail: 'invitee@example.com',
 					expiresAt: invitation.expiresAt,
-					inviterSubject: 'user-1'
+					inviterSubject: 'user-1',
+					locale: 'ja'
 				},
 				expect.objectContaining({})
 			);
+		});
+
+		it('names the invitation locale in the note', async () => {
+			const app = application();
+			const port = notes();
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				event({
+					pathname: CREATE_PATH,
+					method: 'POST',
+					body: validCreateBody({ locale: 'en' }),
+					headers: { 'idempotency-key': 'create-en' }
+				})
+			);
+			expect(port.note).toHaveBeenCalledWith(
+				expect.objectContaining({ locale: 'en' }),
+				expect.objectContaining({})
+			);
+		});
+
+		it('holds the own mail while notes are on and hands it to D6E Auth after "queued"', async () => {
+			const app = application();
+			const port = notes('queued');
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(201);
+			expect(app.create).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ deliveryHoldMs: CONSOLE_NOTE_DELIVERY_HOLD_MS })
+			);
+			expect(app.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'console');
+		});
+
+		it('releases the own mail when D6E Auth does not send its email', async () => {
+			for (const invitationEmail of ['skipped', null] as const) {
+				const app = application();
+				const port = notes(invitationEmail);
+				await invoke(
+					createInstanceInvitationHttpHandlers(() => app, null, port).create,
+					createEvent()
+				);
+				expect(app.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'self');
+			}
+
+			const failedApp = application();
+			const failedPort = notes('queued');
+			failedPort.note.mockRejectedValueOnce(new Error('D6E Auth down'));
+			await invoke(
+				createInstanceInvitationHttpHandlers(() => failedApp, null, failedPort).create,
+				createEvent()
+			);
+			expect(failedApp.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'self');
+		});
+
+		it('neither holds nor settles the own mail when notes are off', async () => {
+			const app = application();
+			const port = notes(null, false);
+			const response = await invoke(
+				createInstanceInvitationHttpHandlers(() => app, null, port).create,
+				createEvent()
+			);
+			expect(response.status).toBe(201);
+			expect(app.create).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.not.objectContaining({ deliveryHoldMs: expect.anything() })
+			);
+			expect(app.settleDelivery).not.toHaveBeenCalled();
+		});
+
+		it('keeps the create response when settling the own mail fails', async () => {
+			const app = application();
+			(app.settleDelivery as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+				new Error('database down')
+			);
+			const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+			try {
+				const response = await invoke(
+					createInstanceInvitationHttpHandlers(() => app, null, notes('queued')).create,
+					createEvent()
+				);
+				expect(response.status).toBe(201);
+				expect(consoleErrorSpy).toHaveBeenCalledWith(
+					expect.stringContaining('instance_invitation_delivery_settle_failed')
+				);
+			} finally {
+				consoleErrorSpy.mockRestore();
+			}
 		});
 
 		it('re-notes an exact replay of a pending invitation but not of a finished one', async () => {
@@ -1347,10 +1448,10 @@ describe('instance invitation HTTP handlers', () => {
 			const app = application();
 			const port = notes();
 			let noted: boolean = false;
-			port.note.mockImplementationOnce(async (): Promise<ConsoleInvitationNoteOutcome> => {
+			port.note.mockImplementationOnce(async (): Promise<ConsoleInvitationNoteResult> => {
 				await new Promise((resolve) => setTimeout(resolve, 20));
 				noted = true;
-				return 'sent';
+				return { outcome: 'sent', invitationEmail: null };
 			});
 			const waitUntil = vi.fn();
 			const requestEvent: RequestEvent = createEvent();

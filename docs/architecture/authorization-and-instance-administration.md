@@ -135,6 +135,19 @@ revive a revoked invitation. Revocations cascaded by member
 suspension or demotion do not withdraw notes; such notes lapse at their expiry, and accepting
 through the console then meets the same opaque failure.
 
+The note also names the invitation mail's language (`locale`: `ja-JP` or `en-US`). D6E Auth emails
+the invitee a link to this server in the console the first time it stores a note for an invitation
+and address, and answers `invitationEmail: "queued"`; otherwise `"skipped"` (a repeated note, or its
+rate limit). So that exactly one invitation email goes out, a create on a server with notes enabled
+stores its own mail with `available_at` 60 seconds ahead. After the note answers, `"queued"` closes
+this server's mail as handed off (status `delivered`, provider id
+`d6e-auth:console-invitation-email`, sealed payload erased); `"skipped"`, a missing field (an older
+D6E Auth), or a failed note releases it at once. A mail already being sent or sent is never touched.
+If the request ends before the decision, the hold lapses and this server sends its mail. An exact
+replay re-sends the note and applies its answer the same way, which can at worst add D6E Auth's
+email after this server's when the first note had failed. There is no separate resend of an
+instance invitation; a new invitation has a new id and D6E Auth emails for it again.
+
 The normal invitation list requests `view=active`: pending invitations whose expiry is after server
 now, filtered before keyset pagination and its limit on both supported databases. Accepted users
 are shown through the member list; revoked, expired and accepted invitations do not appear in the

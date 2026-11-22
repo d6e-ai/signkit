@@ -130,7 +130,35 @@ export interface CreateInstanceInvitationCommand {
 	 * supply it; an invitation without one is accepted only through its link.
 	 */
 	recipientLookup?: string;
+	/**
+	 * When the invitation mail may first be sent; `createdAt` when omitted. A
+	 * server listed in a console holds it briefly so the console note can hand
+	 * the mail to D6E Auth (see {@link SettleInstanceInvitationDeliveryCommand}).
+	 */
+	deliveryAvailableAt?: string;
 }
+
+/**
+ * Decides a new invitation's own mail after the console note answered.
+ *
+ * - `console`: D6E Auth emails the invitee, so this server's mail is closed as
+ *   handed off (recorded as delivered with provider id
+ *   {@link CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID}, its sealed payload erased). Only
+ *   a mail not yet sent or being sent (`pending`, or `failed` and retryable)
+ *   is closed; a delivered or in-flight mail is left alone.
+ * - `self`: this server sends its mail; a hold that has not lapsed yet is
+ *   released so the next drain sends it.
+ */
+export interface SettleInstanceInvitationDeliveryCommand {
+	invitationId: string;
+	handoff: 'console' | 'self';
+	settledAt: string;
+}
+
+export type SettleInstanceInvitationDeliveryStoreResult =
+	{ outcome: 'handed_off' } | { outcome: 'released' } | { outcome: 'unchanged' };
+
+export const CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID: string = 'd6e-auth:console-invitation-email';
 
 /**
  * Provider-independent create outcomes.
@@ -551,6 +579,9 @@ export interface InstanceStore {
 	revokeInstanceInvitation(
 		command: RevokeInstanceInvitationCommand
 	): Promise<RevokeInstanceInvitationStoreResult>;
+	settleInstanceInvitationDelivery(
+		command: SettleInstanceInvitationDeliveryCommand
+	): Promise<SettleInstanceInvitationDeliveryStoreResult>;
 	listInstanceMembers(
 		actor: InstanceActor,
 		query: InstanceMemberListQuery

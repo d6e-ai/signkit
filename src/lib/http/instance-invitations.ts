@@ -7,6 +7,7 @@ import {
 	type CreateInstanceInvitationResult,
 	type InstanceInvitationActor,
 	type InstanceInvitationApplicationPort,
+	type InstanceInvitationDeliveryHandoff,
 	type ListInstanceInvitationsResult,
 	type ListReceivedInstanceInvitationsResult,
 	type RevokeInstanceInvitationResult
@@ -26,7 +27,9 @@ import {
 import {
 	consoleInvitationNotes,
 	runAfterCommand,
-	type ConsoleInvitationNotesPort
+	type ConsoleInvitationNoteResult,
+	type ConsoleInvitationNotesPort,
+	CONSOLE_NOTE_DELIVERY_HOLD_MS
 } from '$lib/server/console-invitation-notes';
 import {
 	bestEffortCaptureMemberDisplay,
@@ -369,6 +372,29 @@ function actorOf(authorized: AuthorizedIdentityActor): InstanceInvitationActor {
 	return { id: authorized.id };
 }
 
+/**
+ * Hands the invitation mail to D6E Auth (`console`) or releases this server's
+ * own mail (`self`). Never fails the create: if this write is lost the hold
+ * lapses and this server sends its mail, which at worst duplicates D6E Auth's.
+ */
+async function settleHeldDelivery(
+	application: InstanceInvitationApplicationPort,
+	invitationId: string,
+	handoff: InstanceInvitationDeliveryHandoff
+): Promise<void> {
+	try {
+		await application.settleDelivery(invitationId, handoff);
+	} catch (error: unknown) {
+		console.error(
+			JSON.stringify({
+				event: 'instance_invitation_delivery_settle_failed',
+				handoff,
+				message: operationErrorName(error)
+			})
+		);
+	}
+}
+
 export function createInstanceInvitationHttpHandlers(
 	resolveApplication: InstanceInvitationApplicationResolver,
 	resolveDisplay: InstanceDisplayApplicationResolver | null = null,
@@ -418,11 +444,16 @@ export function createInstanceInvitationHttpHandlers(
 		if (application instanceof Response) return application;
 
 		try {
+			// A server listed in a console holds the new invitation's own mail
+			// until the note below answers, so D6E Auth can take it over.
+			const notesEnabled: boolean = consoleNotes.enabled({ platform });
+			const locale: 'en' | 'ja' = parsed.data.locale ?? 'ja';
 			const result: CreateInstanceInvitationResult = await application.create(actorOf(authorized), {
 				idempotencyKey: idempotencyKey.data,
 				email: parsed.data.email,
 				role: parsed.data.role,
-				locale: parsed.data.locale
+				locale: parsed.data.locale,
+				...(notesEnabled ? { deliveryHoldMs: CONSOLE_NOTE_DELIVERY_HOLD_MS } : {})
 			});
 			if (
 				(result.outcome === 'created' || result.outcome === 'replayed') &&
@@ -434,17 +465,25 @@ export function createInstanceInvitationHttpHandlers(
 				// note withdrawal) issued from it cannot overtake this note and
 				// have a late PUT write a revoked invitation back.
 				const invitation = result.invitation;
-				await consoleNotes
+				const noted: ConsoleInvitationNoteResult = await consoleNotes
 					.note(
 						{
 							invitationId: invitation.id,
 							recipientEmail: normalizeInstanceInvitationEmail(parsed.data.email),
 							expiresAt: invitation.expiresAt,
-							inviterSubject: authorized.id
+							inviterSubject: authorized.id,
+							locale
 						},
 						{ platform }
 					)
-					.catch((): void => undefined);
+					.catch((): ConsoleInvitationNoteResult => ({ outcome: 'failed', invitationEmail: null }));
+				if (notesEnabled) {
+					await settleHeldDelivery(
+						application,
+						invitation.id,
+						noted.invitationEmail === 'queued' ? 'console' : 'self'
+					);
+				}
 			}
 			return createResponse(result, url.pathname);
 		} catch (error: unknown) {

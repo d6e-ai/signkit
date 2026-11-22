@@ -37,6 +37,7 @@ import type {
 	SetInstanceMemberStatusCommand,
 	SetInstanceMemberStatusStoreResult
 } from '$lib/ports/instance-store';
+import { CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID } from '$lib/ports/instance-store';
 import { PostgresInstanceStore } from './postgres-instance-store';
 
 const TEST_DATABASE_URL: string | undefined = process.env.POSTGRES_TEST_URL?.trim() || undefined;
@@ -2580,6 +2581,106 @@ postgresDescribe('PostgresInstanceStore integration', () => {
 		}
 	});
 
+	describe('settleInstanceInvitationDelivery', () => {
+		const HELD_UNTIL: string = '2026-09-12T12:01:00.000Z';
+		const SETTLED_AT: string = '2026-09-12T12:00:03.000Z';
+
+		async function deliveryRow(): Promise<Record<string, unknown>> {
+			const rows = await database()<Record<string, unknown>[]>`
+				SELECT status, retryable, sealed_payload,
+				       to_char(available_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS available_at,
+				       to_char(delivered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS delivered_at,
+				       provider_message_id, last_error
+				FROM instance_invitation_delivery_outbox WHERE invitation_id = ${INVITATION_ID}
+			`;
+			return rows[0];
+		}
+
+		it('stores a held delivery and releases it once', async (): Promise<void> => {
+			await insertMember(OWNER_ID, 'owner');
+			await store().createInstanceInvitation(createCommand({ deliveryAvailableAt: HELD_UNTIL }));
+			expect((await deliveryRow()).available_at).toBe(HELD_UNTIL);
+			expect(
+				await store().settleInstanceInvitationDelivery({
+					invitationId: INVITATION_ID,
+					handoff: 'self',
+					settledAt: SETTLED_AT
+				})
+			).toEqual({ outcome: 'released' });
+			expect(await deliveryRow()).toMatchObject({
+				status: 'pending',
+				available_at: SETTLED_AT,
+				sealed_payload: 'skiod1_test'
+			});
+			expect(
+				await store().settleInstanceInvitationDelivery({
+					invitationId: INVITATION_ID,
+					handoff: 'self',
+					settledAt: SETTLED_AT
+				})
+			).toEqual({ outcome: 'unchanged' });
+		});
+
+		it('hands a pending or retryable failed delivery to the console', async (): Promise<void> => {
+			for (const failed of [false, true]) {
+				await database().unsafe('TRUNCATE instance_member CASCADE');
+				await insertMember(OWNER_ID, 'owner');
+				await store().createInstanceInvitation(createCommand({ deliveryAvailableAt: HELD_UNTIL }));
+				if (failed) {
+					await database()`
+						UPDATE instance_invitation_delivery_outbox
+						SET status = 'failed', retryable = true, attempts = 1, last_error = 'mail_down'
+					`;
+				}
+				expect(
+					await store().settleInstanceInvitationDelivery({
+						invitationId: INVITATION_ID,
+						handoff: 'console',
+						settledAt: SETTLED_AT
+					})
+				).toEqual({ outcome: 'handed_off' });
+				expect(await deliveryRow()).toEqual({
+					status: 'delivered',
+					retryable: false,
+					sealed_payload: null,
+					available_at: HELD_UNTIL,
+					delivered_at: SETTLED_AT,
+					provider_message_id: CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID,
+					last_error: null
+				});
+			}
+		});
+
+		it('leaves a delivery that is being sent or already sent alone', async (): Promise<void> => {
+			for (const state of ['processing', 'delivered'] as const) {
+				await database().unsafe('TRUNCATE instance_member CASCADE');
+				await insertMember(OWNER_ID, 'owner');
+				await store().createInstanceInvitation(createCommand());
+				if (state === 'processing') {
+					await database()`
+						UPDATE instance_invitation_delivery_outbox
+						SET status = 'processing', claim_token = 'claim', locked_at = ${CREATED_AT}::timestamptz
+					`;
+				} else {
+					await database()`
+						UPDATE instance_invitation_delivery_outbox
+						SET status = 'delivered', retryable = false, sealed_payload = NULL,
+						    delivered_at = ${CREATED_AT}::timestamptz, provider_message_id = 'mail-1'
+					`;
+				}
+				const before: Record<string, unknown> = await deliveryRow();
+				expect(
+					await store().settleInstanceInvitationDelivery({
+						invitationId: INVITATION_ID,
+						handoff: 'console',
+						settledAt: SETTLED_AT
+					})
+				).toEqual({ outcome: 'unchanged' });
+				expect(await deliveryRow()).toEqual(before);
+			}
+		});
+	});
+
 	describe('acceptance without the link (recipient lookup)', () => {
 		const LOOKUP: string = '7'.repeat(64);
 		const PREVIOUS_LOOKUP: string = '8'.repeat(64);
@@ -2827,6 +2928,7 @@ function synchronizeBootstrap(delegates: readonly InstanceStore[]): readonly Ins
 		acceptInstanceInvitation: delegate.acceptInstanceInvitation.bind(delegate),
 		listReceivedInstanceInvitations: delegate.listReceivedInstanceInvitations.bind(delegate),
 		revokeInstanceInvitation: delegate.revokeInstanceInvitation.bind(delegate),
+		settleInstanceInvitationDelivery: delegate.settleInstanceInvitationDelivery.bind(delegate),
 		listInstanceMembers: delegate.listInstanceMembers.bind(delegate),
 		setInstanceMemberRole: delegate.setInstanceMemberRole.bind(delegate),
 		setInstanceMemberStatus: delegate.setInstanceMemberStatus.bind(delegate),
