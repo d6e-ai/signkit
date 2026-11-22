@@ -21,8 +21,6 @@ import {
 } from '$lib/http/console-cors';
 import {
 	D6eAuthRejectedError,
-	refresh,
-	verifyAccessToken,
 	verifyBearerAccessToken,
 	type VerifiedBearerAccessToken,
 	type VerifiedPrincipal
@@ -31,13 +29,6 @@ import type { ApiKeyAuthenticationPort } from '$lib/application/api-keys/api-key
 import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 import { bestEffortCaptureMemberDisplay } from '$lib/server/instance-display-capture';
 import { localePreferenceRedirect } from '$lib/server/locale-redirect';
-import {
-	SESSION_COOKIE,
-	SESSION_COOKIE_OPTIONS,
-	isExpiring,
-	seal,
-	unseal
-} from '$lib/server/session';
 
 type InstanceMembership = NonNullable<App.Locals['instanceMembership']>;
 
@@ -155,22 +146,19 @@ export const handleUnknownApiRoute: Handle = ({ event, resolve }) => {
  *   added tomorrow is closed to keys until someone opens it deliberately;
  * - the *presence* of an `Authorization` header selects bearer mode, not its
  *   validity. A `token` of `null` still means bearer mode, which is what makes a
- *   malformed or foreign credential fail closed instead of falling back to a
- *   cookie session that happened to accompany it.
+ *   malformed or foreign credential fail closed instead of being ignored.
  */
 export function resolveApiKeyBearerMode(
 	pathname: string,
 	authorization: string | null
-): { mode: 'cookie' } | { mode: 'bearer'; token: string | null } | { mode: 'rejected' } {
+): { mode: 'none' } | { mode: 'bearer'; token: string | null } | { mode: 'rejected' } {
 	// Management surfaces are checked first. A well-formed API key there is an
-	// error, not something to ignore: ignoring it would let the accompanying
-	// cookie authorize a request an API key must never be able to reach, so it is
-	// refused outright and the cookie is suppressed with it.
+	// error, not something to ignore, so it is refused outright.
 	if (isApiKeyRejectedPath(pathname) && parseBearerApiKey(authorization) !== null) {
 		return { mode: 'rejected' };
 	}
-	if (!isApiKeyAuthenticatedPath(pathname)) return { mode: 'cookie' };
-	if (!hasAuthorizationHeader(authorization)) return { mode: 'cookie' };
+	if (!isApiKeyAuthenticatedPath(pathname)) return { mode: 'none' };
+	if (!hasAuthorizationHeader(authorization)) return { mode: 'none' };
 	return { mode: 'bearer', token: parseBearerApiKey(authorization) };
 }
 
@@ -197,22 +185,7 @@ export function resolveBearerMode(pathname: string, authorization: string | null
 }
 
 /**
- * Whether the cookie session must be left unresolved for this request.
- *
- * True for every bearer-mode state, including the failing ones. Resolving a
- * cookie alongside a presented bearer would reintroduce exactly the composition
- * this design forbids: an attacker-supplied bearer riding a victim's session.
- */
-export function isCookieSessionSuppressed(
-	authentication: App.Locals['apiKeyAuthentication'],
-	accessToken: App.Locals['accessTokenAuthentication'] = { state: 'absent' }
-): boolean {
-	return authentication.state !== 'absent' || accessToken.state !== 'absent';
-}
-
-/**
- * Resolves a `signkit_` bearer token into an instance authority, before any
- * cookie session is considered. It also selects access-token bearer mode for a
+ * Resolves a `signkit_` bearer token into an instance authority. It also selects access-token bearer mode for a
  * d6e-auth access token on the operator API surface (see
  * {@link resolveBearerMode}); that token is verified by {@link handleSession}.
  *
@@ -223,16 +196,14 @@ export function isCookieSessionSuppressed(
  *    completion artifacts, and the system drains never resolve a key, so a key
  *    presented there cannot authenticate regardless of endpoint behaviour.
  * 2. The mere presence of an `Authorization` header -- not its validity --
- *    selects bearer mode. Anything other than `absent` makes `handleSession`
- *    skip the cookie entirely, so a malformed bearer, a foreign credential
- *    family, or an unauthorized key can never fall back to a browser session
- *    that happened to ride along on the same request.
+ *    selects bearer mode, so a malformed bearer, a foreign credential family,
+ *    or an unauthorized key fails closed instead of being treated as absent.
  * 3. Authentication is live key plus active owner plus scopes only, answered
  *    from one durable snapshot. No tenant selector participates.
  *
  * A store that cannot be resolved is `unavailable`, never `absent`: a deployment
  * without a configured database must fail closed rather than silently demote
- * every agent request to anonymous and hand it to the cookie path.
+ * every agent request to anonymous.
  */
 export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => {
 	event.locals.apiKeyAuthentication = { state: 'absent' };
@@ -241,11 +212,11 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 		event.url.pathname,
 		event.request.headers.get('authorization')
 	);
-	if (bearer.mode === 'cookie') return resolve(event);
+	if (bearer.mode === 'none') return resolve(event);
 	if (bearer.mode === 'access_token') {
 		// No API key was presented, so `apiKeyAuthentication` stays `absent` and
 		// the authorization helpers treat the verified identity as a human
-		// session. `handleSession` verifies the token and never reads the cookie.
+		// session. `handleSession` verifies the token.
 		event.locals.accessTokenAuthentication = { state: 'presented', token: bearer.token };
 		return resolve(event);
 	}
@@ -256,8 +227,8 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 		return resolve(event);
 	}
 
-	// From here on the request is in bearer mode and can no longer use a cookie,
-	// whatever the header turned out to contain.
+	// From here on the request is in bearer mode, whatever the header turned out
+	// to contain.
 	const token: string | null = bearer.token;
 	if (token === null) {
 		// A non-`signkit_` bearer -- a recipient capability, a completion grant, an
@@ -308,8 +279,7 @@ export const handleApiKeyAuthentication: Handle = async ({ event, resolve }) => 
 
 /**
  * Resolves the local instance membership for a verified d6e-auth identity and
- * records it in `locals`, identically for the cookie session and an
- * access-token bearer. Returns the membership only when it is active.
+ * records it in `locals` for an access-token bearer. Returns the membership only when it is active.
  *
  * d6e-auth proves identity only. The active local instance member is the sole
  * operator authority, resolved here through the same instance application
@@ -353,9 +323,9 @@ async function resolveMemberIdentity(
 /**
  * The only request on which an access-token bearer records the member display
  * snapshot from its own verified claims: the self-profile read a console makes
- * when it opens a deployment. Unlike the cookie session, a bearer request has
- * no per-observation marker that could suppress a sealing and database write on
- * every later call, so capture is tied to this one entry read (bootstrap and
+ * when it opens a deployment. A bearer request has no per-observation marker
+ * that could suppress a database write on every later call, so capture is tied
+ * to this one entry read (bootstrap and
  * invitation acceptance still capture immediately on their own).
  */
 function isAccessTokenDisplayCaptureRequest(event: RequestEvent): boolean {
@@ -364,8 +334,7 @@ function isAccessTokenDisplayCaptureRequest(event: RequestEvent): boolean {
 
 /**
  * Access-token bearer mode: the identity comes from the presented d6e-auth
- * access token alone. The cookie jar is neither read nor written -- not even
- * cleared on rejection -- because this request never had a cookie authority.
+ * access token alone.
  */
 async function resolveAccessTokenSession(event: RequestEvent, token: string): Promise<void> {
 	let verified: VerifiedBearerAccessToken;
@@ -421,6 +390,11 @@ async function resolveAccessTokenSession(event: RequestEvent, token: string): Pr
 	}
 }
 
+/**
+ * Resolves the operator identity. The only operator credential besides an API
+ * key is a d6e-auth access token presented by the console as a bearer; this
+ * server keeps no operator cookie session and runs no sign-in of its own.
+ */
 export const handleSession: Handle = async ({ event, resolve }) => {
 	event.locals.requestCallerContexts = undefined;
 	event.locals.principal = null;
@@ -432,88 +406,7 @@ export const handleSession: Handle = async ({ event, resolve }) => {
 		event.locals.accessTokenAuthentication;
 	if (accessToken.state === 'presented') {
 		await resolveAccessTokenSession(event, accessToken.token);
-		return resolve(event);
 	}
-	// Bearer mode is exclusive: once an `Authorization` header has been presented
-	// on an API key surface, or an access token on the operator surface, this
-	// request has no cookie authority at all.
-	if (isCookieSessionSuppressed(event.locals.apiKeyAuthentication, accessToken)) {
-		return resolve(event);
-	}
-
-	const cookie = event.cookies.get(SESSION_COOKIE);
-	if (!cookie) return resolve(event);
-	const unsealed = await unseal(cookie);
-	if (!unsealed) {
-		event.cookies.delete(SESSION_COOKIE, { path: '/' });
-		return resolve(event);
-	}
-	let session = unsealed.session;
-	// Cookie was sealed under a legacy format or the previous key: migrate it
-	// onto the active key now so it keeps working after rotation completes,
-	// without forcing this operator to sign in again.
-	if (unsealed.resealedCookie) {
-		event.cookies.set(SESSION_COOKIE, unsealed.resealedCookie, {
-			...SESSION_COOKIE_OPTIONS,
-			secure: event.url.protocol === 'https:'
-		});
-	}
-
-	try {
-		if (isExpiring(session) && session.refreshToken) {
-			const renewed = await refresh(session.refreshToken);
-			session = {
-				accessToken: renewed.accessToken,
-				refreshToken: renewed.refreshToken ?? session.refreshToken,
-				expiresAt: Math.floor(Date.now() / 1000) + renewed.expiresIn,
-				principal: renewed.principal,
-				profileObservedAt: new Date().toISOString()
-			};
-			event.cookies.set(SESSION_COOKIE, await seal(session), {
-				...SESSION_COOKIE_OPTIONS,
-				secure: event.url.protocol === 'https:'
-			});
-		} else {
-			session.principal = await verifyAccessToken(session.accessToken);
-		}
-
-		const active: InstanceMembership | null = await resolveMemberIdentity(event, session.principal);
-		if (active !== null) {
-			try {
-				session =
-					(await bestEffortCaptureMemberDisplay({
-						cookies: event.cookies,
-						url: event.url,
-						platform: event.platform,
-						session,
-						memberUserId: active.userId,
-						principal: session.principal
-					})) ?? session;
-			} catch {
-				// Display capture never fails identity resolution.
-			}
-		}
-	} catch (error) {
-		console.error(
-			JSON.stringify({
-				event: 'identity_resolution_failed',
-				message: error instanceof Error ? error.message : 'unknown error'
-			})
-		);
-		if (error instanceof D6eAuthRejectedError) {
-			// The provider explicitly rejected this session -- an expired or
-			// revoked refresh/access token -- rather than being unreachable.
-			// Clearing the cookie and leaving the anonymous defaults set above in
-			// place lets the root layout gate redirect to /auth/login normally,
-			// instead of trapping the caller behind a 503 that never recovers
-			// until they clear cookies by hand.
-			event.cookies.delete(SESSION_COOKIE, { path: '/' });
-			event.locals.identityState = 'anonymous';
-		} else {
-			event.locals.identityState = 'unavailable';
-		}
-	}
-
 	return resolve(event);
 };
 

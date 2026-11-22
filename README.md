@@ -5,7 +5,9 @@ Markdown or PDF documents, send them for review and signature, and retain the ex
 audit evidence.
 
 - Draft revisions backed by Git, with multiple ordered documents per envelope.
-- A browser interface, versioned HTTP API, and first-party Rust CLI.
+- Operated from the d6e console (www.d6e.ai/signkit/console) over a versioned HTTP API, with a
+  first-party Rust CLI for automation. The server itself renders only the recipient signing and
+  completed-document pages.
 - Node/Docker with PostgreSQL and S3-compatible storage, or Cloudflare Workers with D1 and R2.
   Vercel is build-tested but not supported for production.
 
@@ -25,7 +27,8 @@ cp .env.example .env
 pnpm run dev
 ```
 
-Configure authentication, encryption keys, database, and storage before using the application. See
+Configure authentication, the d6e console (`SIGNKIT_CONSOLE_URL`, `SIGNKIT_CONSOLE_ORIGINS`),
+encryption keys, database, and storage before using the application. See
 [development setup](docs/development.md) for requirements and tests.
 
 ## Use with an agent

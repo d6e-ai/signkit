@@ -2,7 +2,7 @@
 
 The provider and validator transports, durable job store, runtime-neutral orchestration, atomic
 D1/PostgreSQL publication, fail-closed Node/Cloudflare runtime configuration, protected scheduled
-drain, explicit request/status/download API, Rust CLI commands, and operator UI are implemented. The
+drain, explicit request/status/download API, and Rust CLI commands are implemented; operators use them from the d6e console. The
 drain processes only jobs created by the explicit request transaction.
 
 ## Boundary and terminology

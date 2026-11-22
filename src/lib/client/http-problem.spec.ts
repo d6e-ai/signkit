@@ -6,9 +6,6 @@ import {
 	requestJson,
 	type Problem
 } from './http-problem';
-import { createEnvelopesClient, EnvelopesApiError } from './envelopes';
-import { createContactsClient, ContactsApiError } from './contacts';
-import { createInstanceManagementClient, InstanceManagementApiError } from './instance-management';
 
 interface ProblemFixture {
 	name: string;
@@ -132,38 +129,5 @@ describe('shared browser problem transport', () => {
 		expect(
 			isReplayedResponse(new Response(null, { headers: { 'idempotency-replayed': value } }))
 		).toBe(false);
-	});
-
-	it.each([
-		{
-			name: 'envelopes',
-			error: EnvelopesApiError,
-			request: (fetch: typeof globalThis.fetch) => createEnvelopesClient({ fetch }).list()
-		},
-		{
-			name: 'contacts',
-			error: ContactsApiError,
-			request: (fetch: typeof globalThis.fetch) => createContactsClient({ fetch }).list()
-		},
-		{
-			name: 'instance',
-			error: InstanceManagementApiError,
-			request: (fetch: typeof globalThis.fetch) =>
-				createInstanceManagementClient({ fetch }).getCurrentMember()
-		}
-	])('retains the $name error subclass and replay state', async ({ error, request }) => {
-		const fixture = fixtures[0];
-		const fetch = vi.fn<typeof globalThis.fetch>(
-			async () =>
-				new Response(JSON.stringify(fixture.body), {
-					status: 422,
-					headers: { 'content-type': 'application/problem+json', 'idempotency-replayed': 'true' }
-				})
-		);
-		const result: unknown = await request(fetch).catch((cause: unknown) => cause);
-		expect(result).toBeInstanceOf(error);
-		expect(result).toMatchObject({ ...fixture.expected, replayed: true });
-		expect(fetch).toHaveBeenCalledOnce();
-		expect(fetch.mock.calls[0][1]?.credentials).toBe('same-origin');
 	});
 });

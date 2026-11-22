@@ -1,28 +1,13 @@
 import { resolveInstanceDisplayApplication } from '$lib/application/instance-display/instance-display-runtime';
 import type { VerifiedPrincipal } from './d6e-auth';
-import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, seal, unseal, type Session } from './session';
 
 export const INSTANCE_DISPLAY_CAPTURE_FAILED_CODE: string = 'instance_display_capture_failed';
 
-interface CaptureCookies {
-	get(name: string): string | undefined;
-	set(
-		name: string,
-		value: string,
-		opts: Omit<typeof SESSION_COOKIE_OPTIONS, 'secure'> & { secure: boolean }
-	): void;
-}
-
 export interface CaptureMemberDisplayRequest {
-	cookies?: CaptureCookies;
-	url?: URL;
 	platform?: Readonly<App.Platform>;
-	session?: Session;
 	/**
-	 * The profile observation of a verified d6e-auth access-token bearer (its
-	 * `iat`). When set, the observation comes from the token, the cookie jar is
-	 * neither read nor written, and nothing is returned: a bearer request has no
-	 * session to update.
+	 * The profile observation of the verified d6e-auth access token (its
+	 * `iat`). Without one there is nothing to capture.
 	 */
 	accessTokenObservedAt?: string;
 	memberUserId: string;
@@ -31,17 +16,13 @@ export interface CaptureMemberDisplayRequest {
 
 /**
  * Where an immediate capture (bootstrap, invitation acceptance) takes its
- * profile observation from: the verified access-token bearer when the request
- * is in that mode, otherwise the operator cookie session. A bearer request never
- * hands over the cookie jar, so a cookie that happens to accompany it can
- * neither supply the observation nor receive the stored marker.
+ * profile observation from: the verified access-token bearer. Any other
+ * request (an API key, a failed or absent token) supplies none.
  */
 export function displayCaptureSource(
-	locals: App.Locals,
-	cookies: CaptureCookies
-): Pick<CaptureMemberDisplayRequest, 'cookies' | 'accessTokenObservedAt'> {
+	locals: App.Locals
+): Pick<CaptureMemberDisplayRequest, 'accessTokenObservedAt'> {
 	const accessToken: App.Locals['accessTokenAuthentication'] = locals.accessTokenAuthentication;
-	if (accessToken.state === 'absent') return { cookies };
 	if (accessToken.state === 'verified' && accessToken.observedAt !== null) {
 		return { accessTokenObservedAt: accessToken.observedAt };
 	}
@@ -49,78 +30,25 @@ export function displayCaptureSource(
 }
 
 /**
- * Best-effort member snapshot capture. Never throws. Never fails authentication
- * or membership. Logs only a fixed redacted code.
+ * Best-effort member snapshot capture from the member's own verified token
+ * claims. Never throws, never fails authentication or membership, and logs only
+ * a fixed redacted code. There is no per-observation marker to suppress
+ * repeats, so callers limit how often this runs; the store already ignores an
+ * observation not newer than the stored one.
  */
 export async function bestEffortCaptureMemberDisplay(
 	input: CaptureMemberDisplayRequest
-): Promise<Session | null> {
+): Promise<void> {
 	try {
-		return await capture(input);
+		await capture(input);
 	} catch {
 		logCaptureFailed();
-		return input.session ?? null;
 	}
 }
 
-async function capture(input: CaptureMemberDisplayRequest): Promise<Session | null> {
-	if (input.accessTokenObservedAt !== undefined) {
-		await captureAccessTokenObservation(input, input.accessTokenObservedAt);
-		return null;
-	}
-	if (input.cookies === undefined) return input.session ?? null;
-	if (input.principal.subject !== input.memberUserId) return input.session ?? null;
-	if (input.principal.emailVerified !== true) return input.session ?? null;
-
-	let session: Session | null = input.session ?? null;
-	if (session === null) {
-		const cookie: string | undefined = input.cookies.get(SESSION_COOKIE);
-		if (cookie === undefined) return null;
-		const unsealed = await unseal(cookie);
-		if (unsealed === null) return null;
-		session = unsealed.session;
-	}
-
-	const observedAt: string | undefined = session.profileObservedAt;
-	if (observedAt === undefined) return session;
-	if (session.profileStoredAt === observedAt) return session;
-
-	const application = await resolveInstanceDisplayApplication({ platform: input.platform });
-	if (application === null) return session;
-
-	const storedAt: string = new Date().toISOString();
-	const result = await application.captureMemberSnapshot({
-		userId: input.memberUserId,
-		name: input.principal.name,
-		email: input.principal.email,
-		observedAt,
-		storedAt
-	});
-	if (result.outcome === 'failed') {
-		logCaptureFailed();
-		return session;
-	}
-	if (result.outcome === 'skipped') return session;
-
-	const updated: Session = { ...session, profileStoredAt: observedAt };
-	const sealed: string = await seal(updated);
-	input.cookies.set(SESSION_COOKIE, sealed, {
-		...SESSION_COOKIE_OPTIONS,
-		secure: input.url?.protocol !== 'http:'
-	});
-	return updated;
-}
-
-/**
- * Captures from a verified access-token bearer. The same guards as the cookie
- * path apply -- only the member's own verified claims -- but there is no
- * per-observation marker to suppress repeats, so callers limit how often this
- * runs; the store already ignores an observation not newer than the stored one.
- */
-async function captureAccessTokenObservation(
-	input: CaptureMemberDisplayRequest,
-	observedAt: string
-): Promise<void> {
+async function capture(input: CaptureMemberDisplayRequest): Promise<void> {
+	const observedAt: string | undefined = input.accessTokenObservedAt;
+	if (observedAt === undefined) return;
 	if (input.principal.subject !== input.memberUserId) return;
 	if (input.principal.emailVerified !== true) return;
 	const application = await resolveInstanceDisplayApplication({ platform: input.platform });

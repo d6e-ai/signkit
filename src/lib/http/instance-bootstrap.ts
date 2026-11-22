@@ -209,9 +209,8 @@ export function createInstanceBootstrapHandler(
 		platform?: Readonly<App.Platform>
 	) => BootstrapUnsafeContext = resolveBootstrapUnsafeContext
 ): RequestHandler {
-	return async ({ locals, platform, request, url, cookies }): Promise<Response> => {
-		// Bootstrap is human-session-only (the operator cookie, or a d6e-auth
-		// access-token bearer standing in for it): a `signkit_` API key is already
+	return async ({ locals, platform, request, url }): Promise<Response> => {
+		// Bootstrap is human-session-only (a d6e-auth access-token bearer): a `signkit_` API key is already
 		// rejected upstream in hooks.server.ts (instance management surfaces never
 		// resolve one), so a non-absent apiKeyAuthentication state here can only be
 		// that rejection, and authorizeIdentityRequest below answers it with 403.
@@ -323,8 +322,7 @@ export function createInstanceBootstrapHandler(
 			) {
 				try {
 					await bestEffortCaptureMemberDisplay({
-						...displayCaptureSource(locals, cookies),
-						url,
+						...displayCaptureSource(locals),
 						platform,
 						memberUserId: result.member.userId,
 						principal: locals.principal

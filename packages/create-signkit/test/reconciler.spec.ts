@@ -165,7 +165,11 @@ const INITIAL_DEPLOY_FLAGS = [
 	'--public-origin',
 	'https://signkit.example.workers.dev',
 	'--bootstrap-owner-email',
-	'Owner@Example.com'
+	'Owner@Example.com',
+	'--console-url',
+	'https://console.example/signkit/console',
+	'--console-origins',
+	'https://console.example'
 ];
 
 const OAUTH_STDIN_JSON = JSON.stringify({
@@ -300,6 +304,10 @@ describe('deploy, adopt, and upgrade state transitions', () => {
 				'https://signkit.example.workers.dev',
 				'--bootstrap-owner-email',
 				'owner@example.com',
+				'--console-url',
+				'https://console.example/signkit/console',
+				'--console-origins',
+				'https://console.example',
 				'--yes',
 				'--json'
 			],
@@ -1398,6 +1406,10 @@ describe('bootstrap owner email', () => {
 				'https://signkit.example.workers.dev',
 				'--bootstrap-owner-email',
 				'Owner@Example.com',
+				'--console-url',
+				'https://console.example/signkit/console',
+				'--console-origins',
+				'https://console.example',
 				'--yes',
 				'--json'
 			],
@@ -1480,6 +1492,8 @@ describe('bootstrap owner email', () => {
 				d1: { name: 'signkit', id: D1_ID },
 				r2: { name: 'signkit-objects' },
 				publicOrigin: 'https://signkit.example.workers.dev',
+				consoleOrigins: ['https://console.example'],
+				consoleUrl: 'https://console.example/signkit/console',
 				channel: 'stable',
 				updatedAt: '2026-09-15T00:00:00.000Z'
 			})

@@ -18,6 +18,7 @@ interface DeliveryRow {
 	role: 'owner' | 'admin' | 'member';
 	invitation_status: 'pending' | 'accepted' | 'revoked';
 	expires_at: string;
+	inviter_user_id: string;
 	token_hash: string;
 	email_binding: string;
 	sealed_payload: string | null;
@@ -28,8 +29,8 @@ interface DeliveryRow {
 
 const COLUMNS: string = `delivery.id AS delivery_id, delivery.invitation_id AS invitation_id,
 	delivery.locale, invitation.role, invitation.status AS invitation_status,
-	invitation.expires_at, invitation.token_hash, invitation.email_binding,
-	delivery.sealed_payload, delivery.sealed_payload_sha256,
+	invitation.expires_at, invitation.invited_by_user_id AS inviter_user_id,
+	invitation.token_hash, invitation.email_binding, delivery.sealed_payload, delivery.sealed_payload_sha256,
 	delivery.sealing_key_id, delivery.attempts`;
 
 export class D1InstanceInvitationDeliveryStore implements InstanceInvitationDeliveryStore {
@@ -183,6 +184,7 @@ function toClaim(row: DeliveryRow): ClaimedInstanceInvitationDelivery {
 		role: row.role,
 		invitationStatus: row.invitation_status,
 		expiresAt: row.expires_at,
+		inviterUserId: row.inviter_user_id,
 		tokenHash: row.token_hash,
 		emailBinding: row.email_binding,
 		sealedPayload: row.sealed_payload,

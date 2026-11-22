@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-	isCookieSessionSuppressed,
 	isLocaleExcludedPath,
 	isSessionExcludedPath,
 	resolveApiKeyBearerMode,
@@ -39,19 +38,18 @@ describe('session exclusions', () => {
 describe('bearer mode selection', () => {
 	const TOKEN: string = `signkit_${'a'.repeat(43)}`;
 
-	it('stays in cookie mode with no Authorization header', () => {
-		expect(resolveApiKeyBearerMode('/api/v1/envelopes', null)).toEqual({ mode: 'cookie' });
+	it('stays in no-bearer mode with no Authorization header', () => {
+		expect(resolveApiKeyBearerMode('/api/v1/envelopes', null)).toEqual({ mode: 'none' });
 	});
 
 	/**
 	 * A present-but-empty header is a different input from an absent one -- the
 	 * hook observes `''` rather than `null` -- and is deliberately treated the
-	 * same, because an all-empty `Authorization` carries no credential and so
-	 * cannot compose with a cookie. Asserted through a real `Request` so the
+	 * same, because an all-empty `Authorization` carries no credential. Asserted through a real `Request` so the
 	 * equivalence is pinned against actual Fetch `Headers` behaviour rather than a
 	 * hand-written string.
 	 */
-	it('stays in cookie mode for a present-but-empty Authorization header', () => {
+	it('stays in no-bearer mode for a present-but-empty Authorization header', () => {
 		const url: string = 'https://signkit.example/api/v1/envelopes';
 		for (const value of ['', '   ']) {
 			const request: Request = new Request(url, { headers: { authorization: value } });
@@ -59,15 +57,15 @@ describe('bearer mode selection', () => {
 			expect(request.headers.get('authorization')).toBe('');
 			expect(
 				resolveApiKeyBearerMode('/api/v1/envelopes', request.headers.get('authorization'))
-			).toEqual({ mode: 'cookie' });
+			).toEqual({ mode: 'none' });
 		}
 	});
 
 	/**
 	 * Appending an empty value alongside a real token cannot smuggle the token past
 	 * bearer mode: the joined value is non-empty, so bearer mode is selected, and
-	 * the anchored parse then refuses it -- an opaque failure with the cookie
-	 * suppressed, never a usable credential.
+	 * the anchored parse then refuses it -- an opaque failure, never a usable
+	 * credential.
 	 */
 	it('enters bearer mode with no token when an empty value is appended to a real one', () => {
 		const headers: Headers = new Headers();
@@ -89,8 +87,8 @@ describe('bearer mode selection', () => {
 
 	/**
 	 * The load-bearing case: an unusable bearer still selects bearer mode, with a
-	 * null token. If this returned cookie mode, a malformed or foreign credential
-	 * would silently fall back to whatever session accompanied the request.
+	 * null token. If this returned no-bearer mode, a malformed or foreign
+	 * credential would silently be treated as absent.
 	 */
 	it.each([
 		['a malformed API key', `Bearer signkit_${'a'.repeat(10)}`],
@@ -123,14 +121,12 @@ describe('bearer mode selection', () => {
 		'/settings',
 		'/'
 	])('never enters bearer mode on %s', (pathname) => {
-		expect(resolveApiKeyBearerMode(pathname, `Bearer ${TOKEN}`)).toEqual({ mode: 'cookie' });
+		expect(resolveApiKeyBearerMode(pathname, `Bearer ${TOKEN}`)).toEqual({ mode: 'none' });
 	});
 
 	/**
-	 * Management surfaces reject rather than ignore. Ignoring would leave the
-	 * accompanying cookie to authorize a request an API key must never reach --
-	 * minting a key or administering members --
-	 * so the key is refused and the cookie is suppressed along with it.
+	 * Management surfaces reject rather than ignore: an API key must never reach
+	 * minting a key or administering members, so the key is refused outright.
 	 */
 	it.each([
 		'/api/v1/api-keys',
@@ -159,12 +155,12 @@ describe('bearer mode selection', () => {
 		['no header at all', null]
 	])('leaves %s alone on a management surface', (_name, authorization) => {
 		expect(resolveApiKeyBearerMode('/api/v1/api-keys', authorization)).toEqual({
-			mode: 'cookie'
+			mode: 'none'
 		});
 	});
 
 	/**
-	 * Bootstrap is cookie-session-only like the rest of instance management, so a
+	 * Bootstrap is human-session-only like the rest of instance management, so a
 	 * well-formed API key there is rejected rather than resolved or ignored.
 	 */
 	it('rejects a well-formed API key on the bootstrap endpoint', () => {
@@ -174,44 +170,12 @@ describe('bearer mode selection', () => {
 	});
 });
 
-describe('cookie session suppression', () => {
-	it('keeps the cookie session available only when no bearer was presented', () => {
-		expect(isCookieSessionSuppressed({ state: 'absent' })).toBe(false);
-	});
-
-	it.each([
-		'rejected_surface',
-		'invalid_token',
-		'rate_limited',
-		'integrity_error',
-		'unavailable'
-	] as const)('suppresses the cookie session for the failing state %s', (state) => {
-		expect(isCookieSessionSuppressed({ state })).toBe(true);
-	});
-
-	it('suppresses the cookie session for an authenticated key', () => {
-		expect(
-			isCookieSessionSuppressed({
-				state: 'authenticated',
-				principal: {
-					apiKeyId: '01900000-0000-7000-8000-000000000201',
-					keyPrefix: 'signkit_abcdefgh',
-					ownerUserId: 'user-1',
-					scopes: ['envelopes:read'],
-					expiresAt: '2026-12-11T00:00:00.000Z'
-				}
-			})
-		).toBe(true);
-	});
-});
-
 describe('access-token bearer mode selection', () => {
 	const JWT: string = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.c2lnbmF0dXJl';
 	const API_KEY: string = `signkit_${'a'.repeat(43)}`;
 
 	/**
-	 * Every operator surface accepts the token in place of the cookie, including
-	 * the session-only ones and the envelope routes an API key may also use.
+	 * Every operator surface accepts the token, including the session-only ones and the envelope routes an API key may also use.
 	 */
 	it.each([
 		'/api/v1/envelopes',
@@ -244,7 +208,7 @@ describe('access-token bearer mode selection', () => {
 		expect(resolveBearerMode(pathname, `Bearer ${JWT}`)).toEqual(
 			resolveApiKeyBearerMode(pathname, `Bearer ${JWT}`)
 		);
-		expect(resolveBearerMode(pathname, `Bearer ${JWT}`)).toEqual({ mode: 'cookie' });
+		expect(resolveBearerMode(pathname, `Bearer ${JWT}`)).toEqual({ mode: 'none' });
 	});
 
 	/**
@@ -264,17 +228,5 @@ describe('access-token bearer mode selection', () => {
 		expect(resolveBearerMode(pathname, authorization)).toEqual(
 			resolveApiKeyBearerMode(pathname, authorization)
 		);
-	});
-
-	it('suppresses the cookie session for every access-token state', () => {
-		for (const accessToken of [
-			{ state: 'presented', token: JWT },
-			{ state: 'verified', observedAt: null },
-			{ state: 'rejected' },
-			{ state: 'unavailable' }
-		] as const) {
-			expect(isCookieSessionSuppressed({ state: 'absent' }, accessToken)).toBe(true);
-		}
-		expect(isCookieSessionSuppressed({ state: 'absent' }, { state: 'absent' })).toBe(false);
 	});
 });

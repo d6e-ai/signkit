@@ -8,7 +8,6 @@ import {
 	MAX_RECEIVED_INSTANCE_INVITATIONS,
 	resolveInstanceInvitationExpiresAt,
 	type AcceptInstanceInvitationByRecipientCommand,
-	type AcceptInstanceInvitationCommand,
 	type AcceptInstanceInvitationStoreResult,
 	type CreateInstanceInvitationCommand,
 	type CreateInstanceInvitationStoreResult,
@@ -28,8 +27,6 @@ import {
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	computeInstanceInvitationEmailBinding,
-	hashInstanceInvitationToken,
-	isInstanceInvitationToken,
 	issueInstanceInvitationToken,
 	normalizeInstanceInvitationEmail,
 	type IssuedInstanceInvitationToken
@@ -68,16 +65,17 @@ export interface CreateInstanceInvitationInput {
 	 */
 	expiresAt?: string | null;
 	/**
-	 * Holds the invitation mail this long after creation so a console note can
-	 * hand it to D6E Auth first (see `settleDelivery`). Omitted or 0: the mail
-	 * is available at once. Not part of the request fingerprint.
+	 * Holds the invitation's outbox row this long after creation while the
+	 * create command sends the console note itself (see `settleDelivery`).
+	 * Omitted or 0: the drain may deliver it at once. Not part of the request
+	 * fingerprint.
 	 */
 	deliveryHoldMs?: number;
 }
 
 /**
- * After the console note answered: `console` when D6E Auth emails the
- * invitee, `self` when this server must send its own mail.
+ * After the create command's console note: `console` when D6E Auth holds it,
+ * `self` when the drain must retry it.
  */
 export type InstanceInvitationDeliveryHandoff = 'console' | 'self';
 
@@ -110,12 +108,6 @@ export interface ListInstanceInvitationsInput {
 }
 
 export type ListInstanceInvitationsResult = ListInstanceInvitationsStoreResult;
-
-export interface AcceptInstanceInvitationInput {
-	idempotencyKey: string;
-	token: string;
-	email: string;
-}
 
 /**
  * Public accept outcomes.
@@ -204,14 +196,6 @@ export interface InstanceInvitationApplicationPort {
 		actor: InstanceInvitationActor,
 		query?: ListInstanceInvitationsInput
 	): Promise<ListInstanceInvitationsResult>;
-	accept(
-		actor: InstanceInvitationActor,
-		input: AcceptInstanceInvitationInput
-	): Promise<AcceptInstanceInvitationResult>;
-	acceptInstanceInvitation(
-		actor: InstanceInvitationActor,
-		input: AcceptInstanceInvitationInput
-	): Promise<AcceptInstanceInvitationResult>;
 	/** Pending invitations addressed to the caller's verified email. */
 	listReceived(
 		actor: InstanceInvitationActor,
@@ -233,10 +217,10 @@ export interface InstanceInvitationApplicationPort {
 		maybeInput?: RevokeInstanceInvitationInput
 	): Promise<RevokeInstanceInvitationResult>;
 	/**
-	 * Decides a held invitation mail after the console note answered. Only the
-	 * create handler calls it, right after the note, for an invitation it just
-	 * created or replayed; it needs no actor because it never changes the
-	 * invitation, only whether this server's own mail goes out.
+	 * Settles a held outbox row after the console note. Only the create handler
+	 * calls it, right after the note, for an invitation it just created or
+	 * replayed; it needs no actor because it never changes the invitation, only
+	 * whether the drain still has to deliver the note.
 	 */
 	settleDelivery(
 		invitationId: string,
@@ -461,42 +445,6 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 		return this.list(actor, query);
 	}
 
-	async accept(
-		actor: InstanceInvitationActor,
-		input: AcceptInstanceInvitationInput
-	): Promise<AcceptInstanceInvitationResult> {
-		const commandActor: InstanceActor = assertActor(actor);
-		const idempotencyKey: string = assertIdempotencyKey(input.idempotencyKey);
-		const token: string = assertToken(input.token);
-		const normalizedEmail: string = normalizeEmail(input.email);
-
-		const tokenHash: string = await hashInstanceInvitationToken(token);
-		const emailBinding: string = await computeInstanceInvitationEmailBinding(
-			token,
-			normalizedEmail
-		);
-		const requestFingerprint: string = await sha256Hex(canonicalJson({ tokenHash }));
-		const acceptedAt: string = this.now().toISOString();
-
-		const command: AcceptInstanceInvitationCommand = {
-			actor: commandActor,
-			idempotencyKey,
-			requestFingerprint,
-			tokenHash,
-			emailBinding,
-			acceptedAt
-		};
-
-		return publicAcceptResult(await this.store.acceptInstanceInvitation(command));
-	}
-
-	async acceptInstanceInvitation(
-		actor: InstanceInvitationActor,
-		input: AcceptInstanceInvitationInput
-	): Promise<AcceptInstanceInvitationResult> {
-		return this.accept(actor, input);
-	}
-
 	async listReceived(
 		actor: InstanceInvitationActor,
 		input: ListReceivedInstanceInvitationsInput
@@ -712,13 +660,6 @@ function computeExpiresAt(now: Date, requestedExpiresAt?: string | null): string
 			error instanceof Error ? error.message : 'Invalid instance invitation expiry';
 		throw new InvalidInstanceInvitationRequestError(message);
 	}
-}
-
-function assertToken(token: unknown): string {
-	if (typeof token !== 'string' || !isInstanceInvitationToken(token)) {
-		throw new InvalidInstanceInvitationRequestError('Invalid instance invitation token');
-	}
-	return token;
 }
 
 function assertInvitationId(id: unknown): string {

@@ -320,6 +320,7 @@ async function deployOrUpgrade(
 		initialManagedDeploy,
 		enrollment.mode === 'request'
 	);
+	assertConsoleRegistration(target, enrollment.mode === 'request');
 	if (input.command === 'deploy' && !initialManagedDeploy) {
 		assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, true);
 	}
@@ -363,6 +364,7 @@ async function deployOrUpgrade(
 		target = withEnrollmentDefaults(target, deploymentRecovery.enrolledRecord);
 		try {
 			assertInitialManagedDeployVars(target, release, initialManagedDeploy, false);
+			assertConsoleRegistration(target, false);
 		} catch (error) {
 			await runtime.fs.rm(deploymentRecovery.cleanupDir);
 			throw error;
@@ -999,6 +1001,26 @@ function generatedWorkerVars(
 		vars[CONSOLE_URL_VAR] = target.consoleUrl;
 	}
 	return vars;
+}
+
+/**
+ * SignKit is operated only from a d6e console: the server renders recipient
+ * pages alone and has no operator pages or sign-in of its own. Every deploy and
+ * upgrade therefore needs the console URL (`SIGNKIT_CONSOLE_URL`) and the
+ * console origins allowed to call the API (`SIGNKIT_CONSOLE_ORIGINS`), from
+ * flags, recorded state, or this run's console enrollment. A pending
+ * enrollment supplies both later, so it is exempt here and checked again once
+ * its defaults are applied.
+ */
+export function assertConsoleRegistration(
+	target: EffectiveTarget,
+	enrollmentPending: boolean
+): void {
+	if (enrollmentPending) return;
+	if (target.consoleUrl && target.consoleOrigins && target.consoleOrigins.length > 0) return;
+	throw preflight(
+		`SignKit is operated from a d6e console and has no operator pages of its own. For a new server, set ${ENROLLMENT_TOKEN_ENV} (issued from the console) so this deploy registers it; for a server already registered, pass --console-url and --console-origins.`
+	);
 }
 
 function assertInitialManagedDeployVars(

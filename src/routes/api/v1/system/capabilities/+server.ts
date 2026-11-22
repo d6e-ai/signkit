@@ -5,6 +5,7 @@ import {
 	resolveSignKitRuntime,
 	systemCapabilities
 } from '$lib/capabilities';
+import { resolveConsoleUrl } from '$lib/server/console-url';
 
 export const GET: RequestHandler = ({ platform }) => {
 	const runtime = resolveSignKitRuntime({
@@ -14,5 +15,7 @@ export const GET: RequestHandler = ({ platform }) => {
 	const publicOrigin: string | null = advertisedPublicOrigin(
 		platform?.env?.SIGNKIT_PUBLIC_ORIGIN ?? env.SIGNKIT_PUBLIC_ORIGIN
 	);
-	return json(systemCapabilities({ runtime, publicOrigin }));
+	return json(
+		systemCapabilities({ runtime, publicOrigin, consoleUrl: resolveConsoleUrl(platform) })
+	);
 };

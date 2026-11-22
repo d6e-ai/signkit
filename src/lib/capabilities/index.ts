@@ -36,6 +36,11 @@ export function advertisedPublicOrigin(raw: string | undefined): string | null {
 export function systemCapabilities(input: {
 	runtime: SignKitRuntime;
 	publicOrigin: string | null;
+	/**
+	 * The d6e console that operates this server (`SIGNKIT_CONSOLE_URL`), or null
+	 * when it is missing or unacceptable: such a server cannot be operated.
+	 */
+	consoleUrl?: string | null;
 }) {
 	return {
 		name: 'SignKit',
@@ -43,6 +48,7 @@ export function systemCapabilities(input: {
 		version: SIGNKIT_VERSION,
 		runtime: input.runtime,
 		publicOrigin: input.publicOrigin,
+		consoleUrl: input.consoleUrl ?? null,
 		supportedProfiles: {
 			node: { database: 'postgresql', objects: 's3-compatible', status: 'scaffolded' },
 			cloudflare: { database: 'd1', objects: 'r2', status: 'scaffolded' },

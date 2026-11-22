@@ -1,18 +1,22 @@
 import { env } from '$env/dynamic/private';
-import { resolveNodeMailSender, resolveWorkerMailSender } from '$lib/application/mail/mail-runtime';
 import { resolvePostgresSql } from '$lib/application/runtime/postgres-sql-runtime';
-import type { MailSender } from '$lib/ports/mail-sender';
 import { AesGcmInstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
+import { consoleInvitationNotes } from '$lib/server/console-invitation-notes';
 import {
 	InstanceInvitationDeliveryService,
-	parseInstanceInvitationConsoleUrl,
-	type InstanceInvitationDeliverySenderConfig
+	type InstanceInvitationNotifier
 } from './instance-invitation-delivery-service';
 
 export interface InstanceInvitationDeliveryRuntimeContext {
 	platform?: Readonly<App.Platform>;
 }
 
+/**
+ * The invitation outbox drain. Each pending invitation is delivered to D6E
+ * Auth as a console note; only the durable store and the delivery encryption
+ * key (to open the sealed recipient address) are required here, and a server
+ * without a console URL or client credentials keeps the rows for retry.
+ */
 export async function resolveInstanceInvitationDeliveryService(
 	context: InstanceInvitationDeliveryRuntimeContext
 ): Promise<InstanceInvitationDeliveryService | null> {
@@ -20,74 +24,34 @@ export async function resolveInstanceInvitationDeliveryService(
 	const encryptionKey: string | undefined = nonempty(
 		platformEnv?.DELIVERY_ENCRYPTION_KEY ?? env.DELIVERY_ENCRYPTION_KEY
 	);
-	const publicOrigin: string | undefined = nonempty(
-		platformEnv?.SIGNKIT_PUBLIC_ORIGIN ?? env.SIGNKIT_PUBLIC_ORIGIN
-	);
-	const fromEmail: string | undefined = nonempty(
-		platformEnv?.SIGNKIT_EMAIL_FROM ?? env.SIGNKIT_EMAIL_FROM
-	);
-	const fromName: string | undefined = nonempty(
-		platformEnv?.SIGNKIT_EMAIL_FROM_NAME ?? env.SIGNKIT_EMAIL_FROM_NAME
-	);
-	if (
-		encryptionKey === undefined ||
-		publicOrigin === undefined ||
-		fromEmail === undefined ||
-		fromName === undefined
-	)
-		return null;
-	const sender: InstanceInvitationDeliverySenderConfig = {
-		fromEmail,
-		fromName,
-		...consoleUrlConfig(platformEnv?.SIGNKIT_CONSOLE_URL ?? env.SIGNKIT_CONSOLE_URL)
-	};
+	if (encryptionKey === undefined) return null;
 	const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(
 		encryptionKey,
 		nonempty(platformEnv?.DELIVERY_ENCRYPTION_KEY_PREVIOUS ?? env.DELIVERY_ENCRYPTION_KEY_PREVIOUS)
 	);
+	const notify: InstanceInvitationNotifier = (note) =>
+		consoleInvitationNotes.note(note, { platform: context.platform });
 
 	if (platformEnv !== undefined) {
 		if (platformEnv.DB === undefined) return null;
-		const mail: MailSender | null = await resolveWorkerMailSender(platformEnv, platformEnv.EMAIL);
-		if (mail === null) return null;
 		const { D1InstanceInvitationDeliveryStore } =
 			await import('$lib/adapters/db/d1-instance-invitation-delivery-store');
 		return new InstanceInvitationDeliveryService(
 			new D1InstanceInvitationDeliveryStore(platformEnv.DB),
 			sealer,
-			mail,
-			publicOrigin,
-			sender
+			notify
 		);
 	}
 
 	const databaseUrl: string | undefined = nonempty(env.DATABASE_URL);
-	const mail: MailSender | null = await resolveNodeMailSender(env);
-	if (databaseUrl === undefined || mail === null) return null;
+	if (databaseUrl === undefined) return null;
 	const { PostgresInstanceInvitationDeliveryStore } =
 		await import('$lib/adapters/db/postgres-instance-invitation-delivery-store');
 	return new InstanceInvitationDeliveryService(
 		new PostgresInstanceInvitationDeliveryStore(resolvePostgresSql(databaseUrl)),
 		sealer,
-		mail,
-		publicOrigin,
-		sender
+		notify
 	);
-}
-
-/**
- * The console link is optional copy: an unacceptable value is left out of the
- * mail (and logged without echoing it) rather than blocking delivery.
- */
-function consoleUrlConfig(value: string | undefined): { consoleUrl?: string } {
-	const configured: string | undefined = nonempty(value);
-	if (configured === undefined) return {};
-	const consoleUrl: string | null = parseInstanceInvitationConsoleUrl(configured);
-	if (consoleUrl === null) {
-		console.warn(JSON.stringify({ event: 'instance_invitation_console_url_invalid' }));
-		return {};
-	}
-	return { consoleUrl };
 }
 
 function nonempty(value: string | undefined): string | undefined {

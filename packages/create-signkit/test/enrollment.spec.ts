@@ -63,6 +63,7 @@ function enrollmentBody(overrides: Record<string, unknown> = {}): Record<string,
 		bootstrapOwnerEmail: 'Console.Owner@Example.com',
 		d6eAuthBaseUrl: AUTH_ORIGIN,
 		consoleOrigins: [CONSOLE_ORIGIN],
+		consoleUrl: CONSOLE_URL,
 		...overrides
 	};
 }
@@ -199,7 +200,8 @@ describe('console enrollment on a pristine initial deploy', () => {
 			publicOrigin: PUBLIC_ORIGIN,
 			d6eAuthBaseUrl: AUTH_ORIGIN,
 			bootstrapOwnerEmail: 'console.owner@example.com',
-			consoleOrigins: [CONSOLE_ORIGIN]
+			consoleOrigins: [CONSOLE_ORIGIN],
+			consoleUrl: CONSOLE_URL
 		});
 		expect((await result.fs.stat(RECORD_PATH)).mode & 0o777).toBe(0o600);
 		expect(JSON.stringify(record)).not.toContain(CLIENT_SECRET);
@@ -247,19 +249,15 @@ describe('console enrollment on a pristine initial deploy', () => {
 		expect(state.consoleUrl).toBe(CONSOLE_URL);
 	});
 
-	it('leaves SIGNKIT_CONSOLE_URL unset when D6E Auth names no consoleUrl', async () => {
+	it('refuses to deploy when D6E Auth names no consoleUrl and no flag supplies one', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		const http = new OrderedHttp(cloudflare);
-		http.on(ENROLL_URL, enrollmentBody(), 201);
+		http.on(ENROLL_URL, enrollmentBody({ consoleUrl: undefined }), 201);
 		const result = await runEnrolled({ http, cloudflare });
 
-		expect(result.code).toBe(0);
-		const config = JSON.parse(result.cloudflare.lastConfig ?? '{}') as {
-			vars: Record<string, string>;
-		};
-		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_URL');
-		const state = JSON.parse(await result.fs.readFile(STATE_PATH)) as Record<string, unknown>;
-		expect(state).not.toHaveProperty('consoleUrl');
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(result.cloudflare.lastConfig).toBeUndefined();
 	});
 
 	it('prints a human enrollment line without secrets or the owner address', async () => {
@@ -286,7 +284,7 @@ describe('console enrollment on a pristine initial deploy', () => {
 				'--bootstrap-owner-email',
 				'Operator@Example.com',
 				'--console-origins',
-				'',
+				'https://other-console.example',
 				'--server-name',
 				'  Legal SignKit  '
 			]
@@ -297,9 +295,23 @@ describe('console enrollment on a pristine initial deploy', () => {
 			vars: Record<string, string>;
 		};
 		expect(config.vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL).toBe('operator@example.com');
-		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe('');
+		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe('https://other-console.example');
 		const state = JSON.parse(await result.fs.readFile(STATE_PATH)) as Record<string, unknown>;
-		expect(state.consoleOrigins).toEqual([]);
+		expect(state.consoleOrigins).toEqual(['https://other-console.example']);
+	});
+
+	it('refuses an explicit empty --console-origins: the console must be able to call the API', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		const http = new OrderedHttp(cloudflare);
+		http.on(ENROLL_URL, enrollmentBody(), 201);
+		const result = await runEnrolled({
+			http,
+			cloudflare,
+			extraArgv: ['--console-origins', '']
+		});
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(result.cloudflare.lastConfig).toBeUndefined();
 	});
 
 	it('reads only the SMTP password from stdin when authenticated SMTP is configured', async () => {
@@ -801,19 +813,19 @@ describe('--console-origins', () => {
 		expect(state.consoleOrigins).toEqual([CONSOLE_ORIGIN]);
 	});
 
-	it('leaves the remote var alone when neither the flag nor state names it', async () => {
+	it('refuses an upgrade when neither the flag nor state names it', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		cloudflare.seedReadyWorker();
-		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { consoleOrigins: undefined });
 		const result = await runEnrolled({
 			cloudflare,
 			fs,
 			env: { D6E_ENROLLMENT_TOKEN: undefined },
 			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID]
 		});
-		expect(result.code).toBe(0);
-		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
-		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_ORIGINS');
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(cloudflare.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
 	});
 });
 
@@ -890,18 +902,18 @@ describe('--console-url', () => {
 		expect(state.consoleUrl).toBe(CONSOLE_URL);
 	});
 
-	it('leaves the remote var alone when neither the flag nor state names it', async () => {
+	it('refuses an upgrade when neither the flag nor state names it', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		cloudflare.seedReadyWorker();
-		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { consoleUrl: undefined });
 		const result = await runEnrolled({
 			cloudflare,
 			fs,
 			env: { D6E_ENROLLMENT_TOKEN: undefined },
 			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID]
 		});
-		expect(result.code).toBe(0);
-		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
-		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_URL');
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(cloudflare.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
 	});
 });

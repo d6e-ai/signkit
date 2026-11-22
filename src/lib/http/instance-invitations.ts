@@ -21,13 +21,12 @@ import {
 } from '$lib/ports/instance-store';
 import {
 	INSTANCE_INVITATION_EMAIL_MAX_LENGTH,
-	INSTANCE_INVITATION_TOKEN_PATTERN,
 	normalizeInstanceInvitationEmail
 } from '$lib/security/instance-invitation';
 import {
 	consoleInvitationNotes,
 	runAfterCommand,
-	type ConsoleInvitationNoteResult,
+	type ConsoleInvitationNoteOutcome,
 	type ConsoleInvitationNotesPort,
 	CONSOLE_NOTE_DELIVERY_HOLD_MS
 } from '$lib/server/console-invitation-notes';
@@ -102,12 +101,6 @@ const listInstanceInvitationsSchema: ZodType<{
 	})
 	.strict();
 
-const acceptInstanceInvitationSchema: ZodType<{ token: string }> = z
-	.object({
-		token: z.string().regex(INSTANCE_INVITATION_TOKEN_PATTERN, 'Invalid instance invitation token')
-	})
-	.strict();
-
 /** Revoke carries no fields of its own: an empty object is the only valid body. */
 const revokeInstanceInvitationSchema = z.object({}).strict();
 
@@ -131,7 +124,6 @@ export type InstanceInvitationApplicationResolver = (
 export interface InstanceInvitationHttpHandlers {
 	create: RequestHandler;
 	list: RequestHandler;
-	accept: RequestHandler;
 	listReceived: RequestHandler;
 	acceptReceived: RequestHandler;
 	revoke: RequestHandler;
@@ -373,9 +365,10 @@ function actorOf(authorized: AuthorizedIdentityActor): InstanceInvitationActor {
 }
 
 /**
- * Hands the invitation mail to D6E Auth (`console`) or releases this server's
- * own mail (`self`). Never fails the create: if this write is lost the hold
- * lapses and this server sends its mail, which at worst duplicates D6E Auth's.
+ * Closes the invitation's outbox row once D6E Auth holds the note (`console`),
+ * or releases it at once for the drain to retry the note (`self`). Never fails
+ * the create: if this write is lost the hold lapses and the drain re-sends the
+ * note, which D6E Auth treats as the same note.
  */
 async function settleHeldDelivery(
 	application: InstanceInvitationApplicationPort,
@@ -444,16 +437,15 @@ export function createInstanceInvitationHttpHandlers(
 		if (application instanceof Response) return application;
 
 		try {
-			// A server listed in a console holds the new invitation's own mail
-			// until the note below answers, so D6E Auth can take it over.
-			const notesEnabled: boolean = consoleNotes.enabled({ platform });
+			// The outbox row waits for the note below, so the drain retries only
+			// a note this request could not deliver.
 			const locale: 'en' | 'ja' = parsed.data.locale ?? 'ja';
 			const result: CreateInstanceInvitationResult = await application.create(actorOf(authorized), {
 				idempotencyKey: idempotencyKey.data,
 				email: parsed.data.email,
 				role: parsed.data.role,
 				locale: parsed.data.locale,
-				...(notesEnabled ? { deliveryHoldMs: CONSOLE_NOTE_DELIVERY_HOLD_MS } : {})
+				deliveryHoldMs: CONSOLE_NOTE_DELIVERY_HOLD_MS
 			});
 			if (
 				(result.outcome === 'created' || result.outcome === 'replayed') &&
@@ -465,7 +457,7 @@ export function createInstanceInvitationHttpHandlers(
 				// note withdrawal) issued from it cannot overtake this note and
 				// have a late PUT write a revoked invitation back.
 				const invitation = result.invitation;
-				const noted: ConsoleInvitationNoteResult = await consoleNotes
+				const noted: ConsoleInvitationNoteOutcome = await consoleNotes
 					.note(
 						{
 							invitationId: invitation.id,
@@ -476,14 +468,12 @@ export function createInstanceInvitationHttpHandlers(
 						},
 						{ platform }
 					)
-					.catch((): ConsoleInvitationNoteResult => ({ outcome: 'failed', invitationEmail: null }));
-				if (notesEnabled) {
-					await settleHeldDelivery(
-						application,
-						invitation.id,
-						noted.invitationEmail === 'queued' ? 'console' : 'self'
-					);
-				}
+					.catch((): ConsoleInvitationNoteOutcome => 'failed');
+				await settleHeldDelivery(
+					application,
+					invitation.id,
+					noted === 'sent' || noted === 'withdrawn' ? 'console' : 'self'
+				);
 			}
 			return createResponse(result, url.pathname);
 		} catch (error: unknown) {
@@ -555,94 +545,6 @@ export function createInstanceInvitationHttpHandlers(
 			console.error(
 				JSON.stringify({
 					event: 'instance_invitation_list_failed',
-					message: operationErrorName(error)
-				})
-			);
-			return serviceUnavailable(url.pathname);
-		}
-	};
-
-	const accept: RequestHandler = async ({
-		locals,
-		platform,
-		request,
-		url,
-		cookies
-	}): Promise<Response> => {
-		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
-			locals,
-			url.pathname
-		);
-		if (authorized instanceof Response) return authorized;
-		const expectedSubject = request.headers.get('x-signkit-expected-subject');
-		if (expectedSubject !== null && expectedSubject !== authorized.id) {
-			return accountChanged(url.pathname);
-		}
-
-		const idempotencyKey = idempotencyKeySchema.safeParse(request.headers.get('idempotency-key'));
-		if (!idempotencyKey.success) {
-			return idempotencyKeyRequired(url.pathname, idempotencyKey.error.issues);
-		}
-		if (!acceptsJson(request)) {
-			return unsupportedMediaType(
-				url.pathname,
-				'Instance invitation acceptance requires an application/json request body.'
-			);
-		}
-
-		const body: JsonBodyResult = await readJsonBody(request, MAX_ACCEPT_BODY_BYTES);
-		if (!body.ok) {
-			return body.reason === 'too_large'
-				? bodyTooLarge(url.pathname, MAX_ACCEPT_BODY_BYTES)
-				: invalidJson(url.pathname);
-		}
-
-		const parsed = acceptInstanceInvitationSchema.safeParse(body.value);
-		if (!parsed.success) {
-			return validationFailed(
-				url.pathname,
-				'The instance invitation acceptance request did not match the required schema.',
-				validationErrors(parsed.error.issues)
-			);
-		}
-
-		// The asserted email is the caller's own authenticated d6e-auth
-		// identity email claim, never a value the request body can supply.
-		// Missing or false `email_verified` fails closed: holding a session
-		// is not a provider-verified inbox guarantee.
-		if (authorized.emailVerified !== true) {
-			return emailVerificationRequired(
-				url.pathname,
-				'Accepting an invitation requires a provider-verified email claim.'
-			);
-		}
-
-		const application: InstanceInvitationApplicationPort | Response =
-			await resolveApplicationOrProblem(
-				resolveApplication,
-				{ platform },
-				url.pathname,
-				'instance_invitation_accept_resolution_failed'
-			);
-		if (application instanceof Response) return application;
-
-		try {
-			const result: AcceptInstanceInvitationResult = await application.accept(actorOf(authorized), {
-				idempotencyKey: idempotencyKey.data,
-				token: parsed.data.token,
-				email: authorized.email
-			});
-			await captureAcceptedMemberDisplay(result, { locals, cookies, url, platform });
-			return acceptResponse(result, url.pathname);
-		} catch (error: unknown) {
-			if (error instanceof InvalidInstanceInvitationRequestError) {
-				return validationFailed(url.pathname, error.message, [
-					{ path: '$', message: error.message }
-				]);
-			}
-			console.error(
-				JSON.stringify({
-					event: 'instance_invitation_accept_failed',
 					message: operationErrorName(error)
 				})
 			);
@@ -726,8 +628,7 @@ export function createInstanceInvitationHttpHandlers(
 		params,
 		platform,
 		request,
-		url,
-		cookies
+		url
 	}): Promise<Response> => {
 		const authorized: AuthorizedIdentityActor | Response = authorizeIdentityRequest(
 			locals,
@@ -795,7 +696,7 @@ export function createInstanceInvitationHttpHandlers(
 					email: authorized.email
 				}
 			);
-			await captureAcceptedMemberDisplay(result, { locals, cookies, url, platform });
+			await captureAcceptedMemberDisplay(result, { locals, platform });
 			return acceptResponse(result, url.pathname);
 		} catch (error: unknown) {
 			if (error instanceof InvalidInstanceInvitationRequestError) {
@@ -891,20 +792,18 @@ export function createInstanceInvitationHttpHandlers(
 		}
 	};
 
-	return { create, list, accept, listReceived, acceptReceived, revoke };
+	return { create, list, listReceived, acceptReceived, revoke };
 }
 
 interface AcceptDisplayContext {
 	locals: App.Locals;
-	cookies: Parameters<RequestHandler>[0]['cookies'];
-	url: URL;
 	platform: Readonly<App.Platform> | undefined;
 }
 
 /** Records the caller's own display snapshot after either accept form. */
 async function captureAcceptedMemberDisplay(
 	result: AcceptInstanceInvitationResult,
-	{ locals, cookies, url, platform }: AcceptDisplayContext
+	{ locals, platform }: AcceptDisplayContext
 ): Promise<void> {
 	if (
 		(result.outcome === 'accepted' ||
@@ -914,8 +813,7 @@ async function captureAcceptedMemberDisplay(
 	) {
 		try {
 			await bestEffortCaptureMemberDisplay({
-				...displayCaptureSource(locals, cookies),
-				url,
+				...displayCaptureSource(locals),
 				platform,
 				memberUserId: result.member.userId,
 				principal: locals.principal

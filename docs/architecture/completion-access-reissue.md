@@ -93,7 +93,7 @@ already-replayed request never pays for that IO.
   (`envelopes:send`, or any active instance session member): the explicit recovery command described
   above.
 
-Both accept either a SignKit API key with the listed scope or an operator session cookie, matching
+Both accept either a SignKit API key with the listed scope or an operator access token, matching
 every other envelope-management endpoint's dual-authority pattern.
 
 `failureCauseCode` preserves a bounded, sanitized cause when a new terminal failure would otherwise

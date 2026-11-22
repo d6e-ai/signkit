@@ -384,6 +384,25 @@ describe('GET /api/v1/system/capabilities', () => {
 
 		expect(data).toHaveProperty('publicOrigin', null);
 	});
+
+	it('reports the console that operates this server, or null when none is acceptable', async () => {
+		const configured = {
+			env: { DB: {} as D1Database, SIGNKIT_CONSOLE_URL: 'https://www.d6e.ai/signkit/console' }
+		} as unknown as App.Platform;
+		const configuredData = (await (await GET(createEvent(configured))).json()) as Record<
+			string,
+			unknown
+		>;
+		expect(configuredData.consoleUrl).toBe('https://www.d6e.ai/signkit/console');
+
+		for (const value of [undefined, '', 'http://console.example.com/']) {
+			const platform = {
+				env: { DB: {} as D1Database, SIGNKIT_CONSOLE_URL: value }
+			} as unknown as App.Platform;
+			const data = (await (await GET(createEvent(platform))).json()) as Record<string, unknown>;
+			expect(data).toHaveProperty('consoleUrl', null);
+		}
+	});
 });
 
 describe('advertisedPublicOrigin', () => {

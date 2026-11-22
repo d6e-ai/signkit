@@ -519,8 +519,8 @@ Options:
   --smtp-secure <bool>    Exactly true (implicit TLS) or false (required STARTTLS)
   --smtp-username <name>  Optional SMTP username; password is accepted only in secret stdin JSON
   --bootstrap-owner-email <email>  SIGNKIT_BOOTSTRAP_OWNER_EMAIL as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it; console enrollment supplies a default)
-  --console-origins <list>  SIGNKIT_CONSOLE_ORIGINS: comma-separated console origins allowed to call /api/v1 cross-origin ("" clears it; console enrollment supplies a default)
-  --console-url <url>     SIGNKIT_CONSOLE_URL: where invitation emails send people to join without the link ("" clears it; console enrollment supplies a default)
+  --console-origins <list>  SIGNKIT_CONSOLE_ORIGINS: comma-separated console origins allowed to call /api/v1 cross-origin (required; console enrollment supplies it)
+  --console-url <url>     SIGNKIT_CONSOLE_URL: the d6e console that operates this server (required; console enrollment supplies it)
   --server-name <text>    Console display name sent with D6E_ENROLLMENT_TOKEN enrollment (default: public origin hostname)
   --version <tag|latest>  Release tag or "latest" (default: latest)
   --channel <stable|beta> Release channel (enforced against the selected tag; used to pick latest)
@@ -536,13 +536,17 @@ any Cloudflare inspection. Identity drift requires --cloudflare adopt. The
 cloudflare mail provider uses the native EMAIL binding. The smtp provider omits
 that binding and writes only bounded non-secret SMTP settings to Worker vars.
 Secrets are never accepted on argv.
-A pristine initial deploy (no local state, no remote Worker versions/secrets)
-reads secret JSON once from stdin: redirect a secure file with exactly
+SignKit is operated from a d6e console; the server has no operator pages of its
+own, so every deploy and upgrade needs the console settings. For a new server,
+put a console enrollment token in the D6E_ENROLLMENT_TOKEN environment variable:
+the initial deploy registers the server with D6E Auth, obtains the OAuth pair and
+console settings, and reads no OAuth stdin. A server its administrator already
+registered with the console instead passes --console-url and --console-origins,
+and a pristine initial deploy (no local state, no remote Worker versions/secrets)
+then reads secret JSON once from stdin: redirect a secure file with exactly
 D6E_AUTH_CLIENT_ID and D6E_AUTH_CLIENT_SECRET, plus SIGNKIT_SMTP_PASSWORD when
 --smtp-username is configured
-(create-signkit --cloudflare deploy ... --yes < oauth.json). With a console
-enrollment token in the D6E_ENROLLMENT_TOKEN environment variable, the initial
-deploy obtains the OAuth pair from D6E Auth instead and reads no OAuth stdin.
+(create-signkit --cloudflare deploy ... --yes < oauth.json).
 Back up the recovery
 file and its adjacent target-binding file together. Only the recovery file path
 and SHA-256 fingerprint are reported. See docs/create-signkit.md.

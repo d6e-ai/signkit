@@ -35,7 +35,6 @@ import {
 	InstanceInvitationCollisionExhaustedError,
 	InvalidInstanceInvitationRequestError,
 	sha256Hex,
-	type AcceptInstanceInvitationInput,
 	type AcceptInstanceInvitationResult,
 	type CreateInstanceInvitationInput,
 	type CreateInstanceInvitationResult,
@@ -928,178 +927,6 @@ describe('InstanceInvitationApplication', () => {
 		});
 	});
 
-	describe('accept', () => {
-		const validToken = `ski1_${'b'.repeat(43)}`;
-
-		it('validates token, normalizes email, hashes token/binding, fingerprints canonical tokenHash, calls store with subject', async () => {
-			const store = new FakeInstanceStore();
-			const app = createTestApp(store);
-
-			const input: AcceptInstanceInvitationInput = {
-				idempotencyKey: 'accept-idemp-1',
-				token: validToken,
-				email: '  Signer@Example.COM  '
-			};
-
-			const result: AcceptInstanceInvitationResult = await app.accept(ACCEPTOR_ACTOR, input);
-
-			expect(result.outcome).toBe('accepted');
-			if (result.outcome !== 'accepted') return;
-			expect(result.replayed).toBe(false);
-
-			expect(store.acceptCommands).toHaveLength(1);
-			const command = store.acceptCommands[0];
-			expect(command.actor).toEqual({ type: 'user', id: 'acceptor-user-2' });
-			expect(command.idempotencyKey).toBe('accept-idemp-1');
-			expect(command.acceptedAt).toBe(NOW.toISOString());
-
-			const expectedTokenHash = await hashInstanceInvitationToken(validToken);
-			expect(command.tokenHash).toBe(expectedTokenHash);
-			expect(command.emailBinding).toBe(
-				await computeInstanceInvitationEmailBinding(validToken, 'signer@example.com')
-			);
-
-			// Fingerprints canonical { tokenHash }
-			const expectedFingerprint = await sha256Hex(canonicalJson({ tokenHash: expectedTokenHash }));
-			expect(command.requestFingerprint).toBe(expectedFingerprint);
-		});
-
-		it('marks replayed: true on idempotent replay of accept', async () => {
-			const invitation: InstanceInvitationMetadata = {
-				id: VALID_UUID_1,
-				role: 'admin',
-				status: 'accepted',
-				invitedByUserId: 'inviter-user-1',
-				createdAt: '2026-09-01T00:00:00.000Z',
-				expiresAt: '2026-09-08T00:00:00.000Z',
-				acceptedAt: '2026-09-02T10:00:00.000Z',
-				acceptedByUserId: 'acceptor-user-2',
-				revokedAt: null,
-				revokedByUserId: null
-			};
-			const member = memberMetadata('acceptor-user-2', 'admin');
-			const store = new FakeInstanceStore([], [], [{ outcome: 'replayed', invitation, member }]);
-			const app = createTestApp(store);
-
-			const result = await app.accept(ACCEPTOR_ACTOR, {
-				idempotencyKey: 'accept-replay-1',
-				token: validToken,
-				email: 'signer@example.com'
-			});
-
-			expect(result.outcome).toBe('replayed');
-			if (result.outcome === 'replayed') {
-				expect(result.replayed).toBe(true);
-				expect(result.invitation.acceptedAt).toBe('2026-09-02T10:00:00.000Z');
-				expect(result.member).toEqual(member);
-			}
-		});
-
-		it('demonstrates wrong binding construction: binding differs if email assertion is mismatched', async () => {
-			const token = validToken;
-			const correctEmail = 'signer@example.com';
-			const wrongEmail = 'wrong-signer@example.com';
-
-			const correctBinding = await computeInstanceInvitationEmailBinding(token, correctEmail);
-			const wrongBinding = await computeInstanceInvitationEmailBinding(token, wrongEmail);
-
-			expect(correctBinding).not.toBe(wrongBinding);
-
-			// The store returns invitation_invalid when binding does not match
-			const store = new FakeInstanceStore([], [], [{ outcome: 'invitation_invalid' }]);
-			const app = createTestApp(store);
-
-			const result = await app.accept(ACCEPTOR_ACTOR, {
-				idempotencyKey: 'accept-wrong-binding',
-				token,
-				email: wrongEmail
-			});
-
-			expect(result.outcome).toBe('invitation_invalid');
-			expect(store.acceptCommands[0].emailBinding).toBe(wrongBinding);
-		});
-
-		it('validates invalid accept inputs', async () => {
-			const store = new FakeInstanceStore();
-			const app = createTestApp(store);
-
-			// Invalid token prefix or length
-			await expect(
-				app.accept(ACCEPTOR_ACTOR, {
-					idempotencyKey: 'key-1',
-					token: 'invalid-token',
-					email: 'a@b.co'
-				})
-			).rejects.toThrow(InvalidInstanceInvitationRequestError);
-
-			await expect(
-				app.accept(ACCEPTOR_ACTOR, {
-					idempotencyKey: 'key-1',
-					token: `skr1_${'a'.repeat(43)}`,
-					email: 'a@b.co'
-				})
-			).rejects.toThrow(InvalidInstanceInvitationRequestError);
-
-			// Invalid email
-			await expect(
-				app.accept(ACCEPTOR_ACTOR, {
-					idempotencyKey: 'key-1',
-					token: validToken,
-					email: 'not-an-email'
-				})
-			).rejects.toThrow(InvalidInstanceInvitationRequestError);
-
-			// Invalid actor
-			await expect(
-				app.accept({ id: '' }, { idempotencyKey: 'key-1', token: validToken, email: 'a@b.co' })
-			).rejects.toThrow(InvalidInstanceInvitationRequestError);
-
-			// Invalid idempotency key
-			await expect(
-				app.accept(ACCEPTOR_ACTOR, { idempotencyKey: '', token: validToken, email: 'a@b.co' })
-			).rejects.toThrow(InvalidInstanceInvitationRequestError);
-		});
-
-		it('propagates a scripted already_member outcome with only the current member, no invitation, token, or replay flag', async () => {
-			const member: InstanceMemberMetadata = memberMetadata('acceptor-user-2', 'admin');
-			const store = new FakeInstanceStore([], [], [{ outcome: 'already_member', member }]);
-			const app = createTestApp(store);
-
-			const result: AcceptInstanceInvitationResult = await app.accept(ACCEPTOR_ACTOR, {
-				idempotencyKey: 'accept-already-member-1',
-				token: validToken,
-				email: 'signer@example.com'
-			});
-
-			expect(result).toEqual({ outcome: 'already_member', member });
-			expect(result).not.toHaveProperty('invitation');
-			expect(result).not.toHaveProperty('token');
-			expect(result).not.toHaveProperty('replayed');
-		});
-
-		it('forwards other accept store outcomes (invitation_invalid, idempotency_conflict, member_suspended, integrity_error)', async () => {
-			const outcomes: AcceptInstanceInvitationStoreResult[] = [
-				{ outcome: 'invitation_invalid' },
-				{ outcome: 'idempotency_conflict' },
-				{ outcome: 'member_suspended' },
-				{ outcome: 'integrity_error' }
-			];
-
-			for (const storeResult of outcomes) {
-				const store = new FakeInstanceStore([], [], [storeResult]);
-				const app = createTestApp(store);
-
-				const result = await app.accept(ACCEPTOR_ACTOR, {
-					idempotencyKey: 'key',
-					token: validToken,
-					email: 'signer@example.com'
-				});
-
-				expect(result.outcome).toBe(storeResult.outcome);
-			}
-		});
-	});
-
 	describe('recipient lookup (acceptance without the link)', () => {
 		it('stores the active keyed lookup of the normalized invited email on create', async () => {
 			const store = new FakeInstanceStore();
@@ -1358,13 +1185,6 @@ describe('InstanceInvitationApplication', () => {
 
 			const listRes = await service.listInstanceInvitations(ACTOR);
 			expect(listRes.outcome).toBe('listed');
-
-			const acceptRes = await service.acceptInstanceInvitation(ACCEPTOR_ACTOR, {
-				idempotencyKey: 'alias-2',
-				token: TEST_TOKEN,
-				email: 'alice@example.com'
-			});
-			expect(acceptRes.outcome).toBe('accepted');
 
 			const revokeRes = await service.revokeInstanceInvitation(ACTOR, VALID_UUID_1, {
 				idempotencyKey: 'alias-3'

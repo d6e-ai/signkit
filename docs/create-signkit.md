@@ -28,35 +28,40 @@ Omitting `--cloudflare` exits 2. There is no implicit Cloudflare default.
 
 ## Flags
 
-| Flag                      | Meaning                                                                                                                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--account-id`            | Cloudflare account ID (required; never inherited)                                                                                                                                                |
-| `--worker-name`           | Worker name (default `signkit` when there is no state)                                                                                                                                           |
-| `--d1`                    | D1 name or UUID (default `signkit` when there is no state)                                                                                                                                       |
-| `--r2`                    | R2 bucket name (default `signkit-objects` when there is no state)                                                                                                                                |
-| `--domain`                | Optional custom hostname; implies `https://<hostname>`                                                                                                                                           |
-| `--public-origin`         | Public https origin; must agree with `--domain` when both are set                                                                                                                                |
-| `--d6e-auth-base-url`     | `D6E_AUTH_BASE_URL` (default `https://www.d6e.ai`)                                                                                                                                               |
-| `--email-from`            | `SIGNKIT_EMAIL_FROM` (required for the initial managed deploy)                                                                                                                                   |
-| `--email-from-name`       | `SIGNKIT_EMAIL_FROM_NAME` (default `SignKit`)                                                                                                                                                    |
-| `--mail-provider`         | `cloudflare` (default, native Email binding) or `smtp`                                                                                                                                           |
-| `--smtp-host`             | SMTP hostname; required with `--mail-provider smtp`                                                                                                                                              |
-| `--smtp-port`             | SMTP submission port; required with SMTP, and port 25 is refused                                                                                                                                 |
-| `--smtp-secure`           | `true` for implicit TLS or `false` for mandatory STARTTLS; required with SMTP                                                                                                                    |
-| `--smtp-username`         | Optional SMTP username; when present, `SIGNKIT_SMTP_PASSWORD` is read only from secret stdin                                                                                                     |
-| `--bootstrap-owner-email` | `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it; console enrollment supplies a default)                  |
-| `--console-origins`       | `SIGNKIT_CONSOLE_ORIGINS`: comma-separated console origins allowed to call `/api/v1` cross-origin; `""` turns it off; console enrollment supplies a default                                      |
-| `--console-url`           | `SIGNKIT_CONSOLE_URL`: where invitation emails send people to join without the link (https; http only for loopback); `""` clears it; console enrollment supplies the `consoleUrl` D6E Auth names |
-| `--server-name`           | Console display name sent with console enrollment (default: the public origin's hostname); requires `D6E_ENROLLMENT_TOKEN`                                                                       |
-| `--version`               | `latest` or an exact tag such as `v1.2.3`                                                                                                                                                        |
-| `--channel`               | `stable` (default) or `beta`; enforced against the selected release                                                                                                                              |
-| `--state`                 | Override the XDG state file                                                                                                                                                                      |
-| `--yes`                   | Required for deploy/adopt/upgrade                                                                                                                                                                |
-| `--json`                  | Machine-readable result on stdout                                                                                                                                                                |
+| Flag                      | Meaning                                                                                                                                                                                              |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--account-id`            | Cloudflare account ID (required; never inherited)                                                                                                                                                    |
+| `--worker-name`           | Worker name (default `signkit` when there is no state)                                                                                                                                               |
+| `--d1`                    | D1 name or UUID (default `signkit` when there is no state)                                                                                                                                           |
+| `--r2`                    | R2 bucket name (default `signkit-objects` when there is no state)                                                                                                                                    |
+| `--domain`                | Optional custom hostname; implies `https://<hostname>`                                                                                                                                               |
+| `--public-origin`         | Public https origin; must agree with `--domain` when both are set                                                                                                                                    |
+| `--d6e-auth-base-url`     | `D6E_AUTH_BASE_URL` (default `https://www.d6e.ai`)                                                                                                                                                   |
+| `--email-from`            | `SIGNKIT_EMAIL_FROM` (required for the initial managed deploy)                                                                                                                                       |
+| `--email-from-name`       | `SIGNKIT_EMAIL_FROM_NAME` (default `SignKit`)                                                                                                                                                        |
+| `--mail-provider`         | `cloudflare` (default, native Email binding) or `smtp`                                                                                                                                               |
+| `--smtp-host`             | SMTP hostname; required with `--mail-provider smtp`                                                                                                                                                  |
+| `--smtp-port`             | SMTP submission port; required with SMTP, and port 25 is refused                                                                                                                                     |
+| `--smtp-secure`           | `true` for implicit TLS or `false` for mandatory STARTTLS; required with SMTP                                                                                                                        |
+| `--smtp-username`         | Optional SMTP username; when present, `SIGNKIT_SMTP_PASSWORD` is read only from secret stdin                                                                                                         |
+| `--bootstrap-owner-email` | `SIGNKIT_BOOTSTRAP_OWNER_EMAIL` as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it; console enrollment supplies a default)                      |
+| `--console-origins`       | `SIGNKIT_CONSOLE_ORIGINS`: comma-separated console origins allowed to call `/api/v1` cross-origin; required on every deploy and upgrade (console enrollment supplies it)                             |
+| `--console-url`           | `SIGNKIT_CONSOLE_URL`: the d6e console that operates this server (https; http only for loopback); required on every deploy and upgrade (console enrollment supplies the `consoleUrl` D6E Auth names) |
+| `--server-name`           | Console display name sent with console enrollment (default: the public origin's hostname); requires `D6E_ENROLLMENT_TOKEN`                                                                           |
+| `--version`               | `latest` or an exact tag such as `v1.2.3`                                                                                                                                                            |
+| `--channel`               | `stable` (default) or `beta`; enforced against the selected release                                                                                                                                  |
+| `--state`                 | Override the XDG state file                                                                                                                                                                          |
+| `--yes`                   | Required for deploy/adopt/upgrade                                                                                                                                                                    |
+| `--json`                  | Machine-readable result on stdout                                                                                                                                                                    |
 
 Omitted worker/D1/R2/domain/origin/mail flags inherit existing XDG state **before** Cloudflare inspection. Cloudflare Email is the default, while `--mail-provider smtp` generates SMTP vars and omits the native `EMAIL` binding. Secrets are never accepted on argv.
 
 ## First deploy
+
+SignKit is operated from a d6e console: the server has no operator pages or sign-in of its own, so
+deploy and upgrade refuse to run without the console settings. Register a new server with a console
+enrollment token (step 2's alternative below), which supplies them; a server its administrator
+already registered with the console passes `--console-url` and `--console-origins` instead.
 
 1. `create-signkit --cloudflare plan --account-id <id>` (resolves and downloads the selected release, verifies its GitHub/Sigstore provenance, and inspects Cloudflare; it never reads stdin, creates deployment/state/recovery files, or mutates Cloudflare. Sigstore may create or refresh its standard per-user TUF trust-metadata cache.)
 2. Write the two OAuth credentials to a secure JSON file (mode `0600`, never committed), then redirect it on stdin for the initial deploy. The CLI reads at most 16 KiB, requires exactly `D6E_AUTH_CLIENT_ID` and `D6E_AUTH_CLIENT_SECRET`, and never accepts secret values on argv, prints them, or stores them in state/logs:

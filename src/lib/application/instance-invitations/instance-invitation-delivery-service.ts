@@ -4,13 +4,7 @@ import {
 	type ClaimedInstanceInvitationDelivery,
 	type InstanceInvitationDeliveryStore
 } from '$lib/ports/instance-invitation-delivery-store';
-import {
-	mailProviderReceiptId,
-	MailDeliveryError,
-	type MailMessage,
-	type MailSendReceipt,
-	type MailSender
-} from '$lib/ports/mail-sender';
+import { CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID } from '$lib/ports/instance-store';
 import {
 	computeInstanceInvitationEmailBinding,
 	hashInstanceInvitationToken
@@ -19,7 +13,6 @@ import type { InstanceInvitationDeliveryPayloadSealer } from '$lib/security/inst
 import { sha256Hex } from '$lib/security/sealing-keyring';
 import { newOpaqueToken, type OpaqueTokenGenerator } from '$lib/security/opaque-token';
 import { sanitizeDeliveryErrorCode } from '$lib/ports/delivery-outbox-store';
-import { renderInstanceInvitationMail } from './instance-invitation-email';
 import { cappedExponentialBackoffAvailableAt } from '$lib/ports/capped-exponential-backoff';
 
 export const INSTANCE_INVITATION_DELIVERY_LEASE_MS: number = 5 * 60 * 1000;
@@ -30,47 +23,29 @@ const RETRY_MAX_MS: number = 6 * 60 * 60 * 1000;
 const RETRY_EXPONENT_CAP: number = 10;
 const CONCURRENCY: number = 5;
 
-export interface InstanceInvitationDeliverySenderConfig {
-	fromEmail: string;
-	fromName: string;
-	/**
-	 * Optional page where the invitee can also join without the link (a
-	 * console that lists this server). Absent, the mail points at this
-	 * server's own settings page, which lists received invitations.
-	 */
-	consoleUrl?: string;
-}
-
 /**
- * Accepts only an absolute https URL without credentials or fragment, so a
- * misconfigured value can never put another scheme or a secret into mail.
- * Returns the normalized URL, or null when the value is not acceptable.
+ * Delivers one invitation to D6E Auth as a console note (the same
+ * `PUT /api/v1/console/server-invitations/{id}` the create command sends).
+ * D6E Auth stores it, lists the server for the invitee in the console, and
+ * emails the invitee; this server sends no invitation mail of its own.
+ *
+ * `sent`: stored. `withdrawn`: D6E Auth already holds a withdrawal for the id
+ * (409), the intended end state after a revoke. `disabled`: this server has no
+ * console URL or client credentials. `failed`: rejected or unreachable.
  */
-export function parseInstanceInvitationConsoleUrl(value: string): string | null {
-	let parsed: URL;
-	try {
-		parsed = new URL(value);
-	} catch {
-		return null;
-	}
-	if (
-		parsed.protocol !== 'https:' ||
-		parsed.username !== '' ||
-		parsed.password !== '' ||
-		parsed.hash !== '' ||
-		parsed.href.length > 2048
-	) {
-		return null;
-	}
-	return parsed.href;
+export interface InstanceInvitationNote {
+	invitationId: string;
+	recipientEmail: string;
+	expiresAt: string;
+	inviterSubject: string;
+	locale: 'en' | 'ja';
 }
 
-export class InvalidInstanceInvitationDeliveryConfigError extends Error {
-	constructor() {
-		super('Instance invitation delivery configuration is invalid');
-		this.name = 'InvalidInstanceInvitationDeliveryConfigError';
-	}
-}
+export type InstanceInvitationNoteOutcome = 'sent' | 'withdrawn' | 'disabled' | 'failed';
+
+export type InstanceInvitationNotifier = (
+	note: InstanceInvitationNote
+) => Promise<InstanceInvitationNoteOutcome>;
 
 export type InstanceInvitationDeliveryItemOutcome =
 	| { deliveryId: string; outcome: 'delivered' | 'stale' }
@@ -90,29 +65,30 @@ export interface InstanceInvitationDeliveryBatchResult {
 	outcomes: readonly InstanceInvitationDeliveryItemOutcome[];
 }
 
+/**
+ * Drains the invitation outbox by delivering each invitation to D6E Auth as a
+ * console note, with the outbox's lease, integrity checks, and capped
+ * exponential retry. The create command already sends the note once and
+ * closes the row when D6E Auth stored it; this drain retries the ones it could
+ * not deliver, so an outage never leaves an invitee unlisted.
+ */
 export class InstanceInvitationDeliveryService {
 	readonly #store: InstanceInvitationDeliveryStore;
 	readonly #sealer: InstanceInvitationDeliveryPayloadSealer;
-	readonly #mail: MailSender;
-	readonly #origin: string;
-	readonly #sender: InstanceInvitationDeliverySenderConfig;
+	readonly #notify: InstanceInvitationNotifier;
 	readonly #now: () => Date;
 	readonly #newClaimToken: OpaqueTokenGenerator;
 
 	constructor(
 		store: InstanceInvitationDeliveryStore,
 		sealer: InstanceInvitationDeliveryPayloadSealer,
-		mail: MailSender,
-		publicOrigin: string,
-		sender: InstanceInvitationDeliverySenderConfig,
+		notify: InstanceInvitationNotifier,
 		now: () => Date = (): Date => new Date(),
 		newClaimToken: OpaqueTokenGenerator = newOpaqueToken
 	) {
 		this.#store = store;
 		this.#sealer = sealer;
-		this.#mail = mail;
-		this.#origin = assertPublicHttpsOrigin(publicOrigin);
-		this.#sender = assertSenderConfig(sender);
+		this.#notify = notify;
 		this.#now = now;
 		this.#newClaimToken = newClaimToken;
 	}
@@ -210,49 +186,29 @@ export class InstanceInvitationDeliveryService {
 			);
 		}
 
-		const acceptanceUrl: string = `${this.#origin}/${claim.locale}/invitations/accept#token=${encodeURIComponent(payload.token)}`;
-		// Joining without the link needs no token, so this URL carries none.
-		const joinUrl: string = this.#sender.consoleUrl ?? `${this.#origin}/${claim.locale}/settings`;
-		const copy = renderInstanceInvitationMail(
-			claim.locale,
-			claim.role,
-			acceptanceUrl,
-			claim.expiresAt,
-			joinUrl
-		);
-		const message: MailMessage = {
-			to: payload.email,
-			from: { email: this.#sender.fromEmail, name: this.#sender.fromName },
-			subject: copy.subject,
-			text: copy.text,
-			html: copy.html,
-			deliveryKey: claim.deliveryId
-		};
-		let receipt: MailSendReceipt;
+		let outcome: InstanceInvitationNoteOutcome;
 		try {
-			receipt = await this.#mail.send(message);
-		} catch (error: unknown) {
-			if (error instanceof MailDeliveryError) {
-				return this.#fail(
-					claim,
-					claimToken,
-					error.code,
-					error.retryable,
-					now,
-					error.retryable ? 'retryable_failed' : 'permanently_failed'
-				);
-			}
-			return this.#fail(claim, claimToken, 'mail_delivery_failed', true, now, 'retryable_failed');
+			outcome = await this.#notify({
+				invitationId: claim.invitationId,
+				recipientEmail: payload.email,
+				expiresAt: claim.expiresAt,
+				inviterSubject: claim.inviterUserId,
+				locale: claim.locale
+			});
+		} catch {
+			outcome = 'failed';
 		}
-		const providerMessageId: string | null = mailProviderReceiptId(receipt);
-		if (providerMessageId === null) {
-			return this.#fail(claim, claimToken, 'mail_receipt_invalid', true, now, 'retryable_failed');
+		if (outcome === 'disabled') {
+			return this.#fail(claim, claimToken, 'console_not_configured', true, now, 'retryable_failed');
+		}
+		if (outcome === 'failed') {
+			return this.#fail(claim, claimToken, 'console_note_failed', true, now, 'retryable_failed');
 		}
 		const completed = await this.#store.complete({
 			deliveryId: claim.deliveryId,
 			claimToken,
 			deliveredAt: now.toISOString(),
-			providerMessageId
+			providerMessageId: CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID
 		});
 		return completed.outcome === 'completed'
 			? { deliveryId: claim.deliveryId, outcome: 'delivered' }
@@ -298,59 +254,6 @@ function retryAt(now: Date, attempts: number): string {
 		RETRY_MAX_MS,
 		RETRY_EXPONENT_CAP
 	);
-}
-
-function assertPublicHttpsOrigin(origin: string): string {
-	let parsed: URL;
-	try {
-		parsed = new URL(origin);
-	} catch {
-		throw new InvalidInstanceInvitationDeliveryConfigError();
-	}
-	if (
-		parsed.protocol !== 'https:' ||
-		parsed.username !== '' ||
-		parsed.password !== '' ||
-		parsed.pathname !== '/' ||
-		parsed.search !== '' ||
-		parsed.hash !== ''
-	) {
-		throw new InvalidInstanceInvitationDeliveryConfigError();
-	}
-	return parsed.origin;
-}
-
-function assertSenderConfig(
-	sender: InstanceInvitationDeliverySenderConfig
-): InstanceInvitationDeliverySenderConfig {
-	if (
-		!isValidMailbox(sender.fromEmail) ||
-		sender.fromName.length === 0 ||
-		sender.fromName.length > 200 ||
-		hasControlCharacters(sender.fromName)
-	) {
-		throw new InvalidInstanceInvitationDeliveryConfigError();
-	}
-	if (sender.consoleUrl === undefined) return sender;
-	const consoleUrl: string | null = parseInstanceInvitationConsoleUrl(sender.consoleUrl);
-	if (consoleUrl === null) throw new InvalidInstanceInvitationDeliveryConfigError();
-	return { ...sender, consoleUrl };
-}
-
-function isValidMailbox(value: string): boolean {
-	return (
-		value.length > 0 &&
-		value.length <= 320 &&
-		/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) &&
-		!hasControlCharacters(value)
-	);
-}
-
-function hasControlCharacters(value: string): boolean {
-	return Array.from(value).some((character: string): boolean => {
-		const codePoint: number = character.codePointAt(0) ?? 0;
-		return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
-	});
 }
 
 function summarize(

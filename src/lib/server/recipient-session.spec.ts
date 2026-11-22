@@ -10,7 +10,6 @@ import {
 	sealRecipientSession,
 	unsealRecipientSession
 } from './recipient-session';
-import { seal, unseal } from './session';
 
 const token: string = `skr1_${'A'.repeat(43)}`;
 const envelopeId: string = '01910000-0000-7000-8000-000000000001';
@@ -83,19 +82,6 @@ describe('recipient session sealing', () => {
 		const sealed: string = await sealRecipientSession(token, envelopeId);
 		privateEnv.SESSION_ENCRYPTION_KEY = undefined;
 		await expect(unsealRecipientSession(sealed, envelopeId)).rejects.toThrow(/is not set/);
-	});
-
-	it('cannot interchange recipient and operator session ciphertexts', async () => {
-		const recipientCookie: string = await sealRecipientSession(token, envelopeId);
-		const operatorCookie: string = await seal({
-			accessToken: 'operator-access',
-			refreshToken: null,
-			expiresAt: 1_800_000_000,
-			principal: { subject: 'user-1', email: 'user@example.com', name: 'User' }
-		});
-
-		await expect(unseal(recipientCookie)).resolves.toBeNull();
-		await expect(unsealRecipientSession(operatorCookie, envelopeId)).resolves.toBeNull();
 	});
 
 	it('opens a cookie sealed under the previous key once the active key rotates', async () => {

@@ -34,11 +34,11 @@ describe('consoleInvitationNotes', () => {
 	it('does nothing unless a console URL and the server client are configured', async () => {
 		const fetchMock = vi.fn();
 		vi.stubGlobal('fetch', fetchMock);
-		expect((await consoleInvitationNotes.note(NOTE, {})).outcome).toBe('disabled');
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('disabled');
 		configure({ SIGNKIT_CONSOLE_URL: undefined });
-		expect((await consoleInvitationNotes.note(NOTE, {})).outcome).toBe('disabled');
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('disabled');
 		configure({ SIGNKIT_CONSOLE_URL: 'http://console.example.com/' });
-		expect((await consoleInvitationNotes.note(NOTE, {})).outcome).toBe('disabled');
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('disabled');
 		configure({ D6E_AUTH_CLIENT_SECRET: undefined });
 		expect(await consoleInvitationNotes.forget(INVITATION_ID, {})).toBe('disabled');
 		expect(fetchMock).not.toHaveBeenCalled();
@@ -51,7 +51,7 @@ describe('consoleInvitationNotes', () => {
 		const platform = {
 			env: { SIGNKIT_CONSOLE_URL: 'https://auth.example.com/signkit/console' }
 		} as unknown as App.Platform;
-		expect((await consoleInvitationNotes.note(NOTE, { platform })).outcome).toBe('sent');
+		expect(await consoleInvitationNotes.note(NOTE, { platform })).toBe('sent');
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
@@ -59,7 +59,7 @@ describe('consoleInvitationNotes', () => {
 		configure();
 		const fetchMock = vi.fn(async () => new Response('{"noted":true}', { status: 200 }));
 		vi.stubGlobal('fetch', fetchMock);
-		expect((await consoleInvitationNotes.note(NOTE, {})).outcome).toBe('sent');
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('sent');
 		const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
 		expect(url).toBe(`https://auth.example.com/api/v1/console/server-invitations/${INVITATION_ID}`);
 		expect(init.method).toBe('PUT');
@@ -84,56 +84,6 @@ describe('consoleInvitationNotes', () => {
 		expect(JSON.parse(init.body as string)).toMatchObject({ locale: 'en-US' });
 	});
 
-	it('reports whether D6E Auth emails the invitee for this note', async () => {
-		configure();
-		const cases: [string, 'queued' | 'skipped' | null][] = [
-			['{"noted":true,"invitationEmail":"queued"}', 'queued'],
-			['{"noted":true,"invitationEmail":"skipped"}', 'skipped'],
-			['{"noted":true}', null],
-			['{"noted":true,"invitationEmail":"later"}', null],
-			['["queued"]', null],
-			['not json', null],
-			[`{"invitationEmail":"queued","pad":"${'x'.repeat(5_000)}"}`, null]
-		];
-		for (const [body, expected] of cases) {
-			vi.stubGlobal(
-				'fetch',
-				vi.fn(async () => new Response(body, { status: 200 }))
-			);
-			expect(await consoleInvitationNotes.note(NOTE, {})).toEqual({
-				outcome: 'sent',
-				invitationEmail: expected
-			});
-		}
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async () => new Response(null, { status: 204 }))
-		);
-		expect((await consoleInvitationNotes.note(NOTE, {})).invitationEmail).toBeNull();
-	});
-
-	it('is enabled only with a valid console URL and the server client', () => {
-		expect(consoleInvitationNotes.enabled({})).toBe(false);
-		configure();
-		expect(consoleInvitationNotes.enabled({})).toBe(true);
-		configure({ SIGNKIT_CONSOLE_URL: 'http://console.example.com/' });
-		expect(consoleInvitationNotes.enabled({})).toBe(false);
-		configure({ SIGNKIT_CONSOLE_URL: 'https://auth.example.com/signkit/console' });
-		configure({ D6E_AUTH_CLIENT_SECRET: undefined });
-		expect(consoleInvitationNotes.enabled({})).toBe(false);
-	});
-
-	it('DELETEs the note on withdraw', async () => {
-		configure();
-		const fetchMock = vi.fn(async () => new Response('{"removed":true}', { status: 200 }));
-		vi.stubGlobal('fetch', fetchMock);
-		expect(await consoleInvitationNotes.forget(INVITATION_ID, {})).toBe('sent');
-		const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-		expect(url).toBe(`https://auth.example.com/api/v1/console/server-invitations/${INVITATION_ID}`);
-		expect(init.method).toBe('DELETE');
-		expect(init.body).toBeUndefined();
-	});
-
 	it('treats a note refused for an already withdrawn invitation as withdrawn, not failed', async () => {
 		configure();
 		const warn = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
@@ -141,7 +91,7 @@ describe('consoleInvitationNotes', () => {
 			'fetch',
 			vi.fn(async () => new Response('{"error":"invitation_revoked"}', { status: 409 }))
 		);
-		expect((await consoleInvitationNotes.note(NOTE, {})).outcome).toBe('withdrawn');
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('withdrawn');
 		expect(warn).not.toHaveBeenCalled();
 	});
 
@@ -152,14 +102,14 @@ describe('consoleInvitationNotes', () => {
 			'fetch',
 			vi.fn(async () => new Response('{"error":"invalid_client"}', { status: 401 }))
 		);
-		expect((await consoleInvitationNotes.note(NOTE, {})).outcome).toBe('failed');
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('failed');
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(async () => {
 				throw new TypeError('fetch failed for invitee@example.com d6es_secret');
 			})
 		);
-		expect((await consoleInvitationNotes.note(NOTE, {})).outcome).toBe('failed');
+		expect(await consoleInvitationNotes.note(NOTE, {})).toBe('failed');
 		const logged: string = JSON.stringify(warn.mock.calls);
 		expect(logged).toContain('console_invitation_note_failed');
 		expect(logged).toContain('401');

@@ -34,6 +34,8 @@ export const ACCOUNT_ID = '0123456789abcdef0123456789abcdef';
 export const COMMIT = '0123456789abcdef0123456789abcdef01234567';
 export const D1_ID = '11111111-1111-1111-1111-111111111111';
 export const BOOTSTRAP_OWNER_EMAIL = 'owner@example.com';
+export const CONSOLE_ORIGIN = 'https://console.example';
+export const CONSOLE_URL = 'https://console.example/signkit/console';
 export const WORKER_VERSION = '22222222-2222-2222-2222-222222222222';
 export const PREVIOUS_VERSION = '33333333-3333-3333-3333-333333333333';
 
@@ -52,6 +54,8 @@ export async function writeCloudflareState(
 			r2: { name: 'signkit-objects' },
 			publicOrigin: 'https://signkit.example.workers.dev',
 			bootstrapOwnerEmail: BOOTSTRAP_OWNER_EMAIL,
+			consoleOrigins: [CONSOLE_ORIGIN],
+			consoleUrl: CONSOLE_URL,
 			channel: 'stable',
 			schemaEpoch: D1_SCHEMA_EPOCH,
 			updatedAt: '2026-09-15T00:00:00.000Z',
@@ -467,6 +471,8 @@ export function command(overrides: Partial<ParsedCommand> = {}): ParsedCommand {
 		d1: 'signkit',
 		r2: 'signkit-objects',
 		mailProvider: 'cloudflare',
+		consoleOrigins: [CONSOLE_ORIGIN],
+		consoleUrl: CONSOLE_URL,
 		version: 'latest',
 		channel: 'stable',
 		yes: true,

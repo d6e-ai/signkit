@@ -1,121 +1,25 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
-import { resolveInstanceApplication } from '$lib/application/instance/instance-runtime';
-import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
-import type { InstanceCallerContext, InstanceMemberRole } from '$lib/ports/instance-store';
-import { isConsoleRedirectedPagePath } from '$lib/navigation/console-redirect-surface';
 import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
-import { isSettingsSurfacePath } from '$lib/navigation/settings-surface';
-import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
-import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
-import { isInvitationSurfacePath } from '$lib/navigation/invitation-surface';
-import { localizeHref } from '$lib/paraglide/runtime';
 import { resolveConsoleUrl } from '$lib/server/console-url';
-import { getRequestCallerContext } from '$lib/server/request-caller-membership';
 
 /**
- * Central page-access gate for every non-recipient browser page.
+ * This server renders only recipient pages (`/s`, `/sign`, `/c`): their
+ * visitors authenticate with capability links, never with an operator
+ * session. Operators work in the d6e console that lists this server
+ * (`SIGNKIT_CONSOLE_URL`), so every other page path -- including old
+ * dashboard, envelope, settings, setup, and invitation links -- redirects
+ * there. A server without a valid console URL is misconfigured and answers
+ * 503 instead.
  *
- * An unavailable identity or member read fails closed, even when identity
- * verification already populated `locals.principal`. An anonymous caller redirects to
- * sign-in, while `unavailable` means a session exists but identity could not
- * be verified -- redirecting that case into `/auth/login` would either loop
- * back through the same failing d6e-auth call or silently treat a verification
- * failure as an invitation to reauthenticate, so it fails closed with a 503
- * instead. A verified identity remains eligible for instance bootstrap and
- * membership below; authorization comes only from the local `instance_member`
- * model.
- *
- * The recipient signing surface is exempt because its visitors are never
- * SignKit account holders -- they authenticate with a capability link, not a
- * d6e-auth session. The signed-out surface is exempt for the opposite reason:
- * it is the page `POST /auth/logout` redirects to, and it exists specifically
- * so a just-logged-out caller lands on a public page with a Sign In action
- * instead of being bounced straight back through this same gate into another
- * OAuth round trip.
- *
- * A server listed in a d6e console (`SIGNKIT_CONSOLE_URL`) is operated there:
- * its operator pages (see `isConsoleRedirectedPagePath`) redirect to the
- * console before any sign-in, so a visitor never starts this server's OAuth
- * round trip for them. Done here rather than in a hook so SvelteKit turns the
- * redirect into its data-request form during client-side navigation too, for
- * example after accepting an invitation by link. A standalone server (no
- * console URL) keeps every page.
+ * Done in the layout rather than a hook so SvelteKit also returns the redirect
+ * in its data-request form during client-side navigation.
  */
-export const load: LayoutServerLoad = async ({ locals, platform, url }) => {
-	// Omitted rather than `{ email: null }`: the recipient surface has its own
-	// page data shape, and a field returned unconditionally from every branch
-	// here would become non-optional in every descendant route's merged
-	// `PageData` -- including recipient pages that have nothing to do with an
-	// authenticated email at all.
+export const load: LayoutServerLoad = async ({ platform, url }) => {
 	if (isRecipientSurfacePath(url.pathname)) return {};
-	if (isConsoleRedirectedPagePath(url.pathname)) {
-		const consoleUrl: string | null = resolveConsoleUrl(platform);
-		if (consoleUrl !== null) redirect(302, consoleUrl);
+	const consoleUrl: string | null = resolveConsoleUrl(platform);
+	if (consoleUrl === null) {
+		error(503, 'This SignKit server is not registered with a d6e console.');
 	}
-	if (isSignedOutSurfacePath(url.pathname)) return {};
-	// Capture the fragment in the browser before starting OAuth. Acceptance
-	// itself still requires the authenticated, email-bound POST command.
-	if (isInvitationSurfacePath(url.pathname)) return {};
-
-	if (locals.identityState === 'unavailable') {
-		error(503, 'Identity could not be verified.');
-	}
-	if (locals.principal === null) {
-		const returnTo: string = `${url.pathname}${url.search}`;
-		redirect(302, localizeHref(`/auth/login?return=${encodeURIComponent(returnTo)}`));
-	}
-
-	const email: string = locals.principal.email;
-	const name: string = locals.principal.name;
-	const callerId: string = locals.principal.subject;
-
-	let application: InstanceApplicationPort | null;
-	try {
-		application = await resolveInstanceApplication({ platform });
-	} catch {
-		application = null;
-	}
-	// Unlike the API layer -- which independently re-derives its own
-	// authorization on every request and can safely let a page fail on its next
-	// data fetch -- this gate is the only thing standing between an
-	// unresolvable durable store and rendering a normal page shell for a caller
-	// whose membership can no longer be proven. Proceeding here would be a real
-	// gap, not merely a UX one, so an unresolvable store fails the whole
-	// navigation closed with a 503 rather than falling through.
-	if (application === null) {
-		error(503, 'Instance persistence unavailable.');
-	}
-
-	let context: InstanceCallerContext;
-	try {
-		context = await getRequestCallerContext(locals, callerId, () =>
-			application.getCurrentMember({ id: callerId })
-		);
-	} catch {
-		error(503, 'Instance membership could not be resolved.');
-	}
-
-	if (!context.bootstrapped) {
-		if (!isSetupSurfacePath(url.pathname)) redirect(302, localizeHref('/setup'));
-		return { email, name, instanceMemberRole: null };
-	}
-	if (isSetupSurfacePath(url.pathname)) redirect(302, localizeHref('/'));
-
-	const isActiveMember: boolean = context.member?.status === 'active';
-	if (!isActiveMember && !isSettingsSurfacePath(url.pathname)) {
-		redirect(302, localizeHref('/settings'));
-	}
-
-	// Absent for a non-member, and deliberately null (not the suspended
-	// member's actual role) for an inactive one too: every consumer of this
-	// field -- the sidebar's role-filtered settings links, the settings child
-	// route guards -- treats "has a usable role" and "is an active member" as
-	// the same question, so a suspended owner must never be handed `'owner'`
-	// here only to have some future caller forget to also check `status`.
-	const instanceMemberRole: InstanceMemberRole | null = isActiveMember
-		? context.member!.role
-		: null;
-
-	return { email, name, instanceMemberRole };
+	redirect(302, consoleUrl);
 };
