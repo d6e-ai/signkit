@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Breaking: the move to console-only operation ships as a major release, SignKit 1.0.0 (app and Rust CLI) together with create-signkit 1.0.0. The version numbers are set in the release preparation commit.
+
 ### Removed
 
 - Standalone operation. SignKit is operated only from a d6e console (`SIGNKIT_CONSOLE_URL`, `SIGNKIT_CONSOLE_ORIGINS`): the server's own operator pages (dashboard, envelopes, settings, setup, signed-out), its sign-in (`/auth/*`) and operator session cookie, invitation acceptance by the emailed link (`/invitations/accept` and `POST /api/v1/instance/invitations/accept`), and SignKit's own invitation email are removed. The server renders only the recipient pages (`/s`, `/sign`, `/c`); every other page path redirects to the console, or answers 503 without one. Operators authenticate with a d6e-auth access token; automation keeps using API keys.
