@@ -16,6 +16,7 @@ import type {
 	RevokeInstanceInvitationCommand,
 	ListReceivedInstanceInvitationsStoreResult,
 	RevokeInstanceInvitationStoreResult,
+	SettleInstanceInvitationDeliveryStoreResult,
 	SetInstanceMemberRoleCommand,
 	SetInstanceMemberRoleStoreResult,
 	SetInstanceMemberStatusCommand,
@@ -88,6 +89,10 @@ class MockInstanceStore implements InstanceStore {
 	): Promise<RevokeInstanceInvitationStoreResult> {
 		void command;
 		return { outcome: 'forbidden' };
+	}
+
+	async settleInstanceInvitationDelivery(): Promise<SettleInstanceInvitationDeliveryStoreResult> {
+		return { outcome: 'unchanged' };
 	}
 
 	async listInstanceMembers(

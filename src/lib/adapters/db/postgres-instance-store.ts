@@ -31,6 +31,9 @@ import {
 	type ReceivedInstanceInvitation,
 	type RevokeInstanceInvitationCommand,
 	type RevokeInstanceInvitationStoreResult,
+	type SettleInstanceInvitationDeliveryCommand,
+	type SettleInstanceInvitationDeliveryStoreResult,
+	CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
 	type SetInstanceMemberStatusCommand,
@@ -440,7 +443,8 @@ export class PostgresInstanceStore implements InstanceStore {
 						) VALUES (
 							${command.deliveryId}, ${command.invitationId}, ${command.deliveryLocale},
 							'pending', ${command.sealedDeliveryPayload}, ${command.deliverySealingKeyId},
-							${command.sealedDeliveryPayloadSha256}, ${command.createdAt}::timestamptz,
+							${command.sealedDeliveryPayloadSha256},
+							${command.deliveryAvailableAt ?? command.createdAt}::timestamptz,
 							0, true, NULL, NULL, NULL, NULL, NULL,
 							${command.createdAt}::timestamptz, ${command.createdAt}::timestamptz
 						)
@@ -877,6 +881,33 @@ export class PostgresInstanceStore implements InstanceStore {
 				return { outcome: 'listed', items: rows.map(receivedFromRow) };
 			}
 		);
+	}
+
+	async settleInstanceInvitationDelivery(
+		command: SettleInstanceInvitationDeliveryCommand
+	): Promise<SettleInstanceInvitationDeliveryStoreResult> {
+		if (command.handoff === 'console') {
+			const handedOff = await this.#sql<{ id: string }[]>`
+				UPDATE instance_invitation_delivery_outbox
+				SET status = 'delivered', retryable = false, sealed_payload = NULL,
+				    delivered_at = ${command.settledAt}::timestamptz,
+				    provider_message_id = ${CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID}, last_error = NULL,
+				    updated_at = ${command.settledAt}::timestamptz
+				WHERE invitation_id = ${command.invitationId}
+				  AND (status = 'pending' OR (status = 'failed' AND retryable))
+				RETURNING id
+			`;
+			return handedOff.length > 0 ? { outcome: 'handed_off' } : { outcome: 'unchanged' };
+		}
+		const released = await this.#sql<{ id: string }[]>`
+			UPDATE instance_invitation_delivery_outbox
+			SET available_at = ${command.settledAt}::timestamptz,
+			    updated_at = ${command.settledAt}::timestamptz
+			WHERE invitation_id = ${command.invitationId} AND status = 'pending'
+			  AND available_at > ${command.settledAt}::timestamptz
+			RETURNING id
+		`;
+		return released.length > 0 ? { outcome: 'released' } : { outcome: 'unchanged' };
 	}
 
 	async revokeInstanceInvitation(

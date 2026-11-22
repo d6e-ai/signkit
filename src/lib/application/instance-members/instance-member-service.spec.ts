@@ -19,6 +19,7 @@ import {
 	type RevokeInstanceInvitationCommand,
 	type ListReceivedInstanceInvitationsStoreResult,
 	type RevokeInstanceInvitationStoreResult,
+	type SettleInstanceInvitationDeliveryStoreResult,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
 	type SetInstanceMemberStatusCommand,
@@ -150,6 +151,10 @@ class FakeInstanceStore implements InstanceStore {
 	): Promise<RevokeInstanceInvitationStoreResult> {
 		void command;
 		return { outcome: 'invitation_invalid' };
+	}
+
+	async settleInstanceInvitationDelivery(): Promise<SettleInstanceInvitationDeliveryStoreResult> {
+		return { outcome: 'unchanged' };
 	}
 }
 

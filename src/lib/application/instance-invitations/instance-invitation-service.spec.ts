@@ -22,6 +22,8 @@ import {
 	type ListReceivedInstanceInvitationsQuery,
 	type ListReceivedInstanceInvitationsStoreResult,
 	type RevokeInstanceInvitationStoreResult,
+	type SettleInstanceInvitationDeliveryCommand,
+	type SettleInstanceInvitationDeliveryStoreResult,
 	type SetInstanceMemberRoleCommand,
 	type SetInstanceMemberRoleStoreResult,
 	type SetInstanceMemberStatusCommand,
@@ -152,6 +154,7 @@ class FakeInstanceStore implements InstanceStore {
 	readonly acceptCommands: AcceptInstanceInvitationCommand[] = [];
 	readonly revokeCommands: RevokeInstanceInvitationCommand[] = [];
 	readonly receivedQueries: ListReceivedInstanceInvitationsQuery[] = [];
+	readonly settleCommands: SettleInstanceInvitationDeliveryCommand[] = [];
 	receivedResult: ListReceivedInstanceInvitationsStoreResult = { outcome: 'listed', items: [] };
 
 	readonly #createResults: CreateInstanceInvitationStoreResult[];
@@ -220,6 +223,13 @@ class FakeInstanceStore implements InstanceStore {
 		this.revokeCommands.push(command);
 		const scripted: RevokeInstanceInvitationStoreResult | undefined = this.#revokeResults.shift();
 		return scripted ?? { outcome: 'revoked', invitation: revokeInvitationMetadata(command) };
+	}
+
+	async settleInstanceInvitationDelivery(
+		command: SettleInstanceInvitationDeliveryCommand
+	): Promise<SettleInstanceInvitationDeliveryStoreResult> {
+		this.settleCommands.push(command);
+		return { outcome: command.handoff === 'console' ? 'handed_off' : 'released' };
 	}
 
 	async bootstrapInstance(): Promise<BootstrapInstanceStoreResult> {
@@ -355,6 +365,33 @@ function createTestApp(
 }
 
 describe('InstanceInvitationApplication', () => {
+	describe('settleDelivery', () => {
+		it('passes the handoff to the store with the current time', async () => {
+			const store = new FakeInstanceStore();
+			const app = createTestApp(store);
+			expect(await app.settleDelivery(VALID_UUID_1, 'console')).toEqual({
+				outcome: 'handed_off'
+			});
+			expect(await app.settleDelivery(VALID_UUID_1, 'self')).toEqual({ outcome: 'released' });
+			expect(store.settleCommands).toEqual([
+				{ invitationId: VALID_UUID_1, handoff: 'console', settledAt: NOW.toISOString() },
+				{ invitationId: VALID_UUID_1, handoff: 'self', settledAt: NOW.toISOString() }
+			]);
+		});
+
+		it('rejects a malformed invitation id or handoff before the store', async () => {
+			const store = new FakeInstanceStore();
+			const app = createTestApp(store);
+			await expect(app.settleDelivery('not-an-id', 'self')).rejects.toBeInstanceOf(
+				InvalidInstanceInvitationRequestError
+			);
+			await expect(
+				app.settleDelivery(VALID_UUID_1, 'other' as unknown as 'self')
+			).rejects.toBeInstanceOf(InvalidInstanceInvitationRequestError);
+			expect(store.settleCommands).toEqual([]);
+		});
+	});
+
 	describe('create', () => {
 		it('creates a fresh invitation with fixed 7-day expiry and encrypted delivery payload', async () => {
 			const store = new FakeInstanceStore();
@@ -400,6 +437,42 @@ describe('InstanceInvitationApplication', () => {
 				canonicalJson({ email: 'alice@example.com', locale: 'ja', role: 'admin' })
 			);
 			expect(command.requestFingerprint).toBe(expectedFingerprint);
+		});
+
+		it('holds the invitation mail for the requested time without changing the fingerprint', async () => {
+			const heldStore = new FakeInstanceStore();
+			await createTestApp(heldStore).create(ACTOR, {
+				idempotencyKey: 'idemp-hold-1',
+				email: 'alice@example.com',
+				role: 'member',
+				deliveryHoldMs: 60_000
+			});
+			const plainStore = new FakeInstanceStore();
+			await createTestApp(plainStore).create(ACTOR, {
+				idempotencyKey: 'idemp-hold-1',
+				email: 'alice@example.com',
+				role: 'member'
+			});
+			expect(heldStore.createCommands[0].deliveryAvailableAt).toBe(
+				new Date(NOW.valueOf() + 60_000).toISOString()
+			);
+			expect(plainStore.createCommands[0].deliveryAvailableAt).toBeUndefined();
+			expect(heldStore.createCommands[0].requestFingerprint).toBe(
+				plainStore.createCommands[0].requestFingerprint
+			);
+		});
+
+		it('rejects an invalid delivery hold', async () => {
+			for (const deliveryHoldMs of [-1, 1.5, 10 * 60 * 1000 + 1, Number.NaN]) {
+				await expect(
+					createTestApp(new FakeInstanceStore()).create(ACTOR, {
+						idempotencyKey: 'idemp-hold-bad',
+						email: 'alice@example.com',
+						role: 'member',
+						deliveryHoldMs
+					})
+				).rejects.toBeInstanceOf(InvalidInstanceInvitationRequestError);
+			}
 		});
 
 		it('ensures token one-time response: returned on fresh creation, absent on replay', async () => {

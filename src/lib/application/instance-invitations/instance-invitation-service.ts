@@ -22,7 +22,8 @@ import {
 	type ListInstanceInvitationsStoreResult,
 	type ListReceivedInstanceInvitationsStoreResult,
 	type RevokeInstanceInvitationCommand,
-	type RevokeInstanceInvitationStoreResult
+	type RevokeInstanceInvitationStoreResult,
+	type SettleInstanceInvitationDeliveryStoreResult
 } from '$lib/ports/instance-store';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
@@ -66,7 +67,19 @@ export interface CreateInstanceInvitationInput {
 	 * must expire and cannot exceed the fixed 7-day lifetime.
 	 */
 	expiresAt?: string | null;
+	/**
+	 * Holds the invitation mail this long after creation so a console note can
+	 * hand it to D6E Auth first (see `settleDelivery`). Omitted or 0: the mail
+	 * is available at once. Not part of the request fingerprint.
+	 */
+	deliveryHoldMs?: number;
 }
+
+/**
+ * After the console note answered: `console` when D6E Auth emails the
+ * invitee, `self` when this server must send its own mail.
+ */
+export type InstanceInvitationDeliveryHandoff = 'console' | 'self';
 
 /**
  * Public create outcomes.
@@ -219,6 +232,16 @@ export interface InstanceInvitationApplicationPort {
 		invitationIdOrInput: string | (RevokeInstanceInvitationInput & { invitationId: string }),
 		maybeInput?: RevokeInstanceInvitationInput
 	): Promise<RevokeInstanceInvitationResult>;
+	/**
+	 * Decides a held invitation mail after the console note answered. Only the
+	 * create handler calls it, right after the note, for an invitation it just
+	 * created or replayed; it needs no actor because it never changes the
+	 * invitation, only whether this server's own mail goes out.
+	 */
+	settleDelivery(
+		invitationId: string,
+		handoff: InstanceInvitationDeliveryHandoff
+	): Promise<SettleInstanceInvitationDeliveryStoreResult>;
 }
 
 export type InstanceInvitationServicePort = InstanceInvitationApplicationPort;
@@ -308,6 +331,9 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 		const now: Date = this.now();
 		const createdAt: string = now.toISOString();
 		const expiresAt: string = computeExpiresAt(now, input.expiresAt);
+		const deliveryHoldMs: number = assertDeliveryHoldMs(input.deliveryHoldMs);
+		const deliveryAvailableAt: string | undefined =
+			deliveryHoldMs > 0 ? new Date(now.valueOf() + deliveryHoldMs).toISOString() : undefined;
 
 		// Keyed fingerprint binds every delivery-affecting field without making the
 		// invited mailbox guessable from a stored unsalted hash. The previous-key
@@ -365,6 +391,7 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 				createdAt,
 				expiresAt,
 				recipientLookup: recipientLookups.active,
+				...(deliveryAvailableAt === undefined ? {} : { deliveryAvailableAt }),
 				...(sealedDisplay === null
 					? {}
 					: {
@@ -579,9 +606,37 @@ export class InstanceInvitationApplication implements InstanceInvitationApplicat
 	): Promise<RevokeInstanceInvitationResult> {
 		return this.revoke(actor, invitationIdOrInput, maybeInput);
 	}
+
+	async settleDelivery(
+		invitationId: string,
+		handoff: InstanceInvitationDeliveryHandoff
+	): Promise<SettleInstanceInvitationDeliveryStoreResult> {
+		if (!isInstanceInvitationId(invitationId)) {
+			throw new InvalidInstanceInvitationRequestError('Invitation id is invalid');
+		}
+		if (handoff !== 'console' && handoff !== 'self') {
+			throw new InvalidInstanceInvitationRequestError('Delivery handoff is invalid');
+		}
+		return await this.store.settleInstanceInvitationDelivery({
+			invitationId,
+			handoff,
+			settledAt: this.now().toISOString()
+		});
+	}
 }
 
 export { InstanceInvitationApplication as InstanceInvitationService };
+
+/** A hold is a whole number of milliseconds up to ten minutes. */
+const MAX_DELIVERY_HOLD_MS: number = 10 * 60 * 1000;
+
+function assertDeliveryHoldMs(value: number | undefined): number {
+	if (value === undefined) return 0;
+	if (!Number.isSafeInteger(value) || value < 0 || value > MAX_DELIVERY_HOLD_MS) {
+		throw new InvalidInstanceInvitationRequestError('Delivery hold is invalid');
+	}
+	return value;
+}
 
 function publicAcceptResult(
 	result: AcceptInstanceInvitationStoreResult

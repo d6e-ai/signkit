@@ -7,6 +7,7 @@ import {
 } from '$lib/application/instance/instance-service';
 import { createInstanceBootstrapHandler } from '$lib/http/instance-bootstrap';
 import { identityOnlyLocals } from '$lib/http/http-handler-test-support';
+import { CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID } from '$lib/ports/instance-store';
 import type {
 	AcceptInstanceInvitationByRecipientCommand,
 	AcceptInstanceInvitationByTokenCommand,
@@ -1040,6 +1041,140 @@ describe('D1InstanceStore', () => {
 						revokedByUserId: ACTOR_ID
 					}
 				});
+			} finally {
+				sqlite.close();
+			}
+		});
+	});
+
+	describe('settleInstanceInvitationDelivery', () => {
+		const HELD_UNTIL: string = '2026-09-12T12:01:00.000Z';
+		const SETTLED_AT: string = '2026-09-12T12:00:03.000Z';
+
+		function deliveryRow(sqlite: DatabaseSync): Record<string, unknown> {
+			return sqlite
+				.prepare(
+					`SELECT status, retryable, sealed_payload, available_at, delivered_at,
+					        provider_message_id, last_error, updated_at
+					 FROM instance_invitation_delivery_outbox WHERE invitation_id = ?`
+				)
+				.get(INVITATION_ID) as Record<string, unknown>;
+		}
+
+		it('stores a held delivery and releases it once', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(
+					createInvitationCommand({ deliveryAvailableAt: HELD_UNTIL })
+				);
+				expect(deliveryRow(sqlite).available_at).toBe(HELD_UNTIL);
+
+				expect(
+					await store.settleInstanceInvitationDelivery({
+						invitationId: INVITATION_ID,
+						handoff: 'self',
+						settledAt: SETTLED_AT
+					})
+				).toEqual({ outcome: 'released' });
+				expect(deliveryRow(sqlite)).toMatchObject({
+					status: 'pending',
+					available_at: SETTLED_AT,
+					sealed_payload: 'skiod1_test'
+				});
+				expect(
+					await store.settleInstanceInvitationDelivery({
+						invitationId: INVITATION_ID,
+						handoff: 'self',
+						settledAt: SETTLED_AT
+					})
+				).toEqual({ outcome: 'unchanged' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('hands a pending delivery to the console, erasing its payload', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(
+					createInvitationCommand({ deliveryAvailableAt: HELD_UNTIL })
+				);
+				expect(
+					await store.settleInstanceInvitationDelivery({
+						invitationId: INVITATION_ID,
+						handoff: 'console',
+						settledAt: SETTLED_AT
+					})
+				).toEqual({ outcome: 'handed_off' });
+				expect(deliveryRow(sqlite)).toEqual({
+					status: 'delivered',
+					retryable: 0,
+					sealed_payload: null,
+					available_at: HELD_UNTIL,
+					delivered_at: SETTLED_AT,
+					provider_message_id: CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID,
+					last_error: null,
+					updated_at: SETTLED_AT
+				});
+				expect(
+					await store.settleInstanceInvitationDelivery({
+						invitationId: INVITATION_ID,
+						handoff: 'self',
+						settledAt: SETTLED_AT
+					})
+				).toEqual({ outcome: 'unchanged' });
+			} finally {
+				sqlite.close();
+			}
+		});
+
+		it('leaves a delivery that is being sent or already sent alone', async () => {
+			for (const sql of [
+				`UPDATE instance_invitation_delivery_outbox
+				 SET status = 'processing', claim_token = 'claim', locked_at = '${CREATED_AT}'`,
+				`UPDATE instance_invitation_delivery_outbox
+				 SET status = 'delivered', retryable = 0, sealed_payload = NULL,
+				     delivered_at = '${CREATED_AT}', provider_message_id = 'mail-1'`
+			]) {
+				const { store, sqlite } = createFixture();
+				try {
+					await store.bootstrapInstance(bootstrapCommand());
+					await store.createInstanceInvitation(createInvitationCommand());
+					sqlite.exec(sql);
+					const before: Record<string, unknown> = deliveryRow(sqlite);
+					expect(
+						await store.settleInstanceInvitationDelivery({
+							invitationId: INVITATION_ID,
+							handoff: 'console',
+							settledAt: SETTLED_AT
+						})
+					).toEqual({ outcome: 'unchanged' });
+					expect(deliveryRow(sqlite)).toEqual(before);
+				} finally {
+					sqlite.close();
+				}
+			}
+		});
+
+		it('hands a retryable failed delivery to the console', async () => {
+			const { store, sqlite } = createFixture();
+			try {
+				await store.bootstrapInstance(bootstrapCommand());
+				await store.createInstanceInvitation(createInvitationCommand());
+				sqlite.exec(
+					`UPDATE instance_invitation_delivery_outbox
+					 SET status = 'failed', retryable = 1, attempts = 1, last_error = 'mail_down'`
+				);
+				expect(
+					await store.settleInstanceInvitationDelivery({
+						invitationId: INVITATION_ID,
+						handoff: 'console',
+						settledAt: SETTLED_AT
+					})
+				).toEqual({ outcome: 'handed_off' });
+				expect(deliveryRow(sqlite)).toMatchObject({ status: 'delivered', last_error: null });
 			} finally {
 				sqlite.close();
 			}
