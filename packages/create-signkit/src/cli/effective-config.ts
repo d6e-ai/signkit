@@ -33,8 +33,8 @@ export interface EffectiveTarget {
 	 */
 	consoleOrigins?: readonly string[];
 	/**
-	 * `SIGNKIT_CONSOLE_URL`. `undefined` leaves the remote var untouched; `''`
-	 * writes an empty value (the server then names its own settings page).
+	 * `SIGNKIT_CONSOLE_URL`. Deploy and upgrade require a non-empty value whose
+	 * origin is one of `consoleOrigins` (`assertConsoleRegistration`).
 	 */
 	consoleUrl?: string;
 	inherited: {

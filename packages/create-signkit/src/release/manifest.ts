@@ -23,8 +23,24 @@ export interface ReleaseWorkerInfo {
 	migrationsDirectory: string;
 }
 
+/**
+ * Manifest schema the release build writes. Schema 2 marks a release operated
+ * only from a d6e console (SignKit 1.0 and later). Every create-signkit before
+ * 1.0 accepts only schema 1 and refuses any other value while it resolves the
+ * release, before it changes anything in Cloudflare. That refusal is what keeps
+ * those installers from activating 1.0: their upgrade does not check the
+ * console settings, so it could leave a server with no operator UI.
+ */
+export const RELEASE_MANIFEST_SCHEMA_VERSION = 2;
+
+/** Schema 1 releases (SignKit 0.x) stay installable. */
+const SUPPORTED_SCHEMA_VERSIONS: ReadonlySet<unknown> = new Set([
+	1,
+	RELEASE_MANIFEST_SCHEMA_VERSION
+]);
+
 export interface ReleaseManifest {
-	schemaVersion: 1;
+	schemaVersion: 1 | typeof RELEASE_MANIFEST_SCHEMA_VERSION;
 	kind: 'signkit-cloudflare-release';
 	repository: typeof SIGNKIT_REPOSITORY;
 	tag: string;
@@ -65,9 +81,10 @@ export function parseReleaseManifest(
 	if (!isObject(parsed)) {
 		throw generic('release manifest must be an object');
 	}
-	if (parsed.schemaVersion !== 1) {
+	if (!SUPPORTED_SCHEMA_VERSIONS.has(parsed.schemaVersion)) {
 		throw generic(`unsupported release manifest schemaVersion: ${String(parsed.schemaVersion)}`);
 	}
+	const schemaVersion = parsed.schemaVersion as ReleaseManifest['schemaVersion'];
 	if (parsed.kind !== 'signkit-cloudflare-release') {
 		throw generic('release manifest kind must be signkit-cloudflare-release');
 	}
@@ -136,7 +153,7 @@ export function parseReleaseManifest(
 		throw generic('release manifest migrationPolicy.notes is required');
 	}
 	return {
-		schemaVersion: 1,
+		schemaVersion,
 		kind: 'signkit-cloudflare-release',
 		repository: SIGNKIT_REPOSITORY,
 		tag: parsed.tag,

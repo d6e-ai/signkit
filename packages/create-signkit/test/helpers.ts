@@ -12,7 +12,7 @@ import type { ParsedCommand } from '../src/cli/parse.js';
 import type { FileStat, FileSystem, MkdirOptions } from '../src/runtime/fs.js';
 import type { HttpClient, HttpRequest, HttpResponse } from '../src/runtime/http.js';
 import type { CommandResult, ProcessRunner, RunCommandRequest } from '../src/runtime/process.js';
-import type { ReleaseManifest } from '../src/release/manifest.js';
+import { RELEASE_MANIFEST_SCHEMA_VERSION, type ReleaseManifest } from '../src/release/manifest.js';
 import type { BundleExtractor, ExtractedBundle } from '../src/release/extract.js';
 import type { ReleaseResolver, ResolvedRelease } from '../src/release/github.js';
 import type { ReleaseProvenance } from '../src/release/provenance.js';
@@ -502,7 +502,7 @@ export function command(overrides: Partial<ParsedCommand> = {}): ParsedCommand {
 
 export function sampleManifest(overrides: Partial<ReleaseManifest> = {}): ReleaseManifest {
 	return {
-		schemaVersion: 1,
+		schemaVersion: RELEASE_MANIFEST_SCHEMA_VERSION,
 		kind: 'signkit-cloudflare-release',
 		repository: SIGNKIT_REPOSITORY,
 		tag: 'v1.2.3',

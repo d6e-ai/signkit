@@ -520,7 +520,7 @@ Options:
   --smtp-username <name>  Optional SMTP username; password is accepted only in secret stdin JSON
   --bootstrap-owner-email <email>  SIGNKIT_BOOTSTRAP_OWNER_EMAIL as a non-secret Worker var (required for deploy/upgrade; uninitialized instances fail closed without it; console enrollment supplies a default)
   --console-origins <list>  SIGNKIT_CONSOLE_ORIGINS: comma-separated console origins allowed to call /api/v1 cross-origin (required; console enrollment supplies it)
-  --console-url <url>     SIGNKIT_CONSOLE_URL: the d6e console that operates this server (required; console enrollment supplies it)
+  --console-url <url>     SIGNKIT_CONSOLE_URL: the d6e console that operates this server (required; its origin must be one of the console origins; console enrollment supplies it)
   --server-name <text>    Console display name sent with D6E_ENROLLMENT_TOKEN enrollment (default: public origin hostname)
   --version <tag|latest>  Release tag or "latest" (default: latest)
   --channel <stable|beta> Release channel (enforced against the selected tag; used to pick latest)

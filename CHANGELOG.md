@@ -18,7 +18,8 @@ Breaking: the move to console-only operation ships as a major release, SignKit 1
 - Console CORS also exposes `retry-after` and `x-signkit-commit-sha`, so a d6e console can pace its retry after a void, reissue, or DOCX conversion and read which draft commit a DOCX export rendered. Allowed request headers and authorization are unchanged.
 - Invitations are delivered to D6E Auth as console notes (invited email, expiry, inviter, language), which D6E Auth turns into the invitation email and the console listing. A note the create request could not deliver is retried by the invitation outbox drain, which no longer needs a mail provider.
 - System capabilities report the operating console as `consoleUrl`.
-- `create-signkit` refuses to deploy or upgrade without the console settings: a new server enrolls with `D6E_ENROLLMENT_TOKEN`, and a server already registered passes `--console-url` and `--console-origins`.
+- `create-signkit` refuses to deploy or upgrade without the console settings: a new server enrolls with `D6E_ENROLLMENT_TOKEN`, and a server already registered passes `--console-url` and `--console-origins`. It also refuses a console URL whose origin is not among the console origins, checked after flags, state, and enrollment defaults are combined, because the server would send operators to a console whose API calls it refuses.
+- Release manifests use `schemaVersion` 2. create-signkit before 1.0 refuses them before changing anything, so it cannot activate SignKit 1.0 without the console settings: update create-signkit to 1.0 first, then upgrade. create-signkit 1.0 still installs schema 1 (SignKit 0.x) releases.
 
 ### Fixed
 

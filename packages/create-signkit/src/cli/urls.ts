@@ -202,7 +202,7 @@ export function canonicalConsoleUrl(value: unknown): string | undefined {
 	return url.href;
 }
 
-/** Parses `--console-url`. An empty value clears it (the server then names its own settings page). */
+/** Parses `--console-url`. An empty value clears it, which deploy and upgrade then refuse. */
 export function parseConsoleUrlFlag(value: string, flag: string): string {
 	const trimmed = value.trim();
 	if (trimmed.length === 0) {
