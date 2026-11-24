@@ -19,6 +19,7 @@ interface DeliveryRow {
 	role: 'owner' | 'admin' | 'member';
 	invitationStatus: 'pending' | 'accepted' | 'revoked';
 	expiresAt: Date | string;
+	inviterUserId: string;
 	tokenHash: string;
 	emailBinding: string;
 	sealedPayload: string | null;
@@ -85,7 +86,8 @@ export class PostgresInstanceInvitationDeliveryStore implements InstanceInvitati
 				)
 				SELECT claimed.id AS "deliveryId", claimed.invitation_id AS "invitationId",
 				  claimed.locale, invitation.role, invitation.status AS "invitationStatus",
-				  invitation.expires_at AS "expiresAt", invitation.token_hash AS "tokenHash",
+				  invitation.expires_at AS "expiresAt",
+				  invitation.invited_by_user_id AS "inviterUserId", invitation.token_hash AS "tokenHash",
 				  invitation.email_binding AS "emailBinding", claimed.sealed_payload AS "sealedPayload",
 				  claimed.sealed_payload_sha256 AS "sealedPayloadSha256",
 				  claimed.sealing_key_id AS "sealingKeyId", claimed.attempts
@@ -102,7 +104,8 @@ export class PostgresInstanceInvitationDeliveryStore implements InstanceInvitati
 		const rows = await this.#sql<DeliveryRow[]>`
 			SELECT delivery.id AS "deliveryId", delivery.invitation_id AS "invitationId",
 			  delivery.locale, invitation.role, invitation.status AS "invitationStatus",
-			  invitation.expires_at AS "expiresAt", invitation.token_hash AS "tokenHash",
+			  invitation.expires_at AS "expiresAt",
+			  invitation.invited_by_user_id AS "inviterUserId", invitation.token_hash AS "tokenHash",
 			  invitation.email_binding AS "emailBinding", delivery.sealed_payload AS "sealedPayload",
 			  delivery.sealed_payload_sha256 AS "sealedPayloadSha256",
 			  delivery.sealing_key_id AS "sealingKeyId", delivery.attempts

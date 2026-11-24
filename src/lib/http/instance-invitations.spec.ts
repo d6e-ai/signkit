@@ -24,7 +24,6 @@ import type { InstanceInvitationMetadata, InstanceMemberMetadata } from '$lib/po
 import {
 	CONSOLE_NOTE_DELIVERY_HOLD_MS,
 	type ConsoleInvitationNoteOutcome,
-	type ConsoleInvitationNoteResult,
 	type ConsoleInvitationNotesPort
 } from '$lib/server/console-invitation-notes';
 import {
@@ -96,11 +95,6 @@ function application(): InstanceInvitationApplicationPort {
 		outcome: 'listed',
 		page: { items: [invitation], nextCursor: null }
 	}));
-	const accept = vi.fn(async (): Promise<AcceptInstanceInvitationResult> => ({
-		outcome: 'accepted',
-		invitation,
-		member
-	}));
 	const revoke = vi.fn(async (): Promise<RevokeInstanceInvitationResult> => ({
 		outcome: 'revoked',
 		invitation
@@ -126,8 +120,6 @@ function application(): InstanceInvitationApplicationPort {
 		createInstanceInvitation: create,
 		list,
 		listInstanceInvitations: list,
-		accept,
-		acceptInstanceInvitation: accept,
 		listReceived,
 		acceptReceived,
 		revoke,
@@ -144,7 +136,6 @@ async function invoke(
 }
 
 const CREATE_PATH: string = '/api/v1/instance/invitations';
-const ACCEPT_PATH: string = '/api/v1/instance/invitations/accept';
 const revokePath = (id: string): string => `/api/v1/instance/invitations/${id}/revoke`;
 const RECEIVED_PATH: string = '/api/v1/instance/invitations/received';
 const acceptReceivedPath = (id: string): string => `/api/v1/instance/invitations/${id}/accept`;
@@ -417,7 +408,8 @@ describe('instance invitation HTTP handlers', () => {
 					idempotencyKey: 'create-1',
 					email: 'invitee@example.com',
 					role: 'member',
-					locale: undefined
+					locale: undefined,
+					deliveryHoldMs: CONSOLE_NOTE_DELIVERY_HOLD_MS
 				}
 			);
 			const body: { invitation: InstanceInvitationMetadata; delivery: { status: string } } =
@@ -741,545 +733,13 @@ describe('instance invitation HTTP handlers', () => {
 		});
 	});
 
-	describe('accept', () => {
-		it('rejects a stale displayed account before resolving or consuming an invitation', async () => {
-			const resolver = vi.fn(() => application());
-			const response = await invoke(
-				createInstanceInvitationHttpHandlers(resolver).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: JSON.stringify({ token: VALID_TOKEN }),
-					headers: {
-						'idempotency-key': 'expected-account',
-						'x-signkit-expected-subject': 'previous-user'
-					}
-				})
-			);
-			expect(response.status).toBe(409);
-			expect(await response.json()).toMatchObject({ type: 'urn:signkit:problem:account-changed' });
-			expect(resolver).not.toHaveBeenCalled();
-		});
-		it('allows a matching displayed account without trusting a body-supplied identity', async () => {
-			const app = application();
-			const response = await invoke(
-				createInstanceInvitationHttpHandlers(() => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: JSON.stringify({ token: VALID_TOKEN }),
-					headers: { 'idempotency-key': 'expected-account', 'x-signkit-expected-subject': 'user-1' }
-				})
-			);
-			expect(response.status).toBe(200);
-			expect(app.accept).toHaveBeenCalledWith(
-				{ id: 'user-1' },
-				expect.objectContaining({ email: 'user@example.com' })
-			);
-		});
-
-		function validAcceptBody(overrides: Record<string, unknown> = {}): string {
-			return JSON.stringify({ token: VALID_TOKEN, ...overrides });
-		}
-
-		it('rejects anonymous callers before parsing or resolving dependencies', async () => {
-			const resolver: InstanceInvitationApplicationResolver = vi.fn(
-				(): InstanceInvitationApplicationPort | null => null
-			);
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers(resolver).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					locals: locals('anonymous'),
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(401);
-			expect(resolver).not.toHaveBeenCalled();
-		});
-
-		it('rejects an anonymous caller even with a malformed body', async () => {
-			const resolver: InstanceInvitationApplicationResolver = vi.fn(
-				(): InstanceInvitationApplicationPort | null => null
-			);
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers(resolver).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					locals: locals('anonymous'),
-					method: 'POST',
-					body: '{not json',
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(401);
-			expect(resolver).not.toHaveBeenCalled();
-		});
-
-		it('fails closed with 503 when identity verification is unavailable', async () => {
-			const resolver: InstanceInvitationApplicationResolver = vi.fn(
-				(): InstanceInvitationApplicationPort | null => null
-			);
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers(resolver).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					locals: locals('unavailable'),
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(503);
-			expect(resolver).not.toHaveBeenCalled();
-		});
-
-		it('fails closed with 503 when unavailable even if a principal is present', async () => {
-			const resolver: InstanceInvitationApplicationResolver = vi.fn(
-				(): InstanceInvitationApplicationPort | null => null
-			);
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers(resolver).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					locals: unavailableIdentityLocalsWithPrincipal(),
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(503);
-			expect(resolver).not.toHaveBeenCalled();
-		});
-
-		it('does not require an active organization', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					locals: locals('no_membership'),
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(200);
-		});
-
-		it('requires a bounded visible-ASCII Idempotency-Key', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const handler = createInstanceInvitationHttpHandlers(
-				(): InstanceInvitationApplicationPort => app
-			).accept;
-			const missing: Response = await invoke(
-				handler,
-				event({ pathname: ACCEPT_PATH, method: 'POST', body: validAcceptBody() })
-			);
-			expect(missing.status).toBe(400);
-			expect(app.accept).not.toHaveBeenCalled();
-		});
-
-		it('requires application/json content type', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'content-type': 'text/plain', 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(415);
-			expect(app.accept).not.toHaveBeenCalled();
-		});
-
-		it('rejects request bodies larger than the bounded JSON limit', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody({ padding: 'x'.repeat(5 * 1024) }),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(413);
-			expect(app.accept).not.toHaveBeenCalled();
-		});
-
-		it('rejects invalid JSON', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: '{',
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(400);
-		});
-
-		it('rejects a token that does not match the ski1_ shape', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody({ token: 'not-a-real-token' }),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(400);
-			expect(app.accept).not.toHaveBeenCalled();
-		});
-
-		it('rejects a caller-supplied email: only the token is accepted', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody({ email: 'attacker@example.com' }),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(400);
-			expect(await response.json()).toMatchObject({
-				type: 'urn:signkit:problem:validation-failed'
-			});
-			expect(app.accept).not.toHaveBeenCalled();
-		});
-
-		it.each([
-			['missing', undefined],
-			['false', false]
-		] as const)(
-			'fails closed when the authenticated emailVerified claim is %s',
-			async (_name, emailVerified) => {
-				const app: InstanceInvitationApplicationPort = application();
-				const principal = {
-					subject: 'user-1',
-					email: 'user@example.com',
-					name: 'User',
-					...(emailVerified === undefined ? {} : { emailVerified })
-				};
-				const response: Response = await invoke(
-					createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-					event({
-						pathname: ACCEPT_PATH,
-						locals: {
-							apiKeyAuthentication: { state: 'absent' },
-							accessTokenAuthentication: { state: 'absent' },
-							bootstrapped: true,
-							identityState: 'active',
-							instanceMembership: {
-								userId: principal.subject,
-								role: 'member',
-								status: 'active'
-							},
-							principal
-						},
-						method: 'POST',
-						body: validAcceptBody(),
-						headers: { 'idempotency-key': 'accept-1' }
-					})
-				);
-				expect(response.status).toBe(403);
-				expect(await response.json()).toMatchObject({
-					type: 'urn:signkit:problem:email-verification-required',
-					status: 403
-				});
-				expect(app.accept).not.toHaveBeenCalled();
-			}
-		);
-
-		it("uses the authenticated identity's own email, never a body-supplied value", async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(200);
-			expect(app.accept).toHaveBeenCalledWith(
-				{ id: 'user-1' },
-				{
-					idempotencyKey: 'accept-1',
-					token: VALID_TOKEN,
-					email: 'user@example.com'
-				}
-			);
-		});
-
-		it('returns the invitation and member on a fresh accept, without a replay header', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(200);
-			expect(response.headers.get('cache-control')).toBe('no-store');
-			expect(response.headers.get('idempotency-replayed')).toBeNull();
-			const body: { invitation: InstanceInvitationMetadata; member: InstanceMemberMetadata } =
-				await response.json();
-			expect(body.invitation.id).toBe(INVITATION_ID);
-			expect(body.member.userId).toBe(member.userId);
-			expect(captureMemberDisplay.bestEffortCaptureMemberDisplay).toHaveBeenCalledWith(
-				expect.objectContaining({ memberUserId: member.userId })
-			);
-		});
-
-		it('does not fail accept when display capture throws, and logs no PII', async () => {
-			captureMemberDisplay.bestEffortCaptureMemberDisplay.mockRejectedValueOnce(
-				new Error('ciphertext exploded for user@example.com')
-			);
-			const errorSpy = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
-			const app: InstanceInvitationApplicationPort = application();
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(200);
-			expect(await response.json()).toMatchObject({
-				invitation: { id: INVITATION_ID },
-				member: { userId: member.userId }
-			});
-			expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('user@example.com');
-			errorSpy.mockRestore();
-		});
-
-		it('marks an exact replay with the idempotency-replayed header', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			(app.accept as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-				outcome: 'replayed',
-				invitation,
-				member,
-				replayed: true
-			} satisfies AcceptInstanceInvitationResult);
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(200);
-			expect(response.headers.get('idempotency-replayed')).toBe('true');
-		});
-
-		it('maps invitation_invalid and member_suspended to the identical opaque 404', async () => {
-			const invalidApp: InstanceInvitationApplicationPort = application();
-			(invalidApp.accept as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-				outcome: 'invitation_invalid'
-			} satisfies AcceptInstanceInvitationResult);
-			const suspendedApp: InstanceInvitationApplicationPort = application();
-			(suspendedApp.accept as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-				outcome: 'member_suspended'
-			} satisfies AcceptInstanceInvitationResult);
-
-			const requestEvent = (): RequestEvent =>
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				});
-
-			const invalidResponse: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => invalidApp)
-					.accept,
-				requestEvent()
-			);
-			const suspendedResponse: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => suspendedApp)
-					.accept,
-				requestEvent()
-			);
-
-			expect(invalidResponse.status).toBe(404);
-			expect(suspendedResponse.status).toBe(404);
-			expect(await invalidResponse.json()).toEqual(await suspendedResponse.json());
-		});
-
-		it('maps already_member to an RFC 9457 409 problem with caller member metadata and no invitation, token, hash, or email', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			(app.accept as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-				outcome: 'already_member',
-				member
-			} satisfies AcceptInstanceInvitationResult);
-
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-
-			expect(response.status).toBe(409);
-			expect(response.headers.get('cache-control')).toBe('no-store');
-			const body: Record<string, unknown> = await response.json();
-			expect(body).toEqual({
-				type: 'urn:signkit:problem:instance-member-already-exists',
-				title: 'Instance member already exists',
-				status: 409,
-				detail: 'The authenticated caller is already an active instance member.',
-				instance: ACCEPT_PATH,
-				member
-			});
-			expect(body).not.toHaveProperty('invitation');
-			expect(body).not.toHaveProperty('token');
-			expect(body).not.toHaveProperty('hash');
-			expect(body).not.toHaveProperty('email');
-		});
-
-		it.each([
-			['idempotency_conflict', 409, 'urn:signkit:problem:instance-invitation-idempotency-conflict'],
-			['integrity_error', 503, 'urn:signkit:problem:instance-invitation-integrity-error']
-		] as const)('maps %s to an RFC 9457 problem', async (outcome, status, type) => {
-			const app: InstanceInvitationApplicationPort = application();
-			(app.accept as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-				outcome
-			} satisfies AcceptInstanceInvitationResult);
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(status);
-			expect(await response.json()).toMatchObject({ type, status });
-		});
-
-		it('translates an invalid normalized request into a validation problem', async () => {
-			const app: InstanceInvitationApplicationPort = application();
-			(app.accept as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-				new InvalidInstanceInvitationRequestError('Invalid instance invitation token')
-			);
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): InstanceInvitationApplicationPort => app).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(400);
-		});
-
-		it('fails closed with 503 when persistence is not wired', async () => {
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers((): null => null).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(503);
-			expect(await response.json()).toMatchObject({
-				type: 'urn:signkit:problem:persistence-unavailable'
-			});
-		});
-
-		it('returns 503 when application resolution throws', async () => {
-			const response: Response = await invoke(
-				createInstanceInvitationHttpHandlers(async () => {
-					throw new Error('db unavailable');
-				}).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: validAcceptBody(),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
-			expect(response.status).toBe(503);
-			expect(await response.json()).toMatchObject({
-				type: 'urn:signkit:problem:persistence-unavailable'
-			});
-		});
-
-		it('never logs a resolver error message, which may embed credentials or request content', async () => {
-			const SENTINEL_SECRET: string = 'sentinel-secret-do-not-log-Xk4pQz9';
-			const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-			try {
-				const response: Response = await invoke(
-					createInstanceInvitationHttpHandlers(async () => {
-						throw new Error(`connection failed: password=${SENTINEL_SECRET}`);
-					}).accept,
-					event({
-						pathname: ACCEPT_PATH,
-						method: 'POST',
-						body: validAcceptBody(),
-						headers: { 'idempotency-key': 'accept-1' }
-					})
-				);
-				expect(response.status).toBe(503);
-				for (const call of consoleErrorSpy.mock.calls) {
-					for (const arg of call) {
-						expect(String(arg)).not.toContain(SENTINEL_SECRET);
-					}
-				}
-				expect(consoleErrorSpy).toHaveBeenCalledWith(
-					JSON.stringify({
-						event: 'instance_invitation_accept_resolution_failed',
-						message: 'Error'
-					})
-				);
-			} finally {
-				consoleErrorSpy.mockRestore();
-			}
-		});
-	});
-
 	describe('console invitation notes', () => {
-		function notes(
-			invitationEmail: ConsoleInvitationNoteResult['invitationEmail'] = null,
-			enabled: boolean = true
-		): ConsoleInvitationNotesPort & {
-			enabled: ReturnType<typeof vi.fn>;
+		function notes(outcome: ConsoleInvitationNoteOutcome = 'sent'): ConsoleInvitationNotesPort & {
 			note: ReturnType<typeof vi.fn>;
 			forget: ReturnType<typeof vi.fn>;
 		} {
 			return {
-				enabled: vi.fn((): boolean => enabled),
-				note: vi.fn(async (): Promise<ConsoleInvitationNoteResult> => ({
-					outcome: 'sent',
-					invitationEmail
-				})),
+				note: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => outcome),
 				forget: vi.fn(async (): Promise<ConsoleInvitationNoteOutcome> => 'sent')
 			};
 		}
@@ -1331,55 +791,40 @@ describe('instance invitation HTTP handlers', () => {
 			);
 		});
 
-		it('holds the own mail while notes are on and hands it to D6E Auth after "queued"', async () => {
-			const app = application();
-			const port = notes('queued');
-			const response = await invoke(
-				createInstanceInvitationHttpHandlers(() => app, null, port).create,
-				createEvent()
-			);
-			expect(response.status).toBe(201);
-			expect(app.create).toHaveBeenCalledWith(
-				expect.anything(),
-				expect.objectContaining({ deliveryHoldMs: CONSOLE_NOTE_DELIVERY_HOLD_MS })
-			);
-			expect(app.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'console');
+		it('holds the outbox row and closes it once D6E Auth holds the note', async () => {
+			for (const outcome of ['sent', 'withdrawn'] as const) {
+				const app = application();
+				const response = await invoke(
+					createInstanceInvitationHttpHandlers(() => app, null, notes(outcome)).create,
+					createEvent()
+				);
+				expect(response.status).toBe(201);
+				expect(app.create).toHaveBeenCalledWith(
+					expect.anything(),
+					expect.objectContaining({ deliveryHoldMs: CONSOLE_NOTE_DELIVERY_HOLD_MS })
+				);
+				expect(app.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'console');
+			}
 		});
 
-		it('releases the own mail when D6E Auth does not send its email', async () => {
-			for (const invitationEmail of ['skipped', null] as const) {
+		it('releases the outbox row for the drain when the note did not get through', async () => {
+			for (const outcome of ['failed', 'disabled'] as const) {
 				const app = application();
-				const port = notes(invitationEmail);
 				await invoke(
-					createInstanceInvitationHttpHandlers(() => app, null, port).create,
+					createInstanceInvitationHttpHandlers(() => app, null, notes(outcome)).create,
 					createEvent()
 				);
 				expect(app.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'self');
 			}
 
-			const failedApp = application();
-			const failedPort = notes('queued');
-			failedPort.note.mockRejectedValueOnce(new Error('D6E Auth down'));
+			const thrownApp = application();
+			const thrownPort = notes();
+			thrownPort.note.mockRejectedValueOnce(new Error('D6E Auth down'));
 			await invoke(
-				createInstanceInvitationHttpHandlers(() => failedApp, null, failedPort).create,
+				createInstanceInvitationHttpHandlers(() => thrownApp, null, thrownPort).create,
 				createEvent()
 			);
-			expect(failedApp.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'self');
-		});
-
-		it('neither holds nor settles the own mail when notes are off', async () => {
-			const app = application();
-			const port = notes(null, false);
-			const response = await invoke(
-				createInstanceInvitationHttpHandlers(() => app, null, port).create,
-				createEvent()
-			);
-			expect(response.status).toBe(201);
-			expect(app.create).toHaveBeenCalledWith(
-				expect.anything(),
-				expect.not.objectContaining({ deliveryHoldMs: expect.anything() })
-			);
-			expect(app.settleDelivery).not.toHaveBeenCalled();
+			expect(thrownApp.settleDelivery).toHaveBeenCalledWith(INVITATION_ID, 'self');
 		});
 
 		it('keeps the create response when settling the own mail fails', async () => {
@@ -1390,7 +835,7 @@ describe('instance invitation HTTP handlers', () => {
 			const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 			try {
 				const response = await invoke(
-					createInstanceInvitationHttpHandlers(() => app, null, notes('queued')).create,
+					createInstanceInvitationHttpHandlers(() => app, null, notes()).create,
 					createEvent()
 				);
 				expect(response.status).toBe(201);
@@ -1448,10 +893,10 @@ describe('instance invitation HTTP handlers', () => {
 			const app = application();
 			const port = notes();
 			let noted: boolean = false;
-			port.note.mockImplementationOnce(async (): Promise<ConsoleInvitationNoteResult> => {
+			port.note.mockImplementationOnce(async (): Promise<ConsoleInvitationNoteOutcome> => {
 				await new Promise((resolve) => setTimeout(resolve, 20));
 				noted = true;
-				return { outcome: 'sent', invitationEmail: null };
+				return 'sent';
 			});
 			const waitUntil = vi.fn();
 			const requestEvent: RequestEvent = createEvent();
@@ -1523,15 +968,6 @@ describe('instance invitation HTTP handlers', () => {
 		it('never touches notes when accepting', async () => {
 			const app = application();
 			const port = notes();
-			await invoke(
-				createInstanceInvitationHttpHandlers(() => app, null, port).accept,
-				event({
-					pathname: ACCEPT_PATH,
-					method: 'POST',
-					body: JSON.stringify({ token: VALID_TOKEN }),
-					headers: { 'idempotency-key': 'accept-1' }
-				})
-			);
 			await invoke(
 				createInstanceInvitationHttpHandlers(() => app, null, port).acceptReceived,
 				event({

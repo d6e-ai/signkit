@@ -3,7 +3,7 @@ import type {
 	ClaimedInstanceInvitationDelivery,
 	InstanceInvitationDeliveryStore
 } from '$lib/ports/instance-invitation-delivery-store';
-import { MailDeliveryError, type MailMessage, type MailSender } from '$lib/ports/mail-sender';
+import { CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID } from '$lib/ports/instance-store';
 import {
 	computeInstanceInvitationEmailBinding,
 	hashInstanceInvitationToken
@@ -11,7 +11,8 @@ import {
 import { AesGcmInstanceInvitationDeliveryPayloadSealer } from '$lib/security/instance-invitation-delivery-payload';
 import {
 	InstanceInvitationDeliveryService,
-	InvalidInstanceInvitationDeliveryConfigError
+	type InstanceInvitationNoteOutcome,
+	type InstanceInvitationNotifier
 } from './instance-invitation-delivery-service';
 
 const NOW: Date = new Date('2026-09-17T12:00:00.000Z');
@@ -19,6 +20,7 @@ const INVITATION_ID: string = '01900000-0000-7000-8000-000000000001';
 const DELIVERY_ID: string = '01900000-0000-7000-8000-000000000002';
 const TOKEN: string = `ski1_${'a'.repeat(43)}`;
 const EMAIL: string = 'invitee@example.com';
+const INVITER: string = 'inviter-user-1';
 
 function key(): string {
 	return btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, i: number): number => i + 1)));
@@ -35,10 +37,11 @@ async function eligibleClaim(
 	return {
 		deliveryId: DELIVERY_ID,
 		invitationId: INVITATION_ID,
-		locale: 'ja',
+		locale: 'en',
 		role: 'member',
 		invitationStatus: 'pending',
 		expiresAt: '2026-09-19T12:00:00.000Z',
+		inviterUserId: INVITER,
 		tokenHash: await hashInstanceInvitationToken(TOKEN),
 		emailBinding: await computeInstanceInvitationEmailBinding(TOKEN, EMAIL),
 		sealedPayload: sealed.sealedPayload,
@@ -49,213 +52,135 @@ async function eligibleClaim(
 	};
 }
 
+function storeFor(
+	claim: ClaimedInstanceInvitationDelivery,
+	readClaimed: ClaimedInstanceInvitationDelivery | null = claim
+): InstanceInvitationDeliveryStore & {
+	complete: ReturnType<typeof vi.fn>;
+	fail: ReturnType<typeof vi.fn>;
+} {
+	return {
+		claimPending: vi.fn(async () => [claim]),
+		readClaimed: vi.fn(async () => readClaimed),
+		complete: vi.fn(async () => ({ outcome: 'completed' as const })),
+		fail: vi.fn(async () => ({ outcome: 'failed' as const }))
+	};
+}
+
+function service(
+	store: InstanceInvitationDeliveryStore,
+	sealer: AesGcmInstanceInvitationDeliveryPayloadSealer,
+	notify: InstanceInvitationNotifier
+): InstanceInvitationDeliveryService {
+	return new InstanceInvitationDeliveryService(
+		store,
+		sealer,
+		notify,
+		(): Date => NOW,
+		(): string => 'claim-token'
+	);
+}
+
 describe('InstanceInvitationDeliveryService', () => {
-	it('opens a bound payload, sends localized HTML and text, then scrubs through completion', async () => {
+	it('opens the bound payload, notes D6E Auth, and closes the row as handed off', async () => {
 		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
-		const claim: ClaimedInstanceInvitationDelivery = await eligibleClaim(sealer);
-		const complete = vi.fn(async () => ({ outcome: 'completed' as const }));
-		const store: InstanceInvitationDeliveryStore = {
-			claimPending: vi.fn(async () => [claim]),
-			readClaimed: vi.fn(async () => claim),
-			complete,
-			fail: vi.fn(async () => ({ outcome: 'failed' as const }))
-		};
-		const messages: MailMessage[] = [];
-		const mail: MailSender = {
-			async send(message: MailMessage) {
-				messages.push(message);
-				return { outcome: 'accepted', providerMessageId: '<message@example>' };
-			}
-		};
-		const service = new InstanceInvitationDeliveryService(
-			store,
-			sealer,
-			mail,
-			'https://signkit.example',
-			{ fromEmail: 'noreply@example.com', fromName: 'SignKit' },
-			(): Date => NOW,
-			(): string => 'claim-token'
-		);
-		const result = await service.deliverPending();
+		const store = storeFor(await eligibleClaim(sealer));
+		const notify = vi.fn(async (): Promise<InstanceInvitationNoteOutcome> => 'sent');
+
+		const result = await service(store, sealer, notify).deliverPending();
+
 		expect(result.delivered).toBe(1);
-		expect(messages).toHaveLength(1);
-		expect(messages[0]).toMatchObject({
-			to: EMAIL,
-			deliveryKey: DELIVERY_ID,
-			from: { email: 'noreply@example.com', name: 'SignKit' }
+		expect(notify).toHaveBeenCalledExactlyOnceWith({
+			invitationId: INVITATION_ID,
+			recipientEmail: EMAIL,
+			expiresAt: '2026-09-19T12:00:00.000Z',
+			inviterSubject: INVITER,
+			locale: 'en'
 		});
-		expect(messages[0].text).toContain(TOKEN);
-		expect(messages[0].html).toContain(
-			`https://signkit.example/ja/invitations/accept#token=${TOKEN}`
+		expect(store.complete).toHaveBeenCalledWith(
+			expect.objectContaining({
+				deliveryId: DELIVERY_ID,
+				providerMessageId: CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID
+			})
 		);
-		expect(messages[0].text).not.toContain('トークンを貼り付け');
-		expect(messages[0].html).not.toContain('ワンタイム招待トークン');
-		// Without a configured console, the token-free join link is this server's settings page.
-		expect(messages[0].text).toContain('https://signkit.example/ja/settings');
-		expect(complete).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: DELIVERY_ID }));
 	});
 
-	it('points the token-free join link at a configured console', async () => {
+	it('closes the row when D6E Auth already holds a withdrawal for the invitation', async () => {
 		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
-		const claim: ClaimedInstanceInvitationDelivery = await eligibleClaim(sealer);
-		const messages: MailMessage[] = [];
-		const store: InstanceInvitationDeliveryStore = {
-			claimPending: vi.fn(async () => [claim]),
-			readClaimed: vi.fn(async () => claim),
-			complete: vi.fn(async () => ({ outcome: 'completed' as const })),
-			fail: vi.fn(async () => ({ outcome: 'failed' as const }))
-		};
-		const service = new InstanceInvitationDeliveryService(
-			store,
-			sealer,
-			{
-				async send(message: MailMessage) {
-					messages.push(message);
-					return { outcome: 'accepted', providerMessageId: '<message@example>' };
-				}
-			},
-			'https://signkit.example',
-			{
-				fromEmail: 'noreply@example.com',
-				fromName: 'SignKit',
-				consoleUrl: 'https://console.example/signkit/console'
-			},
-			(): Date => NOW,
-			(): string => 'claim-token'
-		);
-		expect((await service.deliverPending()).delivered).toBe(1);
-		expect(messages[0].text).toContain('https://console.example/signkit/console');
-		expect(messages[0].text).not.toContain('https://signkit.example/ja/settings');
-		const consoleLine = messages[0].text
-			.split('\n')
-			.find((line: string): boolean => line.startsWith('https://console.example'));
-		expect(consoleLine).not.toContain(TOKEN);
+		const store = storeFor(await eligibleClaim(sealer));
+
+		const result = await service(store, sealer, async () => 'withdrawn').deliverPending();
+
+		expect(result.delivered).toBe(1);
+		expect(store.fail).not.toHaveBeenCalled();
 	});
 
-	it('treats a lost claim as stale without opening or sending', async () => {
+	it.each([
+		['failed', 'console_note_failed'],
+		['disabled', 'console_not_configured']
+	] as const)('retries a %s note with backoff', async (outcome, errorCode) => {
 		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
-		const claim: ClaimedInstanceInvitationDelivery = await eligibleClaim(sealer);
-		const mail: MailSender = { send: vi.fn() };
-		const store: InstanceInvitationDeliveryStore = {
-			claimPending: vi.fn(async () => [claim]),
-			readClaimed: vi.fn(async () => null),
-			complete: vi.fn(),
-			fail: vi.fn()
-		};
-		const result = await new InstanceInvitationDeliveryService(
-			store,
-			sealer,
-			mail,
-			'https://signkit.example',
-			{ fromEmail: 'noreply@example.com', fromName: 'SignKit' },
-			(): Date => NOW,
-			(): string => 'claim-token'
-		).deliverPending();
+		const store = storeFor(await eligibleClaim(sealer));
+
+		const result = await service(store, sealer, async () => outcome).deliverPending();
+
+		expect(result.retryableFailed).toBe(1);
+		expect(store.complete).not.toHaveBeenCalled();
+		expect(store.fail).toHaveBeenCalledWith(
+			expect.objectContaining({ errorCode, retryable: true })
+		);
+	});
+
+	it('treats a throwing notifier as a failed note', async () => {
+		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
+		const store = storeFor(await eligibleClaim(sealer));
+
+		const result = await service(store, sealer, async () => {
+			throw new Error('network down');
+		}).deliverPending();
+
+		expect(result.outcomes[0]).toMatchObject({ errorCode: 'console_note_failed' });
+	});
+
+	it('treats a lost claim as stale without opening or noting', async () => {
+		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
+		const store = storeFor(await eligibleClaim(sealer), null);
+		const notify = vi.fn();
+
+		const result = await service(store, sealer, notify).deliverPending();
+
 		expect(result.stale).toBe(1);
-		expect(mail.send).not.toHaveBeenCalled();
+		expect(notify).not.toHaveBeenCalled();
 		expect(store.fail).not.toHaveBeenCalled();
 	});
 
 	it.each([
 		['digest mismatch', { sealedPayloadSha256: 'f'.repeat(64) }, 'ciphertext_digest_mismatch'],
 		['unknown key', { sealingKeyId: 'unknown-key' }, 'sealing_key_mismatch'],
-		['binding mismatch', { emailBinding: 'f'.repeat(64) }, 'payload_binding_mismatch']
-	] as const)('fails closed on %s without sending', async (_label, overrides, expectedCode) => {
+		['binding mismatch', { emailBinding: 'f'.repeat(64) }, 'payload_binding_mismatch'],
+		['a finished invitation', { invitationStatus: 'revoked' }, 'invitation_not_active']
+	] as const)('fails closed on %s without noting', async (_label, overrides, expectedCode) => {
 		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
-		const claim: ClaimedInstanceInvitationDelivery = await eligibleClaim(sealer, overrides);
-		const fail = vi.fn(async () => ({ outcome: 'failed' as const }));
-		const mail: MailSender = { send: vi.fn() };
-		const store: InstanceInvitationDeliveryStore = {
-			claimPending: vi.fn(async () => [claim]),
-			readClaimed: vi.fn(async () => claim),
-			complete: vi.fn(),
-			fail
-		};
-		const result = await new InstanceInvitationDeliveryService(
-			store,
-			sealer,
-			mail,
-			'https://signkit.example',
-			{ fromEmail: 'noreply@example.com', fromName: 'SignKit' },
-			(): Date => NOW,
-			(): string => 'claim-token'
-		).deliverPending();
+		const store = storeFor(await eligibleClaim(sealer, overrides));
+		const notify = vi.fn();
+
+		const result = await service(store, sealer, notify).deliverPending();
+
 		expect(result.outcomes[0]).toMatchObject({ errorCode: expectedCode });
-		expect(mail.send).not.toHaveBeenCalled();
-		expect(fail).toHaveBeenCalledWith(expect.objectContaining({ errorCode: expectedCode }));
+		expect(notify).not.toHaveBeenCalled();
+		expect(store.fail).toHaveBeenCalledWith(expect.objectContaining({ errorCode: expectedCode }));
 	});
 
-	it('retries provider failures but terminates and scrubs after the attempt cap', async () => {
+	it('terminates and scrubs after the attempt cap', async () => {
 		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
-		const claim: ClaimedInstanceInvitationDelivery = await eligibleClaim(sealer, { attempts: 10 });
-		const fail = vi.fn(async () => ({ outcome: 'failed' as const }));
-		const store: InstanceInvitationDeliveryStore = {
-			claimPending: vi.fn(async () => [claim]),
-			readClaimed: vi.fn(async () => claim),
-			complete: vi.fn(),
-			fail
-		};
-		const mail: MailSender = {
-			async send(): Promise<never> {
-				throw new MailDeliveryError('provider_timeout', true);
-			}
-		};
-		const result = await new InstanceInvitationDeliveryService(
-			store,
-			sealer,
-			mail,
-			'https://signkit.example',
-			{ fromEmail: 'noreply@example.com', fromName: 'SignKit' },
-			(): Date => NOW,
-			(): string => 'claim-token'
-		).deliverPending();
+		const store = storeFor(await eligibleClaim(sealer, { attempts: 10 }));
+
+		const result = await service(store, sealer, async () => 'failed').deliverPending();
+
 		expect(result.permanentlyFailed).toBe(1);
 		expect(result.outcomes[0]).toMatchObject({ errorCode: 'delivery_attempts_exhausted' });
-		expect(fail).toHaveBeenCalledWith(
+		expect(store.fail).toHaveBeenCalledWith(
 			expect.objectContaining({ errorCode: 'delivery_attempts_exhausted', retryable: false })
 		);
-	});
-
-	it('rejects non-root origins and invalid sender headers', () => {
-		const store = {} as InstanceInvitationDeliveryStore;
-		const sealer = new AesGcmInstanceInvitationDeliveryPayloadSealer(key());
-		const mail = {} as MailSender;
-		expect(
-			() =>
-				new InstanceInvitationDeliveryService(store, sealer, mail, 'https://signkit.example/base', {
-					fromEmail: 'noreply@example.com',
-					fromName: 'SignKit'
-				})
-		).toThrow(InvalidInstanceInvitationDeliveryConfigError);
-		expect(
-			() =>
-				new InstanceInvitationDeliveryService(store, sealer, mail, 'https://signkit.example', {
-					fromEmail: 'noreply@example.com\r\nBcc: victim@example.com',
-					fromName: 'SignKit'
-				})
-		).toThrow(InvalidInstanceInvitationDeliveryConfigError);
-		expect(
-			() =>
-				new InstanceInvitationDeliveryService(store, sealer, mail, 'https://signkit.example', {
-					fromEmail: 'noreply@example.com',
-					fromName: 'SignKit\r\nBcc: victim@example.com'
-				})
-		).toThrow(InvalidInstanceInvitationDeliveryConfigError);
-		for (const consoleUrl of [
-			'http://console.example/',
-			'javascript:alert(1)',
-			'https://user:secret@console.example/',
-			'https://console.example/#fragment',
-			'not a url'
-		]) {
-			expect(
-				() =>
-					new InstanceInvitationDeliveryService(store, sealer, mail, 'https://signkit.example', {
-						fromEmail: 'noreply@example.com',
-						fromName: 'SignKit',
-						consoleUrl
-					})
-			).toThrow(InvalidInstanceInvitationDeliveryConfigError);
-		}
 	});
 });

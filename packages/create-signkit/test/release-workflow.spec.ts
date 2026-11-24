@@ -10,6 +10,7 @@ import {
 	parseReleaseTag,
 	resolveReleaseTag
 } from '../src/release/semver.js';
+import { RELEASE_MANIFEST_SCHEMA_VERSION } from '../src/release/manifest.js';
 
 const buildScriptPath = fileURLToPath(
 	new URL('../../../scripts/build-cloudflare-release-bundle.mjs', import.meta.url)
@@ -271,6 +272,21 @@ describe('synthetic release tag precedence', () => {
 		expect(build).toMatch(/channelFromReleaseTag\(tag\)/);
 	});
 
+	it('writes a manifest schema that create-signkit before 1.0 refuses', async () => {
+		// create-signkit 0.1.x accepts only schemaVersion 1 and does not check the
+		// console settings on upgrade; any other schema stops it while it resolves
+		// the release, before anything in Cloudflare changes.
+		expect(RELEASE_MANIFEST_SCHEMA_VERSION).not.toBe(1);
+		const build = await readFile(buildScriptPath, 'utf8');
+		expect(build).toMatch(/schemaVersion: RELEASE_MANIFEST_SCHEMA_VERSION,/);
+		const verify = await readFile(verifyScriptPath, 'utf8');
+		expect(verify).toMatch(/schema\/release-manifest\.v2\.json/);
+		const schema = JSON.parse(
+			await readFile(new URL('../schema/release-manifest.v2.json', import.meta.url), 'utf8')
+		) as { properties: { schemaVersion: { const: number } } };
+		expect(schema.properties.schemaVersion.const).toBe(RELEASE_MANIFEST_SCHEMA_VERSION);
+	});
+
 	it('preserves unrelated release assets when rebuilding the Cloudflare bundle', async () => {
 		const build = await readFile(buildScriptPath, 'utf8');
 		// Regression: recursively deleting .release/assets wipes the Node
@@ -309,7 +325,7 @@ describe('semver release tags', () => {
 		expect(() => parseReleaseTag('v1.2.3+build.1')).toThrow(/build metadata/);
 		expect(() => parseReleaseTag('v1.2.3-beta.1+exp.sha')).toThrow(/build metadata/);
 		const schema = JSON.parse(
-			await readFile(new URL('../schema/release-manifest.v1.json', import.meta.url), 'utf8')
+			await readFile(new URL('../schema/release-manifest.v2.json', import.meta.url), 'utf8')
 		) as { properties: { tag: { maxLength: number; pattern: string } } };
 		const tagPattern = new RegExp(schema.properties.tag.pattern);
 		expect(schema.properties.tag.maxLength).toBe(35);

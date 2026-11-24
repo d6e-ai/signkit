@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Verify a generated Cloudflare release bundle against the v1 manifest schema,
- * create-signkit's runtime parser, size/hash, and required archive paths.
+ * Verify a generated Cloudflare release bundle against the v2 manifest schema
+ * (which pre-1.0 create-signkit refuses), create-signkit's runtime parser,
+ * size/hash, and required archive paths.
  *
  * Requires `pnpm run build:create-signkit` and a prior bundle build under
  * `.release/assets`. Does not publish or deploy.
@@ -51,7 +52,7 @@ if (!/^[0-9a-f]{40}$/.test(commit)) {
 }
 
 const schema = JSON.parse(
-	await readFile(join(packageDir, 'schema/release-manifest.v1.json'), 'utf8')
+	await readFile(join(packageDir, 'schema/release-manifest.v2.json'), 'utf8')
 );
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 addFormats(ajv);

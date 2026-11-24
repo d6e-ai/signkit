@@ -1,12 +1,10 @@
 # HTTP API
 
-SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature set at `GET /api/v1/system/capabilities` and the OpenAPI 3.1 document at `GET /api/v1/openapi.json`. Capabilities also identify the deployment: `version` is the product version of the running build and `publicOrigin` is the configured `SIGNKIT_PUBLIC_ORIGIN` (or `null`).
+SignKit exposes a versioned JSON API under `/api/v1`. Discover the live feature set at `GET /api/v1/system/capabilities` and the OpenAPI 3.1 document at `GET /api/v1/openapi.json`. Capabilities also identify the deployment: `version` is the product version of the running build, `publicOrigin` is the configured `SIGNKIT_PUBLIC_ORIGIN` (or `null`), and `consoleUrl` is the d6e console that operates it (or `null`).
 
 ## Authentication
 
-Operator browser requests use the d6e-auth session cookie plus an active local `instance_member` row.
-
-An operator console on another origin sends a d6e-auth access token minted for this deployment instead, as `Authorization: Bearer <JWT>`. It is accepted wherever the session cookie is, identifies the same member, and makes the cookie ignored for that request. Cross-origin calls are allowed only from origins in `SIGNKIT_CONSOLE_ORIGINS`. The rules are specified in [Authorization](architecture/authorization-and-instance-administration.md#operator-access-tokens).
+SignKit is operated from a d6e console and has no operator pages or sign-in of its own. The console sends a d6e-auth access token minted for this deployment, as `Authorization: Bearer <JWT>`; together with an active local `instance_member` row it authorizes every operator endpoint. There is no operator session cookie. Cross-origin calls are allowed only from origins in `SIGNKIT_CONSOLE_ORIGINS`. Capabilities report the console as `consoleUrl`. The rules are specified in [Authorization](architecture/authorization-and-instance-administration.md#operator-access-tokens).
 
 Automation uses a bearer key:
 
@@ -18,7 +16,7 @@ No tenant selector is accepted. A key belongs to the local member that created i
 
 Recipient browser endpoints use `skr1_` capability links and the encrypted browser session created from them. The separate `/api/v1/recipient/**` CLI surface accepts only the recipient's own `skr1_` bearer capability; neither a sender API key nor a browser cookie authorizes it. Background drains use their dedicated deployment secrets.
 
-The contact API is human-session-only: the operator session cookie or a verified d6e-auth operator access token from a console. API keys, recipient capabilities, other bearer values, and recipient browser sessions do not authorize contact reads or mutations.
+The contact API is human-session-only: a verified d6e-auth operator access token from the console. API keys, recipient capabilities, other bearer values, and recipient browser sessions do not authorize contact reads or mutations.
 
 ## Common rules
 
@@ -146,7 +144,6 @@ These endpoints require a human session and reject API-key credentials:
 | `GET`  | `/api/v1/instance/members`                           | List members                                         |
 | `GET`  | `/api/v1/instance/invitations`                       | List invitations                                     |
 | `POST` | `/api/v1/instance/invitations`                       | Invite a member                                      |
-| `POST` | `/api/v1/instance/invitations/accept`                | Accept an invitation                                 |
 | `GET`  | `/api/v1/instance/invitations/received`              | List invitations sent to the caller's verified email |
 | `POST` | `/api/v1/instance/invitations/{invitationId}/accept` | Accept a received invitation without the link        |
 | `POST` | `/api/v1/api-keys`                                   | Create an owner-bound API key                        |

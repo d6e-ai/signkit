@@ -6,13 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Breaking: the move to console-only operation ships as a major release, SignKit 1.0.0 (app and Rust CLI) together with create-signkit 1.0.0. The version numbers are set in the release preparation commit.
+
+### Removed
+
+- Standalone operation. SignKit is operated only from a d6e console (`SIGNKIT_CONSOLE_URL`, `SIGNKIT_CONSOLE_ORIGINS`): the server's own operator pages (dashboard, envelopes, settings, setup, signed-out), its sign-in (`/auth/*`) and operator session cookie, invitation acceptance by the emailed link (`/invitations/accept` and `POST /api/v1/instance/invitations/accept`), and SignKit's own invitation email are removed. The server renders only the recipient pages (`/s`, `/sign`, `/c`); every other page path redirects to the console, or answers 503 without one. Operators authenticate with a d6e-auth access token; automation keeps using API keys.
+
 ### Changed
 
 - The PDF seal authority's engine and validator containers can be placed with an optional `SEAL_LOCATION_HINT` (a Durable Object location hint), and the release command can deploy a subset of roles with `--only`.
 - Console CORS also exposes `retry-after` and `x-signkit-commit-sha`, so a d6e console can pace its retry after a void, reissue, or DOCX conversion and read which draft commit a DOCX export rendered. Allowed request headers and authorization are unchanged.
-- On a server listed in a d6e console (`SIGNKIT_CONSOLE_URL`), invitations send exactly one email: the invitation note names the mail language, and when D6E Auth answers `invitationEmail: "queued"` it emails the invitee a console link and SignKit leaves out its own mail. A failed note, `"skipped"`, or an older D6E Auth keeps SignKit's mail; a new invitation's own mail waits up to 60 seconds for that answer.
-
-- A server listed in a d6e console (`SIGNKIT_CONSOLE_URL`) redirects its own operator pages (dashboard, envelopes, settings, setup, signed-out) to the console. Recipient pages, invitation acceptance by link, sign-in and the API stay on the server, and standalone servers keep every page.
+- Invitations are delivered to D6E Auth as console notes (invited email, expiry, inviter, language), which D6E Auth turns into the invitation email and the console listing. A note the create request could not deliver is retried by the invitation outbox drain, which no longer needs a mail provider.
+- System capabilities report the operating console as `consoleUrl`.
+- `create-signkit` refuses to deploy or upgrade without the console settings: a new server enrolls with `D6E_ENROLLMENT_TOKEN`, and a server already registered passes `--console-url` and `--console-origins`. It also refuses a console URL whose origin is not among the console origins, checked after flags, state, and enrollment defaults are combined, because the server would send operators to a console whose API calls it refuses.
+- Release manifests use `schemaVersion` 2. create-signkit before 1.0 refuses them before changing anything, so it cannot activate SignKit 1.0 without the console settings: update create-signkit to 1.0 first, then upgrade. create-signkit 1.0 still installs schema 1 (SignKit 0.x) releases.
 
 ### Fixed
 

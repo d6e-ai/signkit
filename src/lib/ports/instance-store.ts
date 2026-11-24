@@ -131,23 +131,24 @@ export interface CreateInstanceInvitationCommand {
 	 */
 	recipientLookup?: string;
 	/**
-	 * When the invitation mail may first be sent; `createdAt` when omitted. A
-	 * server listed in a console holds it briefly so the console note can hand
-	 * the mail to D6E Auth (see {@link SettleInstanceInvitationDeliveryCommand}).
+	 * When the drain may first deliver the invitation's console note;
+	 * `createdAt` when omitted. The create command holds it briefly while it
+	 * sends the note itself (see {@link SettleInstanceInvitationDeliveryCommand}).
 	 */
 	deliveryAvailableAt?: string;
 }
 
 /**
- * Decides a new invitation's own mail after the console note answered.
+ * Settles a new invitation's outbox row after the create command's console
+ * note.
  *
- * - `console`: D6E Auth emails the invitee, so this server's mail is closed as
- *   handed off (recorded as delivered with provider id
- *   {@link CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID}, its sealed payload erased). Only
- *   a mail not yet sent or being sent (`pending`, or `failed` and retryable)
- *   is closed; a delivered or in-flight mail is left alone.
- * - `self`: this server sends its mail; a hold that has not lapsed yet is
- *   released so the next drain sends it.
+ * - `console`: D6E Auth holds the note (or a withdrawal for the id), so the row
+ *   is closed as handed off (recorded as delivered with provider id
+ *   {@link CONSOLE_HANDOFF_PROVIDER_MESSAGE_ID}, its sealed payload erased).
+ *   Only a row not yet delivered or being delivered (`pending`, or `failed` and
+ *   retryable) is closed; an in-flight or delivered row is left alone.
+ * - `self`: the note did not get through; a hold that has not lapsed yet is
+ *   released so the next drain retries it.
  */
 export interface SettleInstanceInvitationDeliveryCommand {
 	invitationId: string;

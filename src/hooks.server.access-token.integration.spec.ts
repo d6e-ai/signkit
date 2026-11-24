@@ -1,4 +1,3 @@
-import { Buffer } from 'node:buffer';
 import { DatabaseSync } from 'node:sqlite';
 import type { RequestEvent, RequestHandler } from '@sveltejs/kit';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
@@ -9,7 +8,6 @@ const privateEnv = vi.hoisted<Record<string, string | undefined>>(() => ({}));
 vi.mock('$env/dynamic/private', () => ({ env: privateEnv }));
 
 const { handleApiKeyAuthentication, handleSession } = await import('./hooks.server');
-const { seal } = await import('$lib/server/session');
 const { authorizeScopedInstanceRequest } = await import('$lib/http/api-key-authorization');
 const { GET: dashboardGet } = await import('./routes/api/v1/dashboard/+server');
 const { GET: memberMeGet } = await import('./routes/api/v1/instance/members/me/+server');
@@ -42,7 +40,6 @@ beforeEach((): void => {
 	privateEnv.D6E_AUTH_BASE_URL = BASE_URL;
 	privateEnv.D6E_AUTH_CLIENT_ID = CLIENT_ID;
 	privateEnv.D6E_AUTH_CLIENT_SECRET = 'client-secret';
-	privateEnv.SESSION_ENCRYPTION_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString('base64');
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
@@ -171,15 +168,6 @@ async function runRequest(
 	} as unknown as Parameters<typeof handleApiKeyAuthentication>[0])) as Response;
 
 	return { response, locals: event.locals, cookieReads, cookieWrites };
-}
-
-async function sealedCookieFor(subject: string, email: string): Promise<string> {
-	return seal({
-		accessToken: 'cookie-access-token',
-		refreshToken: 'cookie-refresh-token',
-		expiresAt: Math.floor(Date.now() / 1000) + 3600,
-		principal: { subject, email, name: 'Cookie Member', emailVerified: true }
-	});
 }
 
 async function problemType(response: Response): Promise<string> {
@@ -329,10 +317,12 @@ describe('d6e-auth access token as an operator bearer (real verification, real D
 		}
 	});
 
-	it('ignores a valid cookie session whenever an access token is presented', async () => {
+	it('never reads a cookie, with or without an access token', async () => {
 		const fixture: Fixture = createFixture();
 		try {
-			const sessionCookie: string = await sealedCookieFor(COOKIE_MEMBER_ID, 'member@example.com');
+			// An old operator session cookie may still ride along from before this
+			// server dropped its own sign-in; it is never an authority.
+			const sessionCookie: string = 'old-sealed-operator-session';
 
 			const verified: Outcome = await runRequest(fixture, memberMeGet, {
 				pathname: '/api/v1/instance/members/me',
@@ -353,13 +343,14 @@ describe('d6e-auth access token as an operator bearer (real verification, real D
 			expect(rejected.cookieReads).toEqual([]);
 			expect(rejected.cookieWrites).toEqual([]);
 
-			// Control: the same cookie alone is a working session for its own member.
+			// The cookie alone authorizes nothing.
 			vi.stubGlobal('fetch', vi.fn());
 			const cookieOnly: Outcome = await runRequest(fixture, memberMeGet, {
 				pathname: '/api/v1/instance/members/me',
 				sessionCookie
 			});
-			expect(cookieOnly.cookieReads).toContain('signkit_session');
+			expect(cookieOnly.response.status).toBe(401);
+			expect(cookieOnly.cookieReads).toEqual([]);
 		} finally {
 			fixture.sqlite.close();
 		}
@@ -384,7 +375,7 @@ describe('d6e-auth access token as an operator bearer (real verification, real D
 		}
 	});
 
-	it('keeps a suspended member out exactly as the cookie session would', async () => {
+	it('keeps a suspended member out', async () => {
 		const fixture: Fixture = createFixture();
 		try {
 			fixture.sqlite.exec(

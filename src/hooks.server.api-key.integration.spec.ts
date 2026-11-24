@@ -242,11 +242,12 @@ describe('hooks API key authentication (real D1 store)', () => {
 		}
 	});
 
-	it('still resolves the cookie session when no bearer is presented', async () => {
+	it('stays anonymous when no bearer is presented, never reading a cookie', async () => {
 		const fixture: Fixture = await createFixture();
 		try {
-			const outcome: Outcome = await runHandle(fixture, { sessionCookie: undefined });
-			expect(outcome.cookieReads).toContain('signkit_session');
+			const outcome: Outcome = await runHandle(fixture, { sessionCookie: 'old-sealed-session' });
+			expect(outcome.cookieReads).toEqual([]);
+			expect(outcome.locals.identityState).toBe('anonymous');
 			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'absent' });
 		} finally {
 			fixture.sqlite.close();
@@ -321,7 +322,8 @@ describe('hooks API key authentication (real D1 store)', () => {
 			});
 
 			expect(outcome.locals.apiKeyAuthentication).toEqual({ state: 'absent' });
-			expect(outcome.cookieReads).toContain('signkit_session');
+			expect(outcome.locals.identityState).toBe('anonymous');
+			expect(outcome.cookieReads).toEqual([]);
 		} finally {
 			fixture.sqlite.close();
 		}

@@ -130,16 +130,16 @@ The stores themselves do exact, case-sensitive comparisons against whatever
 email they are given -- this keeps the normalization policy in one place
 instead of duplicating it in two SQL dialects.
 
-## HTTP and SSR
+## HTTP
 
-`GET /api/v1/dashboard` (`src/routes/api/v1/dashboard/+server.ts`) and the
-root page's SSR loader (`src/routes/+page.server.ts`) both delegate to
-`resolveDashboardWorklist` (`src/lib/server/dashboard-worklist-request.ts`):
+`GET /api/v1/dashboard` (`src/routes/api/v1/dashboard/+server.ts`) delegates to
+`resolveDashboardWorklist` (`src/lib/server/dashboard-worklist-request.ts`). The
+d6e console renders the worklist from it; SignKit has no dashboard page of its
+own.
 
 - Authorization runs _before_ query parsing: `authorizeInstanceRequest` is
   called first (anonymous -> 401, suspended/non-member -> 403,
-  identity-unavailable -> 503, an API-key-only request -> 403, never falling
-  through to a cookie session), so an unauthorized caller always sees their
+  identity-unavailable -> 503, an API-key-only request -> 403), so an unauthorized caller always sees their
   authorization failure, never a 400 that incidentally also reveals their
   query string was malformed. There is no caller/email request parameter
   anywhere in this feature; the caller is always the authenticated session,
@@ -159,34 +159,3 @@ root page's SSR loader (`src/routes/+page.server.ts`) both delegate to
   HTTP `Response`, so a caller of `resolveDashboardWorklist` can tell a
   storage outage apart from an authorization or validation failure without
   re-parsing the response body.
-
-The SSR loader (`+page.server.ts`) `await`s `parent()` first, so
-`+layout.server.ts`'s own redirect/error (anonymous caller, unbootstrapped
-instance, non-active member) takes effect before any worklist read is
-attempted -- but authority for the read itself still comes from
-`resolveDashboardWorklist` reading `locals` directly, never from the
-parent's already-resolved `instanceMemberRole`. An `authorization` or
-`validation` failure independently fails the whole render closed (a redirect
-to `/auth/login` or `/settings`, or SvelteKit's `error()`), mirroring the
-layout's own fail-closed behavior; it is never folded into a successful page
-with a populated `worklistError`. Only a `store`-kind failure renders as a
-retryable `worklistError` with `worklist: null` -- the one case where the
-page itself renders normally and lets the UI offer a retry. The loader also
-sets `cache-control: private, no-store`.
-
-The SSR loader queries the application layer directly -- it never issues an
-HTTP self-fetch against `/api/v1/dashboard`. Both surfaces still derive their
-own authorization independently (same helper, called separately), so neither
-depends on the other's cache or on `+layout.server.ts`'s page-access gate
-having already run.
-
-`+page.server.ts` returns `{ worklist, worklistQuery, worklistError }`.
-`worklist` is `null` exactly when `worklistError` is non-null; there is no
-state in which both are populated or both are empty by coincidence.
-
-## Client
-
-`src/lib/client/dashboard.ts` is a thin, typed fetch wrapper
-(`DashboardClient.worklist(params)`) following the existing client pattern
-(`contacts.ts`): RFC 9457 problem parsing via `http-problem.ts`, same-origin
-credentials, no retry/backoff policy of its own.

@@ -320,6 +320,7 @@ async function deployOrUpgrade(
 		initialManagedDeploy,
 		enrollment.mode === 'request'
 	);
+	assertConsoleRegistration(target, enrollment.mode === 'request');
 	if (input.command === 'deploy' && !initialManagedDeploy) {
 		assertValidBootstrapOwnerEmail(target.bootstrapOwnerEmail, true);
 	}
@@ -363,6 +364,7 @@ async function deployOrUpgrade(
 		target = withEnrollmentDefaults(target, deploymentRecovery.enrolledRecord);
 		try {
 			assertInitialManagedDeployVars(target, release, initialManagedDeploy, false);
+			assertConsoleRegistration(target, false, true);
 		} catch (error) {
 			await runtime.fs.rm(deploymentRecovery.cleanupDir);
 			throw error;
@@ -999,6 +1001,48 @@ function generatedWorkerVars(
 		vars[CONSOLE_URL_VAR] = target.consoleUrl;
 	}
 	return vars;
+}
+
+/**
+ * SignKit is operated only from a d6e console: the server renders recipient
+ * pages alone and has no operator pages or sign-in of its own. Every deploy and
+ * upgrade therefore needs the console URL (`SIGNKIT_CONSOLE_URL`) and the
+ * console origins allowed to call the API (`SIGNKIT_CONSOLE_ORIGINS`), from
+ * flags, recorded state, or this run's console enrollment. The URL's origin
+ * must be one of those origins, or the server sends operators to a console
+ * whose API calls it then refuses (CORS). Each value is inherited on its own,
+ * so a flag for one can pair it with a stale other: the pair is checked on the
+ * merged target.
+ *
+ * A pending enrollment supplies missing values later, so only what it cannot
+ * change is checked here, before the single-use token is spent: an explicit
+ * empty value, or a complete pair that does not match. The caller checks again
+ * once the enrollment defaults are applied (`enrolledThisRun`).
+ */
+export function assertConsoleRegistration(
+	target: EffectiveTarget,
+	enrollmentPending: boolean,
+	enrolledThisRun = false
+): void {
+	const { consoleUrl, consoleOrigins } = target;
+	const kept: string = enrolledThisRun
+		? ' D6E Auth already registered this server; its enrollment record and OAuth pair are kept beside the recovery file, so a rerun with corrected flags does not register it again. Nothing was changed in Cloudflare.'
+		: '';
+	if (!consoleUrl || !consoleOrigins || consoleOrigins.length === 0) {
+		// An explicit flag wins over enrollment defaults, so an explicitly empty
+		// value would survive the enrollment.
+		const explicitlyEmpty: boolean =
+			consoleUrl === '' || (consoleOrigins !== undefined && consoleOrigins.length === 0);
+		if (enrollmentPending && !explicitlyEmpty) return;
+		throw preflight(
+			`SignKit is operated from a d6e console and has no operator pages of its own. For a new server, set ${ENROLLMENT_TOKEN_ENV} (issued from the console) so this deploy registers it; for a server already registered, pass --console-url and --console-origins.${kept}`
+		);
+	}
+	const consoleOrigin: string = new URL(consoleUrl).origin;
+	if (consoleOrigins.includes(consoleOrigin)) return;
+	throw preflight(
+		`The console URL ${consoleUrl} is outside the console origins (${consoleOrigins.join(', ')}): the server would send operators to that console and refuse its API calls (CORS). A value without its flag is kept from the last run or the console enrollment, so pass --console-url and --console-origins together, with ${consoleOrigin} among the origins.${kept}`
+	);
 }
 
 function assertInitialManagedDeployVars(

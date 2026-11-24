@@ -27,6 +27,11 @@ const MIGRATION_POLICY = {
 const { resolveReleaseTag, channelFromReleaseTag } = await import(
 	pathToFileURL(join(ROOT, 'packages/create-signkit/dist/release/semver.js')).href
 );
+// Schema 2: create-signkit before 1.0 refuses the release before it changes
+// anything in Cloudflare, so it cannot activate a console-only release.
+const { RELEASE_MANIFEST_SCHEMA_VERSION } = await import(
+	pathToFileURL(join(ROOT, 'packages/create-signkit/dist/release/manifest.js')).href
+);
 const tag = resolveReleaseTag(process.env);
 const commit = (process.env.GITHUB_SHA ?? '').replace(/[^0-9a-f]/g, '').slice(0, 40);
 let channel;
@@ -139,7 +144,7 @@ await run('tar', [
 const bundleBytes = await readFile(bundlePath);
 const sha256 = createHash('sha256').update(bundleBytes).digest('hex');
 const manifest = {
-	schemaVersion: 1,
+	schemaVersion: RELEASE_MANIFEST_SCHEMA_VERSION,
 	kind: 'signkit-cloudflare-release',
 	repository: REPOSITORY,
 	tag,

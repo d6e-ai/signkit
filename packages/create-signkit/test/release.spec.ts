@@ -5,7 +5,7 @@ import {
 	sha256Hex,
 	type GithubRelease
 } from '../src/release/github.js';
-import { parseReleaseManifest } from '../src/release/manifest.js';
+import { RELEASE_MANIFEST_SCHEMA_VERSION, parseReleaseManifest } from '../src/release/manifest.js';
 import { CliError } from '../src/cli/errors.js';
 import {
 	COMMIT,
@@ -228,6 +228,21 @@ describe('GitHub release resolution', () => {
 });
 
 describe('manifest and bundle validation', () => {
+	it('accepts the console-only schema and the earlier one, and refuses any other', () => {
+		expect(parseReleaseManifest(JSON.stringify(sampleManifest())).schemaVersion).toBe(
+			RELEASE_MANIFEST_SCHEMA_VERSION
+		);
+		// SignKit 0.x releases stay installable.
+		expect(
+			parseReleaseManifest(JSON.stringify(sampleManifest({ schemaVersion: 1 }))).schemaVersion
+		).toBe(1);
+		for (const schemaVersion of [3, '2', undefined]) {
+			expect(() =>
+				parseReleaseManifest(JSON.stringify({ ...sampleManifest(), schemaVersion }))
+			).toThrow(/unsupported release manifest schemaVersion/);
+		}
+	});
+
 	it('rejects a manifest for the wrong repository, tag, commit, size, or hash', async () => {
 		expect(() =>
 			parseReleaseManifest(JSON.stringify({ ...sampleManifest(), repository: 'evil/repo' }))

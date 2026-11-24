@@ -81,7 +81,7 @@ function findExplicitMaxWidthViolations(source: string): string[] {
 
 describe('project-wide page-width contract', () => {
 	it('recursively discovers all route +page.svelte files', () => {
-		expect(PAGE_FILES.length).toBeGreaterThanOrEqual(12);
+		expect(PAGE_FILES.length).toBeGreaterThanOrEqual(3);
 	});
 
 	it('rejects explicit max-w-* constraints while allowing max-w-none and prose max-w-none', () => {

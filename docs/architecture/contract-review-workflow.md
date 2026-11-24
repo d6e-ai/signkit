@@ -8,7 +8,7 @@ SignKit envelopes back contract drafting with an immutable, content-addressed Gi
 
 ## 2. API Endpoints
 
-All revision endpoints require `envelopes:read` authorization through an active API key or operator session cookie:
+All revision endpoints require `envelopes:read` authorization through an active API key or operator access token:
 
 - `GET /api/v1/envelopes/{envelopeId}/revisions`: Bounded paginated list of draft revisions (`limit` default 50, max 100; `cursor` integer generation).
 - `GET /api/v1/envelopes/{envelopeId}/revisions/{revisionRef}`: Exact revision snapshot by integer generation or 40-character hexadecimal Git commit SHA. Supports optional `?path=documents/<slug>.md` query filter and `Accept: text/markdown` or `Accept: text/plain` content negotiation.

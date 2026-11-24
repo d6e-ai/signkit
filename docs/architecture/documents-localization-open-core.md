@@ -6,7 +6,7 @@ verification belong to [sent agreement rendering](envelope-model.md#sent-agreeme
 [executed agreement PDF](executed-agreement-pdf.md).
 
 Status: mixed — localization, bounded DOCX import/export, executed agreement PDF composition,
-optional instance PAdES B-B/B-T sealing, authenticated download, operator UI, and CLI are
+optional instance PAdES B-B/B-T sealing, authenticated download, the d6e console, and CLI are
 implemented; the open-core boundary is policy
 
 ## Documents and evidence

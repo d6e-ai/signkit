@@ -1,344 +1,60 @@
 import { isHttpError, isRedirect } from '@sveltejs/kit';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InstanceApplicationPort } from '$lib/application/instance/instance-service';
-import type { InstanceCallerContext, InstanceMemberMetadata } from '$lib/ports/instance-store';
-import { identityOnlyLocals as locals } from '$lib/http/http-handler-test-support';
-
-const resolveInstanceApplication =
-	vi.fn<
-		(context: {
-			platform?: Readonly<App.Platform>;
-		}) => Promise<InstanceApplicationPort | null> | InstanceApplicationPort | null
-	>();
-
-vi.mock('$lib/application/instance/instance-runtime', () => ({
-	resolveInstanceApplication: (context: { platform?: Readonly<App.Platform> }) =>
-		resolveInstanceApplication(context)
-}));
+import { describe, expect, it } from 'vitest';
 
 const { load } = await import('./+layout.server');
 
-const NOW: string = '2026-09-14T00:00:00.000Z';
+const CONSOLE_URL: string = 'https://console.example.com/signkit/console';
 
-function activeOwner(): InstanceMemberMetadata {
-	return { userId: 'user-1', role: 'owner', status: 'active', createdAt: NOW, updatedAt: NOW };
-}
-
-function application(context: InstanceCallerContext | null): InstanceApplicationPort {
+function event(pathname: string, consoleUrl?: string): Parameters<typeof load>[0] {
 	return {
-		bootstrapInstance: vi.fn(),
-		getCurrentMember: vi.fn(async () => {
-			if (context === null) throw new Error('unavailable');
-			return context;
-		})
-	};
-}
-
-function event(input: {
-	pathname: string;
-	search?: string;
-	appLocals?: App.Locals;
-	consoleUrl?: string;
-}): Parameters<typeof load>[0] {
-	const url: URL = new URL(`https://signkit.example${input.pathname}${input.search ?? ''}`);
-	return {
-		locals: input.appLocals ?? locals(),
-		platform:
-			input.consoleUrl === undefined
-				? undefined
-				: { env: { SIGNKIT_CONSOLE_URL: input.consoleUrl } },
-		url
+		platform: consoleUrl === undefined ? undefined : { env: { SIGNKIT_CONSOLE_URL: consoleUrl } },
+		url: new URL(`https://signkit.example${pathname}`)
 	} as unknown as Parameters<typeof load>[0];
 }
 
-const CONSOLE_URL: string = 'https://console.example.com/signkit/console';
-
-/**
- * `localizeHref` runs outside of any request context in this unit test (there
- * is no `paraglideMiddleware` wrapping it, unlike a real request), so it falls
- * back to prefixing every href with the base locale instead of leaving it
- * bare. Stripping that prefix here keeps these assertions about the layout
- * guard's own redirect targets, not about paraglide's context-free fallback.
- */
-function stripLocalePrefix(pathname: string): string {
-	return pathname.replace(/^\/(en|ja)(?=\/|$)/, '') || '/';
-}
-
-/**
- * Accepts the bare `MaybePromise<T>` that `LayoutServerLoad` may return
- * (SvelteKit's load type permits a synchronous return, not just a `Promise`),
- * so callers can pass `load(...)` directly without a throwaway
- * `Promise.resolve` wrapper at every call site.
- */
-async function captureRedirect(result: unknown): Promise<{ status: number; location: string }> {
+async function outcome(
+	result: unknown
+): Promise<{ redirect: string } | { status: number } | { data: unknown }> {
 	try {
-		await result;
-	} catch (error: unknown) {
-		if (isRedirect(error))
-			return { status: error.status, location: stripLocalePrefix(error.location) };
-		throw error;
+		return { data: await result };
+	} catch (caught: unknown) {
+		if (isRedirect(caught)) return { redirect: caught.location };
+		if (isHttpError(caught)) return { status: caught.status };
+		throw caught;
 	}
-	throw new Error('expected a redirect to be thrown');
 }
 
-async function captureHttpError(result: unknown): Promise<{ status: number }> {
-	try {
-		await result;
-	} catch (error: unknown) {
-		if (isHttpError(error)) return { status: error.status };
-		throw error;
-	}
-	throw new Error('expected an HTTP error to be thrown');
-}
-
-describe('root layout access gate', () => {
-	beforeEach(() => {
-		resolveInstanceApplication.mockReset();
-	});
-
-	it('never touches instance state on the recipient surface', async () => {
-		const data = await load(event({ pathname: '/sign', appLocals: locals('anonymous') }));
-		expect(data).toEqual({});
-		expect(resolveInstanceApplication).not.toHaveBeenCalled();
-	});
-
-	it.each(['/invitations/accept', '/en/invitations/accept', '/ja/invitations/accept/'])(
-		'lets the email landing page %s capture its fragment before authentication',
-		async (pathname) => {
-			const data = await load(event({ pathname, appLocals: locals('anonymous') }));
-			expect(data).toEqual({});
-			expect(resolveInstanceApplication).not.toHaveBeenCalled();
+describe('root layout', () => {
+	it('renders recipient pages on every server', async () => {
+		for (const pathname of [
+			'/s/token',
+			'/sign',
+			'/ja/sign/01900000-0000-7000-8000-000000000001',
+			'/c/token/view'
+		]) {
+			expect(await outcome(load(event(pathname, CONSOLE_URL)))).toEqual({ data: {} });
+			expect(await outcome(load(event(pathname)))).toEqual({ data: {} });
 		}
-	);
+	});
 
-	it.each(['/invitations', '/invitations/accept/extra', '/invitations/accepted'])(
-		'keeps other invitation-like path %s behind authentication',
-		async (pathname) => {
-			const redirected = await captureRedirect(
-				load(event({ pathname, appLocals: locals('anonymous') }))
-			);
-			expect(redirected.location).toContain('/auth/login?return=');
+	it('sends every other page, including old operator links, to the console', async () => {
+		for (const pathname of [
+			'/',
+			'/ja',
+			'/envelopes/01900000-0000-7000-8000-000000000001',
+			'/settings/api-keys',
+			'/setup',
+			'/invitations/accept',
+			'/signed-out',
+			'/no-such-page'
+		]) {
+			expect(await outcome(load(event(pathname, CONSOLE_URL)))).toEqual({ redirect: CONSOLE_URL });
 		}
-	);
-
-	/**
-	 * The signed-out surface must render for an anonymous caller without
-	 * redirecting into /auth/login: it is exactly where POST /auth/logout sends
-	 * a caller, and redirecting it back into the login gate would restart OAuth
-	 * immediately after logout instead of showing a public Sign In action.
-	 */
-	it('never gates the signed-out surface behind authentication', async () => {
-		const data = await load(event({ pathname: '/signed-out', appLocals: locals('anonymous') }));
-		expect(data).toEqual({});
-		expect(resolveInstanceApplication).not.toHaveBeenCalled();
 	});
 
-	it('never gates the signed-out surface behind unavailable identity either', async () => {
-		const data = await load(event({ pathname: '/signed-out', appLocals: locals('unavailable') }));
-		expect(data).toEqual({});
-		expect(resolveInstanceApplication).not.toHaveBeenCalled();
-	});
-
-	it('redirects an anonymous caller to /auth/login with a safe same-origin return path', async () => {
-		const redirected = await captureRedirect(
-			load(
-				event({ pathname: '/envelopes', search: '?filter=mine', appLocals: locals('anonymous') })
-			)
-		);
-		expect(redirected.status).toBe(302);
-		expect(redirected.location).toBe(
-			`/auth/login?return=${encodeURIComponent('/envelopes?filter=mine')}`
-		);
-		expect(resolveInstanceApplication).not.toHaveBeenCalled();
-	});
-
-	it('fails closed with a 503 for unresolvable identity, never redirecting into an OAuth loop', async () => {
-		const failed = await captureHttpError(
-			load(event({ pathname: '/', appLocals: locals('unavailable') }))
-		);
-		expect(failed.status).toBe(503);
-		expect(resolveInstanceApplication).not.toHaveBeenCalled();
-	});
-
-	it.each(['/envelopes', '/setup', '/settings'])(
-		'fails closed on %s when identity is verified but membership is unavailable',
-		async (pathname: string) => {
-			const appLocals: App.Locals = {
-				...locals('active'),
-				identityState: 'unavailable',
-				bootstrapped: false,
-				instanceMembership: null
-			};
-			resolveInstanceApplication.mockResolvedValue(
-				application({ bootstrapped: false, member: null })
-			);
-			const failed = await captureHttpError(load(event({ pathname, appLocals })));
-			expect(failed.status).toBe(503);
-			expect(resolveInstanceApplication).not.toHaveBeenCalled();
+	it('answers 503 for operator pages when no acceptable console URL is configured', async () => {
+		for (const consoleUrl of [undefined, '', '   ', 'http://console.example.com/']) {
+			expect(await outcome(load(event('/', consoleUrl)))).toEqual({ status: 503 });
 		}
-	);
-
-	it('lets an authenticated caller without local membership reach instance authorization', async () => {
-		// `no_membership` carries a verified principal. The local
-		// instance_member model decides whether the caller may proceed, so this
-		// state must never be treated like `anonymous` or `unavailable`.
-		resolveInstanceApplication.mockResolvedValue(
-			application({ bootstrapped: true, member: activeOwner() })
-		);
-		const data = await load(event({ pathname: '/envelopes', appLocals: locals('no_membership') }));
-		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: 'owner' });
-	});
-
-	it('forces an authenticated caller on an unbootstrapped instance to /setup', async () => {
-		resolveInstanceApplication.mockResolvedValue(
-			application({ bootstrapped: false, member: null })
-		);
-		const redirected = await captureRedirect(load(event({ pathname: '/envelopes' })));
-		expect(redirected.status).toBe(302);
-		expect(redirected.location).toBe('/setup');
-	});
-
-	it('lets an authenticated caller stay on /setup while the instance is unbootstrapped, with a null role', async () => {
-		resolveInstanceApplication.mockResolvedValue(
-			application({ bootstrapped: false, member: null })
-		);
-		const data = await load(event({ pathname: '/setup' }));
-		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: null });
-	});
-
-	it('redirects away from /setup once the instance is already bootstrapped', async () => {
-		resolveInstanceApplication.mockResolvedValue(
-			application({ bootstrapped: true, member: activeOwner() })
-		);
-		const redirected = await captureRedirect(load(event({ pathname: '/setup' })));
-		expect(redirected.status).toBe(302);
-		expect(redirected.location).toBe('/');
-	});
-
-	it('confines a non-member of a bootstrapped instance to /settings', async () => {
-		resolveInstanceApplication.mockResolvedValue(application({ bootstrapped: true, member: null }));
-		const redirected = await captureRedirect(load(event({ pathname: '/envelopes' })));
-		expect(redirected.status).toBe(302);
-		expect(redirected.location).toBe('/settings');
-	});
-
-	it('confines a suspended member to /settings', async () => {
-		resolveInstanceApplication.mockResolvedValue(
-			application({
-				bootstrapped: true,
-				member: { ...activeOwner(), role: 'member', status: 'suspended' }
-			})
-		);
-		const redirected = await captureRedirect(load(event({ pathname: '/' })));
-		expect(redirected.status).toBe(302);
-		expect(redirected.location).toBe('/settings');
-	});
-
-	it('lets a non-member reach /settings directly, for invitation acceptance, with a null role', async () => {
-		resolveInstanceApplication.mockResolvedValue(application({ bootstrapped: true, member: null }));
-		const data = await load(event({ pathname: '/settings' }));
-		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: null });
-	});
-
-	it('gives a suspended member reaching /settings a null role, never their suspended role', async () => {
-		resolveInstanceApplication.mockResolvedValue(
-			application({
-				bootstrapped: true,
-				member: { ...activeOwner(), status: 'suspended' }
-			})
-		);
-		const data = await load(event({ pathname: '/settings' }));
-		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: null });
-	});
-
-	it('grants an active member normal access to any page and reports their real role', async () => {
-		resolveInstanceApplication.mockResolvedValue(
-			application({ bootstrapped: true, member: activeOwner() })
-		);
-		const data = await load(event({ pathname: '/envelopes/new' }));
-		expect(data).toEqual({ email: 'user@example.com', name: 'User', instanceMemberRole: 'owner' });
-	});
-
-	it('reports an active plain member as role "member"', async () => {
-		resolveInstanceApplication.mockResolvedValue(
-			application({ bootstrapped: true, member: { ...activeOwner(), role: 'member' } })
-		);
-		const data = await load(event({ pathname: '/envelopes' }));
-		expect(data).toEqual({
-			email: 'user@example.com',
-			name: 'User',
-			instanceMemberRole: 'member'
-		});
-	});
-
-	it('fails closed with a 503, never rendering a normal page, when the durable instance store cannot be resolved', async () => {
-		resolveInstanceApplication.mockResolvedValue(null);
-		const failed = await captureHttpError(load(event({ pathname: '/envelopes' })));
-		expect(failed.status).toBe(503);
-	});
-
-	it('fails closed with a 503 when resolving the instance application throws', async () => {
-		resolveInstanceApplication.mockRejectedValue(new Error('boom'));
-		const failed = await captureHttpError(load(event({ pathname: '/envelopes' })));
-		expect(failed.status).toBe(503);
-	});
-
-	it('fails closed with a 503 when reading the caller context throws', async () => {
-		resolveInstanceApplication.mockResolvedValue(application(null));
-		const failed = await captureHttpError(load(event({ pathname: '/envelopes' })));
-		expect(failed.status).toBe(503);
-	});
-
-	describe('on a server listed in a d6e console', () => {
-		it('sends every operator page to the console before any sign-in or instance read', async () => {
-			for (const pathname of [
-				'/',
-				'/ja',
-				'/en/',
-				'/envelopes',
-				'/ja/envelopes/01900000-0000-7000-8000-000000000001',
-				'/envelopes/new',
-				'/settings',
-				'/en/settings/api-keys',
-				'/setup',
-				'/signed-out'
-			]) {
-				const redirected = await captureRedirect(
-					load(event({ pathname, appLocals: locals('anonymous'), consoleUrl: CONSOLE_URL }))
-				);
-				expect(redirected).toEqual({ status: 302, location: CONSOLE_URL });
-			}
-			expect(resolveInstanceApplication).not.toHaveBeenCalled();
-		});
-
-		it('keeps the recipient and invitation pages on this server', async () => {
-			for (const pathname of [
-				'/s/token',
-				'/sign/01900000-0000-7000-8000-000000000001',
-				'/c/x/view'
-			]) {
-				expect(
-					await load(event({ pathname, appLocals: locals('anonymous'), consoleUrl: CONSOLE_URL }))
-				).toEqual({});
-			}
-			expect(
-				await load(
-					event({
-						pathname: '/ja/invitations/accept',
-						appLocals: locals('anonymous'),
-						consoleUrl: CONSOLE_URL
-					})
-				)
-			).toEqual({});
-		});
-
-		it('keeps every page on a standalone server or with an unacceptable console URL', async () => {
-			for (const consoleUrl of [undefined, '', '   ', 'http://console.example.com/']) {
-				const redirected = await captureRedirect(
-					load(event({ pathname: '/settings', appLocals: locals('anonymous'), consoleUrl }))
-				);
-				expect(redirected.location).toBe('/auth/login?return=%2Fsettings');
-			}
-		});
 	});
 });

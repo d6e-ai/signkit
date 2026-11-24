@@ -1,29 +1,15 @@
 <script lang="ts">
-	import { navigating } from '$app/state';
 	import { ModeWatcher } from 'mode-watcher';
-	import AppBreadcrumbs from '$lib/components/app-breadcrumbs.svelte';
-	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import LanguageSwitch from '$lib/components/language-switch.svelte';
 	import NavigationProgress from '$lib/components/navigation-progress.svelte';
 	import ThemeSwitch from '$lib/components/theme-switch.svelte';
-	import * as Sidebar from '$lib/components/ui/sidebar';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { isRecipientSurfacePath } from '$lib/navigation/recipient-surface';
-	import { isSetupSurfacePath } from '$lib/navigation/setup-surface';
-	import { isSignedOutSurfacePath } from '$lib/navigation/signed-out-surface';
-	import { isInvitationSurfacePath } from '$lib/navigation/invitation-surface';
-	import { page } from '$app/state';
 	import './layout.css';
 	import * as m from '$lib/paraglide/messages';
 
-	let { data, children } = $props();
-	let bareShell = $derived(
-		isRecipientSurfacePath(page.url.pathname) ||
-			isSignedOutSurfacePath(page.url.pathname) ||
-			isSetupSurfacePath(page.url.pathname) ||
-			isInvitationSurfacePath(page.url.pathname)
-	);
-	let navigationPending = $derived(navigating.to !== null);
+	// Every page this server renders is a recipient page (signing and the
+	// completed-document view); operators use the d6e console.
+	let { children } = $props();
 </script>
 
 <svelte:head>
@@ -37,45 +23,22 @@
 <ModeWatcher />
 
 <Tooltip.Provider>
-	{#if bareShell}
-		<div class="min-h-svh bg-muted/25">
-			<!-- Header contents share the same container as the page body, so the
-			     brand and the page content line up on wide screens instead of the
-			     header running edge to edge past it. -->
-			<header class="border-b bg-background/90 backdrop-blur-xl">
-				<div class="container mx-auto flex h-16 w-full items-center px-4 sm:px-6">
-					<a href="/" class="font-semibold tracking-tight">{m.app_name()}</a>
-					<div class="ml-auto flex shrink-0 items-center gap-1">
-						<ThemeSwitch />
-						<LanguageSwitch />
-					</div>
+	<div class="min-h-svh bg-muted/25">
+		<!-- Header contents share the same container as the page body, so the
+		     brand and the page content line up on wide screens instead of the
+		     header running edge to edge past it. -->
+		<header class="border-b bg-background/90 backdrop-blur-xl">
+			<div class="container mx-auto flex h-16 w-full items-center px-4 sm:px-6">
+				<span class="font-semibold tracking-tight">{m.app_name()}</span>
+				<div class="ml-auto flex shrink-0 items-center gap-1">
+					<ThemeSwitch />
+					<LanguageSwitch />
 				</div>
-			</header>
-			<main class="container mx-auto w-full px-4 py-6 sm:px-6 sm:py-8 lg:py-10">
-				{@render children()}
-			</main>
-		</div>
-	{:else}
-		<Sidebar.Provider>
-			<AppSidebar
-				name={data.name ?? null}
-				email={data.email ?? null}
-				instanceMemberRole={data.instanceMemberRole ?? null}
-			/>
-			<Sidebar.Inset class="min-w-0" aria-busy={navigationPending}>
-				<header
-					class="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl"
-				>
-					<Sidebar.Trigger />
-					<AppBreadcrumbs />
-					<div class="ml-auto flex shrink-0 items-center gap-1">
-						<ThemeSwitch />
-						<LanguageSwitch />
-					</div>
-				</header>
-				<div class="container mx-auto w-full flex-1 px-4 py-6">{@render children()}</div>
-			</Sidebar.Inset>
-		</Sidebar.Provider>
-	{/if}
+			</div>
+		</header>
+		<main class="container mx-auto w-full px-4 py-6 sm:px-6 sm:py-8 lg:py-10">
+			{@render children()}
+		</main>
+	</div>
 	<NavigationProgress />
 </Tooltip.Provider>

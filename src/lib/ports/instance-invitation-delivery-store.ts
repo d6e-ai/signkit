@@ -10,6 +10,8 @@ export interface ClaimedInstanceInvitationDelivery {
 	role: 'owner' | 'admin' | 'member';
 	invitationStatus: 'pending' | 'accepted' | 'revoked';
 	expiresAt: string;
+	/** The inviter's d6e-auth subject, named in the console note. */
+	inviterUserId: string;
 	tokenHash: string;
 	emailBinding: string;
 	sealedPayload: string | null;

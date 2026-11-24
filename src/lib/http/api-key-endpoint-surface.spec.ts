@@ -978,12 +978,13 @@ describe('API key rejected surface', () => {
 				)
 		],
 		[
-			'POST /api/v1/instance/invitations/accept',
+			'POST /api/v1/instance/invitations/{invitationId}/accept',
 			async (): Promise<Response> =>
-				createInstanceInvitationHttpHandlers(() => null).accept(
+				createInstanceInvitationHttpHandlers(() => null).acceptReceived(
 					event({
-						pathname: '/api/v1/instance/invitations/accept',
+						pathname: `/api/v1/instance/invitations/${KEY_ID}/accept`,
 						method: 'POST',
+						params: { invitationId: KEY_ID },
 						apiKeyAuthentication: { state: 'authenticated', principal: principal() }
 					})
 				)

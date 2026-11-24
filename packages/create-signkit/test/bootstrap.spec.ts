@@ -40,6 +40,10 @@ const INITIAL_DEPLOY_ARGV = [
 	'https://signkit.example.workers.dev',
 	'--bootstrap-owner-email',
 	'owner@example.com',
+	'--console-url',
+	'https://console.example/signkit/console',
+	'--console-origins',
+	'https://console.example',
 	'--yes',
 	'--json'
 ];

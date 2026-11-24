@@ -16,6 +16,8 @@ import {
 import { boundedFetch, type HttpRequest, type HttpResponse } from '../src/runtime/http.js';
 import {
 	ACCOUNT_ID,
+	CONSOLE_ORIGIN as STATE_CONSOLE_ORIGIN,
+	CONSOLE_URL as STATE_CONSOLE_URL,
 	FakeCloudflareClient,
 	FakeHttp,
 	MemoryFileSystem,
@@ -33,6 +35,8 @@ const ENROLL_URL = `${AUTH_ORIGIN}/api/v1/console/enrollments`;
 const PUBLIC_ORIGIN = 'https://signkit.example.workers.dev';
 const CONSOLE_ORIGIN = 'https://console.example.com';
 const CONSOLE_URL = `${CONSOLE_ORIGIN}/signkit/console`;
+const OTHER_CONSOLE_ORIGIN = 'https://other-console.example';
+const OTHER_CONSOLE_URL = `${OTHER_CONSOLE_ORIGIN}/signkit/console`;
 const STATE_PATH = '/xdg/state/create-signkit/state.json';
 const RECOVERY_PATH = resolveRecoveryPath(STATE_PATH);
 const RECORD_PATH = resolveEnrollmentRecordPath(RECOVERY_PATH);
@@ -63,6 +67,7 @@ function enrollmentBody(overrides: Record<string, unknown> = {}): Record<string,
 		bootstrapOwnerEmail: 'Console.Owner@Example.com',
 		d6eAuthBaseUrl: AUTH_ORIGIN,
 		consoleOrigins: [CONSOLE_ORIGIN],
+		consoleUrl: CONSOLE_URL,
 		...overrides
 	};
 }
@@ -199,7 +204,8 @@ describe('console enrollment on a pristine initial deploy', () => {
 			publicOrigin: PUBLIC_ORIGIN,
 			d6eAuthBaseUrl: AUTH_ORIGIN,
 			bootstrapOwnerEmail: 'console.owner@example.com',
-			consoleOrigins: [CONSOLE_ORIGIN]
+			consoleOrigins: [CONSOLE_ORIGIN],
+			consoleUrl: CONSOLE_URL
 		});
 		expect((await result.fs.stat(RECORD_PATH)).mode & 0o777).toBe(0o600);
 		expect(JSON.stringify(record)).not.toContain(CLIENT_SECRET);
@@ -247,19 +253,15 @@ describe('console enrollment on a pristine initial deploy', () => {
 		expect(state.consoleUrl).toBe(CONSOLE_URL);
 	});
 
-	it('leaves SIGNKIT_CONSOLE_URL unset when D6E Auth names no consoleUrl', async () => {
+	it('refuses to deploy when D6E Auth names no consoleUrl and no flag supplies one', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		const http = new OrderedHttp(cloudflare);
-		http.on(ENROLL_URL, enrollmentBody(), 201);
+		http.on(ENROLL_URL, enrollmentBody({ consoleUrl: undefined }), 201);
 		const result = await runEnrolled({ http, cloudflare });
 
-		expect(result.code).toBe(0);
-		const config = JSON.parse(result.cloudflare.lastConfig ?? '{}') as {
-			vars: Record<string, string>;
-		};
-		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_URL');
-		const state = JSON.parse(await result.fs.readFile(STATE_PATH)) as Record<string, unknown>;
-		expect(state).not.toHaveProperty('consoleUrl');
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(result.cloudflare.lastConfig).toBeUndefined();
 	});
 
 	it('prints a human enrollment line without secrets or the owner address', async () => {
@@ -275,7 +277,7 @@ describe('console enrollment on a pristine initial deploy', () => {
 		expect(result.stdout).not.toContain('console.owner@example.com');
 	});
 
-	it('lets explicit --bootstrap-owner-email, --console-origins, and --server-name win', async () => {
+	it('lets explicit --bootstrap-owner-email, console flags, and --server-name win', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		const http = new OrderedHttp(cloudflare);
 		http.on(ENROLL_URL, enrollmentBody(), 201);
@@ -286,7 +288,9 @@ describe('console enrollment on a pristine initial deploy', () => {
 				'--bootstrap-owner-email',
 				'Operator@Example.com',
 				'--console-origins',
-				'',
+				OTHER_CONSOLE_ORIGIN,
+				'--console-url',
+				OTHER_CONSOLE_URL,
 				'--server-name',
 				'  Legal SignKit  '
 			]
@@ -297,9 +301,76 @@ describe('console enrollment on a pristine initial deploy', () => {
 			vars: Record<string, string>;
 		};
 		expect(config.vars.SIGNKIT_BOOTSTRAP_OWNER_EMAIL).toBe('operator@example.com');
-		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe('');
+		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe(OTHER_CONSOLE_ORIGIN);
+		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(OTHER_CONSOLE_URL);
 		const state = JSON.parse(await result.fs.readFile(STATE_PATH)) as Record<string, unknown>;
-		expect(state.consoleOrigins).toEqual([]);
+		expect(state.consoleOrigins).toEqual([OTHER_CONSOLE_ORIGIN]);
+		expect(state.consoleUrl).toBe(OTHER_CONSOLE_URL);
+	});
+
+	it('refuses an explicit console pair that does not match before spending the enrollment token', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		const http = new OrderedHttp(cloudflare);
+		http.on(ENROLL_URL, enrollmentBody(), 201);
+		const result = await runEnrolled({
+			http,
+			cloudflare,
+			extraArgv: ['--console-url', OTHER_CONSOLE_URL, '--console-origins', CONSOLE_ORIGIN]
+		});
+		expect(result.code).toBe(6);
+		expect(String(result.json?.message)).toMatch(/outside the console origins/);
+		expect(result.enrollmentRequests).toHaveLength(0);
+		expectNoCloudflareMutation(result.cloudflare);
+	});
+
+	it('refuses --console-origins without the enrolled console URL, keeping the enrollment for a corrected rerun', async () => {
+		// Only the origins are overridden; the console URL comes from D6E Auth.
+		const cloudflare = new FakeCloudflareClient();
+		const fs = new MemoryFileSystem();
+		const http = new OrderedHttp(cloudflare);
+		http.on(ENROLL_URL, enrollmentBody(), 201);
+		const first = await runEnrolled({
+			http,
+			cloudflare,
+			fs,
+			extraArgv: ['--console-origins', OTHER_CONSOLE_ORIGIN]
+		});
+		expect(first.code).toBe(6);
+		const message = String(first.json?.message);
+		expect(message).toMatch(/outside the console origins/);
+		expect(message).toMatch(/does not register it again/);
+		expect(first.enrollmentRequests).toHaveLength(1);
+		expectNoCloudflareMutation(cloudflare);
+		expect(await fs.exists(STATE_PATH)).toBe(false);
+		expect(await fs.exists(RECORD_PATH)).toBe(true);
+		expectNoSecretsIn(first.stdout + first.stderr);
+
+		const retry = await runEnrolled({
+			http: new OrderedHttp(cloudflare),
+			cloudflare,
+			fs,
+			env: { D6E_ENROLLMENT_TOKEN: '' },
+			extraArgv: ['--console-origins', `${OTHER_CONSOLE_ORIGIN},${CONSOLE_ORIGIN}`]
+		});
+		expect(retry.code).toBe(0);
+		expect(retry.enrollmentRequests).toHaveLength(0);
+		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
+		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(CONSOLE_URL);
+		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe(`${OTHER_CONSOLE_ORIGIN},${CONSOLE_ORIGIN}`);
+	});
+
+	it('refuses an explicit empty --console-origins before spending the enrollment token', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		const http = new OrderedHttp(cloudflare);
+		http.on(ENROLL_URL, enrollmentBody(), 201);
+		const result = await runEnrolled({
+			http,
+			cloudflare,
+			extraArgv: ['--console-origins', '']
+		});
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(result.cloudflare.lastConfig).toBeUndefined();
 	});
 
 	it('reads only the SMTP password from stdin when authenticated SMTP is configured', async () => {
@@ -778,9 +849,30 @@ describe('--console-origins', () => {
 	});
 
 	it('applies an explicit list on upgrade and records it in state', async () => {
+		// The list keeps the recorded console URL's origin, so the pair still matches.
+		const origins = `${STATE_CONSOLE_ORIGIN},${CONSOLE_ORIGIN}`;
 		const cloudflare = new FakeCloudflareClient();
 		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await runEnrolled({
+			cloudflare,
+			fs,
+			env: { D6E_ENROLLMENT_TOKEN: undefined },
+			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--console-origins', origins]
+		});
+		expect(result.code).toBe(0);
+		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
+		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe(origins);
+		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(STATE_CONSOLE_URL);
+		const state = JSON.parse(await fs.readFile(STATE_PATH)) as Record<string, unknown>;
+		expect(state.consoleOrigins).toEqual([STATE_CONSOLE_ORIGIN, CONSOLE_ORIGIN]);
+	});
+
+	it("refuses an upgrade whose list leaves out the recorded console URL's origin", async () => {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const stateBefore: string = await fs.readFile(STATE_PATH);
 		const result = await runEnrolled({
 			cloudflare,
 			fs,
@@ -794,26 +886,27 @@ describe('--console-origins', () => {
 				CONSOLE_ORIGIN
 			]
 		});
-		expect(result.code).toBe(0);
-		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
-		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe(CONSOLE_ORIGIN);
-		const state = JSON.parse(await fs.readFile(STATE_PATH)) as Record<string, unknown>;
-		expect(state.consoleOrigins).toEqual([CONSOLE_ORIGIN]);
+		expect(result.code).toBe(6);
+		const message = String(result.json?.message);
+		expect(message).toMatch(/outside the console origins/);
+		expect(message).toContain(STATE_CONSOLE_ORIGIN);
+		expectNoCloudflareMutation(cloudflare);
+		expect(await fs.readFile(STATE_PATH)).toBe(stateBefore);
 	});
 
-	it('leaves the remote var alone when neither the flag nor state names it', async () => {
+	it('refuses an upgrade when neither the flag nor state names it', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		cloudflare.seedReadyWorker();
-		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { consoleOrigins: undefined });
 		const result = await runEnrolled({
 			cloudflare,
 			fs,
 			env: { D6E_ENROLLMENT_TOKEN: undefined },
 			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID]
 		});
-		expect(result.code).toBe(0);
-		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
-		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_ORIGINS');
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(cloudflare.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
 	});
 });
 
@@ -874,23 +967,45 @@ describe('--console-url', () => {
 	});
 
 	it('applies an explicit URL on upgrade and records it in state', async () => {
+		// Same origin as the recorded console origins, so the pair still matches.
+		const url = `${STATE_CONSOLE_ORIGIN}/ja/signkit/console`;
 		const cloudflare = new FakeCloudflareClient();
 		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const result = await runEnrolled({
+			cloudflare,
+			fs,
+			env: { D6E_ENROLLMENT_TOKEN: undefined },
+			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--console-url', url]
+		});
+		expect(result.code).toBe(0);
+		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
+		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(url);
+		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe(STATE_CONSOLE_ORIGIN);
+		const state = JSON.parse(await fs.readFile(STATE_PATH)) as Record<string, unknown>;
+		expect(state.consoleUrl).toBe(url);
+	});
+
+	it('refuses an upgrade whose URL is outside the recorded console origins', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem());
+		const stateBefore: string = await fs.readFile(STATE_PATH);
 		const result = await runEnrolled({
 			cloudflare,
 			fs,
 			env: { D6E_ENROLLMENT_TOKEN: undefined },
 			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID, '--console-url', CONSOLE_URL]
 		});
-		expect(result.code).toBe(0);
-		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
-		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(CONSOLE_URL);
-		const state = JSON.parse(await fs.readFile(STATE_PATH)) as Record<string, unknown>;
-		expect(state.consoleUrl).toBe(CONSOLE_URL);
+		expect(result.code).toBe(6);
+		const message = String(result.json?.message);
+		expect(message).toMatch(/outside the console origins/);
+		expect(message).toContain(CONSOLE_ORIGIN);
+		expectNoCloudflareMutation(cloudflare);
+		expect(await fs.readFile(STATE_PATH)).toBe(stateBefore);
 	});
 
-	it('leaves the remote var alone when neither the flag nor state names it', async () => {
+	it('moves to another console when both flags change together', async () => {
 		const cloudflare = new FakeCloudflareClient();
 		cloudflare.seedReadyWorker();
 		const fs = await writeCloudflareState(new MemoryFileSystem());
@@ -898,10 +1013,35 @@ describe('--console-url', () => {
 			cloudflare,
 			fs,
 			env: { D6E_ENROLLMENT_TOKEN: undefined },
-			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID]
+			argv: [
+				'--cloudflare',
+				'upgrade',
+				'--account-id',
+				ACCOUNT_ID,
+				'--console-url',
+				CONSOLE_URL,
+				'--console-origins',
+				CONSOLE_ORIGIN
+			]
 		});
 		expect(result.code).toBe(0);
 		const config = JSON.parse(cloudflare.lastConfig ?? '{}') as { vars: Record<string, string> };
-		expect(config.vars).not.toHaveProperty('SIGNKIT_CONSOLE_URL');
+		expect(config.vars.SIGNKIT_CONSOLE_URL).toBe(CONSOLE_URL);
+		expect(config.vars.SIGNKIT_CONSOLE_ORIGINS).toBe(CONSOLE_ORIGIN);
+	});
+
+	it('refuses an upgrade when neither the flag nor state names it', async () => {
+		const cloudflare = new FakeCloudflareClient();
+		cloudflare.seedReadyWorker();
+		const fs = await writeCloudflareState(new MemoryFileSystem(), { consoleUrl: undefined });
+		const result = await runEnrolled({
+			cloudflare,
+			fs,
+			env: { D6E_ENROLLMENT_TOKEN: undefined },
+			argv: ['--cloudflare', 'upgrade', '--account-id', ACCOUNT_ID]
+		});
+		expect(result.code).toBe(6);
+		expect(result.stdout).toMatch(/operated from a d6e console/);
+		expect(cloudflare.calls.some((call) => call.startsWith('uploadVersion'))).toBe(false);
 	});
 });

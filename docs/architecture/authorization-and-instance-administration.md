@@ -13,10 +13,22 @@ attach a separate encrypted display projection; that contract is
 [instance display metadata](instance-display-metadata.md). Display values never authorize a request
 and never appear on mutation receipts or `/me`.
 
+## Operation through a d6e console
+
+SignKit has no operator pages and no sign-in of its own. A deployment is registered with a d6e
+console (`SIGNKIT_CONSOLE_URL` and `SIGNKIT_CONSOLE_ORIGINS`), and operators work there: the
+console calls this server's operator API with a d6e-auth access token (see
+[operator access tokens](#operator-access-tokens)). The server renders only recipient pages
+(`/s`, `/sign`, `/c`); every other page path, including old dashboard, envelope, settings, setup,
+and invitation links, answers a `302` to the console URL, and a server without an acceptable console
+URL answers `503`. System capabilities report the configured `consoleUrl` (or `null`). Automation
+uses [API keys](#api-keys), which an owner mints from the console.
+
 ## Human sessions
 
-After OAuth verification, SignKit retains the d6e-auth subject, display name, email, and
-email-verification claim. It does not read or persist external workspace membership.
+A human operator is the identity of a verified d6e-auth access token: its subject, display name,
+email, and email-verification claim. SignKit does not read or persist external workspace membership,
+and it keeps no operator session cookie; a cookie that still accompanies a request is never read.
 
 Every operator request rechecks the local member:
 
@@ -25,83 +37,68 @@ Every operator request rechecks the local member:
 - `member` can use the ordinary envelope surface.
 - suspended or missing members are denied.
 
-The hook and root layout share that member read only within the current request, keyed by the
-authenticated caller. Each new request reads membership again. Missing persistence remains
-unavailable; it never establishes that the instance is empty. Mutation-time authorization guards and
-API-key ownership checks remain independent of this read snapshot.
+The hook shares that member read only within the current request, keyed by the authenticated
+caller. Each new request reads membership again. Missing persistence remains unavailable; it never
+establishes that the instance is empty. Mutation-time authorization guards and API-key ownership
+checks remain independent of this read snapshot.
 
 Remote JWKS resolvers are retained in a bounded, URL-specific cache of public verification keys.
 Tokens, principals, membership, and authorization decisions are never cached across requests. Token
 validation and key rotation remain jose's responsibility.
 
-Operator cookies use an HKDF-derived operator-session subkey and purpose-bound authenticated data.
-Only the active or configured previous key can open them; recipient and delivery ciphertext cannot
-become operator sessions. Oversized cookies are rejected before decoding or AEAD work. Recognized
-legacy or previous-key cookies are resealed under the active key in the current format; resealing
-does not establish authority. Key rotation is specified in
-[deployment](../deployment.md#rotating-delivery_encryption_key-and-session_encryption_key).
-
-Post-login return paths must start with a single `/` and remain same-origin.
-Absolute/protocol-relative URLs, controls, backslashes, and their encoded forms are rejected. The
-identity provider's configured origin has its own strict
-[configuration boundary](../deployment.md#configuration).
-
 ### Instance bootstrap
 
 The first verified user may claim the empty instance only when their email matches
-`SIGNKIT_BOOTSTRAP_OWNER_EMAIL`. Bootstrap is atomic and creates the first active owner. The only
-unsafe exception requires all local-development signals described in
+`SIGNKIT_BOOTSTRAP_OWNER_EMAIL`. Bootstrap is atomic and creates the first active owner; the console
+offers it when the server reports that it is not yet bootstrapped. The only unsafe exception
+requires all local-development signals described in
 [bootstrap configuration](../deployment.md#claim-the-initial-owner-immediately-after-deploy); a
 loopback origin alone is insufficient.
 
 ### Instance invitations
 
 Invitations bind a verified email address to a future d6e-auth subject. Acceptance requires the
-signed-in verified email to match, and creates or reactivates the local member in one transaction.
+caller's verified email to match, and creates or reactivates the local member in one transaction.
 
-Creating an invitation also creates exactly one durable mail-delivery row in the same database
-transaction as the invitation and its idempotency receipt. The invited mailbox and one-time `ski1_`
-token are never stored as plaintext: they are sealed together with `DELIVERY_ENCRYPTION_KEY`, using
-purpose-specific authenticated data bound to the invitation and delivery identifiers. Exact command
-replay proves the original delivery row and never creates or exposes another token. The API returns
-only that email delivery was scheduled.
+Creating an invitation also creates exactly one durable outbox row in the same database transaction
+as the invitation and its idempotency receipt. The invited mailbox is never stored as plaintext: it
+is sealed (together with a one-time token kept for payload integrity) with
+`DELIVERY_ENCRYPTION_KEY`, using purpose-specific authenticated data bound to the invitation and
+outbox identifiers. Exact command replay proves the original row and never creates another. The API
+returns only that delivery was scheduled.
 
-Invitation emails carry an acceptance link to `/invitations/accept`, with the token in the URL
-fragment. This public landing page removes the fragment before offering sign-in and keeps the
-validated token in tab-scoped session storage with a ten-minute validity window to bridge OAuth.
-The OAuth return path contains no token. Fragment changes are captured even without a page remount;
-a late acceptance result for an older handoff cannot discard the current one. Missing, invalid, or expired local handoffs ask the user
-to reopen the existing email link; the ordinary non-member settings page asks the user to request
-an invitation from an administrator. Neither offers token entry.
+The invitation is delivered to D6E Auth, not by email from this server. The create command sends
+D6E Auth a note — the normalized invited email, the expiry, the inviter's subject, and the language
+(`locale`: `ja-JP` or `en-US`) — authenticated with this server's OAuth client credentials. D6E Auth
+lists the server for the invitee in the console and emails them a link to join there; this server
+sends no invitation mail. The create response waits for the note, so a revoke issued from it cannot
+be overtaken by a late note, and the outbox row is stored with `available_at` 60 seconds ahead while
+it does. When D6E Auth stores the note (or already holds a withdrawal for the id, `409
+invitation_revoked`), the row is closed as handed off: status `delivered`, provider id
+`d6e-auth:console-invitation-email`, sealed payload erased. Otherwise (D6E Auth unreachable or
+refusing) the row is released at once, and the protected instance-invitation drain retries the same
+note with a five-minute reclaimable lease, capped
+exponential backoff, and at most ten claimed attempts. The drain rechecks the invitation's
+pending/unexpired state and the payload's digests after opening it. Without the console
+registration (URL and client credentials) the drain is unavailable and claims nothing, so no row
+spends its attempts while the server is misconfigured. If the create request ends
+before deciding, the hold lapses and the drain sends the note; D6E Auth treats a repeated note as the
+same note and emails only the first time it sees an invitation and address.
 
-The confirmation shows only the caller's own verified email from private, non-cacheable page data.
-It never resolves or exposes the invitation's target email to an unauthenticated visitor. An explicit
-same-origin `POST /auth/switch-account` ends the local SignKit session and returns a private,
-non-cacheable authorization URL for a fresh OAuth flow with account selection. The browser then
-navigates to that URL separately, retaining the invitation in the same tab. This keeps the
-`form-action 'self'` policy intact. It does not log out other services
-or provider accounts. The confirmation uses a same-origin referrer policy so native same-origin POSTs
-retain their request origin while cross-origin navigation receives no referrer. A single-account provider must render fresh credential entry for this request
-rather than silently reuse its current account. Cancelled/failed authorization returns to the invitation
-with recovery actions; choosing the same subject is reported explicitly. Stale callbacks cannot consume
-a newer OAuth flow. Verified code exchange is the only source of a replacement SignKit identity.
+The revoke endpoint withdraws the note; acceptance does not, because the console's own acceptance
+consumes it. The withdrawal may finish after the revoke response. D6E Auth refuses a note for an
+invitation it has seen withdrawn, so no ordering can revive a revoked invitation. Revocations
+cascaded by member suspension or demotion do not withdraw notes; such notes lapse at their expiry,
+and accepting through the console then meets the same opaque failure. Notes never follow redirects,
+and a failure is logged by event name and status only. There is no separate resend of an instance
+invitation; a new invitation has a new id and D6E Auth emails for it again.
 
-An explicit confirmation invokes the existing email-bound acceptance command. The browser includes
-`x-signkit-expected-subject` to bind the click to the account it displayed; if the current verified
-subject differs, the server returns `account-changed` (409) before consuming the invitation. The UI
-refreshes its identity and requires another confirmation. The optional header never establishes
-identity or changes the opaque response for invalid, expired, revoked, or wrong-email invitations.
-Success clears the tab handoff and refreshes membership before entering settings. Opening a link
-never accepts an invitation by itself.
+#### Accepting an invitation
 
-#### Joining without the link
-
-A verified invitee may also accept without the emailed link. Creating an invitation stores, beside
-it, a recipient lookup: an HMAC of the normalized invited email under a purpose-separated key derived
-from `DELIVERY_ENCRYPTION_KEY`. It is never the email itself, and without that key the database alone
-cannot test candidate addresses; a holder of both the database and the key can, exactly as with the
-keyed request fingerprints. Invitations created before lookups existed have none and remain
-acceptable through their link only.
+Creating an invitation stores, beside it, a recipient lookup: an HMAC of the normalized invited email
+under a purpose-separated key derived from `DELIVERY_ENCRYPTION_KEY`. It is never the email itself,
+and without that key the database alone cannot test candidate addresses; a holder of both the
+database and the key can, exactly as with the keyed request fingerprints.
 
 `GET /api/v1/instance/invitations/received` lists pending invitations, unexpired at server now, whose
 lookup matches the caller's own provider-verified email claim (active or, during rotation, previous
@@ -109,65 +106,23 @@ key), newest first and at most 20. It returns only id, role, creation and expiry
 it was matched for. No request value selects the email, the list requires no membership, and active
 or suspended members receive an empty list. A missing or false `email_verified` claim fails closed.
 
-`POST /api/v1/instance/invitations/{invitationId}/accept` takes an empty body and runs the same
-acceptance transaction, `x-signkit-expected-subject` check, verified-email requirement, responses,
-and opaque failure as the link, but proves the invitation by its id and the caller's lookup instead
-of the token. Its idempotency fingerprint differs from the link's, so a key cannot replay one form
-as the other. Acceptance or revocation through either path (including revocations cascaded by member
-suspension or demotion) atomically deletes the lookup; expired lookups are deleted by the next
-invitation create. Non-members who sign in see their received invitations on the settings page and
-can join from there; invitation mail names that page, or `SIGNKIT_CONSOLE_URL` when configured, as
-the way to join without the link. Both endpoints use the same identity authorization as the link
-accept, so any operator credential accepted there is accepted here; API keys are rejected. System
-capabilities advertise both endpoints as `receivedInvitations`, so a client can detect support.
-
-When `SIGNKIT_CONSOLE_URL` is configured, this server is listed in a d6e console and is operated
-there. Its own operator pages (the dashboard, envelopes, settings, first-owner setup, and the
-signed-out page) answer a `302` to that URL before any sign-in, so a visitor never starts this
-server's OAuth round trip for them. The root layout does it, so SvelteKit also returns the redirect
-for client-side navigation. The recipient pages (`/s`, `/sign`, `/c`), invitation acceptance by link
-(`/invitations/accept` and the `/auth/*` sign-in it uses), and the whole API are unchanged. A
-standalone server, without a console URL or with an unacceptable one, keeps every page.
-
-On such a server, creating an
-invitation (or exactly replaying a still-pending one) also sends D6E Auth a note — the normalized
-invited email, the expiry, and the inviter's subject — authenticated with this server's OAuth
-client credentials, so the console can show the server to the invitee before they join. The revoke
-endpoint withdraws the note; acceptance does not, because the console's own acceptance consumes it.
-Notes run after the command commits, never follow redirects, and are best effort: a failure is
-logged by event name and status only and never changes the response. The create response waits for
-the note, so a revoke issued from it cannot be overtaken by a late note; the withdrawal may finish
-after the revoke response. D6E Auth also refuses a note for an invitation it has seen withdrawn
-(`409 invitation_revoked`), which SignKit treats as the expected end state, so no ordering can
-revive a revoked invitation. Revocations cascaded by member
-suspension or demotion do not withdraw notes; such notes lapse at their expiry, and accepting
-through the console then meets the same opaque failure.
-
-The note also names the invitation mail's language (`locale`: `ja-JP` or `en-US`). D6E Auth emails
-the invitee a link to this server in the console the first time it stores a note for an invitation
-and address, and answers `invitationEmail: "queued"`; otherwise `"skipped"` (a repeated note, or its
-rate limit). So that exactly one invitation email goes out, a create on a server with notes enabled
-stores its own mail with `available_at` 60 seconds ahead. After the note answers, `"queued"` closes
-this server's mail as handed off (status `delivered`, provider id
-`d6e-auth:console-invitation-email`, sealed payload erased); `"skipped"`, a missing field (an older
-D6E Auth), or a failed note releases it at once. A mail already being sent or sent is never touched.
-If the request ends before the decision, the hold lapses and this server sends its mail. An exact
-replay re-sends the note and applies its answer the same way, which can at worst add D6E Auth's
-email after this server's when the first note had failed. There is no separate resend of an
-instance invitation; a new invitation has a new id and D6E Auth emails for it again.
+`POST /api/v1/instance/invitations/{invitationId}/accept` takes an empty body, proves the invitation
+by its id and the caller's lookup, and runs the acceptance transaction. An optional
+`x-signkit-expected-subject` header binds the click to the account the console displayed; if the
+current verified subject differs, the server returns `account-changed` (409) before consuming the
+invitation. The header never establishes identity or changes the opaque response for invalid,
+expired, revoked, or wrong-email invitations. Acceptance or revocation (including revocations
+cascaded by member suspension or demotion) atomically deletes the lookup; expired lookups are deleted
+by the next invitation create. Both endpoints use the operator identity authorization; API keys are
+rejected. System capabilities advertise them as `receivedInvitations`. Invitations created before
+lookups existed can no longer be accepted, since acceptance by the emailed token link was removed;
+re-invite those addresses.
 
 The normal invitation list requests `view=active`: pending invitations whose expiry is after server
 now, filtered before keyset pagination and its limit on both supported databases. Accepted users
 are shown through the member list; revoked, expired and accepted invitations do not appear in the
 normal invitation UI. Historical records are retained, and the list API's omitted/`all` view remains
 compatible with historical readers. All views retain the same owner/admin authorization boundary.
-
-The protected instance-invitation drain uses the deployment's configured mail provider, a
-five-minute reclaimable lease, capped exponential backoff, and at most ten claimed attempts. It
-rechecks the invitation's pending/unexpired state and both token digests after opening the payload.
-Delivery, terminal failure, acceptance, and revocation scrub ciphertext. Provider acceptance remains
-an at-least-once boundary, so a crash between provider acceptance and SQL completion can produce a
-rare duplicate email.
 
 Each active member may also own a private recipient contact book. Contact ownership comes only from
 the verified session subject; no request body, query parameter, or header may select another owner
@@ -177,16 +132,15 @@ indistinguishable.
 
 ### Operator access tokens
 
-An operator console may present a d6e-auth access token instead of the session cookie, as
-`Authorization: Bearer <JWT>`. SignKit verifies it with the session's own checks: RS256 against the
+The d6e console presents a d6e-auth access token as `Authorization: Bearer <JWT>`. SignKit verifies
+it: RS256 against the
 provider JWKS, issuer `d6e-auth`, audience equal to this deployment's `D6E_AUTH_CLIENT_ID`, `sub`
 and `email` present, and never a refresh token. A bearer token must also carry `exp`. A token minted
 for another client, including another SignKit deployment, fails the audience check.
 
-The verified identity then takes the same `instance_member` read as a cookie session. Roles,
-suspension, the `no_membership` bootstrap and self-profile access, and every session-only surface
-(dashboard, contacts, members, invitations, API keys, webhooks, bootstrap, recipient-link reissue)
-behave identically. Envelope commands are attributed to that member as `user`, never `agent`. API
+The verified identity then takes the `instance_member` read above. Roles, suspension, the
+`no_membership` bootstrap and self-profile access, and every session-only surface (dashboard,
+contacts, members, invitations, API keys, webhooks, bootstrap, recipient-link reissue) apply. Envelope commands are attributed to that member as `user`, never `agent`. API
 key rules are unchanged.
 
 - The token is recognized only on the operator API surface: `/api/v1/api-keys`, `/api/v1/contacts`,
@@ -195,11 +149,10 @@ key rules are unchanged.
   and system endpoints and browser pages never resolve one.
 - Only the exact `Bearer ` scheme followed by a compact JWS that does not start with `signkit_`
   selects this mode. Every other `Authorization` value keeps its API-key handling.
-- Presenting the token is exclusive. The operator cookie is neither read nor written — not
-  refreshed, resealed, or cleared — and a failed token never falls back to it.
+- A failed token never falls back to anything: no cookie is read.
 - An invalid, expired, foreign-audience, refresh, or malformed token gets the ordinary opaque `401`
   `authentication-required` problem with `WWW-Authenticate: Bearer` and no `error` parameter. An
-  unreachable key set or missing configuration is `503`, as for the session.
+  unreachable key set or missing configuration is `503`.
 - Every request verifies its token again; only public verification keys are cached.
 
 ## API keys
@@ -337,7 +290,7 @@ expired receipt, a capability that expired without ever being used, a superseded
 capability, a voided or expired envelope, and any malformed, tampered, or mismatched evidence or
 cookie all fail closed to the same generic invalid response as an unknown link.
 
-Contacts are a human-session-only operator surface: the operator cookie or a verified
+Contacts are a human-session-only operator surface: a verified
 [operator access token](#operator-access-tokens). API keys, recipient capabilities, any other bearer
 value, and recipient-session cookies cannot authorize contact reads, search, creation, replacement,
 or deletion. Presenting a disallowed bearer on the contact surface must not compose with a browser

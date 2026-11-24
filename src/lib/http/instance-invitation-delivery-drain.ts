@@ -45,7 +45,8 @@ export function createInstanceInvitationDeliveryDrainHandler(
 				type: 'urn:signkit:problem:instance-invitation-delivery-unavailable',
 				title: 'Instance invitation delivery unavailable',
 				status: 503,
-				detail: 'The durable store, encryption key, and mail provider must be configured.',
+				detail:
+					'The durable store, delivery encryption key, and console registration must be configured.',
 				instance: url.pathname
 			});
 		}

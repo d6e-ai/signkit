@@ -944,6 +944,12 @@ const SYSTEM_CAPABILITIES = {
 			format: 'uri',
 			description:
 				'Canonical SIGNKIT_PUBLIC_ORIGIN that recipient links are built from, or null when it is unset or not an HTTP(S) URL.'
+		},
+		consoleUrl: {
+			type: ['string', 'null'],
+			format: 'uri',
+			description:
+				'The d6e console that operates this server (SIGNKIT_CONSOLE_URL), or null when it is unset or not an acceptable https URL. A server without one cannot be operated: it has no operator pages or sign-in of its own.'
 		}
 	},
 	additionalProperties: true
@@ -959,24 +965,6 @@ function jsonResponse(status: string, description: string, schema: Record<string
 }
 
 type SecurityRequirement = Record<string, readonly string[]>;
-
-/**
- * Every operation that accepts the operator cookie session also accepts a
- * d6e-auth access token minted for this deployment, presented as a bearer
- * (`D6eAccessToken`). Derived here rather than repeated per operation so the two
- * can never drift apart.
- */
-function withAccessTokenAlternative(
-	security: readonly SecurityRequirement[]
-): SecurityRequirement[] {
-	const requirements: SecurityRequirement[] = [...security];
-	if (
-		requirements.some((requirement: SecurityRequirement): boolean => 'SessionCookie' in requirement)
-	) {
-		requirements.push({ D6eAccessToken: [] });
-	}
-	return requirements;
-}
 
 function op(input: {
 	summary: string;
@@ -994,9 +982,7 @@ function op(input: {
 		...(input.description === undefined ? {} : { description: input.description }),
 		operationId: input.operationId,
 		tags: [...input.tags],
-		security: withAccessTokenAlternative(
-			input.security ?? [{ SignKitApiKey: [] }, { SessionCookie: [] }]
-		),
+		security: [...(input.security ?? [{ SignKitApiKey: [] }, { D6eAccessToken: [] }])],
 		...(input.parameters === undefined
 			? {}
 			: {
@@ -1557,9 +1543,9 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: "Read the signed-in caller's dashboard worklist",
 					operationId: 'readDashboardWorklist',
 					description:
-						'Session-only. Requires a verified human session with an active local instance membership; any API-key request is rejected outright (403), never falling back to a cookie session. There is no caller or email request parameter -- the caller is always the authenticated session. `counts` reflects the whole instance for every view, independent of `q`; `items` is bounded to the current page.',
+						'Session-only. Requires a verified human session with an active local instance membership; any API-key request is rejected outright (403). There is no caller or email request parameter -- the caller is always the authenticated session. `counts` reflects the whole instance for every view, independent of `q`; `items` is bounded to the current page.',
 					tags: ['Dashboard'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						dashboardViewParam,
 						dashboardQueryParam,
@@ -1586,7 +1572,7 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'Human-session-only. The owner is always the verified d6e-auth subject with a currently active local instance membership. The request cannot select another owner or an organization.',
 					tags: ['Contacts'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [contactCursorParam, contactLimitParam],
 					responses: contactPageResponse
 				}),
@@ -1596,7 +1582,7 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'Creates a contact only after the sender explicitly asks to save it. Preparing or sending an envelope never creates contacts. Email uniqueness is scoped to the verified owner after the same trim/lower-case normalization used for envelope recipients.',
 					tags: ['Contacts'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [idempotencyHeader],
 					requestBody: {
 						required: true,
@@ -1637,7 +1623,7 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'Human-session-only bounded search. The query is carried in a JSON body rather than the URL so contact PII does not enter request URLs, routine access logs, or cursors.',
 					tags: ['Contacts'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					requestBody: {
 						required: true,
 						content: {
@@ -1670,7 +1656,7 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'Full owner-scoped replacement with optimistic concurrency. Unknown and cross-owner identifiers have the same opaque not-found response.',
 					tags: ['Contacts'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [contactIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
@@ -1711,7 +1697,7 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'Deletes only the owner-scoped contact projection. Existing envelope recipients and immutable evidence are unchanged. Unknown and cross-owner identifiers have the same opaque not-found response.',
 					tags: ['Contacts'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [contactIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
@@ -2605,7 +2591,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Reissue a recipient capability',
 					operationId: 'reissueEnvelopeRecipientCapability',
 					tags: ['Envelopes'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [envelopeIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
@@ -2628,7 +2614,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Reissue that recipient capability',
 					operationId: 'reissueNamedRecipientCapability',
 					tags: ['Envelopes'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [envelopeIdParam, recipientIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
@@ -2650,7 +2636,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'List instance webhook endpoints',
 					operationId: 'listWebhooks',
 					tags: ['Webhooks'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{
 							name: 'cursor',
@@ -2673,7 +2659,7 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'The destination host must be in the deployer-configured SIGNKIT_WEBHOOK_ALLOWED_HOSTS allowlist (exact hosts and explicit wildcard suffixes of at least three labels). An absent, empty, or invalid allowlist denies creation by default; the policy is re-evaluated on every delivery attempt with redirects disabled.',
 					tags: ['Webhooks'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [idempotencyHeader],
 					requestBody: {
 						required: true,
@@ -2714,7 +2700,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Get a webhook endpoint',
 					operationId: 'getWebhook',
 					tags: ['Webhooks'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [webhookIdParam],
 					responses: jsonResponse('200', 'Webhook endpoint', { type: 'object' })
 				})
@@ -2724,7 +2710,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Revoke a webhook endpoint',
 					operationId: 'revokeWebhook',
 					tags: ['Webhooks'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [webhookIdParam, idempotencyHeader],
 					requestBody: {
 						required: true,
@@ -2742,7 +2728,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'List webhook delivery attempts',
 					operationId: 'listWebhookDeliveries',
 					tags: ['Webhooks'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [webhookIdParam],
 					responses: jsonResponse('200', 'Webhook delivery log page', { type: 'object' })
 				})
@@ -2875,14 +2861,14 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'List API keys owned by the caller',
 					operationId: 'listApiKeys',
 					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					responses: jsonResponse('200', 'API key page', { type: 'object' })
 				}),
 				post: op({
 					summary: 'Mint an API key',
 					operationId: 'createApiKey',
 					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [idempotencyHeader],
 					requestBody: JSON_BODY,
 					responses: jsonResponse('201', 'Created API key and one-time token', { type: 'object' })
@@ -2893,7 +2879,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Revoke an API key',
 					operationId: 'revokeApiKey',
 					tags: ['API keys'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{ name: 'apiKeyId', in: 'path', required: true, schema: UUIDV7 },
 						idempotencyHeader
@@ -2909,7 +2895,7 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'Cookie-session-only first-owner claim on an empty instance. Uninitialized instances fail closed: the verified session email must exactly match the deployer-configured SIGNKIT_BOOTSTRAP_OWNER_EMAIL (403 bootstrap-owner-mismatch otherwise), or the local-development-only SIGNKIT_ALLOW_UNSAFE_FIRST_USER_BOOTSTRAP opt-in must apply on Node with NODE_ENV=development and a loopback public origin (403 bootstrap-owner-required otherwise). Runtime mode and public origin are independent checks, so a production proxy misconfigured with a loopback origin stays closed. A mismatched or unconfigured attempt never consumes the single empty-instance window. Already-bootstrapped instances answer 409.',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					requestBody: JSON_BODY,
 					responses: jsonResponse('200', 'Bootstrap result', { type: 'object' })
 				})
@@ -2921,7 +2907,7 @@ export function openApiDocument(): Record<string, unknown> {
 						'Session-only owner/admin member metadata page plus a top-level memberDisplays map keyed by userId. Display values are never authorization inputs and are omitted from mutation receipts and /me.',
 					operationId: 'listInstanceMembers',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					responses: jsonResponse('200', 'Member page with display map', { type: 'object' })
 				})
 			},
@@ -2930,7 +2916,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Read the caller instance membership',
 					operationId: 'getInstanceMemberMe',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					responses: jsonResponse('200', 'Caller membership', { type: 'object' })
 				})
 			},
@@ -2939,7 +2925,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Change an instance member role',
 					operationId: 'changeInstanceMemberRole',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{ name: 'userId', in: 'path', required: true, schema: { type: 'string' } },
 						idempotencyHeader
@@ -2953,7 +2939,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Change an instance member status',
 					operationId: 'changeInstanceMemberStatus',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{ name: 'userId', in: 'path', required: true, schema: { type: 'string' } },
 						idempotencyHeader
@@ -2969,7 +2955,7 @@ export function openApiDocument(): Record<string, unknown> {
 						'Session-only owner/admin invitation metadata page plus a top-level invitationDisplays map keyed by invitationId. Target email is display-only and is never added to mutation receipts.',
 					operationId: 'listInstanceInvitations',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{
 							name: 'view',
@@ -2986,7 +2972,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Create an instance invitation',
 					operationId: 'createInstanceInvitation',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{
 							...idempotencyHeader,
@@ -3000,27 +2986,6 @@ export function openApiDocument(): Record<string, unknown> {
 					})
 				})
 			},
-			'/api/v1/instance/invitations/accept': {
-				post: op({
-					summary: 'Accept an instance invitation',
-					operationId: 'acceptInstanceInvitation',
-					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
-					parameters: [
-						idempotencyHeader,
-						{
-							name: 'x-signkit-expected-subject',
-							in: 'header',
-							required: false,
-							schema: { type: 'string' },
-							description:
-								'Optional UI concurrency guard. A different signed-in subject returns account-changed (409) without consuming the invitation. This header never grants authority.'
-						}
-					],
-					requestBody: JSON_BODY,
-					responses: jsonResponse('200', 'Accepted invitation', { type: 'object' })
-				})
-			},
 			'/api/v1/instance/invitations/received': {
 				get: op({
 					summary: 'List invitations received by the signed-in account',
@@ -3028,18 +2993,18 @@ export function openApiDocument(): Record<string, unknown> {
 						"Pending, unexpired invitations addressed to the caller's own provider-verified email, newest first, at most 20, with the account they were matched for. Requires no membership; members receive an empty list. No request value selects the email.",
 					operationId: 'listReceivedInstanceInvitations',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					responses: jsonResponse('200', 'Received invitations', { type: 'object' })
 				})
 			},
 			'/api/v1/instance/invitations/{invitationId}/accept': {
 				post: op({
-					summary: 'Accept a received invitation without the emailed link',
+					summary: 'Accept a received invitation',
 					description:
-						"Same transaction, responses, and opaque failure as the link acceptance, but the invitation is identified by id and must be addressed to the caller's own provider-verified email. The body is an empty object.",
+						"Accepts a pending invitation identified by id. It must be addressed to the caller's own provider-verified email; any other invitation is an opaque failure. The body is an empty object.",
 					operationId: 'acceptReceivedInstanceInvitation',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{ name: 'invitationId', in: 'path', required: true, schema: UUIDV7 },
 						idempotencyHeader,
@@ -3061,7 +3026,7 @@ export function openApiDocument(): Record<string, unknown> {
 					summary: 'Revoke an instance invitation',
 					operationId: 'revokeInstanceInvitation',
 					tags: ['Instance'],
-					security: [{ SessionCookie: [] }],
+					security: [{ D6eAccessToken: [] }],
 					parameters: [
 						{ name: 'invitationId', in: 'path', required: true, schema: UUIDV7 },
 						idempotencyHeader
@@ -3334,17 +3299,12 @@ export function openApiDocument(): Record<string, unknown> {
 					description:
 						'Instance API key. Live scopes: envelopes:read, drafts:write, envelopes:send.'
 				},
-				SessionCookie: {
-					type: 'apiKey',
-					in: 'cookie',
-					name: 'signkit_session'
-				},
 				D6eAccessToken: {
 					type: 'http',
 					scheme: 'bearer',
 					bearerFormat: 'JWT',
 					description:
-						"d6e-auth access token whose audience is this deployment's own client ID, presented by an operator console instead of the session cookie. It authenticates the same human member as the session (role and membership checks are identical) and is accepted wherever SessionCookie is; the cookie is ignored whenever this bearer is presented. An invalid, expired, refresh, or foreign-audience token is an opaque 401 with `WWW-Authenticate: Bearer`."
+						"d6e-auth access token whose audience is this deployment's own client ID, presented by the d6e console that operates this server. It authenticates a human member: role and local membership decide what it may do. This server has no operator session cookie. An invalid, expired, refresh, or foreign-audience token is an opaque 401 with `WWW-Authenticate: Bearer`."
 				},
 				DeliveryWorkerSecret: {
 					type: 'http',
