@@ -1,3 +1,4 @@
+import { base64UrlEncode, OPAQUE_TOKEN_PATTERN } from '$lib/security/opaque-token';
 import { describe, expect, it, vi } from 'vitest';
 import {
 	createRecipientApproveController,
@@ -9,15 +10,12 @@ import {
 const envelopeId = '01910000-0000-7000-8000-000000000001';
 const recipientId = '01910000-0000-7000-8000-000000000002';
 const fieldId = '01910000-0000-7000-8000-000000000003';
-const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function withoutRandomUUID(): () => void {
+function withoutRandomValues(): () => void {
 	const original: Crypto = globalThis.crypto;
 	Object.defineProperty(globalThis, 'crypto', {
 		configurable: true,
-		value: {
-			getRandomValues: original.getRandomValues.bind(original)
-		}
+		value: {}
 	});
 	return (): void => {
 		Object.defineProperty(globalThis, 'crypto', { configurable: true, value: original });
@@ -29,8 +27,8 @@ function headerKey(init: RequestInit | undefined): string {
 }
 
 describe('first-party Idempotency-Key generation', () => {
-	it('mints a UUIDv4 from crypto.randomUUID in every signing flow', async () => {
-		const randomUUID = vi.spyOn(globalThis.crypto, 'randomUUID');
+	it('mints an opaque random key in every signing flow', async () => {
+		const getRandomValues = vi.spyOn(globalThis.crypto, 'getRandomValues');
 		const fetch = vi.fn<typeof globalThis.fetch>(
 			async (): Promise<Response> => new Response('{}', { status: 503 })
 		);
@@ -74,21 +72,21 @@ describe('first-party Idempotency-Key generation', () => {
 			});
 			await sign.confirmSign([{ fieldId, value: 'Jane Doe' }]);
 
-			expect(randomUUID).toHaveBeenCalledTimes(4);
+			expect(getRandomValues).toHaveBeenCalledTimes(4);
 			const keys: string[] = fetch.mock.calls.map((call): string => headerKey(call[1]));
 			expect(keys).toHaveLength(4);
 			expect(new Set(keys).size).toBe(4);
 			for (const [index, key] of keys.entries()) {
-				expect(key).toMatch(uuidV4);
-				expect(key).toBe(randomUUID.mock.results[index]?.value);
+				expect(key).toMatch(OPAQUE_TOKEN_PATTERN);
+				expect(key).toBe(base64UrlEncode(getRandomValues.mock.results[index]?.value as Uint8Array));
 			}
 		} finally {
-			randomUUID.mockRestore();
+			getRandomValues.mockRestore();
 		}
 	});
 
-	it('fails loudly instead of minting a weak key when crypto.randomUUID is missing', async () => {
-		const restore: () => void = withoutRandomUUID();
+	it('fails loudly instead of minting a weak key when crypto.getRandomValues is missing', async () => {
+		const restore: () => void = withoutRandomValues();
 		const fetch = vi.fn();
 		try {
 			expect((): void => {
@@ -99,7 +97,7 @@ describe('first-party Idempotency-Key generation', () => {
 					pageState: 'active',
 					fetch
 				});
-			}).toThrow(/crypto\.randomUUID\(\) is required to mint an Idempotency-Key/);
+			}).toThrow(/no cryptographic random source/);
 
 			const decline = createRecipientDeclineController({
 				envelopeId,
@@ -108,7 +106,7 @@ describe('first-party Idempotency-Key generation', () => {
 				pageState: 'active',
 				fetch
 			});
-			await expect(decline.confirmDecline()).rejects.toThrow(/crypto\.randomUUID/);
+			await expect(decline.confirmDecline()).rejects.toThrow(/no cryptographic random source/);
 			expect(decline.getIdempotencyKey()).toBeNull();
 
 			const approve = createRecipientApproveController({
@@ -119,7 +117,7 @@ describe('first-party Idempotency-Key generation', () => {
 				recipientStatus: 'viewed',
 				fetch
 			});
-			await expect(approve.confirmApprove()).rejects.toThrow(/crypto\.randomUUID/);
+			await expect(approve.confirmApprove()).rejects.toThrow(/no cryptographic random source/);
 			expect(approve.getIdempotencyKey()).toBeNull();
 
 			const sign = createRecipientSignController({
@@ -132,7 +130,7 @@ describe('first-party Idempotency-Key generation', () => {
 				fetch
 			});
 			await expect(sign.confirmSign([{ fieldId, value: 'Jane Doe' }])).rejects.toThrow(
-				/crypto\.randomUUID/
+				/no cryptographic random source/
 			);
 			expect(sign.getIdempotencyKey()).toBeNull();
 
@@ -142,8 +140,8 @@ describe('first-party Idempotency-Key generation', () => {
 		}
 	});
 
-	it('still uses an injected newIdempotencyKey when crypto.randomUUID is unavailable', async () => {
-		const restore: () => void = withoutRandomUUID();
+	it('still uses an injected newIdempotencyKey when crypto.getRandomValues is unavailable', async () => {
+		const restore: () => void = withoutRandomValues();
 		const fetch = vi.fn<typeof globalThis.fetch>(
 			async (): Promise<Response> => new Response('{}', { status: 503 })
 		);

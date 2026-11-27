@@ -1,5 +1,6 @@
 use crate::error::CliError;
 use serde_json::{Map, Value};
+use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -94,7 +95,7 @@ pub fn resolve_idempotency_key(provided: Option<&str>) -> Result<String, CliErro
         Some(_) => Err(CliError::usage(
             "Idempotency-Key must contain 1-200 visible ASCII characters.",
         )),
-        None => new_uuid_v4(),
+        None => new_idempotency_key(),
     }
 }
 
@@ -267,17 +268,17 @@ fn read_bounded_stdin(max_bytes: usize, kind: &str) -> Result<Vec<u8>, CliError>
     Ok(buffer)
 }
 
-fn new_uuid_v4() -> Result<String, CliError> {
-    let mut bytes: [u8; 16] = [0u8; 16];
+/// Generates an opaque idempotency key from 32 OS-random bytes (hex encoded).
+/// Callers must not depend on its format.
+fn new_idempotency_key() -> Result<String, CliError> {
+    let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)
         .map_err(|err| CliError::usage(format!("Failed to generate an Idempotency-Key: {err}")))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-    ))
+    let mut key = String::with_capacity(64);
+    for byte in bytes {
+        write!(&mut key, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -285,25 +286,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_idempotency_key_is_uuid_v4() {
-        let key = new_uuid_v4().unwrap();
-        let bytes = key.as_bytes();
-        assert_eq!(bytes.len(), 36);
-        assert_eq!(bytes[14], b'4');
-        assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
-    }
-
-    #[test]
-    fn resolve_idempotency_key_generates_distinct_uuid_v4_keys_when_unset() {
+    fn resolve_idempotency_key_generates_distinct_opaque_keys_when_unset() {
         let first = resolve_idempotency_key(None).unwrap();
         let second = resolve_idempotency_key(None).unwrap();
         for key in [&first, &second] {
-            let bytes = key.as_bytes();
-            assert_eq!(bytes.len(), 36);
-            assert_eq!(bytes[14], b'4');
-            assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b'));
-            assert!(key.chars().all(|c| ('!'..='~').contains(&c)));
+            assert_eq!(key.len(), 64);
+            assert!(key
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')));
         }
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn resolve_idempotency_key_preserves_provided_keys_including_uuid_v4() {
+        let v4 = "3f2b8c1e-5a4d-4e6f-9a1b-2c3d4e5f6a7b";
+        assert_eq!(resolve_idempotency_key(Some(v4)).unwrap(), v4);
+        assert_eq!(
+            resolve_idempotency_key(Some("Custom~Key!1")).unwrap(),
+            "Custom~Key!1"
+        );
+        assert!(resolve_idempotency_key(Some("")).is_err());
     }
 }

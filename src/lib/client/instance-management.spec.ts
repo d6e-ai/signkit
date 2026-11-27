@@ -1,3 +1,4 @@
+import { base64UrlEncode, OPAQUE_TOKEN_PATTERN } from '$lib/security/opaque-token';
 import { describe, expect, it, vi } from 'vitest';
 import {
 	createInstanceManagementClient,
@@ -7,8 +8,6 @@ import {
 	type CreateApiKeyResponse,
 	type CreateInstanceInvitationResponse
 } from './instance-management';
-
-const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function mockJsonResponse(
 	data: unknown,
@@ -48,8 +47,8 @@ function mockProblemResponse(
 
 describe('InstanceManagementClient', () => {
 	describe('Idempotency-Key generation and injection', () => {
-		it('mints a UUIDv4 by default via crypto.randomUUID', async () => {
-			const randomUUIDSpy = vi.spyOn(globalThis.crypto, 'randomUUID');
+		it('mints an opaque random key by default', async () => {
+			const getRandomValuesSpy = vi.spyOn(globalThis.crypto, 'getRandomValues');
 			const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
 				mockJsonResponse({ member: null, bootstrapped: false })
 			);
@@ -58,13 +57,15 @@ describe('InstanceManagementClient', () => {
 			try {
 				await client.bootstrapOwner();
 
-				expect(randomUUIDSpy).toHaveBeenCalledOnce();
+				expect(getRandomValuesSpy).toHaveBeenCalledOnce();
 				const call = fetchMock.mock.calls[0];
 				const headers = call?.[1]?.headers as Record<string, string>;
-				expect(headers['idempotency-key']).toMatch(uuidV4Regex);
-				expect(headers['idempotency-key']).toBe(randomUUIDSpy.mock.results[0]?.value);
+				expect(headers['idempotency-key']).toMatch(OPAQUE_TOKEN_PATTERN);
+				expect(headers['idempotency-key']).toBe(
+					base64UrlEncode(getRandomValuesSpy.mock.results[0]?.value as Uint8Array)
+				);
 			} finally {
-				randomUUIDSpy.mockRestore();
+				getRandomValuesSpy.mockRestore();
 			}
 		});
 
@@ -102,16 +103,14 @@ describe('InstanceManagementClient', () => {
 			expect(headers['idempotency-key']).toBe('explicit-per-request-key');
 		});
 
-		it('fails when crypto.randomUUID is not available and no generator is injected', () => {
+		it('fails when crypto.getRandomValues is not available and no generator is injected', () => {
 			const originalCrypto = globalThis.crypto;
 			try {
 				Object.defineProperty(globalThis, 'crypto', {
 					configurable: true,
 					value: {}
 				});
-				expect(() => defaultNewIdempotencyKey()).toThrow(
-					/crypto\.randomUUID\(\) is required to mint an Idempotency-Key/
-				);
+				expect(() => defaultNewIdempotencyKey()).toThrow(/no cryptographic random source/);
 			} finally {
 				Object.defineProperty(globalThis, 'crypto', {
 					configurable: true,

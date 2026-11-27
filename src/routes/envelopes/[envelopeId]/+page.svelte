@@ -78,6 +78,7 @@
 		normalizeRecipientName
 	} from '$lib/domain/recipient-identity';
 	import { envelopeBreadcrumbTitle } from '$lib/navigation/envelope-breadcrumb-title';
+	import { newOpaqueToken } from '$lib/security/opaque-token';
 	import { renderRecipientMarkdown } from '$lib/security/recipient-markdown';
 	import type { RecipientMarkdownNode } from '$lib/security/recipient-markdown';
 	import * as m from '$lib/paraglide/messages';
@@ -1094,7 +1095,7 @@
 	}
 
 	function newRecipientDraftRow(): RecipientDraft {
-		const key = crypto.randomUUID();
+		const key = newOpaqueToken();
 		const row = { key } as RecipientDraft;
 		row.email = '';
 		row.name = '';
@@ -1471,7 +1472,7 @@
 		fieldDraftsDirty = true;
 		const documentId = documentIdForPlacement();
 		if (newField.recipientId === '' || documentId === null) return;
-		const key = crypto.randomUUID();
+		const key = newOpaqueToken();
 		const label = newField.label.trim() || fieldTypeLabel(newField.fieldType);
 		const geometry = clampGeometry({
 			page,

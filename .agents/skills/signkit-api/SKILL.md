@@ -19,7 +19,7 @@ Recipient capabilities (`skr1_...`) are separate credentials for the public sign
 
 1. Read `GET /api/v1/system/capabilities` before depending on an optional feature.
 2. Use UUIDv7 envelope and recipient identifiers.
-3. Give every mutation an `Idempotency-Key`; treat it as an opaque token. UUIDv4 is a good generator format.
+3. Give every mutation a cryptographically random, opaque `Idempotency-Key`. See [Identifiers](../../../docs/architecture/identifiers.md#identifiers).
 4. Include the expected generation or state required by the command.
 5. Handle `application/problem+json` by its `type` and `status`, not by matching prose.
 6. Retry only when the error and command semantics make retry safe; reuse the same idempotency key for the same logical command.

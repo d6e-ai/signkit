@@ -20,7 +20,7 @@
 		onRetryPendingChange?: (pending: boolean) => void;
 		onTerminalFailure?: () => void;
 		fetch?: typeof fetch;
-		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		/** Mints the opaque `Idempotency-Key` for this mutation. */
 		newIdempotencyKey?: () => string;
 		document?: {
 			visibilityState: DocumentVisibilityState;
@@ -174,7 +174,7 @@
 		role: string;
 		pageState: string;
 		fetch?: typeof fetch;
-		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		/** Mints the opaque `Idempotency-Key` for this mutation. */
 		newIdempotencyKey?: () => string;
 		onStatusChange?: (status: RecipientDeclineStatus) => void;
 		onSuccess?: () => void;
@@ -328,7 +328,7 @@
 		pageState: string;
 		recipientStatus?: string | (() => string);
 		fetch?: typeof fetch;
-		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		/** Mints the opaque `Idempotency-Key` for this mutation. */
 		newIdempotencyKey?: () => string;
 		onStatusChange?: (status: RecipientApproveStatus) => void;
 		onSuccess?: (info?: { replayed: boolean; receipt?: RecipientApproveReceipt }) => void;
@@ -511,7 +511,7 @@
 		pageState: string;
 		recipientStatus?: string | (() => string);
 		fetch?: typeof fetch;
-		/** Mints the opaque `Idempotency-Key`; defaults to a UUIDv4. */
+		/** Mints the opaque `Idempotency-Key` for this mutation. */
 		newIdempotencyKey?: () => string;
 		onStatusChange?: (status: RecipientSignStatus) => void;
 		onSuccess?: (info?: { replayed: boolean; receipt?: RecipientSignReceipt }) => void;

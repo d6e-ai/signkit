@@ -105,6 +105,23 @@ test('signs once with the fixed endpoint and OIDC bearer', async () => {
 	assert.ok(!JSON.stringify(logs).includes('header.payload.sig'));
 });
 
+test('default request ID is 32 random bytes encoded as hex', async () => {
+	const ids = new Set();
+	for (let i = 0; i < 2; i += 1) {
+		const handler = createHandler({
+			fetchImpl: async () => upstreamOk(),
+			env: ENV,
+			getOidcToken: () => undefined,
+			log: () => {}
+		});
+		const r = await invoke(handler);
+		assert.equal(r.status, 200);
+		assert.match(r.json.requestId, /^[0-9a-f]{64}$/);
+		ids.add(r.json.requestId);
+	}
+	assert.equal(ids.size, 2);
+});
+
 test('falls back to injected OIDC provider', async () => {
 	const { handler, calls } = setup({ getOidcToken: () => 'fake.oidc.token' });
 	const r = await invoke(handler, { headers: { 'x-vercel-oidc-token': undefined } });

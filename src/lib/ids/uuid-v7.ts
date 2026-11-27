@@ -17,9 +17,8 @@ import { v7 as encodeUuidV7 } from 'uuid';
  * Opaque security material — recipient capabilities, completion access grants,
  * API key secrets, OAuth state, session nonces, and delivery claim tokens
  * — must never be minted here: a UUIDv7 carries only 74 random bits and leaks
- * its creation time. Caller-chosen idempotency keys are also not identifiers:
- * first-party browsers mint UUIDv4 via `crypto.randomUUID()`, and the server
- * accepts bounded arbitrary keys without parsing UUID structure.
+ * its creation time. Generate first-party idempotency keys as opaque random
+ * strings. The server accepts bounded caller-provided keys unchanged.
  *
  * RFC 9562 byte encoding comes from the `uuid` package. Monotonic
  * same-millisecond sequencing and the clock-rollback policy live here so both

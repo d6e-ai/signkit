@@ -23,7 +23,7 @@ The contact API is human-session-only: the operator session cookie or a verified
 ## Common rules
 
 - Operator identifiers are UUIDv7.
-- Mutations require an `Idempotency-Key` opaque token; UUIDv4 is recommended.
+- Mutations require an opaque `Idempotency-Key`. See [Identifiers](architecture/identifiers.md#identifiers) for the key contract.
 - Concurrent authoring uses `expectedGeneration` and, where relevant, `expectedFieldGeneration` or an expected state.
 - Errors use `application/problem+json` following RFC 9457. A path under `/api` that matches no endpoint returns a `404`
   `urn:signkit:problem:route-not-found` problem rather than a page or a sign-in redirect.

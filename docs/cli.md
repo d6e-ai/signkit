@@ -210,8 +210,10 @@ signkit envelopes void <envelope-id> --file void.json
 signkit envelopes pdf-seal-request <envelope-id> --profile pades-b-t --idempotency-key <opaque-key>
 ```
 
-When omitted, mutation idempotency keys are generated as UUIDv4 values. Envelope ids and cursors are
-validated as UUIDv7 before any network request.
+When omitted, mutation idempotency keys are generated as opaque strings from OS-random bytes; do not
+depend on their format. Caller-provided keys (1-200 visible ASCII characters, including historical
+UUIDv4 values) are sent unchanged. Envelope ids and cursors are validated as UUIDv7 before any
+network request.
 
 `upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB.
 `--expected-generation` is required; `--title` is optional (1-200 characters, without control
