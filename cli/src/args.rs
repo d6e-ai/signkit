@@ -168,7 +168,7 @@ pub struct EnvelopeCreateArgs {
     #[arg(long, value_name = "PATH")]
     pub file: Option<String>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 }
@@ -212,7 +212,7 @@ pub struct EnvelopeCommitArgs {
     #[arg(long, value_name = "N")]
     pub expected_generation: Option<u64>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 
@@ -269,7 +269,7 @@ pub struct EnvelopeReadyArgs {
     #[arg(long, value_name = "N")]
     pub expected_generation: Option<u64>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 
@@ -332,7 +332,7 @@ pub struct EnvelopeFieldsArgs {
     #[arg(long, value_name = "N")]
     pub expected_field_generation: Option<u64>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 
@@ -378,7 +378,7 @@ pub struct EnvelopeSendArgs {
     #[arg(long, value_name = "ID")]
     pub expected_ready_audit_event_id: Option<String>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 
@@ -424,7 +424,7 @@ pub struct EnvelopeVoidArgs {
     #[arg(long, value_name = "N")]
     pub expected_generation: Option<u64>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 
@@ -455,7 +455,7 @@ pub struct EnvelopeImportDocxArgs {
     #[arg(long, value_name = "N")]
     pub expected_generation: u64,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 }
@@ -482,7 +482,7 @@ pub struct EnvelopeUploadPdfArgs {
     #[arg(long, value_name = "N")]
     pub position: Option<u32>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 }
@@ -501,7 +501,7 @@ pub struct EnvelopeDocumentOrderArgs {
     #[arg(long, value_name = "N")]
     pub expected_generation: Option<u64>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 }
@@ -585,7 +585,7 @@ pub struct EnvelopePdfSealRequestArgs {
     #[arg(long, value_enum)]
     pub profile: PdfSealProfileArg,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 }
@@ -763,7 +763,7 @@ pub struct RecipientActionArgs {
     #[arg(long, value_name = "RECIPIENT_ID")]
     pub recipient_id: Option<String>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 
@@ -844,7 +844,7 @@ pub struct RecipientSignArgs {
     #[arg(long, value_name = "N")]
     pub expected_field_generation: Option<u64>,
 
-    /// Idempotency key. Generated as a UUIDv4 when omitted.
+    /// Idempotency key. An opaque random key is generated when omitted.
     #[arg(long, value_name = "KEY")]
     pub idempotency_key: Option<String>,
 

@@ -39,7 +39,7 @@ signkit envelopes void <envelope-id> --file void.json
 signkit envelopes pdf-seal-request <envelope-id> --profile pades-b-b --idempotency-key <opaque-key>
 ```
 
-An omitted idempotency key is generated as UUIDv4. Reuse the same key only when retrying the same logical mutation.
+An omitted idempotency key is generated as an opaque random string (format not guaranteed); provided keys are sent unchanged. Reuse the same key only when retrying the same logical mutation.
 
 `upload-pdf` sends a raw `application/pdf` body from a regular file or stdin, bounded to 20 MiB. It requires `--expected-generation`; `--title` is optional (1-200 characters, without control characters), and `--position` is optional (0-19). `document-order` accepts JSON with `expectedGeneration` and 1-20 unique UUIDv7 `documentIds`; the IDs are the complete retained set, so omitting an existing ID removes it from the draft.
 

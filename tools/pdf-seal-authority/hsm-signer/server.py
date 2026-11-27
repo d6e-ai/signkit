@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable, Mapping
-from uuid import uuid4
 
 import pkcs11
 from cryptography.hazmat.primitives import serialization
@@ -192,7 +191,7 @@ def make_server(
             except (OSError, ValueError, RecursionError):
                 self.respond(400, {"error": "invalid_request"})
                 return
-            request_id = str(uuid4())
+            request_id = os.urandom(32).hex()
             log_use(request_id, operation_id, "attempted")
             try:
                 signature = sign(message)

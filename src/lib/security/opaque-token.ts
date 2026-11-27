@@ -1,8 +1,8 @@
 /**
  * The single source of unprefixed opaque high-entropy tokens.
  *
- * OAuth CSRF state and invitation/completion worker lease claim tokens are
- * minted here. These values are canonical unpadded base64url over at least 32
+ * OAuth CSRF state, delivery lease claim tokens, and browser-generated opaque
+ * keys are minted here. These values are unpadded base64url over at least 32
  * cryptographic random bytes — 256 bits, with no embedded time and no
  * structure to correlate.
  *
@@ -10,10 +10,9 @@
  * carries only 74 random bits and leaks its creation millisecond, so
  * persistent row identifiers (`$lib/ids/uuid-v7`) and this helper never share
  * a generator. Prefixed credentials (`skr1_`, `skca1_`, `signkit_`) keep their
- * existing issuance modules. Caller-chosen idempotency keys are opaque by
- * semantics but are not minted here: first-party browsers use
- * `crypto.randomUUID()` UUIDv4, and the server accepts bounded arbitrary keys
- * without parsing UUID structure.
+ * existing issuance modules. Browsers use this helper for their default
+ * idempotency keys. The server accepts bounded caller-provided keys without
+ * interpreting their structure.
  *
  * Web Crypto is the only entropy source. Node 22, Cloudflare Workers, Vercel,
  * and browsers all provide `crypto.getRandomValues`; if a runtime does not,
@@ -86,7 +85,7 @@ export function createOpaqueTokenGenerator(
 	};
 }
 
-/** The process-wide generator for OAuth state and delivery lease claim tokens. */
+/** The process-wide generator for opaque tokens and keys. */
 export const newOpaqueToken: OpaqueTokenGenerator = createOpaqueTokenGenerator();
 
 export function isOpaqueToken(value: string): boolean {

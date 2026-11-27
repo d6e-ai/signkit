@@ -6,6 +6,8 @@
  * here.
  */
 
+import { newOpaqueToken } from '$lib/security/opaque-token';
+
 export interface ProblemValidationError {
 	readonly path: string;
 	readonly message: string;
@@ -20,17 +22,9 @@ export interface Problem {
 	readonly errors?: readonly ProblemValidationError[];
 }
 
-/**
- * Mints an opaque `Idempotency-Key`, not a SignKit resource identifier.
- * Keep the existing randomUUID generator; callers reuse the value without
- * interpreting its UUID version or contents.
- */
+/** Mints an opaque key callers can reuse for the same mutation. */
 export function defaultNewIdempotencyKey(): string {
-	const source: Crypto | undefined = globalThis.crypto;
-	if (source === undefined || typeof source.randomUUID !== 'function') {
-		throw new Error('crypto.randomUUID() is required to mint an Idempotency-Key');
-	}
-	return source.randomUUID();
+	return newOpaqueToken();
 }
 
 export function isReplayedResponse(response: Response): boolean {

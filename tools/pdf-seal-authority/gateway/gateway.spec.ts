@@ -8,6 +8,7 @@ import {
 	signPdfSealAuthorization,
 	type PdfSealAuthorizationRequest
 } from '../../../src/lib/application/pdf-seals/pdf-seal-authorization';
+import { UUID_V7_PATTERN } from '../../../src/lib/ids/uuid-v7';
 import { base64UrlEncode } from '../../../src/lib/security/opaque-token';
 import { handle, type GatewayEnv } from './index';
 
@@ -202,6 +203,7 @@ describe('managed key gateway', () => {
 		expect(accepted.status).toBe(200);
 		const pendingBody = (await accepted.json()) as { status: string; providerReceiptId: string };
 		expect(pendingBody.status).toBe('pending');
+		expect(pendingBody.providerReceiptId).toMatch(UUID_V7_PATTERN);
 		await gw.settle();
 		expect(gw.engine).toHaveBeenCalledTimes(1);
 

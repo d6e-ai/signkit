@@ -15,7 +15,7 @@ Identifiers are not derived from request content. Command idempotency is proven 
 The following are deliberately outside the rule and must never be reclassified as UUIDv7 identifiers:
 
 - external d6e-auth user identifiers, which SignKit stores as identity references;
-- caller-chosen idempotency keys: unique opaque strings. First-party browsers mint `crypto.randomUUID()` UUIDv4 as the recommended concrete format; that format is a convenience, not the contract. The server never parses UUID structure and accepts any bounded visible-ASCII key. Idempotency columns are unconstrained text, not a UUID type, so a UUIDv4 key has no database compatibility with SignKit identifiers and must never become a UUIDv7;
+- caller-chosen idempotency keys: unique opaque strings. First-party clients generate these from cryptographically random bytes. The server accepts bounded visible-ASCII keys, including values already issued as UUIDv4, and compares and stores them as text without parsing their structure;
 - opaque security material: recipient capability tokens and their hashes, `skca1_` completion access grants, and `signkit_` API key secrets keep their existing prefixed formats; OAuth state and invitation/completion lease claim tokens are minted by `src/lib/security/opaque-token.ts` as unpadded base64url over 32 Web Crypto random bytes; recipient/receipt cookie material stays in its existing session helpers — all of these keep full randomness, because a UUIDv7 carries only 74 random bits and leaks its creation time;
 - content-derived values: Git commit SHAs, SHA-256 digests, content-addressed object keys, request fingerprints, and audit event hashes.
 

@@ -4,6 +4,7 @@ import type {
 } from '../../../src/lib/application/pdf-seals/provider-signing-gate';
 import type { PdfSealProviderOperation } from '../../../src/lib/ports/pdf-seal-provider';
 import type { PdfSealAuthorizationRequest } from '../../../src/lib/application/pdf-seals/pdf-seal-authorization';
+import { newUuidV7 } from '../../../src/lib/ids/uuid-v7';
 
 const ISO_MILLIS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 /** Same fixed-width UTC text as Date#toISOString, evaluated once per statement. */
@@ -83,7 +84,7 @@ export class D1ProviderSigningLedger implements ProviderSigningLedger {
 			 ON CONFLICT (issuer, audience, operation_id) DO NOTHING`
 			)
 			.bind(
-				crypto.randomUUID(),
+				newUuidV7(),
 				reference.sourceSha256,
 				reference.sourceByteSize,
 				reference.signerCertificateSha256,

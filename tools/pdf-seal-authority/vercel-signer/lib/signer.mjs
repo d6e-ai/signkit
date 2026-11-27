@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const MAX_MESSAGE_BYTES = 32768;
 const MAX_REQUEST_BYTES = 49152;
@@ -222,7 +222,7 @@ export function createHandler({
 	env = process.env,
 	getOidcToken = () => process.env.VERCEL_OIDC_TOKEN,
 	log = (entry) => console.info(JSON.stringify(entry)),
-	newRequestId = randomUUID
+	newRequestId = () => randomBytes(32).toString('hex')
 } = {}) {
 	return async function handler(req, res) {
 		try {
