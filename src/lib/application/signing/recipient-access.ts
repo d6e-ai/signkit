@@ -19,6 +19,11 @@ export interface PublicRecipientAccessContext {
 	envelopeId: string;
 	recipientId: string;
 	recipientName: string;
+	/**
+	 * Optional typed-signature suggestion for signers only; omitted when absent.
+	 * Not a verified identity: `recipientName` stays the identity label.
+	 */
+	signatureDisplayName?: string;
 	role: RecipientSigningContext['recipientRole'];
 	locale: RecipientSigningContext['recipientLocale'];
 	recipientStatus: RecipientSigningContext['recipientStatus'];
@@ -34,6 +39,9 @@ export function toPublicRecipientAccess(
 		envelopeId: context.envelopeId,
 		recipientId: context.recipientId,
 		recipientName: context.recipientName,
+		...(context.recipientRole === 'signer' && context.signatureDisplayName !== undefined
+			? { signatureDisplayName: context.signatureDisplayName }
+			: {}),
 		role: context.recipientRole,
 		locale: context.recipientLocale,
 		recipientStatus: context.recipientStatus,

@@ -4,6 +4,11 @@ export interface RecipientSigningContext {
 	envelopeId: string;
 	recipientId: string;
 	recipientName: string;
+	/**
+	 * Optional sender-entered typed-signature suggestion for signers. Display
+	 * text only, never verified identity; omitted when absent.
+	 */
+	signatureDisplayName?: string;
 	recipientLocale: 'en' | 'ja';
 	recipientRole: RecipientRole;
 	recipientStatus: RecipientStatus;

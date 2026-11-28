@@ -1,6 +1,10 @@
 import { sha256TextHex } from '$lib/domain/audit';
 import type { Recipient, RecipientRole } from '$lib/domain/envelope';
-import { normalizeRecipientEmail, normalizeRecipientName } from '$lib/domain/recipient-identity';
+import {
+	normalizeRecipientEmail,
+	normalizeRecipientName,
+	normalizeSignatureDisplayName
+} from '$lib/domain/recipient-identity';
 
 export interface ReadyCanonicalRecipient {
 	email: string;
@@ -8,6 +12,11 @@ export interface ReadyCanonicalRecipient {
 	role: RecipientRole;
 	locale: 'en' | 'ja';
 	routingOrder: number;
+	/**
+	 * Optional signer-only typed-signature suggestion. Never an identity claim;
+	 * omitted (not null) when absent so pre-existing fingerprints are unchanged.
+	 */
+	signatureDisplayName?: string;
 }
 
 export interface ReadyCanonicalRequest {
@@ -43,13 +52,19 @@ export function canonicalizeReadyRecipients(
 	recipients: readonly ReadyCanonicalRecipient[]
 ): readonly ReadyCanonicalRecipient[] {
 	const canonical: ReadyCanonicalRecipient[] = recipients.map(
-		(recipient: ReadyCanonicalRecipient): ReadyCanonicalRecipient => ({
-			email: normalizeRecipientEmail(recipient.email),
-			name: normalizeRecipientName(recipient.name),
-			role: recipient.role,
-			locale: recipient.locale,
-			routingOrder: recipient.routingOrder
-		})
+		(recipient: ReadyCanonicalRecipient): ReadyCanonicalRecipient =>
+			withSignatureDisplayName(
+				{
+					email: normalizeRecipientEmail(recipient.email),
+					name: normalizeRecipientName(recipient.name),
+					role: recipient.role,
+					locale: recipient.locale,
+					routingOrder: recipient.routingOrder
+				},
+				recipient.signatureDisplayName === undefined
+					? undefined
+					: normalizeSignatureDisplayName(recipient.signatureDisplayName)
+			)
 	);
 	canonical.sort(
 		(left: ReadyCanonicalRecipient, right: ReadyCanonicalRecipient): number =>
@@ -61,14 +76,20 @@ export function canonicalizeReadyRecipients(
 }
 
 export function canonicalReadyRequestJson(request: ReadyCanonicalRequest): string {
+	// The key is appended only when present, so requests without a display name
+	// keep the exact canonical JSON (and hash) they had before the field existed.
 	const recipients: ReadyCanonicalRecipient[] = request.recipients.map(
-		(recipient: ReadyCanonicalRecipient): ReadyCanonicalRecipient => ({
-			email: recipient.email,
-			name: recipient.name,
-			role: recipient.role,
-			locale: recipient.locale,
-			routingOrder: recipient.routingOrder
-		})
+		(recipient: ReadyCanonicalRecipient): ReadyCanonicalRecipient =>
+			withSignatureDisplayName(
+				{
+					email: recipient.email,
+					name: recipient.name,
+					role: recipient.role,
+					locale: recipient.locale,
+					routingOrder: recipient.routingOrder
+				},
+				recipient.signatureDisplayName
+			)
 	);
 	return JSON.stringify({
 		expectedGeneration: request.expectedGeneration,
@@ -109,13 +130,18 @@ export async function validStoredReadyReceipt(
 	}
 	const requestFingerprint: string = await fingerprintReadyRequest({
 		expectedGeneration: row.expectedGeneration,
-		recipients: recipients.map((recipient: Recipient): ReadyCanonicalRecipient => ({
-			email: recipient.email,
-			name: recipient.name,
-			role: recipient.role,
-			locale: recipient.locale,
-			routingOrder: recipient.routingOrder
-		}))
+		recipients: recipients.map((recipient: Recipient): ReadyCanonicalRecipient =>
+			withSignatureDisplayName(
+				{
+					email: recipient.email,
+					name: recipient.name,
+					role: recipient.role,
+					locale: recipient.locale,
+					routingOrder: recipient.routingOrder
+				},
+				recipient.signatureDisplayName
+			)
+		)
 	});
 	const expectedAuditPayload: string = readyAuditPayloadJson({
 		commitSha: row.commitSha,
@@ -127,4 +153,11 @@ export async function validStoredReadyReceipt(
 		}))
 	});
 	return requestFingerprint === row.requestHash && expectedAuditPayload === row.auditPayloadJson;
+}
+
+function withSignatureDisplayName(
+	recipient: ReadyCanonicalRecipient,
+	signatureDisplayName: string | undefined
+): ReadyCanonicalRecipient {
+	return signatureDisplayName === undefined ? recipient : { ...recipient, signatureDisplayName };
 }

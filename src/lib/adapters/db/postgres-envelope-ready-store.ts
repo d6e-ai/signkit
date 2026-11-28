@@ -151,12 +151,13 @@ export class PostgresEnvelopeReadyStore implements EnvelopeReadyStore {
 							INSERT INTO recipient (
 								id, envelope_id, email, name, role, locale,
 								routing_order, status, capability_hash, capability_expires_at,
-								capability_revoked_at, created_at, updated_at
+								capability_revoked_at, created_at, updated_at, signature_display_name
 							) VALUES (
 								${recipient.id}, ${recipient.envelopeId},
 								${recipient.email}, ${recipient.name}, ${recipient.role}, ${recipient.locale},
 								${recipient.routingOrder}, ${recipient.status}, NULL, NULL, NULL,
-								${command.updatedAt}, ${command.updatedAt}
+								${command.updatedAt}, ${command.updatedAt},
+								${recipient.signatureDisplayName ?? null}
 							)
 						`;
 				}
@@ -321,7 +322,9 @@ function isRecipient(value: unknown): value is Recipient {
 		(candidate.locale === 'en' || candidate.locale === 'ja') &&
 		typeof candidate.routingOrder === 'number' &&
 		Number.isSafeInteger(candidate.routingOrder) &&
-		isRecipientStatus(candidate.status)
+		isRecipientStatus(candidate.status) &&
+		(candidate.signatureDisplayName === undefined ||
+			typeof candidate.signatureDisplayName === 'string')
 	);
 }
 

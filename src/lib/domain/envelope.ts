@@ -54,6 +54,12 @@ export interface Recipient {
 	locale: 'en' | 'ja';
 	routingOrder: number;
 	status: RecipientStatus;
+	/**
+	 * Optional signer-only typed-signature suggestion entered by the sender.
+	 * Display text only; `email` and `name` remain the delivery, identity, and
+	 * audit values. Absent (not null) when the sender did not provide one.
+	 */
+	signatureDisplayName?: string;
 }
 
 /**

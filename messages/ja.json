@@ -531,6 +531,7 @@
 	"signature_canvas_ready": "描画した署名を保存しました。確定して使うか、描き直して置き換えてください。",
 	"signature_canvas_typed_label": "入力署名",
 	"signature_canvas_typed_placeholder": "氏名を入力してください",
+	"signature_canvas_typed_suggestion_hint": "この署名名は送信者が提案したもので、本人確認済みではありません。確定する前に確認・修正してください。",
 	"signature_canvas_uploading": "署名を保存しています…",
 	"signature_canvas_upload_failed": "描画した署名を保存できませんでした。再試行するか、入力署名に切り替えてください。",
 	"signature_dialog_title": "署名を追加",

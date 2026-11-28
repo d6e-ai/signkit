@@ -8,6 +8,7 @@ interface RecipientAccessRow {
 	envelope_id: string;
 	recipient_id: string;
 	recipient_name: string;
+	recipient_signature_display_name?: string | null;
 	recipient_locale: 'en' | 'ja';
 	recipient_role: RecipientRole;
 	recipient_status: RecipientStatus;
@@ -37,6 +38,7 @@ export class D1RecipientAccessStore implements RecipientAccessStore {
 export const D1_RECIPIENT_ACCESS_QUERY: string = `SELECT recipient.envelope_id,
 					recipient.id AS recipient_id,
 					recipient.name AS recipient_name,
+					recipient.signature_display_name AS recipient_signature_display_name,
 					recipient.locale AS recipient_locale,
 					recipient.role AS recipient_role,
 					recipient.status AS recipient_status,
@@ -70,6 +72,9 @@ function fromRow(row: RecipientAccessRow): RecipientSigningContext {
 		envelopeId: row.envelope_id,
 		recipientId: row.recipient_id,
 		recipientName: row.recipient_name,
+		...(typeof row.recipient_signature_display_name === 'string'
+			? { signatureDisplayName: row.recipient_signature_display_name }
+			: {}),
 		recipientLocale: row.recipient_locale,
 		recipientRole: row.recipient_role,
 		recipientStatus: row.recipient_status,

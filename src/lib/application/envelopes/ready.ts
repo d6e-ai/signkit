@@ -5,7 +5,11 @@ import {
 	readyAuditPayloadJson,
 	type ReadyCanonicalRecipient
 } from '$lib/domain/commands/ready';
-import { isValidRecipientEmail, isValidRecipientName } from '$lib/domain/recipient-identity';
+import {
+	isValidRecipientEmail,
+	isValidRecipientName,
+	isValidSignatureDisplayName
+} from '$lib/domain/recipient-identity';
 import { newUuidV7, type UuidV7Generator } from '$lib/ids/uuid-v7';
 import {
 	isActionableRecipientRole,
@@ -106,7 +110,10 @@ export class EnvelopeReadyApplication implements EnvelopeReadyApplicationPort {
 				role: recipient.role,
 				locale: recipient.locale,
 				routingOrder: recipient.routingOrder,
-				status: 'pending'
+				status: 'pending',
+				...(recipient.signatureDisplayName === undefined
+					? {}
+					: { signatureDisplayName: recipient.signatureDisplayName })
 			})
 		);
 		const auditEventId: string = this.#newId();
@@ -174,6 +181,16 @@ function assertReadyInput(
 		}
 		if (!recipientRoles.includes(recipient.role)) {
 			throw new InvalidRecipientGraphError('Recipient role is invalid');
+		}
+		if (recipient.signatureDisplayName !== undefined) {
+			if (!isValidSignatureDisplayName(recipient.signatureDisplayName)) {
+				throw new InvalidRecipientGraphError('Recipient signature display name is invalid');
+			}
+			if (recipient.role !== 'signer') {
+				throw new InvalidRecipientGraphError(
+					'A signature display name is allowed only for signer recipients'
+				);
+			}
 		}
 		if (recipient.role === 'prefill') {
 			throw new InvalidRecipientGraphError(

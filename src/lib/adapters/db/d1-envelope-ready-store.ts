@@ -110,8 +110,8 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 						`INSERT INTO recipient (
 							id, envelope_id, email, name, role, locale,
 							routing_order, status, capability_hash, capability_expires_at,
-							capability_revoked_at, created_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`
+							capability_revoked_at, created_at, updated_at, signature_display_name
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`
 					)
 					.bind(
 						recipient.id,
@@ -123,7 +123,8 @@ export class D1EnvelopeReadyStore implements EnvelopeReadyStore {
 						recipient.routingOrder,
 						recipient.status,
 						command.updatedAt,
-						command.updatedAt
+						command.updatedAt,
+						recipient.signatureDisplayName ?? null
 					)
 			)
 		];
@@ -281,7 +282,9 @@ function isRecipient(value: unknown): value is Recipient {
 		(candidate.locale === 'en' || candidate.locale === 'ja') &&
 		typeof candidate.routingOrder === 'number' &&
 		Number.isSafeInteger(candidate.routingOrder) &&
-		isRecipientStatus(candidate.status)
+		isRecipientStatus(candidate.status) &&
+		(candidate.signatureDisplayName === undefined ||
+			typeof candidate.signatureDisplayName === 'string')
 	);
 }
 

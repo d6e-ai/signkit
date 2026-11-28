@@ -531,6 +531,7 @@
 	"signature_canvas_ready": "Drawn signature saved. Confirm to use it, or draw again to replace it.",
 	"signature_canvas_typed_label": "Typed signature",
 	"signature_canvas_typed_placeholder": "Type your full name",
+	"signature_canvas_typed_suggestion_hint": "The sender suggested this signature name. It is not verified; check or edit it before you confirm.",
 	"signature_canvas_uploading": "Saving signature…",
 	"signature_canvas_upload_failed": "Could not save your drawn signature. Try again or switch to typed signature.",
 	"signature_dialog_title": "Add your signature",

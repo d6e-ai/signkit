@@ -149,7 +149,7 @@ postgresDescribe('PostgresEnvelopeReopenStore PG18 integration', () => {
 		const ready = new EnvelopeReadyApplication(new PostgresEnvelopeReadyStore(client));
 		const reopen = new EnvelopeReopenApplication(new PostgresEnvelopeReopenStore(client));
 		const fields = new EnvelopeAuthoringFieldsRead(new PostgresEnvelopeFieldStore(client));
-		const prepared = await ready.ready(USER_ACTOR, ENVELOPE_ID, {
+		const readyInput = {
 			idempotencyKey: 'ready-pg-1',
 			expectedGeneration: 1,
 			recipients: [
@@ -158,11 +158,21 @@ postgresDescribe('PostgresEnvelopeReopenStore PG18 integration', () => {
 					name: 'Alice',
 					role: 'signer',
 					locale: 'en',
-					routingOrder: 1
+					routingOrder: 1,
+					signatureDisplayName: 'A. Director'
 				}
 			]
-		});
+		} as const;
+		const prepared = await ready.ready(USER_ACTOR, ENVELOPE_ID, readyInput);
 		if (prepared.outcome !== 'published') throw new Error(prepared.outcome);
+		expect(prepared.result.recipients[0]).toMatchObject({
+			name: 'Alice',
+			signatureDisplayName: 'A. Director'
+		});
+		await expect(ready.ready(USER_ACTOR, ENVELOPE_ID, readyInput)).resolves.toEqual({
+			outcome: 'replayed',
+			result: prepared.result
+		});
 		await client`INSERT INTO envelope_field (
 			id, envelope_id, recipient_id, document_id, document_path, field_type,
 			label, required, position, page, x, y, width, height, created_at, updated_at

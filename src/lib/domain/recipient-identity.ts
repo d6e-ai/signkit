@@ -21,3 +21,21 @@ export function isValidRecipientEmail(email: string): boolean {
 export function isValidRecipientName(name: string): boolean {
 	return name.length >= 1 && name.length <= 200;
 }
+
+/**
+ * Optional sender-supplied typed-signature suggestion. It is display text only:
+ * delivery, identity, and audit always use the recipient email and name.
+ */
+export function normalizeSignatureDisplayName(name: string): string {
+	return name.trim();
+}
+
+// Plain text: no C0/C1 control characters (including newlines and tabs).
+// eslint-disable-next-line no-control-regex
+const SIGNATURE_DISPLAY_NAME_CONTROL_PATTERN: RegExp = /[\u0000-\u001F\u007F-\u009F]/;
+
+export function isValidSignatureDisplayName(name: string): boolean {
+	return (
+		name.length >= 1 && name.length <= 200 && !SIGNATURE_DISPLAY_NAME_CONTROL_PATTERN.test(name)
+	);
+}

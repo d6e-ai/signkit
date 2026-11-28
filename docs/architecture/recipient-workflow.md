@@ -18,6 +18,12 @@ not appear as missing input or inflate manual required-field progress. No browse
 is shown as an already recorded signing date. They are filled only by the final explicit signing
 command; entered dates retain their calendar input.
 
+The typed-signature dialog is prefilled with the sender's optional
+[signature display name](envelope-model.md#signature-display-name), falling back to the recipient
+name. When the display name is used, the dialog says it is an unverified suggestion from the sender.
+A signature or initials field is filled only after the signer confirms the dialog. The signer may
+edit the text, and the submitted value is always the signer's own.
+
 A filled field, viewing a PDF and completing a recipient's action are separate states. Signing and
 approval retain explicit confirmation; merely navigating or filling fields never submits an action.
 Approvers do not see signer progress. Existing action controllers retain retry and idempotency

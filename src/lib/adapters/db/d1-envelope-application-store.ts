@@ -40,7 +40,8 @@ import {
 
 const MAX_LIST_LIMIT: number = 100;
 
-export const D1_ENVELOPE_DETAIL_RECIPIENT_SQL: string = `SELECT id, email, name, role, locale, routing_order, status
+export const D1_ENVELOPE_DETAIL_RECIPIENT_SQL: string = `SELECT id, email, name, role, locale, routing_order, status,
+					signature_display_name
 				 FROM recipient
 				 WHERE envelope_id = ?
 				 ORDER BY routing_order ASC, id ASC`;
@@ -614,6 +615,7 @@ interface DetailRecipientRow {
 	locale: string;
 	routing_order: number;
 	status: string;
+	signature_display_name?: string | null;
 }
 
 interface DetailReadyAuditRow {
@@ -650,7 +652,10 @@ function fromRecipientRow(row: DetailRecipientRow): PublicEnvelopeRecipient {
 		locale === null ||
 		status === null ||
 		!Number.isSafeInteger(row.routing_order) ||
-		row.routing_order < 1
+		row.routing_order < 1 ||
+		(row.signature_display_name !== undefined &&
+			row.signature_display_name !== null &&
+			typeof row.signature_display_name !== 'string')
 	) {
 		throw new Error('Stored envelope recipient row is corrupted.');
 	}
@@ -661,7 +666,10 @@ function fromRecipientRow(row: DetailRecipientRow): PublicEnvelopeRecipient {
 		role,
 		locale,
 		routingOrder: row.routing_order,
-		status
+		status,
+		...(typeof row.signature_display_name === 'string'
+			? { signatureDisplayName: row.signature_display_name }
+			: {})
 	};
 }
 

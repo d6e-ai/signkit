@@ -10,6 +10,7 @@ import { isActionableRecipientRole, recipientRoles } from '$lib/domain/envelope'
 import {
 	isValidRecipientEmail,
 	isValidRecipientName,
+	isValidSignatureDisplayName,
 	normalizeRecipientEmail
 } from '$lib/domain/recipient-identity';
 import { authorizeScopedInstanceRequest, type AuthorizedApiActor } from './api-key-authorization';
@@ -30,7 +31,8 @@ const recipientSchema = z
 		name: z.string().trim().max(200).refine(isValidRecipientName),
 		role: z.enum(recipientRoles),
 		locale: z.enum(['en', 'ja']),
-		routingOrder: z.number().int().min(1).max(1000)
+		routingOrder: z.number().int().min(1).max(1000),
+		signatureDisplayName: z.string().trim().max(200).refine(isValidSignatureDisplayName).optional()
 	})
 	.strict();
 export const readySchema = z
@@ -56,6 +58,13 @@ export const readySchema = z
 					code: 'custom',
 					path: ['recipients', index, 'role'],
 					message: 'Prefill recipients are not supported in ready recipient graphs.'
+				});
+			}
+			if (recipient.signatureDisplayName !== undefined && recipient.role !== 'signer') {
+				context.addIssue({
+					code: 'custom',
+					path: ['recipients', index, 'signatureDisplayName'],
+					message: 'A signature display name is allowed only for signer recipients.'
 				});
 			}
 		}

@@ -41,6 +41,29 @@ projection, and `envelope.ready` event in one batch; PostgreSQL uses a row lock 
 the same boundary. The replay receipt is stored without capability tokens, and the audit payload
 contains recipient IDs, roles, and routing order rather than names or email addresses.
 
+### Signature display name
+
+A ready recipient may carry an optional `signatureDisplayName`: trimmed plain text, 1–200
+characters, no control characters, accepted only for the `signer` role (advertised as
+`readiness.signatureDisplayName: true` in system capabilities). It serves the case where someone
+other than the named person, such as a legal department mailbox, receives and acts on the link while
+the agreement should show a different typed signature.
+
+The value is a display suggestion, not an identity claim. SignKit never verifies it. Delivery,
+recipient identity, contacts, and audit keep using the recipient `email` and `name`. The
+`envelope.ready` audit payload is unchanged because it already excludes names. The value is stored
+in the nullable `recipient.signature_display_name` column and in the ready replay receipt. When it
+is absent, the key is left out of the canonical ready request (and of every projection), so
+idempotency fingerprints and receipts of requests without it stay byte-identical to earlier
+releases. Reopen preserves it with the rest of the recipient row. Earlier rows and evidence are
+never rewritten.
+
+The operator detail read and the recipient signing context (signers only) return it when present.
+The signing UI prefills it as the typed-signature suggestion, falling back to the recipient name,
+and says that the sender suggested it. The signer still has to open the signature dialog, can edit
+the text, and must confirm it. A field value is always what the signer submitted; nothing is signed
+on the signer's behalf.
+
 `POST /api/v1/envelopes/{envelopeId}/reopen` (`drafts:write`, required `Idempotency-Key`) returns
 `ready` to `draft` only while `sent_commit_sha IS NULL`. The strict JSON body echoes the observed
 Git generation, field generation, and latest `envelope.ready` audit event id. Publication keeps the
@@ -112,8 +135,9 @@ it.
 Operators recover authoring and send state through active-instance-member or scoped API-key
 authorization on `GET /api/v1/envelopes/{envelopeId}` (`envelopes:read`). The read model returns the
 public envelope projection (Git locators and archive digest, never object-store keys), the current
-recipient graph (id, email, name, role, locale, routing order, status — never capability hashes or
-ciphertext), the latest `envelope.ready` audit event id when the envelope is no longer `draft`, and
+recipient graph (id, email, name, role, locale, routing order, status, and the optional
+[signature display name](#signature-display-name) — never capability hashes or ciphertext), the
+latest `envelope.ready` audit event id when the envelope is no longer `draft`, and
 the current field set without labels. Labels can contain PII, so this public projection, placement
 receipts, and completion evidence stay label-free. Reload and a second tab continue from that
 durable read; send readiness is not reconstructed from `sessionStorage`. Create and list use the
