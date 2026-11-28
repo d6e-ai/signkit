@@ -249,6 +249,18 @@ const FIELD_GEOMETRY: Record<string, unknown> = {
 	additionalProperties: false
 };
 
+const SIGNATURE_DISPLAY_NAME: Record<string, unknown> = {
+	type: 'string',
+	minLength: 1,
+	maxLength: 200,
+	description:
+		'Optional, signer-only plain-text typed-signature suggestion (trimmed, no control characters). ' +
+		'Omitted when absent. Display text only and never verified: the recipient email and name remain ' +
+		'the delivery, identity, and audit values. The signer sees it prefilled, may edit it, and must ' +
+		'confirm; submitted signature field values are always the signer-submitted values. Advertised by ' +
+		'`readiness.signatureDisplayName` in system capabilities.'
+};
+
 const ENVELOPE_RECIPIENT: Record<string, unknown> = {
 	type: 'object',
 	description:
@@ -270,7 +282,8 @@ const ENVELOPE_RECIPIENT: Record<string, unknown> = {
 		status: {
 			type: 'string',
 			enum: ['pending', 'viewed', 'completed', 'declined']
-		}
+		},
+		signatureDisplayName: SIGNATURE_DISPLAY_NAME
 	},
 	additionalProperties: false
 };
@@ -535,7 +548,8 @@ const READY_ENVELOPE_REQUEST: Record<string, unknown> = {
 					name: { type: 'string', minLength: 1, maxLength: 200 },
 					role: { type: 'string', enum: ['signer', 'approver', 'viewer', 'cc'] },
 					locale: { type: 'string', enum: ['en', 'ja'] },
-					routingOrder: { type: 'integer', minimum: 1, maximum: 1000 }
+					routingOrder: { type: 'integer', minimum: 1, maximum: 1000 },
+					signatureDisplayName: SIGNATURE_DISPLAY_NAME
 				}
 			}
 		}

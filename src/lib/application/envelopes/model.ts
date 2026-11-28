@@ -112,6 +112,8 @@ export interface PublicEnvelopeRecipient {
 	locale: 'en' | 'ja';
 	routingOrder: number;
 	status: RecipientStatus;
+	/** Optional signer-only typed-signature suggestion; omitted when absent. Not an identity claim. */
+	signatureDisplayName?: string;
 }
 
 /**

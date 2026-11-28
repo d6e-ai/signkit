@@ -27,6 +27,7 @@
 		envelopeId,
 		recipientId,
 		recipientName = '',
+		signatureDisplayName,
 		value = $bindable(''),
 		disabled = false,
 		invalid = false,
@@ -37,6 +38,8 @@
 		envelopeId: string;
 		recipientId: string;
 		recipientName?: string;
+		/** Sender's suggested typed signature, which the signer may edit before confirming. */
+		signatureDisplayName?: string;
 		value?: string;
 		disabled?: boolean;
 		invalid?: boolean;
@@ -102,7 +105,7 @@
 		// button -- abandons the draft and any upload it started. Only the
 		// confirm button ever writes to `value`.
 		if (!next) uploadToken += 1;
-		if (next) applyDraft(draftFromCommitted(value, recipientName));
+		if (next) applyDraft(draftFromCommitted(value, signatureDisplayName ?? recipientName));
 	}
 
 	async function handleOpenAutoFocus(event: Event): Promise<void> {
@@ -310,8 +313,16 @@
 								bind:value={typedValue}
 								placeholder={m.signature_canvas_typed_placeholder()}
 								maxlength={200}
+								aria-describedby={signatureDisplayName !== undefined
+									? `${id}-typed-suggestion`
+									: undefined}
 								{disabled}
 							/>
+							{#if signatureDisplayName !== undefined}
+								<Field.FieldDescription id={`${id}-typed-suggestion`}>
+									{m.signature_canvas_typed_suggestion_hint()}
+								</Field.FieldDescription>
+							{/if}
 						</Field.Field>
 					</Tabs.Content>
 					<Tabs.Content value="draw">

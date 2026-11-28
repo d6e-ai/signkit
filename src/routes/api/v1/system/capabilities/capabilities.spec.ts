@@ -65,6 +65,7 @@ interface CapabilitiesResponse {
 		actionableRoles: string[];
 		observerRoles: string[];
 		preSendOnlyRoles: string[];
+		signatureDisplayName: boolean;
 		concurrency: string;
 		idempotency: string;
 	};
@@ -215,6 +216,9 @@ describe('GET /api/v1/system/capabilities', () => {
 			publication: 'independently-validated-atomic',
 			privateKeyCustody: 'external-provider'
 		});
+
+		// Optional signer-only typed-signature display name on ready recipients
+		expect(data.readiness.signatureDisplayName).toBe(true);
 
 		// Completion delivery capabilities
 		expect(data.completionDelivery).toEqual({

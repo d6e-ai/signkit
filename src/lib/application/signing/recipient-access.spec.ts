@@ -80,7 +80,18 @@ describe('RecipientAccessService', () => {
 });
 
 describe('toPublicRecipientAccess', () => {
-	it('exposes the sender-provided name only on the capability-bound public context', () => {
+	it('keeps the signature suggestion separate from the identity for a signer', () => {
+		const signer = { ...activeContext, signatureDisplayName: 'A. Director' };
+		expect(toPublicRecipientAccess(signer)).toMatchObject({
+			recipientName: 'Recipient',
+			signatureDisplayName: 'A. Director'
+		});
+		expect(toPublicRecipientAccess({ ...signer, recipientRole: 'approver' })).not.toHaveProperty(
+			'signatureDisplayName'
+		);
+	});
+
+	it('exposes only capability-bound public context fields', () => {
 		const access = toPublicRecipientAccess(activeContext);
 		expect(access).toEqual({
 			envelopeId: 'env_1',

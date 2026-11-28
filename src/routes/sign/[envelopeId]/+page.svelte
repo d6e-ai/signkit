@@ -1391,6 +1391,9 @@
 				envelopeId={data.state === 'active' ? data.access.envelopeId : ''}
 				recipientId={data.state === 'active' ? data.access.recipientId : ''}
 				recipientName={data.state === 'active' ? data.access.recipientName : ''}
+				signatureDisplayName={data.state === 'active'
+					? data.access.signatureDisplayName
+					: undefined}
 				label="{field.label} — {fieldTypeLabel(field.fieldType)}"
 				triggerClass="size-full min-h-0 justify-center rounded-md border-2 border-dashed border-primary/60 bg-primary/5 px-1 text-center"
 				{invalid}

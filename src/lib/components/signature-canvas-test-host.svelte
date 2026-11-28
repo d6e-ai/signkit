@@ -4,11 +4,13 @@
 
 	let {
 		recipientName = 'Alex Rivera',
+		signatureDisplayName,
 		initialValue = '',
 		disabled = false,
 		invalid = false
 	}: {
 		recipientName?: string;
+		signatureDisplayName?: string;
 		initialValue?: string;
 		disabled?: boolean;
 		invalid?: boolean;
@@ -23,6 +25,7 @@
 	envelopeId="01910000-0000-7000-8000-000000000001"
 	recipientId="01910000-0000-7000-8000-000000000002"
 	{recipientName}
+	{signatureDisplayName}
 	{disabled}
 	{invalid}
 	bind:value

@@ -9,6 +9,7 @@ interface RecipientAccessRow {
 	envelopeId: string;
 	recipientId: string;
 	recipientName: string;
+	signatureDisplayName?: string | null;
 	recipientLocale: 'en' | 'ja';
 	recipientRole: RecipientRole;
 	recipientStatus: RecipientStatus;
@@ -31,6 +32,7 @@ export class PostgresRecipientAccessStore implements RecipientAccessStore {
 			SELECT recipient.envelope_id AS "envelopeId",
 				recipient.id AS "recipientId",
 				recipient.name AS "recipientName",
+				recipient.signature_display_name AS "signatureDisplayName",
 				recipient.locale AS "recipientLocale",
 				recipient.role AS "recipientRole",
 				recipient.status AS "recipientStatus",
@@ -65,6 +67,9 @@ export class PostgresRecipientAccessStore implements RecipientAccessStore {
 			envelopeId: row.envelopeId,
 			recipientId: row.recipientId,
 			recipientName: row.recipientName,
+			...(typeof row.signatureDisplayName === 'string'
+				? { signatureDisplayName: row.signatureDisplayName }
+				: {}),
 			recipientLocale: row.recipientLocale,
 			recipientRole: row.recipientRole,
 			recipientStatus: row.recipientStatus,

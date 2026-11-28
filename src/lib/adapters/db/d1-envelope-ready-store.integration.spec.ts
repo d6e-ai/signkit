@@ -262,10 +262,29 @@ describe('D1EnvelopeReadyStore SQLite integration', () => {
 			const input = {
 				idempotencyKey: 'ready-replay-1',
 				expectedGeneration: 1,
-				recipients: FIVE_RECIPIENTS
+				recipients: [
+					{ ...FIVE_RECIPIENTS[0], signatureDisplayName: 'A. Director' },
+					...FIVE_RECIPIENTS.slice(1)
+				]
 			};
 			const first = await application.ready(USER_ACTOR, ENVELOPE_ID, input);
-			expect(first.outcome).toBe('published');
+			expect(first).toMatchObject({
+				outcome: 'published',
+				result: {
+					recipients: expect.arrayContaining([
+						expect.objectContaining({
+							email: 'alice@example.com',
+							name: 'Alice',
+							signatureDisplayName: 'A. Director'
+						})
+					])
+				}
+			});
+			expect(
+				sqlite
+					.prepare('SELECT name, signature_display_name FROM recipient WHERE email = ?')
+					.get('alice@example.com')
+			).toEqual({ name: 'Alice', signature_display_name: 'A. Director' });
 
 			const replay = await application.ready(USER_ACTOR, ENVELOPE_ID, input);
 			expect(replay).toEqual({

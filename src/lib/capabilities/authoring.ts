@@ -20,6 +20,7 @@ export const authoringCapabilities = {
 		actionableRoles: ['signer', 'approver'],
 		observerRoles: ['viewer'],
 		preSendOnlyRoles: ['prefill'],
+		signatureDisplayName: true,
 		concurrency: 'expected-generation',
 		idempotency: 'required'
 	},

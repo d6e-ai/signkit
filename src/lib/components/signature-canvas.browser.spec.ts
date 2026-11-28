@@ -83,6 +83,23 @@ test('keeps the field empty until the dialog is confirmed, including a prefilled
 	expect(screen.getByTestId('committed-signature').element().textContent).toBe('Alex Rivera');
 });
 
+test('lets the signer confirm or edit the signature name suggested by the sender', async () => {
+	const screen = await render(SignatureCanvasTestHost, {
+		recipientName: 'Legal Department',
+		signatureDisplayName: 'Alex Rivera'
+	});
+
+	await screen.getByRole('button', { name: 'Add signature' }).click();
+	const typed = screen.getByLabelText('Typed signature');
+	await expect.element(typed).toHaveValue('Alex Rivera');
+	await expect.element(screen.getByText(/The sender suggested this signature name/)).toBeVisible();
+	expect(screen.getByTestId('committed-signature').element().textContent).toBe('(empty)');
+
+	await typed.fill('Alex M. Rivera');
+	await screen.getByRole('button', { name: 'Use this signature' }).click();
+	expect(screen.getByTestId('committed-signature').element().textContent).toBe('Alex M. Rivera');
+});
+
 test('reopening a confirmed typed signature shows that value, not a discarded edit', async () => {
 	const screen = await render(SignatureCanvasTestHost, {
 		recipientName: 'Alex Rivera',

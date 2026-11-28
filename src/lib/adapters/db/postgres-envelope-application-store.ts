@@ -287,7 +287,8 @@ export class PostgresEnvelopeApplicationStore
 				role,
 				locale,
 				routing_order AS "routingOrder",
-				status
+				status,
+				signature_display_name AS "signatureDisplayName"
 			FROM recipient
 			WHERE envelope_id = ${envelopeId}
 			ORDER BY routing_order ASC, id ASC
@@ -869,6 +870,7 @@ interface PostgresDetailRecipientRow {
 	locale: 'en' | 'ja';
 	routingOrder: number;
 	status: RecipientStatus;
+	signatureDisplayName?: string | null;
 }
 
 interface PostgresDetailFieldRow {
@@ -896,7 +898,10 @@ function fromPostgresRecipientRow(row: PostgresDetailRecipientRow): PublicEnvelo
 		role: row.role,
 		locale: row.locale,
 		routingOrder: row.routingOrder,
-		status: row.status
+		status: row.status,
+		...(typeof row.signatureDisplayName === 'string'
+			? { signatureDisplayName: row.signatureDisplayName }
+			: {})
 	};
 }
 

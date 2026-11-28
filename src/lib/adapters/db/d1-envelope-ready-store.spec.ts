@@ -169,7 +169,8 @@ describe('D1EnvelopeReadyStore', () => {
 			command.recipients[0].routingOrder,
 			command.recipients[0].status,
 			command.updatedAt,
-			command.updatedAt
+			command.updatedAt,
+			null
 		]);
 		const recipientSql = fake.batches[0][2].sql;
 		const placeholderCount = (recipientSql.match(/\?/g) || []).length;
